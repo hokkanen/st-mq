@@ -1,3 +1,26 @@
+Implemented 2026-10-02 — Remove unused Shelly session-energy comparisons
+- Keep Recorded energy checks for Property and Charger 1: their stored phase
+  energies integrate power and are compared with the Equalizer import-counter
+  increase and Easee finalized-session meter total over matching periods.
+  Explain in the same fold that Charger 2 records native lifetime-meter
+  increments directly, with estimated phase shares and no integration check.
+- Delete C2 session accumulation, reset/settlement machinery, native session
+  polling, session-verification configuration, API subtotal and comparison
+  output, comparison events and history selector. Shelly exposes four useful
+  electrical feed groups; recorded consumption still uses only its three phase
+  energy streams. Preserve current control, restart/rollback, cost and planning.
+- F1/F3/F4/F5/F7/F8: remove the feature across producers/consumers rather than
+  hiding an active accumulator. Retired C2 check events, state and settings reject
+  explicitly; no history translation, field stripping or automatic data reset.
+  Existing native lifetime recording remains supported without retired state.
+- Work in an isolated branch/worktree, then merge H66 as requested. No household
+  commands, private configuration changes or deployment are part of this cleanup.
+- Validation: full routine suite passes 3,988 tests with one optional skip and
+  no failures. Focused adapter/config/recording (60), UI/catalogue (115), and
+  shared check/API/storage suites pass. Production build passes with its existing
+  bundle-size warning. Firefox energy-check and equipment browser sweeps pass;
+  both themes/mobile and desktop preserve layout and the two useful checks.
+
 Implemented 2026-10-02 — Clarify Garage protection and separate live readings from setup
 - Restore the live Freeze protection fold directly below Garage's Normal
   temperature fold. Keep pipe parameters and sender setup below Floor preheating

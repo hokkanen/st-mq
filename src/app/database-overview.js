@@ -303,7 +303,7 @@ export function getDatabaseOverview({ store, now = Date.now() }) {
   }
 
   const eventCategories = [
-    ['charging-checks', "type='charging-session-check'", 'Finalized charging comparisons', 'One immutable reference and estimated energy comparison per Charger 1 session or Charger 2 charging period; incomplete coverage is excluded from averages.'],
+    ['charging-checks', "type='charging-session-check'", 'Finalized charging comparisons', 'One immutable reference and estimated energy comparison per Charger 1 session; incomplete coverage is excluded from averages.'],
     ['charging-unallocated', "type='charging-energy-unallocated'", 'Unallocated charger meter increments', 'Measured Charger 2 increments without usable phase shares. Retained as diagnostic evidence; phase energy, charging progress and cost remain unavailable for these intervals.'],
     ['heat-power-config', "type='heat-pump-power-config'", 'Historical heat-pump power assumptions', 'Versioned nominal power assumptions used to reconstruct heat-pump power and timing comparisons from recorded equipment states.'],
     ['decisions', "type='decision'", 'Controller decisions', 'Action, phase, reasons, commands and execution outcomes recorded for each decision.'],

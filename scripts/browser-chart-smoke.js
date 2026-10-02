@@ -70,10 +70,8 @@ function seedChargingFixture(store, energySource='simulation') {
       sourceTime:now,receivedAt:now,value:100});
     for (const [source,key,estimatedKwh,referenceKwh,complete,offset] of [
       ['easee','synthetic-first',12,10,true,4],['easee','synthetic-second',81,90,true,2],
-      ['shelly-evse','synthetic-first',12,10,true,4],['shelly-evse','synthetic-partial',2,1,false,2],
     ]) recordChargingSessionCheck(store,{source,sessionKey:key,start:now-offset*3600_000,
       end:now-(offset-1)*3600_000,estimatedKwh,referenceKwh,complete,
-      ...(source==='shelly-evse'?{recordingBasis:'native-meter-counter-phase-allocation',referenceBasis:'native-session-energy'}:{}),
       quality:complete?[]:['incomplete-coverage']});
   });
 }
@@ -370,13 +368,12 @@ try {
   mkdirSync('var',{recursive:true});
   await evaluate("document.getElementById('recording-details').open=true; true");
   await evaluate("document.getElementById('energy-audit-details').open=true; true");
-  await until("document.querySelectorAll('#energy-audit-content .energy-check').length===3");
+  await until("document.querySelectorAll('#energy-audit-content .energy-check').length===2");
   assert.equal(await evaluate("document.querySelector('#energy-audit-details > summary').textContent.trim()"),'Recorded energy checks');
-  assert.match(await evaluate("document.getElementById('energy-audit-content').textContent"),/Compares stored phase-energy totals with meter references over matching periods\./);
+  assert.match(await evaluate("document.getElementById('energy-audit-content').textContent"),/Property and Charger 1 compare stored phase-energy totals, estimated by integrating power, with meter references over matching periods\./);
   const energyCheck = signal => `#energy-audit-content .energy-check[data-check-key="${signal}"]`;
   const propertyCheck = energyCheck('property_import_energy_counter');
   const charger1Check = energyCheck('ev1_session_energy_check');
-  const charger2Check = energyCheck('shelly_session_energy_check');
   const checkText = selector => evaluate(`document.querySelector(${JSON.stringify(selector)}).textContent`);
   const energyKey = value => command('input.performActions',{context,actions:[{type:'key',id:'energy-check-keyboard',
     actions:[{type:'keyDown',value},{type:'keyUp',value}]}]});
@@ -393,13 +390,12 @@ try {
     const checks=await evaluate(`Array.from(document.querySelectorAll('#energy-audit-content .energy-check'),row=>({
       title:row.querySelector('h3').textContent,subtitle:row.querySelector('.energy-check-source').textContent,
       result:row.querySelector('.energy-check-result').textContent,text:row.textContent}))`);
-    assert.deepEqual(checks.map(row=>row.title),['Property','Charger 1','Charger 2'],`${theme}: device checks share a clear row layout`);
+    assert.deepEqual(checks.map(row=>row.title),['Property','Charger 1'],`${theme}: device checks share a clear row layout`);
     assert.equal(checks[0].subtitle,'Import meter');
     assert.equal(checks[0].result,'Waiting for a second meter reading');
     assert(checks.slice(1).every(row=>row.subtitle==='Completed sessions'));
     assert.equal(checks[1].result,'Recorded energy is 7.0% lower than the meter');
     assert.match(checks[1].text,/93(?:\.0+)? kWh.*100(?:\.0+)? kWh/);
-    assert.equal(checks[2].result,'Recorded energy is 20.0% higher than the meter');
     assert(!checks.slice(1).some(row=>/averages|per session|Lifetime energy meter/.test(row.text)),
       'Session results show weighted totals without per-session averages or lifetime counters');
     for(const width of [1440,390]) {
@@ -441,7 +437,7 @@ try {
   await energyKey('\uE007');
   assert.equal(await evaluate(`document.querySelector(${JSON.stringify(charger1Check+' .energy-check-details')}).open`),true,
     'Session comparison details open with Enter');
-  assert.equal(await evaluate(`document.querySelector(${JSON.stringify(charger2Check+' .energy-check-details')}).open`),false,
+  assert.equal(await evaluate(`document.querySelector(${JSON.stringify(propertyCheck+' .energy-check-details')}).open`),false,
     'Other device details remain folded');
   await refreshEnergyChecks();
   assert.equal(await evaluate(`document.querySelector(${JSON.stringify(charger1Check+' .energy-check-details')}).open`),true,
@@ -468,10 +464,6 @@ try {
   gapRows[1].summary={basis:'electricity-meter',recordedSessions:14,comparedSessions:2,excludedSessions:12,
     exclusionReasons:{'incomplete-coverage':12,'zero-reference':6},estimatedKwh:.24002,referenceKwh:.25,
     differenceKwh:-.00998,differencePercent:-3.992,start:now-7200000,end:now-3600000,lastSessionEnd:now};
-  gapRows[2].summary={basis:'electricity-meter',recordedSessions:0,comparedSessions:0,excludedSessions:0,
-    exclusionReasons:{},estimatedKwh:0,referenceKwh:0,differenceKwh:null,differencePercent:null,
-    start:null,end:null,lastSessionEnd:null};
-  gapRows[2].sessionEnergyVerified=true;
   await refreshEnergyChecks(gapRows);
   assert.match(await checkText(propertyCheck),/10\.0% lower/,'An incomplete latest period retains the last successful result');
   assert.match(await checkText(propertyCheck),/Last successful comparison:/);
@@ -483,23 +475,12 @@ try {
   assert.match(await checkText(charger1Check),/Incomplete recording: 12 sessions/);
   assert.match(await checkText(charger1Check),/Meter reference is zero: 6 sessions/);
   assert.match(await checkText(charger1Check),/Reason counts can overlap/,'Overlapping reasons cannot be mistaken for additional excluded sessions');
-  assert.equal(await checkText(charger2Check+' .energy-check-result'),'No completed sessions recorded');
   assert.match(await checkText(propertyCheck), /stored L1–L3 energy sum.*integrating power.*Equalizer import counter/);
   assert.match(await checkText(charger1Check), /stored L1–L3 energy sum.*integrating power.*final session meter reading/);
-  assert.match(await checkText(charger2Check), /lifetime meter increments.*completeness.*not independent meter accuracy/);
-  assert(!/0 compared|0 excluded|0 recorded sessions/.test(await checkText(charger2Check)),
-    'An empty charger uses a useful empty state instead of zero-valued statistics');
-  gapRows[2].sessionEnergyVerified=false;
-  gapRows[2].sessionReference={kind:'plug-period-native-runs',observedKwh:3,runCount:2,
-    complete:false,quality:['missing-final-reference'],phase:'active',start:now-7200000,observedAt:now};
-  await refreshEnergyChecks(gapRows);
-  assert.equal(await checkText(charger2Check+' .energy-check-result'),'Completed-session check unavailable');
-  assert.match(await checkText(charger2Check+' .energy-check-notice'), /no verified final session reference.*Consumption recording continues/);
-  assert.match(await checkText(charger2Check), /Current plug-in period: 3 kWh observed across 2 charging runs/);
-  assert.match(await checkText(charger2Check), /Native total is incomplete; it is excluded from comparison/);
-  assert.match(await checkText(charger2Check), /same plug-in period, including pauses and restarts/);
   const methodCheck='#energy-audit-content details[data-check-key="method"]';
   assert.equal(await checkText(methodCheck+' > summary'),'How comparisons work');
+  assert.match(await evaluate("[...document.querySelectorAll('#energy-audit-content > p')].map(node=>node.textContent).join(' ')"),
+    /Charger 2 records lifetime meter increments directly; only the phase split is estimated, so it has no equivalent integration check/);
   assert.match(await checkText(methodCheck),/do not change recorded history, calibrate estimates, train the house model or adjust recording thresholds/);
   await evaluate("document.querySelectorAll('#energy-audit-content .energy-check-details').forEach(node=>node.open=true); true");
   for(const theme of ['dark','light']) for(const width of [390,1440]) {
@@ -711,15 +692,15 @@ try {
     ['heat_pump_power','heat_pump_power','property_power'],
     ...['learning_profit', 'learning_aux_profit', 'learning_recovery_error', 'learning_indoor_temperature'].map(name => [name, name, 'property_power']),
     ...coefficientKeys.map(name => [name, name, 'property_power']),
-    ...['ev1_session_energy_check','shelly_session_energy_check'].map(name=>[name,name,'property_power']),
+    ['ev1_session_energy_check','ev1_session_energy_check','property_power'],
     ['solar_radiation', 'solar_radiation', 'property_power'], ['power', 'property_power', 'heating_integral']]) {
     const began = performance.now();
     await selectChartSubject(left);
     await until(`document.getElementById('history').dataset.ready === 'true' && document.getElementById('history').dataset.left === ${JSON.stringify(left)} && !!document.querySelector('[data-chart-key="${expected}"]') && !document.querySelector('[data-chart-key="${absent}"]')`);
     assert.equal(await legendState('spot'), 'false', 'Explicitly hidden shared legend preference survives axis changes');
     if(left==='phases')assert.equal(await evaluate("Boolean(document.querySelector('[data-chart-key=charger2_power]'))"),false,'Phase loading retains ampere units rather than total power');
-    if(['ev1_session_energy_check','shelly_session_energy_check'].includes(left)) {
-      assert.equal(await evaluate(`document.querySelector('[data-chart-key="${left}"]').textContent.includes(${JSON.stringify(left==='ev1_session_energy_check'?'Charger 1':'Charger 2')})`),true);
+    if(left==='ev1_session_energy_check') {
+      assert.equal(await evaluate(`document.querySelector('[data-chart-key="${left}"]').textContent.includes(${JSON.stringify('Charger 1')})`),true);
       assert.match(await evaluate("document.getElementById('chart-view-description').textContent"),/[Ss]ession/);
       const sessionPlot=await fetch(`${base}/api/chart?start=2026-09-07&end=2026-09-07&left=${left}`).then(response=>response.json());
       assert.equal(sessionPlot.series[left].length,2,'one chart point per finalized session');
@@ -969,7 +950,7 @@ try {
     connected: true, recording: true, maxAgeMs: 300000,
     readings: Object.fromEntries([
       ...[1,2,3].flatMap(phase => [[`ev2_current_l${phase}`,10,'A'],[`ev2_voltage_l${phase}`,230,'V'],[`ev2_active_power_l${phase}`,2.3,'kW']]),
-      ['ev2_active_power',6.9,'kW'],['ev2_import_energy_counter',123.4,'kWh'],['ev2_session_energy',4.2,'kWh'],
+      ['ev2_active_power',6.9,'kW'],['ev2_import_energy_counter',123.4,'kWh'],
     ].map(([signal,value,unit]) => [signal,{value,unit,sourceTime:now,receivedAt:now,available:true,quality:[]}])) };
   const realProviderStatus = app.engine.providerStatus.bind(app.engine);
   app.engine.providerStatus = () => ({ ...realProviderStatus(), 'shelly-evse': { ...charger2Status } });
@@ -1019,8 +1000,8 @@ try {
     '[data-provider=electricity] .provider-series > li > strong')].map(row => row.textContent))`));
   assert.deepEqual(electricitySeries.filter(label => label.startsWith('Charger 2')), [
     'Charger 2 phase currents L1–L3', 'Charger 2 phase voltages L1–L3', 'Charger 2 active power · total and L1–L3',
-    'Charger 2 phase energy L1–L3', 'Charger 2 session check',
-  ], 'Charger 2 groups required meter inputs into the same five purposes as Charger 1');
+    'Charger 2 phase energy L1–L3',
+  ], 'Charger 2 groups its required electrical inputs into four feeds');
   assert.equal(electricitySeries.includes('Charger 2 total energy'), false, 'Consumption totals are derived from three phase energies');
   for (const label of ['Property phase energy L1–L3', 'Charger 1 phase energy L1–L3'])
     assert.ok(electricitySeries.includes(label), `${label} remains in the combined catalogue`);
@@ -1138,7 +1119,7 @@ try {
   }
   assert.deepEqual(errors, []);
   console.log(JSON.stringify(energyChecksOnly ? { result: 'energy-checks-browser-smoke-passed', browserTimeZone,
-    checked: ['device-methods', 'recording-completeness-vs-integration', 'unverified-session-reference',
+    checked: ['device-methods', 'property-and-charger1-only', 'shelly-meter-recording-explanation',
       'session-counts-and-exclusions', 'property-gap-and-retained-result', 'keyboard-and-refresh-preservation', 'dark-and-light', '390-and-1440-layouts'] }
     : chartOnly ? { result: 'chart-only-browser-smoke-passed', browserTimeZone, timings,
     checked: ['named-views-and-series-explorer', 'recording-inventory', 'power-visible-pixels', 'fullscreen-and-zoom',

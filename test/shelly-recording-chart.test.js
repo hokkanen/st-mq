@@ -79,24 +79,22 @@ test('incomplete charger phase history leaves derived total power unavailable',t
   assert.equal(result.timingBenefit.charger2.energyKwh,null);
 });
 
-test('energy checks show totals and evidence size with the same meaning for both chargers',()=>{
+test('Charger 1 energy checks show recorded totals, session coverage and an honest empty state',()=>{
   const summary={recordedSessions:4,comparedSessions:2,excludedSessions:2,estimatedKwh:22,referenceKwh:20,
     differenceKwh:2,differencePercent:10,start,end:start+HOUR,lastSessionEnd:start+2*HOUR};
   const charger=energyAuditRow({kind:'charging-session-summary',source:'easee',summary});
-  const second=energyAuditRow({kind:'charging-session-summary',source:'shelly-evse',summary});
-  assert.equal(charger.title,'Charger 1');assert.equal(second.title,'Charger 2');
-  assert.equal(charger.subtitle,second.subtitle);
+  assert.equal(charger.title,'Charger 1');
   assert.equal(charger.value,'Recorded energy is 10.0% higher than the meter');
   assert.match(charger.context.join(' '),/22 kWh recorded · 20 kWh metered/);
-  assert.match(second.context.join(' '),/Based on 2 of 4 completed sessions/);
-  assert.equal(second.detailsLabel,'2 sessions excluded · details');
-  const empty=energyAuditRow({kind:'charging-session-summary',source:'shelly-evse',summary:{recordedSessions:0,comparedSessions:0,excludedSessions:0}});
+  assert.match(charger.context.join(' '),/Based on 2 of 4 completed sessions/);
+  assert.equal(charger.detailsLabel,'2 sessions excluded · details');
+  const empty=energyAuditRow({kind:'charging-session-summary',source:'easee',summary:{recordedSessions:0,comparedSessions:0,excludedSessions:0}});
   assert.equal(empty.value,'No completed sessions recorded');
   assert.deepEqual(empty.context,[]);assert.deepEqual(empty.details,[]);
 });
 
 test('excluded sessions explain overlapping issues separately from comparison results',()=>{
-  const display=energyAuditRow({kind:'charging-session-summary',source:'shelly-evse',summary:{
+  const display=energyAuditRow({kind:'charging-session-summary',source:'easee',summary:{
     recordedSessions:2,comparedSessions:0,excludedSessions:2,
     exclusionReasons:{disconnected:2,stale:2,'missing-start':1,'missing-end':1,'duplicate-suspected':1,
       'invented-private-payload':1},

@@ -23,11 +23,10 @@ async function fixture(t, { charging = true, retainedOnly = false, enabled = tru
     data.set(key, structuredClone(value));
   }, transaction: fn => fn(), event: () => 1 };
   withReportDatabase(store, t);
-  const roles = { current_limit: 'Number', start_charging: 'Boolean', work_state: 'Enum', phase_info: 'Object',
-    energy_charge: 'Number', time_charge: 'Number' };
+  const roles = { current_limit: 'Number', start_charging: 'Boolean', work_state: 'Enum', phase_info: 'Object' };
   const ids = Object.fromEntries(Object.keys(roles).map((role, i) => [role, i + 200]));
   const fields = Object.fromEntries(Object.entries({ current_limit: 12, start_charging: true,
-    work_state: charging ? 'charging' : 'connected', energy_charge: 0, time_charge: 0,
+    work_state: charging ? 'charging' : 'connected',
     phase_info: {} }).map(([role, value]) => [role, { value, at: START }]));
   const physical = running => {
     fields.work_state = { value: running ? 'charging' : 'paused', at: now };

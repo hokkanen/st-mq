@@ -97,8 +97,6 @@ export function providerSeries(job, health = {}) {
         'Live total and phase active power. Phase-power shares distribute measured consumption among phases; historical chart power comes from stored energy intervals.', 'Shelly EVSE'),
       seriesRow([...phaseSignals('ev2_energy'), 'ev2_import_energy_counter'], 'Charger 2 phase energy L1–L3', 'kWh',
         'Increases in the lifetime total meter counter are distributed using phase-power shares and stored per interval. Estimated phase distribution; the three phase energies sum to measured total consumption. The charger reports a total counter, without separate phase energy counters. Missing allocation leaves a recording gap.', 'Calculated from Shelly EVSE'),
-      seriesRow(['shelly_session_energy_check', 'ev2_session_energy'], 'Charger 2 session check', 'kWh',
-        'Adds native charging-session energies across the whole plug-in period and compares the total with stored phase energies. Pauses and resets preserve the subtotal; missing final readings leave it incomplete. Checks recording completeness using the same meter, not independent meter accuracy.', 'Shelly EVSE'),
     ];
   }
   if (job === 'market') {
@@ -217,7 +215,7 @@ function electricityDisplay(entries, options) {
         error: current.error, status: current.error ? 'error' : health.status === 'error' ? 'ok' : health.status,
         qualityIssues: current.qualityIssues ?? [] }, options) : displays[index];
       if (key === 'shelly-evse' && !inactiveStates.includes(display.state)) {
-        const nativeSignals = row.signals.filter(signal => !/^ev2_energy_l[123]$/.test(signal) && signal !== 'shelly_session_energy_check');
+        const nativeSignals = row.signals.filter(signal => !/^ev2_energy_l[123]$/.test(signal));
         if (row.signals.includes('ev2_energy_l1')) nativeSignals.push(...phaseSignals('ev2_active_power'));
         const readings = nativeSignals.map(signal => health?.readings?.[signal]);
         const now = options?.now ?? Date.now();
@@ -231,16 +229,12 @@ function electricityDisplay(entries, options) {
         display = usable === readings.length ? { state: 'Available', attention: false }
           : { state: usable ? 'Partly available' : attention ? 'Needs attention' : 'Waiting for readings', attention,
             detail: 'Complete fresh charger readings are required. Retained, missing or old measurements remain unavailable.' };
-        if (row.signals.includes('shelly_session_energy_check') && health?.sessionEnergyVerified === false)
-          display = { state: 'Waiting for verification', attention: false,
-            detail: 'Verify session boundaries, final energy and counter reset behavior before using completed-session comparisons. Electrical recording is available independently.' };
       }
       return withStatus(row, display);
     }));
   const shellyIndex = electricityJobs.indexOf('shelly-evse'), shelly = displays[shellyIndex];
   if (!shelly.attention && !inactiveStates.includes(shelly.state)) {
-    const rows = series.filter(row => row.signals.some(signal => signal.startsWith('ev2_'))
-      && !row.signals.includes('shelly_session_energy_check'));
+    const rows = series.filter(row => row.signals.some(signal => signal.startsWith('ev2_')));
     const incomplete = rows.filter(row => row.state !== 'Available');
     if (incomplete.length) displays[shellyIndex] = { ...shelly,
       state: incomplete.some(row => row.tone === 'attention') ? 'Needs attention'
@@ -432,8 +426,8 @@ export function dashboardProviders(status, options) {
         datasets: consumption.datasets.filter(row => row.signals[0].startsWith('property_') || row.signals[0] === 'ev1_session_energy_check') },
       { key: 'easee-ocpp', title: 'Easee OCPP', description: 'Charger 1 sends electricity readings directly to this controller through local OCPP. Available Easee cloud readings provide a backup when local readings are unavailable.',
         datasets: consumption.datasets.filter(row => row.signals[0].startsWith('ev1_') && row.signals[0] !== 'ev1_session_energy_check') },
-      { key: 'shelly-evse', title: 'Shelly EVSE', description: 'Charger 2 sends electrical readings over MQTT. Its lifetime meter supplies recorded consumption, phase power determines the phase split, and native charging-session energies are added across each plug-in period to check the stored total.',
-        datasets: consumption.datasets.filter(row => row.signals[0].startsWith('ev2_') || row.signals[0] === 'shelly_session_energy_check') },
+      { key: 'shelly-evse', title: 'Shelly EVSE', description: 'Charger 2 sends electrical readings over MQTT. Its lifetime meter supplies recorded consumption directly; phase power determines the estimated phase split.',
+        datasets: consumption.datasets.filter(row => row.signals[0].startsWith('ev2_')) },
     ];
   }
   return [consumption, market ? describe(market) : null,

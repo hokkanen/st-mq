@@ -124,7 +124,7 @@ export async function checkEquipmentBrowser({ evaluate, command, context, until,
     ];
     fixture.chargerReadings=Object.fromEntries([
       ...[1,2,3].flatMap(phase=>[[\`ev2_current_l\${phase}\`,10,'A'],[\`ev2_voltage_l\${phase}\`,230,'V'],[\`ev2_active_power_l\${phase}\`,2.3,'kW']]),
-      ['ev2_active_power',6.9,'kW'],['ev2_import_energy_counter',123.4,'kWh'],['ev2_session_energy',4.2,'kWh'],
+      ['ev2_active_power',6.9,'kW'],['ev2_import_energy_counter',123.4,'kWh'],
     ].map(([signal,value,unit])=>[signal,{value,unit,sourceTime:at,receivedAt:at,available:true,quality:[]}]));
     fixture.dhwr={active:false,durationMinutes:10,actualOn:false,confirmed:false,requestedAt:null,commandTopic:'invented/dhwr/set',feedback:{configured:true,available:true,
       state:reading('Switch',0,'state'),power:reading('Live power',0,'W')}};
@@ -183,9 +183,9 @@ export async function checkEquipmentBrowser({ evaluate, command, context, until,
     const charger2 = '[data-source-section=shelly-evse] .provider-series > li';
     assert.deepEqual(await evaluate(`[...document.querySelectorAll('${charger2} > strong')].map(node=>node.textContent)`), [
       'Charger 2 phase currents L1–L3', 'Charger 2 phase voltages L1–L3', 'Charger 2 active power · total and L1–L3',
-      'Charger 2 phase energy L1–L3', 'Charger 2 session check',
-    ], 'Shelly groups required meter inputs with their recording or checking purpose');
-    assert.equal(await evaluate(`[...document.querySelectorAll('${charger2}')].slice(0,5).every(node=>node.dataset.state==='available')`), true);
+      'Charger 2 phase energy L1–L3',
+    ], 'Shelly groups the four required electrical feeds');
+    assert.equal(await evaluate(`[...document.querySelectorAll('${charger2}')].every(node=>node.dataset.state==='available')`), true);
     assert.match(await evaluate("[...document.querySelectorAll('[data-provider=electricity] .provider-series > li')].find(node=>node.querySelector('strong').textContent==='Charger 2 phase energy L1–L3').textContent"), /Calculated from Shelly EVSE/, 'Estimated phase allocation is distinguished from native measurements');
     await evaluate('window.equipmentUiFixture.completeChargerReadings=structuredClone(window.equipmentUiFixture.chargerReadings);delete window.equipmentUiFixture.chargerReadings.ev2_voltage_l2;true');
     await refresh();
@@ -203,7 +203,7 @@ export async function checkEquipmentBrowser({ evaluate, command, context, until,
     await evaluate("window.equipmentUiFixture.chargerStatus={status:'degraded',reason:'commissioning-required'};true");
     await refresh();
     assert.equal(await evaluate("document.querySelector('[data-provider=electricity] .provider-category-state').textContent"), 'Needs attention', 'Commissioning remains visible in the source overview');
-    assert.equal(await evaluate(`[...document.querySelectorAll('${charger2}')].filter(node=>!node.dataset.series.startsWith('ev2_energy')&&node.dataset.series!=='shelly_session_energy_check').every(node=>node.dataset.state==='available')`), true, 'Fresh native measurements do not become unavailable when charging control needs commissioning');
+    assert.equal(await evaluate(`[...document.querySelectorAll('${charger2}')].filter(node=>!node.dataset.series.startsWith('ev2_energy')).every(node=>node.dataset.state==='available')`), true, 'Fresh native measurements do not become unavailable when charging control needs commissioning');
     await evaluate('window.equipmentUiFixture.chargerStatus={};true');
     await refresh();
     const vehicles = '[data-provider=vehicle-telemetry] .provider-body';

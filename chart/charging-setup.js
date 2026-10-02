@@ -23,7 +23,7 @@ export function chargingSetupMarkup() {
     <details class="equipment-fold"><summary>Physical charger setup</summary>
       <dl class="charging-setup-facts"><div><dt>Charger 1 · Easee</dt><dd id="charging-setup-charger1">Waiting for charger status</dd></div><div><dt>Charger 2 · Shelly EVSE</dt><dd id="charging-setup-charger2">Waiting for charger status</dd></div></dl>
       <p>For Easee, configure one control backend: cloud scheduling or local OCPP. Local OCPP also owns charging authorization; configure plug-and-charge or permitted RFID tags. An expiring pause releases its restriction, but cannot restore cloud authorization after an application outage.</p>
-      <p>For Shelly EVSE, connect MQTT for readings. Before enabling control, verify the model, firmware, connection states, phase order, current limits and write access. Energy checks add charging-run totals until unplugging; verify final readings at stops and resets. Identification pauses have no charger-side expiry; resuming requires this application and MQTT.</p>
+      <p>For Shelly EVSE, connect MQTT for readings. Before enabling control, verify the model, firmware, connection states, phase order, current limits and write access. Recording uses lifetime meter increments with an estimated phase split. Identification pauses have no charger-side expiry; resuming requires this application and MQTT.</p>
       <p>Before a guided test, leave the charger unplugged, turn Automatic charging on and Charge now off, and review native charger schedules or manual Stop. Tests keep electrical protection, commissioning and native restrictions in force.</p>
     </details>
     <details class="equipment-fold charging-setup-vehicle" id="charging-setup-bmw-details">

@@ -22,19 +22,16 @@ export function validateCurrentDatabase(db) {
   if (version !== SCHEMA_VERSION) throw new Error(`Unsupported database schema ${version}; this application requires schema ${SCHEMA_VERSION}. Use a new empty database and explicitly import v0.7.5 CSV files. The existing database was not changed.`);
   if (JSON.stringify(schemaObjects(db)) !== expectedStructure) throw new Error('Malformed current database schema; use an intact same-version backup or a new empty database. The existing database was not changed.');
   if (db.prepare('PRAGMA foreign_key_check').get()) throw new Error('Database contains dangling references; restore an intact same-version backup.');
-  // Shelly's former power-versus-counter diagnostic cannot be relabelled as a
-  // check of stored energy against a completed native session. Reject retired
-  // evidence before startup/restore can mutate an otherwise current database.
+  // Removed charging-check formats are rejected before any writable setup;
+  // opening a database never strips or translates its historical evidence.
   for (const row of db.prepare("SELECT payload FROM events WHERE type='charging-session-check'").iterate())
     assertCurrentChargingSessionCheck(JSON.parse(row.payload));
   for (const row of db.prepare("SELECT value FROM state WHERE key GLOB 'charging:shelly:*'").iterate()) {
     const state = JSON.parse(row.value);
-    if (Object.hasOwn(state, 'checkSession') || state.counter && Object.hasOwn(state.counter, 'powerW'))
+    if (Object.hasOwn(state, 'checkSession') || Object.hasOwn(state, 'sessionCheck')
+      || state.counter && Object.hasOwn(state.counter, 'powerW')
+      || Object.keys(state.fields ?? {}).some(role => !['current_limit', 'start_charging', 'work_state', 'phase_info'].includes(role)))
       throw new Error('Unsupported Shelly session-check state; start a fresh development database or restore a compatible backup. The existing database was not changed.');
-    for (const session of [state.sessionCheck?.active, state.sessionCheck?.pending]) {
-      if (session && Object.hasOwn(session, 'nativeRuns') && session.nativeRuns?.version !== 1)
-        throw new Error('Unsupported Shelly native session accumulator; start a fresh development database or restore a compatible backup. The existing database was not changed.');
-    }
   }
 }
 

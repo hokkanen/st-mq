@@ -201,8 +201,7 @@ test('only charging fills stack while legend choices preserve every remaining co
 });
 
 test('session check axes show single reference points, including hollow excluded comparisons, without extending readings', () => {
-  for(const [key,label,basis] of [['ev1_session_energy_check','Charger 1','electricity-meter'],
-    ['shelly_session_energy_check','Charger 2','electricity-meter']]) {
+  for(const [key,label,basis] of [['ev1_session_energy_check','Charger 1','electricity-meter']]) {
     const points=[{x:2,y:10,sessionCheck:true,referenceBasis:basis,comparisonEligible:true},
       {x:4,y:3,sessionCheck:true,referenceBasis:basis,comparisonEligible:false}];
     const dataset=historyDatasets({[key]:points}, explorerSelection(key)).find(row=>row.key===key);

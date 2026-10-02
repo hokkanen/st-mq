@@ -5,7 +5,7 @@
 | Physical home energy | Easee phase intervals | Shelly native meter deltas | Never |
 | Live phase currents and voltages | L1–L3; local OCPP phase-neutral voltage, cloud terminal voltages require verified mapping | L1–L3 from native `phase_info`, in configured phase order | Never used as charger meter readings |
 | Live active power | Reported total; phase energy is estimated | Native phase power and total power | Never used as charger meter readings |
-| Recorded energy check | Stored phase-energy sum versus final native session meter | Stored phase-energy sum versus verified final native session energy; same-meter recording check | Never a physical meter reference |
+| Recorded energy check | Stored phase-energy sum versus final native session meter | Not applicable: records native meter increments without power integration | Never a physical meter reference |
 | Connection lifecycle | Timestamped Easee state | Commissioned physical work-state mapping | Corroborating vehicle edges |
 | Economic control | Exclusive cloud delayed starts or native OCPP expiring 0 A transaction pauses | EVSE start/stop over MQTT RPC | No vehicle writes |
 | Active vehicle identification | One bounded attempt per physical connection; native expiring pause | Same attempt lifecycle; application-managed start-permission pause | Independent live vehicle evidence |
@@ -33,18 +33,17 @@ The device documentation's `phase_info` response supplies `phase_a`, `phase_b` a
 `phase_c`, each with `voltage`, `current` and `power`, plus `total_power` and
 `total_act_energy`. The public provider status exposes phase currents (A), voltages
 (V), active powers (converted from W to kW), total active power, the accumulated
-total (kWh) and the separate `energy_charge` session reading (kWh). `phaseMap`
+total (kWh). `phaseMap`
 assigns the native phases to installation L1–L3. Original measurement and receipt
 times remain visible; missing, retained, stale or disconnected readings are
 unavailable even when charger control is commissioned. Conversely, valid read-only
 measurements do not require permission to control charging.
 
-The provider list uses five comparable groups: phase currents, phase voltages,
-active power, recorded phase energy and session check. Shelly's power group
-includes total and phase readings; its energy group names the native lifetime
-counter input. The session group identifies `energy_charge` as the reference.
-Electrical acquisition health is independent of control commissioning and native
-session-reference verification.
+The provider list uses four groups: phase currents, phase voltages, active power
+and recorded phase energy. The power group includes total and phase readings;
+the energy group names the native lifetime-counter input. Electrical acquisition
+health remains independent of control commissioning. Native `energy_charge` and
+`time_charge` roles are unused and are not polled.
 
 The manual documents accumulated energy only as a total. No native phase-energy
 counters are advertised or created. Recording allocates each accepted native
@@ -58,20 +57,6 @@ active power and explicitly estimated phase-energy intervals.
 ## Commissioning contract
 
 Charger 2 defaults `enabled:false, verified:false`. Configure a concrete `deviceId` and `topicPrefix` to acquire it. To admit commands, explicitly commission the observed model and firmware, service 0, distinct connected/disconnected/charging work-state strings, current range/step and physical phase mapping. The initial supported allocation profile requires a 6 A minimum and a 1 A step; other minima/steps are rejected until the allocator and hardware contract explicitly support them. The adapter discovers each role's component ID, checks unique mapping and service ownership, and requires write access for the current/start roles. Observed model/firmware and current capabilities must exactly match the configured profile. Any mismatch or unreadable capability withdraws control.
-
-`sessionEnergyVerified:false` separately gates completed-session comparisons.
-Native accumulation runs independently of that flag. The controller adds native
-charging-run energies across the physical connection, retaining its subtotal
-through pauses, resets and restart. Verify zero baselines, stop boundaries and
-final readings before each reset and unplug. A reset is supported when its run
-has a confirmed final reading; a missed final reading leaves the subtotal
-incomplete. The flag requires a pinned model/firmware and state mapping, and
-never authorizes charging commands. Do not manufacture final references from
-cached running samples, lifetime counters or stored phase energy.
-The comparison sums actual stored phase intervals for the same physical charger,
-including the eligible pending tail, and rejects missing or conflicting coverage.
-It checks recording completeness and conservation, not independent meter accuracy
-or individual phase allocation. Neither counter needs a raw history series.
 
 Every refresh reads native service config, status and [schedules](https://shelly-api-docs.shelly.cloud/gen2/ComponentsAndServices/Schedule/). Active errors/flags or a nonrunning service block commands. External `auto_balance` must be disabled for this distinct ST-MQ/Equalizer allocation arrangement; ST-MQ never changes it. Global charge/time caps and automatic-start settings are inspected and preserved. Enabled native schedules own start/stop conservatively; schedule semantics are not reconstructed from guessed windows.
 

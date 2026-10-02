@@ -25,8 +25,8 @@ view('phases', 'Phase loading', 'Electricity', 'Compare property phase currents 
 view('voltage_estimates', 'Phase voltage estimates', 'Electricity', 'Saved smoothed voltage estimates for each supply phase, not live measurements. Inspect a point for the contributing sources and the feed used for its latest update.', 'V',
   ['voltage_estimate_l1', 'voltage_estimate_l2', 'voltage_estimate_l3'], [], [],
   ['voltage_estimate_l1', 'voltage_estimate_l2', 'voltage_estimate_l3']);
-view('session_checks', 'Charging session checks', 'Electricity', 'Final meter readings for completed sessions; inspect a point for its reconstruction and difference.', 'kWh / session',
-  ['ev1_session_energy_check', 'shelly_session_energy_check'], property, [], ['ev1_session_energy_check', 'shelly_session_energy_check']);
+view('session_checks', 'Charging session checks', 'Electricity', 'Charger 1 final meter readings for completed sessions; inspect a point for its reconstruction and difference.', 'kWh / session',
+  ['ev1_session_energy_check'], property, [], ['ev1_session_energy_check']);
 view('temperatures', 'Property temperatures', 'Temperatures & weather', 'Compare the three home rooms and both garage probes on one temperature scale.', '', [],
   ['indoor_temperature', 'bedroom_temperature', 'downstairs_temperature', ...property, 'garage_temperature_2', 'caravan_temperature'],
   ['controller_phase', 'operatingMode', 'compressorHome', 'fireplace', 'garage_frost_active', ...garageRows],

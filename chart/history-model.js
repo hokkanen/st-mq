@@ -87,7 +87,6 @@ const seriesInfo = {
   caravan_humidity: ['Caravan relative humidity', '%', 'outdoor'],
   caravan_dehumidifier_state: ['Caravan dehumidifier', 'state · reported power and fan', 'garage'],
   ev1_session_energy_check: ['Charger 1', 'kWh · finalized session electricity reading', 'ev', 'session'],
-  shelly_session_energy_check: ['Charger 2', 'kWh · finalized physical charging session electricity', 'ev2', 'session'],
   auxiliary_power: ['Auxiliary heat', 'kW · estimated from H66 output and configured capacity', 'auxiliary'],
   property_current_l1: ['Property L1', 'A', 'phase1'],
   property_current_l2: ['Property L2', 'A', 'phase2'],

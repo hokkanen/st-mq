@@ -28,13 +28,10 @@ being switched on simply to remove a blocked status. Algorithm versions and fixe
 code constants follow the software's versioning contract.
 
 For Charger 2, `charging.chargers.charger2.verified` admits control only after
-hardware commissioning. The separate `sessionEnergyVerified` defaults to false
-and qualifies the native completed-session reference used to check recorded
-phase energy. Native charging-session totals are accumulated across each plug-in
-period even before verification; missing final readings remain incomplete.
-MQTT meter acquisition does not require either flag. See
-[charging provider capabilities](charging-provider-capabilities.md) for their
-distinct verification requirements.
+hardware commissioning. MQTT meter acquisition does not require permission to
+control charging. Charger 2 records native lifetime-meter increments directly;
+there is no session-energy comparison setting. See
+[charging provider capabilities](charging-provider-capabilities.md).
 
 Public defaults leave credentials, precise location, account identifiers and
 private installation endpoints empty. The MQTT broker name `core-mosquitto` is Home

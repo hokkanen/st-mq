@@ -117,7 +117,7 @@ test('recorded energy checks always include property availability and real charg
   assert.equal(empty[0].kind,'property-meter-summary');
   assert.equal(empty[0].summary.status,'no-readings');
   assert.equal(empty[0].summary.latestReading,null);
-  assert.deepEqual(empty.slice(1).map(row => row.source), ['easee', 'shelly-evse']);
+  assert.deepEqual(empty.slice(1).map(row => row.source), ['easee']);
   assert(empty.slice(1).every(row => row.summary.recordedSessions === 0 && row.summary.differencePercent === null));
   for(const [at,value] of [[now-60000,10],[now,10.03]])store.energyAudit({source:'easee',device:'invented-property',
     signal:'property_import_energy_counter',sourceTime:at,receivedAt:at,value});
@@ -129,13 +129,10 @@ test('recorded energy checks always include property availability and real charg
   assert(withoutSessions.slice(1).every(row => row.summary.recordedSessions === 0));
   recordChargingSessionCheck(store, { source:'easee',sessionKey:'invented-session',start:now-60000,end:now,
     estimatedKwh:1.1,referenceKwh:1,complete:true,quality:[] });
-  recordChargingSessionCheck(store, { source:'shelly-evse',sessionKey:'invented-tesla-session',start:now-60000,end:now,
-    recordingBasis:'native-meter-counter-phase-allocation',referenceBasis:'native-session-energy',
-    estimatedKwh:1.2,referenceKwh:1,complete:false,quality:['incomplete-coverage'] });
   const auditCount=store.energyAudits().length;
   const response=await fetch(`${base}/api/energy-audits`,{headers});assert.equal(response.status,200);
   const rows=await response.json();
-  assert.deepEqual(rows.map(row=>row.signal),['property_import_energy_counter','ev1_session_energy_check','shelly_session_energy_check']);
+  assert.deepEqual(rows.map(row=>row.signal),['property_import_energy_counter','ev1_session_energy_check']);
   assert.equal(rows[0].summary.status,'compared');
   assert.equal(rows[0].summary.readingCount,2);
   assert.deepEqual(rows[0].summary.latestReading,{valueKwh:10.03,sourceTime:now,receivedAt:now,transport:null});
@@ -146,9 +143,6 @@ test('recorded energy checks always include property availability and real charg
   assert.equal(rows[1].summary.comparedSessions,1);
   assert.equal(rows[1].summary.referenceKwh,1);
   assert(Math.abs(rows[1].summary.differencePercent-10)<1e-10);
-  assert.equal(rows[2].summary.recordedSessions,1);
-  assert.equal(rows[2].summary.excludedSessions,1);
-  assert.equal(rows[2].summary.differencePercent,null);
   assert(rows.every(row=>!Object.hasOwn(row,'device')&&!Object.hasOwn(row,'value')));
   assert(!JSON.stringify(rows).includes('invented-'));
   assert.equal(store.energyAudits().length,auditCount,'summary never deletes audit history');
@@ -156,8 +150,7 @@ test('recorded energy checks always include property availability and real charg
 test('every catalogue axis works, including historical meter references without learning use',async t=>{
   const {base,headers,store,now}=await fixture(t);
   store.energyAudit({source:'easee',device:'invented-property',signal:'property_import_energy_counter',sourceTime:now-60000,receivedAt:now,value:123,quality:[]});
-  for(const source of ['easee','shelly-evse'])recordChargingSessionCheck(store,{source,sessionKey:'invented-finalized-session',
-    ...(source==='shelly-evse'?{recordingBasis:'native-meter-counter-phase-allocation',referenceBasis:'native-session-energy'}:{}),
+  for(const source of ['easee'])recordChargingSessionCheck(store,{source,sessionKey:'invented-finalized-session',
     start:now-3600000,end:now-60000,estimatedKwh:6,referenceKwh:5,complete:true,quality:[]});
   const {HISTORY_AXES}=await import('../src/domain/history-series.js');
   for(const axis of HISTORY_AXES) {
@@ -166,7 +159,7 @@ test('every catalogue axis works, including historical meter references without 
     const chart=await response.json();
     for(const signal of axis.signals)assert(Array.isArray(chart.series[signal]),signal);
     if(axis.key==='property_import_energy_counter')assert(chart.series[axis.key].some(row=>row.y===123&&row.auditOnly));
-    if(['ev1_session_energy_check','shelly_session_energy_check'].includes(axis.key))
+    if(['ev1_session_energy_check'].includes(axis.key))
       assert(chart.series[axis.key].some(row=>row.y===5&&row.auditOnly&&row.sessionCheck));
   }
 });

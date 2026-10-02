@@ -413,10 +413,6 @@ export function createAppServer({ engine, getEngine = () => engine, store, chart
         }
         if (req.method === 'GET' && url.pathname === '/api/energy-audits') {
           const checks = chargingSessionCheckSummaries(readerStore);
-          const shelly = checks.find(check => check.source === 'shelly-evse');
-          const physical = engine.charging?.chargers?.charger2?.adapter?.snapshot?.();
-          shelly.sessionEnergyVerified = physical?.commissioning?.sessionEnergyVerified === true;
-          shelly.sessionReference = physical?.sessionReference ?? null;
           return json(200, [propertyEnergyCheckSummary(readerStore,{now:engine.clock()}), ...checks]);
         }
         if (req.method === 'GET' && url.pathname === '/api/chart') {

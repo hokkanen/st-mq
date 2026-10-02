@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { EventEmitter } from 'node:events';
 import { chargingConfiguration } from '../src/charging/config.js';
-import { createShellyEvseAdapter, createShellyController } from '../src/charging/shelly-evse.js';
+import { createShellyEvseAdapter, createShellyController, shellyAssociation } from '../src/charging/shelly-evse.js';
 import { shellyCurrentLimit } from '../src/charging/shelly-limit.js';
 import { Engine } from '../src/app/engine.js';
 import { Store } from '../src/storage/store.js';
@@ -32,10 +32,9 @@ function fixture(t, extra={}) {
   let now=NOW, authority=true, failSave=false;
   const service={id:0,auto_balance:{enable:false},auto_charge:true,global_charge_limit:0,global_time_limit:0},serviceStatus={state:'running'},schedules={rev:1,jobs:[]};
   const client=new EventEmitter(), values=new Map(), writes=[], energy=[], gaps=[], voltages=[], events=[];
-  const recorded = new Store(':memory:'); t.after(() => recorded.close());
-  const roleTypes={current_limit:'number',start_charging:'boolean',work_state:'enum',phase_info:'object',energy_charge:'number',time_charge:'number'};
+  const roleTypes={current_limit:'number',start_charging:'boolean',work_state:'enum',phase_info:'object'};
   const roles=Object.keys(roleTypes), ids=Object.fromEntries(roles.map((role,i)=>[role,i+200]));
-  const fields={current_limit:16,start_charging:true,work_state:'charging',phase_info:{total_power:8280,total_act_energy:0,phase_a:{voltage:230,current:12,power:2760},phase_b:{voltage:230,current:12,power:2760},phase_c:{voltage:230,current:12,power:2760}},energy_charge:0,time_charge:0};
+  const fields={current_limit:16,start_charging:true,work_state:'charging',phase_info:{total_power:8280,total_act_energy:0,phase_a:{voltage:230,current:12,power:2760},phase_b:{voltage:230,current:12,power:2760},phase_c:{voltage:230,current:12,power:2760}}};
   client.subscribe=(topics,_opts,cb)=>{client.topics=topics;cb(null,topics.map(topic=>({topic,qos:0})));};
   client.publish=(topic,payload,options,cb)=>{
     const frame=JSON.parse(payload);writes.push({...frame,topic,options});let result;
@@ -48,7 +47,7 @@ function fixture(t, extra={}) {
     else result={value:structuredClone(fields[frame.params.role]),last_update_ts:now/1000};
     cb?.();queueMicrotask(()=>client.emit('message',`${frame.src}/rpc`,Buffer.from(JSON.stringify({id:frame.id,src:'synthetic-evse',dst:frame.src,result})),{}));
   };
-  const store={db:recorded.db,getState:key=>structuredClone(values.get(key)),setState:(key,value)=>{if(failSave)throw Error('disk');values.set(key,structuredClone(value));},transaction:fn=>fn(),
+  const store={getState:key=>structuredClone(values.get(key)),setState:(key,value)=>{if(failSave)throw Error('disk');values.set(key,structuredClone(value));},transaction:fn=>fn(),
     event:(type,payload,at)=>events.push({type,payload,at})};
   const engine={recorder:{recordEnergy:value=>energy.push(value),energyGap:value=>gaps.push(value)},voltage:{ingest:value=>voltages.push(value)}};
   const adapter=createShellyEvseAdapter({config:config(extra),broker:{address:'mqtt://synthetic'},client,store,engine,clock:()=>now,canControl:()=>authority});
@@ -111,6 +110,9 @@ test('MQTT live receipt time excludes retained, duplicate, unrelated and disconn
 });
 test('official-shaped role RPC discovers capabilities and canonical C2 energy never uses a vehicle feed', async t=>{
   const f=fixture(t);await f.ready();assert.equal(f.adapter.snapshot().controlReady,true);
+  assert.deepEqual([...new Set(f.writes.flatMap(row => row.params.role ? [row.params.role] : []))].sort(),
+    ['current_limit', 'phase_info', 'start_charging', 'work_state']);
+  assert.equal(Object.hasOwn(f.adapter.snapshot(), 'sessionReference'), false);
   f.setNow(NOW+1000);f.fields.phase_info.total_act_energy=.002;await f.adapter.refresh();
   assert.equal(f.energy.length,1);assert.equal(f.energy[0].source,'shelly-evse');assert.equal(f.energy[0].prefix,'ev2');
   assert.equal(f.energy[0].energies.length,3);
@@ -121,13 +123,26 @@ test('official-shaped role RPC discovers capabilities and canonical C2 energy ne
   assert.equal(f.gaps.length,1);assert.equal(f.gaps[0].prefix,'ev2');
   assert.deepEqual(f.gaps[0].quality,['meter-counter-reset']);
 });
+test('retired Shelly session state and unused cached native counters reject before mutation', () => {
+  const configuration = config(), broker = { address: 'mqtt://synthetic' };
+  const association = shellyAssociation(configuration, broker);
+  const current = { version: 1, association, fields: {}, connection: null, counter: null, sessionSequence: 0 };
+  for (const obsolete of [{ sessionCheck: null }, { sessionCheck: { version: 1 } }, { checkSession: null },
+    { counter: { powerW: 0 } }, { fields: { energy_charge: { value: 0 } } },
+    { fields: { time_charge: { value: 0 } } }]) {
+    let writes = 0;
+    assert.throws(() => createShellyEvseAdapter({ config: configuration, broker, client: new EventEmitter(),
+      store: { getState: () => ({ ...current, ...obsolete }), setState: () => { writes++; } }, engine: {} }),
+    /unsupported-shelly-state/);
+    assert.equal(writes, 0);
+  }
+});
 test('native Shelly phases expose current, voltage and active power in installed L1–L3 order', async t => {
   const f = fixture(t, { phaseMap: [2, 0, 1], verified: false });
   Object.assign(f.fields.phase_info, { total_power: 6000, total_act_energy: 42.5,
     phase_a: { current: 10, voltage: 231, power: 2200 },
     phase_b: { current: 8, voltage: 228, power: 1700 },
     phase_c: { current: 9, voltage: 233, power: 2100 } });
-  f.fields.energy_charge = 3.75;
   await f.ready();
   const readings = f.adapter.readings();
   assert.deepEqual([1, 2, 3].map(n => readings[`ev2_current_l${n}`].value), [9, 10, 8]);
@@ -139,7 +154,7 @@ test('native Shelly phases expose current, voltage and active power in installed
   assert.deepEqual([1, 2, 3].map(n => readings[`ev2_active_power_l${n}`].value), [2.1, 2.2, 1.7]);
   assert.equal(readings.ev2_active_power.value, 6);
   assert.equal(readings.ev2_import_energy_counter.value, 42.5);
-  assert.equal(readings.ev2_session_energy.value, 3.75);
+  assert.equal(Object.keys(readings).length, 11);
   assert.deepEqual(readings.ev2_active_power_l1, { value: 2.1, unit: 'kW', source: 'shelly-evse',
     sourceTime: NOW, receivedAt: NOW, available: true, quality: [], acquisitionOnly: true });
   assert.ok(Object.values(readings).every(row => row.available), 'Read-only measurements do not require permission to control');
@@ -205,12 +220,9 @@ test('a positive C2 meter increment with no phase-power evidence remains excepti
   await f.adapter.refresh();
   assert.equal(f.events.length, 1, 'Repeated source evidence cannot duplicate the exceptional increment');
   f.setNow(NOW + 3000); f.notify('work_state', 'free');
-  assert.equal(f.events.length, 1, 'A disconnect cannot finalize before late native reference and recorded phase energy arrive');
+  assert.equal(f.events.length, 1, 'Disconnecting does not create a redundant native-meter comparison');
   f.setNow(NOW + 34000); f.notify('current_limit', 16);
-  assert.equal(f.events.at(-1).type, 'charging-session-check');
-  assert.equal(f.events.at(-1).payload.referenceKwh, null, 'A lifetime delta cannot become the missing native final session reference');
-  assert.equal(f.events.at(-1).payload.complete, false);
-  assert(f.events.at(-1).payload.quality.includes('incomplete-coverage'));
+  assert.equal(f.events.length, 1, 'Only the unallocated energy diagnostic is recorded');
 });
 
 test('a valid zero C2 meter delta requires no positive phase-power weights', async t => {
@@ -280,7 +292,7 @@ test('C2 phase records and unallocated diagnostics commit with their source curs
   assert.equal(phases.reduce((sum, row) => sum + row.value, 0), .002, 'Unallocated consumption is never added to a later split');
   assert(phases.every(row => row.sourceTime === NOW + 2000 && row.receivedAt === NOW + 2250
     && row.raw.intervalStart === NOW + 1000 && row.raw.intervalEnd === NOW + 2000));
-  assert.equal(store.getState(key).sessionCheck.active.reference, null, 'Lifetime deltas never substitute for native session references');
+  assert.equal(Object.hasOwn(store.getState(key), 'sessionCheck'), false);
   adapter.close(); engine.recorder = new Recorder(store); adapter = create();
   assert.equal(adapter.accept('phase_info', allocated, NOW + 2500), false);
   assert.equal(store.observations().length, 6);
@@ -498,48 +510,4 @@ test('Shelly Charge Now still pauses for the property fuse limit and rejects a p
   assert.notEqual(f.adapter.snapshot().session.connectedAt, connectedAt);
   await controller.update({ enabled: true, chargeNow: { connectedAt }, plan: { periods: [{ startAt: f.now() + 3600000, endAt: null }] }, allocation: {} });
   assert.equal(controller.status().reason, 'economic-wait'); assert.equal(f.fields.start_charging, false);
-});
-
-test('late native session finals update the plug subtotal without rewinding the live counter', async t => {
-  const f = fixture(t, { sessionEnergyVerified: true }); await f.ready();
-  const accept = (role, value, at, now = at) => {
-    f.setNow(now); return f.adapter.accept(role, { value, last_update_ts: at / 1000 }, now);
-  };
-  accept('energy_charge', .005, NOW + 1000);
-  accept('work_state', 'paused', NOW + 2000);
-  accept('energy_charge', 0, NOW + 2100);
-  assert.equal(accept('energy_charge', .01, NOW + 2000, NOW + 2200), false);
-  let snapshot = f.adapter.snapshot();
-  assert.equal(snapshot.fields.energy_charge.value, 0);
-  assert.equal(snapshot.fields.energy_charge.measuredAt, NOW + 2100);
-  assert.equal(snapshot.sessionReference.observedKwh, .01);
-  assert.equal(snapshot.sessionReference.runCount, 1);
-  assert(!snapshot.sessionReference.quality.includes('missing-final-reference'));
-  accept('work_state', 'charging', NOW + 3000);
-  accept('energy_charge', .02, NOW + 4000);
-  snapshot = f.adapter.snapshot();
-  assert(Math.abs(snapshot.sessionReference.observedKwh - .03) < 1e-12);
-  assert.equal(snapshot.sessionReference.runCount, 2);
-  accept('energy_charge', .02, NOW + 4000, NOW + 5000);
-  assert.equal(f.adapter.snapshot().sessionReference.observedKwh, snapshot.sessionReference.observedKwh);
-});
-
-test('only a correlated current zero read establishes a new plug baseline with an unchanged native clock', async t => {
-  const f = fixture(t, { sessionEnergyVerified: true }); f.fields.work_state = 'free'; await f.ready();
-  f.setNow(NOW + 1000);
-  f.adapter.accept('work_state', { value: 'connected', last_update_ts: (NOW + 1000) / 1000 });
-  f.setNow(NOW + 1100);
-  f.adapter.accept('energy_charge', { value: 0, last_update_ts: NOW / 1000 });
-  assert.equal(f.adapter.snapshot().sessionReference.observedKwh, null);
-  f.setNow(NOW + 1200);
-  f.adapter.accept('energy_charge', { value: 0, last_update_ts: NOW / 1000 }, NOW + 1200, false, true);
-  const baseline = f.adapter.snapshot();
-  assert.equal(baseline.sessionReference.observedKwh, 0);
-  assert(!baseline.sessionReference.quality.includes('missing-start'));
-  assert.equal(baseline.fields.energy_charge.measuredAt, NOW, 'A current read never invents a source timestamp');
-  f.setNow(NOW + 1300);
-  f.adapter.accept('work_state', { value: 'charging', last_update_ts: (NOW + 1300) / 1000 });
-  f.setNow(NOW + 2000);
-  f.adapter.accept('energy_charge', { value: .02, last_update_ts: (NOW + 2000) / 1000 });
-  assert.equal(f.adapter.snapshot().sessionReference.observedKwh, .02, 'The full first run increment belongs to this plug');
 });

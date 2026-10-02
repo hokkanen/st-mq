@@ -45,8 +45,6 @@ export const CARAVAN_DEHUMIDIFIER_STATES = Object.freeze({ 0: 'Off', 1: 'Low', 2
 export const SESSION_CHECK_INFO = Object.freeze({
   ev1_session_energy_check: { label: 'Charger 1', source: 'easee', color: 'ev', unit: 'kWh', group: 'Meter checks', role: 'Audit only', kind: 'Recorded',
     detail: 'Final session electricity reading; each point represents one completed session' },
-  shelly_session_energy_check: { label: 'Charger 2', source: 'shelly-evse', color: 'ev2', unit: 'kWh', group: 'Meter checks', role: 'Audit only', kind: 'Recorded',
-    detail: 'Final physical Charger 2 electricity reading; incomplete boundaries are excluded' },
 });
 export const SIGNAL_INFO = Object.freeze(Object.fromEntries([
   ...h66.map(([signal, label, unit, group, role]) => [signal, { label, unit, group, role, kind: 'Recorded' }]),

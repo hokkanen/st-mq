@@ -16,7 +16,7 @@ export function addChargingSessionChecks({ store, range, now, envelopes }) {
       || check.end <= check.start || check.end < range.from || check.end > Math.min(range.to, now)) continue;
     const referenceKwh = Number.isFinite(check.referenceKwh) && check.referenceKwh >= 0 ? check.referenceKwh : null;
     envelopes[signal].add(check.end, referenceKwh, { auditOnly: true, sessionCheck: true,
-      ...(check.source === 'easee' ? { source: check.source, transport: check.transport ?? null } : {}),
+      source: check.source, transport: check.transport ?? null,
       sessionStart: check.start, sessionEnd: check.end, referenceKwh,
       estimatedKwh: Number.isFinite(check.estimatedKwh) && check.estimatedKwh >= 0 ? check.estimatedKwh : null,
       referenceBasis: 'electricity-meter',

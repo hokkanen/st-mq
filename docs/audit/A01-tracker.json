@@ -200,7 +200,7 @@
       ],
       "completion_evidence": "See docs/audit/A01.md and named synthetic regressions; hardware verification has not occurred.",
       "clean_start_and_removal_notes": "Current native formats only. Only v0.7.5 easee.csv/st-mq.csv import compatibility is preserved.",
-      "disposition": "Implemented by physical source ownership. C1 and C2 session checks are Easee and Shelly respectively; Tesla battery-added energy is not a grid-meter reference. No repair of old diagnostic rows."
+      "disposition": "Charger 1 retains its Easee finalized-session comparison. Charger 2 records native meter increments directly and has no session comparison; Tesla battery-added energy is not a grid-meter reference. Retired C2 diagnostics have no translation path."
     },
     {
       "id": "A01-010",

@@ -149,7 +149,7 @@ async function shellyFixture(t) {
     model:'synthetic-model',firmware:'synthetic-firmware',verified:true,connectedStates:['paused'],disconnectedStates:['free'],chargingStates:['charging']}}}).chargers.charger2;
   const phase={total_power:2,total_act_energy:0,phase_a:{voltage:230,current:0,power:2},
     phase_b:{voltage:230,current:0,power:0},phase_c:{voltage:230,current:0,power:0}};
-  const fields={current_limit:16,start_charging:false,work_state:'paused',phase_info:phase,energy_charge:0,time_charge:0};
+  const fields={current_limit:16,start_charging:false,work_state:'paused',phase_info:phase};
   const ids=Object.fromEntries(Object.keys(fields).map((role,i)=>[role,i+200]));
   client.subscribe=(topics,_options,cb)=>cb(null,topics.map(topic=>({topic,qos:0})));
   client.publish=(_topic,payload,_options,cb)=>{
