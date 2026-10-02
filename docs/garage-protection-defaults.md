@@ -22,7 +22,7 @@ bulk temperature reaches zero.
 | Heat transfer | 20 W/m²·K | Initial estimate of heat exchange with the adjacent air. |
 
 These configuration-owned parameters and installation approval appear in
-**Garage → Freeze protection → Protection settings**, beside the live rear/front
+**Garage → Freeze protection → Pipe model & settings**, beside the live rear/front
 air readings, pipe estimates and reserves. The same section identifies the
 **fixed safety factor of 2**: the model counts cooling at twice the nominal
 heat-transfer rate and warming at half the nominal rate. This is a built-in

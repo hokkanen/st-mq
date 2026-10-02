@@ -175,7 +175,7 @@ pump controls and a **Freeze protection** fold directly below **Normal
 temperature**. Raising the selected target shows a moisture warning for
 approximately 24 hours. Protection parameters are edited
 under `garage.protection` in configuration. The live fold shows rear/front air
-readings, pipe estimates and reserves. Its **Protection settings** compares
+readings, pipe estimates and reserves. Its **Pipe model & settings** compares
 configured and reported parameters and explains the pipe calculation and fixed
 safety factor of 2. It links to **Connections & configuration → Garage freeze
 protection**, below **Floor preheating**, for installation and setup; that section

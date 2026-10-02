@@ -1,3 +1,11 @@
+Implemented 2026-10-02 — Refine Garage pipe model navigation
+- Rename the combined parameter/calculation fold Pipe model & settings and align
+  its installation link and current documentation titles. Indent the Installation
+  & setup link by one level within Garage freeze protection.
+- F4/F7: label and spacing only; retain destinations, readback and control behavior.
+- Validation: 21 Garage UI tests, production build and responsive browser checks
+  pass; existing Vite bundle-size warning remains.
+
 Implemented 2026-10-02 — Align native charger app priority and simplify Shelly setup
 - Use Easee cloud ownership as the behavioral reference for OCPP and Shelly.
   Observe native app Stop/Enable/schedules and preserve lower current choices;

@@ -133,7 +133,7 @@ temperature, minimum target, rescue demand and validity to the heat-pump
 controller over Bluetooth. Healthy local protection does not need ST-MQ, MQTT
 or Wi-Fi.
 
-Within **Garage → Freeze protection**, **Protection settings** compares configured
+Within **Garage → Freeze protection**, **Pipe model & settings** compares configured
 and reported values without an editor. It also identifies the fixed safety factor
 of 2 and explains the pipe calculation: geometry sets heat capacity and exposed
 surface, air temperature drives heat exchange, cooling is counted at twice the

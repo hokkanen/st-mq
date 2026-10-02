@@ -278,7 +278,7 @@ without replacing the saved target. Unusable room input or an out-of-range
 calculated external temperature also uses native 16°C in HEAT, preserving power
 unless protection requests rescue.
 
-The live fold contains **Protection settings**, comparing `garage.protection` in
+The live fold contains **Pipe model & settings**, comparing `garage.protection` in
 configuration with actual sender readback. It also explains pipe estimates,
 reserve and the fixed model safety factor of 2: cooling counts at twice the
 nominal heat-transfer rate and warming at half. The factor is a model assumption,

@@ -18,7 +18,7 @@ Room-input loss or an out-of-range input/calculated external temperature can als
 select native 16°C in HEAT, preserving power unless protection requests rescue.
 Show actual controller readback independently from the sender's requested minimum.
 
-The live fold includes **Protection settings**, comparing configured and reported
+The live fold includes **Pipe model & settings**, comparing configured and reported
 parameters from `garage.protection`. Its model details explain the pipe estimate,
 reserve and fixed safety factor of 2, separately from the sender's parameter
 readback. A link opens **Connections & configuration → Garage freeze protection**,

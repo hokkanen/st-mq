@@ -1992,7 +1992,7 @@ body[data-access-role="family"] .family-access-note { display: block; margin: 12
 .garage-protection-targets > div:last-child dd { color: var(--accent); }
 .garage-protection a, .garage-protection-link a { color: var(--accent); text-underline-offset: 3px; }
 .garage-protection-link { margin: 12px 0; font-size: 11px; line-height: 1.6; }
-.garage-protection-body > .garage-protection-link { margin: 12px 0 0; }
+.garage-protection-body > .garage-protection-link { margin: 12px 0 0; padding-inline-start: 16px; }
 .garage-protection-steps { margin: 16px 0 0; padding-left: 22px; }
 .garage-protection-steps > li { padding-left: 4px; margin-bottom: 20px; }
 .garage-protection-steps h4 { margin: 0 0 6px; font-size: 12px; font-weight: 600; }

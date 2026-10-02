@@ -61,7 +61,7 @@ Use **Connections & configuration → Garage freeze protection**, directly below
 **Floor preheating**, for installation and setup guidance.
 The linked **Garage → Freeze protection** fold, below **Normal temperature**,
 contains live air/pipe/reserve readings and explains active protection. Its
-**Protection settings** compares configured and reported parameters and explains
+**Pipe model & settings** compares configured and reported parameters and explains
 the pipe calculation and fixed model safety factor. Build and
 install `dist/sender.js` from the
 [heat-pump controller and sender repository](https://github.com/hokkanen/shelly-cn105-mqtt), following its
