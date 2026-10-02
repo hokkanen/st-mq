@@ -627,7 +627,7 @@ export function createEquipmentPanel({ document, request, onStatus, beforeReques
   }
   const openSetupHash = () => {
     const id = document.defaultView?.location?.hash?.slice(1);
-    if (['floor-preheat-details', 'garage-protection-details'].includes(id)) openSetup(id);
+    if (['floor-preheat-details', 'garage-protection-details', 'garage-protection-configuration-details'].includes(id)) openSetup(id);
   };
   document.defaultView?.addEventListener('hashchange', openSetupHash);
   openSetupHash();
@@ -943,9 +943,10 @@ export function createEquipmentPanel({ document, request, onStatus, beforeReques
   for (const link of document.querySelectorAll('[data-open-garage-protection]')) link.addEventListener('click', event => {
     if (event.button || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return;
     event.preventDefault();
-    if (document.defaultView?.location?.hash !== '#garage-protection-details')
-      document.defaultView?.history?.pushState(null, '', '#garage-protection-details');
-    openSetup('garage-protection-details');
+    const id = link.getAttribute('href').slice(1);
+    if (document.defaultView?.location?.hash !== `#${id}`)
+      document.defaultView?.history?.pushState(null, '', `#${id}`);
+    openSetup(id);
   });
   return { update: status => actions.update(status), refreshControls: () => current && render(current), actions };
 }

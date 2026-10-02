@@ -12,7 +12,7 @@ Using this reference does not establish that every container or fitting cools
 more slowly, or that the pipe wall cannot begin freezing before the estimated
 bulk temperature reaches zero.
 
-## Parameters shown in Frost protection
+## Parameters shown in Garage freeze protection
 
 | Parameter | Initial value | Meaning |
 | --- | ---: | --- |
@@ -21,6 +21,11 @@ bulk temperature reaches zero.
 | Reference pipe wall thickness | 1 mm | Assumed copper thickness; the water bore is calculated from it. |
 | Heat transfer | 20 W/m²·K | Initial estimate of heat exchange with the adjacent air. |
 | Safety factor | 2, fixed | Counts heat loss twice as fast and credits heat gain half as fast. |
+
+These parameters appear in **Connections & configuration → Garage freeze
+protection**, below **Floor preheating**. Its link opens **Garage → Freeze
+protection**, below **Normal temperature**, for live rear/front air readings,
+pipe estimates and reserves; the live fold links back to these settings.
 
 The geometry and heat-transfer values are explicit engineering assumptions,
 not fitted building-model coefficients. They and installation approval are owned
@@ -79,17 +84,25 @@ elapsed exposure.
 The sender persists settings and conservatively handles reboot or acquisition
 gaps. Missing history is unknown: it cannot initialize a warm reference merely
 from a warm current reading. Protection demand accounts for useful-heating delay,
-uses bounded target increases and hysteresis, and remains active until measured
-recovery justifies release. Stored protection state is separate from the removed
-Garage building model; there is no learned economic controller.
+uses bounded target increases and hysteresis, and holds rescue until both
+locations have recovered and remained safe for ten minutes. With uncertain
+history, the conservative initial cold state is an assumption, not a measurement
+of frozen pipes. Air may already be warm while the model gradually credits pipe
+warming; no established pipe temperature or reserve is claimed during that time.
+Stored protection state is separate from the removed Garage building model; there is no learned economic controller.
 
 The sender broadcasts room temperature, minimum target, rescue and validity over
-Bluetooth. The heat-pump controller preserves the saved user target, applies the
-required floor, and explicitly selects HEAT/ON for rescue. ST-MQ displays the
-sender's actual status/settings and applies loaded configuration over MQTT;
+Bluetooth. During normal room regulation, the heat-pump controller uses the
+higher of the saved target and protection minimum, preserving the saved target.
+It explicitly selects HEAT/ON for rescue. A saved 8°C target with a 5°C minimum therefore remains 8°C
+even during rescue. HEAT/ON enables heating rather than forcing continuous
+compressor operation. On recovery, the saved target applies and power stays ON.
+ST-MQ displays the sender's actual status/settings and applies loaded configuration over MQTT;
 broker/application loss must not stop local protection. Configured feed loss is
-a distinct fault policy. With no sender installed, the dashboard reports
-protection unavailable.
+a distinct fault policy: HEAT/ON at native 16°C, with the saved target preserved.
+Unusable room input or an unrepresentable calculated external temperature also
+uses native 16°C in HEAT, preserving power unless protection requests rescue.
+With no sender installed, the dashboard reports protection unavailable.
 
 The reference assumptions do not certify every pipe or stored container. Sensor
 placement, useful-heating delay, radio reception and pump operation need actual

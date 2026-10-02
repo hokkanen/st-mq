@@ -470,15 +470,11 @@
                       </details>
                     </div>
                   </details>
-                  <details id="garage-protection-details" class="section-fold controller-fold garage-protection">
-                    <summary><span>Garage freeze protection</span><small id="garage-protection-status" class="equipment-device-status">Unavailable</small></summary>
+                  <details id="garage-protection-configuration-details" class="section-fold controller-fold garage-protection">
+                    <summary><span>Garage freeze protection</span><small>Pipe details &amp; setup</small></summary>
                     <div class="section-fold-body">
-                      <p id="garage-protection-detail" class="muted">Waiting for protection status. A temperature reading alone does not establish pipe protection.</p>
-                      <div class="garage-protection-grid">
-                        <section class="garage-protection-location" aria-labelledby="garage-rear-protection-title"><h5 id="garage-rear-protection-title">Rear · near pipe</h5><dl class="equipment-readings"><dt>Air temperature</dt><dd id="garage-protection-rear">Unavailable</dd><dt>Estimated pipe</dt><dd id="garage-pipe-rear">Unavailable</dd><dt>Reserve above margin</dt><dd id="garage-reserve-rear">Unavailable</dd></dl><p id="garage-pipe-rear-status" class="muted"></p></section>
-                        <section class="garage-protection-location" aria-labelledby="garage-front-protection-title"><h5 id="garage-front-protection-title">Front · near door</h5><dl class="equipment-readings"><dt>Air temperature</dt><dd id="garage-protection-front">Unavailable</dd><dt>Estimated pipe</dt><dd id="garage-pipe-front">Unavailable</dd><dt>Reserve above margin</dt><dd id="garage-reserve-front">Unavailable</dd></dl><p id="garage-pipe-front-status" class="muted"></p></section>
-                      </div>
-                      <p class="muted">Protection is separate from Normal and Away. When available, it can start heating or temporarily raise the target to protect the pipes. Your selected temperature remains saved. Pipe temperature and reserve are conservative estimates, not additional sensor readings.</p>
+                      <p class="muted">The protection sender estimates pipe reserve from two air probes. The heat-pump controller applies the minimum target and Heat/On rescue independently of your saved Normal or Away selection.</p>
+                      <p class="garage-protection-link"><a href="#garage-protection-details" data-open-garage-protection>View live protection &amp; temperatures in Garage →</a></p>
                       <details id="garage-protection-settings-details" class="equipment-fold">
                         <summary>Protection settings</summary>
                         <p id="garage-protection-settings-status" class="muted" role="status">Waiting for reported protection settings.</p>
@@ -492,17 +488,16 @@
                             <tr><th scope="row">Heat transfer · W/(m²·K)</th><td id="garage-protection-configured-heatTransferWPerM2K">Unavailable</td><td id="garage-protection-reported-heatTransferWPerM2K">Unavailable</td></tr>
                           </tbody>
                         </table>
-                        <p id="garage-protection-settings-help" class="muted">Change <code>garage.protection</code> in configuration, then use <a href="#controls-details" data-open-configuration>Apply reviewed configuration</a>. Reported values come from the local protection unit; matching settings do not by themselves establish that protection is available.</p>
+                        <p id="garage-protection-settings-help" class="muted">Change <code>garage.protection</code> in configuration, then use <a href="#controls-details" data-open-configuration>Apply reviewed configuration</a>. Reported values come from the protection sender; matching settings do not by themselves establish that protection is available.</p>
                       </details>
                       <details id="garage-protection-setup-details" class="equipment-fold">
                         <summary><span>Sender &amp; heat-pump setup</span><small>Install &amp; verify</small></summary>
-                        <p class="muted">The Gen3 sender measures the rear and front air temperatures, estimates pipe reserve and broadcasts the room temperature and protection demand to the heat-pump controller. Once configured, this local Bluetooth link keeps working without this application, Wi-Fi or the MQTT broker.</p>
-                        <p class="muted">At first startup or after lost measurement history, the sender treats pipe reserve conservatively and may request rescue heating. Once the Pill has protection inputs configured, a missing, stale or invalid sender makes it select Heat, power On and a native 16 °C thermostat. Rescue and fallback preserve your saved Normal or Away target.</p>
+                        <p class="muted">The protection sender broadcasts room temperature, minimum target, rescue demand and validity directly to the heat-pump controller over Bluetooth. Once configured, this local protection continues without this application, Wi-Fi or the MQTT broker.</p>
                         <ol class="garage-protection-steps">
-                          <li><h4>Prepare the Gen3 sender and both probes</h4><p>Use a mains-powered Shelly Gen3 with firmware 2.0.0 or newer supporting Bluetooth advertising, a Plus Add-on and two DS18B20 probes. Place the rear probe near the vulnerable pipe and the front probe near the door. Identify each native temperature component by checking the physical probe; do not assume the component numbers. Verify fresh periodic reports from both probes even when their temperatures stay unchanged.</p></li>
-                          <li><h4>Install the sender script</h4><p>Follow the <a href="https://github.com/hokkanen/shelly-cn105-mqtt/blob/main/docs/sender.md" target="_blank" rel="noopener noreferrer">Gen3 sender setup guide</a> to build and install <code>dist/sender.js</code>, enable startup execution, and configure the probe components and MQTT prefix. Enable Bluetooth and connect the sender to the same MQTT broker as this application. Match the sender topics in <code>garage.sender</code>; the sender never operates its relay or commands the heat pump.</p></li>
-                          <li><h4>Receive the BLU H&amp;T on the Gen3</h4><p>Install the separate BLU H&amp;T bridge on the Gen3, retaining the sensor’s Bluetooth address and existing MQTT topic. Generate it with <code>bluHtScript()</code> in <code>integrations/shelly/blu-ht.js</code> and enable startup execution. Verify new Bluetooth receptions and fresh Caravan air readings before stopping the old bridge and disabling its startup setting. Disable the old gateway’s Bluetooth only when no other integration needs it. The BLU H&amp;T remains the Caravan air sensor; it does not replace either protection probe.</p></li>
-                          <li><h4>Connect the Pill to the sender</h4><p>Use the <a href="https://github.com/hokkanen/shelly-cn105-mqtt/blob/main/docs/installation.md" target="_blank" rel="noopener noreferrer">Pill installation instructions</a> in the <a href="https://github.com/hokkanen/shelly-cn105-mqtt" target="_blank" rel="noopener noreferrer">shelly-cn105-mqtt repository</a>. Register the Gen3 sender’s native BTHome components and map room temperature, minimum target, rescue and validity from their actual reported IDs. Replace the temporary BLU H&amp;T input on the Pill with this sender. The Pill receives the sender directly and remains the only heat-pump command owner.</p></li>
+                          <li><h4>Choose a compatible sender and probes</h4><p>The supplied script needs a mains-powered device with scripting, Bluetooth advertising, MQTT and two temperature-probe inputs. The tested example is a Shelly 1 Gen 3 with a Plus Add-on, two DS18B20 probes and firmware 2.0.1. Check the sender guide for required capabilities and firmware; a generation label alone does not establish compatibility. Gen 4 devices have not been independently verified with this setup.</p><p>Place the rear probe near the vulnerable pipe and the front probe near the door. Identify each native temperature component by checking the physical probe; do not assume component numbers. Verify fresh periodic reports from both probes even when their temperatures stay unchanged.</p></li>
+                          <li><h4>Install the protection sender script</h4><p>Follow the <a href="https://github.com/hokkanen/shelly-cn105-mqtt/blob/main/docs/sender.md" target="_blank" rel="noopener noreferrer">protection sender setup guide</a> to build and install <code>dist/sender.js</code>, enable startup execution, and configure the probe components and MQTT prefix. Enable Bluetooth and connect the sender to the same MQTT broker as this application. Match the sender topics in <code>garage.sender</code>; the sender never operates its relay or commands the heat pump.</p></li>
+                          <li><h4>Set up a Bluetooth gateway for other sensors</h4><p>A separate bridge can receive a BLU H&amp;T on a compatible Bluetooth gateway, including the protection sender when it supports both roles. Follow the sender guide’s BLU H&amp;T bridge instructions, retain the sensor’s Bluetooth address and existing MQTT topic, and enable startup execution. Verify new receptions and fresh Caravan readings before stopping the old bridge. Disable the old gateway’s Bluetooth only when no other integration needs it. The BLU H&amp;T supplies Caravan air readings; it does not replace either protection probe.</p></li>
+                          <li><h4>Connect the heat-pump controller</h4><p>Follow the <a href="https://github.com/hokkanen/shelly-cn105-mqtt/blob/main/docs/installation.md" target="_blank" rel="noopener noreferrer">heat-pump controller installation guide</a> in the <a href="https://github.com/hokkanen/shelly-cn105-mqtt" target="_blank" rel="noopener noreferrer">shelly-cn105-mqtt repository</a> for its supported hardware. Register the sender’s native BTHome components and map room temperature, minimum target, rescue and validity from their actual reported IDs. Replace any temporary commissioning sensor input with the protection sender. The heat-pump controller receives the sender directly and remains the only heat-pump command owner.</p></li>
                           <li><h4>Apply settings and verify local protection</h4><p>Review probe placement, pipe geometry, heat-transfer assumptions and the margin in <code>garage.protection</code>. Keep installation approval off until the installation checks pass, then apply the reviewed configuration. Compare Configured and Reported values above and verify fresh protection status; an accepted command or a temperature reading alone is insufficient. Follow the sender guide to check sensor loss, Bluetooth loss, restart and broker loss, and confirm useful heat reaches the protected pipes. Missing or stale evidence means protection is unavailable.</p></li>
                         </ol>
                       </details>
@@ -629,7 +624,7 @@
               <div id="garage-heating-state" class="heating-summary" role="group" aria-label="Current garage heating state">
                 <div class="heating-summary-reading"><span>Heat pump</span><strong id="garage-heating-operation">Unknown</strong><small id="garage-current-mode">Mode unavailable</small></div>
                 <div class="heating-summary-reading"><span>Effective target</span><strong id="garage-current-room">Unavailable</strong><small>Includes protection</small></div>
-                <div class="heating-summary-reading"><span>Freeze protection</span><strong id="garage-protection-summary">Unavailable</strong><small>Independent of mode</small></div>
+                <div class="heating-summary-reading"><span>Freeze protection</span><strong id="garage-protection-summary">Unavailable</strong><small id="garage-protection-summary-note">Normal &amp; Away</small></div>
               </div>
               <details id="garage-target-details" class="equipment-fold">
                 <summary><span>Normal temperature</span><small>Saved until changed</small></summary>
@@ -640,7 +635,40 @@
                 <p id="garage-target-help" class="muted">Away uses the preset shown above. Selecting a temperature keeps the heat pump’s power setting; use Heat-pump settings to turn it on or off.</p>
               </form>
               </details>
-              <p class="garage-protection-link"><a href="#garage-protection-details" data-open-garage-protection>Garage freeze protection status &amp; setup →</a></p>
+              <details id="garage-protection-details" class="equipment-fold garage-protection">
+                <summary><span>Freeze protection</span><small id="garage-protection-status" class="equipment-device-status">Unavailable</small></summary>
+                <div class="garage-protection-body">
+                  <p id="garage-protection-detail">Waiting for protection status. A temperature reading alone does not establish pipe protection.</p>
+                  <dl class="garage-protection-targets" aria-label="Room target and protection minimum">
+                    <div><dt>Selected target</dt><dd id="garage-protection-selected-target">Unavailable</dd></div>
+                    <div><dt>Protection minimum</dt><dd id="garage-protection-minimum-target">Unavailable</dd></div>
+                    <div><dt>Effective target</dt><dd id="garage-protection-effective-target">Unavailable</dd></div>
+                  </dl>
+                  <p id="garage-protection-reason" class="muted">Waiting for the protection sender’s reason.</p>
+                  <div class="garage-protection-grid">
+                    <section class="garage-protection-location" aria-labelledby="garage-rear-protection-title">
+                      <h5 id="garage-rear-protection-title">Rear · near pipe</h5>
+                      <dl class="equipment-readings"><dt>Air temperature</dt><dd id="garage-protection-rear">Unavailable</dd><dt>Estimated pipe</dt><dd id="garage-pipe-rear">Unavailable</dd><dt>Reserve above margin</dt><dd id="garage-reserve-rear">Unavailable</dd></dl>
+                      <p id="garage-pipe-rear-status" class="muted"></p>
+                    </section>
+                    <section class="garage-protection-location" aria-labelledby="garage-front-protection-title">
+                      <h5 id="garage-front-protection-title">Front · near door</h5>
+                      <dl class="equipment-readings"><dt>Air temperature</dt><dd id="garage-protection-front">Unavailable</dd><dt>Estimated pipe</dt><dd id="garage-pipe-front">Unavailable</dd><dt>Reserve above margin</dt><dd id="garage-reserve-front">Unavailable</dd></dl>
+                      <p id="garage-pipe-front-status" class="muted"></p>
+                    </section>
+                  </div>
+                  <details id="garage-protection-operation-details" class="equipment-fold">
+                    <summary>How freeze protection works</summary>
+                    <p><strong>Minimum target.</strong> During normal room regulation with valid protection input, the effective room target is the higher of your selected target and the protection minimum. For example, 8 °C selected with a 5 °C minimum still means an 8 °C room target. Your saved target is never overwritten.</p>
+                    <p><strong>Heat/On rescue.</strong> When the sender requests rescue, the heat-pump controller selects Heat and turns power On, even if the pump was off or in another operating mode. This enables heating; it does not force the compressor to run continuously. Rescue can be active without raising the room target.</p>
+                    <p><strong>Normal &amp; Away.</strong> Both use the same independent protection. The sender may request rescue after startup or lost temperature history because pipe reserve is uncertain. This is a conservative estimate, not a measurement that the pipes are frozen. Estimated pipe temperature and reserve stay unavailable until their history is established.</p>
+                    <p><strong>Recovery.</strong> Rescue clears after both pipe estimates meet the recovery conditions and remain safe for ten minutes. The controller then follows your saved target and leaves the pump powered on.</p>
+                    <p><strong>Missing protection input.</strong> Once protection inputs are configured on the heat-pump controller, a missing, stale or invalid feed triggers a separate fallback: Heat, power On and a native 16 °C thermostat. Normal room regulation resumes when valid input returns; your saved selection is preserved.</p>
+                    <p><strong>Room-sensor fault.</strong> A missing, stale or out-of-range regulation input also selects the native 16 °C thermostat. It preserves the power setting unless protection requests Heat/On rescue.</p>
+                  </details>
+                  <p class="garage-protection-link"><a href="#garage-protection-configuration-details" data-open-garage-protection>Pipe details &amp; sender setup in settings →</a></p>
+                </div>
+              </details>
               <details class="equipment-fold garage-temperature-help">
                 <summary>Warming a cold garage</summary>
                 <p class="muted">Stored items and surfaces warm more slowly than the air. After increasing the target, avoid bringing in wet or snowy vehicles or adding substantial moisture for roughly 24 hours, and longer if contents are still cold. Extra moisture can condense on those cold surfaces.</p>

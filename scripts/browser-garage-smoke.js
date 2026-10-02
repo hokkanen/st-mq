@@ -90,7 +90,7 @@ try {
   await send('Page.addScriptToEvaluateOnNewDocument', { source: `
     globalThis.garageFixture = { mode: 'normal', normalTargetC: 10, targetC: 10, confirmed: true,
       protection: false, uncertain: false, offline: false, readOnly: false, calls: [], reads: 0,
-      configurationStatus: 'confirmed',
+      configurationStatus: 'confirmed', rescue: false, minimumC: 14,
       configuredProtectionSettings: { version: 'garage-thermal-reserve-v1', approved: true, marginC: 1,
         pipeOutsideDiameterMm: 20, pipeWallMm: 2, heatTransferWPerM2K: 5 } };
     garageFixture.protectionSettings = { ...garageFixture.configuredProtectionSettings };
@@ -99,23 +99,28 @@ try {
       const f = garageFixture; f.reads++;
       status.readOnly = f.readOnly; status.input = 'providers';
       status.garage = { settings: { enabled: true }, mode: f.mode, normalTargetC: f.normalTargetC, awayTargetC: 5,
-        requestedTargetC: f.targetC, effectiveTargetC: f.protection === 'active' ? 14 : f.targetC,
+        requestedTargetC: f.targetC, effectiveTargetC: f.fallback ? 16 : f.protection === 'active' ? Math.max(f.targetC, f.minimumC) : f.targetC,
         targetConfirmed: f.confirmed && !f.offline, controlAvailable: !f.offline,
         controlReason: f.offline ? 'The heat-pump controller connection is unavailable.' : null,
         warmingWarning: f.warming ? { since: status.now, until: status.now + 86400000,
           message: 'The target has increased. Avoid wet or snowy vehicles and substantial moisture for roughly 24 hours, and longer if contents are still cold.' } : null,
         observations: { rear: { value: 6.5, sourceTime: status.now, receivedAt: status.now, stale: false, quality: [] },
           front: { value: 4, sourceTime: status.now, receivedAt: status.now, stale: false, quality: [] } },
-        protection: { available: Boolean(f.protection), active: f.protection === 'active', status: f.protection ? 'ready' : 'unavailable',
+        protection: { available: Boolean(f.protection) && !f.offline, active: f.protection === 'active' && !f.offline, status: f.protection ? 'ready' : 'unavailable',
           configuredSettings: f.configuredProtectionSettings,
           settings: f.protection && !f.offline ? f.protectionSettings : null,
           configuration: { status: f.protection && !f.offline ? f.configurationStatus : 'unknown', attempts: 0,
-            reason: f.protection && !f.offline ? f.configurationReason ?? null : 'Waiting for fresh local frost-protection unit status.' },
-          sender: { available: Boolean(f.protection) && !f.offline },
+            reason: f.protection && !f.offline ? f.configurationReason ?? null : 'Waiting for fresh protection sender status.' },
+          sender: { available: Boolean(f.protection) && !f.offline,
+            protection: { available: Boolean(f.protection) && !f.offline, active: f.protection === 'active',
+              minTargetC: f.minimumC, reason: f.uncertain ? 'pipe-history-uncertain' : 'pipe-reserve-low' } },
           locations: { rear: { airC: 6.5, estimatedC: 5, remainingKjPerM: 6, uncertain: false },
             front: { airC: 4, estimatedC: 1.5, remainingKjPerM: 0, uncertain: f.uncertain } } },
         adapter: { connected: !f.offline, observedAt: status.now, health: { deviceOnline: !f.offline, pumpCommunicating: !f.offline },
-          control: { sensorTemperatureC: 7.2, sensorAgeMs: f.sensorAgeMs ?? 10000 },
+          control: { sensorTemperatureC: 7.2, sensorAgeMs: f.sensorAgeMs ?? 10000,
+            status: f.fallback ? 'frost-unavailable' : f.rescue ? 'frost-rescue' : 'active',
+            frostConfigured: Boolean(f.protection) || Boolean(f.fallback), frostAvailable: Boolean(f.protection) && !f.offline,
+            frostActive: f.protection === 'active', frostRescue: f.rescue },
           native: { power: 'off', mode: 'heat', targetC: 16, powerAt: status.now,
             readbacks: Object.fromEntries(Object.entries({ power: 'off', mode: 'heat', targetC: 16 }).map(([key, value]) => [key, { value, measuredAt: status.now }])) },
           telemetry: { compressorActive: { value: false, sourceTime: status.now, unit: 'boolean', supported: true, usable: true, quality: [] } } },
@@ -170,7 +175,7 @@ try {
   assert.doesNotMatch(await evaluate(`document.getElementById('garage-manual-controls').textContent`), /Bluetooth room sensor/i);
   for (const [id, evidence] of [['garage-heating-operation', /compressor/i],
     ['garage-current-room', /control target.*not measured room temperature/i],
-    ['garage-protection-summary', /unavailable.*temperature reading alone/i]]) {
+    ['garage-protection-summary', /unavailable.*temperature.*alone/i]]) {
     await evaluate(`document.querySelector('#${id} .status-detail-trigger').focus()`);
     await keyPress('Enter');
     assert.equal(await evaluate(`document.querySelector('#${id} .status-detail-trigger').getAttribute('aria-expanded')`), 'true');
@@ -203,16 +208,42 @@ try {
   assert.equal(await evaluate(`document.getElementById('garage-protection-status').textContent`), 'Unavailable');
   assert.deepEqual(await evaluate(`(() => {
     const fold = document.getElementById('garage-protection-details');
+    return [Boolean(fold.closest('#garage-control')), fold.previousElementSibling.id, fold.querySelector(':scope > summary > span').textContent];
+  })()`), [true, 'garage-target-details', 'Freeze protection'],
+  'Live freeze protection follows Normal temperature in Garage');
+  assert.deepEqual(await evaluate(`(() => {
+    const fold = document.getElementById('garage-protection-configuration-details');
     return [fold.parentElement.id, fold.previousElementSibling.id, fold.querySelector(':scope > summary > span').textContent];
   })()`), ['connections-details', 'floor-preheat-details', 'Garage freeze protection'],
-  'Freeze protection is its own configuration fold directly below Floor preheating');
-  await evaluate(`document.querySelector('[data-open-garage-protection]').focus()`);
+  'Pipe details and setup have their own configuration fold below Floor preheating');
+  await evaluate(`document.querySelector('#garage-protection-details > summary').focus()`);
+  await keyPress('Enter');
+  assert.equal(await evaluate(`document.getElementById('garage-protection-details').open
+    && document.getElementById('garage-protection-rear').checkVisibility()
+    && document.getElementById('garage-protection-front').checkVisibility()
+    && !document.getElementById('connections-details').open`), true,
+  'The Garage fold exposes both locations independently of settings');
+  await evaluate(`document.querySelector('#garage-protection-details [data-open-garage-protection]').focus()`);
   await keyPress('Enter');
   assert.equal(await evaluate(`document.getElementById('connections-details').open
+    && document.getElementById('garage-protection-configuration-details').open
+    && document.activeElement === document.querySelector('#garage-protection-configuration-details > summary')
+    && location.hash === '#garage-protection-configuration-details'`), true,
+  'The Garage settings link opens its destination and ancestors and moves keyboard focus');
+  await evaluate(`document.getElementById('garage-heating-details').open = false;
+    document.getElementById('garage-protection-details').open = false;
+    document.querySelector('#garage-protection-configuration-details [data-open-garage-protection]').focus()`);
+  await keyPress('Enter');
+  assert.equal(await evaluate(`document.getElementById('garage-heating-details').open
     && document.getElementById('garage-protection-details').open
-    && document.getElementById('garage-protection-detail').checkVisibility()
-    && document.activeElement === document.querySelector('#garage-protection-details > summary')`), true,
-  'The Garage setup link opens its destination and ancestors and moves keyboard focus');
+    && document.activeElement === document.querySelector('#garage-protection-details > summary')
+    && location.hash === '#garage-protection-details'`), true,
+  'The return link reveals live protection and restores keyboard focus in Garage');
+  for (const id of ['garage-protection-configuration-details', 'garage-protection-details']) {
+    await evaluate(`document.getElementById('${id}').open = false; location.hash = '${id}'`);
+    await until(`document.getElementById('${id}').open
+      && document.activeElement === document.querySelector('#${id} > summary')`);
+  }
   await evaluate(`document.querySelector('#garage-protection-setup-details > summary').focus()`);
   await keyPress('Enter');
   assert.equal(await evaluate(`document.getElementById('garage-protection-setup-details').open`), true,
@@ -271,6 +302,7 @@ try {
     garageFixture.protectionSettings.approved = false; garageFixture.poll();
     document.getElementById('connections-details').open = true;
     document.getElementById('garage-protection-details').open = true;
+    document.getElementById('garage-protection-configuration-details').open = true;
     document.getElementById('garage-protection-settings-details').open = true`);
   await until(`document.getElementById('garage-protection-reported-approved').textContent !== 'Unavailable'`);
   for (const owner of ['configured', 'reported']) assert.match(
@@ -279,10 +311,10 @@ try {
   await evaluate(`garageFixture.protection = 'active'; garageFixture.configuredProtectionSettings.approved = true;
     garageFixture.protectionSettings.approved = true; garageFixture.configuredProtectionSettings.marginC = 1.5;
     garageFixture.configurationStatus = 'mismatch';
-    garageFixture.configurationReason = 'The local frost-protection unit reports different values. Configuration remains the source of these parameters.';
+    garageFixture.configurationReason = 'The protection sender reports different values. Configuration remains the source of these parameters.';
     garageFixture.poll()`);
-  await until(`document.getElementById('garage-protection-status').textContent === 'Heating override active'`);
-  assert.equal(await evaluate(`document.getElementById('garage-protection-summary').textContent`), 'Override active');
+  await until(`document.getElementById('garage-protection-status').textContent === 'Minimum target active'`);
+  assert.equal(await evaluate(`document.getElementById('garage-protection-summary').textContent`), 'Minimum target active');
   assert.equal(await evaluate(`document.getElementById('garage-current-room').textContent`), '14 °C');
   assert.equal(await evaluate(`document.getElementById('garage-reserve-front').textContent`), '0 kJ/m');
   assert.equal(Number.parseFloat(await evaluate(`document.getElementById('garage-protection-configured-marginC').textContent`)), 1.5);
@@ -290,13 +322,26 @@ try {
   assert.match(await evaluate(`document.getElementById('garage-protection-settings-status').textContent`), /reports different values/);
   await evaluate(`garageFixture.protectionSettings = { ...garageFixture.configuredProtectionSettings };
     garageFixture.configurationStatus = 'confirmed';
-    garageFixture.configurationReason = 'Configuration confirmed by the local frost-protection unit.';
+    garageFixture.configurationReason = 'Configuration confirmed by the protection sender.';
     garageFixture.poll()`);
   await until(`document.getElementById('garage-protection-settings-status').textContent.includes('Configuration confirmed')`);
   assert.equal(Number.parseFloat(await evaluate(`document.getElementById('garage-protection-reported-marginC').textContent`)), 1.5);
   assert.equal(await evaluate(`garageFixture.calls.length`), 3, 'Readback updates never issue parameter writes');
-  await evaluate(`garageFixture.uncertain = true; garageFixture.poll()`);
-  await until(`document.getElementById('garage-pipe-front').textContent === 'Unavailable'`);
+  await evaluate(`garageFixture.uncertain = true; garageFixture.rescue = true;
+    garageFixture.normalTargetC = 8; garageFixture.targetC = 8; garageFixture.minimumC = 5; garageFixture.poll()`);
+  await until(`document.getElementById('garage-pipe-front').textContent === 'Unavailable'
+    && document.getElementById('garage-protection-status').textContent === 'Heat/On rescue'`);
+  assert.equal(await evaluate(`document.getElementById('garage-protection-summary').textContent`), 'Heat/On rescue');
+  for (const [id, target] of [['selected', '8 °C'], ['minimum', '5 °C'], ['effective', '8 °C']])
+    assert.equal(await evaluate(`document.getElementById('garage-protection-${id}-target').textContent`), target);
+  assert.equal(await evaluate(`document.getElementById('garage-current-room').textContent`), '8 °C');
+  assert.match(await evaluate(`document.getElementById('garage-protection-detail').textContent`), /Heat.*On/i);
+  assert.match(await evaluate(`document.getElementById('garage-protection-reason').textContent`), /history.*uncertain/i);
+  await evaluate(`document.querySelector('#garage-protection-operation-details > summary').focus()`);
+  await keyPress('Enter');
+  assert.equal(await evaluate(`document.getElementById('garage-protection-operation-details').open`), true);
+  assert.match(await evaluate(`document.getElementById('garage-protection-operation-details').textContent`), /8 °C selected.*5 °C minimum.*8 °C room target/);
+  assert.match(await evaluate(`document.getElementById('garage-protection-operation-details').textContent`), /ten minutes.*powered on/s);
   for (const width of [320, 390, 768, 1440]) for (const theme of ['dark', 'light']) {
     await send('Emulation.setDeviceMetricsOverride', { width, height: 1200, deviceScaleFactor: 1, mobile: false });
     await evaluate(`window.homeEnergyTheme.setTheme('${theme}')`); await pause(100);
@@ -309,20 +354,26 @@ try {
       }).map(node => node.id || node.tagName);
     })()`);
     assert.deepEqual(overflow, [], `${width}px ${theme} controls stay within the Garage card`);
-    assert.equal(await evaluate(`(() => {
-      const panel = document.getElementById('garage-protection-details'), box = panel.getBoundingClientRect();
-      return panel.checkVisibility() && [...panel.querySelectorAll('summary,p,dl,table,th,td,a,code,h4')]
-        .filter(node => node.checkVisibility()).every(node => [...node.getClientRects()]
-          .every(rect => rect.left >= box.left - 1 && rect.right <= box.right + 1));
-    })()`), true, `${width}px ${theme} keeps protection readback and sender setup inside the configuration fold`);
+    for (const id of ['garage-protection-details', 'garage-protection-configuration-details'])
+      assert.equal(await evaluate(`(() => {
+        const panel = document.getElementById('${id}'), box = panel.getBoundingClientRect();
+        return panel.checkVisibility() && [...panel.querySelectorAll('summary,p,dl,table,th,td,a,code,h4,h5')]
+          .filter(node => node.checkVisibility()).every(node => [...node.getClientRects()]
+            .every(rect => rect.left >= box.left - 1 && rect.right <= box.right + 1));
+      })()`), true, `${width}px ${theme} keeps ${id} content inside its fold`);
     assert.equal(await evaluate(`(() => {
       const rows = [...document.querySelectorAll('#garage-heating-state > .heating-summary-reading')];
       return rows.length === 3 && rows.every(row => row.scrollWidth <= row.clientWidth + 1);
     })()`), true, `${width}px ${theme} keeps the three heating readings unclipped`);
     await screenshot(`garage-${width}-${theme}`);
     await screenshot(`garage-freeze-protection-${width}-${theme}`, 'garage-protection-details');
+    await screenshot(`garage-freeze-setup-${width}-${theme}`, 'garage-protection-configuration-details');
   }
-  await evaluate(`garageFixture.offline = true; garageFixture.poll()`);
+  await evaluate(`garageFixture.protection = false; garageFixture.fallback = true; garageFixture.rescue = false; garageFixture.poll()`);
+  await until(`document.getElementById('garage-protection-status').textContent === 'Fallback heating'`);
+  assert.match(await evaluate(`document.getElementById('garage-protection-effective-target').textContent`), /16 °C.*native fallback/);
+  assert.equal(await evaluate(`document.getElementById('garage-protection-selected-target').textContent`), '8 °C');
+  await evaluate(`garageFixture.fallback = false; garageFixture.protection = 'active'; garageFixture.offline = true; garageFixture.poll()`);
   await until(`document.getElementById('garage-mode-away').disabled`);
   assert.equal(await evaluate(`document.getElementById('garage-pipe-rear').textContent`), 'Unavailable');
   assert.equal(await evaluate(`document.getElementById('garage-heating-operation').textContent`), 'Unknown',
@@ -336,14 +387,16 @@ try {
   assert.equal(Number.parseFloat(await evaluate(`document.getElementById('garage-protection-configured-marginC').textContent`)), 1.5);
   assert.equal(Number.parseFloat(await evaluate(`document.getElementById('garage-protection-reported-marginC').textContent`)), 1.5);
   assert.equal(await evaluate(`garageFixture.calls.length`), 3);
-  assert.doesNotMatch(await evaluate(`document.getElementById('garage-control').textContent`), /\b(?:Pill|Gen3)\b/i);
+  assert.doesNotMatch(await evaluate(`document.getElementById('garage-control').textContent`), /\b(?:Pill|Gen\s?[34])\b/i);
   assert.deepEqual(errors, []);
   console.log(JSON.stringify({ result: 'garage-manual-browser-smoke-passed', artifacts,
     checks: ['Normal/Away keyboard and pointer changes', 'Away confirmation replaces pending feedback after polling', 'Persistent target edits and polling focus',
       'Condensation advisory without confirmation gate', 'Native OFF remains OFF', 'Missing protection stays unavailable',
       'Three concise heating readings and keyboard evidence', 'Distinct rear observation and expiring controller regulation input',
       'Read-only configured and reported installation parameters', 'Missing, false, mismatching and confirmed sender readback',
-      'Dedicated freeze protection fold below Floor preheating', 'Keyboard setup navigation and Pill repository guides',
+      'Live protection below Normal temperature and separate setup below Floor preheating',
+      'Bidirectional keyboard links and hash navigation', 'Generic device roles with a tested sender example',
+      '8 °C selected / 5 °C minimum rescue keeps the target at 8 °C', 'Separate native 16 °C fallback',
       'Uncertain/stale estimates remain unavailable',
       '320/390/768/1440px layouts in both themes', 'Read-only controls', 'No browser exceptions'] }));
   await send('Page.close');

@@ -58,7 +58,7 @@ It inherits public adapter topics and the Away preset. Sender MQTT topics defaul
 `garage.sender.stateTopic` and `commandTopic` to its actual topics. Review and
 set installation approval and protection parameters under `garage.protection`,
 then use **Apply reviewed configuration** in **Data & settings** or restart. The
-**Freeze protection → Protection settings** panel is read-only: it compares the
+**Connections & configuration → Garage freeze protection** panel is read-only: it compares the
 loaded configuration with actual sender readback. Configured approval is not
 evidence that the sender accepted it or that protection is available.
 See [Garage heating](garage.md).
@@ -203,8 +203,11 @@ independent. `POST /api/automation` accepts Home only; Garage mode controls use
 `POST /api/garage/heating`. Garage enablement and sender wiring are installation
 configuration; fresh adapter evidence is still needed to send a request.
 
-The Freeze protection panel displays the protection sender's state and
-compares configured parameters with reported settings. Installation approval,
+**Garage → Freeze protection**, below **Normal temperature**, displays the live
+rear/front readings and explains protection behavior. It links to **Connections
+& configuration → Garage freeze protection**, below **Floor preheating**, for
+sender setup, pipe assumptions and configured-versus-reported settings. The
+settings fold links back to the live readings. Installation approval,
 margin, pipe geometry and heat transfer come only from `garage.protection`;
 there is no dashboard override or settings-write endpoint. With Garage enabled
 and local write authority, the controller applies loaded configuration through

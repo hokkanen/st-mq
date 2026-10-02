@@ -74,23 +74,25 @@ measurement-existence check must not reconstruct report availability. These
 paths run on the server's main thread: regressions can delay HTTP responses and
 provider downloads even when chart calculations run in a worker.
 
-### Compiled Pill integration
+### Heat-pump controller and sender contracts
 
-After building the separate `shelly-cn105-mqtt` project, run the actual compiled
-driver against the controller's production adapter with synthetic UART, MQTT,
-storage and clocks:
+Run the Garage adapter, sender and configuration tests from this repository:
 
 ```sh
-STMQ_PILL_ARTIFACT=/path/to/shelly-cn105-mqtt/dist/driver.js \
-  node --test test/extended/garage-pill-runtime.test.js
+node --test test/garage-v2-adapter.test.js test/garage-sender.test.js test/garage-protection-config.test.js
 ```
 
-This exercises persistent targets, current boot/challenge fencing, local Bluetooth
-freshness, native command confirmation and independent protection overrides. It opens no device or
-broker connection and does not copy the external driver into this repository.
-The extended suite explicitly skips these integration cases without the artifact
-path; its ordinary host-only adapter coverage still runs in the routine suite.
-Actual Pill heap usage and firmware scheduling require separate installed checks.
+These use synthetic current-contract MQTT state to exercise durable-target
+confirmation, boot/challenge fencing, one-shot native commands and sender
+configuration readback. They do not load the separate firmware driver's compiled
+artifact or establish its UART behavior.
+
+In the separate `shelly-cn105-mqtt` repository, run `npm run check`. Its runtime
+and build tests exercise readable and generated scripts against synthetic UART,
+MQTT, storage and clocks, including source freshness, native confirmation and
+protection overrides. See its [development guide](https://github.com/hokkanen/shelly-cn105-mqtt/blob/main/docs/development.md).
+Both suites are offline; actual device memory, firmware scheduling, radio
+reception and useful heating require separate installation checks.
 
 ## Browser suites
 

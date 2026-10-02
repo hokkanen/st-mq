@@ -465,6 +465,11 @@ Do not broaden a routine code task into a repeated security audit without eviden
 - Do not use the project name **ST-MQ** in user-facing labels, descriptions,
   popovers, status messages or errors. Use natural wording such as “the controller”
   or “this application”. Keep actual file paths and protocol identifiers accurate.
+- Use device roles such as “protection sender”, “heat-pump controller” and
+  “Bluetooth gateway” throughout the UI and current documentation. Name specific
+  hardware and firmware as tested examples or in device-specific instructions,
+  not as universal requirements. Describe compatibility through the capabilities
+  needed, and distinguish tested installations from unverified candidates.
 - Show Mitsubishi fields that have real reported data, including valid zero/false
   values. Omit never-observed or unsupported placeholders. Keep previously observed
   fields visible during temporary data loss, with an explicit unavailable state

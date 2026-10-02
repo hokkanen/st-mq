@@ -1971,7 +1971,7 @@ body[data-access-role="family"] .family-access-note { display: block; margin: 12
 .feature-automation h5 { margin-block: 0 .5rem; }
 .feature-automation p { margin-block: .5rem; }
 
-/* Garage retains its durable choice; protection status and setup live in configuration. */
+/* Garage keeps live protection beside its saved choice; installation lives in settings. */
 .garage-target-form { display:grid; gap:.55rem; margin:1rem 0; }
 .garage-target-form > label { font-weight:600; margin:0; }
 .garage-target-input { display:flex; flex-wrap:wrap; align-items:stretch; gap:.6rem; }
@@ -1980,18 +1980,34 @@ body[data-access-role="family"] .family-access-note { display: block; margin: 12
 .garage-target-form .muted { margin:0; }
 .garage-protection { scroll-margin-top: 20px; }
 .garage-protection > summary { flex-wrap: wrap; }
-.garage-protection .section-fold-body { font-size: 12px; line-height: 1.65; }
+.garage-protection .section-fold-body, .garage-protection-body { font-size: 12px; line-height: 1.65; overflow-wrap: anywhere; }
+.garage-protection-body > p { margin: 4px 0 14px; }
+.garage-protection-body > .equipment-fold { margin-top: 10px; border-bottom: 1px solid var(--border); }
+.garage-protection-body > .equipment-fold > p { margin: 6px 0 14px; color: var(--muted); }
+.garage-protection-body > .equipment-fold strong { color: var(--text); font-weight: 550; }
+.garage-protection-targets { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px; margin: 14px 0; padding: 12px 0; border-top: 1px solid var(--border); border-bottom: 1px solid var(--border); }
+.garage-protection-targets > div { min-width: 0; }
+.garage-protection-targets dt { color: var(--muted); font-size: 10px; line-height: 1.5; }
+.garage-protection-targets dd { margin: 5px 0 0; font-size: 15px; font-weight: 550; font-variant-numeric: tabular-nums; }
+.garage-protection-targets > div:last-child dd { color: var(--accent); }
 .garage-protection a, .garage-protection-link a { color: var(--accent); text-underline-offset: 3px; }
 .garage-protection-link { margin: 12px 0; font-size: 11px; line-height: 1.6; }
+.garage-protection-body > .garage-protection-link { margin: 12px 0 0; }
 .garage-protection-steps { margin: 16px 0 0; padding-left: 22px; }
 .garage-protection-steps > li { padding-left: 4px; margin-bottom: 20px; }
 .garage-protection-steps h4 { margin: 0 0 6px; font-size: 12px; font-weight: 600; }
 .garage-protection-steps p { margin: 0; color: var(--muted); }
+.garage-protection-steps p + p { margin-top: 8px; }
 .garage-protection [data-state="attention"] { color:var(--stale); }
 .garage-warming-warning { line-height:1.55; }
 
-.garage-protection-grid { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:1rem; }
-.garage-protection-location h5 { margin:.6rem 0; font-size:.85rem; }
+.garage-protection-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; }
+.garage-protection-location { min-width: 0; padding: 12px; border: 1px solid var(--border); border-radius: 8px; background: var(--surface-soft); }
+.garage-protection-location h5 { margin: 0; font-size: 12px; font-weight: 550; }
+.garage-protection-location .equipment-readings { grid-template-columns: minmax(0, 1fr) auto; gap: 7px 10px; }
+.garage-protection-location .equipment-readings dd { font-variant-numeric: tabular-nums; }
+.garage-protection-location p { margin: 12px 0 0; font-size: 11px; line-height: 1.6; }
+.garage-protection-location p:empty { display: none; }
 .garage-protection-parameters { width: 100%; table-layout: fixed; border-collapse: collapse; margin: 12px 0; font-size: 11px; line-height: 1.6; }
 .garage-protection-parameters th, .garage-protection-parameters td { padding: 9px 5px; border-bottom: 1px solid var(--border); text-align: right; overflow-wrap: anywhere; vertical-align: top; font-weight: 400; }
 .garage-protection-parameters th { color: var(--muted); }

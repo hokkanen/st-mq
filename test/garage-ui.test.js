@@ -16,6 +16,8 @@ function fixture() {
     'garage-control-mode', 'garage-current-room', 'garage-target-confirmation', 'garage-heating-operation', 'garage-current-mode',
     'garage-regulation-temperature', 'garage-regulation-reading', 'garage-readings-details', 'garage-protection-summary',
     'garage-heating-status', 'garage-control-detail', 'garage-protection-status', 'garage-protection-detail',
+    'garage-protection-selected-target', 'garage-protection-minimum-target', 'garage-protection-effective-target',
+    'garage-protection-reason', 'garage-protection-summary-note',
     'garage-protection-rear', 'garage-protection-front', 'garage-pipe-rear', 'garage-pipe-front', 'garage-reserve-rear',
     'garage-reserve-front', 'garage-pipe-rear-status', 'garage-pipe-front-status',
     'garage-protection-configured-label', 'garage-protection-reported-label', 'garage-protection-settings-status',
@@ -154,13 +156,89 @@ test('condensation warning is visible after warming and disappears only after th
   assert.equal(f.nodes.get('garage-mode-normal').disabled, false, 'An advisory is not a confirmation gate');
 });
 
-test('missing frost demand is unavailable and confirmed override leaves selected target distinct', () => {
+test('missing frost demand is unavailable and a reported minimum leaves the selected target distinct', () => {
   assert.equal(garageDisplay({ protection: { active: true } }).protection, 'Unavailable');
   const display = garageDisplay({ mode: 'away', requestedTargetC: 5, effectiveTargetC: 10,
-    protection: { available: true, active: true } });
+    adapter: { connected: true, control: { status: 'active' } },
+    targetConfirmed: true, protection: { available: true, active: true,
+      sender: { available: true, protection: { available: true, minTargetC: 10 } } } });
   assert.equal(display.mode, 'Away'); assert.equal(display.target, '5 °C'); assert.equal(display.effectiveTarget, '10 °C');
-  assert.equal(display.protection, 'Heating override active');
-  assert.match(display.protectionDetail, /choice remains saved/);
+  assert.equal(display.protection, 'Minimum target active');
+  assert.match(display.protectionDetail, /10 °C protection minimum raises.*selected 5 °C/);
+  assert.match(display.protectionDetail, /saved Normal or Away target stays unchanged/);
+});
+
+test('rescue explains Heat and power On while selected 8 °C already exceeds the 5 °C minimum', () => {
+  const f = fixture(), garage = { ...f.initial.garage, normalTargetC: 8, requestedTargetC: 8, effectiveTargetC: 8,
+    adapter: { connected: true, control: { status: 'frost-rescue', frostRescue: true } },
+    protection: { available: true, active: true, sender: { available: true,
+      protection: { available: true, minTargetC: 5, reason: 'pipe-history-uncertain' } } } };
+  f.panel.update({ ...f.initial, garage });
+  assert.equal(f.nodes.get('garage-protection-summary').textContent, 'Heat/On rescue');
+  assert.equal(f.nodes.get('garage-protection-selected-target').textContent, '8 °C');
+  assert.equal(f.nodes.get('garage-protection-minimum-target').textContent, '5 °C');
+  assert.equal(f.nodes.get('garage-protection-effective-target').textContent, '8 °C');
+  assert.match(f.nodes.get('garage-protection-detail').textContent, /requests Heat and power On.*does not mean the compressor is running.*selected 8 °C.*effective target stays at 8 °C/);
+  assert.match(f.nodes.get('garage-protection-reason').textContent, /history is uncertain.*does not mean.*frozen/);
+  garage.protection.sender.protection.reason = 'recovery-hold';
+  f.panel.update({ ...f.initial, garage });
+  assert.match(f.nodes.get('garage-protection-reason').textContent, /both locations.*ten minutes/);
+  f.panel.update({ ...f.initial, garage, readOnly: true });
+  assert.match(f.nodes.get('garage-protection-detail').textContent, /^Recorded status; live confirmation is unavailable/);
+  assert.equal(f.nodes.get('garage-protection-summary-note').textContent, 'Recorded snapshot');
+});
+
+test('sender minimum and reason require fresh valid evidence independently of controller protection', () => {
+  const garage = { requestedTargetC: 8, effectiveTargetC: 8, targetConfirmed: true,
+    adapter: { connected: true, control: { status: 'frost-rescue', frostRescue: true } },
+    protection: { available: true, active: true, sender: { available: false,
+      protection: { available: true, minTargetC: 5, reason: 'pipe-reserve-low' } } } };
+  let display = garageDisplay(garage);
+  assert.equal(display.protection, 'Heat/On rescue');
+  assert.equal(display.protectionMinimum, 'Unavailable');
+  assert.match(display.protectionReason, /detailed report is unavailable/);
+  assert.doesNotMatch(display.protectionDetail, /already meets/);
+  garage.protection.sender.available = true;
+  garage.protection.sender.protection.available = false;
+  assert.equal(garageDisplay(garage).protectionMinimum, 'Unavailable');
+  garage.protection.sender.protection = { available: true, minTargetC: 0, reason: 'pipe-reserve-recovered' };
+  garage.protection.active = false;
+  display = garageDisplay(garage);
+  assert.equal(display.protectionMinimum, 'No minimum');
+  assert.equal(display.protection, 'Monitoring');
+  assert.match(display.protectionReason, /released rescue/);
+  garage.protection.sender.protection.minTargetC = 10;
+  assert.match(garageDisplay(garage).protectionDetail, /do not yet agree.*confirmation may be pending/);
+  garage.targetConfirmed = false;
+  assert.doesNotMatch(garageDisplay(garage).protectionDetail, /already meets|raises the effective target/);
+});
+
+test('native fallback requires controller evidence and cannot claim usable pipe protection', () => {
+  const garage = { requestedTargetC: 8, effectiveTargetC: 16,
+    adapter: { connected: true, control: { frostConfigured: true, status: 'frost-unavailable', frostRescue: true } },
+    protection: { available: false, active: false } };
+  const display = garageDisplay(garage);
+  assert.equal(display.protection, 'Fallback heating');
+  assert.equal(display.protectionEffective, '16 °C · native fallback');
+  assert.match(display.protectionDetail, /feed is unavailable.*Heat and power On.*native 16 °C.*saved Normal or Away target stays unchanged/);
+  garage.adapter.connected = false;
+  assert.equal(garageDisplay(garage).protection, 'Unavailable');
+});
+
+test('room-input faults explain native fallback even while protection rescue is valid', () => {
+  const garage = { requestedTargetC: 8, effectiveTargetC: 16, targetConfirmed: true,
+    adapter: { connected: true, control: { status: 'sensor-stale', frostRescue: true } },
+    protection: { available: true, active: true,
+      sender: { available: true, protection: { available: true, minTargetC: 5, reason: 'pipe-reserve-low' } } } };
+  for (const status of ['sensor-stale', 'sensor-range']) {
+    garage.adapter.control.status = status;
+    const display = garageDisplay(garage);
+    assert.equal(display.protection, 'Heat/On rescue');
+    assert.equal(display.protectionEffective, '16 °C · native fallback');
+    assert.match(display.protectionDetail, /Room regulation is using the native 16 °C thermostat fallback/);
+    assert.doesNotMatch(display.protectionDetail, /confirmation may be pending|already meets|raises the effective target/);
+    assert.match(display.protectionReason, /forecast to reach/);
+  }
 });
 
 test('heating summary separates reported operation, effective target and independent protection', () => {
@@ -168,17 +246,18 @@ test('heating summary separates reported operation, effective target and indepen
   assert.equal(f.nodes.get('garage-heating-operation').textContent, 'Unknown');
   assert.equal(f.nodes.get('garage-protection-summary').textContent, 'Unavailable');
   const garage = { ...f.initial.garage, mode: 'away', requestedTargetC: 5, effectiveTargetC: 8,
-    adapter: { connected: true, native: { readbacks: { mode: { value: 'heat', measuredAt: now } } },
+    adapter: { connected: true, control: { status: 'active' }, native: { readbacks: { mode: { value: 'heat', measuredAt: now } } },
       telemetry: { compressorActive: { value: false, sourceTime: now, supported: true, quality: [] } } },
-    protection: { available: true, active: true } };
+    protection: { available: true, active: true,
+      sender: { available: true, protection: { available: true, minTargetC: 8 } } } };
   f.panel.update({ ...f.initial, garage });
   assert.equal(f.nodes.get('garage-heating-operation').textContent, 'Idle', 'A reported idle compressor differs from an unknown one');
   assert.equal(f.nodes.get('garage-current-mode').textContent, 'Heat');
   assert.equal(f.nodes.get('garage-current-room').textContent, '8 °C');
-  assert.equal(f.nodes.get('garage-protection-summary').textContent, 'Override active');
-  assert.equal(f.nodes.get('garage-protection-status').textContent, 'Heating override active');
+  assert.equal(f.nodes.get('garage-protection-summary').textContent, 'Minimum target active');
+  assert.equal(f.nodes.get('garage-protection-status').textContent, 'Minimum target active');
   assert.match(f.detailText('garage-current-room'), /Selected target: 5 °C.*freeze-protection minimum.*not measured room temperature/);
-  assert.match(f.detailText('garage-protection-summary'), /choice remains saved/);
+  assert.match(f.detailText('garage-protection-summary'), /saved Normal or Away target stays unchanged/);
   f.panel.update({ ...f.initial, now: now + 120_000, garage: { ...garage, effectiveTargetC: null,
     protection: { available: true, active: false } } });
   assert.equal(f.nodes.get('garage-heating-operation').textContent, 'Unknown');
@@ -236,24 +315,28 @@ test('Garage markup has durable controls and independent protection without reti
   const garage = html.slice(html.indexOf('<article id="garage-control"'), html.indexOf('id="garage-equipment-readings"'));
   for (const id of ['garage-mode-normal', 'garage-mode-away', 'garage-target-form', 'garage-protection-summary'])
     assert(garage.includes(`id="${id}"`));
-  assert.match(garage, /href="#garage-protection-details" data-open-garage-protection/);
-  assert.doesNotMatch(garage, /id="garage-protection-details"/);
+  assert.match(garage, /href="#garage-protection-configuration-details" data-open-garage-protection/);
+  assert(garage.indexOf('id="garage-protection-details"') > garage.indexOf('id="garage-target-details"'));
+  for (const id of ['garage-protection-rear', 'garage-protection-front', 'garage-pipe-rear', 'garage-pipe-front',
+    'garage-protection-selected-target', 'garage-protection-minimum-target', 'garage-protection-effective-target'])
+    assert(garage.includes(`id="${id}"`));
   assert.doesNotMatch(garage, /garage-(automation|pause|learning|release)|Automatic savings|Savings strategy|Temporary heating override/);
   assert.match(garage, /roughly 24 hours.*longer if contents are still cold/);
   assert.match(garage, /including across restarts/);
   const connectionSetup = html.slice(html.indexOf('id="connections-details"'), html.indexOf('id="electricity-details"'));
-  assert(connectionSetup.indexOf('id="garage-protection-details"') > connectionSetup.indexOf('id="floor-preheat-details"'));
+  assert(connectionSetup.indexOf('id="garage-protection-configuration-details"') > connectionSetup.indexOf('id="floor-preheat-details"'));
+  assert.doesNotMatch(connectionSetup, /id="garage-protection-details"|id="garage-protection-rear"|id="garage-pipe-front"/);
+  assert.match(connectionSetup, /href="#garage-protection-details" data-open-garage-protection/);
   assert.match(connectionSetup, /<summary><span>Garage freeze protection<\/span>/);
   const start = connectionSetup.indexOf('id="garage-protection-settings-details"');
   const parameters = connectionSetup.slice(start, connectionSetup.indexOf('</details>', start));
   assert.doesNotMatch(parameters, /<input|<select|<form|garage-protection-submit|api\/garage\/protection/);
   assert.match(parameters, /garage\.protection.*Apply reviewed configuration/);
   assert.match(connectionSetup, /id="garage-protection-setup-details"/);
-  assert.match(connectionSetup, /Gen3.*Plus Add-on.*two DS18B20 probes/);
-  assert.match(connectionSetup, /BLU H&amp;T remains the Caravan air sensor/);
-  assert.match(connectionSetup, /first startup or after lost measurement history.*may request rescue heating/);
-  assert.match(connectionSetup, /protection inputs configured.*missing, stale or invalid sender.*Heat, power On.*16 °C/);
-  assert.match(connectionSetup, /Rescue and fallback preserve your saved Normal or Away target/);
+  assert.match(connectionSetup, /tested example.*Shelly 1 Gen 3.*firmware 2\.0\.1/);
+  assert.match(garage, /8 °C selected with a 5 °C minimum.*8 °C room target/);
+  assert.match(garage, /startup or lost temperature history.*pipe reserve is uncertain/);
+  assert.match(garage, /protection inputs are configured.*missing, stale or invalid feed.*Heat, power On.*16 °C/);
   assert.match(connectionSetup, /https:\/\/github\.com\/hokkanen\/shelly-cn105-mqtt\/blob\/main\/docs\/sender\.md/);
   assert.match(connectionSetup, /https:\/\/github\.com\/hokkanen\/shelly-cn105-mqtt\/blob\/main\/docs\/installation\.md/);
 });

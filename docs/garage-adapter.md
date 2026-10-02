@@ -32,8 +32,10 @@ reports, clear external input and set native 16°C in HEAT, preserving power.
 
 ## Protection sender
 
-The mains-powered Gen3 Shelly with a Plus Add-on and two DS18B20 probes is the
-protection sender. It retains its configuration and front/rear pipe state.
+A compatible, mains-powered device with two DS18B20 probes runs the protection
+sender script. The tested example is a Shelly 1 Gen3 with a Plus Add-on and
+firmware 2.0.1; the device role does not require that particular model. The sender
+retains its configuration and front/rear pipe state.
 Its MQTT status uses `stmq-garage-sender/v1`; commands are bounded and tied to
 fresh sender identity/challenge. `garage.protection` in loaded configuration is
 the only source of installation approval and protection parameters; the dashboard
@@ -54,15 +56,25 @@ source reports unavailable. A BLU H&T supplies temperature only.
 ## Sender installation
 
 Use **Connections & configuration → Garage freeze protection**, directly below
-**Floor preheating**, for setup guidance and the configured-versus-reported
-protection status. Build and install `dist/sender.js` from the
-[Pill repository](https://github.com/hokkanen/shelly-cn105-mqtt), following its
+**Floor preheating**, for setup guidance, pipe assumptions and configured-versus-reported settings.
+The linked **Garage → Freeze protection** fold, below **Normal temperature**,
+contains live air/pipe/reserve readings and explains active protection. Build and
+install `dist/sender.js` from the
+[heat-pump controller and sender repository](https://github.com/hokkanen/shelly-cn105-mqtt), following its
 [sender guide](https://github.com/hokkanen/shelly-cn105-mqtt/blob/main/docs/sender.md).
-That repository also owns [Pill wiring and installation](https://github.com/hokkanen/shelly-cn105-mqtt/blob/main/docs/installation.md).
+That repository also owns [controller wiring and installation](https://github.com/hokkanen/shelly-cn105-mqtt/blob/main/docs/installation.md).
 
-The sender requires firmware with script BLE advertising and BTHome builders
-(2.0.0 or later), enabled Bluetooth, and the sensor add-on. Identify the actual
-rear and front probe components before saving `cn105_sender_config` in its KVS.
+The supplied sender script requires scripting, `BLE.AdvBuilder`,
+`BLE.advertiseOnce`, `BTHome.DataBuilder`, enabled Bluetooth, and a compatible
+sensor add-on exposing both probes. These APIs require firmware 2.0.0 or later.
+Shelly documents advertising on mains-powered Gen3/Gen4 devices with scripting
+and selected Gen2 devices; Gen4 Zigbee mode is excluded. API support alone does
+not verify add-on compatibility, memory headroom or the complete installation.
+See the [official API support](https://shelly-api-docs.shelly.cloud/gen2/Scripts/APIs/BLE/#advertising-support).
+The tested Shelly 1 Gen3 required an update from factory 1.2.2 via the required
+1.3.3 intermediate to 2.0.1; use the sender guide for model-specific update details.
+
+Identify the actual rear and front probe components before saving `cn105_sender_config` in its KVS.
 The rear probe supplies room regulation; swapping probe labels changes the
 physical meaning of the control input. Set its `prefix` to the exact prefix
 of `garage.sender.stateTopic` and `garage.sender.commandTopic`, normally
@@ -76,26 +88,26 @@ Check actual reports from both probes, including unchanged values, at roughly
 sender emits a valid BLE packet only for a new pair of probe reports; stale,
 invalid or unapproved protection emits invalid/rescue flags without temperatures.
 
-Register the Gen3 as the Pill's native BTHome device. Inspect the generated
-component IDs and configure the complete mapping in the Pill repository's
-instructions: temperature object `0x45` index 0 is rear room temperature and
+Register the sender with the heat-pump controller's native BTHome receiver.
+Inspect the generated component IDs and configure the complete mapping in the
+controller repository's instructions: temperature object `0x45` index 0 is rear room temperature and
 index 1 is the protection floor; binary object `0x0f` index 0 is rescue and
 index 1 is validity. Replace the former BLU temperature mapping and remove its
-unused native registration. The Pill still receives the Gen3 through Bluetooth.
+unused native registration. Keep controller Bluetooth enabled for the sender.
 
-The [BLU H&T MQTT bridge](shelly-blu-ht.md) runs separately on the same Gen3,
-receiving Caravan temperature/humidity. Verify fresh reports there before
+The [BLU H&T MQTT bridge](shelly-blu-ht.md) can run as a separate script on the
+sender or another compatible gateway, receiving Caravan temperature/humidity. Verify fresh reports there before
 stopping the former receiver and disabling its script autostart. Preserve the
 sensor address and MQTT topic. This bridge neither commands the pump nor feeds
 the two-probe protection model. Check sender advertising, BLU reception, script
-memory and startup together on the installed Gen3.
+memory and startup together on the installed device.
 
 ## Validation
 
 Test source and generated scripts against synthetic CN105 replies, held/stale
 Bluetooth values, reordered callbacks, persistence failures, one-shot replay,
 remote edits, OFF preservation, mode changes and failed serial writes. Then
-measure actual Pill memory, scheduler progress, timeout/recovery, reboot and
-network loss using the installed firmware. Source size and isolated self-tests
+measure actual heat-pump controller memory, scheduler progress, timeout/recovery,
+reboot and network loss using the installed firmware. Source size and isolated self-tests
 are not heap headroom. Private deployment backups retain the previous sources
 and current device state until the new installation is verified.

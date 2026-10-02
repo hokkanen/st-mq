@@ -171,10 +171,13 @@ Open the **Home** or **Garage** summary for its heating controls. Home retains
 **Automatic / Paused**, **Schedule & away**, **Manual heating override**,
 **Heating strategy & comfort** and the **Home heat model**.
 Garage offers persistent **Normal / Away**, an editable normal target, native
-pump controls and separate **Freeze protection**. Raising the selected target shows
-a moisture warning for approximately 24 hours. Protection parameters are edited
-under `garage.protection` in configuration; the read-only panel compares configured
-and reported settings alongside the sender's pipe estimates.
+pump controls and a **Freeze protection** fold directly below **Normal
+temperature**. Raising the selected target shows a moisture warning for
+approximately 24 hours. Protection parameters are edited
+under `garage.protection` in configuration. The live fold shows rear/front air
+readings, pipe estimates and reserves, and links to **Connections & configuration
+→ Garage freeze protection** below **Floor preheating**. The settings fold compares
+configured and reported parameters, explains sender setup and links back.
 Each heat pump has an overview and detailed readings. Garage's chargers sit
 below its heating summary. Equipment remains in **Sensors & Equipment** (Home)
 and **Sensors & More equipment** (Garage). Home shows **Tariff control** above
@@ -641,8 +644,17 @@ target; Away holds the configured preset. Temperature increases show a condensat
 advisory. The protection sender runs independent front/rear pipe protection and
 communicates its state/settings to the application. Its Bluetooth demand lets the
 heat-pump controller rescue heating without a broker or application connection.
-The Freeze protection panel keeps unavailable evidence distinct from safe or
-active protection. Its installation parameters come exclusively from
+The live Freeze protection fold distinguishes unavailable evidence from safe or
+active protection. During normal room regulation, the effective target is the
+higher of the saved target and protection minimum: an 8°C target with a 5°C minimum remains
+8°C. Separate HEAT/ON rescue enables heating without forcing continuous compressor
+operation. Startup uncertainty is a conservative assumption, not a measured
+frozen pipe. Rescue clears after ten safe minutes at both locations, preserving
+the saved target and leaving power ON. Stale or invalid configured protection
+uses a separate native 16°C HEAT/ON fault fallback. Room-input loss or an
+out-of-range input/calculated external temperature also uses native 16°C in HEAT,
+preserving power unless protection requests rescue. Installation parameters come
+exclusively from
 `garage.protection`; use **Apply reviewed configuration** after editing that source,
 and check for matching sender readback.
 

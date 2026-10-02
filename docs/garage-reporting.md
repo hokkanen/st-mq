@@ -5,11 +5,24 @@ heat-pump control and effective target. A protection or sensor-fallback increase
 is visible without replacing the selected mode. Warm-up advisories describe
 condensation risk and remain distinct from mode lifetime.
 
-The independent protection panel compares parameters from `garage.protection`
-with the protection sender's actual configuration, and shows front/rear air
-and estimated pipe temperatures, validity and heating demand. Its settings are
-read-only; ST-MQ applies only loaded configuration and requires matching fresh
-readback for confirmation. Offline or missing protection is unavailable. With
+**Garage → Freeze protection**, directly below **Normal temperature**, shows
+front/rear air measurements, estimated pipe temperatures and reserves, validity
+and heating demand. During normal room regulation, the effective target is the
+higher of the saved target and protection minimum, separate from HEAT/ON rescue. For example, rescue
+with a 5°C minimum leaves an 8°C saved target at 8°C; it does not force continuous
+compressor operation. Startup uncertainty is a conservative assumption, not a
+measurement of frozen pipes. Recovery requires ten safe minutes at both locations;
+release preserves the saved target and leaves power ON. Invalid or stale
+configured protection selects the separate native 16°C HEAT/ON fault fallback.
+Room-input loss or an out-of-range input/calculated external temperature can also
+select native 16°C in HEAT, preserving power unless protection requests rescue.
+Show actual controller readback independently from the sender's requested minimum.
+
+A link opens **Connections & configuration → Garage freeze protection**, below
+**Floor preheating**, for setup, pipe assumptions and configured-versus-reported
+parameters from `garage.protection`. That fold links back to the live readings.
+Its settings are read-only; ST-MQ applies only loaded configuration and requires
+matching fresh readback for confirmation. Offline or missing protection is unavailable. With
 the BLU H&T test source, temperature control works while pipe protection is
 absent.
 

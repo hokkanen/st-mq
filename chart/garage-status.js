@@ -13,19 +13,55 @@ const words = value => typeof value === 'string' ? value.replaceAll('-', ' ').re
 const modeName = mode => ({ normal: 'Normal', away: 'Away' })[mode] ?? 'Not selected';
 const regulationInputs = new WeakMap();
 
-export function garageDisplay(garage = {}) {
+function protectionDisplay(garage) {
   const protection = garage.protection ?? {};
-  const protectionAvailable = protection.available === true;
-  const protectionActive = protectionAvailable && protection.active === true;
-  const protectionLabel = !protectionAvailable ? 'Unavailable' : protectionActive ? 'Heating override active' : 'Monitoring';
+  const control = garage.adapter?.connected === true ? garage.adapter.control : null;
+  const available = protection.available === true, active = available && protection.active === true;
+  const fallback = control?.frostConfigured === true && control.status === 'frost-unavailable';
+  const temperatureFallback = ['sensor-stale', 'sensor-range'].includes(control?.status);
+  const regulating = ['active', 'frost-rescue'].includes(control?.status);
+  const rescue = active && control?.frostRescue === true;
+  const sender = protection.sender?.available === true ? protection.sender.protection : null;
+  const minimum = sender?.available === true && finite(sender.minTargetC) ? sender.minTargetC : null;
+  const selected = garage.requestedTargetC, effective = garage.effectiveTargetC;
+  const raised = active && regulating && finite(selected) && minimum !== null && minimum > selected && effective === minimum;
+  const label = fallback ? 'Fallback heating' : !available ? 'Unavailable' : rescue ? 'Heat/On rescue'
+    : temperatureFallback ? 'Fallback heating' : raised ? 'Minimum target active' : active ? 'Protection active' : 'Monitoring';
+  let explanation = fallback
+    ? 'The configured protection feed is unavailable. The controller requests Heat and power On with its native 16 °C thermostat fallback.'
+    : !available ? 'Freeze protection is unavailable. Air temperature alone does not establish pipe protection.'
+      : rescue ? 'The controller requests Heat and power On for protection. This enables heating; it does not mean the compressor is running.'
+        : active ? 'The controller reports a protection demand. The effective target below is its reported control target.'
+          : 'Pipe protection is monitoring in both Normal and Away. It can request Heat and power On, and raise the target when needed.';
+  if (temperatureFallback) explanation += ` Room regulation is using the native 16 °C thermostat fallback because ${control.status === 'sensor-stale'
+    ? 'its temperature input is stale or missing' : 'its temperature input or calculated control value is outside the supported range'}.`;
+  if (available && regulating && garage.targetConfirmed === true && finite(selected) && finite(effective) && minimum !== null) {
+    if (effective === selected && minimum <= selected) explanation += ` Your selected ${number(selected)} already meets the ${number(minimum)} protection minimum, so the effective target stays at ${number(effective)}.`;
+    else if (effective === minimum && minimum > selected) explanation += ` The ${number(minimum)} protection minimum raises the effective target above your selected ${number(selected)}.`;
+    else explanation += ' The reported minimum and effective target do not yet agree; controller confirmation may be pending.';
+  }
+  explanation += ' Your saved Normal or Away target stays unchanged.';
+  const reason = sender ? ({
+    'pipe-history-uncertain': 'Pipe temperature history is uncertain, so the sender requests conservative rescue heating. This does not mean the pipes are measured as frozen.',
+    'pipe-reserve-low': 'Air temperature or estimated pipe reserve has reached, or is forecast to reach, the protection threshold; the sender requests rescue heating.',
+    'recovery-hold': 'Conditions have improved. The sender keeps rescue active until both locations meet the recovery conditions for ten minutes.',
+    'pipe-reserve-recovered': 'Both locations have met the recovery conditions. The sender has released rescue.',
+    'pipe-reserve-available': 'The sender reports sufficient pipe reserve; no rescue is requested.',
+    'probe-stale-or-invalid': 'A required probe is stale or invalid, so the sender cannot establish pipe protection.',
+    'policy-not-approved': 'The pipe model has not been approved, so the sender cannot establish pipe protection.',
+  })[sender.reason] || 'The sender has not reported a protection reason.'
+    : 'The sender’s detailed report is unavailable. Controller protection status is reported separately.';
+  return { protection: label, protectionState: !available || active || fallback || temperatureFallback ? 'attention' : 'available',
+    protectionDetail: explanation, protectionReason: reason,
+    protectionMinimum: minimum === null ? 'Unavailable' : minimum === 0 ? 'No minimum' : number(minimum),
+    protectionEffective: fallback || temperatureFallback ? `${number(effective)} · native fallback` : number(effective) };
+}
+
+export function garageDisplay(garage = {}) {
   return { mode: modeName(garage.mode), target: number(garage.requestedTargetC),
     effectiveTarget: number(garage.effectiveTargetC), normalTarget: number(garage.normalTargetC), awayTarget: number(garage.awayTargetC),
     confirmation: garage.targetConfirmed === true ? 'Confirmed by the heat-pump controller' : 'Waiting for heat-pump controller confirmation',
-    protection: protectionLabel, protectionState: !protectionAvailable || protectionActive ? 'attention' : 'available',
-    protectionDetail: !protectionAvailable
-      ? 'Frost protection is unavailable. A temperature reading alone does not establish pipe protection.'
-      : protectionActive ? 'Freeze protection is overriding the selected target. Your Normal or Away choice remains saved.'
-        : 'Independent pipe protection is monitoring. It can start the heat pump and raise its target when needed.',
+    ...protectionDisplay(garage),
     reason: garage.regulationReason || (garage.controlReason ? words(garage.controlReason) : garage.controlAvailable === true
       ? 'The selected mode stays until you change it, including across restarts.' : 'Waiting for the garage heating connection.') };
 }
@@ -109,9 +145,14 @@ export function renderGarage(document, status = {}) {
   set('garage-protection-status', display.protection);
   const protection = document.getElementById('garage-protection-status');
   if (protection) protection.dataset.state = display.protectionState;
-  const protectionDetail = [display.protectionDetail, words(garage.protection?.reason)].filter(Boolean).join(' ');
+  const protectionDetail = `${readOnly ? 'Recorded status; live confirmation is unavailable. ' : ''}${display.protectionDetail}`;
   set('garage-protection-detail', protectionDetail);
-  detail('garage-protection-summary', display.protection === 'Heating override active' ? 'Override active' : display.protection,
+  set('garage-protection-reason', display.protectionReason);
+  set('garage-protection-selected-target', display.target);
+  set('garage-protection-minimum-target', display.protectionMinimum);
+  set('garage-protection-effective-target', display.protectionEffective);
+  set('garage-protection-summary-note', readOnly ? 'Recorded snapshot' : 'Normal & Away');
+  detail('garage-protection-summary', display.protection,
     'Garage freeze protection', protectionDetail, garage.protection?.available !== true);
   const protectionSummary = document.getElementById('garage-protection-summary');
   if (protectionSummary) protectionSummary.dataset.state = display.protectionState;
@@ -145,8 +186,8 @@ export function renderGarage(document, status = {}) {
     set(`garage-reserve-${location}`, known && finite(pipe.remainingKjPerM) && pipe.remainingKjPerM >= 0
       ? pipe.remainingKjPerM > 0 && pipe.remainingKjPerM < 0.01 ? '<0.01 kJ/m'
         : `${new Intl.NumberFormat('en-GB', { maximumFractionDigits: 2 }).format(pipe.remainingKjPerM)} kJ/m` : 'Unavailable');
-    set(`garage-pipe-${location}-status`, pipe?.uncertain ? 'Temperature history is uncertain; reserve is not established.'
-      : !senderFresh ? 'Waiting for a fresh protection report.' : words(pipe?.reason));
+    set(`garage-pipe-${location}-status`, !senderFresh ? 'Waiting for a fresh protection report.'
+      : pipe?.uncertain ? 'Temperature history is uncertain; reserve is not established.' : words(pipe?.reason));
   }
   const warning = garageHeatingWarning(status);
   const warningNode = document.getElementById('garage-warming-warning');

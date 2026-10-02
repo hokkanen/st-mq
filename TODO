@@ -1,3 +1,29 @@
+Implemented 2026-10-02 — Clarify Garage protection and separate live readings from setup
+- Restore the live Freeze protection fold directly below Garage's Normal
+  temperature fold. Keep pipe parameters and sender setup below Floor preheating
+  in Connections & configuration, with keyboard-accessible links both ways and
+  direct hashes that open the destination and its ancestors.
+- Show selected target, reported protection minimum and controller effective
+  target together. Explain Heat/On rescue separately from minimum-target demand:
+  a saved 8°C target with a 5°C minimum stays at 8°C during normal regulation.
+  Explain uncertain pipe history, forecast risk, ten-minute recovery and native
+  16°C fallbacks for missing protection or invalid regulation input. Do not infer
+  compressor operation or pump power from a target or sender report.
+- Use generic device roles across the UI and current documentation in both
+  repositories. Retain actual hardware/firmware as tested examples and keep
+  historical qualification facts. Describe capability requirements rather than
+  requiring one generation; persist this convention in AGENTS.md.
+- F3/F4/F5/F7/F8: preserve configuration-owned pipe parameters, separate sender
+  and controller freshness, unknown estimates, recorded-view wording, local
+  protection authority and responsive layouts. No device/configuration changes,
+  protocol changes, migrations or protection-algorithm changes.
+- Validation: routine suite passes 4,024 tests with one optional skip; final
+  focused UI suite passes all 21 tests, including the additional room-input
+  fallback case. Final production build and Garage browser smoke pass in both
+  themes at 320/390/768/1440px, with keyboard navigation and visual inspection.
+  Existing Vite bundle-size warning remains. Documentation link/consistency and
+  whitespace checks pass; independent review findings are resolved.
+
 Implemented 2026-10-02 — Sum Shelly native charging runs across each plug-in period
 - Accumulate only new native cumulative energy, preserving the observed subtotal
   across charging pauses, counter resets and current-format application restart.

@@ -268,11 +268,24 @@ summary shows compressor activity, **Price control** and **Circulation**; an
 unverified request does not confirm the relay state. Garage separates its
 saved and effective room targets from native pump feedback. It has persistent
 **Normal / Away**, a normal target editor, native controls and independent
-**Freeze protection**. Its read-only settings compare parameters from
-`garage.protection` in configuration with actual sender readback. Edit
+**Freeze protection** directly below **Normal temperature**. The live fold shows
+rear/front air readings, estimated pipe temperatures and reserves. It explains
+the minimum target and independent Heat/On rescue: during normal room regulation,
+an 8°C saved target with a 5°C protection minimum remains 8°C, even during rescue. Startup uncertainty does not
+mean pipes were measured frozen; recovery needs ten safe minutes at both
+locations. Stale or invalid configured protection selects native 16°C Heat/On,
+without replacing the saved target. Unusable room input or an out-of-range
+calculated external temperature also uses native 16°C in HEAT, preserving power
+unless protection requests rescue.
+
+The live fold links to **Connections & configuration → Garage freeze protection**,
+below **Floor preheating**, for sender setup and pipe assumptions; the settings
+fold links back. Its read-only settings compare `garage.protection` in
+configuration with actual sender readback. Edit
 configuration and use **Apply reviewed configuration** to change them; there is no
-dashboard parameter editor. Pipe estimates appear when the protection sender
-is connected. A target increase shows moisture guidance for roughly 24 hours;
+dashboard parameter editor. Pipe estimates require fresh, established model
+evidence from the protection sender. A target increase shows moisture guidance
+for roughly 24 hours;
 the selected mode has no expiry. The BLU H&T development feed supplies
 temperature only.
 

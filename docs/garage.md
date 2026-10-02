@@ -68,8 +68,8 @@ This setting changes only the visualization, not motor timing or door controls.
 ## Local temperature regulation
 
 The heat-pump controller retains the requested target and external-control
-enable in persistent storage. A Gen3 Shelly with the sensor add-on broadcasts
-the real room temperature using BTHome Bluetooth. The heat-pump controller's
+enable in persistent storage. The protection sender reads the rear probe and
+broadcasts the real room temperature using BTHome Bluetooth. The heat-pump controller's
 native BTHome components receive the measurement; its script does not scan or
 decode arbitrary Bluetooth traffic.
 
@@ -89,42 +89,75 @@ while in HEAT, preserving power. This fault fallback can cause warming and is
 shown separately from the selected target. Wi-Fi/MQTT loss does not expire the
 saved target or interrupt a healthy local Bluetooth feed.
 
-## Independent frost protection
+## Independent freeze protection
 
-The protection sender owns separate front/rear conservative pipe-temperature
-estimates. It broadcasts a minimum target, rescue demand and validity alongside
-the real room temperature. The heat-pump controller applies the higher required
-target without overwriting the saved user target. Rescue explicitly selects HEAT
-and ON. Protection is local: the sender and heat-pump controller communicate
-without an ST-MQ or MQTT broker connection.
+Open **Garage → Freeze protection**, directly below **Normal temperature**, for
+live protection status and the **Rear · near pipe** and **Front · near door**
+readings. Each location shows measured air temperature, estimated pipe temperature
+and reserve above the configured margin. The pipe temperature and reserve are
+model estimates, not direct pipe measurements. Unknown or stale evidence is
+unavailable, never proof that the pipes are safe.
 
-The **Garage freeze protection** fold under **Connections & configuration**,
-directly below **Floor preheating**, shows sender availability, readings,
-estimates, settings and active demand. **Protection settings** compares configured and
-reported values without an editor. Installation approval, margin, pipe geometry
-and heat transfer come from `garage.protection` in configuration. After editing
-that source, use **Apply reviewed configuration** in **Data & settings** or restart.
-ST-MQ applies the loaded parameters over MQTT when Garage is enabled and fresh
-sender status and local write authority permit it. The sender validates and
-persists them; only matching fresh readback confirms the configuration.
-Missing/stale status is unavailable, never proof of safety. The fold explains
-sender installation and links to the [Pill repository](https://github.com/hokkanen/shelly-cn105-mqtt)
+Protection monitors both locations in Normal and Away. When no intervention is
+needed, it leaves ordinary target, power and mode choices to their existing
+controls. When protection demands heating, it has two separate effects:
+
+- **Minimum room target:** during normal room regulation, the effective target
+  is the higher of the saved room target and the protection minimum. For example, a saved 8°C target with a 5°C
+  protection minimum still gives an 8°C effective target. The saved target is
+  never overwritten.
+- **Heating rescue:** selects HEAT and ON, including when the pump was off or in
+  another operating mode. It enables heating; it does not force the compressor
+  to run continuously. Rescue can be active without increasing the room target.
+
+After startup or missing exposure history, **pipe history uncertain** means the
+sender cannot establish how cold the pipes became. It starts with a conservative
+cold-state assumption and credits warming gradually. This is not a measurement
+showing frozen pipes. Warm air alone cannot immediately establish a safe pipe
+reserve; the estimates remain unavailable until the model has recovered. Rescue
+clears after both locations have recovered and remained safe for ten minutes.
+The controller then follows the saved target and leaves the pump powered on.
+If a configured protection feed becomes invalid or stale, a separate fault
+fallback selects HEAT/ON at native 16°C while preserving the saved room target.
+A stale, missing or out-of-range room measurement, or an unrepresentable calculated
+external temperature, also uses native 16°C in HEAT. That room-input fallback
+preserves power unless independent protection requests rescue. Valid protection
+and a room-input fault can coexist, so check controller readback as well as the
+sender's minimum.
+
+The sender runs the two-location model locally and broadcasts the rear room
+temperature, minimum target, rescue demand and validity to the heat-pump
+controller over Bluetooth. Healthy local protection does not need ST-MQ, MQTT
+or Wi-Fi. The BLU H&T supplies separate Caravan air observations and cannot
+provide this two-probe protection.
+
+The live fold links to **Connections & configuration → Garage freeze protection**,
+directly below **Floor preheating**, for sender setup and pipe assumptions. That
+settings fold links back to the live readings. **Protection settings** compares
+configured and reported values without an editor. Installation approval, margin,
+pipe geometry and heat transfer come from `garage.protection` in configuration.
+After editing that source, use **Apply reviewed configuration** in **Data &
+settings** or restart. ST-MQ applies loaded parameters over MQTT when Garage is
+enabled and fresh sender status and local write authority permit it. The sender
+validates and persists them; matching fresh readback confirms the configuration.
+A command acknowledgement alone does not establish that protection is ready.
+
+Use the [heat-pump controller and sender repository](https://github.com/hokkanen/shelly-cn105-mqtt)
 for [sender setup](https://github.com/hokkanen/shelly-cn105-mqtt/blob/main/docs/sender.md)
-and [Pill setup](https://github.com/hokkanen/shelly-cn105-mqtt/blob/main/docs/installation.md).
-See [pipe assumptions](garage-protection-defaults.md) and
-[adapter contract](garage-adapter.md).
+and [controller installation](https://github.com/hokkanen/shelly-cn105-mqtt/blob/main/docs/installation.md).
+The supplied sender script has been checked on a Shelly 1 Gen3 with a compatible
+sensor add-on and firmware 2.0.1; model names describe tested examples, not an
+exclusive device requirement. See the [adapter contract](garage-adapter.md) for
+required capabilities and [pipe assumptions](garage-protection-defaults.md).
 
-In **MQTT connections**, local frost protection appears directly below the
-Garage heat pump.
-
-The Gen3 also receives the Caravan BLU H&T through a separate MQTT bridge.
-That sensor supplies Caravan temperature and humidity, not room regulation or
-two-probe pipe protection. The Pill receives the Gen3's rear-probe temperature
-and protection fields through its native BTHome components. The former BLU
-commissioning input is replaced when this complete mapping is installed.
-Until fresh valid sender data reaches the Pill, protection remains unavailable
-or in its configured fault fallback. Simulated protection tests are not
-installed qualification.
+In **MQTT connections**, local freeze protection appears directly below the
+Garage heat pump. A separate gateway script receives the Caravan BLU H&T; the
+example installation runs it alongside the protection sender. The heat-pump
+controller receives the sender's rear-probe temperature and all protection fields
+through native BTHome components. Replace a former temperature-only commissioning
+input only after verifying this complete mapping. Until fresh valid sender data
+arrives, protection remains unavailable or in its configured fault fallback.
+Simulated protection tests do not qualify an installed system.
 
 ## Recording and charts
 
@@ -155,7 +188,7 @@ stays in the overview and mode buttons; it does not need a second summary row.
 Select a status value for confirmation, source and availability details.
 
 The **Regulation input** under **Heat-pump readings** is the heat-pump
-controller's live local-regulation input. Its source is the Gen3's rear feed,
+controller's live local-regulation input. Its source is the sender's rear feed,
 already recorded as `garage_temperature`. The former Caravan BLU H&T
 commissioning input is not a rear-probe measurement. Regulation input
 readback remains in current diagnostic state, with the reported sensor age,
@@ -165,8 +198,9 @@ rear/front acquisition sources keep their own timestamps and coverage.
 **Saved room target** is the target retained by the heat-pump controller after a
 Normal/Away selection; it is not necessarily the saved Normal target while Away
 is selected.
-**Effective room target** includes the independent frost-protection minimum.
-For example, a saved 5°C target and an 8°C protection minimum produce an 8°C
+**Effective room target** includes the independent frost-protection minimum
+during normal room regulation; native 16°C is shown separately for a fault
+fallback. With usable room input, for example, a saved 5°C target and an 8°C protection minimum produce an 8°C
 effective target without changing the saved 5°C request. Neither is the native
 17°C thermostat used during active local regulation.
 
@@ -180,7 +214,8 @@ The state legend entries describe separate facts:
   protection is unavailable, not that temperatures are safe; missing readback
   remains unknown.
 - **Frost override** reports an active independent protection override of the
-  ordinary target/operation. Rescue may explicitly select HEAT and ON.
+  ordinary target/operation. A minimum may raise the effective target; rescue
+  selects HEAT and ON even if the saved target already exceeds that minimum.
 - **Defrost** is the pump's native reported defrost cycle, separate from protecting
   the garage's pipes against freezing.
 
