@@ -102,10 +102,12 @@ Protection monitors both locations in Normal and Away. When no intervention is
 needed, it leaves ordinary target, power and mode choices to their existing
 controls. When protection demands heating, it has two separate effects:
 
-- **Minimum room target:** during normal room regulation, the effective target
-  is the higher of the saved room target and the protection minimum. For example, a saved 8°C target with a 5°C
-  protection minimum still gives an 8°C effective target. The saved target is
-  never overwritten.
+- **Temporary minimum room target:** the sender applies a minimum only while
+  protection demands heating, including its recovery hold. There is no permanent
+  5°C limit. With valid room input, a saved 3°C target temporarily becomes 5°C
+  if protection requests a 5°C minimum, then returns to 3°C after release. An
+  8°C selection remains 8°C with that same minimum. The saved target is never
+  overwritten.
 - **Heating rescue:** selects HEAT and ON, including when the pump was off or in
   another operating mode. It enables heating; it does not force the compressor
   to run continuously. Rescue can be active without increasing the room target.
@@ -116,7 +118,8 @@ cold-state assumption and credits warming gradually. This is not a measurement
 showing frozen pipes. Warm air alone cannot immediately establish a safe pipe
 reserve; the estimates remain unavailable until the model has recovered. Rescue
 clears after both locations have recovered and remained safe for ten minutes.
-The controller then follows the saved target and leaves the pump powered on.
+The sender then reports a zero minimum, meaning no protective target increase.
+The controller follows the saved target and leaves the pump powered on.
 If a configured protection feed becomes invalid or stale, a separate fault
 fallback selects HEAT/ON at native 16°C while preserving the saved room target.
 A stale, missing or out-of-range room measurement, or an unrepresentable calculated
@@ -128,8 +131,7 @@ sender's minimum.
 The sender runs the two-location model locally and broadcasts the rear room
 temperature, minimum target, rescue demand and validity to the heat-pump
 controller over Bluetooth. Healthy local protection does not need ST-MQ, MQTT
-or Wi-Fi. The BLU H&T supplies separate Caravan air observations and cannot
-provide this two-probe protection.
+or Wi-Fi.
 
 The live fold links to **Connections & configuration → Garage freeze protection**,
 directly below **Floor preheating**, for sender setup and pipe assumptions. That
@@ -145,16 +147,17 @@ A command acknowledgement alone does not establish that protection is ready.
 Use the [heat-pump controller and sender repository](https://github.com/hokkanen/shelly-cn105-mqtt)
 for [sender setup](https://github.com/hokkanen/shelly-cn105-mqtt/blob/main/docs/sender.md)
 and [controller installation](https://github.com/hokkanen/shelly-cn105-mqtt/blob/main/docs/installation.md).
-The supplied sender script has been checked on a Shelly 1 Gen3 with a compatible
-sensor add-on and firmware 2.0.1; model names describe tested examples, not an
-exclusive device requirement. See the [adapter contract](garage-adapter.md) for
-required capabilities and [pipe assumptions](garage-protection-defaults.md).
+The tested reference setup uses a **Shelly 1 Gen3, Plus Add-on and two DS18B20
+probes** with firmware **2.0.1** as the sender, and **The Pill by Shelly** with
+firmware **2.0.1-beta3** as the heat-pump controller. Other hardware must provide
+the required sensor, Bluetooth and CN105 interfaces and be checked as an installed
+system. See the [adapter contract](garage-adapter.md) for capabilities and
+[pipe assumptions](garage-protection-defaults.md).
 
 In **MQTT connections**, local freeze protection appears directly below the
-Garage heat pump. A separate gateway script receives the Caravan BLU H&T; the
-example installation runs it alongside the protection sender. The heat-pump
-controller receives the sender's rear-probe temperature and all protection fields
-through native BTHome components. Replace a former temperature-only commissioning
+Garage heat pump. The heat-pump controller receives the sender's rear-probe
+temperature and all protection fields through native BTHome components.
+Replace a former temperature-only commissioning
 input only after verifying this complete mapping. Until fresh valid sender data
 arrives, protection remains unavailable or in its configured fault fallback.
 Simulated protection tests do not qualify an installed system.
@@ -198,10 +201,11 @@ rear/front acquisition sources keep their own timestamps and coverage.
 **Saved room target** is the target retained by the heat-pump controller after a
 Normal/Away selection; it is not necessarily the saved Normal target while Away
 is selected.
-**Effective room target** includes the independent frost-protection minimum
-during normal room regulation; native 16°C is shown separately for a fault
-fallback. With usable room input, for example, a saved 5°C target and an 8°C protection minimum produce an 8°C
-effective target without changing the saved 5°C request. Neither is the native
+**Effective room target** includes a temporary minimum while frost protection
+demands heating; monitoring without demand adds no minimum. During normal room
+regulation with usable input, a saved 3°C target and a 5°C protection minimum
+produce a 5°C effective target until release, without changing the saved 3°C
+request. Native 16°C is shown separately for a fault fallback. Neither is the native
 17°C thermostat used during active local regulation.
 
 The state legend entries describe separate facts:

@@ -36,7 +36,8 @@ function protectionDisplay(garage) {
   if (temperatureFallback) explanation += ` Room regulation is using the native 16 °C thermostat fallback because ${control.status === 'sensor-stale'
     ? 'its temperature input is stale or missing' : 'its temperature input or calculated control value is outside the supported range'}.`;
   if (available && regulating && garage.targetConfirmed === true && finite(selected) && finite(effective) && minimum !== null) {
-    if (effective === selected && minimum <= selected) explanation += ` Your selected ${number(selected)} already meets the ${number(minimum)} protection minimum, so the effective target stays at ${number(effective)}.`;
+    if (effective === selected && minimum === 0) explanation += ` No protection minimum is currently requested; the effective target is your selected ${number(selected)}.`;
+    else if (effective === selected && minimum <= selected) explanation += ` Your selected ${number(selected)} already meets the temporary ${number(minimum)} protection minimum, so the effective target stays at ${number(effective)}.`;
     else if (effective === minimum && minimum > selected) explanation += ` The ${number(minimum)} protection minimum raises the effective target above your selected ${number(selected)}.`;
     else explanation += ' The reported minimum and effective target do not yet agree; controller confirmation may be pending.';
   }

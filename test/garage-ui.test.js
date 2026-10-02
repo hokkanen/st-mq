@@ -206,6 +206,8 @@ test('sender minimum and reason require fresh valid evidence independently of co
   display = garageDisplay(garage);
   assert.equal(display.protectionMinimum, 'No minimum');
   assert.equal(display.protection, 'Monitoring');
+  assert.match(display.protectionDetail, /No protection minimum is currently requested; the effective target is your selected 8 °C/);
+  assert.doesNotMatch(display.protectionDetail, /0 °C protection minimum/);
   assert.match(display.protectionReason, /released rescue/);
   garage.protection.sender.protection.minTargetC = 10;
   assert.match(garageDisplay(garage).protectionDetail, /do not yet agree.*confirmation may be pending/);
@@ -333,9 +335,15 @@ test('Garage markup has durable controls and independent protection without reti
   assert.doesNotMatch(parameters, /<input|<select|<form|garage-protection-submit|api\/garage\/protection/);
   assert.match(parameters, /garage\.protection.*Apply reviewed configuration/);
   assert.match(connectionSetup, /id="garage-protection-setup-details"/);
-  assert.match(connectionSetup, /tested example.*Shelly 1 Gen 3.*firmware 2\.0\.1/);
-  assert.match(garage, /8 °C selected with a 5 °C minimum.*8 °C room target/);
-  assert.match(garage, /startup or lost temperature history.*pipe reserve is uncertain/);
+  const setupStart = connectionSetup.indexOf('id="garage-protection-setup-details"');
+  const setup = connectionSetup.slice(setupStart, connectionSetup.indexOf('</details>', setupStart));
+  assert.match(setup, /scripts have been tested with the following setup/);
+  assert.match(setup, /Shelly 1 Gen 3.*Tested firmware 2\.0\.1/);
+  assert.match(setup, /The Pill by Shelly.*Tested firmware 2\.0\.1-beta3/);
+  assert.doesNotMatch(setup, /BLU|Caravan|gateway for other sensors/);
+  assert.match(garage, /save a room target below 5 °C.*monitoring without a demand, it adds no minimum/);
+  assert.match(garage, /3 °C selection.*5 °C effective target.*returns to 3 °C.*8 °C selection.*stays at 8 °C/);
+  assert.match(garage, /5 °C is not the trigger temperature.*startup or lost temperature history/);
   assert.match(garage, /protection inputs are configured.*missing, stale or invalid feed.*Heat, power On.*16 °C/);
   assert.match(connectionSetup, /https:\/\/github\.com\/hokkanen\/shelly-cn105-mqtt\/blob\/main\/docs\/sender\.md/);
   assert.match(connectionSetup, /https:\/\/github\.com\/hokkanen\/shelly-cn105-mqtt\/blob\/main\/docs\/installation\.md/);

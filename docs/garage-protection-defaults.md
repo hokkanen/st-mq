@@ -92,10 +92,13 @@ warming; no established pipe temperature or reserve is claimed during that time.
 Stored protection state is separate from the removed Garage building model; there is no learned economic controller.
 
 The sender broadcasts room temperature, minimum target, rescue and validity over
-Bluetooth. During normal room regulation, the heat-pump controller uses the
-higher of the saved target and protection minimum, preserving the saved target.
-It explicitly selects HEAT/ON for rescue. A saved 8°C target with a 5°C minimum therefore remains 8°C
-even during rescue. HEAT/ON enables heating rather than forcing continuous
+Bluetooth. The minimum applies only while the sender demands protection,
+including the recovery hold; it is not a permanent 5°C limit. During normal room
+regulation, a saved 3°C target with a 5°C minimum temporarily becomes 5°C, then
+returns to 3°C on release. The sender reports a zero minimum when monitoring
+without demand. The saved target is never overwritten.
+The controller explicitly selects HEAT/ON for rescue. A saved 8°C target with a
+5°C minimum therefore remains 8°C even during rescue. HEAT/ON enables heating rather than forcing continuous
 compressor operation. On recovery, the saved target applies and power stays ON.
 ST-MQ displays the sender's actual status/settings and applies loaded configuration over MQTT;
 broker/application loss must not stop local protection. Configured feed loss is

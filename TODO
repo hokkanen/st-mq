@@ -1,3 +1,20 @@
+Implemented 2026-10-02 — Simplify protection setup and explain temporary minimums
+- Explain that monitoring without demand adds no minimum; targets below 5°C
+  can be saved. Show 3°C selected → 5°C during a protection demand → 3°C after
+  recovery, alongside the 8°C selection that needs no increase. Label the live
+  value Temporary minimum and describe release without implying a 0°C limit.
+- Replace the long hardware caveats and mixed-purpose setup sequence with two
+  tested-reference hardware cards, a compatibility link and four focused steps.
+  Remove the unrelated BLU H&T gateway section from protection setup, retaining
+  its dedicated guide. Align the relevant sender/controller documentation.
+- F3/F4/F5/F7: preserve configuration ownership, fresh sender/controller evidence,
+  protection authority and responsive folds. Check the prose against actual
+  trigger, recovery and native-fallback logic; no control-policy or device changes.
+- Validation: all 21 focused Garage UI tests pass. Production build and Garage
+  browser checks pass at 320/390/768/1440px in both themes, including keyboard
+  navigation; mobile screenshots reviewed. Existing bundle-size warning remains.
+  Changed documentation links and both repository diffs pass checks.
+
 Implemented 2026-10-02 — Remove unused Shelly session-energy comparisons
 - Keep Recorded energy checks for Property and Charger 1: their stored phase
   energies integrate power and are compared with the Equalizer import-counter

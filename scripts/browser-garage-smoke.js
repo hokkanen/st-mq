@@ -249,6 +249,7 @@ try {
   assert.equal(await evaluate(`document.getElementById('garage-protection-setup-details').open`), true,
     'Sender setup opens by keyboard');
   assert.deepEqual(await evaluate(`Array.from(document.querySelectorAll('#garage-protection-setup-details a'), link => link.href)`), [
+    'https://github.com/hokkanen/shelly-cn105-mqtt/blob/main/docs/compatibility.md',
     'https://github.com/hokkanen/shelly-cn105-mqtt/blob/main/docs/sender.md',
     'https://github.com/hokkanen/shelly-cn105-mqtt/blob/main/docs/installation.md',
     'https://github.com/hokkanen/shelly-cn105-mqtt',
@@ -340,7 +341,7 @@ try {
   await evaluate(`document.querySelector('#garage-protection-operation-details > summary').focus()`);
   await keyPress('Enter');
   assert.equal(await evaluate(`document.getElementById('garage-protection-operation-details').open`), true);
-  assert.match(await evaluate(`document.getElementById('garage-protection-operation-details').textContent`), /8 °C selected.*5 °C minimum.*8 °C room target/);
+  assert.match(await evaluate(`document.getElementById('garage-protection-operation-details').textContent`), /3 °C selection.*5 °C effective target.*returns to 3 °C.*8 °C selection.*stays at 8 °C/);
   assert.match(await evaluate(`document.getElementById('garage-protection-operation-details').textContent`), /ten minutes.*powered on/s);
   for (const width of [320, 390, 768, 1440]) for (const theme of ['dark', 'light']) {
     await send('Emulation.setDeviceMetricsOverride', { width, height: 1200, deviceScaleFactor: 1, mobile: false });

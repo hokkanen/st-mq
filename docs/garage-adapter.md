@@ -48,9 +48,11 @@ immediately. Apply configuration or restart to retry after reviewing the source;
 broker reconnects and sender reboots do not reset an exhausted retry budget.
 The Bluetooth protection
 interface carries the minimum target, rescue flag and input/model validity.
-The heat-pump controller applies the floor without replacing the user target and
-selects HEAT/ON when rescue requires it. Configured protection feed loss invokes
-the driver's explicit local fault policy; an installation without a protection
+The heat-pump controller applies the temporary floor while protection demands
+heating, including the recovery hold, without replacing the user target. The
+sender reports a zero floor after release; there is no permanent 5°C limit.
+The controller selects HEAT/ON when rescue requires it. Configured protection
+feed loss invokes the driver's explicit local fault policy; an installation without a protection
 source reports unavailable. A BLU H&T supplies temperature only.
 
 ## Sender installation
@@ -94,13 +96,6 @@ controller repository's instructions: temperature object `0x45` index 0 is rear 
 index 1 is the protection floor; binary object `0x0f` index 0 is rescue and
 index 1 is validity. Replace the former BLU temperature mapping and remove its
 unused native registration. Keep controller Bluetooth enabled for the sender.
-
-The [BLU H&T MQTT bridge](shelly-blu-ht.md) can run as a separate script on the
-sender or another compatible gateway, receiving Caravan temperature/humidity. Verify fresh reports there before
-stopping the former receiver and disabling its script autostart. Preserve the
-sensor address and MQTT topic. This bridge neither commands the pump nor feeds
-the two-probe protection model. Check sender advertising, BLU reception, script
-memory and startup together on the installed device.
 
 ## Validation
 
