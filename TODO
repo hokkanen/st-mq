@@ -1,3 +1,22 @@
+Implemented 2026-10-02 — Refocus the Home planner preview on planned actions
+- Keep a stable Planned actions label and show the next scheduled heating change,
+  manual preheat end or automatic resume. Choose the earlier independent deadline;
+  an earlier resume reassesses heating instead of promising the old preheat end.
+  With no action scheduled, say so instead of repeating the Heat control badge.
+- Keep recovery timing open, missing timing unknown, simulated actions labeled
+  and history explicitly recorded. Explore remains available for empty plans.
+  Include explanation and provenance in the accessible name as well as the
+  tooltip; wrap dated actions on narrow screens so their time is never truncated.
+- F1/F3/F4/F5/F7: replace the permission-status preview without changing controller
+  authority, selected schedules, restoration duties, configuration or stored data.
+  Retain current chosen-plan semantics; add no compatibility paths or migrations.
+- Validation: all 29 focused planner, Home-control and explorer UI tests pass.
+  Production build passes with its existing bundle-size warning. Synthetic
+  explorer/browser checks pass, including 48 planner state/layout combinations
+  at 320/390/1280px in both themes; screenshots reviewed. Dashboard height checks
+  pass at seven widths, allowing only the actual space needed for wrapped actions.
+  Full regression suite and live equipment not exercised.
+
 Implemented 2026-10-02 — Simplify planning and shared charging controls
 - Show Home automatic control as Paused, with a resume time only when set;
   clarify that heating can continue. Keep all six planning inputs visible in

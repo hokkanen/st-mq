@@ -136,7 +136,11 @@ export async function checkDashboardHeights({ evaluate, command, context, refres
       const node = document.getElementById(id);
       return [id, { visible: node.checkVisibility({ visibilityProperty: true }), height: node.getBoundingClientRect().height }];
     }));
-    return { cards, footers, overviews, notes, providers: [...document.querySelectorAll('#providers > li')].map(node => node.dataset.provider),
+    const planner = document.getElementById('home-planned-change');
+    const plan = { height: planner.getBoundingClientRect().height,
+      fits: [...planner.querySelectorAll('.home-plan-copy > span')].every(node =>
+        node.scrollWidth <= node.clientWidth + 1 && node.scrollHeight <= node.clientHeight + 1) };
+    return { cards, footers, overviews, notes, plan, providers: [...document.querySelectorAll('#providers > li')].map(node => node.dataset.provider),
       chargers: [...document.querySelectorAll('#charging-devices > details')].map(node => node.id),
       headings: ['control-title', 'garage-title'].map(id => document.getElementById(id).getBoundingClientRect().top),
       fits: document.documentElement.scrollWidth <= innerWidth };
@@ -145,17 +149,20 @@ export async function checkDashboardHeights({ evaluate, command, context, refres
     await settle();
     const actual = await geometry();
     assert.equal(actual.fits, true, `${label}: the dashboard fits the viewport`);
+    assert.equal(actual.plan.fits, true, `${label}: complete planned actions remain readable`);
     assert.deepEqual(actual.providers, baseline.providers, `${label}: provider inventory is unchanged`);
     assert.deepEqual(actual.chargers, baseline.chargers, `${label}: charger inventory is unchanged`);
     for (const group of ['cards', 'footers']) for (const [index, box] of actual[group].entries()) {
-      assert.ok(Math.abs(box.height - baseline[group][index].height) <= 1,
-        `${label}: ${box.id} retains its height (${baseline[group][index].height}px -> ${box.height}px)`);
+      const planGrowth = box.id === 'home-control' ? actual.plan.height - baseline.plan.height : 0;
+      assert.ok(Math.abs(box.height - baseline[group][index].height - planGrowth) <= 1,
+        `${label}: ${box.id} retains its height apart from ${planGrowth}px needed for the full planned action (${baseline[group][index].height}px -> ${box.height}px)`);
     }
   };
   const naturalResize = async (baseline, width, scenario) => {
     await settle();
     const actual = await geometry(), label = `${width}px ${scenario}`;
     assert.equal(actual.fits, true, `${label}: the dashboard fits the viewport`);
+    assert.equal(actual.plan.fits, true, `${label}: complete planned actions remain readable`);
     assert.deepEqual(actual.providers, baseline.providers, `${label}: provider inventory is unchanged`);
     assert.deepEqual(actual.chargers, baseline.chargers, `${label}: charger inventory is unchanged`);
     assert.ok(Math.abs(actual.cards[2].height - baseline.cards[2].height) <= 1,
@@ -164,9 +171,10 @@ export async function checkDashboardHeights({ evaluate, command, context, refres
       const needed = width > 800 ? Math.max(...actual.overviews.map(row => row.naturalHeight)) : overview.naturalHeight;
       assert.ok(Math.abs(overview.height - needed) <= 1,
         `${label}: ${overview.area} grows only to fit current content (${overview.height}px, needed ${needed}px)`);
-      const delta = overview.height - baseline.overviews[index].height;
+      const planGrowth = overview.area === 'home' ? actual.plan.height - baseline.plan.height : 0;
+      const delta = overview.height - baseline.overviews[index].height + planGrowth;
       assert.ok(Math.abs(actual.cards[index].height - baseline.cards[index].height - delta) <= 1,
-        `${label}: ${overview.area} card changes only by its overview's required ${delta}px`);
+        `${label}: ${overview.area} card changes only by the ${delta}px required for its overview and planned action`);
     }
     for (const [index, footer] of actual.footers.entries()) assert.ok(Math.abs(footer.height - baseline.footers[index].height) <= 1,
       `${label}: ${footer.id} keeps its heading height`);

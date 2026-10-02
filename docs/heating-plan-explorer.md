@@ -13,8 +13,16 @@ use Finnish local time. Recovery completion is an estimate, not a fixed command
 deadline. Reduced heating changes native heat demand; it does not promise that
 the compressor will stop. The normal recovery hold and restoration duties still
 apply; see [planning and recovery](learning-and-control.md#planning-and-recovery).
-The Home card's **Automatic control · Paused** status describes the controller's
-permission; heating can continue while automatic control is paused.
+The Home card's **Planned actions** row shows the next scheduled action and its
+time: preheat, reduced heating, recovery, the end of manual preheat, or an
+automatic resume. Manual preheat and automatic resume have independent deadlines;
+the earlier action appears first. With no scheduled action it reads **No actions
+scheduled**, including during an indefinite pause. The **Heat control** badge shows
+the current Automatic / Paused choice. Heating can continue while paused.
+Recovery does not promise a completion time; the row reads **Next action after
+recovery**. Missing timing remains explicitly unavailable. Simulation uses
+**Simulated actions**, and history views show **Recorded plan**. Select **Explore**
+to inspect the plan and alternatives, even when no action is scheduled.
 
 Configured policy limits, learning evidence, forecast coverage and equipment
 readiness have different effects. For example, raising the configured four-hour

@@ -149,8 +149,19 @@ try {
       value.webAccess = {role:explorerFixture.role,source:'local'};
       value.heatingScenario = explorerFixture.value.activeTrial ?? null;
       value.automation.home.enabled = true;
+      value.override = null;
+      delete value.decision.manualHold;
       value.decision.plan = {schedule:explorerFixture.value.current.schedule};
       value.decision.phase = 'normal';
+      if (explorerFixture.planner) {
+        const planner = explorerFixture.planner;
+        value.input = planner.input ?? 'providers';
+        value.role = planner.role ?? 'master';
+        value.automation.home.enabled = planner.enabled ?? true;
+        value.override = planner.override ?? null;
+        Object.assign(value.decision, planner.decision ?? {});
+        if (planner.role === 'slave') value.lastDecision = {payload: {phase: 'normal'}};
+      }
       if (explorerFixture.recorded) value.input = 'offline';
       return Response.json(value);
     };
@@ -163,6 +174,54 @@ try {
   await send('Emulation.setDeviceMetricsOverride', { width: 1280, height: 1000, deviceScaleFactor: 1, mobile: false });
   await send('Page.navigate', { url: `http://127.0.0.1:${app.server.address().port}/` });
   await until(`globalThis.explorerFixture?.poll && document.body.dataset.authenticated === 'true'`);
+  const planCases = [
+    { name: 'paused', patch: { enabled: false, decision: { plan: null } }, label: 'Planned actions', value: 'No actions scheduled' },
+    { name: 'resume', patch: { enabled: false, override: { expiresAt: now + 24 * hour }, decision: { plan: null } },
+      label: 'Planned actions', value: 'Resume automatic at 1 Oct, 15:00' },
+    { name: 'manual-preheat', patch: { enabled: false, override: { expiresAt: now + 2 * hour },
+      decision: { plan: null, manualHold: { phase: 'preheat', until: now + hour } } },
+      label: 'Planned actions', value: 'End preheat at 16:00' },
+    { name: 'scheduled', patch: {}, label: 'Planned actions', value: 'Preheat at 16:00' },
+    { name: 'reduction', patch: { decision: { phase: 'reduction', expiresAt: now + hour } },
+      label: 'Planned actions', value: 'Recovery at 16:00' },
+    { name: 'simulation', patch: { input: 'simulated' }, label: 'Simulated actions', value: 'Preheat at 16:00' },
+    { name: 'history', patch: { input: 'offline' }, label: 'Recorded plan', value: 'Recorded history only' },
+    { name: 'replica', patch: { role: 'slave' }, label: 'Recorded plan', value: 'Normal heating' },
+  ];
+  for (const [width, height] of [[320, 740], [390, 844], [1280, 1000]]) {
+    await send('Emulation.setDeviceMetricsOverride', { width, height, deviceScaleFactor: 1, mobile: false });
+    for (const theme of ['light', 'dark']) {
+      await evaluate(`document.documentElement.dataset.theme = '${theme}'`);
+      for (const scenario of planCases) {
+        await evaluate(`explorerFixture.planner = ${JSON.stringify(scenario.patch)}; await explorerFixture.poll()`);
+        await until(`document.getElementById('home-plan-label').textContent === ${JSON.stringify(scenario.label)}
+          && document.getElementById('home-plan-value').textContent === ${JSON.stringify(scenario.value)}`);
+        await evaluate(`await new Promise(requestAnimationFrame); await new Promise(requestAnimationFrame)`);
+        const plan = await evaluate(`(() => {
+          const row = document.getElementById('home-planned-change'), bounds = row.getBoundingClientRect();
+          const copy = [...row.querySelectorAll('.home-plan-copy > span')].map(node => {
+            const rect = node.getBoundingClientRect();
+            return { text: node.textContent, visible: node.checkVisibility(), clipped: node.scrollWidth > node.clientWidth + 1,
+              left: rect.left, right: rect.right, top: rect.top, bottom: rect.bottom };
+          });
+          return { aria: row.getAttribute('aria-label'), title: row.title, pageWidth: document.documentElement.scrollWidth,
+            left: bounds.left, right: bounds.right, top: bounds.top, bottom: bounds.bottom, copy };
+        })()`);
+        const name = `${width}px ${theme} ${scenario.name}`;
+        await screenshot(`${width}-${theme}-home-${scenario.name}`, 'home-control');
+        assert(plan.aria.includes(scenario.label) && plan.aria.includes(scenario.value)
+          && plan.aria.includes('Explore'), `${name}: the accessible name describes the planned action and explorer`);
+        assert(plan.title.includes(scenario.value), `${name}: the tooltip agrees with the visible action`);
+        assert(plan.pageWidth <= width && plan.left >= 0 && plan.right <= width,
+          `${name}: the planner row fits the viewport: ${JSON.stringify(plan)}`);
+        assert(plan.copy.every(copy => copy.visible && !copy.clipped && copy.left >= plan.left
+          && copy.right <= plan.right && copy.top >= plan.top && copy.bottom <= plan.bottom),
+        `${name}: planner text is visible without clipping: ${JSON.stringify(plan)}`);
+      }
+    }
+  }
+  await evaluate(`delete explorerFixture.planner; await explorerFixture.poll()`);
+  await send('Emulation.setDeviceMetricsOverride', { width: 1280, height: 1000, deviceScaleFactor: 1, mobile: false });
   await evaluate(`document.getElementById('home-planned-change').focus(); globalThis.initialHomeFold = document.getElementById('home-heat-pump-details').open`);
   await keyPress('Enter');
   await until(`document.getElementById('heating-explorer-dialog').open && !document.getElementById('heating-explorer-content').hidden`);

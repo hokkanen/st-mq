@@ -5,7 +5,7 @@ const date = new Intl.DateTimeFormat('en-GB', { timeZone: 'Europe/Helsinki', day
 const day = new Intl.DateTimeFormat('en-GB', { timeZone: 'Europe/Helsinki', year: 'numeric', month: 'numeric', day: 'numeric' });
 const plannedTime = (at, now) => day.format(at) === day.format(now) ? clock.format(at) : `${date.format(at)}, ${clock.format(at)}`;
 
-/** Describe the chosen plan, never a candidate or an assumed end to recovery. */
+/** Show the next scheduled action, never permission status or a candidate plan. */
 export function homePlannedChange(status = {}) {
   const { now, decision = {} } = status;
   const display = (label, value, detail, at = null) => ({ label, value, detail, at });
@@ -14,31 +14,37 @@ export function homePlannedChange(status = {}) {
     const phase = { normal: 'Normal heating', reduction: 'Reduced heating', preheat: 'Preheat', recovery: 'Recovery' }[saved.phase ?? saved.action];
     return display('Recorded plan', phase ?? 'Unavailable', 'Saved decision from local history. This cannot establish the master’s current plan or the equipment’s current state.');
   }
-  if (status.input === 'offline') return display('Heating plan', 'Recorded history only',
+  if (status.input === 'offline') return display('Recorded plan', 'Recorded history only',
     'No live device connection is open.');
-  if (!Number.isFinite(now) || !decision.phase) return display('Heating plan', 'Waiting for a plan',
-    'The controller has not reported a current heating plan.');
-
-  const pauseUntil = status.override?.expiresAt;
-  if (Number.isFinite(pauseUntil) && pauseUntil > now) return display('Automatic control', `Paused until ${plannedTime(pauseUntil, now)}`,
-    'Automatic control resumes at this time. Heating can continue while automatic control is paused. Manual Preheat keeps its own earlier lease deadline.', pauseUntil);
-  if (status.automation?.home?.enabled === false) return display('Automatic control', 'Paused',
-    'Heating can continue while automatic control is paused. Manual Normal and Reduced stay selected during the pause. Preheat ends at its lease deadline. Monitoring and learning continue.');
-  const hold = decision.manualHold;
-  if (hold?.phase === 'preheat' && hold.until > now) return display('Manual Preheat', `Ends at ${plannedTime(hold.until, now)}`,
-    'Preheat is held until its original lease deadline. ROOM is restored at that deadline even if floor restoration needs a retry.', hold.until);
 
   const simulated = status.input === 'simulated';
-  const planLabel = simulated ? 'Simulation plan' : 'Heating plan';
-  const nextLabel = simulated ? 'Next simulated change' : 'Next planned change';
+  const planLabel = simulated ? 'Simulated actions' : 'Planned actions';
   const provenance = simulated ? 'Simulation only; no commands are sent to the home.'
     : 'The controller rechecks the plan as conditions change.';
-  if (decision.phase === 'recovery') return display(planLabel, 'Recovery in progress',
-    `Recovery ends when the house has recovered; there is no fixed end time. ${provenance}`);
+  if (!Number.isFinite(now)) return display(planLabel, 'Waiting for a plan',
+    'The controller has not reported a current heating plan.');
+
+  // Manual preheat and resuming Automatic have independent deadlines. Show the
+  // first action even while automatic heating is paused or has no chosen plan.
+  const hold = decision.manualHold;
+  const manualPreheatEnd = hold?.phase === 'preheat' && Number.isFinite(hold.until) && hold.until > now ? hold.until : null;
+  const pauseUntil = Number.isFinite(status.override?.expiresAt) && status.override.expiresAt > now ? status.override.expiresAt : null;
+  if (manualPreheatEnd !== null && (pauseUntil === null || manualPreheatEnd <= pauseUntil)) return display(planLabel,
+    `End preheat at ${plannedTime(manualPreheatEnd, now)}`,
+    `The manual preheat boost is scheduled to end and its settings to be restored. ${pauseUntil !== null ? `Resume automatic at ${plannedTime(pauseUntil, now)}. ` : ''}${provenance}`, manualPreheatEnd);
+  if (pauseUntil !== null) return display(planLabel, `Resume automatic at ${plannedTime(pauseUntil, now)}`,
+    `Automatic heating will reassess the plan when it resumes. ${provenance}`, pauseUntil);
+  if (status.automation?.home?.enabled === false) return display(planLabel, 'No actions scheduled',
+    `Automatic heating is paused with no resume time. Explore possible heating plans without enabling them. ${provenance}`);
+  if (!decision.phase) return display(planLabel, 'Waiting for a plan',
+    'The controller has not reported a current heating plan.');
+
+  if (decision.phase === 'recovery') return display(planLabel, 'Next action after recovery',
+    `Normal heating resumes when the house has recovered; there is no fixed end time. ${provenance}`);
 
   const schedule = decision.plan?.schedule;
-  if (!schedule) return display(planLabel, decision.phase === 'normal' ? 'No change planned' : 'Next change unavailable',
-    `No upcoming heating change is scheduled. ${provenance}`);
+  if (!schedule) return display(planLabel, decision.phase === 'normal' ? 'No actions scheduled' : 'Next action unavailable',
+    `${decision.phase === 'normal' ? 'No upcoming heating change is scheduled.' : 'The controller has not reported the next heating action.'} ${provenance}`);
   const { preheatStart, preheatEnd, reductionStart, reductionEnd } = schedule;
   if (![preheatStart, preheatEnd, reductionStart, reductionEnd].every(Number.isFinite)
     || preheatStart > preheatEnd || preheatEnd > reductionStart || reductionStart >= reductionEnd) {
@@ -48,11 +54,11 @@ export function homePlannedChange(status = {}) {
   let next;
   if (decision.phase === 'normal') {
     if (preheatStart > now && preheatEnd > preheatStart) next = { phase: 'Preheat', at: preheatStart };
-    else if (reductionStart > now) next = { phase: 'Reduction', at: reductionStart };
+    else if (reductionStart > now) next = { phase: 'Reduce heating', at: reductionStart };
   } else if (decision.phase === 'preheat') {
     // A gap after preheat returns to normal until the selected reduction starts.
     if (preheatEnd > now && preheatEnd < reductionStart) next = { phase: 'Normal heating', at: preheatEnd };
-    else if (reductionStart > now) next = { phase: 'Reduction', at: reductionStart };
+    else if (reductionStart > now) next = { phase: 'Reduce heating', at: reductionStart };
   } else if (decision.phase === 'reduction') {
     // The active expiry follows the execution schedule, which may have shortened.
     const at = Number.isFinite(decision.expiresAt) ? decision.expiresAt : reductionEnd;
@@ -60,7 +66,7 @@ export function homePlannedChange(status = {}) {
   }
   if (!next) return display(planLabel, 'Awaiting plan update',
     `The previous schedule has no upcoming change. ${provenance}`);
-  return display(nextLabel, `${next.phase} at ${plannedTime(next.at, now)}`,
+  return display(planLabel, `${next.phase} at ${plannedTime(next.at, now)}`,
     `${decision.plan.trial ? 'A bounded learning trial is planned. ' : ''}${provenance}`, next.at);
 }
 
@@ -73,5 +79,5 @@ export function renderHomePlannedChange(document, status) {
     if (node.textContent !== display[key]) node.textContent = display[key];
   }
   row.title = `${display.label}: ${display.value}. ${display.detail}`;
-  row.setAttribute('aria-label', `${display.label}: ${display.value}. Explore the heating plan and its limits`);
+  row.setAttribute('aria-label', `${display.label}: ${display.value}. ${display.detail} Explore the heating plan and its limits`);
 }

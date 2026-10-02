@@ -740,8 +740,8 @@ details details { margin-inline-start: 24px; }
 .overview-reading > .overview-note[id] { height: 15px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .home-planned-change { display: flex; align-items: center; gap: 9px; margin-top: 16px; padding: 10px 14px; border-radius: 6px; background: var(--surface-soft); font-size: 11px; line-height: 1.6; }
 .home-plan-icon { flex: none; align-self: center; width: 15px; height: 15px; color: var(--muted); }
-.home-plan-copy { display: grid; grid-template-rows: 18px 18px; gap: 2px; min-width: 0; }
-.home-plan-copy > span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.home-plan-copy { display: grid; grid-template-rows: minmax(18px, auto) minmax(18px, auto); gap: 2px; min-width: 0; }
+.home-plan-copy > span { white-space: normal; }
 .home-plan-label { color: var(--muted); }
 .home-plan-value { font-weight: 500; font-variant-numeric: tabular-nums; }
 .overview-request { position: relative; }
