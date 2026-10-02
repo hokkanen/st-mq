@@ -341,7 +341,7 @@ try {
   await evaluate(`document.querySelector('#garage-protection-operation-details > summary').focus()`);
   await keyPress('Enter');
   assert.equal(await evaluate(`document.getElementById('garage-protection-operation-details').open`), true);
-  assert.match(await evaluate(`document.getElementById('garage-protection-operation-details').textContent`), /3 °C selection.*5 °C effective target.*returns to 3 °C.*8 °C selection.*stays at 8 °C/);
+  assert.match(await evaluate(`document.getElementById('garage-protection-operation-details').textContent`), /When protection activates.*higher of this minimum and the selected target.*removed after recovery.*saved selection remains unchanged/);
   assert.match(await evaluate(`document.getElementById('garage-protection-operation-details').textContent`), /ten minutes.*powered on/s);
   for (const width of [320, 390, 768, 1440]) for (const theme of ['dark', 'light']) {
     await send('Emulation.setDeviceMetricsOverride', { width, height: 1200, deviceScaleFactor: 1, mobile: false });

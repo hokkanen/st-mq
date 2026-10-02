@@ -1,3 +1,12 @@
+Implemented 2026-10-02 — Polish protection guidance
+- Replace the conversational target examples with a concise description of the
+  temporary minimum, selected target and recovery. Describe probe placement in
+  terms of air conditions around protected pipework, without prescribing a door
+  location. Retain the installed reading labels and protection behavior.
+- F4/F7: presentation-only wording; update existing copy assertions. Validation:
+  all 21 Garage UI tests, production build and browser checks pass at four screen
+  widths in both themes. The existing bundle-size warning remains.
+
 Implemented 2026-10-02 — Simplify protection setup and explain temporary minimums
 - Explain that monitoring without demand adds no minimum; targets below 5°C
   can be saved. Show 3°C selected → 5°C during a protection demand → 3°C after

@@ -341,9 +341,8 @@ test('Garage markup has durable controls and independent protection without reti
   assert.match(setup, /Shelly 1 Gen 3.*Tested firmware 2\.0\.1/);
   assert.match(setup, /The Pill by Shelly.*Tested firmware 2\.0\.1-beta3/);
   assert.doesNotMatch(setup, /BLU|Caravan|gateway for other sensors/);
-  assert.match(garage, /save a room target below 5 °C.*monitoring without a demand, it adds no minimum/);
-  assert.match(garage, /3 °C selection.*5 °C effective target.*returns to 3 °C.*8 °C selection.*stays at 8 °C/);
-  assert.match(garage, /5 °C is not the trigger temperature.*startup or lost temperature history/);
+  assert.match(garage, /When protection activates.*higher of this minimum and the selected target.*removed after recovery.*saved selection remains unchanged/);
+  assert.match(garage, /startup or lost temperature history.*pipe estimates stay unavailable/);
   assert.match(garage, /protection inputs are configured.*missing, stale or invalid feed.*Heat, power On.*16 °C/);
   assert.match(connectionSetup, /https:\/\/github\.com\/hokkanen\/shelly-cn105-mqtt\/blob\/main\/docs\/sender\.md/);
   assert.match(connectionSetup, /https:\/\/github\.com\/hokkanen\/shelly-cn105-mqtt\/blob\/main\/docs\/installation\.md/);
