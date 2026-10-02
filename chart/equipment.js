@@ -613,22 +613,24 @@ export function createEquipmentPanel({ document, request, onStatus, beforeReques
       event.preventDefault();
       if (document.defaultView?.location?.hash !== '#floor-preheat-details')
         document.defaultView?.history?.pushState(null, '', '#floor-preheat-details');
-      openFloorSetup();
+      openSetup('floor-preheat-details');
     });
     paragraph.append(link);
     return paragraph;
   };
-  function openFloorSetup() {
-    const target = $('floor-preheat-details');
+  function openSetup(id) {
+    const target = $(id);
     if (!target) return;
     for (let fold = target; fold; fold = fold.parentElement?.closest('details')) fold.open = true;
     target.querySelector('summary')?.focus({ preventScroll: true });
     target.scrollIntoView({ block: 'start' });
   }
-  document.defaultView?.addEventListener('hashchange', () => {
-    if (document.defaultView.location?.hash === '#floor-preheat-details') openFloorSetup();
-  });
-  if (document.defaultView?.location?.hash === '#floor-preheat-details') openFloorSetup();
+  const openSetupHash = () => {
+    const id = document.defaultView?.location?.hash?.slice(1);
+    if (['floor-preheat-details', 'garage-protection-details'].includes(id)) openSetup(id);
+  };
+  document.defaultView?.addEventListener('hashchange', openSetupHash);
+  openSetupHash();
   const actions = createEquipmentActions({ request, onStatus, beforeRequest, onChange(snapshot) {
     current = snapshot; onBusy(snapshot.busy); render(snapshot);
   } });
@@ -937,6 +939,13 @@ export function createEquipmentPanel({ document, request, onStatus, beforeReques
   for (const link of document.querySelectorAll('[data-open-mqtt-settings], [data-open-configuration]')) link.addEventListener('click', () => {
     $('connections-details').open = true;
     $(link.hasAttribute('data-open-configuration') ? 'controls-details' : 'mqtt-devices-details').open = true;
+  });
+  for (const link of document.querySelectorAll('[data-open-garage-protection]')) link.addEventListener('click', event => {
+    if (event.button || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return;
+    event.preventDefault();
+    if (document.defaultView?.location?.hash !== '#garage-protection-details')
+      document.defaultView?.history?.pushState(null, '', '#garage-protection-details');
+    openSetup('garage-protection-details');
   });
   return { update: status => actions.update(status), refreshControls: () => current && render(current), actions };
 }

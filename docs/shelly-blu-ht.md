@@ -1,22 +1,23 @@
 # Shelly BLU H&T over local MQTT
 
-The BLU H&T / BLU H&T ZB can report directly to ST-MQ through a Bluetooth-capable
-Shelly Plus running the supplied bridge script. No Shelly account, phone app,
-Home Assistant or Zigbee coordinator is needed for this Bluetooth route. The
-Plus 1 receives Bluetooth; it is not a Zigbee coordinator.
+The BLU H&T / BLU H&T ZB reports to ST-MQ through the Gen3 Shelly running the
+supplied bridge script alongside the Garage protection sender. No Shelly account,
+phone app, Home Assistant or Zigbee coordinator is needed for this Bluetooth
+route. The Gen3 receives Bluetooth; it is not a Zigbee coordinator.
 
 The public equipment configuration labels the Shelly BLU H&T **Caravan air** in
 Garage MQTT diagnostics and shows its temperature and humidity inside **Garage →
 Sensors & More equipment → Caravan**. Its topic prefix is `stmq/garage/caravan_air`, beside the other Caravan devices.
-Regenerate and reinstall the bridge script when adopting this current configuration;
-ST-MQ does not subscribe to the former Home topic.
 `caravan_temperature` (°C) and `caravan_humidity` (% RH) are recorded and available
 in chart history. Battery and Bluetooth signal strength are live diagnostics only.
 This sensor is not an input to Home learning, its indoor average, or pipe protection.
-It can simultaneously act as the Pill temperature test source through native
-BTHome components. Bluetooth advertisements can be received by both gateways;
-the MQTT bridge need not be removed. This test connection is temporary and must
-be replaced with the actual Garage sender before relying on room regulation.
+The Gen3 bridge receives this sensor only for Caravan observations. The Pill's
+room-regulation source is the Gen3's rear DS18B20, received through native
+BTHome components together with protection floor/rescue/validity. Remove the
+former BLU H&T commissioning registration from the Pill after verifying the
+Gen3 mapping; keep the Pill's Bluetooth enabled for the Gen3 feed. See
+[Garage sender installation](garage-adapter.md#sender-installation) and the
+[Pill repository](https://github.com/hokkanen/shelly-cn105-mqtt).
 
 ## Gateway setup
 
@@ -42,13 +43,13 @@ be replaced with the actual Garage sender before relying on room regulation.
    unset BLU_ADDRESS
    ```
 
-4. Open the Plus's local web interface, create a script, paste the generated
-   contents, start it, and enable running on startup. The script uses the Gen2
-   `BLE.Scanner.Start` / `Subscribe` API, verified on Plus 1 firmware 1.7.5
-   and Plus Plug S firmware 0.13.0. The generated script uses the common Gen2
-   language subset (`let` and braced conditional branches), and stops its own
-   script if the Bluetooth scan cannot start.
-   It performs no relay operations. Clock synchronization must work on the Plus;
+4. Open the Gen3's local web interface, create a separate script, paste the
+   generated contents, start it, and enable running on startup. The bridge uses
+   passive Bluetooth scanning and stops its own script if scanning cannot start.
+   Keep the frost sender in its own script; it advertises fresh probe/protection
+   packets while the bridge receives BLU reports. Check both scripts' status,
+   memory and sustained reception/advertising with the installed firmware.
+   The bridge performs no relay operations. Clock synchronization must work on the Gen3;
    readings are withheld until it has a valid Unix clock.
 5. Apply ST-MQ configuration and check the new equipment card. If private
    configuration supplies `equipment.devices`, it replaces the public list;
@@ -61,14 +62,16 @@ additional sensors can supply `label`, `area`, `temperatureSignal` and
 `humiditySignal` (custom IDs default to their own signal names). These generators do not
 modify device settings or install scripts themselves.
 
-To move the gateway, back up both devices' configuration and the installed script
+To move reception from the former gateway to the Gen3, back up both devices'
+configuration and the installed script
 outside Git. Install on the destination and verify genuine Bluetooth receptions
 and fresh MQTT reports before disabling the original script's startup setting
 and stopping it. Disable Bluetooth and Bluetooth RPC on the original gateway
 when no other Bluetooth integration needs it; verify the applied settings and
 whether its firmware requires a restart. Preserve the sensor address and MQTT
-topic so the sensor keeps its identity and history. Relay settings and outputs
-are independent of the bridge and need no changes.
+topic so the sensor keeps its identity and history. Require fresh BLU reports
+after a Gen3 restart, alongside fresh two-probe sender advertisements. Relay
+settings and outputs are independent of the bridge and need no changes.
 
 ## Reporting and polling
 
@@ -97,7 +100,7 @@ The sensor's documented GATT `BTHome sample` characteristic also reads its lates
 sample. It is not a documented remote command to force a measurement, and this
 bridge does not use GATT connections. Its regular 60-second broadcasts are the
 normal update mechanism. The ZB model can separately participate in Zigbee, but
-that requires a Zigbee coordinator rather than this Plus 1 Bluetooth bridge.
+that requires a Zigbee coordinator rather than this Gen3 Bluetooth bridge.
 
 References: [H&T ZB protocol and reporting](https://shelly-api-docs.shelly.cloud/docs-ble/Devices/BLU_ZB/ht_ZB/),
 [original BLU H&T](https://shelly-api-docs.shelly.cloud/docs-ble/Devices/BLU/ht/),

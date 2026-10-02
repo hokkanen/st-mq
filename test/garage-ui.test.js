@@ -234,15 +234,28 @@ test('protection configuration is read-only and remains distinct from absent or 
 test('Garage markup has durable controls and independent protection without retired automatic or model controls', () => {
   const html = readFileSync(new URL('../chart/index.html', import.meta.url), 'utf8');
   const garage = html.slice(html.indexOf('<article id="garage-control"'), html.indexOf('id="garage-equipment-readings"'));
-  for (const id of ['garage-mode-normal', 'garage-mode-away', 'garage-target-form', 'garage-protection-details', 'garage-protection-parameters'])
+  for (const id of ['garage-mode-normal', 'garage-mode-away', 'garage-target-form', 'garage-protection-summary'])
     assert(garage.includes(`id="${id}"`));
+  assert.match(garage, /href="#garage-protection-details" data-open-garage-protection/);
+  assert.doesNotMatch(garage, /id="garage-protection-details"/);
   assert.doesNotMatch(garage, /garage-(automation|pause|learning|release)|Automatic savings|Savings strategy|Temporary heating override/);
   assert.match(garage, /roughly 24 hours.*longer if contents are still cold/);
   assert.match(garage, /including across restarts/);
-  const start = garage.indexOf('id="garage-protection-settings-details"');
-  const parameters = garage.slice(start, garage.indexOf('</details>', start));
+  const connectionSetup = html.slice(html.indexOf('id="connections-details"'), html.indexOf('id="electricity-details"'));
+  assert(connectionSetup.indexOf('id="garage-protection-details"') > connectionSetup.indexOf('id="floor-preheat-details"'));
+  assert.match(connectionSetup, /<summary><span>Garage freeze protection<\/span>/);
+  const start = connectionSetup.indexOf('id="garage-protection-settings-details"');
+  const parameters = connectionSetup.slice(start, connectionSetup.indexOf('</details>', start));
   assert.doesNotMatch(parameters, /<input|<select|<form|garage-protection-submit|api\/garage\/protection/);
   assert.match(parameters, /garage\.protection.*Apply reviewed configuration/);
+  assert.match(connectionSetup, /id="garage-protection-setup-details"/);
+  assert.match(connectionSetup, /Gen3.*Plus Add-on.*two DS18B20 probes/);
+  assert.match(connectionSetup, /BLU H&amp;T remains the Caravan air sensor/);
+  assert.match(connectionSetup, /first startup or after lost measurement history.*may request rescue heating/);
+  assert.match(connectionSetup, /protection inputs configured.*missing, stale or invalid sender.*Heat, power On.*16 °C/);
+  assert.match(connectionSetup, /Rescue and fallback preserve your saved Normal or Away target/);
+  assert.match(connectionSetup, /https:\/\/github\.com\/hokkanen\/shelly-cn105-mqtt\/blob\/main\/docs\/sender\.md/);
+  assert.match(connectionSetup, /https:\/\/github\.com\/hokkanen\/shelly-cn105-mqtt\/blob\/main\/docs\/installation\.md/);
 });
 
 test('Home savings values are unchanged and Garage only presents observed electrical timing', () => {

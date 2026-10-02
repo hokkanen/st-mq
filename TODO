@@ -1,3 +1,41 @@
+Implemented 2026-10-02 — Commission Gen3 Garage freeze protection and BLU reception
+- Move Garage freeze protection into its own Connections & configuration fold
+  immediately below Floor preheating. Keep the compact Garage summary and an
+  accessible link; retain configured/reported readback, unknown/stale evidence
+  and configuration ownership. Add sender/probe setup, BLU migration, Pill repo
+  links, cold-start rescue and configured-source-loss HEAT/ON at native 16°C.
+- Owner authorized live Shelly commissioning and supplied rear/front add-on
+  order. Upgrade the new Gen3 through required official 1.3.3 to stable 2.0.1;
+  register both probes, preserve offsets and the temperature MQTT route, install
+  the verified sender and separate BLU bridge with autostart. Preserve the BLU
+  identity/topic and verify distinct real received reports. Remove the Pill's
+  temporary BLU registration after fresh Gen3 BTHome mapping is confirmed.
+- Apply the existing configured protection policy and verify matching KVS/MQTT
+  readback. Bind all four native Pill inputs to the observed sender identity;
+  confirm available protection, rescue and acknowledged local regulation with
+  the saved user target unchanged. The Gen3 relay is not used by either script.
+  Private backups, addresses, credentials and raw evidence remain outside Git.
+- Installed qualification: the Pill retained fresh native protection updates for
+  more than 180 seconds with the sender MQTT broker unreachable; the saved target
+  remained unchanged. Restored broker settings and verified both Gen3 scripts
+  restart, reconnect and resume normal reporting. This tests broker independence
+  and startup, not Wi-Fi radio loss or physical pipe-heating effectiveness.
+- The separate Pill repository fixes compact UTF-8 RPC serialization after a
+  full valid configuration exceeded the KVS limit with added JSON whitespace.
+  Its six Python tests inspect actual transport bytes; source/generated Node
+  checks pass without a driver/sender source change.
+- F1/F3/F4/F5/F7/F8: no new compatibility/migration path or historical rewrites.
+  Retain local protection, native pump command ownership, conservative startup,
+  source freshness, Caravan history and the saved Normal/Away target.
+- Validation: 3,974 routine tests passed, one optional upstream parser skipped;
+  final Garage markup checks, production build and Garage browser sweep passed
+  across mobile/desktop widths and both themes. Independent review confirmed
+  source and served UI placement. The broader equipment browser sweep fails an
+  unrelated missing Charger 2 total-energy assertion; unchanged HEAD reproduces
+  the same failure. Build retains its existing bundle-size warning. Physical
+  cold-weather/pipe-heating effectiveness and deliberate probe/Bluetooth-loss
+  qualification remain outside the observed commissioning checks.
+
 Implemented 2026-10-01 — Sharp Android installed-app launch icons
 - Add a Home Energy web app manifest with 192px/512px icons exported from the
   existing Smart timing vector and an opaque 512px maskable icon. Keep the symbol

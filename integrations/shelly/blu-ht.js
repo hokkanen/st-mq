@@ -1,4 +1,4 @@
-// Generate a Shelly Gen2 script. Hardware addresses belong in the installed
+// Generate a Bluetooth-capable Shelly Gen2/Gen3 script. Addresses belong in the installed
 // script/private configuration, never in a committed household example.
 export function bluHtEquipment({ id = 'blu_ht', label = 'Caravan air', area = 'garage', prefix = 'stmq/garage/caravan_air',
   temperatureSignal = id === 'blu_ht' ? 'caravan_temperature' : `${id}_temperature`,

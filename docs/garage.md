@@ -98,24 +98,33 @@ target without overwriting the saved user target. Rescue explicitly selects HEAT
 and ON. Protection is local: the sender and heat-pump controller communicate
 without an ST-MQ or MQTT broker connection.
 
-The **Freeze protection** panel shows sender availability, readings, estimates,
-settings and active demand. **Protection settings** compares configured and
+The **Garage freeze protection** fold under **Connections & configuration**,
+directly below **Floor preheating**, shows sender availability, readings,
+estimates, settings and active demand. **Protection settings** compares configured and
 reported values without an editor. Installation approval, margin, pipe geometry
 and heat transfer come from `garage.protection` in configuration. After editing
 that source, use **Apply reviewed configuration** in **Data & settings** or restart.
 ST-MQ applies the loaded parameters over MQTT when Garage is enabled and fresh
 sender status and local write authority permit it. The sender validates and
 persists them; only matching fresh readback confirms the configuration.
-Missing/stale status is unavailable, never proof of safety. See
-[pipe assumptions](garage-protection-defaults.md) and [adapter contract](garage-adapter.md).
+Missing/stale status is unavailable, never proof of safety. The fold explains
+sender installation and links to the [Pill repository](https://github.com/hokkanen/shelly-cn105-mqtt)
+for [sender setup](https://github.com/hokkanen/shelly-cn105-mqtt/blob/main/docs/sender.md)
+and [Pill setup](https://github.com/hokkanen/shelly-cn105-mqtt/blob/main/docs/installation.md).
+See [pipe assumptions](garage-protection-defaults.md) and
+[adapter contract](garage-adapter.md).
 
 In **MQTT connections**, local frost protection appears directly below the
 Garage heat pump.
 
-The BLU H&T is a development temperature source. It does not provide two-probe
-pipe protection. The UI explicitly shows this limitation until the protection
-sender is configured and fresh. Simulated protection tests are not installed
-qualification.
+The Gen3 also receives the Caravan BLU H&T through a separate MQTT bridge.
+That sensor supplies Caravan temperature and humidity, not room regulation or
+two-probe pipe protection. The Pill receives the Gen3's rear-probe temperature
+and protection fields through its native BTHome components. The former BLU
+commissioning input is replaced when this complete mapping is installed.
+Until fresh valid sender data reaches the Pill, protection remains unavailable
+or in its configured fault fallback. Simulated protection tests are not
+installed qualification.
 
 ## Recording and charts
 
@@ -146,9 +155,9 @@ stays in the overview and mode buttons; it does not need a second summary row.
 Select a status value for confirmation, source and availability details.
 
 The **Regulation input** under **Heat-pump readings** is the heat-pump
-controller's live local-regulation input. Its intended permanent source is the
-rear feed, already recorded as `garage_temperature`. The temporary Caravan BLU
-H&T used for commissioning is not a rear-probe measurement. Its controller
+controller's live local-regulation input. Its source is the Gen3's rear feed,
+already recorded as `garage_temperature`. The former Caravan BLU H&T
+commissioning input is not a rear-probe measurement. Regulation input
 readback remains in current diagnostic state, with the reported sensor age,
 but creates no separate temperature history or chart legend entry. The
 rear/front acquisition sources keep their own timestamps and coverage.

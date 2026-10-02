@@ -1971,14 +1971,22 @@ body[data-access-role="family"] .family-access-note { display: block; margin: 12
 .feature-automation h5 { margin-block: 0 .5rem; }
 .feature-automation p { margin-block: .5rem; }
 
-/* Garage keeps its durable temperature choice together with independent protection. */
+/* Garage retains its durable choice; protection status and setup live in configuration. */
 .garage-target-form { display:grid; gap:.55rem; margin:1rem 0; }
 .garage-target-form > label { font-weight:600; margin:0; }
 .garage-target-input { display:flex; flex-wrap:wrap; align-items:stretch; gap:.6rem; }
 .garage-target-input input { flex:1 1 6rem; min-width:0; width:7rem; max-width:10rem; }
 .garage-target-input button { flex:1 1 12rem; }
 .garage-target-form .muted { margin:0; }
-.garage-protection > summary { display:flex; flex-wrap:wrap; justify-content:space-between; gap:.5rem; }
+.garage-protection { scroll-margin-top: 20px; }
+.garage-protection > summary { flex-wrap: wrap; }
+.garage-protection .section-fold-body { font-size: 12px; line-height: 1.65; }
+.garage-protection a, .garage-protection-link a { color: var(--accent); text-underline-offset: 3px; }
+.garage-protection-link { margin: 12px 0; font-size: 11px; line-height: 1.6; }
+.garage-protection-steps { margin: 16px 0 0; padding-left: 22px; }
+.garage-protection-steps > li { padding-left: 4px; margin-bottom: 20px; }
+.garage-protection-steps h4 { margin: 0 0 6px; font-size: 12px; font-weight: 600; }
+.garage-protection-steps p { margin: 0; color: var(--muted); }
 .garage-protection [data-state="attention"] { color:var(--stale); }
 .garage-warming-warning { line-height:1.55; }
 

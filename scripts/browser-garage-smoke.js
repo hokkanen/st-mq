@@ -201,7 +201,28 @@ try {
     for (const id of ['garage-equipment-details', 'garage-controller-details', 'garage-readings-details'])
       document.getElementById(id).open = false`);
   assert.equal(await evaluate(`document.getElementById('garage-protection-status').textContent`), 'Unavailable');
-  await evaluate(`document.getElementById('garage-protection-details').open = true;
+  assert.deepEqual(await evaluate(`(() => {
+    const fold = document.getElementById('garage-protection-details');
+    return [fold.parentElement.id, fold.previousElementSibling.id, fold.querySelector(':scope > summary > span').textContent];
+  })()`), ['connections-details', 'floor-preheat-details', 'Garage freeze protection'],
+  'Freeze protection is its own configuration fold directly below Floor preheating');
+  await evaluate(`document.querySelector('[data-open-garage-protection]').focus()`);
+  await keyPress('Enter');
+  assert.equal(await evaluate(`document.getElementById('connections-details').open
+    && document.getElementById('garage-protection-details').open
+    && document.getElementById('garage-protection-detail').checkVisibility()
+    && document.activeElement === document.querySelector('#garage-protection-details > summary')`), true,
+  'The Garage setup link opens its destination and ancestors and moves keyboard focus');
+  await evaluate(`document.querySelector('#garage-protection-setup-details > summary').focus()`);
+  await keyPress('Enter');
+  assert.equal(await evaluate(`document.getElementById('garage-protection-setup-details').open`), true,
+    'Sender setup opens by keyboard');
+  assert.deepEqual(await evaluate(`Array.from(document.querySelectorAll('#garage-protection-setup-details a'), link => link.href)`), [
+    'https://github.com/hokkanen/shelly-cn105-mqtt/blob/main/docs/sender.md',
+    'https://github.com/hokkanen/shelly-cn105-mqtt/blob/main/docs/installation.md',
+    'https://github.com/hokkanen/shelly-cn105-mqtt',
+  ]);
+  await evaluate(`
     document.getElementById('garage-protection-settings-details').open = true; garageFixture.poll()`);
   assert.equal(await evaluate(`document.querySelectorAll('#garage-protection-settings-details input, #garage-protection-settings-details select, #garage-protection-settings-details button, #garage-protection-settings-details form').length`), 0,
     'Protection installation parameters have no dashboard editing controls');
@@ -218,7 +239,8 @@ try {
   assert.match(await evaluate(`document.getElementById('garage-protection-settings-status').textContent`), /Waiting for fresh/);
   assert.match(await evaluate(`document.getElementById('garage-protection-settings-details').textContent`), /config/i);
   assert.deepEqual(await evaluate(`garageFixture.calls`), [], 'Opening and refreshing installation parameters sends no commands');
-  await evaluate(`document.getElementById('garage-protection-details').open = false`);
+  await evaluate(`document.getElementById('garage-protection-details').open = false;
+    document.getElementById('connections-details').open = false`);
   await evaluate(`garageFixture.confirmed = false; document.getElementById('garage-mode-away').click()`);
   await until(`document.getElementById('garage-mode-away').getAttribute('aria-pressed') === 'true'`);
   assert.equal(await evaluate(`document.getElementById('garage-current-room').textContent`), '5 °C');
@@ -247,6 +269,7 @@ try {
   ]);
   await evaluate(`garageFixture.protection = 'ready'; garageFixture.configuredProtectionSettings.approved = false;
     garageFixture.protectionSettings.approved = false; garageFixture.poll();
+    document.getElementById('connections-details').open = true;
     document.getElementById('garage-protection-details').open = true;
     document.getElementById('garage-protection-settings-details').open = true`);
   await until(`document.getElementById('garage-protection-reported-approved').textContent !== 'Unavailable'`);
@@ -287,10 +310,17 @@ try {
     })()`);
     assert.deepEqual(overflow, [], `${width}px ${theme} controls stay within the Garage card`);
     assert.equal(await evaluate(`(() => {
+      const panel = document.getElementById('garage-protection-details'), box = panel.getBoundingClientRect();
+      return panel.checkVisibility() && [...panel.querySelectorAll('summary,p,dl,table,th,td,a,code,h4')]
+        .filter(node => node.checkVisibility()).every(node => [...node.getClientRects()]
+          .every(rect => rect.left >= box.left - 1 && rect.right <= box.right + 1));
+    })()`), true, `${width}px ${theme} keeps protection readback and sender setup inside the configuration fold`);
+    assert.equal(await evaluate(`(() => {
       const rows = [...document.querySelectorAll('#garage-heating-state > .heating-summary-reading')];
       return rows.length === 3 && rows.every(row => row.scrollWidth <= row.clientWidth + 1);
     })()`), true, `${width}px ${theme} keeps the three heating readings unclipped`);
     await screenshot(`garage-${width}-${theme}`);
+    await screenshot(`garage-freeze-protection-${width}-${theme}`, 'garage-protection-details');
   }
   await evaluate(`garageFixture.offline = true; garageFixture.poll()`);
   await until(`document.getElementById('garage-mode-away').disabled`);
@@ -313,6 +343,7 @@ try {
       'Condensation advisory without confirmation gate', 'Native OFF remains OFF', 'Missing protection stays unavailable',
       'Three concise heating readings and keyboard evidence', 'Distinct rear observation and expiring controller regulation input',
       'Read-only configured and reported installation parameters', 'Missing, false, mismatching and confirmed sender readback',
+      'Dedicated freeze protection fold below Floor preheating', 'Keyboard setup navigation and Pill repository guides',
       'Uncertain/stale estimates remain unavailable',
       '320/390/768/1440px layouts in both themes', 'Read-only controls', 'No browser exceptions'] }));
   await send('Page.close');
