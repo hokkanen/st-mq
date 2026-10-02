@@ -270,7 +270,7 @@ try {
     }
     for (const selector of ['#pairing-check-recovery', '#pairing-handover', '.provider-local-adopt'])
       assert.equal(await evaluate(`document.querySelector(${JSON.stringify(selector)}).disabled`), role === 'family', `${role}: ${selector}`);
-    for (const id of ['charger1-charge-now', 'charger1-enabled', 'charger1-resume', 'charger1-setting-readyBy-choose', 'charger1-identify',
+    for (const id of ['charger1-charge-now', 'charger1-enabled', 'charger1-setting-readyBy-choose', 'charger1-identify',
       'charger1-setting-readyBy', 'charger1-setting-manualSoc', 'charger1-setting-minimumSoc', 'charger1-setting-capacityKwh'])
       assert.equal(await evaluate(`document.getElementById(${JSON.stringify(id)}).disabled`), false, `${role}: EV card ${id} remains available`);
     await evaluate(`(() => {

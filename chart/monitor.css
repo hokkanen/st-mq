@@ -348,7 +348,7 @@ input[data-date-picker] { padding-right: 32px; background-image: url("data:image
 .chart-legend-actions { flex: none; display: flex; justify-content: flex-end; gap: 8px; padding: 6px 0; border-top: 1px solid var(--border); }
 .chart-legend-actions > button { flex: none; margin: 0; padding: 5px 6px; min-height: 32px; background: transparent; color: var(--muted); border: 1px solid var(--border); font-size: 10px; white-space: nowrap; }
 .chart-legend-actions > button:hover { background: var(--surface-soft); color: var(--text); }
-.chart-legend-actions .chart-legend-interpolation { display: inline-flex; align-items: center; gap: 5px; }
+.chart-legend-actions .chart-legend-interpolation { display: inline-flex; align-items: center; gap: 5px; margin-inline-end: auto; }
 .chart-legend-interpolation[aria-pressed="true"] { border-color: var(--accent); color: var(--text); }
 .chart-interpolation-state { min-width: 25px; border-radius: 3px; background: var(--surface-soft); color: var(--muted); font-size: 9px; line-height: 16px; text-align: center; }
 .chart-legend-interpolation[aria-pressed="true"] .chart-interpolation-state { background: var(--accent); color: var(--accent-text); }

@@ -70,7 +70,7 @@ Basic start/stop requires fresh native state, start permission and current setti
 a running service and no active errors or flags. It preserves native current
 settings, energy/time caps, automatic-start settings and `auto_balance`.
 Automatic charging remains a separate dashboard choice. Changing a setting in
-the native app takes priority; Use automatic does not enable a native Stop or
+the native app takes priority; turning Automatic charging on does not enable a native Stop or
 raise a native current limit. Enabled native schedules own start/stop until
 removed; removal gives the app release priority for the current connection.
 Shelly schedule windows are not inferred from unverified cron semantics.

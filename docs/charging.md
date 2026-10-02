@@ -70,6 +70,13 @@ unplugging returns to configuration defaults. Editing a field does not erase the
 live source reading beside it. Draft edits survive ordinary status refreshes.
 Change permanent defaults in configuration and choose **Apply reviewed configuration**.
 
+**Current charge** follows the latest applicable vehicle reading and advances with
+measured charging energy, with estimates and their sources labeled beside the
+field. It shows the current battery charge rather than keeping the value from
+plugging in. Unsaved edits remain in place while readings refresh. Saving an edit
+sets a new manual charge reference for this connection; it does not change the
+configured starting-charge default or the original vehicle reading.
+
 Enter ready-by time as **HH:mm**, or use **Choose time** and **Set**. The time
 chooser stays within the window and scrolls when space is limited. Set updates
 the draft; **Save for this session** applies it to the current connection.
@@ -83,8 +90,14 @@ OFF and use automatic charging (enabling it if it was OFF). ON means immediate
 charging is requested; the card's activity line reports whether the vehicle is
 actually charging, waiting or blocked.
 The card keeps its height while saving and after either action, without an extra
-confirmation message. Unplugging also ends the override. **Use automatic** remains
-in Details & settings when an external charger instruction has manual priority.
+confirmation message. Unplugging also ends the override. Both chargers use the
+same controls: **Automatic charging** and **Charge now**. Turning Automatic
+charging ON also requests a handover of eligible manual choices for the current
+connection and ends Charge now. If it is already ON, turn it OFF and ON again to
+request that handover. Before a vehicle connects, the switch saves only the
+automatic preference. There is no separate handover button. Native manual stops
+and schedules that the integration cannot release must be changed in the charger
+controls; switching automatic scheduling on does not bypass them.
 Native vehicle timers, targets, user stops, faults, charger limits and authorization
 still apply, and unavailable or unsupported hardware cannot be started through
 this action.
@@ -117,10 +130,10 @@ timer, target or user stop. The final period always remains an open release.
 
 ### Missing vehicle feeds and takeover
 
-Charging does not require vehicle identification: editable starting charge,
+Charging does not require vehicle identification: editable current charge,
 target, usable capacity and ready-by remain available. Within the same identified
 physical connection, feed loss preserves the last charge anchor plus recorded
-energy, labeled as last known vehicle charge. An explicit starting-charge edit
+energy, labeled as last known vehicle charge. An explicit **Current charge** edit
 replaces it. A new or ambiguous connection cannot borrow that estimate.
 
 The BMW publisher sends a live report every five minutes. Ten minutes without

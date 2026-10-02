@@ -1151,7 +1151,7 @@ test('a matched BMW quick unplug ends the old schedule even when every Easee pol
 
 const requestScope = view => ({ association: view.association, sessionId: view.request.sessionId, revision: view.request.revision });
 
-test('Charge Now removes the automatic delay immediately and Use automatic restores scheduling', async t => {
+test('Charge Now removes the automatic delay immediately and automatic handover restores scheduling', async t => {
   const f = fixture(preferences, {}, { charger1: true }), runtime = f.create(), adapter = fakeAdapter(f.clock);
   t.after(() => runtime.close());
   await runtime.setAdapter('charger1', adapter); runtime.tick({ prices }); await runtime.reconcile();

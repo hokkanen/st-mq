@@ -13,6 +13,8 @@ use Finnish local time. Recovery completion is an estimate, not a fixed command
 deadline. Reduced heating changes native heat demand; it does not promise that
 the compressor will stop. The normal recovery hold and restoration duties still
 apply; see [planning and recovery](learning-and-control.md#planning-and-recovery).
+The Home card's **Automatic control · Paused** status describes the controller's
+permission; heating can continue while automatic control is paused.
 
 Configured policy limits, learning evidence, forecast coverage and equipment
 readiness have different effects. For example, raising the configured four-hour
@@ -32,6 +34,11 @@ cover reduction and preheat duration, permitted room-temperature drop and rise,
 savings strategy and the native ROOM increase used for preheat. The ceiling is
 the maximum permitted duration; it does not force the planner to choose that
 duration. Several limits can be changed together.
+
+All six controls remain visible. Narrow screens pair savings strategy with ROOM
+increase, temperature drop with rise, and reduction duration with preheat duration.
+Wider screens show strategy, drop and reduction across the first row, followed by
+ROOM increase, rise and preheat across the second row. Enter durations directly.
 
 | Explorer control | Permanent configuration field | Supported range |
 | --- | --- | --- |

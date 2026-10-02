@@ -176,12 +176,58 @@ try {
   await keyPress(' ');
   await until(`document.getElementById('heating-explorer-dialog').open && !document.getElementById('heating-explorer-content').hidden`);
   await until(`!document.getElementById('heating-explorer-refresh').disabled`);
-  for (const [width, height, theme] of [[320,740,'light'],[390,844,'dark'],[1280,1000,'light'],[1920,1080,'dark']]) {
+  for (const [width, height] of [[320,740],[390,844],[650,900],[651,900],[1280,1000],[1920,1080]]) {
     await send('Emulation.setDeviceMetricsOverride', {width,height,deviceScaleFactor:1,mobile:false});
-    await evaluate(`document.documentElement.dataset.theme='${theme}';document.getElementById('heating-explorer-dialog').scrollTop=0`);
-    const layout = await evaluate(`(() => { const d=document.getElementById('heating-explorer-dialog');return {viewport:innerWidth,width:d.getBoundingClientRect().width,scroll:d.scrollWidth,client:d.clientWidth,page:document.documentElement.scrollWidth};})()`);
-    assert(layout.width <= width && layout.scroll <= layout.client + 1 && layout.page <= width, `${width}px ${theme} has no horizontal overflow: ${JSON.stringify(layout)}`);
-    await screenshot(`${width}-${theme}-plan`);
+    for (const theme of ['light', 'dark']) {
+      await evaluate(`document.documentElement.dataset.theme='${theme}';document.getElementById('heating-explorer-dialog').scrollTop=0`);
+      await evaluate(`await new Promise(requestAnimationFrame); await new Promise(requestAnimationFrame)`);
+      const layout = await evaluate(`(() => {
+        const d = document.getElementById('heating-explorer-dialog');
+        const grid = document.getElementById('heating-explorer-controls'), bounds = grid.getBoundingClientRect();
+        const controls = [...grid.querySelectorAll('.heating-explorer-control')].map(control => {
+          const input = control.querySelector('input,select'), rect = control.getBoundingClientRect();
+          const renderedInput = control.querySelector('.app-select-trigger') ?? input;
+          return { key: input.id.replace('heating-limit-', ''), visible: renderedInput.checkVisibility(),
+            left: rect.left, right: rect.right, top: rect.top, bottom: rect.bottom,
+            width: rect.width, overflow: control.scrollWidth > control.clientWidth + 1 };
+        });
+        return { viewport: innerWidth, width: d.getBoundingClientRect().width, scroll: d.scrollWidth,
+          client: d.clientWidth, page: document.documentElement.scrollWidth,
+          grid: { left: bounds.left, right: bounds.right, top: bounds.top, bottom: bounds.bottom }, controls,
+          extraControls: Boolean(document.querySelector('#heating-explorer-more-limits,#heating-explorer-secondary-controls,.heating-explorer-presets')) };
+      })()`);
+      const label = `${width}px ${theme}`;
+      assert(layout.width <= width && layout.scroll <= layout.client + 1 && layout.page <= width,
+        `${label} has no horizontal overflow: ${JSON.stringify(layout)}`);
+      assert.equal(layout.extraControls, false, `${label}: all controls live in one grid without duration presets or an extra fold`);
+      assert.equal(layout.controls.length, 6, `${label}: all six planning controls are present`);
+      assert(layout.controls.every(control => control.visible && !control.overflow && control.width > 0
+        && control.left >= layout.grid.left - 1 && control.right <= layout.grid.right + 1
+        && control.top >= layout.grid.top - 1 && control.bottom <= layout.grid.bottom + 1),
+      `${label}: all six controls stay visible and fit their grid: ${JSON.stringify(layout.controls)}`);
+      const expectedRows = width <= 650
+        ? [['savingsStrategy', 'preheatRoomBoostC'], ['maxDropC', 'maxRiseC'], ['maxReductionHours', 'maxPreheatHours']]
+        : [['savingsStrategy', 'maxDropC', 'maxReductionHours'], ['preheatRoomBoostC', 'maxRiseC', 'maxPreheatHours']];
+      const controls = new Map(layout.controls.map(control => [control.key, control]));
+      for (const [rowIndex, keys] of expectedRows.entries()) {
+        for (const [columnIndex, key] of keys.entries()) {
+          const control = controls.get(key), rowStart = controls.get(keys[0]);
+          assert(control, `${label}: ${key} is available`);
+          assert(Math.abs(control.top - rowStart.top) < 1, `${label}: ${keys.join(', ')} share a row`);
+          if (columnIndex > 0) assert(controls.get(keys[columnIndex - 1]).right < control.left,
+            `${label}: ${key} follows ${keys[columnIndex - 1]} without overlap`);
+          if (rowIndex > 0) {
+            const above = controls.get(expectedRows[rowIndex - 1][columnIndex]);
+            assert(above.bottom < control.top && Math.abs(above.left - control.left) < 1
+              && Math.abs(above.right - control.right) < 1,
+            `${label}: ${key} sits below ${above.key} in the same column`);
+          }
+        }
+      }
+      await screenshot(`${width}-${theme}-plan`);
+      await evaluate(`document.getElementById('heating-explorer-controls').scrollIntoView({block:'center'})`);
+      await screenshot(`${width}-${theme}-controls`);
+    }
   }
   await evaluate(`document.getElementById('heating-explorer-jump').click();document.getElementById('heating-limit-maxReductionHours').value='8';document.getElementById('heating-limit-maxReductionHours').dispatchEvent(new Event('input',{bubbles:true}))`);
   const reads = await evaluate(`explorerFixture.requests.length`);

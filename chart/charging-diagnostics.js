@@ -1,3 +1,4 @@
+import { CHARGING_CONTROL_CAUSES as CONTROL_CAUSES } from './charging-status.js';
 import { isReadOnlyReplica } from './replica-status.js';
 import { projectChargingReportHistory, CHARGING_EVENT_FILTERS, chargingFindingCounts } from './charging-report-history.js';
 import { chargingSharedText, chargingSharedSummary } from './charging-shared.js';
@@ -55,37 +56,7 @@ const STATE_LABELS = { disabled: 'Automatic off', unknown: 'Unknown', none: 'No 
   'charge-now': 'Charge now', provisional: 'Provisional release' };
 const SCHEDULE_LABELS = { none: 'No controller charging schedule', proposed: 'Proposed charging periods',
   installed: 'Controller execution plan', unknown: 'Schedule state unknown' };
-const CONTROL_CAUSES = {
-  'read-failed': 'Charger read failed', 'command-failed': 'Charger instruction failed',
-  'readback-failed': 'Charger confirmation could not be read', 'readback-mismatch': 'Charger readback did not match the instruction',
-  'access-denied': 'Charger access denied', 'control-revoked': 'Control permission was withdrawn',
-  'state-changed': 'Charger state changed during the instruction', 'unsupported-schedule': 'Schedule unsupported by the charger',
-  'invalid-plan': 'Charging plan could not be applied', 'missing-current-limit': 'Charging current limit unavailable',
-  'start-passed': 'Requested start had already passed', 'ambiguous-start': 'Requested start time was ambiguous',
-  'start-out-of-range': 'Requested start time was outside the supported range', 'charger-fault': 'Charger reported a fault',
-  ['charging-authorization']: 'Charging authorization required', 'incomplete-state': 'Charger state incomplete',
-  'charger-stopped': 'Charger reported stopped', 'pause-unconfirmed': 'Pause not confirmed',
-  offline: 'Charger offline', 'provider-offline': 'Charger provider offline',
-  'transaction-unconfirmed': 'Charging transaction not confirmed', 'composite-unavailable': 'Charger schedule readback unavailable',
-  'profile-rejected': 'Charger rejected the charging profile', 'retry-limit': 'Instruction retry limit reached',
-  'storage-failed': 'Control state could not be saved', 'evse-control-unavailable': 'Charger control unavailable',
-  'evse-command-revoked': 'Charger instruction permission withdrawn', 'evse-command-unconfirmed': 'Charger instruction unconfirmed',
-  'evse-publish-unconfirmed': 'Instruction delivery unconfirmed', 'evse-rpc-rejected': 'Charger rejected the instruction',
-  'evse-work-state-unavailable': 'Charger connection state unavailable', 'evse-current-control-unavailable': 'Current limiter unavailable', 'evse-profile-unsupported': 'Charger profile unsupported', 'evse-read-unavailable': 'Charger read unavailable',
-  'evse-native-restriction': 'A charger restriction has priority', 'evse-native-schedule-unavailable': 'Charger timer unavailable',
-  'evse-event-overflow': 'Charger event buffer exceeded', 'evse-component-mapping-unverified': 'Charger component mapping unverified',
-  'identification-resume-required': 'Identification release still requires confirmation', 'command-unconfirmed': 'Charger instruction unconfirmed',
-  'control-error': 'Charger control error; detailed cause unavailable',
-  'manual-stop': 'Manual stop has priority', 'manual-release': 'Manual release has priority', 'native-schedule': 'Charger timer has priority',
-  'manual-enable': 'Native app charging has priority', 'manual-charge-now': 'Native app release has priority', 'manual-schedule': 'Native app schedule has priority',
-  'native-current-limit': 'Native current limit', 'vehicle-current-limit': 'Vehicle current limit', 'hardware-restriction': 'Hardware current limit',
-  'fuse-limit': 'Installation current limit', 'priority-allocation': 'Shared charging allocation', 'telemetry-fallback': 'Current fallback for missing measurements',
-  'vehicle-not-before': 'Vehicle start restriction', 'identification-pause': 'Identification pause',
-  'identification-waiting': 'Identification waiting', 'identification-charging': 'Identification observing charge',
-  'economic-wait': 'Waiting for a planned charging period', 'charge-now': 'Charge now requested',
-  'economic-window': 'Within a planned charging period', 'no-headroom': 'No electrical headroom available',
-  'supply-unavailable': 'Supply information unavailable', 'within-limit': 'Within the available current limit',
-};
+
 const IDENTIFICATION_CAUSES = {
   identified: 'Vehicle identified', 'manual-stop': 'Manual Stop has priority', unsupported: 'Only passive matching is available',
   'telemetry-unavailable': 'Vehicle evidence unavailable', 'vehicle-feed-stale': 'Vehicle feed is not current',

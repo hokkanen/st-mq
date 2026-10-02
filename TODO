@@ -1,3 +1,28 @@
+Implemented 2026-10-02 — Simplify planning and shared charging controls
+- Show Home automatic control as Paused, with a resume time only when set;
+  clarify that heating can continue. Keep all six planning inputs visible in
+  the requested two-column or three-column order; remove duration presets and
+  the extra limits fold. Align chart Interpolation left and Reset/Save right.
+- Rename the charger input Current charge and refresh it from the current vehicle
+  reading or labeled energy-based estimate. Preserve unsaved edits and original
+  charge references; saving another field never saves an observed charge value.
+- Give both chargers the same Automatic charging and Charge now controls. Remove
+  the separate Use automatic button; enabling Automatic for a connected vehicle
+  requests the existing fenced handover. Keep native stops, timers and limits
+  authoritative. Translate ordinary popup/control codes into readable messages.
+- F1/F3/F4/F5/F7: retain saved automation permission, session-scoped edits, source
+  provenance and native control priority. No backend control, configuration,
+  schema, compatibility or data changes. Known unambiguous Easee/OCPP manual
+  windows already hand back at their end; Shelly enabled timers have no verified
+  window end and still need explicit handover after removal. Do not imply that
+  native timer completion is supported there or that explicit OFF expires.
+- Validation: all 192 focused UI, source-provenance and handover checks pass.
+  Production build passes with its existing bundle-size warning. Synthetic
+  planning, chart, dashboard-height, equipment and access browser sweeps pass
+  across narrow/desktop layouts and both themes. Inspect planning and legend
+  screenshots; update stale browser-only disclosure-arrow assertions to the
+  existing painted arrows. Full regression suite and live devices not exercised.
+
 Implemented 2026-10-02 — Coordinate both chargers and shared guided assessments
 - Include released and independently observed native charging in joint allocation
   without reserving an entire charger ceiling or acquiring new schedule authority.

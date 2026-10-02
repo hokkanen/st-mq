@@ -472,7 +472,7 @@ test('absolute command expiry after durable intent persistence prevents an unsen
  assert.equal(f.writes.some(row=>row.method.endsWith('.Set')),false);assert.equal(controller.status().pending,null);
 });
 
-test('Charge Now releases a Shelly economic pause for this session and Use automatic restores the price plan', async t => {
+test('Charge Now releases a Shelly economic pause for this session and automatic handover restores the price plan', async t => {
   const f = fixture(t); await f.ready();
   const publish = f.client.publish;
   f.client.publish = (topic, payload, options, callback) => {

@@ -48,13 +48,13 @@ test('scheduled and indefinite pause and simulation retain their actual authorit
   const status = scheduled();
   status.override = { expiresAt: now + hour };
   status.decision.manualHold = { phase: 'reduction', until: now + hour };
-  assert.equal(homePlannedChange(status).label, 'Heating paused');
-  assert.equal(homePlannedChange(status).value, 'Until 16:00');
+  assert.equal(homePlannedChange(status).label, 'Automatic control');
+  assert.equal(homePlannedChange(status).value, 'Paused until 16:00');
   delete status.override;
   delete status.decision.manualHold;
   status.automation.home.enabled = false;
-  assert.equal(homePlannedChange(status).label, 'Heating paused');
-  assert.equal(homePlannedChange(status).value, 'Until you select Automatic');
+  assert.equal(homePlannedChange(status).label, 'Automatic control');
+  assert.equal(homePlannedChange(status).value, 'Paused');
   assert.match(homePlannedChange(status).detail, /Manual Normal and Reduced/);
   status.automation.home.enabled = true;
   status.input = 'simulated';

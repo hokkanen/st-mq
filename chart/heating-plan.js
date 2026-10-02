@@ -20,10 +20,10 @@ export function homePlannedChange(status = {}) {
     'The controller has not reported a current heating plan.');
 
   const pauseUntil = status.override?.expiresAt;
-  if (Number.isFinite(pauseUntil) && pauseUntil > now) return display('Heating paused', `Until ${plannedTime(pauseUntil, now)}`,
-    'Automatic heating resumes at this time. Manual Preheat keeps its own earlier lease deadline.', pauseUntil);
-  if (status.automation?.home?.enabled === false) return display('Heating paused', 'Until you select Automatic',
-    'Manual Normal and Reduced stay selected during the pause. Preheat ends at its lease deadline. Monitoring and learning continue.');
+  if (Number.isFinite(pauseUntil) && pauseUntil > now) return display('Automatic control', `Paused until ${plannedTime(pauseUntil, now)}`,
+    'Automatic control resumes at this time. Heating can continue while automatic control is paused. Manual Preheat keeps its own earlier lease deadline.', pauseUntil);
+  if (status.automation?.home?.enabled === false) return display('Automatic control', 'Paused',
+    'Heating can continue while automatic control is paused. Manual Normal and Reduced stay selected during the pause. Preheat ends at its lease deadline. Monitoring and learning continue.');
   const hold = decision.manualHold;
   if (hold?.phase === 'preheat' && hold.until > now) return display('Manual Preheat', `Ends at ${plannedTime(hold.until, now)}`,
     'Preheat is held until its original lease deadline. ROOM is restored at that deadline even if floor restoration needs a retry.', hold.until);

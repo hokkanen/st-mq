@@ -3,7 +3,7 @@ const numeric = value => Number.isFinite(value) ? Number(value.toFixed(1)) : nul
 const labels = { bmw: 'BMW', tesla: 'Tesla' };
 
 export const BMW_SETUP_DESCRIPTORS = Object.freeze([
-  ['Battery percentage', 'vehicle.powertrain.electric.battery.stateOfCharge.displayed', 'Automatic starting charge'],
+  ['Battery percentage', 'vehicle.powertrain.electric.battery.stateOfCharge.displayed', 'Automatic current charge'],
   ['Vehicle charge limit', 'vehicle.powertrain.electric.battery.stateOfCharge.target', 'Automatic target and vehicle ceiling'],
   ['Usable capacity', 'vehicle.drivetrain.batteryManagement.maxEnergy', 'Optional; configured capacity is the fallback'],
   ['Plug state', 'vehicle.body.chargingPort.status', 'Identification context'],

@@ -1,3 +1,5 @@
+import { chargingControlReason } from './charging-status.js';
+
 const finite = Number.isFinite;
 const timestamp = value => value == null || value === '' || !finite(new Date(value).getTime()) ? null : new Date(value).getTime();
 const nativeForecast = forecast => ['forecast', 'uncertain'].includes(forecast?.state)
@@ -92,7 +94,7 @@ export function chargerSummary(charger, view, { now = Date.now(), formatTime = v
   } else if (handoverUnconfirmed || handoverPending || uncertain) {
     roleLabel = handoverUnconfirmed ? 'Handover unconfirmed' : handoverPending ? 'Handover pending' : 'Control unconfirmed';
     roleState = 'uncertain';
-    roleDetail = (view.state === 'Pause unconfirmed' ? view.problem : control.reason) || (handoverUnconfirmed ? 'Automatic charging is off, but the charger has not confirmed the handover.'
+    roleDetail = (view.state === 'Pause unconfirmed' ? view.problem : chargingControlReason(control.reason)) || (handoverUnconfirmed ? 'Automatic charging is off, but the charger has not confirmed the handover.'
       : handoverPending ? `Manual priority has ended. Waiting for charger confirmation.${enabled ? '' : ' Automatic charging remains off.'}`
         : chargeNow ? 'The immediate charging instruction is awaiting confirmation.' : 'The charger’s current automatic instruction is awaiting confirmation.');
   } else if (identificationActive && !yielded) {

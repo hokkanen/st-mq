@@ -19,7 +19,7 @@ const reasonLabels = {
   'unvalidated-thermal-model': 'The model is still learning how the house holds and recovers heat.',
   'unvalidated-heating-energy-model': 'Heating electricity estimates are not yet sufficiently validated.',
   'flat-prices-preserve-normal-warmth': 'The price difference does not justify changing normal heating.',
-  'heating-paused': 'Automatic heating is paused. Exploring keeps that choice unchanged.',
+  'heating-paused': 'Automatic control is paused. Heating can continue. Exploring keeps that choice unchanged.',
   'room-comfort-limit': 'A monitored room is outside its temperature allowance.',
   'missing-or-stale-observations': 'Fresh temperature observations are needed.',
   'currently-selected-cycle': 'This is the cycle currently selected by the controller.',
@@ -149,8 +149,10 @@ export function createHeatingExplorerPanel({ document, request, afterMutation = 
     }
   }
   function renderControls(result) {
-    controls.clear(); $('heating-explorer-controls').replaceChildren(); $('heating-explorer-secondary-controls').replaceChildren();
-    for (const control of result.controls ?? []) {
+    controls.clear(); $('heating-explorer-controls').replaceChildren();
+    const order = ['savingsStrategy', 'preheatRoomBoostC', 'maxDropC', 'maxRiseC', 'maxReductionHours', 'maxAwayReductionHours', 'maxPreheatHours'];
+    const orderedControls = [...(result.controls ?? [])].sort((a, b) => order.indexOf(a.key) - order.indexOf(b.key));
+    for (const control of orderedControls) {
       const row = element('div', null, 'heating-explorer-control');
       const label = element('label', control.label); const id = `heating-limit-${control.key}`; label.htmlFor = id;
       const input = element(control.options ? 'select' : 'input'); input.id = id;
@@ -172,19 +174,9 @@ export function createHeatingExplorerPanel({ document, request, afterMutation = 
       const effective = control.options?.find(option => option.value === control.effectiveValue)?.label ?? decimal(control.effectiveValue);
       const help = element('small', `${effectiveDiffers ? 'Configured' : 'Current'}: ${current}${control.unit ? ` ${control.unit}` : ''}${effectiveDiffers ? ` · Active cycle: ${effective}${control.unit ? ` ${control.unit}` : ''}` : ''}`); help.id = `${id}-current`;
       row.append(label, wrapper, help);
-      if (['maxReductionHours', 'maxAwayReductionHours'].includes(control.key)) {
-        const presets = element('div', null, 'heating-explorer-presets');
-        for (const hours of [4, 6, 8].filter(value => value >= control.min && value <= control.max)) {
-          const button = element('button', `${hours} h`, 'secondary-button'); button.type = 'button';
-          button.setAttribute('aria-label', `Explore a maximum ${hours} hour reduction`);
-          button.addEventListener('click', () => actions.edit(control.key, hours)); presets.append(button);
-        }
-        row.append(presets);
-      }
-      (['maxReductionHours', 'maxAwayReductionHours', 'maxDropC', 'maxRiseC'].includes(control.key) ? $('heating-explorer-controls') : $('heating-explorer-secondary-controls')).append(row);
+      $('heating-explorer-controls').append(row);
       controls.set(control.key, { input, row, control });
     }
-    $('heating-explorer-more-limits').hidden = !$('heating-explorer-secondary-controls').children.length;
     $('heating-explorer-reset').textContent = result.controls.some(control => control.effectiveValue != null && control.effectiveValue !== control.value)
       ? 'Reset to configured limits' : 'Reset to current limits';
   }
@@ -334,7 +326,6 @@ export function createHeatingExplorerPanel({ document, request, afterMutation = 
       const value = state.limits[key];
       if (String(value ?? '') !== row.input.value) row.input.value = value == null ? '' : String(value);
       row.input.disabled = busy;
-      for (const preset of row.row.querySelectorAll('button')) preset.disabled = busy;
       row.row.dataset.changed = String(value !== row.control.value);
     }
     $('heating-explorer-snapshot').textContent = `${state.stale ? 'Comparison needs refreshing' : 'Conditions pinned'} · ${atTime(result.snapshotAt)} · Europe/Helsinki`;
@@ -343,7 +334,7 @@ export function createHeatingExplorerPanel({ document, request, afterMutation = 
     $('heating-explorer-reset').disabled = busy;
     $('heating-explorer-dirty').hidden = !state.dirty || !result.previewId;
     const context = [status?.input === 'simulated' ? 'Simulated installation: all conditions and outcomes are synthetic.' : '',
-      status?.automation?.home?.enabled === false ? 'Automatic heating is paused. Exploring does not enable it.' : '',
+      status?.automation?.home?.enabled === false ? 'Automatic control is paused. Heating can continue. Exploring does not enable automatic control.' : '',
       result.currentDiffersFromRecalculation ? 'The currently selected plan has been retained. A fresh calculation with the same limits can differ; comparisons use the selected plan.' : '',
       state.stale ? 'Conditions may have changed. Refresh before comparing or applying; this preview keeps its original inputs.' : ''].filter(Boolean).join(' ');
     $('heating-explorer-context').textContent = context; $('heating-explorer-context').hidden = !context;

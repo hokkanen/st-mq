@@ -433,7 +433,8 @@ try {
             hit: document.elementFromPoint(r.left + r.width / 2, r.top + r.height / 2)?.closest('button') === button,
             outsideList: !document.getElementById('chart-legend').contains(button) };
         });
-        return { controls, left: bounds.left, right: bounds.right, height: bounds.height, width: innerWidth };
+        return { controls, left: bounds.left, right: bounds.right, height: bounds.height, width: innerWidth,
+          gap: parseFloat(getComputedStyle(actions).columnGap) };
       })()`);
       assert.equal(footer.controls.length, 3, `${label}: interpolation shares the existing footer with Reset view and Save view`);
       assert(footer.controls.every(control => control.hit && control.outsideList && !control.clipped
@@ -446,6 +447,12 @@ try {
       assert(ordered.every((control, index) => index === 0 || ordered[index - 1].right <= control.left)
         && footer.left >= 0 && footer.right <= footer.width,
       `${label}: the compact footer controls never overlap or overflow`);
+      const interpolation = footer.controls.find(control => control.className.includes('chart-legend-interpolation'));
+      const reset = footer.controls.find(control => control.className.includes('chart-legend-reset'));
+      const save = footer.controls.find(control => control.className.includes('chart-legend-save'));
+      assert(Math.abs(interpolation.left - footer.left) < 1 && Math.abs(save.right - footer.right) < 1
+        && interpolation.right <= reset.left && Math.abs(save.left - reset.right - footer.gap) < 1,
+      `${label}: Interpolation aligns left while Reset view and Save view stay grouped at the right edge`);
     };
     await checkFooter();
     const initialInterpolation = await interpolationEnabled();
@@ -1383,26 +1390,28 @@ try {
       const geometry = id => evaluate(`(() => {
         const summary = document.querySelector('${id}' === 'timing-details' ? '#comparison-toggle' : '#${id} > summary');
         const text = summary.querySelector('span');
-        // Measure rendered text: a flex item's element box includes line-height
-        // leading, whereas the native summary's inline span box does not.
+        // Measure rendered text rather than the span's line-height leading.
         const textRange = document.createRange(); textRange.selectNodeContents(text);
         const outer = summary.getBoundingClientRect(), inner = textRange.getBoundingClientRect();
-        const style = getComputedStyle(summary), marker = getComputedStyle(summary, '${id}' === 'timing-details' ? '::before' : '::marker');
+        const marker = getComputedStyle(summary, '::before');
+        const transform = new DOMMatrixReadOnly(marker.transform === 'none' ? undefined : marker.transform);
         return { height: outer.height, textInset: inner.left - outer.left,
           textCenter: inner.top + inner.height / 2 - outer.top, textHeight: inner.height,
-          arrow: { display: style.display, type: style.listStyleType, fontSize: marker.fontSize, content: marker.content },
-          leadingDecoration: getComputedStyle(summary, '::before').content,
+          arrow: { width: parseFloat(marker.width), height: parseFloat(marker.height),
+            shape: marker.clipPath, background: marker.backgroundColor, content: marker.content,
+            angle: Math.atan2(transform.b, transform.a) * 180 / Math.PI },
           trailingDecoration: getComputedStyle(summary, '::after').content,
           fits: outer.left >= 0 && outer.right <= innerWidth };
       })()`);
       const comparison = await geometry('timing-details'), recording = await geometry('recording-details');
       for (const key of ['height', 'textInset', 'textCenter', 'textHeight'])
         assert(Math.abs(comparison[key] - recording[key]) < 1, `${width}px ${theme}: footer ${key} aligns across the two closed folds`);
-      assert.equal(comparison.leadingDecoration, '"▶"', `${width}px ${theme}: the comparison button has a leading closed triangle`);
-      assert.equal(recording.arrow.type, 'disclosure-closed', `${width}px ${theme}: recording has a native closed triangle`);
-      assert([comparison, recording].every(row => row.textInset > 0 && parseFloat(row.arrow.fontSize) > 0
+      assert.deepEqual(comparison.arrow, recording.arrow, `${width}px ${theme}: both footer folds use the same painted arrow`);
+      assert([comparison, recording].every(row => row.textInset > row.arrow.width && row.arrow.width > 0 && row.arrow.height > 0
+        && row.arrow.content === '""' && row.arrow.shape === 'polygon(15% 0px, 100% 50%, 15% 100%)'
+        && row.arrow.background !== 'rgba(0, 0, 0, 0)' && Math.abs(row.arrow.angle) < .01
         && row.trailingDecoration === 'none' && row.fits),
-        `${width}px ${theme}: footer titles fit with a visible leading arrow`);
+        `${width}px ${theme}: footer titles fit with a visible right-pointing triangle`);
       await capture(`footer-folds-${width}-${theme}`);
       for (const [id, closed] of [['timing-details', comparison], ['recording-details', recording]]) {
         const selector = id === 'timing-details' ? '#comparison-toggle' : `#${id} > summary`;
@@ -1417,13 +1426,15 @@ try {
         assert.equal(await evaluate(isOpen), true, `${id} opens with Enter`);
         assert.equal(await evaluate(`document.activeElement === document.querySelector('${selector}')`), true,
           `${id} keeps keyboard focus on its fold control`);
-        assert.equal(open.arrow.fontSize, closed.arrow.fontSize, `${id} preserves its arrow size`);
+        for (const key of ['width', 'height', 'shape'])
+          assert.equal(open.arrow[key], closed.arrow[key], `${id} preserves its arrow ${key}`);
+        assert(Math.abs(open.arrow.angle - 90) < .01 && open.arrow.background !== 'rgba(0, 0, 0, 0)',
+          `${id}: the painted arrow points down when expanded`);
         if (id === 'timing-details') {
-          assert.equal(open.leadingDecoration, '"▼"', 'The comparison arrow points down when expanded');
           assert.equal(await evaluate("document.getElementById('comparison-content').hidden"), false);
           assert.equal(await evaluate("document.getElementById('recording-details').open"), false,
             'Opening comparisons leaves recording closed');
-        } else assert.equal(open.arrow.type, 'disclosure-open', 'The recording arrow points down when expanded');
+        }
         if (id === 'recording-details') {
           const nestedArrow = await evaluate(`(() => {
             const summary = document.querySelector('#recording-details > #recording-adaptive-details > summary');
@@ -1431,14 +1442,16 @@ try {
             return { display: style.display, type: style.listStyleType,
               fontSize: getComputedStyle(summary, '::marker').fontSize };
           })()`);
-          assert.deepEqual(nestedArrow, { display: closed.arrow.display, type: closed.arrow.type, fontSize: closed.arrow.fontSize },
-            'The recording fold uses the same native triangle size as its independently expandable Adaptive measurements section');
+          assert(nestedArrow.display === 'list-item' && nestedArrow.type === 'disclosure-closed'
+            && parseFloat(nestedArrow.fontSize) > 0,
+          'The independently expandable Adaptive measurements section keeps its visible native closed triangle');
           assert.equal(await evaluate("document.getElementById('comparison-toggle').getAttribute('aria-expanded')"), 'false',
             'Opening recording leaves comparisons closed');
         }
         await capture(`footer-${id}-open-${width}-${theme}`);
         await pressKey(' '); await settle();
         assert.equal(await evaluate(isOpen), false, `${id} closes with Space`);
+        assert.deepEqual((await geometry(id)).arrow, closed.arrow, `${id}: closing restores the original right-pointing arrow`);
         if (id === 'timing-details') assert.equal(await evaluate("document.getElementById('comparison-content').hidden"), true);
       }
     }

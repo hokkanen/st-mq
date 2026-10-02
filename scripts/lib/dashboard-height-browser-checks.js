@@ -105,7 +105,7 @@ export async function checkDashboardHeights({ evaluate, command, context, refres
       const path = new URL(input.url ?? String(input), location.href).pathname;
       if (path.startsWith('/api/charging/') && options.method === 'POST') {
         state.requested = true;
-        await new Promise(resolve => { state.release = resolve; });
+        if (!path.endsWith('/resume')) await new Promise(resolve => { state.release = resolve; });
         if (state.fail) return new Response(JSON.stringify({ error: 'Synthetic charging action failed. The charger could not confirm this request; inspect its current connection and try again.' }), { status: 503 });
         const body = JSON.parse(options.body);
         if (body.enabled !== undefined) state.enabled = body.enabled;
