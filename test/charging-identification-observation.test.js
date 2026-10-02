@@ -25,7 +25,7 @@ async function fixture(t, transport, vehicle = 'bmw', { retainedOnly = false, he
     mqtt: { address: 'mqtt://synthetic.invalid', user: 'synthetic-observation' } },
   charging: { vehicles: { bmw: { mqttTopic: 'synthetic/observation/bmw' } }, chargers: { charger2: { enabled: false } } } };
   const physical = { pluggedIn: true, enabled: true, charging, powerKw: 7, at: START,
-    transactionId: 23, transactionStartedAt: START, manualEvent: null };
+    transactionId: 23, transactionStartedAt: START, enabledAt: START };
   let schedule = normalizeScheduleState({ enabled: 'none' });
   const tesla = { association: 'synthetic-observation-tesla', connected: vehicle === 'tesla', healthy: vehicle === 'tesla' && healthyTesla,
     pluggedIn: true, atHome: true, charging: true, actualPowerKw: 7, fields: {} };
@@ -88,7 +88,8 @@ async function fixture(t, transport, vehicle = 'bmw', { retainedOnly = false, he
       transactionStartedAt: physical.pluggedIn ? physical.transactionStartedAt : null,
       transactionConfirmed: physical.pluggedIn,
       limits: { chargerA: 16, cableA: 16, circuitA: [16, 16, 16] },
-      powerKw: physical.charging ? physical.powerKw : 0, powerAt: now, manualEvent: physical.manualEvent }); },
+      powerKw: physical.charging ? physical.powerKw : 0, powerAt: now, appControl: { readAt: now, enabled: physical.enabled, enabledAt: physical.enabledAt,
+        stopped: !physical.enabled, stopAt: physical.enabledAt, controlKnown: true, faulted: false, authorizationBlocked: false, schedule: null } }); },
     request: async (action, payload, options) => {
       assert.equal(options.guard(), true);
       if (action === 'SetChargingProfile') {
@@ -152,8 +153,7 @@ async function fixture(t, transport, vehicle = 'bmw', { retainedOnly = false, he
       physical.transactionStartedAt = now; changePhysical(true); },
     async manualStop() {
       now += 1000; changePhysical(false);
-      if (transport === 'cloud') physical.enabled = false;
-      else physical.manualEvent = { id: 'synthetic-manual-stop', kind: 'stop', at: now, transactionId: physical.transactionId };
+      physical.enabled = false; physical.enabledAt = now;
       return this.update();
     },
     foreignRestriction() {

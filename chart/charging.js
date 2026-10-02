@@ -861,11 +861,15 @@ export function createChargingPanel({ document, request, beforeRequest = () => {
         if (label === 'Forecast charging power') return ['Forecast power', text.replace(' average during planned periods', ''), `${text}. ${explanation['Current allocation'] ?? explanation['Energy estimate'] ?? ''}`];
         if (label === 'Other scheduled charging') return ['Other charging', text.split(' · ')[0], `${text}. ${explanation['Other charging'] ?? ''}`];
         if (label === 'Saving from pauses') return [label, text.split(' compared with ')[0], text];
-        if (label === 'Charging limit') return [label, text, 'The configured maximum current per phase. Actual current can be lower when supply is shared or the vehicle limits its draw.'];
+        if (label === 'Charging limit') return [label, text, 'The reported maximum current per phase. Actual current can be lower when supply is shared or the vehicle limits its draw.'];
         return [label, text, detail];
       });
-      if (charger.control?.limiter) rows.push(['Current policy', `${human(charger.control.reason)} · ${number(charger.control.limiter.currentA, 'A')} offered ceiling`], ['Command confirmation', human(charger.control.executionStage ?? 'unconfirmed')]);
-      if (charger.telemetry?.commissioning) rows.push(['EVSE readiness', charger.telemetry.commissioning.controlReady ? 'Verified profile admitted' : 'Commissioning required'], ['Controller loss', 'Autonomous fallback unverified']);
+      if (charger.control?.limiter) rows.push(['Current policy', charger.capabilities?.currentControl
+        ? `${human(charger.control.reason)} · ${number(charger.control.limiter.currentA, 'A')} offered ceiling`
+        : 'Native charger current settings'], ['Command confirmation', human(charger.control.executionStage ?? 'unconfirmed')]);
+      if (charger.telemetry?.commissioning) rows.push(['EVSE readiness', !charger.telemetry.commissioning.controlReady ? 'Control unavailable'
+        : charger.capabilities?.currentControl && charger.telemetry.commissioning.currentControlReady !== true
+          ? 'Current limiter unavailable' : 'Start/stop available'], ['Controller loss', 'Autonomous fallback unverified']);
       if (charger.values?.vehicleNotBefore?.available) rows.push(['Vehicle may accept from', chargingTime(charger.values.vehicleNotBefore.value, charging.timezone, next.now)]);
       if (charger.values?.vehicleCurrentA?.available) rows.push(['Vehicle current ceiling', number(charger.values.vehicleCurrentA.value, 'A')]);
       if (charger.sessionCost) rows.push(['Connection delivered', number(charger.sessionCost.deliveredGridKwh, 'kWh')]);

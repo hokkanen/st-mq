@@ -9,6 +9,7 @@ import WebSocket from 'ws';
 import { createDeviceProviders } from '../src/acquisition/devices.js';
 import { createHttp } from '../src/acquisition/http.js';
 import { ocppInstallation } from '../src/acquisition/easee-ocpp-setup.js';
+import { CHARGING_OBSERVATION_IDS } from '../src/charging/easee.js';
 import { loadConfig } from '../src/app/config.js';
 import { start } from '../src/main.js';
 
@@ -21,7 +22,7 @@ const deferred = () => {
   return { promise, resolve };
 };
 
-function fixture(t) {
+function fixture(t, { streaming = false } = {}) {
   const config = { dataDir: '/unused-fixture-directory', connections: { easee: {
     charger_id: CHARGER, access_token: 'fixture-access-token', local_ocpp: {
       server_url: 'ws://192.0.2.10:9001/ocpp', password: 'fixture-ocpp-pass', authorization_mode: 'plug-and-charge',
@@ -30,6 +31,7 @@ function fixture(t) {
   const events = [], providers = [], states = new Map(), listeners = [];
   let now = AT, permitted = true, current = null, version = 0, schedule = { enabled: 'none' };
   let transition = async () => {}, applyHook = async () => {}, beforeRequest = async () => {};
+  let cloudObservations = null, cloudOffline = false, nativeRequest = null, streamRows = null;
   let readSetupState = () => states.get('setup');
   const stateFor = key => ({ get: () => clone(states.get(key) ?? null), set: value => states.set(key, clone(value)) });
   const http = createHttp({ allowOcppSetup: true, allowChargerScheduling: true, canControl: () => permitted,
@@ -54,29 +56,34 @@ function fixture(t) {
         return new Response(null, { status: 204 });
       }
       if (path === `/state/${CHARGER}/observations`) return Response.json({ observations:
-        [[80, 344], [141, 1], [250, true]].map(([id, value]) => ({ id, value, timestamp: new Date(now).toISOString() })) });
-      if (path === `/api/chargers/${CHARGER}/schedules` && method === 'GET') return Response.json(clone(schedule));
+        (cloudOffline ? (() => { throw Error('synthetic cloud unavailable'); })() : cloudObservations
+          ?? [[80, 344], [141, 1], [250, true]].map(([id, value]) => ({ id, value, timestamp: new Date(now).toISOString() }))) });
+      if (path === `/api/chargers/${CHARGER}/schedules` && method === 'GET') {
+        if (cloudOffline) throw Error('synthetic cloud unavailable');
+        return Response.json(clone(schedule));
+      }
       assert.fail(`Unexpected synthetic request: ${method} ${path}`);
     } });
   function make(enabled = true) {
     const configured = clone(config); configured.connections.easee.local_ocpp.enabled = enabled;
     const installation = ocppInstallation(configured);
     const provider = createDeviceProviders({ connections: configured.connections, http, clock: () => now, canControl: () => permitted,
-      streamFactory: null, ocppInstallation: installation, ocppState: stateFor('transactions'), ocppSetupState: stateFor('setup'),
+      streamFactory: streaming ? () => ({ start() {}, close() {}, snapshot: () => clone(streamRows), reconcile() {}, status: () => ({ connected: true }) }) : null, ocppInstallation: installation, ocppState: stateFor('transactions'), ocppSetupState: stateFor('setup'),
       ocppFactory: options => {
         let ready = false, closed = false;
         let control = { connectionId: 'fixture-native-connection', connectorStatus: 'Available', timestamp: now,
           receivedAt: now, transaction: null, readings: [] };
         const listener = {
-          options, get closed() { return closed; }, set control(value) { control = clone(value); },
+          options, get closed() { return closed; }, get control() { return clone(control); }, set control(value) { control = clone(value); },
           async start() { events.push({ type: 'listener-start', enabled: options.config.enabled }); ready = options.config.enabled && options.canControl(); },
           status: () => ({ configured: options.config.enabled, ready: ready && !closed && options.canControl(), available: false, controlTransport: 'ocpp' }),
           snapshot: () => null,
           controlSnapshot: () => ready && !closed && options.canControl() ? clone(control) : null,
           refreshAuthority() { events.push({ type: 'listener-authority', active: options.canControl() }); },
           noteModeDisableRequested() { events.push({ type: 'native-mode-disable-intent' }); },
-          async request(action, payload, { guard } = {}) {
-            assert.equal(options.canControl(), true); assert.equal(guard?.(), true);
+          async request(action, payload, requestOptions = {}) {
+            assert.equal(options.canControl(), true); assert.equal(requestOptions.guard?.(), true);
+            if (nativeRequest) return nativeRequest(action, payload, requestOptions);
             events.push({ type: 'native', action, payload: clone(payload) }); return { status: 'Accepted' };
           },
           async close() { if (!closed) events.push({ type: 'listener-close' }); ready = false; closed = true; },
@@ -92,6 +99,9 @@ function fixture(t) {
   t.after(async () => { for (const provider of providers) await provider.close(); http.close(); });
   return { config, events, states, listeners, make, http,
     get current() { return current; }, get now() { return now; }, advance: ms => { now += ms; },
+    get observations() { return clone(cloudObservations); }, set observations(value) { cloudObservations = clone(value); },
+    set streamRows(value) { streamRows = clone(value); }, set cloudOffline(value) { cloudOffline = value; },
+    set nativeRequest(value) { nativeRequest = value; },
     set schedule(value) { schedule = clone(value); }, set transition(value) { transition = value; },
     set applyHook(value) { applyHook = value; }, set beforeRequest(value) { beforeRequest = value; },
     set setupStateReader(value) { readSetupState = value; }, revoke: () => { permitted = false; } };
@@ -309,4 +319,240 @@ test('native exact-ID cleanup remains available while a stopped transaction awai
   await adapter.clear({ profileId: 719 }, snapshot);
   assert.deepEqual(f.events.filter(event => event.type === 'native').map(({ action, payload }) => ({ action, payload })),
     [{ action: 'ClearChargingProfile', payload: { id: 719 } }]);
+});
+
+async function nativeAppFixture(t, options) {
+  const f = fixture(t, options), profiles = new Map(), cloud = new Map();
+  for (const id of [...CHARGING_OBSERVATION_IDS, 80, 141]) cloud.set(id, { id, value: 16, timestamp: new Date(f.now).toISOString() });
+  const observe = changes => {
+    for (const [id, value] of Object.entries(changes)) cloud.set(Number(id), { id: Number(id), value, timestamp: new Date(f.now).toISOString() });
+    f.observations = [...cloud.values()];
+  };
+  observe({ 31: true, 96: 0, 100: 'C', 109: 3, 120: 7, 250: true, 80: 344, 141: 1 });
+  const provider = f.make(); await provider.reconcileOcpp();
+  const listener = f.listeners.at(-1), adapter = provider.chargerScheduleControl();
+  const physical = (status = 'Charging', powerKw = 7, transactionId = 7) => {
+    listener.control = { connectionId: 'native-app-fixture-socket', connectorStatus: status, timestamp: f.now, receivedAt: f.now,
+      transaction: transactionId === null ? null : { id: transactionId, startedAt: AT - 60_000, confirmed: true },
+      readings: [{ id: 120, value: powerKw, timestamp: new Date(f.now).toISOString(), receivedAt: f.now }] };
+  };
+  physical();
+  f.nativeRequest = async (action, payload, options) => {
+    assert.equal(options.beforeSend?.() ?? true, true);
+    assert.equal(options.guard(), true);
+    f.events.push({ type: 'native', action, payload: clone(payload) });
+    if (action === 'SetChargingProfile') { profiles.set(payload.csChargingProfiles.chargingProfileId, clone(payload.csChargingProfiles)); physical('SuspendedEVSE', 0); return { status: 'Accepted' }; }
+    if (action === 'ClearChargingProfile') return { status: profiles.delete(payload.id) ? 'Accepted' : 'Unknown' };
+    assert.equal(action, 'GetCompositeSchedule');
+    const end = Math.max(0, ...[...profiles.values()].map(profile => Date.parse(profile.validTo)));
+    return { status: 'Accepted', connectorId: 1, scheduleStart: new Date(f.now).toISOString(), chargingSchedule: {
+      duration: payload.duration, chargingRateUnit: 'A', chargingSchedulePeriod: [{ startPeriod: 0, limit: end > f.now ? 0 : 16 },
+        ...(end > f.now && end < f.now + payload.duration * 1000 ? [{ startPeriod: (end - f.now) / 1000, limit: 16 }] : [])] } };
+  };
+  let stored = null;
+  const createController = initialState => adapter.createController({ initialState, clock: () => f.now, canControl: () => true,
+    saveState: value => { stored = clone(value); } });
+  const controller = createController(null); t.after(() => controller.close());
+  const refresh = () => adapter.read({ forceAppRefresh: true });
+  const plan = { id: 'native-app-plan', feasible: true, startAt: AT + 40 * 60_000, periods: [{ startAt: AT + 40 * 60_000, endAt: null }] };
+  await refresh();
+  return { f, provider, listener, adapter, controller, plan, profiles, physical, observe, refresh, createController,
+    get saved() { return stored; }, nativeWrites: () => f.events.filter(row => row.type === 'native' && row.action !== 'GetCompositeSchedule') };
+}
+
+test('production native adapter observes Easee app Stop and Enable, preserves native limits and restores manual priority', async t => {
+  const x = await nativeAppFixture(t), { f, controller } = x;
+  let view = await controller.update({ enabled: true, plan: x.plan });
+  assert.equal(view.phase, 'paused');
+  const ownedId = view.owned.profileId;
+  x.profiles.set(19, { transactionId: 7, validTo: new Date(AT + 20 * 60_000).toISOString() });
+  f.advance(1000); x.observe({ 31: false, 96: 53, 109: 4 }); await x.refresh();
+  view = await controller.update({ enabled: true });
+  assert.equal(view.phase, 'yielded'); assert.equal(view.manual.kind, 'stop');
+  assert.equal(x.profiles.has(ownedId), false); assert.equal(x.profiles.has(19), true);
+  assert.deepEqual(x.nativeWrites().at(-1), { type: 'native', action: 'ClearChargingProfile', payload: { id: ownedId } });
+  view = await controller.update({ enabled: true, resume: true });
+  assert.equal(view.phase, 'yielded', 'Automatic resumption cannot undo an app stop');
+  f.advance(1000); x.observe({ 31: true, 96: 0, 47: 8 }); await x.refresh();
+  view = await controller.update({ enabled: true });
+  assert.equal(view.manual.kind, 'release'); assert.equal(view.phase, 'yielded');
+  assert.equal(view.snapshot.limits.chargerA, 8);
+  const restarted = x.createController(x.saved); t.after(() => restarted.close());
+  view = await restarted.update({ enabled: true, plan: x.plan });
+  assert.equal(view.manual.kind, 'release', 'A restart preserves the same connected session’s app priority');
+  view = await restarted.update({ enabled: true, resume: true });
+  assert.equal(view.phase, 'paused'); assert.equal(view.manual, null);
+  assert.equal(view.snapshot.limits.chargerA, 8);
+  assert(x.nativeWrites().every(row => ['SetChargingProfile', 'ClearChargingProfile'].includes(row.action)));
+  assert(x.nativeWrites().filter(row => row.action === 'SetChargingProfile').every(row => row.payload.csChargingProfiles.chargingSchedule.chargingSchedulePeriod.every(period => period.limit === 0)));
+});
+
+test('production native adapter distinguishes app priority from Equalizer suspension, faults and an unconfirmed pause', async t => {
+  const x = await nativeAppFixture(t);
+  x.physical('SuspendedEVSE', 0); x.observe({ 96: 50, 109: 4 }); await x.refresh();
+  let view = await x.controller.update({ enabled: true, plan: x.plan });
+  assert.equal(view.phase, 'paused'); assert.equal(view.manual, null);
+  x.f.advance(1000); x.observe({ 96: 56, 109: 5 }); await x.refresh();
+  view = await x.controller.update({ enabled: true });
+  assert.equal(view.phase, 'unavailable'); assert.equal(view.manual, null);
+  assert.equal(x.nativeWrites().length, 1);
+});
+
+test('production native read recognizes app Charge now only after physical confirmation of an owned pause', async t => {
+  const x = await nativeAppFixture(t);
+  let view = await x.controller.update({ enabled: true, plan: x.plan });
+  const saved = x.saved, id = view.owned.profileId;
+  assert.equal(view.pauseConfirmed, true);
+  x.f.advance(1000); x.physical('Charging', 7);
+  const restarted = x.createController(saved); t.after(() => restarted.close());
+  view = await restarted.update({ enabled: true, plan: x.plan });
+  assert.equal(view.phase, 'yielded'); assert.equal(view.manual.kind, 'release');
+  assert.deepEqual(x.nativeWrites().at(-1).payload, { id });
+  x.f.advance(1000); x.physical('Available', 0, null);
+  view = await restarted.update({ enabled: true });
+  assert.equal(view.manual, null); assert.equal(view.phase, 'disconnected');
+});
+
+test('production native adapter yields to a changed app schedule until its known window ends', async t => {
+  const x = await nativeAppFixture(t);
+  await x.controller.update({ enabled: true, plan: x.plan });
+  x.f.advance(1000);
+  x.f.schedule = { enabled: 'daily', daily: { timezone: 'UTC', periods: [{ startTime: '12:00', stopTime: '12:05', maximumAmps: 8 }] } };
+  await x.refresh();
+  let view = await x.controller.update({ enabled: true });
+  assert.equal(view.phase, 'yielded'); assert.equal(view.manual.kind, 'window');
+  assert.equal(view.manual.resumeAt, AT + 5 * 60_000);
+  x.f.advance(5 * 60_000); await x.refresh();
+  view = await x.controller.update({ enabled: true });
+  assert.equal(view.manual, null); assert.equal(view.phase, 'paused');
+  assert(finiteOnly(x.nativeWrites()));
+  assert.equal(x.f.events.filter(row => row.type === 'http' && row.path.endsWith('/schedules') && row.method !== 'GET').length, 0);
+});
+const finiteOnly = rows => rows.filter(row => row.action === 'SetChargingProfile').every(row => Boolean(row.payload.csChargingProfiles.validTo));
+
+test('production native pre-write reread fences a newer Easee app action without sending a profile', async t => {
+  const x = await nativeAppFixture(t), snapshot = await x.refresh();
+  x.f.advance(1000); x.observe({ 31: false, 96: 53 });
+  const { ocppPauseInstruction } = await import('../src/charging/ocpp.js');
+  const instruction = ocppPauseInstruction({ profileId: 81, transactionId: 7, now: x.f.now, startAt: AT + 40 * 60_000 });
+  await assert.rejects(x.adapter.install(instruction, snapshot), { code: 'control-revoked' });
+  assert.equal(x.nativeWrites().length, 0);
+});
+
+test('production native cleanup remains local when supplemental Easee cloud evidence is unavailable', async t => {
+  const x = await nativeAppFixture(t);
+  await x.controller.update({ enabled: true, plan: x.plan });
+  x.f.cloudOffline = true; x.f.advance(61_000);
+  const view = await x.controller.update({ enabled: false });
+  assert.equal(view.phase, 'off'); assert.equal(view.handoverConfirmed, true);
+  assert.equal(x.profiles.size, 0); assert.equal(view.snapshot.appControl, null);
+});
+
+test('newer REST app evidence fences a profile even when the stream still holds an older enabled value', async t => {
+  const x = await nativeAppFixture(t, { streaming: true });
+  x.f.streamRows = x.f.observations; x.provider.startStreaming();
+  const snapshot = await x.refresh();
+  x.f.advance(1000); x.observe({ 31: false, 96: 53 });
+  const { ocppPauseInstruction } = await import('../src/charging/ocpp.js');
+  const instruction = ocppPauseInstruction({ profileId: 82, transactionId: 7, now: x.f.now, startAt: AT + 40 * 60_000 });
+  await assert.rejects(x.adapter.install(instruction, snapshot), { code: 'control-revoked' });
+  assert.equal(x.nativeWrites().length, 0);
+  assert.equal((await x.refresh()).appControl.stopped, true);
+});
+
+test('a streamed app change while a native profile is queued revokes its final send guard', async t => {
+  const x = await nativeAppFixture(t, { streaming: true });
+  x.f.streamRows = x.f.observations; x.provider.startStreaming();
+  const snapshot = await x.refresh();
+  x.f.nativeRequest = async (action, payload, options) => {
+    assert.equal(action, 'SetChargingProfile');
+    x.f.advance(1000); x.observe({ 31: false, 96: 53 }); x.f.streamRows = x.f.observations;
+    assert.equal(options.beforeSend(), false);
+    throw Object.assign(Error('queued native write revoked'), { code: 'control-revoked' });
+  };
+  const { ocppPauseInstruction } = await import('../src/charging/ocpp.js');
+  const instruction = ocppPauseInstruction({ profileId: 83, transactionId: 7, now: x.f.now, startAt: AT + 40 * 60_000 });
+  await assert.rejects(x.adapter.install(instruction, snapshot), { code: 'control-revoked' });
+  assert.equal(x.nativeWrites().length, 0);
+});
+
+test('native app schedule priority requires a fresh schedule before expiry handback and records the ready-by cycle', async t => {
+  const x = await nativeAppFixture(t);
+  x.f.schedule = { enabled: 'daily', daily: { timezone: 'UTC', periods: [{ startTime: '12:00', stopTime: '12:05', maximumAmps: 8 }] } };
+  await x.refresh();
+  let view = await x.controller.update({ enabled: true, plan: x.plan, readyBy: '12:04', timezone: 'UTC' });
+  assert.equal(view.manual.cycleEndsAt, AT + 4 * 60_000);
+  x.f.cloudOffline = true; x.f.advance(5 * 60_000 + 1000);
+  view = await x.controller.update({ enabled: true });
+  assert.equal(view.phase, 'yielded'); assert.equal(x.nativeWrites().length, 0);
+  x.f.cloudOffline = false; x.f.advance(1000); await x.refresh();
+  view = await x.controller.update({ enabled: true });
+  assert.equal(view.phase, 'paused');
+  assert.deepEqual(view.lastManualResume, { at: x.f.now, deadlineAt: AT + 4 * 60_000, reason: 'window-end' });
+});
+
+test('natural delayed-schedule expiry does not invent an Easee app Charge now action', async t => {
+  const x = await nativeAppFixture(t);
+  x.f.schedule = { enabled: 'delayed', delayed: { timezone: 'UTC', startTime: '12:05', maximumAmps: 8 } };
+  await x.refresh();
+  let view = await x.controller.update({ enabled: true, plan: x.plan });
+  assert.equal(view.manual.kind, 'schedule');
+  const manual = clone(view.manual);
+  x.f.advance(5 * 60_000); x.f.schedule = { enabled: 'ocpp.direct' }; await x.refresh();
+  view = await x.controller.update({ enabled: true });
+  assert.deepEqual(view.manual, manual);
+});
+
+test('native transaction rollover keeps app priority and the same physical connection scope', async t => {
+  const x = await nativeAppFixture(t);
+  let view = await x.controller.update({ enabled: true, plan: x.plan });
+  const connectedAt = view.session.connectedAt;
+  x.f.advance(1000); x.physical('Charging', 7);
+  view = await x.controller.update({ enabled: true });
+  assert.equal(view.manual.kind, 'release');
+  const manual = clone(view.manual);
+  x.f.advance(1000); x.physical('Charging', 7, 8);
+  view = await x.controller.update({ enabled: true });
+  assert.equal(view.session.connectedAt, connectedAt); assert.equal(view.session.transactionId, 8);
+  assert.deepEqual(view.manual, manual); assert.equal(view.phase, 'yielded');
+});
+
+test('an initially stopped Easee app remains authoritative through missing cloud evidence and restart', async t => {
+  const x = await nativeAppFixture(t);
+  x.observe({ 31: false, 96: 53 }); await x.refresh();
+  let view = await x.controller.update({ enabled: true, plan: x.plan });
+  assert.equal(view.phase, 'unavailable'); assert.equal(view.errorCode, 'charger-stopped');
+  x.f.cloudOffline = true; x.f.advance(61_000);
+  const restarted = x.createController(x.saved); t.after(() => restarted.close());
+  view = await restarted.update({ enabled: true, plan: x.plan, resume: true });
+  assert.equal(view.errorCode, 'charger-stopped'); assert.equal(x.nativeWrites().length, 0);
+});
+
+test('older Easee cloud control observations cannot acknowledge or erase a newer app stop', async t => {
+  const x = await nativeAppFixture(t), older = x.f.observations;
+  await x.controller.update({ enabled: true, plan: x.plan });
+  x.f.advance(1000); x.observe({ 31: false, 96: 53 }); await x.refresh();
+  let view = await x.controller.update({ enabled: true });
+  assert.equal(view.manual.kind, 'stop');
+  const manual = clone(view.manual), writesBefore = x.nativeWrites().length;
+  x.f.advance(1000); x.f.observations = older; await x.refresh();
+  view = await x.controller.update({ enabled: true, resume: true });
+  assert.equal(view.phase, 'yielded'); assert.deepEqual(view.manual, manual);
+  assert.equal(x.nativeWrites().length, writesBefore);
+});
+
+test('a newer Easee schedule wins over a resume request acknowledging an earlier app release', async t => {
+  const x = await nativeAppFixture(t);
+  await x.controller.update({ enabled: true, plan: x.plan });
+  x.f.advance(1000); x.physical('Charging', 7);
+  let view = await x.controller.update({ enabled: true });
+  assert.equal(view.manual.kind, 'release');
+  const earlier = view.manual.id;
+  x.f.advance(1000);
+  x.f.schedule = { enabled: 'daily', daily: { timezone: 'UTC', periods: [{ startTime: '12:00', stopTime: '12:05', maximumAmps: 8 }] } };
+  await x.refresh();
+  const count = x.nativeWrites().length;
+  view = await x.controller.update({ enabled: true, resume: true });
+  assert.equal(view.phase, 'yielded'); assert.equal(view.manual.kind, 'window');
+  assert.notEqual(view.manual.id, earlier); assert.equal(x.nativeWrites().length, count);
 });

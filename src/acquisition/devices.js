@@ -9,7 +9,7 @@
 // https://developer.easee.com/docs/load-balancing
 // https://developer.easee.com/changelog/ocpp-15
 import { createHash } from 'node:crypto';
-import { CHARGING_OBSERVATION_IDS, createEaseeScheduleAdapter } from '../charging/easee.js';
+import { CHARGING_OBSERVATION_IDS, chargingSnapshot, createEaseeScheduleAdapter, effectiveScheduleFingerprint, normalizeScheduleState } from '../charging/easee.js';
 import { createEaseeStream } from './easee-stream.js';
 import { createEaseeOcpp } from './easee-ocpp.js';
 import { createOcppSetup, isOcppSetupState } from './easee-ocpp-setup.js';
@@ -540,14 +540,47 @@ export function createDeviceProviders({ connections = {}, http, tokenStore, cloc
   }
   const scheduleControl = createEaseeScheduleAdapter({ request: easeeAuthenticated, readObservations,
     chargerId: easee.charger_id, equalizerId: easee.equalizer_id, clock, canControl: () => !invalidOcppSetup && canControl() });
-  let nativeCloudSnapshot = null, nativeCloudFlight = null, nextNativeCloudRead = 0;
-  function refreshNativeCloudTelemetry() {
-    if (closed || nativeCloudFlight || nextNativeCloudRead > clock()) return;
+  let nativeCloudSnapshot = null, nativeCloudSchedule = null, nativeCloudFlight = null, nextNativeCloudRead = 0;
+  function refreshNativeCloudTelemetry({ force = false } = {}) {
+    if (closed) return null;
+    if (nativeCloudFlight) return force ? nativeCloudFlight.then(() => refreshNativeCloudTelemetry({ force: true })) : nativeCloudFlight;
+    if (!force && nextNativeCloudRead > clock()) return null;
     nextNativeCloudRead = clock() + 60_000;
-    nativeCloudFlight = scheduleControl.readTelemetry({ signal: lifetime.signal }).then(snapshot => {
-      nativeCloudSnapshot = snapshot;
-    }).catch(() => {}).finally(() => { nativeCloudFlight = null; });
+    // Cloud evidence supplements the local connection; failures never grant app
+    // priority or prevent exact-ID native cleanup. No cloud schedules are written.
+    nativeCloudFlight = Promise.allSettled([
+      scheduleControl.readTelemetry({ signal: lifetime.signal, forceRest: force }).then(snapshot => { nativeCloudSnapshot = snapshot; }),
+      easeeAuthenticated(`${API}/api/chargers/${encodeURIComponent(easee.charger_id)}/schedules`,
+        { method: 'GET', signal: lifetime.signal }).then(value => {
+        nativeCloudSchedule = { readAt: clock(), schedule: normalizeScheduleState(value?.enabled === 'ocpp.direct' ? { enabled: 'none' } : value) };
+      }),
+    ]).finally(() => { nativeCloudFlight = null; });
+    return nativeCloudFlight;
   }
+  function nativeAppControl() {
+    const now = clock();
+    let cloud = nativeCloudSnapshot && now - nativeCloudSnapshot.readAt <= 60_000 ? nativeCloudSnapshot : null;
+    // A streamed app change must fence a queued OCPP write immediately, without
+    // waiting for the next periodic REST read. Source timestamps stay intact.
+    const rows = stream?.snapshot(easee.charger_id, CHARGING_OBSERVATION_IDS, { requiredIds: [31, 96, 100, 109, 250] });
+    if (rows) {
+      try {
+        const previous = Object.entries(cloud?.observations ?? {}).filter(([, row]) => Number.isSafeInteger(row.at))
+          .map(([id, row]) => ({ id: Number(id), value: row.value, timestamp: new Date(row.at).toISOString() }));
+        cloud = chargingSnapshot([...previous, ...rows], null, now);
+      } catch {}
+    }
+    const schedule = nativeCloudSchedule && now - nativeCloudSchedule.readAt <= 60_000 ? nativeCloudSchedule.schedule : null;
+    if (!cloud && !schedule) return null;
+    return { readAt: Math.max(cloud?.readAt ?? 0, schedule ? nativeCloudSchedule.readAt : 0),
+      enabled: cloud?.enabled ?? null, enabledAt: cloud?.observations?.[31]?.at ?? null,
+      stopped: cloud?.stopped === true,
+      stopAt: cloud ? Math.max(cloud.observations?.[31]?.at ?? 0, cloud.reasonAt ?? 0) : null,
+      controlKnown: cloud?.controlKnown === true, faulted: cloud?.faulted === true,
+      authorizationBlocked: cloud?.authorizationBlocked === true, schedule };
+  }
+  const appSignature = value => value ? JSON.stringify([value.controlKnown, value.enabled, value.enabledAt, value.stopped, value.stopAt, value.faulted,
+    value.authorizationBlocked, value.schedule ? effectiveScheduleFingerprint(value.schedule) : null]) : null;
   const nativeScheduleControl = ocppInstallation ? createOcppScheduleAdapter({ scope: ocppInstallation.scope, clock,
     canControl: () => !closed && canControl() && controlBackend === 'native',
     request: (...args) => local.request(...args),
@@ -556,10 +589,12 @@ export function createDeviceProviders({ connections = {}, http, tokenStore, cloc
       return Boolean(current && current.connectionId === snapshot.connectionId && (!requireTransaction
         || (current.transaction?.id ?? null) === snapshot.transactionId
           && (snapshot.transactionId === null || current.transaction?.confirmed))
-        && (!unchangedStatus || current.connectorStatus === snapshot.connectorStatus && current.timestamp === snapshot.statusAt));
+        && (!unchangedStatus || current.connectorStatus === snapshot.connectorStatus && current.timestamp === snapshot.statusAt
+          && appSignature(nativeAppControl()) === appSignature(snapshot.appControl)));
     },
-    readSnapshot: async () => {
-      refreshNativeCloudTelemetry();
+    readSnapshot: async ({ forceAppRefresh = false } = {}) => {
+      if (forceAppRefresh) await refreshNativeCloudTelemetry({ force: true });
+      else refreshNativeCloudTelemetry();
       const current = local.controlSnapshot?.(), now = clock();
       const power = current?.readings.find(row => row.id === 120);
       const cloud = nativeCloudSnapshot && now - nativeCloudSnapshot.readAt <= 300_000 ? nativeCloudSnapshot : null;
@@ -574,6 +609,7 @@ export function createDeviceProviders({ connections = {}, http, tokenStore, cloc
         statusAt: current?.timestamp ?? null, statusReceivedAt: current?.receivedAt ?? null, pluggedIn,
         transactionId: current?.transaction?.id ?? null, transactionStartedAt: current?.transaction?.startedAt ?? null,
         transactionConfirmed: current?.transaction?.confirmed === true,
+        appControl: nativeAppControl(),
         powerKw: power?.value ?? null, powerAt: power ? sourceTime(power.timestamp) : null, powerReceivedAt: power?.receivedAt ?? null,
         ...(cloud ? { limits: cloud.limits } : {}),
         supply: { ...cloud?.supply, chargerCurrentA: vector([183, 184, 185]), voltageV: vector([194, 195, 196]),

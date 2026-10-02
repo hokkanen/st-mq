@@ -20,10 +20,11 @@ const CONTROL_ERRORS = new Set(['read-failed', 'command-failed', 'readback-faile
   'charger-stopped', 'pause-unconfirmed',
   'offline', 'transaction-unconfirmed', 'composite-unavailable', 'profile-rejected', 'retry-limit', 'storage-failed',
   'provider-offline', 'evse-control-unavailable', 'evse-command-revoked', 'evse-command-unconfirmed',
-  'evse-publish-unconfirmed', 'evse-rpc-rejected', 'evse-commissioning-required', 'evse-read-unavailable',
+  'evse-publish-unconfirmed', 'evse-rpc-rejected', 'evse-profile-unsupported', 'evse-current-control-unavailable', 'evse-work-state-unavailable', 'evse-read-unavailable',
   'evse-native-restriction', 'evse-native-schedule-unavailable', 'evse-event-overflow', 'evse-component-mapping-unverified',
   'identification-resume-required', 'command-unconfirmed']);
-const CONTROL_REASONS = new Set([...CONTROL_ERRORS, 'manual-stop', 'manual-release', 'native-schedule',
+const CONTROL_REASONS = new Set([...CONTROL_ERRORS, 'manual-stop', 'manual-release', 'manual-enable', 'manual-charge-now', 'manual-schedule', 'native-schedule',
+  'native-current-limit', 'vehicle-current-limit', 'hardware-restriction', 'fuse-limit', 'priority-allocation', 'telemetry-fallback',
   'vehicle-not-before', 'identification-pause', 'identification-waiting', 'identification-charging',
   'economic-wait', 'charge-now', 'economic-window', 'no-headroom', 'supply-unavailable', 'within-limit']);
 const time = value => Number.isSafeInteger(value) && value >= 0;

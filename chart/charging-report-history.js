@@ -1,6 +1,6 @@
 const MINUTE = 60_000;
 const POWER_SOURCES = new Set(['easee', 'easee-ocpp', 'shelly-evse', 'mqtt']);
-const IMPORTANT_CAUSES = new Set(['charger-fault', 'charging-authorization', 'control-revoked', 'manual-stop', 'manual-release', 'invalid-plan']);
+const IMPORTANT_CAUSES = new Set(['charger-fault', 'charging-authorization', 'control-revoked', 'manual-stop', 'manual-release', 'manual-enable', 'manual-charge-now', 'manual-schedule', 'invalid-plan']);
 const equal = (a, b) => JSON.stringify(a) === JSON.stringify(b);
 const timestamp = value => Number.isSafeInteger(value) && value >= 0 && value <= 8.64e15;
 const at = row => timestamp(row?.at) ? row.at : null;

@@ -3,18 +3,19 @@ import assert from 'node:assert/strict';
 import { chargingConfiguration } from '../src/charging/config.js';
 import { chargingSettings, chargingSettingsFromConfiguration } from '../src/charging/settings.js';
 import { teslamateConfiguration } from '../src/app/config.js';
-test('physical EVSE defaults keep uncommissioned Shelly control disabled', () => {
+test('physical EVSE defaults keep acquisition disabled and discover control readiness', () => {
   const config = chargingConfiguration();
   assert.equal(config.chargers.charger2.enabled, false);
-  assert.equal(config.chargers.charger2.verified, false);
+  assert.equal(Object.hasOwn(config.chargers.charger2, 'verified'), false);
   assert.equal(Object.hasOwn(config.chargers.charger2, 'sessionEnergyVerified'), false);
   assert.equal(config.chargers.charger2.fallbackCurrentA, 12);
   assert.deepEqual(chargingConfiguration(config), config);
   assert.equal(config.vehicles.bmw.mqttTopic, 'stmq/vehicles/bmw');
 });
-test('retired Shelly session verification is rejected even when disabled', () => {
-  for (const value of [false, true, 'true', null])
-    assert.throws(() => chargingConfiguration({ chargers: { charger2: { sessionEnergyVerified: value } } }),
+test('retired Shelly commissioning assertions are rejected even when disabled', () => {
+  for (const key of ['sessionEnergyVerified', 'verified', 'model', 'firmware', 'connectedStates', 'disconnectedStates', 'chargingStates', 'minimumCurrentA', 'currentStepA'])
+    for (const value of [false, true, 'true', null])
+    assert.throws(() => chargingConfiguration({ chargers: { charger2: { [key]: value } } }),
       /current physical-EVSE configuration/);
 });
 test('completed report retention is a bounded configuration default, independent of charging settings', () => {

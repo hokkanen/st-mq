@@ -27,10 +27,13 @@ Approval and commissioning flags must describe the installation, rather than
 being switched on simply to remove a blocked status. Algorithm versions and fixed
 code constants follow the software's versioning contract.
 
-For Charger 2, `charging.chargers.charger2.verified` admits control only after
-hardware commissioning. MQTT meter acquisition does not require permission to
-control charging. Charger 2 records native lifetime-meter increments directly;
-there is no session-energy comparison setting. See
+For Charger 2, configure MQTT device identity and topic, then enable the
+integration. Start/stop readiness is discovered automatically; native app settings
+retain authority. Optional current limiting requires separate installation
+phase/fuse settings and compatible live numeric capabilities. The manual
+`verified`, model/firmware pins, connection-state lists and current minimum/step
+fields are retired and rejected. Charger 2 records native lifetime-meter
+increments directly; there is no session-energy comparison setting. See
 [charging provider capabilities](charging-provider-capabilities.md).
 
 Public defaults leave credentials, precise location, account identifiers and

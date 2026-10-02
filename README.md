@@ -23,7 +23,7 @@ Market, weather, MQTT temperature, TeslaMate and Easee acquisition plus dated co
 setup are integrated. Charger 1 accepts any car, using manual battery values until
 BMW or Tesla is identified, and can use opt-in cloud Easee schedules or native
 OCPP pauses that expire on the charger. Charger 2
-is a physical Shelly EVSE with commissioning-gated MQTT control. Tesla and BMW are read-only vehicle feeds for either charger. Heating mode and charging permission are
+is a physical Shelly EVSE with automatically checked MQTT start/stop control. Tesla and BMW are read-only vehicle feeds for either charger. Heating mode and charging permission are
 independent. The Charging setup section explains BMW/Tesla feeds and opens guided
 physical tests; each charger’s Session report follows normal charging and keeps
 recent outcomes. See [charging controls, tests and reports](docs/charging.md).
@@ -762,7 +762,7 @@ scheduler. Normal Ctrl+C or service stop requests cloud handback; paired handove
 keeps OCPP active. **A crash or power loss can leave charging waiting for ST-MQ
 approval.** Restart ST-MQ or disable Direct OCPP through Easee configuration;
 autonomous pause expiry does not restore cloud authorization. See [local setup and verified limits](docs/charging-easee.md#direct-local-ocpp-telemetry-firmware-344-or-later).
-Charger 2 supports verified EVSE start/stop and current limits, with control disabled until commissioned. See [charging](docs/charging.md) and
+Charger 2 discovers supported start/stop readiness automatically. Optional current limiting requires compatible reported capabilities and installation electrical settings. See [charging](docs/charging.md) and
 [recording configuration and limitations](docs/recording.md).
 
 Optional [vehicle feeds and physical Charger 2](docs/recording.md#charger-2-physical-capture-and-vehicle-feeds)

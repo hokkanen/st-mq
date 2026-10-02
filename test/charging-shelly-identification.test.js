@@ -1,26 +1,26 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { chargingConfiguration } from '../src/charging/config.js';
+import { shellyProfile } from '../src/charging/shelly-profile.js';
 import { createShellyController } from '../src/charging/shelly-evse.js';
 
 const NOW = 1_800_000_000_000;
 function fixture(t) {
-  const config = chargingConfiguration({ chargers: { charger2: { enabled: true, verified: true,
-    deviceId: 'synthetic-shelly', topicPrefix: 'synthetic/shelly', model: 'synthetic-model', firmware: 'synthetic-firmware',
-    connectedStates: ['connected', 'paused'], chargingStates: ['charging'], disconnectedStates: ['free'] } } }).chargers.charger2;
+  const config = shellyProfile(chargingConfiguration({ chargers: { charger2: { enabled: true, limiterEnabled: true,
+    deviceId: 'synthetic-shelly', topicPrefix: 'synthetic/shelly' } } }).chargers.charger2);
   const f = { now: NOW, permitted: true, online: true, controlReady: true, nativeScheduleActive: false,
     request: { id: 'synthetic-identification', connectedAt: NOW, phase: 'pausing', pauseUntil: NOW + 90_000 },
     session: { sessionId: 'synthetic-session', connected: true, connectedAt: NOW, lastDisconnectedAt: null },
     fields: {}, saved: null, writes: [], saveHook: null, beforePublish: null, afterPublish: null, failRead: false,
     physicalPause: true };
   const field = value => ({ value, measuredAt: NOW, receivedAt: NOW, retained: false });
-  f.fields = { start_charging: field(true), current_limit: field(12), work_state: field('charging'),
+  f.fields = { start_charging: field(true), current_limit: field(12), work_state: field('charger_charging'),
     phase_info: field({ total_power: 8280, phase_a: { current: 12 }, phase_b: { current: 12 }, phase_c: { current: 12 } }) };
   f.change = (role, value) => { f.fields[role] = { ...field(structuredClone(value)), measuredAt: f.now, receivedAt: f.now }; };
   f.snapshot = () => ({ association: 'synthetic-shelly', transport: 'shelly-evse', online: f.online,
-    controlReady: f.controlReady, identificationReady: f.online && f.controlReady, nativeScheduleActive: f.nativeScheduleActive,
+    controlReady: f.controlReady, currentControlReady: f.controlReady, nativeScheduleFingerprint: f.nativeScheduleActive ? 'synthetic-schedule' : null, identificationReady: f.online && f.controlReady, nativeScheduleActive: f.nativeScheduleActive,
     fields: structuredClone(f.fields), session: structuredClone(f.session), readAt: f.now,
-    pluggedIn: f.session.connected, charging: f.fields.work_state.value === 'charging',
+    pluggedIn: f.session.connected, charging: f.fields.work_state.value === 'charger_charging',
     statusAt: f.fields.work_state.measuredAt, powerKw: f.fields.phase_info.value.total_power / 1000,
     powerAt: f.fields.phase_info.measuredAt });
   f.adapter = { association: 'synthetic-shelly', config, snapshot: f.snapshot,
@@ -43,7 +43,7 @@ function fixture(t) {
       f.writes.push({ method, ...params }); f.now++;
       f.change(params.role, params.value);
       if (params.role === 'start_charging' && f.physicalPause) {
-        f.change('work_state', params.value ? 'charging' : 'paused');
+        f.change('work_state', params.value ? 'charger_charging' : 'charger_pause');
         f.change('phase_info', { total_power: params.value ? 8280 : 0,
           ...Object.fromEntries(['a', 'b', 'c'].map(key => [`phase_${key}`, { current: params.value ? 12 : 0 }])) });
       }
@@ -70,7 +70,7 @@ test('Shelly identification persists witnessed pause ownership before dispatch a
   let view = await f.update();
   assert.equal(view.owned.witnessedCharging, true); assert.equal(view.ownsInstruction, true);
   assert.equal(view.pauseConfirmed, false); assert.equal(view.nativeExpiry, false);
-  f.now += 1000; f.change('work_state', 'paused');
+  f.now += 1000; f.change('work_state', 'charger_pause');
   f.change('phase_info', { total_power: 0, phase_a: { current: 0 }, phase_b: { current: 0 }, phase_c: { current: 0 } });
   view = await f.update();
   assert.equal(view.pauseConfirmed, true); assert.equal(f.writes.length, 1);
@@ -94,7 +94,7 @@ test('Shelly identification rejects a natural stop or stale power while the comm
   for (const condition of ['stopped', 'stale-power']) {
     const f = fixture(t);
     f.beforePublish = () => {
-      if (condition === 'stopped') { f.now++; f.change('work_state', 'paused'); }
+      if (condition === 'stopped') { f.now++; f.change('work_state', 'charger_pause'); }
       else f.fields.phase_info.measuredAt = NOW - f.adapter.config.maxAgeMs - 1;
     };
     const view = await f.update();
@@ -150,7 +150,7 @@ test('Shelly accepted-but-unread pause recovers after restart without replaying 
   assert.equal(view.owned, null); assert.equal(f.writes.length, 2);
 });
 
-test('Shelly a lost stop reply requires explicit Resume instead of undoing an ambiguous manual stop', async t => {
+test('Shelly a lost stop reply requires native app Resume instead of undoing an ambiguous manual stop', async t => {
   const f = fixture(t);
   f.afterPublish = () => { throw Object.assign(Error('lost reply'), { code: 'evse-command-unconfirmed' }); };
   let view = await f.update(); assert.equal(view.pending.stage, 'dispatched');
@@ -158,8 +158,12 @@ test('Shelly a lost stop reply requires explicit Resume instead of undoing an am
   view = await f.update();
   assert.equal(view.reason, 'identification-resume-required'); assert.equal(view.manual.kind, 'stop');
   assert.equal(view.owned.purpose, 'identification'); assert.equal(f.writes.length, 1);
-  view = await f.update({ resume: true });
-  assert.equal(f.fields.start_charging.value, true); assert.equal(view.owned, null); assert.equal(f.writes.length, 2);
+  view = await f.update({ enabled: true, resume: true });
+  assert.equal(f.fields.start_charging.value, false); assert.equal(f.writes.length, 1);
+  f.now++; f.change('start_charging', true);
+  view = await f.update({ enabled: true, plan: { periods: [{ startAt: f.now + 3600_000, endAt: null }] } });
+  assert.equal(f.fields.start_charging.value, true); assert.equal(view.owned, null); assert.equal(view.manual.kind, 'enable');
+  assert.equal(f.writes.length, 1);
 });
 
 test('Shelly identification never grants old-session restoration permission to a newly connected vehicle', async t => {
@@ -258,7 +262,7 @@ test('Shelly budget stop revokes charging permission even without a physical cha
   for (const situation of ['never-started', 'stale-power']) {
     const f = fixture(t); f.request = probe('pausing');
     if (situation === 'never-started') {
-      f.change('work_state', 'paused');
+      f.change('work_state', 'charger_pause');
       f.change('phase_info', { total_power: 0, phase_a: { current: 0 }, phase_b: { current: 0 }, phase_c: { current: 0 } });
     } else f.beforePublish = () => { f.fields.phase_info.measuredAt = NOW - f.adapter.config.maxAgeMs - 1; };
     const view = await f.update();

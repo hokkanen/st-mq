@@ -16,11 +16,9 @@
   "panel_icon": "mdi:home-lightning-bolt",
   "panel_title": "ST-MQ",
   "ports": {
-
     "1234/tcp": 1234
   },
   "ports_description": {
-
     "1234/tcp": "Direct web access; enabled only when a web token is configured"
   },
   "webui": "http://[HOST]:[PORT:1234]",
@@ -35,21 +33,17 @@
     "NET_ADMIN",
     "NET_RAW"
   ],
-
   "options": {
-
     "controller": {
       "input": "simulated",
       "topology": "standalone",
       "web_token": "",
       "web_family_token": "",
-
       "max_drop_c": 1.5,
       "max_rise_c": 1.5,
       "savings_strategy": "balanced",
       "preheat_room_boost_c": 5,
       "indoor_sensor_weights": {},
-
       "h66_device": "",
       "h66_verification_file": "",
       "heat_pump_model_confirmed": false,
@@ -58,18 +52,15 @@
       "compressor_integral_a1": -100,
       "compressor_hysteresis_c": 10,
       "a2_basis": "absolute",
-
       "heat_pump_compressor_kw": 3,
       "auxiliary_rated_kw": 9,
       "circulation_kw": 0.08,
       "dhwr_kw": 0.025,
       "dhwr_duration_minutes": 10,
-
       "max_reduction_hours": 4,
       "max_away_reduction_hours": 12,
       "max_unobserved_reduction_hours": 0.5,
       "max_preheat_hours": 2,
-
       "learning_trials": true,
       "trial_budget_cents_per_day": 100,
       "max_trial_cost_cents": 50,
@@ -77,7 +68,6 @@
       "recovery_compressor_only": true,
       "recovery_hold_minutes": 60,
       "recovery_comfort_margin_c": 0.5,
-
       "floor_thermal_priors": {
         "capacity_kwh_per_c": 3.2,
         "native_capacity_kwh_per_c": 8.832,
@@ -87,7 +77,6 @@
         "open_allocation_fraction": 0.4,
         "closed_allocation_fraction": 0.05
       },
-
       "floor_preheat": {
         "enabled": false,
         "commissioned": false,
@@ -101,13 +90,11 @@
         "lease_seconds": 900
       }
     },
-
     "garage": {
       "enabled": false,
       "awayTargetC": 5,
       "maxSensorAgeMs": 180000,
       "door_travel_seconds": 18,
-
       "protection": {
         "approved": false,
         "version": "garage-thermal-reserve-v1",
@@ -116,7 +103,6 @@
         "pipeWallMm": 1,
         "heatTransferWPerM2K": 20
       },
-
       "adapter": {
         "driver": "shelly-cn105",
         "stateTopic": "heatpump/garage/state",
@@ -131,7 +117,6 @@
         "maxAgeMs": 180000
       }
     },
-
     "charging": {
       "report_retention_days": 30,
       "defaults": {
@@ -145,15 +130,10 @@
           "enabled": false,
           "profile": "top-ac-portable",
           "deviceId": "",
-          "model": "",
-          "firmware": "",
           "topicPrefix": "",
           "associationVersion": 1,
-          "verified": false,
           "serviceId": 0,
-          "minimumCurrentA": 6,
           "maximumCurrentA": 16,
-          "currentStepA": 1,
           "limiterEnabled": false,
           "fallbackCurrentA": 12,
           "mainFuseA": [
@@ -175,10 +155,7 @@
           "maxAgeMs": 15000,
           "maxSkewMs": 5000,
           "dwellMs": 30000,
-          "rampA": 2,
-          "connectedStates": [],
-          "disconnectedStates": [],
-          "chargingStates": []
+          "rampA": 2
         }
       },
       "vehicles": {
@@ -199,7 +176,6 @@
         }
       }
     },
-
     "electricity": {
       "margin_ct_per_kwh_ex_vat": 0.33,
       "tax_ct_per_kwh_ex_vat": 2.325,
@@ -211,13 +187,11 @@
       "other_transfer_ct_per_kwh_ex_vat": 1.65,
       "effective_date": ""
     },
-
     "geoloc": {
       "country_code": "fi",
       "latitude": "",
       "longitude": ""
     },
-
     "mqtt": {
       "address": "mqtt://core-mosquitto",
       "user": "",
@@ -226,11 +200,9 @@
       "temperature_report_interval_minutes": 70,
       "temperature_report_grace_seconds": 300
     },
-
     "entsoe": {
       "token": ""
     },
-
     "easee": {
       "user": "",
       "pw": "",
@@ -250,7 +222,6 @@
         "authorization_mode": "rfid"
       }
     },
-
     "teslamate": {
       "enabled": true,
       "carId": "1",
@@ -258,7 +229,6 @@
       "namespace": "",
       "maxAgeMs": 180000
     },
-
     "equipment": {
       "poll_seconds": 30,
       "max_age_seconds": 120,
@@ -465,7 +435,6 @@
         }
       ]
     },
-
     "acquisition": {
       "easee_poll_seconds": 15,
       "weather_poll_minutes": 30,
@@ -476,12 +445,10 @@
       "electricity_max_gap_seconds": 60,
       "electricity_telemetry_max_age_seconds": 1020
     },
-
     "recording": {
       "annual_budget_gb": 10,
       "export_directory": "~"
     },
-
     "pair": {
       "pair_id": "",
       "token": "",
@@ -499,7 +466,6 @@
       "vip_helper": "/usr/local/bin/st-mq-vip",
       "vip_socket": ""
     },
-
     "mirror": {
       "role": "master",
       "directory": "",
@@ -515,15 +481,12 @@
       "ssh_config": ""
     }
   },
-
   "schema": {
-
     "controller": {
       "input": "list(simulated|offline|mqtt|providers)",
       "topology": "list(standalone|mirror|pair)",
       "web_token": "password",
       "web_family_token": "password",
-
       "max_drop_c": "float(0,2)",
       "max_rise_c": "float(0.25,2)",
       "savings_strategy": "list(gentle|balanced|savings)",
@@ -533,7 +496,6 @@
         "downstairs_temperature": "float(0,)?",
         "bedroom_temperature": "float(0,)?"
       },
-
       "h66_device": "str?",
       "h66_verification_file": "str?",
       "heat_pump_model_confirmed": "bool",
@@ -542,18 +504,15 @@
       "compressor_integral_a1": "int(-1000,-1)?",
       "compressor_hysteresis_c": "float(1,50)?",
       "a2_basis": "list(absolute|offset)",
-
       "heat_pump_compressor_kw": "float(0.1,20)",
       "auxiliary_rated_kw": "float(0.1,20)",
       "circulation_kw": "float(0,1)",
       "dhwr_kw": "float(0,1)",
       "dhwr_duration_minutes": "float(1,60)",
-
       "max_reduction_hours": "float(0.25,12)",
       "max_away_reduction_hours": "float(0.25,24)",
       "max_unobserved_reduction_hours": "float(0.25,2)",
       "max_preheat_hours": "float(0.25,6)",
-
       "learning_trials": "bool",
       "trial_budget_cents_per_day": "int(0,1000)",
       "max_trial_cost_cents": "int(0,1000)",
@@ -561,7 +520,6 @@
       "recovery_compressor_only": "bool",
       "recovery_hold_minutes": "int(1,240)",
       "recovery_comfort_margin_c": "float(0,1)",
-
       "floor_thermal_priors": {
         "capacity_kwh_per_c": "float(0.1,100)?",
         "native_capacity_kwh_per_c": "float(0.1,100)?",
@@ -571,7 +529,6 @@
         "open_allocation_fraction": "float(0,1)?",
         "closed_allocation_fraction": "float(0,1)?"
       },
-
       "floor_preheat": {
         "enabled": "bool",
         "commissioned": "bool",
@@ -585,13 +542,11 @@
         "lease_seconds": "int(60,900)"
       }
     },
-
     "garage": {
       "enabled": "bool",
       "awayTargetC": "float(0,31)",
       "maxSensorAgeMs": "int(30000,14400000)",
       "door_travel_seconds": "float(1,300)",
-
       "protection": {
         "approved": "bool",
         "version": "list(garage-thermal-reserve-v1)",
@@ -600,7 +555,6 @@
         "pipeWallMm": "float(0.3,10)",
         "heatTransferWPerM2K": "float(1,100)"
       },
-
       "adapter": {
         "driver": "list(shelly-cn105)",
         "stateTopic": "str?",
@@ -615,7 +569,6 @@
         "maxAgeMs": "int(30000,600000)"
       }
     },
-
     "charging": {
       "report_retention_days": "int(1,3650)",
       "defaults": {
@@ -629,15 +582,10 @@
           "enabled": "bool",
           "profile": "str?",
           "deviceId": "str?",
-          "model": "str?",
-          "firmware": "str?",
           "topicPrefix": "str?",
           "associationVersion": "int(0,300000)",
-          "verified": "bool",
           "serviceId": "int(0,300000)",
-          "minimumCurrentA": "int(0,300000)",
           "maximumCurrentA": "int(0,300000)",
-          "currentStepA": "int(0,300000)",
           "limiterEnabled": "bool",
           "fallbackCurrentA": "int(0,300000)",
           "mainFuseA": [
@@ -653,16 +601,7 @@
           "maxAgeMs": "int(0,300000)",
           "maxSkewMs": "int(0,300000)",
           "dwellMs": "int(0,300000)",
-          "rampA": "int(0,300000)",
-          "connectedStates": [
-            "str"
-          ],
-          "disconnectedStates": [
-            "str"
-          ],
-          "chargingStates": [
-            "str"
-          ]
+          "rampA": "int(0,300000)"
         }
       },
       "vehicles": {
@@ -689,7 +628,6 @@
         }
       }
     },
-
     "electricity": {
       "margin_ct_per_kwh_ex_vat": "float(-20,100)",
       "tax_ct_per_kwh_ex_vat": "float(0,100)",
@@ -701,13 +639,11 @@
       "other_transfer_ct_per_kwh_ex_vat": "float(0,100)",
       "effective_date": "str?"
     },
-
     "geoloc": {
       "country_code": "str",
       "latitude": "str?",
       "longitude": "str?"
     },
-
     "mqtt": {
       "address": "str",
       "user": "str",
@@ -716,12 +652,10 @@
       "temperature_report_interval_minutes": "float(0,1440)",
       "temperature_report_grace_seconds": "float(0,900)"
     },
-
     "entsoe": {
       "token": "password?",
       "domain": "str?"
     },
-
     "easee": {
       "user": "str?",
       "pw": "password?",
@@ -739,11 +673,12 @@
         "ca_certificate_domain": "str?",
         "password": "password?",
         "charge_point_id": "str?",
-        "authorization_tags": ["str"],
+        "authorization_tags": [
+          "str"
+        ],
         "authorization_mode": "list(rfid|plug-and-charge)"
       }
     },
-
     "teslamate": {
       "enabled": "bool",
       "carId": "str",
@@ -751,7 +686,6 @@
       "namespace": "str?",
       "maxAgeMs": "int(30000,600000)"
     },
-
     "equipment": {
       "poll_seconds": "int(5,300)",
       "max_age_seconds": "int(30,3600)",
@@ -815,7 +749,6 @@
         }
       ]
     },
-
     "acquisition": {
       "easee_poll_seconds": "float(10,3600)",
       "weather_poll_minutes": "float(5,360)",
@@ -826,12 +759,10 @@
       "electricity_max_gap_seconds": "float(15,300)",
       "electricity_telemetry_max_age_seconds": "float(15,3600)"
     },
-
     "recording": {
       "annual_budget_gb": "float(0.01,10000)",
       "export_directory": "str"
     },
-
     "pair": {
       "pair_id": "str?",
       "token": "password?",
@@ -849,7 +780,6 @@
       "vip_helper": "str",
       "vip_socket": "str?"
     },
-
     "mirror": {
       "role": "list(master|slave)",
       "directory": "str?",

@@ -14,9 +14,8 @@ async function fixture(t, { charging = true, retainedOnly = false, enabled = tru
   const data = new Map(), writes = [], client = new EventEmitter();
   const config = { input: 'mqtt', connections: { mqtt: { address: 'mqtt://synthetic.invalid', user: 'synthetic-user' } },
     charging: { vehicles: { bmw: { mqttTopic: 'synthetic/identification/bmw' } }, chargers: { charger2: {
-      enabled: true, verified: true, deviceId: 'synthetic-evse', topicPrefix: 'synthetic/evse',
-      model: 'synthetic-model', firmware: 'synthetic-firmware', limiterEnabled: false,
-      connectedStates: ['connected', 'paused'], disconnectedStates: ['free'], chargingStates: ['charging'],
+      enabled: true, deviceId: 'synthetic-evse', topicPrefix: 'synthetic/evse',
+      limiterEnabled: false,
     } } } };
   const store = { getState: key => structuredClone(data.get(key)), setState: (key, value) => {
     if (failSave && key.startsWith('charging:')) throw Error('synthetic storage unavailable');
@@ -26,10 +25,10 @@ async function fixture(t, { charging = true, retainedOnly = false, enabled = tru
   const roles = { current_limit: 'Number', start_charging: 'Boolean', work_state: 'Enum', phase_info: 'Object' };
   const ids = Object.fromEntries(Object.keys(roles).map((role, i) => [role, i + 200]));
   const fields = Object.fromEntries(Object.entries({ current_limit: 12, start_charging: true,
-    work_state: charging ? 'charging' : 'connected',
+    work_state: charging ? 'charger_charging' : 'charger_wait',
     phase_info: {} }).map(([role, value]) => [role, { value, at: START }]));
   const physical = running => {
-    fields.work_state = { value: running ? 'charging' : 'paused', at: now };
+    fields.work_state = { value: running ? 'charger_charging' : 'charger_pause', at: now };
     fields.phase_info = { at: now, value: { total_power: running ? 6900 : 0, total_act_energy: 0,
       ...Object.fromEntries(['phase_a', 'phase_b', 'phase_c'].map(phase => [phase,
         { voltage: 230, current: running ? 10 : 0, power: running ? 2300 : 0 }])) } };
@@ -44,7 +43,7 @@ async function fixture(t, { charging = true, retainedOnly = false, enabled = tru
     else if (frame.method === 'Service.GetConfig') result = { id: 0, auto_balance: { enable: false }, auto_charge: true };
     else if (frame.method === 'Service.GetStatus') result = serviceStatus;
     else if (frame.method === 'Schedule.List') result = schedules;
-    else if (frame.method.endsWith('.GetConfig')) result = { id: ids[role], owner: 'service:0', access: 'crw', min: 6, max: 16, meta: { ui: { step: 1 } } };
+    else if (frame.method.endsWith('.GetConfig')) result = { id: ids[role], owner: 'service:0', access: 'crw', options: ['charger_free', 'charger_charging', 'charger_pause', 'charger_wait', 'charger_end'], min: 6, max: 16, meta: { ui: { step: 1 } } };
     else if (frame.method.endsWith('.Set')) {
       writes.push({ ...frame, at: now });
       now += 1000; fields[role] = { value: frame.params.value, at: now };
@@ -100,7 +99,7 @@ async function fixture(t, { charging = true, retainedOnly = false, enabled = tru
     async online() { client.emit('connect'); client.emit('message', 'synthetic/evse/online', Buffer.from('true'), { retain: true }); await adapter.refresh(); },
     start() { now += 1000; vehicleAllows = true; physical(true); publish({ charging: true }, now); },
     manualStop() { now += 1000; fields.start_charging = { value: false, at: now }; physical(false); },
-    disconnect() { now += 1000; physical(false); fields.work_state = { value: 'free', at: now }; },
+    disconnect() { now += 1000; physical(false); fields.work_state = { value: 'charger_free', at: now }; },
     connect() { now += 1000; fields.start_charging = { value: true, at: now }; physical(vehicleAllows); },
     async confirm() { const stopAt = fields.work_state.at; now = stopAt + 4000; publish({ charging: false }, stopAt + 2000); return this.update(); },
     input() { const view = card(); return { association: view.association, sessionId: view.request.sessionId, revision: view.request.revision }; },

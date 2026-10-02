@@ -810,7 +810,9 @@ try {
   // Report inspection is scoped to the selected physical charger, including
   // empty and expired histories. All cases below remain read-only browser work.
   const inspectionMutations = await evaluate('chargingFixture.mutations.length');
+  await until("!document.getElementById('charging-report-dialog').open && document.activeElement.id === 'charger1-session-report'");
   await evaluate("document.getElementById('charger2-session-report').focus()");
+  await until("document.activeElement.id === 'charger2-session-report'");
   await keyPress('Enter');
   await until("document.getElementById('charging-report-dialog').open");
   await pause(40);

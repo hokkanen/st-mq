@@ -836,7 +836,7 @@ export class ChargingRuntime {
     const external = views.find(view => view.capabilities.externalLoadBalancing);
     const reportedSupply = external?.telemetry.providerConnected === false ? null : external?.telemetry.supply;
     const installation = this.configuration.chargers.charger2;
-    const configuredBudgetCurrentA = installation.enabled && installation.verified
+    const configuredBudgetCurrentA = installation.enabled && installation.limiterEnabled && installation.additiveCurrentVerified
       ? installation.mainFuseA.map((amps, phase) => Math.max(0, amps - installation.marginA[phase])) : null;
     const voltageEstimate = readPlanningVoltage(this.store, { input: this.config.input, now });
     const livePhases = livePlanningVoltages(views, reportedSupply, now);

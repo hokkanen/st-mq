@@ -308,6 +308,30 @@ longer values. `local_ocpp.charge_point_id` is needed only for a custom identity
 Cloud credentials remain configured for setup, fallback readings and cloud
 control while native OCPP is inactive.
 
+### Native app priority
+
+Local OCPP follows the cloud controller's ownership rules. The production adapter
+combines source-timed cloud/stream enable and stop observations with read-only
+cloud schedules; it never writes a cloud schedule while OCPP owns control.
+Observed native Stop prevents automatic resumption. App enable or schedule
+removal yields the current physical connection to the app; only the application's
+exact OCPP profile is released. Native current limits remain in the charger.
+A fresh Charging observation before an owned, physically confirmed pause expires
+also establishes an app release. `SuspendedEVSE` or zero power alone does not
+identify a manual action.
+
+Known schedule windows retain their original end across restart, Automatic
+OFF/ON and ready-by edits; ambiguous ends require explicit resumption. Handback
+requires fresh schedule evidence, and a newer app change wins over a queued
+resume or profile write. Manual session priority lasts until physical unplug or
+explicit resumption; transaction rollover alone is not an unplug.
+
+The supplemental cloud read can be unavailable while local charging continues.
+Then unreported app intent remains unknown; exact-ID cleanup stays available
+locally and existing observed manual priority is retained. The integration cannot
+identify app taps that produce no observable change. A controller outage still
+has the authorization and pause-expiry limitations described above.
+
 ### Native charging pauses and identification current
 
 For an economic pause, the native controller installs an absolute,

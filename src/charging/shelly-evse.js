@@ -1,6 +1,7 @@
 import { createHash, randomUUID } from 'node:crypto';
 import { shellyCurrentLimit } from './shelly-limit.js';
 import { createMqttAdmission } from '../acquisition/mqtt-admission.js';
+import { shellyProfile, supportedShellyStates } from './shelly-profile.js';
 const finite = Number.isFinite;
 const copy = value => structuredClone(value);
 const TYPES = { current_limit: 'Number', start_charging: 'Boolean', work_state: 'Enum', phase_info: 'Object' };
@@ -9,12 +10,13 @@ const METHODS = new Set(['Shelly.GetDeviceInfo', 'Service.GetConfig', 'Service.G
 const hash = value => createHash('sha256').update(JSON.stringify(value)).digest('hex');
 const fail = code => Object.assign(new Error(code), { code });
 export function shellyAssociation(config, broker) {
-  return hash(['shelly-evse', config.deviceId, config.model, config.firmware, config.topicPrefix, config.serviceId,
+  return hash(['shelly-evse-v2', config.deviceId, config.profile, config.topicPrefix, config.serviceId,
     config.associationVersion, config.phaseMap, broker?.address, broker?.user]);
 }
 
 /** EVSE RPC transport, deliberately separate from generic relay equipment. */
 export function createShellyEvseAdapter({ config, broker, client, store, engine, clock = Date.now, canControl = () => false } = {}) {
+  config = shellyProfile(config);
   const association = shellyAssociation(config, broker), key = `charging:shelly:${association}`;
   let state = store.getState(key) ?? { version: 1, association, fields: {}, connection: null, counter: null, sessionSequence: 0 };
   if (state.version !== 1 || state.association !== association
@@ -24,6 +26,7 @@ export function createShellyEvseAdapter({ config, broker, client, store, engine,
   state = copy(state);
   let connected = false, admitted = false, online = false, closed = false, generation = 0, discovered = false, controlReady = false;
   let error = null, info = null, service = null, serviceStatus = null, nativeSchedules = null, serviceAt = null, currentConfig = null, polling = null, buffer = [], componentRoles = new Map(), pendingEvents = [];
+  let profileSupported = false, currentWritable = false, currentControlReady = false;
   const source = `stmq-evse-${randomUUID()}`, pending = new Map();
   let subscriptionStatus = 'disconnected', lastLiveAt = null;
   const topics = [
@@ -35,6 +38,7 @@ export function createShellyEvseAdapter({ config, broker, client, store, engine,
   const admission = createMqttAdmission();
   let overflow = false, eventOverflow = false;
   const ready = () => controlReady && !eventOverflow && finite(serviceAt) && clock() >= serviceAt && clock() - serviceAt <= config.maxAgeMs;
+  const currentReady = () => ready() && currentControlReady;
   const persist = () => store.setState(key, copy(state));
   const live = field => {
     const value = state.fields[field];
@@ -42,8 +46,11 @@ export function createShellyEvseAdapter({ config, broker, client, store, engine,
   };
   function rejectPending(reason) { for (const item of pending.values()) { clearTimeout(item.timer); item.reject(fail(reason)); } pending.clear(); }
   async function rpc(method, params = {}, { mutation = false, guard = () => true, beforePublish = () => {} } = {}) {
+    if (['Number.Set', 'Boolean.Set'].includes(method) && !mutation) throw fail('invalid-evse-command');
     if (!METHODS.has(method) || mutation && !['Number.Set', 'Boolean.Set'].includes(method)) throw fail('unsupported-evse-method');
-    if (!connected || !admitted || closed || mutation && (!online || !ready() || !canControl() || !guard())) throw fail('evse-control-unavailable');
+    const permitted = () => ready() && knownWorkState() && settingFresh('start_charging') && settingFresh('current_limit')
+      && (method !== 'Number.Set' || config.limiterEnabled && currentReady());
+    if (!connected || !admitted || closed || mutation && (!online || !permitted() || !canControl() || !guard())) throw fail('evse-control-unavailable');
     if (pending.size >= 16) throw fail('evse-request-limit');
     if (mutation && (params.owner !== `service:${config.serviceId}` || !['current_limit', 'start_charging'].includes(params.role) || method !== `${TYPES[params.role]}.Set`
       || params.role === 'current_limit' && (!finite(params.value) || params.value < config.minimumCurrentA || params.value > config.maximumCurrentA
@@ -51,7 +58,7 @@ export function createShellyEvseAdapter({ config, broker, client, store, engine,
       || params.role === 'start_charging' && typeof params.value !== 'boolean')) throw fail('invalid-evse-command');
     const id = randomUUID(), epoch = generation;
     await beforePublish();
-    if (!connected || !admitted || closed || epoch !== generation || mutation && (!online || !ready() || !canControl() || !guard())) throw fail('evse-command-revoked');
+    if (!connected || !admitted || closed || epoch !== generation || mutation && (!online || !permitted() || !canControl() || !guard())) throw fail('evse-command-revoked');
     return new Promise((resolve, reject) => {
       const timer = setTimeout(() => { pending.delete(id); reject(fail('evse-command-unconfirmed')); }, 5000);
       timer.unref?.(); pending.set(id, { resolve, reject, timer, generation: epoch });
@@ -92,7 +99,7 @@ export function createShellyEvseAdapter({ config, broker, client, store, engine,
     try {
       const record = () => {
         state.fields[role] = { value: copy(value), measuredAt, receivedAt, retained, source: 'shelly-evse' };
-        if (role === 'work_state' && !retained) {
+        if (role === 'work_state' && !retained && discovered && profileSupported) {
           const connectedValue = config.disconnectedStates.includes(value) ? false
             : [...config.connectedStates, ...config.chargingStates].includes(value) ? true : null;
           if (connectedValue !== null && state.connection?.connected !== connectedValue) {
@@ -204,7 +211,9 @@ export function createShellyEvseAdapter({ config, broker, client, store, engine,
           const component = role === 'current_limit' ? currentConfig : await rpc(`${type}.GetConfig`, { owner: `service:${config.serviceId}`, role });
           if (!Number.isSafeInteger(component?.id) || component.id < 0 || component.owner !== `service:${config.serviceId}`
             || typeof component.access !== 'string' || !/[rw*]/.test(component.access)
-            || ['current_limit', 'start_charging'].includes(role) && !/[w*]/.test(component.access)) throw fail('evse-component-mapping-unverified');
+            || role === 'start_charging' && !/[w*]/.test(component.access)) throw fail('evse-component-mapping-unverified');
+          if (role === 'current_limit') currentWritable = /[w*]/.test(component.access);
+          if (role === 'work_state') profileSupported = supportedShellyStates(component);
           componentRoles.set(`${type.toLowerCase()}:${component.id}`, role);
         }
         discovered = info?.id === config.deviceId && componentRoles.size === Object.keys(TYPES).length;
@@ -212,8 +221,9 @@ export function createShellyEvseAdapter({ config, broker, client, store, engine,
         for (const event of events) if (!admitNotification(event.params, event.at, event.retained)) admission.restore(event.admissionCheckpoint);
       }
       // Native limits and flags remain authoritative and may change in the app.
-      [service, serviceStatus, nativeSchedules] = await Promise.all([rpc('Service.GetConfig', { id: config.serviceId }),
-        rpc('Service.GetStatus', { id: config.serviceId }), rpc('Schedule.List')]);
+      [service, serviceStatus, nativeSchedules, currentConfig] = await Promise.all([rpc('Service.GetConfig', { id: config.serviceId }),
+        rpc('Service.GetStatus', { id: config.serviceId }), rpc('Schedule.List'),
+        rpc('Number.GetConfig', { owner: `service:${config.serviceId}`, role: 'current_limit' })]);
       if (epoch !== generation) return;
       serviceAt = clock();
       if (!Array.isArray(nativeSchedules?.jobs) || nativeSchedules.jobs.length > 20
@@ -221,12 +231,14 @@ export function createShellyEvseAdapter({ config, broker, client, store, engine,
       const nativeAvailable = serviceStatus?.state === 'running'
         && (serviceStatus.errors === undefined || Array.isArray(serviceStatus.errors) && serviceStatus.errors.length === 0)
         && (serviceStatus.flags === undefined || Array.isArray(serviceStatus.flags) && serviceStatus.flags.length === 0);
-      controlReady = !eventOverflow && discovered && config.verified && info.model === config.model && info.fw_id === config.firmware
-        && currentConfig?.min === config.minimumCurrentA && currentConfig?.max === config.maximumCurrentA
-        && currentConfig?.meta?.ui?.step === config.currentStepA && service?.id === config.serviceId
-        && service?.auto_balance?.enable === false && nativeAvailable;
-      if (!controlReady) error = eventOverflow ? 'evse-event-overflow' : !nativeAvailable ? 'evse-native-restriction' : 'evse-commissioning-required';
-      else if (['evse-event-overflow', 'evse-native-restriction', 'evse-commissioning-required', 'evse-read-unavailable'].includes(error)) error = null;
+      controlReady = !eventOverflow && discovered && profileSupported && service?.id === config.serviceId && nativeAvailable;
+      currentControlReady = currentWritable && /[w*]/.test(currentConfig?.access ?? '')
+        && componentRoles.get(`number:${currentConfig?.id}`) === 'current_limit' && currentConfig.owner === `service:${config.serviceId}`
+        && currentConfig?.min === config.minimumCurrentA
+        && finite(currentConfig?.max) && currentConfig.max >= config.maximumCurrentA
+        && currentConfig?.meta?.ui?.step === config.currentStepA && service?.auto_balance?.enable === false;
+      if (!controlReady) error = eventOverflow ? 'evse-event-overflow' : !nativeAvailable ? 'evse-native-restriction' : 'evse-profile-unsupported';
+      else if (['evse-event-overflow', 'evse-native-restriction', 'evse-profile-unsupported', 'evse-read-unavailable'].includes(error)) error = null;
       for (const role of Object.keys(TYPES)) {
         const result = await rpc(`${TYPES[role]}.GetStatus`, { owner: `service:${config.serviceId}`, role });
         if (epoch !== generation) return;
@@ -260,9 +272,11 @@ export function createShellyEvseAdapter({ config, broker, client, store, engine,
     return field && !field.retained && field.measuredAt > 0 && field.measuredAt <= clock()
       && field.receivedAt <= clock() && clock() - field.receivedAt <= config.maxAgeMs;
   };
-  const knownWorkState = () => settingFresh('work_state')
+  const knownWorkState = () => discovered && profileSupported && settingFresh('work_state')
     && [...config.connectedStates, ...config.chargingStates, ...config.disconnectedStates].includes(state.fields.work_state.value);
-  const snapshot = () => ({ association, transport: 'shelly-evse', online: connected && admitted && online, controlReady: ready(),
+  const basicReady = () => Boolean(connected && admitted && online && ready() && knownWorkState()
+    && settingFresh('start_charging') && settingFresh('current_limit'));
+  const snapshot = () => ({ association, transport: 'shelly-evse', online: connected && admitted && online, controlReady: basicReady(), currentControlReady: basicReady() && currentReady(),
     identificationReady: Boolean(connected && admitted && online && ready() && knownWorkState()
       && settingFresh('start_charging') && settingFresh('current_limit')),
     pluggedIn: knownWorkState() ? state.connection?.connected ?? null : null,
@@ -272,10 +286,14 @@ export function createShellyEvseAdapter({ config, broker, client, store, engine,
     powerKw: finite(state.fields.phase_info?.value?.total_power) ? state.fields.phase_info.value.total_power / 1000 : null,
     powerAt: state.fields.phase_info?.measuredAt ?? null,
     mqtt: { brokerConnected: connected, subscribed: admitted, subscriptionStatus, lastLiveAt }, topics: copy(topics),
-    readAt: clock(), nativeScheduleActive: Boolean(nativeSchedules?.jobs.some(job => job.enable)), fields: copy(state.fields), session: copy(state.connection),
-    error, generation,
-    commissioning: { verified: config.verified,
-      identityMatched: discovered, controlReady: ready(), controllerLossFallback: 'unverified',
+    readAt: clock(), nativeScheduleActive: Boolean(nativeSchedules?.jobs.some(job => job.enable)),
+    nativeScheduleFingerprint: nativeSchedules?.jobs.some(job => job.enable)
+      ? hash(nativeSchedules.jobs.filter(job => job.enable).map(job => JSON.stringify(job)).sort()) : null,
+    fields: copy(state.fields), session: copy(state.connection),
+    error: error ?? (ready() && !knownWorkState() ? 'evse-work-state-unavailable'
+      : ready() && (!settingFresh('start_charging') || !settingFresh('current_limit')) ? 'evse-read-unavailable' : null), generation,
+    commissioning: { profileSupported, identityMatched: discovered, controlReady: basicReady(), currentControlReady: basicReady() && currentReady(),
+      controllerLossFallback: 'unverified',
       nativeCaps: service ? { energyKwh: service.global_charge_limit, durationMinutes: service.global_time_limit, autoCharge: service.auto_charge, state: serviceStatus?.state, restricted: Boolean(serviceStatus?.errors?.length || serviceStatus?.flags?.length) } : null } });
   // Public electrical readings retain the native source clock and installation
   // phase order. These are current observations, not additional history channels.
@@ -305,16 +323,16 @@ export function createShellyEvseAdapter({ config, broker, client, store, engine,
       ['ev2_import_energy_counter', reading(physical?.total_act_energy, 'kWh')],
     ]);
   };
-  const adapter = { association, config, snapshot, readings, refresh, rpc, accept, capabilities: { scheduling: true, currentControl: true, externalLoadBalancing: false },
+  const adapter = { association, config, snapshot, readings, refresh, rpc, accept, capabilities: { scheduling: true, currentControl: config.limiterEnabled, externalLoadBalancing: false },
     normalize(_snapshot, { now = clock() } = {}) {
       const physical = state.fields.phase_info, phases = physical?.value;
-      const knownState = [...config.connectedStates, ...config.chargingStates, ...config.disconnectedStates].includes(state.fields.work_state?.value);
+      const knownState = knownWorkState();
       const usable = role => ['work_state', 'current_limit'].includes(role) ? state.fields[role] && !state.fields[role].retained && now - state.fields[role].receivedAt <= config.maxAgeMs : live(role);
       const signal = (value, role) => ({ ...(state.fields[role] ?? {}), value: online && usable(role) ? value : null,
         available: online && Boolean(usable(role)) && value != null, source: 'shelly-evse' });
       return { source: 'shelly-evse', providerConnected: online && admitted, association,
         connected: signal(knownState ? state.connection?.connected : null, 'work_state'), charging: signal(knownState ? config.chargingStates.includes(state.fields.work_state?.value) : null, 'work_state'),
-        currentA: signal(state.fields.current_limit?.value, 'current_limit'), maximumCurrentA: { value: config.maximumCurrentA, available: ready(), source: 'verified-hardware' },
+        currentA: signal(state.fields.current_limit?.value, 'current_limit'), maximumCurrentA: { value: currentConfig?.max ?? null, available: ready() && finite(currentConfig?.max), source: 'shelly-evse' },
         actualCurrentA: signal(phases ? Math.max(...['phase_a', 'phase_b', 'phase_c'].map(key => phases[key].current)) : null, 'phase_info'),
         voltageV: signal(phases ? Math.min(...['phase_a', 'phase_b', 'phase_c'].map(key => phases[key].voltage)) : null, 'phase_info'),
         phaseVoltageV: signal(phases ? config.phaseMap.map(index => phases[PHASE_KEYS[index]].voltage) : null, 'phase_info'),
@@ -359,6 +377,9 @@ export function createShellyController({ adapter, initialState, saveState = () =
   let state = initialState ? copy(initialState) : { version: 1, association: adapter.association, phase: 'off', manual: null, ownedPause: false, pending: null };
   let closed = false, revision = 0, planningRevision = null, identification = null, enabled = false, queue = Promise.resolve();
   const persist = () => saveState(copy(state));
+  const manualToken = value => value ? JSON.stringify([value.kind, value.detectedAt, value.fingerprint ?? null]) : null;
+  const scheduleToken = snapshot => snapshot.nativeScheduleFingerprint ?? (snapshot.nativeScheduleActive ? 'active' : null);
+  const sameSetting = (left, right) => left?.value === right?.value && left?.measuredAt === right?.measuredAt;
   const fresh = field => field?.measuredAt > 0 && field.measuredAt <= clock() && field.receivedAt <= clock()
     && clock() - field.receivedAt <= adapter.config.maxAgeMs && !field.retained;
   const physicalFresh = field => fresh(field) && clock() - field.measuredAt <= adapter.config.maxAgeMs;
@@ -403,6 +424,9 @@ export function createShellyController({ adapter, initialState, saveState = () =
     close() { closed = true; revision++; return queue.catch(() => {}); },
     update(input = {}) {
       const intentRevision = ++revision;
+      // A resume acknowledges the instruction visible when the user requested it.
+      // A native change discovered by the ensuing read must retain its priority.
+      const resumeToken = input.resume === true ? manualToken(state.manual) : undefined;
       queue = queue.catch(() => {}).then(async () => {
         if (closed || intentRevision !== revision) return;
         enabled = input.enabled === true;
@@ -416,7 +440,7 @@ export function createShellyController({ adapter, initialState, saveState = () =
           // but never grants permission to start a newly connected vehicle.
           if (state.pending?.owned) state.owned ??= copy(state.pending.owned);
           state.pending = null;
-          delete state.lastStart; delete state.lastCurrent;
+          delete state.lastStart; delete state.lastStartAt; delete state.lastCurrent; delete state.lastCurrentAtSource;
         }
         const start = snapshot.fields.start_charging, current = snapshot.fields.current_limit, workState = snapshot.fields.work_state;
         const permittedState = [...adapter.config.connectedStates, ...adapter.config.chargingStates].includes(workState?.value);
@@ -424,39 +448,58 @@ export function createShellyController({ adapter, initialState, saveState = () =
           identification = null;
           state.phase = 'unavailable'; state.reason = snapshot.error ?? 'provider-offline'; await persist(); return;
         }
+        if (adapter.config.limiterEnabled && snapshot.currentControlReady === false) {
+          identification = null;
+          state.phase = 'unavailable'; state.reason = snapshot.currentControlError ?? 'evse-current-control-unavailable'; await persist(); return;
+        }
         // A publish timeout/restart is an uncertain physical outcome. Reconcile
         // its exact native setting before accepting another intent; never replay it.
         if (state.pending) {
           const pending = state.pending, readback = snapshot.fields[pending.role];
           if (pending.stage === 'proposed') state.pending = null;
-          else if (pending.owned && fresh(readback) && readback.value === false
+          else if (pending.role === 'start_charging' && pending.value === false && fresh(readback) && readback.value === false
             && (pending.stage !== 'accepted' || !time(pending.acceptedAt) || readback.measuredAt > pending.acceptedAt)) {
             // A lost reply cannot attribute an arbitrary later false event to
             // this application: it could be an explicit native Stop instead.
-            state.owned ??= copy(pending.owned);
-            if (!input.resume) {
-              state.manual = { kind: 'stop', detectedAt: readback.measuredAt };
-              state.phase = 'uncertain'; state.reason = 'identification-resume-required'; await persist(); return;
-            }
-            state.pending = null; state.lastStart = false; state.ownedPause = true;
+            if (pending.owned) state.owned ??= copy(pending.owned);
+            state.manual = { kind: 'stop', detectedAt: readback.measuredAt };
+            state.phase = 'uncertain'; state.reason = pending.owned ? 'identification-resume-required' : 'evse-command-unconfirmed'; await persist(); return;
           }
           else if (fresh(readback) && readback.value === pending.value && readback.measuredAt >= pending.dispatchedAt) {
             state.executionStage = 'read-back';
             if (pending.role === 'start_charging') {
-              state.lastStart = pending.value; state.ownedPause = pending.value === false;
+              state.lastStart = pending.value; state.lastStartAt = readback.measuredAt; state.ownedPause = pending.value === false;
               if (pending.owned) state.owned = { ...pending.owned, confirmedAt: clock(), permissionAt: readback.measuredAt };
               else if (pending.value === true) state.owned = null;
-            } else state.lastCurrent = pending.value;
+            } else {
+              // A later same-value app selection is still a native ceiling.
+              // Without an acknowledgement time, attribution is also unknown.
+              if (pending.stage !== 'accepted' || !time(pending.acceptedAt) || readback.measuredAt > pending.acceptedAt)
+                state.manualCurrentA = readback.value < adapter.config.maximumCurrentA ? readback.value : null;
+              state.lastCurrent = pending.value; state.lastCurrentAtSource = readback.measuredAt;
+            }
             state.pending = null;
           } else if (pending.owned && fresh(readback) && readback.value === true && readback.measuredAt > pending.dispatchedAt) {
             // A newer explicit native start supersedes our uncertain stop.
             state.pending = null; state.owned = null; state.ownedPause = false;
-            state.manual = { kind: 'start', detectedAt: readback.measuredAt }; state.lastStart = true;
-          } else if (input.resume) state.pending = null;
+            state.manual = { kind: 'enable', detectedAt: readback.measuredAt };
+            state.lastStart = true; state.lastStartAt = readback.measuredAt;
+          } else if (pending.role === 'start_charging' && fresh(readback) && readback.measuredAt > pending.dispatchedAt) {
+            // A newer native instruction supersedes the uncertain command. A
+            // dashboard resume alone cannot establish its physical outcome.
+            state.pending = null; state.ownedPause = false;
+            state.manual = { kind: readback.value ? 'enable' : 'stop', detectedAt: readback.measuredAt };
+            state.lastStart = readback.value; state.lastStartAt = readback.measuredAt;
+          } else if (pending.role === 'current_limit' && fresh(readback) && readback.measuredAt > pending.dispatchedAt) {
+            state.pending = null;
+            state.manualCurrentA = readback.value < adapter.config.maximumCurrentA ? readback.value : null;
+          }
           else { state.phase = 'uncertain'; state.reason = 'evse-command-unconfirmed'; await persist(); return; }
         }
-        if (state.lastStart !== undefined && start.value !== state.lastStart && start.measuredAt > (state.commandAt ?? 0))
-          state.manual = { kind: start.value ? 'start' : 'stop', detectedAt: start.measuredAt };
+        if (state.lastStart !== undefined && start.measuredAt > (state.lastStartAt ?? 0)) {
+          state.manual = { kind: start.value ? 'enable' : 'stop', detectedAt: start.measuredAt };
+          state.ownedPause = false;
+        }
         if (state.lastStart === undefined && start.value === false) state.manual ??= { kind: 'stop', detectedAt: start.measuredAt };
         // A new source event for an unchanged false setting is still an explicit
         // native Stop. Correlated reads with the old source clock are harmless.
@@ -465,18 +508,36 @@ export function createShellyController({ adapter, initialState, saveState = () =
         if (state.owned && start.value === true && start.measuredAt >= state.owned.requestedAt) {
           state.owned = null; state.ownedPause = false;
         }
-        if (current.value !== state.lastCurrent && current.measuredAt > (state.commandAt ?? 0))
+        if (state.lastCurrent === undefined || current.measuredAt > (state.lastCurrentAtSource ?? 0))
           state.manualCurrentA = current.value < adapter.config.maximumCurrentA ? current.value : null;
-        if (input.resume) { state.manual = null; state.manualCurrentA = null; }
+        const nativeSchedule = scheduleToken(snapshot);
+        if (state.nativeSchedule !== undefined && nativeSchedule !== state.nativeSchedule && state.manual?.kind !== 'stop')
+          state.manual = { kind: nativeSchedule ? 'schedule' : 'charge-now', detectedAt: clock(), fingerprint: nativeSchedule };
+        else if (nativeSchedule && !state.manual)
+          state.manual = { kind: 'schedule', detectedAt: clock(), fingerprint: nativeSchedule };
+        state.nativeSchedule = nativeSchedule;
+        if (input.resume === true && input.enabled === true && resumeToken === manualToken(state.manual)
+          && state.manual?.kind !== 'stop' && !snapshot.nativeScheduleActive) state.manual = null;
+        // Keep device choices independently of automation permission and resume.
+        // These source clocks also distinguish readback from a later app action.
+        state.lastStart = start.value; state.lastStartAt = start.measuredAt;
+        state.lastCurrent = current.value; state.lastCurrentAtSource = current.measuredAt;
         await refreshIdentification(snapshot);
         if (closed || intentRevision !== revision) return;
         if (state.manual || snapshot.nativeScheduleActive) identification = null;
         const chargeNow = Number.isSafeInteger(input.chargeNow?.connectedAt)
           && input.chargeNow.connectedAt === snapshot.session?.connectedAt;
         const restoringUnscheduled = state.owned?.sessionId === sessionId && (!input.enabled || chargeNow);
-        const context = input.allocation ?? {}, limitation = shellyCurrentLimit({ config: adapter.config,
-          ...context, ...(identification || restoringUnscheduled ? { allocationA: null } : {}),
-          nativeCurrentA: state.manualCurrentA, shelly: adapter.liveCurrents(), now: clock() });
+        const context = input.allocation ?? {};
+        const allocationA = identification || restoringUnscheduled ? null : context.allocationA;
+        // Basic scheduling owns only start permission. Positive current limits
+        // remain native until the separate installation limiter is enabled.
+        const nativeCap = Math.min(current.value, ...[context.vehicleCurrentA, allocationA]
+          .filter(value => finite(value) && value >= 0));
+        const limitation = adapter.config.limiterEnabled ? shellyCurrentLimit({ config: adapter.config,
+          ...context, allocationA, nativeCurrentA: state.manualCurrentA, shelly: adapter.liveCurrents(), now: clock() })
+          : { currentA: nativeCap, pause: nativeCap < adapter.config.minimumCurrentA,
+            reason: 'native-current-limit', fallback: false, modelAvailable: false, guaranteedProtection: false };
         state.limiter = limitation;
         const plan = !identification && typeof getPlan === 'function' ? await getPlan(copy(snapshot)) : input.plan;
         const windows = chargeNow ? [{ startAt: clock(), endAt: null }] : plan?.periods ?? [];
@@ -490,9 +551,11 @@ export function createShellyController({ adapter, initialState, saveState = () =
         const probeExpired = () => probing && clock() >= identification.probeUntil;
         const pause = restrict && cap < adapter.config.minimumCurrentA || economic && !inWindow || identificationPause || probeExpired();
         const recovery = state.owned?.sessionId === sessionId && !identificationPause;
+        const nativeRelease = ['enable', 'charge-now'].includes(state.manual?.kind);
         const allowStart = (economic && inWindow || identification && !identificationPause || state.ownedPause && !pause)
           && !nativeBlocked && state.manual?.kind !== 'stop';
         const shouldStart = !pause && allowStart && !snapshot.nativeScheduleActive;
+        let expectedStart = copy(start), expectedCurrent = copy(current);
         const guard = () => !closed && intentRevision === revision && canControl() && adapter.snapshot().session?.sessionId === sessionId
           && adapter.snapshot().association === state.association;
         const command = async (role, value, reason, owned = null) => {
@@ -500,7 +563,9 @@ export function createShellyController({ adapter, initialState, saveState = () =
           state.pending = { association: state.association, sessionId, revision: intentRevision, expiresAt, role, value, reason,
             stage: 'proposed', ...(owned ? { owned: copy(owned) } : {}) };
           await persist();
-          if (!guard() || clock() >= expiresAt) { state.pending = null; await persist(); return false; }
+          if (!guard() || clock() >= expiresAt || !sameSetting(adapter.snapshot().fields.start_charging, expectedStart)
+            || !sameSetting(adapter.snapshot().fields.current_limit, expectedCurrent)
+            || scheduleToken(adapter.snapshot()) !== nativeSchedule) { state.pending = null; await persist(); return false; }
           if (!owned) {
             const prior = copy(state.pending);
             state.pending.stage = 'dispatched'; state.commandAt = state.pending.dispatchedAt = clock();
@@ -508,12 +573,12 @@ export function createShellyController({ adapter, initialState, saveState = () =
           }
           await adapter.rpc(role === 'current_limit' ? 'Number.Set' : 'Boolean.Set', { owner: `service:${adapter.config.serviceId}`, role, value },
             { mutation: true, guard: () => guard() && clock() < expiresAt
+              && sameSetting(adapter.snapshot().fields.start_charging, expectedStart)
+              && sameSetting(adapter.snapshot().fields.current_limit, expectedCurrent)
+              && scheduleToken(adapter.snapshot()) === nativeSchedule
               && (role !== 'start_charging' || value === false && limitation.pause || !adapter.snapshot().nativeScheduleActive)
               && (role !== 'start_charging' || value === false
                 || !probeExpired())
-              && (role !== 'start_charging' || value === false
-                || adapter.snapshot().fields.start_charging?.measuredAt === start.measuredAt
-                  && adapter.snapshot().fields.start_charging?.value === start.value)
               && (!owned || clock() < owned.startAt),
               beforePublish: async () => {
                 if (!owned) return;
@@ -541,17 +606,22 @@ export function createShellyController({ adapter, initialState, saveState = () =
           await adapter.refresh();
           const readback = adapter.snapshot().fields[role];
           if (!fresh(readback) || readback.value !== value || readback.measuredAt < state.commandAt) throw fail('evse-command-unconfirmed');
-          if (state.pending.owned && readback.measuredAt > state.pending.acceptedAt) {
-            state.owned ??= copy(state.pending.owned);
+          if (role === 'start_charging' && value === false && readback.measuredAt > state.pending.acceptedAt) {
+            if (state.pending.owned) state.owned ??= copy(state.pending.owned);
             state.manual = { kind: 'stop', detectedAt: readback.measuredAt };
-            throw fail('identification-resume-required');
+            throw fail(state.pending.owned ? 'identification-resume-required' : 'evse-command-unconfirmed');
           }
           state.executionStage = 'read-back';
           if (role === 'start_charging') {
-            state.lastStart = value; state.ownedPause = value === false;
+            state.lastStart = value; state.lastStartAt = readback.measuredAt; state.ownedPause = value === false;
+            expectedStart = copy(readback);
             if (state.pending.owned) state.owned = { ...state.pending.owned, confirmedAt: clock(), permissionAt: readback.measuredAt };
             else if (value === true) state.owned = null;
-          } else state.lastCurrent = value;
+          } else {
+            if (readback.measuredAt > state.pending.acceptedAt)
+              state.manualCurrentA = readback.value < adapter.config.maximumCurrentA ? readback.value : null;
+            state.lastCurrent = value; state.lastCurrentAtSource = readback.measuredAt; expectedCurrent = copy(readback);
+          }
           state.pending = null;
           await persist(); return true;
         };
@@ -568,7 +638,7 @@ export function createShellyController({ adapter, initialState, saveState = () =
             if (await command('start_charging', false, identificationPause ? 'identification-pause'
               : economic && !inWindow ? 'economic-wait' : limitation.reason, owned)) state.lastPauseAt = clock();
           }
-          if (restrict && cap >= adapter.config.minimumCurrentA && cap !== current.value) {
+          if (adapter.config.limiterEnabled && cap >= adapter.config.minimumCurrentA && cap !== current.value) {
             const decreasing = cap < current.value;
             const increaseAllowed = clock() - (state.lastCurrentAt ?? 0) >= adapter.config.dwellMs;
             if (decreasing || increaseAllowed) {
@@ -581,10 +651,10 @@ export function createShellyController({ adapter, initialState, saveState = () =
           // fixed probe deadline; never send a late probe start.
           if (probeExpired() && adapter.snapshot().fields.start_charging.value && state.manual?.kind !== 'stop')
             if (await command('start_charging', false, 'identification-probe-expired')) state.lastPauseAt = clock();
-          if (shouldStart && !adapter.snapshot().fields.start_charging.value && !state.manual
+          if (shouldStart && !adapter.snapshot().fields.start_charging.value && (!state.manual || nativeRelease)
             && !probeExpired()
             && (identification || recovery || clock() - (state.lastPauseAt ?? 0) >= adapter.config.dwellMs)
-            && adapter.snapshot().fields.current_limit?.value <= cap) {
+            && (!adapter.config.limiterEnabled || adapter.snapshot().fields.current_limit?.value <= cap)) {
             await command('start_charging', true, recovery ? 'identification-resume' : identification ? 'identification-charge' : 'economic-window');
           }
           const actual = adapter.liveCurrents();
@@ -592,11 +662,20 @@ export function createShellyController({ adapter, initialState, saveState = () =
             && (pause ? actual.currents.every(v => v < .5) : actual.currents.every(v => v <= cap + 1))) state.executionStage = 'physical-effect';
           state.released = !pause && !identification && Boolean(input.enabled || chargeNow);
           state.phase = state.manual ? 'manual' : identification ? 'identifying' : pause ? 'waiting' : input.enabled || chargeNow ? 'released' : 'off';
-          state.reason = state.manual ? `manual-${state.manual.kind}` : snapshot.nativeScheduleActive ? 'native-schedule'
+          state.reason = state.manual?.kind === 'stop' ? 'manual-stop' : snapshot.nativeScheduleActive ? 'native-schedule'
+            : state.manual ? `manual-${state.manual.kind}`
             : nativeBlocked ? 'vehicle-not-before' : identificationPause ? 'identification-pause'
               : identification ? identification.phase === 'waiting' ? 'identification-waiting' : 'identification-charging'
                 : pause && economic && !inWindow ? 'economic-wait' : chargeNow && !pause ? 'charge-now' : limitation.reason;
-        } catch (cause) { state.phase = 'uncertain'; state.reason = cause.code ?? 'command-unconfirmed'; }
+        } catch (cause) {
+          // These local adapter rejections occur strictly before publication.
+          // Keep the durable proposal, but do not turn a revoked unsent command
+          // into an ambiguous dispatch that can block the next fresh reconcile.
+          if (state.pending?.stage === 'dispatched' && ['evse-control-unavailable', 'evse-command-revoked',
+            'invalid-evse-command', 'unsupported-evse-method', 'evse-request-limit'].includes(cause.code))
+            state.pending.stage = 'proposed';
+          state.phase = 'uncertain'; state.reason = cause.code ?? 'command-unconfirmed';
+        }
         await persist();
       });
       return queue.then(() => status());

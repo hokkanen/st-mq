@@ -187,8 +187,8 @@ test('temporary cloud startup cannot apply an old disconnected session to the sa
   assertRetained(restarted, f.saved);
 });
 
-test('confirmed new OCPP transactions and disconnects revoke a saved BMW identity', async t => {
-  for (const disconnected of [false, true]) await t.test(disconnected ? 'disconnect' : 'replacement transaction', async t => {
+test('OCPP transaction rollover preserves a saved physical-session identity until an observed unplug', async t => {
+  for (const disconnected of [false, true]) await t.test(disconnected ? 'physical disconnect revokes identity' : 'transaction rollover retains identity', async t => {
     const f = await savedMatch(t), restarted = f.create();
     restarted.tick();
     assertRetained(restarted, f.saved);
@@ -198,17 +198,25 @@ test('confirmed new OCPP transactions and disconnects revoke a saved BMW identit
       : { transactionId: 8, transactionStartedAt: START + 2 * MINUTE, statusAt: START + 2 * MINUTE });
     await f.attach(restarted);
     const current = view(restarted);
-    assert.equal(current.vehicle.id, null);
-    assert.equal(restarted.chargers.charger1.vehicleMatch, null);
-    assert.equal(restarted.chargers.charger1.targetState, null);
-    if (disconnected) assert.equal(restarted.chargers.charger1.request, null);
-    else {
-      assert.notEqual(current.request.scope, f.saved.chargers.charger1.request.scope);
-      assert.deepEqual(current.request.overrides, {});
-      assert.equal(current.request.revision, 1);
+    if (disconnected) {
+      assert.equal(current.vehicle.id, null);
+      assert.equal(restarted.chargers.charger1.vehicleMatch, null);
+      assert.equal(restarted.chargers.charger1.targetState, null);
+      assert.equal(restarted.chargers.charger1.request, null);
+    } else {
+      assert.equal(current.vehicle.id, 'bmw');
+      assertRetained(restarted, f.saved);
+      const session = restarted.chargers.charger1.controller.status().session;
+      assert.equal(session.transactionId, 8);
+      assert.equal(session.connectedAt, START, 'A transaction change alone does not establish a physical unplug');
+      restarted.persist();
+      await restarted.close();
+      const again = f.create(); await f.attach(again);
+      assert.equal(view(again).vehicle.id, 'bmw');
+      assertRetained(again, f.saved);
     }
     assert.equal(restarted.vehicleFeeds.bmw.consumedPlugId, f.saved.vehicleFeeds.bmw.consumedPlugId,
-      'An old plug event cannot identify the replacement connection');
+      'Transaction changes and physical disconnects cannot replay the consumed vehicle plug event');
   });
 });
 

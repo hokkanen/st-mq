@@ -9,14 +9,14 @@ const START = Date.parse('2026-09-24T09:00:00Z'), MINUTE = 60_000, scope = 'a'.r
 const plan = (startAt, extra = {}) => ({ id: 'synthetic-plan', startAt, feasible: true, periods: [{ startAt, endAt: null }], ...extra });
 function fixture({ initialState = null, identification = null } = {}) {
   let now = START, authority = true, connected = true, confirmed = true, transactionId = 7, connectionId = 'synthetic-socket', physicalPause = true;
-  let stored = null, saveError = false, witnessSaveError = false, interceptor = null, manualEvent = null, snapshotChanges = {};
+  let stored = null, saveError = false, witnessSaveError = false, interceptor = null, appControl = null, snapshotChanges = {};
   const profiles = new Map(), calls = [], saves = [];
   const isPausing = () => [...profiles.values()].some(row => row.transactionId === transactionId
     && Date.parse(row.validFrom) <= now && Date.parse(row.validTo) > now);
   const readSnapshot = () => ({ transport: 'ocpp', scope, connectionId, readAt: now, online: connected,
     connectorStatus: isPausing() && physicalPause ? 'SuspendedEVSE' : 'Charging', statusAt: now,
     transactionId, transactionStartedAt: START - MINUTE, transactionConfirmed: confirmed,
-    pluggedIn: true, powerKw: isPausing() && physicalPause ? 0 : 7, powerAt: now, manualEvent, ...snapshotChanges });
+    pluggedIn: true, powerKw: isPausing() && physicalPause ? 0 : 7, powerAt: now, appControl, ...snapshotChanges });
   const request = async (action, payload, options) => {
     assert.equal(options.guard(), true, 'wire mutation/query requires current authority');
     calls.push({ action, payload: structuredClone(payload) });
@@ -48,11 +48,13 @@ function fixture({ initialState = null, identification = null } = {}) {
     confirmed: value => { confirmed = value; }, transaction: value => { transactionId = value; },
     physicalPause: value => { physicalPause = value; }, saveError: value => { saveError = value; },
     witnessSaveError: value => { witnessSaveError = value; },
-    intercept: value => { interceptor = value; }, manual: value => { manualEvent = value; },
+    intercept: value => { interceptor = value; }, app: value => { appControl = value; },
     snapshot: value => { snapshotChanges = value; },
     identify: value => { identification = value; },
     reconnect: () => { connectionId += '-new'; confirmed = false; } };
 }
+const appState = (at, enabled) => ({ readAt: at, enabled, enabledAt: at, stopped: !enabled, stopAt: at,
+  controlKnown: true, faulted: false, authorizationBlocked: false, schedule: null });
 const writes = f => f.calls.filter(row => row.action !== 'GetCompositeSchedule');
 
 test('fresh OCPP connector status cannot refresh old or unknown voltage measurement clocks', () => {
@@ -288,11 +290,12 @@ test('a vehicle-side suspension retains period timing and needs charger-side gap
   assert.deepEqual(writes(f).at(-1), { action: 'ClearChargingProfile', payload: { id: profileId } });
 });
 
-test('only explicit current-transaction native events establish manual priority', async () => {
+test('fresh charging after a confirmed owned pause establishes manual priority', async () => {
   const f = fixture(); await f.controller.update({ enabled: true, plan: plan(START + 30 * MINUTE) });
-  f.advance(1000); f.manual({ id: 'native-release', kind: 'release', at: f.now, transactionId: 7 });
+  f.advance(1000); f.physicalPause(false);
   let view = await f.controller.update({ enabled: true });
   assert.equal(view.phase, 'yielded'); assert.equal(f.profiles.size, 0);
+  f.physicalPause(true);
   view = await f.controller.update({ enabled: true, resume: true });
   assert.equal(view.manual, null); assert.equal(view.phase, 'paused');
   view = await f.controller.update({ enabled: true });
@@ -658,9 +661,9 @@ test('Charge Now clears only this session’s owned pause, preserves foreign pro
 });
 
 test('Charge Now preserves a confirmed native OCPP stop and never sends a remote start', async () => {
-  const f = fixture(); await f.controller.update({ enabled: true, plan: plan(START + 30 * MINUTE) });
+  const f = fixture(); f.app(appState(START, true)); await f.controller.update({ enabled: true, plan: plan(START + 30 * MINUTE) });
   const connectedAt = f.controller.status().session.connectedAt;
-  f.advance(1000); f.manual({ id: 'native-stop', kind: 'stop', at: f.now, transactionId: 7 });
+  f.advance(1000); f.app(appState(f.now, false));
   const view = await f.controller.update({ enabled: false, chargeNow: { connectedAt } });
   assert.equal(view.phase, 'yielded'); assert.equal(view.manual.kind, 'stop');
   assert.equal(f.profiles.size, 0, 'Only the controller’s earlier restriction is removed');
@@ -671,7 +674,9 @@ test('an earlier OCPP session’s Charge Now cannot release a new transaction’
   const f = fixture(); await f.controller.update({ enabled: true, plan: plan(START + 30 * MINUTE) });
   const connectedAt = f.controller.status().session.connectedAt;
   await f.controller.update({ enabled: true, chargeNow: { connectedAt } });
-  f.advance(2000); f.transaction(8); f.snapshot({ transactionStartedAt: f.now });
+  f.advance(1000); f.snapshot({ pluggedIn: false, connectorStatus: 'Available', statusAt: f.now, transactionId: null, transactionStartedAt: null, transactionConfirmed: false });
+  await f.controller.update({ enabled: true });
+  f.advance(1000); f.transaction(8); f.snapshot({ transactionStartedAt: f.now });
   const view = await f.controller.update({ enabled: true, plan: plan(START + 40 * MINUTE), chargeNow: { connectedAt } });
   assert.equal(view.phase, 'paused'); assert.equal(view.released, false);
   assert.equal(f.stored.owned.transactionId, 8);
@@ -719,12 +724,12 @@ test('native identification releases only controller profiles and reapplies econ
 test('native identification respects manual Stop, current transaction confirmation and stale session requests', async () => {
   for (const blocked of ['stop', 'transaction', 'session']) {
     const f = fixture({ identification: activeIdentification() });
-    if (blocked === 'stop') f.manual({ id: 'native-stop', kind: 'stop', at: START, transactionId: 7 });
+    if (blocked === 'stop') f.app(appState(START, false));
     if (blocked === 'transaction') { f.confirmed(false); f.identify({ ...activeIdentification(), connectedAt: START }); }
     if (blocked === 'session') f.identify({ ...activeIdentification(), connectedAt: START - 2 * MINUTE });
     const view = await f.controller.update({ enabled: false });
     assert.equal(writes(f).length, 0);
-    assert.equal(view.phase, blocked === 'stop' ? 'yielded' : blocked === 'transaction' ? 'unavailable' : 'off');
+    assert.equal(view.phase, blocked === 'session' ? 'off' : 'unavailable');
   }
 });
 

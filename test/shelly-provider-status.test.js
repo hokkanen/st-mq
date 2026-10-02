@@ -6,7 +6,7 @@ import { Store } from '../src/storage/store.js';
 
 function fixture() {
   const physical = { online: true, controlReady: false, fields: { phase_info: {} },
-    commissioning: { verified: false, controlReady: false }, error: 'evse-commissioning-required' };
+    commissioning: { profileSupported: false, controlReady: false }, error: 'evse-profile-unsupported' };
   const readings = { ev2_import_energy_counter: { value: 10, available: true } };
   const config = { maxAgeMs: 15000 };
   const adapter = { snapshot: () => physical, readings: () => readings, config };

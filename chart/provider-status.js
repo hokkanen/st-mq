@@ -691,7 +691,7 @@ export function describeProvider(job, health, { now, formatTime }) {
     detail: (health.reason === 'physical-meter' ? 'Physical charger meter readings are available.'
       : health.reason === 'telemetry-unavailable' ? 'Some physical Charger 2 electrical readings are missing or stale.'
         : 'Waiting for physical Charger 2 MQTT telemetry.')
-      + (health.controlReady === false ? ' Charger control requires verified hardware capabilities and native settings; reading availability is separate.' : '') };
+      + (health.controlReady === false ? ' Charger control requires supported live capabilities and native settings; reading availability is separate.' : '') };
   const source = health.source ?? health.acquisition?.selected;
   const selected = providerName(source);
   const base = jobs[job] ?? 'Data provider';

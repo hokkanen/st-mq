@@ -1,3 +1,31 @@
+Implemented 2026-10-02 — Align native charger app priority and simplify Shelly setup
+- Use Easee cloud ownership as the behavioral reference for OCPP and Shelly.
+  Observe native app Stop/Enable/schedules and preserve lower current choices;
+  Use automatic cannot enable a native Stop or raise the native ceiling. Newer
+  app edits fence pending writes and take priority over resume acknowledgements.
+- OCPP production snapshots now carry source-timed app evidence and native
+  schedules, replacing the injected-only manualEvent path. Preserve manual
+  windows and physical plug scope, exact-profile cleanup and charger-side expiry.
+  Missing app evidence stays unknown; SuspendedEVSE alone is never a manual tap.
+- Shelly basic scheduling writes Boolean permission only, preserving native
+  current, load balancing and caps. Optional current control has separate live
+  numeric capabilities and installation electrical requirements. Discover typed
+  roles/state options; support charger_end as connected. Retire manual verified,
+  model/firmware pins, state lists and minimum/step configuration assertions.
+  Preserve lifetime-meter recording and the absence of session-energy checks.
+- F1/F3/F4/F5/F7/F8: reject obsolete configuration and move to schema 18 before
+  state mutation rather than translate earlier ownership/identity records. Keep
+  explicit device authority, source clocks, pending command uncertainty and
+  restoration duties. Native same-value app current selections retain ownership.
+  No household commands, private configuration edits, data reset or deployment.
+- Validation: final routine suite passes 4,043 tests with one optional skip and
+  no failures. Production build passes with the existing bundle-size warning.
+  Charging browser checks pass at 320/390/1440px in both themes; mobile report
+  screenshot reviewed. Fix the smoke script's observed asynchronous dialog-focus
+  race with explicit state waits. Relative documentation links and whitespace
+  checks pass. Independent reviews cover command races, source provenance,
+  physical session scope, runtime planning and configuration/UI consistency.
+
 Implemented 2026-10-02 — Polish protection guidance
 - Replace the conversational target examples with a concise description of the
   temporary minimum, selected target and recovery. Describe probe placement in

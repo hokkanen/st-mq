@@ -146,7 +146,7 @@ test('idle compression preserves real measurement-basis, aged-value and availabi
 async function shellyFixture(t) {
   const {store,recorder}=fixture(t),client=new EventEmitter();let now=START;
   const config=chargingConfiguration({chargers:{charger2:{enabled:true,deviceId:'synthetic-evse',topicPrefix:'test/evse',
-    model:'synthetic-model',firmware:'synthetic-firmware',verified:true,connectedStates:['paused'],disconnectedStates:['free'],chargingStates:['charging']}}}).chargers.charger2;
+    }}}).chargers.charger2;
   const phase={total_power:2,total_act_energy:0,phase_a:{voltage:230,current:0,power:2},
     phase_b:{voltage:230,current:0,power:0},phase_c:{voltage:230,current:0,power:0}};
   const fields={current_limit:16,start_charging:false,work_state:'paused',phase_info:phase};
@@ -158,7 +158,7 @@ async function shellyFixture(t) {
     else if(frame.method==='Service.GetConfig')result={id:0,auto_balance:{enable:false},auto_charge:true,global_charge_limit:0,global_time_limit:0};
     else if(frame.method==='Schedule.List')result={rev:1,jobs:[]};
     else if(frame.method==='Service.GetStatus')result={state:'running'};
-    else if(frame.method.endsWith('.GetConfig'))result={id:ids[frame.params.role],owner:'service:0',access:'crw',min:6,max:16,meta:{ui:{step:1}}};
+    else if(frame.method.endsWith('.GetConfig'))result={id:ids[frame.params.role],owner:'service:0',access:'crw',options:['charger_free','charger_charging','charger_pause','charger_wait','charger_end'],min:6,max:16,meta:{ui:{step:1}}};
     else result={value:structuredClone(fields[frame.params.role]),last_update_ts:now/1000};
     cb?.();queueMicrotask(()=>client.emit('message',`${frame.src}/rpc`,Buffer.from(JSON.stringify({id:frame.id,src:'synthetic-evse',dst:frame.src,result})),{}));
   };

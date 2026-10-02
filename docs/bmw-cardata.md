@@ -161,7 +161,7 @@ vehicle timer or limit prevents charging, then obtains a usable live charging
 baseline and requests a short pause as soon as possible. The label does not
 silently expire after ten minutes. Exhausting an extra charging test leaves
 **Identification pending** while awaiting timestamped evidence; conflicting evidence cannot identify
-the vehicle. Easee cloud, local OCPP and commissioned Shelly EVSE control use the
+the vehicle. Easee cloud, local OCPP and supported Shelly EVSE control use the
 same lifecycle, including with automatic economic charging OFF or Charge now selected. Manual Stop and native
 restrictions retain priority.
 

@@ -1,6 +1,6 @@
 # Charging
 
-ST-MQ models two physical charging points: **Charger 1 is Easee**, using either the cloud delayed-start scheduler or the native OCPP controller’s expiring current profiles; **Charger 2 is the commissioned Top AC / Shelly XT1 EVSE**, controlled through MQTT RPC. TeslaMate and BMW CarData supply vehicle evidence for either charging point. They never supply another home electricity contribution or receive vehicle commands.
+ST-MQ models two physical charging points: **Charger 1 is Easee**, using either the cloud delayed-start scheduler or the native OCPP controller’s expiring current profiles; **Charger 2 is the Top AC / Shelly XT1 EVSE**, controlled through MQTT RPC. TeslaMate and BMW CarData supply vehicle evidence for either charging point. They never supply another home electricity contribution or receive vehicle commands.
 
 Charger 1 uses one control backend at a time. Native OCPP activation releases
 ST-MQ's owned cloud instruction and waits when a foreign cloud schedule still
@@ -20,7 +20,10 @@ new charging or Easee app Start waiting for approval. Restart ST-MQ or disable
 Direct OCPP through Easee configuration. Expiring economic pauses do not provide
 automatic cloud authorization after a crash.
 
-Charger 2 is disabled and unverified by default because the hardware has not arrived. Its production acquisition, planning, recording and command paths are implemented and tested with synthetic providers. Enabling MQTT acquisition is separate from commissioning control. See [provider capabilities and commissioning](charging-provider-capabilities.md).
+Charger 2 is disabled by default. Once its MQTT device identity and topic are
+configured, supported start/stop readiness is checked automatically. Native app
+changes retain priority; optional current limiting has separate installation and
+capability requirements. See [provider capabilities and setup](charging-provider-capabilities.md).
 
 ## Dashboard and requests
 
@@ -83,7 +86,7 @@ The card keeps its height while saving and after either action, without an extra
 confirmation message. Unplugging also ends the override. **Use automatic** remains
 in Details & settings when an external charger instruction has manual priority.
 Native vehicle timers, targets, user stops, faults, charger limits and authorization
-still apply, and unavailable or uncommissioned hardware cannot be started through
+still apply, and unavailable or unsupported hardware cannot be started through
 this action.
 
 A manual SoC is a one-time anchor. A newer applicable vehicle reading supersedes it using the provider's source clock, or explicitly labeled receipt time when no measurement clock exists. A pinned capacity outranks the provider capacity. An explicit requested minimum remains distinct from the vehicle's actual ceiling; requesting 95% while the vehicle reports an 80% ceiling is constrained rather than silently rewritten. Vehicle current limits and native not-before times constrain either charging point.
@@ -143,7 +146,7 @@ preheating, explains physical charger setup and the independent BMW/Tesla feeds.
 The BMW guide lists the exact CarData descriptors and the Home Assistant/MQTT
 mapping requirements. Both vehicle guides show accepted fields with their
 original source or receipt clocks. Feed health, identification and charger
-commissioning remain separate capabilities; opening the guide sends no commands.
+control readiness remain separate capabilities; opening the guide sends no commands.
 
 Each vehicle has a **Guided test** button. Selecting a vehicle loads its
 available battery percentage and charge target independently of charger selection.
@@ -196,7 +199,7 @@ remain separate from current discrepancy and verification status.
 The guide does not ask the user to enter a second controller target or silently
 force the production plan to agree with its assumptions.
 
-Prepare and arm while unplugged, with live charger and vehicle feeds, commissioned
+Prepare and arm while unplugged, with live charger and vehicle feeds, available
 control, Automatic charging enabled and no conflicting charger timer or manual
 Stop. Battery headroom uses the verified usable capacity, battery percentage,
 vehicle target, efficiency and expected charging power: aim for at least 30 minutes
@@ -396,7 +399,7 @@ BMW source timestamps, home scope and consumed plug/start events serve the same
 connection separation. Neither feed's remote voltage or power fills missing
 household electrical measurements.
 
-Easee cloud scheduling, local OCPP and the commissioned Shelly EVSE use the same
+Easee cloud scheduling, local OCPP and the supported Shelly EVSE use the same
 vehicle matcher, pending status, consumed-evidence checks and session boundaries.
 Their adapters normalize ownership and physical pause evidence before it reaches
 identification. A schedule, RPC reply or OCPP acknowledgement alone cannot identify
@@ -454,15 +457,15 @@ can trigger one brief, confirmed pause while the same connection is charging.
 Startup can use live ongoing BMW charging without inventing a
 missing historical start edge. Matching charger and vehicle stop evidence is
 still required; an accepted pause command alone is insufficient. Active tests
-are serialized across charging points. Shelly requires commissioned control,
-fresh physical readings and available MQTT, and retains its electrical limiter
-and native restrictions throughout the test.
+are serialized across charging points. Shelly requires available start/stop control,
+fresh physical readings and available MQTT, and retains native restrictions
+and its optional electrical limiter when enabled throughout the test.
 
 When the charging plan is delaying charge, the extra test temporarily permits
 charging under the existing charger, vehicle and local load-balancing limits.
 Identification does not select a lower positive current. OCPP continues to use
-its established zero-current pause and release commands; Shelly retains its
-ordinary electrical limiter. A conclusive vehicle match ends the extra test immediately and
+its established zero-current pause and release commands; Shelly retains native current settings and its
+optional electrical limiter when enabled. A conclusive vehicle match ends the extra test immediately and
 returns to the current charging choice. A usable BMW baseline triggers its
 correlation pause; absent a match, the shared 0.15 kWh extra-energy allowance
 ends probing for either vehicle.
@@ -588,11 +591,16 @@ The final period is an open release. Reaching the planning minimum or ready-by d
 
 ## Charger 2 current allocation
 
+Basic start/stop leaves native current settings and native load balancing in
+charge. The planner reserves the reported native current, and scheduling sends
+Boolean start/stop only. The allocation below applies with `limiterEnabled:true`;
+missing current-control capabilities block that mode rather than bypass it.
+
 Commissioning must verify three-phase association, phase order, installation fuse ratings and whether the property and charging-current magnitudes support the additive model. For each phase, the modeled non-EV base is `B = property − Easee − Shelly`. The absolute Shelly ceiling is the tightest `fuse − margin − B`, then any planned Easee reservation and hardware, vehicle and native user limits. The calculation includes Shelly's existing draw; it does not mistake incremental spare margin for an absolute setpoint.
 
 Shelly priority excludes Easee's present draw from this fuse test. A temporary property total above the fuse while non-Easee load fits does not cause ST-MQ to fight Equalizer by reducing Shelly. An explicit secondary-deadline reservation can still reduce Shelly and is labeled separately. Equalizer response and actual installation protection are not guaranteed by this model.
 
-A common current is rounded down to the verified step. The initial supported profile uses a verified 6 A minimum and 1 A step; other quantizations fail configuration validation. Values below the verified minimum cause an EVSE pause, not an invalid current RPC. Decreases act promptly. Increases ramp by the configured step budget after dwell; resumption also requires dwell and permission. Native lower current choices, start/stop, energy/time caps, faults and schedules retain authority. Enabled native schedules conservatively own start/stop until disabled/removed; ST-MQ does not guess their cron window or rewrite them. Current limiting remains separate.
+A common current is rounded down to the verified step. The integration supports a reported 6 A minimum and 1 A step; missing or different quantization makes optional current control unavailable. Values below the verified minimum cause an EVSE pause, not an invalid current RPC. Decreases act promptly. Increases ramp by the configured step budget after dwell; resumption also requires dwell and permission. Native lower current choices, start/stop, energy/time caps, faults and schedules retain authority. Enabled native schedules conservatively own start/stop until disabled/removed; ST-MQ does not guess their cron window or rewrite them. Current limiting remains separate.
 
 Coherent current inputs default to a 15-second age and 5-second skew bound, with 1 A per-phase margin. Unknown, stale, misaligned or non-additive inputs select the owner's configured fallback ceiling, initially **12 A**. Known tighter limits still apply. Fallback does not start a stopped vehicle or bypass its native timer. It is not guaranteed fuse protection.
 
@@ -608,10 +616,10 @@ Price revisions are canonicalized by publication authority over their actual cov
 
 ## Restart and compatibility
 
-Current-format sessions, requests, assignments, costs and uncertain commands recover only within the same physical/source association. Device, MQTT broker/root, configured firmware/profile or phase association changes cannot borrow old ownership. A potentially dispatched command is reconciled with native readback before another intention; it is never blindly replayed.
+Current-format sessions, requests, assignments, costs and uncertain commands recover only within the same physical/source association. Device, MQTT broker/root, integration profile/service or phase association changes cannot borrow old ownership. A potentially dispatched command is reconciled with native readback before another intention; it is never blindly replayed.
 
 Pre-1.0 native state is not migrated. The current charging state remains version 6
-and database schema 17; the physical adapter uses its own explicitly scoped
+and database schema 18; the physical adapter uses its own explicitly scoped
 current state. New optional control choices default to OFF/Balanced when absent;
 recorded presentation never supplies control permission. Retired configuration switches for automatic charging and
 priority, dashboard overrides of permanent battery defaults, old pseudo-C2

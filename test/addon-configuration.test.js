@@ -127,7 +127,7 @@ test('physical charger deployment configuration reloads without retired topic or
   f.writeImport({charging:{report_retention_days:90,defaults:{manualSoc:55},chargers:{charger2:{enabled:true,deviceId:'synthetic-evse',topicPrefix:'synthetic/evse'}}}});
   const app=await f.launch();
   assert.equal(app.engine.charging.configuration.chargers.charger2.enabled,true);
-  assert.equal(app.engine.charging.configuration.chargers.charger2.verified,false);
+  assert.equal(Object.hasOwn(app.engine.charging.configuration.chargers.charger2,'verified'),false);
   assert.equal(app.engine.charging.sessionDiagnostics.status().retention.days,90);
   f.writeImport({charging:{report_retention_days:14,chargers:{charger2:{enabled:false}}}});assert.equal((await f.reload()).status,200);
   assert.equal(app.engine.charging.configuration.chargers.charger2.enabled,false);

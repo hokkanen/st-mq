@@ -3,13 +3,14 @@ import assert from 'node:assert/strict';
 import { EventEmitter } from 'node:events';
 import { chargingConfiguration } from '../src/charging/config.js';
 import { createShellyEvseAdapter, createShellyController, shellyAssociation } from '../src/charging/shelly-evse.js';
+import { shellyProfile } from '../src/charging/shelly-profile.js';
 import { shellyCurrentLimit } from '../src/charging/shelly-limit.js';
 import { Engine } from '../src/app/engine.js';
 import { Store } from '../src/storage/store.js';
 import { Recorder } from '../src/storage/recorder.js';
 const NOW = 1800000000000;
-const config = extra => chargingConfiguration({chargers:{charger2:{enabled:true, deviceId:'synthetic-evse',topicPrefix:'test/evse',model:'synthetic-model',firmware:'synthetic-firmware',verified:true,
-  connectedStates:['connected','paused'],disconnectedStates:['free'],chargingStates:['charging'],additiveCurrentVerified:true,marginA:[0,0,0],...extra}}}).chargers.charger2;
+const config = extra => shellyProfile(chargingConfiguration({chargers:{charger2:{enabled:true, deviceId:'synthetic-evse',topicPrefix:'test/evse',
+  additiveCurrentVerified:true,marginA:[0,0,0],...extra}}}).chargers.charger2);
 const reading = currents => ({currents,times:[NOW,NOW,NOW],healthy:true});
 test('phase limiter preserves absolute Shelly capacity, reservation and minimum-current boundary', () => {
   const args={config:config(),now:NOW,property:reading([34,30,32]),easee:reading([12,12,12]),shelly:reading([12,12,12])};
@@ -34,7 +35,8 @@ function fixture(t, extra={}) {
   const client=new EventEmitter(), values=new Map(), writes=[], energy=[], gaps=[], voltages=[], events=[];
   const roleTypes={current_limit:'number',start_charging:'boolean',work_state:'enum',phase_info:'object'};
   const roles=Object.keys(roleTypes), ids=Object.fromEntries(roles.map((role,i)=>[role,i+200]));
-  const fields={current_limit:16,start_charging:true,work_state:'charging',phase_info:{total_power:8280,total_act_energy:0,phase_a:{voltage:230,current:12,power:2760},phase_b:{voltage:230,current:12,power:2760},phase_c:{voltage:230,current:12,power:2760}}};
+  const settingClock = new Map();
+  const fields={current_limit:16,start_charging:true,work_state:'charger_charging',phase_info:{total_power:8280,total_act_energy:0,phase_a:{voltage:230,current:12,power:2760},phase_b:{voltage:230,current:12,power:2760},phase_c:{voltage:230,current:12,power:2760}}};
   client.subscribe=(topics,_opts,cb)=>{client.topics=topics;cb(null,topics.map(topic=>({topic,qos:0})));};
   client.publish=(topic,payload,options,cb)=>{
     const frame=JSON.parse(payload);writes.push({...frame,topic,options});let result;
@@ -42,9 +44,15 @@ function fixture(t, extra={}) {
     else if(frame.method==='Service.GetConfig')result=structuredClone(service);
     else if(frame.method==='Schedule.List')result=structuredClone(schedules);
     else if(frame.method==='Service.GetStatus')result=structuredClone(serviceStatus);
-    else if(frame.method.endsWith('.GetConfig'))result={id:ids[frame.params.role],owner:'service:0',access:'crw',min:6,max:16,meta:{ui:{step:1}}};
-    else if(frame.method.endsWith('.Set')) {fields[frame.params.role]=frame.params.value;result=null;}
-    else result={value:structuredClone(fields[frame.params.role]),last_update_ts:now/1000};
+    else if(frame.method.endsWith('.GetConfig'))result={id:ids[frame.params.role],owner:'service:0',access:'crw',min:6,max:16,meta:{ui:{step:1}},options:['charger_free','charger_wait','charger_pause','charger_charging','charger_end']};
+    else if(frame.method.endsWith('.Set')) {fields[frame.params.role]=frame.params.value;settingClock.set(frame.params.role,{value:frame.params.value,at:now});result=null;}
+    else {
+      const role=frame.params.role, value=fields[role];
+      if (['start_charging','current_limit'].includes(role)) {
+        if (settingClock.get(role)?.value !== value) settingClock.set(role,{value,at:now});
+        result={value,last_update_ts:settingClock.get(role).at/1000};
+      } else result={value:structuredClone(value),last_update_ts:now/1000};
+    }
     cb?.();queueMicrotask(()=>client.emit('message',`${frame.src}/rpc`,Buffer.from(JSON.stringify({id:frame.id,src:'synthetic-evse',dst:frame.src,result})),{}));
   };
   const store={getState:key=>structuredClone(values.get(key)),setState:(key,value)=>{if(failSave)throw Error('disk');values.set(key,structuredClone(value));},transaction:fn=>fn(),
@@ -54,7 +62,7 @@ function fixture(t, extra={}) {
   t.after(()=>adapter.close());
   return {adapter,client,fields,writes,energy,gaps,voltages,events,values,service,serviceStatus,schedules,now:()=>now,setNow:value=>now=value,setAuthority:value=>authority=value,setFail:value=>failSave=value,
     async ready(){client.emit('connect');client.emit('message','test/evse/online',Buffer.from('true'),{retain:true});await adapter.refresh();},
-    notify(role,value,packet={}){client.emit('message','test/evse/events/rpc',Buffer.from(JSON.stringify({src:'synthetic-evse',method:'NotifyStatus',params:{[`${roleTypes[role]}:${ids[role]}`]:{value,last_update_ts:now/1000}}})),packet);}};
+    notify(role,value,packet={}){if (['start_charging','current_limit'].includes(role) && !packet.retain) settingClock.set(role,{value,at:now});client.emit('message','test/evse/events/rpc',Buffer.from(JSON.stringify({src:'synthetic-evse',method:'NotifyStatus',params:{[`${roleTypes[role]}:${ids[role]}`]:{value,last_update_ts:now/1000}}})),packet);}};
 }
 test('MQTT diagnostics distinguish subscription health from charger availability and use real routes', async t => {
   const f = fixture(t);
@@ -138,7 +146,8 @@ test('retired Shelly session state and unused cached native counters reject befo
   }
 });
 test('native Shelly phases expose current, voltage and active power in installed L1–L3 order', async t => {
-  const f = fixture(t, { phaseMap: [2, 0, 1], verified: false });
+  const f = fixture(t, { phaseMap: [2, 0, 1] });
+  f.serviceStatus.errors = ['synthetic-native-fault'];
   Object.assign(f.fields.phase_info, { total_power: 6000, total_act_energy: 42.5,
     phase_a: { current: 10, voltage: 231, power: 2200 },
     phase_b: { current: 8, voltage: 228, power: 1700 },
@@ -219,7 +228,7 @@ test('a positive C2 meter increment with no phase-power evidence remains excepti
       referenceKwh: .001, reason: 'unknown-phase-share' } }]);
   await f.adapter.refresh();
   assert.equal(f.events.length, 1, 'Repeated source evidence cannot duplicate the exceptional increment');
-  f.setNow(NOW + 3000); f.notify('work_state', 'free');
+  f.setNow(NOW + 3000); f.notify('work_state', 'charger_free');
   assert.equal(f.events.length, 1, 'Disconnecting does not create a redundant native-meter comparison');
   f.setNow(NOW + 34000); f.notify('current_limit', 16);
   assert.equal(f.events.length, 1, 'Only the unallocated energy diagnostic is recorded');
@@ -251,7 +260,7 @@ test('C2 phase records and unallocated diagnostics commit with their source curs
     ...Object.fromEntries(['phase_a', 'phase_b', 'phase_c'].map((name, index) => [name,
       { voltage: 230, current: powers[index] / 230, power: powers[index] }])) } });
   adapter.accept('phase_info', sample(NOW, 0, [0, 0, 0]), NOW);
-  adapter.accept('work_state', { value: 'charging', last_update_ts: NOW / 1000 }, NOW);
+  adapter.accept('work_state', { value: 'charger_charging', last_update_ts: NOW / 1000 }, NOW);
   const key = `charging:shelly:${adapter.association}`;
   const sourceBefore = store.getState(key), setState = store.setState;
   const unallocated = sample(NOW + 1000, .001, [0, 0, 0]);
@@ -343,11 +352,11 @@ test('invalid or future Shelly phase packets cannot replace supported electrical
 });
 test('each physical negative/positive notification closes its epoch even between polling ticks',async t=>{
   const f=fixture(t);await f.ready();const first=f.adapter.snapshot().session.sessionId;
-  f.setNow(NOW+1000);f.notify('work_state','free');f.setNow(NOW+2000);f.notify('work_state','connected');
+  f.setNow(NOW+1000);f.notify('work_state','charger_free');f.setNow(NOW+2000);f.notify('work_state','charger_wait');
   assert.notEqual(f.adapter.snapshot().session.sessionId,first);assert.equal(f.adapter.snapshot().session.lastDisconnectedAt,NOW+1000);
 });
 test('commissioning, authority and subscriptions fence all mutations',async t=>{
-  const f=fixture(t,{verified:false});await f.ready();
+  const f=fixture(t,{limiterEnabled:false});await f.ready();
   await assert.rejects(f.adapter.rpc('Number.Set',{owner:'service:0',role:'current_limit',value:10},{mutation:true}));
   assert.equal(f.writes.some(row=>row.method.endsWith('.Set')),false);
   const ready=fixture(t);await ready.ready();ready.setAuthority(false);
@@ -364,7 +373,7 @@ test('fuse pause is an EVSE Boolean action and reply/readback is distinct from p
   assert.notEqual(controller.status().executionStage,'physical-effect');assert.equal(saved.association,f.adapter.association);
 });
 test('telemetry fallback limits current without starting a manual stop',async t=>{
-  const f=fixture(t,{limiterEnabled:true});f.fields.start_charging=false;f.fields.work_state='paused';await f.ready();
+  const f=fixture(t,{limiterEnabled:true});f.fields.start_charging=false;f.fields.work_state='charger_pause';await f.ready();
   const controller=createShellyController({adapter:f.adapter,clock:()=>NOW,canControl:()=>true});t.after(()=>controller.close());
   await controller.update({enabled:false,allocation:{}});
   assert.equal(f.writes.some(row=>row.method==='Boolean.Set'&&row.params.value===true),false);
@@ -372,10 +381,10 @@ test('telemetry fallback limits current without starting a manual stop',async t=
 });
 
 test('first-seen timestamped DUP boundaries are admitted and repeats cannot create another epoch',async t=>{
- const f=fixture(t);await f.ready();f.setNow(NOW+1000);f.notify('work_state','free',{dup:true,messageId:19});
+ const f=fixture(t);await f.ready();f.setNow(NOW+1000);f.notify('work_state','charger_free',{dup:true,messageId:19});
  assert.equal(f.adapter.snapshot().session.connected,false);
- f.setNow(NOW+2000);f.notify('work_state','connected',{dup:true,messageId:20});const session=f.adapter.snapshot().session.sessionId;
- f.notify('work_state','connected',{dup:true,messageId:20});assert.equal(f.adapter.snapshot().session.sessionId,session);
+ f.setNow(NOW+2000);f.notify('work_state','charger_wait',{dup:true,messageId:20});const session=f.adapter.snapshot().session.sessionId;
+ f.notify('work_state','charger_wait',{dup:true,messageId:20});assert.equal(f.adapter.snapshot().session.sessionId,session);
 });
 test('an uncertain saved dispatch reconciles without replaying a different physical setting',async t=>{
  const f=fixture(t,{limiterEnabled:true});await f.ready();const sessionId=f.adapter.snapshot().session.sessionId;
@@ -393,18 +402,21 @@ test('unmapped work states and mismatched RPC role types cannot authorize chargi
  assert.equal(f.writes.some(row=>row.method.endsWith('.Set')),false);
 });
 
-test('native restrictions and external auto balance withdraw control without clearing native caps',async t=>{
+test('native restrictions block control and external auto balance blocks only current control',async t=>{
  const f=fixture(t,{limiterEnabled:true});await f.ready();
  for (const change of [()=>f.serviceStatus.flags=['charge_limit'],()=>{delete f.serviceStatus.flags;f.service.auto_balance.enable=true;}]) {
-   change();f.setNow(NOW+1000);await f.adapter.refresh();assert.equal(f.adapter.snapshot().controlReady,false);
-   await assert.rejects(f.adapter.rpc('Boolean.Set',{owner:'service:0',role:'start_charging',value:true},{mutation:true}));
+   change();f.setNow(NOW+1000);await f.adapter.refresh();
+   assert.equal(f.adapter.snapshot().controlReady,!f.serviceStatus.flags);
+   assert.equal(f.adapter.snapshot().currentControlReady,false);
+   await assert.rejects(f.adapter.rpc('Number.Set',{owner:'service:0',role:'current_limit',value:10},{mutation:true}));
  }
  assert.equal(f.writes.some(row=>row.method==='Service.SetConfig'||row.method.endsWith('.Set')),false);
 });
-test('a lower native current choice is preserved until explicit resume',async t=>{
+test('a lower native current choice survives explicit automatic resumption',async t=>{
  const f=fixture(t,{limiterEnabled:true});f.fields.current_limit=8;await f.ready();
  const controller=createShellyController({adapter:f.adapter,clock:()=>NOW,canControl:()=>true});t.after(()=>controller.close());
  await controller.update({enabled:false,allocation:{}});
+ await controller.update({enabled:true,resume:true,plan:{periods:[{startAt:NOW,endAt:null}]},allocation:{}});
  assert.equal(controller.status().manualCurrentA,8);assert.equal(controller.status().limiter.currentA,8);
  assert.equal(f.writes.some(row=>row.method.endsWith('.Set')),false);
 });
@@ -426,17 +438,20 @@ test('an enabled native schedule owns start and stop while current limiting stay
  await controller.update({enabled:true,plan:{periods:[{startAt:NOW+3600000,endAt:null}]},allocation:{}});
  assert.equal(controller.status().reason,'native-schedule');assert.equal(f.writes.some(row=>row.method==='Boolean.Set'),false);
  f.schedules.jobs=[];await controller.update({enabled:true,plan:{periods:[{startAt:NOW+3600000,endAt:null}]},allocation:{}});
+ assert.equal(controller.status().manual.kind,'charge-now');
+ assert.equal(f.writes.some(row=>row.method==='Boolean.Set'),false);
+ await controller.update({enabled:true,resume:true,plan:{periods:[{startAt:NOW+3600000,endAt:null}]},allocation:{}});
  assert.equal(f.writes.filter(row=>row.method==='Boolean.Set'&&row.params.value===false).length,1);
 });
 test('failed physical persistence restores DUP admission and retries the exact boundary',async t=>{
- const f=fixture(t);await f.ready();f.setNow(NOW+1000);f.setFail(true);f.notify('work_state','free',{dup:true,messageId:71});
- assert.equal(f.adapter.snapshot().session.connected,true);f.setFail(false);f.notify('work_state','free',{dup:true,messageId:71});
+ const f=fixture(t);await f.ready();f.setNow(NOW+1000);f.setFail(true);f.notify('work_state','charger_free',{dup:true,messageId:71});
+ assert.equal(f.adapter.snapshot().session.connected,true);f.setFail(false);f.notify('work_state','charger_free',{dup:true,messageId:71});
  assert.equal(f.adapter.snapshot().session.connected,false);
 });
 test('a retained physical state can be confirmed live at the same original source clock',async t=>{
- const f=fixture(t);await f.ready();f.setNow(NOW+1000);f.notify('work_state','paused',{retain:true});
+ const f=fixture(t);await f.ready();f.setNow(NOW+1000);f.notify('work_state','charger_pause',{retain:true});
  assert.equal(f.adapter.normalize().connected.available,false);
- f.fields.work_state='paused';await f.adapter.refresh();
+ f.fields.work_state='charger_pause';await f.adapter.refresh();
  assert.equal(f.adapter.normalize().connected.value,true);assert.equal(f.adapter.normalize().connected.measuredAt,NOW+1000);
 });
 test('a newer allocation revokes an older queued current intent before publication',async t=>{
@@ -481,7 +496,7 @@ test('Charge Now releases a Shelly economic pause for this session and Use autom
 test('Shelly Charge Now preserves a native stop, native schedule and vehicle start boundary', async t => {
   for (const mode of ['stop', 'schedule', 'vehicle-start']) {
     const f = fixture(t); f.fields.current_limit = 12;
-    if (mode === 'stop') { f.fields.start_charging = false; f.fields.work_state = 'paused'; }
+    if (mode === 'stop') { f.fields.start_charging = false; f.fields.work_state = 'charger_pause'; }
     if (mode === 'schedule') f.schedules.jobs = [{ id: 1, enable: true }];
     await f.ready();
     const controller = createShellyController({ adapter: f.adapter, clock: f.now, canControl: () => true }); t.after(() => controller.close());
@@ -504,10 +519,159 @@ test('Shelly Charge Now still pauses for the property fuse limit and rejects a p
   const connectedAt = f.adapter.snapshot().session.connectedAt;
   await controller.update({ enabled: false, chargeNow: { connectedAt }, allocation: { property: reading([44, 30, 32]), easee: reading([12, 12, 12]) } });
   assert.equal(controller.status().limiter.currentA, 0); assert.equal(f.fields.start_charging, false);
-  f.setNow(f.now() + 1000); f.notify('work_state', 'free');
-  f.setNow(f.now() + f.adapter.config.dwellMs + 1000); f.notify('work_state', 'connected');
-  f.fields.work_state = 'connected'; f.fields.start_charging = true;
+  f.setNow(f.now() + 1000); f.notify('work_state', 'charger_free');
+  f.setNow(f.now() + f.adapter.config.dwellMs + 1000); f.notify('work_state', 'charger_wait');
+  f.fields.work_state = 'charger_wait'; f.fields.start_charging = true;
   assert.notEqual(f.adapter.snapshot().session.connectedAt, connectedAt);
   await controller.update({ enabled: true, chargeNow: { connectedAt }, plan: { periods: [{ startAt: f.now() + 3600000, endAt: null }] }, allocation: {} });
   assert.equal(controller.status().reason, 'economic-wait'); assert.equal(f.fields.start_charging, false);
+});
+
+function advanceCommandClock(f) {
+  const publish = f.client.publish;
+  f.client.publish = (topic, payload, options, callback) => {
+    if (JSON.parse(payload).method.endsWith('.Set')) f.setNow(f.now() + 1000);
+    return publish(topic, payload, options, callback);
+  };
+}
+
+test('basic Shelly scheduling preserves native current and balancing and restores only its own pause', async t => {
+  const f = fixture(t); f.service.auto_balance.enable = true; await f.ready(); advanceCommandClock(f);
+  const controller = createShellyController({ adapter: f.adapter, clock: f.now, canControl: () => true });
+  t.after(() => controller.close());
+  const future = { periods: [{ startAt: NOW + 3600_000, endAt: null }] };
+  let view = await controller.update({ enabled: true, plan: future, allocation: {} });
+  assert.equal(f.fields.start_charging, false); assert.equal(view.ownedPause, true);
+  assert.equal(view.pending, null); assert.equal(f.fields.current_limit, 16);
+  f.setNow(f.now() + f.adapter.config.dwellMs);
+  view = await controller.update({ enabled: false, allocation: {} });
+  assert.equal(f.fields.start_charging, true); assert.equal(view.ownedPause, false);
+  assert.deepEqual(f.writes.filter(row => row.method.endsWith('.Set')).map(row => [row.method, row.params.value]),
+    [['Boolean.Set', false], ['Boolean.Set', true]]);
+  assert.equal(f.service.auto_balance.enable, true);
+});
+
+test('native Shelly Stop survives automatic resumption, off/on and restart until the app starts charging', async t => {
+  const f = fixture(t); await f.ready(); advanceCommandClock(f);
+  let saved, controller;
+  const restart = async () => {
+    await controller?.close();
+    controller = createShellyController({ adapter: f.adapter, initialState: saved, clock: f.now,
+      canControl: () => true, saveState: value => { saved = structuredClone(value); } });
+  };
+  t.after(() => controller?.close()); await restart();
+  const future = { periods: [{ startAt: NOW + 3600_000, endAt: null }] };
+  await controller.update({ enabled: true, plan: future });
+  assert.equal(f.fields.start_charging, false);
+  f.setNow(f.now() + 1000); f.notify('start_charging', false);
+  let view = await controller.update({ enabled: true, resume: true, plan: { periods: [{ startAt: NOW, endAt: null }] } });
+  assert.equal(view.manual.kind, 'stop'); assert.equal(view.ownedPause, false);
+  await controller.update({ enabled: false }); await restart();
+  view = await controller.update({ enabled: true, resume: true, plan: { periods: [{ startAt: NOW, endAt: null }] } });
+  assert.equal(view.manual.kind, 'stop'); assert.equal(f.fields.start_charging, false);
+  assert.equal(f.writes.filter(row => row.method === 'Boolean.Set').length, 1);
+  f.setNow(f.now() + 1000); f.fields.start_charging = true;
+  view = await controller.update({ enabled: true, plan: future });
+  assert.equal(view.manual.kind, 'enable'); assert.equal(f.fields.start_charging, true);
+  await controller.update({ enabled: false }); await restart();
+  view = await controller.update({ enabled: true, plan: future });
+  assert.equal(view.manual.kind, 'enable'); assert.equal(f.fields.start_charging, true);
+  view = await controller.update({ enabled: true, resume: true, plan: future });
+  assert.equal(view.manual, null); assert.equal(f.fields.start_charging, false);
+});
+
+test('native Shelly Start cancels an economic pause and yields scheduling for the physical connection', async t => {
+  const f = fixture(t); await f.ready(); advanceCommandClock(f);
+  const controller = createShellyController({ adapter: f.adapter, clock: f.now, canControl: () => true });
+  t.after(() => controller.close());
+  const future = { periods: [{ startAt: NOW + 3600_000, endAt: null }] };
+  await controller.update({ enabled: true, plan: future });
+  f.setNow(f.now() + 1000); f.fields.start_charging = true;
+  let view = await controller.update({ enabled: true, plan: future });
+  assert.equal(view.manual.kind, 'enable'); assert.equal(view.ownedPause, false);
+  f.setNow(f.now() + 1000); f.fields.phase_info.total_power = 0; f.fields.work_state = 'charger_pause';
+  view = await controller.update({ enabled: true, plan: future });
+  assert.equal(view.manual.kind, 'enable', 'A native pause or zero power does not erase app priority');
+  assert.equal(f.writes.filter(row => row.method === 'Boolean.Set').length, 1);
+});
+
+test('removing a native Shelly schedule releases only the controller pause and preserves app priority', async t => {
+  const f = fixture(t); await f.ready(); advanceCommandClock(f);
+  const controller = createShellyController({ adapter: f.adapter, clock: f.now, canControl: () => true });
+  t.after(() => controller.close());
+  const future = { periods: [{ startAt: NOW + 3600_000, endAt: null }] };
+  await controller.update({ enabled: true, plan: future });
+  f.schedules.jobs = [{ id: 1, enable: true }];
+  await controller.update({ enabled: true, plan: future });
+  assert.equal(f.fields.start_charging, false);
+  f.setNow(f.now() + f.adapter.config.dwellMs); f.schedules.jobs = [];
+  const view = await controller.update({ enabled: true, plan: future });
+  assert.equal(view.manual.kind, 'charge-now'); assert.equal(view.ownedPause, false);
+  assert.equal(f.fields.start_charging, true);
+  assert.equal(f.writes.filter(row => row.method === 'Boolean.Set').length, 2);
+});
+
+test('a newer Shelly app instruction during resume read wins over the acknowledged manual priority', async t => {
+  const f = fixture(t); await f.ready(); advanceCommandClock(f);
+  const controller = createShellyController({ adapter: f.adapter, clock: f.now, canControl: () => true });
+  t.after(() => controller.close());
+  const future = { periods: [{ startAt: NOW + 3600_000, endAt: null }] };
+  await controller.update({ enabled: false });
+  f.setNow(f.now() + 1000); f.notify('start_charging', true);
+  await controller.update({ enabled: true, plan: future });
+  assert.equal(controller.status().manual.kind, 'enable');
+  const refresh = f.adapter.refresh;
+  f.adapter.refresh = async () => {
+    f.adapter.refresh = refresh;
+    f.setNow(f.now() + 1000); f.fields.start_charging = false;
+    return refresh();
+  };
+  const view = await controller.update({ enabled: true, resume: true, plan: future });
+  assert.equal(view.manual.kind, 'stop'); assert.equal(f.fields.start_charging, false);
+  assert.equal(f.writes.some(row => row.method.endsWith('.Set')), false);
+});
+
+test('native Shelly current reduction during persisted automatic intent revokes an older increase', async t => {
+  const f = fixture(t, { limiterEnabled: true }); await f.ready(); advanceCommandClock(f);
+  let edited = false;
+  const controller = createShellyController({ adapter: f.adapter, clock: f.now, canControl: () => true,
+    saveState: state => {
+      if (!edited && state.pending?.role === 'current_limit' && state.pending.stage === 'proposed') {
+        edited = true; f.setNow(f.now() + 1000); f.fields.current_limit = 8; f.notify('current_limit', 8);
+      }
+    } });
+  t.after(() => controller.close());
+  await controller.update({ enabled: false });
+  assert.equal(f.writes.some(row => row.method === 'Number.Set'), false);
+  const view = await controller.update({ enabled: true, resume: true, plan: { periods: [{ startAt: NOW, endAt: null }] } });
+  assert.equal(view.manualCurrentA, 8); assert.equal(f.fields.current_limit, 8);
+  assert.equal(f.writes.some(row => row.method === 'Number.Set'), false);
+});
+
+test('an enabled Shelly limiter with unavailable current capability withholds scheduling commands', async t => {
+  const f = fixture(t, { limiterEnabled: true }); f.service.auto_balance.enable = true; await f.ready();
+  const controller = createShellyController({ adapter: f.adapter, clock: f.now, canControl: () => true });
+  t.after(() => controller.close());
+  const view = await controller.update({ enabled: true, plan: { periods: [{ startAt: NOW + 3600_000, endAt: null }] } });
+  assert.equal(view.phase, 'unavailable'); assert.equal(view.reason, 'evse-current-control-unavailable');
+  assert.equal(f.writes.some(row => row.method.endsWith('.Set')), false);
+});
+
+test('a definitely unsent Shelly command recovers after authority returns without sticky dispatch uncertainty', async t => {
+  const f = fixture(t); await f.ready(); advanceCommandClock(f);
+  let revoked = false;
+  const controller = createShellyController({ adapter: f.adapter, clock: f.now, canControl: () => true,
+    saveState: state => {
+      if (!revoked && state.pending?.stage === 'dispatched') { revoked = true; f.setAuthority(false); }
+    } });
+  t.after(() => controller.close());
+  const input = { enabled: true, plan: { periods: [{ startAt: NOW + 3600_000, endAt: null }] } };
+  let view = await controller.update(input);
+  assert.equal(view.pending.stage, 'proposed');
+  assert.equal(f.writes.some(row => row.method.endsWith('.Set')), false);
+  f.setAuthority(true);
+  view = await controller.update(input);
+  assert.equal(view.pending, null); assert.equal(view.ownedPause, true);
+  assert.equal(f.fields.start_charging, false);
+  assert.equal(f.writes.filter(row => row.method === 'Boolean.Set').length, 1);
 });

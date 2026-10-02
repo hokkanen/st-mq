@@ -94,10 +94,17 @@ test('control context changes are recorded without phase changes and ordinary re
 
 test('charge-now and unavailable commissioning are independent of automatic permission', () => {
   const f = fixture(); f.view.settings.enabled = false; f.view.request.chargeNow = true;
-  f.view.control.snapshot.controlReady = false; f.view.control.reason = 'evse-commissioning-required';
+  f.view.control.snapshot.controlReady = false; f.view.control.reason = 'evse-profile-unsupported';
   const event = controls(f.observe()).at(-1);
   assert.equal(event.automaticEnabled, false); assert.equal(event.chargeNow, true);
-  assert.equal(event.availability, 'unavailable'); assert.equal(event.reasonCode, 'evse-commissioning-required');
+  assert.equal(event.availability, 'unavailable'); assert.equal(event.reasonCode, 'evse-profile-unsupported');
+});
+
+test('native app priority and native current policy retain their supported diagnostic reasons', () => {
+  for (const reason of ['manual-enable', 'manual-charge-now', 'manual-schedule', 'native-current-limit']) {
+    const f = fixture(); f.view.control.reason = reason;
+    assert.equal(controls(f.observe()).at(-1).reasonCode, reason);
+  }
 });
 
 test('unrecognized provider error and reason text never enter stored report evidence', () => {

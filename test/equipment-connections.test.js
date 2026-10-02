@@ -237,7 +237,7 @@ test('Shelly Charger 2 exposes actual MQTT routes and health without inventing p
   assert.match(equipmentConnectionSummary(live).recent, /^Reported /);
   assert.match(equipmentConnectionIntroduction(live), /electricity use.*local Shelly MQTT.*RPC/);
   assert.deepEqual(equipmentTopicGroups(live.topics).map(group => group.label), ['Incoming', 'Requests & commands']);
-  assert.equal(equipmentConnectionSummary(row({ status: 'degraded', reason: 'commissioning-required' })).label, 'Needs commissioning');
+  assert.equal(equipmentConnectionSummary(row({ status: 'degraded', reason: 'evse-profile-unsupported' })).label, 'Needs attention');
   assert.equal(equipmentConnectionSummary(row({ mqttStatus: { brokerConnected: true, subscriptionStatus: 'failed' } })).label, 'Subscription failed');
   assert.equal(equipmentConnectionSummary(row({ mqttStatus: { brokerConnected: false, subscriptionStatus: 'disconnected' } })).label, 'Disconnected');
   assert.equal(equipmentConnectionSummary(row({ enabled: false, status: 'disabled' })).label, 'Not enabled');

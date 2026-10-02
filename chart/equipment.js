@@ -428,7 +428,7 @@ function shellyChargerConnection(status) {
   const [label, state] = health.enabled === false || health.status === 'disabled' ? ['Not enabled', 'pending']
     : mqtt?.brokerConnected === false || mqtt?.subscriptionStatus === 'disconnected' ? ['Disconnected', 'attention']
       : ['failed', 'denied', 'error', 'rejected'].includes(mqtt?.subscriptionStatus) ? ['Subscription failed', 'attention']
-        : health.status === 'degraded' ? [health.reason === 'commissioning-required' ? 'Needs commissioning' : 'Needs attention', 'attention']
+        : health.status === 'degraded' ? ['Needs attention', 'attention']
           : health.status === 'error' ? ['Needs attention', 'attention']
             : health.connected === true ? [health.status === 'ok' ? 'Available' : 'Connected', 'available']
               : ['not-configured', 'unconfigured'].includes(health.status) ? ['Not configured', 'pending']

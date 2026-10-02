@@ -106,13 +106,13 @@ test('setup summary never equates a broker connection with live vehicle health o
   assert.doesNotMatch(JSON.stringify(invalid), /<img|onerror/);
 });
 
-test('setup text retains source clocks, privacy and commissioning boundaries', () => {
+test('setup text retains source clocks, privacy and readiness boundaries', () => {
   const status = { charging: { vehicleFeeds: [{ id: 'bmw', reception: { available: true }, setup: bmwVehicleSetup(bmw(), { available: true, now: NOW }) }],
-    chargers: [{ id: 'charger2', provider: 'shelly-evse', control: { snapshot: { commissioning: { verified: false } } } }] } };
+    chargers: [{ id: 'charger2', provider: 'shelly-evse', control: { snapshot: { commissioning: { profileSupported: false } } } }] } };
   const view = chargingSetupView(status);
   assert.match(view.vehicles.bmw.fields.soc, /^0% · Measured/);
   assert.match(view.vehicles.bmw.fields.pluggedIn, /^Unplugged · Measured/);
-  assert.equal(view.chargers.charger2, 'Commissioning required');
+  assert.equal(view.chargers.charger2, 'Charger profile unavailable · Review the charger card');
   const markup = chargingSetupMarkup();
   for (const [, descriptor] of BMW_SETUP_DESCRIPTORS) assert.ok(markup.includes(descriptor));
   assert.match(markup, /does not send vehicle charging windows/);

@@ -323,8 +323,7 @@ standalone chart series does not change the house learner's input selection.
 ### Charger 2 physical capture and vehicle feeds
 
 Charger 2 records only the configured Shelly EVSE's source-timestamped native
-meter deltas. Its association includes the device, MQTT broker/root, commissioned
-model/firmware and phase mapping. Duplicate or older source timestamps do not
+meter deltas. Its association includes the device, MQTT broker/root, integration profile/service and phase mapping. Duplicate or older source timestamps do not
 advance energy. A counter reset, implausible jump or excessive gap establishes a
 new baseline and keeps missing coverage visible. Pause/resume does not split a
 physical plug connection. No counter from a vehicle supplies home electricity.
@@ -659,7 +658,7 @@ byte and variation metrics remain labeled as such. Current open energy is shown
 separately from finalized observation counts. The annual target measures overall
 SQLite growth; mandatory exact/history records are never dropped to meet it.
 
-This recording contract uses database schema 17. An incompatible development
+This recording contract uses database schema 18. An incompatible development
 schema is rejected before mutation with fresh-database guidance; no migration,
 backfill or automatic reset is provided. Supported read-only v0.7.5 CSV import,
 current-version restart, backup/restore and deterministic journal replay remain.

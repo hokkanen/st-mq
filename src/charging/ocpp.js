@@ -1,4 +1,7 @@
 import { createHash, randomInt } from 'node:crypto';
+import { resolveChargingDeadline } from './settings.js';
+import { TIME_ZONE } from '../domain/prices.js';
+import { effectiveScheduleFingerprint, manualScheduleWindow, nextLocalOccurrence, normalizeScheduleState } from './easee.js';
 
 const KIND = 'ocpp-tx-pause', MAX_PAUSE_MS = 48 * 3600_000, MIN_PAUSE_MS = 15 * 60_000;
 const MAX_ATTEMPTS = 3, MAX_AGE_MS = 60_000;
@@ -60,7 +63,7 @@ const coversZero = (composite, from, until) => composite.startAt <= from && comp
 
 function snapshotFor(value, scope, now) {
   if (!fields(value, ['transport', 'scope', 'connectionId', 'readAt', 'online', 'connectorStatus', 'statusAt', 'statusReceivedAt',
-    'transactionId', 'transactionStartedAt', 'transactionConfirmed', 'pluggedIn', 'powerKw', 'powerAt', 'powerReceivedAt', 'manualEvent', 'limits', 'supply'])
+    'transactionId', 'transactionStartedAt', 'transactionConfirmed', 'pluggedIn', 'powerKw', 'powerAt', 'powerReceivedAt', 'appControl', 'limits', 'supply'])
     || value.transport !== 'ocpp' || value.scope !== scope || typeof value.online !== 'boolean'
     || !time(value.readAt) || value.readAt > now || ![true, false, null].includes(value.pluggedIn)
     || value.online && (!text(value.connectionId) || !STATUSES.includes(value.connectorStatus)
@@ -72,19 +75,29 @@ function snapshotFor(value, scope, now) {
     || value.powerKw !== null && (!Number.isFinite(value.powerKw) || value.powerKw < 0)
     || value.powerAt !== null && (!time(value.powerAt) || value.powerAt > now)
     || ['statusReceivedAt', 'powerReceivedAt'].some(key => value[key] != null && (!time(value[key]) || value[key] > now))) throw fail('read-failed');
-  const event = value.manualEvent;
-  if (event != null && (!fields(event, ['id', 'kind', 'at', 'transactionId']) || !text(event.id)
-    || !['stop', 'release'].includes(event.kind) || !time(event.at) || event.at > now
-    || event.transactionId !== null && !id(event.transactionId))) throw fail('read-failed');
+  if (value.appControl != null && (!validAppControl(value.appControl) || value.appControl.readAt > now
+    || [value.appControl.enabledAt, value.appControl.stopAt].some(at => at !== null && at > now))) throw fail('read-failed');
   return clone(value);
 }
+
+function validAppControl(value) {
+  if (!fields(value, ['readAt', 'enabled', 'enabledAt', 'stopped', 'stopAt', 'controlKnown', 'faulted', 'authorizationBlocked', 'schedule'])
+    || !time(value.readAt) || ![true, false, null].includes(value.enabled)
+    || ![value.stopped, value.controlKnown, value.faulted, value.authorizationBlocked].every(item => typeof item === 'boolean')
+    || ![value.enabledAt, value.stopAt].every(at => at === null || time(at))) return false;
+  try { return value.schedule === null || JSON.stringify(normalizeScheduleState(value.schedule)) === JSON.stringify(value.schedule); }
+  catch { return false; }
+}
+const appFingerprint = value => value ? hash([value.controlKnown, value.enabled, value.enabledAt, value.stopped, value.stopAt, value.faulted,
+  value.authorizationBlocked, value.schedule ? effectiveScheduleFingerprint(value.schedule) : null]) : null;
+const appStopped = value => value?.controlKnown && !value.faulted && !value.authorizationBlocked && value.stopped;
 
 export function createOcppScheduleAdapter({ request, readSnapshot, isCurrent = () => false,
   scope, clock = Date.now, canControl = () => false } = {}) {
   if (!scopeValid(scope) || typeof request !== 'function' || typeof readSnapshot !== 'function') throw fail('invalid-ocpp-adapter');
   const adapter = {
     scope, ownershipNamespace: 'ocpp', capabilities: { scheduling: true, currentControl: false, externalLoadBalancing: true },
-    async read({ signal } = {}) { return snapshotFor(await readSnapshot({ signal }), scope, clock()); },
+    async read({ signal, forceAppRefresh = false } = {}) { return snapshotFor(await readSnapshot({ signal, forceAppRefresh }), scope, clock()); },
     async composite(snapshot, until, { signal, guard = () => true } = {}) {
       const now = clock(), duration = Math.max(60, Math.ceil((until - now) / 1000));
       if (duration > MAX_PAUSE_MS / 1000 + 60) throw fail('invalid-plan');
@@ -99,12 +112,13 @@ export function createOcppScheduleAdapter({ request, readSnapshot, isCurrent = (
         && snapshot.transactionId === instruction.transactionId
         && instruction.startAt - clock() >= (instruction.purpose === 'identification' ? 1000 : MIN_PAUSE_MS);
       if (!allowed()) throw fail('control-revoked');
-      const before = await adapter.read({ signal });
+      const before = await adapter.read({ signal, forceAppRefresh: true });
       if (!allowed() || !before.online || !fresh(before.readAt, clock())
         || before.connectionId !== snapshot.connectionId || !before.transactionConfirmed
         || before.transactionId !== instruction.transactionId || before.pluggedIn !== true
         || ['Unavailable', 'Faulted', 'Reserved'].includes(before.connectorStatus)
-        || before.manualEvent?.id !== snapshot.manualEvent?.id) throw fail('control-revoked');
+        || appStopped(before.appControl) || before.appControl?.faulted || before.appControl?.authorizationBlocked
+        || appFingerprint(before.appControl) !== appFingerprint(snapshot.appControl)) throw fail('control-revoked');
       await beforeWrite(before);
       const beforeSend = () => allowed() && isCurrent(before, { unchangedStatus: true });
       if (!beforeSend()) throw fail('control-revoked');
@@ -156,8 +170,8 @@ export function createOcppScheduleAdapter({ request, readSnapshot, isCurrent = (
 
 export function initialOcppControllerState(scope) {
   if (!scopeValid(scope)) throw fail('invalid-ocpp-adapter');
-  return { version: 1, kind: KIND, scope, nextProfileId: randomInt(1, 1_000_000_000), owned: null, pending: null,
-    manual: null, lastManualEvent: null, execution: null, session: null, released: false, provisional: false, vehicleDisconnect: null };
+  return { version: 2, kind: KIND, scope, nextProfileId: randomInt(1, 1_000_000_000), owned: null, pending: null,
+    manual: null, appControl: null, delayedReleaseAt: null, lastManualResume: null, pauseWitness: null, execution: null, session: null, released: false, provisional: false, vehicleDisconnect: null };
 }
 function validInstruction(value) {
   if (!fields(value, ['profileId', 'transactionId', 'startAt', 'validFrom', 'payload', 'fingerprint', 'confirmedAt', 'requestedAt', 'pauseRequestedAt',
@@ -204,16 +218,24 @@ const validExecution = value => value === null || fields(value, ['planId', 'peri
   && JSON.stringify(executionFor(value)) === JSON.stringify(value);
 function validState(state, scope) {
   const keys = Object.keys(initialOcppControllerState(scope));
-  return fields(state, keys) && keys.every(key => Object.hasOwn(state, key)) && state.version === 1 && state.kind === KIND && state.scope === scope
+  return fields(state, keys) && keys.every(key => Object.hasOwn(state, key)) && state.version === 2 && state.kind === KIND && state.scope === scope
     && id(state.nextProfileId) && typeof state.released === 'boolean' && typeof state.provisional === 'boolean'
     && (state.owned === null || validInstruction(state.owned) && state.owned.profileId < state.nextProfileId)
     && (state.pending === null || fields(state.pending, ['action', 'instruction', 'attempts', 'nextAttemptAt', 'accepted', 'execution'])
       && ['install', 'clear'].includes(state.pending.action) && validInstruction(state.pending.instruction) && state.pending.instruction.profileId < state.nextProfileId
       && Number.isInteger(state.pending.attempts) && state.pending.attempts >= 0 && state.pending.attempts <= MAX_ATTEMPTS
       && time(state.pending.nextAttemptAt) && typeof state.pending.accepted === 'boolean' && validExecution(state.pending.execution))
-    && (state.manual === null || fields(state.manual, ['id', 'kind', 'at', 'transactionId']) && text(state.manual.id)
-      && ['stop', 'release'].includes(state.manual.kind) && time(state.manual.at) && (state.manual.transactionId === null || id(state.manual.transactionId)))
-    && (state.lastManualEvent === null || fields(state.lastManualEvent, ['id', 'at']) && text(state.lastManualEvent.id) && time(state.lastManualEvent.at))
+    && (state.manual === null || fields(state.manual, ['id', 'kind', 'at', 'transactionId', 'resumeAt', 'cycleEndsAt']) && text(state.manual.id)
+      && ['stop', 'release', 'window', 'schedule'].includes(state.manual.kind) && time(state.manual.at)
+      && (state.manual.transactionId === null || id(state.manual.transactionId))
+      && (state.manual.resumeAt === null || time(state.manual.resumeAt)) && time(state.manual.cycleEndsAt))
+    && (state.appControl === null || validAppControl(state.appControl))
+    && (state.delayedReleaseAt === null || time(state.delayedReleaseAt))
+    && (state.lastManualResume === null || fields(state.lastManualResume, ['at', 'deadlineAt', 'reason'])
+      && time(state.lastManualResume.at) && time(state.lastManualResume.deadlineAt) && ['explicit', 'window-end'].includes(state.lastManualResume.reason))
+    && (state.pauseWitness === null || fields(state.pauseWitness, ['profileId', 'transactionId', 'connectionId', 'at'])
+      && id(state.pauseWitness.profileId) && id(state.pauseWitness.transactionId) && text(state.pauseWitness.connectionId) && time(state.pauseWitness.at)
+      && state.pauseWitness.profileId === state.owned?.profileId && state.pauseWitness.transactionId === state.owned.transactionId)
     && (state.session === null || fields(state.session, ['transactionId', 'connected', 'connectedAt', 'lastDisconnectedAt'])
       && (state.session.transactionId === null || id(state.session.transactionId)) && [true, false, null].includes(state.session.connected)
       && (state.session.connectedAt === null || time(state.session.connectedAt)) && (state.session.lastDisconnectedAt === null || time(state.session.lastDisconnectedAt)))
@@ -237,7 +259,7 @@ export function createOcppChargingController({ adapter, initialState = null, sav
   if (!adapter || !scopeValid(adapter.scope)) throw fail('invalid-ocpp-adapter');
   if (initialState !== null && !validState(initialState, adapter.scope)) throw Error('Unsupported native charging ownership; start a fresh development database');
   let state = initialState ? clone(initialState) : initialOcppControllerState(adapter.scope);
-  let snapshot = null, desired = { enabled: false, plan: null }, closed = false, generation = 0, queue = Promise.resolve(), abort = null;
+  let snapshot = null, desired = { enabled: false, plan: null, readyBy: '06:00', timezone: TIME_ZONE }, closed = false, generation = 0, queue = Promise.resolve(), abort = null;
   let phase = 'off', reason = 'Automatic charging is off.', errorCode = null, ownsInstruction = false, pauseConfirmed = false, handoverConfirmed = true;
   let planningRevision = null, identification = null;
   const chargeNowActive = () => Number.isSafeInteger(desired.chargeNow?.connectedAt)
@@ -268,6 +290,57 @@ export function createOcppChargingController({ adapter, initialState = null, sav
       missing.push('a new power reading after the pause');
     else if (snapshot.powerKw !== 0) missing.push('a zero-power reading');
     return `Charging pause scheduled; physical stop not yet confirmed. Waiting for ${missing.join(' and ') || 'charger confirmation'}.`;
+  }
+  const staleAppControl = () => snapshot.appControl?.controlKnown && state.appControl?.controlKnown
+    && ((snapshot.appControl.enabledAt ?? -1) < (state.appControl.enabledAt ?? -1)
+      || (snapshot.appControl.stopAt ?? -1) < (state.appControl.stopAt ?? -1));
+  const nativeStopped = () => appStopped(snapshot.appControl)
+    || appStopped(state.appControl) && (!snapshot.appControl?.controlKnown || staleAppControl());
+  async function observeAppControl() {
+    const now = clock(), app = snapshot.appControl, prior = state.appControl;
+    const changes = {};
+    const manual = (kind, evidence, resumeAt = null) => {
+      changes.manual = { id: hash([kind, evidence, now, state.session?.connectedAt]), kind, at: now,
+        transactionId: snapshot.transactionId, resumeAt, cycleEndsAt: resolveChargingDeadline(now, desired.readyBy, desired.timezone) };
+      changes.execution = null; changes.released = kind === 'release'; changes.provisional = false;
+    };
+    if (app && fresh(app.readAt, now)) {
+      const scheduleChanged = app.schedule && (!prior || app.readAt >= prior.readAt) && (!prior?.schedule
+        || effectiveScheduleFingerprint(app.schedule) !== effectiveScheduleFingerprint(prior.schedule));
+      if (scheduleChanged && app.schedule.enabled !== 'none') {
+        const window = manualScheduleWindow(app.schedule, now);
+        manual(window ? 'window' : 'schedule', effectiveScheduleFingerprint(app.schedule), window?.resumeAt ?? null);
+      } else if (scheduleChanged && prior?.schedule && prior.schedule.enabled !== 'none'
+        && !(time(state.delayedReleaseAt) && now >= state.delayedReleaseAt)) {
+        manual('release', effectiveScheduleFingerprint(app.schedule));
+      }
+      if (scheduleChanged) changes.delayedReleaseAt = app.schedule.enabled === 'delayed'
+        ? nextLocalOccurrence(app.schedule.delayed.startTime, app.schedule.delayed.timezone, now) : null;
+      if (app.controlKnown && !app.faulted && !app.authorizationBlocked && !staleAppControl()) {
+        const enabledChanged = prior?.controlKnown && app.enabled !== prior.enabled && app.enabledAt > prior.enabledAt;
+        const stopChanged = prior?.controlKnown && app.stopped !== prior.stopped && app.stopAt > prior.stopAt;
+        if (app.stopped && (enabledChanged || stopChanged)) manual('stop', [app.enabledAt, app.stopAt]);
+        else if (!app.stopped && (enabledChanged && app.enabled === true || stopChanged && prior.stopped)) {
+          const acknowledged = desired.resume && desired.resume === state.manual?.id;
+          if (!acknowledged && !['window', 'schedule'].includes(changes.manual?.kind)) manual('release', [app.enabledAt, app.stopAt]);
+        }
+      }
+      // Schedule reads and source-timed control observations can fail separately.
+      // Keep each comparison baseline without turning an older/absent control
+      // observation into a fresh live restriction or a repeated schedule change.
+      const controlAdvanced = !prior || (app.enabledAt ?? -1) >= (prior.enabledAt ?? -1)
+        && (app.stopAt ?? -1) >= (prior.stopAt ?? -1);
+      changes.appControl = { ...(controlAdvanced ? app : prior), readAt: app.readAt,
+        schedule: app.schedule && (!prior || app.readAt >= prior.readAt) ? app.schedule : prior?.schedule ?? null };
+    }
+    const witness = state.pauseWitness;
+    if (!changes.manual && !state.manual && witness && state.owned?.profileId === witness.profileId
+      && snapshot.transactionConfirmed && snapshot.transactionId === witness.transactionId
+      && snapshot.connectionId === witness.connectionId && now < state.owned.startAt
+      && snapshot.connectorStatus === 'Charging' && snapshot.statusAt > witness.at && fresh(snapshot.statusAt, now)) {
+      manual('release', ['native-charging', snapshot.statusAt, witness.profileId]);
+    }
+    if (Object.keys(changes).length) await commit(changes);
   }
   async function refreshIdentification() {
     const next = typeof getIdentification === 'function' ? await getIdentification(clone(snapshot)) : null, now = clock();
@@ -319,12 +392,12 @@ export function createOcppChargingController({ adapter, initialState = null, sav
     if (pending.action === 'clear') {
       // Accepted/Unknown addresses this exact ID. Another zero profile may still
       // restrict charging; clearing ours does not assert an unrestricted car.
-      await commit({ owned: null, pending: null }); ownsInstruction = pauseConfirmed = false; return true;
+      await commit({ owned: null, pending: null, pauseWitness: null }); ownsInstruction = pauseConfirmed = false; return true;
     }
-    if (clock() >= pending.instruction.startAt) { await commit({ owned: null, pending: null }); return true; }
+    if (clock() >= pending.instruction.startAt) { await commit({ owned: null, pending: null, pauseWitness: null }); return true; }
     const composite = await adapter.composite(snapshot, pending.instruction.startAt + 60_000, { signal, guard: () => canWrite(current) });
     if (!coversZero(composite, Math.max(clock(), composite.startAt), pending.instruction.startAt)) throw fail('readback-mismatch');
-    await commit({ owned: { ...pending.instruction, confirmedAt: clock() }, execution: pending.execution, released: false, provisional: false, pending: null }); ownsInstruction = true;
+    await commit({ owned: { ...pending.instruction, confirmedAt: clock() }, execution: pending.execution, released: false, provisional: false, pending: null, pauseWitness: null }); ownsInstruction = true;
     return true;
   }
   async function reconcile(current) {
@@ -365,17 +438,23 @@ export function createOcppChargingController({ adapter, initialState = null, sav
         connected: disconnected ? false : awaiting && !physicallyConnected ? null : snapshot.pluggedIn,
         connectedAt: disconnected ? null : newConnection
           ? confirmedTransaction ? Math.min(snapshot.transactionStartedAt, snapshot.statusAt) : snapshot.statusAt
-          : changedTransaction || prior?.connectedAt == null ? snapshot.transactionStartedAt ?? snapshot.statusAt : prior.connectedAt,
+          : prior?.connectedAt == null ? snapshot.transactionStartedAt ?? snapshot.statusAt : prior.connectedAt,
         lastDisconnectedAt: lastDisconnectedAt >= 0 ? lastDisconnectedAt : null };
       await commit({ session, ...(state.vehicleDisconnect && !awaiting ? { vehicleDisconnect: { ...state.vehicleDisconnect, awaitingConnection: false } } : {}),
         ...(newConnection || changedTransaction || disconnected ? { execution: null, released: false, provisional: false,
-          manual: state.manual?.kind === 'stop' && !changedTransaction ? state.manual : null } : {}) });
-      const event = snapshot.manualEvent;
-      if (event && event.id !== state.lastManualEvent?.id && event.at > (state.lastManualEvent?.at ?? -1)
-        && (event.transactionId === null || event.transactionId === snapshot.transactionId))
-        await commit({ manual: event, lastManualEvent: { id: event.id, at: event.at }, execution: null, released: event.kind === 'release' });
-      if (desired.resume && desired.resume === state.manual?.id) {
-        await commit({ manual: null, released: false, execution: null }); desired.resume = null;
+          pauseWitness: null, manual: changedTransaction && !newConnection && !disconnected
+            || ['window', 'schedule'].includes(state.manual?.kind) ? state.manual : null } : {}) });
+      await observeAppControl();
+      if (disconnected && state.manual && !['window', 'schedule'].includes(state.manual.kind))
+        await commit({ manual: null, released: false });
+      const handbackKnown = !['window', 'schedule', 'stop'].includes(state.manual?.kind)
+        || fresh(snapshot.appControl?.readAt, clock()) && (state.manual.kind === 'stop'
+          ? snapshot.appControl.controlKnown : snapshot.appControl.schedule !== null);
+      if (handbackKnown && !staleAppControl() && !nativeStopped() && (desired.resume && desired.resume === state.manual?.id
+        || time(state.manual?.resumeAt) && clock() >= state.manual.resumeAt)) {
+        await commit({ lastManualResume: { at: clock(), deadlineAt: state.manual.cycleEndsAt,
+          reason: desired.resume === state.manual.id ? 'explicit' : 'window-end' },
+          manual: null, released: false, execution: null }); desired.resume = null;
       }
       // Supply fresh physical pause evidence to identification before it chooses
       // whether this temporary instruction is still needed.
@@ -393,7 +472,7 @@ export function createOcppChargingController({ adapter, initialState = null, sav
       const identificationEnded = instruction?.purpose === 'identification'
         && (!identification || identification.id !== instruction.identificationId || clock() >= instruction.startAt);
       if (identificationEnded) await commit({ execution: null, released: false, provisional: false });
-      const release = !controlRequested() || state.manual || disconnected || awaiting || wrongSession
+      const release = !controlRequested() || state.manual || nativeStopped() || disconnected || awaiting || wrongSession
         || identificationEnded && (!desired.enabled || chargeNowActive() || identification || clock() >= instruction.startAt);
       if (release && instruction) {
         handoverConfirmed = false;
@@ -401,8 +480,15 @@ export function createOcppChargingController({ adapter, initialState = null, sav
         handoverConfirmed = true;
       }
       if (!controlRequested()) { await commit({ execution: null }); handoverConfirmed = !state.pending && !state.owned; return display('off', 'Automatic charging is off; external charger restrictions are preserved.'); }
-      if (state.manual) return display('yielded', state.manual.kind === 'stop' ? 'A confirmed native stop has priority. Explicitly resume automatic charging when ready.'
-        : 'A confirmed native release has priority until unplug or explicit resumption.');
+      if (nativeStopped()) return display(state.manual?.kind === 'stop' ? 'yielded' : 'unavailable',
+        'The charger was paused or disabled in Easee. Resume it there before returning to automatic charging.', state.manual ? null : 'charger-stopped');
+      if (state.manual) return display('yielded', state.manual.kind === 'stop'
+        ? 'The charger was paused or disabled in Easee. Resume it there before returning to automatic charging.'
+        : ['window', 'schedule'].includes(state.manual.kind) ? 'The Easee app schedule has temporary priority.'
+          : 'Charging was enabled in Easee. The Easee app has temporary control until unplug or explicit resumption.');
+      if (staleAppControl()) return display('unavailable', 'Waiting for Easee app observations newer than the last confirmed change.', 'app-control-stale');
+      if (snapshot.appControl?.faulted || snapshot.appControl?.authorizationBlocked)
+        return display('unavailable', 'Easee reports a charger fault or charging authorization restriction.');
       if (disconnected) return display('disconnected', 'Waiting for a vehicle connection.');
       if (!canWrite(current)) throw fail('control-revoked');
       if (['Unavailable', 'Faulted', 'Reserved'].includes(snapshot.connectorStatus)) return display('unavailable', 'The charger is unavailable for automatic native scheduling.');
@@ -507,9 +593,20 @@ export function createOcppChargingController({ adapter, initialState = null, sav
         ownsInstruction = pauseConfirmed = false;
         throw fail('control-revoked');
       }
+      await observeAppControl();
+      if (staleAppControl()) throw fail('control-revoked');
+      if (state.manual || nativeStopped()) {
+        if (!await clearInstruction(state.owned, current, signal)) return display('unconfirmed', 'Native profile release is waiting for its bounded retry.');
+        return display(state.manual ? 'yielded' : 'unavailable', nativeStopped()
+          ? 'The charger was paused or disabled in Easee. Resume it there before returning to automatic charging.'
+          : 'The newer Easee app action has temporary priority.');
+      }
       ownsInstruction = ownsInstruction && snapshot.online && snapshot.connectionId === verifiedConnectionId && snapshot.transactionConfirmed
         && snapshot.transactionId === state.owned?.transactionId && clock() < state.owned.startAt;
       observePause();
+      if (pauseConfirmed) await commit({ pauseWitness: { profileId: state.owned.profileId,
+        transactionId: snapshot.transactionId, connectionId: snapshot.connectionId,
+        at: Math.max(snapshot.statusAt, snapshot.powerAt) } });
       if (identification) return display('identifying', pauseConfirmed
         ? 'Charging is briefly paused while waiting for the vehicle identification response.'
         : 'The identification pause is awaiting fresh confirmation from the charger.');

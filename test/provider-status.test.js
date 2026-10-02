@@ -306,7 +306,7 @@ test('electricity groups only physical meters and keeps Tesla vehicle health sep
 test('physical Charger 2 commissioning and unavailable telemetry remain visible',()=>{
   const providers={easee:{status:'ok',currentReadings:easeeReadings()},'shelly-evse':{status:'ok',reason:'physical-meter',...shellyReadings(),controlReady:false}};
   let group=dashboardProviders({providers},options).find(row=>row.key==='electricity');
-  assert.equal(group.display.attention,false);assert.match(group.display.detail,/control requires verified hardware/);
+  assert.equal(group.display.attention,false);assert.match(group.display.detail,/control requires supported live capabilities/);
   providers['shelly-evse']={status:'waiting',reason:'awaiting-mqtt'};group=dashboardProviders({providers},options).find(row=>row.key==='electricity');
   assert.equal(group.display.state,'Partly available');assert.match(group.display.detail,/physical Charger 2 MQTT/);
   providers['shelly-evse']={status:'disabled',reason:'not-enabled'};assert.equal(dashboardProviders({providers},options).find(row=>row.key==='electricity').display.state,'Available');
