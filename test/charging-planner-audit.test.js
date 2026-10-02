@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { planChargers, forecastCharger } from '../src/charging/planner.js';
+import { planChargers, forecastCharger, forecastFixedPlans } from '../src/charging/planner.js';
 
 const now = Date.parse('2026-09-24T00:00:00Z'), HOUR = 3_600_000, QUARTER = HOUR / 4;
 const v = value => ({ value, available: value !== null, assumed: false });
@@ -180,4 +180,241 @@ test('small two-job enumeration independently checks feasibility, cash objective
     assert.ok(result.solver.cashCostLowerBoundCents <= optimum + 1e-6);
     assert.ok(result.solver.cashCostGapBoundCents + 1e-6 >= actual-optimum);
   }
+});
+
+test('opening the final Equalizer period preserves shared allocation under every priority', () => {
+  for (const priority of ['balanced', 'charger1', 'charger2']) {
+    const chargers = [job('charger1'), job('charger2')];
+    const before = run(chargers, { priority });
+    assert.equal(before.feasible, true);
+    chargers[0].control = { released: true, phase: 'released' };
+    chargers[0].values.charging = v(true);
+    chargers[0].values.actualCurrentA = v(before.allocations[0].chargers.charger1.currentA);
+    const after = run(chargers, { priority });
+    assert.equal(after.feasible, true, priority);
+    assert.deepEqual(after.plans.charger1.periods, [{ startAt: now, endAt: null }]);
+    assert.equal(after.plans.charger1.state, 'released');
+    assert.deepEqual(after.allocations, before.allocations, 'a permission transition cannot consume additional supply');
+    assert.equal(after.solver.cashCostCandidateCents, 82.8);
+    assert.ok(after.currentLimits.every(row => row.chargerId === 'charger2'));
+  }
+});
+
+test('observed open manual, Automatic OFF and Charge Now peers retain permission while sharing current', () => {
+  for (const mode of ['off', 'manual', 'charge-now']) for (const priority of ['balanced', 'charger1', 'charger2']) {
+    const first = job('charger1'), second = job('charger2');
+    first.values.charging = v(true); first.values.actualCurrentA = v(8);
+    if (mode === 'off') first.settings.enabled = false;
+    if (mode === 'manual') first.control = { manual: { kind: 'charge-now' } };
+    if (mode === 'charge-now') {
+      first.request = { chargeNow: true };
+      first.control = { released: true, phase: 'released' };
+    }
+    const result = run([first, second], { priority });
+    assert.equal(result.feasible, true, `${mode}/${priority}`);
+    assert.deepEqual(result.plans.charger1.periods, [{ startAt: now, endAt: null }]);
+    assert.equal(result.plans.charger1.state, mode === 'off' ? 'disabled' : mode === 'manual' ? 'manual' : 'released');
+    const allocation = result.allocations[0].chargers;
+    assert.equal(allocation.charger2.currentA, priority === 'charger2' ? 16 : priority === 'charger1' ? 0 : 8);
+  }
+});
+
+test('joint adopted forecasts preserve exact periods, current priority, energy and per-charger slices', () => {
+  const chargers = [job('charger1'), job('charger2')];
+  for (const charger of chargers) {
+    charger.values.charging = v(true); charger.values.actualCurrentA = v(8); charger.values.currentA = v(8);
+    charger.control = { phase: 'active' };
+  }
+  const periodsByCharger = Object.fromEntries(chargers.map(charger => [charger.id, [{ startAt: now, endAt: null }]]));
+  for (const priority of ['balanced', 'charger1', 'charger2']) {
+    const result = forecastFixedPlans({ now, chargers, periodsByCharger, priority,
+      prices: prices([10,10,10,10]), supply: { configuredBudgetCurrentA: [16,16,16] } });
+    assert.equal(result.feasible, true, priority);
+    assert.equal(result.assumptions.priority, priority);
+    for (const charger of chargers) {
+      const plan = result.plans[charger.id], forecast = result.forecasts[charger.id];
+      assert.deepEqual(plan.periods, periodsByCharger[charger.id]);
+      assert.equal(forecast.feasible, true);
+      assert.equal(forecast.finishAt, plan.finishAt);
+      assert.ok(plan.finishAt <= now + HOUR);
+      const integrated = plan.allocations.reduce((sum, row) => sum + row.powerKw * (row.end - row.start) / HOUR, 0);
+      assert.ok(Math.abs(integrated - 4.14) < 1e-8);
+      assert.deepEqual(plan.allocations, forecast.allocations);
+      if (priority === 'balanced') assert.equal(plan.finishAt, now + 3 * QUARTER);
+    }
+    assert.equal(result.solver.cashCostCandidateCents, 82.8);
+  }
+});
+
+test('mixed fixed and optimized periods never move the adopted peer or manufacture shared capacity', () => {
+  const chargers = [job('charger1', 2.07), job('charger2', 4.14)];
+  const fixed = [{ startAt: now, endAt: now + QUARTER }, { startAt: now + 3 * QUARTER, endAt: null }];
+  const result = run(chargers, { priority: 'charger2', prices: prices([20,1,1,20]), fixedPeriods: { charger1: fixed } });
+  assert.equal(result.feasible, true);
+  assert.deepEqual(result.plans.charger1.periods, fixed);
+  assert.ok(result.allocations.every(row => row.phaseCurrentA.every(current => current <= 16)));
+  assert.ok(result.plans.charger1.allocations.filter(row => row.start >= now + QUARTER && row.end <= now + 3 * QUARTER)
+    .every(row => row.currentA === 0));
+});
+
+test('native stops and unknown idle peers cannot acquire charging permission through fixed assessment', () => {
+  for (const kind of ['manual-stop', 'telemetry-stop', 'idle', 'disconnected']) {
+    const first = job('charger1'), second = job('charger2');
+    if (kind === 'manual-stop') first.control = { manual: { kind: 'stop' } };
+    if (kind === 'telemetry-stop') first.telemetry.manualStop = true;
+    if (kind === 'disconnected') first.values.connected = v(false);
+    const result = forecastFixedPlans({ now, chargers: [first, second],
+      periodsByCharger: { charger2: [{ startAt: now, endAt: null }] }, supply: { configuredBudgetCurrentA: [16,16,16] } });
+    assert.equal(result.plans.charger2.feasible, true, kind);
+    assert.ok(result.allocations.every(row => !row.chargers.charger1));
+    assert.equal(result.plans.charger2.finishAt, now + 22.5 * 60_000);
+  }
+});
+
+test('native peer timer and stop bound shared participation; fresh charging overrides a held future vehicle start', () => {
+  const first = job('charger1'); first.settings.enabled = false;
+  first.values.scheduledStartAt = v(now + HOUR / 2);
+  first.values.scheduledEndAt = v(now + 3 * QUARTER);
+  first.telemetry.scheduledEndKind = 'scheduled-stop';
+  const result = run([first, job('charger2')]);
+  assert.deepEqual(result.plans.charger1.periods, [{ startAt: now + HOUR / 2, endAt: now + 3 * QUARTER }]);
+  assert.ok(result.plans.charger1.allocations.filter(row => row.end <= now + HOUR / 2 || row.start >= now + 3 * QUARTER)
+    .every(row => row.currentA === 0));
+  first.values.charging = v(true); first.values.vehicleNotBefore = v(now + 2 * HOUR);
+  const observed = run([first, job('charger2')]);
+  assert.ok(observed.allocations[0].chargers.charger1.currentA > 0);
+  assert.equal(first.values.vehicleNotBefore.value, now + 2 * HOUR, 'observation must not rewrite vehicle telemetry');
+});
+
+test('post-target observed demand remains a shared load across its passed deadline', () => {
+  const first = job('charger1', 0, { deadlineAt: now - QUARTER });
+  first.control = { released: true, phase: 'released' }; first.values.charging = v(true); first.values.actualCurrentA = v(8);
+  const result = run([first, job('charger2', 2.07)]);
+  assert.equal(result.plans.charger2.feasible, true);
+  assert.ok(result.allocations.every(row => Object.hasOwn(row.chargers, 'charger1')));
+  assert.ok(result.allocations.some(row => row.start >= result.plans.charger2.finishAt && row.chargers.charger1.currentA > 0));
+  assert.equal(result.forecasts.charger1.known, false);
+  assert.equal(result.forecasts.charger1.endAt, now + HOUR);
+  first.values.charging = v(false); first.values.actualCurrentA = v(0);
+  const stopped = run([first, job('charger2', 2.07)]);
+  assert.ok(stopped.allocations.every(row => !row.chargers.charger1));
+});
+
+test('repeated planning keeps bounded low-current slices and shares recorded progress across unequal deadlines', () => {
+  const chargers = [job('charger1', 4.14, { deadlineAt: now + 55 * 60_000 }), job('charger2', 4.14)];
+  for (const charger of chargers) {
+    charger.control = { released: true, phase: 'released' };
+    charger.values.charging = v(true);
+    charger.sessionCost = { recordedGridKwh: 0 };
+  }
+  let previousAllocations = [];
+  const selected = [];
+  for (let minute = 0; minute < 45; minute += 5) {
+    const result = run(chargers, { now: now + minute * 60_000, previousAllocations,
+      supply: { configuredBudgetCurrentA: [6,6,6] } });
+    const current = result.allocations.find(row => row.start <= now + minute * 60_000 && row.end > now + minute * 60_000);
+    const winner = Object.entries(current.chargers).find(([,row]) => row.currentA >= 6)?.[0];
+    assert.ok(winner);
+    selected.push(winner);
+    for (const charger of chargers) if (charger.id === winner) {
+      const energy = 4.14 * 5 / 60;
+      charger.requiredGridKwh -= energy;
+      charger.sessionCost.recordedGridKwh += energy;
+      // A source SoC rebase must not erase measured connection progress.
+      charger.referenceGridKwh = charger.requiredGridKwh;
+    }
+    previousAllocations = result.allocations;
+  }
+  assert.deepEqual(selected.slice(0, 3), ['charger1', 'charger1', 'charger1']);
+  assert.deepEqual(selected.slice(3, 6), ['charger2', 'charger2', 'charger2']);
+  assert.deepEqual(selected.slice(6, 9), ['charger1', 'charger1', 'charger1']);
+  assert.ok(chargers.every(charger => charger.sessionCost.recordedGridKwh >= 1.035 - 1e-8));
+});
+
+test('a retained balanced current slice cannot override native limits, explicit priority or an achievable deadline', () => {
+  const chargers = [job('charger1'), job('charger2')];
+  const initial = run(chargers, { supply: { configuredBudgetCurrentA: [6,6,6] } });
+  const at = now + 5 * 60_000;
+  for (const charger of chargers) charger.control = { released: true, phase: 'released' };
+  const args = { now: at, previousAllocations: initial.allocations, supply: { configuredBudgetCurrentA: [6,6,6] } };
+  const preferred = run(chargers, { ...args, priority: 'charger2' });
+  assert.equal(preferred.allocations[0].chargers.charger2.currentA, 6);
+  chargers[0].values.nativeCurrentA = v(0);
+  const restricted = run(chargers, args);
+  assert.equal(restricted.allocations[0].chargers.charger1.currentA, 0);
+  assert.equal(restricted.allocations[0].chargers.charger2.currentA, 6);
+  chargers[0].values.nativeCurrentA = v(6);
+  chargers[0].requiredGridKwh = 1.035;
+  chargers[1].requiredGridKwh = .345;
+  chargers[1].deadlineAt = at + 5 * 60_000;
+  const deadline = run(chargers, args);
+  assert.equal(deadline.plans.charger2.feasible, true, 'service overrides a held fairness slice');
+  assert.equal(deadline.allocations[0].chargers.charger2.currentA, 6);
+});
+
+test('cost-estimated missing energy cannot create normalized delivery credit or a false feasible cost bound', () => {
+  const chargers = [job('charger1'), job('charger2')];
+  chargers[0].sessionCost = { recordedGridKwh: 0, unrecordedGridKwh: 100, deliveredGridKwh: 100 };
+  const short = run(chargers, { supply: { configuredBudgetCurrentA: [6,6,6] } });
+  assert.equal(short.allocations[0].chargers.charger1.currentA, 6);
+  assert.equal(short.solver.cashCostCandidateCents, null);
+  assert.equal(short.solver.cashCostLowerBoundCents, null);
+  const conflict = job('charger1', 1);
+  conflict.values.vehicleCeilingSoc = v(70);
+  const constrained = run([conflict]);
+  assert.equal(constrained.solver.cashCostCandidateCents, null);
+  assert.equal(constrained.solver.cashCostLowerBoundCents, null);
+});
+
+test('a met request cannot spend the peer\'s cheap charging opportunity merely because it has priority', () => {
+  for (const completed of ['charger1', 'charger2']) for (const priority of ['balanced', 'charger1', 'charger2']) {
+    const chargers = ['charger1', 'charger2'].map(id => {
+      const charger = job(id, id === completed ? 0 : 4.14);
+      charger.control = { released: true, phase: 'released' };
+      charger.values.charging = v(true); charger.values.actualCurrentA = v(8);
+      charger.values.vehicleCeilingSoc = v(100);
+      return charger;
+    });
+    const result = run(chargers, { priority, prices: prices([1,1,100,100]) });
+    const pending = completed === 'charger1' ? 'charger2' : 'charger1';
+    assert.equal(result.plans[pending].feasible, true);
+    assert.ok(Math.abs(result.plans[pending].costCents - 4.14) < 1e-8, `${completed}/${priority}`);
+    assert.ok(result.allocations.some(row => row.start >= result.plans[pending].finishAt && Object.hasOwn(row.chargers, completed)),
+      'the open native load is still represented once the requested service is delivered');
+    assert.deepEqual(result.plans[completed].periods, [{ startAt: now, endAt: null }]);
+  }
+});
+
+test('fixed joint forecasts retain honest cost bounds for zero and negative rates and disclose price gaps', () => {
+  const chargers = [job('charger1', 1.035), job('charger2', 1.035)];
+  const periodsByCharger = Object.fromEntries(chargers.map(charger => [charger.id, [{ startAt: now, endAt: null }]]));
+  const forecast = rates => forecastFixedPlans({ now, chargers, periodsByCharger, prices: rates,
+    supply: { configuredBudgetCurrentA: [12,12,12] } });
+  for (const tariff of [0, -10]) {
+    const result = forecast(prices([tariff,tariff,tariff,tariff]));
+    assert.equal(result.feasible, true);
+    assert.equal(result.solver.kind, 'fixed-execution');
+    assert.equal(result.solver.cashCostCandidateCents, 2.07 * tariff);
+    assert.equal(result.solver.cashCostLowerBoundCents, 2.07 * tariff);
+    assert.equal(result.solver.cashCostGapBoundCents, 0);
+    assert.equal(result.solver.globalOptimalityProven, false);
+    assert.equal(result.plans.charger1.costCents, 1.035 * tariff);
+    assert.equal(result.plans.charger2.costCents, 1.035 * tariff);
+    assert.equal(result.plans.charger1.costCents + result.plans.charger2.costCents, result.solver.cashCostCandidateCents);
+  }
+  const unpriced = forecast([]);
+  assert.equal(unpriced.feasible, true, 'unknown rates do not remove physical opportunity');
+  assert.equal(unpriced.assumptions.priceCoverage, 'partial');
+  assert.equal(unpriced.solver.cashCostCandidateCents, null);
+  assert.equal(unpriced.solver.cashCostLowerBoundCents, null);
+  assert.equal(unpriced.solver.cashCostGapBoundCents, null);
+  const laterGap = forecast(prices([10]));
+  assert.equal(laterGap.solver.cashCostCandidateCents, 20.7, 'the fixed candidate itself is entirely priced');
+  assert.equal(laterGap.solver.cashCostLowerBoundCents, null, 'unknown alternative prices cannot support an optimality bound');
+  assert.equal(laterGap.assumptions.priceCoverage, 'partial');
+  const mixed = forecastFixedPlans({ now, chargers, periodsByCharger: { charger1: [{ startAt: now, endAt: null }],
+    charger2: [{ startAt: now + HOUR / 2, endAt: null }] }, prices: prices([10]), supply: { configuredBudgetCurrentA: [12,12,12] } });
+  assert.equal(mixed.plans.charger1.costCents, 10.35);
+  assert.equal(mixed.plans.charger2.costCents, null);
+  assert.equal(mixed.solver.cashCostCandidateCents, null);
 });

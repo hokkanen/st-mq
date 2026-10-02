@@ -2,6 +2,7 @@ import { isReadOnlyReplica } from './replica-status.js';
 import { chargingTime } from './charging.js';
 import { createChargingTime } from './charging-time.js';
 import { chargingTestClock, nextChargingTestTime } from './charging-test-time.js';
+import { chargingSharedText, chargingSharedSummary } from './charging-shared.js';
 
 const terminal = run => ['completed', 'finished', 'cancelled', 'interrupted'].includes(run?.phase);
 const label = value => String(value ?? '').replaceAll('-', ' ');
@@ -25,6 +26,9 @@ const findingLabels = {
   'ready-by-changed': 'The session ready-by time changed during this assessment.',
   'observation-gap': 'Observation was interrupted. Behavior during the missing interval could not be checked.',
   'vehicle-limit-differs-from-preparation': 'The vehicle reported a different target. Review the target below.',
+  'shared-priority-mismatch': 'A joint model did not reflect the selected shared priority. Review the shared charging evidence.',
+  'shared-allocation-inconsistent': 'A shared allocation or cost bound was inconsistent with its recorded inputs.',
+  'shared-current-mismatch': 'Charger 2 current readback exceeded its shared allocation after settling.',
 };
 const endReasons = {
   'equipment-changed': 'The configured physical charger changed.',
@@ -106,6 +110,7 @@ export function createChargingTestsPanel({ document, request, onStatus = () => {
       <p class="charging-test-phase" data-test-phase role="status"></p>
       <p data-test-scope class="muted"></p><p data-test-guidance></p>
       <p data-test-headroom class="muted"></p>
+      <details data-test-shared><summary data-test-shared-summary></summary><p data-test-shared-detail></p></details>
       <section data-test-target-summary aria-label="Vehicle target verification">
         <p data-test-target-reported class="muted"></p>
         <p data-test-target-verification-status></p>
@@ -307,6 +312,8 @@ export function createChargingTestsPanel({ document, request, onStatus = () => {
       : terminal(run) ? `${endMessage} Review the findings and coverage below.`
         : 'Leave the car connected until charging completion is confirmed, then unplug to finish. No End action is required. The assessment continues when this window or browser is closed.';
     q('[data-test-headroom]').textContent = `Assessment expectations: starting charge ${run.expectations.soc}% · vehicle target ${run.expectations.nativeTargetSoc}% · usable capacity ${run.expectations.capacityKwh} kWh. These verified declarations remain separate from the controller’s charging inputs.`;
+    q('[data-test-shared-summary]').textContent = chargingSharedSummary(run.shared);
+    q('[data-test-shared-detail]').textContent = chargingSharedText(run.shared, run.chargerId);
     const target = q('[data-test-target-value]'), recordedTarget = run.expectations.nativeTargetSoc;
     if (targetEditorRun !== run.id) {
       targetEditorRun = run.id; targetEditorOpen = false; targetConflictSeen = null;

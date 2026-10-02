@@ -254,6 +254,30 @@ continues. Restore or remove a temporary timer in the car yourself. Up to 24
 assessments are retained, with active runs preserved. The current assessment state
 is version 2; unsupported development formats are rejected without migration.
 
+The BMW/Charger 1 and Tesla/Charger 2 guides can run separately or together.
+Each keeps its own connection, vehicle evidence and completion result. Its shared
+assessment also observes the other charger, whether or not that charger has a
+guide running. It records measured overlapping draw, the selected shared priority
+and changes made during ordinary use. The guide never changes priority or asks
+for a priority-switching exercise. An absent overlap remains unexercised; missing
+or stale peer evidence remains unknown.
+Priority propagation and current changes have a two-minute settling allowance
+before a persistent mismatch becomes a finding. Brief recalculation or readback
+delays remain visible without leaving a false failure in the guide.
+
+Shared assessment separates proposed schedules, adopted charger execution and
+measured draw. It independently recounts the joint allocation's available energy
+and electrical constraints, and shows the planner's combined cost and reported
+lower/gap bounds where available. These are model checks, not proof of delivered
+energy or exact global optimality. Delayed vehicle-timer recommendations integrate
+the selected charger's exact allocation slices, including gaps assigned to its
+peer. Missing allocation evidence cannot be replaced with peak charging power.
+Shared evidence survives a same-version restart and stays bound to each physical
+connection. Existing version-2 assessments and session reports without this new
+optional evidence retain unknown shared coverage until independently observed;
+their earlier findings and outcomes are unchanged. Malformed shared evidence is
+rejected, and no prior allocation history is invented.
+
 Every ordinary connection also gets a passive **Session report**, in its own row
 below **Details & settings** on its charger card. The action's text and color indicate
 attention, incomplete evidence or the observed result. The report summarizes
@@ -532,6 +556,12 @@ remain separate visible states, independently of the Automatic charging switch.
 
 The global priority setting is **balanced**, **Charger 1**, or **Charger 2**. It belongs to the physical charging point and immediately revises allocation when changed. The revision invalidates queued intentions without resetting session requests, manual instructions, metered energy or cost.
 
+A request edit, Automatic change or Charge now action can also revise the other
+charger's schedule. Both affected controllers discard outdated pending commands
+and reconcile the new joint result. Confirmed native execution remains separate
+from a proposed replacement until readback establishes the change. An arriving
+price forecast can establish the first automatic program after connection.
+
 Change priority in either charger's details. Both entries edit the same saved
 choice, which survives restart and new vehicle connections for the same physical
 chargers. Automatic charging is also a persistent dashboard choice; the four
@@ -540,6 +570,25 @@ ready-by and battery defaults remain configuration-owned.
 The planner first respects device/vehicle limits, manual permission, native start times and credible capacity. It protects both deadlines where the modeled opportunities allow that. Actual all-in electricity cost then governs period selection. Priority must not buy more expensive energy merely to favor a charger. In infeasible cases, charger priority favors its remaining request; balanced mode shares normalized shortfall. Eligible charging time and grid-energy need determine pressure. Shared budgets below two minimum currents use bounded time slices rather than invalid sub-minimum simultaneous commands.
 
 The implementation is a bounded search over a declared slot/current model, **not a globally exact continuous-time optimizer**. Results expose the search kind, relaxed cost lower bound, feasible candidate cost and upper bound on the cost gap where available. Search pruning can miss a better joint candidate; reported feasibility is conditional on the recorded assumptions. Synthetic exhaustive small-horizon comparisons validate representative cases. There is no one-cent pause penalty or mandatory one-cent saving hurdle. Practical minimum economic runs/gaps remain 15 minutes; equal-cost choices prefer stability.
+
+Running-session readiness and price-driven interruption decisions reassess both
+adopted executions together with the selected priority. A cheaper replacement
+must preserve modeled feasibility and reduce combined cost. A final open release
+retains its charging permission while remaining part of shared current allocation;
+it does not reserve the charger's entire current ceiling against its peer.
+Independently observed native/manual activity is likewise accounted for without
+granting the economic scheduler new permission to change that activity.
+Charger 2's prospective current command uses Charger 1's confirmed permission,
+so an unconfirmed replacement cannot manufacture spare capacity.
+Below the capacity needed to run both cars, balanced sharing retains an existing
+allocation for at most its current 15-minute slice. Accepted session progress
+keeps repeated replanning from continually favoring the same car; changed limits,
+native permission or a deadline that can still be met override that hold. A car
+that has met its requested minimum receives residual adjustable capacity after
+outstanding requests, while its final charging permission remains open.
+Shelly records the program currently accepted by its controller, including
+intermediate pauses. Its future transitions still require the application;
+this execution record does not represent a device-local timer.
 
 Planned charging power and duration use the latest published smoothed voltage
 estimate for each physical phase. The same estimates convert future household

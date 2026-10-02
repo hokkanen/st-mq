@@ -1,5 +1,6 @@
 import { isReadOnlyReplica } from './replica-status.js';
 import { projectChargingReportHistory, CHARGING_EVENT_FILTERS, chargingFindingCounts } from './charging-report-history.js';
+import { chargingSharedText, chargingSharedSummary } from './charging-shared.js';
 
 const OUTCOMES = { 'in-progress': 'Outcome not yet confirmed', 'target-confirmed': 'Target confirmed by vehicle',
   'target-estimated': 'Target estimated · awaiting vehicle evidence', 'deadline-missed': 'Target not reached by ready-by',
@@ -10,6 +11,9 @@ const COVERAGE = { identification: 'Vehicle identification', initialRelease: 'Dr
   resume: 'Draw resumed after pause', lateReplan: 'Inputs reassessed after identification', targetAttainment: 'Requested target reached',
   completion: 'Native vehicle limit reached and stopped', energy: 'Recorded energy coverage' };
 const FINDINGS = {
+  'shared-priority-mismatch': ['Shared priority mismatch', 'A joint model did not reflect the selected shared priority. The shared charging event retains the proposed and adopted assessments.'],
+  'shared-allocation-inconsistent': ['Shared allocation evidence inconsistent', 'A joint allocation or reported cost bound did not agree with its recorded inputs. This checks the model, not physical delivery.'],
+  'shared-current-mismatch': ['Shared current limit not respected', 'Fresh Charger 2 current readback exceeded its active shared allocation after settling. Review the recorded shared context and charger evidence.'],
   'charging-during-hold': ['Charging during a planned pause', 'The charger continued drawing power after the pause settling period. Check the recorded plan and charger confirmation.'],
   'control-unconfirmed': ['Control remained unconfirmed', 'A command, readback or charger error remained unresolved beyond the settling period. An acknowledgement alone does not prove a physical response.'],
   'telemetry-unavailable': ['Physical evidence unavailable', 'Fresh charger readings were missing. Charging and stopping could not be assessed during this interval.'],
@@ -32,6 +36,7 @@ const EVENTS = { connected: 'Connection observed', 'observation-started': 'Monit
   identified: 'Vehicle identified', waiting: 'Waiting', charging: 'Identification observing charge', pausing: 'Identification pause requested',
   observing: 'Identification awaiting matching reports', inconclusive: 'Identification inconclusive', completed: 'Identification completed',
   'initial-plan': 'Initial planning snapshot', 'target-changed': 'Requested target changed',
+  'shared-charging-context': 'Both chargers and shared priority',
   ...OUTCOMES, ...COVERAGE };
 const validTime = value => Number.isFinite(value) && Math.abs(value) <= 8.64e15;
 const timeFormatter = (timezone, seconds = false) => new Intl.DateTimeFormat('en-GB', {
@@ -149,6 +154,7 @@ export function chargingReportFacts(report, timezone = 'Europe/Helsinki') {
     ['Ready by', Number.isFinite(current.deadlineAt) ? time(current.deadlineAt, timezone) : 'Unavailable'],
     ['Measured draw / status', `${physical}${chargerStatus}`],
     ['Observation coverage', observation],
+    ['Both chargers and shared priority', chargingSharedSummary(report.shared)],
   ];
 }
 
@@ -327,6 +333,7 @@ export function createChargingDiagnosticsPanel({ document, request, onOpenTest =
     const p = parts.get(node), details = [], evidenceRow = row.context ? { ...row.context, ...row } : row;
     if (['finding', 'finding-update', 'recovery'].includes(row.kind)) details.push(FINDINGS[row.code]?.[1] ?? 'Finding recorded.');
     if (row.kind === 'finding-update') details.push('The same episode remains active; its recorded evidence changed.');
+    if (row.kind === 'shared') details.push(chargingSharedText(row.shared, selectedCharger));
     setText(p.label, `${time(row.at, timezone, true)} · ${eventLabel(row)}`);
     if (Number.isFinite(row.powerKw)) details.push(`Measured draw ${number(row.powerKw)} kW`);
     const source = sourceName(row.source);

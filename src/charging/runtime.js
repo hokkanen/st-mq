@@ -3,7 +3,7 @@ import { acceptVehicleReading, validateBmwChargingHistory, bmwHomeContext, bmwId
 import { chargingConfiguration } from './config.js';
 import { TIME_ZONE } from '../domain/prices.js';
 import { CHARGER_DEFINITIONS, buildCharger } from './model.js';
-import { planChargers, forecastFixedPlan } from './planner.js';
+import { planChargers, forecastFixedPlans } from './planner.js';
 import { createChargingController } from './controller.js';
 import { easeeChargerTelemetry, effectiveScheduleFingerprint } from './easee.js';
 import { teslamateVehicleTelemetry } from './teslamate.js';
@@ -88,6 +88,15 @@ const initialMqtt = () => ({ connected: false, brokerConnected: false, subscribe
   lastMessageAt: null, lastLiveAt: null, lastRetainedAt: null, lastValidAt: null, lastValidLiveAt: null });
 const activePeriod = (control, now) => control?.execution?.periods?.some(period => period.startAt <= now
   && (period.endAt === null || period.endAt > now));
+const remainingPeriods = (periods, now) => (periods ?? []).filter(row => row.endAt === null || row.endAt > now)
+  .map(row => ({ startAt: Math.max(now, row.startAt), endAt: row.endAt }));
+function confirmedPeriods(view, now) {
+  if (view.values.connected.value !== true || view.control?.manual) return null;
+  const control = view.control;
+  if (!control?.provisional && (control?.released || control?.phase === 'released'))
+    return [{ startAt: now, endAt: null }];
+  return control?.execution?.periods?.length ? control.execution.periods : null;
+}
 function livePlanningVoltages(views, supply, now) {
   const valid = value => Number.isFinite(value) && value >= 200 && value <= 250;
   const fresh = at => Number.isSafeInteger(at) && at <= now && now - at <= 5 * MINUTE;
@@ -198,11 +207,17 @@ export class ChargingRuntime {
     return `${this.key}:${id}:${item.association}:ownership${item.adapter?.ownershipNamespace === 'ocpp' ? ':ocpp' : ''}`;
   }
   savedOwnership(id) { return this.charger(id).ownershipAdmitted ? this.store.getState(this.ownershipKey(id)) ?? null : null; }
+  coordinationView() {
+    // Selection is live control intent; model contexts keep the priority under
+    // which they were calculated until the next joint assessment completes.
+    return this.coordination && this.coordination.priority !== this.settings.priority
+      ? { ...this.coordination, priority: this.settings.priority } : this.coordination;
+  }
   persist() {
     // Assessors only observe the production view. A diagnostic storage failure
     // must not block charging or an outstanding physical restoration duty.
     const now = this.clock();
-    try { this.sessionDiagnostics.observe(this.views(now), now); this.diagnosticsError = null; }
+    try { this.sessionDiagnostics.observe(this.views(now), now, this.coordinationView()); this.diagnosticsError = null; }
     catch { this.diagnosticsError = 'Session diagnostics could not be saved.'; }
     try { this.physicalTests.update(this.status(now), now); this.physicalTestsError = null; }
     catch { this.physicalTestsError = 'The charging assessment could not be saved.'; }
@@ -256,10 +271,11 @@ export class ChargingRuntime {
         getMaximumAmps: scheduleCeiling,
         getIdentification: snapshot => this.identificationControl(item, snapshot),
         getPlan: snapshot => {
-          try { this.updatePlan(); }
+          try { this.updatePlan(this.clock(), { sourceId: id }); }
           catch { this.error = 'charging-planning-unavailable'; return null; }
           return this.pricesInitialized ? item.plan : null;
-        } });
+        },
+        getAllocation: () => this.allocationContext() });
       item.lastReconcileAt = null;
       if (!this.timer) { this.timer = setInterval(() => this.tick(), MINUTE); this.timer.unref?.(); }
       this.tick();
@@ -815,7 +831,7 @@ export class ChargingRuntime {
         mqtt: reception, error: item.error ?? null };
     });
   }
-  updatePlan(now = this.clock()) {
+  updatePlan(now = this.clock(), { sourceId } = {}) {
     let views = this.views(now);
     for (const view of views) {
       const item = this.charger(view.id), pluggedIn = view.values.connected.value;
@@ -879,6 +895,7 @@ export class ChargingRuntime {
       return priceWindow(priorPrices, now, view.deadlineAt) !== priceWindow(currentPrices, now, view.deadlineAt);
     }).map(view => view.id));
     const planningViews = views.map(view => priceReplans.has(view.id)
+      || !view.control?.manual && (this.charger(view.id).replan || !this.charger(view.id).plan)
       ? { ...view, control: { ...view.control, released: false, phase: null } } : view);
     // Source-clock refreshes and forecast noise are not new charging intent.
     // User/vehicle inputs, limits, prices and connection changes bypass the
@@ -894,15 +911,56 @@ export class ChargingRuntime {
         && !previous.provisional && previous.state === 'waiting' && !view.control?.pending && !view.control?.manual
         && !priceReplans.has(view.id) ? [[view.id, previous.periods]] : [];
     }));
-    const result = planChargers({ now, chargers: planningViews, prices: this.prices, household: this.household, supply,
-      previousPeriods, priority: this.settings.priority });
-    this.coordination = { allocations: result.allocations, currentLimits: result.currentLimits,
-      currentLimitsAreProposals: false, priority: this.settings.priority, warnings: result.warnings, assumptions: { ...result.assumptions,
-        voltage: { ...voltageEstimate, voltageV: planningVoltageV,
-          provisional: voltageEstimate.voltageV.some(value => value === null) },
-        householdReference: { ...householdReferenceSummary(this.household),
-          noHistory: this.historyReady && householdReferenceSummary(this.household).noHistory,
-          loading: this.historyFlights.size > 0, unavailable: Boolean(this.historyError) } } };
+    const allocationScope = digest({ priority: this.settings.priority, prices: priceWindow(currentPrices, -Infinity, Infinity),
+      chargers: views.map(view => [view.id, view.association, view.request?.sessionId, view.request?.revision,
+        view.settings.enabled, view.request?.chargeNow === true,
+        ...['connected', 'maximumCurrentA', 'nativeCurrentA', 'vehicleCurrentA', 'vehicleNotBefore'].map(key => view.values[key]?.value ?? null)]) });
+    const previousAllocations = this.allocationScope === allocationScope ? this.coordination?.allocations ?? [] : [];
+    const planning = { now, prices: this.prices, household: this.household, supply, priority: this.settings.priority, previousAllocations };
+    // A running native period keeps its permission until an accepted price
+    // revision changes it. Optimize its peer around that actual obligation.
+    const fixedPeriods = Object.fromEntries(views.flatMap(view => {
+      const item = this.charger(view.id), periods = confirmedPeriods(view, now);
+      return periods && !item.newEpisode && !view.control?.provisional && activePeriod(view.control, now)
+        && !priceReplans.has(view.id) ? [[view.id, periods]] : [];
+    }));
+    let result = planChargers({ ...planning, chargers: planningViews, previousPeriods, fixedPeriods });
+    const adoptedPeriods = Object.fromEntries(views.flatMap(view => {
+      const periods = confirmedPeriods(view, now);
+      return periods ? [[view.id, periods]] : [];
+    }));
+    const adopted = forecastFixedPlans({ ...planning, chargers: views, periodsByCharger: adoptedPeriods });
+    // A price revision is an economic choice for the complete shared schedule.
+    // Never buy savings for one car by making its peer infeasible or dearer in sum.
+    const accounting = Object.values(adopted.forecasts).flatMap(forecast => forecast.accounting ?? []);
+    const priced = accounting.length > 0 && accounting.every(row => currentPrices.some(([start, end, price]) =>
+      Number.isFinite(price) && start <= row.start && end >= row.end));
+    const oldCost = accounting.reduce((sum, row) => sum + row.energyKwh * row.priceCtPerKwh, 0);
+    const economicIds = Object.keys(result.plans).filter(id => result.plans[id].requiredGridKwh > 1e-7
+      && (result.plans[id].accounting?.length || result.plans[id].feasible !== null));
+    const comparableService = economicIds.every(id => adopted.plans[id]?.accounting?.length
+      && adopted.plans[id].requiredGridKwh === result.plans[id].requiredGridKwh);
+    const newCosts = economicIds.map(id => result.plans[id].costCents);
+    let priceRevisionWorthwhile = result.feasible === true && adopted.feasible === true && priced
+      && comparableService
+      && newCosts.length > 0 && newCosts.every(Number.isFinite)
+      && oldCost - newCosts.reduce((sum, cost) => sum + cost, 0) > MIN_PRICE_SAVINGS_CENTS;
+    // A newly connected peer may still be awaiting its first adopted program.
+    // Revisit the price comparison after adoption instead of treating different
+    // delivered service as an economic rejection and consuming the new prices.
+    let priceRevisionDeferred = priceReplans.size > 0 && !comparableService;
+    if (priceRevisionWorthwhile) for (const view of views.filter(view => priceReplans.has(view.id))) {
+      const next = result.plans[view.id], running = view.control.execution.periods.find(period => period.startAt <= now
+        && (period.endAt === null || period.endAt > now));
+      if (next?.startAt > now && now - running.startAt < MIN_PRICE_PAUSE_MS) {
+        this.charger(view.id).priceRecheckAt = running.startAt + MIN_PRICE_PAUSE_MS;
+        priceRevisionDeferred = true;
+      } else if (next?.startAt > now && next.startAt - now < MIN_PRICE_PAUSE_MS) priceRevisionWorthwhile = false;
+    }
+    if (priceReplans.size && (!priceRevisionWorthwhile || priceRevisionDeferred)) {
+      for (const id of priceReplans) if (adoptedPeriods[id]) fixedPeriods[id] = adoptedPeriods[id];
+      result = planChargers({ ...planning, chargers: planningViews, previousPeriods, fixedPeriods });
+    }
     const environment = { supply: { budget: supply?.estimate?.available ? supply.estimate.budgetCurrentA : supply?.availableCurrentA,
         voltageV: planningVoltageV, allocationA: supply?.allocationA, quality: supply?.estimate?.quality },
       household: this.household.map(row => [row.start, row.end, row.phaseCurrentA, row.scenarios]),
@@ -940,8 +998,7 @@ export class ChargingRuntime {
       // the last automatic context until the controller verifies handback.
       if (control?.manual && !handbackDue && item.plan && !item.newEpisode) continue;
       const execution = control?.execution;
-      const fixedForecast = () => forecastFixedPlan({ now, charger: view, periods: execution.periods,
-        chargers: views, prices: this.prices, household: this.household, supply });
+      const fixedForecast = () => ({ forecast: adopted.forecasts[view.id], plan: adopted.plans[view.id] });
       const revisionPending = item.plan?.priceRevision && item.plan.priceRevision.previousPlanId === execution?.planId
         && item.plan.id !== execution.planId;
       const retainExecution = fixed => {
@@ -952,21 +1009,9 @@ export class ChargingRuntime {
       };
       if (priceReplans.has(view.id)) {
         const next = result.plans[view.id], fixed = fixedForecast();
-        const running = execution.periods.find(period => period.startAt <= now && (period.endAt === null || now < period.endAt));
-        const pausesNow = next?.startAt > now;
-        const oldAccounting = fixed.forecast.accounting ?? [];
-        // Forecast-only gaps have a zero placeholder price. They cannot support
-        // a savings claim or authorize an interruption.
-        const priced = oldAccounting.every(row => currentPrices.some(([start, end, price]) =>
-          Number.isFinite(price) && start <= row.start && end >= row.end));
-        const oldCost = oldAccounting.reduce((sum, row) => sum + row.energyKwh * row.priceCtPerKwh, 0);
-        const worthwhile = next?.feasible === true && !next.provisional && fixed.forecast.feasible === true
-          && priced && Number.isFinite(next.costCents) && oldCost - next.costCents > MIN_PRICE_SAVINGS_CENTS;
-        if (worthwhile && pausesNow && now - running.startAt < MIN_PRICE_PAUSE_MS) {
-          item.priceRecheckAt = running.startAt + MIN_PRICE_PAUSE_MS;
-        } else {
+        if (!priceRevisionDeferred) {
           item.plan = { ...item.plan, priceSnapshot: currentPrices };
-          if (worthwhile && (!pausesNow || next.startAt - now >= MIN_PRICE_PAUSE_MS)) {
+          if (priceRevisionWorthwhile) {
             item.plan = { ...next, id: randomUUID(), priceSnapshot: currentPrices,
               replanReadyBy: item.plan.replanReadyBy,
               priceRevision: { previousPlanId: execution.planId, at: now },
@@ -987,9 +1032,9 @@ export class ChargingRuntime {
         if (this.historyReady) item.forecast = fixed.forecast;
         continue;
       }
-      if ((control?.released || control?.phase === 'released') && !control?.provisional && !handbackDue && !item.newEpisode) {
-        if (this.historyReady) item.forecast = forecastFixedPlan({ now, charger: view, periods: [{ startAt: now, endAt: null }],
-          chargers: views, prices: this.prices, household: this.household, supply }).forecast;
+      if ((control?.released || control?.phase === 'released') && !control?.provisional && !handbackDue
+        && !item.newEpisode && item.plan && !item.replan) {
+        if (this.historyReady) item.forecast = adopted.forecasts[view.id];
         continue;
       }
       const started = execution?.periods?.some(period => period.startAt <= now);
@@ -1006,29 +1051,102 @@ export class ChargingRuntime {
       if (started && !handbackDue && !item.newEpisode && item.plan
         && (active || item.plan.basis === basis && item.plan.creditedGridKwh === credit
           && (!observedGap || item.plan.replannedGapAt === observedGap))) {
-        if (this.historyReady) item.forecast = forecastFixedPlan({ now, charger: view, periods: execution.periods,
-          chargers: views, prices: this.prices, household: this.household, supply }).forecast;
+        if (this.historyReady) item.forecast = adopted.forecasts[view.id];
         continue;
       }
       const next = result.plans?.[view.id];
       if (next) item.plan = { ...next, basis, stabilityBasis, priceSnapshot: currentPrices, creditedGridKwh: credit, replannedGapAt: observedGap,
         id: started && !active ? randomUUID() : item.plan?.id ?? randomUUID() };
     }
+    const desiredPeriods = Object.fromEntries(views.flatMap(view => {
+      const plan = this.charger(view.id).plan;
+      return view.values.connected.value === true && !view.control?.manual && (view.settings.enabled || view.request?.chargeNow)
+        && plan?.periods?.length ? [[view.id, plan.periods]] : [];
+    }));
+    // Retained native execution can differ from a newly searched candidate.
+    // Reassess the selected periods together before publishing their opportunity.
+    const retained = Object.entries(desiredPeriods).some(([id, periods]) =>
+      digest(remainingPeriods(periods, now)) !== digest(remainingPeriods(result.plans[id]?.periods, now)));
+    const proposed = retained ? forecastFixedPlans({ ...planning, chargers: views, periodsByCharger: desiredPeriods }) : result;
+    for (const [id, periods] of Object.entries(desiredPeriods)) {
+      const item = this.charger(id), assessed = proposed.plans[id];
+      if (assessed && digest(remainingPeriods(periods, now)) === digest(remainingPeriods(assessed.periods, now)))
+        item.plan = { ...item.plan, allocations: assessed.allocations ?? [], intervals: assessed.intervals ?? [] };
+    }
+    // A C2 command must be sized against C1's confirmed permission. Use C2's
+    // requested periods prospectively so its old waiting execution cannot
+    // suppress an explicitly requested start. Readback remains separate below.
+    const commandPeriods = { ...desiredPeriods };
+    if (adoptedPeriods.charger1) commandPeriods.charger1 = adoptedPeriods.charger1;
+    else delete commandPeriods.charger1;
+    const command = forecastFixedPlans({ ...planning, chargers: views, periodsByCharger: commandPeriods });
+    const sessions = Object.fromEntries(views.map(view => [view.id, view.request?.sessionId ?? null]));
+    const requests = Object.fromEntries(views.map(view => [view.id, { sessionId: view.request?.sessionId ?? null,
+      revision: view.request?.revision ?? null, automatic: view.settings.enabled, chargeNow: view.request?.chargeNow === true }]));
+    const context = calculation => ({ at: now, sessions, requests, priority: this.settings.priority, feasible: calculation.feasible,
+      solver: calculation.solver, allocations: calculation.allocations, assumptions: calculation.assumptions,
+      plans: Object.fromEntries(Object.entries(calculation.plans).map(([id, plan]) => [id, {
+        feasible: plan.feasible, deadlineAt: plan.deadlineAt, requiredGridKwh: plan.requiredGridKwh,
+        deliveredGridKwh: plan.deliveredGridKwh, shortfallGridKwh: plan.shortfallGridKwh,
+        costCents: plan.costCents, provisional: plan.provisional === true, periods: plan.periods,
+      }])) });
+    this.coordination = { at: now, sessions, requests, allocations: command.allocations, currentLimits: command.currentLimits,
+      currentLimitsAreProposals: true, allocationBasis: 'confirmed-peer-and-requested-charger2',
+      priority: this.settings.priority, solver: proposed.solver, proposed: context(proposed), adopted: context(adopted),
+      warnings: proposed.warnings, assumptions: { ...proposed.assumptions,
+        voltage: { ...voltageEstimate, voltageV: planningVoltageV,
+          provisional: voltageEstimate.voltageV.some(value => value === null) },
+        householdReference: { ...householdReferenceSummary(this.household),
+          noHistory: this.historyReady && householdReferenceSummary(this.household).noHistory,
+          loading: this.historyFlights.size > 0, unavailable: Boolean(this.historyError) } } };
+    this.allocationScope = allocationScope;
     for (const view of this.views(now)) {
       const item = this.charger(view.id);
       item.sessionCost = updateSessionCost(item.sessionCost, view, now, this.prices, this.readEnergy);
     }
+    this.fenceChangedCommands(now, sourceId);
     this.persist(); this.scheduleWakeup(now);
+  }
+  invalidateCommands() {
+    for (const item of Object.values(this.chargers)) {
+      item.controller?.invalidate?.();
+      item.lastReconcileAt = null;
+    }
+  }
+  fenceChangedCommands(now, sourceId) {
+    const current = this.coordination?.allocations?.find(row => row.start <= now && row.end > now);
+    for (const [id, item] of Object.entries(this.chargers)) {
+      const basis = digest({ association: item.association, session: item.request?.sessionId,
+        enabled: item.controls.enabled, chargeNow: item.request?.chargeNow === true,
+        periods: remainingPeriods(item.plan?.periods, now).map(row => [row.startAt <= now ? 'open' : row.startAt, row.endAt]),
+        provisional: item.plan?.provisional === true,
+        ...(id === 'charger2' ? { current: current?.chargers?.charger2?.currentLimitA ?? null,
+          reservation: this.settings.priority === 'charger2' ? 0 : current?.chargers?.charger1?.currentA ?? 0 } : {}) });
+      const changed = item.commandBasis !== undefined && item.commandBasis !== basis;
+      item.commandBasis = basis;
+      if (!changed || id === sourceId || !item.controller || item.backendTransition || this.closed) continue;
+      item.controller.invalidate?.(); item.lastReconcileAt = null;
+      if (item.reconcileFlight) { item.reconcileAgain = true; continue; }
+      if (item.reconcileQueued) continue;
+      item.reconcileQueued = true;
+      setImmediate(() => {
+        item.reconcileQueued = false;
+        if (!this.closed && !item.backendTransition && !item.reconcileFlight && item.lastReconcileAt === null)
+          void this.reconcile(id).catch(() => { item.error = 'charging-reconciliation-unavailable'; });
+      });
+    }
   }
   scheduleWakeup(now = this.clock()) {
     if (this.closed) return;
-    const boundaries = Object.values(this.chargers).flatMap(item => {
-      const control = item.controller?.status();
-      return [item.priceRecheckAt, control?.manual?.resumeAt, control?.owned?.startAt,
-        item.identification?.probe?.endedAt === null ? item.identification.probe.deadlineAt : null, item.identification?.phase === 'pausing' ? item.identification.pauseUntil : null,
-        ...(item.identification?.phase === 'pausing' || item.identification?.probe?.endedAt === null ? [now + 2000] : []),
-        ...[...(control?.execution?.periods ?? []), ...(item.plan?.periods ?? [])].flatMap(period => [period.startAt, period.endAt])];
-    }).filter(at => Number.isSafeInteger(at) && at > now);
+    const boundaries = [...(this.coordination?.allocations ?? []).flatMap(row => [row.start, row.end])
+      .filter(Number.isFinite).map(Math.ceil),
+      ...Object.values(this.chargers).flatMap(item => {
+        const control = item.controller?.status();
+        return [item.priceRecheckAt, control?.manual?.resumeAt, control?.owned?.startAt,
+          item.identification?.probe?.endedAt === null ? item.identification.probe.deadlineAt : null, item.identification?.phase === 'pausing' ? item.identification.pauseUntil : null,
+          ...(item.identification?.phase === 'pausing' || item.identification?.probe?.endedAt === null ? [now + 2000] : []),
+          ...[...(control?.execution?.periods ?? []), ...(item.plan?.periods ?? [])].flatMap(period => [period.startAt, period.endAt])];
+      })].filter(at => Number.isSafeInteger(at) && at > now);
     const next = boundaries.length ? Math.min(...boundaries) : null;
     if (next === this.boundaryAt) return;
     clearTimeout(this.boundaryTimer); this.boundaryAt = next;
@@ -1113,7 +1231,7 @@ export class ChargingRuntime {
       try { this.persist(); } catch (error) { item.replan = true; throw error; }
     }
     item.error = null;
-    try { this.updatePlan(); this.error = null; } catch { this.error = 'charging-planning-unavailable'; }
+    try { this.updatePlan(this.clock(), { sourceId: id }); this.error = null; } catch { this.error = 'charging-planning-unavailable'; }
   }
   checkControlAuthority() {
     if (this.closed || !this.canControl() || !['mqtt', 'providers'].includes(this.config.input))
@@ -1135,9 +1253,9 @@ export class ChargingRuntime {
       Object.assign(item, { controls: previous.controls, replan: previous.replan, request: previous.request, plan: previous.plan });
       this.revision = previous.revision; this.refreshSettings(); throw error;
     }
-    item.controller?.invalidate?.();
+    this.invalidateCommands();
     try { this.updatePlan(); } catch { this.error = 'charging-planning-unavailable'; }
-    await this.reconcile(id);
+    await this.reconcile();
   }
   async setSettings(input) {
     this.checkControlAuthority();
@@ -1151,7 +1269,7 @@ export class ChargingRuntime {
     this.controls = { ...this.controls, priority: input.priority, revision: this.controls.revision + 1 };
     this.revision++; this.refreshSettings();
     try { this.persist(); } catch (error) { this.controls = previous; this.revision = previousRevision; this.refreshSettings(); throw error; }
-    for (const item of Object.values(this.chargers)) item.controller?.invalidate?.();
+    this.invalidateCommands();
     try { this.updatePlan(); } catch { this.error = 'charging-planning-unavailable'; }
     await this.reconcile();
   }
@@ -1179,10 +1297,10 @@ export class ChargingRuntime {
     const previous = copyRequest(item.request), previousRevision = this.revision, previousPlan = item.plan;
     item.request.chargeNow = true; item.request.revision++; this.revision++; item.plan = null;
     try { this.persist(); } catch (error) { item.request = previous; item.plan = previousPlan; this.revision = previousRevision; throw error; }
-    item.controller.invalidate?.();
+    this.invalidateCommands();
     try { this.updatePlan(); } catch { this.error = 'charging-planning-unavailable'; }
     // Release scheduling immediately even when price/history work is unavailable.
-    await this.reconcile(id);
+    await this.reconcile();
   }
   async identifyVehicle(id, input) {
     this.checkControlAuthority();
@@ -1226,7 +1344,7 @@ export class ChargingRuntime {
     item.plan = control?.released ? previousPlan : previousPlan && activePeriod(control, this.clock())
       ? { ...previousPlan, ...(Object.hasOwn(input.changes, 'readyBy') ? { replanReadyBy: checked.readyBy } : {}) } : null;
     try { this.persist(); } catch (error) { item.request = previous; item.plan = previousPlan; this.revision = previousRevision; throw error; }
-    item.controller?.invalidate?.(); this.updatePlan(); await this.reconcile(id);
+    this.invalidateCommands(); this.updatePlan(); await this.reconcile();
   }
   async resume(id, input) {
     this.charger(id);
@@ -1239,9 +1357,10 @@ export class ChargingRuntime {
       const previous = copyRequest(item.request), previousRevision = this.revision, previousPlan = item.plan;
       delete item.request.chargeNow; item.request.revision++; this.revision++; item.plan = null;
       try { this.persist(); } catch (error) { item.request = previous; item.plan = previousPlan; this.revision = previousRevision; throw error; }
-      item.controller?.invalidate?.();
     }
+    this.invalidateCommands();
     await this.reconcile(id, { resume: true });
+    await Promise.all(Object.keys(this.chargers).filter(peer => peer !== id).map(peer => this.reconcile(peer)));
   }
   chargingTestAction(action, input) {
     this.checkControlAuthority();
@@ -1263,7 +1382,7 @@ export class ChargingRuntime {
         reception: this.teslaCapture.reception?.() ?? null,
         setup: teslaVehicleSetup(tesla, { now }), usedByChargerId: usedBy('tesla') });
     }
-    return { revision: this.revision, timezone: TIME_ZONE, controls: { priority: this.controls.priority, revision: this.controls.revision }, settings: this.settings, chargers, vehicleFeeds, coordination: this.coordination, error: this.error ?? null,
+    return { revision: this.revision, timezone: TIME_ZONE, controls: { priority: this.controls.priority, revision: this.controls.revision }, settings: this.settings, chargers, vehicleFeeds, coordination: this.coordinationView(), error: this.error ?? null,
       diagnostics: { ...this.sessionDiagnostics.status(now), canManage: !this.closed && this.canControl() && this.config.input !== 'offline',
         ...(this.diagnosticsError ? { available: false, error: this.diagnosticsError } : {}) },
       physicalTests: { ...this.physicalTests.status(), canManage: !this.closed && this.canControl() && ['mqtt', 'providers'].includes(this.config.input),

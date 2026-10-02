@@ -429,6 +429,20 @@ try {
   await evaluate("chargingFixture.runs[0].sessionId='session-fixture-1'; chargingFixture.runs[0].report={id:'report-fixture'}; chargingFixture.runs[0].phase='observing'; chargingFixture.connected=true");
   await poll(); await until("!document.querySelector('[data-test-report]').disabled");
 
+  await evaluate(`chargingFixture.runs[0].shared = {priorityChanges:1,coverage:{overlap:'observed'},current:{
+    selectedPriority:'charger2',overlap:'observed',priority:'consistent',prioritySince:null,
+    peers:[{id:'charger1',connected:true,drawing:true,powerKw:4.14},{id:'charger2',connected:true,drawing:true,powerKw:5.52}],
+    execution:{state:'consistent'},proposed:{state:'feasible',costCents:50,costLowerBoundCents:45,costGapBoundCents:5},
+    adopted:{state:'feasible',costCents:50}}}`);
+  await poll();
+  assert.equal(await evaluate("document.querySelector('[data-test-shared]').open"), false,
+    'Shared charging details begin collapsed so the selected vehicle remains the main focus');
+  assert.match(await evaluate("document.querySelector('[data-test-shared-summary]').textContent"), /Priority Charger 2.*overlapping draw observed/);
+  await click('[data-test-shared-summary]'); await poll();
+  assert.equal(await evaluate("document.querySelector('[data-test-shared]').open"), true, 'Polling preserves shared-detail disclosure');
+  assert.match(await evaluate("document.querySelector('[data-test-shared-detail]').textContent"), /Charger 2 draw: 5.52 kW.*combined cost 50 cents.*Planner-reported/s);
+  await click('[data-test-shared-summary]');
+
   // BMW's raw target may alternate independently of the setting the user has
   // verified in the car. Each distinct disagreement is acknowledged explicitly.
   await evaluate(`chargingFixture.observeTarget('run-1',100,'bmw-cardata',${now - 300000})`); await poll();

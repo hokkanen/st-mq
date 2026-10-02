@@ -1,6 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import { CHARGING_EFFICIENCY } from '../domain/charging-energy.js';
 import { chargingDiagnosticSessionId } from './session-diagnostics.js';
+import { sharedChargingAssessment, advanceSharedAssessment, validSharedAssessment } from './shared-assessment.js';
 
 const MINUTE = 60_000, HOUR = 60 * MINUTE, MAX_RUNS = 24;
 const PROGRAMS = ['immediate', 'vehicle-schedule'];
@@ -126,16 +127,20 @@ function expectedOpportunity(charger, estimate, startAt, deadlineAt) {
   const used = [];
   if (!(remaining > 0) || !(estimate.powerKw > 0) || !time(deadlineAt))
     return { feasible: false, finishAt, used };
+  const slices = charger.plan?.allocations;
+  if (!Array.isArray(slices) || slices.some(row => !finite(row?.start) || !finite(row?.end)
+    || row.end <= row.start || !finite(row.powerKw) || row.powerKw < 0)) return { feasible: false, finishAt, used };
+  const ordered = [...slices].sort((a, b) => a.start - b.start);
+  if (ordered.some((row, index) => index > 0 && row.start < ordered[index - 1].end))
+    return { feasible: false, finishAt, used };
   for (const period of periods(charger)) {
     const start = Math.max(startAt, period.startAt), end = Math.min(period.endAt ?? deadlineAt, deadlineAt);
     if (end <= start) continue;
-    // Prefer power from the production plan's resource intervals. Do not fill
-    // gaps in published allocation evidence with a larger assumed allowance.
-    const allocations = (charger.plan?.intervals ?? []).filter(row => finite(row.powerKw)
-      && row.powerKw >= 0 && row.end > start && row.start < end);
-    const slots = allocations.length ? allocations.map(row => ({ start: Math.max(start, row.start),
-      end: Math.min(end, row.end), powerKw: Math.min(row.powerKw, estimate.powerKw) }))
-      : [{ start, end, powerKw: estimate.powerKw }];
+    // Exact shared allocation slices are the opportunity evidence. A broad
+    // interval's peak or a whole-session average is not continuous power.
+    const allocations = ordered.filter(row => row.end > start && row.start < end);
+    const slots = allocations.map(row => ({ start: Math.max(start, row.start),
+      end: Math.min(end, row.end), powerKw: row.powerKw }));
     for (const slot of slots.sort((a, b) => a.start - b.start)) {
       if (!(slot.powerKw > 0) || slot.end <= slot.start) continue;
       const duration = Math.min(slot.end - slot.start, remaining / slot.powerKw * HOUR);
@@ -185,7 +190,7 @@ function recommendation(charger, estimate, now) {
 function validateSaved(saved) {
   const keys = ['id', 'chargerId', 'vehicleId', 'program', 'association', 'backend', 'phase', 'createdAt', 'updatedAt',
     'expiresAt', 'endedAt', 'endReason', 'sessionId', 'connectedAt', 'expectations', 'headroom', 'recommendation', 'milestones',
-    'findings', 'initialPlan', 'latestPlan', 'deadlineAt', 'schedule', 'target', 'restorationReminder', 'report', 'lastSeenAt'];
+    'findings', 'initialPlan', 'latestPlan', 'deadlineAt', 'schedule', 'target', 'restorationReminder', 'report', 'lastSeenAt', 'shared'];
   if (!allowed(saved, ['version', 'runs']) || saved.version !== 2 || !Array.isArray(saved.runs) || saved.runs.length > MAX_RUNS)
     throw new Error('Unsupported physical charging test state; start a fresh development database.');
   for (const run of saved.runs) {
@@ -229,6 +234,7 @@ function validateSaved(saved) {
           || !time(row.confirmedAt) || !run.sessionId || !time(run.connectedAt)
           || row.confirmedAt < run.connectedAt || row.confirmedAt > run.updatedAt
           || run.endedAt !== null && row.confirmedAt > run.endedAt))
+      || run.shared !== undefined && !validSharedAssessment(run.shared)
       || !object(run.milestones) || !Array.isArray(run.findings) || run.findings.length > 32
       || !allowed(run.headroom, ['capacityKwh', 'powerKw', 'gridKwh', 'minutes', 'minimumMinutes', 'adequate', 'declaredSoc', 'basis'])
       || ![30, 60].includes(run.headroom.minimumMinutes)
@@ -320,6 +326,7 @@ export class ChargingPhysicalTests {
           vehicleStartAt: input.program === 'vehicle-schedule' ? input.vehicleStartAt : null },
         headroom: preview.headroom, recommendation: preview.recommendation, milestones: {}, findings: [],
         initialPlan: null, latestPlan: null, deadlineAt: null, report: null,
+        shared: advanceSharedAssessment(null, sharedChargingAssessment(view.chargers, view.coordination, now)),
         schedule: { startAt: input.program === 'vehicle-schedule' ? input.vehicleStartAt : null, confirmedAt: null, history: [] },
         target: { reportedSoc: null, reportedAt: null, source: null, revision: 1, requiresConfirmation: false,
           history: [{ targetSoc: input.nativeTargetSoc, confirmedAt: now }] },
@@ -496,6 +503,11 @@ export class ChargingPhysicalTests {
   }
 
   observeRun(run, charger, view, now) {
+    run.shared = advanceSharedAssessment(run.shared, sharedChargingAssessment(view.chargers, view.coordination, now));
+    if (run.shared.current.priority === 'inconsistent') this.finding(run, 'shared-priority-mismatch', now);
+    if ([run.shared.current.proposed.state, run.shared.current.adopted.state].includes('inconsistent'))
+      this.finding(run, 'shared-allocation-inconsistent', now);
+    if (run.shared.current.execution.state === 'inconsistent') this.finding(run, 'shared-current-mismatch', now);
     const identified = charger.vehicle?.state === 'identified' && charger.vehicle.sessionId === run.sessionId;
     if (identified && charger.vehicle.id !== run.vehicleId) this.finding(run, 'wrong-vehicle-identified', now);
     if (identified && charger.vehicle.id === run.vehicleId && !run.milestones.identification) {

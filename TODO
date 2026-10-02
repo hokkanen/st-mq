@@ -1,3 +1,35 @@
+Implemented 2026-10-02 — Coordinate both chargers and shared guided assessments
+- Include released and independently observed native charging in joint allocation
+  without reserving an entire charger ceiling or acquiring new schedule authority.
+  Forecast adopted programs together; assess price replacements against the same
+  combined requests, feasibility and cost. Preserve balanced scarce-capacity turns
+  across repeated replanning and give outstanding requests capacity before cars
+  whose requested minimum is already met.
+- Fence and reconcile affected peers after session edits, Automatic, Charge now,
+  resume and priority changes. Handle prices arriving after connection, fractional
+  allocation boundaries, failed replacement and restart. Record accepted Shelly
+  execution and distinguish intermediate windows from its final open release.
+- Keep BMW/Charger 1 and Tesla/Charger 2 guides independent while assessing both
+  chargers regardless of which guides run. Observe overlap and natural priority
+  changes; separate proposed/adopted allocations, settled current readback and
+  physical evidence. Integrate exact allocation slices for delayed timer advice.
+  Show compact shared details and bounded cost evidence without claiming exact
+  global optimality or physical success from a model.
+- F1/F3/F4/F5/F6/F7/F8: replace the isolated fixed forecast API with one joint API;
+  retain native/manual authority, fresh source clocks, scoped requests and current
+  restart behavior. New optional shared observations remain unknown when absent;
+  reject malformed present evidence and invent no historical observations. No
+  development-state migration, private configuration access or household commands.
+- Validation: planner audits, 15 production-adapter integration scenarios and the
+  18-case guide/priority/program matrix cover overlap, delay, independent completion,
+  unplug, stale data and restart. Routine suite passes 4,098 tests with one optional
+  Tuya source-parser skip; after final priority-settling and persisted-state checks,
+  all 1,233 charging regressions pass. Production build passes with the existing
+  bundle-size warning. Charging browser checks pass at 320/390/1440px in both themes,
+  including keyboard use and disclosure preservation; screenshots reviewed.
+  Native charger operation and deployment remain untested. Retain unknown evidence
+  through observation gaps; require positive evidence to resolve shared findings.
+
 Implemented 2026-10-02 — Align protection navigation and clarify probe locations
 - Share the nested folds' 24px indent with the Installation & setup link instead
   of its incorrect 16px offset. Verify actual text alignment in the browser at

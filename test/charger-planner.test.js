@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { chargingSettings } from '../src/charging/settings.js';
 import { buildCharger } from '../src/charging/model.js';
-import { forecastCharger, forecastFixedPlan, planChargers } from '../src/charging/planner.js';
+import { forecastCharger, forecastFixedPlans, planChargers } from '../src/charging/planner.js';
 
 const HOUR = 3_600_000, now = Date.parse('2026-01-15T00:00:00Z');
 const settings = chargingSettings();
@@ -506,21 +506,22 @@ test('historical phase patterns are converted to deliverable charging power befo
 test('confirmed execution readiness is recomputed from the same constrained forecast as its completion estimate', () => {
   const charger = make('first', { preferences: { capacityKwh: 37 }, telemetry: { minimumSoc: 100, charging: true },
     control: { released: true, phase: 'released' }, deadlineAt: now + 11 * HOUR });
-  const current = forecastFixedPlan({ now, charger, periods: [{ startAt: now - HOUR, endAt: null }],
+  const current = forecastFixedPlans({ now, chargers: [charger], periodsByCharger: { first: [{ startAt: now - HOUR, endAt: null }] },
     supply: { availableCurrentA: [6, 6, 6], voltageV: 230 }, prices: prices(Array(11).fill(10)) });
-  assert.equal(current.plan.feasible, true);
-  assert.equal(current.forecast.feasible, true);
-  assert.equal(current.forecast.finishAt, current.plan.finishAt);
-  assert.equal(current.forecast.powerKw, 4.14);
-  const impossible = forecastFixedPlan({ now, charger: { ...charger, deadlineAt: now + HOUR },
-    periods: [{ startAt: now, endAt: null }], supply: { availableCurrentA: [6, 6, 6], voltageV: 230 }, prices: prices([10]) });
-  assert.equal(impossible.plan.feasible, false);
-  assert.equal(impossible.forecast.finishAt, null, 'An unconstrained 11 kW finish cannot accompany the constrained readiness warning');
-  assert.ok(impossible.plan.shortfallGridKwh > 32);
-  const withoutPrices = forecastFixedPlan({ now, charger, periods: [{ startAt: now, endAt: null }],
+  assert.equal(current.plans.first.feasible, true);
+  assert.equal(current.forecasts.first.feasible, true);
+  assert.equal(current.forecasts.first.finishAt, current.plans.first.finishAt);
+  assert.equal(current.forecasts.first.powerKw, 4.14);
+  const impossible = forecastFixedPlans({ now, chargers: [{ ...charger, deadlineAt: now + HOUR }],
+    periodsByCharger: { first: [{ startAt: now, endAt: null }] }, supply: { availableCurrentA: [6, 6, 6], voltageV: 230 }, prices: prices([10]) });
+  assert.equal(impossible.plans.first.feasible, false);
+  assert.equal(impossible.forecasts.first.finishAt, null, 'An unconstrained 11 kW finish cannot accompany the constrained readiness warning');
+  assert.ok(impossible.plans.first.shortfallGridKwh > 32);
+  const withoutPrices = forecastFixedPlans({ now, chargers: [charger], periodsByCharger: { first: [{ startAt: now, endAt: null }] },
     supply: { availableCurrentA: [6, 6, 6], voltageV: 230 } });
-  assert.equal(withoutPrices.forecast.feasible, true, 'Missing electricity prices do not prevent a physical readiness estimate');
-  assert.equal(withoutPrices.plan.costCents, null);
+  assert.equal(withoutPrices.forecasts.first.feasible, true, 'Missing electricity prices do not prevent a physical readiness estimate');
+  assert.equal(withoutPrices.plans.first.costCents, null);
+  assert.equal(withoutPrices.solver.cashCostCandidateCents, null);
 });
 
 test('a provisional allowance remains eligible for economical planning even with an earlier release flag', () => {

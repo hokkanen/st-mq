@@ -80,7 +80,9 @@ test('reports API pages persisted sessions and events, scopes chargers and valid
   const older = await (await f.request(path(ids[0], 'events', `&limit=2&before=${encodeURIComponent(events.nextBefore)}`))).json();
   assert.ok(older.events.every(event => !events.events.some(row => row.id === event.id)));
   const plans = await (await f.request(path(ids[0], 'events', '&filter=plans'))).json();
-  assert.ok(plans.events.length); assert.ok(plans.events.every(event => event.kind === 'plan' && event.plan));
+  assert.ok(plans.events.length); assert.ok(plans.events.every(event => event.kind === 'plan' && event.plan
+    || event.kind === 'shared' && event.shared?.peers.length === 2 && event.shared.proposed && event.shared.adopted));
+  assert.ok(plans.events.some(event => event.kind === 'shared'), 'Plans include the recorded peer and shared-priority assessment');
   assert.equal((await f.request(path(ids[0]).replace('charger1', 'charger2'))).status, 404);
   for (const query of ['&limit=0', '&limit=101', '&savedOnly=yes', '&unknown=1', '&chargerId=charger2'])
     assert.equal((await f.request(path('', '', query))).status, 400, query);

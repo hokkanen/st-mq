@@ -590,7 +590,9 @@ test('a released connected session retains its actual plan through new SoC, dead
     'The owned delayed occurrence cannot roll forward to tomorrow after its release');
   runtime.receiveSoc(runtime.configuration.vehicles.bmw.mqttTopic, packet(90, installed.startAt, 'reading-now'));
   await editSession(runtime, 'charger1', { readyBy: '08:00' });
-  assert.deepEqual(runtime.chargers.charger1.plan, installed);
+  const { allocations: oldAllocation, intervals: oldResources, ...installedInstruction } = installed;
+  const { allocations: liveAllocation, intervals: liveResources, ...currentInstruction } = runtime.chargers.charger1.plan;
+  assert.deepEqual(currentInstruction, installedInstruction, 'The released instruction is unchanged while remaining resource forecasts can refresh');
   assert.equal(chargerView(runtime).values.soc.value, 20, 'An unidentified feed cannot change this session');
   assert.equal(adapter.calls.filter(call => call.kind === 'install').length, 1);
   assert.equal(adapter.calls.filter(call => call.kind === 'clear').length, 0);
@@ -800,7 +802,7 @@ test('a future second controller has independent plans and ownership while Equal
   assert.equal(f.values.get(runtime.ownershipKey('charger1')).owned.planId, first.plan.id);
   assert.equal(f.values.get(runtime.ownershipKey('charger2')).owned.planId, second.plan.id);
   assert(secondDecisions.some(decision => decision.enabled && decision.planId === second.plan.id));
-  assert.equal(runtime.status().coordination.currentLimitsAreProposals, false);
+  assert.equal(runtime.status().coordination.currentLimitsAreProposals, true);
   assert.ok(runtime.status().coordination.currentLimits.length > 0);
   assert.ok(runtime.status().coordination.currentLimits.every(limit => limit.chargerId === 'charger2'));
   assert.deepEqual(currentCommands, [], 'Coordination proposals never become Equalizer or unsupported dynamic-current writes');
@@ -997,7 +999,10 @@ test('vehicle timer changes during a pause revise the remaining confirmed period
   const runningPlan = structuredClone(chargerView(runtime).plan);
   Object.assign(timer, { value: initialNow + 2.5 * HOUR, available: true });
   runtime.updatePlan();
-  assert.deepEqual(chargerView(runtime).plan, runningPlan, 'A changed vehicle timer does not rewrite an already active period');
+  const { allocations: oldAllocation, intervals: oldResources, ...runningInstruction } = runningPlan;
+  const { allocations: liveAllocation, intervals: liveResources, ...currentInstruction } = chargerView(runtime).plan;
+  assert.deepEqual(currentInstruction, runningInstruction, 'A changed vehicle timer does not rewrite an already active instruction');
+  assert(liveAllocation.every(row => row.start >= timer.value || row.powerKw === 0), 'The resource forecast respects the newly observed vehicle timer');
   Object.assign(timer, { value: null, available: false });
   f.setNow(initialNow + HOUR); adapter.setObservation({ mode: 2 });
   runtime.readEnergy = () => ({ gridKwh: 11.04, coveredMs: HOUR,
@@ -1255,7 +1260,14 @@ test('automatic charging and shared priority persist independently of configured
   const runtime = f.create(); t.after(() => runtime.close());
   const configured = structuredClone(f.config.charging);
   await runtime.setControl('charger1', automaticScope(runtime));
+  const priorities = [], observe = runtime.sessionDiagnostics.observe.bind(runtime.sessionDiagnostics);
+  runtime.sessionDiagnostics.observe = (chargers, now, coordination) => {
+    priorities.push([coordination?.priority, coordination?.proposed?.priority, coordination?.adopted?.priority]);
+    return observe(chargers, now, coordination);
+  };
   await runtime.setSettings(priorityScope(runtime));
+  assert.deepEqual(priorities[0], ['charger2', 'balanced', 'balanced'], 'Observers see the new selection before its models catch up');
+  assert.deepEqual(priorities.at(-1), ['charger2', 'charger2', 'charger2']);
   assert.equal(runtime.settings.chargers.charger1.enabled, true);
   assert.equal(runtime.settings.priority, 'charger2');
   assert.deepEqual(f.config.charging, configured);

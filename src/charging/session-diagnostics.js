@@ -1,4 +1,5 @@
 import { createHash } from 'node:crypto';
+import { sharedChargingAssessment, advanceSharedAssessment, sharedAssessmentKey, validSharedAssessment } from './shared-assessment.js';
 
 const VERSION = 2, MINUTE = 60_000, DAY = 24 * 60 * MINUTE, EXPIRY_BATCH = 1;
 const FILTERS = new Set(['all', 'findings', 'plans', 'charging', 'control', 'vehicle', 'evidence']);
@@ -439,7 +440,7 @@ function newRecord(view, now, id, startedAt) {
     vehicleId: null, expectationAt: now, firstChargingAt: null, current: null,
     outcome: { state: 'in-progress', at: now, basis: 'observation' },
     coverage: Object.fromEntries(COVERAGE.map(key => [key, { state: 'not-exercised' }])),
-    findings: [], planContext: [], events: [], counts: { events: 0, plans: 0, findings: 0 }, pendingChecks: {} };
+    findings: [], planContext: [], events: [], counts: { events: 0, plans: 0, findings: 0 }, pendingChecks: {}, shared: null };
 }
 function publicReport(record, now) {
   if (record?.version !== VERSION) throw unsupported();
@@ -477,7 +478,7 @@ function planContext(history, next) {
 }
 function category(kind) {
   if (['finding', 'finding-update', 'recovery'].includes(kind)) return 'findings';
-  if (kind === 'plan') return 'plans';
+  if (kind === 'plan' || kind === 'shared') return 'plans';
   if (['physical', 'charger-status', 'outcome', 'session', 'check'].includes(kind)) return 'charging';
   if (['vehicle', 'identification'].includes(kind)) return 'vehicle';
   return kind;
@@ -497,17 +498,18 @@ function pageLimit(value) {
 const unsupported = () => new Error('Unsupported charging diagnostics; start a fresh development database');
 function validateRecord(row, id) {
   const keys = 'association,chargerId,counts,coverage,current,endReason,endedAt,events,expectationAt,findings,firstChargingAt,id,observedAt,observedFrom,outcome,pendingChecks,planContext,saved,savedAt,startedAt,vehicleId,version';
-  if (!row || row.version !== VERSION || row.chargerId !== id || Object.keys(row).sort().join(',') !== keys
+  if (!row || row.version !== VERSION || row.chargerId !== id || Object.keys(row).filter(key => key !== 'shared').sort().join(',') !== keys
     || !/^[a-f0-9]{64}$/.test(row.id) || !/^[a-f0-9]{64}$/.test(row.association)
     || !time(row.startedAt) || !time(row.observedFrom) || !time(row.observedAt) || row.observedAt < row.startedAt
     || !time(row.expectationAt) || row.firstChargingAt !== null && !time(row.firstChargingAt)
     || row.endedAt !== null && (!time(row.endedAt) || row.endedAt < row.startedAt)
     || typeof row.saved !== 'boolean' || row.savedAt !== null && !time(row.savedAt) || row.saved !== (row.savedAt !== null)
+    || row.shared !== undefined && !validSharedAssessment(row.shared)
     || !row.current || !row.outcome || !row.coverage || COVERAGE.some(name => !row.coverage[name])
     || Object.keys(row.coverage).some(name => !COVERAGE.includes(name)) || !row.pendingChecks
     || !row.counts || ['events', 'plans', 'findings'].some(key => !time(row.counts[key]))
     || !Array.isArray(row.events) || row.events.length || !Array.isArray(row.planContext) || row.planContext.length > 8
-    || !Array.isArray(row.findings) || row.findings.length > 12) throw unsupported();
+    || !Array.isArray(row.findings) || row.findings.length > 16) throw unsupported();
   return row;
 }
 
@@ -562,12 +564,13 @@ export class ChargingSessionDiagnostics {
        AND ended_at IS NOT NULL AND ended_at<=? ORDER BY ended_at LIMIT ?)`)
       .run(this.key, now - this.retentionDays * DAY, EXPIRY_BATCH).changes;
   }
-  observe(chargers, now = this.clock()) {
+  observe(chargers, now = this.clock(), coordination = null) {
     this.writable();
     if (!time(now) || !Array.isArray(chargers)) throw new TypeError('Charging diagnostics require runtime views and a UTC timestamp');
     // Publish the bounded working copy only after its SQL transaction commits.
     // Failed writes cannot consume events or create duplicate episodes on retry.
     const state = clone(this.state), touched = new Map();
+    const shared = sharedChargingAssessment(chargers, coordination, now);
     let changed = false;
     for (const view of chargers) {
       if (!['charger1', 'charger2'].includes(view.id) || typeof view.association !== 'string') continue;
@@ -606,8 +609,22 @@ export class ChargingSessionDiagnostics {
       const record = slot.current;
       if (!record || now < record.observedAt || id && id !== record.id) continue;
       const before = JSON.stringify([record.findings, record.coverage, record.pendingChecks]);
+      const sharedAssessment = advanceSharedAssessment(record.shared, shared);
+      if (!record.shared || sharedAssessmentKey(record.shared.current) !== sharedAssessmentKey(sharedAssessment.current))
+        event(record, now, 'shared', 'shared-charging-context', { shared: clone(sharedAssessment.current) });
+      record.shared = sharedAssessment;
+      // SQL already preserves the complete semantic history; the checkpoint
+      // needs only its current comparison reference and cumulative coverage.
+      record.shared.history = [];
       const current = observation(view, now), plan = planFor(view, now), previousPlan = record.planContext.at(-1);
       assess(record, current, now);
+      if (['consistent', 'inconsistent'].includes(record.shared.current.priority))
+        finding(record, 'shared-priority-mismatch', record.shared.current.priority === 'inconsistent', now);
+      const sharedModels = [record.shared.current.proposed.state, record.shared.current.adopted.state];
+      if (sharedModels.includes('inconsistent') || sharedModels.every(state => ['feasible', 'shortfall'].includes(state)))
+        finding(record, 'shared-allocation-inconsistent', sharedModels.includes('inconsistent'), now);
+      if (['consistent', 'inconsistent'].includes(record.shared.current.execution.state))
+        finding(record, 'shared-current-mismatch', record.shared.current.execution.state === 'inconsistent', now);
       const changes = planChanges(record.planContext, plan, now);
       if (changes.length || !previousPlan && plan.inputStatus === 'available') {
         plan.changes = changes; plan.reason = planReason(changes, !previousPlan);

@@ -111,8 +111,9 @@ test('paged reports and filtered events are stable with equal timestamps and con
   assert.equal(new Set(ids).size, complete.counts.events);
   for (const [filter, expected] of [['plans', 'plan'], ['control', 'control']]) {
     const page = f.observer.reportEvents({ ...ref(report), filter });
-    assert(page.events.length); assert(page.events.every(row => row.kind === expected));
-    if (filter === 'plans') assert(page.events.every(row => row.plan?.inputs));
+    assert(page.events.length); assert(page.events.every(row => row.kind === expected || filter === 'plans' && row.kind === 'shared'));
+    if (filter === 'plans') assert(page.events.every(row => row.kind === 'plan' ? row.plan?.inputs
+      : row.shared?.peers.length === 2 && row.shared.proposed && row.shared.adopted));
   }
   assert.throws(() => f.observer.listReports({ chargerId: 'charger1', limit: 101 }), /limit/);
   assert.throws(() => f.observer.reportEvents({ ...ref(report), before: 'NaN' }), /cursor/);

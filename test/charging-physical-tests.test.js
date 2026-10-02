@@ -51,7 +51,7 @@ function fixture() {
   };
   const plan = (charger = view.chargers[0], start = now + HOUR) => {
     charger.plan = { reason: 'cheapest-feasible-start', deadlineAt: charger.request.deadlineAt, feasible: true,
-      periods: [{ startAt: start, endAt: null }] };
+      periods: [{ startAt: start, endAt: null }], allocations: [{ start, end: charger.request.deadlineAt, powerKw: 11.04 }] };
   };
   return { saved, writes, store, create, view, input, advance, plug, identify, plan, clock: () => now };
 }

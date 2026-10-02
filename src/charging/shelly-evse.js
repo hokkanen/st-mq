@@ -366,11 +366,31 @@ function validIdentificationPause(value) {
     && typeof value.witnessedCharging === 'boolean';
 }
 
+function shellyExecution(plan) {
+  const planId = plan?.id ?? plan?.planId, periods = plan?.periods;
+  if (!token(planId) || !time(plan?.deadlineAt) || !Array.isArray(periods) || !periods.length || periods.length > 24
+    || periods.some((period, index) => !period || Object.keys(period).some(key => !['startAt', 'endAt'].includes(key))
+      || !time(period.startAt) || period.endAt !== null && (!time(period.endAt) || period.endAt <= period.startAt)
+      || index > 0 && (periods[index - 1].endAt === null || periods[index - 1].endAt > period.startAt))
+    || periods.at(-1).endAt !== null) return null;
+  return { planId, periods: copy(periods), finalStartAt: periods.at(-1).startAt, deadlineAt: plan.deadlineAt };
+}
+function validShellyExecution(value) {
+  if (value === undefined || value === null) return true;
+  const keys = ['planId', 'periods', 'finalStartAt', 'deadlineAt'];
+  if (typeof value !== 'object' || Array.isArray(value) || Object.keys(value).length !== keys.length
+    || Object.keys(value).some(key => !keys.includes(key))) return false;
+  const execution = shellyExecution(value);
+  return execution !== null && value.finalStartAt === execution.finalStartAt;
+}
+
 /** The single serialized writer owns current limits and scoped internal pauses.
  * Identification restoration is an application obligation, never a native timer. */
 export function createShellyController({ adapter, initialState, saveState = () => {}, clock = Date.now,
-  canControl = () => false, getIdentification, getPlan } = {}) {
+  canControl = () => false, getIdentification, getPlan, getAllocation } = {}) {
   if (initialState && (initialState.version !== 1 || initialState.association !== adapter.association
+    || !validShellyExecution(initialState.execution)
+    || initialState.provisional !== undefined && typeof initialState.provisional !== 'boolean'
     || initialState.owned != null && !validIdentificationPause(initialState.owned)
     || initialState.pending?.owned != null && (!validIdentificationPause(initialState.pending.owned)
       || initialState.pending.role !== 'start_charging' || initialState.pending.value !== false))) throw fail('unsupported-shelly-ownership');
@@ -436,6 +456,7 @@ export function createShellyController({ adapter, initialState, saveState = () =
         const sessionId = snapshot.session?.sessionId;
         if (state.sessionId !== sessionId) {
           state.manual = null; state.manualCurrentA = null; state.ownedPause = false; state.sessionId = sessionId;
+          state.execution = null; state.provisional = false;
           // An old connection's stop remains visible as a restoration obligation,
           // but never grants permission to start a newly connected vehicle.
           if (state.pending?.owned) state.owned ??= copy(state.pending.owned);
@@ -463,6 +484,7 @@ export function createShellyController({ adapter, initialState, saveState = () =
             // this application: it could be an explicit native Stop instead.
             if (pending.owned) state.owned ??= copy(pending.owned);
             state.manual = { kind: 'stop', detectedAt: readback.measuredAt };
+            state.execution = null; state.provisional = false;
             state.phase = 'uncertain'; state.reason = pending.owned ? 'identification-resume-required' : 'evse-command-unconfirmed'; await persist(); return;
           }
           else if (fresh(readback) && readback.value === pending.value && readback.measuredAt >= pending.dispatchedAt) {
@@ -516,6 +538,7 @@ export function createShellyController({ adapter, initialState, saveState = () =
         else if (nativeSchedule && !state.manual)
           state.manual = { kind: 'schedule', detectedAt: clock(), fingerprint: nativeSchedule };
         state.nativeSchedule = nativeSchedule;
+        if (state.manual || nativeSchedule || !input.enabled) { state.execution = null; state.provisional = false; }
         if (input.resume === true && input.enabled === true && resumeToken === manualToken(state.manual)
           && state.manual?.kind !== 'stop' && !snapshot.nativeScheduleActive) state.manual = null;
         // Keep device choices independently of automation permission and resume.
@@ -528,8 +551,12 @@ export function createShellyController({ adapter, initialState, saveState = () =
         const chargeNow = Number.isSafeInteger(input.chargeNow?.connectedAt)
           && input.chargeNow.connectedAt === snapshot.session?.connectedAt;
         const restoringUnscheduled = state.owned?.sessionId === sessionId && (!input.enabled || chargeNow);
-        const context = input.allocation ?? {};
-        const allocationA = identification || restoringUnscheduled ? null : context.allocationA;
+        const plan = !identification && typeof getPlan === 'function' ? await getPlan(copy(snapshot)) : input.plan;
+        const context = typeof getAllocation === 'function' ? await getAllocation(copy(snapshot)) : input.allocation ?? {};
+        // A scoped runtime callback includes the latest requested permission.
+        // Its shared allocation still governs Charge now and restoration; an
+        // old captured waiting allocation cannot prevent standalone recovery.
+        const allocationA = identification || restoringUnscheduled && typeof getAllocation !== 'function' ? null : context.allocationA;
         // Basic scheduling owns only start permission. Positive current limits
         // remain native until the separate installation limiter is enabled.
         const nativeCap = Math.min(current.value, ...[context.vehicleCurrentA, allocationA]
@@ -539,7 +566,6 @@ export function createShellyController({ adapter, initialState, saveState = () =
           : { currentA: nativeCap, pause: nativeCap < adapter.config.minimumCurrentA,
             reason: 'native-current-limit', fallback: false, modelAvailable: false, guaranteedProtection: false };
         state.limiter = limitation;
-        const plan = !identification && typeof getPlan === 'function' ? await getPlan(copy(snapshot)) : input.plan;
         const windows = chargeNow ? [{ startAt: clock(), endAt: null }] : plan?.periods ?? [];
         const economic = !identification && (input.enabled || chargeNow) && !state.manual && !snapshot.nativeScheduleActive && windows.length > 0;
         const inWindow = windows.some(period => period.startAt <= clock() && (period.endAt === null || period.endAt > clock()));
@@ -660,8 +686,25 @@ export function createShellyController({ adapter, initialState, saveState = () =
           const actual = adapter.liveCurrents();
           if (state.executionStage === 'read-back' && actual.healthy && actual.times.every(at => at >= (state.commandAt ?? Infinity))
             && (pause ? actual.currents.every(v => v < .5) : actual.currents.every(v => v <= cap + 1))) state.executionStage = 'physical-effect';
-          state.released = !pause && !identification && Boolean(input.enabled || chargeNow);
-          state.phase = state.manual ? 'manual' : identification ? 'identifying' : pause ? 'waiting' : input.enabled || chargeNow ? 'released' : 'off';
+          if (!guard()) return;
+          if (chargeNow || state.manual) { state.execution = null; state.provisional = false; }
+          else if (economic && !nativeBlocked && !state.pending) {
+            const readback = adapter.snapshot(), permission = readback.fields.start_charging, currentLimit = readback.fields.current_limit;
+            const adopted = shellyExecution(plan);
+            if (adopted && fresh(permission) && permission.value === !pause
+              && (pause || !adapter.config.limiterEnabled || fresh(currentLimit) && currentLimit.value <= cap)) {
+              // This is the program the application is executing, with the
+              // current permission verified on the EVSE. Future transitions
+              // still require this controller; no native timer is implied.
+              state.execution = adopted; state.provisional = plan.provisional === true;
+            }
+          }
+          const permission = adapter.snapshot().fields.start_charging;
+          const open = !pause && !nativeBlocked && !state.pending && fresh(permission) && permission.value === true;
+          const intermediate = state.execution && clock() < state.execution.finalStartAt;
+          state.released = open && !identification && !state.manual && !state.provisional && !intermediate && Boolean(input.enabled || chargeNow);
+          state.phase = state.manual ? 'manual' : identification ? 'identifying' : pause ? 'waiting'
+            : input.enabled || chargeNow ? !open ? 'waiting' : state.provisional ? 'provisional' : intermediate ? 'active' : 'released' : 'off';
           state.reason = state.manual?.kind === 'stop' ? 'manual-stop' : snapshot.nativeScheduleActive ? 'native-schedule'
             : state.manual ? `manual-${state.manual.kind}`
             : nativeBlocked ? 'vehicle-not-before' : identificationPause ? 'identification-pause'
