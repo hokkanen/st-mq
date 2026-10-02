@@ -151,6 +151,26 @@ test('property comparison explains boundaries, ongoing energy and source versus 
   assert(!closed.details.join(' ').includes('ongoing'));
 });
 
+test('Shelly shows the plug-period native subtotal without claiming an incomplete comparison', () => {
+  const reference = { kind: 'plug-period-native-runs', observedKwh: 3, runCount: 2,
+    complete: false, quality: ['missing-final-reference'], phase: 'active' };
+  const item = { kind: 'charging-session-summary', source: 'shelly-evse', sessionEnergyVerified: false,
+    sessionReference: reference, summary: { recordedSessions: 0, comparedSessions: 0, excludedSessions: 0 } };
+  const display = energyAuditRow(item);
+  assert.match(display.method, /same plug-in period, including pauses and restarts/);
+  assert.match(display.context.join(' '), /Current plug-in period: 3 kWh observed across 2 charging runs/);
+  assert.match(display.context.join(' '), /incomplete.*excluded/);
+  assert.match(display.details.join(' '), /Final meter reading was not confirmed/);
+  assert.doesNotMatch(display.value, /matches|%/);
+  const settled = energyAuditRow({ ...item, sessionReference: null, summary: { ...item.summary,
+    latestReferenceAggregation: { ...reference, end: 60000 } } });
+  assert.match(settled.context.join(' '), /Latest completed plug-in period: 3 kWh.*Plug-in period ended:/);
+  const active = energyAuditRow({ ...item, sessionReference: { ...reference, observedKwh: 0, runCount: 0, quality: [] } });
+  assert.match(active.context.join(' '), /0.000 kWh observed.*accumulating/);
+  const missing = energyAuditRow({ ...item, sessionReference: { ...reference, observedKwh: null } });
+  assert.match(missing.context.join(' '), /No energy observed yet/);
+});
+
 test('property failures distinguish missing readings, reset, ordering and incomplete or conflicting coverage',()=>{
   const cases={
     'no-readings':'No property meter readings recorded',

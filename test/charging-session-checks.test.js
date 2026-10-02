@@ -4,7 +4,8 @@ import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { Store } from '../src/storage/store.js';
-import { recordChargingSessionCheck, chargingSessionCheckSummaries } from '../src/app/charging-session-checks.js';
+import { recordChargingSessionCheck, chargingSessionCheckSummaries, comparableChargingSession,
+  assertCurrentChargingSessionCheck } from '../src/app/charging-session-checks.js';
 
 function fixture(t) {
   const directory = mkdtempSync(join(tmpdir(), 'stmq-session-checks-'));
@@ -36,6 +37,7 @@ test('empty summaries have no invented sessions or percentages and ignore cumula
     assert.equal(summary.differencePercent, null);
     assert.equal(summary.start, null);
     assert.equal(summary.end, null);
+    assert.equal(summary.latestReferenceAggregation, null);
   }
 });
 
@@ -56,7 +58,7 @@ test('all-session comparison is energy weighted and excludes incomplete, zero-re
   assert.deepEqual(easeeTotals, { basis: 'electricity-meter', recordedSessions: 6, comparedSessions: 2,
     excludedSessions: 4, exclusionReasons: { 'comparison-incomplete': 1, 'zero-reference': 1, stale: 1, 'missing-estimate': 1 },
     estimatedKwh: 93, referenceKwh: 100, differenceKwh: -7,
-    start: 1000, end: 131000, lastSessionEnd: 131000, referenceTransports: ['unknown'] });
+    start: 1000, end: 131000, lastSessionEnd: 131000, referenceTransports: ['unknown'], latestReferenceAggregation: null });
   assert.equal(tesla.summary.comparedSessions, 1);
   assert.equal(tesla.summary.differencePercent, 12.5);
   assert.deepEqual({ events: store.events().length, states: store.db.prepare('SELECT count(*) AS n FROM state').get().n }, before);
@@ -145,4 +147,99 @@ test('malformed sessions cannot create plausible averages', t => {
     assert.throws(() => recordChargingSessionCheck(store, session(change)), TypeError);
   }
   assert.equal(store.events().length, 0);
+});
+
+const aggregation = (changes = {}) => ({ kind: 'plug-period-native-runs', observedKwh: 3,
+  runCount: 2, complete: true, quality: [], ...changes });
+
+test('native run totals retain observed incomplete subtotals without adding them to comparison averages', t => {
+  const { store } = fixture(t);
+  recordChargingSessionCheck(store, session({ source: 'shelly-evse', sessionKey: 'invented-two-runs',
+    estimatedKwh: 2.7, referenceKwh: 3, referenceAggregation: aggregation() }));
+  recordChargingSessionCheck(store, session({ source: 'shelly-evse', sessionKey: 'invented-other-runs',
+    start: 71000, end: 131000, estimatedKwh: 6.3, referenceKwh: 7,
+    referenceAggregation: aggregation({ observedKwh: 7, runCount: 3 }) }));
+  const incomplete = aggregation({ observedKwh: 20, runCount: 4, complete: false,
+    quality: ['missing-final-reference', 'reference-coverage-gap'] });
+  const id = recordChargingSessionCheck(store, session({ source: 'shelly-evse', sessionKey: 'invented-incomplete-runs',
+    start: 141000, end: 201000, estimatedKwh: 21, referenceKwh: null, complete: false,
+    referenceAggregation: incomplete }));
+  const check = store.events().find(row => row.id === id).payload;
+  assert.deepEqual(check.referenceAggregation, incomplete);
+  assert.equal(check.referenceKwh, null);
+  assert.equal(comparableChargingSession(check), false);
+  const { summary } = chargingSessionCheckSummaries(store)[1];
+  assert.equal(summary.recordedSessions, 3);
+  assert.equal(summary.comparedSessions, 2);
+  assert.equal(summary.excludedSessions, 1);
+  assert.equal(summary.estimatedKwh, 9);
+  assert.equal(summary.referenceKwh, 10);
+  assert.equal(summary.differencePercent, -10);
+  assert.deepEqual(summary.exclusionReasons, { 'missing-final-reference': 1, 'reference-coverage-gap': 1, 'missing-reference': 1 });
+  assert.deepEqual(summary.latestReferenceAggregation, { ...incomplete, start: 141000, end: 201000 });
+});
+
+test('the latest native aggregation remains available when later valid single-run checks omit new evidence', t => {
+  const { store, path } = fixture(t);
+  const input = session({ source: 'shelly-evse', referenceKwh: 3, referenceAggregation: aggregation() });
+  const id = recordChargingSessionCheck(store, input);
+  recordChargingSessionCheck(store, session({ source: 'shelly-evse', sessionKey: 'invented-later-single-run',
+    start: 71000, end: 131000 }));
+  store.close();
+  const reopened = new Store(path);
+  try {
+    assert.equal(recordChargingSessionCheck(reopened, input), id);
+    const { summary } = chargingSessionCheckSummaries(reopened)[1];
+    assert.equal(summary.comparedSessions, 2);
+    assert.equal(summary.lastSessionEnd, 131000);
+    assert.deepEqual(summary.latestReferenceAggregation, { ...aggregation(), start: 1000, end: 61000 });
+    assert.throws(() => recordChargingSessionCheck(reopened, { ...input,
+      referenceAggregation: aggregation({ runCount: 3 }) }), /Conflicting finalized/);
+  } finally { reopened.close(); }
+});
+
+test('a confirmed native run total still requires complete stored phase coverage', t => {
+  const { store } = fixture(t);
+  recordChargingSessionCheck(store, session({ source: 'shelly-evse', estimatedKwh: null,
+    referenceKwh: 3, complete: false, quality: ['incomplete-coverage'], referenceAggregation: aggregation() }));
+  const { summary } = chargingSessionCheckSummaries(store)[1];
+  assert.equal(summary.comparedSessions, 0);
+  assert.equal(summary.latestReferenceAggregation.complete, true);
+  assert.deepEqual(summary.exclusionReasons, { 'incomplete-coverage': 1 });
+});
+
+test('malformed or contradictory native aggregation evidence is rejected at write and persisted read boundaries', t => {
+  const { store } = fixture(t);
+  const valid = session({ source: 'shelly-evse', referenceKwh: 3, referenceAggregation: aggregation() });
+  for (const changes of [
+    { source: 'easee' }, { referenceAggregation: null }, { referenceAggregation: [] },
+    ...[{ kind: 'invented-other-kind' }, { observedKwh: NaN }, { observedKwh: -1 }, { observedKwh: null },
+      { runCount: -1 }, { runCount: 1.5 }, { runCount: Number.MAX_SAFE_INTEGER + 1 },
+      { complete: undefined }, { quality: ['invented-quality'] }, { quality: ['missing-final-reference'] },
+      { extra: 'retired-field' }, { complete: false }].map(change => ({ referenceAggregation: aggregation(change) })),
+    { referenceKwh: 2 },
+    { complete: true, referenceKwh: null, referenceAggregation: aggregation({ complete: false }) },
+    { complete: false, referenceKwh: 3, referenceAggregation: aggregation({ complete: false }) },
+  ]) {
+    const input = { ...valid, ...changes };
+    assert.throws(() => recordChargingSessionCheck(store, input), /reference aggregation/);
+    assert.throws(() => assertCurrentChargingSessionCheck({ version: 1, ...input }), /reference aggregation/);
+  }
+  assert.equal(store.events().length, 0);
+  store.event('charging-session-check', { version: 1, ...valid,
+    referenceAggregation: aggregation({ complete: false }) }, valid.end);
+  assert.throws(() => chargingSessionCheckSummaries(store), /reference aggregation/);
+});
+
+test('absent new aggregation metadata remains absent and empty observed evidence never invents a total', t => {
+  const { store } = fixture(t);
+  recordChargingSessionCheck(store, session({ source: 'shelly-evse' }));
+  assert(!Object.hasOwn(store.events()[0].payload, 'referenceAggregation'));
+  recordChargingSessionCheck(store, session({ source: 'shelly-evse', sessionKey: 'invented-no-native-observations',
+    referenceKwh: null, complete: false, referenceAggregation: aggregation({ observedKwh: null,
+      runCount: 0, complete: false, quality: ['missing-start', 'missing-final-reference'] }) }));
+  const { summary } = chargingSessionCheckSummaries(store)[1];
+  assert.equal(summary.comparedSessions, 1);
+  assert.equal(summary.latestReferenceAggregation.observedKwh, null);
+  assert.equal(summary.latestReferenceAggregation.runCount, 0);
 });

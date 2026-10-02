@@ -8,16 +8,35 @@ const SOURCES = Object.freeze({
 });
 const QUALITY = new Set(['estimated', 'estimated-boundary', 'incomplete-coverage', 'missing-start', 'missing-end',
   'counter-reset', 'out-of-order', 'stale', 'disconnected', 'assignment-uncertain', 'duplicate-suspected', 'missing-final-reference',
-  'session-reference-unverified']);
+  'session-reference-unverified', 'reference-coverage-gap']);
 const COMPARABLE_QUALITY = new Set(['estimated', 'estimated-boundary']);
 const digest = value => createHash('sha256').update(value).digest('hex');
 const instant = value => Number.isSafeInteger(value) && value >= 0 && value <= 8640000000000000;
 const energy = value => value === null || Number.isFinite(value) && value >= 0;
+const AGGREGATION_FIELDS = new Set(['kind', 'observedKwh', 'runCount', 'complete', 'quality']);
+
+function validReferenceAggregation(check) {
+  if (!Object.hasOwn(check, 'referenceAggregation')) return true;
+  const aggregation = check.referenceAggregation;
+  if (check.source !== 'shelly-evse' || !aggregation || typeof aggregation !== 'object' || Array.isArray(aggregation)
+    || Object.keys(aggregation).some(key => !AGGREGATION_FIELDS.has(key))
+    || aggregation.kind !== 'plug-period-native-runs' || !energy(aggregation.observedKwh)
+    || !Number.isSafeInteger(aggregation.runCount) || aggregation.runCount < 0
+    || typeof aggregation.complete !== 'boolean' || !Array.isArray(aggregation.quality)
+    || aggregation.quality.some(flag => !QUALITY.has(flag))) return false;
+  // An observed subtotal survives an uncertain reset for inspection, but it
+  // cannot become the final native reference or enter comparison averages.
+  if (!aggregation.complete) return check.complete === false && check.referenceKwh === null;
+  return Number.isFinite(aggregation.observedKwh) && check.referenceKwh === aggregation.observedKwh
+    && aggregation.quality.every(flag => COMPARABLE_QUALITY.has(flag));
+}
 
 export function assertCurrentChargingSessionCheck(check) {
   if (check?.source === 'shelly-evse' && (check.version !== VERSION
     || check.recordingBasis !== 'native-meter-counter-phase-allocation' || check.referenceBasis !== 'native-session-energy'))
     throw new Error('Unsupported Shelly session-check format; start a fresh development database or restore a compatible backup.');
+  if (check && !validReferenceAggregation(check))
+    throw new Error('Unsupported charging session reference aggregation; start a fresh development database or restore a compatible backup.');
 }
 
 export function comparableChargingSession(check) {
@@ -32,7 +51,7 @@ export function comparableChargingSession(check) {
 // session; a session can have several reasons, so the counts need not add up to
 // excludedSessions. Old checks without a specific diagnosis remain honest.
 function exclusionReasons(check) {
-  const reasons = new Set((Array.isArray(check.quality) ? check.quality : [])
+  const reasons = new Set([...(Array.isArray(check.quality) ? check.quality : []), ...(check.referenceAggregation?.quality ?? [])]
     .filter(flag => QUALITY.has(flag) && !COMPARABLE_QUALITY.has(flag)));
   if ((!Number.isFinite(check.estimatedKwh) || check.estimatedKwh < 0) && !reasons.has('incomplete-coverage')) reasons.add('missing-estimate');
   if (!Number.isFinite(check.referenceKwh) || check.referenceKwh < 0) reasons.add('missing-reference');
@@ -59,9 +78,12 @@ export function recordChargingSessionCheck(store, input) {
   if (input.transport !== undefined && !['cloud','ocpp'].includes(input.transport)) throw new TypeError('Invalid charging check transport');
   if (input.source === 'shelly-evse' && (input.recordingBasis !== 'native-meter-counter-phase-allocation'
     || input.referenceBasis !== 'native-session-energy')) throw new TypeError('Shelly session-check measurement bases are required');
+  if (!validReferenceAggregation(input)) throw new TypeError('Invalid charging session reference aggregation');
   const check = { version: VERSION, source: input.source, start: input.start, end: input.end,
     estimatedKwh: input.estimatedKwh, referenceKwh: input.referenceKwh, complete: input.complete,
     ...(input.source === 'shelly-evse' ? { recordingBasis: input.recordingBasis, referenceBasis: input.referenceBasis } : {}),
+    ...(input.referenceAggregation ? { referenceAggregation: { ...input.referenceAggregation,
+      quality: [...new Set(input.referenceAggregation.quality)].sort() } } : {}),
     quality: [...new Set(quality)].sort(), ...(input.transport ? {transport:input.transport} : {}) };
   // Hash identifiers before persistence; keep the source in the identity so the
   // two providers can use the same session key without colliding.
@@ -86,7 +108,7 @@ export function chargingSessionCheckSummaries(store) {
   const rows = Object.entries(SOURCES).map(([source, descriptor]) => ({ kind: 'charging-session-summary', source,
     signal: descriptor.signal, summary: { basis: descriptor.basis, recordedSessions: 0, comparedSessions: 0,
       excludedSessions: 0, exclusionReasons: {}, estimatedKwh: 0, referenceKwh: 0, differenceKwh: null, differencePercent: null,
-      start: null, end: null, lastSessionEnd: null, referenceTransports: [] } }));
+      start: null, end: null, lastSessionEnd: null, referenceTransports: [], latestReferenceAggregation: null } }));
   const bySource = new Map(rows.map(row => [row.source, row.summary]));
   // Store.events() has a page limit. Iteration deliberately includes all history
   // without loading every session into memory or silently averaging one page.
@@ -98,6 +120,8 @@ export function chargingSessionCheckSummaries(store) {
     if (!summary.referenceTransports.includes(transport)) summary.referenceTransports.push(transport);
     summary.recordedSessions++;
     summary.lastSessionEnd = Math.max(summary.lastSessionEnd ?? check.end, check.end);
+    if (check.referenceAggregation && (!summary.latestReferenceAggregation || check.end >= summary.latestReferenceAggregation.end))
+      summary.latestReferenceAggregation = { ...check.referenceAggregation, start: check.start, end: check.end };
     if (!comparableChargingSession(check)) {
       summary.excludedSessions++;
       for (const reason of exclusionReasons(check)) summary.exclusionReasons[reason] = (summary.exclusionReasons[reason] ?? 0) + 1;

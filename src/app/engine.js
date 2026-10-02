@@ -147,6 +147,7 @@ export class Engine {
       connected: physical?.online === true, recording: enabled && meterAvailable,
       controlReady: physical?.controlReady === true, commissioning: physical?.commissioning ?? null,
       sessionEnergyVerified: physical?.commissioning?.sessionEnergyVerified === true,
+      sessionReference: physical?.sessionReference ?? null,
       readings, maxAgeMs: physicalAdapter?.config?.maxAgeMs ?? null,
       mqttStatus: physical?.mqtt ?? null, topics: physical?.topics ?? [] };
     return providers;

@@ -1,3 +1,35 @@
+Implemented 2026-10-02 — Sum Shelly native charging runs across each plug-in period
+- Accumulate only new native cumulative energy, preserving the observed subtotal
+  across charging pauses, counter resets and current-format application restart.
+  Physical unplug ends the period; the next connection starts a new subtotal.
+- Keep observed native energy separate from a confirmed final reference. Missing
+  run finals, uncertain starts/ownership or acquisition gaps exclude comparison;
+  lifetime counters and stored phase energy cannot fill native reference gaps.
+  Session commissioning still gates comparisons independently of accumulation.
+- Show the current or latest completed plug-period subtotal and incomplete quality
+  directly in Recorded energy checks. Explain the summed charging-run reference
+  in provider feeds and Physical charger setup, retaining five Shelly feed rows
+  and the same three phase-energy histories used for consumption.
+- F1/F4/F7: add optional current accumulator/evidence state without interpreting
+  earlier cached fields as past run energy or rewriting current historical checks.
+  Keep role settlement bounded and preserve restart, recorder tails and rollback.
+  Retired diagnostic formats remain rejected; no translator, backfill or reset.
+- F3/F5/F8: retain commissioning and control authority; private installation
+  settings and telemetry remain outside Git. No additional physical charging
+  commands are needed for this accumulation change.
+- Validation: final routine suite passes 4,021 tests with one optional skip
+  and no failures; 79 focused accumulator/adapter/shared-contract/storage tests
+  pass. Cover duplicate reads, multiple resets, late finals, missing resets,
+  unplug ownership, restart/rollback, initial zero clocks and long timer waits.
+  Independent review confirms the corrected boundary cases. API/UI checks and
+  Firefox energy-check browser sweep pass, including subtotal/exclusion display
+  and mobile/desktop layouts in both themes. Production build passes with the
+  existing bundle-size warning. Existing household database accepted unchanged.
+- Restarted the application gracefully without a reset or migration. Passive
+  live validation confirms the native plug subtotal increases during charging,
+  is exposed through status/checks, and remains honestly partial when collection
+  began mid-plug. Lifetime-meter recording continues; commissioning stays false.
+
 Implemented 2026-10-02 — Compare recorded charger energy and connect Shelly EVSE
 - Replace C2's parallel power-integration diagnostic with the sum of actual
   stored phase energy against a verified native completed-session reference.

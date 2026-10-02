@@ -31,6 +31,10 @@ export function validateCurrentDatabase(db) {
     const state = JSON.parse(row.value);
     if (Object.hasOwn(state, 'checkSession') || state.counter && Object.hasOwn(state.counter, 'powerW'))
       throw new Error('Unsupported Shelly session-check state; start a fresh development database or restore a compatible backup. The existing database was not changed.');
+    for (const session of [state.sessionCheck?.active, state.sessionCheck?.pending]) {
+      if (session && Object.hasOwn(session, 'nativeRuns') && session.nativeRuns?.version !== 1)
+        throw new Error('Unsupported Shelly native session accumulator; start a fresh development database or restore a compatible backup. The existing database was not changed.');
+    }
   }
 }
 

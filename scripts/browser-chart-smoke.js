@@ -490,9 +490,14 @@ try {
   assert(!/0 compared|0 excluded|0 recorded sessions/.test(await checkText(charger2Check)),
     'An empty charger uses a useful empty state instead of zero-valued statistics');
   gapRows[2].sessionEnergyVerified=false;
+  gapRows[2].sessionReference={kind:'plug-period-native-runs',observedKwh:3,runCount:2,
+    complete:false,quality:['missing-final-reference'],phase:'active',start:now-7200000,observedAt:now};
   await refreshEnergyChecks(gapRows);
   assert.equal(await checkText(charger2Check+' .energy-check-result'),'Completed-session check unavailable');
   assert.match(await checkText(charger2Check+' .energy-check-notice'), /no verified final session reference.*Consumption recording continues/);
+  assert.match(await checkText(charger2Check), /Current plug-in period: 3 kWh observed across 2 charging runs/);
+  assert.match(await checkText(charger2Check), /Native total is incomplete; it is excluded from comparison/);
+  assert.match(await checkText(charger2Check), /same plug-in period, including pauses and restarts/);
   const methodCheck='#energy-audit-content details[data-check-key="method"]';
   assert.equal(await checkText(methodCheck+' > summary'),'How comparisons work');
   assert.match(await checkText(methodCheck),/do not change recorded history, calibrate estimates, train the house model or adjust recording thresholds/);

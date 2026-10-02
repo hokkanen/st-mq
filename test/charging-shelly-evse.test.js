@@ -499,3 +499,47 @@ test('Shelly Charge Now still pauses for the property fuse limit and rejects a p
   await controller.update({ enabled: true, chargeNow: { connectedAt }, plan: { periods: [{ startAt: f.now() + 3600000, endAt: null }] }, allocation: {} });
   assert.equal(controller.status().reason, 'economic-wait'); assert.equal(f.fields.start_charging, false);
 });
+
+test('late native session finals update the plug subtotal without rewinding the live counter', async t => {
+  const f = fixture(t, { sessionEnergyVerified: true }); await f.ready();
+  const accept = (role, value, at, now = at) => {
+    f.setNow(now); return f.adapter.accept(role, { value, last_update_ts: at / 1000 }, now);
+  };
+  accept('energy_charge', .005, NOW + 1000);
+  accept('work_state', 'paused', NOW + 2000);
+  accept('energy_charge', 0, NOW + 2100);
+  assert.equal(accept('energy_charge', .01, NOW + 2000, NOW + 2200), false);
+  let snapshot = f.adapter.snapshot();
+  assert.equal(snapshot.fields.energy_charge.value, 0);
+  assert.equal(snapshot.fields.energy_charge.measuredAt, NOW + 2100);
+  assert.equal(snapshot.sessionReference.observedKwh, .01);
+  assert.equal(snapshot.sessionReference.runCount, 1);
+  assert(!snapshot.sessionReference.quality.includes('missing-final-reference'));
+  accept('work_state', 'charging', NOW + 3000);
+  accept('energy_charge', .02, NOW + 4000);
+  snapshot = f.adapter.snapshot();
+  assert(Math.abs(snapshot.sessionReference.observedKwh - .03) < 1e-12);
+  assert.equal(snapshot.sessionReference.runCount, 2);
+  accept('energy_charge', .02, NOW + 4000, NOW + 5000);
+  assert.equal(f.adapter.snapshot().sessionReference.observedKwh, snapshot.sessionReference.observedKwh);
+});
+
+test('only a correlated current zero read establishes a new plug baseline with an unchanged native clock', async t => {
+  const f = fixture(t, { sessionEnergyVerified: true }); f.fields.work_state = 'free'; await f.ready();
+  f.setNow(NOW + 1000);
+  f.adapter.accept('work_state', { value: 'connected', last_update_ts: (NOW + 1000) / 1000 });
+  f.setNow(NOW + 1100);
+  f.adapter.accept('energy_charge', { value: 0, last_update_ts: NOW / 1000 });
+  assert.equal(f.adapter.snapshot().sessionReference.observedKwh, null);
+  f.setNow(NOW + 1200);
+  f.adapter.accept('energy_charge', { value: 0, last_update_ts: NOW / 1000 }, NOW + 1200, false, true);
+  const baseline = f.adapter.snapshot();
+  assert.equal(baseline.sessionReference.observedKwh, 0);
+  assert(!baseline.sessionReference.quality.includes('missing-start'));
+  assert.equal(baseline.fields.energy_charge.measuredAt, NOW, 'A current read never invents a source timestamp');
+  f.setNow(NOW + 1300);
+  f.adapter.accept('work_state', { value: 'charging', last_update_ts: (NOW + 1300) / 1000 });
+  f.setNow(NOW + 2000);
+  f.adapter.accept('energy_charge', { value: .02, last_update_ts: (NOW + 2000) / 1000 });
+  assert.equal(f.adapter.snapshot().sessionReference.observedKwh, .02, 'The full first run increment belongs to this plug');
+});

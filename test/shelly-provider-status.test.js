@@ -26,6 +26,10 @@ test('Shelly meter acquisition remains available independently of control and se
   assert.equal(status.sessionEnergyVerified, false);
   assert.deepEqual(status.commissioning, f.physical.commissioning);
   assert.deepEqual(status.readings, f.readings);
+  assert.equal(status.sessionReference, null);
+  f.physical.sessionReference = { kind: 'plug-period-native-runs', observedKwh: 3, runCount: 2,
+    complete: false, quality: ['missing-final-reference'], phase: 'active', start: 1000, observedAt: 10000 };
+  assert.deepEqual(f.status().sessionReference, f.physical.sessionReference);
   f.physical.error = 'evse-native-restriction';
   assert.equal(f.status().status, 'ok', 'Native charge restrictions do not invalidate live electrical measurements');
   f.config.sessionEnergyVerified = true;
@@ -57,9 +61,11 @@ test('Shelly acquisition status follows usable measurements and transport, not a
 test('energy checks API exposes current native reference verification independently of historical totals', async t => {
   const store = new Store(':memory:');
   let verified = false;
+  const sessionReference = { kind: 'plug-period-native-runs', observedKwh: 3, runCount: 2,
+    complete: false, quality: ['missing-final-reference'], phase: 'active', start: 1000, observedAt: 10000 };
   const engine = { clock: () => 100000,
     charging: { chargers: { charger2: { adapter: {
-      snapshot: () => ({ commissioning: { sessionEnergyVerified: verified }, privateDeviceId: 'synthetic-private-device' }),
+      snapshot: () => ({ commissioning: { sessionEnergyVerified: verified }, sessionReference, privateDeviceId: 'synthetic-private-device' }),
     } } } } };
   const server = createAppServer({ engine, store, chartService: { overview() {} } });
   await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
@@ -72,6 +78,7 @@ test('energy checks API exposes current native reference verification independen
   const before = await read();
   assert.equal(before[2].sessionEnergyVerified, false);
   assert.equal(before[2].summary.recordedSessions, 0);
+  assert.deepEqual(before[2].sessionReference, sessionReference);
   assert(!JSON.stringify(before).includes('synthetic-private-device'));
   verified = true;
   const after = await read();

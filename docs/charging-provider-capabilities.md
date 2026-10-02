@@ -60,11 +60,14 @@ active power and explicitly estimated phase-energy intervals.
 Charger 2 defaults `enabled:false, verified:false`. Configure a concrete `deviceId` and `topicPrefix` to acquire it. To admit commands, explicitly commission the observed model and firmware, service 0, distinct connected/disconnected/charging work-state strings, current range/step and physical phase mapping. The initial supported allocation profile requires a 6 A minimum and a 1 A step; other minima/steps are rejected until the allocator and hardware contract explicitly support them. The adapter discovers each role's component ID, checks unique mapping and service ownership, and requires write access for the current/start roles. Observed model/firmware and current capabilities must exactly match the configured profile. Any mismatch or unreadable capability withdraws control.
 
 `sessionEnergyVerified:false` separately gates completed-session comparisons.
-Verify that the native session reference covers the same physical connection,
-starts at zero, survives pauses, and remains available as a final total before
-the next session resets it. The flag requires a pinned model/firmware and state
-mapping, and never authorizes charging commands. A reset or missing final reading
-excludes that session; do not manufacture a final reference from a cached sample.
+Native accumulation runs independently of that flag. The controller adds native
+charging-run energies across the physical connection, retaining its subtotal
+through pauses, resets and restart. Verify zero baselines, stop boundaries and
+final readings before each reset and unplug. A reset is supported when its run
+has a confirmed final reading; a missed final reading leaves the subtotal
+incomplete. The flag requires a pinned model/firmware and state mapping, and
+never authorizes charging commands. Do not manufacture final references from
+cached running samples, lifetime counters or stored phase energy.
 The comparison sums actual stored phase intervals for the same physical charger,
 including the eligible pending tail, and rejects missing or conflicting coverage.
 It checks recording completeness and conservation, not independent meter accuracy

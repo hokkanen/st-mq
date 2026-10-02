@@ -456,24 +456,48 @@ session flushes pending energy once and compares all three original Easee energy
 series over the same period. Duplicate polls cannot create duplicate sessions or
 force repeated flushes. Conflicting finalized readings do not rewrite a check.
 
-Charger 2 checks belong to the physical Shelly association and a verified native
-session interval. The `sessionEnergyVerified` commissioning flag is independent
-of permission to control charging. Its supported contract requires a native
-session total covering the physical connection, a witnessed zero baseline, no
-intermediate resets, and a final reading after the connection ends. Asynchronous
-meter/reference delivery gets a bounded settlement period before finalization;
-it cannot replace missing source evidence. Missing boundaries, reset counters,
-unverified semantics or incomplete stored phase coverage exclude comparison.
-An earlier running-session sample is never promoted to a final total. Old Shelly
-power-integration checks are rejected rather than relabeled as recorded energy.
-Tesla battery-added energy is never a C2 electricity-meter reference.
+Charger 2 checks belong to the physical Shelly association and cover one plug-in
+period. The controller sums native charging-run energies across pauses and
+resets until unplugging. Each native reading is cumulative: `1 → 2 → 0 → 0.5 → 1`
+contributes 3 kWh, not 4.5 kWh. Repeated values do not add energy. The compact
+accumulator survives restart; no raw session-energy time series is added.
+
+The observed native subtotal is separate from a confirmed final comparison
+reference. Each run needs a witnessed baseline and final reading at its stop
+before resetting. Missing final readings, unexplained decreases, uncertain
+boundaries or gaps that could hide a reset leave the observed subtotal incomplete.
+Asynchronous state/reference delivery gets bounded settlement; it cannot replace
+missing evidence or promote an earlier running sample to a final total. The
+`sessionEnergyVerified` flag separately qualifies installed native semantics;
+it gates comparisons, not accumulation or charging control. Incomplete stored
+phase coverage also excludes comparison. Lifetime counters and stored phases
+never fill missing native-reference energy. Tesla battery-added energy is never
+a C2 electricity-meter reference.
+
+A newly observed plug connection may establish its zero baseline from a live
+native reading while the charger is still known to be noncharging. An unchanged
+zero may have an older source timestamp: only a correlated current read can
+establish it after insertion, and its original clock is preserved. Starting
+observation after charging has begun does not grant credit for earlier energy.
+
+Current session-check events may carry optional `referenceAggregation` evidence
+with `kind:plug-period-native-runs`, observed kWh, run count, completeness and
+quality. Only confirmed totals enter `referenceKwh` and comparison averages.
+An absent new `nativeRuns` accumulator starts from newly received evidence;
+initialization mid-plug is incomplete and never imports cached prior energy.
+Existing current-format one-run checks retain their meaning. No historical
+backfill or format translator is provided; retired power-integration checks
+remain rejected. The API and Recorded energy checks show the active subtotal or
+the latest completed subtotal, with incomplete evidence labeled explicitly.
 
 Installed XT1 1.7.1 commissioning observed a native session reset after a Boolean
 stop while the vehicle remained plugged in, without a final positive total in
 the captured MQTT notifications. That firmware behavior does not establish the
-supported connection-session reference contract. Leave session verification
-false and show the unavailable comparison explicitly; lifetime-counter recording
-continues independently.
+complete native-reference contract. The accumulator retains energy observed
+before each reset and continues with the next run, but cannot recover an
+unreported final increment. Leave session verification false and show the
+observed subtotal separately from the unavailable comparison; lifetime-counter
+recording continues independently.
 
 Recording diagnostics compare a valid counter increment with the sum of committed
 phase-energy estimates over the same source-time period. Missing coverage prevents

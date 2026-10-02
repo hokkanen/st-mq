@@ -98,7 +98,7 @@ export function providerSeries(job, health = {}) {
       seriesRow([...phaseSignals('ev2_energy'), 'ev2_import_energy_counter'], 'Charger 2 phase energy L1–L3', 'kWh',
         'Increases in the lifetime total meter counter are distributed using phase-power shares and stored per interval. Estimated phase distribution; the three phase energies sum to measured total consumption. The charger reports a total counter, without separate phase energy counters. Missing allocation leaves a recording gap.', 'Calculated from Shelly EVSE'),
       seriesRow(['shelly_session_energy_check', 'ev2_session_energy'], 'Charger 2 session check', 'kWh',
-        'Compares the sum of stored phase energies with the charger’s final native session energy. Checks recording completeness and the summed phase allocation, using the same meter; it does not independently test meter accuracy. Requires verified session boundaries and a final reading.', 'Shelly EVSE'),
+        'Adds native charging-session energies across the whole plug-in period and compares the total with stored phase energies. Pauses and resets preserve the subtotal; missing final readings leave it incomplete. Checks recording completeness using the same meter, not independent meter accuracy.', 'Shelly EVSE'),
     ];
   }
   if (job === 'market') {
@@ -432,7 +432,7 @@ export function dashboardProviders(status, options) {
         datasets: consumption.datasets.filter(row => row.signals[0].startsWith('property_') || row.signals[0] === 'ev1_session_energy_check') },
       { key: 'easee-ocpp', title: 'Easee OCPP', description: 'Charger 1 sends electricity readings directly to this controller through local OCPP. Available Easee cloud readings provide a backup when local readings are unavailable.',
         datasets: consumption.datasets.filter(row => row.signals[0].startsWith('ev1_') && row.signals[0] !== 'ev1_session_energy_check') },
-      { key: 'shelly-evse', title: 'Shelly EVSE', description: 'Charger 2 sends electrical readings over MQTT. Its total meter counter supplies recorded consumption, phase power determines the phase split, and final session energy checks the stored total.',
+      { key: 'shelly-evse', title: 'Shelly EVSE', description: 'Charger 2 sends electrical readings over MQTT. Its lifetime meter supplies recorded consumption, phase power determines the phase split, and native charging-session energies are added across each plug-in period to check the stored total.',
         datasets: consumption.datasets.filter(row => row.signals[0].startsWith('ev2_') || row.signals[0] === 'shelly_session_energy_check') },
     ];
   }
