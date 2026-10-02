@@ -22,8 +22,9 @@ const cloudAvailable = snapshot => snapshot.controlKnown === true && snapshot.en
   && !snapshot.faulted && !snapshot.manualStop && !snapshot.stopped && !snapshot.authorizationBlocked;
 const currentTransaction = (snapshot, session, until) => snapshot.transactionConfirmed === true
   && transactionId(snapshot.transactionId) && snapshot.transactionId === session.transactionId
-  && observed(snapshot.transactionStartedAt, until)
-  && (session.lastDisconnectedAt == null || snapshot.transactionStartedAt > session.lastDisconnectedAt);
+  && observed(snapshot.transactionProvenance === 'meter-values' ? snapshot.transactionConfirmedAt : snapshot.transactionStartedAt, until)
+  && (session.lastDisconnectedAt == null
+    || (snapshot.transactionProvenance === 'meter-values' ? snapshot.transactionConfirmedAt : snapshot.transactionStartedAt) > session.lastDisconnectedAt);
 
 /** Transport facts become one vehicle-independent, current-session pause proof.
  * Ownership alone never establishes that the requested physical stop occurred.

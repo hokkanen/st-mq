@@ -269,10 +269,17 @@ export function createOcppSetup({ installation, state, api, listener, clock = Da
       foreign = fingerprint; persist({ nextAttemptAt: clock() + 300_000 }); publish('blocked', 'foreign-configuration'); return;
     }
     foreign = null;
-    if (fingerprint === wanted && saved.appliedFingerprint === wanted && saved.intent === null) {
+    // An already applied setup survives an application restart. With genuinely
+    // absent setup state, a matching readback plus fresh authenticated local
+    // readings also establishes the installed connection without reapplying it.
+    // An unfinished explicit apply still follows its durable intent below.
+    if (fingerprint === wanted && saved.intent === null
+      && (saved.appliedFingerprint === wanted || listener.status().available)) {
+      if (saved.appliedFingerprint !== wanted) { await prepareControl('native'); check(); }
       await commitControl('native'); check();
       const available = listener.status().available;
-      persist({ failures: 0, nextAttemptAt: clock() + (available ? 3600_000 : 300_000),
+      persist({ ownedFingerprint: wanted, appliedFingerprint: wanted, adoptionFingerprint: null,
+        failures: 0, nextAttemptAt: clock() + (available ? 3600_000 : 300_000),
         ...(available ? { lastSuccessAt: clock() } : {}) });
       publish(available ? 'ready' : 'connecting', available ? null : 'waiting-connection'); return;
     }
@@ -355,8 +362,8 @@ export function createOcppSetup({ installation, state, api, listener, clock = Da
       desiredEnabled = false;
       await flight;
       check();
-      // Preserve a real provider backoff; shutdown must report an unconfirmed
-      // restoration instead of bypassing rate limits or pretending OCPP is off.
+      // Preserve a real provider backoff; an explicit integration change must
+      // report an unconfirmed restoration instead of bypassing rate limits.
       if ((saved.ownedFingerprint || saved.intent) && saved.failures && saved.nextAttemptAt > clock())
         throw fail('control-transition-pending');
       changedConfiguration = true;

@@ -119,12 +119,18 @@ Process shutdown revokes new writes and drains outstanding work before storage
 can close; it does not invent a charger handover during authority transfer.
 
 The observed instruction baseline persists and is refreshed even while control
-is off or no vehicle is connected. A foreign active schedule with unknown
-ownership is preserved on first observation. A simple daily/weekly window lasts
-through its **current or next concrete end**, even beyond ready-by. Multiple
-periods and unknown/ambiguous ends require explicit resumption. Unplugging,
-restarting, OFF/ON and editing ready-by do not erase or move a window end.
-Own confirmed/recovered writes, inactive
+is off or no vehicle is connected. With Automatic enabled, a new confirmed
+physical connection supersedes earlier charger instructions and native schedules,
+including daily and weekly recurrence. A genuinely missing saved session follows
+the same policy after fresh connection evidence. Restart or network reconnection
+preserves known ownership; unreadable or invalid state cannot grant takeover.
+
+External instructions observed later in that connection take priority. A simple
+daily/weekly window lasts through its **current or next concrete end**, even
+beyond ready-by, unless the vehicle is unplugged or Use automatic is selected.
+Multiple periods and unknown/ambiguous ends require explicit resumption or a new
+physical connection. Restarting, OFF/ON and editing ready-by do not move a window
+end. Own confirmed/recovered writes, inactive
 schedule caches and normal one-off expiry are excluded from manual detection.
 
 The explicit Use automatic action acknowledges the displayed native instruction.
@@ -145,13 +151,17 @@ scheduled wait (reason 54), before the owned future release time, also identifie
 Charge now when `/schedules` remains unchanged. ST-MQ then relinquishes only its
 own delay and yields until confirmed unplug or explicit resumption.
 Initial charging before any verified pause is separate and remains schedulable.
-Zero power, Equalizer pauses and ordinary operating-mode changes do
-not create manual priority. Ordinary scheduling preserves a disabled charger,
+An enabled charger with a zero dynamic charger ceiling and no-current reason 52
+also reports a stop restriction. Observation 48 supplies that ceiling and its
+source clock; missing or older evidence cannot authorize a resume. Zero power,
+Equalizer pauses and ordinary operating-mode changes do not create manual
+priority. Ordinary scheduling preserves a disabled charger,
 authorization request or fault. Final release remains open even after its
 estimated completion/deadline.
 
-The separate **Use automatic** action supersedes earlier observed manual
-instructions and disables supported delayed/daily/weekly charging schedules.
+New-connection automatic takeover and the separate **Use automatic** action
+supersede earlier observed manual instructions and disable supported
+delayed/daily/weekly charging schedules.
 It may use the documented [enabled setting](https://developer.easee.com/reference/charger_setchargersetting)
 and [resume command](https://developer.easee.com/reference/charger_resumesession).
 It never uses the authorizing start command. Resume resets Easee's dynamic
@@ -165,6 +175,13 @@ transaction therefore cannot perform a takeover requiring a future pause.
 Source-clocked preflight and readback fence newer changes. Superseded native
 schedules are not restored, while subsequent external instructions regain
 priority. State observations cannot guarantee who or which app issued them.
+
+The policy covers native charger schedules, but the public Easee API documents
+disable operations only for delayed, daily and weekly schedules. Its read model
+also includes off-peak and tariff schedules without corresponding documented
+disable operations. Those types remain visibly blocked rather than being
+reported as replaced; unrelated site settings are not changed. See the
+[official schedule API](https://developer.easee.com/reference/getchargersschedules).
 
 Streamed events preserve reported changes between routine polls. App taps that
 leave the same state and transitions Easee does not report remain invisible;
@@ -263,26 +280,31 @@ Native OCPP activation transfers control as well as telemetry. An
 that the connected native OCPP server takes over charging authorization, RFID
 handling and charge schedules. The cloud scheduler described above cannot be
 assumed to remain effective after activation. ST-MQ selects one charging control
-backend at a time. It finishes and verifies release of its current cloud-owned
-instruction before activating native OCPP. An active foreign cloud schedule
-blocks that transition; ST-MQ preserves it. Missing native control readiness or
+backend at a time. Initial activation checks for an active cloud schedule before
+suspending the cloud controller. An active schedule defers commissioning,
+preserving both the restriction and any pending automatic takeover in the cloud
+controller. Once that schedule clears or expires, setup drains the old controller
+and checks again before applying native configuration. Missing native control readiness or
 an unfinished handover stays visibly pending. Falling back to cloud readings
 does not switch the charging controller back to cloud schedules.
 
-**Stopping ST-MQ does not guarantee automatic cloud fallback.** A normal Ctrl+C
-or service stop requests `OcppOff` through Easee cloud before closing charging
-control. That request needs working cloud access; failures retain the restoration
-obligation and report a shutdown error. Paired handover deliberately keeps OCPP
-active so the charger reconnects to the shared address on the next controller.
-Startup can re-enable the installation's matching, previously disabled setup.
+**Stopping ST-MQ leaves native OCPP enabled.** Normal Ctrl+C, service stop and
+restart close the connection while retaining the setup journal, charging control
+intent and outstanding profile obligations. They do not apply `OcppOff`, clear
+owned pauses or switch the charger to cloud operation. Paired handover preserves
+the same state so the charger reconnects to the shared address on the next
+controller. Startup verifies matching installed configuration without rewriting
+or applying charger configuration. Fresh authenticated local readings can establish a matching
+installation when its setup journal is genuinely absent; an unconnected initial
+installation still requires confirmed commissioning.
 
-A crash, forced termination, suspension or power loss cannot send that handback
-after the process is gone. The charger can remain in native OCPP mode, and a new
-charge or Easee app Start can wait for ST-MQ approval. Restart ST-MQ, or disable
-Direct OCPP through Easee configuration to return authority to cloud control.
-There is no seamless cloud-control backup. An existing pause expiring on the
-charger only removes that restriction; it does not restore cloud authorization
-for a new charging session.
+An ordinary stop, crash, suspension or power loss is a local connection outage.
+A new charge or Easee app Start can wait for ST-MQ approval while the controller
+is unavailable. Restart ST-MQ to restore local control. Returning to cloud
+control requires explicitly disabling the integration or Direct OCPP through
+Easee configuration. There is no seamless cloud-control backup. An existing
+pause expiring on the charger only removes that restriction; it does not restore
+cloud authorization for a new charging session.
 
 The local receiver supports charger power, phase currents and explicitly
 identified phase-neutral voltages. Its voltage-only feed remains usable without
@@ -312,8 +334,14 @@ the site operator. `easee.local_ocpp.authorization_mode` selects authorization:
   derives a private virtual tag from the installation credentials and uses it
   for `RemoteStartTransaction`. No physical tag list is required in this mode.
   A remote-start acknowledgement alone does not prove charging: the native
-  transaction and physical state must follow. This opt-in grants start
-  permission; the separate Automatic charging switch governs economic pauses.
+  transaction and physical state must follow. The controller grants a short-lived
+  start permission only when the current plan or an allowed session action calls
+  for charging. A scheduled wait, saved stop, missing fresh instructions or
+  incomplete takeover cannot authorize startup. This gate covers outgoing remote
+  starts and incoming authorization/start requests for the private virtual tag.
+  Virtual-tag authorization replies expire immediately from the charger cache;
+  accepted transaction retries keep their original durable reply. Configured RFID
+  tags retain their independent authorization rules.
 
 Without an explicit password, standalone ST-MQ creates a private
 `easee-ocpp-credentials.json` file in its data directory; paired computers derive
@@ -328,8 +356,9 @@ control while native OCPP is inactive.
 
 Local OCPP follows the cloud controller's ownership rules. The production adapter
 combines source-timed cloud/stream enable and stop observations with cloud
-schedules. Ordinary scheduling does not mutate cloud schedules. Explicit **Use
-automatic** may disable the superseded native schedule and enable/resume the
+schedules. Ordinary scheduling within an established session does not mutate
+cloud schedules. New-connection automatic takeover and explicit **Use automatic**
+may disable the superseded native schedule and enable/resume the
 charger through the cloud API after a local economic pause is confirmed where
 needed. It never installs a cloud economic schedule while OCPP owns control.
 Observed native Stop prevents ordinary automatic resumption. Observed enable or schedule
@@ -477,9 +506,12 @@ OCPP server connection will be replaced and that native OCPP takes over charging
 authorization and schedules. The server rereads the inspected revision before replacement. A newer
 external edit requires another review and confirmation; it does not grant
 permission for recurring automatic overwrites.
-After an orderly shutdown or configuration reload, setup remembers the exact
-inactive connection it applied. It can update that connection to a newly detected
-address without another adoption; changed remote settings still require review.
+Ordinary shutdown and unrelated configuration reloads preserve the installed
+connection. An explicit change to the charger identity or local OCPP settings
+first releases the old integration through its existing connection. Setup keeps
+the exact inactive connection it applied, allowing its own settings to be
+updated without another adoption; changed remote settings still require review.
+A newly detected endpoint can update the installation's owned configuration.
 
 To turn off a local connection managed by this installation, set
 `easee.local_ocpp.enabled` to `false` and use **Apply reviewed configuration**. ST-MQ checks
@@ -540,6 +572,21 @@ ledger is protocol identity state, not a duplicate session-energy series. A rese
 meter counter can still end its known transaction; the raw nonnegative start and
 stop values are retained without treating their difference as energy.
 
+Some existing transactions reconnect without a `StartTransaction` exchange.
+The ledger can retain these separately as observed transactions after two
+distinct, advancing, fresh power `MeterValues` reports, at least one second apart,
+name the same positive transaction ID on the current authenticated connection.
+An active connector status is also required. Conflicting IDs, already ended
+transactions, stale/out-of-order readings and socket or boot boundaries cannot
+create this authority. Reconnection requires fresh confirmation again. The
+snapshot identifies `meter-values` provenance and confirmation time while
+leaving the original start time and authorization empty. These observations
+authorize targeting the confirmed current transaction with a restriction; they
+do not fabricate a start acknowledgement, tag, meter baseline or charging
+history. Recovery and guarded profile installation are covered by synthetic
+protocol and production-adapter tests; acceptance by the installed charger still
+needs a separately authorized hardware check.
+
 Each transaction retains its latest transaction-specific evidence time. A fresh,
 explicitly timestamped `Available` or `Finishing` status from the
 current authenticated connector can establish that no transaction is ongoing,
@@ -561,7 +608,9 @@ connection identity. This records intent, not physical completion. Following a
 later authenticated connection, fresh explicit `Preparing` newer than the request,
 with no current transaction-bearing meter evidence, can permit one recovery
 remote start in plug-and-charge mode. The attempt is saved before it is sent;
-retries and restarts do not replenish it. A new boot message on the same socket
+the current controller start permission is still required. Retries and restarts
+do not replenish it. Ordinary application restarts never request this mode
+change. A new boot message on the same socket
 or ordinary paired handover does not create this recovery permission.
 
 The old row stays active until a distinct, authorized `StartTransaction` on that

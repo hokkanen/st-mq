@@ -2,9 +2,10 @@
 
 ST-MQ models two physical charging points: **Charger 1 is Easee**, using either the cloud delayed-start scheduler or the native OCPP controller’s expiring current profiles; **Charger 2 is the Top AC / Shelly XT1 EVSE**, controlled through MQTT RPC. TeslaMate and BMW CarData supply vehicle evidence for either charging point. They never supply another home electricity contribution or receive vehicle commands.
 
-Charger 1 uses one control backend at a time. Native OCPP activation releases
-ST-MQ's owned cloud instruction and waits when a foreign cloud schedule still
-owns charging. Cloud telemetry remains a data fallback without silently
+Charger 1 uses one control backend at a time. Initial native OCPP activation
+waits while a cloud schedule remains active, leaving the cloud controller and
+its pending automatic takeover intact. It drains the old controller only after
+that schedule is cleared or expires. Cloud telemetry remains a data fallback without silently
 reactivating cloud scheduling. Native `plug-and-charge` authorization can start
 a connected vehicle without an RFID tap; RFID mode instead requires permitted
 tags. Native economic pauses expire on the charger and release to its existing
@@ -13,12 +14,13 @@ delay uses normal charging current, with a controller-managed energy allowance
 and safety deadline. See
 [local setup and native control](charging-easee.md#direct-local-ocpp-telemetry-firmware-344-or-later).
 
-**Native OCPP needs ST-MQ for charging authorization.** Normal Ctrl+C or service
-stop requests a return to cloud control; paired handover keeps OCPP active. A
-failed cloud request leaves handback unconfirmed. A crash or power loss can leave
-new charging or Easee app Start waiting for approval. Restart ST-MQ or disable
-Direct OCPP through Easee configuration. Expiring economic pauses do not provide
-automatic cloud authorization after a crash.
+**Native OCPP needs ST-MQ for charging authorization.** Normal Ctrl+C, service
+stop, restart and paired handover leave OCPP enabled on the charger. A restart
+reopens the local connection without cycling charger configuration. While the
+controller is offline, new charging or Easee app Start may wait for approval.
+Restart ST-MQ to restore local control, or explicitly disable Direct OCPP through
+Easee configuration to return to cloud control. Expiring economic pauses do not
+provide automatic cloud authorization during an outage.
 
 Charger 2 is disabled by default. Once its MQTT device identity and topic are
 configured, supported start/stop readiness is checked automatically. Native app
@@ -31,9 +33,12 @@ Both charger cards show the physical connection, assigned vehicle or uncertainty
 
 A live local OCPP connection status newer than the last disconnect restores
 Charger 1's physical session and readings even while its transaction is
-unconfirmed. Native scheduling still waits for a confirmed transaction newer
-than that disconnect. Transaction confirmation does not restart the physical
-session or reset its settings, deadline, progress or cost.
+unconfirmed. Native scheduling still waits for transaction evidence newer than
+that disconnect. An existing transaction can be recovered from two distinct,
+fresh, advancing transaction-bearing meter reports on the authenticated local
+connection, with an active connector status. Its original start time and
+authorization remain unknown. Transaction confirmation does not restart the
+physical session or reset its settings, deadline, progress or cost.
 
 Each card’s **How charging works** section explains its scheduling, current
 limits and pause recovery. Easee cloud delays and local OCPP pauses can release
@@ -98,7 +103,16 @@ come from reported capabilities. Messages wrap and the card grows when needed;
 status, errors and popup explanations are never deliberately clipped.
 
 The Automatic switch saves the scheduling preference. It stays **ON** while
-manual control has priority. **Use automatic** is a separate, explicit new
+manual control has priority. With Automatic enabled, a new confirmed physical
+connection takes automatic control and supersedes earlier charger instructions
+and native charging schedules, including recurring schedules. A genuinely missing
+saved session follows that policy after fresh connection evidence; unreadable or
+invalid saved state cannot authorize takeover. Restart and network reconnection
+preserve a known session's automatic or manual ownership. A later external change
+has priority for that connection; unplugging ends that manual scope. Changing the
+Automatic preference alone does not take over an already established session.
+
+**Use automatic** is a separate, explicit new
 instruction: enable Automatic, end Charge now, supersede the observed manual
 Start/Stop and disable supported native charging schedules. Those earlier
 instructions are not restored after the session, unplugging or restart; a new
@@ -112,7 +126,7 @@ outcomes remain visible independently of the button; success requires charger
 readback. Compact status labels omit terminal periods, while explanations and
 action receipts use complete sentences.
 
-Handover is bound to the displayed equipment, connection, request/control
+Automatic and explicit handover are bound to the current equipment, connection, request/control
 revisions and observed native instruction. A newer observed instruction fences
 it. Charger APIs do not supply an atomic cross-client lock: a concurrent external
 edit must still be detected through source clocks, schedule revisions and

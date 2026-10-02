@@ -253,6 +253,7 @@ export function createDeviceProviders({ connections = {}, http, tokenStore, cloc
   }
   const lifetime = new AbortController();
   let closed = false, stream = null, streaming = false, electricityEpoch = 0, nativeStopped = false, restoringOcpp = false;
+  let nativeStartPermission = null;
   const streamedElectricity = new Set(), streamedVoltage = new Set(), transports = new Map(), reconcileAt = new Map();
   const cloudVoltage = new Map();
   let savedOcppSetup, invalidOcppSetup = false;
@@ -266,7 +267,17 @@ export function createDeviceProviders({ connections = {}, http, tokenStore, cloc
     enabled: !invalidOcppSetup && (ocppInstallation.enabled || restorationPending) } : easee.local_ocpp;
   const local = ocppFactory({ config: localConfig, chargerId: easee.charger_id, clock, virtualTag: ocppInstallation?.virtualTag,
     canControl: () => !closed && !nativeStopped && !invalidOcppSetup && canControl(), state: ocppState,
+    canStart: () => {
+      const permission = nativeStartPermission, current = local.controlSnapshot?.();
+      const permitted = Boolean(permission && !closed && controlBackend === 'native' && canControl()
+        && permission.until > clock() && permission.guard() && current?.connectionId === permission.connectionId
+        && ['Preparing', 'Charging', 'SuspendedEV', 'SuspendedEVSE'].includes(current.connectorStatus)
+        && appSignature(nativeAppControl()) === permission.appSignature);
+      if (!permitted) nativeStartPermission = null;
+      return permitted;
+    },
     onDisconnect: () => {
+      nativeStartPermission = null;
       if (!closed && supplied(easee.charger_id)) {
         electricityEpoch++; onStreamDisconnect([easee.charger_id], { transport: 'ocpp' });
       }
@@ -277,11 +288,20 @@ export function createDeviceProviders({ connections = {}, http, tokenStore, cloc
     beforeDisable: () => local.noteModeDisableRequested(),
     prepareControl: async target => {
       if (typeof onOcppControlTransition !== 'function') throw Object.assign(new Error('Native control is unavailable'), { code: 'native-control-unavailable' });
+      const nativeScheduleClear = async () => {
+        const current = await easeeAuthenticated(`${API}/api/chargers/${encodeURIComponent(easee.charger_id)}/schedules`, { method: 'GET' });
+        return ['none', 'ocpp.direct'].includes(current?.enabled);
+      };
+      // Commissioning can replace the cloud schedule itself. Inspect it before
+      // suspending the cloud controller: a blocked setup must not cancel that
+      // controller's pending automatic takeover or release its economic wait.
+      if (target === 'native' && !await nativeScheduleClear())
+        throw Object.assign(new Error('Cloud schedule is active'), { code: 'cloud-schedule-active' });
       await onOcppControlTransition({ phase: 'prepare', target });
       controlBackend = 'transition';
       if (target === 'native') {
-        const current = await easeeAuthenticated(`${API}/api/chargers/${encodeURIComponent(easee.charger_id)}/schedules`, { method: 'GET' });
-        if (!['none', 'ocpp.direct'].includes(current?.enabled)) {
+        // An external schedule can arrive while the old controller drains.
+        if (!await nativeScheduleClear()) {
           controlBackend = 'cloud';
           await onOcppControlTransition({ phase: 'complete', target: 'cloud', adapter: scheduleControl });
           throw Object.assign(new Error('Cloud schedule is active'), { code: 'cloud-schedule-active' });
@@ -356,7 +376,7 @@ export function createDeviceProviders({ connections = {}, http, tokenStore, cloc
         // Equalizer 31 is current, while charger 31 is enablement. Never route
         // electrical samples or private provider identifiers into session events.
         if (!closed && canControl() && deviceId === easee.charger_id
-          && [31, 96, 100, 109, 250].includes(observation.id)) onChargerObservation(observation);
+          && [31, 48, 96, 100, 109, 250].includes(observation.id)) onChargerObservation(observation);
       },
       products: electricalDevices.map(device => ({ id: device.id,
         ids: [...new Set([...device.ids, ...(device.prefix === 'ev1' ? CHARGING_OBSERVATION_IDS : [])])] })) });
@@ -587,7 +607,7 @@ export function createDeviceProviders({ connections = {}, http, tokenStore, cloc
     return { readAt: Math.max(cloud?.readAt ?? 0, schedule ? nativeCloudSchedule.readAt : 0),
       enabled: cloud?.enabled ?? null, enabledAt: cloud?.observations?.[31]?.at ?? null,
       stopped: cloud?.stopped === true,
-      stopAt: cloud ? Math.max(cloud.observations?.[31]?.at ?? 0, cloud.reasonAt ?? 0) : null,
+      stopAt: cloud ? Math.max(cloud.observations?.[31]?.at ?? 0, cloud.observations?.[48]?.at ?? 0, cloud.reasonAt ?? 0) : null,
       controlKnown: cloud?.controlKnown === true, faulted: cloud?.faulted === true,
       authorizationBlocked: cloud?.authorizationBlocked === true, schedule };
   }
@@ -595,6 +615,11 @@ export function createDeviceProviders({ connections = {}, http, tokenStore, cloc
     value.authorizationBlocked, value.schedule ? effectiveScheduleFingerprint(value.schedule) : null]) : null;
   const nativeScheduleControl = ocppInstallation ? createOcppScheduleAdapter({ scope: ocppInstallation.scope, clock,
     canControl: () => !closed && canControl() && controlBackend === 'native',
+    setStartPermission: (snapshot, options = {}) => {
+      nativeStartPermission = snapshot && typeof options.guard === 'function' && Number.isSafeInteger(options.until)
+        ? { connectionId: snapshot.connectionId, appSignature: appSignature(snapshot.appControl),
+          until: options.until, guard: options.guard } : null;
+    },
     request: (...args) => local.request(...args),
     takeoverNative: async ({ expectedAppControl, signal, canMutate, beforeWrite }) => {
       const snapshot = await nativeTakeoverControl.read({ signal, forceRest: true });
@@ -634,6 +659,8 @@ export function createDeviceProviders({ connections = {}, http, tokenStore, cloc
         readAt: now, online: Boolean(current), connectorStatus: current?.connectorStatus ?? null,
         statusAt: current?.timestamp ?? null, statusReceivedAt: current?.receivedAt ?? null, pluggedIn,
         transactionId: current?.transaction?.id ?? null, transactionStartedAt: current?.transaction?.startedAt ?? null,
+        transactionProvenance: current?.transaction?.provenance ?? null,
+        transactionConfirmedAt: current?.transaction?.confirmedAt ?? null,
         transactionConfirmed: current?.transaction?.confirmed === true,
         appControl: nativeAppControl(),
         powerKw: power?.value ?? null, powerAt: power ? sourceTime(power.timestamp) : null, powerReceivedAt: power?.receivedAt ?? null,

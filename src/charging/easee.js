@@ -57,13 +57,14 @@ export function normalizeScheduleState(payload) {
 }
 
 export function scheduleFingerprint(state) { return hash(normalizeScheduleState(state)); }
+export const easeeScheduleTakeoverSupported = schedule => ['none', 'delayed', 'daily', 'weekly'].includes(schedule?.enabled);
 
 /** Bind an explicit handover to the instruction actually shown to its user. */
 export function easeeTakeoverFingerprint(snapshot) {
   if (!snapshot?.schedule) return null;
   return hash([snapshot.fingerprint ?? scheduleFingerprint(snapshot.schedule), snapshot.enabled,
     snapshot.observations?.[31]?.at ?? null, snapshot.stopped, snapshot.reason, snapshot.reasonAt,
-    snapshot.mode, snapshot.modeAt, snapshot.limits?.dynamicChargerA, snapshot.limits?.chargerA,
+    snapshot.mode, snapshot.modeAt, snapshot.limits?.dynamicChargerA, snapshot.observations?.[48]?.at ?? null, snapshot.limits?.chargerA,
     snapshot.pluggedIn, snapshot.faulted, snapshot.authorizationBlocked]);
 }
 
@@ -216,7 +217,10 @@ export function chargingSnapshot(observations, scheduling, now, allocationA = nu
       dynamicCircuitA: [111, 112, 113].map(id => amps(pick(id).value)),
       equalizerAvailableA: [230, 231, 232].map(id => amps(pick(id).value)),
       allocationA, equalizerAvailableAt: [230, 231, 232].map(id => pick(id).at) } };
-  result.stopped = enabled === false || reason === 53;
+  // A zero dynamic charger limit is the restriction used by the Easee app's
+  // pause. Keep it separate from circuit/Equalizer limiting and from who set it.
+  result.dynamicChargerPaused = reason === 52 && result.limits.dynamicChargerA === 0;
+  result.stopped = enabled === false || reason === 53 || result.dynamicChargerPaused;
   result.authorizationBlocked = [7, 8].includes(mode) || reason === 55;
   result.faulted = mode === 5 || reason === 56;
   result.manualStop = result.stopped;
@@ -224,7 +228,8 @@ export function chargingSnapshot(observations, scheduling, now, allocationA = nu
   // Compare command-relevant availability without mistaking load balancing for
   // a user instruction. Charging that begins during a write gets a fresh read.
   result.controlFingerprint = hash([enabled, pluggedIn, result.stopped, result.authorizationBlocked, result.faulted]);
-  result.controlKnown = online === true && enabled !== null && mode !== null && reason !== null && pluggedIn !== null;
+  result.controlKnown = online === true && enabled !== null && mode !== null && reason !== null && pluggedIn !== null
+    && (reason !== 52 || result.limits.dynamicChargerA !== null);
   return result;
 }
 
@@ -347,16 +352,21 @@ export function createEaseeScheduleAdapter({ request, readObservations, chargerI
         throw failure('state-changed', 'The charger instruction changed before automatic handover.');
       if (!allowed()) throw failure('control-revoked', 'Charging control authority changed.');
       if (!usable(current)) throw failure('access-denied', 'The charger is not available for automatic handover.');
-      if (!['none', 'delayed', 'daily', 'weekly'].includes(current.schedule.enabled))
+      if (!easeeScheduleTakeoverSupported(current.schedule))
         throw failure('unsupported-schedule', 'This schedule cannot yet be disabled through the supported charger API.');
       // Resume resets the dynamic charger ceiling. Never erase a separate
       // current restriction whose purpose cannot be established from telemetry.
       const canResume = value => amps(value.limits?.dynamicChargerA) !== null
         && amps(value.limits?.chargerA) > 0 && (value.limits.dynamicChargerA >= value.limits.chargerA
-          || value.limits.dynamicChargerA === 0 && value.reason === 53
+          || value.limits.dynamicChargerA === 0 && [52, 53].includes(value.reason)
             && value.limits.circuitA?.length === 3 && value.limits.circuitA.every(limit => amps(limit) > 0)
             && (value.pluggedIn === false || amps(value.limits.cableA) > 0));
-      if (current.reason === 53 && !canResume(current))
+      const resumeRequired = value => value.reason === 53 || value.dynamicChargerPaused === true;
+      const samePause = (after, before) => !resumeRequired(before)
+        || after.reason === before.reason && after.reasonAt === before.reasonAt
+          && after.limits?.dynamicChargerA === before.limits?.dynamicChargerA
+          && after.observations?.[48]?.at === before.observations?.[48]?.at;
+      if (resumeRequired(current) && !canResume(current))
         throw failure('resume-current-limit', 'The charger pause cannot be cleared while preserving its current limit.');
       const write = async (stage, url, body, verify) => {
         const dispatchAllowed = () => allowed() && (stage !== 'schedule' || !pause || pause.startAt - clock() >= 15 * 60_000);
@@ -391,7 +401,7 @@ export function createEaseeScheduleAdapter({ request, readObservations, chargerI
           after.fingerprint === scheduleFingerprint({ ...before.schedule, enabled: 'delayed', delayed }) && after.enabled === before.enabled
           && after.observations?.[31]?.at === before.observations?.[31]?.at
           && after.pluggedIn === before.pluggedIn && after.stopped === before.stopped
-          && (before.reason !== 53 || after.reason === 53 && after.reasonAt === before.reasonAt));
+          && samePause(after, before));
         // Replacing the active type alone does not prove that an older repeating
         // schedule was permanently disabled. Explicitly disable its named type
         // beneath the confirmed delay; never first remove the current pause.
@@ -399,25 +409,27 @@ export function createEaseeScheduleAdapter({ request, readObservations, chargerI
           await write('schedule-disable', `${base}/${priorKind}/disable`, null, (after, before) =>
             after.fingerprint === before.fingerprint && after.controlFingerprint === before.controlFingerprint
             && after.observations?.[31]?.at === before.observations?.[31]?.at
-            && (before.reason !== 53 || after.reasonAt === before.reasonAt));
+            && samePause(after, before));
         }
       } else if (current.schedule.enabled !== 'none') {
         await write('schedule', `${base}/${current.schedule.enabled}/disable`, null, (after, before) =>
           after.schedule.enabled === 'none' && after.controlFingerprint === before.controlFingerprint
           && after.observations?.[31]?.at === before.observations?.[31]?.at
-          && (before.reason !== 53 || after.reason === 53 && after.reasonAt === before.reasonAt));
+          && samePause(after, before));
       }
       const chargerBase = base.slice(0, -'/schedules'.length);
       if (current.enabled === false) {
         await write('enable', `${chargerBase}/settings`, { enabled: true }, (after, before, requestedAt) =>
           after.enabled === true && after.observations?.[31]?.at >= requestedAt
           && after.fingerprint === before.fingerprint && after.pluggedIn === before.pluggedIn
-          && (after.reason !== 53 || before.reason === 53 && after.reasonAt === before.reasonAt));
+          && (!resumeRequired(after) || samePause(after, before)));
       }
-      if (current.reason === 53) {
+      if (resumeRequired(current)) {
         if (!canResume(current)) throw failure('resume-current-limit', 'The charger current limit prevents automatic handover.');
         await write('resume', `${chargerBase}/commands/resume_charging`, null, (after, before, requestedAt) =>
           after.enabled === true && !after.stopped && after.reasonAt >= requestedAt
+          && after.limits?.dynamicChargerA > 0 && (before.limits.dynamicChargerA > 0
+            && after.limits.dynamicChargerA === before.limits.dynamicChargerA || after.observations?.[48]?.at >= requestedAt)
           && after.fingerprint === before.fingerprint && after.pluggedIn === before.pluggedIn);
       }
       if (current.stopped) throw failure('readback-mismatch', 'The charger still reports stopped.');

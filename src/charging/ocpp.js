@@ -1,7 +1,7 @@
 import { createHash, randomInt } from 'node:crypto';
 import { resolveChargingDeadline } from './settings.js';
 import { TIME_ZONE } from '../domain/prices.js';
-import { effectiveScheduleFingerprint, manualScheduleWindow, nextLocalOccurrence, normalizeScheduleState } from './easee.js';
+import { easeeScheduleTakeoverSupported, effectiveScheduleFingerprint, manualScheduleWindow, nextLocalOccurrence, normalizeScheduleState } from './easee.js';
 
 const KIND = 'ocpp-tx-pause', MAX_PAUSE_MS = 48 * 3600_000, MIN_PAUSE_MS = 15 * 60_000;
 const MAX_ATTEMPTS = 3, MAX_AGE_MS = 60_000;
@@ -63,13 +63,17 @@ const coversZero = (composite, from, until) => composite.startAt <= from && comp
 
 function snapshotFor(value, scope, now) {
   if (!fields(value, ['transport', 'scope', 'connectionId', 'readAt', 'online', 'connectorStatus', 'statusAt', 'statusReceivedAt',
-    'transactionId', 'transactionStartedAt', 'transactionConfirmed', 'pluggedIn', 'powerKw', 'powerAt', 'powerReceivedAt', 'appControl', 'limits', 'supply'])
+    'transactionId', 'transactionStartedAt', 'transactionConfirmedAt', 'transactionProvenance', 'transactionConfirmed', 'pluggedIn', 'powerKw', 'powerAt', 'powerReceivedAt', 'appControl', 'limits', 'supply'])
     || value.transport !== 'ocpp' || value.scope !== scope || typeof value.online !== 'boolean'
     || !time(value.readAt) || value.readAt > now || ![true, false, null].includes(value.pluggedIn)
     || value.online && (!text(value.connectionId) || !STATUSES.includes(value.connectorStatus)
       || !time(value.statusAt) || value.statusAt > now || !fresh(value.readAt, now))
     || value.transactionId !== null && !id(value.transactionId)
-    || value.transactionId !== null && (!time(value.transactionStartedAt) || value.transactionStartedAt > now)
+    || value.transactionId !== null && (value.transactionProvenance === 'meter-values'
+      ? value.transactionStartedAt !== null || !time(value.transactionConfirmedAt) || value.transactionConfirmedAt > now
+      : !time(value.transactionStartedAt) || value.transactionStartedAt > now)
+    || value.transactionProvenance !== undefined && value.transactionProvenance !== null
+      && !['start-transaction', 'meter-values'].includes(value.transactionProvenance)
     || typeof value.transactionConfirmed !== 'boolean'
     || value.transactionConfirmed && value.transactionId === null
     || value.powerKw !== null && (!Number.isFinite(value.powerKw) || value.powerKw < 0)
@@ -90,14 +94,17 @@ function validAppControl(value) {
 }
 export const appFingerprint = value => value ? hash([value.controlKnown, value.enabled, value.enabledAt, value.stopped, value.stopAt, value.faulted,
   value.authorizationBlocked, value.schedule ? effectiveScheduleFingerprint(value.schedule) : null]) : null;
+const appInstructionFingerprint = value => value ? hash([value.enabled, value.enabledAt, value.stopped, value.stopped ? value.stopAt : null,
+  value.schedule ? effectiveScheduleFingerprint(value.schedule) : null]) : null;
 const appStopped = value => value?.controlKnown && !value.faulted && !value.authorizationBlocked && value.stopped;
 
 export function createOcppScheduleAdapter({ request, readSnapshot, isCurrent = () => false,
-  scope, clock = Date.now, canControl = () => false, takeoverNative } = {}) {
+  scope, clock = Date.now, canControl = () => false, takeoverNative, setStartPermission = () => {} } = {}) {
   if (!scopeValid(scope) || typeof request !== 'function' || typeof readSnapshot !== 'function') throw fail('invalid-ocpp-adapter');
   const adapter = {
     scope, ownershipNamespace: 'ocpp', supportsTakeover: typeof takeoverNative === 'function',
     capabilities: { scheduling: true, currentControl: false, externalLoadBalancing: true },
+    setStartPermission,
     async read({ signal, forceAppRefresh = false } = {}) { return snapshotFor(await readSnapshot({ signal, forceAppRefresh }), scope, clock()); },
     async composite(snapshot, until, { signal, guard = () => true } = {}) {
       const now = clock(), duration = Math.max(60, Math.ceil((until - now) / 1000));
@@ -186,7 +193,7 @@ export function createOcppScheduleAdapter({ request, readSnapshot, isCurrent = (
 export function initialOcppControllerState(scope) {
   if (!scopeValid(scope)) throw fail('invalid-ocpp-adapter');
   return { version: 2, kind: KIND, scope, nextProfileId: randomInt(1, 1_000_000_000), owned: null, pending: null,
-    manual: null, appControl: null, delayedReleaseAt: null, lastManualResume: null, pauseWitness: null, execution: null, session: null, released: false, provisional: false, vehicleDisconnect: null, takeoverPending: null };
+    manual: null, appControl: null, delayedReleaseAt: null, lastManualResume: null, pauseWitness: null, execution: null, session: null, released: false, provisional: false, vehicleDisconnect: null, takeoverPending: null, automaticTakeover: null };
 }
 function validInstruction(value) {
   if (!fields(value, ['profileId', 'transactionId', 'startAt', 'validFrom', 'payload', 'fingerprint', 'confirmedAt', 'requestedAt', 'pauseRequestedAt',
@@ -231,9 +238,27 @@ function revisedExecution(plan, prior, now) {
 }
 const validExecution = value => value === null || fields(value, ['planId', 'periods', 'finalStartAt', 'deadlineAt'])
   && JSON.stringify(executionFor(value)) === JSON.stringify(value);
+function selectExecution(plan, previous, now) {
+  const priceRevision = revisedExecution(plan, previous, now);
+  if (plan?.priceRevision && !priceRevision) plan = null;
+  const candidate = executionFor(plan);
+  let execution = priceRevision ?? (previous && now >= previous.periods[0].startAt ? previous : candidate);
+  if (!priceRevision && execution && now >= execution.periods[0].startAt && now < execution.finalStartAt
+    && !execution.periods.some(row => row.startAt <= now && now < row.endAt)
+    && candidate && candidate.planId !== execution.planId) {
+    const remaining = candidate.periods.filter(row => row.endAt === null || row.endAt > now);
+    if (remaining.length) {
+      const elapsed = execution.periods.filter(row => time(row.endAt) && row.endAt <= now);
+      remaining[0] = { ...remaining[0], startAt: Math.max(elapsed.at(-1)?.endAt ?? 0, remaining[0].startAt) };
+      execution = { ...candidate, periods: [...elapsed, ...remaining] };
+      if (execution.periods.length > 24) throw fail('invalid-plan');
+    }
+  }
+  return { plan, execution, priceRevision };
+}
 function validState(state, scope) {
   const keys = Object.keys(initialOcppControllerState(scope));
-  return fields(state, keys) && keys.filter(key => key !== 'takeoverPending').every(key => Object.hasOwn(state, key)) && state.version === 2 && state.kind === KIND && state.scope === scope
+  return fields(state, keys) && keys.filter(key => !['takeoverPending', 'automaticTakeover'].includes(key)).every(key => Object.hasOwn(state, key)) && state.version === 2 && state.kind === KIND && state.scope === scope
     && id(state.nextProfileId) && typeof state.released === 'boolean' && typeof state.provisional === 'boolean'
     && (state.owned === null || validInstruction(state.owned) && state.owned.profileId < state.nextProfileId)
     && (state.pending === null || fields(state.pending, ['action', 'instruction', 'attempts', 'nextAttemptAt', 'accepted', 'execution'])
@@ -245,6 +270,9 @@ function validState(state, scope) {
       && (state.manual.transactionId === null || id(state.manual.transactionId))
       && (state.manual.resumeAt === null || time(state.manual.resumeAt)) && time(state.manual.cycleEndsAt))
     && (state.appControl === null || validAppControl(state.appControl))
+    && (state.automaticTakeover == null || fields(state.automaticTakeover, ['connectedAt', 'fingerprint'])
+      && time(state.automaticTakeover.connectedAt)
+      && (state.automaticTakeover.fingerprint === null || scopeValid(state.automaticTakeover.fingerprint)))
     && (state.takeoverPending == null || fields(state.takeoverPending, ['connectedAt', 'requestedAt', 'beforeSchedule', 'afterSchedule', 'enabledAt', 'stopAt'])
       && (state.takeoverPending.connectedAt === null || time(state.takeoverPending.connectedAt)) && time(state.takeoverPending.requestedAt)
       && scopeValid(state.takeoverPending.beforeSchedule) && scopeValid(state.takeoverPending.afterSchedule)
@@ -276,6 +304,7 @@ const REASONS = {
   'resume-current-limit': 'The charger has a separate current limit that cannot safely be preserved while clearing its pause.',
   'unsupported-schedule': 'This charger schedule cannot yet be disabled through the supported API.',
   'transaction-unconfirmed': 'Automatic handover is waiting for a confirmed charger transaction so its planned pause can be preserved.',
+  'status-stale': 'Waiting for charger connection status newer than the saved session evidence.',
 };
 
 /** Current transaction only; no cloud schedule is presented as native readback. */
@@ -292,17 +321,19 @@ export function createOcppChargingController({ adapter, initialState = null, sav
     snapshot.connectorStatus, snapshot.statusAt, state.session?.connectedAt, appFingerprint(snapshot.appControl)]) : null;
   const takeoverStatus = () => {
     const app = snapshot?.appControl;
+    const supported = easeeScheduleTakeoverSupported(app?.schedule);
     const available = !closed && adapter.supportsTakeover && snapshot?.online
       && fresh(snapshot.readAt, clock()) && fresh(app?.readAt, clock()) && app.controlKnown
       && typeof snapshot.pluggedIn === 'boolean' && !['Unavailable', 'Faulted', 'Reserved'].includes(snapshot.connectorStatus)
-      && app.schedule !== null && !app.faulted && !app.authorizationBlocked;
+      && app.schedule !== null && !app.faulted && !app.authorizationBlocked && supported;
     return { available: Boolean(available), token: available ? takeoverToken() : null,
-      reason: takeoverState === 'blocked' ? reason : available ? null : 'Fresh charger state and control access are required to use automatic.',
+      reason: takeoverState === 'blocked' ? reason : available ? null : app?.schedule && !supported
+        ? REASONS['unsupported-schedule'] : 'Fresh charger state and control access are required to use automatic.',
       ...(takeoverState ? { state: takeoverState, attemptToken: takeoverAttempt } : {}) };
   };
   const chargeNowActive = () => Number.isSafeInteger(desired.chargeNow?.connectedAt)
     && desired.chargeNow.connectedAt === state.session?.connectedAt && snapshot?.pluggedIn === true
-    && snapshot.transactionConfirmed && !state.vehicleDisconnect?.awaitingConnection;
+    && !state.vehicleDisconnect?.awaitingConnection;
   const controlRequested = () => desired.enabled === true || chargeNowActive() || identification !== null;
   const status = () => ({ ...clone(state), phase, reason, errorCode, enabled: desired.enabled === true,
     ownsInstruction, pauseConfirmed, handoverConfirmed, planningRevision, takeover: takeoverStatus(), identification: identification ? clone(identification) : null,
@@ -315,6 +346,27 @@ export function createOcppChargingController({ adapter, initialState = null, sav
     state = next;
   }
   const canWrite = current => !closed && current === generation && canControl();
+  function permitStart(plan, current) {
+    const now = clock(), app = snapshot?.appControl;
+    if (!canWrite(current) || !snapshot?.online || snapshot.pluggedIn !== true
+      || !fresh(app?.readAt, now) || !app.controlKnown || app.stopped || app.faulted || app.authorizationBlocked
+      || app.schedule?.enabled !== 'none' || nativeStopped() || staleAppControl() || state.takeoverPending || state.automaticTakeover
+      || state.manual && state.manual.kind !== 'release') return;
+    const selected = selectExecution(plan, state.execution, now);
+    const periods = selected.execution?.periods ?? [];
+    const active = periods.find(period => period.startAt <= now && (period.endAt === null || period.endAt > now));
+    const identifying = identification && identification.phase !== 'pausing'
+      && (identification.mode !== 'probe' || now < identification.probeUntil);
+    if (identification && !identifying) return;
+    const openRelease = state.released && !state.provisional && !selected.priceRevision
+      || selected.plan?.provisional === true || selected.plan?.feasible === false
+      || !selected.execution && time(selected.plan?.startAt) && selected.plan.startAt <= now;
+    if (desired.enabled && !state.manual && !chargeNowActive() && !identifying && !active && !openRelease) return;
+    const until = Math.min(now + MAX_AGE_MS,
+      desired.enabled && !state.manual && !chargeNowActive() && !identifying ? active?.endAt ?? Infinity : Infinity,
+      identifying && identification.mode === 'probe' ? identification.probeUntil : Infinity);
+    adapter.setStartPermission?.(snapshot, { until, guard: () => canWrite(current) });
+  }
   function observePause() {
     ownsInstruction = ownsInstruction && snapshot.online && snapshot.transactionConfirmed
       && snapshot.transactionId === state.owned?.transactionId && clock() < state.owned.startAt;
@@ -466,9 +518,9 @@ export function createOcppChargingController({ adapter, initialState = null, sav
         requestedAt: clock(), beforeSchedule: effectiveScheduleFingerprint(before?.schedule ?? snapshot.appControl.schedule),
         afterSchedule: effectiveScheduleFingerprint({ enabled: 'none' }),
         enabledAt: before?.observations?.[31]?.at ?? snapshot.appControl.enabledAt,
-        stopAt: before ? Math.max(before.observations?.[31]?.at ?? 0, before.reasonAt ?? 0) : snapshot.appControl.stopAt } }) });
+        stopAt: before ? Math.max(before.observations?.[31]?.at ?? 0, before.observations?.[48]?.at ?? 0, before.reasonAt ?? 0) : snapshot.appControl.stopAt } }) });
     await commit({ appControl: clone(snapshot.appControl), manual: null, execution: null, released: false, provisional: false,
-      delayedReleaseAt: null, takeoverPending: null,
+      delayedReleaseAt: null, takeoverPending: null, automaticTakeover: null,
       ...(priorManual ? { lastManualResume: { at: clock(), deadlineAt: priorManual.cycleEndsAt, reason: 'explicit' } } : {}) });
     takeoverState = 'confirmed';
   }
@@ -494,10 +546,24 @@ export function createOcppChargingController({ adapter, initialState = null, sav
       if (closed || current !== generation) return status();
       if (!snapshot.online || !fresh(snapshot.readAt, clock())) return display('unavailable', 'The local charger connection is unavailable; existing bounded profiles may still apply.', 'offline');
       const prior = state.session;
+      const knownPhysicalAt = Math.max(prior?.connectedAt ?? -1,
+        state.pauseWitness?.at ?? -1, snapshot.transactionStartedAt ?? -1, snapshot.transactionConfirmedAt ?? -1);
+      const manualAt = state.manual && ['stop', 'release'].includes(state.manual.kind) && state.appControl?.controlKnown
+        ? Math.max(state.appControl.enabledAt ?? -1, state.appControl.stopAt ?? -1) : state.manual?.at ?? -1;
+      const knownConnectionAt = Math.max(knownPhysicalAt, manualAt);
+      const explicitDisconnect = state.vehicleDisconnect?.awaitingConnection
+        && state.vehicleDisconnect.measuredAt > knownPhysicalAt;
+      // A reconnect may replay an old Available status. Its new receipt time
+      // cannot end a newer physical session or erase a later manual instruction.
+      // A separately observed, newer physical disconnect retains its authority.
+      if (snapshot.pluggedIn === false && snapshot.statusAt <= knownConnectionAt && !explicitDisconnect)
+        return display('unavailable', REASONS['status-stale'], 'status-stale');
       const disconnected = snapshot.pluggedIn === false;
       const lastDisconnectedAt = Math.max(prior?.lastDisconnectedAt ?? -1, state.vehicleDisconnect?.measuredAt ?? -1,
         disconnected ? snapshot.statusAt : -1);
-      const confirmedTransaction = snapshot.transactionConfirmed && snapshot.transactionStartedAt > lastDisconnectedAt;
+      const transactionBoundary = snapshot.transactionProvenance === 'meter-values'
+        ? snapshot.transactionConfirmedAt : snapshot.transactionStartedAt;
+      const confirmedTransaction = snapshot.transactionConfirmed && transactionBoundary > lastDisconnectedAt;
       const changedTransaction = prior?.transactionId !== null && prior?.transactionId !== undefined
         && confirmedTransaction && snapshot.transactionId !== prior.transactionId;
       const awaiting = state.vehicleDisconnect?.awaitingConnection && !confirmedTransaction;
@@ -509,13 +575,15 @@ export function createOcppChargingController({ adapter, initialState = null, sav
       const session = { transactionId: confirmedTransaction ? snapshot.transactionId : newConnection ? null : prior?.transactionId ?? null,
         connected: disconnected ? false : awaiting && !physicallyConnected ? null : snapshot.pluggedIn,
         connectedAt: disconnected ? null : newConnection
-          ? confirmedTransaction ? Math.min(snapshot.transactionStartedAt, snapshot.statusAt) : snapshot.statusAt
+          ? confirmedTransaction && time(snapshot.transactionStartedAt) ? Math.min(snapshot.transactionStartedAt, snapshot.statusAt) : snapshot.statusAt
           : prior?.connectedAt == null ? snapshot.transactionStartedAt ?? snapshot.statusAt : prior.connectedAt,
         lastDisconnectedAt: lastDisconnectedAt >= 0 ? lastDisconnectedAt : null };
       await commit({ session, ...(state.vehicleDisconnect && !awaiting ? { vehicleDisconnect: { ...state.vehicleDisconnect, awaitingConnection: false } } : {}),
         ...(newConnection || changedTransaction || disconnected ? { execution: null, released: false, provisional: false,
-          pauseWitness: null, manual: changedTransaction && !newConnection && !disconnected
-            || ['window', 'schedule'].includes(state.manual?.kind) ? state.manual : null } : {}) });
+          pauseWitness: null, manual: changedTransaction && !newConnection && !disconnected ? state.manual : null } : {}),
+        ...(newConnection ? { automaticTakeover: desired.enabled && adapter.supportsTakeover ? { connectedAt: session.connectedAt,
+          fingerprint: snapshot.appControl?.controlKnown && snapshot.appControl.schedule !== null ? appInstructionFingerprint(snapshot.appControl) : null } : null }
+          : disconnected || !desired.enabled ? { automaticTakeover: null } : {}) });
       if (state.takeoverPending && !desired.takeover) {
         const unresolved = state.takeoverPending, app = snapshot.appControl;
         const newerStop = app?.stopped && app.stopAt > Math.max(unresolved.stopAt ?? 0, unresolved.requestedAt);
@@ -527,8 +595,24 @@ export function createOcppChargingController({ adapter, initialState = null, sav
       if (desired.takeover) {
         const token = desired.takeover; desired.takeover = null;
         await takeOver(current, token, signal);
+      } else if (state.automaticTakeover) {
+        const claim = state.automaticTakeover, app = snapshot.appControl;
+        if (claim.connectedAt !== session.connectedAt) await commit({ automaticTakeover: null });
+        else if (app?.schedule && !easeeScheduleTakeoverSupported(app.schedule))
+          return display('unavailable', REASONS['unsupported-schedule'], 'unsupported-schedule');
+        else if (!takeoverStatus().available) return display('unavailable',
+          'Automatic control is waiting for fresh charger instructions.', 'takeover-unavailable');
+        else {
+          const fingerprint = appInstructionFingerprint(app);
+          if (claim.fingerprint !== null && claim.fingerprint !== fingerprint) await commit({ automaticTakeover: null });
+          else {
+            if (claim.fingerprint === null) await commit({ automaticTakeover: { ...claim, fingerprint } });
+            if (app.stopped || app.schedule.enabled !== 'none' || state.manual) await takeOver(current, takeoverToken(), signal);
+            else await commit({ automaticTakeover: null });
+          }
+        }
       }
-      if (disconnected && state.manual && !['window', 'schedule'].includes(state.manual.kind))
+      if (disconnected && state.manual)
         await commit({ manual: null, released: false });
       const handbackKnown = !['window', 'schedule', 'stop'].includes(state.manual?.kind)
         || fresh(snapshot.appControl?.readAt, clock()) && (state.manual.kind === 'stop'
@@ -548,6 +632,8 @@ export function createOcppChargingController({ adapter, initialState = null, sav
       }
       await refreshIdentification();
       if (closed || current !== generation) return status();
+      const startPlan = typeof getPlan === 'function' ? await getPlan(clone(snapshot)) : desired.plan;
+      permitStart(startPlan, current);
       const instruction = state.pending?.instruction ?? state.owned;
       const wrongSession = instruction && snapshot.transactionConfirmed && instruction.transactionId !== snapshot.transactionId;
       const identificationEnded = instruction?.purpose === 'identification'
@@ -596,24 +682,10 @@ export function createOcppChargingController({ adapter, initialState = null, sav
         // remain restricted by somebody else's profile and is not ownership.
         if (!await clearInstruction(previousInstruction, current, signal)) return display('unconfirmed', 'Native expiry cleanup is waiting for its bounded retry.');
       }
-      let plan = identification ? { id: identification.id, startAt: identification.mode === 'probe' ? identification.returnStartAt : identification.pauseUntil }
-        : typeof getPlan === 'function' ? await getPlan(clone(snapshot)) : desired.plan;
+      let { plan, execution, priceRevision } = selectExecution(identification
+        ? { id: identification.id, startAt: identification.mode === 'probe' ? identification.returnStartAt : identification.pauseUntil }
+        : startPlan, state.execution, clock());
       if (!canWrite(current)) throw fail('control-revoked');
-      const priceRevision = revisedExecution(plan, state.execution, clock());
-      if (plan?.priceRevision && !priceRevision) plan = null;
-      const candidate = executionFor(plan);
-      let execution = priceRevision ?? (state.execution && clock() >= state.execution.periods[0].startAt ? state.execution : candidate);
-      if (!priceRevision && execution && clock() >= execution.periods[0].startAt && clock() < execution.finalStartAt
-        && !execution.periods.some(row => row.startAt <= clock() && clock() < row.endAt)
-        && candidate && candidate.planId !== execution.planId) {
-        const remaining = candidate.periods.filter(row => row.endAt === null || row.endAt > clock());
-        if (remaining.length) {
-          const elapsed = execution.periods.filter(row => time(row.endAt) && row.endAt <= clock());
-          remaining[0] = { ...remaining[0], startAt: Math.max(elapsed.at(-1)?.endAt ?? 0, remaining[0].startAt) };
-          execution = { ...candidate, periods: [...elapsed, ...remaining] };
-          if (execution.periods.length > 24) throw fail('invalid-plan');
-        }
-      }
       if (state.released && !state.provisional && !priceRevision) {
         const restriction = state.pending?.instruction ?? state.owned;
         if (restriction && !await clearInstruction(restriction, current, signal)) return display('unconfirmed', 'Native profile release is pending.');
@@ -691,6 +763,7 @@ export function createOcppChargingController({ adapter, initialState = null, sav
         ? 'The native pause is confirmed and expires at the planned start.'
         : missingPauseEvidence());
     } catch (error) {
+      adapter.setStartPermission?.(null);
       if (takeoverState === 'pending') takeoverState = 'blocked';
       if (closed || current !== generation) return status();
       handoverConfirmed = !controlRequested() ? false : null;
@@ -701,6 +774,7 @@ export function createOcppChargingController({ adapter, initialState = null, sav
   }
   return { status, supportsIdentification: true,
     update(input = {}) {
+      adapter.setStartPermission?.(null);
       if (Object.hasOwn(input, 'resume')) throw new Error('Unsupported charging control field: resume');
       if (typeof input.takeover !== 'string' && takeoverState !== 'pending') { takeoverState = null; takeoverAttempt = null; }
       desired = { ...desired, ...input, takeover: typeof input.takeover === 'string' ? input.takeover : null };
@@ -709,7 +783,7 @@ export function createOcppChargingController({ adapter, initialState = null, sav
       queue = queue.catch(() => {}).then(() => reconcile(current));
       return queue.then(() => status());
     },
-    invalidate() { generation++; abort?.abort(); },
-    close() { closed = true; generation++; abort?.abort(); return queue.catch(() => {}); },
+    invalidate() { adapter.setStartPermission?.(null); generation++; abort?.abort(); },
+    close() { adapter.setStartPermission?.(null); closed = true; generation++; abort?.abort(); return queue.catch(() => {}); },
   };
 }

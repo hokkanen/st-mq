@@ -26,14 +26,14 @@ async function freePort() {
 
 async function fixture(t, overrides = {}, virtualTag = '', initialState) {
   const port = await freePort();
-  let saved = structuredClone(initialState), now = at, permitted = true, broken = false, writes = 0, sequence = 0;
+  let saved = structuredClone(initialState), now = at, permitted = true, startPermitted = true, broken = false, writes = 0, sequence = 0;
   const clients = [];
   const local = createEaseeOcpp({ config: { ...config, port, ...overrides }, chargerId: 'fixture-charger',
-    clock: () => now, canControl: () => permitted, virtualTag,
+    clock: () => now, canControl: () => permitted, canStart: () => startPermitted, virtualTag,
     state: { get: () => saved, set: value => { if (broken) throw new Error('Synthetic storage failure'); saved = structuredClone(value); writes++; } } });
   t.after(async () => { for (const client of clients) client.terminate(); await local.close(); });
   await local.start();
-  return { local, port, get saved() { return structuredClone(saved); }, get writes() { return writes; }, set now(value) { now = value; }, set permitted(value) { permitted = value; }, set broken(value) { broken = value; },
+  return { local, port, get saved() { return structuredClone(saved); }, get writes() { return writes; }, set now(value) { now = value; }, set permitted(value) { permitted = value; }, set startPermitted(value) { startPermitted = value; }, set broken(value) { broken = value; },
     async connect({ autoReply = true } = {}) {
       const ws = new WebSocket(`ws://127.0.0.1:${port}/ocpp/fixture-charger`, 'ocpp1.6', {
         headers: { Authorization: `Basic ${Buffer.from(`fixture-charger:${config.password}`).toString('base64')}` },
@@ -389,9 +389,260 @@ test('authenticated connections that send no OCPP messages expire and release th
 
 const preparing = { connectorId: 1, status: 'Preparing', errorCode: 'NoError' };
 const remoteStarts = client => client.calls.filter(call => call[2] === 'RemoteStartTransaction');
+const connector = (status, time = at) => ({ connectorId: 1, status, errorCode: 'NoError', timestamp: new Date(time).toISOString() });
 async function flushCalls(client) {
   for (let index = 0; index < 8; index++) await client.call('Heartbeat', {});
 }
+
+test('remote start waits for an explicit control permission and rechecks it before sending', async t => {
+  const f = await fixture(t, { authorization_mode: 'plug-and-charge' }, 'fixture-virtual-tag');
+  f.startPermitted = false;
+  const client = await f.connect({ autoReply: false });
+  await client.call('StatusNotification', preparing);
+  assert.equal(f.local.status().remoteStartStatus, 'idle');
+  f.startPermitted = true;
+  await client.call('StatusNotification', preparing);
+  assert.equal(f.local.status().remoteStartStatus, 'queued');
+  f.startPermitted = false;
+  for (let index = 0; index < 6; index++) {
+    const call = client.calls[index];
+    if (call) client.ws.send(JSON.stringify([3, call[1], { status: 'Accepted' }]));
+    await client.call('Heartbeat', {});
+  }
+  assert.equal(remoteStarts(client).length, 0);
+  f.startPermitted = true;
+  await client.call('StatusNotification', preparing);
+  assert.equal(remoteStarts(client).length, 1, 'A revoked queued permission does not consume the later scheduled start');
+});
+
+test('automatic virtual-tag authorization follows present permission without leaving a reusable authorization cache entry', async t => {
+  const tag = 'fixture-virtual-tag', f = await fixture(t, { authorization_mode: 'plug-and-charge' }, tag), client = await f.connect();
+  f.startPermitted = false;
+  assert.deepEqual((await client.call('Authorize', { idTag: tag }, 'authorization-retry'))[2].idTagInfo,
+    { status: 'Blocked', expiryDate: new Date(at).toISOString() });
+  assert.equal((await client.call('Authorize', { idTag: 'fixture-tag' }))[2].idTagInfo.status, 'Accepted',
+    'A configured physical RFID remains an explicit external authorization');
+  f.startPermitted = true;
+  assert.deepEqual((await client.call('Authorize', { idTag: tag }, 'authorization-retry'))[2].idTagInfo,
+    { status: 'Accepted', expiryDate: new Date(at).toISOString() });
+  f.startPermitted = false;
+  assert.equal((await client.call('Authorize', { idTag: tag }, 'authorization-retry'))[2].idTagInfo.status, 'Blocked',
+    'A cached successful Authorize response cannot bypass a revoked automatic permission');
+  assert.equal((await client.call('Authorize', { idTag: 'fixture-tag' }, 'authorization-retry'))[2], 'ProtocolError');
+  assert.equal(remoteStarts(client).length, 0);
+});
+
+test('unsolicited virtual StartTransaction cannot bypass waiting and its later genuine start preserves historical replies', async t => {
+  const tag = 'fixture-virtual-tag', f = await fixture(t, { authorization_mode: 'plug-and-charge' }, tag), client = await f.connect();
+  const start = { connectorId: 1, idTag: tag, meterStart: 10, timestamp: new Date(at).toISOString() };
+  f.startPermitted = false;
+  const blocked = await client.call('StartTransaction', start);
+  assert.equal(blocked[0], 3);
+  assert.deepEqual(blocked[2].idTagInfo, { status: 'Blocked', expiryDate: start.timestamp });
+  assert.equal(f.saved.activeId, null);
+  assert.equal(f.saved.transactions[0].status, 'Blocked');
+  f.now = at + 1000; f.startPermitted = true;
+  const accepted = await client.call('StartTransaction', { ...start, timestamp: new Date(at + 1000).toISOString() });
+  assert.equal(accepted[2].idTagInfo.status, 'Accepted');
+  assert.notEqual(accepted[2].transactionId, blocked[2].transactionId);
+  assert.deepEqual((await client.call('StartTransaction', start))[2], blocked[2]);
+  f.startPermitted = false;
+  assert.deepEqual((await client.call('StartTransaction', { ...start, timestamp: new Date(at + 1000).toISOString() }))[2], accepted[2],
+    'A replay acknowledges an existing accepted transaction rather than authorizing a new one');
+  f.now = at + 2000;
+  assert.equal((await client.call('StartTransaction', { ...start, timestamp: new Date(at + 2000).toISOString() }))[2],
+    'OccurrenceConstraintViolation');
+  assert.equal(f.saved.activeId, accepted[2].transactionId, 'A refused additional start cannot replace the accepted physical transaction');
+  assert.equal((await client.call('StopTransaction', { transactionId: blocked[2].transactionId,
+    timestamp: start.timestamp, meterStop: 10 }))[0], 3);
+  assert.equal(f.saved.activeId, accepted[2].transactionId);
+  const restarted = await fixture(t, { authorization_mode: 'plug-and-charge' }, tag, f.saved);
+  assert.equal(restarted.local.status().ready, true);
+});
+
+test('configured RFID StartTransaction remains available while automatic virtual starts are withheld', async t => {
+  const f = await fixture(t, { authorization_mode: 'plug-and-charge' }, 'fixture-virtual-tag'), client = await f.connect();
+  f.startPermitted = false;
+  assert.equal((await client.call('StartTransaction', { connectorId: 1, idTag: 'fixture-tag', meterStart: 10,
+    timestamp: new Date(at).toISOString() }))[2].idTagInfo.status, 'Accepted');
+});
+
+test('repeated current transaction measurements recover a profile target without inventing authorization or start history', async t => {
+  const f = await fixture(t), client = await f.connect();
+  const paused = samples.map(row => ({ ...row, value: row.measurand === 'Voltage' ? row.value : '0' }));
+  await client.call('StatusNotification', connector('SuspendedEVSE'));
+  await client.call('MeterValues', { ...meter(paused), transactionId: 711 });
+  assert.equal(f.local.controlSnapshot().transaction, null);
+  await client.call('MeterValues', { ...meter(paused), transactionId: 711 });
+  assert.equal(f.local.controlSnapshot().transaction, null, 'Repeated cached source time is not independent evidence');
+  f.now = at + 30_000;
+  await client.call('MeterValues', { ...meter(paused, at + 30_000), transactionId: 711 });
+  assert.deepEqual(f.local.controlSnapshot().transaction, {
+    id: 711, startedAt: null, tagHash: null, confirmed: true, provenance: 'meter-values', confirmedAt: at + 30_000,
+  });
+  assert.deepEqual(f.saved.transactions, []);
+  assert.equal(f.saved.latestStartAt, 0);
+  assert.deepEqual(f.saved.recovered, { activeId: 711, transactions: [{ id: 711, observedAt: at, confirmedAt: at + 30_000, lastEvidenceAt: at + 30_000 }] });
+  assert.equal((await client.call('Authorize', { idTag: 'unknown-fixture-tag' }))[2].idTagInfo.status, 'Invalid');
+  f.now = at + 91_000; await client.call('Heartbeat', {});
+  assert.equal(f.local.controlSnapshot().transaction.confirmed, false, 'Heartbeats cannot refresh transaction evidence');
+});
+
+test('recovered transactions require fresh repeated confirmation after reconnect, boot and same-version restart', async t => {
+  const f = await fixture(t), first = await f.connect();
+  await first.call('StatusNotification', connector('Charging'));
+  await first.call('MeterValues', { ...meter(), transactionId: 712 });
+  f.now = at + 1000;
+  await first.call('MeterValues', { ...meter(samples, at + 1000), transactionId: 712 });
+  const next = await f.connect();
+  await next.call('StatusNotification', connector('SuspendedEVSE', at + 1000));
+  await next.call('MeterValues', { ...meter(samples, at + 1000), transactionId: 712 });
+  assert.equal(f.local.controlSnapshot().transaction.confirmed, false);
+  f.now = at + 2000;
+  await next.call('MeterValues', { ...meter(samples, at + 2000), transactionId: 712 });
+  assert.equal(f.local.controlSnapshot().transaction.confirmed, true);
+  await next.call('BootNotification', { chargePointVendor: 'Easee', chargePointModel: 'fixture' });
+  await next.call('StatusNotification', connector('SuspendedEVSE', at + 2000));
+  assert.equal(f.local.controlSnapshot().transaction.confirmed, false);
+  const restarted = await fixture(t, {}, '', f.saved); restarted.now = at + 3000;
+  const client = await restarted.connect();
+  await client.call('StatusNotification', connector('SuspendedEVSE', at + 3000));
+  await client.call('MeterValues', { ...meter(samples, at + 2000), transactionId: 712 });
+  assert.equal(restarted.local.controlSnapshot().transaction.confirmed, false, 'Pre-connection replay cannot grant control');
+  await client.call('MeterValues', { ...meter(samples, at + 3000), transactionId: 712 });
+  restarted.now = at + 4000;
+  await client.call('MeterValues', { ...meter(samples, at + 4000), transactionId: 712 });
+  assert.equal(restarted.local.controlSnapshot().transaction.confirmed, true);
+  assert.equal(restarted.local.controlSnapshot().transaction.startedAt, null);
+});
+
+test('conflicting transaction identities revoke recovery and cannot be voted away by repeated readings', async t => {
+  const f = await fixture(t), client = await f.connect();
+  await client.call('StatusNotification', connector('Charging'));
+  await client.call('MeterValues', { ...meter(), transactionId: 713 });
+  f.now = at + 1000;
+  await client.call('MeterValues', { ...meter(samples, at + 1000), transactionId: 714 });
+  for (let offset = 2000; offset <= 4000; offset += 1000) {
+    f.now = at + offset;
+    await client.call('MeterValues', { ...meter(samples, at + offset), transactionId: 713 });
+  }
+  assert.equal(f.local.controlSnapshot().transaction, null);
+  assert.equal(f.saved.recovered, undefined);
+});
+
+test('current measurements maintain recovered confirmation and an explicit later end allows a new authorized session', async t => {
+  const f = await fixture(t, { authorization_mode: 'plug-and-charge' }, 'fixture-virtual-tag'), client = await f.connect();
+  await client.call('StatusNotification', connector('SuspendedEVSE'));
+  for (let offset = 0; offset <= 120_000; offset += 30_000) {
+    f.now = at + offset;
+    await client.call('MeterValues', { ...meter(samples, at + offset), transactionId: 719 });
+  }
+  assert.equal(f.local.controlSnapshot().transaction.confirmed, true, 'An unchanged suspended status does not invalidate fresh transaction measurements');
+  f.now = at + 121_000;
+  await client.call('StatusNotification', connector('Available', at + 121_000));
+  assert.equal(f.local.controlSnapshot().transaction, null);
+  assert.deepEqual(f.saved.recovered.transactions[0].endedByStatus,
+    { status: 'Available', at: at + 121_000, receivedAt: at + 121_000 });
+  assert.equal(f.saved.recovered.transactions[0].stoppedAt, undefined);
+  f.now = at + 122_000;
+  await client.call('StatusNotification', connector('Preparing', at + 122_000)); await flushCalls(client);
+  assert.equal(remoteStarts(client).length, 1);
+  const restarted = await fixture(t, {}, '', f.saved);
+  assert.equal(restarted.local.status().ready, true);
+});
+
+test('a new conflicting current ID revokes confirmed recovery while older out-of-order reports cannot replace it', async t => {
+  const f = await fixture(t), client = await f.connect();
+  await client.call('StatusNotification', connector('Charging'));
+  await client.call('MeterValues', { ...meter(), transactionId: 720 });
+  f.now = at + 2000; await client.call('MeterValues', { ...meter(samples, at + 2000), transactionId: 720 });
+  await client.call('MeterValues', { ...meter(samples, at + 1000), transactionId: 721 });
+  assert.equal(f.local.controlSnapshot().transaction.confirmed, true);
+  f.now = at + 3000; await client.call('MeterValues', { ...meter(samples, at + 3000), transactionId: 721 });
+  assert.equal(f.local.controlSnapshot().transaction.confirmed, false);
+  f.now = at + 4000; await client.call('MeterValues', { ...meter(samples, at + 4000), transactionId: 720 });
+  assert.equal(f.local.controlSnapshot().transaction.confirmed, false);
+  assert.equal(f.saved.recovered.activeId, 720, 'The conflicting ID never becomes a replacement control target');
+});
+
+test('recovery rejects stale, future, connector-zero, non-power and invalid transaction evidence', async t => {
+  for (const kind of ['stale', 'future', 'connector-zero', 'voltage-only', 'invalid-id', 'implicit-status', 'preparing']) {
+    const f = await fixture(t), client = await f.connect();
+    await client.call('StatusNotification', kind === 'implicit-status' ? { ...preparing, status: 'SuspendedEVSE' }
+      : connector(kind === 'preparing' ? 'Preparing' : 'SuspendedEVSE'));
+    for (let offset = 0; offset <= 1000; offset += 1000) {
+      f.now = at + offset;
+      const payload = { ...meter(kind === 'voltage-only' ? samples.filter(row => row.measurand === 'Voltage') : samples,
+        at + offset + (kind === 'stale' ? -61_000 : kind === 'future' ? 500 : 0)),
+      transactionId: kind === 'invalid-id' ? 2147483648 : 715,
+      connectorId: kind === 'connector-zero' ? 0 : 1 };
+      await client.call('MeterValues', payload);
+    }
+    assert.equal(f.local.controlSnapshot().transaction, null, kind);
+    assert.equal(f.saved.recovered, undefined, kind);
+  }
+});
+
+test('a real StopTransaction closes an observed transaction and cannot resurrect it from later meter reports', async t => {
+  const f = await fixture(t), client = await f.connect();
+  await client.call('StatusNotification', connector('Charging'));
+  await client.call('MeterValues', { ...meter(), transactionId: 716 });
+  f.now = at + 1000; await client.call('MeterValues', { ...meter(samples, at + 1000), transactionId: 716 });
+  const stopped = { transactionId: 716, timestamp: new Date(at + 1000).toISOString(), meterStop: 42 };
+  assert.equal((await client.call('StopTransaction', stopped))[0], 3);
+  assert.equal(f.local.controlSnapshot().transaction, null);
+  assert.equal(f.saved.recovered.transactions[0].meterStop, 42);
+  assert.equal(f.saved.recovered.transactions[0].startedAt, undefined);
+  assert.equal((await client.call('StopTransaction', stopped))[0], 3);
+  for (let offset = 2000; offset <= 3000; offset += 1000) {
+    f.now = at + offset; await client.call('MeterValues', { ...meter(samples, at + offset), transactionId: 716 });
+  }
+  assert.equal(f.local.controlSnapshot().transaction, null);
+});
+
+test('a later authorized StartTransaction supersedes observed identity without fabricating its missing stop', async t => {
+  const f = await fixture(t), client = await f.connect();
+  await client.call('StatusNotification', connector('Charging'));
+  await client.call('MeterValues', { ...meter(), transactionId: 717 });
+  f.now = at + 1000; await client.call('MeterValues', { ...meter(samples, at + 1000), transactionId: 717 });
+  f.now = at + 2000;
+  const response = await client.call('StartTransaction', { connectorId: 1, idTag: 'fixture-tag', meterStart: 44,
+    timestamp: new Date(at + 2000).toISOString() });
+  assert.equal(response[0], 3);
+  assert.equal(f.saved.recovered.activeId, null);
+  assert.deepEqual(f.saved.recovered.transactions[0].endedByNewStart, { transactionId: response[2].transactionId, startedAt: at + 2000 });
+  assert.equal(f.saved.recovered.transactions[0].stoppedAt, undefined);
+  const restarted = await fixture(t, {}, '', f.saved);
+  assert.equal(restarted.local.status().ready, true);
+});
+
+test('explicit native handback retains mode-disable intent for an observed transaction and bounds its later recovery attempt', async t => {
+  const f = await fixture(t, { authorization_mode: 'plug-and-charge' }, 'fixture-virtual-tag'), client = await f.connect();
+  await client.call('StatusNotification', connector('SuspendedEVSE'));
+  await client.call('MeterValues', { ...meter(), transactionId: 722 });
+  f.now = at + 1000; await client.call('MeterValues', { ...meter(samples, at + 1000), transactionId: 722 });
+  f.local.noteModeDisableRequested();
+  const next = await f.connect(); f.now = at + 2000;
+  await next.call('StatusNotification', connector('Preparing', at + 2000)); await flushCalls(next);
+  assert.equal(remoteStarts(next).length, 1);
+  assert.equal(f.saved.recovered.transactions[0].modeDisableIntent.attemptedAt, at + 2000);
+  const restarted = await fixture(t, { authorization_mode: 'plug-and-charge' }, 'fixture-virtual-tag', f.saved);
+  restarted.now = at + 3000; const replacement = await restarted.connect();
+  await replacement.call('StatusNotification', connector('Preparing', at + 3000)); await flushCalls(replacement);
+  assert.equal(remoteStarts(replacement).length, 0, 'Restart cannot replenish a used explicit mode recovery attempt');
+});
+
+test('malformed recovery state and failed evidence persistence never grant control', async t => {
+  const f = await fixture(t), client = await f.connect();
+  await client.call('StatusNotification', connector('Charging'));
+  await client.call('MeterValues', { ...meter(), transactionId: 718 });
+  const before = f.saved; f.broken = true; f.now = at + 1000;
+  assert.equal((await client.call('MeterValues', { ...meter(samples, at + 1000), transactionId: 718 }))[0], 4);
+  assert.deepEqual(f.saved, before); assert.equal(f.local.controlSnapshot(), null);
+  const bad = await fixture(t, {}, '', { ...before, recovered: { activeId: 718,
+    transactions: [{ id: 718, observedAt: at, lastEvidenceAt: at + 1000, tagHash: 'invented' }] } });
+  assert.equal(bad.local.status().error, 'incompatible-transaction-state'); assert.equal(bad.writes, 0);
+});
 
 test('plug-and-charge uses only the known private tag and starts once per current Preparing transition', async t => {
   const virtualTag = 'fixture-virtual-tag';

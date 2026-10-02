@@ -532,7 +532,7 @@ export class PairManager {
     try {
       // Graceful restoration is allowed until it is flushed. Authority-loss
       // demotion can still synchronously revoke the gate during this await.
-      await this.hooks.stopControl?.({ restore: true, preserveOcpp: true });
+      await this.hooks.stopControl?.({ restore: true });
       this.activeAllowed = false;
       await this.vip.release();
       if (this.state.value.role !== 'master') throw pairError('authority_changed');

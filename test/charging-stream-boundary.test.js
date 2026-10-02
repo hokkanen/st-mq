@@ -17,18 +17,22 @@ function harness() {
   const request = async (url, options) => {
     if (options.method === 'GET') {
       if (url.endsWith('/schedules')) return structuredClone(h.schedule);
-      return [row(250, h.online, h.now), row(31, h.enabled, h.now), row(109, h.mode, h.sourceAt),
-        row(100, h.pilot, h.sourceAt), row(96, h.reason ?? (h.schedule.enabled === 'none' ? 0 : 54), h.now),
-        row(47, 16, h.now), row(48, 16, h.now), row(104, 32, h.now),
+      return [row(250, h.online, h.now), row(31, h.enabled, h.enabledAt ?? h.controlAt ?? h.now), row(109, h.mode, h.sourceAt),
+        row(100, h.pilot, h.sourceAt), row(96, h.reason ?? (h.schedule.enabled === 'none' ? 0 : 54), h.controlAt ?? h.now),
+        row(47, 16, h.now), row(48, 16, h.controlAt ?? h.now), row(104, 32, h.now),
         ...[22, 23, 24].map(id => row(id, 20, h.now))];
     }
     assert.equal(options.controlGuard?.(), true);
     if (url.endsWith('/disable') && h.failClear) throw new Error('synthetic clear failure');
     await h.writeHook?.(url);
-    h.writes.push(url.endsWith('/disable') ? 'clear' : 'install');
-    if (url.endsWith('/disable')) h.schedule.enabled = 'none';
+    if (url.endsWith('/settings')) { h.writes.push('enable'); h.enabled = true; h.enabledAt = h.now; }
+    else if (url.endsWith('/resume_charging')) { h.writes.push('resume'); h.reason = null; h.controlAt = h.now; }
+    else if (url.endsWith('/disable')) {
+      h.writes.push('clear');
+      if (h.schedule.enabled === url.split('/').at(-2)) h.schedule.enabled = 'none';
+    }
     else { const { enabled, ...delayed } = JSON.parse(options.body);
-      h.schedule = normalizeScheduleState({ enabled: 'delayed', delayed }); }
+      h.writes.push('install'); h.schedule = normalizeScheduleState({ ...h.schedule, enabled: 'delayed', delayed }); }
     return '';
   };
   const native = createEaseeScheduleAdapter({ request, chargerId: 'synthetic-charger', clock: () => h.now, canControl: () => h.allowed });
@@ -154,25 +158,41 @@ test('a stream boundary received during an old-session write queues cleanup afte
   assert.equal(state.vehicleDisconnect.cleanupPending, false); assert.deepEqual(h.writes, ['install', 'install', 'clear']);
 });
 
-test('stream reconnect preserves manual stops and foreign schedules instead of granting control', async t => {
+test('a physical stream reconnect waits for a plan before superseding earlier stops and schedules', async t => {
   await t.test('manual stop', async () => {
-    const h = harness(); await h.begin(); h.enabled = false; h.reason = 53;
+    const h = harness(); await h.begin(); h.enabled = false; h.reason = 53; h.controlAt = h.now;
     const event = reconnected(disconnected());
     let state = await h.update({ vehicleDisconnect: event, plan: null });
-    assert.equal(state.phase, 'yielded'); assert.equal(state.manual.kind, 'stop');
+    assert.equal(state.phase, 'unavailable'); assert.equal(state.errorCode, 'invalid-plan'); assert.equal(state.manual, null);
+    assert.ok(state.automaticTakeover);
     assert.equal(state.vehicleDisconnect.cleanupPending, true); assert.ok(state.owned);
     h.now += MINUTE; h.restart();
     state = await h.update({ vehicleDisconnect: event, plan: null });
-    assert.equal(state.manual.kind, 'stop'); assert.deepEqual(h.writes, ['install']);
+    assert.ok(state.automaticTakeover); assert.equal(h.enabled, false); assert.deepEqual(h.writes, ['install']);
+    state = await h.update({ vehicleDisconnect: event });
+    assert.equal(state.phase, 'waiting'); assert.equal(state.vehicleDisconnect.cleanupPending, false);
+    assert.deepEqual(h.writes, ['install', 'install', 'enable', 'resume'], 'The new delay is not cleared as old-session cleanup');
+    h.now += 1000; h.controlAt = h.now; h.enabled = false; h.reason = 53;
+    state = await h.update({ vehicleDisconnect: event });
+    assert.equal(state.phase, 'yielded'); assert.equal(state.manual.kind, 'stop');
+    h.restart(); state = await h.update({ vehicleDisconnect: event });
+    assert.equal(state.phase, 'yielded'); assert.equal(state.manual.kind, 'stop');
+    assert.equal(h.writes.length, 4);
   });
   await t.test('foreign schedule', async () => {
     const h = harness(); await h.begin();
     h.schedule = normalizeScheduleState({ enabled: 'daily', daily: { timezone: 'UTC',
       periods: [{ startTime: '09:00', stopTime: '10:00', maximumAmps: 16 }] } });
     const saved = structuredClone(h.schedule);
-    const state = await h.update({ vehicleDisconnect: reconnected(disconnected()), plan: null });
-    assert.equal(state.phase, 'yielded'); assert.equal(state.manual.kind, 'window'); assert.equal(state.owned, null);
+    const event = reconnected(disconnected());
+    let state = await h.update({ vehicleDisconnect: event, plan: null });
+    assert.equal(state.phase, 'unavailable'); assert.equal(state.manual, null); assert.equal(state.owned, null);
+    assert.ok(state.automaticTakeover);
     assert.deepEqual(h.schedule, saved); assert.deepEqual(h.writes, ['install']);
+    state = await h.update({ vehicleDisconnect: event });
+    assert.equal(state.phase, 'waiting'); assert.equal(state.manual, null);
+    assert.deepEqual(h.writes, ['install', 'install', 'clear']);
+    assert.equal(h.schedule.enabled, 'delayed');
   });
 });
 

@@ -44,6 +44,18 @@ test('cloud, OCPP and Shelly prove the exact same transport-independent pause', 
   }
 });
 
+test('a recovered OCPP transaction proves only a pause requested after its current-connection confirmation', () => {
+  const control = fixture('ocpp');
+  Object.assign(control.snapshot, { transactionStartedAt: null, transactionProvenance: 'meter-values',
+    transactionConfirmedAt: expected.requestedAt - 1000 });
+  assert.deepEqual(confirmedIdentityPause(control, NOW), expected);
+  assert.equal(control.snapshot.transactionStartedAt, null, 'Recovery must not invent the original transaction start');
+  for (const confirmedAt of [null, expected.requestedAt + 1000, control.session.lastDisconnectedAt]) {
+    control.snapshot.transactionConfirmedAt = confirmedAt;
+    assert.equal(confirmedIdentityPause(control, NOW), null, 'Missing, later or prior-connection confirmation is insufficient');
+  }
+});
+
 test('Shelly identity requires current owned pause, physical stop and fresh zero power', () => {
   const invalid = [
     ...commonInvalid.filter(([name]) => name !== 'disabled automatic control'),

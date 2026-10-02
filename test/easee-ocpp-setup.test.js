@@ -95,7 +95,7 @@ test('detected address remains stable until configuration is reapplied and owned
   address = '192.0.2.20'; f.advance(300_001); await f.setup.runDue();
   assert.equal(detections, 1);
   assert.equal(f.current.websocketConnectionArgs.url, 'ws://192.0.2.10:9001/ocpp/fixture-charger');
-  // Apply configuration and orderly shutdown hand native control back first.
+  // An explicit integration change can hand native control back first.
   await f.setup.deactivate();
   assert.equal(f.current.connectivityMode, 'OcppOff');
   assert.equal(f.saved.ownedFingerprint, null);
@@ -150,6 +150,27 @@ test('native setup stores and applies a version, waits for local readings, and a
   const publicData = JSON.stringify({ status: restarted.status(), saved: f.saved });
   for (const privateValue of [f.installation.password, f.installation.identity, f.installation.endpoint, 'fixture-tag'])
     assert(!publicData.includes(privateValue), 'Status/history omit raw installation identity, endpoint, tags and secrets');
+});
+
+test('fresh authenticated native readings adopt a matching connection without replaying setup after state loss', async () => {
+  const original = fixture(); await original.setup.runDue();
+  const f = fixture({ current: original.current });
+  f.listener.available = true;
+  await f.setup.runDue();
+  assert.equal(f.setup.status().state, 'ready');
+  assert.deepEqual(f.calls, ['get']);
+  assert.equal(f.saved.ownedFingerprint, original.saved.ownedFingerprint);
+  assert.equal(f.saved.appliedFingerprint, original.saved.appliedFingerprint);
+  assert.equal(f.saved.lastAppliedAt, null, 'Observed installation is not a new application command');
+});
+
+test('matching stored connection without saved setup or authenticated readings still completes initial commissioning', async () => {
+  const original = fixture(); await original.setup.runDue();
+  const f = fixture({ current: original.current });
+  await f.setup.runDue();
+  assert.equal(f.setup.status().state, 'connecting');
+  assert.equal(f.calls.filter(call => call === 'store').length, 0);
+  assert.equal(f.calls.filter(call => call === 'apply').length, 1);
 });
 
 test('missing endpoint, authorization, credentials, listener or authority cannot program a charger', async () => {

@@ -892,7 +892,7 @@ const stoppedApp = at => ({ ...appState(at, false), schedule: noNativeSchedule()
 
 test('native Use automatic confirms an economic zero profile before clearing the displayed stop', async () => {
   const f = fixture({ nativeTakeover: true }); f.app(stoppedApp(START));
-  const prior = await f.controller.update({ enabled: true, plan: plan(START + 30 * MINUTE) });
+  const prior = await f.controller.update({ enabled: false, plan: plan(START + 30 * MINUTE) });
   assert.equal(prior.takeover.available, true);
   const result = await f.controller.update({ enabled: true, takeover: prior.takeover.token });
   assert.equal(result.takeover.state, 'confirmed'); assert.equal(result.takeover.attemptToken, prior.takeover.token);
@@ -911,7 +911,7 @@ test('native Use automatic permanently removes a native schedule when the plan i
   const f = fixture({ nativeTakeover: true });
   f.app({ ...appState(START, true), schedule: { ...noNativeSchedule(), enabled: 'daily', daily: { timezone: 'UTC',
     periods: [{ maximumAmps: 16, startTime: '10:00:00', stopTime: '12:00:00' }] } } });
-  const prior = await f.controller.update({ enabled: true, plan: plan(START) });
+  const prior = await f.controller.update({ enabled: false, plan: plan(START) });
   const result = await f.controller.update({ enabled: true, takeover: prior.takeover.token });
   assert.equal(result.takeover.state, 'confirmed'); assert.equal(result.phase, 'released');
   assert.equal(result.appControl.schedule.enabled, 'none'); assert.equal(result.manual, null);
@@ -920,7 +920,7 @@ test('native Use automatic permanently removes a native schedule when the plan i
 
 test('native Use automatic requires current displayed evidence and a transaction for an economic delay', async () => {
   const f = fixture({ nativeTakeover: true }); f.app(stoppedApp(START));
-  let prior = await f.controller.update({ enabled: true, plan: plan(START + 30 * MINUTE) });
+  let prior = await f.controller.update({ enabled: false, plan: plan(START + 30 * MINUTE) });
   f.advance(1000); f.app(stoppedApp(f.now));
   let result = await f.controller.update({ enabled: true, takeover: prior.takeover.token });
   assert.equal(result.errorCode, 'takeover-stale'); assert.equal(result.takeover.state, 'blocked');
@@ -934,8 +934,81 @@ test('native Use automatic requires current displayed evidence and a transaction
 test('native Use automatic never claims success after unconfirmed cloud handover or retries a dispatch', async () => {
   const f = fixture({ nativeTakeover: () => { throw Object.assign(new Error('synthetic outage'), { code: 'readback-failed' }); } });
   f.app(stoppedApp(START));
-  const prior = await f.controller.update({ enabled: true, plan: plan(START + 30 * MINUTE) });
+  const prior = await f.controller.update({ enabled: false, plan: plan(START + 30 * MINUTE) });
   const result = await f.controller.update({ enabled: true, takeover: prior.takeover.token });
   assert.equal(result.takeover.state, 'blocked'); assert.equal(f.nativeCalls.length, 1);
   await f.controller.update({ enabled: true }); assert.equal(f.nativeCalls.length, 1);
+});
+
+test('automatic takes over a new physical connection and preserves a later schedule across restart', async () => {
+  const f = fixture({ nativeTakeover: true });
+  const schedule = at => ({ ...appState(at, true), schedule: { ...noNativeSchedule(), enabled: 'daily',
+    daily: { timezone: 'UTC', periods: [{ maximumAmps: 16, startTime: '10:00:00', stopTime: '12:00:00' }] } } });
+  f.app(schedule(START));
+  const first = await f.controller.update({ enabled: true, plan: plan(START + 30 * MINUTE) });
+  assert.equal(first.phase, 'paused'); assert.equal(first.manual, null);
+  assert.equal(f.nativeCalls.length, 1); assert.equal(f.nativeCalls[0].paused, true);
+  f.advance(1000); f.app(schedule(f.now));
+  const later = await f.controller.update({ enabled: true });
+  assert.equal(later.phase, 'yielded'); assert.equal(later.manual.kind, 'window');
+  const restarted = fixture({ initialState: f.stored, nativeTakeover: true });
+  restarted.advance(1000); restarted.app(schedule(restarted.now));
+  const preserved = await restarted.controller.update({ enabled: true, plan: plan(START + 30 * MINUTE) });
+  assert.equal(preserved.phase, 'yielded'); assert.equal(restarted.nativeCalls.length, 0);
+  restarted.advance(1000); restarted.snapshot({ pluggedIn: false, connectorStatus: 'Available', transactionConfirmed: false });
+  await restarted.controller.update({ enabled: true });
+  restarted.advance(1000); restarted.transaction(8);
+  restarted.snapshot({ transactionStartedAt: restarted.now, statusAt: restarted.now });
+  restarted.app(schedule(restarted.now));
+  const next = await restarted.controller.update({ enabled: true });
+  assert.equal(next.manual, null); assert.equal(restarted.nativeCalls.length, 1);
+  assert.equal(restarted.nativeCalls[0].paused, true);
+});
+
+test('automatic pauses a recovered transaction without inventing its start time', async () => {
+  const f = fixture();
+  f.snapshot({ transactionStartedAt: null, transactionProvenance: 'meter-values', transactionConfirmedAt: START });
+  const result = await f.controller.update({ enabled: true, plan: plan(START + 30 * MINUTE) });
+  assert.equal(result.phase, 'paused'); assert.equal(result.snapshot.transactionStartedAt, null);
+  assert.equal(result.session.connectedAt, START);
+  assert.equal(writes(f)[0].payload.csChargingProfiles.transactionId, 7);
+  f.advance(1000); f.snapshot({ pluggedIn: false, connectorStatus: 'Available', transactionConfirmed: false,
+    transactionStartedAt: null, transactionProvenance: 'meter-values', transactionConfirmedAt: START });
+  await f.controller.update({ enabled: true });
+  f.advance(1000); f.snapshot({ transactionStartedAt: null, transactionProvenance: 'meter-values', transactionConfirmedAt: START });
+  const stale = await f.controller.update({ enabled: true });
+  assert.equal(stale.errorCode, 'transaction-unconfirmed', 'old recovery cannot authorize the next connection');
+});
+
+test('start authorization follows the plan before a transaction exists and is revoked on close', async () => {
+  const f = fixture(); let permission = null;
+  f.adapter.setStartPermission = (snapshot, options) => { permission = snapshot ? { snapshot, ...options } : null; };
+  f.confirmed(false); f.snapshot({ connectorStatus: 'Preparing', transactionId: null, transactionStartedAt: null });
+  const app = { ...appState(START, true), schedule: noNativeSchedule() }; f.app(app);
+  await f.controller.update({ enabled: true, plan: plan(START + 30 * MINUTE) });
+  assert.equal(permission, null, 'plug-and-charge must not authorize an expensive waiting period');
+  const open = { id: 'open', startAt: START, periods: [{ startAt: START, endAt: START + 20_000 }, { startAt: START + 30 * MINUTE, endAt: null }] };
+  await f.controller.update({ enabled: true, plan: open });
+  assert.equal(permission.until, START + 20_000); assert.equal(permission.guard(), true);
+  const prior = permission; f.controller.invalidate();
+  assert.equal(permission, null); assert.equal(prior.guard(), false);
+  f.advance(1000); f.app({ ...app, readAt: f.now, stopped: true, stopAt: f.now });
+  await f.controller.update({ enabled: true, plan: open });
+  assert.equal(permission, null, 'a later native pause wins over the open automatic window');
+  await f.controller.close(); assert.equal(permission, null);
+});
+
+test('a pending automatic takeover preserves the pause until transaction recovery and fences newer instructions', async () => {
+  const f = fixture({ nativeTakeover: true }); f.app(stoppedApp(START)); f.confirmed(false);
+  const pending = await f.controller.update({ enabled: true, plan: plan(START + 30 * MINUTE) });
+  assert.equal(pending.errorCode, 'transaction-unconfirmed'); assert.ok(pending.automaticTakeover);
+  assert.equal(f.nativeCalls.length, 0);
+  f.advance(1000); f.app({ ...stoppedApp(START), readAt: f.now }); f.confirmed(true);
+  const adopted = await f.controller.update({ enabled: true });
+  assert.equal(adopted.phase, 'paused'); assert.equal(f.nativeCalls.length, 1);
+  const changed = fixture({ nativeTakeover: true }); changed.app(stoppedApp(START)); changed.confirmed(false);
+  await changed.controller.update({ enabled: true, plan: plan(START + 30 * MINUTE) });
+  changed.advance(1000); changed.app(stoppedApp(changed.now)); changed.confirmed(true);
+  const newer = await changed.controller.update({ enabled: true });
+  assert.equal(newer.automaticTakeover, null); assert.equal(changed.nativeCalls.length, 0);
 });

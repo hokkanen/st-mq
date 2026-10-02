@@ -163,13 +163,14 @@ test('a verified unplug arriving during an old-session install waits for readbac
   assert.deepEqual(h.writes, ['install', 'install', 'clear']);
 });
 
-test('a foreign manual window replaces ownership and survives the verified unplug', async () => {
+test('a foreign window remains physically intact until the next connection has an automatic plan', async () => {
   const h = harness(); await h.begin();
   h.schedule = normalizeScheduleState({ enabled: 'daily', daily: { timezone: 'UTC',
     periods: [{ startTime: '09:00', stopTime: '10:00', maximumAmps: 16 }] } });
   const manualSchedule = structuredClone(h.schedule);
   const state = await h.update({ vehicleDisconnect: reconnect(disconnect()), plan: null });
-  assert.equal(state.phase, 'yielded'); assert.equal(state.manual.kind, 'window');
+  assert.equal(state.phase, 'unavailable'); assert.equal(state.errorCode, 'invalid-plan');
+  assert.equal(state.manual, null); assert.ok(state.automaticTakeover);
   assert.equal(state.owned, null); assert.deepEqual(h.schedule, manualSchedule);
   assert.deepEqual(h.writes, ['install']);
 });
@@ -182,7 +183,11 @@ test('stopped, offline, faulted, unauthorized, and revoked-control snapshots ret
     const state = await h.update({ vehicleDisconnect: reconnect(disconnect()), plan: null });
     assert.equal(state.released, false); assert.ok(state.owned);
     assert.equal(state.vehicleDisconnect.cleanupPending, true);
-    if (change.enabled === false) assert.equal(state.manual.kind, 'stop');
+    if (change.enabled === false) {
+      assert.equal(state.manual, null, 'Previous session priority does not carry across a physical disconnect');
+      if (change.mode !== 1) assert.ok(state.automaticTakeover, 'The next connection waits for a plan before taking over');
+      assert.equal(h.enabled, false, 'Missing planning evidence cannot release the restriction');
+    }
     if (change.online === false) assert.equal(state.session.connectedAt, null);
     assert.deepEqual(h.writes, ['install']);
   });

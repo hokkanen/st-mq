@@ -1,3 +1,49 @@
+Implemented 2026-10-02 — Preserve charging ownership through restart and take control on plug-in
+- With Automatic enabled, each confirmed new physical connection supersedes
+  earlier charging instructions and supported native charger schedules, including
+  recurring schedules. Genuinely absent saved session state follows the same
+  policy after fresh evidence. Later external instructions retain priority within
+  that connection across process/network restart; Use automatic remains an
+  explicit handover. Preference changes and Charge now do not independently
+  acquire takeover authority. Keep both cards' explanations consistent.
+- F3/F5 amendment follows the owner's agreed session policy. Ordinary stop,
+  restart and paired handover preserve OCPP configuration and profile obligations;
+  explicit integration changes own cloud handback. Matching installed connections
+  are reused without apply/reboot. Initial commissioning waits for active cloud
+  schedules before draining their controller, preserving a pending takeover.
+- Recognize enabled Easee pauses reported as dynamic charger current 0 A with
+  reason 52. Require fresh instruction evidence and known electrical limits;
+  install and confirm the planned wait before enabling/resuming. Fence later
+  external changes, uncertain writes and stale connection reports. Completing a
+  new delay consumes the old connection's cleanup so it cannot clear that delay.
+- Recover an existing OCPP transaction from two distinct fresh advancing meter
+  reports and active connector status on the authenticated socket. Keep observed
+  transactions separate from actual StartTransaction history; do not invent start
+  time, authorization, meter baseline or energy (F4). Bound and persist evidence,
+  require fresh confirmation after reconnect, and reject conflicts/ended IDs.
+- Coordinate remote starts and private virtual-tag authorization with a short
+  controller permission tied to the selected plan, connection and native state.
+  A scheduled wait, saved pause, stale evidence, revised plan or revoked control
+  cannot reuse an earlier start permission. Preserve real RFID authorization and
+  durable accepted transaction replies. F1: current-format optional evidence and
+  intent fields, no format migration or compatibility path; remove the redundant
+  shutdown-only preserveOcpp exception.
+- Easee's documented schedule writes cover delayed/daily/weekly, but not its
+  off-peak/tariff read models. Unsupported types stay visibly blocked; no guessed
+  commands or unrelated site settings. Shelly takeover touches verified charging
+  jobs only, confirms a required economic stop before disabling jobs, and preserves
+  unrelated or opaque jobs, native limits and protections. Failed confirmation
+  retains the pause and uncertain intent across restart.
+- Validation: npm run check passes 4,216 offline tests with one optional upstream
+  Tuya parser check skipped; production build passes with the existing bundle-size
+  advisory. A final 338-test controller, protocol, production-adapter and UI
+  run covers the last takeover-availability changes. Shared charger browser checks pass
+  at 320/390/1440px in both themes, including conditional actions, status copy,
+  receipts, settings and long descriptions. The equipment browser sweep also
+  passes OCPP setup, keyboard details and responsive layout checks. Hardware
+  acceptance of a recovered-ID OCPP profile remains unverified. No deployment or
+  live-device commands.
+
 Implemented 2026-10-02 — Restore contextual charger actions and balance both cards
 - Compare the original shared Use automatic presentation before a8e209d. Restore
   ordinary outlined-button sizing and show the action only for a replaceable

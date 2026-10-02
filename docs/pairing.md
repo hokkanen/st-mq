@@ -301,9 +301,10 @@ profile expiry even while the computers transfer control. The slave validates th
 final setup state before activation. Only the authoritative master owns the
 live listener and provisions the charger. The moved VIP gives the charger the
 same endpoint and credentials, so a role handover keeps OCPP active and does
-not reconfigure the charger through Easee cloud. An ordinary application stop
-instead attempts to release its profiles and apply `OcppOff` before closing
-its connections. A crash or power loss cannot perform that cloud handback.
+not reconfigure the charger through Easee cloud. Ordinary application stops and
+restarts also preserve native OCPP configuration and outstanding profile
+obligations; they close the connection without applying `OcppOff`. Returning to
+cloud control requires an explicit integration change.
 Existing finite pauses can expire autonomously, but a new plug-in may wait for
 OCPP authorization and the Easee app cannot be assumed to bypass that wait.
 The promoted computer must restore the local listener and fresh authorization

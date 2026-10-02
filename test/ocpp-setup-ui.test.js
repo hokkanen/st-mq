@@ -24,7 +24,8 @@ test('adoption confirms the replacement and sends only the reviewed revision onc
   let confirm, finish, confirmations = 0, refreshed = 0;
   const action = createOcppSetupAction({ getStatus: status,
     confirm: async options => { confirmations++; assert.match(options.message, /existing OCPP server connection.*Native OCPP takes over charging authorization and schedules/);
-      assert.match(options.message, /crash or power loss.*wait for approval.*restarts or Direct OCPP is disabled/);
+      assert.match(options.message, /Stopping or restarting.*keeps OCPP enabled.*offline.*wait for authorization/);
+      assert.match(options.message, /Returning to cloud control requires disabling Direct OCPP/);
       return new Promise(resolve => { confirm = resolve; }); },
     request: async (...args) => { requests.push(args); await new Promise(resolve => { finish = resolve; }); },
     onBusy: value => busy.push(value), onMessage: (...args) => messages.push(args), afterRequest: async () => { refreshed++; } });

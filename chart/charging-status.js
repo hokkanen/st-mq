@@ -2,7 +2,7 @@ export const CHARGING_CONTROL_CAUSES = {
   'read-failed': 'Charger read failed', 'command-failed': 'Charger instruction failed',
   'readback-failed': 'Charger confirmation could not be read', 'readback-mismatch': 'Charger readback did not match the instruction',
   'access-denied': 'Charger access denied', 'control-revoked': 'Control permission was withdrawn',
-  'state-changed': 'Charger state changed during the instruction', 'unsupported-schedule': 'Schedule unsupported by the charger',
+  'state-changed': 'Charger state changed during the instruction', 'unsupported-schedule': 'Charger schedule cannot be replaced',
   'invalid-plan': 'Charging plan could not be applied', 'missing-current-limit': 'Charging current limit unavailable',
   'start-passed': 'Requested start had already passed', 'ambiguous-start': 'Requested start time was ambiguous',
   'start-out-of-range': 'Requested start time was outside the supported range', 'charger-fault': 'Charger reported a fault',
@@ -10,6 +10,8 @@ export const CHARGING_CONTROL_CAUSES = {
   'charger-stopped': 'Charger reported stopped', 'pause-unconfirmed': 'Pause not confirmed',
   offline: 'Charger offline', 'provider-offline': 'Charger provider offline',
   'transaction-unconfirmed': 'Charging transaction not confirmed', 'composite-unavailable': 'Charger schedule readback unavailable',
+  'charging-plan-unavailable': 'Waiting for a charging plan', 'takeover-unavailable': 'Waiting for automatic control',
+  'status-stale': 'Waiting for current connection status',
   'profile-rejected': 'Charger rejected the charging profile', 'retry-limit': 'Instruction retry limit reached',
   'storage-failed': 'Control state could not be saved', 'evse-control-unavailable': 'Charger control unavailable',
   'evse-command-revoked': 'Charger instruction permission withdrawn', 'evse-command-unconfirmed': 'Charger instruction unconfirmed',
@@ -31,6 +33,10 @@ export const CHARGING_CONTROL_CAUSES = {
 };
 
 const CONTROL_DETAILS = {
+  'charging-plan-unavailable': 'Automatic control is waiting for a charging plan. Existing charger restrictions remain in place.',
+  'takeover-unavailable': 'Automatic control is waiting for fresh charger readings and control access. Existing restrictions remain in place.',
+  'status-stale': 'The charger connection report is older than the current session. Waiting for an updated report; the current charging instructions remain in effect.',
+  'unsupported-schedule': 'Automatic control cannot replace this type of charger schedule. Change it in the charger controls before returning to automatic charging.',
   'manual-stop': 'A stop instruction is preventing automatic scheduling.',
   'native-schedule': 'The charger’s own schedule has priority over automatic scheduling.',
   'manual-schedule': 'A charger schedule has priority over automatic charging.',

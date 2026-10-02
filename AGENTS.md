@@ -221,17 +221,23 @@ permission to act. See [the configuration guide](docs/configuration.md).
   It still respects live control authority, device readiness and native limits.
   Integration setup, commissioning and electrical limits remain configured.
 - Both charger cards use one shared component with capability-driven differences.
-  The explicit **Use automatic** action is a new instruction that supersedes
-  earlier manual charging Start/Stop choices and disables supported native
-  charging schedules until changed externally again. It enables Automatic and
-  returns to price scheduling; it need not start charging immediately. Ordinary
-  polling, the Automatic preference switch and Charge now never implicitly
-  acquire this takeover authority. Bind the action to current equipment,
+  With Automatic enabled, each new confirmed physical connection takes automatic
+  control, superseding earlier charging instructions and native charger schedules,
+  including recurring schedules. Genuinely absent saved session state follows the
+  same policy after fresh connection evidence; unreadable or invalid state does
+  not grant permission. Later external instructions take priority for that
+  connection and survive restart/reconnect. The explicit **Use automatic** action
+  also supersedes earlier instructions, enables Automatic and returns to price
+  scheduling; it need not start charging immediately. Ordinary polling within an
+  established connection, the Automatic preference switch and Charge now never
+  independently acquire takeover authority. Bind takeover to current equipment,
   connection and observed native instructions; newer external changes retain
-  priority. Confirm the native changes and preserve uncertain outcomes across
-  failure. Do not restore superseded instructions after unplugging or restart,
-  infer who caused an observed stop, change unrelated device schedules or bypass
-  electrical protection, charger authorization, faults or vehicle restrictions.
+  priority. Confirm native changes and preserve uncertain outcomes across failure.
+  Unsupported native schedule operations remain visibly blocked; this policy does
+  not authorize guessed device commands or unrelated site settings. Do not restore
+  superseded instructions after unplugging or restart, infer who caused an observed
+  stop, change unrelated device schedules or bypass electrical protection, charger
+  authorization, faults or vehicle restrictions.
 - Explicit configuration import/application and clearly labeled native-device
   setup/commands are separate from controller-default edits. Keep their actual
   effect visible. Historical records, restoration obligations, commissioning and
@@ -337,6 +343,9 @@ Details: [recording and provenance](docs/recording.md),
   where applicable. Require the live evidence, commissioning and readiness for
   the action; owner approval alone is not evidence of adapter capability. Reject
   stale, unknown or retired authority rather than translating it into permission.
+- Ordinary application stop, restart and paired handover preserve the charger's
+  OCPP configuration and current instructions. Only explicit native-control
+  deactivation or connection reconfiguration owns return to cloud control.
 - Preserve native equipment protection and required service. Temporary changes
   retain their ownership, expiry and durable restoration obligations across
   restart, failure, model repair and correction. Reconcile with fresh actual state

@@ -9,11 +9,12 @@ and bounded owner-authorized live experiments. Household identifiers, credential
 authorization tags and private endpoints are omitted from this record.
 
 **Practical outage limit:** native OCPP does not provide seamless cloud-control
-backup. Normal Ctrl+C/service stop requests `OcppOff`; failed cloud access leaves
-handback unconfirmed. Paired handover preserves OCPP for the next controller.
-After abrupt process or power loss, charging can remain approval-blocked until
-ST-MQ restarts or Direct OCPP is disabled through Easee configuration. Expiry of
-an installed pause does not restore cloud authorization for a new transaction.
+backup. Normal Ctrl+C/service stop, restart and paired handover preserve OCPP
+configuration and existing control obligations. An offline controller can leave
+new charging approval-blocked until ST-MQ restarts or Direct OCPP is explicitly
+disabled through Easee configuration. Expiry of an installed pause does not
+restore cloud authorization for a new transaction. Earlier live experiments
+below describe the former shutdown behavior; they are historical observations.
 
 ## Current implementation
 
@@ -23,9 +24,9 @@ an installed pause does not restore cloud authorization for a new transaction.
 | Explicit adoption | The dashboard requires confirmation of replacing an inspected foreign connection. A revision check before the write rejects a changed configuration. Read-only or unauthorized instances cannot adopt it. |
 | Owned disable | Disabling local OCPP and applying configuration stores/applies `OcppOff` only for the exact owned configuration, preserving its address, credentials and certificates. Pending cloud failure does not claim shutdown success. |
 | Invalid setup state | Unsupported or malformed saved setup prevents the local listener from starting and fences both charging control backends before any setup mutation. It does not silently reset ownership. |
-| Shutdown and handover | Normal shutdown attempts owned `OcppOff` before closing the charging runtime; cloud failure preserves the obligation and reports an error. Paired role transfer keeps native OCPP active. A crash cannot perform cloud handback after the process is gone. |
+| Shutdown and handover | Ordinary shutdown, restart and paired role transfer preserve native configuration and outstanding profile obligations. Only an explicit integration change requests owned `OcppOff`; unconfirmed restoration remains pending. |
 | Authorization | The default `rfid` mode requires permitted tags. Opt-in `plug-and-charge` uses a private virtual tag derived from installation credentials for remote startup; an empty physical tag list is allowed in that mode. |
-| Exclusive control | Native activation releases ST-MQ's owned cloud instruction first. A foreign active cloud schedule is preserved and holds the transition. Cloud telemetry fallback does not reactivate cloud scheduling. |
+| Exclusive control | Initial native activation checks for an active cloud schedule before suspending the cloud controller, preserving its restriction and pending automatic takeover. Once the schedule clears or expires, setup drains old control and rechecks before applying native configuration. Cloud telemetry fallback does not reactivate cloud scheduling. |
 | Native scheduling | Absolute `TxProfile` restrictions bind to the confirmed current transaction. Economic pauses use 0 A and expire at the planned release. Extra identification charging releases the owned pause under normal native current limits; controller energy/time guards reinstate the economic pause. No positive-current profile or autonomous probe cutoff is installed. Effective composite readback verifies zero-current restrictions. Cleanup requires the exact owned profile ID and current authorized connection; it remains possible when the old transaction is unconfirmed. Missing profile IDs are rejected. |
 | Paired address | The charger uses the pairing VIP and local port. Peer readiness verifies compatible endpoint, identity, credentials, authorization mode and tags, plus listener admission. Disabled local OCPP still requires these checks while restoration is owed. Final transaction/setup state travels with the verified database snapshot. |
 | Public status | Setup progress, activation/control-handover waiting and fresh local measurements are separate. Working cloud reading availability stays accurate. No endpoint, password or private tag is displayed. |

@@ -1,6 +1,6 @@
 import { resolveChargingDeadline } from './settings.js';
 import { TIME_ZONE } from '../domain/prices.js';
-import { delayedScheduleFor, easeeTakeoverFingerprint, effectiveScheduleFingerprint, manualScheduleWindow, nextLocalOccurrence, scheduleFingerprint } from './easee.js';
+import { delayedScheduleFor, easeeScheduleTakeoverSupported, easeeTakeoverFingerprint, effectiveScheduleFingerprint, manualScheduleWindow, nextLocalOccurrence, scheduleFingerprint } from './easee.js';
 import { createHash } from 'node:crypto';
 
 const copy = value => structuredClone(value);
@@ -14,9 +14,31 @@ const RELEASE_REASON = 'Charging is released and may continue beyond the minimum
 const MIN_PRICE_PAUSE_MS = 15 * 60_000;
 const MAX_IDENTIFICATION_PAUSE_MS = 5 * 60_000;
 const identificationFields = ['purpose', 'identificationId', 'identificationConnectedAt'];
+const validSession = value => value == null || typeof value === 'object' && !Array.isArray(value)
+  && Object.keys(value).every(key => ['connected', 'connectedAt', 'lastDisconnectedAt', 'observedAt', 'instruction',
+    'enabled', 'stopped', 'mode', 'modeAt', 'waitingForScheduleAt', 'delayedReleaseAt'].includes(key))
+  && [true, false, null].includes(value.connected) && [true, false, null].includes(value.enabled)
+  && typeof value.stopped === 'boolean' && isTime(value.observedAt)
+  && (value.mode === null || Number.isFinite(value.mode))
+  && [value.connectedAt, value.lastDisconnectedAt, value.modeAt, value.waitingForScheduleAt, value.delayedReleaseAt]
+    .every(at => at === null || isTime(at))
+  && (value.connected === true ? isTime(value.connectedAt) : value.connected !== false || value.connectedAt === null)
+  && typeof value.instruction === 'string' && /^[a-f0-9]{64}$/.test(value.instruction);
+// Automatic permission freezes native instructions, not operating-mode or
+// readiness telemetry. Actual writes retain the stricter complete preflight.
+const automaticInstructionFingerprint = snapshot => createHash('sha256').update(JSON.stringify([
+  activeFingerprint(snapshot.schedule), snapshot.enabled,
+  snapshot.enabled === false ? snapshot.observations?.[31]?.at ?? null : null,
+  snapshot.limits?.dynamicChargerA === 0 ? ['zero-current', Math.max(snapshot.observations?.[48]?.at ?? 0,
+    snapshot.reason === 53 ? snapshot.reasonAt ?? 0 : 0)] : snapshot.reason === 53 ? ['stop', snapshot.reasonAt] : null,
+])).digest('hex');
+const validAutomaticTakeover = value => value == null || typeof value === 'object' && !Array.isArray(value)
+  && Object.keys(value).every(key => ['connectedAt', 'fingerprint'].includes(key)) && isTime(value.connectedAt)
+  && typeof value.fingerprint === 'string' && /^[a-f0-9]{64}$/.test(value.fingerprint);
 const validTakeoverPending = value => value == null || typeof value === 'object' && !Array.isArray(value)
-  && Object.keys(value).every(key => ['connectedAt', 'requestedAt', 'stage', 'beforeSchedule', 'afterSchedule', 'enabledAt', 'reasonAt'].includes(key))
+  && Object.keys(value).every(key => ['connectedAt', 'requestedAt', 'stage', 'beforeSchedule', 'afterSchedule', 'enabledAt', 'reasonAt', 'dynamicCurrentAt'].includes(key))
   && [value.connectedAt, value.enabledAt, value.reasonAt].every(at => at === null || isTime(at)) && isTime(value.requestedAt)
+  && (value.dynamicCurrentAt == null || isTime(value.dynamicCurrentAt))
   && ['schedule', 'schedule-disable', 'enable', 'resume'].includes(value.stage)
   && [value.beforeSchedule, value.afterSchedule].every(value => typeof value === 'string' && /^[a-f0-9]{64}$/.test(value));
 function validIdentificationOwnership(value) {
@@ -50,7 +72,8 @@ const DIAGNOSTICS = {
 export function createChargingController({ adapter, initialState = null, saveState = () => {}, clock = Date.now,
   canControl = () => false, getPlan, getMaximumAmps, getIdentification } = {}) {
   if (initialState && (initialState.version !== 5 || !validIdentificationOwnership(initialState.owned)
-    || !validIdentificationOwnership(initialState.pending) || !validTakeoverPending(initialState.takeoverPending))) throw new Error('Unsupported charging ownership; start a fresh development database');
+    || !validIdentificationOwnership(initialState.pending) || !validTakeoverPending(initialState.takeoverPending)
+    || !validAutomaticTakeover(initialState.automaticTakeover) || !validSession(initialState.session))) throw new Error('Unsupported charging ownership; start a fresh development database');
   const previous = initialState ? copy(initialState) : {};
   let state = { phase: 'off', owned: null, pending: null, manual: null, released: false,
     disconnected: false, execution: null, handoverConfirmed: true, reason: 'Automatic charging is off.',
@@ -66,11 +89,13 @@ export function createChargingController({ adapter, initialState = null, saveSta
   const takeoverToken = () => snapshot ? createHash('sha256').update(JSON.stringify([
     easeeTakeoverFingerprint(snapshot), state.session?.connectedAt ?? null, state.session?.lastDisconnectedAt ?? null])).digest('hex') : null;
   const takeoverStatus = () => {
+    const supported = easeeScheduleTakeoverSupported(snapshot?.schedule);
     const available = !closed && snapshot?.online === true && snapshot.controlKnown
       && !snapshot.faulted && !snapshot.authorizationBlocked && snapshot.readAt <= clock()
-      && clock() - snapshot.readAt <= 60_000 && typeof adapter.takeover === 'function';
+      && clock() - snapshot.readAt <= 60_000 && typeof adapter.takeover === 'function' && supported;
     return { available, token: available ? takeoverToken() : null, reason: takeoverState === 'blocked' ? state.reason : available ? null
-      : 'Fresh charger state and control access are required to use automatic.',
+      : snapshot?.schedule && !supported ? 'This charger schedule cannot be replaced through the supported controls.'
+        : 'Fresh charger state and control access are required to use automatic.',
       ...(takeoverState ? { state: takeoverState, attemptToken: takeoverAttempt } : {}) };
   };
   const status = () => ({ ...copy(state), enabled: desired.enabled === true, planningRevision, takeover: takeoverStatus(),
@@ -129,7 +154,7 @@ export function createChargingController({ adapter, initialState = null, saveSta
         lastDisconnectedAt: event.measuredAt, waitingForScheduleAt: null, delayedReleaseAt: null };
       state.disconnected = true; state.released = false; state.provisional = false; state.execution = null;
       delete state.lastMissedTransition;
-      if (state.manual && !['window', 'schedule', 'stop'].includes(state.manual.kind)) state.manual = null;
+      state.manual = null; state.automaticTakeover = null;
     } else if (known.endedConnectedAt !== event.endedConnectedAt || known.measuredAt !== event.measuredAt
       || known.receivedAt !== event.receivedAt) return;
     const reconnected = event.reconnected, boundary = state.vehicleDisconnect;
@@ -147,8 +172,12 @@ export function createChargingController({ adapter, initialState = null, saveSta
     if (JSON.stringify(prior.vehicleDisconnect) === JSON.stringify(state.vehicleDisconnect)) return;
     try { await persist(); } catch (error) { state = prior; throw error; }
   }
+  const staleDisconnect = () => snapshot.pluggedIn === false && state.session?.connected === true
+      && isTime(snapshot.disconnectedAt) && snapshot.disconnectedAt < Math.max(
+        state.session.connectedAt ?? 0, state.session.modeAt ?? 0, state.manual?.detectedAt ?? 0);
   function observedConnection(now) {
     const boundary = state.vehicleDisconnect;
+    if (staleDisconnect()) return null;
     if (!boundary?.awaitingConnection || snapshot.pluggedIn !== true) return snapshot.pluggedIn;
     // A change-reported connected value can survive a quick unplug/replug.
     // Keep that raw Easee reading intact, but do not reuse it as a new session.
@@ -195,8 +224,10 @@ export function createChargingController({ adapter, initialState = null, saveSta
   function observeSession(now) {
     // Readable scheduling state is useful even without a connected vehicle.
     // Offline cached data cannot establish a manual change or a disconnect.
-    if (snapshot.online !== true) return;
+    if (snapshot.online !== true || !snapshot.controlKnown || !isTime(snapshot.readAt)
+      || snapshot.readAt > now || now - snapshot.readAt > 60_000) return;
     const prior = state.session, connection = observedConnection(now);
+    const newConnection = connection === true && prior?.connected !== true;
     if (prior) {
       const scheduleChanged = prior.instruction !== currentFingerprint();
       const nativeExpiry = snapshot.schedule.enabled === 'none' && isTime(prior.delayedReleaseAt) && now >= prior.delayedReleaseAt;
@@ -234,16 +265,23 @@ export function createChargingController({ adapter, initialState = null, saveSta
     if (snapshot.controlKnown && connection === false) {
       state.disconnected = true; state.released = false; state.provisional = false; state.execution = null;
       delete state.lastMissedTransition;
-      if (state.manual && !['window', 'schedule'].includes(state.manual.kind)
-        && !(state.vehicleDisconnect?.awaitingConnection && state.manual.kind === 'stop' && stopped(snapshot))) state.manual = null;
+      state.manual = null; state.automaticTakeover = null;
       if (state.owned && now >= state.owned.startAt && !state.vehicleDisconnect?.cleanupPending) state.owned = null;
     } else if (connection === true) {
       state.disconnected = false;
       if (prior?.connected === false) state.released = false;
     }
-    // An unrestricted first observation is a baseline. A pre-existing foreign
-    // restriction retains its owner's priority until a known end or resumption.
     remember(now, connection);
+    if (newConnection) {
+      // Automatic permission applies to each physical connection. A restart
+      // with the same saved connection is not a new permission to replace edits.
+      state.manual = null; state.released = false; state.execution = null;
+      state.automaticTakeover = desired.enabled && (stopped(snapshot)
+        || snapshot.schedule.enabled !== 'none' && !ownsCurrent())
+        ? { connectedAt: state.session.connectedAt, fingerprint: automaticInstructionFingerprint(snapshot) } : null;
+      if (!desired.enabled && snapshot.schedule.enabled !== 'none' && !ownsCurrent()) yieldSchedule(now);
+      if (!desired.enabled && stopped(snapshot)) manual('stop', now, STOP_REASON);
+    }
   }
   function executionFor(plan) {
     if (!Array.isArray(plan?.periods) || !plan.periods.length) return null;
@@ -320,7 +358,7 @@ export function createChargingController({ adapter, initialState = null, saveSta
     if (state.vehicleDisconnect?.cleanupPending) state.vehicleDisconnect.cleanupPending = false;
     rememberOwnInstruction(clock());
   }
-  async function takeOver(expectedGeneration, token) {
+  async function takeOver(expectedGeneration, token, automatic = false) {
     takeoverState = 'blocked'; takeoverAttempt = token;
     if (!token || token !== takeoverToken()) throw Object.assign(new Error('Stale automatic handover'), { code: 'takeover-stale' });
     if (!permitted() || !takeoverStatus().available || !desired.enabled) throw Object.assign(new Error('Control unavailable'), { code: 'control-revoked' });
@@ -351,7 +389,7 @@ export function createChargingController({ adapter, initialState = null, saveSta
           beforeSchedule: activeFingerprint(before.schedule),
           afterSchedule: stage === 'schedule' ? pause ? state.pending.expectedActiveFingerprint : activeFingerprint({ enabled: 'none' })
             : activeFingerprint(before.schedule), enabledAt: before.observations?.[31]?.at ?? null,
-          reasonAt: before.reasonAt ?? null };
+          reasonAt: before.reasonAt ?? null, dynamicCurrentAt: before.observations?.[48]?.at ?? null };
         await persist();
       },
       afterWrite: async ({ stage, snapshot: observed }) => {
@@ -359,6 +397,9 @@ export function createChargingController({ adapter, initialState = null, saveSta
         if (stage === 'schedule') {
           state.owned = pause ? confirmedOwned(clock(), state.pending) : null;
           state.pending = null;
+          // This confirmed instruction replaces the previous connection's
+          // delay. Its cleanup obligation must not clear the new waiting plan.
+          if (state.vehicleDisconnect?.cleanupPending) state.vehicleDisconnect.cleanupPending = false;
         }
         // Record only positively confirmed own changes as the new baseline.
         remember(clock()); await persist();
@@ -366,8 +407,8 @@ export function createChargingController({ adapter, initialState = null, saveSta
     if (expectedGeneration !== generation || !permitted()) throw Object.assign(new Error('Control changed'), { code: 'control-revoked' });
     const unresolved = state.takeoverPending;
     state.manual = null; state.released = false; state.execution = execution; state.provisional = false;
-    if (priorManual) state.lastManualResume = { at: clock(), deadlineAt: priorManual.cycleEndsAt, reason: 'explicit' };
-    remember(clock()); state.takeoverPending = null;
+    if (priorManual) state.lastManualResume = { at: clock(), deadlineAt: priorManual.cycleEndsAt, reason: automatic ? 'connection' : 'explicit' };
+    remember(clock()); state.takeoverPending = null; state.automaticTakeover = null;
     try { await persist(); } catch (error) { state.takeoverPending = unresolved; throw error; }
     takeoverState = 'confirmed';
   }
@@ -444,6 +485,12 @@ export function createChargingController({ adapter, initialState = null, saveSta
       if (expectedGeneration !== generation || closed) return status();
       snapshot = await adapter.read(); now = clock(); state.lastReadAt = snapshot.readAt;
       if (expectedGeneration !== generation || closed) return status();
+      // An older source-reported unplug cannot reset ownership or lower the
+      // source watermark on repeated reads. Leave raw observations untouched.
+      // Missing source clocks retain the direct-read receipt fallback.
+      if (staleDisconnect()) {
+        await phase('unavailable', 'Waiting for current charger connection evidence.', 'incomplete-state'); return status();
+      }
       // A timeout can follow a successful cloud write. Recover durable intent
       // before interpreting the newly observed instruction as an app edit.
       if (state.pending?.action === 'install') {
@@ -482,7 +529,8 @@ export function createChargingController({ adapter, initialState = null, saveSta
       if (state.takeoverPending && !desired.takeover) {
         const unresolved = state.takeoverPending;
         const newerStop = snapshot.stopped && (snapshot.enabled === false && snapshot.observations?.[31]?.at > Math.max(unresolved.enabledAt ?? 0, unresolved.requestedAt)
-          || snapshot.reason === 53 && snapshot.reasonAt > Math.max(unresolved.reasonAt ?? 0, unresolved.requestedAt));
+          || [52, 53].includes(snapshot.reason) && snapshot.reasonAt > Math.max(unresolved.reasonAt ?? 0, unresolved.requestedAt)
+          || snapshot.dynamicChargerPaused && snapshot.observations?.[48]?.at > Math.max(unresolved.dynamicCurrentAt ?? 0, unresolved.requestedAt));
         const differentSchedule = snapshot.online === true && ![unresolved.beforeSchedule, unresolved.afterSchedule].includes(currentFingerprint())
           && !(ownsCurrent() || normalExpiry(now));
         const differentConnection = snapshot.pluggedIn === false || unresolved.connectedAt !== (state.session?.connectedAt ?? null)
@@ -493,9 +541,27 @@ export function createChargingController({ adapter, initialState = null, saveSta
         }
       }
       observeSession(now);
+      if (state.automaticTakeover && (!desired.enabled || state.session?.connected === false
+        || state.automaticTakeover.connectedAt !== state.session?.connectedAt)) state.automaticTakeover = null;
+      if (state.automaticTakeover && snapshot.online === true && snapshot.controlKnown
+        && !snapshot.faulted && !snapshot.authorizationBlocked
+        && state.automaticTakeover.fingerprint !== automaticInstructionFingerprint(snapshot)) {
+        // Freeze the first instruction. A newer external change wins even if
+        // planning or fresh control readiness delayed the initial takeover.
+        state.automaticTakeover = null;
+        if (stopped(snapshot)) manual('stop', now, STOP_REASON);
+        else if (snapshot.schedule.enabled !== 'none' && !ownsCurrent()) yieldSchedule(now);
+        else manual('enable', now, 'Charging was enabled outside automatic control. That instruction has temporary priority.');
+      }
       if (desired.takeover) {
         const token = desired.takeover; desired.takeover = null;
         await takeOver(expectedGeneration, token);
+        now = clock();
+      } else if (state.automaticTakeover && snapshot.controlKnown && !easeeScheduleTakeoverSupported(snapshot.schedule)) {
+        await phase('unavailable', takeoverStatus().reason, 'unsupported-schedule'); return status();
+      } else if (state.automaticTakeover && snapshot.pluggedIn === true && takeoverStatus().available && permitted()) {
+        await persist();
+        await takeOver(expectedGeneration, takeoverToken(), true);
         now = clock();
       }
       if (state.owned && !ownsCurrent()) {
@@ -540,7 +606,9 @@ export function createChargingController({ adapter, initialState = null, saveSta
       if (snapshot.authorizationBlocked || [7, 8].includes(snapshot.mode) || snapshot.reason === 55) {
         await phase('unavailable', 'Easee is waiting for charging authorization.', 'charging-authorization'); return status();
       }
-      if (!snapshot.controlKnown) { await phase('unavailable', 'Easee has not supplied enough charger state to confirm control.', 'incomplete-state'); return status(); }
+      if (!snapshot.controlKnown || !isTime(snapshot.readAt) || snapshot.readAt > now || now - snapshot.readAt > 60_000) {
+        await phase('unavailable', 'Easee has not supplied enough fresh charger state to confirm control.', 'incomplete-state'); return status();
+      }
       if (stopped(snapshot)) {
         await phase(state.manual?.kind === 'stop' ? 'yielded' : 'unavailable', state.manual?.kind === 'stop' ? STOP_REASON
           : STOP_REASON, state.manual?.kind === 'stop' ? null : 'charger-stopped');

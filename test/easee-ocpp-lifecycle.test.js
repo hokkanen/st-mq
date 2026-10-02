@@ -34,7 +34,7 @@ function fixture(t, { streaming = false } = {}) {
   let cloudObservations = null, cloudOffline = false, nativeRequest = null, streamRows = null;
   let readSetupState = () => states.get('setup');
   const stateFor = key => ({ get: () => clone(states.get(key) ?? null), set: value => states.set(key, clone(value)) });
-  const http = createHttp({ allowOcppSetup: true, allowChargerScheduling: true, allowChargerTakeover: true, canControl: () => permitted,
+  const newHttp = () => createHttp({ allowOcppSetup: true, allowChargerScheduling: true, allowChargerTakeover: true, canControl: () => permitted,
     fetchImpl: async (url, options) => {
       const path = new URL(url).pathname, method = options.method, body = options.body ? JSON.parse(options.body) : null;
       events.push({ type: 'http', path, method, body });
@@ -80,6 +80,7 @@ function fixture(t, { streaming = false } = {}) {
       }
       assert.fail(`Unexpected synthetic request: ${method} ${path}`);
     } });
+  const http = newHttp();
   function make(enabled = true) {
     const configured = clone(config); configured.connections.easee.local_ocpp.enabled = enabled;
     const installation = ocppInstallation(configured);
@@ -113,7 +114,7 @@ function fixture(t, { streaming = false } = {}) {
     providers.push(provider); return provider;
   }
   t.after(async () => { for (const provider of providers) await provider.close(); http.close(); });
-  return { config, events, states, listeners, make, http,
+  return { config, events, states, listeners, make, http, newHttp,
     get current() { return current; }, get now() { return now; }, advance: ms => { now += ms; },
     get observations() { return clone(cloudObservations); }, set observations(value) { cloudObservations = clone(value); },
     set streamRows(value) { streamRows = clone(value); }, set cloudOffline(value) { cloudOffline = value; },
@@ -146,18 +147,32 @@ test('provider activation drains cloud control before store, accepts native POST
   assert.equal(writes(f).length, 2, 'Matching readback cannot cause repeated store/apply writes');
 });
 
-test('provider leaves a foreign active cloud schedule intact and restores cloud control selection', async t => {
+test('provider leaves an active cloud schedule and pending cloud takeover intact before native commissioning', async t => {
   const f = fixture(t); f.schedule = { enabled: 'daily', daily: { timezone: 'Europe/Helsinki',
     periods: [{ startTime: '01:00:00', stopTime: '03:00:00', maximumAmps: 10 }] } };
+  f.transition = () => assert.fail('Blocked commissioning must not suspend or recreate the cloud controller');
+  const provider = f.make(); await provider.reconcileOcpp();
+  assert.deepEqual(writes(f), []);
+  assert.equal(provider.localOcppStatus().setup.reason, 'cloud-schedule-active');
+  assert.equal(provider.chargerScheduleControl().ownershipNamespace, undefined);
+  assert.deepEqual(f.events.filter(event => event.type === 'transition'), []);
+  await provider.restoreOcpp();
+  assert.equal(provider.localOcppStatus().setup.state, 'disabled', 'Failed preflight leaves no restoration obligation or shutdown backoff');
+  assert.deepEqual(writes(f), []);
+});
+
+test('a schedule installed during native commissioning preflight prevents configuration writes and restores cloud control', async t => {
+  const f = fixture(t);
+  f.transition = ({ phase, target }) => {
+    if (phase === 'prepare' && target === 'native') f.schedule = { enabled: 'delayed',
+      delayed: { timezone: 'Europe/Helsinki', startTime: '22:00:00', maximumAmps: 16 } };
+  };
   const provider = f.make(); await provider.reconcileOcpp();
   assert.deepEqual(writes(f), []);
   assert.equal(provider.localOcppStatus().setup.reason, 'cloud-schedule-active');
   assert.equal(provider.chargerScheduleControl().ownershipNamespace, undefined);
   assert.deepEqual(f.events.filter(event => event.type === 'transition').map(({ phase, target }) => [phase, target]),
     [['prepare', 'native'], ['complete', 'cloud']]);
-  await provider.restoreOcpp();
-  assert.equal(provider.localOcppStatus().setup.state, 'disabled', 'Failed preflight leaves no restoration obligation or shutdown backoff');
-  assert.deepEqual(writes(f), []);
 });
 
 test('unsupported setup state fences listener authorization and both control backends before mutation', async t => {
@@ -205,7 +220,9 @@ test('ordinary provider close preserves native commissioning while explicit rest
   const count = writes(f).length; await first.close();
   assert.equal(writes(f).length, count); assert.equal(f.current.connectivityMode, 'DualProtocol');
   assert(f.states.get('setup').ownedFingerprint);
+  f.advance(30_001);
   const restarted = f.make(); await restarted.reconcileOcpp();
+  assert.equal(writes(f).length, count, 'Restart verifies matching native settings without applying them again');
   await restarted.restoreOcpp();
   assert.equal(f.current.connectivityMode, 'OcppOff');
   assert.equal(restarted.localOcppStatus().setup.state, 'disabled');
@@ -286,8 +303,8 @@ async function waitFor(condition) {
   assert.fail('Synthetic application did not reach the expected lifecycle boundary');
 }
 
-test('full application shutdown restores OcppOff while paired handover preserves native commissioning', async t => {
-  for (const preserveOcpp of [false, true]) {
+test('application shutdown preserves native commissioning on orderly stop and authority loss; restart does not reapply', async t => {
+  for (const restore of [true, false]) {
     const directory = mkdtempSync(join(tmpdir(), 'stmq-ocpp-lifecycle-'));
     t.after(() => rmSync(directory, { recursive: true, force: true }));
     const f = fixture(t), requestsReady = deferred();
@@ -297,9 +314,9 @@ test('full application shutdown restores OcppOff while paired handover preserves
     config.connections.easee = { ...f.config.connections.easee, local_ocpp: { ...f.config.connections.easee.local_ocpp,
       host: '127.0.0.1', port, server_url: `ws://192.0.2.10:${port}/ocpp` } };
     config.connections.mqtt = { address: '' };
-    const app = await start({ config, clock: () => AT, installSignalHandlers: false,
+    const app = await start({ config, clock: () => f.now, installSignalHandlers: false,
       providerOptions: { automatic: false, streamFactory: null, http: f.http } });
-    t.after(() => app.close({ preserveOcpp }));
+    t.after(() => app.close({ restore }));
     f.setupStateReader = () => app.store.getState('easee:ocpp-setup'); requestsReady.resolve();
     await waitFor(() => app.engine.ocppSetup.status()?.setup.state === 'connecting');
     assert.equal(app.engine.charging.charger('charger1').adapter.ownershipNamespace, 'ocpp');
@@ -318,11 +335,35 @@ test('full application shutdown restores OcppOff while paired handover preserves
       sampledValue: [{ measurand: 'Power.Active.Import', unit: 'W', value: '0' }] }] }]));
     await waitFor(() => app.engine.ocppSetup.status().available === true);
     const initialWrites = writes(f).length, closed = once(client, 'close');
-    await app.close({ restore: true, preserveOcpp }); await closed;
-    assert.equal(f.current.connectivityMode, preserveOcpp ? 'DualProtocol' : 'OcppOff');
-    assert.equal(writes(f).length, initialWrites + (preserveOcpp ? 0 : 2));
+    await app.close({ restore }); await closed;
+    assert.equal(f.current.connectivityMode, 'DualProtocol');
+    assert.equal(writes(f).length, initialWrites);
     const probe = createServer(); probe.listen(port, '127.0.0.1'); await once(probe, 'listening');
     await new Promise(resolve => probe.close(resolve));
+
+    f.advance(30_001);
+    const restartReady = deferred(); f.beforeRequest = () => restartReady.promise;
+    let nextConfig = config;
+    const restarted = await start({ config, readConfig: () => nextConfig, clock: () => f.now, installSignalHandlers: false,
+      providerOptions: { automatic: false, streamFactory: null, get http() { return f.newHttp(); } } });
+    t.after(() => restarted.close());
+    f.setupStateReader = () => restarted.store.getState('easee:ocpp-setup'); restartReady.resolve();
+    await waitFor(() => restarted.engine.ocppSetup.status()?.setup.state === 'connecting');
+    assert.equal(restarted.engine.charging.charger('charger1').adapter.ownershipNamespace, 'ocpp');
+    assert.equal(restarted.engine.ocppSetup.status().listening, true);
+    assert.equal(f.current.connectivityMode, 'DualProtocol');
+    assert.equal(writes(f).length, initialWrites, 'Reopening the persistent application does not reset charger mode');
+    if (restore) {
+      await restarted.reloadSettings();
+      assert.equal(f.current.connectivityMode, 'DualProtocol');
+      assert.equal(writes(f).length, initialWrites, 'Unchanged configuration reload does not reset charger mode');
+      nextConfig = clone(config); nextConfig.connections.easee.local_ocpp.enabled = false;
+      await restarted.reloadSettings();
+      assert.equal(f.current.connectivityMode, 'OcppOff', 'Explicit disabling still restores cloud mode through the old connection');
+      assert.equal(writes(f).length, initialWrites + 2);
+      assert.equal(restarted.engine.ocppSetup.status().setup.state, 'disabled');
+    }
+    await restarted.close();
   }
 });
 
@@ -375,6 +416,31 @@ async function nativeAppFixture(t, options) {
   return { f, provider, listener, adapter, controller, plan, profiles, physical, observe, refresh, createController,
     get saved() { return stored; }, nativeWrites: () => f.events.filter(row => row.type === 'native' && row.action !== 'GetCompositeSchedule') };
 }
+
+test('production native start authorization is fenced by live status, reconnect and app pause before controller polling', async t => {
+  for (const change of ['fault', 'unplug', 'reconnect', 'app-pause']) {
+    const x = await nativeAppFixture(t, { streaming: true });
+    x.f.streamRows = x.f.observations; x.provider.startStreaming();
+    const immediate = { ...x.plan, startAt: AT, periods: [{ startAt: AT, endAt: null }] };
+    await x.controller.update({ enabled: true, plan: immediate });
+    const canStart = x.listener.options.canStart;
+    assert.equal(canStart(), true, `${change}: an open period initially authorizes native startup`);
+    const before = x.controller.status();
+    x.f.advance(1000);
+    if (change === 'fault') x.physical('Faulted', 0);
+    if (change === 'unplug') x.physical('Available', 0, null);
+    if (change === 'reconnect') x.listener.control = { ...x.listener.control, connectionId: 'fixture-reconnected-socket' };
+    if (change === 'app-pause') {
+      x.observe({ 48: 0, 96: 52 }); x.f.streamRows = x.f.observations;
+    }
+    assert.equal(canStart(), false, `${change}: fresh device evidence revokes the queued start without another controller update`);
+    assert.deepEqual(x.controller.status(), before, `${change}: the command fence does not require controller reconciliation`);
+    x.f.advance(1000);
+    x.physical('Preparing', 0, null);
+    if (change === 'app-pause') { x.observe({ 48: 16, 96: 0 }); x.f.streamRows = x.f.observations; }
+    assert.equal(canStart(), false, `${change}: a recovered connection cannot reuse authorization issued before the interruption`);
+  }
+});
 
 test('production native adapter observes Easee app Stop and Enable, preserves native limits and restores manual priority', async t => {
   const x = await nativeAppFixture(t), { f, controller } = x;
@@ -494,6 +560,7 @@ test('a streamed app change while a native profile is queued revokes its final s
 
 test('native app schedule priority requires a fresh schedule before expiry handback and records the ready-by cycle', async t => {
   const x = await nativeAppFixture(t);
+  await x.controller.update({ enabled: false });
   x.f.schedule = { enabled: 'daily', daily: { timezone: 'UTC', periods: [{ startTime: '12:00', stopTime: '12:05', maximumAmps: 8 }] } };
   await x.refresh();
   let view = await x.controller.update({ enabled: true, plan: x.plan, readyBy: '12:04', timezone: 'UTC' });
@@ -509,6 +576,7 @@ test('native app schedule priority requires a fresh schedule before expiry handb
 
 test('natural delayed-schedule expiry does not invent an Easee app Charge now action', async t => {
   const x = await nativeAppFixture(t);
+  await x.controller.update({ enabled: false });
   x.f.schedule = { enabled: 'delayed', delayed: { timezone: 'UTC', startTime: '12:05', maximumAmps: 8 } };
   await x.refresh();
   let view = await x.controller.update({ enabled: true, plan: x.plan });
@@ -533,15 +601,16 @@ test('native transaction rollover keeps app priority and the same physical conne
   assert.deepEqual(view.manual, manual); assert.equal(view.phase, 'yielded');
 });
 
-test('an initially stopped Easee app remains authoritative through missing cloud evidence and restart', async t => {
+test('an observed Easee app pause remains authoritative through missing cloud evidence and restart', async t => {
   const x = await nativeAppFixture(t);
-  x.observe({ 31: false, 96: 53 }); await x.refresh();
+  await x.controller.update({ enabled: false });
+  x.f.advance(1000); x.observe({ 31: true, 48: 0, 96: 52 }); await x.refresh();
   let view = await x.controller.update({ enabled: true, plan: x.plan });
-  assert.equal(view.phase, 'unavailable'); assert.equal(view.errorCode, 'charger-stopped');
+  assert.equal(view.phase, 'yielded'); assert.equal(view.manual.kind, 'stop');
   x.f.cloudOffline = true; x.f.advance(61_000);
   const restarted = x.createController(x.saved); t.after(() => restarted.close());
   view = await restarted.update({ enabled: true, plan: x.plan, replan: true });
-  assert.equal(view.errorCode, 'charger-stopped'); assert.equal(x.nativeWrites().length, 0);
+  assert.equal(view.phase, 'yielded'); assert.equal(view.manual.kind, 'stop'); assert.equal(x.nativeWrites().length, 0);
 });
 
 test('older Easee cloud control observations cannot acknowledge or erase a newer app stop', async t => {
@@ -576,7 +645,7 @@ test('a newer Easee schedule wins over a takeover request for an earlier display
 test('production Use automatic confirms a local economic hold before enabling and resuming an Easee pause', async t => {
   const x = await nativeAppFixture(t), { f, controller } = x;
   x.observe({ 31: false, 48: 0, 96: 53, 109: 2 }); x.physical('SuspendedEVSE', 0); await x.refresh();
-  const prior = await controller.update({ enabled: true, plan: x.plan });
+  const prior = await controller.update({ enabled: false, plan: x.plan });
   assert.equal(prior.takeover.available, true);
   const start = f.events.length, hardLimits = f.observations.filter(row => [22, 23, 24, 47, 104, 111, 112, 113, 230, 231, 232].includes(row.id));
   const result = await controller.update({ enabled: true, takeover: prior.takeover.token });
@@ -601,7 +670,7 @@ test('production Use automatic disables an active native daily schedule permanen
   f.schedule = { enabled: 'daily', daily: { timezone: 'UTC', periods: [{ startTime: '13:00', stopTime: '14:00', maximumAmps: 8 }] } };
   await x.refresh();
   const immediate = { id: 'start-now', startAt: f.now, periods: [{ startAt: f.now, endAt: null }], feasible: true };
-  const prior = await controller.update({ enabled: true, plan: immediate });
+  const prior = await controller.update({ enabled: false, plan: immediate });
   assert.equal(prior.manual.kind, 'window');
   const result = await controller.update({ enabled: true, takeover: prior.takeover.token });
   assert.equal(result.takeover.state, 'confirmed'); assert.equal(result.phase, 'released');
@@ -619,7 +688,7 @@ test('production Use automatic disables an active native daily schedule permanen
 test('production takeover preserves restrictive positive current limits and fences a newer native instruction', async t => {
   const x = await nativeAppFixture(t), { f, controller } = x;
   x.observe({ 31: true, 48: 8, 96: 53, 109: 2 }); await x.refresh();
-  let prior = await controller.update({ enabled: true, plan: x.plan });
+  let prior = await controller.update({ enabled: false, plan: x.plan });
   let result = await controller.update({ enabled: true, takeover: prior.takeover.token });
   assert.equal(result.takeover.state, 'blocked'); assert.equal(result.errorCode, 'resume-current-limit');
   assert.equal(writes(f).some(row => row.path.endsWith('/commands/resume_charging')), false);
@@ -635,7 +704,7 @@ test('an interrupted native schedule disable retains the economic zero profile t
   const x = await nativeAppFixture(t), { f, controller } = x;
   f.schedule = { enabled: 'daily', daily: { timezone: 'UTC', periods: [{ startTime: '13:00', stopTime: '14:00', maximumAmps: 8 }] } };
   await x.refresh();
-  const prior = await controller.update({ enabled: true, plan: x.plan });
+  const prior = await controller.update({ enabled: false, plan: x.plan });
   f.beforeRequest = async () => {
     if (f.events.at(-1).path?.endsWith('/daily/disable') && f.events.at(-1).method === 'POST') {
       f.schedule = { enabled: 'none' }; throw Error('synthetic lost disable reply');
@@ -659,7 +728,7 @@ test('an interrupted native schedule disable retains the economic zero profile t
 test('a lost native resume reply cannot become manual release and remove the planned zero profile', async t => {
   const x = await nativeAppFixture(t), { f, controller } = x;
   x.observe({ 31: true, 48: 0, 96: 53, 109: 2 }); await x.refresh();
-  const prior = await controller.update({ enabled: true, plan: x.plan });
+  const prior = await controller.update({ enabled: false, plan: x.plan });
   f.beforeRequest = async () => {
     if (f.events.at(-1).path?.endsWith('/commands/resume_charging') && f.events.at(-1).method === 'POST') {
       f.observations = f.observations.map(row => [48, 96].includes(row.id)
@@ -679,4 +748,39 @@ test('a lost native resume reply cannot become manual release and remove the pla
   result = await restarted.update({ enabled: true, takeover: result.takeover.token });
   assert.equal(result.takeover.state, 'confirmed'); assert.equal(result.takeoverPending, null);
   assert.equal(writes(f).filter(row => row.path.endsWith('/commands/resume_charging')).length, 1);
+});
+
+test('automatic takeover waits for recovered transaction authority before replacing an Easee zero-current pause', async t => {
+  const x = await nativeAppFixture(t), { f, controller } = x;
+  x.observe({ 31: true, 48: 0, 96: 52, 109: 2 }); x.physical('SuspendedEVSE', 0, null); await x.refresh();
+  let result = await controller.update({ enabled: true, plan: x.plan });
+  assert.equal(result.errorCode, 'transaction-unconfirmed'); assert.ok(result.automaticTakeover);
+  assert.equal(x.nativeWrites().length, 0);
+  assert.equal(writes(f).some(row => row.path.endsWith('/commands/resume_charging')), false);
+
+  // The receiver validates independently reported, fresh transaction-bearing
+  // readings. Recovery preserves the unknown original session start time.
+  f.advance(1000); const confirmedAt = f.now;
+  const recover = () => {
+    x.listener.control = { ...x.listener.control, transaction: { id: 7, startedAt: null, confirmedAt,
+      provenance: 'meter-values', confirmed: true } };
+  };
+  x.physical('SuspendedEVSE', 0); recover();
+  const nativeRequest = x.listener.request;
+  x.listener.request = async (...args) => { const response = await nativeRequest(...args); recover(); return response; };
+  const before = f.events.length;
+  result = await controller.update({ enabled: true });
+  assert.equal(result.phase, 'paused'); assert.equal(result.manual, null);
+  assert.equal(result.snapshot.transactionStartedAt, null); assert.equal(result.snapshot.transactionProvenance, 'meter-values');
+  assert.equal(result.owned.transactionId, 7); assert.equal(result.automaticTakeover, null);
+  const events = f.events.slice(before), install = events.findIndex(row => row.action === 'SetChargingProfile'),
+    confirmed = events.findIndex(row => row.action === 'GetCompositeSchedule'),
+    resume = events.findIndex(row => row.path?.endsWith('/commands/resume_charging'));
+  assert.ok(install >= 0 && confirmed > install && resume > confirmed);
+  assert.equal(events.some(row => row.action === 'RemoteStartTransaction'), false);
+  assert.equal(writes(f).some(row => row.path.endsWith('/schedules/delayed')), false);
+  const restarted = x.createController(x.saved); t.after(() => restarted.close());
+  const count = writes(f).length;
+  result = await restarted.update({ enabled: true, plan: x.plan });
+  assert.equal(result.phase, 'paused'); assert.equal(writes(f).length, count);
 });

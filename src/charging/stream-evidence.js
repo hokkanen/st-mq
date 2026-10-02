@@ -1,9 +1,10 @@
 const MAX_AGE = 15 * 60_000;
-const IDS = new Set([31, 96, 100, 109, 250]);
+const IDS = new Set([31, 48, 96, 100, 109, 250]);
 const CONNECTED_MODES = [2, 3, 4, 6, 7, 8];
 const time = value => Number.isSafeInteger(value) && value >= 0;
 const validValue = (id, value) => id === 31 || id === 250 ? typeof value === 'boolean' || value === 0 || value === 1
-  : id === 96 ? Number.isFinite(value)
+  : id === 48 ? Number.isFinite(value) && value >= 0 && value <= 1000
+    : id === 96 ? Number.isFinite(value)
     : id === 100 ? ['A', 'B', 'C', 'D'].includes(value)
       : id === 109 && Number.isInteger(value) && value >= 0 && value <= 8;
 const sameValue = (id, left, right) => left === right || (id === 31 || id === 250) && Number(left) === Number(right);

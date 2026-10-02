@@ -22,10 +22,11 @@ current to the charger, vehicle and Equalizer. Cloud readings can back up local
 telemetry; control does not switch back merely because telemetry does. The
 [Easee setup record](audit/OCPP-SETUP.md) separates bounded live observations from
 synthetic protocol validation and untested installation conditions.
-Normal service stop requests cloud handback; paired handover keeps OCPP active.
-After a crash or power loss, new charging or Easee app Start can remain blocked
-waiting for approval. Restart ST-MQ or disable Direct OCPP through Easee
-configuration; an expired pause does not restore cloud authorization.
+Normal service stop, restart and paired handover keep OCPP enabled. While the
+controller is offline, new charging or Easee app Start can remain blocked waiting
+for approval. Restart ST-MQ to restore local control, or explicitly disable
+Direct OCPP through Easee configuration to return to cloud control. An expired
+pause does not restore cloud authorization.
 
 The Charger 2 profile targets the [Top AC Portable EV Charger](https://shelly-api-docs.shelly.cloud/gen2/Devices/ShellyX/XT1/TopACPortableEVCharger/) on Shelly XT1. The integration uses the documented EVSE roles for state, current, start permission and electrical data. This is not a generic Shelly relay adapter. [XT1](https://shelly-api-docs.shelly.cloud/gen2/Devices/ShellyX/XT1/) documents role addressing, service state and access permissions; [Number](https://shelly-api-docs.shelly.cloud/gen2/DynamicComponents/Virtual/Number/) documents numeric limits and `meta.ui.step`.
 
@@ -105,15 +106,23 @@ remain useful independently of control availability.
 The [MQTT channel](https://shelly-api-docs.shelly.cloud/gen2/ComponentsAndServices/Mqtt/) and [RPC envelope](https://shelly-api-docs.shelly.cloud/gen2/General/RPCProtocol/) are used on the configured broker. Subscription admission precedes bounded ordered replay. Requests use random correlated IDs and a per-instance reply route. Replies must come from the configured device; retained replies cannot confirm a command. Timestamped first-seen DUP notifications can establish a real source event, whereas replay cannot create another plug epoch. Oversized payloads, unknown roles and buffer overflow cannot grant control.
 
 Ordinary mutations use `Number.Set` for `current_limit` and `Boolean.Set` for
-`start_charging`. Explicit **Use automatic** additionally permits
+`start_charging`. Automatic takeover on a new confirmed physical connection and
+explicit **Use automatic** additionally permit
 [`Schedule.Update`](https://shelly-api-docs.shelly.cloud/gen2/ComponentsAndServices/Schedule/)
 with `{id, enable:false}` for verified charging-only jobs. It reads the complete
 job list and revision before and after each change, preserves unrelated jobs,
 and refuses mixed or opaque jobs that cannot safely be attributed to charging.
+When the price plan requires waiting, takeover first confirms native start
+permission is off before disabling those jobs. A rejected or unconfirmed stop
+leaves the schedules intact; uncertain commands retain their durable record.
 Superseded schedules remain disabled until externally changed again. A saved
 native permission reference prevents an old Stop from regaining priority after
 restart or unplugging; genuinely newer source evidence takes priority again.
-The action follows the economic plan, which can keep start permission false
+Known session ownership survives application or MQTT restart. Later manual
+instructions retain priority until unplugging or Use automatic; a genuinely
+missing saved session can take automatic control after fresh native evidence.
+An unreadable or invalid state cannot supply that permission. Takeover follows
+the economic plan, which can keep start permission false
 during a planned pause. It does not alter a current limit as part of takeover.
 Relay writes, service configuration writes and vehicle writes remain forbidden.
 Commands use QoS 0, `retain:false`, no offline queue and no automatic application

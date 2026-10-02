@@ -8,6 +8,7 @@ const MAX_FUTURE_MS = 1000;
 const CALL_TIMEOUT_MS = 15_000;
 const FIRST_MESSAGE_TIMEOUT_MS = 30_000;
 const NO_TRANSACTION_STATUSES = new Set(['Available', 'Finishing']);
+const RECOVERABLE_STATUSES = new Set(['Charging', 'SuspendedEVSE', 'SuspendedEV']);
 const REQUEST_ACTIONS = new Set(['SetChargingProfile', 'ClearChargingProfile', 'GetCompositeSchedule', 'GetConfiguration']);
 const requestError = code => Object.assign(new Error(code), { code });
 const unreachableAddresses = new BlockList();
@@ -93,7 +94,7 @@ export function ocppMeterReadings(payload, now) {
  * remote authorization with a known private tag. This endpoint does not infer
  * charging-profile support or silently convert an existing cloud schedule. */
 export function createEaseeOcpp({ config: input, chargerId, clock = Date.now, canControl = () => false,
-  onDisconnect = () => {}, state, virtualTag = '' } = {}) {
+  canStart = () => false, onDisconnect = () => {}, state, virtualTag = '' } = {}) {
   const config = localOcppConfiguration(input);
   if (typeof virtualTag !== 'string' || virtualTag.length > 20) throw new TypeError('Invalid private OCPP virtual tag');
   const plugAndCharge = config.authorization_mode === 'plug-and-charge';
@@ -105,6 +106,7 @@ export function createEaseeOcpp({ config: input, chargerId, clock = Date.now, ca
   let connectorStatus = null, connectorStatusAt = null, connectorReceivedAt = null, connectorStatusExplicit = false;
   let preparingAttempted = false, remoteStartStatus = 'idle';
   let observedTransaction = null, connectionId = null, authenticatedConnectionId = null, transactionEvidence = null;
+  let recoveryCandidate = null, recoveryConflict = false, evidenceBoundaryAt = null;
   const instanceId = randomUUID(); let connectionSequence = 0;
   let statusTransition = 0;
   const values = new Map(), replies = new Map(), pendingCalls = new Map();
@@ -115,7 +117,7 @@ export function createEaseeOcpp({ config: input, chargerId, clock = Date.now, ca
   let ledger = null, stateReady = false;
   const configurationFailures = new Set();
   const validLedger = value => value && value.version === 4 && value.scope === scope
-    && Object.keys(value).every(key => ['version', 'scope', 'nextId', 'latestStartAt', 'activeId', 'transactions'].includes(key))
+    && Object.keys(value).every(key => ['version', 'scope', 'nextId', 'latestStartAt', 'activeId', 'transactions', 'recovered'].includes(key))
     && Number.isSafeInteger(value.nextId) && value.nextId > 0 && value.nextId < 2147483647
     && Number.isSafeInteger(value.latestStartAt) && value.latestStartAt >= 0
     && (value.activeId === null || Number.isSafeInteger(value.activeId))
@@ -123,7 +125,7 @@ export function createEaseeOcpp({ config: input, chargerId, clock = Date.now, ca
     && new Set(value.transactions.map(row => row.id)).size === value.transactions.length
     && value.transactions.every(row => row && Object.keys(row).every(key => ['id', 'fingerprint', 'tagHash', 'status', 'startedAt', 'lastEvidenceAt', 'meterStart', 'stopFingerprint', 'stoppedAt', 'meterStop', 'endedByStatus', 'modeDisableIntent', 'endedByNewStart'].includes(key))
       && Number.isSafeInteger(row.id) && row.id > 0 && row.id < value.nextId
-      && /^[a-f0-9]{64}$/.test(row.fingerprint) && /^[a-f0-9]{64}$/.test(row.tagHash) && ['Accepted', 'Invalid'].includes(row.status)
+      && /^[a-f0-9]{64}$/.test(row.fingerprint) && /^[a-f0-9]{64}$/.test(row.tagHash) && ['Accepted', 'Blocked', 'Invalid'].includes(row.status)
       && Number.isSafeInteger(row.startedAt) && row.startedAt >= 0 && row.startedAt <= value.latestStartAt
       && Number.isSafeInteger(row.lastEvidenceAt) && row.lastEvidenceAt >= row.startedAt
       && Number.isSafeInteger(row.meterStart) && row.meterStart >= 0
@@ -158,7 +160,58 @@ export function createEaseeOcpp({ config: input, chargerId, clock = Date.now, ca
           && Number.isSafeInteger(row.meterStop) && row.meterStop >= 0))
     && value.transactions.filter(row => row.status === 'Accepted' && row.stoppedAt === undefined && !row.endedByStatus && !row.endedByNewStart).every(row => row.id === value.activeId)
     && (value.activeId === null || value.transactions.some(row => row.id === value.activeId && row.status === 'Accepted'
-      && row.stoppedAt === undefined && !row.endedByStatus && !row.endedByNewStart));
+      && row.stoppedAt === undefined && !row.endedByStatus && !row.endedByNewStart))
+    && (value.recovered === undefined || validRecovered(value));
+  const validRecovered = value => {
+    const recovered = value.recovered;
+    return recovered && Object.keys(recovered).length === 2
+      && Object.keys(recovered).every(key => ['activeId', 'transactions'].includes(key))
+      && (recovered.activeId === null || Number.isSafeInteger(recovered.activeId))
+      && !(recovered.activeId !== null && value.activeId !== null)
+      && Array.isArray(recovered.transactions) && recovered.transactions.length <= 128
+      && new Set(recovered.transactions.map(row => row?.id)).size === recovered.transactions.length
+      && recovered.transactions.every(row => row && Object.keys(row).every(key => ['id', 'observedAt', 'confirmedAt', 'lastEvidenceAt',
+        'endedByStatus', 'endedByNewStart', 'stoppedAt', 'meterStop', 'stopFingerprint', 'modeDisableIntent'].includes(key))
+        && Number.isSafeInteger(row.id) && row.id > 0 && row.id < 2147483647
+        && !value.transactions.some(known => known.id === row.id)
+        && Number.isSafeInteger(row.observedAt) && row.observedAt >= 0
+        && Number.isSafeInteger(row.confirmedAt) && row.confirmedAt - row.observedAt >= 1000
+        && Number.isSafeInteger(row.lastEvidenceAt) && row.lastEvidenceAt >= row.confirmedAt
+        && (row.endedByStatus === undefined || row.endedByStatus
+          && row.endedByNewStart === undefined
+          && Object.keys(row.endedByStatus).length === 3
+          && Object.keys(row.endedByStatus).every(key => ['status', 'at', 'receivedAt'].includes(key))
+          && NO_TRANSACTION_STATUSES.has(row.endedByStatus.status)
+          && Number.isSafeInteger(row.endedByStatus.at) && row.endedByStatus.at > row.lastEvidenceAt
+          && Number.isSafeInteger(row.endedByStatus.receivedAt) && row.endedByStatus.receivedAt >= 0
+          && row.endedByStatus.at - row.endedByStatus.receivedAt <= MAX_FUTURE_MS
+          && row.endedByStatus.receivedAt - row.endedByStatus.at <= MAX_AGE_MS)
+        && (row.endedByNewStart === undefined || row.endedByNewStart
+          && Object.keys(row.endedByNewStart).length === 2
+          && Object.keys(row.endedByNewStart).every(key => ['transactionId', 'startedAt'].includes(key))
+          && Number.isSafeInteger(row.endedByNewStart.startedAt) && row.endedByNewStart.startedAt > row.lastEvidenceAt
+          && row.endedByNewStart.startedAt > (row.modeDisableIntent?.requestedAt ?? 0)
+          && row.endedByNewStart.startedAt <= value.latestStartAt
+          && Number.isSafeInteger(row.endedByNewStart.transactionId) && row.endedByNewStart.transactionId > 0
+          && row.endedByNewStart.transactionId < value.nextId
+          && value.transactions.filter(next => next.id === row.endedByNewStart.transactionId)
+            .every(next => next.status === 'Accepted' && next.startedAt === row.endedByNewStart.startedAt))
+        && (row.modeDisableIntent === undefined || row.modeDisableIntent
+          && Object.keys(row.modeDisableIntent).every(key => ['requestedAt', 'connectionId', 'attemptedAt'].includes(key))
+          && Number.isSafeInteger(row.modeDisableIntent.requestedAt) && row.modeDisableIntent.requestedAt >= row.observedAt
+          && (row.modeDisableIntent.connectionId === null || typeof row.modeDisableIntent.connectionId === 'string'
+            && row.modeDisableIntent.connectionId.length > 0 && row.modeDisableIntent.connectionId.length <= 100)
+          && (row.modeDisableIntent.attemptedAt === undefined || Number.isSafeInteger(row.modeDisableIntent.attemptedAt)
+            && row.modeDisableIntent.attemptedAt >= row.modeDisableIntent.requestedAt))
+        && (row.stopFingerprint === undefined && row.stoppedAt === undefined && row.meterStop === undefined
+          || /^[a-f0-9]{64}$/.test(row.stopFingerprint) && Number.isSafeInteger(row.stoppedAt)
+            && row.stoppedAt >= row.observedAt && Number.isSafeInteger(row.meterStop) && row.meterStop >= 0
+            && (!row.endedByStatus || row.stoppedAt <= row.endedByStatus.at)))
+      && recovered.transactions.filter(row => !row.endedByStatus && !row.endedByNewStart && row.stoppedAt === undefined)
+        .every(row => row.id === recovered.activeId)
+      && (recovered.activeId === null || recovered.transactions.some(row => row.id === recovered.activeId
+        && !row.endedByStatus && !row.endedByNewStart && row.stoppedAt === undefined));
+  };
   const persist = next => {
     if (!stateReady || !state?.set) throw new Error('OCPP state unavailable');
     try { state.set(structuredClone(next)); ledger = next; }
@@ -184,16 +237,26 @@ export function createEaseeOcpp({ config: input, chargerId, clock = Date.now, ca
     configurationFailures.clear(); lastMessageAt = null; connectedAt = null; telemetryConfigured = false;
     connectorStatus = null; connectorStatusAt = null; connectorReceivedAt = null; connectorStatusExplicit = false;
     observedTransaction = null; connectionId = null; authenticatedConnectionId = null; transactionEvidence = null;
+    recoveryCandidate = null; recoveryConflict = false; evidenceBoundaryAt = null;
     preparingAttempted = false; remoteStartStatus = 'idle'; statusTransition++;
     onDisconnect();
   }
   function send(value) { if (!closed && canControl() && socket?.readyState === 1) socket.send(JSON.stringify(value)); }
-  const activeTransaction = () => ledger?.transactions.find(row => row.id === ledger.activeId);
+  const activeTransaction = () => ledger?.transactions.find(row => row.id === ledger.activeId)
+    ?? ledger?.recovered?.transactions.find(row => row.id === ledger.recovered.activeId);
+  const isRecovered = row => row?.observedAt !== undefined;
+  const updateTransaction = (row, retired = false, base = ledger) => isRecovered(row)
+    ? { ...base, recovered: { ...base.recovered, activeId: retired && base.recovered.activeId === row.id ? null : base.recovered.activeId,
+      transactions: base.recovered.transactions.map(known => known.id === row.id ? row : known) } }
+    : { ...base, activeId: retired && base.activeId === row.id ? null : base.activeId,
+      transactions: base.transactions.map(known => known.id === row.id ? row : known) };
   const afterModeDisable = active => active?.modeDisableIntent && authenticatedConnectionId
     && active.modeDisableIntent.connectionId !== authenticatedConnectionId;
   function canRequestRemoteStart() {
     const active = activeTransaction();
-    if (!active) return true;
+    if (recoveryConflict) return false;
+    if (!active) return !transactionEvidence || transactionEvidence.at < evidenceBoundaryAt
+      || NO_TRANSACTION_STATUSES.has(connectorStatus) && connectorStatusAt > transactionEvidence.at;
     const intent = active.modeDisableIntent, now = clock();
     // A mode change creates uncertainty, not proof that charging stopped.
     // Permit one recovery attempt only on a later authenticated connection,
@@ -212,14 +275,13 @@ export function createEaseeOcpp({ config: input, chargerId, clock = Date.now, ca
       finishRequest(call, 'ocpp-request-revoked'); sendNextCall(); return;
     }
     if (action === 'RemoteStartTransaction') {
-      if (!stateReady || !authorizationReady || !canRequestRemoteStart() || connectorStatus !== 'Preparing'
+      if (!stateReady || !authorizationReady || !permittedBy(canStart) || !canRequestRemoteStart() || connectorStatus !== 'Preparing'
         || transition !== statusTransition || clock() < connectorStatusAt || !transportFresh()) {
-        remoteStartStatus = 'cancelled'; sendNextCall(); return;
+        preparingAttempted = false; remoteStartStatus = 'cancelled'; sendNextCall(); return;
       }
       // A start permission must not outlive durable transaction storage.
       const active = activeTransaction();
-      try { persist(active ? { ...ledger, transactions: ledger.transactions.map(row => row.id === active.id
-        ? { ...row, modeDisableIntent: { ...row.modeDisableIntent, attemptedAt: clock() } } : row) } : ledger); }
+      try { persist(active ? updateTransaction({ ...active, modeDisableIntent: { ...active.modeDisableIntent, attemptedAt: clock() } }) : ledger); }
       catch { remoteStartStatus = 'unavailable'; sendNextCall(); return; }
       remoteStartStatus = 'pending';
     }
@@ -228,7 +290,7 @@ export function createEaseeOcpp({ config: input, chargerId, clock = Date.now, ca
   }
   function requestRemoteStart() {
     reconcileTransactionStatus();
-    if (!plugAndCharge || !authorizationReady || !stateReady || preparingAttempted
+    if (!plugAndCharge || !authorizationReady || !stateReady || !permittedBy(canStart) || preparingAttempted
       || connectorStatus !== 'Preparing' || !canRequestRemoteStart() || clock() < connectorStatusAt || !transportFresh()) return;
     preparingAttempted = true; remoteStartStatus = 'queued';
     callQueue.unshift({ action: 'RemoteStartTransaction', payload: { connectorId: 1, idTag: virtualTag }, transition: statusTransition });
@@ -244,19 +306,66 @@ export function createEaseeOcpp({ config: input, chargerId, clock = Date.now, ca
     callQueue.push({ action: 'TriggerMessage', payload: { requestedMessage: 'StatusNotification', connectorId: 1 } });
     sendNextCall();
   }
-  function applyReadings(readings, transactionId, receivedAt) {
-    if (readings.length && Number.isSafeInteger(transactionId) && transactionId > 0) {
+  function recoverTransaction(readings, transactionId, receivedAt, messageId) {
+    const validId = Number.isSafeInteger(transactionId) && transactionId > 0 && transactionId < 2147483647;
+    const powerReadings = readings.filter(row => row.id === 120);
+    const at = Math.max(...powerReadings.map(row => instant(row.timestamp)));
+    const fresh = validId && Number.isSafeInteger(at) && at >= evidenceBoundaryAt && at <= receivedAt
+      && clock() >= at && clock() - at <= MAX_AGE_MS;
+    if (!fresh) return true;
+    const currentPower = powerReadings.filter(row => instant(row.timestamp) === at), priorPower = values.get(120);
+    if (new Set(currentPower.map(row => row.value)).size !== 1
+      || instant(priorPower?.timestamp) === at && priorPower.value !== currentPower[0].value) {
+      recoveryConflict = true; observedTransaction = null; return true;
+    }
+    if (recoveryCandidate && at - recoveryCandidate.lastAt > MAX_AGE_MS) recoveryCandidate = null;
+    const active = activeTransaction();
+    // Two different current transaction identifiers on one connection cannot
+    // establish ownership. Keep telemetry, but revoke control until a new
+    // authenticated connection or an explicit transaction boundary resolves it.
+    if (at < Math.max(active?.lastEvidenceAt ?? 0, recoveryCandidate?.lastAt ?? 0)) return true;
+    if (active && active.id !== transactionId || recoveryCandidate && recoveryCandidate.id !== transactionId) {
+      recoveryConflict = true; observedTransaction = null; return true;
+    }
+    if (recoveryConflict || active && !isRecovered(active) || !messageId || !connectorStatusExplicit
+      || !RECOVERABLE_STATUSES.has(connectorStatus) || connectorStatusAt < evidenceBoundaryAt
+      || connectorStatusAt > at || !recoveryCandidate && receivedAt - connectorStatusAt > MAX_AGE_MS) return true;
+    const known = ledger.transactions.some(row => row.id === transactionId)
+      || ledger.recovered?.transactions.some(row => row.id === transactionId && row.id !== ledger.recovered.activeId);
+    if (known || !active && [...ledger.transactions, ...(ledger.recovered?.transactions ?? [])]
+      .some(row => Math.max(row.lastEvidenceAt, row.endedByStatus?.at ?? 0, row.stoppedAt ?? 0,
+        row.endedByNewStart?.startedAt ?? 0) >= at)) return true;
+    if (!recoveryCandidate) {
+      recoveryCandidate = { id: transactionId, firstAt: at, lastAt: at, messageId }; return true;
+    }
+    if (messageId === recoveryCandidate.messageId || at <= recoveryCandidate.lastAt) return true;
+    recoveryCandidate.lastAt = at;
+    if (at - recoveryCandidate.firstAt < 1000) return true;
+    if (!active) {
+      const recovered = ledger.recovered ?? { activeId: null, transactions: [] };
+      const transaction = { id: transactionId, observedAt: recoveryCandidate.firstAt, confirmedAt: at, lastEvidenceAt: at };
+      try { persist({ ...ledger, recovered: { activeId: transactionId,
+        transactions: [...recovered.transactions, transaction].slice(-128) } }); }
+      catch { return false; }
+    }
+    observedTransaction = { id: transactionId, at };
+    return true;
+  }
+  function applyReadings(readings, transactionId, receivedAt, messageId) {
+    if (readings.length && Number.isSafeInteger(transactionId) && transactionId > 0 && transactionId < 2147483647) {
       const at = Math.max(...readings.map(row => instant(row.timestamp)));
       if (!transactionEvidence || at >= transactionEvidence.at) transactionEvidence = { id: transactionId, at };
     }
-    const active = ledger?.transactions.find(row => row.id === ledger.activeId);
+    if (!recoverTransaction(readings, transactionId, receivedAt, messageId)) return false;
+    const active = activeTransaction();
     if (readings.length && active && transactionId === active.id) {
       const at = Math.max(...readings.map(row => instant(row.timestamp)));
       if (at > active.lastEvidenceAt) {
-        try { persist({ ...ledger, transactions: ledger.transactions.map(row => row.id === active.id ? { ...row, lastEvidenceAt: at } : row) }); }
+        try { persist(updateTransaction({ ...active, lastEvidenceAt: at })); }
         catch { return false; }
       }
-      if (at >= active.startedAt && (!observedTransaction || at >= observedTransaction.at)) observedTransaction = { id: transactionId, at };
+      if (!isRecovered(active) && !recoveryConflict && at >= active.startedAt
+        && (!observedTransaction || at >= observedTransaction.at)) observedTransaction = { id: transactionId, at };
     }
     for (const row of readings) {
       const before = values.get(row.id), at = instant(row.timestamp), priorAt = instant(before?.timestamp);
@@ -266,7 +375,7 @@ export function createEaseeOcpp({ config: input, chargerId, clock = Date.now, ca
     return true;
   }
   function reconcileTransactionStatus() {
-    const active = ledger?.transactions.find(row => row.id === ledger.activeId), now = clock();
+    const active = activeTransaction(), now = clock();
     if (!active || !transportFresh() || !connectorStatusExplicit || !NO_TRANSACTION_STATUSES.has(connectorStatus)
       || connectorStatusAt > now || now - connectorStatusAt > MAX_AGE_MS
       || connectorStatusAt <= active.lastEvidenceAt
@@ -278,9 +387,11 @@ export function createEaseeOcpp({ config: input, chargerId, clock = Date.now, ca
     // remains missing, including its energy counter. An old status cannot end a
     // newer session, even across restart or a native/cloud/native transition.
     const endedByStatus = { status: connectorStatus, at: connectorStatusAt, receivedAt: connectorReceivedAt };
-    try { persist({ ...ledger, activeId: null, transactions: ledger.transactions.map(row => row.id === active.id ? { ...row, endedByStatus } : row) }); }
+    try { persist(updateTransaction({ ...active, endedByStatus }, true)); }
     catch { return; }
     observedTransaction = null;
+    if (transactionEvidence?.id === active.id) transactionEvidence = null;
+    recoveryCandidate = null; recoveryConflict = false;
   }
   function releaseFutureReadings() {
     // Only this authenticated connection owns this bounded buffer. Original
@@ -289,7 +400,7 @@ export function createEaseeOcpp({ config: input, chargerId, clock = Date.now, ca
       const pending = futureReadings[index];
       if (instant(pending.row.timestamp) > clock()) { index++; continue; }
       futureReadings.splice(index, 1);
-      applyReadings([pending.row], pending.transactionId, pending.receivedAt);
+      applyReadings([pending.row], pending.transactionId, pending.receivedAt, pending.messageId);
     }
   }
   function prepareState() {
@@ -310,8 +421,14 @@ export function createEaseeOcpp({ config: input, chargerId, clock = Date.now, ca
     if (!ownsConnection) { ownsConnection = true; return prepareState(); }
     return stateReady;
   }
-  const authorized = tag => typeof tag === 'string' && (config.authorization_tags.some(value => equal(value, tag))
-    || plugAndCharge && authorizationReady && equal(virtualTag, tag));
+  const configuredTag = tag => typeof tag === 'string' && config.authorization_tags.some(value => equal(value, tag));
+  const automaticTag = tag => typeof tag === 'string' && !configuredTag(tag)
+    && plugAndCharge && authorizationReady && equal(virtualTag, tag);
+  const authorizationInfo = tag => automaticTag(tag)
+    // This tag represents a live controller permission, never a reusable RFID
+    // enrollment. OCPP expiryDate removes it from the authorization cache.
+    ? { status: permittedBy(canStart) ? 'Accepted' : 'Blocked', expiryDate: currentTime() }
+    : { status: configuredTag(tag) ? 'Accepted' : 'Invalid' };
   function receive(data, binary) {
     refreshAuthority();
     if (!canControl() || closed) { socket?.close(1008, 'Unavailable'); return; }
@@ -349,10 +466,15 @@ export function createEaseeOcpp({ config: input, chargerId, clock = Date.now, ca
     const requestHash = digest({ action, payload });
     if (replies.has(id)) {
       const prior = replies.get(id);
+      if (prior.requestHash !== requestHash) { send([4, id, 'ProtocolError', 'Conflicting message identifier', {}]); return; }
       if (['Authorize', 'StartTransaction'].includes(action)) {
         try { persist(ledger); } catch { send([4, id, 'InternalError', 'Transaction storage unavailable', {}]); return; }
       }
-      send(prior.requestHash === requestHash ? prior.reply : [4, id, 'ProtocolError', 'Conflicting message identifier', {}]); return;
+      // An Authorize retry asks about present permission. Transaction replies
+      // are durable historical acknowledgements and must remain unchanged.
+      if (action === 'Authorize') send([3, id, { idTagInfo: authorizationInfo(payload.idTag) }]);
+      else send(prior.reply);
+      return;
     }
     let response;
     if (action === 'BootNotification') {
@@ -362,17 +484,18 @@ export function createEaseeOcpp({ config: input, chargerId, clock = Date.now, ca
       values.clear(); futureReadings.length = 0; rejectRequests('ocpp-reconfigured'); booted = true; onDisconnect();
       connectionId = `${instanceId}:${++connectionSequence}`;
       connectorStatus = null; connectorStatusAt = null; connectorReceivedAt = null; connectorStatusExplicit = false; observedTransaction = null;
+      recoveryCandidate = null; recoveryConflict = false; evidenceBoundaryAt = clock();
       preparingAttempted = false; remoteStartStatus = 'idle'; statusTransition++;
       response = { status: 'Accepted', currentTime: currentTime(), interval: 30 };
     } else if (action === 'Heartbeat') response = { currentTime: currentTime() };
     else if (action === 'MeterValues') {
       const receivedAt = clock(), readings = ocppMeterReadings(payload, receivedAt + MAX_FUTURE_MS);
-      if (!applyReadings(readings.filter(row => instant(row.timestamp) <= receivedAt), payload.transactionId, receivedAt)) {
+      if (!applyReadings(readings.filter(row => instant(row.timestamp) <= receivedAt), payload.transactionId, receivedAt, id)) {
         send([4, id, 'InternalError', 'Transaction storage unavailable', {}]); return;
       }
       for (const row of readings.filter(row => instant(row.timestamp) > receivedAt)) {
         if (futureReadings.length === 32) futureReadings.shift();
-        futureReadings.push({ row, transactionId: payload.transactionId, receivedAt });
+        futureReadings.push({ row, transactionId: payload.transactionId, receivedAt, messageId: id });
       }
       response = {};
     } else if (action === 'Authorize') {
@@ -380,7 +503,7 @@ export function createEaseeOcpp({ config: input, chargerId, clock = Date.now, ca
         send([4, id, 'FormationViolation', 'Invalid authorization identifier', {}]); return;
       }
       try { persist(ledger); } catch { send([4, id, 'InternalError', 'Transaction storage unavailable', {}]); return; }
-      response = { idTagInfo: { status: authorized(payload.idTag) ? 'Accepted' : 'Invalid' } };
+      response = { idTagInfo: authorizationInfo(payload.idTag) };
     }
     else if (action === 'StartTransaction') {
       const startedAt = instant(payload.timestamp);
@@ -393,34 +516,43 @@ export function createEaseeOcpp({ config: input, chargerId, clock = Date.now, ca
       const fingerprint = digest({ scope, connectorId: 1, startedAt, meterStart: payload.meterStart, idTag: payload.idTag });
       let transaction = ledger.transactions.find(row => row.fingerprint === fingerprint);
       if (!transaction) {
-        const active = activeTransaction(), accepted = authorized(payload.idTag);
-        const supersedes = active && accepted && afterModeDisable(active)
-          && startedAt > Math.max(active.lastEvidenceAt, active.modeDisableIntent.requestedAt)
+        const active = activeTransaction(), authorization = authorizationInfo(payload.idTag), accepted = authorization.status === 'Accepted';
+        const supersedes = active && accepted && (isRecovered(active) || afterModeDisable(active))
+          && startedAt > Math.max(active.lastEvidenceAt, active.modeDisableIntent?.requestedAt ?? 0)
           && !futureReadings.some(pending => pending.transactionId === active.id && instant(pending.row.timestamp) >= startedAt);
         if (active && !supersedes || startedAt <= ledger.latestStartAt || ledger.nextId >= 2147483646
-          || ledger.transactions.some(row => row.endedByStatus && startedAt < row.endedByStatus.at)) {
+          || [...ledger.transactions, ...(ledger.recovered?.transactions ?? [])]
+            .some(row => row.endedByStatus && startedAt < row.endedByStatus.at)) {
           send([4, id, 'OccurrenceConstraintViolation', 'Transaction conflicts with recorded history', {}]); return;
         }
-        transaction = { id: ledger.nextId, fingerprint, tagHash: digest({ scope, idTag: payload.idTag }),
-          status: accepted ? 'Accepted' : 'Invalid', startedAt, lastEvidenceAt: startedAt, meterStart: payload.meterStart };
-        const transactions = supersedes ? ledger.transactions.map(row => row.id === active.id
-          ? { ...row, endedByNewStart: { transactionId: transaction.id, startedAt } } : row) : ledger.transactions;
-        const next = { ...ledger, nextId: ledger.nextId + 1, latestStartAt: startedAt,
+        let nextId = ledger.nextId;
+        while (ledger.recovered?.transactions.some(row => row.id === nextId)) nextId++;
+        if (nextId >= 2147483646) { send([4, id, 'OccurrenceConstraintViolation', 'Transaction identifier unavailable', {}]); return; }
+        transaction = { id: nextId, fingerprint, tagHash: digest({ scope, idTag: payload.idTag }),
+          status: authorization.status, startedAt, lastEvidenceAt: startedAt, meterStart: payload.meterStart };
+        const updated = supersedes ? updateTransaction({ ...active,
+          endedByNewStart: { transactionId: transaction.id, startedAt } }, true) : ledger;
+        const next = { ...updated, nextId: nextId + 1, latestStartAt: startedAt,
           activeId: transaction.status === 'Accepted' ? transaction.id : null,
-          transactions: [...transactions, transaction].slice(-128) };
+          transactions: [...updated.transactions, transaction].slice(-128) };
         try { persist(next); } catch { send([4, id, 'InternalError', 'Transaction storage unavailable', {}]); return; }
       } else {
         // Reconfirm durable storage before replaying a charging authorization.
         try { persist(ledger); } catch { send([4, id, 'InternalError', 'Transaction storage unavailable', {}]); return; }
       }
-      if (transaction.status === 'Accepted' && ledger.activeId === transaction.id) observedTransaction = { id: transaction.id, at: startedAt };
-      response = { transactionId: transaction.id, idTagInfo: { status: transaction.status } };
+      if (transaction.status === 'Accepted' && ledger.activeId === transaction.id) {
+        observedTransaction = { id: transaction.id, at: startedAt }; recoveryCandidate = null; recoveryConflict = false;
+      }
+      if (transaction.status === 'Blocked') preparingAttempted = false;
+      response = { transactionId: transaction.id, idTagInfo: { status: transaction.status,
+        ...(automaticTag(payload.idTag) ? { expiryDate: new Date(transaction.startedAt).toISOString() } : {}) } };
     } else if (action === 'StopTransaction') {
       if (!stateReady) { send([4, id, 'InternalError', 'Transaction storage unavailable', {}]); return; }
-      const stoppedAt = instant(payload.timestamp), transaction = ledger.transactions.find(row => row.id === payload.transactionId);
-      if (!transaction || transaction.status !== 'Accepted' || !Number.isSafeInteger(payload.meterStop)
+      const stoppedAt = instant(payload.timestamp), transaction = ledger.transactions.find(row => row.id === payload.transactionId)
+        ?? ledger.recovered?.transactions.find(row => row.id === payload.transactionId);
+      if (!transaction || !isRecovered(transaction) && !['Accepted', 'Blocked'].includes(transaction.status) || !Number.isSafeInteger(payload.meterStop)
         || payload.meterStop < 0 || !Number.isSafeInteger(stoppedAt)
-        || stoppedAt < transaction.startedAt || stoppedAt > clock()
+        || stoppedAt < (transaction.startedAt ?? transaction.observedAt) || stoppedAt > clock()
         || transaction.endedByStatus && stoppedAt > transaction.endedByStatus.at) {
         send([4, id, 'PropertyConstraintViolation', 'Unknown or invalid transaction end', {}]); return;
       }
@@ -428,11 +560,11 @@ export function createEaseeOcpp({ config: input, chargerId, clock = Date.now, ca
       if (transaction.stopFingerprint && transaction.stopFingerprint !== fingerprint) {
         send([4, id, 'ProtocolError', 'Conflicting transaction end', {}]); return;
       }
-      const next = { ...ledger, activeId: ledger.activeId === transaction.id ? null : ledger.activeId,
-        transactions: ledger.transactions.map(row => row.id === transaction.id
-          ? { ...row, stoppedAt, meterStop: payload.meterStop, stopFingerprint: fingerprint } : row) };
+      const next = updateTransaction({ ...transaction, stoppedAt, meterStop: payload.meterStop, stopFingerprint: fingerprint }, true);
       try { persist(next); } catch { send([4, id, 'InternalError', 'Transaction storage unavailable', {}]); return; }
       if (observedTransaction?.id === transaction.id) observedTransaction = null;
+      if (transactionEvidence?.id === transaction.id) transactionEvidence = null;
+      if (recoveryCandidate?.id === transaction.id) { recoveryCandidate = null; recoveryConflict = false; }
       response = {};
     } else if (action === 'StatusNotification') {
       const validStatuses = ['Available', 'Preparing', 'Charging', 'SuspendedEVSE', 'SuspendedEV', 'Finishing', 'Reserved', 'Unavailable', 'Faulted'];
@@ -447,6 +579,10 @@ export function createEaseeOcpp({ config: input, chargerId, clock = Date.now, ca
         if (connectorStatus !== status) { preparingAttempted = false; remoteStartStatus = 'idle'; statusTransition++; }
         connectorStatus = status; connectorStatusAt = at; connectorReceivedAt = clock(); connectorStatusExplicit = payload.timestamp !== undefined;
         if (['Available', 'Reserved', 'Unavailable'].includes(status)) observedTransaction = null;
+        if (!activeTransaction() && NO_TRANSACTION_STATUSES.has(status) && connectorStatusExplicit
+          && at <= clock() && clock() - at <= MAX_AGE_MS && at > (transactionEvidence?.at ?? Infinity)) {
+          transactionEvidence = null; recoveryCandidate = null; recoveryConflict = false;
+        }
       }
       response = {};
     } else if (['DiagnosticsStatusNotification', 'FirmwareStatusNotification'].includes(action)) response = {};
@@ -485,7 +621,7 @@ export function createEaseeOcpp({ config: input, chargerId, clock = Date.now, ca
             // TCP connection. Its late events cannot clear the new socket.
             const previous = socket; socket = null; previous?.terminate();
             reset(); socket = connection; connectionId = `${instanceId}:${++connectionSequence}`;
-            authenticatedConnectionId = connectionId; connectedAt = clock(); error = null;
+            authenticatedConnectionId = connectionId; connectedAt = clock(); evidenceBoundaryAt = connectedAt; error = null;
             socket.on('message', (data, binary) => { if (socket === connection) receive(data, binary); });
             socket.on('error', () => {});
             socket.on('close', () => { if (socket === connection) { socket = null; reset(); } });
@@ -536,8 +672,7 @@ export function createEaseeOcpp({ config: input, chargerId, clock = Date.now, ca
       // owned OcppOff intent, immediately before apply. Retried applies keep
       // the original boundary and cannot replenish a used recovery attempt.
       const modeDisableIntent = { requestedAt: now, connectionId: authenticatedConnectionId };
-      persist(active && !active.modeDisableIntent ? { ...ledger, transactions: ledger.transactions.map(row => row.id === active.id
-        ? { ...row, modeDisableIntent } : row) } : ledger);
+      persist(active && !active.modeDisableIntent ? updateTransaction({ ...active, modeDisableIntent }) : ledger);
     },
     request(action, payload, { signal, guard = () => true, beforeSend = () => true } = {}) {
       if (!REQUEST_ACTIONS.has(action)) return Promise.reject(requestError('ocpp-action-not-allowed'));
@@ -576,11 +711,12 @@ export function createEaseeOcpp({ config: input, chargerId, clock = Date.now, ca
       releaseFutureReadings();
       reconcileTransactionStatus();
       if (!stateReady) return null;
-      const active = ledger.transactions.find(row => row.id === ledger.activeId);
-      const confirmed = observedTransaction?.id === active?.id && clock() >= observedTransaction?.at
+      const active = activeTransaction();
+      const confirmed = !recoveryConflict && observedTransaction?.id === active?.id && clock() >= observedTransaction?.at
         && clock() - observedTransaction.at <= MAX_AGE_MS;
       return { connectionId, connectorStatus, timestamp: connectorStatusAt, receivedAt: connectorReceivedAt,
-        transaction: active ? { id: active.id, startedAt: active.startedAt, tagHash: active.tagHash, confirmed } : null,
+        transaction: active ? { id: active.id, startedAt: active.startedAt ?? null, tagHash: active.tagHash ?? null, confirmed,
+          provenance: isRecovered(active) ? 'meter-values' : 'start-transaction', confirmedAt: active.confirmedAt ?? active.startedAt } : null,
         readings: [...values.values()].filter(row => row.value !== null && instant(row.timestamp) <= clock()
           && clock() - instant(row.timestamp) <= MAX_AGE_MS).map(row => ({ ...row })) };
     },

@@ -452,6 +452,10 @@ export function createShellyController({ adapter, initialState, saveState = () =
       || Object.keys(initialState.automaticPermission).some(key => !['value', 'measuredAt'].includes(key))
       || typeof initialState.automaticPermission.value !== 'boolean' || !time(initialState.automaticPermission.measuredAt))
     || initialState.scheduleTakeoverPending !== undefined && typeof initialState.scheduleTakeoverPending !== 'boolean'
+    || initialState.automaticTakeover != null && (typeof initialState.automaticTakeover !== 'object'
+      || Object.keys(initialState.automaticTakeover).some(key => !['sessionId', 'fingerprint'].includes(key))
+      || !token(initialState.automaticTakeover.sessionId)
+      || initialState.automaticTakeover.fingerprint !== null && !/^[a-f0-9]{64}$/.test(initialState.automaticTakeover.fingerprint))
     || initialState.provisional !== undefined && typeof initialState.provisional !== 'boolean'
     || initialState.owned != null && !validIdentificationPause(initialState.owned)
     || initialState.pending?.owned != null && (!validIdentificationPause(initialState.pending.owned)
@@ -467,6 +471,10 @@ export function createShellyController({ adapter, initialState, saveState = () =
   const physicalFresh = field => fresh(field) && clock() - field.measuredAt <= adapter.config.maxAgeMs;
   const takeoverToken = snapshot => hash([snapshot.association, snapshot.generation, snapshot.session?.sessionId,
     snapshot.session?.connectedAt, snapshot.fields.start_charging?.value, snapshot.fields.start_charging?.measuredAt,
+    snapshot.fields.current_limit?.value, snapshot.fields.current_limit?.measuredAt,
+    scheduleToken(snapshot), snapshot.nativeScheduleRevision ?? null]);
+  const automaticFingerprint = snapshot => hash([snapshot.association, snapshot.session?.sessionId,
+    snapshot.fields.start_charging?.value, snapshot.fields.start_charging?.measuredAt,
     snapshot.fields.current_limit?.value, snapshot.fields.current_limit?.measuredAt,
     scheduleToken(snapshot), snapshot.nativeScheduleRevision ?? null]);
   const takeoverStatus = snapshot => {
@@ -524,7 +532,7 @@ export function createShellyController({ adapter, initialState, saveState = () =
     update(input = {}) {
       if (Object.hasOwn(input, 'resume')) throw fail('unsupported-shelly-control-input');
       const intentRevision = ++revision;
-      const takeoverRequested = typeof input.takeover === 'string';
+      let takeoverRequested = typeof input.takeover === 'string';
       const requestedSnapshot = adapter.snapshot();
       const takeoverCurrent = takeoverRequested && input.enabled === true
         && canControl() && takeoverStatus(requestedSnapshot).available && input.takeover === takeoverToken(requestedSnapshot);
@@ -539,23 +547,28 @@ export function createShellyController({ adapter, initialState, saveState = () =
         if (input.replan === true) { await persist(); planningRevision = input.controlsRevision ?? null; }
         await adapter.refresh();
         let snapshot = adapter.snapshot();
-        let acceptedTakeoverToken = null;
+        let acceptedTakeoverToken = null, takeoverPlan = null;
         if (takeoverRequested && (!takeoverCurrent || !canControl() || !takeoverStatus(snapshot).available || input.takeover !== takeoverToken(snapshot))) {
           takeoverResult = { state: 'blocked', reason: takeoverStatus(snapshot).available ? 'evse-takeover-changed'
             : takeoverStatus(snapshot).reason ?? 'evse-control-unavailable' };
           return;
         }
         const sessionId = snapshot.session?.sessionId;
-        if (state.sessionId !== sessionId) {
+        const changedSession = snapshot.session?.connected === true && sessionId && state.sessionId !== sessionId
+          || snapshot.session?.connected === false && state.sessionId != null;
+        if (changedSession) {
           state.manual = null; state.manualCurrentA = null; state.ownedPause = false; state.sessionId = sessionId;
           state.execution = null; state.provisional = false;
+          state.automaticTakeover = enabled && snapshot.session?.connected === true
+            ? { sessionId, fingerprint: snapshot.controlReady ? automaticFingerprint(snapshot) : null } : null;
           // An old connection's stop remains visible as a restoration obligation,
           // but never grants permission to start a newly connected vehicle.
           if (state.pending?.owned) state.owned ??= copy(state.pending.owned);
           state.pending = null;
           delete state.lastStart; delete state.lastStartAt; delete state.lastCurrent; delete state.lastCurrentAtSource;
         }
-        const start = snapshot.fields.start_charging, current = snapshot.fields.current_limit, workState = snapshot.fields.work_state;
+        let start = snapshot.fields.start_charging;
+        const current = snapshot.fields.current_limit, workState = snapshot.fields.work_state;
         const permittedState = [...adapter.config.connectedStates, ...adapter.config.chargingStates].includes(workState?.value);
         if (!snapshot.online || !snapshot.controlReady || !fresh(start) || !fresh(current) || !fresh(workState) || !permittedState || !sessionId) {
           identification = null;
@@ -565,20 +578,88 @@ export function createShellyController({ adapter, initialState, saveState = () =
           identification = null;
           state.phase = 'unavailable'; state.reason = snapshot.currentControlError ?? 'evse-current-control-unavailable'; await persist(); return;
         }
+        if (!enabled && state.automaticTakeover) { state.automaticTakeover = null; await persist(); }
+        if (!takeoverRequested && state.automaticTakeover) {
+          const claim = state.automaticTakeover, fingerprint = automaticFingerprint(snapshot);
+          if (claim.sessionId !== sessionId || claim.fingerprint !== null && claim.fingerprint !== fingerprint) {
+            state.automaticTakeover = null;
+            await persist();
+          } else if (start.value === true && !snapshot.nativeScheduleActive && !state.manual) {
+            state.automaticTakeover = null; await persist();
+          } else if (!takeoverStatus(snapshot).available || !canControl()) {
+            state.phase = 'unavailable'; state.reason = takeoverStatus(snapshot).reason ?? 'evse-control-unavailable';
+            await persist(); return;
+          } else {
+            if (claim.fingerprint === null) { state.automaticTakeover = { ...claim, fingerprint }; await persist(); }
+            takeoverPlan = typeof getPlan === 'function' ? await getPlan(copy(snapshot), { takeover: true }) : input.plan;
+            if (!takeoverPlan?.periods?.length) {
+              state.phase = 'unavailable'; state.reason = 'charging-plan-unavailable'; await persist(); return;
+            }
+            if (automaticFingerprint(adapter.snapshot()) !== fingerprint) {
+              state.automaticTakeover = null; await persist();
+              state.phase = 'uncertain'; state.reason = 'evse-takeover-changed'; return;
+            }
+            takeoverRequested = true;
+            takeoverAttemptToken = takeoverToken(snapshot); takeoverAttemptRevision = intentRevision;
+            takeoverResult = { state: 'pending', reason: null };
+          }
+        }
         if (takeoverRequested) {
-          const expectedStart = copy(start), expectedCurrent = copy(current), epoch = snapshot.generation;
-          const takeoverGuard = () => !closed && intentRevision === revision && canControl()
+          let expectedStart = copy(start);
+          const expectedCurrent = copy(current), epoch = snapshot.generation;
+          const takeoverContextCurrent = () => !closed && intentRevision === revision && canControl()
             && adapter.snapshot().generation === epoch && adapter.snapshot().association === state.association
             && adapter.snapshot().session?.sessionId === sessionId
-            && sameSetting(adapter.snapshot().fields.start_charging, expectedStart)
             && sameSetting(adapter.snapshot().fields.current_limit, expectedCurrent);
+          const takeoverGuard = () => takeoverContextCurrent()
+            && sameSetting(adapter.snapshot().fields.start_charging, expectedStart);
           try {
             if (!takeoverGuard()) throw fail('evse-takeover-changed');
+            // Consume this connection's automatic claim before any mutation.
+            // A lost reply must be reconciled, never repeated as a new takeover.
+            state.automaticTakeover = null;
+            await persist();
             if (snapshot.nativeScheduleActive) {
               if (typeof adapter.disableNativeSchedules !== 'function') throw fail('evse-native-schedule-unsupported');
+              takeoverPlan ??= typeof getPlan === 'function' ? await getPlan(copy(snapshot), { takeover: true }) : input.plan;
+              if (!takeoverGuard()) throw fail('evse-takeover-changed');
+              const openPeriod = takeoverPlan?.periods?.some(period => period.startAt <= clock()
+                && (period.endAt === null || period.endAt > clock()));
+              if (start.value === true && !openPeriod) {
+                // Removing a native schedule must never briefly release the car
+                // before the economic wait is installed. Confirm the native
+                // start permission first, using the same durable command journal.
+                const expectedSchedule = scheduleToken(snapshot), expectedScheduleRevision = snapshot.nativeScheduleRevision;
+                const expiresAt = clock() + 10000;
+                const pauseGuard = () => takeoverGuard() && clock() < expiresAt
+                  && scheduleToken(adapter.snapshot()) === expectedSchedule
+                  && adapter.snapshot().nativeScheduleRevision === expectedScheduleRevision;
+                state.pending = { association: state.association, sessionId, revision: intentRevision, expiresAt,
+                  role: 'start_charging', value: false, reason: 'automatic-takeover-wait', stage: 'proposed' };
+                await persist();
+                await adapter.rpc('Boolean.Set', { owner: `service:${adapter.config.serviceId}`, role: 'start_charging', value: false },
+                  { mutation: true, guard: pauseGuard, beforePublish: async () => {
+                    if (!pauseGuard()) throw fail('evse-takeover-changed');
+                    const prior = copy(state.pending);
+                    state.pending.stage = 'dispatched'; state.commandAt = state.pending.dispatchedAt = clock();
+                    try { await persist(); } catch (cause) { state.pending = prior; throw cause; }
+                  } });
+                state.pending.stage = 'accepted'; state.pending.acceptedAt = clock(); await persist();
+                await adapter.refresh();
+                snapshot = adapter.snapshot();
+                const readback = snapshot.fields.start_charging;
+                if (!takeoverContextCurrent() || !snapshot.controlReady || !fresh(readback) || readback.value !== false
+                  || readback.measuredAt < state.pending.dispatchedAt || readback.measuredAt > state.pending.acceptedAt
+                  || scheduleToken(snapshot) !== expectedSchedule || snapshot.nativeScheduleRevision !== expectedScheduleRevision)
+                  throw fail('evse-command-unconfirmed');
+                start = copy(readback); expectedStart = copy(readback);
+                state.lastStart = false; state.lastStartAt = readback.measuredAt; state.ownedPause = true;
+                state.automaticPermission = { value: false, measuredAt: readback.measuredAt };
+                state.pending = null; state.executionStage = 'read-back'; await persist();
+              }
               // Remember a possible native schedule effect across lost replies
               // and restart. It grants no retry or charging permission.
-              state.scheduleTakeoverPending = true;
+              state.scheduleTakeoverPending = true; state.nativeSchedule = scheduleToken(snapshot);
               await persist();
               await adapter.disableNativeSchedules({ guard: takeoverGuard, beforePublish: persist });
               await adapter.refresh();
@@ -589,6 +670,7 @@ export function createShellyController({ adapter, initialState, saveState = () =
             // when the economic plan will leave an existing Stop in place. Its
             // source clock prevents that old stop reappearing after unplug/restart.
             state.manual = null; state.pending = null; state.owned = null;
+            state.automaticTakeover = null;
             state.ownedPause = start.value === false;
             state.automaticPermission = { value: start.value, measuredAt: start.measuredAt };
             state.lastStart = start.value; state.lastStartAt = start.measuredAt;

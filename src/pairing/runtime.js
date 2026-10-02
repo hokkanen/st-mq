@@ -98,7 +98,7 @@ export async function startPaired({ config, readConfig, clock = Date.now, provid
       if (controllerToken) controllerToken.revoked = true;
       runtime?.revokeControl?.();
     },
-    async stopControl({ restore = false, preserveOcpp = false } = {}) {
+    async stopControl({ restore = false } = {}) {
       if (!restore) hooks.revokeControl();
       const previous = runtime; runtime = null;
       const token = controllerToken;
@@ -106,7 +106,7 @@ export async function startPaired({ config, readConfig, clock = Date.now, provid
       replicaAbort?.abort();
       historyAbort?.abort();
       await historyPending?.catch(() => {});
-      try { await previous?.close({ restore, preserveOcpp }); }
+      try { await previous?.close({ restore }); }
       finally { if (token) token.revoked = true; }
       await runtimeStarting?.catch(() => {});
     },

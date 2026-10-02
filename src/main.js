@@ -81,7 +81,7 @@ export async function start({ config = loadConfig(), readConfig = configurationR
     console.error(JSON.stringify({ event: 'controller-error',
       reason: databaseBusy ? 'database-busy' : 'controller-tick-failed', eventStored: false }));
   }
-  function close({ restore = true, preserveOcpp = false } = {}) {
+  function close({ restore = true } = {}) {
     if (closePending) return closePending;
     closed = true;
     runtimeUsable = false;
@@ -97,7 +97,7 @@ export async function start({ config = loadConfig(), readConfig = configurationR
       const replicationStopped = attempt(() => replication?.stop());
       await reloadPending?.catch(() => {});
       await authorityStopping?.catch(() => {});
-      await attempt(() => stopRuntime({ restore, preserveOcpp }));
+      await attempt(() => stopRuntime({ restore }));
       await attempt(() => authority?.close());
       await replicationStopped;
       await attempt(() => chartService?.close());
@@ -108,7 +108,7 @@ export async function start({ config = loadConfig(), readConfig = configurationR
     })();
     return closePending;
   }
-  function stopRuntime({ restore = true, preserveOcpp = false } = {}) {
+  function stopRuntime({ restore = true, deactivateOcpp = false } = {}) {
     restore = restore && canControl();
     clearTimeout(timer);
     // Revocation starts before any slow feature cleanup. MQTT queues cannot wait
@@ -135,10 +135,10 @@ export async function start({ config = loadConfig(), readConfig = configurationR
     runtimeStopPending = (async () => {
       const errors = [];
       const attempt = async fn => { try { return await fn(); } catch (error) { errors.push(error); } };
-      // Normal exit relinquishes native OCPP while the charger controller,
-      // listener, authenticated cloud transport and write authority still exist.
-      // Paired handover carries that same native session to the next master.
-      if (restore && !preserveOcpp) for (const acquisition of acquisitions)
+      // A process restart is a transport outage, not a change of charger mode.
+      // Only an explicit integration change relinquishes native OCPP through
+      // the old connection while its controller and write authority still exist.
+      if (restore && deactivateOcpp) for (const acquisition of acquisitions)
         await attempt(() => acquisition.restoreOcpp?.());
       await engine?.automationChangePromise?.catch(() => {});
       await attempt(() => engine?.charging?.close());
@@ -327,7 +327,10 @@ export async function start({ config = loadConfig(), readConfig = configurationR
       }
       runtimeUsable = false;
       try {
-        await stopRuntime(); stopped = true;
+        const previousEasee = config.connections?.easee, nextEasee = next.connections?.easee;
+        const deactivateOcpp = previousEasee?.charger_id !== nextEasee?.charger_id
+          || !isDeepStrictEqual(previousEasee?.local_ocpp, nextEasee?.local_ocpp);
+        await stopRuntime({ deactivateOcpp }); stopped = true;
         requireRunning();
         // A changed provider account/location must not reuse old current caches.
         // Keep unaffected providers' retry state, including shared rate limits.

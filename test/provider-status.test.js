@@ -960,8 +960,8 @@ test('completed setup does not imply complete fresh local measurements', () => {
     setup: { state: 'ready', endpointSource: 'configured' }, pendingConfiguration: ['MeterValuesSampledData'] };
   let display = easeeLocalConnectionDisplay({ localOcpp }, options);
   assert.equal(display.setup.label, 'Setup complete');
-  assert.match(display.outage, /normal shutdown requests a return to Easee cloud control.*paired handover keeps the local connection active/);
-  assert.match(display.outage, /failed handback, crash or power loss.*waiting for authorization.*Restart the controller or disable Direct OCPP/);
+  assert.match(display.outage, /shutdown, restart and paired handover keep local OCPP enabled/);
+  assert.match(display.outage, /offline.*wait for authorization.*Restart the controller or explicitly disable Direct OCPP/);
   assert.match(display.outage, /expired pause does not restore cloud authorization/);
   assert.equal(display.readings.label, 'Waiting for readings');
   assert.match(display.readings.detail, /acknowledge measurement settings/);

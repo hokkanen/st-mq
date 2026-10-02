@@ -43,6 +43,19 @@ function harness() {
   return h;
 }
 
+test('unsupported Easee schedule types block automatic takeover and do not offer an unusable action', async () => {
+  for (const kind of ['offPeak', 'tariff']) {
+    const h = harness();
+    h.schedules = normalizeScheduleState({ enabled: kind, [kind]: { timezone: 'UTC' } });
+    const view = await h.update();
+    assert.equal(view.errorCode, 'unsupported-schedule');
+    assert.equal(view.takeover.available, false);
+    assert.equal(view.takeover.token, null);
+    assert.equal(h.writes.length, 0);
+    await h.controller.close();
+  }
+});
+
 test('the retired resume control field is rejected before mutation', () => {
   const h = harness();
   for (const resume of [true, false]) assert.throws(() => h.update({ resume }), /Unsupported charging control field: resume/);
@@ -223,14 +236,14 @@ test('removing a manual window in Easee releases that connected session without 
   assert.equal(result.released, true); assert.equal(h.writes.length, 0);
 });
 
-test('disconnect preserves an observed manual window until its recorded expiry', async () => {
+test('a new physical connection supersedes the previous manual window before its expiry', async () => {
   const h = harness(); await h.update(); h.schedules = appWindow();
   await h.update(); h.mode = 1;
-  let result = await h.update(); assert.equal(result.phase, 'yielded'); assert.equal(result.manual.kind, 'window');
+  let result = await h.update(); assert.equal(result.phase, 'disconnected'); assert.equal(result.manual, null);
   h.mode = 2; h.restart(); result = await h.update();
-  assert.equal(result.phase, 'yielded'); assert.equal(h.writes.length, 1);
+  assert.equal(result.phase, 'waiting'); assert.equal(h.writes.length, 3);
   h.now = NOW + 2 * 3600_000; result = await h.update();
-  assert.equal(result.phase, 'waiting'); assert.equal(result.manual, null); assert.equal(h.writes.length, 2);
+  assert.equal(result.phase, 'waiting'); assert.equal(result.manual, null); assert.equal(h.writes.length, 3);
 });
 
 test('a new connection can plan again after the previous native one-off has released', async () => {
@@ -319,12 +332,12 @@ test('provider enforces charging cancellation after asynchronous authentication'
 const appWindow = () => normalizeScheduleState({ enabled: 'daily', daily: { timezone: 'UTC',
   periods: [{ startTime: '19:00', stopTime: '20:00', maximumAmps: 16 }] } });
 
-test('a pre-existing foreign native schedule retains priority until explicit resumption', async () => {
+test('automatic control supersedes a pre-existing recurring schedule when no session state exists', async () => {
   const h = harness(); h.schedules = appWindow();
   let result = await h.update();
-  assert.equal(result.phase, 'yielded'); assert.equal(result.manual.kind, 'window'); assert.equal(h.writes.length, 0);
+  assert.equal(result.phase, 'waiting'); assert.equal(result.manual, null); assert.equal(h.writes.length, 2);
   assert.equal(result.version, 5); assert.equal(result.session.connected, true);
-  result = await h.update({ takeover: result.takeover.token });
+  h.restart(); result = await h.update();
   assert.equal(result.phase, 'waiting'); assert.equal(result.manual, null);
   assert.equal(h.schedules.enabled, 'delayed'); assert.equal(h.writes.length, 2);
 });
@@ -346,12 +359,12 @@ test('a post-plug edit made while ST-MQ was stopped is recognized after restart'
   assert.equal(result.phase, 'yielded'); assert.equal(result.manual.kind, 'window'); assert.equal(h.writes.length, 0);
 });
 
-test('an app schedule change noticed before arrival retains priority when the vehicle connects', async () => {
+test('an app schedule set before arrival is superseded when the vehicle connects with automatic enabled', async () => {
   const h = harness(); h.mode = 1; await h.update({ enabled: false });
   h.schedules = appWindow(); await h.update({ enabled: false });
   h.mode = 2;
   const result = await h.update();
-  assert.equal(result.phase, 'yielded'); assert.equal(result.manual.kind, 'window'); assert.equal(h.writes.length, 0);
+  assert.equal(result.phase, 'waiting'); assert.equal(result.manual, null); assert.equal(h.writes.length, 2);
 });
 
 test('inactive cached schedule edits neither create manual priority nor lose confirmed ownership', async () => {
@@ -380,19 +393,19 @@ test('native expiry while off preserves the original unbounded manual instructio
   assert.equal(result.phase, 'yielded'); assert.equal(result.manual.kind, 'schedule'); assert.equal(h.writes.length, 0);
 });
 
-test('a pre-existing manual schedule requires explicit resumption even when already charging', async () => {
+test('initial automatic takeover schedules an already charging vehicle without claiming a confirmed pause', async () => {
   const h = harness(); h.mode = 3; h.schedules = appWindow();
-  assert.equal((await h.update()).phase, 'yielded'); assert.equal(h.writes.length, 0);
-  const result = await h.update({ takeover: h.controller.status().takeover.token });
+  const result = await h.update();
   assert.equal(result.phase, 'pause-unconfirmed'); assert.equal(result.manual, null); assert.equal(result.released, false);
   assert.equal(h.schedules.enabled, 'delayed'); assert.equal(h.writes.length, 2);
   assert.ok(h.writes[0].url.endsWith('/schedules/delayed'));
 });
 
-test('a pre-existing disabled state is unavailable, but a later stop is manual priority', async () => {
+test('initial automatic takeover clears a pre-existing stop, but a later stop remains manual across restart', async () => {
   const h = harness(); h.enabled = false; h.reason = 53;
   let result = await h.update();
-  assert.equal(result.phase, 'unavailable'); assert.equal(result.errorCode, 'charger-stopped'); assert.equal(result.manual, null);
+  assert.equal(result.phase, 'waiting'); assert.equal(result.errorCode, null); assert.equal(result.manual, null);
+  assert.equal(h.enabled, true); assert.equal(h.reason, null);
   h.mode = 1; await h.update(); h.enabled = true; h.reason = 54; h.mode = 2; await h.update();
   h.enabled = false; h.reason = 53;
   result = await h.update();
@@ -511,14 +524,12 @@ test('manual priority lasts through its end even across ready-by and setting cha
   assert.equal(result.manual, null); assert.equal(result.phase, 'waiting');
 });
 
-test('manual changes remain observable while disconnected, off, and across restarts', async () => {
+test('native schedules remain untouched while off and disconnected, then automatic takes control on arrival', async () => {
   const h = harness(); h.mode = 1; await h.update({ enabled: false });
   h.schedules = appWindow(); await h.update({ enabled: false }); h.restart();
   let result = await h.update({ enabled: false });
-  assert.equal(result.manual.kind, 'window'); assert.equal(h.writes.length, 0);
+  assert.equal(result.manual, null); assert.equal(result.snapshot.schedule.enabled, 'daily'); assert.equal(h.writes.length, 0);
   h.mode = 2; result = await h.update();
-  assert.equal(result.phase, 'yielded'); assert.equal(h.writes.length, 0);
-  result = await h.update({ takeover: result.takeover.token });
   assert.equal(result.phase, 'waiting'); assert.equal(result.manual, null); assert.equal(h.writes.length, 2);
   h.schedules = appWindow(); result = await h.update();
   assert.equal(result.phase, 'yielded', 'a later external edit supersedes acknowledgement');
@@ -556,7 +567,7 @@ test('an expired manual schedule remains untouched while disconnected and plans 
   let result = await h.update();
   assert.equal(result.phase, 'disconnected'); assert.equal(result.manual, null); assert.equal(h.writes.length, 0);
   h.mode = 2; result = await h.update();
-  assert.equal(result.phase, 'waiting'); assert.equal(h.writes.length, 1);
+  assert.equal(result.phase, 'waiting'); assert.equal(h.writes.length, 2);
 });
 
 test('a start-now plan created after API latency releases immediately without second precision errors', async () => {
@@ -1134,7 +1145,7 @@ test('a completed identification pause becomes the economic delay without briefl
 test('Use automatic confirms a price delay before clearing a native stop and keeps old schedules disabled after restart', async () => {
   const h = harness(); h.enabled = false; h.reason = 53; h.dynamicA = 0;
   h.schedules = normalizeScheduleState({ enabled: 'daily', daily: { timezone: 'UTC', periods: [{ startTime: '19:00', stopTime: '20:00', maximumAmps: 16 }] } });
-  const prior = await h.update(); assert.equal(prior.takeover.available, true);
+  const prior = await h.update({ enabled: false }); assert.equal(prior.takeover.available, true);
   const result = await h.update({ takeover: prior.takeover.token });
   assert.equal(result.takeover.state, 'confirmed'); assert.equal(result.takeover.attemptToken, prior.takeover.token);
   assert.equal(result.manual, null); assert.equal(result.phase, 'waiting');
@@ -1151,7 +1162,7 @@ test('Use automatic confirms a price delay before clearing a native stop and kee
 test('Use automatic clears a native schedule permanently when its economic plan allows charging now', async () => {
   const h = harness(); h.enabled = false;
   h.schedules = normalizeScheduleState({ enabled: 'weekly', weekly: { timezone: 'UTC', periods: [{ startDay: 'thursday', stopDay: 'thursday', startTime: '19:00', stopTime: '20:00', maximumAmps: 16 }] } });
-  const prior = await h.update();
+  const prior = await h.update({ enabled: false });
   const result = await h.update({ takeover: prior.takeover.token, plan: { id: 'now', startAt: NOW } });
   assert.equal(result.takeover.state, 'confirmed'); assert.equal(result.phase, 'released');
   assert.equal(h.schedules.enabled, 'none');
@@ -1160,7 +1171,7 @@ test('Use automatic clears a native schedule permanently when its economic plan 
 
 test('Use automatic rejects a newer displayed instruction and never retries the old takeover', async () => {
   const h = harness(); h.enabled = false;
-  const prior = await h.update(); h.reason = 53;
+  const prior = await h.update({ enabled: false }); h.reason = 53;
   const result = await h.update({ takeover: prior.takeover.token });
   assert.equal(result.takeover.state, 'blocked'); assert.equal(result.errorCode, 'takeover-stale'); assert.equal(h.writes.length, 0);
   await h.update(); assert.equal(h.writes.length, 0);
@@ -1169,7 +1180,7 @@ test('Use automatic rejects a newer displayed instruction and never retries the 
 test('Use automatic preserves faults, authorization and a separate restrictive dynamic current ceiling', async () => {
   for (const changes of [{ mode: 5 }, { reason: 55 }, { reason: 53, dynamicA: 8 }]) {
     const h = harness(); Object.assign(h, changes);
-    const prior = await h.update();
+    const prior = await h.update({ enabled: false });
     const result = await h.update({ takeover: prior.takeover.token ?? 'invalid-token' });
     assert.notEqual(result.takeover.state, 'confirmed'); assert.equal(h.writes.length, 0);
     if (changes.dynamicA) assert.equal(result.errorCode, 'resume-current-limit');
@@ -1178,7 +1189,7 @@ test('Use automatic preserves faults, authorization and a separate restrictive d
 
 test('failed explicit resume readback stays unconfirmed and ordinary polling does not resend it', async () => {
   const h = harness(); h.reason = 53;
-  const prior = await h.update();
+  const prior = await h.update({ enabled: false });
   let resumed = false;
   h.writeHook = async url => { if (url.endsWith('/resume_charging')) resumed = true; };
   h.readHook = async () => { if (resumed) h.reason = 53; };
@@ -1190,14 +1201,14 @@ test('failed explicit resume readback stays unconfirmed and ordinary polling doe
 
 test('Use automatic refuses to release a stop without a usable economic plan', async () => {
   const h = harness(); h.enabled = false;
-  const prior = await h.update();
+  const prior = await h.update({ enabled: false });
   const result = await h.update({ takeover: prior.takeover.token, plan: null });
   assert.equal(result.takeover.state, 'blocked'); assert.equal(h.writes.length, 0); assert.equal(h.enabled, false);
 });
 
 test('a new stop observed during takeover schedule installation prevents the subsequent enable or resume', async () => {
   const h = harness(); h.enabled = false; h.reason = 53;
-  const prior = await h.update();
+  const prior = await h.update({ enabled: false });
   h.writeHook = async url => { if (url.endsWith('/delayed')) h.now += 1000; };
   const result = await h.update({ takeover: prior.takeover.token });
   assert.equal(result.takeover.state, 'blocked'); assert.equal(result.errorCode, 'readback-mismatch');
@@ -1208,7 +1219,7 @@ test('a new stop observed during takeover schedule installation prevents the sub
 
 test('switching automatic off while takeover checks the enable command prevents any resume', async () => {
   const h = harness(); h.enabled = false; h.reason = 53;
-  const prior = await h.update(); let unblock, arrived, scheduled = false, reads = 0;
+  const prior = await h.update({ enabled: false }); let unblock, arrived, scheduled = false, reads = 0;
   const entered = new Promise(resolve => { arrived = resolve; });
   h.writeHook = async url => { if (url.endsWith('/delayed')) scheduled = true; };
   h.readHook = async url => {
@@ -1227,7 +1238,7 @@ test('future automatic handover explicitly disables the previous recurrence befo
   h.schedules = normalizeScheduleState({ enabled: 'weekly', weekly: { timezone: 'UTC', periods: [{ startDay: 'thursday', stopDay: 'thursday', startTime: '19:00', stopTime: '20:00', maximumAmps: 16 }] } });
   let recurringEnabled = true;
   h.writeHook = async url => { if (url.endsWith('/weekly/disable')) recurringEnabled = false; };
-  const prior = await h.update();
+  const prior = await h.update({ enabled: false });
   const result = await h.update({ takeover: prior.takeover.token });
   assert.equal(result.takeover.state, 'confirmed'); assert.equal(recurringEnabled, false);
   assert.equal(h.schedules.enabled, 'delayed');
@@ -1240,7 +1251,7 @@ test('a vendor disable response that removes the new delay blocks takeover befor
   const h = harness(); h.enabled = false; h.reason = 53;
   h.schedules = normalizeScheduleState({ enabled: 'daily', daily: { timezone: 'UTC', periods: [{ startTime: '19:00', stopTime: '20:00', maximumAmps: 16 }] } });
   h.writeHook = async url => { if (url.endsWith('/daily/disable')) h.schedules.enabled = 'none'; };
-  const prior = await h.update(); const result = await h.update({ takeover: prior.takeover.token });
+  const prior = await h.update({ enabled: false }); const result = await h.update({ takeover: prior.takeover.token });
   assert.equal(result.takeover.state, 'blocked'); assert.equal(result.errorCode, 'readback-mismatch');
   assert.equal(h.enabled, false); assert.equal(h.writes.length, 2);
   assert.equal(h.writes.some(row => row.url.endsWith('/settings') || row.url.endsWith('/resume_charging')), false);
@@ -1248,7 +1259,7 @@ test('a vendor disable response that removes the new delay blocks takeover befor
 
 test('an interrupted native resume retains its economic delay through polling and restart until a fresh explicit handover', async () => {
   const h = harness(); h.reason = 53;
-  const prior = await h.update();
+  const prior = await h.update({ enabled: false });
   h.writeHook = async url => { if (url.endsWith('/resume_charging')) { h.reason = null; throw Error('synthetic lost reply'); } };
   let result = await h.update({ takeover: prior.takeover.token });
   assert.equal(result.takeover.state, 'blocked'); assert.equal(h.saved.takeoverPending.stage, 'resume');
@@ -1263,7 +1274,7 @@ test('an interrupted native resume retains its economic delay through polling an
 
 test('failed final handover persistence retains the interrupted-mutation marker in memory and durable state', async () => {
   const h = harness(); h.enabled = false;
-  const prior = await h.update(); let failed = false;
+  const prior = await h.update({ enabled: false }); let failed = false;
   h.saveHook = value => { if (!failed && value.takeoverPending === null && value.session?.enabled === true) {
     failed = true; throw Error('synthetic failed final save');
   } };
@@ -1271,4 +1282,187 @@ test('failed final handover persistence retains the interrupted-mutation marker 
   assert.equal(result.takeover.state, 'blocked'); assert.ok(h.saved.takeoverPending); assert.ok(result.takeoverPending);
   const count = h.writes.length; result = await h.update();
   assert.equal(result.errorCode, 'takeover-unconfirmed'); assert.equal(h.writes.length, count); assert.equal(h.schedules.enabled, 'delayed');
+});
+
+test('an enabled charger with a zero dynamic charger restriction remains paused through restart', async () => {
+  const h = harness(); await h.update();
+  h.now += 60_000; h.reason = 52; h.dynamicA = 0;
+  let result = await h.update();
+  assert.equal(result.snapshot.enabled, true);
+  assert.equal(result.snapshot.dynamicChargerPaused, true);
+  assert.equal(result.phase, 'yielded'); assert.equal(result.manual.kind, 'stop');
+  assert.equal(h.writes.length, 1);
+  h.restart(); result = await h.update();
+  assert.equal(result.phase, 'yielded'); assert.equal(result.manual.kind, 'stop');
+  assert.equal(h.dynamicA, 0); assert.equal(h.writes.length, 1);
+  result = await h.update({ takeover: result.takeover.token });
+  assert.equal(result.phase, 'waiting'); assert.equal(result.manual, null);
+  assert.deepEqual(h.writes.slice(1).map(row => row.url.split('/').at(-1)), ['delayed', 'resume_charging']);
+  assert.equal(h.dynamicA, 32);
+});
+
+test('a new connection takes over a zero charger restriction only after confirming the economic delay', async () => {
+  const h = harness(); h.mode = 1; await h.update();
+  h.mode = 2; h.reason = 52; h.dynamicA = 0; h.now += 60_000;
+  h.writeHook = url => {
+    assert.ok(h.saved.automaticTakeover, 'The connection-scoped permission is durable before dispatch');
+    if (url.endsWith('/resume_charging')) assert.equal(h.schedules.enabled, 'delayed');
+  };
+  const result = await h.update();
+  assert.equal(result.phase, 'waiting'); assert.equal(result.automaticTakeover, null);
+  assert.deepEqual(h.writes.map(row => row.url.split('/').at(-1)), ['delayed', 'resume_charging']);
+  assert.equal(h.enabled, true);
+});
+
+test('missing planning inputs retain automatic takeover across restart without releasing the existing pause', async () => {
+  const h = harness(); h.reason = 52; h.dynamicA = 0;
+  let result = await h.update({ plan: null });
+  assert.ok(result.automaticTakeover); assert.equal(h.writes.length, 0); assert.equal(h.dynamicA, 0);
+  h.restart(); result = await h.update();
+  assert.equal(result.phase, 'waiting'); assert.equal(result.automaticTakeover, null);
+  assert.deepEqual(h.writes.map(row => row.url.split('/').at(-1)), ['delayed', 'resume_charging']);
+});
+
+test('a newer external instruction cancels pending initial takeover instead of being acknowledged by a retry', async () => {
+  const h = harness(); h.schedules = appWindow();
+  let result = await h.update({ plan: null });
+  assert.ok(result.automaticTakeover); assert.equal(h.writes.length, 0);
+  h.schedules.daily.periods[0].stopTime = '22:00:00'; h.now += 1000;
+  h.restart(); result = await h.update();
+  assert.equal(result.phase, 'yielded'); assert.equal(result.automaticTakeover, null);
+  assert.equal(result.manual.kind, 'window'); assert.equal(h.writes.length, 0);
+  await h.update(); assert.equal(h.writes.length, 0);
+});
+
+test('normal operating-mode updates do not cancel an initial takeover waiting for its plan', async () => {
+  const h = harness(); h.schedules = appWindow();
+  await h.update({ plan: null });
+  h.now += 1000; h.mode = 3; h.reason = 0;
+  h.restart(); const result = await h.update();
+  assert.equal(result.phase, 'pause-unconfirmed'); assert.equal(result.manual, null);
+  assert.equal(result.automaticTakeover, null); assert.equal(h.schedules.enabled, 'delayed');
+  assert.equal(h.writes.length, 2);
+});
+
+test('fault recovery does not replace the frozen instruction while initial takeover waits', async () => {
+  const h = harness(); h.schedules = appWindow();
+  await h.update({ plan: null });
+  h.now += 1000; h.mode = 5; h.reason = 56;
+  let result = await h.update();
+  assert.equal(result.errorCode, 'charger-fault'); assert.ok(result.automaticTakeover);
+  assert.equal(h.writes.length, 0);
+  h.now += 1000; h.mode = 2; h.reason = 54;
+  result = await h.update();
+  assert.equal(result.phase, 'waiting'); assert.equal(result.manual, null);
+  assert.equal(result.automaticTakeover, null); assert.equal(h.writes.length, 2);
+});
+
+test('a new stop still supersedes a pending initial schedule takeover', async () => {
+  const h = harness(); h.schedules = appWindow();
+  await h.update({ plan: null });
+  h.now += 1000; h.reason = 52; h.dynamicA = 0;
+  const result = await h.update();
+  assert.equal(result.phase, 'yielded'); assert.equal(result.manual.kind, 'stop');
+  assert.equal(result.automaticTakeover, null); assert.equal(h.writes.length, 0);
+});
+
+test('an older disconnected source replay after restart cannot erase current-session manual priority', async () => {
+  const h = harness(); await h.update();
+  h.now += 1000; h.enabled = false; h.reason = 53;
+  const stopped = await h.update();
+  h.now += 2000; const newer = await h.update();
+  h.now += 1000; h.mode = 1;
+  const read = h.adapter.read;
+  h.adapter.read = async options => ({ ...await read(options), modeAt: NOW + 2000, disconnectedAt: NOW + 2000 });
+  h.restart(); let result = await h.update();
+  assert.equal(result.errorCode, 'incomplete-state'); assert.deepEqual(result.manual, stopped.manual);
+  assert.equal(result.session.connectedAt, stopped.session.connectedAt);
+  assert.equal(result.session.modeAt, newer.session.modeAt);
+  h.now += 1000; h.restart(); result = await h.update();
+  assert.equal(result.errorCode, 'incomplete-state'); assert.deepEqual(result.manual, stopped.manual);
+  assert.equal(result.session.modeAt, newer.session.modeAt, 'Repeated stale reads cannot lower the accepted source watermark');
+  h.adapter.read = read; h.mode = 2; h.now += 1000;
+  result = await h.update();
+  assert.equal(result.phase, 'yielded'); assert.deepEqual(result.manual, stopped.manual);
+  assert.equal(result.automaticTakeover, null); assert.equal(h.writes.length, 1);
+});
+
+test('a newer zero-limit pause source event prevents release during takeover preflight', async () => {
+  const h = harness(); h.reason = 52; h.dynamicA = 0;
+  const prior = await h.update({ enabled: false });
+  let reads = 0;
+  h.readHook = url => { if (url.endsWith('/schedules') && ++reads === 2) h.now += 1000; };
+  const result = await h.update({ takeover: prior.takeover.token });
+  assert.notEqual(result.takeover.state, 'confirmed');
+  assert.equal(h.writes.length, 0); assert.equal(h.dynamicA, 0);
+});
+
+test('unreadable initial control state cannot establish a connection or consume automatic takeover authority', async () => {
+  const h = harness(); h.reason = 52; h.dynamicA = 0;
+  const read = h.adapter.read;
+  h.adapter.read = async options => ({ ...await read(options), controlKnown: false });
+  let result = await h.update();
+  assert.equal(result.errorCode, 'incomplete-state'); assert.equal(result.session, null);
+  assert.equal(h.writes.length, 0);
+  h.adapter.read = read;
+  result = await h.update();
+  assert.equal(result.phase, 'waiting'); assert.equal(h.writes.length, 2);
+});
+
+test('a reported charger-current restriction with an unknown current value cannot authorize takeover', async () => {
+  const h = harness(); h.reason = 52; h.dynamicA = null;
+  const result = await h.update();
+  assert.equal(result.errorCode, 'incomplete-state'); assert.equal(result.snapshot.controlKnown, false);
+  assert.equal(result.takeover.available, false); assert.equal(h.writes.length, 0);
+});
+
+test('resuming a stopped charger accepts an unchanged positive current limit without inventing a new source clock', async () => {
+  const h = harness(); h.reason = 53;
+  h.adapter = createEaseeScheduleAdapter({ request: async (url, options) => {
+    const value = await h.request(url, options);
+    return Array.isArray(value) ? value.map(row => row.id === 48
+      ? { ...row, timestamp: new Date(NOW - 60_000).toISOString() } : row) : value;
+  }, chargerId: 'synthetic-charger', clock: () => h.now, canControl: () => h.allowed });
+  h.restart();
+  const prior = await h.update({ enabled: false });
+  const result = await h.update({ takeover: prior.takeover.token });
+  assert.equal(result.phase, 'waiting'); assert.equal(result.takeover.state, 'confirmed');
+  assert.equal(result.snapshot.observations[48].at, NOW - 60_000);
+});
+
+test('an old initial control reading cannot establish automatic ownership or dispatch a plan', async () => {
+  const h = harness(), read = h.adapter.read;
+  h.adapter.read = async options => ({ ...await read(options), readAt: h.now - 61_000 });
+  const result = await h.update();
+  assert.equal(result.errorCode, 'incomplete-state'); assert.equal(result.session, null);
+  assert.equal(h.writes.length, 0);
+});
+
+test('turning automatic off cancels initial takeover and does not replay it when enabled again', async () => {
+  const h = harness(); h.reason = 52; h.dynamicA = 0;
+  await h.update({ plan: null });
+  const off = await h.update({ enabled: false });
+  assert.equal(off.automaticTakeover, null); assert.equal(h.writes.length, 0);
+  h.restart(); const result = await h.update();
+  assert.equal(result.errorCode, 'charger-stopped'); assert.equal(h.writes.length, 0); assert.equal(h.dynamicA, 0);
+});
+
+test('malformed persisted automatic takeover does not authorize any charger mutation', () => {
+  const h = harness();
+  for (const marker of [{ connectedAt: NOW, fingerprint: 'not-a-fingerprint' },
+    { connectedAt: 'now', fingerprint: 'a'.repeat(64) }, { connectedAt: NOW, fingerprint: 'a'.repeat(64), authorized: true }]) {
+    assert.throws(() => createChargingController({ adapter: h.adapter, initialState: { version: 5,
+      automaticTakeover: marker } }), /Unsupported charging ownership/);
+  }
+  assert.equal(h.writes.length, 0);
+});
+
+test('malformed persisted connection state is rejected rather than treated as an absent session', async () => {
+  const h = harness(); await h.update({ enabled: false });
+  for (const session of [{}, [], 'missing', { ...h.saved.session, connectedAt: null },
+    { ...h.saved.session, observedAt: 'now' }, { ...h.saved.session, retired: true }]) {
+    assert.throws(() => createChargingController({ adapter: h.adapter, initialState: { ...h.saved, session } }),
+      /Unsupported charging ownership/);
+  }
+  assert.equal(h.writes.length, 0);
 });
