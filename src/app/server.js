@@ -372,11 +372,11 @@ export function createAppServer({ engine, getEngine = () => engine, store, chart
             const result = current.charging.chargingTestAction(chargingTestAction[1], input);
             return json(200, chargingTestAction[1] === 'preview' ? result : status());
           });
-        const chargerAction = url.pathname.match(/^\/api\/charging\/chargers\/([^/]+)\/(settings|control|resume|charge-now|identify)$/);
+        const chargerAction = url.pathname.match(/^\/api\/charging\/chargers\/([^/]+)\/(settings|control|resume|use-automatic|charge-now|identify)$/);
         if (req.method === 'POST' && chargerAction)
           return await mutate(async (current, input) => {
             const [, id, action] = chargerAction;
-            const method = { settings: 'setChargerSettings', control: 'setControl', resume: 'resume', 'charge-now': 'chargeNow', identify: 'identifyVehicle' }[action];
+            const method = { settings: 'setChargerSettings', control: 'setControl', resume: 'resume', 'use-automatic': 'useAutomatic', 'charge-now': 'chargeNow', identify: 'identifyVehicle' }[action];
             await current.charging[method](id, input); return json(200, status());
           });
         if (req.method === 'POST' && url.pathname === '/api/garage/heating')

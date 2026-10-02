@@ -380,12 +380,14 @@ export function createDeviceProviders({ connections = {}, http, tokenStore, cloc
     // dispatch, including a retry after asynchronous authentication or storage.
     if ((responseText || url.startsWith(`${API}/local-ocpp/`) && options.method === 'POST') && !canControl())
       throw new Error('Controller authority was revoked');
-    if (responseText && url.includes('/schedules') && controlBackend !== 'cloud')
+    const nativeScheduleDisable = options.nativeTakeover === true && controlBackend === 'native'
+      && /\/schedules\/(delayed|daily|weekly)\/disable$/.test(url) && options.method === 'POST';
+    if (responseText && url.includes('/schedules') && controlBackend !== 'cloud' && !nativeScheduleDisable)
       throw new Error('Cloud charging control is inactive while native OCPP owns charging');
     if (responseText && options.controlGuard && !options.controlGuard()) throw new Error('Charging schedule authority was revoked');
     if (options.signal?.aborted) throw new Error('Provider request was aborted');
     admitRequest();
-    const { controlGuard, ...transportOptions } = options;
+    const { controlGuard, nativeTakeover, ...transportOptions } = options;
     try { return await request(url, transportOptions, 'Easee', responseText); }
     catch (error) {
       if (httpStatus(error) === 429) blockedUntil = Math.max(blockedUntil, clock() + (error.retryAfterMs ?? 300_000));
@@ -540,6 +542,16 @@ export function createDeviceProviders({ connections = {}, http, tokenStore, cloc
   }
   const scheduleControl = createEaseeScheduleAdapter({ request: easeeAuthenticated, readObservations,
     chargerId: easee.charger_id, equalizerId: easee.equalizer_id, clock, canControl: () => !invalidOcppSetup && canControl() });
+  // Native OCPP still needs the vendor API to clear vendor Start/Stop and
+  // schedules on an explicit handover. It never installs a cloud schedule.
+  const nativeTakeoverControl = createEaseeScheduleAdapter({
+    request: async (url, options, responseText) => {
+      const result = await easeeAuthenticated(url, { ...options, nativeTakeover: true }, responseText);
+      return options.method === 'GET' && url.endsWith('/schedules') && result?.enabled === 'ocpp.direct'
+        ? { enabled: 'none' } : result;
+    }, readObservations, chargerId: easee.charger_id, equalizerId: easee.equalizer_id, clock,
+    canControl: () => !closed && !invalidOcppSetup && canControl() && controlBackend === 'native',
+  });
   let nativeCloudSnapshot = null, nativeCloudSchedule = null, nativeCloudFlight = null, nextNativeCloudRead = 0;
   function refreshNativeCloudTelemetry({ force = false } = {}) {
     if (closed) return null;
@@ -584,6 +596,20 @@ export function createDeviceProviders({ connections = {}, http, tokenStore, cloc
   const nativeScheduleControl = ocppInstallation ? createOcppScheduleAdapter({ scope: ocppInstallation.scope, clock,
     canControl: () => !closed && canControl() && controlBackend === 'native',
     request: (...args) => local.request(...args),
+    takeoverNative: async ({ expectedAppControl, signal, canMutate, beforeWrite }) => {
+      const snapshot = await nativeTakeoverControl.read({ signal, forceRest: true });
+      const remember = value => {
+        nativeCloudSnapshot = value;
+        nativeCloudSchedule = { readAt: value.readAt, schedule: value.schedule };
+      };
+      remember(snapshot);
+      if (!canMutate() || appSignature(nativeAppControl()) !== appSignature(expectedAppControl))
+        throw Object.assign(new Error('The charger instruction changed before automatic handover.'), { code: 'takeover-stale' });
+      const result = await nativeTakeoverControl.takeover({ expectedSnapshot: snapshot, signal, canMutate, beforeWrite,
+        afterWrite: ({ snapshot: confirmed }) => remember(confirmed) });
+      remember(result);
+      return nativeAppControl();
+    },
     isCurrent: (snapshot, { requireTransaction = true, unchangedStatus = false } = {}) => {
       const current = local.controlSnapshot?.();
       return Boolean(current && current.connectionId === snapshot.connectionId && (!requireTransaction

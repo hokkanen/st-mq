@@ -127,8 +127,8 @@ restarting, OFF/ON and editing ready-by do not erase or move a window end.
 Own confirmed/recovered writes, inactive
 schedule caches and normal one-off expiry are excluded from manual detection.
 
-The resume action acknowledges the currently observed manual fingerprint. A
-newer edit discovered during its fresh read wins again. Expiry also requires a
+The explicit Use automatic action acknowledges the displayed native instruction.
+A newer edit discovered during its fresh read wins again. Expiry also requires a
 fresh read before handback; loss of communication keeps handover visibly pending.
 The controller records why handback occurred so the runtime can advance to the
 next readiness cycle when the manual window ends after ready-by.
@@ -146,9 +146,25 @@ Charge now when `/schedules` remains unchanged. ST-MQ then relinquishes only its
 own delay and yields until confirmed unplug or explicit resumption.
 Initial charging before any verified pause is separate and remains schedulable.
 Zero power, Equalizer pauses and ordinary operating-mode changes do
-not create manual priority. A disabled charger, authorization request or fault
-remains unavailable; no enable, authorization, start/stop or current command is
-issued. Final release remains open even after its estimated completion/deadline.
+not create manual priority. Ordinary scheduling preserves a disabled charger,
+authorization request or fault. Final release remains open even after its
+estimated completion/deadline.
+
+The separate **Use automatic** action supersedes earlier observed manual
+instructions and disables supported delayed/daily/weekly charging schedules.
+It may use the documented [enabled setting](https://developer.easee.com/reference/charger_setchargersetting)
+and [resume command](https://developer.easee.com/reference/charger_resumesession).
+It never uses the authorizing start command. Resume resets Easee's dynamic
+charger ceiling: a distinct positive restrictive ceiling blocks this command;
+an explicit stopped zero ceiling can be cleared only with known hard electrical
+limits. No charger/circuit/cable setting is increased. A future economic pause
+is installed and confirmed before enabling or resuming the charger. Cloud mode
+uses a delayed schedule; local OCPP uses a bounded zero-current profile on a
+confirmed transaction, never a second cloud economic schedule. An unconfirmed
+transaction therefore cannot perform a takeover requiring a future pause.
+Source-clocked preflight and readback fence newer changes. Superseded native
+schedules are not restored, while subsequent external instructions regain
+priority. State observations cannot guarantee who or which app issued them.
 
 Streamed events preserve reported changes between routine polls. App taps that
 leave the same state and transitions Easee does not report remain invisible;
@@ -311,10 +327,13 @@ control while native OCPP is inactive.
 ### Native app priority
 
 Local OCPP follows the cloud controller's ownership rules. The production adapter
-combines source-timed cloud/stream enable and stop observations with read-only
-cloud schedules; it never writes a cloud schedule while OCPP owns control.
-Observed native Stop prevents automatic resumption. App enable or schedule
-removal yields the current physical connection to the app; only the application's
+combines source-timed cloud/stream enable and stop observations with cloud
+schedules. Ordinary scheduling does not mutate cloud schedules. Explicit **Use
+automatic** may disable the superseded native schedule and enable/resume the
+charger through the cloud API after a local economic pause is confirmed where
+needed. It never installs a cloud economic schedule while OCPP owns control.
+Observed native Stop prevents ordinary automatic resumption. Observed enable or schedule
+removal yields the current physical connection to external control; only the application's
 exact OCPP profile is released. Native current limits remain in the charger.
 A fresh Charging observation before an owned, physically confirmed pause expires
 also establishes an app release. `SuspendedEVSE` or zero power alone does not

@@ -27,6 +27,26 @@ test('provider errors preserve status but never URL, credentials or provider-ech
   await assert.rejects(failed.json('https://api.easee.com'), /provider-network-error/);
 });
 
+test('explicit charger takeover allows only enabling and non-authorizing resume under control authority', async () => {
+  const calls = []; let authority = true;
+  const http = createHttp({ allowChargerTakeover: true, canControl: () => authority,
+    fetchImpl: async (url, options) => { calls.push({ url, options }); return new Response(null, { status: 204 }); } });
+  const base = 'https://api.easee.com/api/chargers/fixture-charger';
+  const resume = `${base}/commands/resume_charging`, settings = `${base}/settings`;
+  const post = value => ({ method: 'POST', ...(value === undefined ? {} : { body: JSON.stringify(value) }) });
+  await http.text(resume, post());
+  await http.text(settings, post({ enabled: true }));
+  for (const [url, value] of [[resume, {}], [settings, { enabled: false }], [settings, { enabled: true, maxChargerCurrent: 32 }],
+    [settings, {}], [`${base}/commands/start_charging`, undefined], [`${resume}?other=true`, undefined]])
+    await assert.rejects(http.text(url, post(value)), /device-writes-not-allowed/);
+  authority = false;
+  await assert.rejects(http.text(resume, post()), /controller-authority-revoked/);
+  assert.equal(calls.length, 2);
+  const readOnly = createHttp({ fetchImpl: async () => { throw new Error('must not dispatch'); } });
+  await assert.rejects(readOnly.text(resume, post()), /device-writes-not-allowed/);
+  http.close(); readOnly.close();
+});
+
 test('native OCPP setup permits only bounded connection settings and version apply under authority', async () => {
   const calls = []; let authority = true;
   const http = createHttp({ allowOcppSetup: true, canControl: () => authority,

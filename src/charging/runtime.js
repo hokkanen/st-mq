@@ -847,7 +847,19 @@ export class ChargingRuntime {
       item.progress = updateChargingProgress(item.progress, raw, now, this.readEnergy).state;
       if (typeof pluggedIn === 'boolean') item.wasPluggedIn = pluggedIn;
     }
-    views = this.views(now);
+    views = this.views(now).map(view => {
+      const attempt = this.charger(view.id).takeoverAttempt;
+      if (!attempt || !this.takeoverCurrent(this.charger(view.id), attempt)) return view;
+      // Plan the explicitly requested handover without claiming native success.
+      // Observed readings, progress and the public view keep their provenance;
+      // only this candidate removes the earlier instructions being superseded.
+      return { ...view, control: { ...view.control, manual: null, released: false,
+        phase: 'planning', execution: null, provisional: false },
+      telemetry: { ...view.telemetry, manualStop: false, scheduledEndKind: null },
+      values: { ...view.values,
+        scheduledStartAt: { ...view.values.scheduledStartAt, value: null, available: false },
+        scheduledEndAt: { ...view.values.scheduledEndAt, value: null, available: false } } };
+    });
     const deadlineAt = Math.max(...views.map(view => view.deadlineAt));
     const external = views.find(view => view.capabilities.externalLoadBalancing);
     const reportedSupply = external?.telemetry.providerConnected === false ? null : external?.telemetry.supply;
@@ -1206,20 +1218,26 @@ export class ChargingRuntime {
       }
     }
   }
-  async reconcileCharger(id, { resume = false, replan = false } = {}) {
+  async reconcileCharger(id, { replan = false, takeover = null } = {}) {
     const item = this.charger(id);
     if (item.backendTransition) return;
     if (item.adapterPending) await item.adapterFlight;
     if (!item.controller || this.closed || item.backendTransition) return;
+    if (takeover && (!item.takeoverAttempt || item.takeoverAttempt.token !== takeover
+      || !this.takeoverCurrent(item, item.takeoverAttempt)))
+      throw new Error('Charging controls or connection changed before takeover. Refresh and try again.');
     if (!this.flushStreamEvidence()) { this.scheduleStreamReconcile(1000); return; }
     const controller = item.controller, settings = this.views().find(view => view.id === id).settings;
+    if (takeover && (!item.takeoverAttempt || item.takeoverAttempt.token !== takeover
+      || !this.takeoverCurrent(item, item.takeoverAttempt)))
+      throw new Error('Charging controls or connection changed before takeover. Refresh and try again.');
     const controlsRevision = item.controls.revision;
     item.lastReconcileAt = this.clock();
     // The native schedule ceiling follows the reported fixed charger limit;
     // it is never a command to change Equalizer's live allowance.
     const maximumAmps = scheduleCeiling(controller.status()?.snapshot);
     await controller.update({ enabled: settings.enabled, plan: this.pricesInitialized ? item.plan : null,
-      timezone: TIME_ZONE, readyBy: settings.readyBy, maximumAmps, resume, replan: replan || item.replan, controlsRevision,
+      timezone: TIME_ZONE, readyBy: settings.readyBy, maximumAmps, takeover, replan: replan || item.replan, controlsRevision,
       chargeNow: item.request?.chargeNow === true ? { connectedAt: sessionConnectedAt(item.request) } : null,
       allocation: id === 'charger2' ? this.allocationContext() : undefined,
       vehicleDisconnect: item.vehicleDisconnect ? { ...item.vehicleDisconnect,
@@ -1359,7 +1377,58 @@ export class ChargingRuntime {
       try { this.persist(); } catch (error) { item.request = previous; item.plan = previousPlan; this.revision = previousRevision; throw error; }
     }
     this.invalidateCommands();
-    await this.reconcile(id, { resume: true });
+    // Cancelling Charge now returns our session choice to planning. It does not
+    // authorize clearing a native instruction; Use automatic owns that action.
+    await this.reconcile(id, { replan: true });
+    await Promise.all(Object.keys(this.chargers).filter(peer => peer !== id).map(peer => this.reconcile(peer)));
+  }
+  takeoverCurrent(item, attempt) {
+    return !this.closed && !item.backendTransition && this.canControl()
+      && item.controller === attempt.controller && item.association === attempt.association
+      && item.controls.enabled && item.controls.revision === attempt.controlRevision
+      && item.request?.sessionId === attempt.sessionId && item.request.revision === attempt.revision;
+  }
+  async useAutomatic(id, input) {
+    this.checkControlAuthority();
+    if (!object(input) || Object.keys(input).sort().join(',') !== 'association,controlRevision,revision,sessionId,takeoverToken'
+      || typeof input.takeoverToken !== 'string' || !input.takeoverToken.length || input.takeoverToken.length > 256)
+      throw new Error('Use automatic requires the displayed charging controls and connection.');
+    const { item, view } = this.checkedSession(id, input);
+    if (item.takeoverAttempt || item.controls.revision !== input.controlRevision)
+      throw new Error('Charging controls changed; refresh before taking over.');
+    const takeover = view.control?.takeover;
+    if (!view.capabilities.scheduling || !item.controller || item.backendTransition
+      || view.values.connected.value !== true || takeover?.available !== true)
+      throw new Error(takeover?.reason || 'Automatic takeover is unavailable until the charger and connection are confirmed.');
+    if (takeover.token !== input.takeoverToken)
+      throw new Error('The charger instruction changed. Review the current status before taking over.');
+    const previous = { controls: item.controls, request: copyRequest(item.request), plan: item.plan,
+      replan: item.replan, revision: this.revision };
+    item.controls = { enabled: true, revision: item.controls.revision + 1 };
+    delete item.request.chargeNow;
+    item.request.revision++; item.plan = null; item.replan = true; this.revision++; this.refreshSettings();
+    try { this.persist(); } catch (error) {
+      Object.assign(item, { controls: previous.controls, request: previous.request, plan: previous.plan, replan: previous.replan });
+      this.revision = previous.revision; this.refreshSettings(); throw error;
+    }
+    const attempt = { token: input.takeoverToken, controller: item.controller, association: item.association,
+      sessionId: item.request.sessionId, revision: item.request.revision, controlRevision: item.controls.revision };
+    item.takeoverAttempt = attempt;
+    this.invalidateCommands();
+    try {
+      this.updatePlan();
+      await this.reconcile(id, { takeover: attempt.token });
+      if (!this.takeoverCurrent(item, attempt))
+        throw new Error('Charging controls or connection changed during takeover. Review the current status.');
+      const result = item.controller.status()?.takeover;
+      if (result?.state !== 'confirmed' || result.attemptToken !== attempt.token)
+        throw new Error(result?.reason || 'Automatic takeover has not been confirmed by the charger. Review the current status before trying again.');
+    } finally {
+      if (item.takeoverAttempt === attempt) delete item.takeoverAttempt;
+      // No takeover permission survives this request or a restart. Subsequent
+      // reconciliation uses actual native evidence and preserves newer choices.
+      try { this.updatePlan(); } catch { this.error = 'charging-planning-unavailable'; }
+    }
     await Promise.all(Object.keys(this.chargers).filter(peer => peer !== id).map(peer => this.reconcile(peer)));
   }
   chargingTestAction(action, input) {

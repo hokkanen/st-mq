@@ -96,7 +96,7 @@ export async function checkChargingPriority({ send, evaluate, until, artifacts }
           knobTransform: getComputedStyle(state, '::after').transform,
           labelsFit: [...range.getClientRects()].every(rect => rect.left >= bounds.left && rect.right <= bounds.right && rect.top >= bounds.top && rect.bottom <= bounds.bottom),
           fits: bounds.left >= box.left && bounds.right <= box.right && bounds.top >= box.top && bounds.bottom <= box.bottom,
-          hasSecondAction: Boolean(document.querySelector('#charger1-resume, #charger2-resume')),
+          hasSecondAction: Boolean(summary.querySelector('.charging-use-automatic')),
           hasMessage: document.getElementById('charger1-control-message').checkVisibility() };
       })()`);
     };

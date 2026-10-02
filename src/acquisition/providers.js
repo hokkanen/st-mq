@@ -160,7 +160,7 @@ export function startProviders({ engine, store, config, clock = Date.now, http,
   devices, market = fetchMarket, weather = fetchWeather, outdoor = fetchOutdoorTemperature,
   temperatureProvider, automatic = true, canControl = () => true, streamFactory, ocppFactory } = {}) {
   const connections = config.connections ?? {};
-  http ??= createHttp({ allowChargerScheduling: true, allowOcppSetup: true, canControl });
+  http ??= createHttp({ allowChargerScheduling: true, allowChargerTakeover: true, allowOcppSetup: true, canControl });
   const location = configuredLocation(connections);
   const ownsDevices = !devices;
   let localInstallation;

@@ -104,7 +104,21 @@ remain useful independently of control availability.
 
 The [MQTT channel](https://shelly-api-docs.shelly.cloud/gen2/ComponentsAndServices/Mqtt/) and [RPC envelope](https://shelly-api-docs.shelly.cloud/gen2/General/RPCProtocol/) are used on the configured broker. Subscription admission precedes bounded ordered replay. Requests use random correlated IDs and a per-instance reply route. Replies must come from the configured device; retained replies cannot confirm a command. Timestamped first-seen DUP notifications can establish a real source event, whereas replay cannot create another plug epoch. Oversized payloads, unknown roles and buffer overflow cannot grant control.
 
-Only `Number.Set` for `current_limit` and `Boolean.Set` for `start_charging` are mutation methods. Neither relay writes, service configuration writes, vehicle writes nor native-schedule edits are permitted. Commands use QoS 0, `retain:false`, no offline queue and no automatic application retry. Durable intent records association, session, revision and absolute expiry; authority and scope are rechecked after awaits immediately before publication.
+Ordinary mutations use `Number.Set` for `current_limit` and `Boolean.Set` for
+`start_charging`. Explicit **Use automatic** additionally permits
+[`Schedule.Update`](https://shelly-api-docs.shelly.cloud/gen2/ComponentsAndServices/Schedule/)
+with `{id, enable:false}` for verified charging-only jobs. It reads the complete
+job list and revision before and after each change, preserves unrelated jobs,
+and refuses mixed or opaque jobs that cannot safely be attributed to charging.
+Superseded schedules remain disabled until externally changed again. A saved
+native permission reference prevents an old Stop from regaining priority after
+restart or unplugging; genuinely newer source evidence takes priority again.
+The action follows the economic plan, which can keep start permission false
+during a planned pause. It does not alter a current limit as part of takeover.
+Relay writes, service configuration writes and vehicle writes remain forbidden.
+Commands use QoS 0, `retain:false`, no offline queue and no automatic application
+retry. Durable intent records association, session, revision and absolute expiry;
+authority and scope are rechecked after awaits immediately before publication.
 
 Status distinguishes proposed, dispatched, accepted, read-back and physical-effect stages. A successful RPC response alone proves no current reduction. A possible dispatch followed by timeout/restart remains uncertain until a compatible fresh native reading reconciles it. Manual changes survive priority changes and current-format restart within their connection scope.
 

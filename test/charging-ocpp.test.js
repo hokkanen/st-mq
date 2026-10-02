@@ -7,10 +7,10 @@ import { chargerDisplay } from '../chart/charging.js';
 
 const START = Date.parse('2026-09-24T09:00:00Z'), MINUTE = 60_000, scope = 'a'.repeat(64);
 const plan = (startAt, extra = {}) => ({ id: 'synthetic-plan', startAt, feasible: true, periods: [{ startAt, endAt: null }], ...extra });
-function fixture({ initialState = null, identification = null } = {}) {
+function fixture({ initialState = null, identification = null, nativeTakeover = false } = {}) {
   let now = START, authority = true, connected = true, confirmed = true, transactionId = 7, connectionId = 'synthetic-socket', physicalPause = true;
   let stored = null, saveError = false, witnessSaveError = false, interceptor = null, appControl = null, snapshotChanges = {};
-  const profiles = new Map(), calls = [], saves = [];
+  const profiles = new Map(), calls = [], saves = [], nativeCalls = [];
   const isPausing = () => [...profiles.values()].some(row => row.transactionId === transactionId
     && Date.parse(row.validFrom) <= now && Date.parse(row.validTo) > now);
   const readSnapshot = () => ({ transport: 'ocpp', scope, connectionId, readAt: now, online: connected,
@@ -34,6 +34,14 @@ function fixture({ initialState = null, identification = null } = {}) {
     return interceptor ? interceptor(action, payload, options, result) : result();
   };
   const adapter = createOcppScheduleAdapter({ scope, readSnapshot, request, clock: () => now, canControl: () => authority,
+    ...(nativeTakeover ? { takeoverNative: async ({ expectedAppControl, canMutate, beforeWrite }) => {
+      assert.equal(canMutate(), true); assert.deepEqual(appControl, expectedAppControl);
+      await beforeWrite();
+      nativeCalls.push({ paused: isPausing(), previous: structuredClone(appControl) });
+      if (typeof nativeTakeover === 'function') return nativeTakeover({ appControl, now });
+      appControl = { ...appState(now, true), schedule: { enabled: 'none', delayed: null, daily: null, weekly: null, offPeak: null, tariff: null } };
+      return structuredClone(appControl);
+    } } : {}),
     isCurrent: (value, { unchangedStatus = false } = {}) => connected && value.connectionId === connectionId
       && value.transactionId === transactionId && (!unchangedStatus || value.connectorStatus === readSnapshot().connectorStatus
         && value.statusAt === readSnapshot().statusAt) });
@@ -43,7 +51,7 @@ function fixture({ initialState = null, identification = null } = {}) {
       if (saveError || witnessSaveError && state.pending?.instruction.pauseRequestedAt !== undefined) throw Error('synthetic disk error');
       stored = structuredClone(state); saves.push(stored);
     } });
-  return { controller, adapter, calls, saves, profiles, get stored() { return stored; }, get now() { return now; },
+  return { controller, adapter, calls, saves, profiles, nativeCalls, get stored() { return stored; }, get now() { return now; },
     advance: ms => { now += ms; }, authority: value => { authority = value; }, connected: value => { connected = value; },
     confirmed: value => { confirmed = value; }, transaction: value => { transactionId = value; },
     physicalPause: value => { physicalPause = value; }, saveError: value => { saveError = value; },
@@ -56,6 +64,12 @@ function fixture({ initialState = null, identification = null } = {}) {
 const appState = (at, enabled) => ({ readAt: at, enabled, enabledAt: at, stopped: !enabled, stopAt: at,
   controlKnown: true, faulted: false, authorizationBlocked: false, schedule: null });
 const writes = f => f.calls.filter(row => row.action !== 'GetCompositeSchedule');
+
+test('the retired resume control field is rejected before native mutation', () => {
+  const f = fixture();
+  for (const resume of [true, false]) assert.throws(() => f.controller.update({ enabled: true, resume }), /Unsupported charging control field: resume/);
+  assert.equal(writes(f).length, 0);
+});
 
 test('fresh OCPP connector status cannot refresh old or unknown voltage measurement clocks', () => {
   const { adapter } = fixture();
@@ -291,12 +305,13 @@ test('a vehicle-side suspension retains period timing and needs charger-side gap
 });
 
 test('fresh charging after a confirmed owned pause establishes manual priority', async () => {
-  const f = fixture(); await f.controller.update({ enabled: true, plan: plan(START + 30 * MINUTE) });
+  const f = fixture({ nativeTakeover: true }); f.app({ ...appState(START, true), schedule: noNativeSchedule() });
+  await f.controller.update({ enabled: true, plan: plan(START + 30 * MINUTE) });
   f.advance(1000); f.physicalPause(false);
   let view = await f.controller.update({ enabled: true });
   assert.equal(view.phase, 'yielded'); assert.equal(f.profiles.size, 0);
   f.physicalPause(true);
-  view = await f.controller.update({ enabled: true, resume: true });
+  view = await f.controller.update({ enabled: true, takeover: view.takeover.token });
   assert.equal(view.manual, null); assert.equal(view.phase, 'paused');
   view = await f.controller.update({ enabled: true });
   assert.equal(view.manual, null, 'repeated source event cannot undo explicit resumption');
@@ -655,7 +670,7 @@ test('Charge Now clears only this session’s owned pause, preserves foreign pro
   const count = writes(f).length;
   await f.controller.update({ enabled: true, plan: future, chargeNow: { connectedAt } });
   assert.equal(writes(f).length, count, 'A price plan cannot replace the active session override');
-  view = await f.controller.update({ enabled: true, plan: future, chargeNow: null, resume: true });
+  view = await f.controller.update({ enabled: true, plan: future, chargeNow: null, replan: true });
   assert.equal(view.phase, 'paused'); assert(f.profiles.has(999999999));
   assert.equal(writes(f).at(-1).action, 'SetChargingProfile');
 });
@@ -870,4 +885,57 @@ test('native pause confirmation cannot cross a connection or transaction change 
     assert.equal(view.ownsInstruction, false); assert.equal(view.pauseConfirmed, false);
     assert.equal(writes(f).length, 1, 'The earlier owned profile remains a scoped restoration obligation');
   }
+});
+
+const noNativeSchedule = () => ({ enabled: 'none', delayed: null, daily: null, weekly: null, offPeak: null, tariff: null });
+const stoppedApp = at => ({ ...appState(at, false), schedule: noNativeSchedule() });
+
+test('native Use automatic confirms an economic zero profile before clearing the displayed stop', async () => {
+  const f = fixture({ nativeTakeover: true }); f.app(stoppedApp(START));
+  const prior = await f.controller.update({ enabled: true, plan: plan(START + 30 * MINUTE) });
+  assert.equal(prior.takeover.available, true);
+  const result = await f.controller.update({ enabled: true, takeover: prior.takeover.token });
+  assert.equal(result.takeover.state, 'confirmed'); assert.equal(result.takeover.attemptToken, prior.takeover.token);
+  assert.equal(f.nativeCalls.length, 1); assert.equal(f.nativeCalls[0].paused, true);
+  assert.equal(result.manual, null); assert.equal(result.phase, 'paused');
+  assert.equal(writes(f).length, 1); assert.equal(writes(f)[0].action, 'SetChargingProfile');
+  const restarted = fixture({ initialState: f.stored, nativeTakeover: true }); restarted.app(result.appControl);
+  await restarted.controller.update({ enabled: true, plan: plan(START + 30 * MINUTE) });
+  assert.equal(restarted.nativeCalls.length, 0, 'restarting never replays explicit cloud handover');
+  f.advance(1000); f.app(stoppedApp(f.now));
+  const later = await f.controller.update({ enabled: true }); assert.equal(later.manual.kind, 'stop');
+  assert.equal(later.phase, 'yielded'); assert.equal(f.nativeCalls.length, 1);
+});
+
+test('native Use automatic permanently removes a native schedule when the plan is open', async () => {
+  const f = fixture({ nativeTakeover: true });
+  f.app({ ...appState(START, true), schedule: { ...noNativeSchedule(), enabled: 'daily', daily: { timezone: 'UTC',
+    periods: [{ maximumAmps: 16, startTime: '10:00:00', stopTime: '12:00:00' }] } } });
+  const prior = await f.controller.update({ enabled: true, plan: plan(START) });
+  const result = await f.controller.update({ enabled: true, takeover: prior.takeover.token });
+  assert.equal(result.takeover.state, 'confirmed'); assert.equal(result.phase, 'released');
+  assert.equal(result.appControl.schedule.enabled, 'none'); assert.equal(result.manual, null);
+  assert.equal(f.nativeCalls.length, 1); assert.equal(writes(f).length, 0);
+});
+
+test('native Use automatic requires current displayed evidence and a transaction for an economic delay', async () => {
+  const f = fixture({ nativeTakeover: true }); f.app(stoppedApp(START));
+  let prior = await f.controller.update({ enabled: true, plan: plan(START + 30 * MINUTE) });
+  f.advance(1000); f.app(stoppedApp(f.now));
+  let result = await f.controller.update({ enabled: true, takeover: prior.takeover.token });
+  assert.equal(result.errorCode, 'takeover-stale'); assert.equal(result.takeover.state, 'blocked');
+  assert.equal(f.nativeCalls.length, 0); assert.equal(writes(f).length, 0);
+  f.confirmed(false); prior = await f.controller.update({ enabled: true });
+  result = await f.controller.update({ enabled: true, takeover: prior.takeover.token });
+  assert.equal(result.errorCode, 'transaction-unconfirmed'); assert.equal(f.nativeCalls.length, 0);
+  assert.equal(writes(f).length, 0);
+});
+
+test('native Use automatic never claims success after unconfirmed cloud handover or retries a dispatch', async () => {
+  const f = fixture({ nativeTakeover: () => { throw Object.assign(new Error('synthetic outage'), { code: 'readback-failed' }); } });
+  f.app(stoppedApp(START));
+  const prior = await f.controller.update({ enabled: true, plan: plan(START + 30 * MINUTE) });
+  const result = await f.controller.update({ enabled: true, takeover: prior.takeover.token });
+  assert.equal(result.takeover.state, 'blocked'); assert.equal(f.nativeCalls.length, 1);
+  await f.controller.update({ enabled: true }); assert.equal(f.nativeCalls.length, 1);
 });

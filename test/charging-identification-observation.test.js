@@ -680,20 +680,20 @@ test('a forced update during a slow reconciliation runs as soon as the request f
   finish[1](); await next;
 });
 
-test('repeated identification wakeups cannot starve an explicit queued resume', async t => {
+test('repeated identification wakeups cannot starve an explicit queued takeover', async t => {
   const f = await fixture(t, 'ocpp', 'bmw', { retainedOnly: true }); await f.update();
   const finish = [], calls = [];
   f.runtime.reconcileCharger = async (id, options) => {
     calls.push(options); await new Promise(resolve => finish.push(resolve));
   };
   const flight = f.runtime.reconcile('charger1');
-  const resume = f.runtime.reconcile('charger1', { resume: true });
+  const takeover = f.runtime.reconcile('charger1', { takeover: 'fixture-takeover-token' });
   ChargingRuntime.prototype.tick.call(f.runtime, { force: true });
   ChargingRuntime.prototype.tick.call(f.runtime, { force: true });
   finish[0](); await flight;
   await new Promise(resolve => setImmediate(resolve));
-  assert.equal(calls.length, 2); assert.equal(calls[1].resume, true);
-  finish[1](); await resume;
+  assert.equal(calls.length, 2); assert.equal(calls[1].takeover, 'fixture-takeover-token');
+  finish[1](); await takeover;
   assert.equal(f.runtime.chargers.charger1.reconcileFlight, null);
 });
 

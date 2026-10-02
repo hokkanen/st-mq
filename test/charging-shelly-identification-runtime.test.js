@@ -34,7 +34,7 @@ async function fixture(t, { charging = true, retainedOnly = false, enabled = tru
         { voltage: 230, current: running ? 10 : 0, power: running ? 2300 : 0 }])) } };
   };
   physical(charging);
-  const schedules = { jobs: [] }, serviceStatus = { state: 'running' };
+  const schedules = { rev: 1, jobs: [] }, serviceStatus = { state: 'running' };
   client.subscribe = (topics, options, cb) => cb(null, topics.map(topic => ({ topic, qos: 0 })));
   client.publish = (topic, payload, options, cb) => {
     const frame = JSON.parse(payload), role = frame.params.role;
@@ -43,6 +43,11 @@ async function fixture(t, { charging = true, retainedOnly = false, enabled = tru
     else if (frame.method === 'Service.GetConfig') result = { id: 0, auto_balance: { enable: false }, auto_charge: true };
     else if (frame.method === 'Service.GetStatus') result = serviceStatus;
     else if (frame.method === 'Schedule.List') result = schedules;
+    else if (frame.method === 'Schedule.Update') {
+      writes.push({ ...frame, at: now });
+      const job = schedules.jobs.find(job => job.id === frame.params.id);
+      assert.ok(job); assert.equal(frame.params.enable, false); job.enable = false; result = { rev: ++schedules.rev };
+    }
     else if (frame.method.endsWith('.GetConfig')) result = { id: ids[role], owner: 'service:0', access: 'crw', options: ['charger_free', 'charger_charging', 'charger_pause', 'charger_wait', 'charger_end'], min: 6, max: 16, meta: { ui: { step: 1 } } };
     else if (frame.method.endsWith('.Set')) {
       writes.push({ ...frame, at: now });
@@ -188,6 +193,43 @@ test('Shelly explicit manual Stop during its identification pause wins across ti
   f.manualStop(); await f.update(); f.setNow(deadline + 1000); await f.restart(); await f.update();
   assert.equal(starts(f).length, 0); assert.equal(f.card().identification.available, false);
   assert.equal(f.item().controller.status().manual.kind, 'stop');
+});
+
+test('Use automatic returns a stopped Shelly to economic waiting through the real runtime and RPC controller', async t => {
+  const f = await fixture(t, { charging: false, retainedOnly: true });
+  await f.update(); f.manualStop(); await f.update();
+  const before = f.card();
+  assert.equal(before.control.manual.kind, 'stop');
+  const input = { ...f.input(), controlRevision: before.controls.revision, takeoverToken: before.control.takeover.token };
+  await f.runtime.useAutomatic('charger2', input);
+  const after = f.card();
+  assert.equal(after.controls.enabled, true); assert.equal(after.control.manual, null);
+  assert.equal(after.control.takeover.state, 'confirmed');
+  assert.equal(after.control.takeover.attemptToken, input.takeoverToken);
+  assert.equal(f.fields.start_charging.value, false);
+  assert.equal(starts(f).length, 0, 'Use automatic does not force charging during the economic wait');
+  await f.restart(); await f.update();
+  assert.equal(f.card().control.manual, null); assert.equal(f.fields.start_charging.value, false);
+  f.manualStop(); await f.update();
+  assert.equal(f.card().control.manual.kind, 'stop', 'the next external Stop takes priority again');
+});
+
+test('Use automatic disables Shelly charging timers permanently without restoring them on runtime restart', async t => {
+  const f = await fixture(t, { charging: false });
+  f.schedules.jobs = [{ id: 1, enable: true, timespec: '0 0 22 * * *', calls: [
+    { method: 'Boolean.Set', params: { owner: 'service:0', role: 'start_charging', value: true } }] }];
+  f.schedules.rev++; f.manualStop(); await f.update();
+  const before = f.card();
+  await f.runtime.useAutomatic('charger2', { ...f.input(), controlRevision: before.controls.revision,
+    takeoverToken: before.control.takeover.token });
+  assert.equal(f.schedules.jobs[0].enable, false);
+  assert.equal(f.card().control.takeover.state, 'confirmed');
+  await f.restart(); await f.update();
+  assert.equal(f.schedules.jobs[0].enable, false);
+  assert.equal(f.writes.filter(row => row.method === 'Schedule.Update').length, 1);
+  f.schedules.jobs[0].enable = true; f.schedules.rev++; await f.update();
+  assert.equal(f.card().control.manual.kind, 'schedule');
+  assert.equal(f.writes.filter(row => row.method === 'Schedule.Update').length, 1);
 });
 
 test('Shelly native schedules and faults withhold active identification commands', async t => {

@@ -509,7 +509,7 @@ test('the explanation fold discloses operational assumptions without exposing ir
   assert.match(explanations['Pause recovery'], /one-off start.*scheduled time.*loses contact/);
   assert.match(explanations['Price planning'], /New prices can pause automatic charging.*costs less/);
   assert.match(explanations['Price planning'], /reaching the target or ready-by time does not stop charging/i);
-  assert.match(explanations['Manual priority'], /complete window, including after ready-by/);
+  assert.match(explanations['Manual priority'], /confirmed end.*automatic scheduling when it ends/);
   assert.match(explanations['Automatic charging'], /until you turn it off or unplug/);
   for (const backend of [{ control: { kind: 'ocpp-tx-pause', snapshot: null } },
     { telemetry: { transport: 'ocpp' } }, { control: { snapshot: { transport: 'ocpp' } } }]) {
@@ -517,7 +517,7 @@ test('the explanation fold discloses operational assumptions without exposing ir
     assert.match(local['Period transitions'], /local charger connection.*expiring zero-current restriction/);
     assert.doesNotMatch(local['Period transitions'], /Easee cloud|one-off start/);
     assert.match(local['Pause recovery'], /expires automatically.*loses contact.*authorization.*does not return.*cloud control/);
-    assert.match(local['Manual priority'], /manual Stop requires explicit resumption/);
+    assert.match(local['Manual priority'], /Use automatic explicitly replaces the displayed stop/);
     assert.doesNotMatch(local['Manual instruction ownership'], /Manual windows/);
   }
   assert(!JSON.stringify(result).includes('ST-MQ'));
@@ -544,7 +544,7 @@ test('physical Charger 2 explanations preserve native vehicle constraints and di
   assert.doesNotMatch(details['Price planning'],/New prices can pause/);
   assert.match(details['Period transitions'],/several charging periods.*pause and restart.*MQTT.*confirmed charger instructions.*Actual charging activity/);
   assert.match(details['Pause recovery'],/do not expire.*loses contact with Shelly.*remain paused.*resume it in Shelly/);
-  assert.match(details['Manual priority'],/manual Stop or active native schedule must be changed in the charger controls/);
+  assert.match(details['Manual priority'],/Use automatic explicitly replaces.*charger schedule.*economic scheduling/);
   assert.doesNotMatch(details['Manual instruction ownership'],/Manual windows|schedule expiry/);
   assert.match(details['Automatic charging'],/OFF stops price scheduling.*limiter can remain active.*pause charging/);
   assert.match(details['Unavailable data'],/current limits, the configured fallback and native restrictions/);
@@ -855,8 +855,8 @@ test('Charger 2 popups explain manual priority and unconfirmed instructions with
   const panel = createChargingPanel({ document, request: async () => {} });
   const item = connected('charger2'); item.settings.enabled = true;
   for (const [reason, manual, expected] of [
-    ['manual-stop', { kind: 'stop' }, /manual stop is active.*priority.*charger controls/i],
-    ['native-schedule', { kind: 'schedule' }, /schedule set on the charger has priority/i],
+    ['manual-stop', { kind: 'stop' }, /stop instruction has priority.*select use automatic/i],
+    ['native-schedule', { kind: 'schedule' }, /schedule on the charger has priority/i],
     ['evse-command-unconfirmed', null, /outcome is still unknown.*fresh reading/i],
     ['telemetry-fallback', null, /configured fallback.*fresh measurements/i],
     ['future-control-condition', null, /Check the charger controls for details/],
@@ -876,7 +876,7 @@ test('Charger 2 popups explain manual priority and unconfirmed instructions with
   panel.close();
 });
 
-test('both charger switches request eligible manual handover when turned on and preserve native stop priority', async () => {
+test('both Automatic switches change only the persistent preference and preserve other charger instructions', async () => {
   for (const id of ['charger1', 'charger2']) {
     const document = documentFixture(), $ = name => document.getElementById(name), calls = [];
     let item = { ...connected(id), control: { phase: 'manual', reason: 'manual-stop', manual: { kind: 'stop' } } };
@@ -889,17 +889,97 @@ test('both charger switches request eligible manual handover when turned on and 
     panel.update(status(item)); const toggle = $(`${id}-enabled`);
     assert.equal($(`${id}-resume`), null);
     await clickAction(toggle);
-    assert.deepEqual(calls, [[`/api/charging/chargers/${id}/control`, { association: item.association, revision: 0, enabled: true }],
-      [`/api/charging/chargers/${id}/resume`, {}]]);
+    assert.deepEqual(calls, [[`/api/charging/chargers/${id}/control`, { association: item.association, revision: 0, enabled: true }]]);
     assert.equal(toggle.getAttribute('aria-checked'), 'true');
     assert.equal($(`${id}-control-message`).textContent, 'Preference saved');
-    assert.match($(`${id}-event-value`).textContent, /manual stop is active/i);
-    assert.match($(`${id}-control-detail`).textContent, /Automatic charging remains ON.*off and on to request a handover/);
+    assert.match($(`${id}-event-value`).textContent, /Stop instruction active/);
+    assert.match($(`${id}-control-detail`).textContent, /Automatic charging remains ON.*Use automatic requests/);
     await clickAction(toggle);
     assert.deepEqual(calls.at(-1), [`/api/charging/chargers/${id}/control`, { association: item.association, revision: 1, enabled: false }]);
-    assert.equal(calls.length, 3, 'Turning OFF only changes the durable automatic preference');
+    assert.equal(calls.length, 2, 'Turning OFF only changes the durable automatic preference');
     assert.equal(toggle.getAttribute('aria-checked'), 'false'); panel.close();
   }
+});
+
+test('both shared Use automatic actions submit the displayed connection and native token without changing preference first', async () => {
+  for (const id of ['charger1', 'charger2']) for (const enabled of [false, true]) {
+    const document = documentFixture(), $ = name => document.getElementById(name), calls = []; let finish;
+    const item = { ...connected(id), controls: { enabled, revision: 4 },
+      control: { phase: 'manual', reason: 'native-schedule', manual: { kind: 'schedule' }, takeover: { available: true, token: 'fixture-current-native-state' } } };
+    item.settings.enabled = enabled; item.request.chargeNow = true;
+    const panel = createChargingPanel({ document, request: (...args) => { calls.push(args); return new Promise(resolve => { finish = resolve; }); } });
+    panel.update(status(item)); const button = $(`${id}-use-automatic`);
+    assert.equal(button.textContent, 'Use automatic'); assert(!button.hidden && !button.disabled);
+    assert($(`${id}-charging-controls`).contains(button)); assert(!$(`${id}-device-summary`).contains(button));
+    assert.match($(`${id}-takeover-help`).textContent, /Earlier schedules stay disabled.*newer external change/);
+    const pending = clickAction(button);
+    assert(button.disabled); assert($(`${id}-enabled`).disabled); assert.match($(`${id}-takeover-message`).textContent, /Saving/);
+    await clickAction(button); assert.equal(calls.length, 1);
+    assert.deepEqual(calls[0], [`/api/charging/chargers/${id}/use-automatic`, { association: item.association,
+      sessionId: item.request.sessionId, revision: item.request.revision, controlRevision: 4, takeoverToken: 'fixture-current-native-state' }]);
+    const acknowledged = { ...item, settings: { ...item.settings, enabled: true }, request: { ...item.request, chargeNow: false },
+      control: { phase: 'waiting', takeover: { available: false, token: null, state: 'pending' } } };
+    finish(status(acknowledged)); await pending;
+    assert(button.disabled); assert.equal($(`${id}-enabled`).getAttribute('aria-checked'), 'true');
+    assert.equal($(`${id}-charge-now`).getAttribute('aria-pressed'), 'false');
+    assert.match($(`${id}-takeover-help`).textContent, /awaiting charger confirmation/);
+    assert.match($(`${id}-state`).textContent, /Handover pending/);
+    assert.match($(`${id}-takeover-message`).textContent, /Automatic control confirmed.*economic plan/);
+    assert.doesNotMatch($(`${id}-takeover-message`).textContent, /Charging started|handover is complete/);
+    panel.close();
+  }
+});
+
+test('Use automatic availability follows capabilities, authority, session and native evidence for both providers', async () => {
+  for (const id of ['charger1', 'charger2']) {
+    const document = documentFixture(), $ = name => document.getElementById(name), calls = [];
+    const item = { ...connected(id), control: { takeover: { available: true, token: 'fixture-native-state' } } };
+    const panel = createChargingPanel({ document, request: async (...args) => { calls.push(args); return status(item); } });
+    for (const changed of [
+      { ...status(item), role: 'slave' }, { ...status(item), readOnly: true }, status({ ...item, readOnly: true }),
+      status({ ...item, request: null }), status({ ...item, values: { ...item.values, connected: reading(false) } }),
+      status({ ...item, capabilities: { scheduling: false } }), status({ ...item, control: {} }),
+      status({ ...item, control: { takeover: { available: true, token: null } } }),
+      status({ ...item, control: { takeover: { available: false, token: 'stale', reason: 'Fresh charger readings are unavailable.' } } }),
+    ]) {
+      panel.update(changed); assert($(`${id}-use-automatic`).disabled);
+      await clickAction($(`${id}-use-automatic`)); assert.deepEqual(calls, []);
+    }
+    assert.match($(`${id}-takeover-help`).textContent, /Fresh charger readings are unavailable/);
+    panel.update(status(item)); assert(!$(`${id}-use-automatic`).disabled);
+    panel.close();
+  }
+});
+
+test('Use automatic errors remain readable and keep the current preference and native state', async () => {
+  const document = documentFixture(), $ = id => document.getElementById(id);
+  const item = { ...connected('charger2'), control: { phase: 'manual', reason: 'manual-stop',
+    takeover: { available: true, token: 'fixture-older-native-state' } } };
+  const panel = createChargingPanel({ document, request: async () => { throw new Error('The charger changed after this view was loaded. Review its latest state before trying again.'); } });
+  panel.update(status(item)); await clickAction($('charger2-use-automatic'));
+  assert.equal($('charger2-enabled').getAttribute('aria-checked'), 'false');
+  assert($('charger2-takeover-message').matches('.form-error'));
+  assert.match($('charger2-takeover-message').textContent, /charger changed.*latest state/);
+  assert(!$('charger2-use-automatic').disabled);
+  panel.close();
+});
+
+test('a failed Use automatic request refreshes an acknowledged preference without claiming a completed handover', async () => {
+  const document = documentFixture(), $ = id => document.getElementById(id); let refreshes = 0;
+  const item = { ...connected('charger2'), control: { takeover: { available: true, token: 'fixture-native-state' } } };
+  const acknowledged = { ...item, settings: { ...item.settings, enabled: true },
+    control: { takeover: { available: false, token: null, state: 'blocked', reason: 'evse-native-schedule-unconfirmed' } } };
+  const panel = createChargingPanel({ document,
+    request: async () => { throw new Error('evse-native-schedule-unconfirmed'); },
+    afterRequest: () => { refreshes++; panel.update(status(acknowledged)); } });
+  panel.update(status(item)); await clickAction($('charger2-use-automatic'));
+  assert.equal(refreshes, 1, 'The production callback refreshes status after failure as well as success');
+  assert.equal($('charger2-enabled').getAttribute('aria-checked'), 'true');
+  assert.equal($('charger2-state').textContent, 'Handover blocked');
+  assert.match($('charger2-takeover-message').textContent, /previous schedule was disabled.*has not taken over/);
+  assert.match($('charger2-takeover-help').textContent, /has not taken over/);
+  assert($('charger2-use-automatic').disabled);
+  panel.close();
 });
 
 test('visitor settings remain editable until identification and automatic fields never replace saved defaults', async () => {
@@ -1538,7 +1618,7 @@ test('Shelly pause recovery remains explicit after identification completes or t
     control: { phase: 'uncertain', reason: 'identification-resume-required' } }));
   assert.equal($('charger2-identification-state').textContent, 'Review required');
   assert.equal($('charger2-notice').textContent, 'Review charger pause');
-  assert.match($('charger2-identification-status').textContent, /manual Stop may be active.*Review the charger.*Automatic charging off and on/);
+  assert.match($('charger2-identification-status').textContent, /Another stop instruction may be active.*Review the charger.*Use automatic/);
   assert.doesNotMatch($('charger2-identification-status').textContent, /will restore|has resumed/);
   assert.equal($('charger2-resume'), null); assert(!$('charger2-enabled').disabled);
   assert($('charger2-identify').disabled);

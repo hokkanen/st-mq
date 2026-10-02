@@ -88,15 +88,16 @@ function validAppControl(value) {
   try { return value.schedule === null || JSON.stringify(normalizeScheduleState(value.schedule)) === JSON.stringify(value.schedule); }
   catch { return false; }
 }
-const appFingerprint = value => value ? hash([value.controlKnown, value.enabled, value.enabledAt, value.stopped, value.stopAt, value.faulted,
+export const appFingerprint = value => value ? hash([value.controlKnown, value.enabled, value.enabledAt, value.stopped, value.stopAt, value.faulted,
   value.authorizationBlocked, value.schedule ? effectiveScheduleFingerprint(value.schedule) : null]) : null;
 const appStopped = value => value?.controlKnown && !value.faulted && !value.authorizationBlocked && value.stopped;
 
 export function createOcppScheduleAdapter({ request, readSnapshot, isCurrent = () => false,
-  scope, clock = Date.now, canControl = () => false } = {}) {
+  scope, clock = Date.now, canControl = () => false, takeoverNative } = {}) {
   if (!scopeValid(scope) || typeof request !== 'function' || typeof readSnapshot !== 'function') throw fail('invalid-ocpp-adapter');
   const adapter = {
-    scope, ownershipNamespace: 'ocpp', capabilities: { scheduling: true, currentControl: false, externalLoadBalancing: true },
+    scope, ownershipNamespace: 'ocpp', supportsTakeover: typeof takeoverNative === 'function',
+    capabilities: { scheduling: true, currentControl: false, externalLoadBalancing: true },
     async read({ signal, forceAppRefresh = false } = {}) { return snapshotFor(await readSnapshot({ signal, forceAppRefresh }), scope, clock()); },
     async composite(snapshot, until, { signal, guard = () => true } = {}) {
       const now = clock(), duration = Math.max(60, Math.ceil((until - now) / 1000));
@@ -106,7 +107,7 @@ export function createOcppScheduleAdapter({ request, readSnapshot, isCurrent = (
       if (!isCurrent(snapshot) || !guard()) throw fail('control-revoked');
       return normalizeOcppComposite(reply, { now, duration });
     },
-    async install(instruction, snapshot, { signal, guard = () => true, beforeWrite = () => {} } = {}) {
+    async install(instruction, snapshot, { signal, guard = () => true, beforeWrite = () => {}, takeover = false } = {}) {
       if (!validInstruction(instruction)) throw fail('invalid-plan');
       const allowed = () => canControl() && guard() && isCurrent(snapshot) && snapshot.transactionConfirmed
         && snapshot.transactionId === instruction.transactionId
@@ -117,7 +118,7 @@ export function createOcppScheduleAdapter({ request, readSnapshot, isCurrent = (
         || before.connectionId !== snapshot.connectionId || !before.transactionConfirmed
         || before.transactionId !== instruction.transactionId || before.pluggedIn !== true
         || ['Unavailable', 'Faulted', 'Reserved'].includes(before.connectorStatus)
-        || appStopped(before.appControl) || before.appControl?.faulted || before.appControl?.authorizationBlocked
+        || appStopped(before.appControl) && !takeover || before.appControl?.faulted || before.appControl?.authorizationBlocked
         || appFingerprint(before.appControl) !== appFingerprint(snapshot.appControl)) throw fail('control-revoked');
       await beforeWrite(before);
       const beforeSend = () => allowed() && isCurrent(before, { unchangedStatus: true });
@@ -127,6 +128,20 @@ export function createOcppScheduleAdapter({ request, readSnapshot, isCurrent = (
       // change Charging to SuspendedEVSE before its acknowledgement can arrive.
       const reply = await request('SetChargingProfile', clone(instruction.payload), { signal, guard: allowed, beforeSend });
       if (reply?.status !== 'Accepted') throw fail('profile-rejected');
+    },
+    async takeover(snapshot, { signal, guard = () => false, beforeWrite = () => {} } = {}) {
+      if (typeof takeoverNative !== 'function') throw fail('takeover-unavailable');
+      const allowed = () => canControl() && guard() && isCurrent(snapshot, { requireTransaction: false });
+      const before = await adapter.read({ signal, forceAppRefresh: true });
+      if (!allowed() || appFingerprint(before.appControl) !== appFingerprint(snapshot.appControl)) throw fail('takeover-stale');
+      const app = await takeoverNative({ expectedAppControl: clone(before.appControl), signal, canMutate: allowed, beforeWrite });
+      if (!allowed()) throw fail('control-revoked');
+      const after = await adapter.read({ signal, forceAppRefresh: true });
+      if (!allowed() || !after.online || after.connectionId !== snapshot.connectionId
+        || appFingerprint(after.appControl) !== appFingerprint(app) || !fresh(app?.readAt, clock())
+        || !app.controlKnown || app.stopped || app.enabled !== true || app.faulted || app.authorizationBlocked
+        || app.schedule?.enabled !== 'none') throw fail('readback-mismatch');
+      return after;
     },
     async clear(instruction, snapshot, { signal, guard = () => true } = {}) {
       if (!id(instruction?.profileId)) throw fail('invalid-plan');
@@ -171,7 +186,7 @@ export function createOcppScheduleAdapter({ request, readSnapshot, isCurrent = (
 export function initialOcppControllerState(scope) {
   if (!scopeValid(scope)) throw fail('invalid-ocpp-adapter');
   return { version: 2, kind: KIND, scope, nextProfileId: randomInt(1, 1_000_000_000), owned: null, pending: null,
-    manual: null, appControl: null, delayedReleaseAt: null, lastManualResume: null, pauseWitness: null, execution: null, session: null, released: false, provisional: false, vehicleDisconnect: null };
+    manual: null, appControl: null, delayedReleaseAt: null, lastManualResume: null, pauseWitness: null, execution: null, session: null, released: false, provisional: false, vehicleDisconnect: null, takeoverPending: null };
 }
 function validInstruction(value) {
   if (!fields(value, ['profileId', 'transactionId', 'startAt', 'validFrom', 'payload', 'fingerprint', 'confirmedAt', 'requestedAt', 'pauseRequestedAt',
@@ -218,7 +233,7 @@ const validExecution = value => value === null || fields(value, ['planId', 'peri
   && JSON.stringify(executionFor(value)) === JSON.stringify(value);
 function validState(state, scope) {
   const keys = Object.keys(initialOcppControllerState(scope));
-  return fields(state, keys) && keys.every(key => Object.hasOwn(state, key)) && state.version === 2 && state.kind === KIND && state.scope === scope
+  return fields(state, keys) && keys.filter(key => key !== 'takeoverPending').every(key => Object.hasOwn(state, key)) && state.version === 2 && state.kind === KIND && state.scope === scope
     && id(state.nextProfileId) && typeof state.released === 'boolean' && typeof state.provisional === 'boolean'
     && (state.owned === null || validInstruction(state.owned) && state.owned.profileId < state.nextProfileId)
     && (state.pending === null || fields(state.pending, ['action', 'instruction', 'attempts', 'nextAttemptAt', 'accepted', 'execution'])
@@ -230,6 +245,10 @@ function validState(state, scope) {
       && (state.manual.transactionId === null || id(state.manual.transactionId))
       && (state.manual.resumeAt === null || time(state.manual.resumeAt)) && time(state.manual.cycleEndsAt))
     && (state.appControl === null || validAppControl(state.appControl))
+    && (state.takeoverPending == null || fields(state.takeoverPending, ['connectedAt', 'requestedAt', 'beforeSchedule', 'afterSchedule', 'enabledAt', 'stopAt'])
+      && (state.takeoverPending.connectedAt === null || time(state.takeoverPending.connectedAt)) && time(state.takeoverPending.requestedAt)
+      && scopeValid(state.takeoverPending.beforeSchedule) && scopeValid(state.takeoverPending.afterSchedule)
+      && [state.takeoverPending.enabledAt, state.takeoverPending.stopAt].every(at => at === null || time(at)))
     && (state.delayedReleaseAt === null || time(state.delayedReleaseAt))
     && (state.lastManualResume === null || fields(state.lastManualResume, ['at', 'deadlineAt', 'reason'])
       && time(state.lastManualResume.at) && time(state.lastManualResume.deadlineAt) && ['explicit', 'window-end'].includes(state.lastManualResume.reason))
@@ -251,6 +270,12 @@ const REASONS = {
   'profile-rejected': 'The charger rejected the native profile command.', 'control-revoked': 'Native charging authority or the connection changed.',
   'invalid-plan': 'The proposed native charging pause is not valid.', 'retry-limit': 'The native command remains unconfirmed after three attempts.',
   'command-failed': 'The native charger command is unconfirmed.', 'storage-failed': 'Charging intent could not be saved.',
+  'takeover-stale': 'The charger instruction changed. Review its current status before using automatic again.',
+  'takeover-unavailable': 'The charger connection cannot currently confirm automatic handover.',
+  'takeover-unconfirmed': 'The previous automatic handover is unconfirmed. Review the charger status and choose Use automatic again.',
+  'resume-current-limit': 'The charger has a separate current limit that cannot safely be preserved while clearing its pause.',
+  'unsupported-schedule': 'This charger schedule cannot yet be disabled through the supported API.',
+  'transaction-unconfirmed': 'Automatic handover is waiting for a confirmed charger transaction so its planned pause can be preserved.',
 };
 
 /** Current transaction only; no cloud schedule is presented as native readback. */
@@ -262,12 +287,25 @@ export function createOcppChargingController({ adapter, initialState = null, sav
   let snapshot = null, desired = { enabled: false, plan: null, readyBy: '06:00', timezone: TIME_ZONE }, closed = false, generation = 0, queue = Promise.resolve(), abort = null;
   let phase = 'off', reason = 'Automatic charging is off.', errorCode = null, ownsInstruction = false, pauseConfirmed = false, handoverConfirmed = true;
   let planningRevision = null, identification = null;
+  let takeoverState = null, takeoverAttempt = null;
+  const takeoverToken = () => snapshot ? hash([adapter.scope, snapshot.connectionId, snapshot.transactionId,
+    snapshot.connectorStatus, snapshot.statusAt, state.session?.connectedAt, appFingerprint(snapshot.appControl)]) : null;
+  const takeoverStatus = () => {
+    const app = snapshot?.appControl;
+    const available = !closed && adapter.supportsTakeover && snapshot?.online
+      && fresh(snapshot.readAt, clock()) && fresh(app?.readAt, clock()) && app.controlKnown
+      && typeof snapshot.pluggedIn === 'boolean' && !['Unavailable', 'Faulted', 'Reserved'].includes(snapshot.connectorStatus)
+      && app.schedule !== null && !app.faulted && !app.authorizationBlocked;
+    return { available: Boolean(available), token: available ? takeoverToken() : null,
+      reason: takeoverState === 'blocked' ? reason : available ? null : 'Fresh charger state and control access are required to use automatic.',
+      ...(takeoverState ? { state: takeoverState, attemptToken: takeoverAttempt } : {}) };
+  };
   const chargeNowActive = () => Number.isSafeInteger(desired.chargeNow?.connectedAt)
     && desired.chargeNow.connectedAt === state.session?.connectedAt && snapshot?.pluggedIn === true
     && snapshot.transactionConfirmed && !state.vehicleDisconnect?.awaitingConnection;
   const controlRequested = () => desired.enabled === true || chargeNowActive() || identification !== null;
   const status = () => ({ ...clone(state), phase, reason, errorCode, enabled: desired.enabled === true,
-    ownsInstruction, pauseConfirmed, handoverConfirmed, planningRevision, identification: identification ? clone(identification) : null,
+    ownsInstruction, pauseConfirmed, handoverConfirmed, planningRevision, takeover: takeoverStatus(), identification: identification ? clone(identification) : null,
     snapshot: snapshot ? { ...clone(snapshot), nativeInstruction: ownsInstruction ? clone(state.owned) : null } : null });
   const display = (next, message, code = null) => { phase = next; reason = message; errorCode = code; return status(); };
   async function commit(changes) {
@@ -321,8 +359,7 @@ export function createOcppChargingController({ adapter, initialState = null, sav
         const stopChanged = prior?.controlKnown && app.stopped !== prior.stopped && app.stopAt > prior.stopAt;
         if (app.stopped && (enabledChanged || stopChanged)) manual('stop', [app.enabledAt, app.stopAt]);
         else if (!app.stopped && (enabledChanged && app.enabled === true || stopChanged && prior.stopped)) {
-          const acknowledged = desired.resume && desired.resume === state.manual?.id;
-          if (!acknowledged && !['window', 'schedule'].includes(changes.manual?.kind)) manual('release', [app.enabledAt, app.stopAt]);
+          if (!['window', 'schedule'].includes(changes.manual?.kind)) manual('release', [app.enabledAt, app.stopAt]);
         }
       }
       // Schedule reads and source-timed control observations can fail separately.
@@ -375,6 +412,7 @@ export function createOcppChargingController({ adapter, initialState = null, sav
         && (pending.action !== 'clear' || identification?.mode !== 'probe' || state.manual || snapshot.pluggedIn !== true
           || identification.phase === 'pausing' || clock() < identification.probeUntil) };
       if (pending.action === 'install') await adapter.install(pending.instruction, snapshot, { ...options,
+        takeover: takeoverState === 'pending',
         beforeWrite: async before => {
           if (!canWrite(current)) throw fail('control-revoked');
           const { pauseRequestedAt: _priorWitness, ...instruction } = state.pending.instruction;
@@ -399,6 +437,40 @@ export function createOcppChargingController({ adapter, initialState = null, sav
     if (!coversZero(composite, Math.max(clock(), composite.startAt), pending.instruction.startAt)) throw fail('readback-mismatch');
     await commit({ owned: { ...pending.instruction, confirmedAt: clock() }, execution: pending.execution, released: false, provisional: false, pending: null, pauseWitness: null }); ownsInstruction = true;
     return true;
+  }
+  async function takeOver(current, token, signal) {
+    takeoverState = 'blocked'; takeoverAttempt = token;
+    if (!token || token !== takeoverToken()) throw fail('takeover-stale');
+    if (!canWrite(current) || !takeoverStatus().available || !desired.enabled) throw fail('takeover-unavailable');
+    const plan = snapshot.pluggedIn === true
+      ? typeof getPlan === 'function' ? await getPlan(clone(snapshot), { takeover: true }) : desired.plan : null;
+    if (snapshot.pluggedIn === true && (!plan || !time(plan.startAt))) throw fail('invalid-plan');
+    const now = clock(), periods = plan?.periods;
+    const active = periods?.some(period => period.startAt <= now && (period.endAt === null || period.endAt > now));
+    const startAt = periods && !active ? periods.find(period => period.startAt > now)?.startAt ?? plan.startAt : plan?.startAt;
+    takeoverState = 'pending';
+    if (startAt > now) {
+      if (!snapshot.transactionConfirmed || snapshot.transactionId === null || snapshot.pluggedIn !== true)
+        throw fail('transaction-unconfirmed');
+      if (startAt - now < MIN_PAUSE_MS) throw fail('invalid-plan');
+      const profileId = state.pending?.instruction.profileId ?? state.owned?.profileId ?? state.nextProfileId;
+      const instruction = { ...ocppPauseInstruction({ profileId, transactionId: snapshot.transactionId,
+        startAt: Math.ceil(startAt / 1000) * 1000, now: Math.floor(now / 1000) * 1000 }), requestedAt: now };
+      await commit({ nextProfileId: state.owned || state.pending ? state.nextProfileId : profileId + 1,
+        pending: { action: 'install', instruction, execution: null, attempts: 0, nextAttemptAt: 0, accepted: false } });
+      if (!await dispatch(current, signal)) throw fail('command-failed');
+    }
+    const priorManual = state.manual;
+    snapshot = await adapter.takeover(snapshot, { signal, guard: () => canWrite(current) && desired.enabled === true,
+      beforeWrite: ({ before } = {}) => commit({ takeoverPending: { connectedAt: state.session?.connectedAt ?? null,
+        requestedAt: clock(), beforeSchedule: effectiveScheduleFingerprint(before?.schedule ?? snapshot.appControl.schedule),
+        afterSchedule: effectiveScheduleFingerprint({ enabled: 'none' }),
+        enabledAt: before?.observations?.[31]?.at ?? snapshot.appControl.enabledAt,
+        stopAt: before ? Math.max(before.observations?.[31]?.at ?? 0, before.reasonAt ?? 0) : snapshot.appControl.stopAt } }) });
+    await commit({ appControl: clone(snapshot.appControl), manual: null, execution: null, released: false, provisional: false,
+      delayedReleaseAt: null, takeoverPending: null,
+      ...(priorManual ? { lastManualResume: { at: clock(), deadlineAt: priorManual.cycleEndsAt, reason: 'explicit' } } : {}) });
+    takeoverState = 'confirmed';
   }
   async function reconcile(current) {
     if (closed || current !== generation) return status();
@@ -444,17 +516,26 @@ export function createOcppChargingController({ adapter, initialState = null, sav
         ...(newConnection || changedTransaction || disconnected ? { execution: null, released: false, provisional: false,
           pauseWitness: null, manual: changedTransaction && !newConnection && !disconnected
             || ['window', 'schedule'].includes(state.manual?.kind) ? state.manual : null } : {}) });
+      if (state.takeoverPending && !desired.takeover) {
+        const unresolved = state.takeoverPending, app = snapshot.appControl;
+        const newerStop = app?.stopped && app.stopAt > Math.max(unresolved.stopAt ?? 0, unresolved.requestedAt);
+        const differentSchedule = app?.schedule && ![unresolved.beforeSchedule, unresolved.afterSchedule].includes(effectiveScheduleFingerprint(app.schedule));
+        if (newerStop || differentSchedule || disconnected || unresolved.connectedAt !== session.connectedAt) await commit({ takeoverPending: null });
+        else if (desired.enabled === true) return display('unconfirmed', REASONS['takeover-unconfirmed'], 'takeover-unconfirmed');
+      }
       await observeAppControl();
+      if (desired.takeover) {
+        const token = desired.takeover; desired.takeover = null;
+        await takeOver(current, token, signal);
+      }
       if (disconnected && state.manual && !['window', 'schedule'].includes(state.manual.kind))
         await commit({ manual: null, released: false });
       const handbackKnown = !['window', 'schedule', 'stop'].includes(state.manual?.kind)
         || fresh(snapshot.appControl?.readAt, clock()) && (state.manual.kind === 'stop'
           ? snapshot.appControl.controlKnown : snapshot.appControl.schedule !== null);
-      if (handbackKnown && !staleAppControl() && !nativeStopped() && (desired.resume && desired.resume === state.manual?.id
-        || time(state.manual?.resumeAt) && clock() >= state.manual.resumeAt)) {
+      if (handbackKnown && !staleAppControl() && !nativeStopped() && time(state.manual?.resumeAt) && clock() >= state.manual.resumeAt) {
         await commit({ lastManualResume: { at: clock(), deadlineAt: state.manual.cycleEndsAt,
-          reason: desired.resume === state.manual.id ? 'explicit' : 'window-end' },
-          manual: null, released: false, execution: null }); desired.resume = null;
+          reason: 'window-end' }, manual: null, released: false, execution: null });
       }
       // Supply fresh physical pause evidence to identification before it chooses
       // whether this temporary instruction is still needed.
@@ -481,12 +562,12 @@ export function createOcppChargingController({ adapter, initialState = null, sav
       }
       if (!controlRequested()) { await commit({ execution: null }); handoverConfirmed = !state.pending && !state.owned; return display('off', 'Automatic charging is off; external charger restrictions are preserved.'); }
       if (nativeStopped()) return display(state.manual?.kind === 'stop' ? 'yielded' : 'unavailable',
-        'The charger was paused or disabled in Easee. Resume it there before returning to automatic charging.', state.manual ? null : 'charger-stopped');
+        'The charger reports paused or disabled. Use automatic to let the charging planner take over.', state.manual ? null : 'charger-stopped');
       if (state.manual) return display('yielded', state.manual.kind === 'stop'
-        ? 'The charger was paused or disabled in Easee. Resume it there before returning to automatic charging.'
-        : ['window', 'schedule'].includes(state.manual.kind) ? 'The Easee app schedule has temporary priority.'
-          : 'Charging was enabled in Easee. The Easee app has temporary control until unplug or explicit resumption.');
-      if (staleAppControl()) return display('unavailable', 'Waiting for Easee app observations newer than the last confirmed change.', 'app-control-stale');
+        ? 'The charger reports paused or disabled. Use automatic to let the charging planner take over.'
+        : ['window', 'schedule'].includes(state.manual.kind) ? 'The charger schedule has temporary priority.'
+          : 'Another charging instruction has priority until unplugging or choosing Use automatic.');
+      if (staleAppControl()) return display('unavailable', 'Waiting for charger readings newer than the last confirmed change.', 'app-control-stale');
       if (snapshot.appControl?.faulted || snapshot.appControl?.authorizationBlocked)
         return display('unavailable', 'Easee reports a charger fault or charging authorization restriction.');
       if (disconnected) return display('disconnected', 'Waiting for a vehicle connection.');
@@ -508,10 +589,6 @@ export function createOcppChargingController({ adapter, initialState = null, sav
         if (restriction && !await clearInstruction(restriction, current, signal)) return display('unconfirmed', 'Charge Now is waiting for the native profile release.');
         await commit({ execution: null, released: true, provisional: false });
         return display('released', 'Charge Now is active for this connection. Charger and vehicle limits still apply.');
-      }
-      if (desired.resetPlan) {
-        await commit({ released: false, execution: null, provisional: false }); desired.resetPlan = false;
-        display('unavailable', 'Updating the automatic charging plan.');
       }
       const previousInstruction = state.pending?.instruction ?? state.owned;
       if (previousInstruction && clock() >= previousInstruction.startAt) {
@@ -598,8 +675,8 @@ export function createOcppChargingController({ adapter, initialState = null, sav
       if (state.manual || nativeStopped()) {
         if (!await clearInstruction(state.owned, current, signal)) return display('unconfirmed', 'Native profile release is waiting for its bounded retry.');
         return display(state.manual ? 'yielded' : 'unavailable', nativeStopped()
-          ? 'The charger was paused or disabled in Easee. Resume it there before returning to automatic charging.'
-          : 'The newer Easee app action has temporary priority.');
+          ? 'The charger reports paused or disabled. Use automatic to let the charging planner take over.'
+          : 'The newer charger instruction has temporary priority.');
       }
       ownsInstruction = ownsInstruction && snapshot.online && snapshot.connectionId === verifiedConnectionId && snapshot.transactionConfirmed
         && snapshot.transactionId === state.owned?.transactionId && clock() < state.owned.startAt;
@@ -614,6 +691,7 @@ export function createOcppChargingController({ adapter, initialState = null, sav
         ? 'The native pause is confirmed and expires at the planned start.'
         : missingPauseEvidence());
     } catch (error) {
+      if (takeoverState === 'pending') takeoverState = 'blocked';
       if (closed || current !== generation) return status();
       handoverConfirmed = !controlRequested() ? false : null;
       const code = REASONS[error?.code] ? error.code : error?.code === 'readback-mismatch' ? 'readback-mismatch' : 'command-failed';
@@ -623,7 +701,9 @@ export function createOcppChargingController({ adapter, initialState = null, sav
   }
   return { status, supportsIdentification: true,
     update(input = {}) {
-      desired = { ...desired, ...input, resetPlan: input.resume === true, resume: input.resume === true ? state.manual?.id ?? null : null };
+      if (Object.hasOwn(input, 'resume')) throw new Error('Unsupported charging control field: resume');
+      if (typeof input.takeover !== 'string' && takeoverState !== 'pending') { takeoverState = null; takeoverAttempt = null; }
+      desired = { ...desired, ...input, takeover: typeof input.takeover === 'string' ? input.takeover : null };
       const current = ++generation;
       abort?.abort(); abort = new AbortController();
       queue = queue.catch(() => {}).then(() => reconcile(current));

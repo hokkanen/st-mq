@@ -1,3 +1,33 @@
+Implemented 2026-10-02 — Restore explicit automatic charging handover
+- Restore Use automatic in the shared capability-driven charger component.
+  Automatic remains ON while yielding to manual instructions; changing that
+  preference or cancelling Charge now does not acquire native takeover authority.
+  The explicit action enables Automatic, ends Charge now and supersedes earlier
+  observed Start/Stop and supported charger schedules until changed externally
+  again. Economic scheduling may keep charging paused after handover.
+- Bind the action to equipment, connection, request/control revisions and native
+  source evidence. Confirm native writes, reject stale actions, preserve newer
+  external changes and keep interrupted results visibly uncertain. No prior
+  takeover permission is replayed after restart. Disable native charging timers
+  without restoring them on unplug/restart or changing unrelated Shelly jobs.
+- F3/F5 amendment follows the owner's explicit decision that Use automatic takes
+  precedence over earlier manual controls permanently until set externally again.
+  Ordinary polling retains manual priority. Preserve electrical limits, faults,
+  authorization, vehicle restrictions and truthful source attribution (F4).
+  Unsupported timer shapes/current restrictions produce an explicit explanation.
+  F1: remove the superseded controller resume-acknowledgement input; the current
+  Charge now cancellation endpoint only replans. No aliases or migration paths.
+- Allow charger text, receipts and popups to wrap/grow across both cards. Replace
+  raw control codes and unsupported claims about which app caused a stop with
+  readable explanations. Preserve shared controls and capability-based differences.
+- Validation: full offline suite passes 4,157 tests, with one optional upstream
+  Tuya parser check skipped. Focused backend/runtime/UI, production provider
+  wiring, restricted HTTP write, family-access, restart and cancellation checks
+  pass. Production build passes with its existing bundle-size advisory. Browser
+  checks cover both chargers, long messages, popups and actions at 320/390/1440px
+  in both themes; full charging and seven-width dashboard-height sweeps pass.
+  No deployment or live-device commands.
+
 Implemented 2026-10-02 — Refocus the Home planner preview on planned actions
 - Keep a stable Planned actions label and show the next scheduled heating change,
   manual preheat end or automatic resume. Choose the earlier independent deadline;

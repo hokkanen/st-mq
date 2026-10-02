@@ -89,18 +89,29 @@ and stays highlighted while ON; click **Charge now** again to turn the override
 OFF and use automatic charging (enabling it if it was OFF). ON means immediate
 charging is requested; the card's activity line reports whether the vehicle is
 actually charging, waiting or blocked.
-The card keeps its height while saving and after either action, without an extra
-confirmation message. Unplugging also ends the override. Both chargers use the
-same controls: **Automatic charging** and **Charge now**. Turning Automatic
-charging ON also requests a handover of eligible manual choices for the current
-connection and ends Charge now. If it is already ON, turn it OFF and ON again to
-request that handover. Before a vehicle connects, the switch saves only the
-automatic preference. There is no separate handover button. Native manual stops
-and schedules that the integration cannot release must be changed in the charger
-controls; switching automatic scheduling on does not bypass them.
-Native vehicle timers, targets, user stops, faults, charger limits and authorization
-still apply, and unavailable or unsupported hardware cannot be started through
-this action.
+Unplugging also ends the override. Both chargers use the same component and
+controls: **Automatic charging**, **Charge now** and **Use automatic**. Differences
+come from reported capabilities. Messages wrap and the card grows when needed;
+status, errors and popup explanations are never deliberately clipped.
+
+The Automatic switch saves the scheduling preference. It stays **ON** while
+manual control has priority. **Use automatic** is a separate, explicit new
+instruction: enable Automatic, end Charge now, supersede the observed manual
+Start/Stop and disable supported native charging schedules. Those earlier
+instructions are not restored after the session, unplugging or restart; a new
+external instruction takes priority again. Returning to the price plan may keep
+charging paused until a cheaper period. The button explains unavailable,
+pending and unconfirmed outcomes, and success requires charger readback.
+
+Handover is bound to the displayed equipment, connection, request/control
+revisions and observed native instruction. A newer observed instruction fences
+it. Charger APIs do not supply an atomic cross-client lock: a concurrent external
+edit must still be detected through source clocks, schedule revisions and
+readback. Observed stop/enable changes do not prove which app or person caused
+them. Vehicle timers and targets, faults, electrical limits and authorization
+remain authoritative. Unsupported native schedule shapes stay visible as blocked
+rather than being silently removed. See the [Easee takeover constraints](charging-easee.md#ownership-and-manual-controls)
+and [Shelly command contract](charging-provider-capabilities.md#mqtt-and-commands).
 
 A manual SoC is a one-time anchor. A newer applicable vehicle reading supersedes it using the provider's source clock, or explicitly labeled receipt time when no measurement clock exists. A pinned capacity outranks the provider capacity. An explicit requested minimum remains distinct from the vehicle's actual ceiling; requesting 95% while the vehicle reports an 80% ceiling is constrained rather than silently rewritten. Vehicle current limits and native not-before times constrain either charging point.
 

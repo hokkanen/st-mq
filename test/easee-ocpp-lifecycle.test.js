@@ -34,7 +34,7 @@ function fixture(t, { streaming = false } = {}) {
   let cloudObservations = null, cloudOffline = false, nativeRequest = null, streamRows = null;
   let readSetupState = () => states.get('setup');
   const stateFor = key => ({ get: () => clone(states.get(key) ?? null), set: value => states.set(key, clone(value)) });
-  const http = createHttp({ allowOcppSetup: true, allowChargerScheduling: true, canControl: () => permitted,
+  const http = createHttp({ allowOcppSetup: true, allowChargerScheduling: true, allowChargerTakeover: true, canControl: () => permitted,
     fetchImpl: async (url, options) => {
       const path = new URL(url).pathname, method = options.method, body = options.body ? JSON.parse(options.body) : null;
       events.push({ type: 'http', path, method, body });
@@ -61,6 +61,22 @@ function fixture(t, { streaming = false } = {}) {
       if (path === `/api/chargers/${CHARGER}/schedules` && method === 'GET') {
         if (cloudOffline) throw Error('synthetic cloud unavailable');
         return Response.json(clone(schedule));
+      }
+      if (method === 'POST' && path === `/api/chargers/${CHARGER}/settings`) {
+        assert.deepEqual(body, { enabled: true });
+        cloudObservations = cloudObservations.map(row => row.id === 31
+          ? { ...row, value: true, timestamp: new Date(now).toISOString() } : row);
+        return new Response(null, { status: 200 });
+      }
+      if (method === 'POST' && path === `/api/chargers/${CHARGER}/commands/resume_charging`) {
+        assert.equal(body, null);
+        cloudObservations = cloudObservations.map(row => [48, 96].includes(row.id)
+          ? { ...row, value: row.id === 48 ? 16 : 0, timestamp: new Date(now).toISOString() } : row);
+        return new Response(null, { status: 200 });
+      }
+      if (method === 'POST' && /^\/api\/chargers\/[^/]+\/schedules\/(?:daily|weekly|delayed)\/disable$/.test(path)) {
+        assert.equal(body, null); schedule = { ...schedule, enabled: 'none' };
+        return new Response(null, { status: 204 });
       }
       assert.fail(`Unexpected synthetic request: ${method} ${path}`);
     } });
@@ -371,8 +387,8 @@ test('production native adapter observes Easee app Stop and Enable, preserves na
   assert.equal(view.phase, 'yielded'); assert.equal(view.manual.kind, 'stop');
   assert.equal(x.profiles.has(ownedId), false); assert.equal(x.profiles.has(19), true);
   assert.deepEqual(x.nativeWrites().at(-1), { type: 'native', action: 'ClearChargingProfile', payload: { id: ownedId } });
-  view = await controller.update({ enabled: true, resume: true });
-  assert.equal(view.phase, 'yielded', 'Automatic resumption cannot undo an app stop');
+  view = await controller.update({ enabled: true, replan: true });
+  assert.equal(view.phase, 'yielded', 'Ordinary replanning cannot undo a stop instruction');
   f.advance(1000); x.observe({ 31: true, 96: 0, 47: 8 }); await x.refresh();
   view = await controller.update({ enabled: true });
   assert.equal(view.manual.kind, 'release'); assert.equal(view.phase, 'yielded');
@@ -380,7 +396,7 @@ test('production native adapter observes Easee app Stop and Enable, preserves na
   const restarted = x.createController(x.saved); t.after(() => restarted.close());
   view = await restarted.update({ enabled: true, plan: x.plan });
   assert.equal(view.manual.kind, 'release', 'A restart preserves the same connected session’s app priority');
-  view = await restarted.update({ enabled: true, resume: true });
+  view = await restarted.update({ enabled: true, takeover: view.takeover.token });
   assert.equal(view.phase, 'paused'); assert.equal(view.manual, null);
   assert.equal(view.snapshot.limits.chargerA, 8);
   assert(x.nativeWrites().every(row => ['SetChargingProfile', 'ClearChargingProfile'].includes(row.action)));
@@ -524,7 +540,7 @@ test('an initially stopped Easee app remains authoritative through missing cloud
   assert.equal(view.phase, 'unavailable'); assert.equal(view.errorCode, 'charger-stopped');
   x.f.cloudOffline = true; x.f.advance(61_000);
   const restarted = x.createController(x.saved); t.after(() => restarted.close());
-  view = await restarted.update({ enabled: true, plan: x.plan, resume: true });
+  view = await restarted.update({ enabled: true, plan: x.plan, replan: true });
   assert.equal(view.errorCode, 'charger-stopped'); assert.equal(x.nativeWrites().length, 0);
 });
 
@@ -536,23 +552,131 @@ test('older Easee cloud control observations cannot acknowledge or erase a newer
   assert.equal(view.manual.kind, 'stop');
   const manual = clone(view.manual), writesBefore = x.nativeWrites().length;
   x.f.advance(1000); x.f.observations = older; await x.refresh();
-  view = await x.controller.update({ enabled: true, resume: true });
+  view = await x.controller.update({ enabled: true, replan: true });
   assert.equal(view.phase, 'yielded'); assert.deepEqual(view.manual, manual);
   assert.equal(x.nativeWrites().length, writesBefore);
 });
 
-test('a newer Easee schedule wins over a resume request acknowledging an earlier app release', async t => {
+test('a newer Easee schedule wins over a takeover request for an earlier displayed release', async t => {
   const x = await nativeAppFixture(t);
   await x.controller.update({ enabled: true, plan: x.plan });
   x.f.advance(1000); x.physical('Charging', 7);
   let view = await x.controller.update({ enabled: true });
   assert.equal(view.manual.kind, 'release');
-  const earlier = view.manual.id;
+  const earlier = view.manual.id, takeover = view.takeover.token;
   x.f.advance(1000);
   x.f.schedule = { enabled: 'daily', daily: { timezone: 'UTC', periods: [{ startTime: '12:00', stopTime: '12:05', maximumAmps: 8 }] } };
   await x.refresh();
   const count = x.nativeWrites().length;
-  view = await x.controller.update({ enabled: true, resume: true });
-  assert.equal(view.phase, 'yielded'); assert.equal(view.manual.kind, 'window');
+  view = await x.controller.update({ enabled: true, takeover });
+  assert.equal(view.takeover.state, 'blocked'); assert.equal(view.manual.kind, 'window');
   assert.notEqual(view.manual.id, earlier); assert.equal(x.nativeWrites().length, count);
+});
+
+test('production Use automatic confirms a local economic hold before enabling and resuming an Easee pause', async t => {
+  const x = await nativeAppFixture(t), { f, controller } = x;
+  x.observe({ 31: false, 48: 0, 96: 53, 109: 2 }); x.physical('SuspendedEVSE', 0); await x.refresh();
+  const prior = await controller.update({ enabled: true, plan: x.plan });
+  assert.equal(prior.takeover.available, true);
+  const start = f.events.length, hardLimits = f.observations.filter(row => [22, 23, 24, 47, 104, 111, 112, 113, 230, 231, 232].includes(row.id));
+  const result = await controller.update({ enabled: true, takeover: prior.takeover.token });
+  assert.equal(result.takeover.state, 'confirmed'); assert.equal(result.phase, 'paused'); assert.equal(result.manual, null);
+  const events = f.events.slice(start), envelope = events.findIndex(row => row.action === 'GetCompositeSchedule');
+  const enable = events.findIndex(row => row.path?.endsWith('/settings'));
+  const resume = events.findIndex(row => row.path?.endsWith('/commands/resume_charging'));
+  assert.ok(envelope >= 0 && enable > envelope && resume > enable);
+  assert.equal(events.some(row => row.method === 'POST' && row.path?.endsWith('/schedules/delayed')), false);
+  assert.deepEqual(f.observations.filter(row => hardLimits.some(limit => limit.id === row.id)), hardLimits);
+  assert.equal(result.appControl.stopped, false); assert.equal(result.appControl.enabled, true);
+  const restarted = x.createController(x.saved); t.after(() => restarted.close());
+  const beforeRestart = writes(f).length; await restarted.update({ enabled: true, plan: x.plan });
+  assert.equal(writes(f).length, beforeRestart, 'native enable/resume are never replayed on restart');
+  f.advance(1000); x.observe({ 31: false, 96: 53 }); await x.refresh();
+  const manual = await restarted.update({ enabled: true, plan: x.plan });
+  assert.equal(manual.phase, 'yielded'); assert.equal(manual.manual.kind, 'stop');
+});
+
+test('production Use automatic disables an active native daily schedule permanently through its guarded vendor API', async t => {
+  const x = await nativeAppFixture(t), { f, controller } = x;
+  f.schedule = { enabled: 'daily', daily: { timezone: 'UTC', periods: [{ startTime: '13:00', stopTime: '14:00', maximumAmps: 8 }] } };
+  await x.refresh();
+  const immediate = { id: 'start-now', startAt: f.now, periods: [{ startAt: f.now, endAt: null }], feasible: true };
+  const prior = await controller.update({ enabled: true, plan: immediate });
+  assert.equal(prior.manual.kind, 'window');
+  const result = await controller.update({ enabled: true, takeover: prior.takeover.token });
+  assert.equal(result.takeover.state, 'confirmed'); assert.equal(result.phase, 'released');
+  assert.equal(result.appControl.schedule.enabled, 'none'); assert.equal(result.manual, null);
+  assert.equal(writes(f).filter(row => row.path.endsWith('/schedules/daily/disable')).length, 1);
+  const restarted = x.createController(x.saved); t.after(() => restarted.close());
+  f.advance(1000); x.physical('Available', 0, null); x.observe({ 100: 'A', 109: 1 }); await x.refresh();
+  await restarted.update({ enabled: true, plan: immediate });
+  f.advance(1000); x.physical('Charging', 7, 8); x.observe({ 100: 'C', 109: 3 }); await x.refresh();
+  const reconnected = await restarted.update({ enabled: true, plan: immediate });
+  assert.equal(reconnected.appControl.schedule.enabled, 'none'); assert.equal(reconnected.manual, null);
+  assert.equal(writes(f).filter(row => row.path.endsWith('/schedules/daily/disable')).length, 1);
+});
+
+test('production takeover preserves restrictive positive current limits and fences a newer native instruction', async t => {
+  const x = await nativeAppFixture(t), { f, controller } = x;
+  x.observe({ 31: true, 48: 8, 96: 53, 109: 2 }); await x.refresh();
+  let prior = await controller.update({ enabled: true, plan: x.plan });
+  let result = await controller.update({ enabled: true, takeover: prior.takeover.token });
+  assert.equal(result.takeover.state, 'blocked'); assert.equal(result.errorCode, 'resume-current-limit');
+  assert.equal(writes(f).some(row => row.path.endsWith('/commands/resume_charging')), false);
+  assert.equal(f.observations.find(row => row.id === 48).value, 8);
+  prior = await controller.update({ enabled: true, plan: x.plan });
+  f.advance(1000); x.observe({ 31: false, 96: 53 }); await x.refresh();
+  result = await controller.update({ enabled: true, takeover: prior.takeover.token });
+  assert.equal(result.takeover.state, 'blocked'); assert.equal(result.errorCode, 'takeover-stale');
+  assert.equal(writes(f).some(row => row.path.endsWith('/settings') || row.path.endsWith('/commands/resume_charging')), false);
+});
+
+test('an interrupted native schedule disable retains the economic zero profile through polling and restart', async t => {
+  const x = await nativeAppFixture(t), { f, controller } = x;
+  f.schedule = { enabled: 'daily', daily: { timezone: 'UTC', periods: [{ startTime: '13:00', stopTime: '14:00', maximumAmps: 8 }] } };
+  await x.refresh();
+  const prior = await controller.update({ enabled: true, plan: x.plan });
+  f.beforeRequest = async () => {
+    if (f.events.at(-1).path?.endsWith('/daily/disable') && f.events.at(-1).method === 'POST') {
+      f.schedule = { enabled: 'none' }; throw Error('synthetic lost disable reply');
+    }
+  };
+  let result = await controller.update({ enabled: true, takeover: prior.takeover.token });
+  assert.equal(result.takeover.state, 'blocked'); assert.ok(x.saved.takeoverPending); assert.ok(result.owned);
+  f.beforeRequest = async () => {}; await x.refresh();
+  const count = x.nativeWrites().length;
+  result = await controller.update({ enabled: true }); assert.equal(result.errorCode, 'takeover-unconfirmed');
+  const restarted = x.createController(x.saved); t.after(() => restarted.close());
+  result = await restarted.update({ enabled: true, plan: x.plan });
+  assert.equal(result.errorCode, 'takeover-unconfirmed'); assert.equal(x.nativeWrites().length, count);
+  assert.equal(x.profiles.has(result.owned.profileId), true);
+  f.advance(1000); x.observe({ 31: false, 96: 53 }); await x.refresh();
+  result = await restarted.update({ enabled: true, plan: x.plan });
+  assert.equal(result.takeoverPending, null); assert.equal(result.manual.kind, 'stop'); assert.equal(result.phase, 'yielded');
+  assert.equal(writes(f).some(row => row.path.endsWith('/commands/resume_charging')), false);
+});
+
+test('a lost native resume reply cannot become manual release and remove the planned zero profile', async t => {
+  const x = await nativeAppFixture(t), { f, controller } = x;
+  x.observe({ 31: true, 48: 0, 96: 53, 109: 2 }); await x.refresh();
+  const prior = await controller.update({ enabled: true, plan: x.plan });
+  f.beforeRequest = async () => {
+    if (f.events.at(-1).path?.endsWith('/commands/resume_charging') && f.events.at(-1).method === 'POST') {
+      f.observations = f.observations.map(row => [48, 96].includes(row.id)
+        ? { ...row, value: row.id === 48 ? 16 : 0, timestamp: new Date(f.now).toISOString() } : row);
+      throw Error('synthetic lost resume reply');
+    }
+  };
+  let result = await controller.update({ enabled: true, takeover: prior.takeover.token });
+  assert.equal(result.takeover.state, 'blocked'); assert.ok(x.saved.takeoverPending);
+  const id = result.owned.profileId, nativeCount = x.nativeWrites().length;
+  f.beforeRequest = async () => {}; await x.refresh();
+  result = await controller.update({ enabled: true }); assert.equal(result.errorCode, 'takeover-unconfirmed');
+  const restarted = x.createController(x.saved); t.after(() => restarted.close());
+  result = await restarted.update({ enabled: true, plan: x.plan });
+  assert.equal(result.errorCode, 'takeover-unconfirmed'); assert.equal(x.profiles.has(id), true);
+  assert.equal(x.nativeWrites().length, nativeCount);
+  result = await restarted.update({ enabled: true, takeover: result.takeover.token });
+  assert.equal(result.takeover.state, 'confirmed'); assert.equal(result.takeoverPending, null);
+  assert.equal(writes(f).filter(row => row.path.endsWith('/commands/resume_charging')).length, 1);
 });

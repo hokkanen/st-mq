@@ -1150,6 +1150,147 @@ test('a matched BMW quick unplug ends the old schedule even when every Easee pol
 });
 
 const requestScope = view => ({ association: view.association, sessionId: view.request.sessionId, revision: view.request.revision });
+const takeoverScope = view => ({ ...requestScope(view), controlRevision: view.controls.revision,
+  takeoverToken: view.control.takeover.token });
+
+async function takeoverFixture(t) {
+  const f = fixture(preferences), runtime = f.create(), adapter = fakeAdapter(f.clock);
+  t.after(() => runtime.close());
+  await runtime.setAdapter('charger1', adapter); await runtime.reconcile();
+  runtime.tick({ prices }); await runtime.reconcile(); runtime.tick = () => {};
+  const controller = runtime.chargers.charger1.controller, status = controller.status.bind(controller), update = controller.update.bind(controller);
+  const calls = [], takeover = { available: true, token: 'synthetic-native-instruction', reason: null };
+  let during = async () => {}, confirmation = 'confirmed', confirmedToken = null, planningRevision = null;
+  controller.status = () => ({ ...status(), takeover: structuredClone(takeover), planningRevision });
+  controller.update = async input => {
+    if (!input.takeover) return update(input);
+    calls.push(structuredClone(input));
+    await during(input);
+    planningRevision = input.controlsRevision;
+    Object.assign(takeover, { state: confirmation, attemptToken: confirmedToken ?? input.takeover });
+    return controller.status();
+  };
+  return { ...f, runtime, adapter, controller, calls, takeover,
+    setDuring: value => { during = value; }, setResult: (state, token = null) => { confirmation = state; confirmedToken = token; } };
+}
+
+test('Use automatic rejects stale displayed scope or native instruction before persistence and dispatch', async t => {
+  const f = await takeoverFixture(t), scope = takeoverScope(chargerView(f.runtime));
+  const before = structuredClone(f.values.get('charging:mqtt')), writes = f.writes.length;
+  for (const changes of [{ association: 'another-charger' }, { sessionId: 'another-connection' },
+    { revision: scope.revision + 1 }, { controlRevision: scope.controlRevision + 1 },
+    { takeoverToken: 'fixture-newer-instruction' }, { takeoverToken: '' }, { unexpected: true }]) {
+    await assert.rejects(f.runtime.useAutomatic('charger1', { ...scope, ...changes }), /changed|displayed/);
+    assert.deepEqual(f.values.get('charging:mqtt'), before);
+    assert.equal(f.writes.length, writes); assert.equal(f.calls.length, 0);
+  }
+});
+
+test('Use automatic durably enables Automatic and clears Charge now with one scoped confirmed takeover', async t => {
+  const f = await takeoverFixture(t);
+  await f.runtime.chargeNow('charger1', requestScope(chargerView(f.runtime)));
+  const before = chargerView(f.runtime), scope = takeoverScope(before);
+  assert.equal(before.controls.enabled, false); assert.equal(before.request.chargeNow, true);
+  let persisted;
+  f.setDuring(() => { persisted = structuredClone(f.values.get('charging:mqtt').chargers.charger1); });
+  await f.runtime.useAutomatic('charger1', scope);
+  assert.equal(persisted.controls.enabled, true); assert.equal(persisted.request.chargeNow, undefined);
+  assert.equal(persisted.controls.revision, scope.controlRevision + 1);
+  assert.equal(persisted.request.revision, scope.revision + 1);
+  assert.equal(f.calls.length, 1); assert.equal(f.calls[0].takeover, scope.takeoverToken);
+  assert.equal(f.calls[0].enabled, true); assert.equal(f.calls[0].chargeNow, null);
+  assert.equal(Object.hasOwn(f.calls[0], 'resume'), false, 'explicit native takeover has its own controller path');
+  assert.equal(f.runtime.chargers.charger1.takeoverAttempt, undefined);
+  const saved = JSON.stringify(f.values.get('charging:mqtt').chargers);
+  assert.equal(saved.includes(scope.takeoverToken), false, 'native takeover permission is never replayed from runtime state');
+});
+
+test('Use automatic persistence failure rolls back automatic permission and Charge now without dispatch', async t => {
+  const f = await takeoverFixture(t);
+  await f.runtime.chargeNow('charger1', requestScope(chargerView(f.runtime)));
+  const before = structuredClone(chargerView(f.runtime)), scope = takeoverScope(before);
+  f.store.fail = true;
+  await assert.rejects(f.runtime.useAutomatic('charger1', scope), /locked/);
+  f.store.fail = false;
+  const after = chargerView(f.runtime);
+  assert.deepEqual(after.controls, before.controls); assert.deepEqual(after.request, before.request);
+  assert.equal(f.calls.length, 0); assert.equal(f.runtime.chargers.charger1.takeoverAttempt, undefined);
+});
+
+test('Use automatic plans beyond the superseded native timer without changing published native evidence', async t => {
+  const f = await takeoverFixture(t);
+  f.adapter.setSchedule({ enabled: 'daily', daily: { timezone: 'UTC',
+    periods: [{ startTime: '03:00', stopTime: '04:00', maximumAmps: 16 }] } });
+  f.adapter.setObservation({ manualStop: true, stopped: true });
+  await f.runtime.reconcile('charger1');
+  const before = chargerView(f.runtime);
+  assert.equal(before.telemetry.manualStop, true);
+  const published = { manual: before.control.manual, schedule: before.control.snapshot.schedule,
+    start: before.values.scheduledStartAt, end: before.values.scheduledEndAt };
+  let planned;
+  f.setDuring(input => {
+    planned = structuredClone(input.plan);
+    const during = chargerView(f.runtime);
+    assert.deepEqual({ manual: during.control.manual, schedule: during.control.snapshot.schedule,
+      start: during.values.scheduledStartAt, end: during.values.scheduledEndAt }, published);
+    assert.equal(during.telemetry.manualStop, true, 'a candidate cannot manufacture native handover evidence');
+  });
+  await f.runtime.useAutomatic('charger1', takeoverScope(before));
+  assert.equal(planned.feasible, true);
+  assert.equal(planned.startAt, initialNow + HOUR, 'candidate follows cheaper periods instead of the old 03:00 timer');
+  assert.notEqual(planned.state, 'manual-stop');
+});
+
+test('Use automatic requires a fresh confirmed result for the exact displayed instruction', async t => {
+  for (const [state, token] of [['pending', null], ['blocked', null], ['confirmed', 'earlier-attempt']]) {
+    const f = await takeoverFixture(t); f.setResult(state, token);
+    await assert.rejects(f.runtime.useAutomatic('charger1', takeoverScope(chargerView(f.runtime))), /not been confirmed/);
+    assert.equal(f.runtime.chargers.charger1.takeoverAttempt, undefined);
+    assert.equal(f.calls.length, 1);
+  }
+});
+
+test('a newer session or automatic edit revokes an awaited Use automatic result', async t => {
+  for (const change of ['request', 'automatic', 'connection']) {
+    const f = await takeoverFixture(t), item = f.runtime.chargers.charger1;
+    let entered, release;
+    const waiting = new Promise(resolve => { entered = resolve; }), gate = new Promise(resolve => { release = resolve; });
+    f.setDuring(async () => { entered(); await gate; });
+    const pending = f.runtime.useAutomatic('charger1', takeoverScope(chargerView(f.runtime)));
+    const rejected = assert.rejects(pending, /changed during takeover/);
+    await waiting;
+    // Model the accepted newer edit at the persistence boundary while the
+    // controller command is awaited; its own reconcile waits on this flight.
+    if (change === 'request') item.request.revision++;
+    if (change === 'automatic') { item.controls.enabled = false; item.controls.revision++; f.runtime.refreshSettings(); }
+    if (change === 'connection') item.request.sessionId = 'newer-physical-connection';
+    f.runtime.persist(); f.runtime.invalidateCommands(); release(); await rejected;
+    assert.equal(item.takeoverAttempt, undefined);
+    if (change === 'automatic') assert.equal(item.controls.enabled, false);
+  }
+});
+
+test('Charge now OFF never acknowledges native manual priority or sends explicit takeover', async t => {
+  for (const mode of ['stop', 'schedule']) {
+    const f = await takeoverFixture(t);
+    await f.runtime.setControl('charger1', automaticScope(f.runtime));
+    await f.runtime.chargeNow('charger1', requestScope(chargerView(f.runtime)));
+    f.setNow(initialNow + 1000);
+    if (mode === 'stop') f.adapter.setObservation({ enabled: false, stopped: true, manualStop: true });
+    else f.adapter.setSchedule({ enabled: 'daily', daily: { timezone: 'UTC',
+      periods: [{ startTime: '03:00', stopTime: '04:00', maximumAmps: 16 }] } });
+    await f.runtime.reconcile('charger1');
+    const mutations = f.adapter.calls.filter(row => row.kind !== 'read').length;
+    await f.runtime.resume('charger1', {});
+    const view = chargerView(f.runtime);
+    assert.equal(view.request.chargeNow, undefined);
+    if (mode === 'stop') assert.equal(view.control.snapshot.stopped, true);
+    else { assert.equal(view.control.snapshot.schedule.enabled, 'daily'); assert.ok(view.control.manual); }
+    assert.equal(f.calls.length, 0, 'ordinary Charge now OFF has no native takeover token');
+    assert.equal(f.adapter.calls.filter(row => row.kind !== 'read').length, mutations);
+    assert.notEqual(view.control.phase, 'released');
+  }
+});
 
 test('Charge Now removes the automatic delay immediately and automatic handover restores scheduling', async t => {
   const f = fixture(preferences, {}, { charger1: true }), runtime = f.create(), adapter = fakeAdapter(f.clock);

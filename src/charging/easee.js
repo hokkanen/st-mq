@@ -58,6 +58,15 @@ export function normalizeScheduleState(payload) {
 
 export function scheduleFingerprint(state) { return hash(normalizeScheduleState(state)); }
 
+/** Bind an explicit handover to the instruction actually shown to its user. */
+export function easeeTakeoverFingerprint(snapshot) {
+  if (!snapshot?.schedule) return null;
+  return hash([snapshot.fingerprint ?? scheduleFingerprint(snapshot.schedule), snapshot.enabled,
+    snapshot.observations?.[31]?.at ?? null, snapshot.stopped, snapshot.reason, snapshot.reasonAt,
+    snapshot.mode, snapshot.modeAt, snapshot.limits?.dynamicChargerA, snapshot.limits?.chargerA,
+    snapshot.pluggedIn, snapshot.faulted, snapshot.authorizationBlocked]);
+}
+
 /** Only the active instruction can override the current charging session. */
 export function effectiveScheduleFingerprint(state) {
   const normalized = normalizeScheduleState(state);
@@ -328,6 +337,92 @@ export function createEaseeScheduleAdapter({ request, readObservations, chargerI
       } catch { throw failure('read-failed', 'Easee returned an unsupported charger or schedule state.'); }
     },
     readTelemetry(options = {}) { return adapter.read({ ...options, telemetryOnly: true }); },
+    async takeover({ expectedSnapshot, pause = null, signal, canMutate = () => false,
+      beforeWrite = () => {}, afterWrite = () => {} } = {}) {
+      let current = await adapter.read({ signal, forceRest: true });
+      const allowed = () => canControl() && canMutate();
+      const usable = value => value.online === true && value.controlKnown && !value.faulted && !value.authorizationBlocked;
+      const same = value => easeeTakeoverFingerprint(value) === easeeTakeoverFingerprint(current);
+      if (!expectedSnapshot || easeeTakeoverFingerprint(current) !== easeeTakeoverFingerprint(expectedSnapshot))
+        throw failure('state-changed', 'The charger instruction changed before automatic handover.');
+      if (!allowed()) throw failure('control-revoked', 'Charging control authority changed.');
+      if (!usable(current)) throw failure('access-denied', 'The charger is not available for automatic handover.');
+      if (!['none', 'delayed', 'daily', 'weekly'].includes(current.schedule.enabled))
+        throw failure('unsupported-schedule', 'This schedule cannot yet be disabled through the supported charger API.');
+      // Resume resets the dynamic charger ceiling. Never erase a separate
+      // current restriction whose purpose cannot be established from telemetry.
+      const canResume = value => amps(value.limits?.dynamicChargerA) !== null
+        && amps(value.limits?.chargerA) > 0 && (value.limits.dynamicChargerA >= value.limits.chargerA
+          || value.limits.dynamicChargerA === 0 && value.reason === 53
+            && value.limits.circuitA?.length === 3 && value.limits.circuitA.every(limit => amps(limit) > 0)
+            && (value.pluggedIn === false || amps(value.limits.cableA) > 0));
+      if (current.reason === 53 && !canResume(current))
+        throw failure('resume-current-limit', 'The charger pause cannot be cleared while preserving its current limit.');
+      const write = async (stage, url, body, verify) => {
+        const dispatchAllowed = () => allowed() && (stage !== 'schedule' || !pause || pause.startAt - clock() >= 15 * 60_000);
+        const before = await adapter.read({ signal, forceRest: true });
+        if (!same(before)) throw failure('state-changed', 'The charger instruction changed during automatic handover.');
+        if (!allowed() || !usable(before)) throw failure('control-revoked', 'Charging control authority changed.');
+        await beforeWrite({ stage, before: clone(before) });
+        if (!dispatchAllowed()) throw failure('control-revoked', 'Charging control authority or the planned pause changed.');
+        const requestedAt = clock();
+        try {
+          await request(url, { method: 'POST', ...(body ? { headers: { 'content-type': 'application/json' },
+            body: JSON.stringify(body) } : {}), signal, controlGuard: dispatchAllowed }, true);
+        } catch (error) {
+          if (!allowed()) throw failure('control-revoked', 'Charging control authority changed.');
+          if ([401, 403].includes(error?.status ?? error?.response?.status)) throw failure('access-denied', 'Easee rejected charging authorization.');
+          throw failure('command-failed', 'Easee did not confirm automatic handover.');
+        }
+        let after;
+        try { after = await adapter.read({ signal, forceRest: true }); }
+        catch { throw failure('readback-failed', 'Automatic handover could not be read back.'); }
+        if (!usable(after) || !verify(after, before, requestedAt))
+          throw failure('readback-mismatch', 'The charger has not confirmed automatic handover.');
+        current = after;
+        await afterWrite({ stage, snapshot: clone(current), requestedAt });
+        if (!allowed()) throw failure('control-revoked', 'Charging control authority changed.');
+      };
+      if (pause) {
+        const priorKind = current.schedule.enabled;
+        const delayed = delayedScheduleFor(pause, clock());
+        if (pause.startAt - clock() < 15 * 60_000) throw failure('start-passed', 'The planned pause is too short.');
+        await write('schedule', `${base}/delayed`, { enabled: true, ...delayed }, (after, before) =>
+          after.fingerprint === scheduleFingerprint({ ...before.schedule, enabled: 'delayed', delayed }) && after.enabled === before.enabled
+          && after.observations?.[31]?.at === before.observations?.[31]?.at
+          && after.pluggedIn === before.pluggedIn && after.stopped === before.stopped
+          && (before.reason !== 53 || after.reason === 53 && after.reasonAt === before.reasonAt));
+        // Replacing the active type alone does not prove that an older repeating
+        // schedule was permanently disabled. Explicitly disable its named type
+        // beneath the confirmed delay; never first remove the current pause.
+        if (['daily', 'weekly'].includes(priorKind)) {
+          await write('schedule-disable', `${base}/${priorKind}/disable`, null, (after, before) =>
+            after.fingerprint === before.fingerprint && after.controlFingerprint === before.controlFingerprint
+            && after.observations?.[31]?.at === before.observations?.[31]?.at
+            && (before.reason !== 53 || after.reasonAt === before.reasonAt));
+        }
+      } else if (current.schedule.enabled !== 'none') {
+        await write('schedule', `${base}/${current.schedule.enabled}/disable`, null, (after, before) =>
+          after.schedule.enabled === 'none' && after.controlFingerprint === before.controlFingerprint
+          && after.observations?.[31]?.at === before.observations?.[31]?.at
+          && (before.reason !== 53 || after.reason === 53 && after.reasonAt === before.reasonAt));
+      }
+      const chargerBase = base.slice(0, -'/schedules'.length);
+      if (current.enabled === false) {
+        await write('enable', `${chargerBase}/settings`, { enabled: true }, (after, before, requestedAt) =>
+          after.enabled === true && after.observations?.[31]?.at >= requestedAt
+          && after.fingerprint === before.fingerprint && after.pluggedIn === before.pluggedIn
+          && (after.reason !== 53 || before.reason === 53 && after.reasonAt === before.reasonAt));
+      }
+      if (current.reason === 53) {
+        if (!canResume(current)) throw failure('resume-current-limit', 'The charger current limit prevents automatic handover.');
+        await write('resume', `${chargerBase}/commands/resume_charging`, null, (after, before, requestedAt) =>
+          after.enabled === true && !after.stopped && after.reasonAt >= requestedAt
+          && after.fingerprint === before.fingerprint && after.pluggedIn === before.pluggedIn);
+      }
+      if (current.stopped) throw failure('readback-mismatch', 'The charger still reports stopped.');
+      return current;
+    },
     async installDelayed({ startAt, timezone, maximumAmps, expectedFingerprint, expectedControlFingerprint, signal,
       canMutate = () => true, allowChargingPause = false, beforeWrite = () => {}, identification = null } = {}) {
       if (identification !== null && (typeof identification !== 'object' || Array.isArray(identification)

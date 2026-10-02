@@ -220,6 +220,18 @@ permission to act. See [the configuration guide](docs/configuration.md).
   Charge now is a session action independent of the Automatic charging switch.
   It still respects live control authority, device readiness and native limits.
   Integration setup, commissioning and electrical limits remain configured.
+- Both charger cards use one shared component with capability-driven differences.
+  The explicit **Use automatic** action is a new instruction that supersedes
+  earlier manual charging Start/Stop choices and disables supported native
+  charging schedules until changed externally again. It enables Automatic and
+  returns to price scheduling; it need not start charging immediately. Ordinary
+  polling, the Automatic preference switch and Charge now never implicitly
+  acquire this takeover authority. Bind the action to current equipment,
+  connection and observed native instructions; newer external changes retain
+  priority. Confirm the native changes and preserve uncertain outcomes across
+  failure. Do not restore superseded instructions after unplugging or restart,
+  infer who caused an observed stop, change unrelated device schedules or bypass
+  electrical protection, charger authorization, faults or vehicle restrictions.
 - Explicit configuration import/application and clearly labeled native-device
   setup/commands are separate from controller-default edits. Keep their actual
   effect visible. Historical records, restoration obligations, commissioning and

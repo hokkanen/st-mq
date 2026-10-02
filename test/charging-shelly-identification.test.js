@@ -150,7 +150,7 @@ test('Shelly accepted-but-unread pause recovers after restart without replaying 
   assert.equal(view.owned, null); assert.equal(f.writes.length, 2);
 });
 
-test('Shelly a lost stop reply requires native app Resume instead of undoing an ambiguous manual stop', async t => {
+test('Shelly a lost stop reply stays paused until an explicit automatic takeover', async t => {
   const f = fixture(t);
   f.afterPublish = () => { throw Object.assign(Error('lost reply'), { code: 'evse-command-unconfirmed' }); };
   let view = await f.update(); assert.equal(view.pending.stage, 'dispatched');
@@ -158,11 +158,13 @@ test('Shelly a lost stop reply requires native app Resume instead of undoing an 
   view = await f.update();
   assert.equal(view.reason, 'identification-resume-required'); assert.equal(view.manual.kind, 'stop');
   assert.equal(view.owned.purpose, 'identification'); assert.equal(f.writes.length, 1);
-  view = await f.update({ enabled: true, resume: true });
+  view = await f.update({ enabled: true });
   assert.equal(f.fields.start_charging.value, false); assert.equal(f.writes.length, 1);
-  f.now++; f.change('start_charging', true);
-  view = await f.update({ enabled: true, plan: { periods: [{ startAt: f.now + 3600_000, endAt: null }] } });
-  assert.equal(f.fields.start_charging.value, true); assert.equal(view.owned, null); assert.equal(view.manual.kind, 'enable');
+  f.now++;
+  view = await f.update({ enabled: true, takeover: f.controller.status().takeover.token,
+    plan: { periods: [{ startAt: f.now + 3600_000, endAt: null }] } });
+  assert.equal(view.takeover.state, 'confirmed');
+  assert.equal(f.fields.start_charging.value, false); assert.equal(view.owned, null); assert.equal(view.manual, null);
   assert.equal(f.writes.length, 1);
 });
 

@@ -20,7 +20,7 @@ export const CHARGING_CONTROL_CAUSES = {
   'identification-resume-required': 'Identification release still requires confirmation', 'command-unconfirmed': 'Charger instruction unconfirmed',
   'control-error': 'Charger control error; detailed cause unavailable',
   'manual-stop': 'Manual stop has priority', 'manual-release': 'Manual release has priority', 'native-schedule': 'Charger timer has priority',
-  'manual-enable': 'Native app charging has priority', 'manual-charge-now': 'Native app release has priority', 'manual-schedule': 'Native app schedule has priority',
+  'manual-enable': 'Other charging instruction has priority', 'manual-charge-now': 'Immediate charging instruction has priority', 'manual-schedule': 'Charger schedule has priority',
   'native-current-limit': 'Native current limit', 'vehicle-current-limit': 'Vehicle current limit', 'hardware-restriction': 'Hardware current limit',
   'fuse-limit': 'Installation current limit', 'priority-allocation': 'Shared charging allocation', 'telemetry-fallback': 'Current fallback for missing measurements',
   'vehicle-not-before': 'Vehicle start restriction', 'identification-pause': 'Identification pause',
@@ -31,12 +31,12 @@ export const CHARGING_CONTROL_CAUSES = {
 };
 
 const CONTROL_DETAILS = {
-  'manual-stop': 'A manual stop is active and has priority over automatic charging. Resume charging in the charger controls when ready.',
-  'native-schedule': 'A schedule set on the charger has priority. Disable the timer in the charger app, then turn Automatic charging off and on here to request a handover.',
-  'manual-schedule': 'A schedule set in the charger app has priority over automatic charging.',
-  'manual-enable': 'A charging choice made in the charger app has priority over automatic charging.',
-  'manual-charge-now': 'Immediate charging selected in the charger app has priority over automatic scheduling.',
-  'manual-release': 'A manual charging release has priority over automatic scheduling.',
+  'manual-stop': 'A stop instruction has priority over automatic scheduling. Select Use automatic to return to the charging plan when the charger is ready.',
+  'native-schedule': 'A schedule on the charger has priority. Use automatic replaces the current schedule with economic scheduling; a newer external change takes priority again.',
+  'manual-schedule': 'A charger schedule has priority over automatic charging.',
+  'manual-enable': 'Another charging instruction has priority over automatic scheduling.',
+  'manual-charge-now': 'An immediate charging instruction has priority over automatic scheduling.',
+  'manual-release': 'A charging release has priority over automatic scheduling.',
   'vehicle-not-before': 'The vehicle has a later charging start time. Charging must wait until the vehicle allows it.',
   'telemetry-fallback': 'Current is limited to the configured fallback while fresh measurements are unavailable. This is not a guarantee of fuse protection.',
   'fuse-limit': 'Charging current is limited by the estimated spare capacity of the installation.',
@@ -52,7 +52,17 @@ const CONTROL_DETAILS = {
   'evse-command-unconfirmed': 'The charger has not confirmed the instruction. Its outcome is still unknown; waiting for a fresh reading.',
   'evse-publish-unconfirmed': 'Delivery of the charger instruction is unconfirmed. Its outcome is still unknown; waiting for a fresh reading.',
   'command-unconfirmed': 'The charger instruction is unconfirmed. Waiting for a fresh reading.',
+  'evse-takeover-changed': 'The charger changed after this view was loaded. Review its latest state before requesting automatic control again.',
+  'evse-native-schedule-unsupported': 'The charger cannot replace this native schedule through the available connection. Change it in the charger controls before trying again.',
+  'evse-native-schedule-unconfirmed': 'The charger has not confirmed that its previous schedule was disabled. Automatic scheduling has not taken over yet.',
 };
+
+export function chargingControlLabel(value) {
+  return ({ 'manual-stop': 'Stop instruction active', 'native-schedule': 'Charger schedule active',
+    'manual-schedule': 'Charger schedule active', 'manual-enable': 'Other charging instruction active',
+    'manual-charge-now': 'Immediate charging instruction active', 'manual-release': 'Charging release active' })[value]
+    ?? CHARGING_CONTROL_CAUSES[value] ?? chargingControlReason(value);
+}
 
 /** Keep machine codes in diagnostics data and readable causes in ordinary UI. */
 export function chargingControlReason(value) {

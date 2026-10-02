@@ -191,6 +191,26 @@ test('manual expiry, unknown ownership and handover failures never claim confirm
   assert.equal(handover.roleLabel, 'Handover unconfirmed'); assert.equal(handover.roleState, 'uncertain');
 });
 
+test('an interrupted automatic handover is uncertainty, not an external manual override', () => {
+  for (const id of ['charger1', 'charger2']) {
+    for (const charging of [false, true]) {
+      const item = charger({ id, control: { phase: 'manual', confirmed: true,
+        manual: { kind: 'takeover-unconfirmed', detectedAt: now }, reason: 'evse-native-schedule-unconfirmed' } });
+      item.values.charging = reading(charging);
+      const view = chargerDisplay(item, { now }), result = summary(item);
+      assert.equal(view.yielded, false);
+      assert.equal(view.state, charging ? 'Charging' : 'Handover unconfirmed');
+      assert.equal(view.event, 'Handover unconfirmed');
+      assert.match(view.problem, /has not confirmed.*previous schedule/);
+      assert.equal(result.roleLabel, 'Handover unconfirmed');
+      assert.equal(result.roleState, 'uncertain');
+      assert.equal(result.completion.value, 'Checking');
+      assert.match(result.activity, /Handover unconfirmed/);
+      assert.doesNotMatch(JSON.stringify(result), /Manual override|takeover-unconfirmed|evse-native/);
+    }
+  }
+});
+
 test('a pending revision retains the confirmed start without using the proposed completion', () => {
   const item = charger({ plan: { startAt: startAt + hour, finishAt, deadlineAt } }), result = summary(item);
   assert.equal(result.roleLabel, 'Control unconfirmed');

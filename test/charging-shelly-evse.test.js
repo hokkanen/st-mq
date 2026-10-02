@@ -43,6 +43,10 @@ function fixture(t, extra={}) {
     if(frame.method==='Shelly.GetDeviceInfo')result={id:'synthetic-evse',model:'synthetic-model',fw_id:'synthetic-firmware'};
     else if(frame.method==='Service.GetConfig')result=structuredClone(service);
     else if(frame.method==='Schedule.List')result=structuredClone(schedules);
+    else if(frame.method==='Schedule.Update') {
+      const job=schedules.jobs.find(job=>job.id===frame.params.id);
+      assert.ok(job);assert.deepEqual(frame.params,{id:job.id,enable:false});job.enable=false;result={rev:++schedules.rev};
+    }
     else if(frame.method==='Service.GetStatus')result=structuredClone(serviceStatus);
     else if(frame.method.endsWith('.GetConfig'))result={id:ids[frame.params.role],owner:'service:0',access:'crw',min:6,max:16,meta:{ui:{step:1}},options:['charger_free','charger_wait','charger_pause','charger_charging','charger_end']};
     else if(frame.method.endsWith('.Set')) {fields[frame.params.role]=frame.params.value;settingClock.set(frame.params.role,{value:frame.params.value,at:now});result=null;}
@@ -412,11 +416,12 @@ test('native restrictions block control and external auto balance blocks only cu
  }
  assert.equal(f.writes.some(row=>row.method==='Service.SetConfig'||row.method.endsWith('.Set')),false);
 });
-test('a lower native current choice survives explicit automatic resumption',async t=>{
+test('a lower native current choice survives explicit automatic takeover',async t=>{
  const f=fixture(t,{limiterEnabled:true});f.fields.current_limit=8;await f.ready();
  const controller=createShellyController({adapter:f.adapter,clock:()=>NOW,canControl:()=>true});t.after(()=>controller.close());
  await controller.update({enabled:false,allocation:{}});
- await controller.update({enabled:true,resume:true,plan:{periods:[{startAt:NOW,endAt:null}]},allocation:{}});
+ const result=await controller.update({enabled:true,takeover:controller.status().takeover.token,plan:{periods:[{startAt:NOW,endAt:null}]},allocation:{}});
+ assert.equal(result.takeover.state,'confirmed');
  assert.equal(controller.status().manualCurrentA,8);assert.equal(controller.status().limiter.currentA,8);
  assert.equal(f.writes.some(row=>row.method.endsWith('.Set')),false);
 });
@@ -440,7 +445,9 @@ test('an enabled native schedule owns start and stop while current limiting stay
  f.schedules.jobs=[];await controller.update({enabled:true,plan:{periods:[{startAt:NOW+3600000,endAt:null}]},allocation:{}});
  assert.equal(controller.status().manual.kind,'charge-now');
  assert.equal(f.writes.some(row=>row.method==='Boolean.Set'),false);
- await controller.update({enabled:true,resume:true,plan:{periods:[{startAt:NOW+3600000,endAt:null}]},allocation:{}});
+ f.setNow(NOW+1000);
+ const result=await controller.update({enabled:true,takeover:controller.status().takeover.token,plan:{periods:[{startAt:NOW+3600000,endAt:null}]},allocation:{}});
+ assert.equal(result.takeover.state,'confirmed');
  assert.equal(f.writes.filter(row=>row.method==='Boolean.Set'&&row.params.value===false).length,1);
 });
 test('failed physical persistence restores DUP admission and retries the exact boundary',async t=>{
@@ -489,7 +496,7 @@ test('Charge Now releases a Shelly economic pause for this session and automatic
   assert.equal(f.fields.start_charging, true); assert.equal(controller.status().ownedPause, false);
   assert.equal(controller.status().reason, 'charge-now');
   assert.equal(f.writes.filter(row => row.method === 'Boolean.Set' && row.params.value === true).length, 1);
-  await controller.update({ enabled: true, plan: future, chargeNow: null, resume: true, allocation: {} });
+  await controller.update({ enabled: true, plan: future, chargeNow: null, replan: true, allocation: {} });
   assert.equal(f.fields.start_charging, false); assert.equal(controller.status().reason, 'economic-wait');
 });
 
@@ -551,7 +558,7 @@ test('basic Shelly scheduling preserves native current and balancing and restore
   assert.equal(f.service.auto_balance.enable, true);
 });
 
-test('native Shelly Stop survives automatic resumption, off/on and restart until the app starts charging', async t => {
+test('native Shelly manual choices survive automatic toggles and restart until explicit takeover', async t => {
   const f = fixture(t); await f.ready(); advanceCommandClock(f);
   let saved, controller;
   const restart = async () => {
@@ -564,10 +571,10 @@ test('native Shelly Stop survives automatic resumption, off/on and restart until
   await controller.update({ enabled: true, plan: future });
   assert.equal(f.fields.start_charging, false);
   f.setNow(f.now() + 1000); f.notify('start_charging', false);
-  let view = await controller.update({ enabled: true, resume: true, plan: { periods: [{ startAt: NOW, endAt: null }] } });
+  let view = await controller.update({ enabled: true, plan: { periods: [{ startAt: NOW, endAt: null }] } });
   assert.equal(view.manual.kind, 'stop'); assert.equal(view.ownedPause, false);
   await controller.update({ enabled: false }); await restart();
-  view = await controller.update({ enabled: true, resume: true, plan: { periods: [{ startAt: NOW, endAt: null }] } });
+  view = await controller.update({ enabled: true, plan: { periods: [{ startAt: NOW, endAt: null }] } });
   assert.equal(view.manual.kind, 'stop'); assert.equal(f.fields.start_charging, false);
   assert.equal(f.writes.filter(row => row.method === 'Boolean.Set').length, 1);
   f.setNow(f.now() + 1000); f.fields.start_charging = true;
@@ -576,7 +583,8 @@ test('native Shelly Stop survives automatic resumption, off/on and restart until
   await controller.update({ enabled: false }); await restart();
   view = await controller.update({ enabled: true, plan: future });
   assert.equal(view.manual.kind, 'enable'); assert.equal(f.fields.start_charging, true);
-  view = await controller.update({ enabled: true, resume: true, plan: future });
+  view = await controller.update({ enabled: true, takeover: controller.status().takeover.token, plan: future });
+  assert.equal(view.takeover.state, 'confirmed');
   assert.equal(view.manual, null); assert.equal(f.fields.start_charging, false);
 });
 
@@ -611,7 +619,7 @@ test('removing a native Shelly schedule releases only the controller pause and p
   assert.equal(f.writes.filter(row => row.method === 'Boolean.Set').length, 2);
 });
 
-test('a newer Shelly app instruction during resume read wins over the acknowledged manual priority', async t => {
+test('a Shelly Stop discovered during takeover read supersedes the earlier native Start', async t => {
   const f = fixture(t); await f.ready(); advanceCommandClock(f);
   const controller = createShellyController({ adapter: f.adapter, clock: f.now, canControl: () => true });
   t.after(() => controller.close());
@@ -626,9 +634,243 @@ test('a newer Shelly app instruction during resume read wins over the acknowledg
     f.setNow(f.now() + 1000); f.fields.start_charging = false;
     return refresh();
   };
-  const view = await controller.update({ enabled: true, resume: true, plan: future });
+  const refused = await controller.update({ enabled: true, takeover: controller.status().takeover.token, plan: future });
+  assert.equal(refused.takeover.state, 'blocked');
+  assert.equal(refused.takeover.reason, 'evse-takeover-changed');
+  const view = await controller.update({ enabled: true, plan: future });
   assert.equal(view.manual.kind, 'stop'); assert.equal(f.fields.start_charging, false);
   assert.equal(f.writes.some(row => row.method.endsWith('.Set')), false);
+});
+
+const nativeChargingJob = (id = 1, value = true) => ({ id, enable: true, timespec: '0 0 22 * * *',
+  calls: [{ method: 'Boolean.Set', params: { owner: 'service:0', role: 'start_charging', value } }] });
+
+test('retired Shelly resume inputs reject before state or physical mutation', async t => {
+  const f = fixture(t); await f.ready(); let saves = 0;
+  const controller = createShellyController({ adapter: f.adapter, clock: f.now, canControl: () => true,
+    saveState: () => { saves++; } }); t.after(() => controller.close());
+  const reads = f.writes.length;
+  for (const resume of [true, false, null])
+    assert.throws(() => controller.update({ enabled: true, resume }), /unsupported-shelly-control-input/);
+  assert.equal(saves, 0); assert.equal(f.writes.length, reads);
+});
+
+test('explicit Shelly takeover supersedes a native Stop but follows the current economic window', async t => {
+  for (const mode of ['charge', 'wait', 'no-plan']) {
+    const f = fixture(t); f.fields.start_charging = false; f.fields.work_state = 'charger_pause'; await f.ready();
+    const controller = createShellyController({ adapter: f.adapter, clock: f.now, canControl: () => true });
+    t.after(() => controller.close());
+    await controller.update({ enabled: true });
+    assert.equal(controller.status().manual.kind, 'stop');
+    f.setNow(NOW + 1000);
+    const { token } = controller.status().takeover;
+    const plan = mode === 'no-plan' ? null : { periods: [{ startAt: NOW + (mode === 'wait' ? 3600_000 : 0), endAt: null }] };
+    const result = await controller.update({ enabled: true, takeover: token, plan });
+    assert.equal(result.takeover.state, 'confirmed', mode);
+    assert.equal(result.takeover.attemptToken, token);
+    assert.equal(result.manual, null);
+    assert.equal(f.fields.start_charging, mode === 'charge');
+    assert.equal(f.writes.some(row => row.method === 'Number.Set'), false);
+    if (mode !== 'charge') assert.equal(f.writes.some(row => row.method === 'Boolean.Set'), false);
+  }
+});
+
+test('an adopted Shelly stop never regains manual priority after controller restart or a new connection', async t => {
+  const f = fixture(t); f.fields.start_charging = false; f.fields.work_state = 'charger_pause'; await f.ready();
+  let saved;
+  const options = { adapter: f.adapter, clock: f.now, canControl: () => true, saveState: value => { saved = structuredClone(value); } };
+  let controller = createShellyController(options); t.after(() => controller.close());
+  const future = { periods: [{ startAt: NOW + 3600_000, endAt: null }] };
+  await controller.update({ enabled: true, plan: future });
+  await controller.update({ enabled: true, takeover: controller.status().takeover.token, plan: future });
+  assert.equal(controller.status().manual, null);
+  await controller.close(); controller = createShellyController({ ...options, initialState: saved });
+  await controller.update({ enabled: true, plan: future });
+  assert.equal(controller.status().manual, null);
+  f.setNow(NOW + 1000); f.fields.work_state = 'charger_free';
+  await controller.update({ enabled: true, plan: future });
+  f.setNow(NOW + 2000); f.fields.work_state = 'charger_pause';
+  await controller.update({ enabled: true, plan: future });
+  assert.equal(controller.status().manual, null);
+  assert.equal(controller.status().ownedPause, true);
+  assert.equal(f.fields.start_charging, false);
+  f.setNow(NOW + 3600_000); await controller.update({ enabled: true, plan: future });
+  assert.equal(f.fields.start_charging, true);
+  f.setNow(f.now() + 1000); f.fields.start_charging = false;
+  const external = await controller.update({ enabled: true, plan: future });
+  assert.equal(external.manual.kind, 'stop');
+  assert.equal(external.automaticPermission, null);
+  assert.equal(f.fields.start_charging, false, 'a genuinely later external Stop wins again');
+});
+
+test('Shelly takeover disables only verified charging jobs permanently and confirms every native write', async t => {
+  const f = fixture(t); f.fields.start_charging = false; f.fields.work_state = 'charger_pause';
+  const first = nativeChargingJob(1), second = nativeChargingJob(2, false);
+  second.calls[0].params = { id: 201, value: false };
+  const unrelated = { id: 3, enable: true, timespec: '0 0 12 * * *', calls: [{ method: 'Switch.Set', params: { id: 0, on: true } }] };
+  f.schedules.jobs = [first, unrelated, second]; await f.ready();
+  let saved;
+  const options = { adapter: f.adapter, clock: f.now, canControl: () => true, saveState: value => { saved = structuredClone(value); } };
+  let controller = createShellyController(options); t.after(() => controller.close());
+  const future = { periods: [{ startAt: NOW + 3600_000, endAt: null }] };
+  await controller.update({ enabled: true, plan: future });
+  const result = await controller.update({ enabled: true, takeover: controller.status().takeover.token, plan: future });
+  assert.equal(result.takeover.state, 'confirmed'); assert.equal(result.manual, null);
+  assert.equal(f.fields.start_charging, false, 'handover does not pulse charging during an expensive period');
+  assert.deepEqual(f.schedules.jobs, [{ ...first, enable: false }, unrelated, { ...second, enable: false }]);
+  const mutations = f.writes.filter(row => row.method === 'Schedule.Update');
+  assert.deepEqual(mutations.map(row => row.params), [{ id: 1, enable: false }, { id: 2, enable: false }]);
+  assert.ok(mutations.every(row => row.options.retain === false && row.options.qos === 0));
+  assert.equal(f.adapter.snapshot().nativeScheduleActive, false, 'unrelated jobs cannot own charging');
+  await controller.close(); controller = createShellyController({ ...options, initialState: saved });
+  await controller.update({ enabled: true, plan: future });
+  assert.equal(controller.status().manual, null);
+  assert.equal(f.writes.filter(row => row.method === 'Schedule.Update').length, 2, 'no replay or restoration on restart');
+  f.schedules.jobs[0].enable = true; f.schedules.rev++;
+  const external = await controller.update({ enabled: true, plan: future });
+  assert.equal(external.manual.kind, 'schedule');
+  assert.equal(f.writes.filter(row => row.method === 'Schedule.Update').length, 2, 'new external schedule takes precedence');
+});
+
+test('mixed or unsupported native Shelly jobs refuse takeover without changing unrelated instructions', async t => {
+  for (const job of [
+    { id: 1, enable: true },
+    { ...nativeChargingJob(), calls: [...nativeChargingJob().calls, { method: 'Switch.Set', params: { id: 0, on: false } }] },
+    { ...nativeChargingJob(), calls: [{ method: 'Script.Start', params: { id: 1 } }] },
+    { ...nativeChargingJob(), calls: [{ method: 'Boolean.Set', params: { id: 201, value: true, toggle_after: 60 } }] },
+  ]) {
+    const f = fixture(t); f.schedules.jobs = [job]; await f.ready();
+    const controller = createShellyController({ adapter: f.adapter, clock: f.now, canControl: () => true }); t.after(() => controller.close());
+    await controller.update({ enabled: true });
+    assert.equal(controller.status().takeover.available, false);
+    assert.equal(controller.status().takeover.reason, 'evse-native-schedule-unsupported');
+    const result = await controller.update({ enabled: true, takeover: 'invalid', plan: { periods: [{ startAt: NOW, endAt: null }] } });
+    assert.equal(result.takeover.state, 'blocked');
+    assert.equal(f.writes.some(row => row.method === 'Schedule.Update' || row.method.endsWith('.Set')), false);
+  }
+});
+
+test('Shelly takeover fences a new native instruction discovered by refresh and a later instruction while planning', async t => {
+  for (const during of ['refresh', 'plan']) {
+    const f = fixture(t); f.fields.start_charging = false; f.fields.work_state = 'charger_pause'; await f.ready();
+    let changeDuringPlan = false;
+    const plan = { periods: [{ startAt: NOW, endAt: null }] };
+    const controller = createShellyController({ adapter: f.adapter, clock: f.now, canControl: () => true,
+      getPlan: async () => { if (changeDuringPlan) { f.setNow(f.now() + 1000); f.notify('start_charging', false); } return plan; } });
+    t.after(() => controller.close()); await controller.update({ enabled: true });
+    const { token } = controller.status().takeover;
+    if (during === 'refresh') {
+      const refresh = f.adapter.refresh;
+      f.adapter.refresh = async () => { f.adapter.refresh = refresh; f.setNow(f.now() + 1000); f.notify('start_charging', false); return refresh(); };
+    } else changeDuringPlan = true;
+    const result = await controller.update({ enabled: true, takeover: token });
+    assert.equal(result.takeover.state, 'blocked');
+    assert.equal(result.takeover.reason, 'evse-takeover-changed');
+    assert.equal(result.takeover.attemptToken, token);
+    assert.equal(f.fields.start_charging, false);
+    assert.equal(f.writes.some(row => row.method.endsWith('.Set')), false);
+  }
+});
+
+test('a newer queued update cannot leave Shelly takeover pending or retain an obsolete result', async t => {
+  const f = fixture(t); f.fields.start_charging = false; f.fields.work_state = 'charger_pause'; await f.ready();
+  const controller = createShellyController({ adapter: f.adapter, clock: f.now, canControl: () => true }); t.after(() => controller.close());
+  await controller.update({ enabled: true });
+  const takeover = controller.update({ enabled: true, takeover: controller.status().takeover.token });
+  const newer = controller.update({ enabled: false });
+  const cancelled = await takeover;
+  assert.notEqual(cancelled.takeover.state, 'pending');
+  await newer;
+  assert.equal(controller.status().takeover.state, undefined);
+  assert.equal(f.writes.some(row => row.method.endsWith('.Set') || row.method === 'Schedule.Update'), false);
+  await controller.update({ enabled: true, takeover: controller.status().takeover.token });
+  assert.equal(controller.status().takeover.state, 'confirmed');
+  await controller.update({ enabled: true });
+  assert.equal(controller.status().takeover.state, undefined, 'later status describes current control rather than the old successful click');
+});
+
+test('Shelly takeover reports rejected or unconfirmed schedule removal and never starts charging', async t => {
+  for (const mode of ['rejected', 'unchanged', 'new-schedule']) {
+    const f = fixture(t); f.fields.start_charging = false; f.fields.work_state = 'charger_pause'; f.schedules.jobs = [nativeChargingJob()];
+    await f.ready();
+    const publish = f.client.publish;
+    f.client.publish = (topic, payload, options, callback) => {
+      const frame = JSON.parse(payload);
+      if (frame.method !== 'Schedule.Update') return publish(topic, payload, options, callback);
+      f.writes.push({ ...frame, topic, options });
+      if (mode === 'new-schedule') { f.schedules.jobs[0].enable = false; f.schedules.jobs.push(nativeChargingJob(2)); f.schedules.rev += 2; }
+      callback?.();
+      queueMicrotask(() => f.client.emit('message', `${frame.src}/rpc`, Buffer.from(JSON.stringify({ id: frame.id,
+        src: 'synthetic-evse', dst: frame.src, ...(mode === 'rejected' ? { error: { code: -1 } } : { result: { rev: 2 } }) })), {}));
+    };
+    const controller = createShellyController({ adapter: f.adapter, clock: f.now, canControl: () => true }); t.after(() => controller.close());
+    await controller.update({ enabled: true });
+    const result = await controller.update({ enabled: true, takeover: controller.status().takeover.token,
+      plan: { periods: [{ startAt: NOW, endAt: null }] } });
+    assert.equal(result.takeover.state, 'blocked');
+    assert.equal(result.takeover.reason, mode === 'rejected' ? 'evse-rpc-rejected' : 'evse-native-schedule-unconfirmed');
+    assert.equal(f.fields.start_charging, false);
+    assert.equal(f.writes.some(row => row.method === 'Boolean.Set'), false);
+    await controller.update({ enabled: true });
+    assert.equal(f.writes.filter(row => row.method === 'Schedule.Update').length, 1, 'ordinary polling never retries a takeover');
+  }
+});
+
+test('an unconfirmed Shelly timer removal never becomes native Charge now after restart', async t => {
+  const f = fixture(t); await f.ready(); f.setNow(NOW + 1000);
+  let saved;
+  const options = { adapter: f.adapter, clock: f.now, canControl: () => true, saveState: value => { saved = structuredClone(value); } };
+  let controller = createShellyController(options); t.after(() => controller.close());
+  const plan = { periods: [{ startAt: NOW + 3600_000, endAt: null }] };
+  await controller.update({ enabled: true, plan });
+  assert.equal(f.fields.start_charging, false); assert.equal(controller.status().ownedPause, true);
+  f.schedules.jobs = [nativeChargingJob()]; f.schedules.rev++;
+  await controller.update({ enabled: true, plan });
+  assert.equal(controller.status().manual.kind, 'schedule');
+  const publish = f.client.publish, beforeSchedules = structuredClone(f.schedules);
+  let wrongReadback = false;
+  f.client.publish = (topic, payload, options, callback) => {
+    const frame = JSON.parse(payload);
+    if (frame.method === 'Schedule.Update') wrongReadback = true;
+    else if (frame.method === 'Schedule.List' && wrongReadback) {
+      wrongReadback = false; callback?.();
+      queueMicrotask(() => f.client.emit('message', `${frame.src}/rpc`, Buffer.from(JSON.stringify({ id: frame.id,
+        src: 'synthetic-evse', dst: frame.src, result: beforeSchedules })), {}));
+      return;
+    }
+    return publish(topic, payload, options, callback);
+  };
+  const result = await controller.update({ enabled: true, takeover: controller.status().takeover.token, plan });
+  assert.equal(result.takeover.state, 'blocked');
+  assert.equal(f.schedules.jobs[0].enable, false, 'the native change happened despite unusable confirmation');
+  await controller.close(); controller = createShellyController({ ...options, initialState: saved });
+  f.setNow(f.now() + f.adapter.config.dwellMs);
+  await controller.update({ enabled: true, plan });
+  assert.equal(controller.status().manual.kind, 'takeover-unconfirmed');
+  assert.equal(controller.status().reason, 'evse-native-schedule-unconfirmed');
+  assert.equal(f.fields.start_charging, false);
+  assert.equal(f.writes.filter(row => row.method === 'Schedule.Update').length, 1);
+  assert.equal(f.writes.filter(row => row.method === 'Boolean.Set' && row.params.value).length, 0);
+  const retry = await controller.update({ enabled: true, takeover: controller.status().takeover.token, plan });
+  assert.equal(retry.takeover.state, 'confirmed'); assert.equal(retry.manual, null);
+  assert.equal(f.fields.start_charging, false);
+});
+
+test('Shelly takeover cannot relax a native current ceiling, vehicle restriction or native fault', async t => {
+  for (const mode of ['current', 'vehicle', 'fault', 'authority']) {
+    const f = fixture(t); f.fields.start_charging = false; f.fields.work_state = 'charger_pause'; f.fields.current_limit = 8; await f.ready();
+    let allowed = true;
+    const controller = createShellyController({ adapter: f.adapter, clock: f.now, canControl: () => allowed }); t.after(() => controller.close());
+    await controller.update({ enabled: true }); f.setNow(NOW + 1000); const { token } = controller.status().takeover;
+    if (mode === 'fault') f.serviceStatus.errors = ['overtemperature'];
+    if (mode === 'authority') { allowed = false; f.setAuthority(false); }
+    const result = await controller.update({ enabled: true, takeover: token, plan: { periods: [{ startAt: NOW, endAt: null }] },
+      allocation: mode === 'vehicle' ? { notBefore: NOW + 3600_000 } : {} });
+    assert.equal(result.takeover.state, ['fault', 'authority'].includes(mode) ? 'blocked' : 'confirmed');
+    assert.equal(f.fields.current_limit, 8);
+    assert.equal(f.writes.some(row => row.method === 'Number.Set' || row.method === 'Service.SetConfig'), false);
+    assert.equal(f.fields.start_charging, mode === 'current');
+  }
 });
 
 test('native Shelly current reduction during persisted automatic intent revokes an older increase', async t => {
@@ -643,7 +885,7 @@ test('native Shelly current reduction during persisted automatic intent revokes 
   t.after(() => controller.close());
   await controller.update({ enabled: false });
   assert.equal(f.writes.some(row => row.method === 'Number.Set'), false);
-  const view = await controller.update({ enabled: true, resume: true, plan: { periods: [{ startAt: NOW, endAt: null }] } });
+  const view = await controller.update({ enabled: true, plan: { periods: [{ startAt: NOW, endAt: null }] } });
   assert.equal(view.manualCurrentA, 8); assert.equal(f.fields.current_limit, 8);
   assert.equal(f.writes.some(row => row.method === 'Number.Set'), false);
 });

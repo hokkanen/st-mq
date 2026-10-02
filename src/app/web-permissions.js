@@ -11,7 +11,7 @@ export function familyRouteAllowed(method, path) {
   return method === 'GET' ? reads.has(path) || /^\/api\/charging\/reports(?:\/[^/]+(?:\/events)?)?$/.test(path)
     : method === 'POST' && (writes.has(path)
     || /^\/api\/charging\/tests\/(preview|start|schedule|target|cancel)$/.test(path)
-    || /^\/api\/charging\/chargers\/[^/]+\/(settings|control|resume|charge-now|identify)$/.test(path));
+    || /^\/api\/charging\/chargers\/[^/]+\/(settings|control|resume|use-automatic|charge-now|identify)$/.test(path));
 }
 
 export function familyActionAllowed(path, input, engine) {
