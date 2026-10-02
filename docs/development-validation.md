@@ -304,6 +304,8 @@ a new disposable profile before the next suite:
 
 ```sh
 node scripts/browser-chart-smoke.js ws://127.0.0.1:39124/session
+# Limit to recorded-energy check methods, exclusions and commissioning states:
+# node scripts/browser-chart-smoke.js ws://127.0.0.1:39124/session --energy-checks-only
 # Limit this combined suite to chart, recording, dates, tooltips and zoom checks:
 # node scripts/browser-chart-smoke.js ws://127.0.0.1:39124/session --chart-only
 node scripts/browser-pairing-smoke.js ws://127.0.0.1:39124/session

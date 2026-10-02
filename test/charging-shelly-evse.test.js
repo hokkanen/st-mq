@@ -32,6 +32,7 @@ function fixture(t, extra={}) {
   let now=NOW, authority=true, failSave=false;
   const service={id:0,auto_balance:{enable:false},auto_charge:true,global_charge_limit:0,global_time_limit:0},serviceStatus={state:'running'},schedules={rev:1,jobs:[]};
   const client=new EventEmitter(), values=new Map(), writes=[], energy=[], gaps=[], voltages=[], events=[];
+  const recorded = new Store(':memory:'); t.after(() => recorded.close());
   const roleTypes={current_limit:'number',start_charging:'boolean',work_state:'enum',phase_info:'object',energy_charge:'number',time_charge:'number'};
   const roles=Object.keys(roleTypes), ids=Object.fromEntries(roles.map((role,i)=>[role,i+200]));
   const fields={current_limit:16,start_charging:true,work_state:'charging',phase_info:{total_power:8280,total_act_energy:0,phase_a:{voltage:230,current:12,power:2760},phase_b:{voltage:230,current:12,power:2760},phase_c:{voltage:230,current:12,power:2760}},energy_charge:0,time_charge:0};
@@ -47,7 +48,7 @@ function fixture(t, extra={}) {
     else result={value:structuredClone(fields[frame.params.role]),last_update_ts:now/1000};
     cb?.();queueMicrotask(()=>client.emit('message',`${frame.src}/rpc`,Buffer.from(JSON.stringify({id:frame.id,src:'synthetic-evse',dst:frame.src,result})),{}));
   };
-  const store={getState:key=>structuredClone(values.get(key)),setState:(key,value)=>{if(failSave)throw Error('disk');values.set(key,structuredClone(value));},transaction:fn=>fn(),
+  const store={db:recorded.db,getState:key=>structuredClone(values.get(key)),setState:(key,value)=>{if(failSave)throw Error('disk');values.set(key,structuredClone(value));},transaction:fn=>fn(),
     event:(type,payload,at)=>events.push({type,payload,at})};
   const engine={recorder:{recordEnergy:value=>energy.push(value),energyGap:value=>gaps.push(value)},voltage:{ingest:value=>voltages.push(value)}};
   const adapter=createShellyEvseAdapter({config:config(extra),broker:{address:'mqtt://synthetic'},client,store,engine,clock:()=>now,canControl:()=>authority});
@@ -204,8 +205,12 @@ test('a positive C2 meter increment with no phase-power evidence remains excepti
   await f.adapter.refresh();
   assert.equal(f.events.length, 1, 'Repeated source evidence cannot duplicate the exceptional increment');
   f.setNow(NOW + 3000); f.notify('work_state', 'free');
+  assert.equal(f.events.length, 1, 'A disconnect cannot finalize before late native reference and recorded phase energy arrive');
+  f.setNow(NOW + 34000); f.notify('current_limit', 16);
   assert.equal(f.events.at(-1).type, 'charging-session-check');
-  assert.equal(f.events.at(-1).payload.referenceKwh, .001, 'The meter-versus-power session diagnostic remains independent');
+  assert.equal(f.events.at(-1).payload.referenceKwh, null, 'A lifetime delta cannot become the missing native final session reference');
+  assert.equal(f.events.at(-1).payload.complete, false);
+  assert(f.events.at(-1).payload.quality.includes('incomplete-coverage'));
 });
 
 test('a valid zero C2 meter delta requires no positive phase-power weights', async t => {
@@ -275,7 +280,7 @@ test('C2 phase records and unallocated diagnostics commit with their source curs
   assert.equal(phases.reduce((sum, row) => sum + row.value, 0), .002, 'Unallocated consumption is never added to a later split');
   assert(phases.every(row => row.sourceTime === NOW + 2000 && row.receivedAt === NOW + 2250
     && row.raw.intervalStart === NOW + 1000 && row.raw.intervalEnd === NOW + 2000));
-  assert.equal(store.getState(key).checkSession.referenceKwh, .003, 'Session comparison retains both valid native deltas');
+  assert.equal(store.getState(key).sessionCheck.active.reference, null, 'Lifetime deltas never substitute for native session references');
   adapter.close(); engine.recorder = new Recorder(store); adapter = create();
   assert.equal(adapter.accept('phase_info', allocated, NOW + 2500), false);
   assert.equal(store.observations().length, 6);

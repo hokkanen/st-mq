@@ -10,7 +10,7 @@ export const DEFAULT_CHARGING_CONFIGURATION = Object.freeze({
   defaults: DEFAULT_CHARGING_DEFAULTS,
   chargers: { charger1: {}, charger2: {
     enabled: false, profile: 'top-ac-portable', deviceId: '', model: '', firmware: '', topicPrefix: '',
-    associationVersion: 1, verified: false, serviceId: 0, minimumCurrentA: 6, maximumCurrentA: 16, currentStepA: 1,
+    associationVersion: 1, verified: false, sessionEnergyVerified: false, serviceId: 0, minimumCurrentA: 6, maximumCurrentA: 16, currentStepA: 1,
     limiterEnabled: false, fallbackCurrentA: 12, mainFuseA: [25, 25, 25], marginA: [1, 1, 1],
     phaseMap: [0, 1, 2], additiveCurrentVerified: false, maxAgeMs: 15000, maxSkewMs: 5000,
     dwellMs: 30000, rampA: 2, connectedStates: [], disconnectedStates: [], chargingStates: [],
@@ -32,7 +32,7 @@ export function chargingConfiguration(input = {}) {
   const defaults = DEFAULT_CHARGING_CONFIGURATION.chargers.charger2, supplied = input.chargers?.charger2 ?? {};
   strict(supplied, Object.keys(defaults), 'Shelly EVSE configuration');
   const c2 = { ...structuredClone(defaults), ...supplied };
-  for (const key of ['enabled', 'verified', 'limiterEnabled', 'additiveCurrentVerified']) if (typeof c2[key] !== 'boolean') throw new Error(`Invalid EVSE ${key}`);
+  for (const key of ['enabled', 'verified', 'sessionEnergyVerified', 'limiterEnabled', 'additiveCurrentVerified']) if (typeof c2[key] !== 'boolean') throw new Error(`Invalid EVSE ${key}`);
   if (c2.profile !== 'top-ac-portable' || !topic(c2.topicPrefix) || !topic(c2.deviceId)) throw new Error('Unsupported EVSE profile or topic');
   for (const key of ['model', 'firmware']) if (typeof c2[key] !== 'string' || c2[key].length > 100 || /[\u0000-\u001f]/.test(c2[key])) throw new Error(`Invalid EVSE ${key}`);
   for (const key of ['associationVersion', 'serviceId', 'minimumCurrentA', 'maximumCurrentA', 'currentStepA', 'fallbackCurrentA', 'maxAgeMs', 'maxSkewMs', 'dwellMs', 'rampA'])
@@ -52,6 +52,8 @@ export function chargingConfiguration(input = {}) {
   }
   if (c2.enabled && (!c2.topicPrefix || !c2.deviceId)) throw new Error('An enabled EVSE needs a device identity and topic');
   if (c2.verified && (!c2.model || !c2.firmware || !c2.disconnectedStates.length || !c2.chargingStates.length || !c2.connectedStates.length)) throw new Error('EVSE commissioning requires model, firmware and verified state semantics');
+  if (c2.sessionEnergyVerified && (!c2.model || !c2.firmware || !c2.disconnectedStates.length || !c2.chargingStates.length || !c2.connectedStates.length))
+    throw new Error('EVSE session energy verification requires model, firmware and physical session state mappings');
   strict(input.vehicles ?? {}, ['bmw', 'tesla'], 'vehicles');
   const vehicles = {};
   for (const [id, defaults] of Object.entries(DEFAULT_CHARGING_CONFIGURATION.vehicles)) {

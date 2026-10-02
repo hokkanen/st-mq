@@ -323,6 +323,7 @@ const exclusionLabels = {
   'counter-reset': 'Session energy counter reset',
   'out-of-order': 'Session order or boundaries conflict',
   'missing-final-reference': 'Final meter reading was not confirmed',
+  'session-reference-unverified': 'Charger session boundaries and final energy reading are not verified',
   'missing-estimate': 'Recorded energy total is unavailable',
   'missing-reference': 'Meter reference is unavailable',
   'zero-reference': 'Meter reference is zero',
@@ -346,14 +347,19 @@ export function energyAuditRow(item) {
       .map(([key, label]) => `${label}: ${sessions(s.exclusionReasons[key])}.`);
     return { key: item.signal ?? (second ? 'shelly_session_energy_check' : 'ev1_session_energy_check'),
       title: second ? 'Charger 2' : 'Charger 1', subtitle: 'Completed sessions',
+      method: second
+        ? 'Checks that the stored L1–L3 energy sum matches the charger’s final session energy. Recording uses lifetime meter increments, so this checks completeness and the summed phase allocation, not independent meter accuracy.'
+        : 'Checks that the stored L1–L3 energy sum, estimated by integrating power, matches the charger’s final session meter reading.',
       value: count > 0 ? energyDifference(s.differencePercent)
-        : s.recordedSessions > 0 ? 'No complete comparisons yet' : 'No completed sessions recorded',
+        : second && item.sessionEnergyVerified === false ? 'Completed-session check unavailable'
+          : s.recordedSessions > 0 ? 'No complete comparisons yet' : 'No completed sessions recorded',
       context: count > 0 ? [
         `${checkEnergy(s.estimatedKwh)} recorded · ${checkEnergy(s.referenceKwh)} metered`,
         `Based on ${count} of ${s.recordedSessions} completed sessions.`,
         `Compared sessions: ${checkPeriod(s)}`,
       ] : s.recordedSessions > 0 ? [`All ${sessions(s.recordedSessions)} excluded from comparison.`] : [],
-      notice: null,
+      notice: second && item.sessionEnergyVerified === false
+        ? 'The charger has no verified final session reference. Final energy and reset behavior must be confirmed before comparisons can run. Consumption recording continues from the lifetime meter counter.' : null,
       detailsLabel: excluded > 0 ? `${sessions(excluded)} excluded · details` : 'Comparison details',
       details: s.recordedSessions > 0 ? [
         ...(!second ? [`Final meter references: ${(s.referenceTransports?.length ? s.referenceTransports : ['unknown'])
@@ -372,6 +378,7 @@ export function energyAuditRow(item) {
   const state = propertyCheckStates[s.status];
   const coverage = s.coverage;
   return { key: item.signal, title: 'Property', subtitle: 'Import meter',
+    method: 'Checks the stored L1–L3 energy sum, estimated by integrating power, against the increase in the Equalizer import counter over the same period.',
     value: comparison ? energyDifference(comparison.differencePercent) : state ?? 'Comparison unavailable',
     context: [
       ...(comparison ? [
@@ -420,20 +427,22 @@ export function renderEnergyAudits(rows, root) {
     summary.textContent = label; details.append(summary, ...lines.map(text => paragraph(text)));
     return details;
   };
-  const nodes = [paragraph('Compares recorded energy with electricity-meter readings.', 'muted')];
+  const nodes = [paragraph('Compares stored phase-energy totals with meter references over matching periods.', 'muted')];
   for (const item of rows) {
     const display = energyAuditRow(item), article = document.createElement('article');
     article.className = 'energy-check'; article.dataset.checkKey = display.key;
     const identity = document.createElement('div'), title = document.createElement('h3');
     title.textContent = display.title; identity.append(title, paragraph(display.subtitle, 'energy-check-source'));
     const body = document.createElement('div'); body.className = 'energy-check-body';
-    body.append(paragraph(display.value, 'energy-check-result'), ...display.context.map(text => paragraph(text, 'energy-check-context')));
+    body.append(paragraph(display.value, 'energy-check-result'), paragraph(display.method, 'energy-check-context'),
+      ...display.context.map(text => paragraph(text, 'energy-check-context')));
     if (display.notice) body.append(paragraph(display.notice, 'energy-check-notice'));
     if (display.details.length) body.append(disclosure(display.key, display.detailsLabel, display.details));
     article.append(identity, body); nodes.push(article);
   }
   nodes.push(disclosure('method', 'How comparisons work', [
-    'Recorded energy is estimated from power readings. Property compares that estimate with the increase between two cumulative import-meter readings. Chargers compare completed sessions with their final electricity-meter references.',
+    'Each comparison sums the stored L1–L3 energy over the reference period. Property and Charger 1 test power-integration estimates against meter readings. Charger 2 records lifetime meter increments and checks their stored phase sum against native session energy from the same meter.',
+    'A complete Charger 2 session should agree within meter resolution and rounding. Agreement does not validate individual phase shares or the meter’s physical accuracy.',
     'The percentage is the difference between the recorded and metered totals, divided by the metered total. Larger sessions therefore contribute more. The number of sessions and energy checked show how much evidence supports the result.',
     'Only matching periods with complete recording are compared. Gaps are never filled for these checks. All dates and times are Finnish time.',
     'These checks are read-only. They do not change recorded history, calibrate estimates, train the house model or adjust recording thresholds.',

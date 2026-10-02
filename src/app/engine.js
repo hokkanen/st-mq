@@ -135,11 +135,19 @@ export class Engine {
     const physicalAdapter = this.charging?.chargers?.charger2?.adapter;
     const physical = physicalAdapter?.snapshot?.();
     const enabled = this.charging?.configuration?.chargers?.charger2?.enabled === true;
+    const readings = physicalAdapter?.readings?.() ?? {};
+    // Electrical acquisition is useful before permission to control is verified.
+    // All electrical readings share the validated phase_info source and clock;
+    // the separate native session reference cannot disable meter recording.
+    const meterAvailable = physical?.online === true && readings.ev2_import_energy_counter?.available === true;
+    const meterReceived = physical?.fields?.phase_info != null;
     providers['shelly-evse'] = { source: 'shelly-evse', enabled,
-      status: !enabled ? 'disabled' : physical?.online ? physical.controlReady ? 'ok' : 'degraded' : 'waiting',
-      reason: !enabled ? 'not-enabled' : physical?.online ? physical.controlReady ? 'physical-meter' : 'commissioning-required' : 'awaiting-mqtt',
-      connected: physical?.online === true, recording: physical?.fields?.phase_info != null,
-      readings: physicalAdapter?.readings?.() ?? {}, maxAgeMs: physicalAdapter?.config?.maxAgeMs ?? null,
+      status: !enabled ? 'disabled' : meterAvailable ? 'ok' : physical?.online && meterReceived ? 'degraded' : 'waiting',
+      reason: !enabled ? 'not-enabled' : meterAvailable ? 'physical-meter' : physical?.online ? 'telemetry-unavailable' : 'awaiting-mqtt',
+      connected: physical?.online === true, recording: enabled && meterAvailable,
+      controlReady: physical?.controlReady === true, commissioning: physical?.commissioning ?? null,
+      sessionEnergyVerified: physical?.commissioning?.sessionEnergyVerified === true,
+      readings, maxAgeMs: physicalAdapter?.config?.maxAgeMs ?? null,
       mqttStatus: physical?.mqtt ?? null, topics: physical?.topics ?? [] };
     return providers;
   }

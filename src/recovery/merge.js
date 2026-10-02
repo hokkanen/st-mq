@@ -7,6 +7,7 @@ import { recordedEnergyGroups, validEnergyQuality } from '../storage/energy-hist
 import { Recorder, RECORDING_VERSION } from '../storage/recorder.js';
 import { recordingPolicy, recordingStreamKey, RECORDING_POLICIES } from '../domain/recording-policy.js';
 import { ENERGY_SIGNALS } from '../domain/history-series.js';
+import { assertCurrentChargingSessionCheck } from '../app/charging-session-checks.js';
 
 export const RECOVERY_POLICY = 'master-wins-gaps-only-v1';
 const json = JSON.stringify;
@@ -476,6 +477,7 @@ export class HistoryMerge {
     await this.rows('events', row => {
       const payload = decode(row.payload);
       this.require(text(row.type) && instant(row.at) && object(payload));
+      if (row.type === 'charging-session-check') assertCurrentChargingSessionCheck(payload);
       const old = this.target.db.prepare('SELECT * FROM events WHERE type=? AND at=? ORDER BY id DESC LIMIT 1').get(row.type, row.at);
       if (old) return { id: old.id, disposition: same(decode(old.payload), payload) ? 'duplicates' : 'conflicts' };
       if (row.type === 'charging-session-check') {

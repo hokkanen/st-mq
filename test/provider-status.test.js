@@ -9,10 +9,11 @@ const options = { now, formatTime: value => new Date(value).toISOString().slice(
 const easeeReadings = () => ({ charger: { qualityIssues: [], error: null, lastSuccessAt: now },
   property: { qualityIssues: [], error: null, lastSuccessAt: now } });
 const shellySignals = [
-  ...['current', 'voltage', 'active_power'].flatMap(field => [1, 2, 3].map(phase => `ev2_${field}_l${phase}`)),
-  'ev2_active_power', 'ev2_import_energy_counter', ...[1,2,3].map(phase=>`ev2_energy_l${phase}`), 'ev2_session_energy', 'shelly_session_energy_check',
+  ...['current', 'voltage'].flatMap(field => [1, 2, 3].map(phase => `ev2_${field}_l${phase}`)),
+  'ev2_active_power', ...[1, 2, 3].map(phase => `ev2_active_power_l${phase}`),
+  ...[1, 2, 3].map(phase => `ev2_energy_l${phase}`), 'ev2_import_energy_counter', 'shelly_session_energy_check', 'ev2_session_energy',
 ];
-const shellyReadings = () => ({ maxAgeMs: 60_000, readings: Object.fromEntries(shellySignals
+const shellyReadings = () => ({ maxAgeMs: 60_000, sessionEnergyVerified: true, controlReady: true, readings: Object.fromEntries(shellySignals
   .filter(signal => !signal.startsWith('ev2_energy') && signal !== 'shelly_session_energy_check')
   .map(signal => [signal, { value: 0, available: true, sourceTime: now, quality: [] }])) });
 const temperature = (source, value = 21, extra = {}) => ({ source, value, observedAt: now, stale: false, ...extra });
@@ -303,9 +304,9 @@ test('electricity groups only physical meters and keeps Tesla vehicle health sep
   assert.match(group.display.detail,/Physical charger meter/);
 });
 test('physical Charger 2 commissioning and unavailable telemetry remain visible',()=>{
-  const providers={easee:{status:'ok',currentReadings:easeeReadings()},'shelly-evse':{status:'degraded',reason:'commissioning-required'}};
+  const providers={easee:{status:'ok',currentReadings:easeeReadings()},'shelly-evse':{status:'ok',reason:'physical-meter',...shellyReadings(),controlReady:false}};
   let group=dashboardProviders({providers},options).find(row=>row.key==='electricity');
-  assert.equal(group.display.attention,true);assert.match(group.display.detail,/verified model, firmware/);
+  assert.equal(group.display.attention,false);assert.match(group.display.detail,/control requires verified hardware/);
   providers['shelly-evse']={status:'waiting',reason:'awaiting-mqtt'};group=dashboardProviders({providers},options).find(row=>row.key==='electricity');
   assert.equal(group.display.state,'Partly available');assert.match(group.display.detail,/physical Charger 2 MQTT/);
   providers['shelly-evse']={status:'disabled',reason:'not-enabled'};assert.equal(dashboardProviders({providers},options).find(row=>row.key==='electricity').display.state,'Available');
@@ -317,9 +318,10 @@ test('unknown physical EVSE diagnostics never expose raw payloads',()=>{
   }
 });
 
-test('Shelly catalogue distinguishes native readings and total counter from estimated phase energy', () => {
+test('Shelly groups required native inputs into five feeds without hiding their purpose', () => {
   const rows = providerSeries('shelly-evse');
-  for (const field of ['current', 'voltage', 'active_power']) {
+  assert.equal(rows.length, providerSeries('easee').filter(row => row.signals[0].startsWith('ev1_')).length);
+  for (const field of ['current', 'voltage']) {
     const row = rows.find(row => row.signals.includes(`ev2_${field}_l1`));
     assert.deepEqual(row.signals, [1, 2, 3].map(phase => `ev2_${field}_l${phase}`));
     assert.equal(row.source, 'Shelly EVSE');
@@ -330,7 +332,26 @@ test('Shelly catalogue distinguishes native readings and total counter from esti
   assert.equal(phases.source,'Calculated from Shelly EVSE');
   assert.match(phases.detail,/Estimated phase distribution/);
   assert.match(phases.detail,/sum to measured total consumption/);
+  assert.deepEqual(rows.find(row => row.signals.includes('ev2_active_power')).signals,
+    ['ev2_active_power', 'ev2_active_power_l1', 'ev2_active_power_l2', 'ev2_active_power_l3']);
+  assert.deepEqual(rows.find(row => row.signals.includes('shelly_session_energy_check')).signals,
+    ['shelly_session_energy_check', 'ev2_session_energy']);
   assert(!rows.some(row=>row.signals.includes('ev2_energy')));
+});
+
+test('grouped Shelly feeds distinguish essential recording inputs from the separate session check', () => {
+  for (const signal of ['ev2_import_energy_counter', 'ev2_active_power_l2', 'ev2_session_energy']) {
+    const health = { status: 'ok', reason: 'physical-meter', ...shellyReadings() };
+    delete health.readings[signal];
+    const group = dashboardProviders({ providers: { 'shelly-evse': health } }, options)[0];
+    assert.notEqual(group.datasets.find(row => row.signals.includes(signal)).state, 'Available');
+    if (signal === 'ev2_active_power_l2')
+      assert.notEqual(group.datasets.find(row => row.signals.includes('ev2_energy_l1')).state, 'Available');
+    assert.equal(group.display.state === 'Available', signal === 'ev2_session_energy');
+    health.readings[signal] = { value: 0, available: true, sourceTime: now - 60_001, quality: [] };
+    assert.equal(dashboardProviders({ providers: { 'shelly-evse': health } }, options)[0].display.state,
+      signal === 'ev2_session_energy' ? 'Available' : 'Needs attention');
+  }
 });
 
 test('Shelly phase availability follows each native reading and keeps inactive chargers inactive', () => {
@@ -363,11 +384,12 @@ test('Shelly native freshness reaches the source summary while commissioning rem
   health.readings.ev2_current_l1.sourceTime = now;
   delete health.readings.ev2_voltage_l3;
   assert.equal(group().display.state, 'Partly available');
-  Object.assign(health, shellyReadings(), { status: 'degraded', reason: 'commissioning-required' });
+  Object.assign(health, shellyReadings(), { controlReady: false, sessionEnergyVerified: false });
   const uncommissioned = group();
-  assert.equal(uncommissioned.display.state, 'Needs attention');
+  assert.equal(uncommissioned.display.state, 'Available');
   assert.equal(uncommissioned.datasets.find(row => row.signals[0] === 'ev2_current_l1').state, 'Available');
-  assert.equal(uncommissioned.datasets.find(row => row.signals[0] === 'ev2_energy_l1').state, 'Needs attention');
+  assert.equal(uncommissioned.datasets.find(row => row.signals[0] === 'ev2_energy_l1').state, 'Available');
+  assert.equal(uncommissioned.datasets.find(row => row.signals.includes('shelly_session_energy_check')).state, 'Waiting for verification');
 });
 
 test('Easee provider catalogue includes acquired fields and one Charger 1 session check without a lifetime counter', () => {

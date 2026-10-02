@@ -7,9 +7,20 @@ test('physical EVSE defaults keep uncommissioned Shelly control disabled', () =>
   const config = chargingConfiguration();
   assert.equal(config.chargers.charger2.enabled, false);
   assert.equal(config.chargers.charger2.verified, false);
+  assert.equal(config.chargers.charger2.sessionEnergyVerified, false);
   assert.equal(config.chargers.charger2.fallbackCurrentA, 12);
   assert.deepEqual(chargingConfiguration(config), config);
   assert.equal(config.vehicles.bmw.mqttTopic, 'stmq/vehicles/bmw');
+});
+test('native session verification is independent of control permission and bound to a concrete hardware profile', () => {
+  for (const supplied of [{ sessionEnergyVerified: 'true' }, { sessionEnergyVerified: true }])
+    assert.throws(() => chargingConfiguration({ chargers: { charger2: supplied } }));
+  const config = chargingConfiguration({ chargers: { charger2: {
+    sessionEnergyVerified: true, model: 'invented-model', firmware: 'invented-firmware',
+    disconnectedStates: ['free'], connectedStates: ['connected'], chargingStates: ['charging'],
+  } } });
+  assert.equal(config.chargers.charger2.sessionEnergyVerified, true);
+  assert.equal(config.chargers.charger2.verified, false);
 });
 test('completed report retention is a bounded configuration default, independent of charging settings', () => {
   assert.equal(chargingConfiguration().report_retention_days, 30);

@@ -1,3 +1,49 @@
+Implemented 2026-10-02 — Compare recorded charger energy and connect Shelly EVSE
+- Replace C2's parallel power-integration diagnostic with the sum of actual
+  stored phase energy against a verified native completed-session reference.
+  Share physical-source/association/coverage selection with C1. Preserve meter
+  delta recording, estimated phase distribution, pending tails and all energy
+  consumers; do not add raw counter or power time-series histories.
+- Settle independently delivered boundaries/references for a bounded period;
+  reject missing starts/final values, resets, conflicting/incomplete phase groups
+  and unverified session semantics. Persist settlement across restart and keep
+  transaction rollback consistent. Reject obsolete C2 diagnostic records/state
+  before database mutation; no translation, repair or migration path is added.
+- Explain Property's integrated-phase-versus-Equalizer-counter check, C1's
+  integrated-phase-versus-final-session check and C2's same-meter recording check
+  in each Recorded energy checks row, including empty states. C2 does not prove
+  independent meter accuracy or individual phase shares. Group its provider list
+  into five rows and distinguish electrical acquisition from control and session
+  commissioning. Keep the Physical charger setup description concise.
+- Configure the arrived XT1's MQTT on the existing broker and pin its actual
+  model, firmware, identity, route and role-state mapping in private settings.
+  Retain native schedules/limits and automatic-start settings; private backups
+  and raw captures stay outside Git. The owner connected a vehicle for bounded
+  physical Boolean stop/resume checks; restore the original charging settings.
+- Hardware limit: installed 1.7.1 reports charger_end while still plugged in and
+  resets energy_charge without publishing a final positive reference in the
+  observed stop sequence. Keep sessionEnergyVerified=false and display the
+  comparison as unavailable while lifetime-counter recording continues. Current
+  limit metadata lacks meta.ui.step; installed phase order/additive-current and
+  outage behavior remain unqualified, so verified=false retains read-only
+  application operation. Do not convert those unknowns into commissioning.
+- F1/F3/F4/F5/F7/F8: current formats only, explicit commissioning ownership,
+  source-clock/physical-device evidence, bounded state, preserved command
+  authority and private installation configuration. No household history reset.
+- Validation: final routine suite passes 3,993 tests with one optional upstream
+  parser skip and no failures. Production build, focused adapter/session/API and
+  storage/export/snapshot tests, equipment browser sweep, and focused Firefox
+  energy-check sweep pass. Browser checks cover mobile/desktop and both themes;
+  the broader recording browser sweep hit an unrelated export readiness timeout
+  before these checks. Existing bundle-size warning remains. Documentation links
+  and whitespace checks pass.
+- Live application restarted gracefully against the existing accepted database,
+  with no reset or migration. Confirmed broker subscription, 12 available native
+  readings, one initial stored interval for each of the three C2 phase series,
+  four available electrical feed groups, and an explicit unavailable session
+  comparison. Confirmed the running page serves the rebuilt bundle. Control and
+  native-session verification remain false for the hardware limits above.
+
 Implemented 2026-10-02 — Commission Gen3 Garage freeze protection and BLU reception
 - Move Garage freeze protection into its own Connections & configuration fold
   immediately below Floor preheating. Keep the compact Garage summary and an

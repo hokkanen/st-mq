@@ -7,13 +7,21 @@ const SOURCES = Object.freeze({
   'shelly-evse': { signal: 'shelly_session_energy_check', basis: 'electricity-meter' },
 });
 const QUALITY = new Set(['estimated', 'estimated-boundary', 'incomplete-coverage', 'missing-start', 'missing-end',
-  'counter-reset', 'out-of-order', 'stale', 'disconnected', 'assignment-uncertain', 'duplicate-suspected', 'missing-final-reference']);
+  'counter-reset', 'out-of-order', 'stale', 'disconnected', 'assignment-uncertain', 'duplicate-suspected', 'missing-final-reference',
+  'session-reference-unverified']);
 const COMPARABLE_QUALITY = new Set(['estimated', 'estimated-boundary']);
 const digest = value => createHash('sha256').update(value).digest('hex');
 const instant = value => Number.isSafeInteger(value) && value >= 0 && value <= 8640000000000000;
 const energy = value => value === null || Number.isFinite(value) && value >= 0;
 
+export function assertCurrentChargingSessionCheck(check) {
+  if (check?.source === 'shelly-evse' && (check.version !== VERSION
+    || check.recordingBasis !== 'native-meter-counter-phase-allocation' || check.referenceBasis !== 'native-session-energy'))
+    throw new Error('Unsupported Shelly session-check format; start a fresh development database or restore a compatible backup.');
+}
+
 export function comparableChargingSession(check) {
+  assertCurrentChargingSessionCheck(check);
   return check?.version === VERSION && check.complete === true
     && Number.isFinite(check.estimatedKwh) && check.estimatedKwh >= 0
     && Number.isFinite(check.referenceKwh) && check.referenceKwh > 0
@@ -49,8 +57,11 @@ export function recordChargingSessionCheck(store, input) {
   const quality = input.quality ?? [];
   if (!Array.isArray(quality) || quality.some(flag => !QUALITY.has(flag))) throw new TypeError('Invalid charging session quality');
   if (input.transport !== undefined && !['cloud','ocpp'].includes(input.transport)) throw new TypeError('Invalid charging check transport');
+  if (input.source === 'shelly-evse' && (input.recordingBasis !== 'native-meter-counter-phase-allocation'
+    || input.referenceBasis !== 'native-session-energy')) throw new TypeError('Shelly session-check measurement bases are required');
   const check = { version: VERSION, source: input.source, start: input.start, end: input.end,
     estimatedKwh: input.estimatedKwh, referenceKwh: input.referenceKwh, complete: input.complete,
+    ...(input.source === 'shelly-evse' ? { recordingBasis: input.recordingBasis, referenceBasis: input.referenceBasis } : {}),
     quality: [...new Set(quality)].sort(), ...(input.transport ? {transport:input.transport} : {}) };
   // Hash identifiers before persistence; keep the source in the identity so the
   // two providers can use the same session key without colliding.
@@ -81,6 +92,7 @@ export function chargingSessionCheckSummaries(store) {
   // without loading every session into memory or silently averaging one page.
   for (const row of store.db.prepare('SELECT payload FROM events WHERE type=? ORDER BY at,id').iterate(EVENT_TYPE)) {
     const check = JSON.parse(row.payload), summary = bySource.get(check.source);
+    assertCurrentChargingSessionCheck(check);
     if (!summary || check.version !== VERSION) continue;
     const transport = ['cloud','ocpp'].includes(check.transport) ? check.transport : 'unknown';
     if (!summary.referenceTransports.includes(transport)) summary.referenceTransports.push(transport);

@@ -412,7 +412,11 @@ export function createAppServer({ engine, getEngine = () => engine, store, chart
           return;
         }
         if (req.method === 'GET' && url.pathname === '/api/energy-audits') {
-          return json(200, [propertyEnergyCheckSummary(readerStore,{now:engine.clock()}), ...chargingSessionCheckSummaries(readerStore)]);
+          const checks = chargingSessionCheckSummaries(readerStore);
+          const shelly = checks.find(check => check.source === 'shelly-evse');
+          shelly.sessionEnergyVerified = engine.charging?.chargers?.charger2?.adapter?.snapshot?.()
+            ?.commissioning?.sessionEnergyVerified === true;
+          return json(200, [propertyEnergyCheckSummary(readerStore,{now:engine.clock()}), ...checks]);
         }
         if (req.method === 'GET' && url.pathname === '/api/chart') {
           const now = engine.clock();

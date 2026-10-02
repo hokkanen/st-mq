@@ -22,6 +22,7 @@ test('charger meter charts project each saved session reference once, distinguis
   const store = new Store(':memory:'); t.after(() => store.close());
   const put = (source, key, offset, referenceKwh, complete = true) => recordChargingSessionCheck(store, {
     source, sessionKey: key, start: start + offset * HOUR, end: start + (offset + 1) * HOUR,
+    ...(source === 'shelly-evse' ? { recordingBasis: 'native-meter-counter-phase-allocation', referenceBasis: 'native-session-energy' } : {}),
     estimatedKwh: 12, referenceKwh, complete, quality: complete ? [] : ['incomplete-coverage'],
   });
   put('easee', 'invented-first', 0, 10);

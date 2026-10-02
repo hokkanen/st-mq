@@ -130,6 +130,7 @@ test('recorded energy checks always include property availability and real charg
   recordChargingSessionCheck(store, { source:'easee',sessionKey:'invented-session',start:now-60000,end:now,
     estimatedKwh:1.1,referenceKwh:1,complete:true,quality:[] });
   recordChargingSessionCheck(store, { source:'shelly-evse',sessionKey:'invented-tesla-session',start:now-60000,end:now,
+    recordingBasis:'native-meter-counter-phase-allocation',referenceBasis:'native-session-energy',
     estimatedKwh:1.2,referenceKwh:1,complete:false,quality:['incomplete-coverage'] });
   const auditCount=store.energyAudits().length;
   const response=await fetch(`${base}/api/energy-audits`,{headers});assert.equal(response.status,200);
@@ -156,6 +157,7 @@ test('every catalogue axis works, including historical meter references without 
   const {base,headers,store,now}=await fixture(t);
   store.energyAudit({source:'easee',device:'invented-property',signal:'property_import_energy_counter',sourceTime:now-60000,receivedAt:now,value:123,quality:[]});
   for(const source of ['easee','shelly-evse'])recordChargingSessionCheck(store,{source,sessionKey:'invented-finalized-session',
+    ...(source==='shelly-evse'?{recordingBasis:'native-meter-counter-phase-allocation',referenceBasis:'native-session-energy'}:{}),
     start:now-3600000,end:now-60000,estimatedKwh:6,referenceKwh:5,complete:true,quality:[]});
   const {HISTORY_AXES}=await import('../src/domain/history-series.js');
   for(const axis of HISTORY_AXES) {

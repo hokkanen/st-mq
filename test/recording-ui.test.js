@@ -128,6 +128,19 @@ const propertyCheck = summary => ({kind:'property-meter-summary',signal:'propert
 const meterComparison = {estimatedKwh:1,meteredKwh:1,differenceKwh:0,differencePercent:0,start:0,end:60_000,
   edgeEstimated:true,includesOpenInterval:true};
 
+test('unverified Shelly session references remain unavailable independently of stored history', () => {
+  const item = { kind: 'charging-session-summary', source: 'shelly-evse', sessionEnergyVerified: false,
+    summary: { recordedSessions: 0, comparedSessions: 0, excludedSessions: 0 } };
+  const empty = energyAuditRow(item);
+  assert.equal(empty.value, 'Completed-session check unavailable');
+  assert.match(empty.notice, /no verified final session reference.*Consumption recording continues/);
+  const historical = energyAuditRow({ ...item, summary: { ...item.summary, recordedSessions: 1,
+    comparedSessions: 1, estimatedKwh: 1, referenceKwh: 1, differencePercent: 0, start: 0, end: 60_000 } });
+  assert.match(historical.value, /matches/);
+  assert.equal(historical.notice, empty.notice, 'Historical agreement does not commission the current device');
+  assert.equal(energyAuditRow({ ...item, sessionEnergyVerified: true }).value, 'No completed sessions recorded');
+});
+
 test('property comparison explains boundaries, ongoing energy and source versus receipt times', () => {
   const ongoing=energyAuditRow(propertyCheck({comparison:meterComparison}));
   assert.match(ongoing.details.join(' '),/boundaries is prorated.*ongoing recorded interval/);

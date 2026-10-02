@@ -27,6 +27,13 @@ Approval and commissioning flags must describe the installation, rather than
 being switched on simply to remove a blocked status. Algorithm versions and fixed
 code constants follow the software's versioning contract.
 
+For Charger 2, `charging.chargers.charger2.verified` admits control only after
+hardware commissioning. The separate `sessionEnergyVerified` defaults to false
+and qualifies the native completed-session reference used to check recorded
+phase energy. MQTT meter acquisition does not require either flag. See
+[charging provider capabilities](charging-provider-capabilities.md) for their
+distinct verification requirements.
+
 Public defaults leave credentials, precise location, account identifiers and
 private installation endpoints empty. The MQTT broker name `core-mosquitto` is Home
 Assistant's standard service name; equipment IDs and topics are generic logical

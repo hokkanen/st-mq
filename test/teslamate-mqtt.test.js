@@ -58,10 +58,13 @@ test('vehicle persistence failure rolls back fields and admits the same report a
   f.send('battery_level',80);assert.equal(f.engine.charging.teslaCapture.snapshot().batteryLevel,undefined);
   fail=false;f.send('battery_level',80);assert.equal(f.engine.charging.teslaCapture.snapshot().batteryLevel,80);
 });
-test('provider status separates vehicle health from commissioned physical Charger 2',()=>{
+test('provider status separates vehicle health, physical telemetry and charger control readiness',()=>{
   const engine={store:{getState:()=>({})},config:{input:'mqtt',connections:{teslamate:{enabled:true}}},charging:{configuration:{chargers:{charger2:{enabled:true}}}}};
   let status=Engine.prototype.providerStatus.call(engine);
   assert.equal(status.teslamate.reason,'awaiting-mqtt');assert.equal(status['shelly-evse'].reason,'awaiting-mqtt');
   engine.charging.chargers={charger2:{adapter:{snapshot:()=>({online:true,controlReady:false,fields:{}})}}};
-  status=Engine.prototype.providerStatus.call(engine);assert.equal(status['shelly-evse'].reason,'commissioning-required');
+  status=Engine.prototype.providerStatus.call(engine);
+  assert.equal(status['shelly-evse'].reason,'telemetry-unavailable');
+  assert.equal(status['shelly-evse'].status,'waiting');
+  assert.equal(status['shelly-evse'].controlReady,false);
 });

@@ -1,7 +1,7 @@
 import { createHash, randomUUID } from 'node:crypto';
 import { shellyCurrentLimit } from './shelly-limit.js';
 import { createMqttAdmission } from '../acquisition/mqtt-admission.js';
-import { recordChargingSessionCheck } from '../app/charging-session-checks.js';
+import { newShellySessionCheckState, updateShellySessionChecks } from './shelly-session-checks.js';
 const finite = Number.isFinite;
 const copy = value => structuredClone(value);
 const TYPES = { current_limit: 'Number', start_charging: 'Boolean', work_state: 'Enum', phase_info: 'Object', energy_charge: 'Number', time_charge: 'Number' };
@@ -18,8 +18,11 @@ export function shellyAssociation(config, broker) {
 export function createShellyEvseAdapter({ config, broker, client, store, engine, clock = Date.now, canControl = () => false } = {}) {
   const association = shellyAssociation(config, broker), key = `charging:shelly:${association}`;
   let state = store.getState(key) ?? { version: 1, association, fields: {}, connection: null, counter: null, sessionSequence: 0 };
-  if (state.version !== 1 || state.association !== association) throw fail('unsupported-shelly-state');
+  if (state.version !== 1 || state.association !== association || Object.hasOwn(state, 'checkSession')
+    || state.counter && Object.hasOwn(state.counter, 'powerW')
+    || state.sessionCheck && state.sessionCheck.version !== 1) throw fail('unsupported-shelly-state');
   state = copy(state);
+  state.sessionCheck ??= newShellySessionCheckState();
   let connected = false, admitted = false, online = false, closed = false, generation = 0, discovered = false, controlReady = false;
   let error = null, info = null, service = null, serviceStatus = null, nativeSchedules = null, serviceAt = null, currentConfig = null, polling = null, buffer = [], componentRoles = new Map(), pendingEvents = [];
   const source = `stmq-evse-${randomUUID()}`, pending = new Map();
@@ -33,6 +36,8 @@ export function createShellyEvseAdapter({ config, broker, client, store, engine,
   const admission = createMqttAdmission();
   let overflow = false, eventOverflow = false;
   const ready = () => controlReady && !eventOverflow && finite(serviceAt) && clock() >= serviceAt && clock() - serviceAt <= config.maxAgeMs;
+  const sessionReferenceVerified = () => config.sessionEnergyVerified === true && componentRoles.size === Object.keys(TYPES).length
+    && info?.id === config.deviceId && info?.model === config.model && info?.fw_id === config.firmware;
   const persist = () => store.setState(key, copy(state));
   const live = field => {
     const value = state.fields[field];
@@ -89,36 +94,24 @@ export function createShellyEvseAdapter({ config, broker, client, store, engine,
     try {
       const record = () => {
         state.fields[role] = { value: copy(value), measuredAt, receivedAt, retained, source: 'shelly-evse' };
+        let recordingQuality = null, intervalStart = null;
         if (role === 'work_state' && !retained) {
           const connectedValue = config.disconnectedStates.includes(value) ? false
             : [...config.connectedStates, ...config.chargingStates].includes(value) ? true : null;
           if (connectedValue !== null && state.connection?.connected !== connectedValue) {
             engine.recorder.flush?.(receivedAt, { force: true, source: 'shelly-evse', device: association,
               prefix: 'ev2' });
-            const ended = state.checkSession;
-            if (connectedValue === false && ended && measuredAt > ended.start) {
-              const quality = [...ended.quality];
-              if (ended.lastAt !== measuredAt) quality.push('missing-end');
-              recordChargingSessionCheck(store, { source: 'shelly-evse', sessionKey: state.connection.sessionId,
-                start: ended.start, end: measuredAt, estimatedKwh: ended.estimatedKwh,
-                referenceKwh: ended.referenceKwh, complete: quality.length === 0, quality });
-              state.checkSession = null;
-            }
             state.sessionSequence++;
             state.connection = { connected: connectedValue, connectedAt: connectedValue ? measuredAt : null,
               lastDisconnectedAt: connectedValue ? state.connection?.lastDisconnectedAt ?? null : measuredAt,
               sessionId: connectedValue ? `${association}:${measuredAt}:${state.sessionSequence}` : null };
-            if (connectedValue) {
-              const baseline = state.fields.phase_info;
-              state.checkSession = { start: measuredAt, lastAt: baseline?.measuredAt ?? null, estimatedKwh: 0,
-                referenceKwh: 0, quality: baseline?.measuredAt === measuredAt && !baseline.retained ? [] : ['missing-start'] };
-            }
           }
+          if (connectedValue === null) recordingQuality = 'assignment-uncertain';
         }
         if (role === 'phase_info' && !retained) {
           const before = state.counter, total = value.total_act_energy;
           const phasePowers = config.phaseMap.map(index => value[PHASE_KEYS[index]].power / 1000);
-          const check = state.checkSession;
+          intervalStart = before?.at ?? null;
           let acceptedEnergy = false;
           if (before && measuredAt > before.at && measuredAt - before.at <= config.maxAgeMs * 2 && total >= before.value) {
             const energy = total - before.value;
@@ -144,24 +137,35 @@ export function createShellyEvseAdapter({ config, broker, client, store, engine,
                 store.event('charging-energy-unallocated', { source: 'shelly-evse', device: association,
                   start: before.at, end: measuredAt, referenceKwh: energy, reason: 'unknown-phase-share' }, receivedAt);
               }
-              if (check && before.at >= check.start) {
-                check.referenceKwh += energy;
-                check.estimatedKwh += (before.powerW + value.total_power) / 2 * (measuredAt - before.at) / 3600000000;
-              }
-            } else { error = 'evse-counter-jump'; if (check) check.quality.push('incomplete-coverage'); }
-          } else if (before && total < before.value) { error = 'evse-counter-reset'; if (check) check.quality.push('counter-reset'); }
-          else if (before && check) check.quality.push('incomplete-coverage');
+            } else { error = 'evse-counter-jump'; }
+          } else if (before && total < before.value) { error = 'evse-counter-reset'; recordingQuality = 'counter-reset'; }
           if (before && !acceptedEnergy) engine.recorder.energyGap?.({
             source: 'shelly-evse', device: association, prefix: 'ev2', start: before.at, end: measuredAt, receivedAt,
             quality: [total < before.value ? 'meter-counter-reset' : measuredAt - before.at > config.maxAgeMs * 2 ? 'meter-report-gap' : 'invalid-meter-delta'] });
-          if (check) check.lastAt = measuredAt;
-          state.counter = { at: measuredAt, value: total, powerW: value.total_power, phasePowers };
+          state.counter = { at: measuredAt, value: total, phasePowers };
         }
+        if (!retained) updateShellySessionChecks({ state: state.sessionCheck, connection: state.connection,
+          role, field: state.fields[role], config: { ...config, sessionEnergyVerified: sessionReferenceVerified() },
+          store, recorder: engine.recorder, association, now: receivedAt,
+          recordingQuality, intervalStart });
         persist();
       };
       if (store.transaction) store.transaction(record); else record();
     } catch (cause) { state = prior; throw cause; }
     return true;
+  }
+  function settleSessionChecks(now = clock()) {
+    if (!state.sessionCheck.pending || now < state.sessionCheck.pending.deadline) return;
+    const prior = copy(state);
+    try {
+      const record = () => {
+        updateShellySessionChecks({ state: state.sessionCheck, connection: state.connection,
+          config: { ...config, sessionEnergyVerified: sessionReferenceVerified() }, store,
+          recorder: engine.recorder, association, now });
+        persist();
+      };
+      if (store.transaction) store.transaction(record); else record();
+    } catch (cause) { state = prior; throw cause; }
   }
   function receive(topic, payload, packet = {}, receivedAt = clock()) {
     if (closed || !connected || Buffer.byteLength(payload) > 65536) return;
@@ -270,7 +274,10 @@ export function createShellyEvseAdapter({ config, broker, client, store, engine,
     connected = admitted = online = discovered = controlReady = false; subscriptionStatus = 'disconnected'; generation++; buffer = []; rejectPending('evse-offline');
   }
   client.on('connect', connect); client.on('message', receive); client.on('offline', disconnect); client.on('close', disconnect);
-  const timer = setInterval(() => { void refresh().then(() => engine.charging?.tick({ force: true })); }, 5000); timer.unref?.();
+  const timer = setInterval(() => {
+    try { settleSessionChecks(); } catch (cause) { error = cause.code ?? 'evse-recording-unavailable'; }
+    void refresh().then(() => engine.charging?.tick({ force: true }));
+  }, 5000); timer.unref?.();
   const settingFresh = role => {
     const field = state.fields[role];
     return field && !field.retained && field.measuredAt > 0 && field.measuredAt <= clock()
@@ -289,7 +296,8 @@ export function createShellyEvseAdapter({ config, broker, client, store, engine,
     powerAt: state.fields.phase_info?.measuredAt ?? null,
     mqtt: { brokerConnected: connected, subscribed: admitted, subscriptionStatus, lastLiveAt }, topics: copy(topics),
     readAt: clock(), nativeScheduleActive: Boolean(nativeSchedules?.jobs.some(job => job.enable)), fields: copy(state.fields), session: copy(state.connection), error, generation,
-    commissioning: { verified: config.verified, identityMatched: discovered, controlReady: ready(), controllerLossFallback: 'unverified',
+    commissioning: { verified: config.verified, sessionEnergyVerified: sessionReferenceVerified(),
+      identityMatched: discovered, controlReady: ready(), controllerLossFallback: 'unverified',
       nativeCaps: service ? { energyKwh: service.global_charge_limit, durationMinutes: service.global_time_limit, autoCharge: service.auto_charge, state: serviceStatus?.state, restricted: Boolean(serviceStatus?.errors?.length || serviceStatus?.flags?.length) } : null } });
   // Public electrical readings retain the native source clock and installation
   // phase order. These are current observations, not additional history channels.

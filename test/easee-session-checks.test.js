@@ -90,7 +90,7 @@ test('new finalized session flushes pending energy once and compares its full ph
 test('session timestamps inside compact intervals are explicitly estimated at the boundaries', t => {
   const f = fixture(t);
   f.integrate(start, end);
-  const result = compareEaseeSessionEnergy(f.store, { device, start: start + 15_000, end: end - 15_000 });
+  const result = compareEaseeSessionEnergy(f.store, { device, start: start + 15_000, end: end - 15_000, now: end });
   near(result.estimatedKwh, 0.05);
   assert.equal(result.edgeEstimated, true);
 });
@@ -100,7 +100,7 @@ test('duplicate covering records are not hidden by the first complete interval',
   f.integrate(start, end);
   f.store.observation({ source: 'easee', device, signal: 'ev1_energy_l1', value: 0.1 / 3, unit: 'kWh',
     sourceTime: end, receivedAt: end, quality: [], raw: { intervalStart: start, intervalEnd: end } });
-  assert.equal(compareEaseeSessionEnergy(f.store, { device, start, end }), null);
+  assert.equal(compareEaseeSessionEnergy(f.store, { device, start, end, now: end }), null);
 });
 
 test('out-of-order actual sessions remain recorded but are excluded from the average', async t => {

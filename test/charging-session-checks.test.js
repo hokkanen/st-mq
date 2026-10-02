@@ -14,7 +14,9 @@ function fixture(t) {
   return { store, path };
 }
 const session = (changes = {}) => ({ source: 'easee', sessionKey: 'invented-session', start: 1000, end: 61000,
-  estimatedKwh: 1.1, referenceKwh: 1, complete: true, quality: [], ...changes });
+  estimatedKwh: 1.1, referenceKwh: 1, complete: true, quality: [],
+  ...(changes.source === 'shelly-evse' ? { recordingBasis: 'native-meter-counter-phase-allocation', referenceBasis: 'native-session-energy' } : {}),
+  ...changes });
 
 test('empty summaries have no invented sessions or percentages and ignore cumulative audit periods', t => {
   const { store } = fixture(t);
@@ -102,7 +104,8 @@ test('finalized checks are durable, source-scoped, idempotent and reject conflic
     assert.equal(recordChargingSessionCheck(reopened, input), eventId);
     assert.throws(() => recordChargingSessionCheck(reopened, { ...input, referenceKwh: 2 }), /Conflicting finalized/);
     assert.equal(reopened.events().length, 1);
-    assert.notEqual(recordChargingSessionCheck(reopened, { ...input, source: 'shelly-evse' }), eventId);
+    assert.notEqual(recordChargingSessionCheck(reopened, { ...input, source: 'shelly-evse',
+      recordingBasis: 'native-meter-counter-phase-allocation', referenceBasis: 'native-session-energy' }), eventId);
     assert.deepEqual(chargingSessionCheckSummaries(reopened).map(row => row.summary.recordedSessions), [1, 1]);
   } finally { reopened.close(); }
 });

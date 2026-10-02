@@ -79,9 +79,9 @@ export function providerSeries(job, health = {}) {
         'Reported total power used to estimate phase energy over each recorded interval.', source),
       prefix === 'ev1'
         ? seriesRow(['ev1_session_energy_check'], 'Charger 1 session check', 'kWh',
-          'One finalized session reading for comparison; it does not correct recorded energy or train the model.', 'Easee cloud')
+          'Compares the sum of stored phase energies, estimated by integrating power, with the final charger session meter reading. It does not correct recorded energy or train the model.', 'Easee cloud')
         : seriesRow(['property_import_energy_counter'], 'Property meter counter', 'kWh',
-          'Cumulative reading for meter checks; it does not correct recorded energy or train the model.', source),
+          'Its increase is compared with the sum of stored property phase energies over the same period to check the power-integration estimate. It does not correct recorded energy or train the model.', source),
       seriesRow(phaseSignals(`${prefix}_energy`), `${label} phase energy L1–L3`, 'kWh',
         'Estimated from acquired electrical readings and saved per interval. The chart derives power and interval current estimates from these records.', `Calculated from ${source}`),
     ]; });
@@ -93,18 +93,12 @@ export function providerSeries(job, health = {}) {
         'Latest measured phase currents in installation order. Historical chart currents are interval estimates reconstructed from saved phase energy.', 'Shelly EVSE'),
       seriesRow(phaseSignals('ev2_voltage'), 'Charger 2 phase voltages L1–L3', 'V',
         'Measured voltage on each phase, using the configured phase mapping and original charger measurement time.', 'Shelly EVSE'),
-      seriesRow(phaseSignals('ev2_active_power'), 'Charger 2 phase active power L1–L3', 'kW',
-        'Measured active power on each phase, converted from watts to kilowatts. These are live readings, separate from interval-average chart power.', 'Shelly EVSE'),
-      seriesRow(['ev2_active_power'], 'Charger 2 active power', 'kW',
-        'Reported total active power, converted from watts to kilowatts. Historical chart power is calculated from the sum of recorded phase energies.', 'Shelly EVSE'),
-      seriesRow(['ev2_import_energy_counter'], 'Charger 2 meter counter', 'kWh',
-        'Native cumulative total energy. The charger reports a total counter, without separate phase energy counters.', 'Shelly EVSE'),
-      seriesRow(phaseSignals('ev2_energy'), 'Charger 2 phase energy L1–L3', 'kWh',
-        'Native total meter increments allocated using measured phase-power shares. Estimated phase distribution; the three phase energies sum to measured total consumption. Resets, gaps and invalid source clocks are excluded.', 'Calculated from Shelly EVSE'),
-      seriesRow(['ev2_session_energy'], 'Charger 2 session energy', 'kWh',
-        'Energy reported by the charger for its current charging session, with its own measurement time.', 'Shelly EVSE'),
-      seriesRow(['shelly_session_energy_check'], 'Charger 2 session check', 'kWh',
-        'Physical meter reference compared with recorded power integration. Incomplete connection boundaries are excluded.', 'Shelly EVSE'),
+      seriesRow(['ev2_active_power', ...phaseSignals('ev2_active_power')], 'Charger 2 active power · total and L1–L3', 'kW',
+        'Live total and phase active power. Phase-power shares distribute measured consumption among phases; historical chart power comes from stored energy intervals.', 'Shelly EVSE'),
+      seriesRow([...phaseSignals('ev2_energy'), 'ev2_import_energy_counter'], 'Charger 2 phase energy L1–L3', 'kWh',
+        'Increases in the lifetime total meter counter are distributed using phase-power shares and stored per interval. Estimated phase distribution; the three phase energies sum to measured total consumption. The charger reports a total counter, without separate phase energy counters. Missing allocation leaves a recording gap.', 'Calculated from Shelly EVSE'),
+      seriesRow(['shelly_session_energy_check', 'ev2_session_energy'], 'Charger 2 session check', 'kWh',
+        'Compares the sum of stored phase energies with the charger’s final native session energy. Checks recording completeness and the summed phase allocation, using the same meter; it does not independently test meter accuracy. Requires verified session boundaries and a final reading.', 'Shelly EVSE'),
     ];
   }
   if (job === 'market') {
@@ -222,9 +216,10 @@ function electricityDisplay(entries, options) {
       let display = current ? describeProvider(key, { ...health, currentReadings: { [scope]: current },
         error: current.error, status: current.error ? 'error' : health.status === 'error' ? 'ok' : health.status,
         qualityIssues: current.qualityIssues ?? [] }, options) : displays[index];
-      if (key === 'shelly-evse' && row.signals.every(signal => !/^ev2_energy_l[123]$/.test(signal) && signal !== 'shelly_session_energy_check')
-        && !inactiveStates.includes(display.state)) {
-        const readings = row.signals.map(signal => health?.readings?.[signal]);
+      if (key === 'shelly-evse' && !inactiveStates.includes(display.state)) {
+        const nativeSignals = row.signals.filter(signal => !/^ev2_energy_l[123]$/.test(signal) && signal !== 'shelly_session_energy_check');
+        if (row.signals.includes('ev2_energy_l1')) nativeSignals.push(...phaseSignals('ev2_active_power'));
+        const readings = nativeSignals.map(signal => health?.readings?.[signal]);
         const now = options?.now ?? Date.now();
         const usable = readings.filter(reading => reading?.available === true && Number.isFinite(reading.value)
           && Number.isFinite(reading.sourceTime) && reading.sourceTime > 0 && reading.sourceTime <= now
@@ -236,12 +231,16 @@ function electricityDisplay(entries, options) {
         display = usable === readings.length ? { state: 'Available', attention: false }
           : { state: usable ? 'Partly available' : attention ? 'Needs attention' : 'Waiting for readings', attention,
             detail: 'Complete fresh charger readings are required. Retained, missing or old measurements remain unavailable.' };
+        if (row.signals.includes('shelly_session_energy_check') && health?.sessionEnergyVerified === false)
+          display = { state: 'Waiting for verification', attention: false,
+            detail: 'Verify session boundaries, final energy and counter reset behavior before using completed-session comparisons. Electrical recording is available independently.' };
       }
       return withStatus(row, display);
     }));
   const shellyIndex = electricityJobs.indexOf('shelly-evse'), shelly = displays[shellyIndex];
   if (!shelly.attention && !inactiveStates.includes(shelly.state)) {
-    const rows = series.filter(row => row.source === 'Shelly EVSE');
+    const rows = series.filter(row => row.signals.some(signal => signal.startsWith('ev2_'))
+      && !row.signals.includes('shelly_session_energy_check'));
     const incomplete = rows.filter(row => row.state !== 'Available');
     if (incomplete.length) displays[shellyIndex] = { ...shelly,
       state: incomplete.some(row => row.tone === 'attention') ? 'Needs attention'
@@ -433,7 +432,7 @@ export function dashboardProviders(status, options) {
         datasets: consumption.datasets.filter(row => row.signals[0].startsWith('property_') || row.signals[0] === 'ev1_session_energy_check') },
       { key: 'easee-ocpp', title: 'Easee OCPP', description: 'Charger 1 sends electricity readings directly to this controller through local OCPP. Available Easee cloud readings provide a backup when local readings are unavailable.',
         datasets: consumption.datasets.filter(row => row.signals[0].startsWith('ev1_') && row.signals[0] !== 'ev1_session_energy_check') },
-      { key: 'shelly-evse', title: 'Shelly EVSE', description: 'Charger 2 sends three-phase current, voltage and active power over MQTT. Its meter reports total and session energy; separate phase energy counters are not provided.',
+      { key: 'shelly-evse', title: 'Shelly EVSE', description: 'Charger 2 sends electrical readings over MQTT. Its total meter counter supplies recorded consumption, phase power determines the phase split, and final session energy checks the stored total.',
         datasets: consumption.datasets.filter(row => row.signals[0].startsWith('ev2_') || row.signals[0] === 'shelly_session_energy_check') },
     ];
   }
@@ -695,8 +694,10 @@ export function describeProvider(job, health, { now, formatTime }) {
   if (job === 'easee') return describeEasee(health, { now, formatTime });
   if (job === 'teslamate') return describeTeslaMate(health, { now, formatTime });
   if (job === 'shelly-evse') return { title: jobs[job], state: states[health.status] ?? 'Status pending', attention: health.status === 'degraded',
-    detail: health.reason === 'commissioning-required' ? 'Physical Charger 2 requires verified model, firmware, role mapping and native settings before control.'
-      : health.reason === 'physical-meter' ? 'Physical charger meter and state are available. Controller-loss fallback is not verified.' : 'Waiting for physical Charger 2 MQTT telemetry.' };
+    detail: (health.reason === 'physical-meter' ? 'Physical charger meter readings are available.'
+      : health.reason === 'telemetry-unavailable' ? 'Some physical Charger 2 electrical readings are missing or stale.'
+        : 'Waiting for physical Charger 2 MQTT telemetry.')
+      + (health.controlReady === false ? ' Charger control requires verified hardware capabilities and native settings; reading availability is separate.' : '') };
   const source = health.source ?? health.acquisition?.selected;
   const selected = providerName(source);
   const base = jobs[job] ?? 'Data provider';

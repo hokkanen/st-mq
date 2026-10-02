@@ -182,9 +182,9 @@ export async function checkEquipmentBrowser({ evaluate, command, context, until,
     assert.equal(await evaluate("[...document.querySelectorAll('#providers .provider-body')].every(body=>body.firstElementChild.classList.contains('provider-introduction')&&body.firstElementChild.textContent.length>30)"), true);
     const charger2 = '[data-source-section=shelly-evse] .provider-series > li';
     assert.deepEqual(await evaluate(`[...document.querySelectorAll('${charger2} > strong')].map(node=>node.textContent)`), [
-      'Charger 2 phase currents L1–L3', 'Charger 2 phase voltages L1–L3', 'Charger 2 phase active power L1–L3',
-      'Charger 2 active power', 'Charger 2 meter counter', 'Charger 2 total energy', 'Charger 2 phase energy L1–L3', 'Charger 2 session energy', 'Charger 2 session check',
-    ], 'Shelly native phase readings are listed alongside supported total and session measurements');
+      'Charger 2 phase currents L1–L3', 'Charger 2 phase voltages L1–L3', 'Charger 2 active power · total and L1–L3',
+      'Charger 2 phase energy L1–L3', 'Charger 2 session check',
+    ], 'Shelly groups required meter inputs with their recording or checking purpose');
     assert.equal(await evaluate(`[...document.querySelectorAll('${charger2}')].slice(0,5).every(node=>node.dataset.state==='available')`), true);
     assert.match(await evaluate("[...document.querySelectorAll('[data-provider=electricity] .provider-series > li')].find(node=>node.querySelector('strong').textContent==='Charger 2 phase energy L1–L3').textContent"), /Calculated from Shelly EVSE/, 'Estimated phase allocation is distinguished from native measurements');
     await evaluate('window.equipmentUiFixture.completeChargerReadings=structuredClone(window.equipmentUiFixture.chargerReadings);delete window.equipmentUiFixture.chargerReadings.ev2_voltage_l2;true');

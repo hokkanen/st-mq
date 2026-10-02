@@ -5,6 +5,7 @@
 | Physical home energy | Easee phase intervals | Shelly native meter deltas | Never |
 | Live phase currents and voltages | L1–L3; local OCPP phase-neutral voltage, cloud terminal voltages require verified mapping | L1–L3 from native `phase_info`, in configured phase order | Never used as charger meter readings |
 | Live active power | Reported total; phase energy is estimated | Native phase power and total power | Never used as charger meter readings |
+| Recorded energy check | Stored phase-energy sum versus final native session meter | Stored phase-energy sum versus verified final native session energy; same-meter recording check | Never a physical meter reference |
 | Connection lifecycle | Timestamped Easee state | Commissioned physical work-state mapping | Corroborating vehicle edges |
 | Economic control | Exclusive cloud delayed starts or native OCPP expiring 0 A transaction pauses | EVSE start/stop over MQTT RPC | No vehicle writes |
 | Active vehicle identification | One bounded attempt per physical connection; native expiring pause | Same attempt lifecycle; application-managed start-permission pause | Independent live vehicle evidence |
@@ -38,6 +39,13 @@ times remain visible; missing, retained, stale or disconnected readings are
 unavailable even when charger control is commissioned. Conversely, valid read-only
 measurements do not require permission to control charging.
 
+The provider list uses five comparable groups: phase currents, phase voltages,
+active power, recorded phase energy and session check. Shelly's power group
+includes total and phase readings; its energy group names the native lifetime
+counter input. The session group identifies `energy_charge` as the reference.
+Electrical acquisition health is independent of control commissioning and native
+session-reference verification.
+
 The manual documents accumulated energy only as a total. No native phase-energy
 counters are advertised or created. Recording allocates each accepted native
 meter increment using endpoint phase powers into three estimated phase-energy
@@ -50,6 +58,17 @@ active power and explicitly estimated phase-energy intervals.
 ## Commissioning contract
 
 Charger 2 defaults `enabled:false, verified:false`. Configure a concrete `deviceId` and `topicPrefix` to acquire it. To admit commands, explicitly commission the observed model and firmware, service 0, distinct connected/disconnected/charging work-state strings, current range/step and physical phase mapping. The initial supported allocation profile requires a 6 A minimum and a 1 A step; other minima/steps are rejected until the allocator and hardware contract explicitly support them. The adapter discovers each role's component ID, checks unique mapping and service ownership, and requires write access for the current/start roles. Observed model/firmware and current capabilities must exactly match the configured profile. Any mismatch or unreadable capability withdraws control.
+
+`sessionEnergyVerified:false` separately gates completed-session comparisons.
+Verify that the native session reference covers the same physical connection,
+starts at zero, survives pauses, and remains available as a final total before
+the next session resets it. The flag requires a pinned model/firmware and state
+mapping, and never authorizes charging commands. A reset or missing final reading
+excludes that session; do not manufacture a final reference from a cached sample.
+The comparison sums actual stored phase intervals for the same physical charger,
+including the eligible pending tail, and rejects missing or conflicting coverage.
+It checks recording completeness and conservation, not independent meter accuracy
+or individual phase allocation. Neither counter needs a raw history series.
 
 Every refresh reads native service config, status and [schedules](https://shelly-api-docs.shelly.cloud/gen2/ComponentsAndServices/Schedule/). Active errors/flags or a nonrunning service block commands. External `auto_balance` must be disabled for this distinct ST-MQ/Equalizer allocation arrangement; ST-MQ never changes it. Global charge/time caps and automatic-start settings are inspected and preserved. Enabled native schedules own start/stop conservatively; schedule semantics are not reconstructed from guessed windows.
 
@@ -90,12 +109,23 @@ It never renews an uncertain command or repeats an expired attempt automatically
 
 ## Hardware verification still required
 
-All current tests use invented device identities and synthetic traffic. Before setting `verified:true` on the arrived hardware, confirm:
+Automated tests use invented device identities and synthetic traffic. Before setting `verified:true` on installed hardware, confirm:
 
 - Actual model, firmware, role IDs/permissions, min/max/step, native work-state meanings and source-clock behavior.
 - Plug detection versus full/paused/faulted states; current changes during charging; Boolean pause/resume and native schedule interaction.
 - Phase order, additive model, fuse values/margins and Equalizer response with asymmetric household loads.
 - Meter units, resets and cadence across stop/resume/reboot; source-time completeness at session boundaries.
 - Manual app changes, reconnect, lost replies and process/broker/device outages, including retained last setpoint and any actual autonomous fallback mechanism.
+
+The bounded 2 October 2026 live setup confirmed an XT1 with all expected roles,
+working MQTT, source-clocked three-phase measurements and physical Boolean
+stop/resume. Its 1.7.1 firmware omits the current slider's `meta.ui.step`; this
+does not satisfy the adapter's strict current-capability check. A stop reported
+`charger_end` while plugged in and reset native session energy without publishing
+a final positive total in the captured notifications. Keep both control and
+session verification false until their remaining requirements are established.
+Private device identities, broker credentials and raw test captures stay outside
+the repository. No phase-order, additive-current or outage qualification follows
+from these bounded observations.
 
 No autonomous 12 A controller-loss mechanism has been verified. The implemented 12 A telemetry-loss policy requires ST-MQ and a reachable controllable charger. It is explicitly not a hardware protection guarantee. The current implementation remains useful for disabled commissioning and synthetic validation without claiming that those hardware checks have happened.

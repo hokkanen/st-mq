@@ -336,8 +336,10 @@ expiry, retained delivery or disconnection. Raw snapshots remain live-only; vali
 phase powers also allocate the measured total increments into adaptive phase
 energy. Historical equivalent phase currents are derived from interval energy,
 using the same presentation as Charger 1, and are labeled estimates.
-The accumulated total and native `energy_charge` session diagnostic are kept
-distinct from interval energy and finalized session checks. The integration has
+The accumulated total supplies interval energy; the native `energy_charge`
+reading supplies a completed-session reference only after its final-value and
+reset semantics are verified. Neither raw counter adds another history series.
+The integration has
 no native individual phase-energy counters. Its three phase increments preserve
 the native measured increment in their sum; each individual phase remains an
 estimate. Charging progress, cost, charts and household calculations read the
@@ -348,8 +350,9 @@ an explicit three-phase gap and one `charging-energy-unallocated` diagnostic
 event. The event preserves the source, physical association, source interval,
 measured kWh increment and reason. It is not an energy series and supplies no
 charging progress, cost or household energy credit. Zero increments need no phase
-weights. Session checks retain their separate counter and power evidence even
-when phase allocation is unavailable. Missing or conflicting phase members must
+weights. A session check reads the actual stored phase energy, so missing phase
+allocation excludes the comparison instead of claiming complete recording.
+Missing or conflicting phase members must
 not become a partial total or be combined across physical sources.
 
 Charger standby remains measured even when automatic charging is disabled.
@@ -403,9 +406,19 @@ its own dates when the latest reading cannot be compared. Reading counts and
 comparisons belong to the latest reading's source and physical meter; another
 meter's history cannot supply a baseline or a successful result.
 
-**Charger 1** and **Charger 2** report the direction and percentage of the
-difference, the total estimated and metered kWh, and how many recorded completed
-sessions contributed. The aggregation includes all recorded completed sessions;
+Each check names its measurement method. **Property** compares the sum of its
+stored, power-integrated phase energies with the Equalizer import-counter
+increase over the same window. **Charger 1** compares its stored, power-integrated
+phase energies with Easee's final session meter total. These assess power-based
+energy estimates against meter references. **Charger 2** compares its stored
+phase energies with a verified final native session total. Because its recorded
+energy already comes from the same charger's lifetime counter, this checks
+recording completeness and total conservation, not independent meter accuracy
+or the correctness of each estimated phase share.
+
+Both chargers report the direction and percentage of the difference, recorded
+and metered kWh, and how many completed sessions contributed. The aggregation
+includes all recorded completed sessions;
 its percentage is `100 × (sum estimate − sum reference) / sum reference`. Totals
 and sample counts expose small amounts of evidence without misleading per-session
 averages. Empty chargers show one empty state. Incomplete sessions and zero
@@ -443,13 +456,24 @@ session flushes pending energy once and compares all three original Easee energy
 series over the same period. Duplicate polls cannot create duplicate sessions or
 force repeated flushes. Conflicting finalized readings do not rewrite a check.
 
-Charger 2 diagnostic checks belong to the physical Shelly association and plug
-epoch. They compare native accumulated-meter deltas with a power-based estimate
-over that exact connection. Missing start/end samples, counter resets or gaps
-exclude the comparison. The native session-energy role is retained as diagnostic
-telemetry until actual reset semantics are commissioned. Tesla battery-added
-energy is never labeled as a C2 electricity-meter reference. Incomplete coverage
-does not imply a measured accuracy percentage.
+Charger 2 checks belong to the physical Shelly association and a verified native
+session interval. The `sessionEnergyVerified` commissioning flag is independent
+of permission to control charging. Its supported contract requires a native
+session total covering the physical connection, a witnessed zero baseline, no
+intermediate resets, and a final reading after the connection ends. Asynchronous
+meter/reference delivery gets a bounded settlement period before finalization;
+it cannot replace missing source evidence. Missing boundaries, reset counters,
+unverified semantics or incomplete stored phase coverage exclude comparison.
+An earlier running-session sample is never promoted to a final total. Old Shelly
+power-integration checks are rejected rather than relabeled as recorded energy.
+Tesla battery-added energy is never a C2 electricity-meter reference.
+
+Installed XT1 1.7.1 commissioning observed a native session reset after a Boolean
+stop while the vehicle remained plugged in, without a final positive total in
+the captured MQTT notifications. That firmware behavior does not establish the
+supported connection-session reference contract. Leave session verification
+false and show the unavailable comparison explicitly; lifetime-counter recording
+continues independently.
 
 Recording diagnostics compare a valid counter increment with the sum of committed
 phase-energy estimates over the same source-time period. Missing coverage prevents

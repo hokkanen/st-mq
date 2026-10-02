@@ -5,6 +5,7 @@ import { createHash, randomUUID } from 'node:crypto';
 
 import { CURRENT_SCHEMA, SCHEMA_VERSION } from './schema.js';
 import { recordedEnergyGroups } from './energy-history.js';
+import { assertCurrentChargingSessionCheck } from '../app/charging-session-checks.js';
 export { SCHEMA_VERSION } from './schema.js';
 const MAX_LIMIT = 5000;
 
@@ -21,6 +22,16 @@ export function validateCurrentDatabase(db) {
   if (version !== SCHEMA_VERSION) throw new Error(`Unsupported database schema ${version}; this application requires schema ${SCHEMA_VERSION}. Use a new empty database and explicitly import v0.7.5 CSV files. The existing database was not changed.`);
   if (JSON.stringify(schemaObjects(db)) !== expectedStructure) throw new Error('Malformed current database schema; use an intact same-version backup or a new empty database. The existing database was not changed.');
   if (db.prepare('PRAGMA foreign_key_check').get()) throw new Error('Database contains dangling references; restore an intact same-version backup.');
+  // Shelly's former power-versus-counter diagnostic cannot be relabelled as a
+  // check of stored energy against a completed native session. Reject retired
+  // evidence before startup/restore can mutate an otherwise current database.
+  for (const row of db.prepare("SELECT payload FROM events WHERE type='charging-session-check'").iterate())
+    assertCurrentChargingSessionCheck(JSON.parse(row.payload));
+  for (const row of db.prepare("SELECT value FROM state WHERE key GLOB 'charging:shelly:*'").iterate()) {
+    const state = JSON.parse(row.value);
+    if (Object.hasOwn(state, 'checkSession') || state.counter && Object.hasOwn(state.counter, 'powerW'))
+      throw new Error('Unsupported Shelly session-check state; start a fresh development database or restore a compatible backup. The existing database was not changed.');
+  }
 }
 
 // Fetch timestamps describe acquisition, not forecast content. Keep them in a
