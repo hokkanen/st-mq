@@ -50,12 +50,29 @@ fixture.setCase = name => {
     controls: { priority: 'balanced', revision: 1 }, chargers: [charger('charger1', 'easee'), charger('charger2', 'shelly-evse')] } };
   for (const item of fixture.status.charging.chargers) {
     if (name === 'ordinary') item.control = { phase: 'waiting', owned: { startAt: now + 3600000 }, takeover: { available: true, token: 'native:' + item.id } };
+    if (name === 'manual-start') { item.control.reason = 'manual-release'; item.control.manual = { kind: 'release' }; }
+    if (name === 'manual-window') { item.control.reason = 'native-schedule'; item.control.manual = { kind: 'window', startsAt: now + 3600000, resumeAt: now + 7200000 }; }
     if (name === 'long') { item.control.reason = longText; item.control.manual.reason = longText; item.label += ' with a long synthetic descriptive name'; }
     if (name === 'pending') item.control.takeover = { available: false, token: null, state: 'pending' };
     if (name === 'blocked') item.control.takeover = { available: false, token: null, state: 'blocked', reason: longText };
     if (name === 'unavailable') item.control.takeover = { available: false, token: null, reason: 'Fresh charger readings are unavailable. Check the connection and try again.' };
-    if (name === 'estimate') item.progress = { estimatedSoc: 55.6, hasEnergyEstimate: true, deliveredGridKwh: 10, remainingGridKwh: 20 };
+    if (name === 'estimate') {
+      item.control = { phase: 'waiting', owned: { startAt: now + 3600000 }, takeover: { available: true, token: 'native:' + item.id } };
+      item.values.soc = reading(20, 'session-anchor');
+      item.progress = { estimatedSoc: 23, hasEnergyEstimate: true, deliveredGridKwh: 2.5, remainingGridKwh: 44 };
+    }
     if (name === 'readonly') item.readOnly = true;
+    if (name === 'disconnected') item.values.connected = reading(false);
+    if (name === 'unknown-connection') item.values.connected = { value: null, available: false };
+    if (name === 'missing-token') item.control.takeover.token = null;
+    if (name === 'monitoring') item.capabilities.scheduling = false;
+    if (name === 'uncertain') item.control = { phase: 'unconfirmed', confirmed: false, reason: 'Waiting for a confirmed charger instruction.', takeover: { available: false, token: null } };
+    if (name === 'startup-stop' || name === 'unavailable-startup-stop') item.control = {
+      phase: 'unavailable', errorCode: 'charger-stopped', manual: null,
+      reason: 'The charger reports paused or disabled. A stop instruction is preventing automatic scheduling.',
+      takeover: name === 'startup-stop' ? { available: true, token: 'native:' + item.id }
+        : { available: false, token: null, reason: 'Fresh charger readings are unavailable. Check the connection and try again.' },
+    };
   }
   panel.update(fixture.status);
 };
@@ -110,7 +127,7 @@ try {
   for (const width of [320, 390, 1440]) for (const theme of ['dark', 'light']) {
     await send('Emulation.setDeviceMetricsOverride', { width, height: 1000, deviceScaleFactor: 1, mobile: false });
     await evaluate(`document.documentElement.dataset.theme = '${theme}'`);
-    for (const state of ['ordinary', 'long', 'manual-stop', 'pending', 'blocked', 'unavailable', 'estimate', 'readonly']) {
+    for (const state of ['ordinary', 'long', 'manual-stop', 'manual-start', 'manual-window', 'pending', 'blocked', 'unavailable', 'estimate', 'readonly', 'disconnected', 'unknown-connection', 'missing-token', 'monitoring', 'uncertain', 'startup-stop', 'unavailable-startup-stop']) {
       await evaluate(`chargingFixture.setCase('${state}'); document.querySelectorAll('.charging-device').forEach(card => card.open = true)`);
       const layout = await evaluate(`(() => {
         const cards = [...document.querySelectorAll('.charging-device')];
@@ -119,15 +136,45 @@ try {
           const nodes = [...card.querySelectorAll('*')].filter(node => node.checkVisibility() && [...node.childNodes].some(child => child.nodeType === Node.TEXT_NODE && child.textContent.trim()));
           const clipped = nodes.filter(node => { const style = getComputedStyle(node); return style.textOverflow === 'ellipsis' || !['none', '0'].includes(style.webkitLineClamp) || node.scrollWidth > node.clientWidth + 1 && ['hidden', 'clip'].includes(style.overflowX); }).map(node => node.id || node.className);
           const outside = [...summary.children].filter(node => node.checkVisibility() && node.getBoundingClientRect().bottom > box.bottom + 1).map(node => node.id || node.className);
-          const action = card.querySelector('.charging-use-automatic');
-          return { id: card.id, clipped, outside, action: { label: action.textContent, disabled: action.disabled, visible: action.checkVisibility(), parent: action.parentElement.id.replace(/^charger[12]/, 'charger') } };
+          const action = card.querySelector('.charging-use-automatic'), save = card.querySelector('button[type="submit"]');
+          const help = document.getElementById(card.id.replace('-device', '-takeover-help'));
+          const event = card.querySelector('.charging-event-value').textContent;
+          const fields = [...card.querySelectorAll('.charging-fields input')].filter(input => input.checkVisibility());
+          const fieldsOutside = fields.filter(input => { const bounds = input.getBoundingClientRect(), area = input.closest('.charging-fields').getBoundingClientRect();
+            return bounds.left < area.left - 1 || bounds.right > area.right + 1; }).map(input => input.id);
+          return { id: card.id, clipped, outside, fieldsOutside, event,
+            action: { label: action.textContent, disabled: action.disabled, visible: action.checkVisibility(), helpVisible: help.checkVisibility(),
+              inSummary: summary.contains(action), usesStandardSize: getComputedStyle(action).fontSize === getComputedStyle(save).fontSize && getComputedStyle(action).minHeight === getComputedStyle(save).minHeight,
+              parent: action.parentElement.id.replace(/^charger[12]/, 'charger') } };
         }) };
       })()`);
       assert.equal(layout.overflow, false, `${width}px ${theme} ${state}: no horizontal overflow`);
-      for (const card of layout.cards) { assert.deepEqual(card.clipped, [], `${width}px ${theme} ${state} ${card.id}: readable text`); assert.deepEqual(card.outside, [], `${width}px ${theme} ${state} ${card.id}: summary grows around text`); }
+      for (const card of layout.cards) {
+        const context = `${width}px ${theme} ${state} ${card.id}`;
+        assert.deepEqual(card.clipped, [], `${context}: readable text`);
+        assert.deepEqual(card.outside, [], `${context}: summary grows around text`);
+        assert.deepEqual(card.fieldsOutside, [], `${context}: session inputs stay within their field columns`);
+        assert(!/[.!?]$/.test(card.event.trim()), `${context}: compact status uses a fragment without terminal punctuation`);
+      }
       assert.deepEqual(layout.cards[0].action, layout.cards[1].action, 'Both providers render the same action and capability state');
       assert.equal(layout.cards[0].action.label, 'Use automatic');
-      assert.equal(layout.cards[0].action.disabled, ['pending', 'blocked', 'unavailable', 'readonly'].includes(state));
+      const actionVisible = ['long', 'manual-stop', 'manual-start', 'manual-window', 'startup-stop'].includes(state);
+      assert.equal(layout.cards[0].action.visible, actionVisible, `${state}: takeover is offered only for a replaceable external instruction`);
+      if (actionVisible) assert.equal(layout.cards[0].action.helpVisible, true, `${state}: the available action has an explanation`);
+      if (['ordinary', 'estimate', 'disconnected', 'unknown-connection', 'monitoring', 'uncertain'].includes(state))
+        assert.equal(layout.cards[0].action.helpVisible, false, `${state}: unrelated takeover guidance stays hidden`);
+      assert.equal(layout.cards[0].action.inSummary, false, 'Use automatic belongs with Charging controls');
+      if (actionVisible) {
+        assert.equal(layout.cards[0].action.disabled, false);
+        assert.equal(layout.cards[0].action.usesStandardSize, true, 'Use automatic keeps the standard secondary-button size');
+      }
+      if (state === 'startup-stop' || state === 'unavailable-startup-stop') {
+        for (const id of ['charger1', 'charger2']) {
+          assert.equal(await evaluate(`document.getElementById('${id}-problem').checkVisibility()`), true, 'A pre-existing stop remains explained independently of takeover availability');
+          assert.match(await evaluate(`document.getElementById('${id}-problem').textContent`), /stop instruction is preventing automatic scheduling/);
+          if (state === 'unavailable-startup-stop') assert.match(await evaluate(`document.getElementById('${id}-takeover-help').textContent`), /Fresh charger readings are unavailable/);
+        }
+      }
       if (state === 'long') {
         for (const id of ['charger1', 'charger2']) {
           await evaluate(`document.querySelector('#${id}-event-value button').click()`);
@@ -135,10 +182,21 @@ try {
           assert.equal(await evaluate("document.getElementById('status-detail-popover').scrollWidth <= document.getElementById('status-detail-popover').clientWidth + 1"), true, 'Long words wrap inside the popup');
           await evaluate("document.querySelector('.status-detail-close').click()");
         }
+      }
+      if (['ordinary', 'long', 'manual-stop', 'estimate', 'uncertain', 'startup-stop', 'unavailable-startup-stop'].includes(state)) {
         const metrics = await send('Page.getLayoutMetrics');
         const shot = await send('Page.captureScreenshot', { format: 'png', captureBeyondViewport: true,
           clip: { x: 0, y: 0, width, height: Math.min(metrics.cssContentSize.height, 12000), scale: 1 } });
-        writeFileSync(join(artifacts, `charging-long-${width}-${theme}.png`), Buffer.from(shot.data, 'base64'));
+        writeFileSync(join(artifacts, `charging-${state}-${width}-${theme}.png`), Buffer.from(shot.data, 'base64'));
+        if (state === 'estimate' || state === 'manual-stop') {
+          const clip = await evaluate(`(() => {
+            const node = ${state === 'estimate' ? "document.getElementById('charger1-session-settings')" : "document.getElementById('charger1-use-automatic').parentElement"};
+            const bounds = node.getBoundingClientRect();
+            return { x: bounds.left + scrollX, y: bounds.top + scrollY, width: bounds.width, height: bounds.height, scale: 1 };
+          })()`);
+          const detail = await send('Page.captureScreenshot', { format: 'png', captureBeyondViewport: true, clip });
+          writeFileSync(join(artifacts, `charging-${state}-detail-${width}-${theme}.png`), Buffer.from(detail.data, 'base64'));
+        }
       }
     }
   }
@@ -149,19 +207,21 @@ try {
     await evaluate(`chargingFixture.hold = true; document.getElementById('${id}-use-automatic').click()`);
     await until('Boolean(chargingFixture.finish)');
     assert.equal(await evaluate(`document.getElementById('${id}-use-automatic').disabled`), true);
+    assert.equal(await evaluate(`document.getElementById('${id}-use-automatic').checkVisibility()`), true, 'The in-flight action remains visible');
     const action = await evaluate('chargingFixture.writes[1]');
     assert.equal(action[0], `/api/charging/chargers/${id}/use-automatic`);
     assert.deepEqual(action[1], { association: `fixture:${id}`, sessionId: `session:${id}`, revision: 7, controlRevision: 5, takeoverToken: `native:${id}` });
     await evaluate('chargingFixture.hold = false; chargingFixture.finish(); chargingFixture.finish = null');
-    await until(`document.getElementById('${id}-takeover-help').textContent.includes('awaiting charger confirmation')`);
+    await until(`!document.getElementById('${id}-use-automatic').checkVisibility()`);
     assert.equal(await evaluate(`document.getElementById('${id}-enabled').getAttribute('aria-checked')`), 'true');
-    assert.match(await evaluate(`document.getElementById('${id}-takeover-message').textContent`), /confirmed.*economic plan/);
+    assert.equal(await evaluate(`document.getElementById('${id}-takeover-message').checkVisibility()`), true, 'The action receipt stays visible after its button is hidden');
+    assert.match(await evaluate(`document.getElementById('${id}-takeover-message').textContent`), /confirm/i);
     await evaluate(`chargingFixture.setCase('manual-stop'); chargingFixture.error = 'The charger changed after this view was loaded. Review its latest state before trying again.'; document.getElementById('${id}-use-automatic').click()`);
     await until(`document.getElementById('${id}-takeover-message').classList.contains('form-error')`);
     assert.match(await evaluate(`document.getElementById('${id}-takeover-message').textContent`), /charger changed.*latest state/);
   }
   assert.deepEqual(errors, []);
-  console.log(`Charging controls browser checks passed: shared controls, explicit takeover fencing, pending/errors, readable long states and popups at 320/390/1440px in both themes. Screenshots: ${artifacts}`);
+  console.log(`Charging controls browser checks passed: conditional shared controls, explicit takeover fencing, pending/errors and retained receipts, expanded session settings, consistent compact statuses, readable long states and popups at 320/390/1440px in both themes. Screenshots: ${artifacts}`);
 } finally {
   socket?.close(); for (const task of pending.values()) clearTimeout(task.timer);
   if (browser && browser.exitCode === null) { browser.kill(); await new Promise(resolve => browser.once('exit', resolve)); }

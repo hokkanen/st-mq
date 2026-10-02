@@ -19,7 +19,7 @@ export const CHARGING_CONTROL_CAUSES = {
   'evse-event-overflow': 'Charger event buffer exceeded', 'evse-component-mapping-unverified': 'Charger component mapping unverified',
   'identification-resume-required': 'Identification release still requires confirmation', 'command-unconfirmed': 'Charger instruction unconfirmed',
   'control-error': 'Charger control error; detailed cause unavailable',
-  'manual-stop': 'Manual stop has priority', 'manual-release': 'Manual release has priority', 'native-schedule': 'Charger timer has priority',
+  'manual-stop': 'Stop instruction active', 'manual-release': 'Charging release active', 'native-schedule': 'Charger schedule active',
   'manual-enable': 'Other charging instruction has priority', 'manual-charge-now': 'Immediate charging instruction has priority', 'manual-schedule': 'Charger schedule has priority',
   'native-current-limit': 'Native current limit', 'vehicle-current-limit': 'Vehicle current limit', 'hardware-restriction': 'Hardware current limit',
   'fuse-limit': 'Installation current limit', 'priority-allocation': 'Shared charging allocation', 'telemetry-fallback': 'Current fallback for missing measurements',
@@ -31,8 +31,8 @@ export const CHARGING_CONTROL_CAUSES = {
 };
 
 const CONTROL_DETAILS = {
-  'manual-stop': 'A stop instruction has priority over automatic scheduling. Select Use automatic to return to the charging plan when the charger is ready.',
-  'native-schedule': 'A schedule on the charger has priority. Use automatic replaces the current schedule with economic scheduling; a newer external change takes priority again.',
+  'manual-stop': 'A stop instruction is preventing automatic scheduling.',
+  'native-schedule': 'The charger’s own schedule has priority over automatic scheduling.',
   'manual-schedule': 'A charger schedule has priority over automatic charging.',
   'manual-enable': 'Another charging instruction has priority over automatic scheduling.',
   'manual-charge-now': 'An immediate charging instruction has priority over automatic scheduling.',
@@ -57,11 +57,15 @@ const CONTROL_DETAILS = {
   'evse-native-schedule-unconfirmed': 'The charger has not confirmed that its previous schedule was disabled. Automatic scheduling has not taken over yet.',
 };
 
-export function chargingControlLabel(value) {
+export function chargingControlLabel(value, kind) {
   return ({ 'manual-stop': 'Stop instruction active', 'native-schedule': 'Charger schedule active',
     'manual-schedule': 'Charger schedule active', 'manual-enable': 'Other charging instruction active',
     'manual-charge-now': 'Immediate charging instruction active', 'manual-release': 'Charging release active' })[value]
-    ?? CHARGING_CONTROL_CAUSES[value] ?? chargingControlReason(value);
+    ?? CHARGING_CONTROL_CAUSES[value]
+    ?? ({ stop: 'Stop instruction active', schedule: 'Charger schedule active', 'native-schedule': 'Charger schedule active',
+      window: 'Charger schedule active', enable: 'Other charging instruction active',
+      'charge-now': 'Immediate charging instruction active', release: 'Charging release active' })[kind]
+    ?? (value ? 'Charger needs attention' : '');
 }
 
 /** Keep machine codes in diagnostics data and readable causes in ordinary UI. */

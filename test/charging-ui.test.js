@@ -55,7 +55,7 @@ test('both chargers use the same compact model and retain useful energy informat
   const original = charger(), renamed = { ...original, id: 'another-charger', label: 'Another charger' };
   const first = view(original), second = view(renamed);
   assert.deepEqual({ ...first, id: second.id, label: second.label }, second);
-  assert.equal(first.soc, '20 %'); assert.equal(first.socSource, 'Manual charge reference'); assert.equal(first.gridEnergy, '32.9 kWh');
+  assert.equal(first.soc, '20 %'); assert.equal(first.socSource, 'Configured starting charge'); assert.equal(first.gridEnergy, '32.9 kWh');
   assert.equal(chargingDisplay(status().charging, now).chargers.length, 2);
   assert.equal(view(charger('charger2')).event, 'Automatic charging OFF');
   assert(!first.rows.some(([label]) => ['Current charge', 'Minimum charge', 'Grid energy to minimum'].includes(label)), 'Do not repeat overview metrics');
@@ -220,7 +220,7 @@ test('an active period never hides unconfirmed control behind charging permissio
     const result = view({ ...item, plan: { ...item.plan, periods }, control: { ...control, ...patch },
       values: { ...item.values, charging: reading(false) } });
     assert.equal(result.state, 'Control unavailable', JSON.stringify(patch));
-    assert.equal(result.event, 'Waiting for a confirmed charger instruction.');
+    assert.equal(result.event, 'Waiting for charger confirmation');
     assert.equal(result.eventAt, null);
     assert.doesNotMatch(result.readiness, /Expected on time/);
   }
@@ -252,7 +252,7 @@ test('manual control and Charge now retain priority during an idle scheduled per
   const control = { phase: 'active', owned: { startAt: periods[0].startAt }, execution: { periods } };
   const scheduled = { ...item, plan: { ...item.plan, periods }, control, values: { ...item.values, charging: reading(false) } };
   const manual = view({ ...scheduled, control: { ...control, phase: 'yielded', manual: { kind: 'stop', reason: 'Manual Stop is active.' } } });
-  assert.equal(manual.state, 'Manual control'); assert.equal(manual.event, 'Manual Stop is active.');
+  assert.equal(manual.state, 'Manual control'); assert.equal(manual.event, 'Stop instruction active');
   const immediate = view({ ...scheduled, request: { ...item.request, chargeNow: true } });
   assert.equal(immediate.state, 'Charge now selected'); assert.equal(immediate.event, 'Charging requested until unplugging');
 });
@@ -350,7 +350,7 @@ test('delivered energy raises estimated charge while retaining the original vehi
   assert.match(result.readingTime, /14 Sept 2026/);
   assert.equal(Object.fromEntries(result.rows)['Delivered since charge reference'], '12 kWh from the grid');
   assert.equal(Object.fromEntries(result.rows)['Last reported charge'], '20 % · Vehicle MQTT · measured 14 Sept 2026, 21:00');
-  assert.equal(result.sources, 'Estimated from vehicle charge + delivered energy');
+  assert.equal(result.sources, 'Estimated from vehicle charge and measured energy');
 });
 
 test('vehicle-feed outage shows the retained connection estimate instead of the saved starting-charge default', () => {
@@ -382,7 +382,7 @@ test('last reported charge preserves the source and original time beside the cur
   assert.match(Object.fromEntries(received.rows)['Last reported charge'], /received 15 Sept 2026, 21:00 · measurement time unknown$/);
   const manual = view({ ...item, values: { ...item.values, soc: reading(30, 'manual-fallback') },
     progress: { estimatedSoc: 39, hasEnergyEstimate: true } });
-  assert.equal(manual.soc, '≈39 %'); assert.equal(Object.fromEntries(manual.rows)['Manual charge reference'], '30 %');
+  assert.equal(manual.soc, '≈39 %'); assert.equal(Object.fromEntries(manual.rows)['Configured starting charge'], '30 %');
   assert.equal(manual.rows.some(([name]) => name === 'Last reported charge'), false);
 });
 
@@ -469,7 +469,7 @@ test('estimated current charge progresses beyond the requested target and identi
     estimatedSocSource: 'starting-charge', deliveredGridKwh: 58.4, remainingGridKwh: 0,
     basis: { energyCoverageIncomplete: true } }, values: { ...item.values, charging: reading(true), powerKw: reading(8) } });
   assert.equal(result.soc, '≈91 %'); assert.equal(result.minimum, '80 %'); assert.equal(result.gridEnergy, '0 kWh');
-  assert.equal(result.sources, 'Estimated from manual charge + delivered energy');
+  assert.equal(result.sources, 'Estimated from configured starting charge and measured energy');
   assert.equal(result.minimumSource, 'Requested target');
   assert.equal(result.readiness, 'Target reached'); assert.match(result.event, /target reached$/);
   assert.match(result.notes.join(' '), /Some charging energy was not measured/);
@@ -510,15 +510,16 @@ test('the explanation fold discloses operational assumptions without exposing ir
   assert.match(explanations['Price planning'], /New prices can pause automatic charging.*costs less/);
   assert.match(explanations['Price planning'], /reaching the target or ready-by time does not stop charging/i);
   assert.match(explanations['Manual priority'], /confirmed end.*automatic scheduling when it ends/);
-  assert.match(explanations['Automatic charging'], /until you turn it off or unplug/);
+  assert.match(explanations['Automatic charging'], /unplugging and restart.*without replacing other charger instructions/);
+  assert.match(explanations['Charge now'], /until you turn it off or unplug/);
   for (const backend of [{ control: { kind: 'ocpp-tx-pause', snapshot: null } },
     { telemetry: { transport: 'ocpp' } }, { control: { snapshot: { transport: 'ocpp' } } }]) {
     const local = Object.fromEntries(view({ ...item, ...backend }).explanations);
     assert.match(local['Period transitions'], /local charger connection.*expiring zero-current restriction/);
     assert.doesNotMatch(local['Period transitions'], /Easee cloud|one-off start/);
     assert.match(local['Pause recovery'], /expires automatically.*loses contact.*authorization.*does not return.*cloud control/);
-    assert.match(local['Manual priority'], /Use automatic explicitly replaces the displayed stop/);
-    assert.doesNotMatch(local['Manual instruction ownership'], /Manual windows/);
+    assert.match(local['Use automatic'], /button in Charging controls replaces.*enables Automatic charging and ends Charge now/);
+    assert.match(local['Charger confirmation'], /pending until the charger confirms.*measurements.*started or paused/);
   }
   assert(!JSON.stringify(result).includes('ST-MQ'));
   assert(Object.fromEntries(view(charger('charger2')).explanations)['Period transitions']);
@@ -544,14 +545,19 @@ test('physical Charger 2 explanations preserve native vehicle constraints and di
   assert.doesNotMatch(details['Price planning'],/New prices can pause/);
   assert.match(details['Period transitions'],/several charging periods.*pause and restart.*MQTT.*confirmed charger instructions.*Actual charging activity/);
   assert.match(details['Pause recovery'],/do not expire.*loses contact with Shelly.*remain paused.*resume it in Shelly/);
-  assert.match(details['Manual priority'],/Use automatic explicitly replaces.*charger schedule.*economic scheduling/);
-  assert.doesNotMatch(details['Manual instruction ownership'],/Manual windows|schedule expiry/);
-  assert.match(details['Automatic charging'],/OFF stops price scheduling.*limiter can remain active.*pause charging/);
+  assert.match(details['Use automatic'],/button in Charging controls replaces.*automatic scheduling.*schedules stay disabled/);
+  assert.match(details['Charger confirmation'],/pending until the charger confirms.*measurements.*started or paused/);
+  assert.match(details['Automatic charging'],/Turning it off stops price scheduling.*limiter can remain active.*pause charging/);
   assert.match(details['Unavailable data'],/current limits, the configured fallback and native restrictions/);
   assert.match(details['Charging current'],/adjusts Shelly’s current.*pauses.*below the charging minimum/);
   assert.match(details['Other charging'],/automatic scheduling off/);
   assert.match(details['Target & completion'],/does not change the vehicle’s own charge limit/);
   assert.doesNotMatch(details['Period transitions'],/Easee/);
+  const withoutLimiter = Object.fromEntries(view(charger('charger2', { capabilities: { scheduling: true, currentControl: false } })).explanations);
+  assert.match(withoutLimiter['Automatic charging'], /charger’s own current limits and schedules remain in effect/);
+  assert.doesNotMatch(withoutLimiter['Automatic charging'], /limiter can remain active/);
+  assert.match(withoutLimiter['Charging current'], /This page does not change charging current/);
+  assert.doesNotMatch(withoutLimiter['Charging current'], /adjusts Shelly’s current/);
 });
 
 test('known charger limits stay available in details while the vehicle is disconnected', () => {
@@ -677,8 +683,8 @@ test('identical forms adapt to capabilities and automatic values, with no shared
   assert.equal(visibleFields('charger2')[0], 'charger2-setting-readyBy');
   assert.equal($('charger2-setting-minimumSoc').value, 85); assert(!$('charger2-setting-minimumSoc').disabled);
   assert.equal($('charger2-setting-manualSoc').value, 62); assert(!$('charger2-setting-manualSoc').disabled);
-  assert.match($('charger2-setting-minimumSoc-help').textContent, /Configured default: 80%/);
-  assert.match($('charger2-setting-manualSoc-help').textContent, /Configured default: 20%/);
+  assert.match($('charger2-setting-minimumSoc-help').textContent, /Configured default: 80 %/);
+  assert.match($('charger2-setting-manualSoc-help').textContent, /Configured default: 20 %/);
   for (const id of ['charger1', 'charger2']) for (const { key } of chargingFields) {
     const help = $(`${id}-setting-${key}-help`);
     assert(!help.querySelector('button'), 'Settings instructions remain inline beside their fields');
@@ -784,14 +790,16 @@ test('current charge fields follow vehicle readings and measured progress withou
   assert.equal(input.value, 40);
   panel.update(status(current(45)));
   assert.equal(input.value, 45);
-  assert.match(help.textContent, /BMW CarData supplies the latest charge reading/);
+  assert.match(help.textContent, /Latest reading from BMW CarData/);
   panel.update(status(current(45, { estimatedSoc: 49.26, hasEnergyEstimate: true })));
   assert.equal(input.value, 49.3);
-  assert.match(help.textContent, /Current estimate: 49.3 %.*BMW CarData charge \+ measured charging energy.*charging losses/);
+  assert.match(help.textContent, /Estimated from BMW CarData reading and measured energy/);
+  assert.doesNotMatch(help.textContent, /Current estimate:|49\.3|Unsaved|charging losses/);
+  assert.match(help.textContent, /newer vehicle reading.*Configured default: 20 %/);
   input.focus(); input.value = '51.2'; input.dispatch('input');
   panel.update(status(current(52, { estimatedSoc: 53.1, hasEnergyEstimate: true })));
   assert.equal(document.activeElement, input); assert.equal(input.value, '51.2');
-  assert.match(help.textContent, /Unsaved current-charge edit.*Current estimate: 53.1 %/);
+  assert.match(help.textContent, /Unsaved edit.*Current estimate: 53.1 %/);
   assert.deepEqual(item.settings, defaults); assert.deepEqual(calls, []);
   await submit($('charger1-settings-form'));
   assert.deepEqual(calls, [['/api/charging/chargers/charger1/settings', sessionPayload('charger1', { manualSoc: 51.2 })]]);
@@ -805,9 +813,9 @@ test('current charge fields retain outage estimates, label manual progress, and 
     retainedVehicleReference: true, referenceSoc: { value: 44, source: 'teslamate', measuredAt: now - 3600_000 } };
   panel.update(status({ ...item, progress }));
   const input = $('charger2-setting-manualSoc'), help = $('charger2-setting-manualSoc-help');
-  assert.equal(input.value, 44); assert.match(help.textContent, /Current estimate: 44 %.*last known TeslaMate charge/);
+  assert.equal(input.value, 44); assert.match(help.textContent, /Estimated from the last TeslaMate reading/);
   panel.update(status({ ...item, progress: { estimatedSoc: 35.4, hasEnergyEstimate: true } }));
-  assert.equal(input.value, 35.4); assert.match(help.textContent, /manual charge \+ measured charging energy/);
+  assert.equal(input.value, 35.4); assert.match(help.textContent, /configured starting charge and measured energy/);
   panel.update(status({ ...item, progress: { estimatedSoc: 70, hasEnergyEstimate: false } }));
   assert.equal(input.value, 20, 'An unsubstantiated estimate does not replace the configured charge');
   input.focus(); input.value = '48'; input.dispatch('input');
@@ -841,9 +849,9 @@ test('saved manual current charge stays a manual reference as measured energy ad
   const advanced = { ...anchored, progress: { estimatedSoc: 42, hasEnergyEstimate: true } };
   panel.update(status(advanced));
   assert.equal($('charger1-setting-manualSoc').value, 42);
-  assert.match($('charger1-setting-manualSoc-help').textContent, /manual charge \+ measured charging energy/);
+  assert.match($('charger1-setting-manualSoc-help').textContent, /manual charge and measured energy/);
   const presented = view(advanced);
-  assert.equal(presented.socSource, 'Estimated from manual charge + delivered energy');
+  assert.equal(presented.socSource, 'Estimated from manual charge and measured energy');
   assert.equal(presented.readingTime, '', 'The edit timestamp is not a vehicle measurement');
   assert.equal(Object.fromEntries(presented.rows)['Manual charge reference'], '35 %');
   assert(!presented.rows.some(([label]) => label === 'Last reported charge'));
@@ -855,8 +863,8 @@ test('Charger 2 popups explain manual priority and unconfirmed instructions with
   const panel = createChargingPanel({ document, request: async () => {} });
   const item = connected('charger2'); item.settings.enabled = true;
   for (const [reason, manual, expected] of [
-    ['manual-stop', { kind: 'stop' }, /stop instruction has priority.*select use automatic/i],
-    ['native-schedule', { kind: 'schedule' }, /schedule on the charger has priority/i],
+    ['manual-stop', { kind: 'stop' }, /stop instruction is preventing automatic scheduling/i],
+    ['native-schedule', { kind: 'schedule' }, /charger’s own schedule has priority/i],
     ['evse-command-unconfirmed', null, /outcome is still unknown.*fresh reading/i],
     ['telemetry-fallback', null, /configured fallback.*fresh measurements/i],
     ['future-control-condition', null, /Check the charger controls for details/],
@@ -893,7 +901,7 @@ test('both Automatic switches change only the persistent preference and preserve
     assert.equal(toggle.getAttribute('aria-checked'), 'true');
     assert.equal($(`${id}-control-message`).textContent, 'Preference saved');
     assert.match($(`${id}-event-value`).textContent, /Stop instruction active/);
-    assert.match($(`${id}-control-detail`).textContent, /Automatic charging remains ON.*Use automatic requests/);
+    assert.match($(`${id}-control-detail`).textContent, /Automatic charging remains on while another charger instruction has priority/);
     await clickAction(toggle);
     assert.deepEqual(calls.at(-1), [`/api/charging/chargers/${id}/control`, { association: item.association, revision: 1, enabled: false }]);
     assert.equal(calls.length, 2, 'Turning OFF only changes the durable automatic preference');
@@ -911,21 +919,41 @@ test('both shared Use automatic actions submit the displayed connection and nati
     panel.update(status(item)); const button = $(`${id}-use-automatic`);
     assert.equal(button.textContent, 'Use automatic'); assert(!button.hidden && !button.disabled);
     assert($(`${id}-charging-controls`).contains(button)); assert(!$(`${id}-device-summary`).contains(button));
-    assert.match($(`${id}-takeover-help`).textContent, /Earlier schedules stay disabled.*newer external change/);
+    assert.match($(`${id}-takeover-help`).textContent, /enables Automatic charging.*replaces the current charger instruction.*ends Charge now/);
+    assert.match($(`${id}-takeover-help`).textContent, /Charger schedules stay disabled until changed/);
     const pending = clickAction(button);
-    assert(button.disabled); assert($(`${id}-enabled`).disabled); assert.match($(`${id}-takeover-message`).textContent, /Saving/);
+    assert(button.disabled && !button.hidden, 'Keep the selected action visible while its local request is in flight');
+    assert($(`${id}-enabled`).disabled); assert.match($(`${id}-takeover-message`).textContent, /Saving/);
     await clickAction(button); assert.equal(calls.length, 1);
     assert.deepEqual(calls[0], [`/api/charging/chargers/${id}/use-automatic`, { association: item.association,
       sessionId: item.request.sessionId, revision: item.request.revision, controlRevision: 4, takeoverToken: 'fixture-current-native-state' }]);
     const acknowledged = { ...item, settings: { ...item.settings, enabled: true }, request: { ...item.request, chargeNow: false },
       control: { phase: 'waiting', takeover: { available: false, token: null, state: 'pending' } } };
     finish(status(acknowledged)); await pending;
-    assert(button.disabled); assert.equal($(`${id}-enabled`).getAttribute('aria-checked'), 'true');
+    assert(button.disabled && button.hidden); assert.equal($(`${id}-enabled`).getAttribute('aria-checked'), 'true');
     assert.equal($(`${id}-charge-now`).getAttribute('aria-pressed'), 'false');
-    assert.match($(`${id}-takeover-help`).textContent, /awaiting charger confirmation/);
+    assert.match($(`${id}-takeover-help`).textContent, /Waiting for charger confirmation/);
     assert.match($(`${id}-state`).textContent, /Handover pending/);
-    assert.match($(`${id}-takeover-message`).textContent, /Automatic control confirmed.*economic plan/);
-    assert.doesNotMatch($(`${id}-takeover-message`).textContent, /Charging started|handover is complete/);
+    assert.match($(`${id}-takeover-message`).textContent, /requested.*Waiting for charger confirmation/);
+    assert.doesNotMatch($(`${id}-takeover-message`).textContent, /scheduling confirmed|control confirmed|Charging started|handover is complete/);
+    const confirmed = { ...acknowledged, control: { phase: 'waiting', takeover: { available: true, token: 'fixture-reconciled',
+      attemptToken: item.control.takeover.token, state: 'confirmed' } } };
+    for (const unrelated of [
+      { ...confirmed, control: { ...confirmed.control, takeover: { ...confirmed.control.takeover, attemptToken: 'fixture-another-action' } } },
+      { ...confirmed, request: { ...confirmed.request, sessionId: 'another-connection' } },
+      { ...confirmed, association: 'fixture:replacement-equipment' },
+    ]) {
+      panel.update(status(unrelated));
+      assert.match($(`${id}-takeover-message`).textContent, /Waiting for charger confirmation/,
+        'Confirmation must belong to this action, equipment and connection');
+    }
+    panel.update(status(confirmed));
+    const receipt = $(`${id}-takeover-message`).textContent;
+    assert.match(receipt, /Automatic scheduling confirmed/);
+    assert(button.hidden && button.disabled, 'Successful takeover removes the now-irrelevant action');
+    assert(!$(`${id}-takeover-message`).hidden, 'The action receipt remains visible after its button is hidden');
+    panel.update(status({ ...confirmed, control: { phase: 'unavailable', reason: 'read-failed', takeover: { available: false, token: null } } }));
+    assert.equal($(`${id}-takeover-message`).textContent, receipt, 'A later stale reading must not undo confirmed action evidence');
     panel.close();
   }
 });
@@ -933,20 +961,44 @@ test('both shared Use automatic actions submit the displayed connection and nati
 test('Use automatic availability follows capabilities, authority, session and native evidence for both providers', async () => {
   for (const id of ['charger1', 'charger2']) {
     const document = documentFixture(), $ = name => document.getElementById(name), calls = [];
-    const item = { ...connected(id), control: { takeover: { available: true, token: 'fixture-native-state' } } };
+    const item = { ...connected(id), control: { phase: 'manual', reason: 'manual-stop', manual: { kind: 'stop' },
+      takeover: { available: true, token: 'fixture-native-state' } } };
     const panel = createChargingPanel({ document, request: async (...args) => { calls.push(args); return status(item); } });
+    const ordinary = { ...item, control: { phase: 'waiting', takeover: item.control.takeover } };
+    for (const enabled of [false, true]) for (const chargeNow of [false, true]) {
+      panel.update(status({ ...ordinary, settings: { ...ordinary.settings, enabled }, request: { ...ordinary.request, chargeNow } }));
+      assert($(`${id}-use-automatic`).hidden && $(`${id}-use-automatic`).disabled,
+        'Capability readiness and Charge now alone do not make takeover relevant');
+      assert($(`${id}-takeover-help`).hidden);
+      await clickAction($(`${id}-use-automatic`)); assert.deepEqual(calls, []);
+    }
+    for (const enabled of [false, true]) {
+      panel.update(status({ ...item, settings: { ...item.settings, enabled } }));
+      assert(!$(`${id}-use-automatic`).hidden && !$(`${id}-use-automatic`).disabled,
+        'A replaceable external instruction permits explicit takeover with either Automatic preference');
+      panel.update(status({ ...item, settings: { ...item.settings, enabled }, control: { phase: 'unavailable',
+        errorCode: 'charger-stopped', manual: null, takeover: item.control.takeover } }));
+      assert(!$(`${id}-use-automatic`).hidden && !$(`${id}-use-automatic`).disabled,
+        'A confirmed pre-existing stop permits takeover without attributing it to an observed manual change');
+    }
     for (const changed of [
       { ...status(item), role: 'slave' }, { ...status(item), readOnly: true }, status({ ...item, readOnly: true }),
+      { ...status(item), charging: { ...status(item).charging, readOnly: true } },
       status({ ...item, request: null }), status({ ...item, values: { ...item.values, connected: reading(false) } }),
-      status({ ...item, capabilities: { scheduling: false } }), status({ ...item, control: {} }),
-      status({ ...item, control: { takeover: { available: true, token: null } } }),
-      status({ ...item, control: { takeover: { available: false, token: 'stale', reason: 'Fresh charger readings are unavailable.' } } }),
+      status({ ...item, values: { ...item.values, connected: reading(null) } }),
+      status({ ...item, capabilities: { scheduling: false } }), status({ ...item, control: {} }), status({ ...item, controls: null }),
+      status({ ...item, control: { ...item.control, takeover: { available: true, token: null } } }),
+      status({ ...item, control: { ...item.control, takeover: { available: true, token: '' } } }),
+      status({ ...item, control: { ...item.control, takeover: { available: true, token: 'pending', state: 'pending' } } }),
+      status({ ...item, control: { phase: 'unavailable', errorCode: 'charger-stopped', manual: null,
+        takeover: { available: false, token: null } } }),
+      status({ ...item, control: { ...item.control, takeover: { available: false, token: 'stale', reason: 'Fresh charger readings are unavailable.' } } }),
     ]) {
-      panel.update(changed); assert($(`${id}-use-automatic`).disabled);
+      panel.update(changed); assert($(`${id}-use-automatic`).disabled && $(`${id}-use-automatic`).hidden);
       await clickAction($(`${id}-use-automatic`)); assert.deepEqual(calls, []);
     }
     assert.match($(`${id}-takeover-help`).textContent, /Fresh charger readings are unavailable/);
-    panel.update(status(item)); assert(!$(`${id}-use-automatic`).disabled);
+    panel.update(status(item)); assert(!$(`${id}-use-automatic`).disabled && !$(`${id}-use-automatic`).hidden);
     panel.close();
   }
 });
@@ -966,9 +1018,10 @@ test('Use automatic errors remain readable and keep the current preference and n
 
 test('a failed Use automatic request refreshes an acknowledged preference without claiming a completed handover', async () => {
   const document = documentFixture(), $ = id => document.getElementById(id); let refreshes = 0;
-  const item = { ...connected('charger2'), control: { takeover: { available: true, token: 'fixture-native-state' } } };
+  const item = { ...connected('charger2'), control: { phase: 'manual', reason: 'native-schedule', manual: { kind: 'schedule' },
+    takeover: { available: true, token: 'fixture-native-state' } } };
   const acknowledged = { ...item, settings: { ...item.settings, enabled: true },
-    control: { takeover: { available: false, token: null, state: 'blocked', reason: 'evse-native-schedule-unconfirmed' } } };
+    control: { ...item.control, takeover: { available: false, token: null, state: 'blocked', reason: 'evse-native-schedule-unconfirmed' } } };
   const panel = createChargingPanel({ document,
     request: async () => { throw new Error('evse-native-schedule-unconfirmed'); },
     afterRequest: () => { refreshes++; panel.update(status(acknowledged)); } });
@@ -1005,7 +1058,7 @@ test('visitor settings remain editable until identification and automatic fields
   assert.equal($('charger1-vehicle').textContent, 'Easee · BMW identified');
   assert.equal($('charger1-setting-manualSoc').value, 57); assert.equal($('charger1-setting-manualSoc').disabled, false);
   assert.equal($('charger1-setting-minimumSoc').value, 83); assert.equal($('charger1-setting-minimumSoc').disabled, false);
-  assert.match($('charger1-setting-manualSoc-help').textContent, /BMW CarData.*Configured default: 35%/);
+  assert.match($('charger1-setting-manualSoc-help').textContent, /BMW CarData.*Configured default: 35 %/);
   assert.equal($('charger1-setting-capacityKwh').value, 61); assert.equal($('charger1-setting-capacityKwh').disabled, false);
   panel.update(status({ ...saved, vehicle: { state: 'disconnected' }, values: { ...saved.values, connected: reading(false) } }));
   assert.equal($('charger1-vehicle').textContent, 'Easee · Any vehicle');
@@ -1024,7 +1077,7 @@ test('held BMW target uses attention color with report details but no extra noti
   assert.equal($('charger1-target-source').textContent, 'Held BMW target');
   for (const name of ['notice', 'controls', 'toggle', 'help', 'message']) assert.equal($(`charger1-target-${name}`), null);
   assert.equal($('charger1-device').open, undefined, 'The held target remains visible in the collapsed summary');
-  assert.match($('charger1-setting-minimumSoc-help').textContent, /^Held BMW target supplies/);
+  assert.match($('charger1-setting-minimumSoc-help').textContent, /^BMW target retained after conflicting reports/);
   const popup = openDetail($('charger1-target-label'));
   assert.match(popup.textContent, /Selected planning target: 85 %, measured 15 Sept 2026, 20:59/);
   assert.match(popup.textContent, /Latest BMW target report: 100 %, measured 15 Sept 2026, 21:00/);
@@ -1091,15 +1144,15 @@ test('BMW unknown location distinguishes indefinite remembered home context from
   item.vehicle = { state: 'identifying', id: null, homeContext: { source: 'last-known', measuredAt } };
   item.identification = { phase: 'pausing', active: true, available: true };
   const pending = view(item);
-  assert.match(pending.vehicle.detail, /BMW location is currently unknown/);
+  assert.match(pending.vehicle.detail, /last confirmed home location.*current location is unavailable/);
   assert.ok(pending.vehicle.detail.includes(chargingTime(measuredAt, 'Europe/Helsinki', now)));
-  assert.match(pending.vehicle.detail, /without a time limit.*unplugging and reconnecting.*valid away report.*Matching charging evidence/);
+  assert.match(pending.vehicle.detail, /Matching charging evidence is still required for this connection/);
   assert.match(pending.vehicle.label, /Identifying/);
   item.vehicle = { ...item.vehicle, state: 'identified', id: 'bmw', label: 'BMW' };
   item.identification = { phase: 'completed', active: false, available: true };
-  assert.match(view(item).vehicle.detail, /currently unknown/);
+  assert.match(view(item).vehicle.detail, /current location is unavailable/);
   item.vehicle.homeContext = null;
-  assert.doesNotMatch(view(item).vehicle.detail, /last confirmed home position/);
+  assert.doesNotMatch(view(item).vehicle.detail, /last confirmed home location/);
 });
 
 test('BMW awaiting-stop identification explains the pending evidence while leaving saved target editable', () => {
@@ -1131,7 +1184,7 @@ test('finished probing keeps historical matching pending and the ordinary chargi
   assert.equal($('charger1-notice').textContent, 'Identification pending');
   assert.doesNotMatch($('charger1-state').textContent, /Identifying|inconclusive/);
   assert(!$('charger1-identify').disabled, 'Only an explicit retry can request another test');
-  for (const [reason, expected] of [['bmw-home-unknown', /no valid last known home/], ['bmw-away', /latest valid BMW location is away/],
+  for (const [reason, expected] of [['bmw-home-unknown', /home location report is needed/], ['bmw-away', /latest valid BMW location is away/],
     ['bmw-not-plugged', /plugged-in state/], ['vehicle-feed-stale', /feed is not current/]]) {
     item.identification = { phase: 'waiting', active: true, available: false, reason };
     panel.update(status(item)); assert.match($('charger1-identification-status').textContent, expected);
@@ -1228,7 +1281,7 @@ test('charge summary explanations update without disturbing form drafts, fold st
   assert.equal($('charger2-charge-label').querySelector('.status-detail-trigger'), trigger);
   assert.equal($('status-detail-popover'), popup); assert.equal(popup.hidden, false); assert.equal(popup.showCount, 1);
   assert.match(popupBody.textContent, /TeslaMate/); assert.match(popupBody.textContent, /Charge measured .*21:00/);
-  assert.match($('charger2-setting-manualSoc-help').textContent, /Configured default: 22%/);
+  assert.match($('charger2-setting-manualSoc-help').textContent, /Configured default: 22 %/);
   assert.equal(popup.scrollTop, 42); assert.equal(popupBody.scrollTop, 18); assert.equal(document.activeElement, close);
   assert.equal($('charger1-setting-manualSoc'), field); assert.equal(field.value, '45'); assert.equal(device.open, false);
   assert.equal($('charger2-setting-manualSoc').value, 63); assert(!$('charger2-setting-manualSoc').disabled);
@@ -1538,7 +1591,7 @@ test('Identify follows session settings, supports an identified vehicle with aut
   assert.equal($('charger1-identification-title').textContent, 'Identification');
   assert.equal($('charger1-identification').getAttribute('aria-labelledby'), 'charger1-identification-title');
   assert.equal(button.textContent, 'Identify'); assert.equal(button.disabled, false);
-  assert.match($('charger1-identification-status').textContent, /short charging test.*Automatic charging off.*Manual Stop/s);
+  assert.match($('charger1-identification-status').textContent, /short charging test.*automatic scheduling off.*stop instructions keep priority/s);
   const pending = clickAction(button);
   assert.deepEqual(calls, [['/api/charging/chargers/charger1/identify', { association: item.association, sessionId: item.request.sessionId, revision: 1 }]]);
   assert(button.disabled); assert($('charger1-charge-now').disabled); assert($('charger1-settings-save').disabled);
@@ -1606,7 +1659,7 @@ test('Shelly pause recovery remains explicit after identification completes or t
     panel.update(status(item));
     assert.equal($('charger2-identification-state').textContent, 'Recovery pending');
     assert.equal($('charger2-notice').textContent, 'Pause recovery pending');
-    assert.match($('charger2-identification-status').textContent, /release is unconfirmed.*when the charger is reachable/);
+    assert.match($('charger2-identification-status').textContent, /pause is awaiting confirmation.*when the charger is reachable/);
     assert.doesNotMatch($('charger2-identification-status').textContent, /has resumed|now applies|Connect a vehicle/);
     assert($('charger2-identify').disabled);
   }
@@ -1618,7 +1671,7 @@ test('Shelly pause recovery remains explicit after identification completes or t
     control: { phase: 'uncertain', reason: 'identification-resume-required' } }));
   assert.equal($('charger2-identification-state').textContent, 'Review required');
   assert.equal($('charger2-notice').textContent, 'Review charger pause');
-  assert.match($('charger2-identification-status').textContent, /Another stop instruction may be active.*Review the charger.*Use automatic/);
+  assert.match($('charger2-identification-status').textContent, /another stop instruction may be active.*Review the charger.*Use automatic.*button in Charging controls/);
   assert.doesNotMatch($('charger2-identification-status').textContent, /will restore|has resumed/);
   assert.equal($('charger2-resume'), null); assert(!$('charger2-enabled').disabled);
   assert($('charger2-identify').disabled);
@@ -1742,7 +1795,8 @@ test('automatic charging is a persistent fenced control, separate from the four 
   assert.equal(toggle.getAttribute('aria-checked'), 'true');
   assert.equal($('charger1-control-message').textContent, 'Preference saved');
   assert.match(openDetail($('charger1-control-message')).textContent, /stays in effect until changed/);
-  assert.match($('charger1-control-detail').textContent, /unplugging and restart/);
+  assert.match($('charger1-control-detail').textContent, /stays in effect until changed/);
+  assert.match($('charger1-explanations').textContent, /unplugging and restart/);
   panel.update({ ...status(item), role: 'slave' }); assert(toggle.disabled);
   await clickAction(toggle); assert.equal(calls.length, 1); panel.close();
 });

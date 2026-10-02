@@ -71,9 +71,12 @@ live source reading beside it. Draft edits survive ordinary status refreshes.
 Change permanent defaults in configuration and choose **Apply reviewed configuration**.
 
 **Current charge** follows the latest applicable vehicle reading and advances with
-measured charging energy, with estimates and their sources labeled beside the
-field. It shows the current battery charge rather than keeping the value from
-plugging in. Unsaved edits remain in place while readings refresh. Saving an edit
+measured charging energy. Brief field help identifies the source and configured
+default; the Charge popover and **How charging works** explain estimates,
+charging losses and reference updates. Configured starting charge and a saved
+manual reference are labeled separately. The field shows the current battery
+charge rather than keeping the value from plugging in. Unsaved edits remain in
+place while readings refresh. Saving an edit
 sets a new manual charge reference for this connection; it does not change the
 configured starting-charge default or the original vehicle reading.
 
@@ -100,8 +103,14 @@ instruction: enable Automatic, end Charge now, supersede the observed manual
 Start/Stop and disable supported native charging schedules. Those earlier
 instructions are not restored after the session, unplugging or restart; a new
 external instruction takes priority again. Returning to the price plan may keep
-charging paused until a cheaper period. The button explains unavailable,
-pending and unconfirmed outcomes, and success requires charger readback.
+charging paused until a cheaper period. The button uses the same outlined styling
+as other card actions and appears in **Charging controls** only when another
+charger instruction has priority and takeover is available for the current
+connection and control authority. It stays disabled during its request and hides
+when takeover is unavailable or no longer needed. Pending, blocked and unconfirmed
+outcomes remain visible independently of the button; success requires charger
+readback. Compact status labels omit terminal periods, while explanations and
+action receipts use complete sentences.
 
 Handover is bound to the displayed equipment, connection, request/control
 revisions and observed native instruction. A newer observed instruction fences

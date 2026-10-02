@@ -9,7 +9,7 @@ const boundaryId = value => typeof value === 'string' && value.length > 0 && val
 // Inactive cached recurrences are not instructions to this charging session.
 const activeFingerprint = effectiveScheduleFingerprint;
 const ownedFingerprint = owned => owned?.activeFingerprint ?? (owned?.schedule ? activeFingerprint(owned.schedule) : null);
-const STOP_REASON = 'The charger reports paused or disabled. Use automatic to let the charging planner take over.';
+const STOP_REASON = 'The charger reports paused or disabled. A stop instruction is preventing automatic scheduling.';
 const RELEASE_REASON = 'Charging is released and may continue beyond the minimum and deadline.';
 const MIN_PRICE_PAUSE_MS = 15 * 60_000;
 const MAX_IDENTIFICATION_PAUSE_MS = 5 * 60_000;
@@ -38,7 +38,7 @@ const DIAGNOSTICS = {
   'unsupported-schedule': 'This Easee schedule type cannot be released through the available API. Disable it in Easee to resume automatic charging.',
   'resume-current-limit': 'The charger has a separate current limit that cannot safely be preserved while clearing its pause. Release that restriction at the charger before using automatic.',
   'takeover-stale': 'The charger instruction changed. Review its current status before using automatic again.',
-  'takeover-unconfirmed': 'The previous automatic handover is unconfirmed. Review the charger status and choose Use automatic again.',
+  'takeover-unconfirmed': 'Automatic control is unconfirmed. Review the charger status before retrying with the “Use automatic” button in Charging controls.',
   'invalid-plan': 'The proposed start or charging limit is invalid. A new plan will be requested.',
   'missing-current-limit': 'Easee has not supplied a usable charger current limit. Another reading will be requested before scheduling.',
   'start-passed': 'The proposed start arrived while Easee was being checked. The current instruction will be read again to release charging.',

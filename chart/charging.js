@@ -46,6 +46,15 @@ const currentChargeEstimate = charger => {
 };
 const requestKey = charger => charger.request ? `${charger.association}:${charger.request.sessionId}:${charger.request.revision}` : null;
 const connectedSession = charger => Boolean(charger.request && charger.values?.connected?.value === true);
+const hasPriorityInstruction = charger => {
+  const control = charger.control ?? {}, manual = control.manual ?? control.manualOverride;
+  return Boolean(manual && manual.kind !== 'unknown') || ['yielded', 'manual'].includes(control.phase)
+    || control.errorCode === 'charger-stopped' || control.reason === 'identification-resume-required';
+};
+const manualChargeReference = field => ['manual', 'session-anchor'].includes(field?.source);
+const chargeReferenceLabel = field => manualChargeReference(field) ? 'manual charge' : 'configured starting charge';
+const takeoverConfirmedMessage = 'Automatic scheduling confirmed. Charging may wait until the next planned period.';
+const takeoverPendingMessage = 'Automatic scheduling requested. Waiting for charger confirmation.';
 const sessionTargetFor = charger => charger.vehicle?.state === 'identified' && charger.vehicle.id === 'bmw'
   && charger.values?.connected?.value === true && Number.isSafeInteger(charger.targetSelection?.connectedAt)
   ? charger.targetSelection : null;
@@ -54,18 +63,18 @@ function identificationPresentation(charger) {
   if (!identification || charger.values?.connected?.value === false) return null;
   if (identification.pauseOutstanding && charger.control?.reason === 'identification-resume-required') return {
     label: 'Review charger pause', state: 'Review required', activity: 'Review charger pause', recovery: true,
-    detail: 'The charger may have received the identification pause, but its ownership is unconfirmed. Another stop instruction may be active. Review the charger, then choose Use automatic to replace the displayed instruction with economic scheduling when available.',
+    detail: 'The identification pause could not be released safely because another stop instruction may be active. Review the charger status. The “Use automatic” button in Charging controls becomes available when the charger can confirm the change.',
   };
   const recovery = identification.pauseOutstanding === true && (!identification.active
     || identification.reason === 'charger-unavailable' || ['uncertain', 'unavailable'].includes(charger.control?.phase));
   if (recovery) return { label: 'Pause recovery pending', state: 'Recovery pending', activity: 'Pause recovery pending', recovery: true,
-    detail: 'The identification pause has not been released or its release is unconfirmed. The controller will restore the current charging choice when the charger is reachable. Manual Stop keeps priority.' };
+    detail: 'Release of the identification pause is awaiting confirmation. The controller will restore the current charging choice when the charger is reachable. Other stop instructions keep priority.' };
   const waiting = {
-    'manual-stop': ['Manual Stop active', 'Waiting for manual Stop to end. Identification will not override it.'],
+    'manual-stop': ['Stop instruction active', 'A stop instruction is preventing the identification test. Live vehicle matching continues.'],
     'unsupported': ['Live matching only', 'This charger cannot run an identification test. Waiting for live vehicle matching.'],
     'telemetry-unavailable': ['Waiting for vehicle data', 'Waiting for live vehicle readings before testing this connection.'],
     'vehicle-feed-stale': ['Waiting for vehicle data', 'The vehicle feed is not current. Waiting for a live report before requesting a charging test.'],
-    'bmw-home-unknown': ['Waiting for home context', 'BMW has no valid last known home location. Unknown GPS does not erase an earlier home report.'],
+    'bmw-home-unknown': ['Waiting for home location', 'A BMW home location report is needed before this connection can be tested.'],
     'bmw-away': ['BMW last reported away', 'The latest valid BMW location is away. Waiting for a valid home report or another vehicle’s matching evidence.'],
     'bmw-not-plugged': ['Waiting for BMW plug evidence', 'BMW has not reported a usable plugged-in state for this connection.'],
     'charger-unavailable': ['Waiting for charger', 'Waiting for a fresh charger connection before continuing identification.'],
@@ -99,7 +108,7 @@ function identificationPresentation(charger) {
   };
   if (identification.phase === 'inconclusive') return { label: 'Identification inconclusive', state: 'Inconclusive', activity: 'Identification inconclusive',
     detail: `${({
-      'manual-stop': 'Manual Stop interrupted the identification test and keeps priority.',
+      'manual-stop': 'A stop instruction interrupted the identification test and keeps priority.',
       'pause-timeout': 'The physical identification pause was not confirmed before its deadline.',
     })[identification.reason] ?? 'The identification attempt ended without a conclusive match.'} The current charging choice now applies. Applicable vehicle evidence can still identify this connection until unplugging; choose Identify for an explicit retry when available.` };
   return null;
@@ -109,7 +118,7 @@ function vehiclePresentation(charger, { now, timezone } = {}) {
   const identification = identificationPresentation(charger);
   const home = vehicle?.homeContext;
   const homeDetail = home?.source === 'last-known'
-    ? ` BMW location is currently unknown. Its last confirmed home position (${chargingTime(home.measuredAt, timezone, now)}) remains usable without a time limit, including after unplugging and reconnecting. A valid away report replaces it. Matching charging evidence is still required for this connection.` : '';
+    ? ` Using BMW’s last confirmed home location from ${chargingTime(home.measuredAt, timezone, now)} while its current location is unavailable. Matching charging evidence is still required for this connection.` : '';
   if (vehicle?.state === 'conflict') return { label: 'Vehicle evidence conflicts',
     detail: `Both connections remain separately metered. Use the charger fallback request until the evidence resolves.${identification ? ` ${identification.detail}` : ''}` };
   if (identification) return { label: vehicle?.state === 'identified'
@@ -133,13 +142,13 @@ const get = (object, path) => path.split('.').reduce((value, key) => value?.[key
 // configured defaults and capabilities, including for chargers added later.
 export const chargingFields = [
   { key: 'readyBy', label: 'Ready-by time · local', type: 'time', scheduling: true,
-    help: 'Plan to reach the target by this time. New prices can move charging to cheaper periods. Reaching the target or this time does not stop charging.' },
+    help: 'Plan to reach the target by this local time. Charging may continue afterward.' },
   { key: 'manualSoc', reading: 'soc', label: 'Current charge · %', type: 'number', min: 0, max: 100, step: 0.1, automatic: true,
-    help: 'Updates from the vehicle and measured charging energy. Enter the current charge if needed; saving sets a new reference for this session. A newer vehicle reading can replace it. Unsaved edits stay as entered.' },
+    help: 'Save a correction for this session. A newer vehicle reading can replace it.' },
   { key: 'minimumSoc', label: 'Target charge · %', type: 'number', min: 0, max: 100, step: 1, automatic: true,
-    help: 'Planning target for this session. This does not change the vehicle’s own charging limit.' },
+    help: 'Planning target; the vehicle’s own charging limit still applies.' },
   { key: 'capacityKwh', label: 'Usable battery capacity · kWh', type: 'number', min: 1, max: 300, step: 0.1, automatic: true,
-    help: 'Usable battery capacity for this session. Permanent defaults are set in configuration.' },
+    help: 'Capacity used to estimate charging time and energy.' },
 ].map(field => ({ type: 'text', ...field }));
 
 export function chargingReadingTime(value, timezone = 'Europe/Helsinki') {
@@ -235,7 +244,7 @@ export function chargerDisplay(charger, { now = Date.now(), timezone = 'Europe/H
   let event = '', eventAt = null, eventKind = null;
   let pauseUnconfirmed = false;
   if (connected !== true) {
-    event = activeManual && resumption ? resumption : enabled ? connected === false ? 'Automatic charging is ready for the next connection' : 'Waiting for charger readings'
+    event = activeManual && resumption ? resumption.replace(/\.$/, '') : enabled ? connected === false ? 'Automatic charging is ready for the next connection' : 'Waiting for charger readings'
       : supported ? 'Automatic charging OFF' : 'Monitoring';
   } else if (identification?.recovery && !yielded) {
     state = identification.label; event = identification.activity;
@@ -252,7 +261,7 @@ export function chargerDisplay(charger, { now = Date.now(), timezone = 'Europe/H
   } else if (activeManual) {
     state = charging ? hasManualWindow ? 'Charging · manual schedule' : 'Charging · manual control' : hasManualWindow ? 'Manual schedule' : 'Manual control';
     event = `${charging && finite(values.powerKw?.value) ? `${number(values.powerKw.value, 'kW')} now · ` : ''}${hasManualWindow
-      ? `Manual window ${window(manualStart, manualEnd ?? resumeAt)}` : chargingControlLabel(manual?.reason || control.reason) || 'Manual charger control is active.'}`;
+      ? `Manual window ${window(manualStart, manualEnd ?? resumeAt)}` : chargingControlLabel(manual?.reason || control.reason, manual?.kind) || 'Other charger instruction active'}`;
     eventAt = validTime(resumeAt) ? Number(manualStart) > now ? manualStart : resumeAt : null; eventKind = 'manual';
   } else if (charging) {
     state = 'Charging'; event = finite(values.powerKw?.value) ? `${number(values.powerKw.value, 'kW')} now` : 'Charging now';
@@ -271,9 +280,9 @@ export function chargerDisplay(charger, { now = Date.now(), timezone = 'Europe/H
     event = pauseUnconfirmed ? `Next period ${time(eventAt)} · pause awaiting confirmation`
       : `${uncertain ? 'Last confirmed ' : ''}${betweenPeriods ? uncertain ? 'resume' : 'Resumes' : uncertain ? 'start' : 'Starts'} ${time(eventAt)}${revisionPending && !uncertain ? ' · update awaiting confirmation' : ''}`;
   } else if (handoverUnconfirmed) {
-    state = 'Handover unconfirmed'; event = 'Waiting for the charger to confirm the handover.';
+    state = 'Handover unconfirmed'; event = 'Waiting for handover confirmation';
   } else if (uncertain) {
-    state = 'Control unavailable'; event = 'Waiting for a confirmed charger instruction.';
+    state = 'Control unavailable'; event = 'Waiting for charger confirmation';
   } else if (released || provisional || (owned || execution) && currentPeriod) {
     event = 'Charging is allowed';
     if (validTime(finishAt) && Number(finishAt) > now && requiredGridKwh > 0) event += ` · ${number(minimum, '%')} estimated ${time(finishAt)}`;
@@ -320,8 +329,8 @@ export function chargerDisplay(charger, { now = Date.now(), timezone = 'Europe/H
   if (showMetrics && estimatedSoc && vehicleCharge(referenceSoc)) rows.push(['Last reported charge',
     `${number(referenceSoc.value, '%')} · ${sourceLabel(referenceSoc, charger.vehicle)} · ${readingTime.replace(/^Charge /, '')}`,
     'This is the last charge reported by the vehicle. The main charge estimate adds measured energy delivered after this reference, allowing for charging losses. The reference can be newer than plugging in; it is not necessarily the session’s starting charge.']);
-  else if (showMetrics && estimatedSoc && finite(soc.value)) rows.push(['Manual charge reference', number(soc.value, '%'),
-    'This manually supplied charge is the reference for the current estimate. Measured energy delivered after this reference advances the estimate, allowing for charging losses. Edit Current charge to set a new reference for another vehicle or after driving.']);
+  else if (showMetrics && estimatedSoc && finite(soc.value)) rows.push([manualChargeReference(soc) ? 'Manual charge reference' : 'Configured starting charge', number(soc.value, '%'),
+    `The estimate starts from the ${chargeReferenceLabel(soc)} and adds measured charging energy, allowing for losses. Edit Current charge in Session settings to set a new reference.`]);
   if (showPlan && !released && !charging && finite(plan.costCents) && !uncertain && !revisionPending) {
     rows.push(['Estimated cost to target', `€${(plan.costCents / 100).toFixed(2)}`]);
     if (periods.length > 1 && finite(plan.savingsCents) && plan.savingsCents > 0) rows.push(['Saving from pauses', `€${(plan.savingsCents / 100).toFixed(2)} compared with one continuous period`]);
@@ -355,9 +364,9 @@ export function chargerDisplay(charger, { now = Date.now(), timezone = 'Europe/H
   if (showMetrics && progress.basis?.energyCoverageIncomplete) notes.push('Some charging energy was not measured. The charge estimate may be low until a new vehicle reading arrives.');
   if (showMetrics && retainedVehicleReference) notes.push('Vehicle readings are unavailable. The estimate keeps the last vehicle charge and measured energy for this connection. Edit Current charge to replace it.');
   const controlDetail = !supported ? 'This integration supports monitoring only.'
-    : activeManual ? `Another instruction has priority. Automatic charging remains ${enabled ? 'ON' : 'OFF'}. ${resumption || 'Use automatic requests a return to economic scheduling.'}`
+    : activeManual ? `Automatic charging remains ${enabled ? 'on' : 'off'} while another charger instruction has priority.${resumption ? ` ${resumption}` : ''}`
       : provisional ? 'Charging is allowed for now. The forecast is being updated; economical periods can still be scheduled when it improves.'
-      : 'Choose economical charging periods to reach the target by the ready-by time. This preference stays in effect until changed, including after unplugging and restart.';
+      : 'Choose lower-cost charging periods to reach the target by the ready-by time. This choice stays in effect until changed.';
   const provider = charger.provider ?? charger.telemetry?.provider;
   const shelly = provider === 'shelly-evse', easee = provider === 'easee';
   const localEasee = easee && (control.kind === 'ocpp-tx-pause'
@@ -378,9 +387,9 @@ export function chargerDisplay(charger, { now = Date.now(), timezone = 'Europe/H
     : `Charging loss is fixed at ${number(CHARGING_LOSS_FRACTION * 100, '%')} of grid energy (${number(CHARGING_EFFICIENCY * 100, '%')} reaches the battery). Grid energy and cost estimates include these losses.`;
   const explanations = [
     ['Vehicle identification', vehiclePresentation(charger, { now, timezone }).detail],
-    ['Readings & fallbacks', 'Only an identified vehicle’s charge, target and usable capacity take priority, separately for each available field. Otherwise, configured charge, target and capacity defaults are used. Current charge follows the latest vehicle reading or the estimate from measured charging energy. Explicit session edits take priority for this connection; a newer vehicle charge reading can replace a manual charge reference. Unplugging restores configured defaults. Automatic readings never erase configured values. The original reading time stays visible as it ages; a receipt time is labeled separately when measurement time is unknown.'],
+    ['Readings & fallbacks', 'An identified vehicle supplies charge, target and usable capacity when available; missing values use configured defaults. Session edits override these values until unplugging, except that a newer vehicle charge reading can replace a manual charge reference. Current charge updates with vehicle readings and measured energy while unsaved edits stay as entered. Measurement and receipt times are labeled separately.'],
     ['Target & completion', 'The displayed target comes from the vehicle when available. The requested target is used for estimates and does not change the vehicle’s own charge limit. The estimated target time is a forecast, not a command to stop charging. Estimated cost includes all energy delivered since plugging in plus the energy still needed to reach the target. It stays visible after reaching the target and grows with any further charging.'],
-    ['Charging progress', 'Delivered charging energy raises the estimated current charge from the latest reference, allowing for charging losses and usable capacity. Added energy shows recorded grid energy since plugging in and stays until disconnection. A new vehicle reading updates only the battery estimate reference. The original vehicle reading stays separate; missing energy is not invented. The estimate can keep rising beyond the requested target. Disconnecting clears connection progress; enter Current charge after driving when no vehicle reading is available.'],
+    ['Charging progress', 'Current charge is estimated from the latest vehicle reading, saved manual reference or configured starting charge, plus measured charging energy. The estimate allows for charging losses and usable capacity. Added energy covers the whole connection and is not reset by new battery readings. Missing energy is excluded. Charging and the estimate can continue beyond the target. Update Current charge after driving if vehicle readings are unavailable.'],
     ['Energy estimate', `Three-phase charging is assumed. Forecasts use saved smoothed voltage estimates for each phase, with fresh local readings used provisionally while those estimates are established. ${energyAssumption}`],
   ];
   if (!supported) explanations.push(
@@ -399,9 +408,11 @@ export function chargerDisplay(charger, { now = Date.now(), timezone = 'Europe/H
     ['Household forecast', 'Property consumption is reduced by known charging, then matched to local hours and outdoor conditions. A couple of usable nights can begin the estimate. Recent similar nights carry more weight, while older cold-weather readings remain useful when those conditions return. Broader history is used when close matches are scarce; zero other load is assumed only when no usable reference exists.'],
     ['Current reference', householdReferenceText(assumptions.householdReference, now)],
     ['Other charging', 'A physically charging peer consumes capacity even with automatic scheduling off. Its continuing demand remains reserved when its stop is unknown. Household forecasting subtracts each physical charger once.'],
-    ['Manual priority', 'Another charger instruction can take priority while Automatic charging stays ON. A schedule with a confirmed end can return to automatic scheduling when it ends. Use automatic explicitly replaces the displayed stop, start or charger schedule with economic scheduling and ends Charge now. Replaced schedules remain disabled until a newer external change; they are not restored later. Charger and vehicle limits still apply.'],
-    ['Manual instruction ownership', 'The charger’s current instruction does not always reveal who set it. Unconfirmed ownership is shown as unknown. Fresh charger readback is required before Use automatic can replace the displayed instruction, and a newer external change takes priority. An accepted command alone does not confirm a physical pause or charging.'],
-    ['Automatic charging', `The dashboard remembers automatic charging and shared priority until you change them, including after unplugging and restart. This switch changes the scheduling preference; it does not replace other charger instructions. Use automatic requests that separate handover. Charge now works with automatic charging ON or OFF and lasts until you turn it off or unplug. OFF stops price scheduling; it does not send a manual Stop. ${shelly ? 'The configured current limiter can remain active and may still pause charging. Other stops and native schedules remain in effect.' : 'Only restrictions belonging to this application are removed; newer manual instructions are preserved. If the charger cannot confirm removal, the handover stays visibly unconfirmed.'}`],
+    ['Manual priority', 'Charger start, stop and schedule instructions take priority while Automatic charging remains on. A schedule with a confirmed end can return to automatic scheduling when it ends. Charger and vehicle limits still apply.'],
+    ['Use automatic', 'The “Use automatic” button in Charging controls replaces the current charger instruction with automatic scheduling, enables Automatic charging and ends Charge now. Charger schedules stay disabled until changed in the charger controls, including after unplugging or restart. Charging may wait for a lower-cost period. The button appears when another instruction has priority and the charger is ready to confirm the change. A newer external instruction takes priority again.'],
+    ['Charger confirmation', 'A requested change remains pending until the charger confirms its settings. Charging measurements show whether charging has actually started or paused. Failed or unconfirmed changes remain visible for review.'],
+    ['Automatic charging', `Automatic charging and shared priority stay in effect until changed, including after unplugging and restart. The switch changes the scheduling preference without replacing other charger instructions. Turning it off stops price scheduling without sending a stop instruction. ${shelly && charger.capabilities?.currentControl ? 'The configured current limiter can remain active and may still pause charging.' : shelly ? 'The charger’s own current limits and schedules remain in effect.' : 'Only restrictions set by this application are removed. If removal cannot be confirmed, the handover remains unconfirmed.'}`],
+    ['Charge now', 'The “Charge now” button requests immediate charging with automatic scheduling on or off. It stays on until you turn it off or unplug. Turning it off returns to automatic scheduling and enables Automatic charging if needed. Other charger instructions and vehicle limits still apply.'],
     ['Unavailable data', `Missing price or power forecasts, or too little time, do not add a price delay. ${shelly ? 'Charging remains subject to current limits, the configured fallback and native restrictions. ' : ''}A disabled charger, fault or authorization requirement must be resolved first. An unreachable charger cannot receive a release command. Failed or uncertain changes remain visible until reconciled.`],
   );
   if (charger.capabilities?.externalLoadBalancing) {
@@ -414,11 +425,11 @@ export function chargerDisplay(charger, { now = Date.now(), timezone = 'Europe/H
       unavailable: 'A usable supply estimate is still being established.',
     })[assumptions.supply] ?? 'The night forecast combines the available supply with expected household use; the last reported allowance describes current conditions.';
     explanations.push(['Current allocation', `${provider === 'easee' ? 'Equalizer' : 'The external load balancer'} controls the current and protects the property supply. The reported allowance, charger limit and actual draw are separate: a limit does not promise that current is available now. ${supported ? `${basis} ` : ''}The charging limit caps the forecast. Automatic charging does not change the external limits.`]);
-  } else if (shelly && supported) explanations.push(['Charging current', 'This application adjusts Shelly’s current using the configured supply limits, available measurements and shared charger priority. It respects known vehicle and charger limits and pauses when the available current is below the charging minimum. Missing or stale measurements use the configured fallback; this is not a guarantee of property fuse protection. Actual draw can be lower than the selected current.']);
+  } else if (shelly && supported && charger.capabilities?.currentControl) explanations.push(['Charging current', 'This application adjusts Shelly’s current using the configured supply limits, available measurements and shared charger priority. It respects known vehicle and charger limits and pauses when the available current is below the charging minimum. Missing or stale measurements use the configured fallback; this is not a guarantee of property fuse protection. Actual draw can be lower than the selected current.']);
   else explanations.push(['Charging current', `Selected current is the vehicle or charger’s requested current, capped by its reported maximum. Actual draw can be lower. Power is the measured charging rate; the target forecast uses available current and voltage.${charger.capabilities?.currentControl === true ? '' : ' This page does not change charging current.'}`]);
-  const socSource = retainedVehicleReference ? `Estimated from last known vehicle charge${hasProgress ? ' + delivered energy' : ''}`
-    : estimatedSoc ? vehicleCharge(soc) ? 'Estimated from vehicle charge + delivered energy' : 'Estimated from manual charge + delivered energy'
-    : vehicleCharge(soc) ? sourceLabel(soc, charger.vehicle) : 'Manual charge reference';
+  const socSource = retainedVehicleReference ? `Estimated from last known vehicle charge${hasProgress ? ' and measured energy' : ''}`
+    : estimatedSoc ? `Estimated from ${vehicleCharge(soc) ? 'vehicle charge' : chargeReferenceLabel(soc)} and measured energy`
+    : vehicleCharge(soc) ? sourceLabel(soc, charger.vehicle) : manualChargeReference(soc) ? 'Manual charge reference' : 'Configured starting charge';
   const targetSource = values.minimumSoc?.source === 'session-request' ? 'Planning target for this connection'
     : values.minimumSoc?.source === 'bmw-target-filter' ? 'BMW target held after conflicting reports'
       : automatic(values.minimumSoc) ? `Target from ${sourceLabel(values.minimumSoc, charger.vehicle)}` : 'Requested target';
@@ -636,7 +647,7 @@ export function createChargingPanel({ document, request, beforeRequest = () => {
     const takeoverMessage = make('p', '', 'temporary-status charging-takeover-message', `${id}-takeover-message`); takeoverMessage.setAttribute('role', 'status');
     useAutomatic.setAttribute('aria-describedby', `${takeoverHelp.id} ${takeoverMessage.id}`);
     const preferences = make('section', '', 'charging-detail-section', `${id}-charging-controls`);
-    const scopeNote = make('p', 'Changes apply until unplugging. General and vehicle defaults are changed only in configuration.', 'charging-form-help');
+    const scopeNote = make('p', 'Saved changes apply until unplugging. Set permanent defaults in configuration.', 'charging-form-help');
     const identificationSection = make('section', '', 'charging-identification', `${id}-identification`);
     const identificationHeading = make('div', '', 'charging-identification-heading');
     const identificationTitle = make('h6', 'Identification', '', `${id}-identification-title`);
@@ -676,12 +687,16 @@ export function createChargingPanel({ document, request, beforeRequest = () => {
         enabled: !current.settings.enabled }, controlMessage, 'Automatic charging preference saved. It stays in effect until changed.');
     });
     bind(useAutomatic, 'click', () => {
-      if (useAutomatic.disabled) return;
+      if (useAutomatic.hidden || useAutomatic.disabled) return;
       const current = device.charger;
+      device.takeoverReceipt = { association: current.association, sessionId: current.request.sessionId, token: current.control.takeover.token };
       return mutate(`${prefix}/use-automatic`, { association: current.association,
         sessionId: current.request.sessionId, revision: current.request.revision,
         controlRevision: current.controls.revision, takeoverToken: current.control.takeover.token }, takeoverMessage,
-      'Automatic control confirmed. Charging follows the economic plan and may wait until a planned period.');
+      () => {
+        device.takeoverReceipt.pending = device.charger.control?.takeover?.state === 'pending';
+        return device.takeoverReceipt.pending ? takeoverPendingMessage : takeoverConfirmedMessage;
+      });
     });
     bind(chargeNow, 'click', event => {
       event.preventDefault(); event.stopPropagation();
@@ -735,15 +750,18 @@ export function createChargingPanel({ document, request, beforeRequest = () => {
       if (!draft || input.value !== value) input.value = value;
       const unsupported = field.scheduling && !charger?.capabilities?.scheduling;
       const configured = get(charger.defaults ?? settings, key);
-      const configuredDetail = configured == null ? '' : `Configured default: ${configured}${key === 'capacityKwh' ? ' kWh' : key === 'readyBy' ? '' : '%'}. `;
+      const configuredDetail = configured == null ? '' : `Configured default: ${configured}${key === 'capacityKwh' ? ' kWh' : key === 'readyBy' ? '' : ' %'}.`;
       const retained = charger.progress?.retainedVehicleReference === true;
       const reference = retained ? { ...charger.progress.referenceSoc, available: true } : reading;
       const sourceDetail = estimate !== null
-        ? `Current estimate: ${number(estimate, '%')}, from ${retained ? 'last known ' : ''}${automaticFor(charger, reference) && vehicleCharge(reference) ? `${sourceLabel(reference, charger.vehicle)} charge` : 'manual charge'}${charger.progress.hasEnergyEstimate ? ' + measured charging energy' : ''}, allowing for charging losses. `
-        : key === 'manualSoc' && reading?.source === 'session-anchor' ? 'Saved manual charge reference. '
-          : live ? `${sourceLabel(reading, charger.vehicle)} supplies the ${key === 'manualSoc' ? 'latest charge reading' : 'current value'}. ` : '';
+        ? `Estimated from ${retained ? 'the last ' : ''}${automaticFor(charger, reference) && vehicleCharge(reference) ? `${sourceLabel(reference, charger.vehicle)} reading` : chargeReferenceLabel(reference)}${charger.progress.hasEnergyEstimate ? ' and measured energy' : ''}.`
+        : key === 'manualSoc' && reading?.source === 'session-anchor' ? 'Saved manual charge reference.'
+          : live && reading.source === 'session-request' ? 'Saved for this session.'
+            : live && reading.source === 'bmw-target-filter' ? 'BMW target retained after conflicting reports.'
+              : live ? `Latest ${key === 'manualSoc' ? 'reading' : 'value'} from ${sourceLabel(reading, charger.vehicle)}.` : '';
+      const draftDetail = key === 'manualSoc' && draft ? `Unsaved edit.${estimate !== null ? ` Current estimate: ${number(estimate, '%')}.` : ''}` : '';
       help.textContent = unsupported ? 'Scheduling is unavailable with this integration.'
-        : `${key === 'manualSoc' && draft ? 'Unsaved current-charge edit. ' : ''}${sourceDetail}${configuredDetail}${field.help ?? ''}`;
+        : [draftDetail, sourceDetail, field.help, configuredDetail].filter(Boolean).join(' ');
       help.hidden = !help.textContent;
     }
   }
@@ -763,15 +781,18 @@ export function createChargingPanel({ document, request, beforeRequest = () => {
       device.enabledValue.parentElement.hidden = !supported;
       device.enabledValue.disabled = locked || charger.readOnly === true || !supported || !charger.controls;
       const takeover = charger.control?.takeover;
-      device.useAutomatic.hidden = !supported;
-      device.useAutomatic.disabled = locked || charger.readOnly === true || !supported || !connectedSession(charger)
-        || !charger.controls || takeover?.available !== true || typeof takeover.token !== 'string' || !takeover.token || takeover.state === 'pending';
-      device.takeoverHelp.hidden = !supported;
-      device.takeoverHelp.textContent = !writable() || charger.readOnly ? 'View only. Use automatic is available on the controlling instance.'
-        : !connectedSession(charger) ? 'Connect a vehicle before requesting automatic control.'
-          : takeover?.state === 'pending' ? 'The handover is awaiting charger confirmation. Charging follows the economic plan once confirmed.'
-            : takeover?.available !== true ? chargingControlReason(takeover?.reason) || 'Fresh charger readings are needed before automatic control can take over.'
-              : 'Replace the displayed stop, start or charger schedule with economic scheduling. Earlier schedules stay disabled until a newer external change. This also enables Automatic charging and ends Charge now.';
+      const canTakeOver = writable() && charger.readOnly !== true && supported && connectedSession(charger)
+        && charger.controls && hasPriorityInstruction(charger) && takeover?.available === true
+        && typeof takeover.token === 'string' && Boolean(takeover.token) && takeover.state !== 'pending';
+      device.useAutomatic.hidden = !canTakeOver;
+      device.useAutomatic.disabled = busy || !canTakeOver;
+      const takeoverPending = takeover?.state === 'pending';
+      const takeoverBlocked = hasPriorityInstruction(charger) && supported && connectedSession(charger) && !canTakeOver;
+      device.takeoverHelp.hidden = !canTakeOver && !takeoverPending && !takeoverBlocked;
+      device.takeoverHelp.textContent = takeoverPending ? takeoverPendingMessage
+        : canTakeOver ? 'This button enables Automatic charging, replaces the current charger instruction and ends Charge now. Charger schedules stay disabled until changed in the charger controls.'
+          : !writable() || charger.readOnly ? 'Automatic control can be restored from the controlling instance.'
+            : chargingControlReason(takeover?.reason) || 'Automatic control is unavailable until fresh charger readings confirm that the instruction can be replaced.';
       const chargeNowActive = charger.request?.chargeNow === true;
       device.chargeNow.hidden = !supported;
       device.chargeNowState.textContent = chargeNowActive ? 'ON' : 'OFF';
@@ -796,7 +817,7 @@ export function createChargingPanel({ document, request, beforeRequest = () => {
       device.identificationStatus.textContent = identification?.detail
         ?? (connected === false ? 'Connect a vehicle to identify it.' : !connectedSession(charger) ? 'Waiting for current charger readings before identification is available.'
           : charger.identification?.available !== true ? 'Identification is currently unavailable. Live vehicle matching continues.'
-            : 'A short charging test can check this connection again and may briefly pause charging. Works with Automatic charging off and Charge now; Manual Stop keeps priority.');
+            : 'A short charging test checks which vehicle is connected and may briefly pause charging. It works with automatic scheduling off or Charge now on. Other stop instructions keep priority.');
     }
   }
   function update(next) {
@@ -824,6 +845,17 @@ export function createChargingPanel({ document, request, beforeRequest = () => {
         formatTime: value => chargingTime(value, charging.timezone ?? 'Europe/Helsinki', next.now) });
       const explanation = Object.fromEntries(view.explanations);
       device.charger = charger; device.title.textContent = charger.label;
+      const receipt = device.takeoverReceipt, takeover = charger.control?.takeover;
+      if (receipt?.pending && actionMessages.has(device.takeoverMessage) && !device.takeoverMessage.matches('.form-error')
+        && receipt.association === charger.association
+        && receipt.sessionId === charger.request?.sessionId && receipt.token === takeover?.attemptToken) {
+        if (takeover.state === 'confirmed') {
+          receipt.pending = false; actionMessage(device.takeoverMessage, takeoverConfirmedMessage);
+        } else if (takeover.state === 'blocked') {
+          receipt.pending = false; actionMessage(device.takeoverMessage,
+            chargingControlReason(takeover.reason) || 'Automatic scheduling could not take over. Review the charger status.', { error: true });
+        }
+      }
       metricDetail(device.vehicle, { label: `${charger.provider === 'easee' ? 'Easee · ' : charger.provider === 'shelly-evse' ? 'Shelly · ' : ''}${view.vehicle.label}`, title: 'Vehicle at this charger', detail: view.vehicle.detail, key: `${charger.id}:vehicle` });
       device.section.dataset.state = view.state;
       device.section.dataset.connected = String(charger.values?.connected?.value === true);
@@ -892,8 +924,10 @@ export function createChargingPanel({ document, request, beforeRequest = () => {
         return [label, text, detail];
       });
       if (charger.control?.limiter) rows.push(['Current policy', charger.capabilities?.currentControl
-        ? `${chargingControlReason(charger.control.reason)} ${number(charger.control.limiter.currentA, 'A')} offered ceiling`
-        : 'Native charger current settings'], ['Command confirmation', chargingCommandConfirmation(charger.control.executionStage)]);
+        ? [chargingControlLabel(charger.control.reason, charger.control.manual?.kind),
+          finite(charger.control.limiter.currentA) ? `${number(charger.control.limiter.currentA, 'A')} ceiling` : ''].filter(Boolean).join(' · ')
+        : 'Native charger current settings', chargingControlReason(charger.control.reason)],
+      ['Command confirmation', chargingCommandConfirmation(charger.control.executionStage)]);
       if (charger.telemetry?.commissioning) rows.push(['EVSE readiness', !charger.telemetry.commissioning.controlReady ? 'Control unavailable'
         : charger.capabilities?.currentControl && charger.telemetry.commissioning.currentControlReady !== true
           ? 'Current limiter unavailable' : 'Start/stop available'], ['Controller loss', 'Autonomous fallback unverified']);
@@ -902,7 +936,7 @@ export function createChargingPanel({ document, request, beforeRequest = () => {
       if (charger.sessionCost) rows.push(['Connection delivered', number(charger.sessionCost.deliveredGridKwh, 'kWh')]);
       list(device.readings, rows); device.readings.hidden = !rows.length;
       device.notes.replaceChildren(...view.notes.map(note => make('li', note))); device.notes.hidden = !view.notes.length;
-      device.controlDetail.textContent = presentation.roleState === 'uncertain' && !view.identification?.recovery ? presentation.roleDetail : view.controlDetail;
+      device.controlDetail.textContent = view.controlDetail;
       device.enabledValue.textContent = charger.settings.enabled === true ? 'ON' : 'OFF';
       device.enabledValue.setAttribute('aria-checked', String(charger.settings.enabled === true));
       updateFields(device.settings, charger.settings, charger);

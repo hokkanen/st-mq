@@ -21,7 +21,7 @@ export function chargingNotice(charger, view, summary) {
   if (view.risk) return { label: 'Target may be late', detail, state: 'attention' };
   if (view.yielded) {
     const priority = view.priority || (!view.showMetrics ? view.event : '');
-    const resumption = priority.match(/^Automatic control resumes (.+?)(?: at the ready-by boundary)?\.$/);
+    const resumption = priority.match(/^Automatic control resumes (.+?)(?: at the ready-by boundary)?\.?$/);
     return { label: resumption ? `Automatic resumes ${resumption[1]}` : 'Manual control has priority',
       detail: [...new Set([priority, detail || summary.roleDetail].filter(Boolean))].join('\n\n'), state: 'manual' };
   }
@@ -109,7 +109,7 @@ export function chargerSummary(charger, view, { now = Date.now(), formatTime = v
     roleDetail = `${view.vehicle.detail} Automatic charging remains ${enabled ? 'on' : 'off'}.${chargeNow ? ' Charge now remains selected.' : ''}`;
   } else if (chargeNow && !yielded) {
     roleLabel = 'Charge now'; roleState = 'manual';
-    roleDetail = `Charging is requested until unplugging. Automatic charging remains ${enabled ? 'on' : 'off'}. Click “Charge now” again to end this request and use automatic charging.`;
+    roleDetail = `Charging is requested until unplugging. Automatic charging remains ${enabled ? 'on' : 'off'}. Select the “Charge now” button again to end this request and use automatic scheduling.`;
   } else if (yielded) {
     roleLabel = 'Manual override'; roleState = 'manual';
     roleDetail = view.priority || 'An external charger change has priority over automatic charging.';

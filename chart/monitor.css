@@ -1785,7 +1785,7 @@ button.garage-door-action:disabled { opacity: 1; cursor: default; }
 .charging-master { display: flex; align-items: center; justify-content: space-between; gap: 16px; font-size: 13px; }
 .charging-master button { width: 68px; min-height: 36px; margin: 0; padding: 7px 10px; font-size: 12px; }
 .charging-master button[aria-checked="false"] { color: var(--muted); background: var(--surface-soft); border-color: var(--border); }
-.charging-use-automatic { max-width: 100%; min-height: 36px; margin: 0; font-size: 12px; white-space: normal; }
+.charging-use-automatic { max-width: 100%; white-space: normal; }
 .charging-takeover-help { margin: 8px 0 0; }
 .charging-takeover-message { margin: 8px 0 0; }
 .charging-fields { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 16px 14px; margin-top: 16px; }

@@ -23,6 +23,28 @@ test('a summary warning explains uncertainty without claiming a stale healthy fo
   assert.match(result.detail, /fresh charger reading/); assert.doesNotMatch(result.detail, /Expected on time/);
 });
 
+test('both charger cards use concise activity labels while retaining complete instruction details', () => {
+  for (const [id, provider] of [['charger1', 'easee'], ['charger2', 'shelly-evse']]) {
+    for (const [kind, label] of [['stop', 'Stop instruction active'], ['schedule', 'Charger schedule active'],
+      ['release', 'Charging release active']]) {
+      const reason = 'The charger reported a separate instruction. It remains active until changed.';
+      const item = charger({ id, provider, control: { phase: 'manual', manual: { kind, reason } } });
+      const display = chargerDisplay(item, { now }), result = summary(item);
+      assert.equal(result.activity, label);
+      assert.equal(display.controlReason, reason, 'The compact activity must not discard the detailed provider explanation');
+      assert.doesNotMatch(result.activity, /[.!?]$/);
+      assert.doesNotMatch(result.roleLabel, /[.!?]$/);
+    }
+    for (const control of [{ phase: 'unavailable', reason: 'read-failed' }, { phase: 'off', handoverConfirmed: false }]) {
+      const item = charger({ id, provider, settings: { enabled: control.phase !== 'off' }, control });
+      const result = summary(item);
+      assert.match(result.activity, /^Waiting for (?:charger|handover) confirmation$/);
+      assert.doesNotMatch(result.activity, /[.!?]$/);
+      assert.match(result.roleDetail, /[.]$/);
+    }
+  }
+});
+
 test('manual resumption remains daily information while disconnected and OFF is explicit', () => {
   const item = charger(), disconnected = { ...item, values: { ...item.values, connected: reading(false) } };
   const result = notice({ ...disconnected, control: { phase: 'yielded', manual: { kind: 'window',
@@ -68,7 +90,7 @@ test('identification keeps progress visible with automatic OFF without reviving 
   const item = charger({ settings: { enabled: false }, identification,
     control: { phase: 'yielded', manual: { kind: 'stop', reason: 'Manual Stop is active.' } } });
   const stopped = summary(item);
-  assert.equal(stopped.roleLabel, 'Manual override'); assert.match(stopped.activity, /Manual Stop/);
+  assert.equal(stopped.roleLabel, 'Manual override'); assert.equal(stopped.activity, 'Stop instruction active');
   assert.equal(stopped.completion.at, null);
   const testing = { ...item, settings: { enabled: true }, identification: { ...identification, phase: 'pausing', reason: 'awaiting-stop-confirmation' }, control: { phase: 'identifying' } };
   const result = summary(testing);
@@ -425,7 +447,7 @@ test('native stop and future manual windows stay visible ahead of a retained Cha
     const display = chargerDisplay(item, { now }), result = summary(item);
     assert.equal(display.yielded, true); assert.equal(result.roleLabel, 'Manual override');
     assert.doesNotMatch(result.activity, /Charging requested/);
-    assert.match(result.activity, manual.kind === 'stop' ? /stopped at the charger/ : /Manual window/);
+    assert.match(result.activity, manual.kind === 'stop' ? /^Stop instruction active$/ : /Manual window/);
     assert.equal(notice(item).state, 'manual');
     assert.doesNotMatch(notice(item).detail, /Automatic control resumes/);
   }

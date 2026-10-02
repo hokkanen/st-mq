@@ -1,3 +1,31 @@
+Implemented 2026-10-02 — Restore contextual charger actions and balance both cards
+- Compare the original shared Use automatic presentation before a8e209d. Restore
+  ordinary outlined-button sizing and show the action only for a replaceable
+  external instruction (including a stop already present at startup) with a
+  connected session, fresh native evidence and write
+  authority. Keep local requests disabled in place; hide irrelevant/unavailable
+  actions while retaining pending, blocked and completed receipts independently.
+- Use concise status fragments without terminal punctuation and complete sentences
+  for explanations. Keep provider details in popovers, shorten Current charge and
+  the other session helpers, and move reference/charging-loss details to existing
+  explanations. Remove repeated control-error prose and speculative origin text.
+  Name the actual controls when explaining actions. Distinguish configured
+  starting charge from manual references; describe Shelly current adjustment
+  only when that capability is enabled.
+- F1/F3/F4/F5: retain the shared capability-driven component, scoped takeover
+  tokens, newer external priority, session drafts/defaults, vehicle limits and
+  physical confirmation. Pending receipts accept only matching action/equipment/
+  connection evidence and remain confirmed through later stale readings. Remove
+  the unconditional takeover presentation without aliases or migration paths;
+  no changes to actuation, persistence formats or controller authority.
+- Validation: npm run check passes 4,158 offline tests (one optional upstream
+  Tuya parser check skipped) and the production build, with the existing bundle
+  size advisory. Focused UI/summary checks pass 136 tests. Synthetic browser
+  checks cover both chargers across 17 states at 320/390/1440px in both themes,
+  including expanded settings, long text, popovers and retained receipts. The
+  seven-width dashboard-height sweep passes; screenshots reviewed for balance.
+  No deployment or live-device commands.
+
 Implemented 2026-10-02 — Restore explicit automatic charging handover
 - Restore Use automatic in the shared capability-driven charger component.
   Automatic remains ON while yielding to manual instructions; changing that

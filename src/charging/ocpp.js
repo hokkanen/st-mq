@@ -272,7 +272,7 @@ const REASONS = {
   'command-failed': 'The native charger command is unconfirmed.', 'storage-failed': 'Charging intent could not be saved.',
   'takeover-stale': 'The charger instruction changed. Review its current status before using automatic again.',
   'takeover-unavailable': 'The charger connection cannot currently confirm automatic handover.',
-  'takeover-unconfirmed': 'The previous automatic handover is unconfirmed. Review the charger status and choose Use automatic again.',
+  'takeover-unconfirmed': 'Automatic control is unconfirmed. Review the charger status before retrying with the “Use automatic” button in Charging controls.',
   'resume-current-limit': 'The charger has a separate current limit that cannot safely be preserved while clearing its pause.',
   'unsupported-schedule': 'This charger schedule cannot yet be disabled through the supported API.',
   'transaction-unconfirmed': 'Automatic handover is waiting for a confirmed charger transaction so its planned pause can be preserved.',
@@ -562,11 +562,11 @@ export function createOcppChargingController({ adapter, initialState = null, sav
       }
       if (!controlRequested()) { await commit({ execution: null }); handoverConfirmed = !state.pending && !state.owned; return display('off', 'Automatic charging is off; external charger restrictions are preserved.'); }
       if (nativeStopped()) return display(state.manual?.kind === 'stop' ? 'yielded' : 'unavailable',
-        'The charger reports paused or disabled. Use automatic to let the charging planner take over.', state.manual ? null : 'charger-stopped');
+        'The charger reports paused or disabled. A stop instruction is preventing automatic scheduling.', state.manual ? null : 'charger-stopped');
       if (state.manual) return display('yielded', state.manual.kind === 'stop'
-        ? 'The charger reports paused or disabled. Use automatic to let the charging planner take over.'
+        ? 'The charger reports paused or disabled. A stop instruction is preventing automatic scheduling.'
         : ['window', 'schedule'].includes(state.manual.kind) ? 'The charger schedule has temporary priority.'
-          : 'Another charging instruction has priority until unplugging or choosing Use automatic.');
+          : 'Another charger instruction has priority over automatic scheduling.');
       if (staleAppControl()) return display('unavailable', 'Waiting for charger readings newer than the last confirmed change.', 'app-control-stale');
       if (snapshot.appControl?.faulted || snapshot.appControl?.authorizationBlocked)
         return display('unavailable', 'Easee reports a charger fault or charging authorization restriction.');
@@ -675,7 +675,7 @@ export function createOcppChargingController({ adapter, initialState = null, sav
       if (state.manual || nativeStopped()) {
         if (!await clearInstruction(state.owned, current, signal)) return display('unconfirmed', 'Native profile release is waiting for its bounded retry.');
         return display(state.manual ? 'yielded' : 'unavailable', nativeStopped()
-          ? 'The charger reports paused or disabled. Use automatic to let the charging planner take over.'
+          ? 'The charger reports paused or disabled. A stop instruction is preventing automatic scheduling.'
           : 'The newer charger instruction has temporary priority.');
       }
       ownsInstruction = ownsInstruction && snapshot.online && snapshot.connectionId === verifiedConnectionId && snapshot.transactionConfirmed
