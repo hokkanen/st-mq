@@ -31,6 +31,12 @@ capability requirements. See [provider capabilities and setup](charging-provider
 
 Both charger cards show the physical connection, assigned vehicle or uncertainty, current request, measured/estimated progress, connection cost and control state. The Automatic charging switch governs economic scheduling. Vehicle identification and metering continue with automatic charging OFF. The separately configured Charger 2 limiter can remain active with economic scheduling OFF.
 
+When the physical connection is unknown or disconnected, the compact card still
+shows configured starting charge, target, capacity and ready-by defaults. These
+are labeled defaults, not vehicle readings or an active session estimate. Earlier
+session edits and progress do not populate this preview, and session actions
+remain unavailable until the current connection is confirmed.
+
 An unavailable vehicle feed leaves identification pending without suspending
 ordinary scheduling. The configured battery defaults and any current session
 edits still supply the request; proposed periods remain visible. An actual
@@ -64,6 +70,11 @@ period kept separate from that confirmation. **Reported allowance** is the
 Equalizer's current allowance, not actual draw or proof that a scheduling pause
 has taken effect. Vehicle timers, limits and other native restrictions still
 apply during an open period.
+
+Both native expiring pauses and application-managed pauses use the same confirmed
+pause wording. An application-managed pause needs current session ownership,
+confirmed disabled start permission and fresh physical noncharging evidence.
+Its next charging period still requires the application to resume the charger.
 
 Permanent defaults come only from configuration. Both unidentified charging
 points start with 20% charge, an 80% minimum, 06:00 ready-by and 74 kWh capacity

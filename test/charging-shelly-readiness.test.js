@@ -108,6 +108,121 @@ test('correlated current readback keeps a stable 6 A setting usable without rewr
   assert.equal(f.mutations().length, 0, 'Reconciliation must not change the native setting');
 });
 
+test('matching older work-state and start-permission replies preserve connection evidence across refreshes', async t => {
+  for (const [role, value] of [['work_state', 'charger_wait'], ['start_charging', true]]) await t.test(role, async t => {
+    const f = fixture(t); await f.ready();
+    f.notify(role, value);
+    const before = f.adapter.snapshot(), observedAt = before.fields[role].measuredAt;
+    f.measuredAt[role] = observedAt - 1000;
+    for (let repeat = 0; repeat < 3; repeat++) {
+      f.advance(16000);
+      await f.adapter.refresh();
+      const snapshot = f.adapter.snapshot(), field = snapshot.fields[role];
+      assert.equal(snapshot.controlReady, true);
+      assert.equal(f.adapter.normalize().connected.value, true);
+      assert.deepEqual(snapshot.session, before.session, 'A readback cannot invent another physical connection');
+      assert.equal(field.measuredAt, observedAt);
+      assert.equal(field.readback.measuredAt, observedAt - 1000);
+      assert.equal(field.receivedAt, snapshot.readAt);
+    }
+    assert.equal(f.mutations().length, 0);
+  });
+});
+
+test('control read failures keep physical connection and metering observable while commands remain blocked', async t => {
+  for (const failing of ['Service.GetStatus', 'Schedule.List', 'Number.GetStatus', 'Boolean.GetStatus']) await t.test(failing, async t => {
+    const f = fixture(t); await f.ready();
+    const originalSession = f.adapter.snapshot().session, publish = f.client.publish;
+    f.client.publish = (topic, payload, options, done) => {
+      const frame = JSON.parse(payload);
+      if (frame.method !== failing) return publish(topic, payload, options, done);
+      done?.();
+      queueMicrotask(() => f.client.emit('message', `${frame.src}/rpc`, Buffer.from(JSON.stringify({
+        id: frame.id, src: DEVICE, dst: frame.src, error: { code: -1, message: 'Synthetic read failure' },
+      })), {}));
+    };
+    f.advance(16000);
+    f.fields.work_state = 'charger_wait';
+    f.fields.phase_info = { ...f.fields.phase_info, total_power: 0, ...Object.fromEntries(
+      ['phase_a', 'phase_b', 'phase_c'].map(phase => [phase, { voltage: 230, current: 0, power: 0 }])) };
+    await f.adapter.refresh();
+    const snapshot = f.adapter.snapshot(), telemetry = f.adapter.normalize();
+    assert.equal(snapshot.controlReady, false);
+    assert.equal(snapshot.error, 'evse-rpc-rejected');
+    assert.equal(telemetry.connected.value, true);
+    assert.equal(telemetry.charging.value, false);
+    assert.equal(telemetry.powerKw.value, 0);
+    assert.equal(telemetry.powerKw.available, true);
+    assert.deepEqual(snapshot.session, originalSession);
+    await assert.rejects(f.command('start_charging', true));
+    assert.equal(f.mutations().length, 0);
+    f.client.publish = publish;
+    await f.refresh();
+    assert.equal(f.adapter.snapshot().controlReady, true);
+    assert.equal(f.adapter.snapshot().error, null);
+  });
+});
+
+test('a timed-out current read does not delay independent physical state or meter observations', async t => {
+  const f = fixture(t); await f.ready();
+  const originalSession = f.adapter.snapshot().session, publish = f.client.publish;
+  let observed;
+  const physicalRead = new Promise(resolve => { observed = resolve; });
+  f.client.publish = (topic, payload, options, done) => {
+    const frame = JSON.parse(payload);
+    if (frame.method === 'Number.GetStatus') { done?.(); return; }
+    publish(topic, payload, options, done);
+    if (frame.method === 'Object.GetStatus') queueMicrotask(observed);
+  };
+  f.advance(16000);
+  // The RPC timeout is intentionally unref'ed in production. Keep this
+  // synthetic observation alive through its real timeout, without a retry.
+  const timeout = new Promise(resolve => setTimeout(resolve, 5100));
+  const refresh = f.adapter.refresh();
+  await physicalRead;
+  assert.equal(f.adapter.normalize().connected.value, true, 'Work-state readback arrives before the unrelated timeout');
+  assert.equal(f.adapter.normalize().powerKw.available, true);
+  assert.equal(f.adapter.snapshot().controlReady, false);
+  await timeout; await refresh;
+  assert.equal(f.adapter.snapshot().error, 'evse-command-unconfirmed');
+  assert.equal(f.adapter.normalize().connected.value, true);
+  assert.deepEqual(f.adapter.snapshot().session, originalSession);
+  await assert.rejects(f.command('start_charging', true));
+  assert.equal(f.mutations().length, 0);
+});
+
+test('economic pause status requires owned permission and fresh physical no-draw evidence', async t => {
+  const f = fixture(t);
+  for (const role of Object.keys(TYPES)) f.measuredAt[role] = NOW;
+  await f.ready();
+  const controller = createShellyController({ adapter: f.adapter, canControl: () => true,
+    clock: () => f.adapter.snapshot().readAt });
+  t.after(() => controller.close());
+  f.advance(1000);
+  const plan = { id: 'synthetic-economic-pause', deadlineAt: NOW + 3_600_000,
+    periods: [{ startAt: NOW + 60_000, endAt: null }] };
+  await controller.update({ enabled: true, plan });
+  assert.equal(f.fields.start_charging, false);
+  assert.equal(controller.status().phase, 'waiting');
+  assert.equal(controller.status().ownsInstruction, true);
+  assert.equal(controller.status().pauseConfirmed, false, 'Native permission alone does not prove stopped draw');
+  const stopped = { ...f.fields.phase_info, total_power: 0, ...Object.fromEntries(
+    ['phase_a', 'phase_b', 'phase_c'].map(phase => [phase, { voltage: 230, current: 0, power: 0 }])) };
+  f.notify('work_state', 'charger_wait');
+  f.notify('phase_info', stopped);
+  assert.equal(controller.status().pauseConfirmed, true);
+  assert.equal(controller.status().nativeExpiry, false);
+  assert.equal(controller.status().owned, null, 'Economic waiting invents no identification restoration obligation');
+  f.advance(16000); await f.adapter.refresh();
+  assert.equal(controller.status().ownsInstruction, true);
+  assert.equal(controller.status().pauseConfirmed, false, 'A correlated read does not renew physical measurement age');
+  f.notify('phase_info', stopped);
+  assert.equal(controller.status().pauseConfirmed, true);
+  f.notify('start_charging', false);
+  assert.equal(controller.status().ownsInstruction, false, 'A newer native Stop supersedes economic ownership immediately');
+  assert.equal(controller.status().pauseConfirmed, false);
+});
+
 test('unsolicited same-clock setting notifications cannot renew expired receipt evidence', async t => {
   const f = fixture(t); await f.ready();
   f.advance(16000);
@@ -205,28 +320,30 @@ test('a conflicting native event during refresh cannot be cleared by the remaini
 });
 
 test('a native event during a pending query fences its delayed setting reply even at the same value', async t => {
-  for (const value of [6, 16]) await t.test(`${value} A event`, async t => {
-    const f = fixture(t); f.fields.current_limit = 6; await f.ready();
+  for (const [role, initial, value] of [['current_limit', 6, 6], ['current_limit', 6, 16],
+    ['start_charging', false, false], ['start_charging', false, true],
+    ['work_state', 'charger_wait', 'charger_wait'], ['work_state', 'charger_wait', 'charger_charging']]) await t.test(`${role}: ${value}`, async t => {
+    const f = fixture(t); f.fields[role] = initial; await f.ready();
     const publish = f.client.publish;
     let release, announced;
     const requested = new Promise(resolve => { announced = resolve; });
     f.client.publish = (topic, payload, options, done) => {
       const frame = JSON.parse(payload);
-      if (frame.method !== 'Number.GetStatus') return publish(topic, payload, options, done);
+      if (frame.method !== `${TYPES[role]}.GetStatus`) return publish(topic, payload, options, done);
       f.client.publish = publish;
       done?.();
       release = () => f.client.emit('message', `${frame.src}/rpc`, Buffer.from(JSON.stringify({
-        id: frame.id, src: DEVICE, dst: frame.src, result: { value: 6, last_update_ts: NOW / 1000 },
+        id: frame.id, src: DEVICE, dst: frame.src, result: { value: initial, last_update_ts: NOW / 1000 },
       })), {});
       announced();
     };
     const refresh = f.adapter.refresh();
     await requested;
-    f.notify('current_limit', value);
-    const observed = f.adapter.snapshot().fields.current_limit;
+    f.notify(role, value);
+    const observed = f.adapter.snapshot().fields[role];
     f.advance(16000);
     release(); await refresh;
-    assert.deepEqual(f.adapter.snapshot().fields.current_limit, observed);
+    assert.deepEqual(f.adapter.snapshot().fields[role], observed);
     assert.equal(f.adapter.snapshot().controlReady, false, 'A delayed query cannot refresh a later native event');
     await assert.rejects(f.command('start_charging', true));
     assert.equal(f.mutations().length, 0);

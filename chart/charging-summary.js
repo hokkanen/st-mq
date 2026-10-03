@@ -28,7 +28,8 @@ export function chargingNotice(charger, view, summary) {
   if (view.notes.length) return { label: 'Estimate has limitations', detail, state: 'attention' };
   if (!view.showMetrics) return { label: view.supported && charger.settings?.enabled !== true ? 'Automatic charging is off'
     : charger.values?.connected?.value === false ? 'Ready for the next connection' : 'Waiting for a connection reading',
-    detail: 'Charge, progress and cost will appear when a vehicle is confirmed connected. Saved settings remain available below.', state: 'quiet' };
+    detail: view.defaultsPreview ? 'Configured defaults are shown for a new connection. Live charge, progress and cost need a confirmed vehicle connection.'
+      : 'Charge, progress and cost will appear when a vehicle is confirmed connected. Saved settings remain available below.', state: 'quiet' };
   if (summary.completion.value === 'Reached') return { label: 'Target reached · vehicle decides when to stop',
     detail: 'No more energy is needed for the displayed target. The vehicle may continue to its own charge limit.', state: 'good' };
   if (summary.completion.detail === 'Expected on time') return { label: ['Expected on time', view.periodCount].filter(Boolean).join(' · '),

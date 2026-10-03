@@ -4,7 +4,7 @@ import { setStatusDetail } from './status-details.js';
 import { chargerSummary, chargingCost, chargingNotice } from './charging-summary.js';
 import { createChargingPriority } from './charging-priority.js';
 import { createChargingTime } from './charging-time.js';
-import { chargingControlLabel, chargingControlReason, chargingCommandConfirmation, chargingIdentificationInProgress, chargingTransactionWaiting } from './charging-status.js';
+import { chargingControlLabel, chargingControlReason, chargingCommandConfirmation, chargingIdentificationInProgress, chargingTransactionWaiting, chargingPauseConfirmedForPeriod } from './charging-status.js';
 import { CHARGING_LOSS_FRACTION, CHARGING_EFFICIENCY } from '../src/domain/charging-energy.js';
 
 const finite = Number.isFinite;
@@ -277,9 +277,7 @@ export function chargerDisplay(charger, { now = Date.now(), timezone = 'Europe/H
     else if (currentFinish) event += ` · ${number(minimum, '%')} estimated ${time(finishAt)}`;
   } else if (ownedStart != null && nextPeriod && !currentPeriod && !released && !provisional) {
     // A planned gap and an idle vehicle do not confirm the charger's pause.
-    pauseUnconfirmed = betweenPeriods && !uncertain
-      && (phase !== 'paused' || control.pauseConfirmed === false || control.ownsInstruction === false
-        || Number(owned?.startAt) !== Number(nextPeriod.startAt));
+    pauseUnconfirmed = betweenPeriods && !uncertain && !chargingPauseConfirmedForPeriod(control, nextPeriod);
     state = pauseUnconfirmed ? 'Pause unconfirmed' : uncertain ? 'Update unconfirmed' : betweenPeriods ? 'Paused between periods' : 'Scheduled';
     eventAt = nextPeriod.startAt; eventKind = pauseUnconfirmed ? 'proposed' : 'confirmed';
     event = pauseUnconfirmed ? `Next period ${time(eventAt)} · pause awaiting confirmation`
@@ -305,6 +303,11 @@ export function chargerDisplay(charger, { now = Date.now(), timezone = 'Europe/H
   else event = supported ? 'Automatic charging OFF' : 'Monitoring';
   if (handoverUnconfirmed) state = 'Handover unconfirmed';
   const showMetrics = connected === true;
+  const defaults = charger.defaults;
+  const defaultsPreview = !showMetrics && defaults && [defaults.manualSoc, defaults.minimumSoc, defaults.capacityKwh].every(finite)
+    && /^([01]\d|2[0-3]):[0-5]\d$/.test(defaults.readyBy)
+    ? { soc: number(defaults.manualSoc, '%'), minimum: number(defaults.minimumSoc, '%'),
+      capacity: number(defaults.capacityKwh, 'kWh'), readyBy: defaults.readyBy } : null;
   const showPlan = enabled && showMetrics && (!identificationInProgress || estimateOnly) && !yielded && (!uncertain || ownedStart != null || estimateOnly || transactionWaiting);
   const currentForecast = forecastAbsent || Object.hasOwn(forecast, 'feasible') ? forecast : plan;
   const deadlineAt = plan.deadlineAt ?? charger.deadlineAt;
@@ -462,7 +465,7 @@ export function chargerDisplay(charger, { now = Date.now(), timezone = 'Europe/H
     'Edit the target in Session settings and save to change the plan until unplugging. This does not change the car’s charging limit.',
   ].filter(Boolean).join('\n\n') : '';
   const vehicle = vehiclePresentation(charger, { now, timezone });
-  return { id: charger.id, label: charger.label, state, event, eventAt, eventKind, summary: `${state} · ${event}`, risk, showMetrics, vehicle, identification,
+  return { id: charger.id, label: charger.label, state, event, eventAt, eventKind, summary: `${state} · ${event}`, risk, showMetrics, defaultsPreview, vehicle, identification,
     soc: estimatedSoc ? `≈${Math.round(progress.estimatedSoc)} %` : socKnown ? number(soc.value, '%') : 'Unknown', socSource, minimum: number(minimum, '%'),
     minimumSource: targetSource, sources: socSource, targetHeld, targetDetail,
     gridEnergy: `${estimatedSoc && requiredGridKwh > 0 ? '≈' : ''}${number(requiredGridKwh, 'kWh')}`, deadline, readiness, readingTime, periodCount, periodRows,
@@ -622,7 +625,8 @@ export function createChargingPanel({ document, request, beforeRequest = () => {
     event.append(eventLabel, eventValue);
     const deadlineGroup = make('div', '', 'charging-ready-by');
     const deadline = make('strong', '', 'charging-deadline', `${id}-deadline`);
-    deadlineGroup.append(make('span', 'Ready by'), deadline); timing.append(event, deadlineGroup);
+    const deadlineLabel = make('span', 'Ready by');
+    deadlineGroup.append(deadlineLabel, deadline); timing.append(event, deadlineGroup);
     const readiness = make('p', '', 'charging-readiness', `${id}-readiness`);
     const priority = make('p', '', 'charging-priority', `${id}-priority`);
     summary.append(timing, overview);
@@ -689,7 +693,7 @@ export function createChargingPanel({ document, request, beforeRequest = () => {
     explanationFold.append(make('summary', 'How charging works'));
     const explanations = make('dl', '', 'equipment-readings', `${id}-explanations`); explanationFold.append(explanations); body.append(explanationFold);
     section.append(summary, body); $('charging-devices')?.append(section);
-    const device = { id, chargeNow, chargeNowState, controlMessage, identify, identificationSection, identificationState, identificationStatus, identificationMessage, section, title, vehicle, state, event, eventLabel, eventValue, overview, sources, metrics, chargeLabel, targetLabel, targetSource, completionLabel, completion, readiness, priority, readingTime, deadline, deadlineGroup, facts, deliveredLabel, deliveredValue, remaining, energyLabel, energyValue, costLabel, cost, costMetric, scheduleInfo, scheduleHeading, periodCount, periods, problem, explanations, readings, notes, settings, enabledValue, useAutomatic, takeoverHelp, takeoverMessage, controlDetail, charger, notice, footerHint, sessionStatus };
+    const device = { id, chargeNow, chargeNowState, controlMessage, identify, identificationSection, identificationState, identificationStatus, identificationMessage, section, title, vehicle, state, event, eventLabel, eventValue, overview, sources, metrics, chargeLabel, targetLabel, targetSource, completionLabel, completion, readiness, priority, readingTime, deadline, deadlineLabel, deadlineGroup, facts, deliveredLabel, deliveredValue, remaining, energyLabel, energyValue, costLabel, cost, costMetric, scheduleInfo, scheduleHeading, periodCount, periods, problem, explanations, readings, notes, settings, enabledValue, useAutomatic, takeoverHelp, takeoverMessage, controlDetail, charger, notice, footerHint, sessionStatus };
     bind(identify, 'click', () => {
       if (identify.disabled) return;
       const current = device.charger;
@@ -885,24 +889,31 @@ export function createChargingPanel({ document, request, beforeRequest = () => {
         title: 'Charging activity', detail: [...new Set([presentation.activity, view.controlReason, view.identification?.detail, view.controlDetail].filter(Boolean))].join('\n\n'), key: `${charger.id}:activity` });
       device.event.dataset.state = view.risk ? 'attention' : 'normal';
       device.overview.hidden = false;
-      device.metrics.soc.value.textContent = view.showMetrics ? view.soc : '—'; device.metrics.minimum.value.textContent = view.showMetrics ? view.minimum : '—';
-      device.sources.textContent = !view.showMetrics ? 'Awaiting data' : view.soc.startsWith('≈') ? 'Estimated charge' : view.sources;
+      const defaultsPreview = view.defaultsPreview;
+      device.metrics.soc.value.textContent = view.showMetrics ? view.soc : defaultsPreview?.soc ?? '—';
+      device.metrics.minimum.value.textContent = view.showMetrics ? view.minimum : defaultsPreview?.minimum ?? '—';
+      device.sources.textContent = defaultsPreview ? 'Configured defaults' : !view.showMetrics ? 'Awaiting data' : view.soc.startsWith('≈') ? 'Estimated charge' : view.sources;
       device.metrics.minimum.value.dataset.state = view.showMetrics && view.targetHeld ? 'attention' : 'normal';
       device.targetSource.textContent = view.showMetrics && view.targetHeld ? 'Held BMW target' : '';
       device.targetSource.hidden = !device.targetSource.textContent;
-      device.completion.textContent = presentation.completion.value;
-      const sourceDetail = !view.showMetrics ? 'A confirmed vehicle connection is needed before a remembered charge reading can be shown as current.'
+      device.completion.textContent = defaultsPreview?.capacity ?? presentation.completion.value;
+      const sourceDetail = defaultsPreview ? 'Configured starting charge for planning a new connection. Current vehicle charge is unknown.'
+        : !view.showMetrics ? 'A confirmed vehicle connection is needed before a remembered charge reading can be shown as current.'
         : [view.soc.startsWith('≈') ? `${view.socSource}, allowing for charging losses. The battery estimate advances from the latest charge reference; Added energy covers the whole connection.` : view.socSource, view.readingTime].filter(Boolean).join('\n');
-      metricDetail(device.chargeLabel, { label: 'Charge', title: 'Current charge', detail: sourceDetail, key: `${charger.id}:source` });
-      metricDetail(device.targetLabel, { label: 'Target', title: 'Target charge', detail: !view.showMetrics ? 'The target will be shown for the connected vehicle. Configured defaults are shown in Session settings.' : [`${view.minimumSource}. Estimates cover reaching this charge, which is not a command to stop the vehicle.`, view.targetDetail].filter(Boolean).join('\n\n'), key: `${charger.id}:target` });
-      const completionDetail = presentation.completion.at !== null
+      metricDetail(device.chargeLabel, { label: defaultsPreview ? 'Starting charge' : 'Charge', title: defaultsPreview ? 'Configured starting charge' : 'Current charge', detail: sourceDetail, key: `${charger.id}:source` });
+      metricDetail(device.targetLabel, { label: 'Target', title: 'Target charge', detail: defaultsPreview ? 'Configured target for a new connection. This planning default does not set the vehicle’s charge limit.'
+        : !view.showMetrics ? 'The target will be shown for the connected vehicle. Configured defaults are shown in Session settings.' : [`${view.minimumSource}. Estimates cover reaching this charge, which is not a command to stop the vehicle.`, view.targetDetail].filter(Boolean).join('\n\n'), key: `${charger.id}:target` });
+      const completionDetail = defaultsPreview ? 'Configured usable battery capacity for planning a new connection. It is an assumption until applicable vehicle evidence or session settings replace it.'
+        : presentation.completion.at !== null
         ? 'Forecast time to reach the displayed target at the expected charging power. Charging can continue after the target is reached.'
         : presentation.completion.detail;
-      metricDetail(device.completionLabel, { label: 'Est. target', title: 'Estimated target time', detail: completionDetail, key: `${charger.id}:completion` });
+      metricDetail(device.completionLabel, { label: defaultsPreview ? 'Capacity' : 'Est. target', title: defaultsPreview ? 'Configured battery capacity' : 'Estimated target time', detail: completionDetail, key: `${charger.id}:completion` });
       device.readingTime.textContent = view.readingTime; device.readingTime.hidden = !view.readingTime;
       device.sessionStatus.textContent = view.showMetrics ? presentation.activity
-        : `${presentation.activity.replace(/\.$/, '')}. Readings and estimates will appear when a vehicle is confirmed connected.`;
-      device.deadline.textContent = view.deadline.replace(/^Ready by /, ''); device.deadlineGroup.hidden = !view.deadline;
+        : `${presentation.activity.replace(/\.$/, '')}. Live readings and estimates will appear when a vehicle is confirmed connected.`;
+      device.deadline.textContent = defaultsPreview?.readyBy ?? view.deadline.replace(/^Ready by /, '');
+      device.deadlineLabel.textContent = defaultsPreview ? 'Default ready-by' : 'Ready by';
+      device.deadlineGroup.hidden = !view.deadline && !defaultsPreview;
       device.readiness.textContent = presentation.roleState === 'uncertain' ? '' : view.readiness;
       device.readiness.hidden = !device.readiness.textContent; device.readiness.dataset.state = view.risk ? 'attention' : 'normal';
       device.remaining.hidden = false;

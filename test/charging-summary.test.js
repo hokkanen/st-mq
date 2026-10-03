@@ -85,6 +85,39 @@ test('both charger cards use concise activity labels while retaining complete in
   }
 });
 
+test('confirmed controller-held and native pauses share activity and completion while unconfirmed pauses stay distinct', () => {
+  const periods = [{ startAt: now - 2 * hour, endAt: now - hour }, { startAt, endAt: null }];
+  const execution = { planId: 'accepted', periods, finalStartAt: startAt };
+  const states = [
+    { provider: 'easee', control: { phase: 'paused', confirmed: true, ownsInstruction: true,
+      pauseConfirmed: true, owned: { startAt }, execution } },
+    { provider: 'shelly-evse', control: { phase: 'waiting', reason: 'economic-wait', confirmed: true,
+      executionStage: 'physical-effect', nativeExpiry: false, ownsInstruction: true, pauseConfirmed: true,
+      owned: null, pending: null, manual: null, execution } },
+  ];
+  for (const state of states) {
+    const item = charger({ ...state, values: { connected: reading(true), charging: reading(false), minimumSoc: reading(80) },
+      plan: { id: 'accepted', state: 'waiting', periods, startAt, finishAt, deadlineAt, feasible: true } });
+    const display = chargerDisplay(item, { now }), result = summary(item);
+    assert.equal(display.state, 'Paused between periods', state.provider);
+    assert.equal(result.activity, 'Paused between periods · Resumes 23:00', state.provider);
+    assert.equal(result.roleLabel, 'Controlled', state.provider);
+    assert.equal(result.completion.at, finishAt, state.provider);
+    for (const evidence of [{ pauseConfirmed: false }, { ownsInstruction: false }, { confirmed: false }]) {
+      const unconfirmed = { ...item, control: { ...item.control, ...evidence } };
+      assert.equal(summary(unconfirmed).roleState, 'uncertain', `${state.provider}: ${JSON.stringify(evidence)}`);
+      assert.equal(summary(unconfirmed).completion.at, null);
+      assert.notEqual(chargerDisplay(unconfirmed, { now }).state, 'Paused between periods');
+    }
+  }
+  const held = charger({ ...states[1], plan: { id: 'accepted', periods, startAt, finishAt, deadlineAt, feasible: true } });
+  for (const control of [
+    { ...held.control, pending: { stage: 'dispatched' } },
+    { ...held.control, phase: 'active' },
+    { ...held.control, nativeExpiry: true },
+  ]) assert.equal(chargerDisplay({ ...held, control }, { now }).state, 'Pause unconfirmed');
+});
+
 test('manual resumption remains daily information while disconnected and OFF is explicit', () => {
   const item = charger(), disconnected = { ...item, values: { ...item.values, connected: reading(false) } };
   const result = notice({ ...disconnected, control: { phase: 'yielded', manual: { kind: 'window',

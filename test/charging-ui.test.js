@@ -583,6 +583,54 @@ test('known charger limits stay available in details while the vehicle is discon
   assert.equal(Object.fromEntries(disconnected.rows)['Last reported Equalizer allowance'], '0 A per phase');
 });
 
+test('both folded cards show configuration defaults without presenting stale session values as current', () => {
+  const document = documentFixture(), $ = id => document.getElementById(id);
+  const panel = createChargingPanel({ document, request: async () => { throw new Error('No command expected'); } });
+  const items = ['charger1', 'charger2'].map(id => ({ ...charger(id),
+    defaults: { readyBy: '07:15', manualSoc: 25, minimumSoc: 75, capacityKwh: 64 },
+    settings: { enabled: true, readyBy: '09:55', manualSoc: 99, minimumSoc: 95, capacityKwh: 33 },
+    values: { connected: reading(null), soc: reading(87), minimumSoc: reading(95) },
+    progress: { estimatedSoc: 99, hasEnergyEstimate: true, remainingGridKwh: 7 },
+    sessionCost: { recordedGridKwh: 12, totalCents: 345 },
+  }));
+  for (const connection of [null, false]) {
+    panel.update(status(...items.map(item => ({ ...item, values: { ...item.values, connected: reading(connection) } }))));
+    for (const item of items) {
+      const id = item.id, card = $(`${id}-device`), summary = $(`${id}-device-summary`);
+      assert.equal(Boolean(card.open), false);
+      assert.equal($(`${id}-soc`).textContent, '25 %');
+      assert.equal($(`${id}-minimum`).textContent, '75 %');
+      assert.equal($(`${id}-charge-label`).textContent, 'Starting charge');
+      assert.equal($(`${id}-sources`).textContent, 'Configured defaults');
+      assert.equal($(`${id}-completion-label`).textContent, 'Capacity');
+      assert.equal($(`${id}-completion`).textContent, '64 kWh');
+      assert.equal($(`${id}-deadline`).textContent, '07:15');
+      assert.equal($(`${id}-deadline`).parentElement.children[0].textContent, 'Default ready-by');
+      assert.equal($(`${id}-deadline`).parentElement.hidden, false);
+      for (const metric of ['soc', 'minimum', 'completion', 'deadline']) assert(summary.contains($(`${id}-${metric}`)));
+      assert.equal($(`${id}-event-value`).textContent, connection === false ? 'Not connected' : 'Connection unknown');
+      assert.equal($(`${id}-energy`).textContent, '—');
+      assert.equal($(`${id}-delivered`).textContent, '—');
+      assert.equal($(`${id}-cost`).textContent, 'No estimate');
+      assert.equal($(`${id}-charge-now`).disabled, true);
+      assert.equal($(`${id}-setting-manualSoc`).disabled, true);
+      assert.match(openDetail($(`${id}-charge-label`)).textContent, /Configured starting charge.*Current vehicle charge is unknown/);
+      document.dispatch('keydown', { key: 'Escape' });
+    }
+  }
+  panel.update(status(...items.map(item => ({ ...item, progress: null,
+    values: { connected: reading(true), soc: reading(30, 'manual-fallback'), minimumSoc: reading(70, 'manual-fallback') } }))));
+  for (const { id } of items) {
+    assert.equal($(`${id}-soc`).textContent, '30 %');
+    assert.equal($(`${id}-minimum`).textContent, '70 %');
+    assert.equal($(`${id}-charge-label`).textContent, 'Charge');
+    assert.equal($(`${id}-completion-label`).textContent, 'Est. target');
+    assert.equal($(`${id}-deadline`).parentElement.children[0].textContent, 'Ready by');
+    assert.equal($(`${id}-charge-now`).disabled, false);
+  }
+  panel.close();
+});
+
 class Events {
   constructor() { this.listeners = new Map(); this.handlers = new Map(); }
   addEventListener(key, listener) {

@@ -61,6 +61,15 @@ fixture.setCase = name => {
         reason: 'Waiting for a current transaction confirmed on this connection.',
         snapshot: { transport: 'ocpp', transactionConfirmed: false } };
     }
+    if (name === 'confirmed-pause') {
+      const periods = [{ startAt: now - 7200000, endAt: now - 3600000 }, { startAt: now + 3600000, endAt: null }];
+      item.plan = { ...item.plan, id: 'accepted', periods };
+      item.control = { confirmed: true, ownsInstruction: true, pauseConfirmed: true,
+        execution: { planId: 'accepted', periods, finalStartAt: now + 3600000 },
+        ...(item.provider === 'easee' ? { phase: 'paused', owned: { startAt: now + 3600000 } }
+          : { phase: 'waiting', reason: 'economic-wait', nativeExpiry: false, owned: null,
+            executionStage: 'physical-effect', pending: null, manual: null }) };
+    }
     if (name === 'manual-start') { item.control.reason = 'manual-release'; item.control.manual = { kind: 'release' }; }
     if (name === 'manual-window') { item.control.reason = 'native-schedule'; item.control.manual = { kind: 'window', startsAt: now + 3600000, resumeAt: now + 7200000 }; }
     if (name === 'long') { item.control.reason = longText; item.control.manual.reason = longText; item.label += ' with a long synthetic descriptive name'; }
@@ -149,7 +158,7 @@ try {
   for (const width of [320, 390, 1440]) for (const theme of ['dark', 'light']) {
     await send('Emulation.setDeviceMetricsOverride', { width, height: 1000, deviceScaleFactor: 1, mobile: false });
     await evaluate(`document.documentElement.dataset.theme = '${theme}'`);
-    for (const state of ['ordinary', 'missing-vehicle-feed', 'approval-pending', 'long', 'manual-stop', 'manual-start', 'manual-window', 'pending', 'blocked', 'handover-timeout', 'handover-cancelled', 'handover-protocol', 'unavailable', 'estimate', 'readonly', 'disconnected', 'unknown-connection', 'missing-token', 'monitoring', 'uncertain', 'startup-stop', 'unavailable-startup-stop']) {
+    for (const state of ['ordinary', 'missing-vehicle-feed', 'approval-pending', 'confirmed-pause', 'long', 'manual-stop', 'manual-start', 'manual-window', 'pending', 'blocked', 'handover-timeout', 'handover-cancelled', 'handover-protocol', 'unavailable', 'estimate', 'readonly', 'disconnected', 'unknown-connection', 'missing-token', 'monitoring', 'uncertain', 'startup-stop', 'unavailable-startup-stop']) {
       await evaluate(`chargingFixture.setCase('${state}'); document.querySelectorAll('.charging-device').forEach(card => card.open = true)`);
       const layout = await evaluate(`(() => {
         const cards = [...document.querySelectorAll('.charging-device')];
@@ -189,6 +198,11 @@ try {
         else assert.equal(await evaluate(`document.getElementById('charger1-event-label').textContent`), 'Starts');
         assert.equal(await evaluate(`document.getElementById('charger2-event-label').textContent`), 'Starts');
       }
+      if (state === 'confirmed-pause') for (const id of ['charger1', 'charger2']) {
+        assert.equal(await evaluate(`document.getElementById('${id}-state').textContent`), 'Controlled');
+        assert.match(await evaluate(`document.getElementById('${id}-event-value').textContent`), /^Paused between periods · Resumes /);
+        assert.equal(await evaluate(`document.getElementById('${id}-completion').textContent`), '17:00');
+      }
       const actionVisible = ['long', 'manual-stop', 'manual-start', 'manual-window', 'startup-stop'].includes(state);
       assert.equal(layout.cards[0].action.visible, actionVisible, `${state}: takeover is offered only for a replaceable external instruction`);
       if (actionVisible) assert.equal(layout.cards[0].action.helpVisible, true, `${state}: the available action has an explanation`);
@@ -225,7 +239,19 @@ try {
           await evaluate("document.querySelector('.status-detail-close').click()");
         }
       }
-      if (['ordinary', 'long', 'manual-stop', 'estimate', 'uncertain', 'startup-stop', 'unavailable-startup-stop', 'handover-timeout'].includes(state)) {
+      if (['disconnected', 'unknown-connection'].includes(state)) {
+        await evaluate("document.querySelectorAll('.charging-device').forEach(card => card.open = false)");
+        for (const id of ['charger1', 'charger2']) {
+          for (const [field, expected] of [['soc', '20 %'], ['minimum', '80 %'], ['completion', '74 kWh'], ['deadline', '06:00']]) {
+            assert.equal(await evaluate(`document.getElementById('${id}-${field}').checkVisibility()`), true, 'Configured defaults are visible without unfolding');
+            assert.equal(await evaluate(`document.getElementById('${id}-${field}').textContent`), expected);
+          }
+          assert.equal(await evaluate(`document.getElementById('${id}-sources').textContent`), 'Configured defaults');
+          assert.equal(await evaluate(`document.getElementById('${id}-charge-now').disabled`), true);
+          assert.equal(await evaluate(`document.getElementById('${id}-energy').textContent`), '—');
+        }
+      }
+      if (['ordinary', 'long', 'manual-stop', 'estimate', 'uncertain', 'startup-stop', 'unavailable-startup-stop', 'handover-timeout', 'unknown-connection'].includes(state)) {
         const metrics = await send('Page.getLayoutMetrics');
         const shot = await send('Page.captureScreenshot', { format: 'png', captureBeyondViewport: true,
           clip: { x: 0, y: 0, width, height: Math.min(metrics.cssContentSize.height, 12000), scale: 1 } });

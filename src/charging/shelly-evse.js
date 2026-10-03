@@ -119,7 +119,7 @@ export function createShellyEvseAdapter({ config, broker, client, store, engine,
     }
     const sameValue = previous && JSON.stringify(previous.value) === JSON.stringify(result.value);
     if (previous?.measuredAt >= measuredAt && sameValue && readback && setting
-      && (previous.measuredAt === measuredAt && !previous.retained || role === 'current_limit')) {
+      && (!previous.retained || role === 'current_limit')) {
       // A correlated query confirms the current setting even when its update
       // clock predates the latest matching notification. Preserve both source
       // clocks; this is receipt freshness, never a new instruction or plug edge.
@@ -287,35 +287,51 @@ export function createShellyEvseAdapter({ config, broker, client, store, engine,
         const events = pendingEvents; pendingEvents = [];
         for (const event of events) if (!admitNotification(event.params, event.at, event.retained)) admission.restore(event.admissionCheckpoint);
       }
-      // Native limits and flags remain authoritative and may change in the app.
-      [service, serviceStatus, nativeSchedules, currentConfig] = await Promise.all([rpc('Service.GetConfig', { id: config.serviceId }),
-        rpc('Service.GetStatus', { id: config.serviceId }), rpc('Schedule.List'),
-        rpc('Number.GetConfig', { owner: `service:${config.serviceId}`, role: 'current_limit' })]);
-      if (epoch !== generation) return;
-      serviceAt = clock();
-      if (!Array.isArray(nativeSchedules?.jobs) || nativeSchedules.jobs.length > 20
-        || nativeSchedules.jobs.some(job => typeof job?.enable !== 'boolean')) throw fail('evse-native-schedule-unavailable');
-      const nativeAvailable = serviceStatus?.state === 'running'
-        && (serviceStatus.errors === undefined || Array.isArray(serviceStatus.errors) && serviceStatus.errors.length === 0)
-        && (serviceStatus.flags === undefined || Array.isArray(serviceStatus.flags) && serviceStatus.flags.length === 0);
-      const eligible = !eventOverflow && discovered && profileSupported && service?.id === config.serviceId && nativeAvailable;
-      // Healthy polling keeps existing readiness. Recovery cannot reopen the
-      // command gate using cached settings before all native reads complete.
-      controlReady = controlReady && eligible;
-      currentControlReady = currentWritable && /[w*]/.test(currentConfig?.access ?? '')
-        && componentRoles.get(`number:${currentConfig?.id}`) === 'current_limit' && currentConfig.owner === `service:${config.serviceId}`
-        && currentConfig?.min === config.minimumCurrentA
-        && finite(currentConfig?.max) && currentConfig.max >= config.maximumCurrentA
-        && currentConfig?.meta?.ui?.step === config.currentStepA && service?.auto_balance?.enable === false;
-      if (!eligible) error = eventOverflow ? 'evse-event-overflow' : !nativeAvailable ? 'evse-native-restriction' : 'evse-profile-unsupported';
-      for (const role of Object.keys(TYPES)) {
-        await rpc(`${TYPES[role]}.GetStatus`, { owner: `service:${config.serviceId}`, role }, { statusReadback: true });
+      let eligible = false;
+      const checked = promise => promise.catch(cause => {
+        if (epoch === generation) { controlReady = false; error = cause.code ?? 'evse-read-unavailable'; }
+        throw cause;
+      });
+      const metadata = async () => {
+        // Native limits and flags remain authoritative and may change in the app.
+        const reads = await Promise.allSettled([rpc('Service.GetConfig', { id: config.serviceId }),
+          rpc('Service.GetStatus', { id: config.serviceId }), rpc('Schedule.List'),
+          rpc('Number.GetConfig', { owner: `service:${config.serviceId}`, role: 'current_limit' })].map(checked));
         if (epoch !== generation) return;
-      }
+        const failed = reads.find(result => result.status === 'rejected');
+        if (failed) throw failed.reason;
+        [service, serviceStatus, nativeSchedules, currentConfig] = reads.map(result => result.value);
+        serviceAt = clock();
+        if (!Array.isArray(nativeSchedules?.jobs) || nativeSchedules.jobs.length > 20
+          || nativeSchedules.jobs.some(job => typeof job?.enable !== 'boolean')) throw fail('evse-native-schedule-unavailable');
+        const nativeAvailable = serviceStatus?.state === 'running'
+          && (serviceStatus.errors === undefined || Array.isArray(serviceStatus.errors) && serviceStatus.errors.length === 0)
+          && (serviceStatus.flags === undefined || Array.isArray(serviceStatus.flags) && serviceStatus.flags.length === 0);
+        eligible = !eventOverflow && discovered && profileSupported && service?.id === config.serviceId && nativeAvailable;
+        // Healthy polling keeps existing readiness. Recovery cannot reopen the
+        // command gate using cached settings before all native reads complete.
+        controlReady = controlReady && eligible;
+        currentControlReady = currentWritable && /[w*]/.test(currentConfig?.access ?? '')
+          && componentRoles.get(`number:${currentConfig?.id}`) === 'current_limit' && currentConfig.owner === `service:${config.serviceId}`
+          && currentConfig?.min === config.minimumCurrentA
+          && finite(currentConfig?.max) && currentConfig.max >= config.maximumCurrentA
+          && currentConfig?.meta?.ui?.step === config.currentStepA && service?.auto_balance?.enable === false;
+        if (!eligible) error = eventOverflow ? 'evse-event-overflow' : !nativeAvailable ? 'evse-native-restriction' : 'evse-profile-unsupported';
+      };
+      // Physical state and metering remain observable when a control-only read
+      // fails. Close command admission on the first error, but settle every
+      // independent read before a new refresh can begin.
+      const reads = await Promise.allSettled([checked(metadata()), ...Object.keys(TYPES).map(role => checked(
+        rpc(`${TYPES[role]}.GetStatus`, { owner: `service:${config.serviceId}`, role }, { statusReadback: true })))]);
+      if (epoch !== generation) return;
+      const failed = reads.find(result => result.status === 'rejected');
+      if (failed) throw failed.reason;
       // A notification error during any await invalidates this refresh too.
       // Its later successful replies must not erase the newer failure.
       if (eligible && readinessAtStart === readinessRevision) { controlReady = true; error = null; }
-    })().catch(cause => { controlReady = false; error = cause.code ?? 'evse-read-unavailable'; }).finally(() => { polling = null; });
+    })().catch(cause => {
+      if (epoch === generation) { controlReady = false; error = cause.code ?? 'evse-read-unavailable'; }
+    }).finally(() => { polling = null; });
     return polling;
   }
   function connect() {
@@ -547,13 +563,24 @@ export function createShellyController({ adapter, initialState, saveState = () =
     && snapshot.fields.start_charging.measuredAt === state.owned.permissionAt && state.lastStart === false && state.ownedPause;
   const status = () => {
     const snapshot = adapter.snapshot(), owned = state.owned ?? null;
-    const ownsInstruction = Boolean(snapshot.online && snapshot.controlReady && !state.manual && !state.pending && ownSetting(snapshot));
+    const permission = snapshot.fields.start_charging;
+    const economicPause = state.phase === 'waiting' && state.reason === 'economic-wait' && state.execution
+      && snapshot.session?.connected === true && state.sessionId === snapshot.session.sessionId
+      && state.ownedPause && state.lastStart === false && fresh(permission)
+      && sameSetting(permission, { value: false, measuredAt: state.lastStartAt });
+    const identificationPause = ownSetting(snapshot);
+    const ownsInstruction = Boolean(snapshot.online && snapshot.controlReady && !state.manual && !state.pending
+      && !snapshot.nativeScheduleActive && (identificationPause || economicPause));
     const physical = snapshot.fields.phase_info, work = snapshot.fields.work_state;
-    const pauseConfirmed = ownsInstruction && owned.witnessedCharging && !snapshot.nativeScheduleActive
-      && physicalFresh(physical) && physicalFresh(work)
-      && physical.measuredAt >= owned.requestedAt && work.measuredAt >= owned.requestedAt
+    // Economic pauses can start while the vehicle is already idle. Current
+    // physical no-draw evidence confirms that permission; identification still
+    // requires the separately witnessed charging-to-stopped transition.
+    const pauseEvidence = identificationPause ? owned.witnessedCharging && physicalFresh(work)
+      && physical?.measuredAt >= owned.requestedAt && work?.measuredAt >= owned.requestedAt
+      : economicPause && fresh(work) && physical?.measuredAt >= permission.measuredAt;
+    const pauseConfirmed = Boolean(ownsInstruction && pauseEvidence && physicalFresh(physical)
       && adapter.config.connectedStates.includes(work.value) && !adapter.config.chargingStates.includes(work.value)
-      && physical.value.total_power === 0 && PHASE_KEYS.every(key => physical.value[key]?.current < .5);
+      && physical.value.total_power === 0 && PHASE_KEYS.every(key => physical.value[key]?.current < .5));
     const manual = state.manual ?? (snapshot.nativeScheduleActive ? { kind: 'native-schedule' } : null);
     const stopped = manual?.kind === 'stop' || snapshot.fields.start_charging?.value === false
       && !state.ownedPause && !state.pending?.owned;

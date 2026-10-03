@@ -17,6 +17,11 @@ Versions follow Semantic Versioning. `-dev.N` denotes a development prerelease.
 
 ### Fixed
 
+- Charger 2 keeps physical connection readings available when another charger
+  read fails, and accepts confirmed unchanged state without losing its original
+  timestamp. Both charger cards show clearly labeled configured defaults while
+  connection evidence is unavailable, and use consistent wording for confirmed
+  pauses between charging periods.
 - Reset pairing accepts configured storage-directory links, including a checkout's
   `var` link to persistent storage. Internal links and overlapping physical paths
   remain protected, and changing a directory link cannot redirect an interrupted

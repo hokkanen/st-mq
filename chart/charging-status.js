@@ -55,6 +55,16 @@ export const chargingTransactionWaiting = charger => charger.control?.errorCode 
   && charger.plan?.periods?.some(period => Number.isFinite(period.startAt)) === true
   && !charger.control.manual && !['pending', 'blocked'].includes(charger.control.takeover?.state);
 
+/** A controller-held pause and a native expiring pause have different release evidence. */
+export function chargingPauseConfirmedForPeriod(control, period) {
+  if (control.nativeExpiry === false) return control.phase === 'waiting'
+    && control.ownsInstruction === true && control.pauseConfirmed === true
+    && !control.pending && !control.manual
+    && control.execution?.periods?.some(row => Number(row.startAt) === Number(period.startAt)) === true;
+  return control.phase === 'paused' && control.pauseConfirmed !== false && control.ownsInstruction !== false
+    && Number(control.owned?.startAt) === Number(period.startAt);
+}
+
 const CONTROL_DETAILS = {
   'charging-plan-unavailable': 'Automatic control is waiting for a charging plan. Existing charger restrictions remain in place.',
   'takeover-unavailable': 'Automatic control is waiting for fresh charger readings and control access. Existing restrictions remain in place.',

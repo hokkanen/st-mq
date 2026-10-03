@@ -107,10 +107,11 @@ Every refresh reads service configuration/status, numeric current capabilities
 and [schedules](https://shelly-api-docs.shelly.cloud/gen2/ComponentsAndServices/Schedule/).
 The source contract requires positive native `last_update_ts` values in seconds.
 Zero/unknown timestamps are unavailable. A correlated read renews setting receipt
-evidence without changing its original source clock. An unchanged current-limit
-reply can have an older update timestamp than its matching notification; the
-adapter preserves both timestamps while confirming the current value from the
-new query. This cannot establish a new native instruction or confirm a command
+evidence without changing its original source clock. An unchanged current-limit,
+start-permission or work-state reply can have an older update timestamp than its
+matching notification; the adapter preserves both timestamps while confirming
+the current value from the new query. This cannot establish a new native
+instruction or confirm a command
 whose dispatch is in a later source-clock second. When a native timestamp has
 whole-second precision, a matching correlated read requested after the command
 acknowledgement can confirm an update in that same second. It preserves the
@@ -127,6 +128,13 @@ or jump warnings are separate from command-readiness errors and clear after a
 valid subsequent increment, while recorded gaps remain intact. MQTT electrical
 acquisition and lifetime-meter recording remain useful independently of control
 availability.
+
+After device discovery, connection-state and electrical reads run independently
+of control-setting and schedule reads. A failed or timed-out control read closes
+command admission but does not prevent a successful physical-state read from
+keeping the connection visible. Missing or stale physical evidence still leaves
+the connection unknown; neither vehicle feeds nor polling renew measurement
+timestamps or establish a new plug event.
 
 ## MQTT and commands
 
