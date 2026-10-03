@@ -8,11 +8,11 @@ const VEHICLES = new Set(['bmw', 'tesla']);
 const SOURCES = new Set(['bmw-cardata', 'teslamate', 'bmw-target-filter', 'manual-fallback', 'session-anchor', 'session-request', 'vehicle', 'mqtt', 'easee', 'easee-ocpp', 'shelly-evse']);
 const PHASES = new Set(['off', 'waiting', 'paused', 'active', 'released', 'provisional', 'identifying', 'unconfirmed', 'pause-unconfirmed', 'uncertain', 'ownership-uncertain', 'unavailable', 'yielded', 'manual', 'disconnected']);
 const ID_PHASES = new Set(['waiting', 'charging', 'pausing', 'observing', 'completed', 'inconclusive']);
-const ID_REASONS = new Set(['identified', 'manual-stop', 'unsupported', 'telemetry-unavailable', 'charger-unavailable',
+const ID_REASONS = new Set(['identified', 'manual-stop', 'interrupted', 'unsupported', 'telemetry-unavailable', 'charger-unavailable',
   'another-identification-active', 'awaiting-evidence', 'probe-energy-limit', 'probe-time-limit', 'telemetry-lost',
   'awaiting-stop-confirmation', 'observing-charge', 'waiting-for-charging',
   'bmw-home-unknown', 'bmw-away', 'bmw-not-plugged', 'vehicle-feed-stale', 'economic-plan-pending',
-  'evidence-capacity', 'pause-timeout']);
+  'evidence-capacity', 'pause-timeout', 'current-control-unavailable', 'current-evidence-pending', 'current-ambiguous']);
 // Provider messages can contain URLs, identifiers or upstream payload text.
 // Persist only exact supported diagnostic codes, never an arbitrary reason.
 const CONTROL_ERRORS = new Set(['read-failed', 'command-failed', 'readback-failed', 'readback-mismatch',

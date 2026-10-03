@@ -1308,15 +1308,16 @@ test('pending current identification names missing readiness, observations and a
   }
 });
 
-test('finished probing keeps historical matching pending and the ordinary charging plan visible', () => {
+test('finished probing shows an inconclusive attempt and keeps passive matching and ordinary charging available', () => {
   const document = documentFixture(), $ = id => document.getElementById(id);
   const panel = createChargingPanel({ document, request: async () => status() });
   const item = { ...connected(), vehicle: { state: 'identifying', id: null },
-    identification: { phase: 'observing', active: false, available: true, reason: 'probe-energy-limit' } };
+    identification: { phase: 'inconclusive', active: false, available: true, reason: 'probe-energy-limit' } };
   panel.update(status(item));
-  assert.equal($('charger1-identification-state').textContent, 'Pending');
+  assert.equal($('charger1-identification-state').textContent, 'Inconclusive');
   assert.match($('charger1-identification-status').textContent, /energy budget.*current charging choice.*until unplugging.*arrive later/);
-  assert.equal($('charger1-notice').textContent, 'Identification pending');
+  assert.match($('charger1-identification-status').textContent, /No further automatic tests.*choose Identify for an explicit retry/);
+  assert.equal($('charger1-notice').textContent, 'Identification inconclusive');
   assert.doesNotMatch($('charger1-state').textContent, /Identifying|inconclusive/);
   assert(!$('charger1-identify').disabled, 'Only an explicit retry can request another test');
   for (const [reason, expected] of [['bmw-home-unknown', /home location report is needed/], ['bmw-away', /latest valid BMW location is away/],
@@ -1753,6 +1754,16 @@ test('identification remains pending while waiting and an inconclusive result st
   assert.equal($('charger1-notice').textContent, 'Identification inconclusive');
   assert.match($('charger1-identification-status').textContent, /current charging choice now applies/);
   assert(!$('charger1-identify').disabled); panel.close();
+});
+
+test('identification exhaustion explains passive matching without implying a confirmed pause failed', () => {
+  for (const [reason, explanation] of [['interrupted', /test ended without identifying this vehicle/],
+    ['pause-timeout', /vehicle was not identified within the brief pause deadline/]]) {
+    const display = view({ ...connected(), identification: { phase: 'inconclusive', active: false, available: true, reason } });
+    assert.match(display.identification.detail, explanation);
+    assert.match(display.identification.detail, /No further automatic tests.*Matching vehicle reports are still accepted.*explicit retry/);
+    assert.doesNotMatch(display.identification.detail, /physical.*pause was not confirmed/);
+  }
 });
 
 test('identification keeps the charging wait while general pause recovery belongs in How charging works', () => {

@@ -134,8 +134,12 @@ function identificationPresentation(charger, { now = Date.now(), timezone = 'Eur
   if (identification.phase === 'inconclusive') return { label: 'Identification inconclusive', state: 'Inconclusive', activity: 'Identification inconclusive',
     detail: `${({
       'manual-stop': 'A stop instruction interrupted the identification test and keeps priority.',
-      'pause-timeout': 'The physical identification pause was not confirmed before its deadline.',
-    })[identification.reason] ?? 'The identification attempt ended without a conclusive match.'} The current charging choice now applies. Applicable vehicle evidence can still identify this connection until unplugging; choose Identify for an explicit retry when available.` };
+      'interrupted': 'The active identification test ended without identifying this vehicle.',
+      'pause-timeout': 'The vehicle was not identified within the brief pause deadline.',
+      'probe-energy-limit': 'The brief charging test reached its energy budget.',
+      'probe-time-limit': 'The brief charging test reached its safety time limit.',
+      'telemetry-lost': 'The charging test ended because current charger measurements became unavailable.',
+    })[identification.reason] ?? 'The identification attempt ended without a conclusive match.'} The current charging choice now applies. No further automatic tests run for this connection. Matching vehicle reports are still accepted until unplugging, including reports that arrive later; choose Identify for an explicit retry when available.` };
   return null;
 }
 function vehiclePresentation(charger, { now, timezone } = {}) {

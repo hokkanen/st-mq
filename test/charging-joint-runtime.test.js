@@ -46,7 +46,7 @@ test('Shelly startup validates adopted execution before reading or writing devic
 // Production runtime, planner, controllers, transport adapters and vehicle feeds.
 // Only the physical devices/broker and acquisition clocks are simulated. Device
 // settings keep their source clocks; reads do not manufacture native changes.
-async function fixture(t, { limiter = true } = {}) {
+async function fixture(t, { limiter = true, budgetA = 16 } = {}) {
   let now = START, runtime, heldOcppWrite = null, revokedOcppWrites = 0, rejectShellyWrites = false;
   const store = new Store(':memory:'), client = new EventEmitter();
   const commands = [], profiles = new Map(), reads = { charger1: 0, charger2: 0 };
@@ -59,7 +59,7 @@ async function fixture(t, { limiter = true } = {}) {
     bmw: { mqttTopic: 'synthetic/joint/bmw', defaults: { capacityKwh: 10 } },
     tesla: { defaults: { capacityKwh: 10 } },
   }, chargers: { charger2: { enabled: true, deviceId: 'synthetic-joint-evse', topicPrefix: 'synthetic/joint/evse',
-    limiterEnabled: limiter, additiveCurrentVerified: true, mainFuseA: triple(16), marginA: triple(0), dwellMs: 0, rampA: 16 } } } };
+    limiterEnabled: limiter, additiveCurrentVerified: true, mainFuseA: triple(budgetA), marginA: triple(0), dwellMs: 0, rampA: 16 } } } };
   const fields = { current_limit: { value: 16, at: now }, start_charging: { value: true, at: now },
     work_state: { value: 'charger_free', at: now } };
   const schedules = { jobs: [] };
@@ -68,7 +68,7 @@ async function fixture(t, { limiter = true } = {}) {
   const amps2 = () => cars.charger2.connected && cars.charger2.allows && fields.start_charging.value
     ? Math.min(cars.charger2.demandA, fields.current_limit.value) : 0;
   const amps1 = () => cars.charger1.connected && cars.charger1.allows && !paused()
-    ? Math.min(cars.charger1.demandA, 16 - amps2()) : 0;
+    ? Math.max(0, Math.min(cars.charger1.demandA, budgetA - amps2())) : 0;
   const physical2 = () => {
     const state = !cars.charger2.connected ? 'charger_free' : amps2() > 0 ? 'charger_charging'
       : !fields.start_charging.value ? 'charger_pause' : 'charger_wait';
@@ -95,7 +95,8 @@ async function fixture(t, { limiter = true } = {}) {
     } else {
       const meter = physical2();
       result = { value: role === 'phase_info' ? meter : fields[role].value,
-        last_update_ts: (role === 'phase_info' ? now : fields[role].at) / 1000 };
+        last_update_ts: (role === 'phase_info' ? now : fields[role].at) / 1000,
+        ...(fields[role]?.source ? { source: fields[role].source } : {}) };
     }
     cb?.(); queueMicrotask(() => client.emit('message', `${frame.src}/rpc`, Buffer.from(JSON.stringify({
       id: frame.id, src: 'synthetic-joint-evse', dst: frame.src, ...(error ? { error } : { result }) })), {}));
@@ -114,8 +115,8 @@ async function fixture(t, { limiter = true } = {}) {
         transactionId: cars.charger1.connected ? cars.charger1.connectedAt / 1000 : null,
         transactionStartedAt: cars.charger1.connectedAt, transactionConfirmed: cars.charger1.connected,
         pluggedIn: cars.charger1.connected, powerKw: amps1() * .69, powerAt: now,
-        appControl: null, limits: { chargerA: 16, cableA: 16, circuitA: triple(16), allocationA: 32, equalizerAvailableA: triple(16 - amps2()) },
-        supply: { availableCurrentA: triple(16 - amps2()), propertyCurrentA: triple(amps1() + amps2()), chargerCurrentA: triple(amps1()),
+        appControl: null, limits: { chargerA: 16, cableA: 16, circuitA: triple(16), allocationA: 32, equalizerAvailableA: triple(Math.max(0, budgetA - amps2())) },
+        supply: { availableCurrentA: triple(Math.max(0, budgetA - amps2())), propertyCurrentA: triple(amps1() + amps2()), chargerCurrentA: triple(amps1()),
           voltageV: triple(230), observationTimes: { allowance: triple(now), property: triple(now), charger: triple(now), voltage: triple(now) } } };
     };
     ocpp = createOcppScheduleAdapter({ scope, readSnapshot: snapshot, clock: () => now, canControl: () => true,
@@ -322,6 +323,78 @@ test('an infeasible shared deadline follows the selected priority in forecasts a
   }
   assert.ok(f.commands.filter(command => command.role === 'current_limit').every(command => command.value >= 6),
     'A zero allocation pauses instead of sending an unsupported current');
+});
+
+for (const limiter of [true, false]) for (const priority of ['balanced', 'charger1', 'charger2'])
+  test(`economic permission stays stable through changing actual draw with ${priority} priority and limiter ${limiter}`, async t => {
+    const f = await fixture(t, { limiter });
+    await f.connect('charger1'); await f.connect('charger2');
+    for (const id of ['charger1', 'charger2']) await f.edit(id, { capacityKwh: 25, readyBy: '03:00' });
+    await f.automatic('charger1', true); await f.automatic('charger2', true); await f.priority(priority); await f.plan();
+    const execution = () => ['charger1', 'charger2'].map(id => f.view(id).control.execution);
+    const initial = structuredClone(execution()), before = f.commands.length;
+    for (const [first, second] of [[16,16], [8,8], [16,6], [6,16], [8,8]]) {
+      f.cars.charger1.demandA = first; f.cars.charger2.demandA = second;
+      f.advance(30_000);
+      for (const role of ['current_limit', 'start_charging']) f.fields[role] = { ...f.fields[role], at: f.now, source: 'sys' };
+      await f.settle();
+      assert.deepEqual(execution(), initial, 'Own load changes must not replace accepted charging periods');
+      for (const id of ['charger1', 'charger2']) assert.notEqual(f.view(id).identification.phase, 'pausing');
+    }
+    assert.deepEqual(f.commands.slice(before).filter(command => command.role === 'start_charging'
+      || command.chargerId === 'charger1'), [], 'Routine draw readback must not alternate charging permissions');
+  });
+
+test('economic current sharing still responds to actual peer stopping and returning', async t => {
+  const f = await fixture(t);
+  await f.connect('charger1'); await f.connect('charger2');
+  for (const id of ['charger1', 'charger2']) await f.edit(id, { capacityKwh: 25, readyBy: '03:00' });
+  await f.automatic('charger1', true); await f.automatic('charger2', true); await f.priority('charger1'); await f.plan();
+  const before = f.commands.length;
+  f.cars.charger1.demandA = 0; f.advance(30_000); await f.settle();
+  assert.equal(f.fields.start_charging.value, true, 'A physically idle peer need not waste the remaining live capacity');
+  f.cars.charger1.demandA = 16; f.advance(30_000); await f.settle();
+  assert.equal(f.fields.start_charging.value, false, 'A returning preferred load must immediately regain its capacity');
+  assert.deepEqual(f.commands.slice(before).filter(command => command.role === 'start_charging').map(command => command.value), [true, false]);
+});
+
+for (const priority of ['balanced', 'charger1', 'charger2'])
+  test(`economic waiting survives polling and restart with ${priority} priority`, async t => {
+    const f = await fixture(t, { limiter: false });
+    await f.automatic('charger1', true); await f.automatic('charger2', true); await f.plan();
+    await f.connect('charger1'); await f.connect('charger2'); await f.priority(priority); await f.plan();
+    const periods = () => ['charger1', 'charger2'].map(id => f.view(id).control.execution?.periods);
+    const accepted = structuredClone(periods());
+    assert.ok(accepted.every(rows => rows?.[0].startAt > f.now));
+    let before = f.commands.length;
+    for (let tick = 0; tick < 6; tick++) { f.advance(30_000); await f.settle(); }
+    assert.deepEqual(periods(), accepted);
+    assert.deepEqual(f.commands.slice(before).filter(command => command.role === 'start_charging'
+      || command.chargerId === 'charger1'), []);
+    await f.restart();
+    assert.deepEqual(periods(), accepted, 'Restart must preserve accepted economic waiting');
+    before = f.commands.length;
+    for (let tick = 0; tick < 6; tick++) { f.advance(30_000); await f.settle(); }
+    assert.deepEqual(periods(), accepted);
+    assert.deepEqual(f.commands.slice(before).filter(command => command.role === 'start_charging'
+      || command.chargerId === 'charger1'), []);
+  });
+
+test('balanced economic allocation keeps a short-capacity turn through repeated readback', async t => {
+  const f = await fixture(t, { budgetA: 6 });
+  await f.connect('charger1'); await f.connect('charger2');
+  for (const id of ['charger1', 'charger2']) await f.edit(id, { capacityKwh: 25, readyBy: '03:00' });
+  await f.automatic('charger1', true); await f.automatic('charger2', true); await f.plan();
+  const active = () => f.runtime.status().coordination.allocations.find(row => row.start <= f.now && row.end > f.now);
+  const winner = () => Object.entries(active().chargers).find(([, row]) => row.currentA >= 6)?.[0];
+  const first = winner(), before = f.commands.length;
+  assert.ok(first);
+  for (let tick = 0; tick < 12; tick++) {
+    f.advance(30_000); await f.settle();
+    assert.equal(winner(), first, 'Polling must preserve the existing 15-minute allocation slice');
+  }
+  assert.deepEqual(f.commands.slice(before).filter(command => command.role === 'start_charging'
+    || command.chargerId === 'charger1'), [], 'An unchanged economic allocation must not cause start/stop commands');
 });
 
 async function chargingBeforePriceRevision(t) {

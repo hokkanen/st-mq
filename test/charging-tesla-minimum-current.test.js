@@ -31,6 +31,34 @@ test('verified minimum on Charger 2 distinguishes the Tesla by measured current 
     'Fresh affirmative Tesla current supports Charger 1 independently of Charger 2 having a different car');
 });
 
+test('Tesla phase metadata does not veto corroborated measured current and power', () => {
+  for (const phases of [2, 1, null, undefined]) {
+    const { tesla, options, first, minimumPhysical } = fixture();
+    if (phases === undefined) delete tesla.phases;
+    else tesla.phases = phases;
+    assert.ok(matchTeslaMinimumCurrent(tesla, options),
+      'A three-phase charger at 6 A and 4.1 kW matches the independent Tesla 6 A and 4 kW reports');
+    tesla.actualCurrentA = 16; tesla.actualPowerKw = 11;
+    tesla.fields.charger_actual_current.value = 16; tesla.fields.charger_power.value = 11;
+    assert.ok(matchTeslaMinimumCurrent(tesla, { ...options, physical: first, peers: [minimumPhysical] }),
+      'The same electrical comparison also identifies Tesla on Charger 1');
+  }
+});
+
+test('ignoring Tesla phase metadata still requires current and power to agree with physical measurements', () => {
+  const { tesla, options } = fixture();
+  tesla.phases = 2;
+  tesla.actualPowerKw = 1.4;
+  assert.equal(matchTeslaMinimumCurrent(tesla, options), null,
+    'Equal current cannot corroborate single-phase Tesla power against measured three-phase power');
+  tesla.actualPowerKw = 4;
+  tesla.actualCurrentA = 8;
+  assert.equal(matchTeslaMinimumCurrent(tesla, options), null, 'Matching power alone cannot replace matching actual current');
+  tesla.actualCurrentA = 6;
+  options.physical.phaseCurrentA = field([6, 8, 6]);
+  assert.equal(matchTeslaMinimumCurrent(tesla, options), null, 'Uneven measured phases remain inconclusive');
+});
+
 test('confirmed limit without physical response never identifies Tesla', () => {
   for (const phase of ['proposed', 'applying', 'restoring', 'uncertain', 'restored', 'superseded']) {
     const { tesla, options } = fixture(); options.currentTest.phase = phase;
@@ -129,7 +157,7 @@ test('actual phase measurements exclude stale, inferred and uneven current inste
   options.physical = singlePhase; options.minimumPhysical = singlePhase;
   assert.ok(matchTeslaMinimumCurrent(tesla, options), 'Single-phase current is not divided by three');
   tesla.phases = 3;
-  assert.equal(matchTeslaMinimumCurrent(tesla, options), null, 'Different known phase counts do not corroborate identity');
+  assert.ok(matchTeslaMinimumCurrent(tesla, options), 'Measured single-phase current and corroborating power suffice despite different Tesla phase metadata');
 });
 
 test('Tesla current duplicates and unknown gaps preserve original evidence and retained provenance', () => {

@@ -96,7 +96,9 @@ export function measuredChargingCurrent(physical, now) {
 
 /** A minimum-current test on Charger 2 distinguishes simultaneous loads only
  * after actual draw and independent live Tesla current agree uniquely. Missing
- * peer evidence and equal currents remain ambiguous, never BMW by elimination. */
+ * peer evidence and equal currents remain ambiguous, never BMW by elimination.
+ * Tesla's reported phase count is not a reliable count of energized phases;
+ * measured current and corroborating power supply the electrical comparison. */
 export function matchTeslaMinimumCurrent(tesla, { physical, peers = [], minimumPhysical, currentTest,
   connectedAt, lastDisconnectedAt, consumedCurrentAt, now = Date.now() } = {}) {
   const field = tesla?.fields?.charger_actual_current, power = tesla?.fields?.charger_power;
@@ -116,14 +118,13 @@ export function matchTeslaMinimumCurrent(tesla, { physical, peers = [], minimumP
     || field.receivedAt > now || now - field.receivedAt > MINUTE
     || time(consumedCurrentAt) && field.receivedAt <= consumedCurrentAt
     || !Number.isFinite(tesla.actualCurrentA) || tesla.actualCurrentA <= .5
-    || !Number.isInteger(tesla.phases) || tesla.phases < 1 || tesla.phases > 3
     || power?.retained !== false || !time(power.receivedAt) || power.receivedAt < since || power.receivedAt > now
     || !Number.isFinite(tesla.actualPowerKw) || tesla.actualPowerKw <= .5 || !freshPower(physical)
     || Math.abs(physical.powerKw.value - tesla.actualPowerKw) > .75) return null;
   const current = measuredChargingCurrent(physical, now), minimum = measuredChargingCurrent(minimumPhysical, now);
   if (!current || !minimum || !freshPower(minimumPhysical) || minimum.measuredAt < currentTest.confirmedAt
     || current.measuredAt < currentTest.confirmedAt || Math.abs(minimum.value - currentTest.appliedCurrentA) > .5
-    || current.phases !== tesla.phases || Math.abs(current.value - tesla.actualCurrentA) > .5) return null;
+    || Math.abs(current.value - tesla.actualCurrentA) > .5) return null;
   for (const peer of peers) {
     if (peer.connected?.available === true && peer.connected.value === false) continue;
     const zero = peer.powerKw;
@@ -329,6 +330,16 @@ export function bmwChargingEvents(reading) {
   return events;
 }
 
+// Consuming a newer source episode also fences older episodes. Otherwise a
+// later legitimate match could revive an earlier ambiguous start/stop pair.
+// Use raw history: ongoing baselines need not be distinct transition edges.
+export function bmwConsumedChargingAt(reading, consumedChargingId) {
+  if (!eventId(consumedChargingId)) return null;
+  try { validateBmwChargingHistory(reading); } catch { return null; }
+  return reading?.fields?.charging?.history?.find(row => row.value === true
+    && row.readingId === consumedChargingId)?.measuredAt ?? null;
+}
+
 // Vehicle departures fence all historical charging episodes, including when
 // charger polling did not observe the intervening unplug.
 function bmwEvidenceStart(reading, connectedAt, lastDisconnectedAt) {
@@ -354,10 +365,12 @@ function bmwSessionEvidence(reading, { connectedAt, lastDisconnectedAt, charging
     .filter(at => sourceTime(at) && (matchingSince === null || at >= matchingSince)).sort((a, b) => a - b);
   const stoppedTimes = (Array.isArray(stoppedAt) ? stoppedAt : [stoppedAt]).filter(sourceTime).sort((a, b) => a - b);
   const edges = bmwChargingEvents(reading);
+  const consumedAt = bmwConsumedChargingAt(reading, consumedChargingId);
   const episodes = [];
   for (let index = 0; index < edges.length; index++) {
     const start = edges[index], stop = edges[index + 1]?.value === false ? edges[index + 1] : null;
     if (start.value !== true || !event(start) || start.readingId === consumedChargingId
+      || consumedAt !== null && start.measuredAt <= consumedAt
       || matchingSince !== null && start.measuredAt < matchingSince) continue;
     // Pair the first physical stop following the matched physical start. A
     // later unrelated stop must not close an earlier charging episode.

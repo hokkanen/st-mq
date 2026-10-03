@@ -1,4 +1,4 @@
-import { connectionEvidenceStart, bmwIdentityContextValid, bmwChargingEvents } from './vehicle.js';
+import { connectionEvidenceStart, bmwIdentityContextValid, bmwChargingEvents, bmwConsumedChargingAt } from './vehicle.js';
 
 const MINUTE = 60_000;
 export const IDENTIFICATION_CHARGE_LIMIT_MS = 5 * MINUTE;
@@ -14,7 +14,7 @@ const stateKeys = ['version', 'id', 'connectedAt', 'attempt', 'phase', 'action',
 const candidateKeys = ['connectedAt', 'association', 'kind', 'readingId', 'measuredAt', 'receivedAt', 'physicalAt', 'capturedAt'];
 const pauseKeys = ['connectedAt', 'requestedAt', 'confirmedAt', 'startAt', 'stoppedAt'];
 const probeKeys = ['startedAt', 'deadlineAt', 'returnStartAt', 'endedAt'];
-const reasons = ['identified', 'manual-stop', 'pause-timeout',
+const reasons = ['identified', 'manual-stop', 'interrupted', 'pause-timeout',
   'awaiting-evidence', 'probe-energy-limit', 'probe-time-limit', 'telemetry-lost'];
 const exactKeys = (value, keys) => object(value) && Object.keys(value).sort().join(',') === [...keys].sort().join(',');
 const validCandidate = value => exactKeys(value, candidateKeys) && ['start', 'ongoing'].includes(value.kind)
@@ -71,15 +71,15 @@ export function validateIdentificationState(state) {
 
 const finish = (state, phase, reason, now) => ({ ...state, phase, reason, action: null, completedAt: now,
   ...(state.probe ? { probe: { ...state.probe, endedAt: state.probe.endedAt ?? now } } : {}) });
-const observe = (state, reason, now) => ({ ...state, phase: 'observing', reason, action: null,
-  ...(state.probe ? { probe: { ...state.probe, endedAt: state.probe.endedAt ?? now } } : {}) });
 
 /** Identification lasts for a connection. Only extra charging has a probe
  * budget. A BMW correlation pause retains its original bounded deadline after
  * physical confirmation so the vehicle can observe the stop. Independent BMW
- * evidence may also arrive later in the same connection. */
+ * evidence may also arrive later in the same connection. Exhaustion or
+ * interruption ends active testing until an explicit retry or new connection;
+ * passive evidence can still complete the saved attempt. */
 export function advanceIdentification(previous, { connectedAt, now, connected = true, identified = false,
-  manualRetry = false, manualStop = false, available = true, charging = false, energyKwh = null, powerKw = null,
+  manualRetry = false, manualStop = false, interrupted = false, available = true, charging = false, energyKwh = null, powerKw = null,
   normalCharging = true, probeAllowed = false, probeReturnAt = null, probeDurationMs = IDENTIFICATION_CHARGE_LIMIT_MS,
   physicalFresh = true, physicalStopped = false, candidate = null, pause = null } = {}) {
   validateIdentificationState(previous);
@@ -105,17 +105,18 @@ export function advanceIdentification(previous, { connectedAt, now, connected = 
       state.chargeUsedKwh = Math.max(state.chargeUsedKwh, energyKwh - state.chargeEnergyKwh);
   }
   if (identified && !manualRetry) return state.phase === 'completed' ? state : finish(state, 'completed', 'identified', now);
-  if (['completed', 'inconclusive'].includes(state.phase)) return state;
+  if (['completed', 'inconclusive', 'observing'].includes(state.phase)) return state;
+  if (interrupted) return finish(state, 'inconclusive', 'interrupted', now);
   if (manualStop) {
     state.action = null;
-    return state.phase === 'waiting' && !state.probe ? state : observe(state, 'manual-stop', now);
+    return state.phase === 'waiting' && !state.probe ? state : finish(state, 'inconclusive', 'manual-stop', now);
   }
   if (state.phase === 'pausing' && validPause(pause) && pause.connectedAt === connectedAt
     && [state.pauseUntil, state.probe?.returnStartAt].includes(pause.startAt)
     && pause.requestedAt >= (state.candidate?.capturedAt ?? state.startedAt)
     && pause.confirmedAt <= now && pause.stoppedAt <= now && pause.stoppedAt < state.pauseUntil) {
     state.pause = structuredClone(pause);
-    if (!state.candidate) return observe(state, state.reason ?? 'awaiting-evidence', now);
+    if (!state.candidate) return finish(state, 'inconclusive', state.reason ?? 'awaiting-evidence', now);
     if (state.probe) state.probe.endedAt ??= now;
     state.reason ??= 'awaiting-evidence';
   }
@@ -125,18 +126,11 @@ export function advanceIdentification(previous, { connectedAt, now, connected = 
     // Current zero/withholding evidence ends the extra charging, but cannot
     // manufacture the causal pause proof required by active vehicle matching.
     // A candidate still needs its already bounded observation window.
-    if (!state.candidate) return observe(state, state.reason ?? 'awaiting-evidence', now);
+    if (!state.candidate) return finish(state, 'inconclusive', state.reason ?? 'awaiting-evidence', now);
     state.probe.endedAt = now;
-  }
-  if (state.phase === 'observing') {
-    // A probe that never obtained physical charging can still use one ordinary
-    // charging opportunity later, without another extra-energy allowance.
-    if (!(normalCharging && charging && available && state.pauseUntil === null)) return state;
-    state.phase = 'charging'; state.reason = null;
-    state.chargingStartedAt ??= now;
   }
   if (normalCharging && state.probe && state.probe.endedAt === null && state.phase !== 'pausing')
-    state.probe.endedAt = now;
+    return finish(state, 'inconclusive', 'interrupted', now);
   const probeDuration = Math.min(IDENTIFICATION_CHARGE_LIMIT_MS, Math.max(1000, Math.floor(probeDurationMs)));
   if (!normalCharging && available && physicalFresh && probeAllowed && !state.probe && state.pauseUntil === null
     && time(probeReturnAt) && probeReturnAt > now + probeDuration) {
@@ -168,7 +162,7 @@ export function advanceIdentification(previous, { connectedAt, now, connected = 
     state.pauseUntil = Math.ceil((now + IDENTIFICATION_PAUSE_WAIT_MS) / 1000) * 1000;
   }
   if (state.phase === 'pausing') {
-    if (now >= state.pauseUntil) return observe(state, 'pause-timeout', now);
+    if (now >= state.pauseUntil) return finish(state, 'inconclusive', 'pause-timeout', now);
     // Even a lost vehicle feed must not cancel an already-budgeted charger stop.
     state.action = 'pause';
   } else state.action = available && (probing || normalCharging) ? 'allow' : null;
@@ -191,8 +185,10 @@ export function prepareActiveBmwCandidate(reading, { connectedAt, lastDisconnect
   const departure = departureAt(reading, lastDisconnectedAt);
   const boundary = connectionEvidenceStart(connectedAt, departure);
   const field = reading.fields?.charging;
+  const consumedAt = bmwConsumedChargingAt(reading, consumedChargingId);
   const live = observed => observed?.retained === false && eventId(observed.readingId)
     && observed.readingId !== consumedChargingId && time(observed.measuredAt) && time(observed.receivedAt)
+    && (consumedAt === null || observed.measuredAt > consumedAt)
     && observed.measuredAt > departure && observed.measuredAt <= now
     && observed.receivedAt >= boundary && observed.receivedAt <= now;
   const stops = (Array.isArray(stoppedAt) ? stoppedAt : [stoppedAt]).filter(at => time(at) && at <= now);
@@ -217,9 +213,11 @@ export function prepareActiveBmwCandidate(reading, { connectedAt, lastDisconnect
 export function matchActiveBmwPause(reading, { state, now, lastDisconnectedAt, consumedChargingId } = {}) {
   if (!state || !bmwIdentityContextValid(reading, now)) return null;
   const { candidate, pause, connectedAt } = state;
+  const consumedAt = bmwConsumedChargingAt(reading, consumedChargingId);
   if (!validCandidate(candidate) || !validPause(pause) || candidate.connectedAt !== connectedAt
     || pause.connectedAt !== connectedAt || ![state.pauseUntil, state.probe?.returnStartAt].includes(pause.startAt)
     || candidate.association !== (reading.association ?? null) || candidate.readingId === consumedChargingId
+    || consumedAt !== null && candidate.measuredAt <= consumedAt
     || candidate.capturedAt > pause.requestedAt || candidate.receivedAt > pause.requestedAt
     || candidate.measuredAt >= pause.requestedAt || candidate.physicalAt > pause.requestedAt
     || pause.requestedAt > pause.stoppedAt || pause.confirmedAt > now || pause.stoppedAt > now) return null;

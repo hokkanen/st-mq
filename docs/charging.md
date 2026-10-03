@@ -537,15 +537,22 @@ faults or unavailable control block it; identification does not invent a current
 command or enable the economic limiter.
 
 Confirmation requires fresh measured phase currents after the minimum-setting
-readback, fresh live Tesla actual-current evidence from that test, compatible
-energized-phase count and corroborating power. The physical readings must settle
-and continue to agree on a later observation. Requested current and the pilot
+readback, fresh live Tesla actual-current evidence from that test and
+corroborating power. Tesla's reported phase count is not authoritative for the
+charger's measured wiring; it cannot veto an otherwise unique current/power match.
+The physical readings must settle and continue to agree on a later observation. Requested current and the pilot
 ceiling are not measured draw. A Tesla current held from before the test cannot
 identify either charger, even if its value matches. Each other observed charger
 must have fresh distinguishing current evidence, confirmed zero draw or a
-confirmed disconnect. Equal currents, missing peer measurements or ambiguous
-phase evidence leave identification pending. A unique Tesla match can identify
-either charger; BMW still requires its own positive evidence.
+confirmed disconnect. Equal currents, missing peer measurements or inconsistent
+measured currents and power leave identification unresolved. A unique Tesla match
+can identify either charger; BMW still requires its own positive evidence.
+If the same BMW source start/stop episode matched both chargers, a unique Tesla
+current match retires that ambiguous episode for both. Polling and restart cannot
+reuse it to recreate the conflict or identify the other charger by elimination.
+Consuming a newer BMW source episode also fences earlier episodes, so a later
+independent BMW match cannot revive the retired evidence.
+Independent contradictory BMW evidence still leaves an unresolved conflict.
 
 The current test saves the original setting, equipment/session scope and fixed
 90-second deadline before a write. Positive identification or expiry returns
@@ -567,7 +574,7 @@ or the end of a bounded charging probe can supply the second edge.
 An ongoing BMW baseline without its original start edge instead requires a
 verified controlled pause. Unknown charger state never counts as a stop.
 
-Identification remains pending for the physical connection independently of
+Passive identification continues for the physical connection independently of
 economic scheduling and any bounded charging test. BMW and Tesla use this same
 lifecycle, energy allowance, control permissions, restart behavior and return to
 the current charging choice. The matchers differ according to the available
@@ -609,12 +616,21 @@ test leaves its budget unused; loss during an active test never renews its limit
 
 When normal charging is permitted, it proceeds under native current limits;
 waiting for either vehicle has no short charging timeout or identification energy budget.
+Ordinary observation does not override the accepted economic program or its
+start/stop commitments. Only a bounded probe, minimum-current test or BMW pause
+can acquire temporary identification control. An active probe retains its saved
+economic return time even if its own temporary draw changes the forecast.
 A conclusive Tesla match can finish immediately. A usable BMW charging baseline
 can trigger one brief, confirmed pause while the same connection is charging.
 Startup can use live ongoing BMW charging without inventing a
 missing historical start edge. Matching charger and vehicle stop evidence is
 still required; an accepted pause command alone is insufficient. Active tests
-are serialized across charging points. Shelly requires available start/stop control,
+are serialized across charging points. A BMW pause waits while its peer has a
+recent charging transition, pending control or an upcoming economic transition
+within the pause and correlation window. This avoids creating two matching stop
+episodes without holding the peer away from its economic schedule. Unexpected
+physical or manual changes still take priority and ambiguous evidence stays unresolved.
+Shelly requires available start/stop control,
 fresh physical readings and available MQTT, and retains native restrictions
 and its optional electrical limiter when enabled throughout the test.
 
@@ -652,14 +668,18 @@ returns immediately to the current charging choice. During an economic delay,
 that choice is the scheduled pause. The zero-current OCPP restriction that
 ends an extra probe can therefore last until the planned economic release; it
 does not expire after the ordinary 90-second identification pause.
-Probe limits leave **Identification pending**
-while normal control uses session/default battery inputs. Source-timestamped BMW
-start/stop evidence can confirm the same connection until unplugging, including
+Exhaustion, completion of the minimum-current comparison, interruption or the
+pause deadline ends active testing for that attempt. An unresolved attempt shows
+**Identification inconclusive** while normal control uses session/default battery inputs.
+Source-timestamped BMW start/stop evidence can confirm the same connection until unplugging, including
 after a long charging run or delayed and reordered delivery. Matching still
 requires corresponding episodes and tightly correlated physical transitions;
 newer current state is never rolled backward by historical evidence. Tests never
-repeat automatically for that connection. Normal scheduled charging can supply
-additional evidence after the probe budget is exhausted.
+repeat automatically for that connection: polling, restart, economic replanning
+and **Use automatic** cannot reopen an ended attempt. Choosing **Identify** or a
+new physical connection permits a new attempt. There is at most one bounded
+charging probe, one minimum-current comparison and one BMW pause per attempt.
+Normal scheduled charging can supply additional evidence after the probe budget is exhausted.
 
 The attempt, consumed budget, absolute deadlines and physical evidence survive a current-version
 restart. A known connection resumes its pending attempt or completed outcome;

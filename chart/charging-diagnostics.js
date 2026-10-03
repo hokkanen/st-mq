@@ -72,6 +72,7 @@ const planningAssumptions = rows => (Array.isArray(rows) ? rows : []).filter(row
 
 const IDENTIFICATION_CAUSES = {
   identified: 'Vehicle identified', 'manual-stop': 'Manual Stop has priority', unsupported: 'Only passive matching is available',
+  interrupted: 'Active identification test ended; passive matching continues',
   'telemetry-unavailable': 'Vehicle evidence unavailable', 'vehicle-feed-stale': 'Vehicle feed is not current',
   'charger-unavailable': 'Fresh charger readiness unavailable', 'another-identification-active': 'The other charger is testing a vehicle',
   'bmw-home-unknown': 'BMW has no valid last known home location', 'bmw-away': 'BMW last valid location is away',
@@ -84,10 +85,10 @@ const IDENTIFICATION_CAUSES = {
   'awaiting-stop-confirmation': 'Waiting for physical stop confirmation',
   'observing-charge': 'Observing charging for a usable BMW baseline',
   'waiting-for-charging': 'Waiting for the vehicle to begin charging',
-  'probe-energy-limit': 'Extra charging ended at the probe energy limit; identification remains pending',
-  'probe-time-limit': 'Extra charging ended at the safety time limit; identification remains pending',
-  'telemetry-lost': 'Charging test ended after loss of current measurements; identification remains pending',
-  'pause-timeout': 'The physical pause reached its safety deadline',
+  'probe-energy-limit': 'Extra charging ended at the probe energy limit; passive matching continues',
+  'probe-time-limit': 'Extra charging ended at the safety time limit; passive matching continues',
+  'telemetry-lost': 'Charging test ended after loss of current measurements; passive matching continues',
+  'pause-timeout': 'The vehicle was not identified within the brief pause deadline',
 };
 
 function inputText(input, kind = 'soc') {

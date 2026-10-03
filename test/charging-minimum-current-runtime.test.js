@@ -10,7 +10,7 @@ const START = 1_800_000_000_000;
 
 // Real runtime, Tesla MQTT capture, Shelly RPC adapter and controller. Charger 1
 // supplies independent synthetic phase measurements and cannot issue commands.
-async function fixture(t, { firstCurrentA = 16, firstAvailable = true, stepMetadata = true } = {}) {
+async function fixture(t, { firstCurrentA = 16, firstAvailable = true, stepMetadata = true, currentWritable = true } = {}) {
   let now = START, runtime, adapter, meterAt = START;
   const data = new Map(), writes = [], client = new EventEmitter();
   const config = { input: 'mqtt', connections: {
@@ -42,7 +42,7 @@ async function fixture(t, { firstCurrentA = 16, firstAvailable = true, stepMetad
     else if (frame.method === 'Service.GetStatus') result = { state: 'running' };
     else if (frame.method === 'Schedule.List') result = { rev: 1, jobs: [] };
     else if (frame.method.endsWith('.GetConfig')) result = { id: components[role][1], owner: 'service:0',
-      access: 'crw', min: 6, max: 16, meta: { ui: stepMetadata ? { step: 1 } : {} },
+      access: role === 'current_limit' && !currentWritable ? 'r' : 'crw', min: 6, max: 16, meta: { ui: stepMetadata ? { step: 1 } : {} },
       options: ['charger_free', 'charger_charging', 'charger_pause'] };
     else if (frame.method.endsWith('.Set')) {
       writes.push({ method: frame.method, ...frame.params, at: now });
@@ -88,7 +88,7 @@ async function fixture(t, { firstCurrentA = 16, firstAvailable = true, stepMetad
     runtime.updatePlan = () => {
       runtime.telemetry(now);
       for (const item of Object.values(runtime.chargers)) item.plan = { id: 'synthetic-normal-plan', feasible: true,
-        startAt: START, periods: [{ startAt: START, endAt: null }] };
+        deadlineAt: START + 8 * 3600_000, startAt: START, periods: [{ startAt: START, endAt: null }] };
     };
     attachFirst(runtime);
     if (!adapter) {
@@ -118,7 +118,9 @@ async function fixture(t, { firstCurrentA = 16, firstAvailable = true, stepMetad
 }
 
 for (const charger of ['charger1', 'charger2']) test(`minimum-current runtime identifies Tesla on ${charger} from two independent settled measurements`, async t => {
-  const f = await fixture(t); let control = await f.update();
+  const f = await fixture(t);
+  f.publishTesla({ charger_phases: 2 }); // The vehicle can report 2 while all three physical phases carry current.
+  let control = await f.update();
   assert.equal(control.currentTest.phase, 'active'); assert.equal(f.fields.current_limit.value, 6);
   assert.equal(f.writes.filter(row => row.method === 'Number.Set').length, 1);
   assert.equal(f.item('charger1').vehicleMatch, null); assert.equal(f.item('charger2').vehicleMatch, null);
@@ -132,6 +134,122 @@ for (const charger of ['charger1', 'charger2']) test(`minimum-current runtime id
   assert.equal(control.currentTest.phase, 'restored'); assert.equal(f.fields.current_limit.value, 12);
   assert.ok(f.now < control.currentTest.expiresAt, 'Success ends the current test before its fixed deadline');
   assert.deepEqual(f.writes.map(row => [row.role, row.value]), [['current_limit', 6], ['current_limit', 12]]);
+});
+
+test('minimum-current timeout restores once and cannot restart through polling, Use automatic or restart', async t => {
+  const f = await fixture(t, { firstCurrentA: 6 });
+  await f.update();
+  const attempt = structuredClone(f.item('charger2').identification);
+  const test = structuredClone(f.item('charger2').controller.status().currentTest);
+  f.advance(91_000); await f.update();
+  assert.equal(f.fields.current_limit.value, 12);
+  assert.equal(f.item('charger2').controller.status().currentTest.phase, 'restored');
+  assert.equal(f.item('charger2').identification.phase, 'inconclusive');
+  for (let i = 0; i < 4; i++) {
+    f.advance(60_000); await f.sampleTesla(6); await f.update();
+  }
+  const view = f.runtime.status().chargers.find(row => row.id === 'charger2');
+  await f.runtime.useAutomatic('charger2', { association: view.association,
+    sessionId: view.request.sessionId, revision: view.request.revision,
+    controlRevision: view.controls.revision, takeoverToken: view.control.takeover.token });
+  await f.restart(); await f.update();
+  assert.equal(f.item('charger2').identification.id, attempt.id);
+  assert.equal(f.item('charger2').identification.phase, 'inconclusive');
+  assert.equal(f.item('charger2').controller.status().currentTest.expiresAt, test.expiresAt);
+  assert.deepEqual(f.writes.map(row => [row.role, row.value]), [['current_limit', 6], ['current_limit', 12]]);
+});
+
+test('ordinary identification observation preserves economic execution and emits no control request', async t => {
+  const f = await fixture(t, { currentWritable: false });
+  f.item('charger2').controls.enabled = true; f.runtime.refreshSettings();
+  await f.update();
+  for (let i = 0; i < 3; i++) {
+    f.advance(10_000); await f.update();
+    const item = f.item('charger2'), control = item.controller.status();
+    assert.equal(item.identification.phase, 'charging');
+    assert.equal(f.runtime.identificationControl(item, control.snapshot), null);
+    assert.equal(control.identification, null);
+    assert.equal(control.execution.planId, 'synthetic-normal-plan');
+  }
+  assert.deepEqual(f.writes, []);
+});
+
+for (const winner of ['charger1', 'charger2']) test(`a unique Tesla test on ${winner} retires one BMW episode shared by both chargers`, async t => {
+  const f = await fixture(t); f.observe();
+  f.runtime.setMqttStatus({ connected: true, subscribed: true }, 'bmw');
+  const publish = values => f.runtime.receiveSoc('synthetic/minimum-current/bmw', JSON.stringify({
+    provider: 'bmw-cardata', ...values, fields: Object.fromEntries(Object.keys(values).map(key => [key,
+      { measuredAt: key === 'pluggedIn' ? START - 120_000 : f.now, readingId: `synthetic-${key}-${f.now}` }])) }), { retain: false }, f.now);
+  // The BMW inlet can remain CONNECTED across charger sessions; this older
+  // context cannot supply a fresh plug edge that independently fences replay.
+  f.advance(1000); publish({ atHome: true, pluggedIn: true, charging: true });
+  const chargingId = f.runtime.vehicleFeeds.bmw.reading.fields.charging.readingId;
+  f.advance(20_000); publish({ charging: false });
+  assert.equal(f.runtime.vehicleFeeds.bmw.consumedChargingId, null, 'No physical stop has been supplied yet');
+  // The same recorded simultaneous start/stop episode matched both chargers.
+  for (const item of Object.values(f.runtime.chargers)) {
+    item.vehicleEvidence.chargingTimes = [START + 1000];
+    item.vehicleEvidence.stoppedTimes = [f.now];
+  }
+  await f.adapter.refresh(); f.observe();
+  assert.ok(Object.values(f.runtime.chargers).every(item => item.vehicleConflict?.ids.includes('bmw')));
+  await f.update(); f.advance(6000); await f.sampleTesla(winner === 'charger1' ? 16 : 6);
+  f.advance(5000); await f.adapter.refresh(); f.observe();
+  assert.equal(f.item(winner).vehicleMatch?.id, 'tesla');
+  const peer = winner === 'charger1' ? 'charger2' : 'charger1';
+  assert.equal(f.item(peer).vehicleMatch, null, 'Discarding an ambiguous episode cannot identify BMW by elimination');
+  assert.equal(f.runtime.vehicleFeeds.bmw.consumedChargingId, chargingId);
+  await f.update(); await f.restart(); f.advance(10_000); await f.update();
+  assert.equal(f.item(winner).vehicleMatch?.id, 'tesla', 'Restoration and restart must not revive the ambiguous BMW episode');
+  assert.equal(f.item(peer).vehicleMatch, null);
+  assert.equal(f.item(winner).vehicleConflict, null); assert.equal(f.item(peer).vehicleConflict, null);
+  // A later, independent BMW episode identifies the peer. Consuming that new
+  // episode must not make the earlier shared episode usable again.
+  f.runtime.setMqttStatus({ connected: true, subscribed: true }, 'bmw');
+  f.advance(90_000); await f.adapter.refresh();
+  f.item(peer).vehicleEvidence.chargingTimes.push(f.now);
+  publish({ charging: true });
+  const laterChargingId = f.runtime.vehicleFeeds.bmw.reading.fields.charging.readingId;
+  f.advance(20_000); await f.adapter.refresh();
+  f.item(peer).vehicleEvidence.stoppedTimes.push(f.now);
+  publish({ charging: false });
+  for (let sample = 0; sample < 3; sample++) {
+    f.advance(1000); await f.adapter.refresh(); f.observe();
+    assert.equal(f.item(winner).vehicleMatch?.id, 'tesla', 'A newer BMW match cannot revive the retired shared episode');
+    assert.equal(f.item(peer).vehicleMatch?.id, 'bmw', 'The peer requires its own new BMW start and stop');
+    assert.equal(f.item(winner).vehicleConflict, null); assert.equal(f.item(peer).vehicleConflict, null);
+  }
+  assert.equal(f.runtime.vehicleFeeds.bmw.consumedChargingId, laterChargingId);
+  await f.restart();
+  f.runtime.setMqttStatus({ connected: true, subscribed: true }, 'bmw');
+  f.advance(1000); await f.adapter.refresh(); publish({ charging: false }); f.observe();
+  assert.equal(f.item(winner).vehicleMatch?.id, 'tesla');
+  assert.equal(f.item(peer).vehicleMatch?.id, 'bmw');
+  assert.equal(f.item(winner).vehicleConflict, null); assert.equal(f.item(peer).vehicleConflict, null);
+});
+
+test('a unique Tesla current match cannot retire an independent contradictory BMW episode', async t => {
+  const f = await fixture(t); await f.update();
+  f.runtime.setMqttStatus({ connected: true, subscribed: true }, 'bmw');
+  const publish = values => f.runtime.receiveSoc('synthetic/minimum-current/bmw', JSON.stringify({
+    provider: 'bmw-cardata', ...values, fields: Object.fromEntries(Object.keys(values).map(key => [key,
+      { measuredAt: f.now, readingId: `synthetic-independent-${key}-${f.now}` }])) }), { retain: false }, f.now);
+  f.advance(1000); publish({ atHome: true, pluggedIn: true, charging: true });
+  const startedAt = f.now;
+  f.advance(20_000); publish({ charging: false });
+  f.item('charger1').vehicleEvidence.chargingTimes = [startedAt];
+  f.item('charger1').vehicleEvidence.stoppedTimes = [f.now];
+  await f.adapter.refresh(); f.observe();
+  assert.equal(f.item('charger1').vehicleMatch?.id, 'bmw');
+  assert.equal(f.item('charger2').vehicleMatch, null, 'The BMW episode does not match both chargers');
+  f.advance(6000); await f.sampleTesla(16);
+  for (let sample = 0; sample < 3; sample++) {
+    f.advance(5000); await f.adapter.refresh(); f.observe();
+    assert.deepEqual([...(f.item('charger1').vehicleConflict?.ids ?? [])].sort(), ['bmw', 'tesla'],
+      `Current sample ${sample + 1} cannot discard an independent contradictory BMW identity`);
+    assert.equal(f.item('charger1').vehicleMatch, null);
+    assert.equal(f.item('charger2').vehicleMatch, null);
+  }
 });
 
 for (const scenario of ['equal-current', 'missing-peer']) test(`minimum-current runtime leaves ${scenario} unresolved without power/start fallback`, async t => {

@@ -175,7 +175,7 @@ test('Shelly bounded BMW pause returns to economic waiting without releasing cha
   f.setNow(START + 60_000); await f.update();
   assert.equal(f.item().identification.phase, 'pausing'); assert.equal(f.fields.start_charging.value, false);
   f.setNow(deadline + 1000); await f.update();
-  assert.equal(f.item().identification.phase, 'observing'); assert.equal(f.item().controller.status().reason, 'economic-wait');
+  assert.equal(f.item().identification.phase, 'inconclusive'); assert.equal(f.item().controller.status().reason, 'economic-wait');
   assert.equal(f.fields.start_charging.value, false); assert.equal(starts(f).length, 0);
   assert.equal(f.card().vehicle.id, null); assert.equal(f.item().identification.attempt, 1);
 });
@@ -196,7 +196,7 @@ test('Shelly restart resumes the same absolute pause and timeout never retries a
   assert.equal(f.fields.start_charging.value, false);
   assert.equal(f.item().identification.pauseUntil, before.pauseUntil);
   f.setNow(before.pauseUntil + 1000); await f.update();
-  assert.equal(f.item().identification.phase, 'observing'); assert.equal(starts(f).length, 1);
+  assert.equal(f.item().identification.phase, 'inconclusive'); assert.equal(starts(f).length, 1);
   await f.restart(); await f.update(); assert.equal(f.item().identification.id, before.id);
   assert.equal(stops(f).length, 1);
 });
@@ -209,7 +209,7 @@ test('Shelly outage can extend a pause and recovery releases it without renewing
   assert.equal(f.card().identification.available, false);
   await assert.rejects(f.runtime.identifyVehicle('charger2', input), /unavailable|connection/);
   await f.restart(); await f.online(); await f.update();
-  assert.equal(f.item().identification.phase, 'observing');
+  assert.equal(f.item().identification.phase, 'inconclusive');
   assert.equal(f.item().identification.id, before.id); assert.equal(starts(f).length, 1);
   assert.equal(f.card().identification.pauseOutstanding, false);
 });
@@ -239,6 +239,26 @@ test('Use automatic returns a stopped Shelly to economic waiting through the rea
   assert.equal(f.card().control.manual, null); assert.equal(f.fields.start_charging.value, false);
   f.manualStop(); await f.update();
   assert.equal(f.card().control.manual.kind, 'stop', 'the next external Stop takes priority again');
+});
+
+test('Use automatic and fresh BMW reports cannot restart an interrupted identification attempt', async t => {
+  const f = await fixture(t); f.setNow(START + 1000); await f.update();
+  assert.equal(f.item().identification.phase, 'pausing');
+  f.manualStop(); await f.update();
+  const interrupted = structuredClone(f.item().identification), before = f.card();
+  assert.equal(interrupted.phase, 'inconclusive'); assert.equal(interrupted.reason, 'manual-stop');
+  await f.runtime.useAutomatic('charger2', { ...f.input(), controlRevision: before.controls.revision,
+    takeoverToken: before.control.takeover.token });
+  await f.restart();
+  for (let step = 1; step <= 3; step++) {
+    f.setNow(f.now + MINUTE); f.publish({ charging: true }, f.now); await f.update();
+    const state = f.item().identification;
+    assert.equal(state.phase, 'inconclusive'); assert.equal(state.action, null);
+    assert.equal(state.id, interrupted.id); assert.equal(state.attempt, interrupted.attempt);
+    assert.equal(state.pauseUntil, interrupted.pauseUntil); assert.equal(state.completedAt, interrupted.completedAt);
+    assert.equal(f.item().controller.status().reason, 'economic-wait');
+  }
+  assert.equal(starts(f).length, 0, 'Fresh vehicle reports cannot recreate an extra charging probe');
 });
 
 test('Use automatic disables Shelly charging timers permanently without restoring them on runtime restart', async t => {

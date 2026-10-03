@@ -412,7 +412,7 @@ for (const transport of ['cloud', 'ocpp']) {
       'Restart retains the existing bounded pause and any installed economic return');
     assert.equal(attempt(f).phase, 'pausing');
     f.setNow(initial.pauseUntil + 1000); await f.update();
-    assert.equal(attempt(f).phase, 'observing');
+    assert.equal(attempt(f).phase, 'inconclusive');
     await f.restart(); await f.update(); assert.equal(attempt(f).id, initial.id);
   });
 
@@ -478,7 +478,7 @@ for (const transport of ['cloud', 'ocpp']) {
     f.setNow(stopAt + 1000); await f.update();
     assert.ok(attempt(f).pause);
     f.setNow(attempt(f).pauseUntil + 1000); await f.update();
-    assert.equal(attempt(f).phase, 'observing'); assert.equal(f.view().id, null);
+    assert.equal(attempt(f).phase, 'inconclusive'); assert.equal(f.view().id, null);
     f.publish({ charging: false }, stopAt + 2000); await f.update();
     assert.equal(f.view().id, 'bmw'); assert.equal(attempt(f).phase, 'completed');
   });
@@ -511,7 +511,7 @@ for (const transport of ['cloud', 'ocpp']) {
     assert.equal(attempt(f).phase, 'pausing'); assert.equal(f.physical.charging, false);
     assert.equal(attempt(f).pauseUntil, initial.pauseUntil); assert.equal(installs(f).length, 1);
     f.setNow(initial.pauseUntil + 1000); await f.update(); await f.update();
-    assert.equal(attempt(f).phase, 'observing'); assert.equal(attempt(f).action, null);
+    assert.equal(attempt(f).phase, 'inconclusive'); assert.equal(attempt(f).action, null);
     assert.equal(f.physical.charging, true); assert.equal(f.view().id, null);
     assert.equal(attempt(f).attempt, 1); assert.equal(installs(f).length, 1);
   });
@@ -524,7 +524,7 @@ for (const transport of ['cloud', 'ocpp']) {
     assert.equal(attempt(f).phase, 'pausing'); assert.equal(f.physical.charging, false);
     assert.equal(installs(f).length, 1);
     f.setNow(initial.pauseUntil + 1000); const control = await f.update();
-    assert.equal(attempt(f).phase, 'observing'); assert.equal(attempt(f).action, null);
+    assert.equal(attempt(f).phase, 'inconclusive'); assert.equal(attempt(f).action, null);
     assert.equal(control.owned.startAt, FUTURE); assert.notEqual(control.owned.purpose, 'identification');
     assert.equal(f.physical.charging, false); assert.equal(f.view().id, null);
     assert.equal(installs(f).length, transport === 'cloud' ? 2 : 1);
@@ -610,7 +610,7 @@ test(`an economic OCPP probe uses normal current, stops on its fixed deadline an
   assert.equal(Date.parse(stopProfile.payload.csChargingProfiles.validTo), FUTURE);
   const stoppedAt = f.physical.at;
   f.setNow(f.now + 1000); await f.update();
-  assert.equal(item.identification.phase, 'observing'); assert.equal(item.identification.probe.deadlineAt, probe.deadlineAt);
+  assert.equal(item.identification.phase, 'inconclusive'); assert.equal(item.identification.probe.deadlineAt, probe.deadlineAt);
   assert.ok(item.identification.chargeUsedKwh <= .15);
   const count = f.writes.filter(row => row.action === 'SetChargingProfile').length;
   f.setNow(f.now + 5 * MINUTE); f.publish({ soc: 45 }, f.now); await f.update();
@@ -634,7 +634,7 @@ test('cloud scheduling runs a bounded normal-current probe and returns to the ec
   f.setNow(initial.probe.deadlineAt); await f.update();
   f.setNow(f.now + 1000); await f.update();
   const stopped = f.runtime.chargers.charger1.identification;
-  assert.equal(stopped.phase, 'observing'); assert.equal(f.physical.charging, false);
+  assert.equal(stopped.phase, 'inconclusive'); assert.equal(f.physical.charging, false);
   assert.ok(stopped.chargeUsedKwh > 0 && stopped.chargeUsedKwh <= .15);
   const count = f.writes.length;
   f.setNow(f.now + MINUTE); await f.restart(); await f.update();
@@ -659,7 +659,7 @@ test('normal-current economic probe retains its energy-bound deadline through re
   assert.equal(f.physical.charging, false);
   f.setNow(f.now + 1000); await f.update();
   const ended = f.runtime.chargers.charger1.identification;
-  assert.equal(ended.phase, 'observing'); assert.ok(ended.chargeUsedKwh <= .15);
+  assert.equal(ended.phase, 'inconclusive'); assert.ok(ended.chargeUsedKwh <= .15);
   assert.ok(f.writes.filter(row => row.action === 'SetChargingProfile').every(row =>
     row.payload.csChargingProfiles.chargingSchedule.chargingSchedulePeriod.every(period => period.limit === 0)),
   'No positive current profile is installed');
@@ -695,7 +695,7 @@ test('unassigned Tesla receives the same economic OCPP probe allowance and resto
   f.setNow(probe.deadlineAt); await f.update();
   f.setNow(f.now + 1000); await f.update();
   const stopped = f.runtime.chargers.charger1.identification;
-  assert.equal(stopped.phase, 'observing'); assert.equal(stopped.candidate, null); assert.equal(f.physical.charging, false);
+  assert.equal(stopped.phase, 'inconclusive'); assert.equal(stopped.candidate, null); assert.equal(f.physical.charging, false);
   assert.ok(stopped.chargeUsedKwh > 0 && stopped.chargeUsedKwh <= .15);
   const count = f.writes.filter(row => row.action === 'SetChargingProfile').length;
   f.setNow(f.now + 5 * MINUTE); await f.restart(); await f.update();
@@ -745,7 +745,7 @@ test('repeated identification wakeups cannot starve an explicit queued takeover'
   assert.equal(f.runtime.chargers.charger1.reconcileFlight, null);
 });
 
-test('simultaneous supported charging points serialize physical pauses without consuming the queued budget', async t => {
+test('serialized BMW pauses wait for a quiet peer after the first attempt is exhausted', async t => {
   const f = await fixture(t, 'cloud'); f.physical.pauseBlocked = true; f.setNow(START + 1000); await f.update();
   const first = f.runtime.chargers.charger1, second = f.runtime.chargers.charger2;
   const control = structuredClone(first.controller.status());
@@ -765,7 +765,24 @@ test('simultaneous supported charging points serialize physical pauses without c
   control.snapshot.readAt = f.now; control.snapshot.powerAt = f.now;
   control.snapshot.observations[120].at = f.now;
   f.runtime.telemetry(f.now);
-  assert.equal(first.identification.phase, 'observing');
-  assert.equal(second.identification.phase, 'pausing');
+  assert.equal(first.identification.phase, 'inconclusive');
+  assert.equal(second.identification.phase, 'charging', 'An expired attempt cannot immediately hand off another pause with stale peer evidence');
   assert.equal(second.identification.chargeDeadlineAt, null);
+  assert.equal(second.identification.pauseUntil, null);
+  const exhausted = structuredClone(first.identification);
+  f.physical.pauseBlocked = false;
+  await f.update();
+  assert.equal(f.physical.charging, false, 'The first charger resumes its ordinary economic waiting plan');
+  f.setNow(f.now + MINUTE + 1000);
+  await f.update();
+  control.snapshot.readAt = f.now; control.snapshot.powerAt = f.now;
+  control.snapshot.observations[120].at = f.now;
+  f.runtime.telemetry(f.now);
+  assert.equal(second.identification.phase, 'pausing', 'A fresh stable peer permits the queued BMW pause after the quiet window');
+  const secondDeadline = second.identification.pauseUntil;
+  f.setNow(f.now + 1000); f.runtime.telemetry(f.now);
+  assert.equal(second.identification.pauseUntil, secondDeadline);
+  assert.equal(first.identification.id, exhausted.id); assert.equal(first.identification.phase, 'inconclusive');
+  assert.equal(first.identification.pauseUntil, exhausted.pauseUntil);
+  assert.equal(first.identification.probe.endedAt, exhausted.probe.endedAt);
 });

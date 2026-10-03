@@ -42,6 +42,12 @@ Versions follow Semantic Versioning. `-dev.N` denotes a development prerelease.
 
 ### Fixed
 
+- Tesla identification now tolerates inaccurate vehicle phase-count metadata
+  when measured current and power uniquely match, and can retire an old BMW
+  episode that ambiguously matched both chargers. Identification no longer
+  overrides ordinary economic charging while just observing, and exhausted
+  attempts cannot restart pause loops. BMW tests wait for a quiet peer window;
+  Balanced and both priority modes retain their existing schedule commitments.
 - Home Assistant development deployments reuse one terminal connection for file
   transfers, removing repeated connection setup and the delay before every chunk.
   Transfer checksums, offset checks and stopped-app safeguards remain in place.

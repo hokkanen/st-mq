@@ -20,7 +20,7 @@ import { updateSessionCost } from './session-cost.js';
 import { updateTargetState, targetSelection, validateTargetState, validateTargetSelection } from './target.js';
 import { acceptEaseeTransition } from './stream-evidence.js';
 import { confirmedIdentityPause } from './identity-evidence.js';
-import { advanceIdentification, prepareActiveBmwCandidate, matchActiveBmwPause, validateIdentificationState, IDENTIFICATION_ENERGY_LIMIT_KWH } from './identification.js';
+import { advanceIdentification, prepareActiveBmwCandidate, matchActiveBmwPause, validateIdentificationState, IDENTIFICATION_ENERGY_LIMIT_KWH, IDENTIFICATION_PAUSE_WAIT_MS } from './identification.js';
 import { shellyAssociation } from './shelly-evse.js';
 import { ChargingSessionDiagnostics } from './session-diagnostics.js';
 import { ChargingPhysicalTests } from './physical-tests.js';
@@ -355,7 +355,7 @@ export class ChargingRuntime {
     return Boolean(tesla?.healthy === true && tesla.atHome === true && tesla.pluggedIn === true
       && control?.snapshot?.identificationCurrentReady === true && this.identificationAvailable(item, now)
       && !(control.currentTest && item.vehicleEvidence?.teslaCurrentResolvedTestId === control.currentTest.id)
-      && !['completed', 'inconclusive'].includes(item.identification?.phase)
+      && !['observing', 'completed', 'inconclusive'].includes(item.identification?.phase)
       && !(control.currentTest && control.currentTest.id === item.identification?.id && (control.currentTest.expiresAt <= now
         || ['restoring', 'restored', 'superseded', 'uncertain'].includes(control.currentTest.phase))));
   }
@@ -375,6 +375,12 @@ export class ChargingRuntime {
   identificationChargingChoice(item, now) {
     const control = item.controller?.status();
     if (!item.controls.enabled || item.request?.chargeNow === true) return { normalCharging: true };
+    // The test's own reduced current or temporary release can change its
+    // forecast. Keep the captured return time until the bounded probe ends;
+    // those observations cannot manufacture a new ordinary charging window.
+    const probe = item.identification?.probe;
+    if (probe?.endedAt === null && now < probe.returnStartAt)
+      return { normalCharging: false, probeReturnAt: probe.returnStartAt };
     const plan = item.plan;
     if (plan?.feasible === false || plan?.provisional === true) return { normalCharging: true };
     const periods = control?.execution?.periods?.length ? control.execution.periods : plan?.periods;
@@ -384,6 +390,35 @@ export class ChargingRuntime {
     if (next) return { normalCharging: false, probeReturnAt: next };
     if (plan?.startAt <= now || control?.released && !control?.provisional) return { normalCharging: true };
     return { normalCharging: false, reason: 'economic-plan-pending' };
+  }
+  identificationPauseAvailable(item, physicalById, now) {
+    // A peer transition can correlate with the same delayed BMW stop. Wait for
+    // a quiet window instead of interrupting or freezing the peer's economics.
+    return Object.entries(this.chargers).every(([id, peer]) => {
+      if (peer === item || !(peer.controller || peer.adapter || this.configuration.chargers[id]?.enabled
+        || id === 'charger1' && this.config.connections?.easee?.charger_id)) return true;
+      const physical = physicalById[id], control = peer.controller?.status();
+      if (physical?.connected?.available !== true) return false;
+      if (physical.connected.value === false) return true;
+      const power = physical.powerKw, charging = physical.charging;
+      if (!control || control.snapshot?.online !== true || physical.providerConnected === false
+        || control.manual || control.pending || control.snapshot?.faulted
+        || control.snapshot?.authorizationBlocked || !power?.available || !charging?.available
+        || !Number.isFinite(power.value) || power.value < 0
+        || !Number.isSafeInteger(power.measuredAt) || power.measuredAt > now || now - power.measuredAt > MINUTE
+        || charging.value !== (power.value > .5)) return false;
+      if ([...(peer.vehicleEvidence?.chargingTimes ?? []), ...(peer.vehicleEvidence?.stoppedTimes ?? [])]
+        .some(at => at > now - MINUTE && at <= now)) return false;
+      if (peer.identification?.phase === 'pausing' || peer.identification?.probe?.endedAt === null
+        || ['proposed', 'applying', 'active', 'restoring', 'uncertain'].includes(control.currentTest?.phase)) return false;
+      if (!peer.controls.enabled || peer.request?.chargeNow) return true;
+      const periods = control.execution?.periods?.length ? control.execution.periods : peer.plan?.periods;
+      if (!periods?.length || peer.plan?.provisional || peer.plan?.feasible === false) return false;
+      const allowed = periods.some(row => row.startAt <= now && (row.endAt === null || row.endAt > now));
+      if (allowed !== charging.value) return false;
+      const horizon = now + IDENTIFICATION_PAUSE_WAIT_MS + 30_000;
+      return !periods.some(row => [row.startAt, row.endAt].some(at => at > now && at <= horizon));
+    });
   }
   identificationControl(item, snapshot) {
     const now = this.clock();
@@ -395,10 +430,14 @@ export class ChargingRuntime {
     this.scheduleWakeup(now);
     if (!state?.action || !this.identificationAvailable(item, now)) return null;
     if (!this.identificationTurn(item)) return null;
+    const minimumCurrent = this.minimumCurrentIdentification(item, now);
+    // Passive observation must preserve the accepted economic program. Only
+    // an actual bounded test may acquire temporary charging permission.
+    if (state.phase !== 'pausing' && state.probe?.endedAt !== null && !minimumCurrent) return null;
     return { id: state.id, connectedAt: state.connectedAt, phase: state.phase,
       ...(state.probe && (state.probe.endedAt === null || state.phase === 'pausing') && ['ocpp', 'shelly-evse'].includes(snapshot?.transport) ? { mode: 'probe',
         probeUntil: state.probe.deadlineAt, returnStartAt: state.probe.returnStartAt } : {}),
-      ...(this.minimumCurrentIdentification(item, now) ? { minimumCurrent: true } : {}),
+      ...(minimumCurrent ? { minimumCurrent: true } : {}),
       ...(state.phase === 'pausing' ? { pauseUntil: state.pauseUntil } : {}) };
   }
   async pauseForBackendChange(id) {
@@ -570,7 +609,7 @@ export class ChargingRuntime {
     return true;
   }
   telemetry(now) {
-    const result = {}, controls = {}, candidates = {}, freshCandidates = {}, currentMatches = {}, awaitingConnection = new Set(), tesla = this.teslaCapture?.snapshot() ?? {}, bmw = this.vehicleFeeds.bmw;
+    const result = {}, controls = {}, candidates = {}, freshCandidates = {}, currentMatches = {}, bmwMatches = {}, awaitingConnection = new Set(), tesla = this.teslaCapture?.snapshot() ?? {}, bmw = this.vehicleFeeds.bmw;
     const bmwAvailable = vehicleFeedAvailable(bmw, now);
     const homeContext = bmwAvailable ? bmwHomeContext(bmw.reading, now) : null;
     const vehicleAssociations = { bmw: bmw.association, tesla: tesla.association };
@@ -655,8 +694,12 @@ export class ChargingRuntime {
             retain(key, [at]); evidence.physicalCharging = result[id].charging.value;
           }
         }
+        // Withdrawing an assignment into a same-connection conflict does not
+        // erase its positive evidence. Explicitly retired shared episodes have
+        // their conflicts cleared below and remain fenced by consumption.
+        const retainedBmw = item.vehicleMatch?.id === 'bmw' || item.vehicleConflict?.ids.includes('bmw');
         const bmwPause = !evidence.historyOverflow && !reidentifying && bmwAvailable && matchBmwControlledPause(bmw.reading, { connectedAt, lastDisconnectedAt: session.lastDisconnectedAt,
-          chargingAt: evidence.chargingTimes, stoppedAt: evidence.stoppedTimes, now, consumedChargingId: item.vehicleMatch?.id === 'bmw' ? null : bmw.consumedChargingId,
+          chargingAt: evidence.chargingTimes, stoppedAt: evidence.stoppedTimes, now, consumedChargingId: retainedBmw ? null : bmw.consumedChargingId,
           pause: confirmedIdentityPause(control, now) ?? item.identification?.pause });
         if (bmwPause) { candidates[id].push('bmw'); evidence.bmwReason = 'matched-controlled-pause';
           evidence.bmwChargingReadingId = bmwPause.chargingReadingId; evidence.bmwPlugReadingId = null; }
@@ -665,19 +708,20 @@ export class ChargingRuntime {
         const activeBmw = !evidence.historyOverflow && bmwAvailable && item.identification?.connectedAt === connectedAt
           && matchActiveBmwPause(bmw.reading, { state: { ...item.identification,
             pause: activePause ?? item.identification.pause }, now, lastDisconnectedAt: session.lastDisconnectedAt,
-            consumedChargingId: item.vehicleMatch?.id === 'bmw' || item.identification.attempt > 1 ? null : bmw.consumedChargingId });
+            consumedChargingId: retainedBmw ? null : bmw.consumedChargingId });
         if (activeBmw) { candidates[id].push('bmw'); evidence.bmwReason = 'matched-identification-pause';
           evidence.bmwChargingReadingId = activeBmw.chargingReadingId; evidence.bmwPlugReadingId = null; }
         const passiveBmw = !evidence.historyOverflow && bmwAvailable && bmwSessionMatchDetails(bmw.reading, { connectedAt, lastDisconnectedAt: session.lastDisconnectedAt,
           chargingAt: evidence.chargingTimes, stoppedAt: evidence.stoppedTimes, now,
           matchingSince: reidentifying ? item.identification.startedAt : null,
-          consumedPlugId: reidentifying || item.vehicleMatch?.id === 'bmw' ? null : bmw.consumedPlugId,
-          consumedChargingId: item.vehicleMatch?.id === 'bmw' ? null : bmw.consumedChargingId });
+          consumedPlugId: reidentifying || retainedBmw ? null : bmw.consumedPlugId,
+          consumedChargingId: retainedBmw ? null : bmw.consumedChargingId });
         if (passiveBmw) {
           candidates[id].push('bmw');
           if (!activeBmw) { evidence.bmwReason = 'matched-physical-session';
             evidence.bmwChargingReadingId = passiveBmw.chargingReadingId; evidence.bmwPlugReadingId = passiveBmw.plugReadingId; }
         }
+        bmwMatches[id] = [bmwPause, activeBmw, passiveBmw].filter(Boolean);
         const peers = Object.entries(result).filter(([peerId]) => peerId !== id
           && (this.chargers[peerId].controller || this.chargers[peerId].adapter
             || this.configuration.chargers[peerId]?.enabled === true
@@ -724,6 +768,23 @@ export class ChargingRuntime {
     const currentWinners = Object.keys(this.chargers).filter(id => Boolean(currentMatches[id]));
     if (currentWinners.length === 1) {
       const winner = currentWinners[0];
+      const episode = bmwMatches[winner]?.[0];
+      const sharedBmw = Object.entries(bmwMatches).filter(([, matches]) => matches.length);
+      if (episode && sharedBmw.length > 1 && sharedBmw.every(([, matches]) => matches.every(match =>
+        match.chargingReadingId === episode.chargingReadingId && match.stopReadingId === episode.stopReadingId))) {
+        // One BMW episode matching both chargers is not independent evidence
+        // against a unique current test. Consume it for both connections so a
+        // later poll/restart cannot recreate the conflict or infer BMW by
+        // elimination. A different contradictory episode still fails closed.
+        bmw.consumedChargingId = episode.chargingReadingId;
+        for (const [id] of sharedBmw) {
+          candidates[id] = candidates[id].filter(vehicle => vehicle !== 'bmw');
+          freshCandidates[id] = freshCandidates[id].filter(vehicle => vehicle !== 'bmw');
+          const item = this.chargers[id];
+          if (item.vehicleMatch?.id === 'bmw') item.vehicleMatch = null;
+          if (item.vehicleConflict) item.vehicleConflict.ids = item.vehicleConflict.ids.filter(vehicle => vehicle !== 'bmw');
+        }
+      }
       for (const [id, item] of Object.entries(this.chargers)) {
         if (id === winner) {
           candidates[id] = [...freshCandidates[id]];
@@ -779,7 +840,8 @@ export class ChargingRuntime {
         const control = item.controller.status(), physical = result[id];
         const available = !item.vehicleEvidence?.historyOverflow && this.identificationAvailable(item, now) && this.identificationFeedReady(item, now)
           && this.identificationTurn(item);
-        const candidate = !this.minimumCurrentIdentification(item, now) && !item.vehicleEvidence?.historyOverflow && physical.powerKw?.available === true && physical.powerKw.value > 0
+        const candidate = !this.minimumCurrentIdentification(item, now) && this.identificationPauseAvailable(item, result, now)
+          && !item.vehicleEvidence?.historyOverflow && physical.powerKw?.available === true && physical.powerKw.value > 0
           && bmwAvailable && prepareActiveBmwCandidate(bmw.reading, {
           connectedAt: control.session.connectedAt, lastDisconnectedAt: control.session.lastDisconnectedAt,
           chargingAt: item.vehicleEvidence?.chargingTimes, stoppedAt: item.vehicleEvidence?.stoppedTimes,
@@ -809,6 +871,11 @@ export class ChargingRuntime {
               && control.snapshot.fields.start_charging.measuredAt >= probeStartedAt);
         item.identification = advanceIdentification(item.identification, {
           ...choice, probeAllowed,
+          interrupted: control.currentTest?.id === item.identification?.id && Boolean(control.currentTest)
+            && (control.currentTest.expiresAt <= now
+              || item.vehicleEvidence?.teslaCurrentResolvedTestId === control.currentTest.id
+              || ['restoring', 'restored', 'superseded', 'uncertain'].includes(control.currentTest.phase)
+              || !available),
           probeDurationMs: Math.floor((IDENTIFICATION_ENERGY_LIMIT_KWH / probeCeilingKw * 3600 - 10) * 1000), physicalFresh, physicalStopped,
           connectedAt: control.session.connectedAt, now, connected: true, identified: reidentifying ? freshIdentity : Boolean(vehicleId),
           available, manualStop: Boolean(control.manual || control.snapshot?.manualStop || control.snapshot?.stopped),

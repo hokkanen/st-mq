@@ -52,18 +52,28 @@ test('waiting identification records its exact blocker initially and on change, 
   assert.doesNotMatch(JSON.stringify([...f.states.values()]), /private-vehicle/);
 });
 
-test('probe completion leaves identification observable while ordinary scheduling determines expected behavior', () => {
+test('probe exhaustion records an inconclusive attempt while ordinary scheduling determines expected behavior', () => {
   const f = fixture(); f.view.vehicle = { state: 'identifying', id: null };
-  f.view.identification = { phase: 'observing', active: false, reason: 'probe-energy-limit' };
+  f.view.identification = { phase: 'inconclusive', active: false, reason: 'probe-energy-limit' };
   f.view.plan = { state: 'waiting', periods: [{ startAt: START + 60 * MINUTE, endAt: null }] };
   f.view.control.phase = 'paused'; f.view.control.pauseConfirmed = true;
   const report = f.observe();
   assert.equal(report.current.expectation, 'hold');
-  assert.equal(report.current.identification, 'observing');
+  assert.equal(report.current.identification, 'inconclusive');
   assert.equal(report.current.identificationReason, 'probe-energy-limit');
   assert.equal(report.current.identificationActive, false);
-  assert.equal(report.findings.some(row => row.code === 'identification-inconclusive'), false);
+  assert.equal(report.findings.some(row => row.code === 'identification-inconclusive'), true);
   assert.equal(report.timeline.find(row => row.kind === 'identification').reasonCode, 'probe-energy-limit');
+});
+
+test('an interrupted attempt records its bounded outcome while passive matching remains possible', () => {
+  const f = fixture(); f.view.vehicle = { state: 'unidentified', id: null };
+  f.view.identification = { phase: 'inconclusive', active: false, reason: 'interrupted' };
+  const report = f.observe();
+  assert.equal(report.current.identificationReason, 'interrupted');
+  assert.equal(report.current.identificationActive, false);
+  assert.equal(report.timeline.find(row => row.kind === 'identification').reasonCode, 'interrupted');
+  assert.equal(report.findings.some(row => row.code === 'identification-inconclusive'), true);
 });
 
 test('off phase records Automatic permission separately from unavailable control and native handover error', () => {
