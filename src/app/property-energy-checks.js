@@ -38,7 +38,7 @@ function latestComparison(store,pairs,now) {
 export function propertyEnergyCheckSummary(store, { now = Date.now() } = {}) {
   if (!Number.isSafeInteger(now) || Math.abs(now) > 8640000000000000)
     throw new TypeError('Property checks require a valid receipt cutoff');
-  const latest = store.db.prepare(`SELECT * FROM energy_audits WHERE signal=? AND source_time<=? AND received_at<=?
+  const latest = store.db.prepare(`SELECT * FROM active_energy_audits AS energy_audits WHERE signal=? AND source_time<=? AND received_at<=?
     ORDER BY received_at DESC,id DESC LIMIT 1`).get(SIGNAL,now,now);
   const summary = { status:'no-readings', readingCount:0, latestReading:null, previousReading:null,
     coverage:null, comparison:null, lastSuccessfulComparison:null };
@@ -50,7 +50,7 @@ export function propertyEnergyCheckSummary(store, { now = Date.now() } = {}) {
   // also avoids a growing predecessor lookup for each older counter.
   const pairs=[];
   let highest=null,previous=null;
-  for(const row of store.db.prepare(`SELECT * FROM energy_audits WHERE source=? AND device=? AND signal=?
+  for(const row of store.db.prepare(`SELECT * FROM active_energy_audits AS energy_audits WHERE source=? AND device=? AND signal=?
     AND source_time<=? AND received_at<=? ORDER BY received_at,id`).iterate(latest.source,latest.device,SIGNAL,now,now)) {
     summary.readingCount++;
     if(row.id===latest.id)previous=highest;

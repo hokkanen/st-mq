@@ -86,7 +86,7 @@ export function chargingSessionCheckSummaries(store) {
   const bySource = new Map(rows.map(row => [row.source, row.summary]));
   // Store.events() has a page limit. Iteration deliberately includes all history
   // without loading every session into memory or silently averaging one page.
-  for (const row of store.db.prepare('SELECT payload FROM events WHERE type=? ORDER BY at,id').iterate(EVENT_TYPE)) {
+  for (const row of store.db.prepare('SELECT payload FROM active_events AS events WHERE type=? ORDER BY at,id').iterate(EVENT_TYPE)) {
     const check = JSON.parse(row.payload), summary = bySource.get(check.source);
     assertCurrentChargingSessionCheck(check);
     if (!summary || check.version !== VERSION) continue;

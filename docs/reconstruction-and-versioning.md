@@ -88,9 +88,47 @@ completion status. Newer corrections supersede stale workers. Pending work survi
 restart. A failed worker retains the previous model and reports failure; restarting
 the service or recording another correction retries it.
 
+## Recovery source corrections
+
+Current-format history recovery uses the same gap merge and ordered model replay
+for paired computers and SQLite backups. Each operation records immutable
+contribution ownership and source fingerprints. Records that were already local
+are not owned by the recovery, and retrying a donor does not duplicate its evidence.
+The recovery list includes interrupted operations with accepted contributions.
+
+Revert and restore are explicit, reviewed source-selection revisions. Revert
+excludes an operation's contributions and dependent learning; it never deletes
+original observations, events or journal payloads. Later local recordings and
+other accepted recoveries remain selected. Restore reapplies the retained source
+where current evidence permits; local evidence acquired in the meantime wins
+conflicts. Rejected fingerprints prevent a different snapshot from silently
+reintroducing the same source. Logical provenance remains stable across local
+record IDs and compact journal projections.
+
+A worker stages exclusions and a complete journal projection, replays the current
+algorithm from its supported seed, and catches up new learning. Publication checks
+the source selection, fireplace and sensor revisions, authority and journal head,
+then atomically selects the new history, epoch, checkpoint and immutable decision.
+A concurrent local observation that changes restoration conflicts requires a new
+review. Until publication, control and charts retain the prior selection; a failed
+revision leaves that selection intact. Published prior epochs and decisions remain
+available as evidence. Abandoned unpublished projections may be discarded.
+
+Physical observations can be shared by multiple saved input histories. A revision
+is refused if another input's selected journal depends on evidence it would
+exclude; changing only the current model would leave that other history incorrect.
+Keep the recovery active or use separate databases for those input histories.
+Recovery does not silently translate or repair another input's saved journal.
+
+Derived cycle savings and recovery-error claims become unknown when their inputs
+or frozen model could depend on rejected learning. Original outcomes, observations
+and frozen forecasts remain recorded. Recovery corrections never replay equipment
+commands, revert configuration, grant control authority or erase restoration duties.
+They correct the retained interpretation, not the physical actions already taken.
+
 ## Version discipline
 
-The Home learning algorithm is `committed-house-v13-scoped-sensor-changes`, with
+The Home learning algorithm is `committed-house-v14-reversible-recovery`, with
 thermal model version 4. Production starts from a fresh database and an explicit
 initial seed. There is no compatibility migration for development databases.
 

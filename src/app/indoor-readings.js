@@ -65,10 +65,10 @@ export function indoorReportCoverage(store, { reading, from, at, notBefore = -In
     if (from === at) return null;
     // Disabling periodic reporting changes future availability only. A window
     // that began under that contract must still retain any earlier report gap.
-    const earlier = store.db.prepare(`SELECT o.raw FROM recorder_coverage c JOIN observations o ON o.id=c.observation_id
+    const earlier = store.db.prepare(`SELECT o.raw FROM active_recorder_coverage c JOIN active_observations o ON o.id=c.observation_id
       WHERE c.source=? AND c.device=? AND c.signal=? AND c.start_at<=?
         AND json_extract(o.raw,'$.reportIntervalMs')>0
-        AND COALESCE((SELECT n.start_at FROM recorder_coverage n WHERE n.source=c.source AND n.device=c.device
+        AND COALESCE((SELECT n.start_at FROM active_recorder_coverage n WHERE n.source=c.source AND n.device=c.device
           AND n.signal=c.signal AND n.id>c.id ORDER BY n.id LIMIT 1),?)>?
       ORDER BY c.start_at DESC,c.id DESC LIMIT 1`).get(reading.source, reading.device, reading.signal, at, at, from);
     age = earlier ? temperatureReportMaxAge({ raw: JSON.parse(earlier.raw) }) : null;
@@ -76,15 +76,15 @@ export function indoorReportCoverage(store, { reading, from, at, notBefore = -In
   }
   // This boundary is constant for the whole query. Correlating it with each
   // candidate span repeatedly scans/sorts the same stream as history grows.
-  const preceding = store.db.prepare(`SELECT id FROM recorder_coverage
+  const preceding = store.db.prepare(`SELECT id FROM active_recorder_coverage AS recorder_coverage
     WHERE source=? AND device=? AND signal=? AND start_at<=?
     ORDER BY start_at DESC,id DESC LIMIT 1`).get(reading.source, reading.device, reading.signal, from)?.id ?? null;
   const args = [reading.source, reading.device, reading.signal, at, from, from - age, preceding];
   const spans = store.db.prepare(`SELECT c.*,o.id AS original_id,o.source_time AS original_source_time,
       o.received_at AS original_received_at,o.value,o.unit,o.quality,o.raw,o.import_id,o.row_number,
-      (SELECT n.start_at FROM recorder_coverage n WHERE n.source=c.source AND n.device=c.device
+      (SELECT n.start_at FROM active_recorder_coverage n WHERE n.source=c.source AND n.device=c.device
         AND n.signal=c.signal AND n.id>c.id ORDER BY n.id LIMIT 1) AS next_start
-    FROM recorder_coverage c LEFT JOIN observations o ON o.id=c.observation_id
+    FROM active_recorder_coverage c LEFT JOIN active_observations o ON o.id=c.observation_id
     WHERE c.source=? AND c.device=? AND c.signal=? AND c.start_at<=?
       AND (c.source_time+COALESCE(json_extract(o.raw,'$.reportIntervalMs'),0)
         +COALESCE(json_extract(o.raw,'$.reportGraceMs'),0)>=? OR c.end_at>=?
@@ -98,10 +98,10 @@ export function indoorReportCoverage(store, { reading, from, at, notBefore = -In
   });
   // Direct committed observations (including fixtures/imports) still establish
   // their own bounded interval. Recorder observations use their coverage only.
-  for (const row of store.db.prepare(`SELECT o.* FROM observations o LEFT JOIN imports i ON i.id=o.import_id
+  for (const row of store.db.prepare(`SELECT o.* FROM active_observations o LEFT JOIN active_imports i ON i.id=o.import_id
     WHERE o.source=? AND o.device=? AND o.signal=? AND o.received_at<=? AND o.received_at>=?
       AND (o.import_id IS NULL OR i.status='complete')
-      AND NOT EXISTS (SELECT 1 FROM recorder_coverage c WHERE c.observation_id=o.id)
+      AND NOT EXISTS (SELECT 1 FROM active_recorder_coverage c WHERE c.observation_id=o.id)
     ORDER BY o.received_at,o.id`).all(reading.source, reading.device, reading.signal, at, from - age)) {
     const observation = decode(row);
     if (observation.raw?.retained || observation.quality.includes('retained') || observation.raw?.acquisitionOnly) continue;
@@ -139,7 +139,7 @@ export function indoorReportCoverage(store, { reading, from, at, notBefore = -In
  * a sensor boundary; that does not need to reconstruct report availability. */
 export function lastIndoorReading(store, { signal, at, input, notBefore = -Infinity, includeAvailability = true }) {
   const scope = input === 'simulated' ? "o.source='simulation'" : "o.source<>'simulation'";
-  const query = store.db.prepare(`SELECT o.* FROM observations o LEFT JOIN imports i ON i.id=o.import_id
+  const query = store.db.prepare(`SELECT o.* FROM active_observations o LEFT JOIN active_imports i ON i.id=o.import_id
     WHERE o.signal=? AND o.source_time>=? AND o.source_time<=? AND o.received_at<=?
       AND o.value IS NOT NULL AND (o.import_id IS NULL OR i.status='complete') AND ${scope}
     ORDER BY o.source_time DESC,o.id DESC`);
@@ -147,7 +147,7 @@ export function lastIndoorReading(store, { signal, at, input, notBefore = -Infin
     const observation = decode(row);
     if (!observation.raw?.acquisitionOnly && indoorReadingUsable(observation, at)) {
       if (!includeAvailability) return observation;
-      const after = store.db.prepare(`SELECT * FROM observations WHERE signal=? AND source=? AND device=?
+      const after = store.db.prepare(`SELECT * FROM active_observations AS observations WHERE signal=? AND source=? AND device=?
         AND received_at>=? AND received_at<=? AND (source_time IS NULL OR source_time>=? AND source_time<=?)
         ORDER BY received_at DESC,id DESC`);
       let latest = observation;

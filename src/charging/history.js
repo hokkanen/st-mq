@@ -150,12 +150,12 @@ function addEntries(reference, spans, priority, voltageV) {
  * bounded adjacent current snapshots provide an explicitly estimated profile. */
 function buildLegacy(store, reference, now, voltageV, { from = 0, to = now, onSpans, input = 'live' } = {}) {
   const query = store.db.prepare(`SELECT r.raw,r.quality,r.source_time,r.row_number,i.id,i.kind
-    FROM import_rows r JOIN imports i ON i.id=r.import_id
+    FROM active_import_rows r JOIN active_imports i ON i.id=r.import_id
     WHERE i.status='complete' AND i.kind IN ('easee','stmq') AND r.source_time>=? AND r.source_time<=?
     ORDER BY r.source_time,i.id,r.row_number`);
   let previous = null, pendingTime = null, easee = null, outside = null, day = null, spans = [];
   const temperatures = [];
-  const firstSavedPeer = store.db.prepare(`SELECT min(json_extract(raw,'$.intervalStart')) AS at FROM observations
+  const firstSavedPeer = store.db.prepare(`SELECT min(json_extract(raw,'$.intervalStart')) AS at FROM active_observations AS observations
     WHERE signal IN ('ev2_energy_l1','ev2_energy_l2','ev2_energy_l3') AND import_id IS NULL
       AND json_valid(raw) AND source_time<=? AND received_at<=? AND ${nativeScope('live')}`).get(now, now).at;
   const firstPeer = Math.min(firstSavedPeer ?? Infinity,
@@ -217,7 +217,7 @@ function buildLegacy(store, reference, now, voltageV, { from = 0, to = now, onSp
 
 const cacheByDb = new WeakMap();
 function nextSourceAt(store, now, input) {
-  return store.db.prepare(`SELECT min(max(source_time,received_at)) AS at FROM observations
+  return store.db.prepare(`SELECT min(max(source_time,received_at)) AS at FROM active_observations AS observations
     WHERE signal IN (${[...SIGNALS, ...VOLTAGE_SIGNALS, 'outdoor_temperature'].map(() => '?').join(',')})
       AND max(source_time,received_at)>? AND import_id IS NULL AND ${nativeScope(input)}`)
     .get(...SIGNALS, ...VOLTAGE_SIGNALS, 'outdoor_temperature', now).at;
@@ -234,7 +234,7 @@ function modernRows(store, { from, to, now, input, prefix }) {
   return rows;
 }
 function modernTemperatures(store, { from, to, now, input }) {
-  return store.db.prepare(`SELECT id,value,quality,source_time,unit FROM observations
+  return store.db.prepare(`SELECT id,value,quality,source_time,unit FROM active_observations AS observations
     WHERE signal='outdoor_temperature' AND source_time>=? AND source_time<=?
       AND received_at<=?
       AND import_id IS NULL AND ${nativeScope(input)} ORDER BY source_time,id`)
@@ -309,21 +309,22 @@ function updateModern(store, reference, { from, to, now, input, voltageV }) {
  * learning journals or their versioned replay. */
 export function householdReference(store, { now, input = 'live', voltageV, timezone = TIME_ZONE }) {
   if (!store?.db) return new HouseholdReference({ timezone });
-  const imports = input === 'simulated' ? '' : JSON.stringify(store.db.prepare("SELECT id,row_count,completed_at FROM imports WHERE status='complete' AND kind IN ('stmq','easee') ORDER BY id").all());
+  const imports = input === 'simulated' ? '' : JSON.stringify(store.db.prepare("SELECT id,row_count,completed_at FROM active_imports AS imports WHERE status='complete' AND kind IN ('stmq','easee') ORDER BY id").all());
   // Only first-mature fallback publication changes pre-estimate CSV meaning.
   // Ordinary later estimates must not repeatedly reinterpret that archive.
   const csvVoltageKey = input === 'simulated' ? '' : JSON.stringify(createVoltageReader(store, { input, now })(0, { allowFuture: true }));
   const voltageAvailable = voltages(voltageV).every(value => finite(value) && value >= 200 && value <= 250);
-  const key = JSON.stringify([input, timezone]);
+  const historySelection = store.db.prepare('SELECT generation FROM history_selection WHERE id=1').get().generation;
+  const key = JSON.stringify([input, timezone, historySelection]);
   const pendingRows = pendingEnergyObservations(store, { now, input: input === 'simulated' ? input : 'providers' })
     .filter(row => SIGNALS.includes(row.signal));
   const pendingKey = JSON.stringify(pendingRows);
   let cache = cacheByDb.get(store.db);
-  const watermark = store.db.prepare('SELECT max(id) AS id FROM observations').get().id ?? 0;
+  const watermark = store.db.prepare('SELECT max(id) AS id FROM active_observations AS observations').get().id ?? 0;
   if (!cache || cache.key !== key || cache.imports !== imports || cache.csvVoltageKey !== csvVoltageKey || now < cache.now) {
     const reference = new HouseholdReference({ timezone });
     if (input !== 'simulated') buildLegacy(store, reference, now, voltageV);
-    const firstSaved = store.db.prepare(`SELECT min(json_extract(raw,'$.intervalStart')) AS at FROM observations
+    const firstSaved = store.db.prepare(`SELECT min(json_extract(raw,'$.intervalStart')) AS at FROM active_observations AS observations
       WHERE signal IN (${SIGNALS.map(() => '?').join(',')}) AND json_valid(raw) AND import_id IS NULL AND ${nativeScope(input)}`).get(...SIGNALS).at;
     const first = Math.min(firstSaved ?? Infinity, ...pendingRows.map(row => parse(row.raw, {}).intervalStart));
     if (voltageAvailable && finite(first) && first <= now) updateModern(store, reference, { from: moment.tz(first - DAY, timezone).startOf('day').valueOf(), to: now, now, input, voltageV });
@@ -337,7 +338,7 @@ export function householdReference(store, { now, input = 'live', voltageV, timez
     // When voltage arrives, add energy-derived records to the same index;
     // never decode the entire legacy archive a second time at startup.
     const importedDates = new Set([...cache.reference.legacyHours].map(key => key.slice(0, 10))), peerDates = new Set();
-    if (input !== 'simulated' && importedDates.size) for (const row of store.db.prepare(`SELECT source_time,raw FROM observations
+    if (input !== 'simulated' && importedDates.size) for (const row of store.db.prepare(`SELECT source_time,raw FROM active_observations AS observations
       WHERE signal IN ('ev2_energy_l1','ev2_energy_l2','ev2_energy_l3') AND source_time<=? AND import_id IS NULL AND ${nativeScope(input)}`).iterate(now)) {
       const raw = parse(row.raw, {});
       if (!finite(raw.intervalStart) || !finite(raw.intervalEnd) || raw.intervalEnd <= raw.intervalStart) continue;
@@ -349,7 +350,7 @@ export function householdReference(store, { now, input = 'live', voltageV, timez
       cache.reference.removeDates(new Set([date]), 0);
       buildLegacy(store, cache.reference, now, voltageV, { from: from.valueOf(), to });
     }
-    const firstSaved = store.db.prepare(`SELECT min(json_extract(raw,'$.intervalStart')) AS at FROM observations
+    const firstSaved = store.db.prepare(`SELECT min(json_extract(raw,'$.intervalStart')) AS at FROM active_observations AS observations
       WHERE signal IN (${SIGNALS.map(() => '?').join(',')}) AND json_valid(raw) AND import_id IS NULL AND ${nativeScope(input)}`).get(...SIGNALS).at;
     const first = Math.min(firstSaved ?? Infinity, ...pendingRows.map(row => parse(row.raw, {}).intervalStart));
     if (finite(first) && first <= now) updateModern(store, cache.reference,
@@ -359,12 +360,12 @@ export function householdReference(store, { now, input = 'live', voltageV, timez
     return cache.reference;
   }
   if (watermark > cache.watermark || pendingKey !== cache.pendingKey || finite(cache.nextSourceAt) && cache.nextSourceAt <= now) {
-    const changed = store.db.prepare(`SELECT source_time,raw,signal FROM observations WHERE id>? AND id<=?
+    const changed = store.db.prepare(`SELECT source_time,raw,signal FROM active_observations AS observations WHERE id>? AND id<=?
       AND signal IN (${[...SIGNALS, ...VOLTAGE_SIGNALS, 'outdoor_temperature'].map(() => '?').join(',')})
       AND import_id IS NULL AND ${nativeScope(input)}`).all(cache.watermark, watermark, ...SIGNALS, ...VOLTAGE_SIGNALS, 'outdoor_temperature');
     if (pendingKey !== cache.pendingKey) changed.push(...cache.pendingRows, ...pendingRows);
     if (finite(cache.nextSourceAt) && cache.nextSourceAt <= now) changed.push(...store.db.prepare(`SELECT source_time,raw,signal
-      FROM observations WHERE max(source_time,received_at)>? AND max(source_time,received_at)<=?
+      FROM active_observations AS observations WHERE max(source_time,received_at)>? AND max(source_time,received_at)<=?
         AND signal IN (${[...SIGNALS, ...VOLTAGE_SIGNALS, 'outdoor_temperature'].map(() => '?').join(',')})
         AND import_id IS NULL AND ${nativeScope(input)}`).all(cache.now, now, ...SIGNALS, ...VOLTAGE_SIGNALS, 'outdoor_temperature'));
     const dates = new Map(), changedPeerDates = new Set();

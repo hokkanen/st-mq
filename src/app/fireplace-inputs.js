@@ -6,7 +6,7 @@ const HOUR = 3_600_000;
 /** Source events are retained once. This projection is computed in memory for
  * learning, including corrected retrospective rebuilds; it never edits telemetry. */
 export function fireplaceLearningContext(store, input, revision, asOf = Infinity) {
-  const rows = store.db.prepare('SELECT id,at,kind,kg,target_id FROM fireplace_events WHERE input=? AND id<=? AND at<=? ORDER BY id')
+  const rows = store.db.prepare('SELECT id,at,kind,kg,target_id FROM active_fireplace_events AS fireplace_events WHERE input=? AND id<=? AND at<=? ORDER BY id')
     .all(input, revision ?? Number.MAX_SAFE_INTEGER, Number.isFinite(asOf) ? asOf : Number.MAX_SAFE_INTEGER);
   const removed = new Map();
   for (const row of rows) if (row.kind === 'remove' && !removed.has(row.target_id)) removed.set(row.target_id, row.at);

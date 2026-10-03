@@ -6,7 +6,7 @@ const PHASES = ['property','ev1'].flatMap(prefix => [1,2,3].map(phase => `${pref
  * emitting at the last source row preserves stream order with bounded memory. */
 export function* alignEaseePowerSnapshots(rows, db, now) {
   const snapshot = db.prepare(`SELECT id,source,device,signal,value,unit,source_time,received_at,quality,raw,import_id,row_number
-    FROM observations WHERE source='easee' AND import_id IS NULL AND device=? AND received_at=?
+    FROM active_observations AS observations WHERE source='easee' AND import_id IS NULL AND device=? AND received_at=?
     AND signal IN (?,?,?) ORDER BY id`);
   const cache = new Map();
   for (const row of rows) {

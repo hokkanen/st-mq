@@ -177,8 +177,8 @@ export class Recorder {
       const s = this.signalState(reading, at);
       if (!s.last || s.lastPollAt > at) return { changed: false };
       const span = this.store.db.prepare(`SELECT c.*,o.value,o.unit,o.source_time AS observed_source_time,
-        o.received_at AS observed_received_at,o.quality,o.raw FROM recorder_coverage c
-        JOIN observations o ON o.id=c.observation_id WHERE c.source=? AND c.device=? AND c.signal=?
+        o.received_at AS observed_received_at,o.quality,o.raw FROM active_recorder_coverage c
+        JOIN active_observations o ON o.id=c.observation_id WHERE c.source=? AND c.device=? AND c.signal=?
         AND c.status='fresh' AND c.start_at<=? AND c.end_at<=? ORDER BY c.id DESC LIMIT 1`)
         .get(reading.source, reading.device, reading.signal, at, at);
       const previousRaw = span?.raw ? JSON.parse(span.raw) : reading.raw ?? {};
@@ -212,7 +212,7 @@ export class Recorder {
         if (!lastQuality.some(transport) || !lastQuality.every(allowed)) return { changed: false };
         // A subsequent disconnect must not hide an earlier invalid payload.
         // Start at the genuine receipt, not a later policy/recovery event time.
-        const attempts = this.store.db.prepare(`SELECT quality,raw FROM observations WHERE source=? AND device=? AND signal=?
+        const attempts = this.store.db.prepare(`SELECT quality,raw FROM active_observations AS observations WHERE source=? AND device=? AND signal=?
           AND received_at>=? AND received_at<=? AND id>? ORDER BY received_at,id`)
           .all(reading.source, reading.device, reading.signal, receivedAt, at, span?.observation_id ?? reading.id ?? 0);
         for (const attempt of attempts) {
@@ -399,7 +399,7 @@ export class Recorder {
         const raw = compactRaw(o.raw, o);
         if (cachedPolicyChange) {
           const report = this.store.db.prepare(`SELECT c.end_at,c.source_time,o.source_time AS original_source_time,o.raw
-            FROM recorder_coverage c JOIN observations o ON o.id=c.observation_id WHERE c.id=?`).get(s.coverageId);
+            FROM active_recorder_coverage c JOIN active_observations o ON o.id=c.observation_id WHERE c.id=?`).get(s.coverageId);
           const previousRaw = report?.raw ? JSON.parse(report.raw) : {};
           Object.assign(raw, { timeBasis: 'report-policy-change', reportPolicyChangedAt: o.receivedAt,
             originalReportSourceTime: o.sourceTime,
@@ -463,7 +463,7 @@ export class Recorder {
       // local interval and advance normally, so retries cannot double count or
       // permanently stall acquisition. Any uncovered remainder is a real gap.
       let recoveredEnd = null;
-      for (const row of this.store.db.prepare(`SELECT o.source_time,o.received_at,o.quality,o.raw FROM observations o
+      for (const row of this.store.db.prepare(`SELECT o.source_time,o.received_at,o.quality,o.raw FROM active_observations o
         WHERE o.signal IN (${signals.map(()=>'?').join(',')}) AND o.unit='kWh' AND o.value>=0
           AND o.import_id IS NULL AND o.source_time>? AND o.source_time<=? AND o.received_at<=?
           AND ${source === 'simulation' ? "o.source='simulation'" : "o.source<>'simulation'"}
@@ -613,7 +613,7 @@ export class Recorder {
 
   committedAt(signal,at) {
     if (!finiteTime(at)) throw new TypeError('Invalid committed timestamp');
-    const row = this.store.db.prepare(`SELECT * FROM observations WHERE signal=? AND source_time<=? AND received_at<=?
+    const row = this.store.db.prepare(`SELECT * FROM active_observations AS observations WHERE signal=? AND source_time<=? AND received_at<=?
       AND import_id IS NULL ORDER BY source_time DESC,id DESC LIMIT 1`).get(signal,at,at);
     if (!row) return null;
     const o = {id:row.id,source:row.source,device:row.device,signal:row.signal,value:row.value,unit:row.unit,
@@ -621,7 +621,7 @@ export class Recorder {
     if (o.raw?.acquisitionOnly || o.raw?.auditOnly) return null;
     const reportAge = temperatureReportMaxAge(o);
     if (reportAge !== null) {
-      const span = this.store.db.prepare(`SELECT * FROM recorder_coverage WHERE source=? AND device=? AND signal=?
+      const span = this.store.db.prepare(`SELECT * FROM active_recorder_coverage AS recorder_coverage WHERE source=? AND device=? AND signal=?
         AND start_at<=? ORDER BY start_at DESC,id DESC LIMIT 1`).get(o.source,o.device,signal,at);
       const available = span?.status==='fresh' && at<span.source_time+reportAge;
       return {...o,value:available?o.value:null,quality:available?o.quality:flags([...o.quality,span?.status==='fresh'?'missing-report':span?.status??'unavailable']),
@@ -629,7 +629,7 @@ export class Recorder {
         reportReceivedAt:span?.end_at<=at?span.end_at:null,
         reportExpiresAt:available?Math.min(span.source_time+reportAge,span.end_at>at?at:Infinity):null};
     }
-    const coverage = this.store.db.prepare(`SELECT * FROM recorder_coverage WHERE source=? AND device=? AND signal=? AND start_at<=?
+    const coverage = this.store.db.prepare(`SELECT * FROM active_recorder_coverage AS recorder_coverage WHERE source=? AND device=? AND signal=? AND start_at<=?
       ORDER BY start_at DESC,id DESC LIMIT 1`).get(o.source,o.device,signal,at);
     if (coverage && coverage.end_at >= o.receivedAt) {
       if (coverage.status !== 'fresh') return {...o,value:null,quality:flags([...o.quality,coverage.status])};
@@ -644,6 +644,7 @@ export class Recorder {
 
   status(now = this.clock()) {
     const g = this.store.getState(GLOBAL_KEY) ?? this.global(now);
+    const historySelection = this.store.db.prepare('SELECT generation FROM history_selection WHERE id=1').get().generation;
     const revision = this.store.db.prepare(`SELECT (SELECT MAX(id) FROM observations) observations,
       (SELECT MAX(id) FROM provider_snapshot_fetches) snapshots,(SELECT MAX(id) FROM recorder_coverage) coverage`).get();
     const rows = this.store.db.prepare("SELECT value FROM state WHERE key LIKE 'recorder:signal:%'").all();
@@ -716,7 +717,7 @@ export class Recorder {
         threshold:exact ? null : Math.max(powerFloor,valueFloor(s),s.scale*g.tolerance),thresholdUnit:grouped || totalEnergy ? 'kW' : s.unit,
         optimizedQuantity:grouped ? 'phase-power' : totalEnergy ? 'total-power' : 'value',grouped,...stats};
     }).sort((a,b)=>a.signal.localeCompare(b.signal));
-    return {version:VERSION,...this.config,historyRevision:JSON.stringify({...revision,energy:g.energyRevision ?? 0}),temperatureReportRevision,sourceReportRevision,normalizedTolerance:g.tolerance,measuredDatabaseBytes:this.store.databaseBytes(),
+    return {version:VERSION,...this.config,historySelection,historyRevision:JSON.stringify({...revision,selection:historySelection,energy:g.energyRevision ?? 0}),temperatureReportRevision,sourceReportRevision,normalizedTolerance:g.tolerance,measuredDatabaseBytes:this.store.databaseBytes(),
       bytesPerDay:g.bytesPerDay,bytesPerDay7d:g.bytesPerDay7d,projectedAnnualBytes:g.bytesPerDay7d*YEAR/DAY,
       measurementHours:g.measuredHours,budgetBasis:'soft-rolling-growth',
       parameters:parameters.filter(row=>row.policy.startsWith('adaptive-')),

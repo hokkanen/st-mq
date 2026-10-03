@@ -8,6 +8,7 @@ import { loadConfig, configurationReader, configurationSource, configurationLoad
 import { Engine } from './app/engine.js';
 import { createEquipmentTests } from './app/equipment-tests.js';
 import { createWebAccess } from './app/web-access.js';
+import { createHistoryRecovery } from './app/history-recovery.js';
 import { startHistoryLearning } from './app/learning.js';
 import { createChartService } from './app/chart-service.js';
 import { prepareStorage } from './app/storage-paths.js';
@@ -18,7 +19,7 @@ import { createConfigurationReviews, configurationRestartRequired, configuration
 
 export async function start({ config = loadConfig(), readConfig = configurationReader(config),
   clock = Date.now, providerOptions = {}, mqttOptions = {}, pairContext = null, pairOptions = {},
-  installSignalHandlers = true, shutdownSignal = null, startupTransaction = null } = {}) {
+  installSignalHandlers = true, shutdownSignal = null, startupTransaction = null, historyRecoveryOptions = {} } = {}) {
   const validateTopology = candidate => {
     if (!['standalone', 'mirror', 'pair'].includes(candidate.topology ?? 'standalone')) throw new Error('Invalid local topology');
     if (candidate.role !== undefined && !['master', 'slave'].includes(candidate.role)) throw new Error('Invalid local instance role');
@@ -56,7 +57,7 @@ export async function start({ config = loadConfig(), readConfig = configurationR
   await prepareStorage(config);
   const store = new Store(config.dbPath);
   const runtimeTiming = createRuntimeTiming();
-  let engine, webAccess, learning, chartService, commandTransport, replication, authority, timer, closed = false, reloadPending = null;
+  let engine, webAccess, learning, chartService, commandTransport, replication, authority, historyRecovery, timer, closed = false, reloadPending = null;
   let runtimeUsable = true, starting = true, configurationResult = null;
   const configurationReviews = createConfigurationReviews({ clock });
   let authorityStopping = null, controlRevoked = false;
@@ -97,6 +98,7 @@ export async function start({ config = loadConfig(), readConfig = configurationR
       const replicationStopped = attempt(() => replication?.stop());
       await reloadPending?.catch(() => {});
       await authorityStopping?.catch(() => {});
+      await attempt(() => historyRecovery?.close());
       await attempt(() => stopRuntime({ restore }));
       await attempt(() => authority?.close());
       await replicationStopped;
@@ -109,6 +111,7 @@ export async function start({ config = loadConfig(), readConfig = configurationR
     return closePending;
   }
   function stopRuntime({ restore = true, deactivateOcpp = false } = {}) {
+    historyRecovery?.cancel();
     restore = restore && canControl();
     clearTimeout(timer);
     // Revocation starts before any slow feature cleanup. MQTT queues cannot wait
@@ -135,6 +138,7 @@ export async function start({ config = loadConfig(), readConfig = configurationR
     runtimeStopPending = (async () => {
       const errors = [];
       const attempt = async fn => { try { return await fn(); } catch (error) { errors.push(error); } };
+      await attempt(() => historyRecovery?.settled());
       // A process restart is a transport outage, not a change of charger mode.
       // Only an explicit integration change relinquishes native OCPP through
       // the old connection while its controller and write authority still exist.
@@ -179,6 +183,7 @@ export async function start({ config = loadConfig(), readConfig = configurationR
         canControl });
     }
     engine = new Engine({ store, config, clock, commandTransport, canControl });
+    engine.historyRecovery = historyRecovery;
     engine.runtimeTiming = runtimeTiming.status;
     // Load durable native-setting obligations before the first active dispatch.
     // MQTT connection and device publications remain asynchronous.
@@ -262,6 +267,7 @@ export async function start({ config = loadConfig(), readConfig = configurationR
   }
   async function previewSettings() {
     requireRunning();
+    if (historyRecovery?.busy()) throw new Error('Wait for history recovery to finish before updating settings.');
     if (starting || reloadPending) throw Object.assign(new Error('Settings are being updated. Retry shortly.'), { statusCode: 409 });
     if (!runtimeUsable || typeof readConfig !== 'function') throw new Error(settingsReloadStatus().reason);
     const baseline = config;
@@ -272,6 +278,7 @@ export async function start({ config = loadConfig(), readConfig = configurationR
   }
   async function reloadSettings(reviewId) {
     requireRunning();
+    if (historyRecovery?.busy()) throw new Error('Wait for history recovery to finish before updating settings.');
     if (starting) throw new Error('The application is still starting. Retry shortly.');
     if (!runtimeUsable) throw new Error(settingsReloadStatus().reason);
     if (reloadPending) throw new Error('Settings are already being updated.');
@@ -449,10 +456,18 @@ export async function start({ config = loadConfig(), readConfig = configurationR
     // A duplicate launch must fail without touching equipment. API requests are
     // held by settingsReloadStatus().busy until startup has completed.
     chartService = createChartService({ store });
+    historyRecovery = createHistoryRecovery({ store, getEngine: () => engine, canControl,
+      ready: () => !closed && !starting && !reloadPending && runtimeUsable,
+      getExportDirectory: () => config.recording?.exportDirectory ?? homedir(), pairContext, clock,
+      getResetBackups: async () => {
+        const { listResetBackups } = await import('./pairing/reset-storage.js');
+        return listResetBackups(config);
+      }, ...historyRecoveryOptions });
     webAccess = createWebAccess({ config, topology: config.topology, role: config.role, getEngine: () => engine, store, chartService,
       getDatabaseExportDirectory: () => config.recording?.exportDirectory ?? homedir(),
       syncStatus: () => replication?.status() ?? null,
       pairContext,
+      historyRecovery,
       controlAuthority: authority,
       reloadSettings: typeof readConfig === 'function' ? reloadSettings : null,
       previewSettings: typeof readConfig === 'function' ? previewSettings : null, settingsReloadStatus,
@@ -460,6 +475,8 @@ export async function start({ config = loadConfig(), readConfig = configurationR
     await webAccess.start();
     requireRunning();
     await createRuntime();
+    historyRecovery.initialize();
+    engine.historyRecovery = historyRecovery;
     requireRunning();
     if (canControl()) { engine.tick(); }
     requireRunning();
@@ -485,7 +502,7 @@ export async function start({ config = loadConfig(), readConfig = configurationR
     console.log(JSON.stringify({ event: 'ready', input: config.input, environment: engine.environment(), manualHeatingTests: engine.heatingTests().available,
       address: webAccess.server.address(), startupMs: Math.round(performance.now() - started) }));
     finishStartup();
-    return { store, get engine() { return engine; }, get server() { return webAccess.server; }, webAccess, mirror: replication, close, reloadSettings, previewSettings, revokeControl };
+    return { store, get engine() { return engine; }, get server() { return webAccess.server; }, webAccess, historyRecovery, mirror: replication, close, reloadSettings, previewSettings, revokeControl };
   } catch (error) {
     finishStartup();
     try { await close(); } catch (cleanupError) { error.cleanupError = cleanupError; }

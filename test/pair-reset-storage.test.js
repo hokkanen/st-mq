@@ -1,9 +1,11 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { randomUUID } from 'node:crypto';
-import { lstat, mkdir, mkdtemp, readFile, readdir, rename, rm, stat, symlink, writeFile } from 'node:fs/promises';
+import { copyFile, lstat, mkdir, mkdtemp, readFile, readdir, rename, rm, stat, symlink, writeFile } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
-import { archiveRoot, createResetArchive, resumeResetArchive, selectResetDatabase } from '../src/pairing/reset-storage.js';
+import { DatabaseSync } from 'node:sqlite';
+import { Store, SCHEMA_VERSION } from '../src/storage/store.js';
+import { archiveRoot, createResetArchive, listResetBackups, resumeResetArchive, selectResetDatabase } from '../src/pairing/reset-storage.js';
 
 async function file(path, bytes) {
   await mkdir(dirname(path), { recursive: true, mode: 0o700 });
@@ -31,6 +33,102 @@ async function fixture(t) {
 const absent = async path => { await assert.rejects(lstat(path), { code: 'ENOENT' }); };
 const archived = (plan, source) => join(plan.archiveDirectory, plan.entries.find(entry => entry.source === source).destination);
 const resume = (plan, config, source = plan) => resumeResetArchive(source, { config, requestId: plan.requestId, mode: plan.mode });
+
+async function walFixture(root, destination, value) {
+  await mkdir(dirname(destination), { recursive: true, mode: 0o700 });
+  const staging = await mkdtemp(join(root, 'synthetic-wal-'));
+  const store = new Store(join(staging, 'source.sqlite'));
+  try {
+    store.db.exec('PRAGMA wal_autocheckpoint=0');
+    store.setState('synthetic-backup-evidence', value);
+    for (const suffix of ['', '-wal', '-shm']) await copyFile(`${store.path}${suffix}`, `${destination}${suffix}`);
+  } finally { store.close(); await rm(staging, { recursive: true, force: true }); }
+}
+
+test('reset archives produce separate verified portable backups including committed WAL and preserve every original byte', async t => {
+  const { root, config, state, create } = await fixture(t);
+  await walFixture(root, config.dbPath, 'configured');
+  const active = join(config.pair.directory, 'promoted.sqlite');
+  await walFixture(root, active, 'active');
+  state.activeDbPath = active;
+  const plan = await create('fresh');
+  const originals = new Map();
+  for (const entry of plan.entries) originals.set(entry.source, await readFile(entry.source));
+  const result = await resume(plan, config);
+  assert.equal(result.recoveryBackups.length, 2);
+  assert.equal(result.recoveryBackupUnavailable, null);
+  const values = [];
+  for (const item of result.recoveryBackups) {
+    assert.equal(item.status, 'complete');
+    assert.equal((await stat(item.path)).mode & 0o777, 0o600);
+    const db = new DatabaseSync(item.path, { readOnly: true });
+    try {
+      assert.equal(db.prepare('PRAGMA integrity_check').get().integrity_check, 'ok');
+      assert.equal(db.prepare('PRAGMA journal_mode').get().journal_mode, 'delete');
+      assert.equal(db.prepare('PRAGMA user_version').get().user_version, SCHEMA_VERSION);
+      values.push(JSON.parse(db.prepare("SELECT value FROM state WHERE key='synthetic-backup-evidence'").get().value));
+    } finally { db.close(); }
+    await absent(`${item.path}-wal`); await absent(`${item.path}-shm`);
+  }
+  assert.deepEqual(values.sort(), ['active', 'configured']);
+  for (const entry of plan.entries) assert.deepEqual(await readFile(archived(plan, entry.source)), originals.get(entry.source));
+  assert.deepEqual(await resume(plan, config, plan.archiveDirectory), result);
+  const available = await listResetBackups(config);
+  assert.deepEqual(available.map(item => item.path).sort(), result.recoveryBackups.map(item => item.path).sort());
+  assert(available.every(item => /^[a-f0-9]{64}$/.test(item.id) && item.kind === 'reset'));
+  assert.equal(new Set(available.map(item => item.id)).size, 2);
+  assert.deepEqual(await listResetBackups({ ...config, pair: {} }), available,
+    'standalone can select completed reset backups after changing topology');
+});
+
+test('incompatible and corrupt databases remain intact with explicit unavailable backup reasons', async t => {
+  const { config, create } = await fixture(t);
+  const retired = join(config.pair.directory, 'retired.sqlite');
+  const db = new DatabaseSync(retired);
+  db.exec('CREATE TABLE old_records (value); INSERT INTO old_records VALUES (17); PRAGMA user_version=1'); db.close();
+  const original = await readFile(retired);
+  const plan = await create('fresh'), result = await resume(plan, config);
+  assert.deepEqual(result.recoveryBackups.map(item => item.reason).sort(), ['incompatible-database', 'invalid-database']);
+  assert(result.recoveryBackups.every(item => item.status === 'unavailable' && item.path === null));
+  assert.deepEqual(await readFile(archived(plan, retired)), original);
+  assert.equal(await readFile(archived(plan, config.dbPath), 'utf8'), 'database bytes');
+  assert.deepEqual(await listResetBackups(config), []);
+});
+
+test('retry verifies a published backup left before its manifest acknowledgement and refuses a changed copy', async t => {
+  const { root, config, create } = await fixture(t);
+  await walFixture(root, config.dbPath, 42);
+  const plan = await create('fresh'), result = await resume(plan, config);
+  const manifestPath = join(plan.archiveDirectory, 'reset.json');
+  const interrupted = JSON.parse(await readFile(manifestPath, 'utf8'));
+  interrupted.complete = false;
+  interrupted.recoveryBackups[0] = { ...interrupted.recoveryBackups[0], status: 'pending', bytes: null, digest: null, reason: null };
+  await writeFile(manifestPath, JSON.stringify(interrupted));
+  assert.deepEqual(await resume(plan, config), result);
+  await writeFile(manifestPath, JSON.stringify(interrupted));
+  await writeFile(result.recoveryBackups[0].path, 'unrelated existing contents');
+  await assert.rejects(resume(plan, config), { code: 'pair_reset_storage_failed' });
+  assert.equal(await readFile(result.recoveryBackups[0].path, 'utf8'), 'unrelated existing contents');
+  assert.equal(await readFile(archived(plan, config.dbPath), 'utf8').then(value => value.startsWith('SQLite format 3')), true);
+});
+
+test('reset backup discovery excludes malformed manifests, unfinished archives and replaced file links', async t => {
+  const { root, config, create } = await fixture(t);
+  await walFixture(root, config.dbPath, 42);
+  const plan = await create('fresh');
+  assert.deepEqual(await listResetBackups(config), []);
+  const result = await resume(plan, config), backup = result.recoveryBackups[0].path;
+  const saved = `${backup}.saved`;
+  await rename(backup, saved); await symlink(saved, backup);
+  assert.deepEqual(await listResetBackups(config), []);
+  await rm(backup); await rename(saved, backup);
+  const manifestPath = join(plan.archiveDirectory, 'reset.json');
+  const manifest = JSON.parse(await readFile(manifestPath, 'utf8'));
+  manifest.recoveryBackups[0].destination = '../outside.sqlite';
+  await writeFile(manifestPath, JSON.stringify(manifest));
+  assert.deepEqual(await listResetBackups(config), []);
+  await assert.rejects(resume(plan, config), { code: 'pair_reset_unsafe_storage' });
+});
 
 test('fresh reset archives exact database sidecars and pairing state without touching credentials or the node lock', async t => {
   const { config, create } = await fixture(t);

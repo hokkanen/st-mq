@@ -7,7 +7,7 @@ import { randomUUID } from 'node:crypto';
 import { DatabaseSync } from 'node:sqlite';
 import { start } from '../src/main.js';
 import { loadConfig } from '../src/app/config.js';
-import { Store } from '../src/storage/store.js';
+import { Store, SCHEMA_VERSION } from '../src/storage/store.js';
 import * as resetStorage from '../src/pairing/reset-storage.js';
 
 async function fixture(t) {
@@ -49,6 +49,9 @@ test('keep history archives previous pairing identity and returns a master as pr
   const previousId = app.pair.state.value.nodeId;
   const op = await completed(app, command(app, 'keep'));
   assert.equal(op.state, 'complete', op.error);
+  assert.equal(op.result.backupCount, 1);
+  assert.equal(op.result.unavailableCount, 0);
+  assert.deepEqual(op.result.unavailableReasons, []);
   assert.equal(app.pair.canControl(), false);
   assert.equal(app.status().role, 'protected');
   assert.equal(app.status().reason, 'pairing_reset');
@@ -75,6 +78,9 @@ test('fresh archives an incompatible database intact, keeps provider files, and 
   const app = await f.open(); assert.equal(app.status().error, 'database_schema_mismatch');
   const request = command(app, 'fresh'); const op = await completed(app, request);
   assert.equal(op.state, 'complete', op.error);
+  assert.equal(op.result.backupCount, 0);
+  assert.equal(op.result.unavailableCount, 1);
+  assert.deepEqual(op.result.unavailableReasons, ['incompatible-database']);
   assert.equal(app.status().role, 'slave'); assert.equal(app.status().bootstrapPending, true);
   assert.equal(app.status().error, null); assert.equal(app.pair.canControl(), false);
   await assert.rejects(readFile(f.config.dbPath), { code: 'ENOENT' });
@@ -88,7 +94,7 @@ test('fresh archives an incompatible database intact, keeps provider files, and 
   assert.equal(restarted.status().uiOperation.state, 'complete');
   assert.deepEqual(await readdir(resetStorage.archiveRoot(f.config)), before, 'retry after restart does not reset again');
   await promote(restarted);
-  assert.equal(restarted.store.db.prepare('PRAGMA user_version').get().user_version, 19);
+  assert.equal(restarted.store.db.prepare('PRAGMA user_version').get().user_version, SCHEMA_VERSION);
   assert.ok((await Promise.all(databases.map(file => readFile(file)))).some(bytes => bytes.equals(original)), 'promotion leaves the old database archive unchanged');
 });
 

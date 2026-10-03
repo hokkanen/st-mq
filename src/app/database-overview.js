@@ -2,6 +2,7 @@ import { statSync } from 'node:fs';
 import { createHash } from 'node:crypto';
 import { SIGNAL_INFO } from '../domain/history-series.js';
 import { recordingPolicy, recordedSignalInfo, RECORDING_POLICIES } from '../domain/recording-policy.js';
+import { RECOVERABLE_TABLES, recoveryRecordKey } from '../storage/schema.js';
 
 export const OVERVIEW_REFRESH_MS = 5 * 60_000;
 const fields = (...pairs) => pairs.map(([name, description]) => ({ name, description }));
@@ -233,7 +234,7 @@ export function getDatabaseOverview({ store, now = Date.now() }) {
       { label: 'Cycles with saved assessments', value: cycleFacts.assessed ?? 0 }],
     fields: fields(['Original plan', 'Schedule, frozen model and configuration, weather and price assumptions.'],
       ['Execution', 'Committed observations, requested phases, adjustments and coverage.'], ['Assessment', 'Recorded cycle cost, comparable space-heating cost and benefit, space-heating recovery error and uncertainty; hot-water service is excluded from benefit.']) }));
-  add('learning', 'Learning history', 'These are stored model records and calculated results. Explaining or selecting the home model’s inputs is a separate feature.', learningItems);
+  add('learning', 'Learning history', 'Journal samples, episodes and contexts describe the selected model history. Other retained model epochs are listed under storage support. Cycle records retain original plans and outcomes, including records excluded by recovery corrections.', learningItems);
 
   const fireplace = grouped('fireplace_events', "CASE WHEN kind IN ('load','remove') THEN kind ELSE 'other' END", 'at');
   const retractedLoads = db.prepare(`SELECT COUNT(*) count FROM fireplace_events loads JOIN
@@ -263,7 +264,7 @@ export function getDatabaseOverview({ store, now = Date.now() }) {
     ['session-checks', "key LIKE 'charging-session-check:%' OR key LIKE 'easee:session-check:%' OR key LIKE 'easee:session-check-head:%'", 'Charging comparison identities', 'Hashed session identities prevent duplicate finalized comparisons; raw provider identifiers are not copied into checks.'],
     ['learning', "key LIKE 'learning:%' OR key LIKE 'adaptive:%' OR key LIKE 'learned:%'", 'Learning checkpoints and progress', 'Current fitted model, replay cursor, baseline, metrics and history rebuild progress.'],
     ['fireplace', "key LIKE 'fireplace:%'", 'Fireplace reconstruction progress', 'Current correction revision, background reconstruction status and progress. A replacement model is activated after reconstruction completes.'],
-    ['recovery', "key LIKE 'recovery:%'", 'History recovery progress', 'Current manual recovery progress and its accepted, conflicting and skipped record counts. The complete reconstructed model is published after catching up live learning.'],
+    ['recovery', "key LIKE 'recovery:%' OR key='history-recovery:coordinator'", 'History recovery progress', 'Current recovery progress, reviewed sources, bounded request receipts and accepted, conflicting or skipped counts. The complete reconstructed model is published after catching up live learning; private paths and source identities are omitted.'],
     ['settings', "key LIKE 'settings:%' OR key LIKE 'occupancy:%'", 'Settings and temporary overrides', 'Current operating settings, occupancy and timed away selections; credentials remain in external configuration.'],
     ['automation', "key LIKE 'automation:%'", 'Heating automation choices', 'Home automatic-control permission bound to current equipment identity. Pause is the initial choice.'],
     ['heating-scenarios', "key LIKE 'heating-explorer:trial:%'", 'One-cycle heating scenarios', 'Latest explicit admin approval, temporary limits, equipment binding, expiry and outcome. Hypothetical comparison snapshots stay in bounded memory and do not enter the database.'],
@@ -384,9 +385,65 @@ export function getDatabaseOverview({ store, now = Date.now() }) {
     ]);
   const recoveryRuns = aggregate('recovery_runs', 'started_at', 'COALESCE(completed_at,started_at)');
   const recoverySources = aggregate('recovery_provenance', 'NULL');
+  const recoveries = aggregate('history_recoveries', 'started_at', 'COALESCE(completed_at,started_at)');
+  const recoveryMembers = aggregate('recovery_members', 'NULL');
+  const recoveryDecisions = aggregate('recovery_decisions', 'at');
+  const historySelections = aggregate('history_selection', 'NULL');
+  const recoveryExclusions = aggregate('recovery_exclusions', 'NULL');
+  const recoveryFacts = db.prepare(`SELECT SUM(active=1) active,SUM(active=0) reverted,
+    SUM(completed_at IS NULL) unfinished FROM history_recoveries`).get();
+  // Only exclusions belonging to the published selection count as excluded
+  // history. Indexed source lookups avoid scanning the history again for each
+  // view, and ignore stale references to rows no longer physically retained.
+  const excludedRows = table => {
+    const physical = table === 'learning_journal' ? 'learning_journal_entries' : table;
+    const lookup = table === 'import_rows'
+      ? "r.import_id=CAST(substr(x.record_key,1,instr(x.record_key,':')-1) AS INTEGER) AND r.row_number=CAST(substr(x.record_key,instr(x.record_key,':')+1) AS INTEGER)"
+      : 'r.id=x.record_key';
+    return Number(db.prepare(`SELECT COUNT(*) count FROM recovery_exclusions x JOIN ${physical} r
+      ON ${lookup} AND ${recoveryRecordKey(table)}=x.record_key
+      WHERE x.generation=(SELECT generation FROM history_selection WHERE id=1) AND x.table_name=?`).get(table).count);
+  };
+  const exclusionsByTable = new Map(RECOVERABLE_TABLES.map(table => [table, excludedRows(table)]));
+  const selectedExclusions = [...exclusionsByTable.values()].reduce((total, count) => total + count, 0);
+  const excludedLearning = excludedRows('learning_journal');
+  add('recovery', 'Recovered history and corrections', 'Recoveries retain their original source evidence. Revert and restore change which records charts and learning use; they do not erase the stored source or undo recorded equipment actions. Counts here are records and references, not additional measurements.', [
+    item('history-recoveries', 'Recovery operations', 'Persistent identities, sources and outcomes for accepted recoveries, including interrupted work and later reversals.', recoveries, {
+      countLabel: 'recoveries', retention: 'mixed', dateBasis: 'recovery start / completion',
+      retentionDescription: 'Operation identities and source contributions remain available after reversal; status and completion are updated as work progresses.',
+      writeBehavior: 'Created when recovery is accepted; updated during completion, interruption, reversal or restoration.',
+      facts: [{ label: 'Currently included recoveries', value: Number(recoveryFacts.active ?? 0) },
+        { label: 'Reverted recoveries', value: Number(recoveryFacts.reverted ?? 0) },
+        { label: 'Without a completed recovery', value: Number(recoveryFacts.unfinished ?? 0) }],
+      fields: fields(['Identity and source', 'Recovery identity, source kind and donor digest; source names and private identifiers are not shown here.'],
+        ['Outcome', 'Start/completion timestamps, progress status, current inclusion and aggregate recovery report.']) }),
+    item('recovery-members', 'Recovery contributions', 'References bind each accepted contribution to its recovery and source fingerprint, including shared or dependent evidence.', recoveryMembers, {
+      countLabel: 'references', dateBasis: 'no independent timestamps stored',
+      retentionDescription: 'Retained across reversal and restart so a rejected contribution cannot silently return from another source.',
+      writeBehavior: 'Once per distinct recovery and accepted source-record reference.',
+      fields: fields(['Contribution reference', 'Recovery identity, dataset and local record reference; individual identities are omitted.'],
+        ['Source fingerprint', 'Content identity used to recognize a repeated contribution without treating a different backup as new evidence.']) }),
+    item('recovery-decisions', 'Recovery reversal and restoration decisions', 'Immutable decisions record when an entire recovery was excluded or restored.', recoveryDecisions, {
+      countLabel: 'decisions', dateBasis: 'decision time', writeBehavior: 'When a verified reversal or restoration publishes its complete history and model.',
+      fields: fields(['Decision', 'Recovery reference, include/exclude choice and publication time.'],
+        ['Published interpretation', 'History generation and complete model epoch identify the interpretation retained for this decision.'],
+        ['Impact', 'Reviewed aggregate impact and reconstruction report; private source details are omitted.']) }),
+    item('history-selection', 'Current history selection', 'One current selection connects the charts to the published recovery interpretation. It exists even before any records are recovered.', historySelections, {
+      countLabel: 'selection', retention: 'current', dateBasis: 'no independent timestamps stored',
+      retentionDescription: 'Updated atomically with the reconstructed model when a reversal or restoration completes.',
+      writeBehavior: 'Initialized with the empty database; changed only by complete recovery publication.',
+      facts: [{ label: 'Source records excluded from current charts and learning', value: selectedExclusions },
+        { label: 'Original learning entries excluded by recovery corrections', value: excludedLearning }],
+      fields: fields(['Selection reference', 'Opaque published generation shared by history views; the private reference is not displayed.']) }),
+    item('recovery-exclusions', 'Retained exclusion references', 'Each reference excludes one source record or dependent learning entry in one history selection. Previous selections and work in progress can retain additional references.', recoveryExclusions, {
+      countLabel: 'references', retention: 'mixed', dateBasis: 'no independent timestamps stored',
+      retentionDescription: 'Published selections retain their references; abandoned unpublished work can be removed without deleting original source evidence.',
+      writeBehavior: 'Built in the background for a proposed reversal or restoration before atomic publication.',
+      fields: fields(['Exclusion reference', 'History generation, dataset and original record reference; no duplicated source payload.']) }),
+  ]);
   const otherEpochs = aggregate('learning_journal_entries', 'at', 'at',
     "epoch<>COALESCE((SELECT epoch FROM learning_epochs WHERE input=learning_journal_entries.input),'original')");
-  add('support', 'Recording and storage support', 'These support records are stored in addition to measurements. Charts read original committed records using SQLite indexes. Display-point reduction and cached chart responses stay in memory; no separate chart summaries are stored in the database.', [
+  add('support', 'Recording and storage support', 'These support records are stored in addition to measurements. Charts read selected original committed records using SQLite indexes; excluded recovery evidence stays in storage. Display-point reduction and cached chart responses stay in memory; no separate chart summaries are stored in the database.', [
     item('adaptive-observations', 'Saved adaptive measurement history', 'Every saved adaptive dataset is listed here, including recovered history without a current recorder checkpoint. The Adaptive measurements table shows streams with a current checkpoint and their thresholds. Matching signals with the same unit and saving rule are combined across sources.', observations.get('adaptive'), {
       dateBasis: 'observation time, or receipt time when unavailable', writeBehavior: 'When a learned numeric change threshold, quality transition or accumulated-energy interval closure requires a record; unchanged values are not repeated.', fields: observationFields,
       breakdownLabel: 'Measurement / unit / saving rule',
@@ -436,11 +493,32 @@ export function getDatabaseOverview({ store, now = Date.now() }) {
     recovery_provenance: recoverySources.count, learning_cycles: cycles.count,
     fireplace_events: sum([...fireplace.values()]).count,
     charging_reports: chargingReports.count, charging_report_events: chargingEvents.count,
+    history_recoveries: recoveries.count, recovery_members: recoveryMembers.count, recovery_decisions: recoveryDecisions.count,
+    history_selection: historySelections.count, recovery_exclusions: recoveryExclusions.count,
   };
   const actualTables = db.prepare("SELECT name FROM sqlite_schema WHERE type='table' AND name NOT LIKE 'sqlite_%' ORDER BY name").all();
   if (actualTables.some(({ name }) => !Object.hasOwn(tableCounts, name))) inventoryIssues.push('An unregistered physical table needs a writer and retention description.');
   const tables = actualTables.map(({ name }, index) => Object.hasOwn(tableCounts, name) ? { name, rows: tableCounts[name] }
     : { name: `Additional internal table ${index + 1}`, rows: db.prepare(`SELECT COUNT(*) count FROM "${name.replaceAll('"', '""')}"`).get().count });
+  const selectionTables = RECOVERABLE_TABLES.map(name => ({ name, retainedRows: tableCounts[name],
+    selectedRows: tableCounts[name] - exclusionsByTable.get(name), excludedRows: exclusionsByTable.get(name) }));
+  const retainedSourceRows = selectionTables.reduce((total, row) => total + row.retainedRows, 0);
+  const selectionItem = groups.find(group => group.id === 'recovery').items.find(item => item.id === 'history-selection');
+  selectionItem.facts.unshift({ label: 'Retained source records', value: retainedSourceRows },
+    { label: 'Source records selected for charts and learning', value: retainedSourceRows - selectedExclusions });
+  const viewDescriptions = {
+    provider_snapshots: 'Joins all retained fetch references with shared content, including excluded recovery evidence; stores no additional rows.',
+    learning_journal: 'Selected complete learning epoch for each input; source entries and other retained epochs are counted in learning_journal_entries.',
+    learning_journal_all: 'Resolves compact epoch references to original saved inputs; stores no duplicated payload rows.',
+    ...Object.fromEntries(RECOVERABLE_TABLES.map(table => [`active_${table}`, `Selects currently included records from ${table}; excluded originals remain counted in that physical table. This view stores no rows.`])),
+    active_provider_snapshots: 'Joins currently included provider fetches and shared content for charts and learning; stores no additional rows.',
+  };
+  const actualViews = db.prepare("SELECT name FROM sqlite_schema WHERE type='view' AND name NOT LIKE 'sqlite_%' ORDER BY name").all();
+  if (actualViews.some(({ name }) => !Object.hasOwn(viewDescriptions, name)))
+    inventoryIssues.push('An unregistered SQL view needs an interpretation description.');
+  const views = actualViews.map(({ name }, index) => Object.hasOwn(viewDescriptions, name)
+    ? { name, description: viewDescriptions[name] }
+    : { name: `Additional internal view ${index + 1}`, description: 'A read-only projection with no physical rows; its interpretation is not registered.' });
   const pageSize = db.prepare('PRAGMA page_size').get().page_size;
   const allocatedBytes = db.prepare('PRAGMA page_count').get().page_count * pageSize;
   const reusableBytes = db.prepare('PRAGMA freelist_count').get().freelist_count * pageSize;
@@ -449,10 +527,10 @@ export function getDatabaseOverview({ store, now = Date.now() }) {
   return { generatedAt: now, refreshAfterMs: OVERVIEW_REFRESH_MS,
     catalogueComplete: inventoryIssues.length === 0, inventoryIssues: [...new Set(inventoryIssues)],
     database: { allocatedBytes, reusableBytes, fileBytes, walBytes, totalFileBytes: fileBytes === null ? null : fileBytes + walBytes,
-      description: 'SQLite allocated pages include recorded data, indexes that speed lookups and reusable pages. Chart responses and display-point reduction use memory, not additional database tables. Main-file plus WAL bytes are physical files and include temporary journal overhead; dataset sizes are not estimated.' },
+      description: 'Stored source counts include evidence excluded by recovery corrections; selected chart history can contain fewer records. Learning journal counts identify the selected model history separately from other retained epochs. SQLite allocated pages include records, indexes and reusable pages. Main-file plus WAL bytes include temporary journal overhead; dataset sizes are not estimated. Chart responses and point reduction use memory.' },
     groups, accounting: { tables, totalRows: tables.reduce((total, table) => total + table.rows, 0),
-      views: [{ name: 'provider_snapshots', description: 'Current read-only view joining fetch references with shared content; it stores no additional rows.' },
-        { name: 'learning_journal', description: 'Selected complete learning epoch for each input; source entries and archived epochs are counted in learning_journal_entries.' },
-        { name: 'learning_journal_all', description: 'Resolves compact epoch references to their original saved input; it stores no duplicated payload rows.' }],
+      views, selection: { tables: selectionTables, retainedSourceRows,
+        selectedSourceRows: retainedSourceRows - selectedExclusions, excludedSourceRows: selectedExclusions,
+        selectedLearningEntries: sum([...journal.values()]).count, excludedLearningEntries: excludedLearning },
       description: 'Each physical table is counted once here. Dataset counts above overlap where documents contain periods or fetches reference shared content; do not add those dataset counts together.' } };
 }

@@ -663,7 +663,7 @@ byte and variation metrics remain labeled as such. Current open energy is shown
 separately from finalized observation counts. The annual target measures overall
 SQLite growth; mandatory exact/history records are never dropped to meet it.
 
-This recording contract uses database schema 19. An incompatible development
+This recording contract uses database schema 20. An incompatible development
 schema is rejected before mutation with fresh-database guidance; no migration,
 backfill or automatic reset is provided. Supported read-only v0.7.5 CSV import,
 current-version restart, backup/restore and deterministic journal replay remain.
@@ -959,7 +959,7 @@ explicit initial seed when adopting an existing model; original discarded source
 polls are not required to reproduce subsequent learning. Older imported history is
 resampled causally with bounded holds, retaining unknown heating/solar information.
 
-The current algorithm is `committed-house-v13-scoped-sensor-changes`. Saved configuration retains
+The current algorithm is `committed-house-v14-reversible-recovery`. Saved configuration retains
 source-output assumptions, selected-slab priors, the relative ROOM increase and the
 bounded recovery policy. Changed equipment assumptions invalidate affected
 equipment/cost calibration. Checkpoint digests and journal-prefix identity detect
@@ -1138,6 +1138,7 @@ the way each dataset is updated. Groups cover:
 - Learning samples, episodes, replay configuration and assessments.
 - Current settings and checkpoints, explicitly distinguished from retained history.
 - Easee/st-mq CSV imports, manual counters and historical annotations.
+- Recovery contributions, immutable revert/restore decisions and the current history selection.
 - Availability coverage, recorder statistics and storage support.
 
 An empty dataset is identified as empty rather than inferred to contain
@@ -1148,9 +1149,19 @@ or model inputs. Purely reconstructed chart values are not listed as independent
 stored series; persisted calculated learning results are described as such.
 The overview explains that chart point reduction and response caching use RAM,
 while the retained SQLite indexes support queries over original records. Storage
-accounting lists all 18 physical tables and separately identifies the three SQL
-views; there are no persisted chart summaries
-or chart-summary bookkeeping entries.
+accounting enumerates each current physical table once and separately describes
+all SQL views; the views add no stored rows. There are no persisted chart summaries
+or chart-summary bookkeeping entries. The initial current history-selection entry
+is metadata, not a measurement.
+
+Source dataset counts include retained evidence excluded by recovery corrections.
+**Recovered history and corrections** separately reports retained source records,
+records included in the published selection and excluded original evidence.
+Historical and unpublished exclusion references remain storage records without
+being mistaken for exclusions in the current charts. Learning journal counts refer
+to the selected complete model epoch; other retained epochs have their own count.
+No recovery names, private source paths, fingerprints or record payloads are exposed
+by this inventory.
 
 Database inventory queries are read-only and requested when the other-data fold
 is open. A bounded worker query and cache keep large inventories out of the live
@@ -1381,6 +1392,50 @@ or learning inputs.
 Chart projections do not replace retained evidence or backfill history from
 current live readings.
 
+## Recover history from a backup or paired computer
+
+Open **Recording details → Recover history…** to review and recover missing
+history. Standalone controllers and active paired masters use this same window.
+**Paired computers → Review history…** opens it with the other computer selected.
+The window follows the Fireplace dialog's open/close behavior; closing it does
+not cancel work already running on the server. Admin access is required, and
+read-only computers cannot apply history changes.
+
+Choose a verified reset-archive backup, a local copy from the configured export
+folder, an uploaded self-contained SQLite backup, or the paired computer. Reset
+backups and ordinary exports have the same `.sqlite` format. Only the current
+schema and learning contract are supported; recovery does not migrate older
+development databases. Keep the original backup. Uploaded copies are temporary
+working sources and do not replace an independent backup.
+
+For a backup, confirm **This backup belongs to this installation**, then select
+**Check backup**. Review the missing, conflicting, already present and skipped
+record counts and periods before confirming **Recover gaps and rebuild model**.
+The check does not change recorded history. Existing local history takes
+precedence over conflicting source records. Recovery imports supported source
+evidence with provenance; it does not restore the backup's configuration,
+dashboard permissions, pairing role or equipment-control state. A normal paired
+slave is available for comparison only; protected paired history also requires
+the separate [resume-mirroring decision](pairing.md#protected-history-and-manual-recovery).
+
+**Previous recoveries** retains each recovery for later review. Select
+**Review revert**, inspect its effect, then confirm **Revert recovery** to exclude
+its accepted evidence from current history and rebuild the model. **Review
+restore → Restore recovery** includes that evidence again where current evidence
+permits; later local evidence wins new conflicts. These actions apply
+to a whole recovery, have no time limit, and preserve later independent records
+and corrections. Original evidence and immutable decisions remain stored; a
+revert does not reclaim their disk space. The previous selected history and model
+remain available until the replacement is ready for atomic publication. See the
+[recovery source-correction contract](reconstruction-and-versioning.md#recovery-source-corrections).
+
+Interrupted recovery can retain valid accepted entries. Reopen the window to
+review its saved outcome, revert its contribution or check the source again to
+finish. If a request's response was lost, **Recheck the same request** resolves
+that request before another history change. Model reconstruction runs in the
+background while control remains available; a failed or stale rebuild does not
+publish a partial replacement model.
+
 ## Single-file database export
 
 Open **Recording details → Export database** and choose:
@@ -1405,9 +1460,13 @@ simultaneous timestamp collisions get a distinguishing suffix.
 The SQLite online backup API copies the current committed database, including WAL
 pages, into one private file. Recording continues; the file represents a consistent
 snapshot and does not promise to include later writes. Only the copy switches to
-DELETE journal mode, so it can be opened without WAL/SHM companion files. There is
-no checkpoint or overwrite of the running database. Server copies use mode `0600`;
-new export directories use mode `0700`. A copy is published only after completion.
+DELETE journal mode, so it can be opened without WAL/SHM companion files. Downloads,
+server copies, CLI backups and reset-archive recovery backups use this same snapshot
+generator and current `.sqlite` format. Current-schema and integrity validation run
+in a worker before publication. There is no checkpoint or overwrite of the running
+database. Server copies use mode `0600`;
+new export directories use mode `0700`. A verified copy is flushed before publication;
+an existing destination or SQLite companion file is never overwritten.
 
 The web API accepts no destination path: authenticated `POST /api/database-export`
 with an empty JSON object saves in the configured server folder, and authenticated
@@ -1418,9 +1477,10 @@ copy is saved or sent. Slave exports hold the verified snapshot they began with
 until the operation completes.
 
 An export includes private history and saved application state. Retain the matching
-software version for model replay; restore remains the existing offline operation
-into a new database path. The export does not contain the separate private
-configuration file or external token files.
+software version for model replay. **Recover history** can import supported gaps
+into the active database; a full restore remains the offline operation into a new
+database path. The export does not contain the separate private configuration file
+or external token files.
 
 ## Retained storage costs
 
@@ -1457,7 +1517,9 @@ STMQ_INPUT=offline npm start
 ```
 
 Select `--db <path>` when the default database is not the intended source.
-Backups use SQLite's online backup API and publish only a completed copy. Restore
+Backups use the same verified, self-contained SQLite snapshot generator as dashboard
+exports and reset archives. They publish only a completed copy without requiring
+WAL/SHM companions. Restore
 to a new path while the target application is stopped; validate the result before
 switching the configured database. Keep backups on separate storage. An existing
 incompatible or malformed database is rejected before mutation.

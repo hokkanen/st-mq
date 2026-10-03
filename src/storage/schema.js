@@ -1,5 +1,16 @@
 // One current schema. Pre-production databases are never migrated.
-export const SCHEMA_VERSION = 19;
+export const SCHEMA_VERSION = 20;
+// Original source rows remain immutable evidence. The active views select the
+// current recovery interpretation without erasing history or changing local IDs.
+export const RECOVERABLE_TABLES = ['annotations', 'counters', 'energy_audits', 'events',
+  'fireplace_events', 'import_rows', 'imports', 'learning_cycles', 'observations',
+  'provider_snapshot_contents', 'provider_snapshot_fetches', 'recorder_coverage'];
+export const recoveryRecordKey = (table, alias = 'r') => table === 'import_rows'
+  ? `printf('%d:%d',${alias}.import_id,${alias}.row_number)` : `CAST(${alias}.id AS TEXT)`;
+// Indexed streams share the same selection rule as active views.
+export const selectedHistoryPredicate = (table, alias = 'r') => `NOT EXISTS(SELECT 1 FROM recovery_exclusions x
+ WHERE x.generation=(SELECT generation FROM history_selection WHERE id=1)
+ AND x.table_name='${table}' AND x.record_key=${recoveryRecordKey(table, alias)})`;
 export const CURRENT_SCHEMA = `
 CREATE TABLE annotations (
   id INTEGER PRIMARY KEY, kind TEXT NOT NULL, start_at INTEGER NOT NULL, end_at INTEGER,
@@ -86,6 +97,22 @@ CREATE TABLE recovery_runs (id TEXT PRIMARY KEY, input TEXT NOT NULL, donor_dige
             previous_epoch TEXT NOT NULL, epoch TEXT NOT NULL, status TEXT NOT NULL,
             started_at INTEGER NOT NULL, completed_at INTEGER, report TEXT,
             previous_fireplace_revision INTEGER, source_head INTEGER, fireplace_revision INTEGER);
+CREATE TABLE history_recoveries (
+ id TEXT PRIMARY KEY, input TEXT NOT NULL, donor_digest TEXT NOT NULL, source TEXT NOT NULL CHECK(json_valid(source)),
+ started_at INTEGER NOT NULL, completed_at INTEGER, status TEXT NOT NULL, active INTEGER NOT NULL CHECK(active IN (0,1)),
+ report TEXT CHECK(report IS NULL OR json_valid(report)));
+CREATE TABLE recovery_members (
+ recovery_id TEXT NOT NULL REFERENCES history_recoveries(id), table_name TEXT NOT NULL, record_key TEXT NOT NULL,
+ fingerprint TEXT NOT NULL, PRIMARY KEY(recovery_id,table_name,record_key)) WITHOUT ROWID;
+CREATE TABLE recovery_decisions (
+ id INTEGER PRIMARY KEY AUTOINCREMENT, recovery_id TEXT NOT NULL REFERENCES history_recoveries(id),
+ active INTEGER NOT NULL CHECK(active IN (0,1)), at INTEGER NOT NULL, generation TEXT NOT NULL, epoch TEXT NOT NULL,
+ report TEXT NOT NULL CHECK(json_valid(report)));
+CREATE TABLE history_selection (id INTEGER PRIMARY KEY CHECK(id=1), generation TEXT NOT NULL);
+INSERT INTO history_selection(id,generation) VALUES(1,'original');
+CREATE TABLE recovery_exclusions (
+ generation TEXT NOT NULL, table_name TEXT NOT NULL, record_key TEXT NOT NULL, reason TEXT NOT NULL DEFAULT 'source',
+ PRIMARY KEY(generation,table_name,record_key)) WITHOUT ROWID;
 CREATE TABLE state (key TEXT PRIMARY KEY, value TEXT NOT NULL, updated_at INTEGER NOT NULL);
 CREATE INDEX annotations_time ON annotations(start_at, end_at);
 CREATE INDEX charging_reports_history ON charging_reports(namespace,charger_id,started_at DESC,report_id DESC);
@@ -100,6 +127,8 @@ CREATE INDEX learning_entries_algorithm
           ON learning_journal_entries(epoch,input,algorithm_version,id);
 CREATE INDEX learning_entries_epoch_input ON learning_journal_entries(epoch,input,id);
 CREATE INDEX learning_entries_time ON learning_journal_entries(epoch,input,kind,at,id);
+CREATE INDEX learning_roots_time ON learning_journal_entries(input,at,CASE kind WHEN 'context' THEN 0 WHEN 'sample' THEN 1 ELSE 2 END,id)
+ WHERE source_entry_id IS NULL;
 CREATE INDEX observations_easee_acquisition ON observations(device, received_at, id)
 WHERE source='easee' AND import_id IS NULL;
 CREATE INDEX observations_recovery_energy ON observations(device,signal,
@@ -121,6 +150,12 @@ CREATE INDEX recorder_coverage_signal_time ON recorder_coverage(signal,end_at,id
 CREATE INDEX recorder_coverage_stream ON recorder_coverage(source,device,signal,id);
 CREATE INDEX recorder_metrics_bucket ON recorder_metrics(bucket);
 CREATE INDEX recovery_provenance_target ON recovery_provenance(table_name,target_id);
+CREATE INDEX recovery_members_record ON recovery_members(table_name,record_key);
+CREATE INDEX recovery_members_fingerprint ON recovery_members(table_name,fingerprint);
+CREATE INDEX history_recoveries_input ON history_recoveries(input,started_at,id);
+CREATE INDEX recovery_decisions_generation ON recovery_decisions(generation);
+CREATE INDEX recovery_decisions_epoch ON recovery_decisions(epoch);
+CREATE INDEX recovery_runs_epoch ON recovery_runs(epoch,status);
 CREATE INDEX snapshots_content_fetch ON provider_snapshot_fetches(content_id,kind,source,fetched_at);
 CREATE INDEX snapshots_kind_time ON "provider_snapshot_fetches"(kind, fetched_at, id);
 CREATE VIEW learning_journal AS SELECT id,input,key,kind,at,algorithm_version,
@@ -134,4 +169,9 @@ CREATE VIEW learning_journal_all AS SELECT e.id,e.epoch,e.input,e.key,e.kind,e.a
 CREATE VIEW provider_snapshots AS SELECT f.id,f.kind,f.source,f.issued_at,f.fetched_at,
  c.payload AS payload,f.digest FROM provider_snapshot_fetches f
  JOIN provider_snapshot_contents c ON c.id=f.content_id;
+${RECOVERABLE_TABLES.map(table => `CREATE VIEW active_${table} AS SELECT r.* FROM ${table} r
+ WHERE ${selectedHistoryPredicate(table)};`).join('\n')}
+CREATE VIEW active_provider_snapshots AS SELECT f.id,f.kind,f.source,f.issued_at,f.fetched_at,
+ c.payload AS payload,f.digest FROM active_provider_snapshot_fetches f
+ JOIN active_provider_snapshot_contents c ON c.id=f.content_id;
 `;

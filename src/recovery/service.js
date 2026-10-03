@@ -4,6 +4,8 @@ import { learningVersion, validLearningCheckpoint, LEARNING_ALGORITHM } from '..
 import { fireplaceLearningContext } from '../app/fireplace-inputs.js';
 import { sensorRevision } from '../app/sensor-inputs.js';
 import { markRecoveryFailed, projectedSensorContext } from './state.js';
+import { selectedHistory, recoveryEvidenceVersion } from './ledger.js';
+export { listRecoveries } from './ledger.js';
 
 const running = new WeakSet();
 const validInput = input => {
@@ -24,7 +26,7 @@ export function recoveryPreview({ masterPath, donorPath, input = 'mqtt', workDir
  * leaves idempotent source imports and an unpublished projection, never half a
  * checkpoint. onPublish runs synchronously with no intervening control tick. */
 export async function recoverHistory({ store, donorPath, input = 'mqtt', preview, isCurrent = () => true,
-  onPublish = () => {}, onProgress = () => {}, signal }) {
+  onPublish = () => {}, onProgress = () => {}, signal, source, operationId }) {
   validInput(input);
   if (store.path === ':memory:' || store.readOnly) throw new TypeError('Recovery requires the writable master database on disk');
   if (running.has(store)) throw unavailable('A recovery is already running');
@@ -33,10 +35,11 @@ export async function recoverHistory({ store, donorPath, input = 'mqtt', preview
   if (!isCurrent()) throw unavailable('Recovery requires the current master');
   running.add(store);
   try {
-    return await workerJob({ mode: 'recover', masterPath: store.path, donorPath, input, preview }, {
+    return await workerJob({ mode: 'recover', masterPath: store.path, donorPath, input, preview, source, operationId }, {
       signal, onProgress, onReady(message, worker) {
         if (!isCurrent()) throw unavailable('Master authority changed; recovery remains protected');
         const result = store.transaction(() => {
+          if (selectedHistory(store) !== message.sourceSelection) throw unavailable('Selected recovery history changed; check again');
           if (store.learningEpoch(input) !== message.sourceEpoch)
             throw unavailable('The selected model history changed during recovery');
           const revision = fireplaceLearningContext(store, input).fireplaceRevision;
@@ -61,8 +64,11 @@ export async function recoverHistory({ store, donorPath, input = 'mqtt', preview
             if (checkpoint) store.setState(`adaptive:${input}`, checkpoint);
           }
           const report = { ...message.report, previewId, status: 'complete', imported: message.report.counts.missing,
+            recoveryId: message.recoveryId,
             model: { ...message.report.model, status: message.runId ? 'rebuilt' : 'unchanged' } };
           store.setState(`recovery:active:${input}`, { status: 'complete', epoch: message.epoch, completedAt: Date.now(), report });
+          if (message.recoveryId) store.db.prepare('UPDATE history_recoveries SET status=?,completed_at=?,report=? WHERE id=?')
+            .run('complete', Date.now(), JSON.stringify(report), message.recoveryId);
           store.setState(`pending-plan:${input}`, null);
           if (message.runId) store.setState(`fireplace:rebuild:${input}`, { status: 'current', revision,
             sensorRevision: message.sensorRevision, epoch: message.epoch, requiresRebuild: false, recoveryEpoch: message.epoch });
@@ -85,7 +91,7 @@ export async function recoverHistory({ store, donorPath, input = 'mqtt', preview
 
 function workerJob(workerData, { onProgress, onReady, signal }) {
   return new Promise((resolve, reject) => {
-    const worker = new Worker(new URL('./worker.js', import.meta.url), { workerData });
+    const worker = new Worker(new URL(workerData.mode.startsWith('revision') ? './revision-worker.js' : './worker.js', import.meta.url), { workerData });
     let settled = false, temporary = null;
     const finish = (error, result) => {
       if (settled) return;
@@ -106,10 +112,75 @@ function workerJob(workerData, { onProgress, onReady, signal }) {
       try {
         if (message.type === 'temporary') temporary = message.path;
         else if (message.type === 'progress') onProgress?.({ phase: message.phase, processed: message.processed });
-        else if (message.type === 'failed') finish(new Error(message.error));
+        else if (message.type === 'failed') finish(Object.assign(new Error(message.error),
+          { code: ['recovery_scope_mismatch', 'recovery_other_input', 'database_schema_mismatch', 'database_schema_invalid'].includes(message.code) ? message.code : undefined }));
         else if (message.type === 'complete') finish(null, message.report);
         else if (message.type === 'ready') { const result = onReady(message, worker); if (result) finish(null, result); }
       } catch (error) { finish(error); }
     });
   });
+}
+
+export function previewRecoveryRevision({ store, input = 'mqtt', recoveryId, active, onProgress = () => {}, signal }) {
+  validInput(input);
+  if (store.readOnly || store.path === ':memory:' || typeof active !== 'boolean' || typeof recoveryId !== 'string')
+    throw new TypeError('Choose a recovery in the current writable database');
+  return workerJob({ mode: 'revision-preview', masterPath: store.path, input, recoveryId, active }, { onProgress, signal });
+}
+
+/** Publish the selected source revision and a complete caught-up model together.
+ * Retained evidence is never deleted, and runtime permissions are never copied. */
+export async function reviseRecovery({ store, input = 'mqtt', recoveryId, active, preview, isCurrent = () => true,
+  onPublish = () => {}, onProgress = () => {}, signal }) {
+  validInput(input);
+  if (store.readOnly || store.path === ':memory:' || typeof active !== 'boolean' || typeof recoveryId !== 'string')
+    throw new TypeError('Choose a recovery in the current writable database');
+  if (running.has(store)) throw unavailable('A recovery is already running');
+  if (!isCurrent()) throw unavailable('Recovery requires current write authority');
+  const { previewId, ...checked } = preview ?? {};
+  if (previewId !== learningVersion(checked) || checked.recoveryId !== recoveryId || checked.active !== active)
+    throw unavailable('Review this recovery before changing it');
+  running.add(store);
+  store.setState(`recovery:active:${input}`, { status: 'rebuilding', recoveryId, revision: true, startedAt: Date.now() });
+  try {
+    return await workerJob({ mode: 'revision', masterPath: store.path, input, recoveryId, active, preview }, {
+      signal, onProgress, onReady(message, worker) {
+        if (!isCurrent()) throw unavailable('Control authority changed; the previous history remains selected');
+        const result = store.transaction(() => {
+          if (selectedHistory(store) !== message.sourceSelection || store.learningEpoch(input) !== message.sourceEpoch
+            || fireplaceLearningContext(store, input).fireplaceRevision !== message.sourceFireplace
+            || sensorRevision(store, input) !== message.sourceSensor)
+            throw unavailable('Source history changed during reconstruction; review again');
+          if (journalHead(store, input) !== message.sourceHead) return null;
+          if (message.evidenceVersion !== null && message.evidenceVersion !== recoveryEvidenceVersion(store)) return null;
+          const row = store.db.prepare('SELECT * FROM learning_journal_all WHERE epoch=? AND input=? ORDER BY id DESC LIMIT 1')
+            .get(message.epoch, input);
+          const last = row && { id: row.id, key: row.key, kind: row.kind, at: row.at, algorithmVersion: row.algorithm_version,
+            configVersion: row.config_version === null ? null : JSON.parse(row.config_version),
+            forecastVersion: row.forecast_version === null ? null : JSON.parse(row.forecast_version), payload: JSON.parse(row.payload) };
+          if (last ? !validLearningCheckpoint(message.checkpoint, last) : message.checkpoint !== null)
+            throw unavailable('The reconstructed model could not be verified');
+          const report = { ...message.report, previewId, status: 'complete', model: { status: 'rebuilt' } };
+          store.db.prepare('UPDATE history_selection SET generation=? WHERE id=1').run(message.generation);
+          store.db.prepare('INSERT INTO learning_epochs(input,epoch) VALUES(?,?) ON CONFLICT(input) DO UPDATE SET epoch=excluded.epoch')
+            .run(input, message.epoch);
+          store.db.prepare('UPDATE history_recoveries SET active=? WHERE id=? AND input=?').run(Number(active), recoveryId, input);
+          store.db.prepare('INSERT INTO recovery_decisions(recovery_id,active,at,generation,epoch,report) VALUES(?,?,?,?,?,?)')
+            .run(recoveryId, Number(active), Date.now(), message.generation, message.epoch, JSON.stringify(report));
+          store.setState(`adaptive:${input}`, message.checkpoint);
+          store.setState(`pending-plan:${input}`, null);
+          store.setState(`fireplace:rebuild:${input}`, { status: 'current', revision: message.fireplaceRevision,
+            sensorRevision: message.sensorRevision, epoch: message.epoch, requiresRebuild: false });
+          store.setState(`recovery:active:${input}`, { status: 'complete', epoch: message.epoch, completedAt: Date.now(), report });
+          store.event(active ? 'history-recovery-restored' : 'history-recovery-reverted', { recoveryId, input }, Date.now());
+          return { report, checkpoint: message.checkpoint, epoch: message.epoch };
+        });
+        if (!result) { onProgress({ phase: 'catching-up', processed: 0 }); worker.postMessage({ type: 'catchup' }); return null; }
+        onPublish(result); return result;
+      },
+    });
+  } catch (error) {
+    try { markRecoveryFailed(store, input); } catch {}
+    throw error;
+  } finally { running.delete(store); }
 }

@@ -8,12 +8,29 @@ Versions follow Semantic Versioning. `-dev.N` denotes a development prerelease.
 
 ### Added
 
+- **Recover history** opens one shared window from Recording details and Paired
+  computers. Preview and recover missing history from a paired computer, a saved
+  backup or an uploaded SQLite file. Earlier recoveries remain available to
+  revert and restore, preserving newer local recordings and other recoveries.
+- Dashboard exports, CLI backups and pairing reset archives now produce the same
+  self-contained `.sqlite` format. Reset archives also retain the original files;
+  incompatible or damaged originals remain preserved with an explicit explanation
+  when a usable SQLite backup cannot be made.
+
 - **Reset pairing…** offers **Keep local history** or **Start fresh** from the
   paired dashboard, including protected startup failures. Both archive the
   previous pairing files; Start fresh also archives local databases and snapshots
   before returning as a slave. Archives remain until manually deleted and are
   accessible through Home Assistant's app-configuration folder. Retained history
   stays protected, and neither choice automatically promotes the computer.
+
+### Changed
+
+- Reversible recovery uses SQLite schema 20 and learning algorithm
+  `committed-house-v14-reversible-recovery`. Earlier development databases require
+  a deliberate fresh start; they are rejected without migration or automatic
+  reset. Recovery accepts the current format only; supported 0.7.5 CSV import
+  remains available.
 
 ### Fixed
 

@@ -44,7 +44,12 @@ and database formats; it does not translate 0.7.5 settings or migrate earlier
 development databases. Review [configuration](configuration.md), select a fresh
 database directory explicitly when needed, and use [CSV import](csv-import.md)
 only for the two supported 0.7.5 exports. Incompatible databases remain unchanged.
-Current-format backup/restore and restart remain supported.
+Current-format backup/restore and restart remain supported. Once a compatible
+fresh database is running, **Recording details → Recover history** can inspect
+current-format SQLite backups and recover missing history without restoring old
+configuration or actuation permission. It cannot import incompatible development
+schemas. Pairing reset archives preserve original files and, when their databases
+are compatible and intact, also contain self-contained SQLite recovery copies.
 
 Begin with simulated input and separate data/database paths when evaluating
 alongside an existing installation, as shown in the isolated-start example below.

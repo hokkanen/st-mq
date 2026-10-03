@@ -38,7 +38,7 @@ export class CycleTracker {
     this.store.transaction(() => {
       const from = Math.min(...context.fireplaceExcludedRanges.map(range => range.start));
       const to = Math.max(...context.fireplaceExcludedRanges.map(range => range.end));
-      for (const row of this.store.db.prepare('SELECT payload FROM learning_cycles WHERE input=? AND started_at<? AND COALESCE(ended_at,?)>?')
+      for (const row of this.store.db.prepare('SELECT payload FROM active_learning_cycles AS learning_cycles WHERE input=? AND started_at<? AND COALESCE(ended_at,?)>?')
         .all(this.input, to, now, from)) {
         const cycle = JSON.parse(row.payload);
         if (!fireplaceEpisodeAffected({ ...cycle, endedAt: cycle.endedAt ?? now }, context)) continue;

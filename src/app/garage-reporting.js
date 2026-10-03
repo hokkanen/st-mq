@@ -1,3 +1,4 @@
+import { selectedHistoryPredicate } from '../storage/schema.js';
 import { DailyTimingBenchmark, normalizeTimingDifference } from './daily-timing-benchmark.js';
 
 const finite = Number.isFinite, MAX_INTERVAL_MS = 15 * 60_000;
@@ -22,6 +23,7 @@ export function getGarageTimingBenefit({ store, input = 'offline', range, now = 
   // correction or delayed delivery leaking into a historical as-of calculation.
   for (const row of store.db.prepare(`SELECT value,unit,quality,raw,source_time FROM observations INDEXED BY observations_signal_time
     WHERE signal='garage_energy' AND source_time>? AND source_time<=? AND received_at<=?
+    AND ${selectedHistoryPredicate('observations', 'observations')}
     AND ${input === 'simulated' ? "source='simulation'" : "source<>'simulation'"}
     ORDER BY source_time,id`).iterate(range.from, Math.min(now, range.to + MAX_INTERVAL_MS), now)) {
     let raw, flags;

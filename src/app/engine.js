@@ -310,6 +310,7 @@ export class Engine {
     return this.fireplaceRebuild ??= new FireplaceRebuildManager({ store: this.store, input: this.config.input });
   }
   reconcileFireplace() {
+    if (this.historyRecovery?.busy()) return;
     if (!['mqtt', 'providers', 'simulated'].includes(this.config.input)) return;
     const recovery = this.store.getState(`recovery:active:${this.config.input}`);
     if (['importing', 'rebuilding', 'catching-up'].includes(recovery?.status)) return;

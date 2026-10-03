@@ -1,3 +1,4 @@
+import { selectedHistoryPredicate } from '../storage/schema.js';
 const QUARTER_HOUR = 15 * 60_000;
 const INVALID_PRICE = new Set(['missing', 'invalid_numeric', 'invalid_unit', 'invalid_value', 'invalid-value',
   'invalid-payload', 'conflicting_duplicate', 'future_source_time', 'future-source-time',
@@ -40,9 +41,9 @@ export function historicalSpotIntervals(store, range, now) {
       source: 'historical-spot', intervalBasis: 'recorded-quarter-hour' });
   };
   const rows = store.db.prepare(`SELECT o.id,o.value,o.unit,o.source_time,o.quality,o.import_id,o.row_number
-    FROM observations o INDEXED BY observations_signal_time LEFT JOIN imports i ON i.id=o.import_id
+    FROM observations o INDEXED BY observations_signal_time LEFT JOIN active_imports i ON i.id=o.import_id
     WHERE o.signal='spot_price' AND o.source_time>=? AND o.source_time<? AND o.source_time<=? AND o.received_at<=?
-    AND o.source<>'simulation'
+    AND ${selectedHistoryPredicate('observations', 'o')} AND o.source<>'simulation'
     AND NOT(o.source IN ('controller-learning','controller-estimate','controller') AND o.device='simulated')
     AND (o.import_id IS NULL OR i.status='complete' AND i.kind='stmq' AND i.completed_at<=?)
     ORDER BY o.source_time,o.id`)

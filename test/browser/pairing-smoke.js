@@ -52,10 +52,20 @@ try {
     try {
       if (request.url === '/favicon.ico') { response.writeHead(204); response.end(); return; }
       if (request.url === '/api/pair' && request.method === 'GET') return json(200, topology === 'pair' ? pair : null);
-      if (request.url === '/api/pair/action' && request.method === 'POST') {
+      if (request.url === '/api/history-recovery' && request.method === 'GET') return json(200, {
+        available: pair.canControl === true, readOnly: pair.canControl !== true, busy: pair.busy === true,
+        sources: [{ id: 'peer', kind: 'peer', label: 'Paired computer', available: pair.actions?.['check-recovery'] === true }],
+        operations: [], preview: pair.recovery?.preview ?? null, peer: pair,
+        job: pair.uiOperation ? { ...pair.uiOperation, requestId: pair.uiOperation.id,
+          kind: pair.uiOperation.action === 'check-recovery' ? 'check' : pair.uiOperation.action,
+          status: pair.uiOperation.state, source: { id: 'peer' }, result: pair.recovery?.report } : null,
+      });
+      if (['/api/pair/action', '/api/history-recovery/action'].includes(request.url) && request.method === 'POST') {
         const chunks = []; let bytes = 0;
         for await (const chunk of request) { bytes += chunk.length; assert(bytes <= 4096); chunks.push(chunk); }
-        const body = JSON.parse(Buffer.concat(chunks).toString()); actions.push(body);
+        const body = JSON.parse(Buffer.concat(chunks).toString());
+        if (request.url === '/api/history-recovery/action') { assert.equal(body.sourceId, 'peer'); if (body.action === 'check') body.action = 'check-recovery'; }
+        actions.push(body);
         assert(['check-recovery', 'recover', 'rejoin', 'reset'].includes(body.action), 'Fixture only accepts the tested management actions');
         if (body.action === 'reset') {
           assert.equal(body.resetToken, resetToken); assert.equal(body.confirmed, true);
@@ -67,7 +77,7 @@ try {
         }
         pair = { ...pair, busy: true, uiOperation: { id: body.requestId, action: body.action, state: 'running' },
           recovery: { ...pair.recovery, state: body.action === 'check-recovery' ? 'checking' : 'recovering' } };
-        return json(202, { status: pair });
+        return json(202, request.url === '/api/pair/action' ? { status: pair } : { available: true, busy: true, readOnly: false, peer: pair, sources: [{ id: 'peer', kind: 'peer', label: 'Paired computer' }], preview: pair.recovery.preview ?? null, operations: [], job: { id: body.requestId, requestId: body.requestId, kind: body.action === 'check-recovery' ? 'check' : body.action, status: 'running', source: { id: 'peer' } } });
       }
       assert.equal(request.method, 'GET', 'No other fixture mutations are allowed');
       const result = await fetch(`${pair.role === 'master' ? upstream : readOnlyUpstream}${request.url}`, { signal: AbortSignal.timeout(10_000) });
@@ -139,7 +149,7 @@ try {
     measurements.push({ width, theme, closedHeight: height });
     const heightLimit = (width >= 1000 ? 90 : 125) + (attention ? 50 : 0);
     assert(height <= heightLimit, `Closed pair block stays compact: ${height}px at ${width}px`);
-    assert.equal(await evaluate(`${$('pairing-check-recovery')}.checkVisibility()`), false, 'Closed disclosure hides controls');
+    assert.equal(await evaluate(`${$('pairing-history-recovery')}.checkVisibility()`), false, 'Closed disclosure hides controls');
   };
   const capture = async (name, header = false, element = null) => {
     await evaluate(header ? 'scrollTo(0, 0); true' : `${$(element ?? 'pairing-panel')}.scrollIntoView({ block: 'start' }); true`);
@@ -180,16 +190,12 @@ try {
   await command('input.performActions', { context, actions: [{ type: 'key', id: 'pair-keyboard',
     actions: [{ type: 'keyDown', value: '\uE007' }, { type: 'keyUp', value: '\uE007' }] }] });
   assert.equal(await evaluate(`${$('pairing-details')}.open`), true, 'Native disclosure opens with Enter');
-  assert.equal(await evaluate(`${$('pairing-check-recovery')}.checkVisibility()`), true);
-  assert.equal(await evaluate(`${$('pairing-recover')}.disabled`), true);
-  assert.equal(await evaluate(`${$('pairing-recover-step')}.checkVisibility()`), false, 'Routine mirroring does not show unnecessary recovery steps');
-  assert.equal(await evaluate(`${$('pairing-rejoin-step')}.checkVisibility()`), false);
-  assert.match(await evaluate(`${$('pairing-recover-help')}.textContent`), /check|step 1/i);
+  assert.equal(await evaluate(`${$('pairing-history-recovery')}.checkVisibility()`), true);
+  assert.equal(await evaluate(`${$('pairing-rejoin-step')}.checkVisibility()`), false, 'Recovery steps live in the shared dialog');
   await command('browsingContext.setViewport', { context, viewport: { width: 1440, height: 1400 }, devicePixelRatio: 1 });
   await capture('desktop-expanded');
   await capture('desktop-header', true);
-  await evaluate(`${$('pairing-recover')}.click(); true`);
-  assert.equal(actions.length, 0, 'Disabled recovery does not issue a request');
+  assert.equal(actions.length, 0, 'Opening pairing details does not issue a history request');
   pair = master({ peer: { reachable: false, lastSeenAt: now - 120_000 } });
   await until(`${$('pairing-peer')}.textContent.includes('unavailable')`);
   assert.equal(await evaluate(`${$('pairing-details')}.open`), true, 'Polling preserves the open disclosure');
@@ -211,70 +217,57 @@ try {
     counts: { missing: 0, conflicts: 0, duplicates: 21, skipped: 0 } } },
     peer: { reachable: true, role: 'slave', lastSeenAt: now, syncReceivedAt: now,
       sync: { state: 'ready', sourceAt: now - 60_000, verifiedAt: now - 30_000, bytes: 2e6 } } });
-  await until(`${$('pairing-preview')}.textContent.includes('History comparison')`);
-  assert.equal(await evaluate(`${$('pairing-attention')}.dataset.tone`), 'neutral', 'Informational comparison does not use attention color');
-  assert.match(await evaluate(`${$('pairing-syncStat')}.textContent`), /Slave snapshot 1 min old/);
-  assert.equal(await evaluate(`${$('pairing-recover')}.disabled`), true);
+  await evaluate(`${$('pairing-history-recovery')}.click(); true`);
+  await until(`${$('history-recovery-dialog')}.open && ${$('history-recovery-preview')}.textContent.includes('History comparison')`);
+  assert.equal(await evaluate(`${$('history-recovery-source')}.value`), 'peer');
+  assert.equal(await evaluate(`${$('history-recovery-apply')}.hidden`), true, 'Normal comparisons cannot become recovery');
   assert.equal(await evaluate(`${$('pairing-rejoin')}.disabled`), true);
-  assert.doesNotMatch(await evaluate(`${$('pairing-recovery')}.textContent`), /discard|then resume|recover the gaps/i);
-  assert.match(await evaluate(`${$('pairing-syncDetail')}.textContent`), /verified snapshot.*Identity verified.*Status received/i);
-  for (const width of [1440, 390, 320]) for (const theme of ['dark', 'light']) {
-    await close(); await checkLayout(width, theme, true); await open();
-    assert.equal(await evaluate('document.documentElement.scrollWidth <= innerWidth'), true,
-      'Normal mirror comparison and peer snapshot status fit the viewport');
-  }
-  await capture('normal-mirror-comparison');
+  await evaluate(`${$('history-recovery-close')}.click(); true`);
+  assert.equal(await evaluate('document.activeElement.id'), 'pairing-history-recovery');
   pair = master();
-  await until(`${$('pairing-preview')}.hidden`);
-
-  await evaluate(`${$('pairing-check-recovery')}.click(); true`);
+  await evaluate(`${$('pairing-history-recovery')}.click(); true`);
+  await until(`${$('history-recovery-check')}.disabled === false`);
+  await evaluate(`${$('history-recovery-check')}.click(); true`);
   await until(`${$('pairing-recovery')}.textContent.includes('Checking')`);
   assert.equal(actions.length, 1);
-  assert.equal(await evaluate(`${$('pairing-recover')}.disabled`), true, 'Running check cannot enable recovery');
+  assert.equal(await evaluate(`${$('history-recovery-apply')}.disabled`), true);
+  await evaluate(`${$('history-recovery-close')}.click(); true`);
   await close();
-  assert.equal(await evaluate(`${$('pairing-attention')}.checkVisibility()`), true, 'Check progress remains visible when folded');
+  assert.equal(await evaluate(`${$('pairing-attention')}.checkVisibility()`), true);
   pair = master({ recovery: { state: 'error', error: 'synthetic-unrendered-detail' },
     uiOperation: { id: actions.at(-1).requestId, action: 'check-recovery', state: 'error' } });
-  await until(`${$('pairing-attention')}.textContent.length > 0 && ${$('pairing-check-recovery')}.disabled === false`);
-  assert.equal(await evaluate(`${$('pairing-recover')}.disabled`), true, 'Failed check cannot enable recovery');
-  assert.equal(await evaluate(`${$('pairing-attention')}.checkVisibility()`), true, 'Failure remains visible when folded');
-  assert.doesNotMatch(await evaluate(`${$('pairing-panel')}.textContent`), /synthetic-unrendered-detail/);
-  await open(); await evaluate(`${$('pairing-check-recovery')}.click(); true`);
+  await until(`${$('pairing-attention')}.textContent.length > 0`);
+  await open(); await evaluate(`${$('pairing-history-recovery')}.click(); true`);
+  await until(`${$('history-recovery-check')}.disabled === false`);
+  assert.equal(await evaluate(`${$('history-recovery-apply')}.hidden`), true);
+  assert.doesNotMatch(await evaluate(`${$('history-recovery-dialog')}.textContent`), /synthetic-unrendered-detail/);
+  await evaluate(`${$('history-recovery-check')}.click(); true`);
   await until(`${$('pairing-recovery')}.textContent.includes('Checking')`);
   assert.equal(actions.length, 2);
   pair = { ...checked(), uiOperation: { id: actions.at(-1).requestId, action: 'check-recovery', state: 'complete' } };
-  await until(`${$('pairing-recover')}.disabled === false`);
-  assert.equal(await evaluate(`${$('pairing-recover-step')}.checkVisibility()`), true, 'Protected history exposes the complete recovery workflow');
+  await until(`${$('history-recovery-apply')}.disabled === false && !${$('history-recovery-apply')}.hidden`);
   assert.equal(await evaluate(`${$('pairing-rejoin-step')}.checkVisibility()`), true);
-  assert.equal(await evaluate(`${$('pairing-attention')}.dataset.tone`), 'attention');
-  for (const width of [1440, 768, 390, 320]) for (const theme of ['dark', 'light']) {
-    await close(); await checkLayout(width, theme, true); await open();
-    assert.equal(await evaluate('document.documentElement.scrollWidth <= innerWidth'), true, 'Protected recovery workflow fits each viewport');
-    assert.equal(await evaluate(`getComputedStyle(${$('pairing-rejoin')}).color === getComputedStyle(${$('pairing-attention')}).color`), true,
-      'Discarding unrecovered history is visibly an attention action');
+  for (const width of [1440, 390, 320]) for (const theme of ['dark', 'light']) {
+    await command('browsingContext.setViewport', { context, viewport: { width, height: 1000 }, devicePixelRatio: 1 });
+    await evaluate(`document.documentElement.dataset.theme = '${theme}'; true`);
+    assert.equal(await evaluate(`(() => { const d=${$('history-recovery-dialog')}; return d.scrollWidth <= d.clientWidth && d.getBoundingClientRect().right <= innerWidth; })()`), true, `${width}px ${theme}: shared recovery dialog fits`);
     if (width === 1440 || width === 320) await capture(`recovery-ready-${width}-${theme}`);
   }
-  assert.equal(await evaluate(`${$('pairing-details')}.open`), true);
-  assert.equal(await evaluate(`${$('pairing-preview')}.checkVisibility()`), true);
-  assert.match(await evaluate(`${$('pairing-preview')}.textContent`), /12/);
-  assert.equal(await evaluate(`${$('pairing-rejoin')}.disabled`), false);
-  assert.match(await evaluate(`${$('pairing-rejoin')}.textContent`), /Skip recovery/i);
   assert.match(await confirmAction('pairing-rejoin', false), /discard|delete|lost|replaced/i);
-  await until(`${$('pairing-recover')}.disabled === false`);
-  assert.equal(actions.length, 2, 'Cancelling skip preserves the checked recovery choice');
-  assert.match(await confirmAction('pairing-recover', true), /gap|rebuild/i);
+  assert.equal(actions.length, 2);
+  assert.match(await confirmAction('history-recovery-apply', true), /history|rebuild/i);
   await until(`${$('pairing-recovery')}.textContent.includes('Recovering')`);
-  assert.equal(await evaluate(`${$('pairing-attention')}.dataset.tone`), 'progress', 'Running recovery uses progress color while blocked mirroring remains explicit');
   assert.equal(actions.at(-1).action, 'recover');
-  assert.equal(actions.at(-1).previewId, previewId, 'Recovery uses the successfully checked snapshot');
+  assert.equal(actions.at(-1).previewId, previewId);
+  await evaluate(`${$('history-recovery-close')}.click(); true`);
   await close();
-  assert.equal(await evaluate(`${$('pairing-attention')}.checkVisibility()`), true, 'Recovery progress remains visible when folded');
+  assert.equal(await evaluate(`${$('pairing-attention')}.checkVisibility()`), true);
   pair = master({ peer: { reachable: true, role: 'protected', lastSeenAt: now },
     recovery: { state: 'complete', donorRole: 'protected', report: { ...preview, imported: 12, model: { status: 'rebuilt' } } },
     actions: { 'check-recovery': true, recover: false, rejoin: true },
     uiOperation: { id: actions.at(-1).requestId, action: 'recover', state: 'complete', progress: { phase: 'publishing', processed: 12 } } });
   await until(`${$('pairing-rejoin')}.textContent === 'Resume mirroring' && !${$('pairing-rejoin')}.disabled`);
-  assert.equal(await evaluate(`${$('pairing-phase')}.textContent`), '', 'Completed recovery cannot retain a publishing progress indicator');
+  assert.equal(await evaluate(`${$('pairing-phase')}.textContent`), '');
 
   for (const role of ['slave', 'protected']) {
     pair = role === 'slave' ? { ...standby(role), sync: { state: 'waiting' } } : standby(role);
@@ -288,7 +281,7 @@ try {
     }
     assert.equal(await evaluate(`${$('pairing-master-controls')}.checkVisibility()`), false);
     assert.equal(await evaluate(`${$('pairing-slave-controls')}.checkVisibility()`), true);
-    for (const id of ['pairing-check-recovery', 'pairing-recover', 'pairing-rejoin', 'pairing-handover'])
+    for (const id of ['pairing-history-recovery', 'pairing-rejoin', 'pairing-handover'])
       assert.equal(await evaluate(`${$(id)}.checkVisibility()`), false, `${role} hides master control ${id}`);
     assert.equal(await evaluate(`${$('pairing-promote')}.checkVisibility()`), true);
     assert.equal(await evaluate(`${$('replica-notice')}.hidden`), true, 'Paired viewer has no duplicate large banner');

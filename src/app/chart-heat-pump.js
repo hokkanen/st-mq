@@ -31,10 +31,10 @@ export function recordHeatPumpConfiguration(store, input, config, at) {
 function* configurations(db, from, to, input) {
   const scope = input === 'simulated' ? "json_extract(payload,'$.input')='simulated'"
     : "json_extract(payload,'$.input') IN ('mqtt','providers')";
-  const previous = db.prepare(`SELECT id,at,payload FROM events WHERE type=? AND at<=? AND ${scope}
+  const previous = db.prepare(`SELECT id,at,payload FROM active_events AS events WHERE type=? AND at<=? AND ${scope}
     ORDER BY at DESC,id DESC LIMIT 1`).get(HEAT_PUMP_CONFIG_EVENT, from);
   if (previous) yield { at: from, config: powerConfiguration(parse(previous.payload, null)), configId: previous.id };
-  for (const row of db.prepare(`SELECT id,at,payload FROM events WHERE type=? AND at>? AND at<? AND ${scope}
+  for (const row of db.prepare(`SELECT id,at,payload FROM active_events AS events WHERE type=? AND at>? AND at<? AND ${scope}
     ORDER BY at,id`).iterate(HEAT_PUMP_CONFIG_EVENT, from, to))
     yield { at: row.at, config: powerConfiguration(parse(row.payload, null)), configId: row.id };
 }
@@ -58,7 +58,7 @@ function reading(row, at, until, status = 'fresh') {
 function* observations(db, signal, from, to, input, now) {
   const source = input === 'simulated' ? 'simulation' : 'husdata-h66';
   for (const row of db.prepare(`SELECT id,source,device,signal,value,unit,source_time,received_at,quality,raw
-    FROM observations WHERE signal=? AND source=? AND source_time>=? AND source_time<? AND received_at<=?
+    FROM active_observations AS observations WHERE signal=? AND source=? AND source_time>=? AND source_time<? AND received_at<=?
     AND import_id IS NULL AND COALESCE(json_extract(raw,'$.recorder.status'),'fresh')='fresh'
     ORDER BY source_time,id`).iterate(signal, source, from - AGE, to, now))
     yield reading(row, row.source_time, Math.min(row.source_time, row.received_at) + AGE);
@@ -68,7 +68,7 @@ function* coverage(db, signal, from, to, input, now) {
   const source = input === 'simulated' ? 'simulation' : 'husdata-h66';
   for (const row of db.prepare(`SELECT c.id AS coverage_id,c.source,c.device,c.signal,c.status,c.start_at,c.end_at,
     c.source_time AS confirmed_at,c.observation_id,o.value,o.unit,o.quality,o.raw
-    FROM recorder_coverage c LEFT JOIN observations o ON o.id=c.observation_id
+    FROM active_recorder_coverage c LEFT JOIN active_observations o ON o.id=c.observation_id
     WHERE c.signal=? AND c.source=? AND c.end_at>=? AND c.start_at<? AND c.end_at<=?
     AND (o.received_at IS NULL OR o.received_at<=?)
     ORDER BY c.start_at,c.id`).iterate(signal, source, from - AGE, to, now, now)) {

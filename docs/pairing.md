@@ -499,11 +499,28 @@ Archives use private permissions and are named by time and operation ID:
 The result displays the specific archive path for 24 hours. Archives include the
 original `state.json`, the configured database when present, the actual promoted
 or published database, and their SQLite companion files. Configuration and
-unrelated files in the data directory are excluded. Keep mode uses a separate
+unrelated files in the data directory are excluded. Each identifiable supported
+database also produces a verified self-contained `.sqlite` file in the archive's
+`backups` directory, using the same snapshot generator as dashboard and CLI exports.
+These files include committed WAL content and require no companion files. Distinct
+databases get separately identified backups; reset never merges their histories.
+The current archive manifest records each portable backup and its checksum only
+after verified publication. These backups are available from **Recording details
+→ Recover history…**, including when the computer later runs standalone. The
+reset result reports how many usable backups were made and any unavailable
+history; it does not claim that preserved raw files are portable backups.
+
+Corrupt or incompatible source databases remain byte-for-byte in the original
+archive. They are neither converted nor repaired; the reset result reports that
+a recovery backup is unavailable and why. No identifiable database likewise
+reports unavailable history. This does not prevent a deliberate fresh reset.
+Storage or publication failures leave reset protected and incomplete for explicit
+retry instead of claiming a completed backup. Keep mode uses a separate
 copy of the selected database; the archived copy stays inactive. On the same
 filesystem, files are renamed; between filesystems, each copy is verified and
 flushed before the original filesystem entry is removed. Permanent deletion of
-archives is manual. Ensure enough free space for the archive and retained copy.
+archives is manual. Ensure enough free space for the raw archive, portable backups,
+temporary verification copies and any retained active copy.
 
 An interrupted archive remains protected across restart. The dashboard offers
 retry of the same choice using the same archive; it never resumes control or
@@ -580,8 +597,10 @@ The header shows **Pair · Master** or **Pair · Slave** alongside the control
 mode: owning the master role does not mean automatic control is enabled.
 Protected recovery and transitions are shown separately from normal roles.
 Open **Paired computers**, just above **Event log**, for connection and snapshot details,
-recovery controls, handover or manual promotion. The section stays compact when
-closed and still shows important progress or attention messages. Slaves use
+recovery controls, handover or manual promotion. **Review history…** opens the
+same [Recover history window](recording.md#recover-history-from-a-backup-or-paired-computer)
+as **Recording details**, with the peer preselected. The section stays compact
+when closed and still shows important progress or attention messages. Slaves use
 the same layout, with recovery and handover performed from the master's UI.
 
 Checks are initiated on the master. When the other computer is a normal slave,
@@ -593,14 +612,16 @@ authorize resurrecting it. A healthy mirror containing the same records must
 not report those records as missing merely because their measurements are
 unavailable, stale or invalid.
 
-During normal mirroring, the history workflow shows only the optional check. The recovery
-and resume-mirroring steps appear when the peer reports protected history or a
-protected-history decision remains unresolved. These presentation choices do not
-change the server's readiness checks or the required confirmations.
+During normal mirroring, the window's paired-history workflow offers the optional
+comparison. Recovery and resume-mirroring steps appear when the peer reports
+protected history or a protected-history decision remains unresolved. Backup
+sources and previous recoveries use the same window, including outside pair mode.
+These presentation choices do not change the server's readiness checks or the
+required confirmations.
 
 For a computer in **Protected recovery**:
 
-1. **Check other computer for missing data** takes a consistent donor snapshot
+1. In **Review history…**, **Check other computer** takes a consistent donor snapshot
    and shows counts and periods for missing, conflicting, already present and
    skipped entries. Checking does not change the master's history.
 2. Review the preview, then **Recover gaps and rebuild model**. The request
@@ -624,6 +645,13 @@ New donor history requires a fresh review. Handover remains unavailable while
 the other computer is protected. Recovery and rejoin recheck the donor's role
 and identity before acting, so a preview cannot authorize a different computer
 or a newly promoted controller.
+
+Paired recoveries also appear under **Previous recoveries** in the shared window.
+The active controller can review and revert a recovery's accepted history, then
+restore it later. These source corrections preserve recorded evidence and later
+independent work. They do not undo a completed mirroring handover, change either
+computer's role or grant equipment control. See
+[reversible recovery](recording.md#recover-history-from-a-backup-or-paired-computer).
 
 The displayed period spans the earliest and latest missing entries; it is not
 necessarily one continuous recording outage. Counts describe stored records,

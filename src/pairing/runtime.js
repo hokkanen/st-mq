@@ -32,7 +32,7 @@ export async function startPaired({ config, readConfig, clock = Date.now, provid
   validateBroker = requireLocalBroker, recoveryModule = () => import('../recovery/service.js'),
   managerOptions = {}, prepareVipPolicy = prepareAddonVipPolicy, snapshotSource = createSourceSnapshot,
   resetStorage = { createResetArchive, resumeResetArchive, selectResetDatabase } } = {}) {
-  let runtime = null, manager, closed = false, recoveryRunning = false, latestOperation = null;
+  let runtime = null, manager, closed = false, latestOperation = null;
   let primaryPath = config.dbPath;
   let closing = null;
   let resetPending = null;
@@ -43,15 +43,6 @@ export async function startPaired({ config, readConfig, clock = Date.now, provid
   const requireOpen = () => { if (closing) throw requestError('The instance is shutting down.'); };
   let runtimeStarting = null, controllerToken = null;
   let replicaAbort = null;
-  let historyAbort = null, historyPending = null;
-  function historyJob(operation) {
-    historyAbort = new AbortController();
-    const signal = AbortSignal.any([historyAbort.signal, AbortSignal.timeout(config.pair.timeoutMs ?? 3600000)]);
-    historyPending = Promise.resolve().then(() => operation(signal)).finally(() => {
-      historyPending = null; historyAbort = null;
-    });
-    return historyPending;
-  }
   const operations = new Map(), handlers = new Map();
   const runtimeConfiguration = next => inheritConfigurationSnapshot(next, { ...next, role: 'master', dbPath: primaryPath });
   function resetStatus() {
@@ -61,17 +52,21 @@ export async function startPaired({ config, readConfig, clock = Date.now, provid
       state?.reset, state?.resetReceipt?.requestId])).digest('hex');
     return { token, archiveDirectory: archiveRoot(config), pendingMode: state?.reset?.mode ?? null,
       keepBlockedReason: manager.state?.invalid ? 'invalid_pair_state' : null,
-      blockedReason: manager.busy || manager.stopping || closed || closing || resetPending ? 'busy' : null,
+      blockedReason: manager.busy || manager.stopping || runtime?.historyRecovery?.working() || closed || closing || resetPending ? 'busy' : null,
       lastResult: state?.resetReceipt ?? null };
   }
   const context = {
     canControl: () => !closed && Boolean(manager?.canControl()),
-    recovering: () => recoveryRunning,
+    recovering: () => Boolean(runtime?.historyRecovery?.busy()),
     configurationSource: configurationSource(config), runtimeConfiguration,
     status: () => {
       const status = manager.status(), reset = resetStatus();
-      return { ...status, actions: { ...status.actions, reset: !reset.blockedReason }, reset,
-        ...(latestOperation ? { uiOperation: latestOperation } : {}) };
+      const historyBusy = Boolean(runtime?.historyRecovery?.working()), job = runtime?.historyRecovery?.currentJob();
+      return { ...status, busy: status.busy || historyBusy,
+        actions: { ...Object.fromEntries(Object.entries(status.actions ?? {}).map(([key, allowed]) => [key, allowed && !historyBusy])),
+          reset: !reset.blockedReason }, reset,
+        ...(latestOperation ? { uiOperation: { ...latestOperation,
+          ...(job?.requestId === latestOperation.id && job.progress ? { progress: job.progress } : {}) } } : {}) };
     },
     requestAction(input) {
       if (!input || typeof input !== 'object' || Array.isArray(input)
@@ -102,7 +97,7 @@ export async function startPaired({ config, readConfig, clock = Date.now, provid
           finishedAt: receipt.completedAt, result: receipt };
         return context.status();
       }
-      if (closed || closing || [...operations.values()].some(value => value.state === 'running'))
+      if (closed || closing || context.recovering() || [...operations.values()].some(value => value.state === 'running'))
         throw requestError('A paired operation is already running.');
       if (input.action === 'reset') assertReset(input);
       const operation = { id: input.requestId, action: input.action, ...(input.mode ? { mode: input.mode } : {}), state: 'running', startedAt: clock() };
@@ -144,8 +139,7 @@ export async function startPaired({ config, readConfig, clock = Date.now, provid
       const token = controllerToken;
       if (token && (!previous || !restore)) token.revoked = true;
       replicaAbort?.abort();
-      historyAbort?.abort();
-      await historyPending?.catch(() => {});
+      await previous?.historyRecovery?.close();
       try { await previous?.close({ restore }); }
       finally { if (token) token.revoked = true; }
       await runtimeStarting?.catch(() => {});
@@ -164,6 +158,7 @@ export async function startPaired({ config, readConfig, clock = Date.now, provid
       const token = controllerToken = { revoked: false };
       runtimeStarting = startRuntime({ config: runtimeConfiguration(config), readConfig, clock, providerOptions, mqttOptions,
         pairContext: { ...context, canControl: () => !token.revoked && context.canControl() }, installSignalHandlers: false,
+        historyRecoveryOptions: { recoveryModule, timeoutMs: config.pair.timeoutMs ?? 3_600_000 },
         shutdownSignal: startupAbort.signal })
         .then(async started => {
           if (closed || closing || token.revoked) { await started.close({ restore: false }); throw requestError('The instance is shutting down.'); }
@@ -216,30 +211,15 @@ export async function startPaired({ config, readConfig, clock = Date.now, provid
       })();
       try { await runtimeStarting; } finally { runtimeStarting = null; replicaAbort = null; }
     },
-    async recoveryPreview({ donorPath }) {
+    async recoveryPreview({ donorPath, requestId }) {
       if (!context.canControl() || !runtime?.store) throw requestError('Recovery is available on the active master.');
-      const { recoveryPreview } = await recoveryModule();
-      const owner = runtime;
-      return historyJob(signal => recoveryPreview({ masterPath: owner.store.path, donorPath, signal,
-        input: owner.engine.config.input, workDirectory: join(config.pair.directory, 'recovery-work') }));
+      return runtime.historyRecovery.checkPath({ donorPath, source: { id: 'peer', kind: 'peer', label: 'Paired computer' },
+        requestId });
     },
-    async recoveryApply({ donorPath, preview }) {
+    async recoveryApply({ donorPath, preview, isCurrent, requestId }) {
       if (!context.canControl() || !runtime?.engine) throw requestError('Recovery is available on the active master.');
-      const owner = runtime, engine = owner.engine;
-      recoveryRunning = true;
-      try {
-        await engine.closeFireplace(); engine.fireplaceRebuild = null;
-        const { recoverHistory } = await recoveryModule();
-        return await historyJob(signal => recoverHistory({ store: owner.store, donorPath, input: engine.config.input, preview, signal,
-          workDirectory: join(config.pair.directory, 'recovery-work'),
-          isCurrent: () => !closed && context.canControl() && runtime === owner && owner.engine === engine,
-          onProgress: progress => { if (latestOperation) latestOperation.progress = progress; },
-          onPublish: result => {
-            engine.checkpoint = result.checkpoint; engine.pendingPlan = null;
-            engine.fireplaceRebuild = null;
-            engine.fireplaceReserveOverride = null;
-          } }));
-      } finally { recoveryRunning = false; }
+      return runtime.historyRecovery.applyPath({ donorPath, preview, isCurrent,
+        source: { id: 'peer', kind: 'peer', label: 'Paired computer' }, requestId });
     },
   };
   const makeManager = state => managerFactory({ config: config.pair, hooks, clock, ...managerOptions, ...(state ? { state } : {}) });
@@ -298,7 +278,11 @@ export async function startPaired({ config, readConfig, clock = Date.now, provid
       }
       result = await resetStorage.resumeResetArchive(journal.archiveDirectory,
         { config, requestId: journal.requestId, mode: journal.mode });
-      const receipt = { ...journal, requestId: input.requestId, completedAt: clock() };
+      const unavailable = (result.recoveryBackups ?? []).filter(item => item.status === 'unavailable');
+      const receipt = { ...journal, requestId: input.requestId, completedAt: clock(),
+        backupCount: (result.recoveryBackups ?? []).filter(item => item.status === 'complete').length,
+        unavailableCount: unavailable.length + (result.recoveryBackupUnavailable ? 1 : 0),
+        unavailableReasons: [...new Set([...unavailable.map(item => item.reason), result.recoveryBackupUnavailable].filter(Boolean))] };
       await old.state.resetPairing({ activeDbPath: result.keptDbPath, receipt });
       primaryPath = result.keptDbPath ?? config.dbPath;
       result = receipt;

@@ -382,7 +382,7 @@ export function createPairActions({ request, storage, confirm = message => confi
     } };
 }
 
-export function createPairPanel({ document, request, storage, confirm, afterMutation, formatTime, now = () => Date.now() }) {
+export function createPairPanel({ document, request, storage, confirm, afterMutation, formatTime, now = () => Date.now(), onRecovery = () => {} }) {
   const $ = id => document.getElementById(id);
   const controller = createPairActions({ request, storage, confirm, afterMutation, onChange: render });
   const resetDialog = $('pairing-reset-dialog');
@@ -439,7 +439,6 @@ export function createPairPanel({ document, request, storage, confirm, afterMuta
     $('pairing-recovery-intro').textContent = recoveryNeeded
       ? 'Check the other computer’s preserved history, recover any gaps, then resume mirroring. Existing master history wins overlaps.'
       : 'Mirroring is automatic. An optional comparison checks the other snapshot without changing either database.';
-    $('pairing-recover-step').hidden = !recoveryNeeded;
     $('pairing-rejoin-step').hidden = !recoveryNeeded;
     $('pairing-master-controls').hidden = state.view.role !== 'master';
     $('pairing-slave-controls').hidden = !['slave', 'protected'].includes(state.view.role);
@@ -459,21 +458,22 @@ export function createPairPanel({ document, request, storage, confirm, afterMuta
       ? 'If another computer is the master, use its Paired computers section to check this computer’s history and recover missing entries before resuming mirroring. If this computer should become master instead, promote it below using the preserved local history.'
       : 'This computer reads the last copied snapshot and does not record measurements or send commands. While the master is unavailable, the history remains readable and grows older. Mirroring catches up when the master returns, provided the histories have not diverged.';
     const help = pairActionHelp(state.view);
-    for (const field of ['check', 'recover', 'rejoin', 'handover', 'promote', 'reset']) {
+    for (const field of ['check', 'rejoin', 'handover', 'promote', 'reset']) {
       const node = $(`pairing-${field}-help`);
       node.textContent = !state.available ? 'Reconnect to this computer before starting an action.'
         : state.busy || state.pending ? 'Wait for the current request to be confirmed before starting another action.' : help[field];
-      node.dataset.ready = String(field === 'recover' && !state.pending && !state.busy && state.available && pairActionAllowed(state.view, 'recover'));
     }
     $('pairing-rejoin').textContent = state.view.recovery?.pendingRelease ? 'Verify mirroring completion'
       : checkedPreview(state.view) && hasMissing(state.view) && !mirrorComparison(state.view) ? 'Skip recovery and resume mirroring' : 'Resume mirroring';
     $('pairing-rejoin').dataset.tone = checkedPreview(state.view) && !mirrorComparison(state.view) ? 'attention' : 'neutral';
     $('pairing-rejoin-help').dataset.tone = $('pairing-rejoin').dataset.tone;
-    for (const action of actions) {
+    for (const action of actions.filter(action => !['check-recovery', 'recover'].includes(action))) {
       const button = $(`pairing-${action}`);
       button.hidden = action === 'reset' ? false : action === 'promote' ? !['slave', 'protected'].includes(state.view.role) : state.view.role !== 'master';
       button.disabled = !state.available || state.busy || Boolean(state.pending) || !pairActionAllowed(state.view, action);
     }
+    $('pairing-history-recovery').disabled = !state.available;
+    $('pairing-history-recovery').textContent = recoveryNeeded ? 'Recover history…' : 'Review history…';
     resetDialogState(state);
     const receipt = state.view.reset?.lastResult;
     const showReceipt = receipt && resetModes.includes(receipt.mode) && typeof receipt.archiveDirectory === 'string' && stamp(receipt.completedAt) && receipt.completedAt <= now() && now() - receipt.completedAt <= 86400_000;
@@ -481,10 +481,11 @@ export function createPairPanel({ document, request, storage, confirm, afterMuta
     $('pairing-reset-receipt').textContent = showReceipt ? `${receipt.mode === 'keep' ? 'Pairing reset; local history kept protected.' : 'Started fresh as a slave.'} Archive: ${receipt.archiveDirectory}. Archives are kept until you manually delete them.` : '';
     $('pairing-retry').hidden = !state.pending || (state.view.uiOperation?.id === state.pending.requestId && state.view.uiOperation.state === 'running');
     $('pairing-retry').disabled = !state.available || state.busy;
-    const report = ['complete', 'resolved'].includes(state.view.recovery?.state) ? display.report : null;
-    renderRecoveryReport(document, $('pairing-preview'), report ?? display.preview, { formatTime, report: Boolean(report), comparison: mirrorComparison(state.view) });
   }
-  for (const action of actions.filter(action => action !== 'reset')) $(`pairing-${action}`).addEventListener('click', () => { void controller.run(action); });
+  for (const action of ['handover', 'promote', 'rejoin']) $(`pairing-${action}`).addEventListener('click', () => { void controller.run(action); });
+  $('pairing-history-recovery').addEventListener('click', () => {
+    if (!$('pairing-history-recovery').disabled) onRecovery({ sourceId: 'peer', trigger: $('pairing-history-recovery') });
+  });
   $('pairing-reset').addEventListener('click', () => {
     const state = controller.snapshot();
     if (!state.available || state.busy || state.pending || !pairActionAllowed(state.view, 'reset') || resetDialog.open) return;
@@ -506,7 +507,7 @@ export function createPairPanel({ document, request, storage, confirm, afterMuta
 }
 
 /** Render only whitelisted aggregates, never a donor record or serialized error. */
-export function renderRecoveryReport(document, root, data, { formatTime = at => new Date(at).toISOString(), report = false, comparison = false } = {}) {
+export function renderRecoveryReport(document, root, data, { formatTime = at => new Date(at).toISOString(), report = false, comparison = false, source = 'peer' } = {}) {
   root.replaceChildren(); root.hidden = !data;
   if (!data) return;
   const heading = document.createElement('h3'); heading.textContent = comparison ? 'History comparison' : data.recoverySkipped ? 'Mirroring resumed without recovery' : report ? 'Recovery result' : 'Recovery preview'; root.append(heading);
@@ -532,9 +533,15 @@ export function renderRecoveryReport(document, root, data, { formatTime = at => 
   if (count(data.model?.unsupported) > 0) {
     const line = document.createElement('p'); line.textContent = `Unsupported learning entries skipped: ${data.model.unsupported}.`; root.append(line);
   }
+  if (count(data.sourceAssessment?.skippedLearningRecords) > 0) {
+    const line = document.createElement('p');
+    line.textContent = `${data.sourceAssessment.skippedLearningRecords} learning records use another input and are skipped. Their original history remains separate.`;
+    root.append(line);
+  }
   const policy = document.createElement('p'); policy.className = 'muted';
   policy.textContent = comparison ? 'This is a comparison with a normal slave snapshot. Differences can reflect snapshot age or master deletions. Mirroring applies the master’s history automatically; these entries are not imported.'
     : data.recoverySkipped ? 'Gap recovery was deliberately skipped. The master history and model were kept; the other computer’s unmatched history was discarded, without a separate archive.'
-    : 'Existing master history wins overlaps. Skipped donor entries are not kept as a separate archive after successful recovery and verified mirroring.';
+    : source === 'backup' ? 'Existing history takes precedence. The source backup stays unchanged. Conflicting or unsupported entries are skipped; recorded gaps remain unknown where no usable evidence exists.'
+      : 'Existing master history wins overlaps. Skipped donor entries are not kept as a separate archive after successful recovery and verified mirroring.';
   root.append(policy);
 }

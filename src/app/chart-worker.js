@@ -17,8 +17,8 @@ const heatingFingerprint = ({ generatedAt, ...summary }) => JSON.stringify(summa
 const pendingEnergyFingerprint = (args,range) => JSON.stringify(pendingEnergyObservations(store,args)
   .filter(row=>row.source_time>range.from&&JSON.parse(row.raw).intervalStart<range.to));
 const latestSourceCoverage=db.prepare(`SELECT c.*,o.raw,o.source_time AS observed_at FROM state s
-  JOIN recorder_coverage c ON c.id=json_extract(s.value,'$.coverageId')
-  JOIN observations o ON o.id=c.observation_id WHERE s.key LIKE 'recorder:signal:%' AND (
+  JOIN active_recorder_coverage c ON c.id=json_extract(s.value,'$.coverageId')
+  JOIN active_observations o ON o.id=c.observation_id WHERE s.key LIKE 'recorder:signal:%' AND (
     c.source IN ('husdata-h66','simulation') AND c.signal IN ('compressor_active','dhw_routing','operating_mode','auxiliary_output')
     OR c.source='controller-estimate' AND c.signal='auxiliary_power'
     OR c.source='mqtt-equipment' AND c.signal='dhwr_active') ORDER BY c.id`);
@@ -35,17 +35,26 @@ function sourceCoverageFingerprint(args,range) {
   }
   return JSON.stringify(spans);
 }
-let overview = null;
+let overview = null, overviewRevision = null;
+const readOverviewRevision = db.prepare(`SELECT generation,
+  (SELECT COUNT(*) FROM history_recoveries WHERE completed_at IS NOT NULL) completedRecoveries
+  FROM history_selection WHERE id=1`);
 parentPort.on('message', ({ id, args, operation }) => {
   try {
     if (operation === 'overview') {
       const at = Date.now();
-      const hit = overview && at - overview.generatedAt >= 0 && at - overview.generatedAt < OVERVIEW_REFRESH_MS;
+      const currentOverviewRevision = JSON.stringify(readOverviewRevision.get());
+      const hit = overview && overviewRevision === currentOverviewRevision
+        && at - overview.generatedAt >= 0 && at - overview.generatedAt < OVERVIEW_REFRESH_MS;
       if (!hit) {
         // Consistent read snapshot across aggregate queries. WAL permits the
         // controller's writer to continue while the worker builds the overview.
         db.exec('BEGIN');
-        try { overview = getDatabaseOverview({ store, now: at }); db.exec('COMMIT'); }
+        try {
+          overview = getDatabaseOverview({ store, now: at });
+          overviewRevision = JSON.stringify(readOverviewRevision.get());
+          db.exec('COMMIT');
+        }
         catch (error) { db.exec('ROLLBACK'); throw error; }
       }
       parentPort.postMessage({ id, result: { ...overview,
@@ -56,23 +65,24 @@ parentPort.on('message', ({ id, args, operation }) => {
     // They do not invalidate a completed historical plot. New observations,
     // availability spans, forecast fetches and completed imports do.
     const currentVersion = JSON.stringify(db.prepare(`SELECT
-      (SELECT MAX(id) FROM observations) observations,
-      (SELECT MIN(received_at) FROM observations WHERE received_at>?) nextReceipt,
-      (SELECT MIN(completed_at) FROM imports WHERE status='complete' AND completed_at>?) nextImportPublication,
-      (SELECT MIN(fetched_at) FROM provider_snapshot_fetches WHERE fetched_at>?) nextProviderReceipt,
-      (SELECT MAX(id) FROM provider_snapshot_fetches) snapshots,
-      (SELECT MAX(id) FROM recorder_coverage) coverage,
+      (SELECT generation FROM history_selection WHERE id=1) recoverySelection,
+      (SELECT MAX(id) FROM active_observations AS observations) observations,
+      (SELECT MIN(received_at) FROM active_observations AS observations WHERE received_at>?) nextReceipt,
+      (SELECT MIN(completed_at) FROM active_imports AS imports WHERE status='complete' AND completed_at>?) nextImportPublication,
+      (SELECT MIN(fetched_at) FROM active_provider_snapshot_fetches AS provider_snapshot_fetches WHERE fetched_at>?) nextProviderReceipt,
+      (SELECT MAX(id) FROM active_provider_snapshot_fetches AS provider_snapshot_fetches) snapshots,
+      (SELECT MAX(id) FROM active_recorder_coverage AS recorder_coverage) coverage,
       (SELECT group_concat(json_extract(value,'$.lastSourceTime')||':'||json_extract(value,'$.coverageId'))
         FROM state WHERE key LIKE 'recorder:signal:%' AND json_extract(value,'$.reportPolicy.reportIntervalMs')>0
           AND json_extract(value,'$.signal')<>'dhwr_active') temperatureReports,
       (SELECT MAX(id) FROM learning_journal) learningJournal,
-      (SELECT MAX(id) FROM fireplace_events) fireplaceRevision,
+      (SELECT MAX(id) FROM active_fireplace_events AS fireplace_events) fireplaceRevision,
       (SELECT group_concat(CASE WHEN json_valid(value) THEN json_extract(value,'$.checkpointDigest') ELSE 'invalid' END) FROM state WHERE key IN ('adaptive:mqtt','adaptive:providers','adaptive:simulated')) adaptiveModels,
       (SELECT group_concat(value) FROM state WHERE key IN ('fireplace:rebuild:mqtt','fireplace:rebuild:providers','fireplace:rebuild:simulated')) fireplaceRebuilds,
-      (SELECT MAX(id) FROM events WHERE type='heat-pump-power-config') heatPowerConfig,
-      (SELECT MAX(id) FROM energy_audits) energyAudits,
-      (SELECT MAX(id) FROM events WHERE type='charging-session-check') chargingSessionChecks,
-      (SELECT COUNT(*) FROM imports WHERE status='complete') imports`).get(args.now,args.now,args.now));
+      (SELECT MAX(id) FROM active_events AS events WHERE type='heat-pump-power-config') heatPowerConfig,
+      (SELECT MAX(id) FROM active_energy_audits AS energy_audits) energyAudits,
+      (SELECT MAX(id) FROM active_events AS events WHERE type='charging-session-check') chargingSessionChecks,
+      (SELECT COUNT(*) FROM active_imports AS imports WHERE status='complete') imports`).get(args.now,args.now,args.now));
     if (currentVersion !== version) { cache.clear(); cacheBytes = 0; version = currentVersion; }
     // Historical views survive second-by-second clock movement. Current/future
     // views renew within fifteen seconds, preserving acquisition timestamps.

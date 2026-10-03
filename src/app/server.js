@@ -86,7 +86,7 @@ function chargingReportQuery(url, kind) {
 
 export function createAppServer({ engine, getEngine = () => engine, store, chartService, token = '', familyToken = '',
   getAccess, ingress = false, role = 'master', topology = 'standalone', getReadContext, syncStatus,
-  pairContext, controlAuthority, getDatabaseExportDirectory = homedir,
+  pairContext, controlAuthority, historyRecovery, getDatabaseExportDirectory = homedir,
   reloadSettings, previewSettings, settingsReloadStatus = () => ({ available: false, busy: false,
     reason: 'This instance has no reloadable configuration source.' }), staticDir = resolve('dist') }) {
   const overviewService = getReadContext ? null : chartService?.overview ? chartService : createChartService({ store });
@@ -97,6 +97,7 @@ export function createAppServer({ engine, getEngine = () => engine, store, chart
   const exportDatabase = createDatabaseExport({ getDirectory: getDatabaseExportDirectory });
   const writesBlocked = () => role === 'slave' || Boolean(pairContext && !pairContext.canControl())
     || Boolean(controlAuthority && !controlAuthority.canControl());
+  const recovering = () => Boolean(historyRecovery?.busy() || pairContext?.recovering?.());
   const readOnlyMessage = 'This computer is read-only. Database edits, settings changes and device commands require the active master.';
   const server = createServer(async (req, res) => {
     let acceptedAccess, completingReload = false, readContext, webAccess;
@@ -171,6 +172,38 @@ export function createAppServer({ engine, getEngine = () => engine, store, chart
           return state.busy ? 'Settings are being updated. Retry shortly.' : null;
         };
         if (unavailable()) return json(503, { error: unavailable() });
+        if (url.pathname === '/api/history-recovery' && req.method === 'GET') {
+          if ([...url.searchParams.keys()].some(key => key !== 'before') || url.searchParams.getAll('before').length > 1)
+            return json(400, { error: 'Unsupported recovery history query.' });
+          const before = url.searchParams.get('before') ?? undefined;
+          if (before !== undefined && (before.length > 180 || !/^\d+:[a-f0-9-]+$/.test(before)))
+            return json(400, { error: 'Invalid recovery history cursor.' });
+          if (!historyRecovery) return json(200, { available: false, readOnly: true, busy: false,
+            sources: [], operations: [], job: null, preview: null, peer: pairContext?.status() ?? null });
+          const result = await historyRecovery.view({ before });
+          if (!stillAuthorized()) return;
+          return json(200, result);
+        }
+        if (url.pathname === '/api/history-recovery/upload' && req.method === 'POST') {
+          if (!historyRecovery) return json(409, { error: readOnlyMessage });
+          // Stream directly into a bounded private file; never buffer a database
+          // in memory or accept a path from the browser.
+          const result = await historyRecovery.upload(req, () => {
+            const current = access();
+            return current.enabled && (ingress || current === acceptedAccess)
+              && webIdentity(req, current, ingress)?.role === 'admin' && !writesBlocked() && !unavailable();
+          });
+          if (!stillAuthorized()) return;
+          return json(201, result);
+        }
+        if (url.pathname === '/api/history-recovery/action' && req.method === 'POST') {
+          if (!historyRecovery) return json(409, { error: readOnlyMessage });
+          const input = await body(req);
+          if (!stillAuthorized()) return;
+          if (unavailable()) return json(503, { error: unavailable() });
+          if (writesBlocked()) return json(409, { error: readOnlyMessage });
+          return json(202, await historyRecovery.action(input));
+        }
         if (saveDatabase) {
           const input = await body(req);
           if (!stillAuthorized()) return;
@@ -184,11 +217,11 @@ export function createAppServer({ engine, getEngine = () => engine, store, chart
         const readerCharts = readContext?.chartService ?? chartService;
         const sensorChangesStatus = (view = (readContext ? engine : getEngine()).sensorChangesStatus()) => {
           const readOnly = role === 'slave' || controlAuthority && !controlAuthority.canControl()
-            || pairContext && (!pairContext.canControl() || pairContext.recovering());
+            || recovering() || pairContext && !pairContext.canControl();
           return readOnly ? { ...view, available: false, readOnly: true, canRetryRebuild: false,
             events: view.events.map(event => ({ ...event, canRevert: false })) } : view;
         };
-        const fireplaceStatus = (view, now) => fireplaceAccess(writesBlocked() || pairContext?.recovering()
+        const fireplaceStatus = (view, now) => fireplaceAccess(writesBlocked() || recovering()
           ? { ...view, available: false, readOnly: true } : view, webAccess, now);
         const status = () => {
           const sync = syncStatus?.();
@@ -210,7 +243,7 @@ export function createAppServer({ engine, getEngine = () => engine, store, chart
           // after parsing, and never dispatch while a replacement is in progress.
           if (unavailable()) return json(503, { error: unavailable() });
           if (writesBlocked()) return json(409, { error: readOnlyMessage });
-          if (pairContext?.recovering() && ['/api/fireplace', '/api/fireplace/remove', '/api/sensor-changes',
+          if (recovering() && ['/api/fireplace', '/api/fireplace/remove', '/api/sensor-changes',
             '/api/sensor-changes/revert', '/api/sensor-changes/retry-rebuild', '/api/settings/reload', '/api/settings/preview', '/api/charging/ocpp-setup'].includes(url.pathname))
             return json(409, { error: 'Historical recovery is running. Wait before changing source corrections or configuration.' });
           const current = getEngine();
@@ -330,7 +363,7 @@ export function createAppServer({ engine, getEngine = () => engine, store, chart
             ? readerStore.db.prepare('SELECT namespace FROM charging_reports WHERE charger_id=? ORDER BY started_at DESC LIMIT 1').get(query.chargerId)?.namespace
               ?? 'charging:offline:session-diagnostics'
             : `charging:${engine.config.input}:session-diagnostics`;
-          const readOnly = writesBlocked() || Boolean(pairContext?.recovering()) || engine.config.input === 'offline';
+          const readOnly = writesBlocked() || recovering() || engine.config.input === 'offline';
           const snapshotAt = readContext ? engine.clock() : null;
           const recordedRetention = readerStore.getState(key.slice(0, -':session-diagnostics'.length))?.view?.diagnostics?.retention?.days;
           const retentionDays = (engine.config.input === 'offline' || readContext ? recordedRetention
@@ -351,7 +384,7 @@ export function createAppServer({ engine, getEngine = () => engine, store, chart
         }
         if (reportRoute && req.method === 'POST' && ['save', 'delete'].includes(reportRoute[2]))
           return await mutate((current, input) => {
-            if (current.config.input === 'offline' || pairContext?.recovering())
+            if (current.config.input === 'offline' || recovering())
               return json(409, { error: 'Charging reports are read-only on this computer.' });
             const [, reportId, action] = reportRoute, query = { ...chargingReportQuery(url, 'report'), reportId };
             if (!input || typeof input !== 'object' || Array.isArray(input)
@@ -367,7 +400,7 @@ export function createAppServer({ engine, getEngine = () => engine, store, chart
         const chargingTestAction = url.pathname.match(/^\/api\/charging\/tests\/(preview|start|schedule|target|cancel)$/);
         if (req.method === 'POST' && chargingTestAction)
           return await mutate((current, input) => {
-            if (pairContext?.recovering()) return json(409, { error: 'Wait for recovery to finish before changing a charging assessment.' });
+            if (recovering()) return json(409, { error: 'Wait for recovery to finish before changing a charging assessment.' });
             const result = current.charging.chargingTestAction(chargingTestAction[1], input);
             return json(200, chargingTestAction[1] === 'preview' ? result : status());
           });
@@ -470,6 +503,13 @@ export function createAppServer({ engine, getEngine = () => engine, store, chart
       }
     } catch (error) {
       if (!res.destroyed) {
+        if (/^\/api\/history-recovery(?:\/(?:action|upload))?(?:\?|$)/.test(req.url)) {
+          // Filesystem and SQLite failures can contain private paths or source
+          // content. Only coordinator-authored explanations cross this boundary.
+          const code = error.statusCode ?? (error instanceof SyntaxError ? 400 : 503);
+          return json(code, { error: error.publicMessage ?? (code >= 500
+            ? 'Recovery storage is unavailable. Retry shortly.' : 'The recovery request must contain valid supported input.') });
+        }
         const fireplaceWrite = req.method === 'POST' && /^\/api\/(?:fireplace(?:\/remove)?|sensor-changes(?:\/(?:revert|retry-rebuild))?)(?:\?|$)/.test(req.url);
         const code = error.statusCode ?? (fireplaceWrite && !(error instanceof TypeError || error instanceof SyntaxError) ? 503 : 400);
         json(code, { error: code >= 500 ? 'Request could not be confirmed. Retry shortly.'

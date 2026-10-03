@@ -1,3 +1,4 @@
+import { selectedHistoryPredicate } from '../storage/schema.js';
 import { DailyTimingBenchmark } from './daily-timing-benchmark.js';
 export { DailyTimingBenchmark } from './daily-timing-benchmark.js';
 import { getGarageTimingBenefit, buildHeatingSavings } from './garage-reporting.js';
@@ -277,7 +278,7 @@ export function knownIntervals(market, store, range, now) {
   };
   // Acquisition currently requests 48 hours; seven days also covers the adapter's
   // maximum accepted horizon. Future fetched revisions cannot rewrite this view.
-  for (const row of store.db.prepare(`SELECT payload,fetched_at FROM provider_snapshots
+  for (const row of store.db.prepare(`SELECT payload,fetched_at FROM active_provider_snapshots AS provider_snapshots
     WHERE kind='market' AND fetched_at>=? AND fetched_at<=? ORDER BY fetched_at,id`)
     .iterate(range.from - 7 * DAY, Math.min(now, range.to + 7 * DAY))) {
     try { accept(JSON.parse(row.payload), row.fetched_at); } catch { /* Reject corrupt snapshots independently. */ }
@@ -345,7 +346,7 @@ function* mergedHistoryRows(store, nativeRows, from, to, requested, now) {
   // across the JS boundary. The importer owns parsing and quality semantics.
   function* imported() {
     const query = store.db.prepare(`SELECT r.canonical,r.source_time,r.row_number,i.id,i.kind,i.started_at
-      FROM import_rows r JOIN imports i ON i.id=r.import_id
+      FROM active_import_rows r JOIN active_imports i ON i.id=r.import_id
       WHERE i.status='complete' AND i.completed_at<=? AND i.kind IN (${requested.has('property_current_l1') ? "'stmq','easee'" : "'stmq'"}) AND r.source_time>=? AND r.source_time<?
       ORDER BY r.source_time,i.id,r.row_number`);
     for (const original of query.iterate(now, from, to)) {
@@ -369,7 +370,8 @@ function addHistoricalChargerTiming(store, timing, range, now, input, cutoff = I
   if (until <= range.from - 30 * 60_000) return;
   const compact = input !== 'simulated' && range.to - range.from > 7 * DAY;
   const native = store.db.prepare(`SELECT o.* FROM observations o INDEXED BY observations_time
-    LEFT JOIN imports i ON i.id=o.import_id WHERE o.source_time>=? AND o.source_time<?
+    LEFT JOIN active_imports i ON i.id=o.import_id WHERE o.source_time>=? AND o.source_time<?
+    AND ${selectedHistoryPredicate('observations', 'o')}
     AND o.signal IN ('ev1_current_l1','ev1_current_l2','ev1_current_l3')
     AND o.received_at<=? AND (o.import_id IS NULL OR i.status='complete' AND i.completed_at<=?)
     AND ${input === 'simulated' ? "o.source='simulation'" : "o.source<>'simulation'"}
@@ -501,8 +503,9 @@ export function getChartData({ store, input = 'offline', contract = null, market
     try {
       for(const signal of requested) {
         const query=store.db.prepare(`SELECT ${columns}
-          FROM observations o INDEXED BY observations_signal_time LEFT JOIN imports i ON i.id=o.import_id
+          FROM observations o INDEXED BY observations_signal_time LEFT JOIN active_imports i ON i.id=o.import_id
           WHERE o.signal=? AND o.source_time>=? AND o.source_time<?
+          AND ${selectedHistoryPredicate('observations', 'o')}
           ${compactImports ? 'AND o.import_id IS NULL' : ''}
           AND ${sourceScope} AND o.received_at<=? AND (o.import_id IS NULL OR i.status='complete' AND i.completed_at<=?)
           AND COALESCE(json_extract(o.raw,'$.recorder.status'),'fresh')='fresh'
@@ -725,7 +728,7 @@ export function getChartData({ store, input = 'offline', contract = null, market
     // prior state seeds historical days too; explicit outage coverage still
     // interrupts it, and the original report time accompanies the held line.
     for (const signal of leftNames.filter(name => DOOR_SIGNALS.includes(name) || RECORDED_EVIDENCE_SIGNALS.includes(name))) {
-      const seed = store.db.prepare(`SELECT ${columns} FROM observations o LEFT JOIN imports i ON i.id=o.import_id
+      const seed = store.db.prepare(`SELECT ${columns} FROM active_observations o LEFT JOIN active_imports i ON i.id=o.import_id
         WHERE o.signal=? AND o.source_time<? AND ${sourceScope}
         AND o.received_at<=? AND (o.import_id IS NULL OR i.status='complete' AND i.completed_at<=?) ORDER BY o.source_time DESC,o.id DESC LIMIT 1`)
         .get(signal, range.from - 3 * HOUR, now, now);
@@ -734,11 +737,11 @@ export function getChartData({ store, input = 'offline', contract = null, market
     // Learned estimates remain in effect until superseded, including past-day
     // views. A seed retains its original timestamp and never backdates learning.
     for (const signal of leftNames.filter(name => LEARNING.includes(name))) {
-      const seed = store.db.prepare(`SELECT ${columns} FROM observations o WHERE o.signal=? AND o.source_time<?
+      const seed = store.db.prepare(`SELECT ${columns} FROM active_observations o WHERE o.signal=? AND o.source_time<?
         AND o.source='controller-learning' AND o.device=? AND o.received_at<=? ORDER BY o.source_time DESC,o.id DESC LIMIT 1`).get(signal, range.from - 3 * HOUR, input, now);
       if (seed) earlier.push(seed);
     }
-    const phaseSeed = store.db.prepare(`SELECT ${columns} FROM observations o WHERE o.signal='controller_phase'
+    const phaseSeed = store.db.prepare(`SELECT ${columns} FROM active_observations o WHERE o.signal='controller_phase'
       AND o.source='controller' AND o.device=? AND o.source_time<? AND o.received_at<=? ORDER BY o.source_time DESC,o.id DESC LIMIT 1`)
       .get(input, range.from - 3 * HOUR, now);
     if (phaseSeed) earlier.push(phaseSeed);
@@ -749,12 +752,14 @@ export function getChartData({ store, input = 'offline', contract = null, market
       const signals = [...new Set([...TEMPERATURES.filter(name => names.includes(name)),
         ...(names.includes('heating_integral') ? ['heating_integral'] : []), ...(aggregatePower ? PHASES : phaseNames)])];
       const latest = store.db.prepare(`SELECT o.source_time FROM observations o INDEXED BY observations_signal_time
-        LEFT JOIN imports i ON i.id=o.import_id WHERE o.signal=? AND o.source_time<?
+        LEFT JOIN active_imports i ON i.id=o.import_id WHERE o.signal=? AND o.source_time<?
+        AND ${selectedHistoryPredicate('observations', 'o')}
         AND ${sourceScope} AND o.received_at<=? AND (o.import_id IS NULL OR i.status='complete' AND i.completed_at<=?)
         ORDER BY o.source_time DESC,o.id DESC LIMIT 1`);
       const times = new Set(signals.map(signal => latest.get(signal, range.from - 3 * HOUR, now, now)?.source_time).filter(Number.isFinite));
       const seeds = store.db.prepare(`SELECT ${columns} FROM observations o INDEXED BY observations_time
-        LEFT JOIN imports i ON i.id=o.import_id WHERE o.source_time=?
+        LEFT JOIN active_imports i ON i.id=o.import_id WHERE o.source_time=?
+        AND ${selectedHistoryPredicate('observations', 'o')}
         AND o.signal IN (${signals.map(() => '?').join(',')}) AND ${sourceScope}
         AND o.received_at<=? AND (o.import_id IS NULL OR i.status='complete' AND i.completed_at<=?) ORDER BY o.id`);
       // Keep complete acquisition cohorts and normal duplicate/source precedence.
@@ -888,7 +893,7 @@ export function getChartData({ store, input = 'offline', contract = null, market
     if (modelCoefficients.unsupportedRecords || modelCoefficients.invalidRecords) warnings.push('Some coefficient history is unavailable because its learning records are unsupported or incomplete.');
   }
   for(const signal of leftNames.filter(name=>AUDIT_SIGNALS.includes(name))) {
-    for(const row of store.db.prepare('SELECT value,source_time,quality FROM energy_audits WHERE signal=? AND source_time>=? AND source_time<=? ORDER BY source_time,id')
+    for(const row of store.db.prepare('SELECT value,source_time,quality FROM active_energy_audits AS energy_audits WHERE signal=? AND source_time>=? AND source_time<=? ORDER BY source_time,id')
       .iterate(signal,range.from,Math.min(range.to,now))) {
       const quality=JSON.parse(row.quality);
       envelopes[signal].add(row.source_time,quality.some(flag=>/reset|not.increasing|invalid/.test(flag))?null:row.value,{auditOnly:true});

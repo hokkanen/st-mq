@@ -81,6 +81,26 @@ test('zero is available only with assessed cycles and selected totals have no ro
   assert.equal(summary(store, { now: range.from + 3 * HOUR }).counts.assessed, 40, 'A completion recorded exactly now is included');
 });
 
+test('recovery corrections remove derived benefit claims while preserving original cycle outcomes and forecasts', t => {
+  const store = new Store(':memory:'); t.after(() => store.close());
+  const cycle = save(store, 'recovered-evidence', { actual: { costCents: 175 },
+    plan: { referencePrediction: { costCents: 300 } } });
+  const original = store.cycles({ input: 'providers' });
+  store.db.prepare("INSERT INTO recovery_exclusions(generation,table_name,record_key) VALUES(?,'cycle_assessments',?)")
+    .run('synthetic-reverted-generation', cycle.id);
+  store.db.prepare('UPDATE history_selection SET generation=? WHERE id=1').run('synthetic-reverted-generation');
+  const result = summary(store);
+  assert.equal(result.valueEuro, null);
+  assert.equal(result.counts.completed, 1);
+  assert.equal(result.counts.unassessed, 1);
+  const rows = store.cycleSummaries({ input: 'providers' });
+  assert.equal(rows[0].profitCents, null); assert.equal(rows[0].recoveryErrorCents, null);
+  assert.equal(rows[0].actualCostCents, 175);
+  assert.deepEqual(store.cycles({ input: 'providers' }), original, 'frozen evidence remains unchanged');
+  store.db.prepare("UPDATE history_selection SET generation='original' WHERE id=1").run();
+  assert.equal(summary(store).valueEuro, 1.25, 'restored valid history selects the original assessment again');
+});
+
 test('heating card receives the same total on every chart axis and resolution, independently of rolling metric observations', t => {
   const store = new Store(':memory:'); t.after(() => store.close());
   save(store, 'chart-assessment');

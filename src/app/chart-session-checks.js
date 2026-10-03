@@ -8,7 +8,7 @@ export function addChargingSessionChecks({ store, range, now, envelopes }) {
   if (!selected.length) return { records: 0 };
   const bySource = new Map(selected.map(([signal, info]) => [info.source, signal]));
   let records = 0;
-  for (const row of store.db.prepare("SELECT payload FROM events WHERE type='charging-session-check' AND at>=? AND at<=? ORDER BY at,id")
+  for (const row of store.db.prepare("SELECT payload FROM active_events AS events WHERE type='charging-session-check' AND at>=? AND at<=? ORDER BY at,id")
     .iterate(range.from, Math.min(range.to, now))) {
     const check = JSON.parse(row.payload), signal = bySource.get(check.source);
     assertCurrentChargingSessionCheck(check);

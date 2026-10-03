@@ -98,3 +98,26 @@ test('explicit chart refresh after a mutation cancels old work while recorder po
   chart.close();
   await Promise.all([initial, polled, corrected]);
 });
+
+test('a recovery selection change discards pending historical chart work across status polls', async t => {
+  const { chart, requests, nodes } = fixture(t);
+  const status = { now: Date.parse('2026-09-20T12:00:00Z'), input: 'providers',
+    recording: { historyRevision: 1, historySelection: 0 } };
+  const initial = chart.refresh(status);
+  await Promise.resolve();
+  const start = nodes.get('date-start');
+  start.value = '2024-01-15'; start.dispatchEvent(new Event('change'));
+  await Promise.resolve();
+  const historical = requests.at(-1), count = requests.length;
+  assert.equal(new URL(historical.path, 'http://fixture').searchParams.get('start'), '2024-01-15');
+  const ordinary = chart.refresh({ ...status, recording: { ...status.recording, historyRevision: 2 } });
+  await Promise.resolve();
+  assert.equal(requests.length, count, 'Ordinary recording does not replace historical requests');
+  const recovered = chart.refresh({ ...status, recording: { historyRevision: 3, historySelection: 1 } });
+  await Promise.resolve();
+  assert.equal(historical.signal.aborted, true);
+  assert.equal(requests.length, count + 1);
+  assert.equal(requests.at(-1).path, historical.path, 'The same past dates are queried after recovery or reversal');
+  chart.close();
+  await Promise.all([initial, ordinary, recovered]);
+});

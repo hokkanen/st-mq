@@ -2,7 +2,6 @@ import { chmod, link, mkdir, mkdtemp, rm, stat } from 'node:fs/promises';
 import { createReadStream } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
-import { DatabaseSync } from 'node:sqlite';
 import { pipeline } from 'node:stream/promises';
 
 /** The SQLite backup API includes committed WAL pages without pausing recording.
@@ -27,11 +26,6 @@ export function createDatabaseExport({ getDirectory }) {
       const path = join(directory, 'history.sqlite');
       await store.backup(path);
       await chmod(path, 0o600);
-      // Backup copies the source WAL header as well as its committed pages.
-      // Finish this private copy in rollback-journal mode so even read-only
-      // consumers can open the download without creating WAL/SHM companions.
-      const snapshot = new DatabaseSync(path);
-      try { snapshot.exec('PRAGMA journal_mode=DELETE'); } finally { snapshot.close(); }
       const { size } = await stat(path);
       if (response.destroyed || !authorized()) return;
       const stem = `stmq-${new Date().toISOString().replaceAll(':', '-').replace('.', '-')}`;

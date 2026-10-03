@@ -44,7 +44,7 @@ export function createWebSession({ storage, ingress = false }) {
     logout() {
       locked = true; token = '';
       storage.removeItem(tokenKey); storage.setItem(loggedOutKey, 'true');
-      for (const key of ['stmq-fireplace-pending', 'stmq-sensor-change-pending', 'stmq-pair-pending-v1']) storage.removeItem(key);
+      for (const key of ['stmq-fireplace-pending', 'stmq-sensor-change-pending', 'stmq-pair-pending-v1', 'stmq-history-recovery-pending']) storage.removeItem(key);
       cancellation.abort();
     },
     run(operation, { signal } = {}) {

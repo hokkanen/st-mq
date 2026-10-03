@@ -30,6 +30,13 @@ test('standalone entry starts offline promptly, serves built UI, survives restar
     assert.equal(status.settingsReload.configuration.environment, 'ubuntu');
     assert.equal(status.settingsReload.configuration.privatePath, join(directory, 'st-mq/secrets.json'));
     assert.equal(status.settingsReload.configuration.defaultsPath, config.configuration.defaultsPath);
+    const recovery = await fetch(`http://127.0.0.1:${app.server.address().port}/api/history-recovery`);
+    assert.equal(recovery.status, 200);
+    const recoveryState = await recovery.json();
+    assert.equal(recoveryState.available, true);
+    assert.equal(recoveryState.readOnly, false);
+    assert.deepEqual(recoveryState.operations, []);
+    assert.equal(app.engine.historyRecovery, app.historyRecovery);
     app.engine.setTemporary({ pauseUntil: new Date(app.engine.clock() + 60 * 60_000).toISOString() });
     // A conflicting listener must close its worker instead of hanging startup.
     await assert.rejects(start({ config: { ...config, dataDir: join(directory, 'conflict'), dbPath: join(directory, 'conflict/test.sqlite'), port: app.server.address().port } }), /EADDRINUSE/);

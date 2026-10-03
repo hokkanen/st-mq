@@ -15,6 +15,7 @@ export function projectedSensorContext(store, input, epoch) {
  * journal; a failed peer must not permanently suspend ordinary corrections. */
 export function markRecoveryFailed(store, input) {
   store.transaction(() => {
+    store.db.prepare("UPDATE history_recoveries SET status='interrupted' WHERE input=? AND status IN ('importing','rebuilding')").run(input);
     const checkpoint = store.getState(`adaptive:${input}`);
     const revision = fireplaceLearningContext(store, input).fireplaceRevision;
     const correctedSensors = sensorRevision(store, input);

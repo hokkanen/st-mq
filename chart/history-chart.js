@@ -379,8 +379,13 @@ export function createHistoryChart({ api, getTheme = () => document.documentElem
     lastInput = status.input;
     // Ordinary recorder progress expires through the detail TTL. Aborting on
     // every poll would repeatedly kill slow queries for historical viewports.
-    const recording={historyRevision:liveRevision,temperatureReportRevision:status.recording?.temperatureReportRevision,
+    const recording={historyRevision:liveRevision,historySelection:status.recording?.historySelection,temperatureReportRevision:status.recording?.temperatureReportRevision,
       sourceReportRevision:status.recording?.sourceReportRevision};
+    // Recovery revisions can change any recorded date. Discard pending work and
+    // every cached range, including historical overviews and zoomed detail.
+    if (lastRecording?.historySelection !== undefined && lastRecording.historySelection !== recording.historySelection) {
+      invalidate(); force = true;
+    }
     if (recordingChangedForSelection(selection,today,lastRecording,recording)) {
       force = true;
       if (lastRecording?.temperatureReportRevision!==recording.temperatureReportRevision) invalidateDetail();

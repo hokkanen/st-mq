@@ -29,6 +29,7 @@ import { applicationUrl, usesHomeAssistantLogin, authenticationMessage, createPo
   fetchJsonResponse, createEventStream, createCommunicationWatch } from './network.js';
 import { isReadOnlyReplica, renderReplicaStatus, replicaSnapshotKey, renderInstanceRole, pairPanelView } from './replica-status.js';
 import { createPairPanel } from './pair-status.js';
+import { createHistoryRecoveryPanel } from './history-recovery.js';
 import { createEquipmentPanel, dhwrReadingSummary } from './equipment.js';
 import { createGarageDoorPanel } from './garage-doors.js';
 import { renderFloorPreheat } from './floor-preheat.js';
@@ -154,8 +155,8 @@ async function api(path, data, options = {}) {
   assertDashboardWrite(path, data, lastStatus);
   const { response,result } = await session.run(({ headers, signal }) => fetchJsonResponse(applicationUrl(path), {
     signal, method: data === undefined ? 'GET' : 'POST',
-    headers: { ...headers, ...(data === undefined ? {} : { 'Content-Type': 'application/json' }) },
-    ...(data === undefined ? {} : { body: JSON.stringify(data) }),
+    headers: { ...headers, ...(data === undefined ? {} : { 'Content-Type': options.binary ? 'application/vnd.sqlite3' : 'application/json' }) },
+    ...(data === undefined ? {} : { body: options.binary ? data : JSON.stringify(data) }),
   }), options);
   if (response.status === 401) {
     lockScreen({ authenticationFailed: true });
@@ -182,6 +183,9 @@ renderModelInputs($('model-inputs-content'), undefined, { sensorChanges: $('sens
 const sensorChangePanel = createSensorChangePanel({ document, request: api, storage: sessionStorage,
   beforeMutation: () => { ++refreshSequence; }, afterMutation: () => refresh({ forceChart: true }) });
 const pairPanel = createPairPanel({ document, request: api, storage: sessionStorage, formatTime: time,
+  afterMutation: () => refresh({ forceChart: true }), onRecovery: options => historyRecovery.open(options) });
+const historyRecovery = createHistoryRecoveryPanel({ document, request: api, storage: sessionStorage, formatTime: time,
+  upload: file => api('/api/history-recovery/upload', file, { binary: true }),
   afterMutation: () => refresh({ forceChart: true }) });
 const garageDoors = createGarageDoorPanel({ document,
   onAction: (deviceId, action) => equipmentPanel.actions.cover(deviceId, action),
@@ -753,6 +757,7 @@ function render(s) {
   chargingDiagnostics.update(s); chargingTests.update(s); chargingSetup.render(s);
   $('error').hidden = true;
   pairPanel.update(pairPanelView(s));
+  historyRecovery.update({ ...s, webAccess });
   const replica = renderReplicaStatus(document, s, { formatTime: time });
   if (replica) garageDoors.close();
   renderHomePlannedChange(document, s);
@@ -915,6 +920,7 @@ async function refreshPairing() {
     readOnlyControls.update(lastStatus);
     garageDoors.update({ ...equipmentPanel.actions.snapshot(), status: lastStatus });
     pairPanel.update(pairPanelView(lastStatus));
+    historyRecovery.update({ ...lastStatus, webAccess });
     renderInstanceRole(document, lastStatus);
     if (isReadOnlyReplica(lastStatus)) {
       garageDoors.close(); fireplacePanel.close(); heatingExplorer.clear();
@@ -1122,6 +1128,7 @@ document.addEventListener('themechange', event => historyChart.updateTheme(event
 setInterval(() => refresh({ background: true }), 15_000);
 setInterval(refreshPairing, 3_000);
 setInterval(() => { checkCommunication(); if (!session.locked) { fireplacePanel.tick(); heatingExplorer.tick(); } }, 1000);
+setInterval(() => { if (!session.locked) historyRecovery.tick(); }, 2000);
 window.addEventListener('online', () => void refresh());
 document.addEventListener('visibilitychange', () => { checkCommunication(); if (!document.hidden) void refresh(); });
 if (session.locked) { $('auth').hidden = ingress; $('connection').textContent = 'Signed out'; if (!ingress) $('token').focus(); }

@@ -8,9 +8,9 @@ const issuedTime = row => row.issuedAt == null && row.issuedAtBasis === 'fetched
 export function* historicalSolar(store,range,now) {
   const until=Math.min(range.to,now);
   const query=store.db.prepare(`SELECT v.*,f.fetch_metadata,
-    (SELECT MIN(p.fetched_at) FROM provider_snapshot_fetches p WHERE p.content_id=f.content_id
-      AND p.source=f.source AND p.kind=f.kind) AS first_fetched_at FROM provider_snapshots v
-    JOIN provider_snapshot_fetches f ON f.id=v.id
+    (SELECT MIN(p.fetched_at) FROM active_provider_snapshot_fetches p WHERE p.content_id=f.content_id
+      AND p.source=f.source AND p.kind=f.kind) AS first_fetched_at FROM active_provider_snapshots v
+    JOIN active_provider_snapshot_fetches f ON f.id=v.id
     WHERE v.kind='weather' AND v.fetched_at>=? AND v.fetched_at<? ORDER BY v.fetched_at,v.id`);
   let previous=null;
   function* emit(snapshot,end) {

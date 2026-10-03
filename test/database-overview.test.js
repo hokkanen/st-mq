@@ -26,12 +26,16 @@ test('empty overview explains all physical tables without inventing historical p
     assert.equal(overview.database.fileBytes, null);
     assert(overview.database.allocatedBytes > 0);
     const actual = store.db.prepare("SELECT name FROM sqlite_schema WHERE type='table' AND name NOT LIKE 'sqlite_%' ORDER BY name").all();
-    assert.equal(actual.length, 20);
     assert.deepEqual(overview.accounting.tables.map(table => table.name), actual.map(table => table.name));
     for (const table of overview.accounting.tables) assert.equal(table.rows,
       store.db.prepare(`SELECT COUNT(*) count FROM ${table.name}`).get().count, table.name);
-    assert.equal(overview.accounting.views[0].name, 'provider_snapshots');
-    assert.equal(overview.accounting.totalRows, 0, 'fresh databases contain no synthetic chart bookkeeping records');
+    const actualViews = store.db.prepare("SELECT name FROM sqlite_schema WHERE type='view' AND name NOT LIKE 'sqlite_%' ORDER BY name").all();
+    assert.deepEqual(overview.accounting.views.map(view => view.name), actualViews.map(view => view.name));
+    assert(overview.accounting.views.every(view => view.description));
+    assert.equal(overview.accounting.totalRows, 1, 'fresh databases contain only the initial current history selection');
+    assert.equal(overview.accounting.selection.retainedSourceRows, 0);
+    assert.equal(overview.accounting.selection.selectedSourceRows, 0);
+    assert.equal(overview.accounting.selection.excludedSourceRows, 0);
     assert(!overview.accounting.tables.some(table => table.name.startsWith('chart_rollup')));
     assert(!items(overview).has('chart-rollups'));
     assert(!items(overview).has('rollup-metadata'));
@@ -39,7 +43,7 @@ test('empty overview explains all physical tables without inventing historical p
     assert.match(overview.groups.find(group => group.id === 'support').description, /cached chart responses stay in memory/);
     for (const [id, item] of items(overview)) {
       assert(item.description && item.retentionDescription, id);
-      assert.equal(item.status, 'empty', id);
+      assert.equal(item.status, id === 'history-selection' ? 'present' : 'empty', id);
     }
   } finally { store.close(); }
 });
@@ -283,9 +287,77 @@ test('fireplace inventory separates retained loads, correction actions and curre
     assert.equal(corrections.dateBasis, 'correction time');
     assert.equal(rows.get('state-fireplace').count, 1, 'updated worker progress is current state, not duplicated historical records');
     assert.equal(overview.accounting.tables.find(table => table.name === 'fireplace_events').rows, 5);
-    assert.equal(overview.accounting.totalRows, 6);
+    assert.equal(overview.accounting.totalRows, 7, 'six evidence/state records plus the initialized history selection');
     assert(!JSON.stringify(overview).includes('invented-private'));
   } finally { store.close(); }
+});
+
+test('overview separates retained source evidence, published exclusions and selected learning without exposing recovery details', t => {
+  const store = new Store(':memory:'); t.after(() => store.close());
+  const privateMarker = 'private-recovery-source-marker';
+  for (const index of [0, 1, 2]) put(store, 'controller_phase', index, at + index * 1000);
+  const ids = store.db.prepare('SELECT id FROM observations ORDER BY id').all().map(row => row.id);
+  const insert = store.db.prepare(`INSERT INTO history_recoveries
+    (id,input,donor_digest,source,started_at,completed_at,status,active,report) VALUES(?,?,?,?,?,?,?,?,?)`);
+  insert.run(privateMarker, 'providers', privateMarker, JSON.stringify({ kind: 'backup', label: privateMarker }),
+    at - 1000, at, 'complete', 0, JSON.stringify({ private: privateMarker }));
+  insert.run(`${privateMarker}-active`, 'providers', privateMarker, JSON.stringify({ kind: 'peer', label: privateMarker }),
+    at, null, 'interrupted', 1, null);
+  const member = store.db.prepare('INSERT INTO recovery_members(recovery_id,table_name,record_key,fingerprint) VALUES(?,?,?,?)');
+  member.run(privateMarker, 'observations', String(ids[1]), privateMarker);
+  member.run(`${privateMarker}-active`, 'observations', String(ids[2]), privateMarker);
+  store.db.prepare('INSERT INTO recovery_decisions(recovery_id,active,at,report,generation,epoch) VALUES(?,?,?,?,?,?)')
+    .run(privateMarker, 0, at + 2000, JSON.stringify({ private: privateMarker }), 'published', 'selected');
+  const exclusion = store.db.prepare('INSERT INTO recovery_exclusions(generation,table_name,record_key) VALUES(?,?,?)');
+  exclusion.run('previous', 'observations', String(ids[0]));
+  exclusion.run('published', 'observations', String(ids[1]));
+  exclusion.run('published', 'observations', '999999');
+  exclusion.run('unpublished', 'observations', String(ids[2]));
+  const journal = store.db.prepare(`INSERT INTO learning_journal_entries
+    (epoch,input,key,kind,at,algorithm_version,payload,source_entry_id) VALUES(?,?,?,?,?,?,?,?)`);
+  const first = Number(journal.run('original', 'providers', 'first', 'sample', at, 'fixture', '{}', null).lastInsertRowid);
+  const second = Number(journal.run('original', 'providers', 'second', 'sample', at + 1000, 'fixture', '{}', null).lastInsertRowid);
+  journal.run('selected', 'providers', 'kept', 'sample', at + 1000, 'fixture', null, second);
+  store.db.prepare('INSERT INTO learning_epochs(input,epoch) VALUES(?,?)').run('providers', 'selected');
+  exclusion.run('published', 'learning_journal', String(first));
+  store.db.prepare("UPDATE history_selection SET generation='published' WHERE id=1").run();
+  store.db.exec('PRAGMA query_only=ON');
+  const overview = getDatabaseOverview({ store, now: at + 3000 }), rows = items(overview);
+  assert.equal(overview.catalogueComplete, true);
+  assert.equal(rows.get('controller_phase').count, 3, 'inventory retains the reverted record');
+  assert.equal(rows.get('journal-sample').count, 1, 'model input counts identify the selected completed epoch');
+  assert.equal(rows.get('learning-archive').count, 2);
+  assert.equal(rows.get('history-recoveries').count, 2);
+  assert.equal(rows.get('history-recoveries').firstAt, at - 1000);
+  assert.equal(rows.get('recovery-members').count, 2);
+  assert.equal(rows.get('recovery-decisions').count, 1);
+  assert.equal(rows.get('recovery-exclusions').count, 5, 'retained exclusion references include previous and proposed generations');
+  assert.deepEqual(overview.accounting.selection.tables.find(row => row.name === 'observations'),
+    { name: 'observations', retainedRows: 3, selectedRows: 2, excludedRows: 1 });
+  assert.equal(overview.accounting.selection.selectedSourceRows, 2);
+  assert.equal(overview.accounting.selection.excludedSourceRows, 1, 'absent and unpublished rows are not excluded retained evidence');
+  assert.equal(overview.accounting.selection.selectedLearningEntries, 1);
+  assert.equal(overview.accounting.selection.excludedLearningEntries, 1);
+  for (const table of overview.accounting.tables) assert.equal(table.rows,
+    store.db.prepare(`SELECT COUNT(*) count FROM ${table.name}`).get().count, table.name);
+  assert.equal(overview.accounting.totalRows, overview.accounting.tables.reduce((total, row) => total + row.rows, 0));
+  assert.match(overview.database.description, /counts include evidence excluded/);
+  assert(!JSON.stringify(overview).includes(privateMarker));
+});
+
+test('overview counts composite CSV source identities and avoids disclosing unknown SQL view names', t => {
+  const store = new Store(':memory:'); t.after(() => store.close());
+  store.db.prepare(`INSERT INTO imports(kind,sha256,path,status,started_at) VALUES('stmq','synthetic','/private/source','complete',?)`).run(at);
+  store.db.prepare(`INSERT INTO import_rows(import_id,row_number,source_time,raw,quality,canonical)
+    VALUES(1,2,?,'private-original-row','[]','{}')`).run(at);
+  store.db.exec(`INSERT INTO recovery_exclusions(generation,table_name,record_key) VALUES('original','import_rows','1:2');
+    CREATE VIEW "private-view-identity" AS SELECT id FROM observations; PRAGMA query_only=ON`);
+  const overview = getDatabaseOverview({ store, now: at });
+  assert.deepEqual(overview.accounting.selection.tables.find(row => row.name === 'import_rows'),
+    { name: 'import_rows', retainedRows: 1, selectedRows: 0, excludedRows: 1 });
+  assert.equal(overview.catalogueComplete, false);
+  assert(overview.inventoryIssues.includes('An unregistered SQL view needs an interpretation description.'));
+  assert(!JSON.stringify(overview).includes('private-'));
 });
 
 test('overview API is authenticated, worker-backed, cached and read-only', async t => {

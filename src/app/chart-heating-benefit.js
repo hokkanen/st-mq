@@ -1,3 +1,5 @@
+import { cycleAssessmentExcluded } from '../storage/cycle-assessment.js';
+
 const finite = Number.isFinite;
 
 /** Read frozen, attributable space-heating assessments. Each complete cycle is
@@ -16,9 +18,9 @@ export function getHeatingBenefit({ store, input = 'offline', range, now = Date.
   // Extract only compact assessment fields inside SQLite; observation tapes,
   // frozen models, credentials and device identifiers never enter the result.
   const row = store.db.prepare(`WITH selected AS (
-    SELECT status, started_at, ended_at,
+    SELECT status, started_at, ended_at, ${cycleAssessmentExcluded('learning_cycles.id')} AS recoveryExcluded,
       CASE WHEN json_valid(payload) THEN payload ELSE '{}' END AS data
-    FROM learning_cycles
+    FROM active_learning_cycles AS learning_cycles
     WHERE input=? AND started_at<=? AND started_at<?
       AND ((status IN ('completed','incomplete') AND ended_at>=? AND ended_at<? AND ended_at<=?)
         OR (status='active' AND ended_at IS NULL))
@@ -31,6 +33,7 @@ export function getHeatingBenefit({ store, input = 'offline', range, now = Date.
       status='completed' AND ended_at>started_at
         AND json_extract(data,'$.assessment.basis')='estimated-space-heating-execution-and-reference'
         AND COALESCE(json_extract(data,'$.fireplaceCorrectionRevision'),0)=0
+        AND NOT recoveryExcluded
         AND json_type(data,'$.assessment.profitCents') IN ('integer','real') AS assessed
     FROM selected
   ) SELECT

@@ -110,7 +110,7 @@ function chargingSnapshot(snapshot) {
 }
 
 function recordedInput(store) {
-  const row = store.db.prepare("SELECT payload,at FROM events WHERE type='decision' ORDER BY id DESC LIMIT 1").get();
+  const row = store.db.prepare("SELECT payload,at FROM active_events AS events WHERE type='decision' ORDER BY id DESC LIMIT 1").get();
   const decision = row ? { ...JSON.parse(row.payload), at: row.at } : null;
   if (INPUTS.has(decision?.input)) return { input: decision.input, decision };
   const scopes = [...INPUTS];

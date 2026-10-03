@@ -56,6 +56,17 @@ async function apiAction(app, body) {
   await until(() => app.status().uiOperation?.state !== 'running');
   assert.equal(app.status().uiOperation.state, 'complete', JSON.stringify(app.status()));
 }
+async function historyAction(app, body) {
+  const response = await fetch(`${url(app)}/api/history-recovery/action`, { method: 'POST',
+    headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ sourceId: 'peer', ...body }) });
+  assert.equal(response.status, 202);
+  await until(() => app.status().uiOperation?.state !== 'running');
+  assert.equal(app.status().uiOperation.state, 'complete', JSON.stringify(app.status()));
+  const view = await (await fetch(`${url(app)}/api/history-recovery`)).json();
+  assert.equal(view.job.requestId, body.requestId);
+  assert.equal(view.job.source.kind, 'peer');
+  assert.equal(view.job.status, 'complete');
+}
 function observation(store, at, value) {
   store.observation({ source: 'synthetic', device: 'invented-home', signal: 'indoor_temperature',
     value, unit: 'degC', sourceTime: at, receivedAt: at });
@@ -121,10 +132,10 @@ test('outage promotion, returning Hassio, manual gap recovery and exact rejoin r
   observation(returned.store, now - 2 * W, 22);
   connect(returned, b); await b.pair.observeClaim(returned.pair.state.claim());
   assert.equal(b.pair.state.value.role, 'protected'); assert.equal(b.engine, undefined);
-  await apiAction(returned, command('check-recovery'));
+  await historyAction(returned, { action: 'check', requestId: randomUUID() });
   const preview = returned.pair.state.value.recovery.preview;
   assert.match(preview.previewId, /^[a-f0-9]{64}$/); assert.ok(preview.counts.missing >= 1);
-  await apiAction(returned, command('recover', { previewId: preview.previewId }));
+  await historyAction(returned, command('recover', { previewId: preview.previewId }));
   assert.equal(b.pair.state.value.role, 'protected');
   assert.equal(returned.store.observations().find(row => row.sourceTime === now - 3 * W).value, 21);
   assert.equal(returned.store.observations().find(row => row.sourceTime === now - 2 * W).value, 22);

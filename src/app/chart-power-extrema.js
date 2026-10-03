@@ -29,7 +29,7 @@ function* energyIntervals(store, options, prefix) {
 
 function* currentIntervals(store,{ from,to,now,input,readValue,voltageReader }) {
   if (to <= from) return;
-  const rows = store.db.prepare(`SELECT o.* FROM observations o LEFT JOIN imports i ON i.id=o.import_id
+  const rows = store.db.prepare(`SELECT o.* FROM active_observations o LEFT JOIN active_imports i ON i.id=o.import_id
     WHERE o.signal IN ('ev1_current_l1','ev1_current_l2','ev1_current_l3')
     AND o.source_time>=? AND o.source_time<? AND o.received_at<=?
     AND ${input === 'simulated' ? "o.source='simulation'" : "o.source<>'simulation'"}
@@ -62,7 +62,7 @@ function* currentIntervals(store,{ from,to,now,input,readValue,voltageReader }) 
 }
 
 function* auxiliaryIntervals(store, { from, to, now, input, readValue }) {
-  const rows = store.db.prepare(`SELECT signal,value,unit,quality,raw,source,source_time,id FROM observations
+  const rows = store.db.prepare(`SELECT signal,value,unit,quality,raw,source,source_time,id FROM active_observations AS observations
     WHERE signal IN ('auxiliary_power','auxiliary_output') AND source_time>=? AND source_time<?
       AND received_at<=? AND import_id IS NULL AND ${scope(input)} ORDER BY source_time,id`)
     .iterate(from-H66_MAX_AGE_MS,Math.min(to,now+1),now);

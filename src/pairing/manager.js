@@ -607,7 +607,7 @@ export class PairManager {
       await this.syncTask;
       if (name === 'promote') await this.promote();
       else if (name === 'handover') await this.handover();
-      else if (name === 'check-recovery') await this.checkRecovery();
+      else if (name === 'check-recovery') await this.checkRecovery(body);
       else if (name === 'recover') await this.recover(body);
       else await this.rejoin(body);
       await this.finishAction(body.requestId, 'complete');
@@ -719,7 +719,7 @@ export class PairManager {
     }
   }
 
-  async checkRecovery() {
+  async checkRecovery({ requestId } = {}) {
     if (!this.canControl()) throw pairError('not_master');
     if (!this.hooks.recoveryPreview) throw pairError('recovery_unavailable');
     const previous = this.state.value.recovery;
@@ -734,7 +734,7 @@ export class PairManager {
       const donor = await receiveSnapshot({ directory: join(this.config.directory, 'recovery'), metadata,
         peer: this.peer, signal: this.abort.signal, publish: false,
         guard: async () => { if (!this.canControl()) throw pairError('not_master'); } });
-      const preview = await this.hooks.recoveryPreview({ donorPath: donor.dbPath });
+      const preview = await this.hooks.recoveryPreview({ donorPath: donor.dbPath, requestId });
       preview.previewId ??= randomUUID();
       const completed = completedReceipt.report && sameDonor(previous.metadata, metadata) && !needsRecovery(preview);
       await this.state.update({ recovery: { state: completed ? 'complete' : 'ready', metadata, donorPath: donor.dbPath, preview,
@@ -754,7 +754,7 @@ export class PairManager {
     await this.assertRecoveryDonor(recovery);
     await this.state.update({ recovery: { ...recovery, state: 'recovering' } });
     try {
-      const report = await this.hooks.recoveryApply({ donorPath: recovery.donorPath, preview: recovery.preview,
+      const report = await this.hooks.recoveryApply({ donorPath: recovery.donorPath, preview: recovery.preview, requestId: body.requestId,
         isCurrent: () => this.canControl() });
       if (!this.canControl()) throw pairError('authority_changed');
       await this.state.update({ recovery: { ...recovery, state: 'complete', report: report.report ?? report } });

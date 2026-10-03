@@ -6,6 +6,8 @@ import { createHash, randomUUID } from 'node:crypto';
 import { CURRENT_SCHEMA, SCHEMA_VERSION } from './schema.js';
 import { recordedEnergyGroups } from './energy-history.js';
 import { assertCurrentChargingSessionCheck } from '../app/charging-session-checks.js';
+import { createDatabaseBackup } from './backup.js';
+import { cycleAssessmentExcluded } from './cycle-assessment.js';
 export { SCHEMA_VERSION } from './schema.js';
 const MAX_LIMIT = 5000;
 
@@ -206,7 +208,7 @@ export class Store {
     if (from !== undefined) { clauses.push('source_time>=?'); params.push(instant(from,'from')); }
     if (to !== undefined) { clauses.push('source_time<?'); params.push(instant(to,'to')); }
     params.push(limitValue(limit));
-    return this.db.prepare(`SELECT * FROM energy_audits WHERE ${clauses.join(' AND ')}
+    return this.db.prepare(`SELECT * FROM active_energy_audits AS energy_audits WHERE ${clauses.join(' AND ')}
       ORDER BY ${newestFirst ? 'source_time DESC,id DESC' : 'id'} LIMIT ?`).all(...params)
       .map(row => {
         const result = { id:row.id,source:row.source,device:row.device,signal:row.signal,sourceTime:row.source_time,
@@ -228,7 +230,7 @@ export class Store {
   previousEnergyAudit(row, now = Date.now()) {
     // Receipt order makes a delayed older meter timestamp observable. Use the
     // highest prior meter timestamp so it cannot become a new counter baseline.
-    return this.db.prepare(`SELECT * FROM energy_audits WHERE source=? AND device=? AND signal=?
+    return this.db.prepare(`SELECT * FROM active_energy_audits AS energy_audits WHERE source=? AND device=? AND signal=?
       AND (received_at<? OR received_at=? AND id<?) AND source_time<=? AND received_at<=?
       ORDER BY source_time DESC,received_at,id LIMIT 1`)
       .get(row.source,row.device,row.signal,row.received_at,row.received_at,row.id,now,now) ?? null;
@@ -280,21 +282,24 @@ export class Store {
   }
 
   cycles({ input, limit = 100, completedOnly = false } = {}) {
-    return this.db.prepare(`SELECT payload FROM learning_cycles WHERE input=? ${completedOnly ? "AND status='completed'" : ''}
+    return this.db.prepare(`SELECT payload FROM active_learning_cycles AS learning_cycles WHERE input=? ${completedOnly ? "AND status='completed'" : ''}
       ORDER BY started_at DESC LIMIT ?`).all(label(input, 'input'), limitValue(limit)).map(row => JSON.parse(row.payload));
   }
 
   /** Dashboard/control summaries avoid materializing complete observation tapes. */
   cycleSummaries({ input, limit = 100, completedOnly = false } = {}) {
     return this.db.prepare(`SELECT id,status,started_at AS startedAt,ended_at AS endedAt,
-      json_extract(payload,'$.assessment.profitCents') AS profitCents,
+      CASE WHEN NOT ${cycleAssessmentExcluded('learning_cycles.id')}
+        THEN json_extract(payload,'$.assessment.profitCents') END AS profitCents,
       json_extract(payload,'$.actual.costCents') AS actualCostCents,
-      json_extract(payload,'$.assessment.uncertaintyCents') AS uncertaintyCents,
-      json_extract(payload,'$.assessment.recoveryErrorCents') AS recoveryErrorCents,
+      CASE WHEN NOT ${cycleAssessmentExcluded('learning_cycles.id')}
+        THEN json_extract(payload,'$.assessment.uncertaintyCents') END AS uncertaintyCents,
+      CASE WHEN NOT ${cycleAssessmentExcluded('learning_cycles.id')}
+        THEN json_extract(payload,'$.assessment.recoveryErrorCents') END AS recoveryErrorCents,
       json_extract(payload,'$.actual.missingHours') AS missingHours,
       json_extract(payload,'$.actual.auxiliarySpaceObserved') AS auxiliarySpaceObserved,
       json_extract(payload,'$.incompleteReason') AS incompleteReason
-      FROM learning_cycles WHERE input=? ${completedOnly ? "AND status='completed'" : ''}
+      FROM active_learning_cycles AS learning_cycles WHERE input=? ${completedOnly ? "AND status='completed'" : ''}
       ORDER BY started_at DESC LIMIT ?`).all(label(input, 'input'), limitValue(limit))
       .map(row => ({ ...row, auxiliarySpaceObserved: row.auxiliarySpaceObserved === 1 }));
   }
@@ -325,25 +330,25 @@ export class Store {
     const params = [integer(afterId, 'afterId')];
     if (kind !== undefined) params.push(kind);
     params.push(limitValue(limit));
-    return this.db.prepare(`SELECT v.*,f.fetch_metadata FROM provider_snapshots v JOIN provider_snapshot_fetches f ON f.id=v.id
+    return this.db.prepare(`SELECT v.*,f.fetch_metadata FROM active_provider_snapshots v JOIN active_provider_snapshot_fetches f ON f.id=v.id
       WHERE v.id > ? ${kind === undefined ? '' : 'AND v.kind = ?'} ORDER BY v.id LIMIT ?`).all(...params)
       .map(row => ({ id: row.id, kind: row.kind, source: row.source, issuedAt: row.issued_at, fetchedAt: row.fetched_at,
         payload: restoreSnapshot(row.payload,row.fetch_metadata) }));
   }
 
   snapshotById(id) {
-    const row = this.db.prepare(`SELECT v.*,f.fetch_metadata,f.content_id FROM provider_snapshots v
-      JOIN provider_snapshot_fetches f ON f.id=v.id WHERE v.id=?`).get(integer(id,'snapshot id'));
+    const row = this.db.prepare(`SELECT v.*,f.fetch_metadata,f.content_id FROM active_provider_snapshots v
+      JOIN active_provider_snapshot_fetches f ON f.id=v.id WHERE v.id=?`).get(integer(id,'snapshot id'));
     if (!row) return null;
     const first = this.db.prepare(`SELECT MIN(fetched_at) AS at
-      FROM provider_snapshot_fetches WHERE content_id=? AND kind=? AND source=?`).get(row.content_id,row.kind,row.source).at;
+      FROM active_provider_snapshot_fetches AS provider_snapshot_fetches WHERE content_id=? AND kind=? AND source=?`).get(row.content_id,row.kind,row.source).at;
     return {id:row.id,kind:row.kind,source:row.source,issuedAt:row.issued_at,fetchedAt:row.fetched_at,
       contentId:row.content_id,contentFirstFetchedAt:first,digest:row.digest,payload:restoreSnapshot(row.payload,row.fetch_metadata)};
   }
 
   latestSnapshot(kind,at) {
     if (!['market','weather'].includes(kind)) throw new TypeError('Invalid snapshot kind');
-    const row = this.db.prepare('SELECT id FROM provider_snapshot_fetches WHERE kind=? AND fetched_at<=? ORDER BY fetched_at DESC,id DESC LIMIT 1')
+    const row = this.db.prepare('SELECT id FROM active_provider_snapshot_fetches AS provider_snapshot_fetches WHERE kind=? AND fetched_at<=? ORDER BY fetched_at DESC,id DESC LIMIT 1')
       .get(kind,instant(at,'snapshot as-of timestamp'));
     return row ? this.snapshotById(row.id) : null;
   }
@@ -356,8 +361,8 @@ export class Store {
   events({ after = 0, limit = 100 } = {}) {
     integer(after, 'after'); limit = limitValue(limit);
     const rows = after > 0
-      ? this.db.prepare('SELECT * FROM events WHERE id > ? ORDER BY id LIMIT ?').all(after, limit)
-      : this.db.prepare('SELECT * FROM (SELECT * FROM events ORDER BY id DESC LIMIT ?) ORDER BY id').all(limit);
+      ? this.db.prepare('SELECT * FROM active_events AS events WHERE id > ? ORDER BY id LIMIT ?').all(after, limit)
+      : this.db.prepare('SELECT * FROM (SELECT * FROM active_events AS events ORDER BY id DESC LIMIT ?) ORDER BY id').all(limit);
     return rows.map(row => ({ id: row.id, type: row.type, payload: JSON.parse(row.payload), at: row.at }));
   }
 
@@ -383,12 +388,12 @@ export class Store {
     if (from !== undefined) { clauses.push('o.source_time >= ?'); params.push(instant(from, 'from')); }
     if (to !== undefined) { clauses.push('o.source_time < ?'); params.push(instant(to, 'to')); }
     params.push(limitValue(limit));
-    return this.db.prepare(`SELECT o.* FROM observations o LEFT JOIN imports i ON i.id = o.import_id
+    return this.db.prepare(`SELECT o.* FROM active_observations o LEFT JOIN active_imports i ON i.id = o.import_id
       WHERE ${clauses.join(' AND ')} ORDER BY o.id LIMIT ?`).all(...params).map(observationResult);
   }
 
   latestObservation(signal) {
-    const row = this.db.prepare(`SELECT o.* FROM observations o LEFT JOIN imports i ON i.id = o.import_id
+    const row = this.db.prepare(`SELECT o.* FROM active_observations o LEFT JOIN active_imports i ON i.id = o.import_id
       WHERE o.signal = ? AND (o.import_id IS NULL OR i.status = 'complete') ORDER BY o.source_time DESC, o.id DESC LIMIT 1`)
       .get(label(signal, 'signal'));
     return row ? observationResult(row) : null;
@@ -397,10 +402,10 @@ export class Store {
   /** Original historical episodes in ingestion order; callers reject non-increasing time. */
   trainingRows({ afterId = 0, limit = 256 } = {}) {
     return this.db.prepare(`SELECT o.id, o.source_time, o.value, o.quality, r.canonical,
-      EXISTS(SELECT 1 FROM annotations a WHERE a.exclude_training = 1 AND a.start_at <= o.source_time
+      EXISTS(SELECT 1 FROM active_annotations a WHERE a.exclude_training = 1 AND a.start_at <= o.source_time
         AND (a.end_at IS NULL OR a.end_at > o.source_time)) AS annotated
-      FROM observations o JOIN imports i ON i.id = o.import_id
-      JOIN import_rows r ON r.import_id = o.import_id AND r.row_number = o.row_number
+      FROM active_observations o JOIN active_imports i ON i.id = o.import_id
+      JOIN active_import_rows r ON r.import_id = o.import_id AND r.row_number = o.row_number
       WHERE o.id > ? AND o.signal = 'indoor_temperature' AND i.kind = 'stmq' AND i.status = 'complete'
       ORDER BY o.id LIMIT ?`).all(integer(afterId, 'afterId'), limitValue(limit)).map(row => {
       const canonical = JSON.parse(row.canonical);
@@ -420,7 +425,7 @@ export class Store {
   }
 
   importRow(importId, rowNumber) {
-    const row = this.db.prepare('SELECT * FROM import_rows WHERE import_id = ? AND row_number = ?')
+    const row = this.db.prepare('SELECT * FROM active_import_rows AS import_rows WHERE import_id = ? AND row_number = ?')
       .get(integer(importId, 'importId'), integer(rowNumber, 'rowNumber'));
     return row ? { importId: row.import_id, rowNumber: row.row_number, sourceTime: row.source_time, raw: row.raw, quality: JSON.parse(row.quality) } : null;
   }
@@ -442,7 +447,7 @@ export class Store {
     if (from !== undefined) { clauses.push('(end_at IS NULL OR end_at > ?)'); params.push(instant(from, 'from')); }
     if (to !== undefined) { clauses.push('start_at < ?'); params.push(instant(to, 'to')); }
     params.push(limitValue(limit));
-    return this.db.prepare(`SELECT * FROM annotations WHERE ${clauses.join(' AND ')} ORDER BY start_at, id LIMIT ?`).all(...params)
+    return this.db.prepare(`SELECT * FROM active_annotations AS annotations WHERE ${clauses.join(' AND ')} ORDER BY start_at, id LIMIT ?`).all(...params)
       .map(row => ({ id: row.id, kind: row.kind, startAt: row.start_at, endAt: row.end_at, note: row.note,
         boundaryConfidence: row.boundary_confidence, excludeTraining: Boolean(row.exclude_training), provenance: row.provenance, createdAt: row.created_at }));
   }
@@ -468,7 +473,7 @@ export class Store {
     const params = [integer(afterId, 'afterId')];
     if (signal !== undefined) params.push(label(signal, 'signal'));
     params.push(limitValue(limit));
-    return this.db.prepare(`SELECT * FROM counters WHERE id > ?${clause} ORDER BY id LIMIT ?`).all(...params)
+    return this.db.prepare(`SELECT * FROM active_counters AS counters WHERE id > ?${clause} ORDER BY id LIMIT ?`).all(...params)
       .map(row => ({ id: row.id, device: row.device, signal: row.signal, value: row.value, unit: row.unit,
         observedDate: row.observed_date, sourceTime: row.source_time, note: row.note, provenance: row.provenance }));
   }
@@ -476,30 +481,18 @@ export class Store {
   summary() {
     return {
       schemaVersion: this.db.prepare('PRAGMA user_version').get().user_version,
-      observations: this.db.prepare('SELECT COUNT(*) AS count, MIN(source_time) AS first, MAX(source_time) AS last FROM observations').get(),
-      imports: this.db.prepare('SELECT * FROM imports ORDER BY id DESC LIMIT 100').all(),
-      events: this.db.prepare('SELECT COUNT(*) AS count FROM events').get().count,
-      counters: this.db.prepare('SELECT COUNT(*) AS count FROM counters').get().count,
+      observations: this.db.prepare('SELECT COUNT(*) AS count, MIN(source_time) AS first, MAX(source_time) AS last FROM active_observations AS observations').get(),
+      imports: this.db.prepare('SELECT * FROM active_imports AS imports ORDER BY id DESC LIMIT 100').all(),
+      events: this.db.prepare('SELECT COUNT(*) AS count FROM active_events AS events').get().count,
+      counters: this.db.prepare('SELECT COUNT(*) AS count FROM active_counters AS counters').get().count,
       annotations: this.annotations(),
       interpretation: 'Current snapshots are amperes, not metered energy. Historical heat values are requests, not compressor activity. Savings and causal auxiliary attribution are unproven.',
     };
   }
 
   async backup(destination) {
-    const path = resolve(destination);
-    const occupied = () => path === this.path || existsSync(path) || existsSync(`${path}-wal`) || existsSync(`${path}-shm`);
-    if (occupied()) throw new Error('Backup destination must be a new file without WAL/SHM companions');
-    mkdirSync(dirname(path), { recursive: true });
-    const staging = `${path}.backup-${randomUUID()}`;
-    try {
-      closeSync(openSync(staging, 'wx', 0o600));
-      await sqliteBackup(this.db, staging);
-      if (occupied()) throw new Error('Backup destination must be a new file without WAL/SHM companions');
-      // Publish only a completed copy, without replacing a concurrently created
-      // destination. Failed backups leave no misleading partial final file.
-      linkSync(staging, path);
-    } finally { rmSync(staging, { force: true }); }
-    return path;
+    if (resolve(destination) === this.path) throw new Error('Backup destination must be a new file without SQLite companions');
+    return createDatabaseBackup({ database: this.db, destination });
   }
 
   /** Restore to a new database while the application is stopped; never overwrite a live WAL. */

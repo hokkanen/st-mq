@@ -9,6 +9,8 @@ import { markRecoveryFailed, projectedSensorContext } from './state.js';
 import { applyLearningRecord, learningVersion, LEARNING_ALGORITHM, LEARNING_WINDOW_MS } from '../app/committed-learning.js';
 import { fireplaceLearningContext } from '../app/fireplace-inputs.js';
 import { sensorRevision } from '../app/sensor-inputs.js';
+import { beginRecovery, rememberContribution, selectedHistory } from './ledger.js';
+import { assessRecoverySource } from './source-scope.js';
 
 const json = JSON.stringify;
 const decode = row => ({ id: row.id, key: row.key, kind: row.kind, at: row.at,
@@ -19,6 +21,7 @@ const epochOf = (store, input) => store.learningEpoch(input);
 const invalid = message => Object.assign(new Error(message), { code: 'RECOVERY_INVALID' });
 let target, donor, temporary, running = false, projection = null;
 let originalFireplaceRevision = 0;
+let recoveryId = null, sourceSelection = null, sourceAssessment = null;
 let progressAt = 0;
 const progress = value => {
   if (Date.now() - progressAt > 100 || value.phase !== 'importing') { parentPort.postMessage({ type: 'progress', ...value }); progressAt = Date.now(); }
@@ -32,6 +35,7 @@ async function open() {
   donor = new Store(workerData.donorPath, { readOnly: true });
   donor.db.exec('BEGIN'); donor.db.prepare('PRAGMA schema_version').get();
   if (donor.db.prepare('PRAGMA integrity_check').get().integrity_check !== 'ok') throw invalid('Donor database integrity check failed');
+  sourceAssessment = assessRecoverySource(donor, workerData.input);
   // Semantic rows with missing references are rejected individually by merge;
   // only physical database corruption prevents scanning the donor altogether.
   const donorDigest = await fileDigest(workerData.donorPath);
@@ -47,6 +51,7 @@ async function open() {
     if (donorDigest !== workerData.preview?.donorDigest || workerData.preview?.input !== workerData.input)
       throw invalid('Recovery preview is stale; check the other instance again');
     target = new Store(workerData.masterPath);
+    if (workerData.preview?.sourceSelection !== selectedHistory(target)) throw invalid('Selected history changed; check the source again');
   }
   return donorDigest;
 }
@@ -187,6 +192,20 @@ async function createProjection(merge, runId) {
     });
     after = rows.at(-1).id; await yieldTurn();
   }
+  // Only fully remapped inputs are accepted immutable contributions. A worker
+  // stopped during staging must not expose unresolved donor IDs as recoverable
+  // history. Once any root is accepted, retain its full supporting epoch.
+  after = 0;
+  for (;;) {
+    const rows = target.db.prepare('SELECT * FROM learning_journal_entries WHERE epoch=? AND source_entry_id IS NULL AND id>? ORDER BY id LIMIT 64').all(epoch, after);
+    if (!rows.length) break;
+    target.transaction(() => { for (const row of rows) {
+      const original = donor.db.prepare('SELECT * FROM learning_journal WHERE id=?').get(sources.get(row.id).id);
+      rememberContribution(target, recoveryId, 'learning_journal', row, original, donor);
+      after = row.id;
+    } });
+    await yieldTurn();
+  }
   const source = { ...fireplaceLearningContext(target, input), ...projectedSensorContext(target, input, epoch) };
   projection = { runId, epoch, sourceEpoch, sourceHead, sourceSensorRevision, source, sourceRevision: source.fireplaceRevision,
     masterIds, donorIds, checkpoint: null, after: 0, processed: 0, lastAt: -Infinity, merge };
@@ -235,21 +254,26 @@ async function catchup() {
   await replayProjection();
   parentPort.postMessage({ type: 'ready', epoch: p.epoch, sourceEpoch: p.sourceEpoch, sourceHead: p.sourceHead,
     sourceSensorRevision: p.sourceSensorRevision, sensorRevision: p.source.sensorRevision,
-    fireplaceRevision: p.sourceRevision, checkpoint: p.checkpoint, runId: p.runId, report: p.merge.report });
+    fireplaceRevision: p.sourceRevision, checkpoint: p.checkpoint, runId: p.runId, recoveryId, sourceSelection, report: p.merge.report });
 }
 
 async function start() {
   const donorDigest = await open();
+  sourceSelection = selectedHistory(target);
+  if (workerData.mode !== 'preview') recoveryId = beginRecovery(target, { input: workerData.input, donorDigest,
+    source: workerData.source, operationId: workerData.operationId });
   originalFireplaceRevision = target.getState(`adaptive:${workerData.input}`)?.fireplaceRevision
     ?? fireplaceLearningContext(target, workerData.input).fireplaceRevision;
-  const merge = new HistoryMerge({ target, donor, donorDigest, input: workerData.input, progress });
+  const merge = new HistoryMerge({ target, donor, donorDigest, input: workerData.input, recoveryId, progress });
   if (workerData.mode !== 'preview') {
-    target.setState(`recovery:active:${workerData.input}`, { status: 'importing', startedAt: Date.now() });
+    target.setState(`recovery:active:${workerData.input}`, { status: 'importing', recoveryId, startedAt: Date.now() });
     // A stopped worker can leave an unpublished projection. Remove only those
     // abandoned staging epochs, in bounded batches; successful prior epochs
     // remain the reconstruction archive for their original checkpoints.
     const abandoned = target.db.prepare(`SELECT r.id,r.epoch FROM recovery_runs r WHERE r.input=? AND r.status<>'complete'
-      AND NOT EXISTS(SELECT 1 FROM learning_epochs e WHERE e.epoch=r.epoch)`).all(workerData.input);
+      AND NOT EXISTS(SELECT 1 FROM learning_epochs e WHERE e.epoch=r.epoch)
+      AND NOT EXISTS(SELECT 1 FROM learning_journal_entries j JOIN recovery_members m
+        ON m.table_name='learning_journal' AND m.record_key=CAST(j.id AS TEXT) WHERE j.epoch=r.epoch)`).all(workerData.input);
     for (const run of abandoned) {
       for (;;) {
         const removed = target.db.prepare(`DELETE FROM learning_journal_entries WHERE id IN
@@ -261,8 +285,16 @@ async function start() {
     }
   }
   const report = await merge.run();
+  report.sourceAssessment = sourceAssessment;
+  if (sourceAssessment.skippedLearningRecords) {
+    report.counts.skipped += sourceAssessment.skippedLearningRecords;
+    report.tables.push({ name: 'other_learning_inputs', missing: 0, conflicts: 0, duplicates: 0,
+      skipped: sourceAssessment.skippedLearningRecords });
+  }
+  if (recoveryId) target.db.prepare('UPDATE history_recoveries SET report=?,status=? WHERE id=?')
+    .run(JSON.stringify(report), 'rebuilding', recoveryId);
   if (workerData.mode === 'preview') {
-    const publicReport = { ...report, donorDigest, input: workerData.input };
+    const publicReport = { ...report, donorDigest, input: workerData.input, sourceSelection };
     publicReport.previewId = learningVersion(publicReport);
     parentPort.postMessage({ type: 'complete', report: publicReport }); cleanup(); return;
   }
@@ -273,7 +305,7 @@ async function start() {
     parentPort.postMessage({ type: 'ready', epoch: epochOf(target, workerData.input), sourceEpoch: epochOf(target, workerData.input),
       sourceHead: head(target, workerData.input), fireplaceRevision: fireplaceLearningContext(target, workerData.input).fireplaceRevision,
       sourceSensorRevision: sensorRevision(target, workerData.input), sensorRevision: sensorRevision(target, workerData.input),
-      checkpoint: target.getState(`adaptive:${workerData.input}`), runId: null, report });
+      checkpoint: target.getState(`adaptive:${workerData.input}`), runId: null, recoveryId, sourceSelection, report });
     return;
   }
   await createProjection(merge, randomUUID());
@@ -287,7 +319,8 @@ function cleanup() {
 }
 function failed(error) {
   try { if (target && workerData.mode !== 'preview') markRecoveryFailed(target, workerData.input); } catch {}
-  parentPort.postMessage({ type: 'failed', error: error?.code === 'RECOVERY_INVALID' ? error.message
+  const code = ['recovery_scope_mismatch', 'database_schema_mismatch', 'database_schema_invalid'].includes(error?.code) ? error.code : undefined;
+  parentPort.postMessage({ type: 'failed', code, error: error?.code === 'RECOVERY_INVALID' ? error.message
     : 'Recovery failed; accepted history remains valid and the previous model remains active.' }); cleanup();
 }
 async function handleMessage(message) {
@@ -299,7 +332,7 @@ async function handleMessage(message) {
       else parentPort.postMessage({ type: 'ready', epoch: epochOf(target, workerData.input), sourceEpoch: epochOf(target, workerData.input),
         sourceHead: head(target, workerData.input), fireplaceRevision: fireplaceLearningContext(target, workerData.input).fireplaceRevision,
         sourceSensorRevision: sensorRevision(target, workerData.input), sensorRevision: sensorRevision(target, workerData.input),
-        checkpoint: target.getState(`adaptive:${workerData.input}`), runId: null, report: message.report });
+        checkpoint: target.getState(`adaptive:${workerData.input}`), runId: null, recoveryId, sourceSelection, report: message.report });
     } else if (message.type === 'close') cleanup();
   } catch (error) { failed(error); }
   finally { running = false; }

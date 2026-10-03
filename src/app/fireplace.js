@@ -22,7 +22,7 @@ function request(payload, fields) {
 }
 const loadEvent = row => ({ id: row.id, at: row.at, litAt: row.at, kg: row.kg });
 export const fireplaceRevision = (store, input) => store.db.prepare(
-  'SELECT COALESCE(MAX(id),0) revision FROM fireplace_events WHERE input=?').get(validInput(input)).revision;
+  'SELECT COALESCE(MAX(id),0) revision FROM active_fireplace_events AS fireplace_events WHERE input=?').get(validInput(input)).revision;
 
 /** Removal retracts an erroneous load at every model timestamp. asOf selects
  * what was recorded by that time; revision fixes a reproducible source version. */
@@ -32,7 +32,7 @@ export function fireplaceEvents(store, input, { revision, asOf } = {}) {
   if (!Number.isSafeInteger(revision) || revision < 0) throw new TypeError('Invalid fireplace revision');
   if (asOf !== undefined) instant(asOf);
   const bound = asOf ?? Number.MAX_SAFE_INTEGER;
-  const rows = store.db.prepare(`SELECT * FROM fireplace_events WHERE input=? AND id<=? AND at<=? ORDER BY id`)
+  const rows = store.db.prepare(`SELECT * FROM active_fireplace_events AS fireplace_events WHERE input=? AND id<=? AND at<=? ORDER BY id`)
     .all(input, revision, bound);
   const removed = new Set(rows.filter(row => row.kind === 'remove').map(row => row.target_id));
   return { revision: rows.at(-1)?.id ?? 0,
@@ -78,13 +78,13 @@ export function removeFireplace(store, input, payload, now = Date.now(), { maxAg
       const first = store.db.prepare("SELECT MIN(at) at FROM fireplace_events WHERE input=? AND target_id=? AND kind='remove'").get(input, payload.id);
       return { id: payload.id, removedAt: first.at, revision: fireplaceRevision(store, input), repeated: true };
     }
-    const target = store.db.prepare("SELECT * FROM fireplace_events WHERE input=? AND id=? AND kind='load'").get(input, payload.id);
+    const target = store.db.prepare("SELECT * FROM active_fireplace_events AS fireplace_events WHERE input=? AND id=? AND kind='load'").get(input, payload.id);
     if (!target) throw new TypeError('Fireplace load was not found for this input');
     // Check against the original server timestamp inside the write transaction.
     // An already committed request above remains retryable without another write.
     if (maxAgeMs !== Infinity && (target.at > now || now - target.at > maxAgeMs))
       throw Object.assign(new Error('Admin access is required to remove firewood recorded more than 15 minutes ago.'), { statusCode: 403 });
-    const first = store.db.prepare("SELECT at FROM fireplace_events WHERE input=? AND target_id=? AND kind='remove' ORDER BY id LIMIT 1")
+    const first = store.db.prepare("SELECT at FROM active_fireplace_events AS fireplace_events WHERE input=? AND target_id=? AND kind='remove' ORDER BY id LIMIT 1")
       .get(input, payload.id);
     const revision = Number(store.db.prepare(`INSERT INTO fireplace_events(input,request_id,at,kind,kg,target_id)
       VALUES(?,?,?,'remove',NULL,?)`).run(input, payload.requestId, now, payload.id).lastInsertRowid);
@@ -96,12 +96,12 @@ export function removeFireplace(store, input, payload, now = Date.now(), { maxAg
 export function fireplaceView(store, input, { asOf = Date.now(), revision } = {}) {
   if (!INPUTS.has(input)) return { available: false, input, revision: 0, entries: [], active: [], requiresRebuild: false, rebuild: { status: 'idle' } };
   const source = fireplaceEvents(store, input, { revision, asOf });
-  const removals = store.db.prepare(`SELECT target_id,MIN(at) removed_at FROM fireplace_events
+  const removals = store.db.prepare(`SELECT target_id,MIN(at) removed_at FROM active_fireplace_events AS fireplace_events
     WHERE input=? AND kind='remove' AND id<=? AND at<=? GROUP BY target_id`).all(input, source.revision, asOf);
   const removed = new Map(removals.map(row => [row.target_id, row.removed_at]));
   const affected = store.db.prepare(`SELECT 1 FROM learning_journal WHERE input=? AND kind='sample'
     AND algorithm_version=? AND at>? LIMIT 1`);
-  const events = store.db.prepare(`SELECT * FROM fireplace_events WHERE input=? AND kind='load'
+  const events = store.db.prepare(`SELECT * FROM active_fireplace_events AS fireplace_events WHERE input=? AND kind='load'
     AND id<=? AND at<=? AND at>=? ORDER BY at DESC,id DESC`).all(input, source.revision, asOf, Math.max(0, asOf - 48 * 3_600_000))
     .map(row => ({ ...loadEvent(row), removedAt: removed.get(row.id) ?? null,
       requiresRebuild: Boolean(affected.get(input, LEARNING_ALGORITHM, row.at)) }));

@@ -239,7 +239,7 @@ export class HeatingExplorer {
     if (!trial || !ACTIVE.has(trial.status)) return null;
     const active = this.engine.cycles.active();
     if (trial.status === 'running' && active?.id !== trial.cycleId) {
-      const row = this.engine.store.db.prepare('SELECT payload FROM learning_cycles WHERE id=?').get(trial.cycleId);
+      const row = this.engine.store.db.prepare('SELECT payload FROM active_learning_cycles AS learning_cycles WHERE id=?').get(trial.cycleId);
       const cycle = row ? JSON.parse(row.payload) : null;
       this.finish(cycle?.status === 'completed' ? 'completed' : 'interrupted', cycle?.incompleteReason ?? 'Cycle and recovery ended.',
         { outcome: cycle?.assessment ?? null });

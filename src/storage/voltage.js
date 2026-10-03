@@ -306,13 +306,13 @@ export function createVoltageReader(store, { input = 'live', now = Date.now() } 
   const scope = input === 'simulated' ? "device='simulated'" : "device IN ('mqtt','providers','live')";
   const where = `source='voltage-estimate' AND ${scope} AND unit='V' AND received_at<=?`;
   const availableAt = 'MAX(source_time,received_at)';
-  const before = store.db.prepare(`SELECT *,${availableAt} AS available_at FROM observations WHERE ${where} AND signal=?
+  const before = store.db.prepare(`SELECT *,${availableAt} AS available_at FROM active_observations AS observations WHERE ${where} AND signal=?
     AND source_time<=? ORDER BY available_at DESC,id DESC LIMIT 1`);
-  const first = store.db.prepare(`SELECT * FROM observations WHERE ${where} AND signal=?
+  const first = store.db.prepare(`SELECT * FROM active_observations AS observations WHERE ${where} AND signal=?
     AND source_time<=? AND value BETWEEN 200 AND 250 AND json_extract(raw,'$.voltageMature')=1
     AND NOT EXISTS (SELECT 1 FROM json_each(observations.quality) WHERE value NOT IN ('estimated','good','simulated'))
     ORDER BY ${availableAt},id LIMIT 1`);
-  const next = store.db.prepare(`SELECT ${availableAt} AS available_at FROM observations WHERE ${where} AND signal=?
+  const next = store.db.prepare(`SELECT ${availableAt} AS available_at FROM active_observations AS observations WHERE ${where} AND signal=?
     AND ${availableAt}>? AND source_time<=? ORDER BY available_at,id LIMIT 1`);
   const cached = [null, null, null], firstRows = [undefined, undefined, undefined];
   const lookup = (at, { allowFuture = false } = {}) => {
@@ -336,7 +336,7 @@ export function createVoltageReader(store, { input = 'live', now = Date.now() } 
     if (cached.every(phase => phase && phase.from <= from && phase.to >= to)) return;
     // Stream large exports in bounded pages. Most adjacent energy intervals
     // stay inside the cached flat estimate and require no additional SQL.
-    const query = store.db.prepare(`SELECT DISTINCT ${availableAt} AS at FROM observations WHERE ${where}
+    const query = store.db.prepare(`SELECT DISTINCT ${availableAt} AS at FROM active_observations AS observations WHERE ${where}
       AND signal IN ('voltage_estimate_l1','voltage_estimate_l2','voltage_estimate_l3')
       AND ${availableAt}>? AND ${availableAt}<? ORDER BY at LIMIT 1024`);
     let cursor = from;

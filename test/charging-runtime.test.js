@@ -1175,6 +1175,55 @@ test('archive preparation is nonblocking, permits only provisional charging and 
   assert.equal(chargerView(runtime).forecast.feasible, true);
 });
 
+test('recovery selection invalidates ready household forecasts and fences an older in-flight result', async t => {
+  const f = fixture(), runtime = f.create(), finishes = [];
+  runtime.historyService = { request: () => new Promise(resolve => { finishes.push(resolve); }), close() {} };
+  t.after(() => runtime.close());
+  runtime.updatePlan();
+  assert.equal(finishes.length, 1);
+  const oldRows = [];
+  f.store.db.prepare('UPDATE history_selection SET generation=? WHERE id=1').run('synthetic-reverted');
+  finishes[0](oldRows);
+  await new Promise(resolve => setImmediate(resolve));
+  assert.notEqual(runtime.household, oldRows, 'a result from before publication never becomes the current forecast');
+  assert.equal(runtime.historyReady, false);
+  assert.equal(finishes.length, 2, 'the completed stale request immediately schedules the selected history');
+  const currentRows = [];
+  finishes[1](currentRows);
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(runtime.household, currentRows);
+  assert.equal(runtime.historyReady, true);
+  f.store.db.prepare('UPDATE history_selection SET generation=? WHERE id=1').run('synthetic-restored');
+  runtime.updatePlan();
+  assert.equal(finishes.length, 3, 'restoring refreshes history without waiting five minutes or changing the deadline');
+  assert.equal(runtime.historyReady, false, 'planning waits for a reference built from the new selection');
+  assert.notEqual(runtime.household, currentRows);
+  finishes[2]([]);
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(runtime.historyReady, true);
+});
+
+test('household forecast callbacks settle safely after the database closes before the runtime', async t => {
+  for (const outcome of ['completed', 'failed']) await t.test(outcome, async t => {
+    const store = new Store(':memory:');
+    const runtime = new ChargingRuntime({ store, engine: {}, config: { input: 'mqtt', charging: {} }, clock: () => initialNow });
+    let finish, fail, ticks = 0;
+    runtime.historyService = { request: () => new Promise((resolve, reject) => { finish = resolve; fail = reject; }), close() {} };
+    t.after(async () => { await runtime.close(); if (store.db.isOpen) store.close(); });
+    runtime.updatePlan();
+    runtime.tick = () => { ticks++; };
+    store.close();
+    assert.equal(runtime.closed, false, 'database closure can precede runtime disposal');
+    if (outcome === 'completed') finish([]);
+    else fail(new Error('Synthetic forecast failure'));
+    await new Promise(resolve => setImmediate(resolve));
+    assert.equal(runtime.historyReady, false, 'a closed source never publishes a forecast');
+    assert.equal(runtime.historyError, null, 'a late result cannot access finalized source statements');
+    assert.equal(runtime.historyFlights.size, 0);
+    assert.equal(ticks, 0, 'cleanup cannot request another control tick against the closed database');
+  });
+});
+
 test('restarting with a confirmed delayed start does not briefly release it while archive history warms', async t => {
   const f = fixture(preferences, {}, { charger1: true }), original = f.create(), adapter = fakeAdapter(f.clock);
   await original.setAdapter('charger1', adapter); original.tick({ prices }); await original.reconcile();

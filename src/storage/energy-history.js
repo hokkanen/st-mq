@@ -1,3 +1,4 @@
+import { selectedHistoryPredicate } from './schema.js';
 import { ENERGY_SIGNALS } from '../domain/history-series.js';
 import { pendingEnergyObservations } from './pending-energy.js';
 import { recordedTransport } from '../domain/recording-source.js';
@@ -20,7 +21,7 @@ const totalOnly = prefix => prefix === 'caravan';
 
 export function recordedEnergyStart(store, prefix, input, now) {
   if (!Number.isFinite(now)) throw new TypeError('Energy selection requires an explicit receipt cutoff');
-  const row = store.db.prepare(`SELECT MIN(json_extract(raw,'$.intervalStart')) AS at FROM observations
+  const row = store.db.prepare(`SELECT MIN(json_extract(raw,'$.intervalStart')) AS at FROM active_observations AS observations
     WHERE signal=? AND ${scope(input)} AND ${physicalWriter} AND import_id IS NULL AND received_at<=? AND source_time<=?
     AND json_valid(raw) AND json_type(raw,'$.intervalStart')='integer'
     AND json_extract(raw,'$.intervalEnd')=source_time
@@ -40,6 +41,7 @@ function* rawRows(store, { from, to, now, input, prefix, source, device }) {
   const iterator = store.db.prepare(`SELECT id,source,device,signal,value,unit,source_time,received_at,quality,raw
     FROM observations INDEXED BY observations_energy_geometry
     WHERE signal IN (${ENERGY_SIGNALS.map(signal => `'${signal}'`).join(',')}) AND import_id IS NULL
+    AND ${selectedHistoryPredicate('observations', 'observations')}
     AND signal IN (${signals.map(() => '?').join(',')}) AND ${geometry}<?
     AND source_time>? AND source_time<=? AND ${scope(input)} AND ${physicalWriter} AND received_at<=? AND import_id IS NULL
     ${source !== undefined ? 'AND source=?' : ''} ${device != null ? 'AND device=?' : ''}

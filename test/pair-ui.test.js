@@ -536,15 +536,13 @@ test('the pair panel hides outside pair mode, shows promotion only on a slave, a
   assert.equal($('pairing-master-controls').hidden, false);
   assert.equal($('pairing-slave-controls').hidden, true);
   assert.equal($('pairing-promote').hidden, true);
-  assert.equal($('pairing-recover').disabled, false);
-  assert.match(allText($('pairing-preview')), /Missing entries: 12/);
+  assert.equal($('pairing-history-recovery').disabled, false);
+  assert.equal($('pairing-history-recovery').textContent, 'Recover history…');
   assert.equal($('pairing-rejoin').textContent, 'Skip recovery and resume mirroring');
   assert.equal($('pairing-rejoin').disabled, false);
-  assert.match($('pairing-recover-help').textContent, /checked snapshot is ready/);
   panel.update(primary());
-  assert.equal($('pairing-recover').disabled, true);
   assert.equal($('pairing-rejoin').disabled, true);
-  assert.match($('pairing-recover-help').textContent, /Locked until step 1/);
+  assert.equal($('pairing-history-recovery').textContent, 'Review history…');
   panel.update(null);
   assert.equal($('pairing-panel').hidden, true, 'leaving pair topology removes controls from a previous pair status');
 });
@@ -621,11 +619,11 @@ test('normal slave comparisons never claim that differences require recovery or 
     panel.update(view);
     assert.match($('pairing-recovery').textContent, /normal slave.*Normal mirroring is automatic/);
     assert.match($('pairing-rejoin-help').textContent, /does not require resuming mirroring/);
-    assert.equal($('pairing-recover').disabled, true);
-    assert.equal($('pairing-rejoin').disabled, true);
-    assert.match(allText($('pairing-preview')), /History comparison/);
-    assert.match(allText($('pairing-preview')), new RegExp(`Only in the other snapshot: ${missing}`));
-    assert.doesNotMatch(allText($('pairing-preview')), /Recovery preview|Missing entries:|Recovery includes rebuilding/);
+      assert.equal($('pairing-rejoin').disabled, true);
+    renderRecoveryReport(document, $('shared-preview'), view.recovery.preview, { comparison: true });
+    assert.match(allText($('shared-preview')), /History comparison/);
+    assert.match(allText($('shared-preview')), new RegExp(`Only in the other snapshot: ${missing}`));
+    assert.doesNotMatch(allText($('shared-preview')), /Recovery preview|Missing entries:|Recovery includes rebuilding/);
     assert.equal(pairActionAllowed({ ...view, actions: { recover: true, rejoin: true } }, 'recover'), false);
     assert.equal(pairActionAllowed({ ...view, actions: { recover: true, rejoin: true } }, 'rejoin'), false);
   }
@@ -645,9 +643,7 @@ test('protected no-gap previews and completed recovery explain the remaining exp
   panel.update({ ...view, recovery: { ...view.recovery, state: 'complete', report: { imported: 12, counts: {}, model: { status: 'rebuilt' } } } });
   assert.equal($('pairing-rejoin').textContent, 'Resume mirroring');
   assert.match($('pairing-check-help').textContent, /Resume mirroring below/);
-  assert.match($('pairing-recover-help').textContent, /Resume mirroring below/);
-  assert.doesNotMatch($('pairing-recover-help').textContent, /Run a new check/);
-  assert.match(allText($('pairing-preview')), /Recovery result.*Recovered entries: 12/);
+  assert.equal($('pairing-history-recovery').textContent, 'Recover history…');
 });
 
 test('master and slave show the same reported snapshot while unreachable or protected peers never look synchronized', () => {

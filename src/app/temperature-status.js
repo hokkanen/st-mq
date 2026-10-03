@@ -70,7 +70,7 @@ export function indoorStatusMetadata(reading, now, { latest = reading, store, kn
   const maxAge = temperatureReportMaxAge(reading), metadata = temperatureTimeMetadata(reading, now);
   let lastReportAt = reading?.raw?.originalReportSourceTime ?? reading?.sourceTime ?? null, reportExpiresAt;
   if (store && reading) {
-    const span = store.db.prepare(`SELECT source_time,end_at FROM recorder_coverage
+    const span = store.db.prepare(`SELECT source_time,end_at FROM active_recorder_coverage AS recorder_coverage
       WHERE source=? AND device=? AND signal=? AND status='fresh' AND start_at<=?
       ORDER BY start_at DESC,id DESC LIMIT 1`).get(reading.source, reading.device, reading.signal, knownAt);
     if (span?.end_at > knownAt) {
@@ -78,7 +78,7 @@ export function indoorStatusMetadata(reading, now, { latest = reading, store, kn
       // later endpoint cannot reveal the actual last report known then.
       lastReportAt = null; reportExpiresAt = reading.reportExpiresAt ?? knownAt;
     } else if (span && span.source_time >= lastReportAt) lastReportAt = span.source_time;
-    latest = decode(store.db.prepare(`SELECT * FROM observations WHERE source=? AND device=? AND signal=?
+    latest = decode(store.db.prepare(`SELECT * FROM active_observations AS observations WHERE source=? AND device=? AND signal=?
       AND received_at>=? AND received_at<=? AND COALESCE(json_extract(raw,'$.retained'),0)<>1
       AND NOT EXISTS(SELECT 1 FROM json_each(quality) WHERE value='retained')
       ORDER BY received_at DESC,id DESC LIMIT 1`)
@@ -124,7 +124,7 @@ export function temperatureBoundaryStatus(reading, changedAt, now, { clearValue 
 }
 
 export function recordedTemperatureAttempt(store, signal, knownAt, input) {
-  return decode(store.db.prepare(`SELECT o.* FROM observations o LEFT JOIN imports i ON i.id=o.import_id
+  return decode(store.db.prepare(`SELECT o.* FROM active_observations o LEFT JOIN active_imports i ON i.id=o.import_id
     WHERE o.signal=? AND o.received_at<=? AND (o.import_id IS NULL OR i.status='complete')
     AND ${input === 'simulated' ? "o.source='simulation'" : "o.source<>'simulation'"}
     ORDER BY o.received_at DESC,o.id DESC LIMIT 1`).get(signal, knownAt));
@@ -163,17 +163,17 @@ export function recordedOutdoorObservation(store, now, { knownAt = now, input } 
   for (const source of scopes) {
     const scope = source ? 'AND o.source=?' : "AND o.source<>'simulation'";
     const since = knownAt - OUTDOOR_MAX_AGE_MS;
-    const rows = store.db.prepare(`SELECT o.* FROM observations o LEFT JOIN imports i ON i.id=o.import_id
+    const rows = store.db.prepare(`SELECT o.* FROM active_observations o LEFT JOIN active_imports i ON i.id=o.import_id
       WHERE o.signal='outdoor_temperature' AND o.received_at>=? AND o.received_at<=?
       AND (o.import_id IS NULL OR i.status='complete') ${scope}
       ORDER BY o.received_at,o.id`).all(since, knownAt, ...(source ? [source] : [])).map(decode);
-    const earlier = decode(store.db.prepare(`SELECT o.* FROM observations o LEFT JOIN imports i ON i.id=o.import_id
+    const earlier = decode(store.db.prepare(`SELECT o.* FROM active_observations o LEFT JOIN active_imports i ON i.id=o.import_id
       WHERE o.signal='outdoor_temperature' AND o.received_at<?
       AND (o.import_id IS NULL OR i.status='complete') ${scope}
       ORDER BY o.received_at DESC,o.id DESC LIMIT 1`).get(since, ...(source ? [source] : [])));
     if (earlier) rows.unshift(earlier);
     for (const span of store.db.prepare(`SELECT o.*,c.source_time AS report_time,c.end_at,c.status
-      FROM recorder_coverage c JOIN observations o ON o.id=c.observation_id
+      FROM active_recorder_coverage c JOIN active_observations o ON o.id=c.observation_id
       WHERE c.signal='outdoor_temperature' AND c.end_at>=? AND c.end_at<=? ${scope}
       ORDER BY c.end_at,c.id`).all(since, knownAt, ...(source ? [source] : []))) {
       const row = decode(span);

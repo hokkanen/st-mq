@@ -19,19 +19,19 @@ function* availabilityRows(store,{from,to,input,signals}) {
   if(!wanted.length) return;
   const scope=input==='simulated' ? "c.source='simulation'" : "c.source<>'simulation'";
   const sql=`WITH gaps AS (
-    SELECT c.* FROM recorder_coverage c WHERE c.status<>'fresh' AND c.start_at<?
-      AND COALESCE((SELECT n.start_at FROM recorder_coverage n WHERE n.source=c.source AND n.device=c.device
+    SELECT c.* FROM active_recorder_coverage c WHERE c.status<>'fresh' AND c.start_at<?
+      AND COALESCE((SELECT n.start_at FROM active_recorder_coverage n WHERE n.source=c.source AND n.device=c.device
         AND n.signal=c.signal AND n.id>c.id ORDER BY n.id LIMIT 1),?)>=?
       AND c.signal IN (${wanted.map(()=>'?').join(',')}) AND ${scope}
   ), transitions AS (
     SELECT c.id,c.source,c.device,c.signal,c.status,MAX(c.start_at,?) AS at,c.observation_id FROM gaps c
     UNION ALL
     SELECT f.id,f.source,f.device,f.signal,f.status,f.start_at AS at,f.observation_id
-      FROM gaps c JOIN recorder_coverage f ON f.id=(SELECT n.id FROM recorder_coverage n
+      FROM gaps c JOIN active_recorder_coverage f ON f.id=(SELECT n.id FROM active_recorder_coverage n
         WHERE n.source=c.source AND n.device=c.device AND n.signal=c.signal AND n.id>c.id ORDER BY n.id LIMIT 1)
       WHERE f.status='fresh' AND f.start_at>=? AND f.start_at<?
   ) SELECT t.*,o.unit,o.value,o.quality,o.raw,o.source_time AS original_source_time
-    FROM transitions t LEFT JOIN observations o ON o.id=t.observation_id ORDER BY t.at,t.id`;
+    FROM transitions t LEFT JOIN active_observations o ON o.id=t.observation_id ORDER BY t.at,t.id`;
   for(const row of store.db.prepare(sql).iterate(to,to,from,...wanted,from,from,to)) {
     let raw={},quality=[];
     try {raw=row.raw ? JSON.parse(row.raw) : {};} catch { /* Optional metadata. */ }
@@ -57,9 +57,9 @@ function* confirmedReportRows(store,{from,to,input,signals,now=to}) {
   const wanted=[...signals];
   if (!wanted.length) return;
   const sql=`SELECT c.*,o.value,o.unit,o.quality,o.raw,o.source_time AS original_source_time,
-    (SELECT n.start_at FROM recorder_coverage n WHERE n.source=c.source AND n.device=c.device
+    (SELECT n.start_at FROM active_recorder_coverage n WHERE n.source=c.source AND n.device=c.device
       AND n.signal=c.signal AND n.id>c.id ORDER BY n.id LIMIT 1) AS next_start
-    FROM recorder_coverage c JOIN observations o ON o.id=c.observation_id
+    FROM active_recorder_coverage c JOIN active_observations o ON o.id=c.observation_id
     WHERE c.signal IN (${wanted.map(()=>'?').join(',')}) AND c.start_at<=?
       AND ${input==='simulated' ? "(c.source='simulation' OR c.source='controller-estimate' AND c.device='simulated')"
         : "c.source<>'simulation' AND NOT(c.source='controller-estimate' AND c.device='simulated')"}

@@ -24,8 +24,8 @@ export function snapshotState(snapshot, key) {
  * publication boundary; incomplete imports never become dashboard evidence. */
 function observationReader(snapshot) {
   if (!snapshot) return () => null;
-  const query = snapshot.store.db.prepare(`SELECT o.* FROM observations o
-    LEFT JOIN imports i ON i.id=o.import_id WHERE o.signal=? AND o.source_time<=? AND o.received_at<=?
+  const query = snapshot.store.db.prepare(`SELECT o.* FROM active_observations o
+    LEFT JOIN active_imports i ON i.id=o.import_id WHERE o.signal=? AND o.source_time<=? AND o.received_at<=?
     AND (? IS NULL OR o.source=?) AND (? IS NULL OR o.device=?)
     AND (o.import_id IS NULL OR i.status='complete') ORDER BY o.source_time DESC,o.id DESC LIMIT 1`);
   return (signal, source = null, device = null) => {

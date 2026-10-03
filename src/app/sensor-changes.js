@@ -55,7 +55,7 @@ export function revertSensorChange(store, input, payload, now, { config = {}, se
       revision: first.id, repeated: true, requiresRebuild: ['pending','running','ready','failed'].includes(store.getState(jobKey(input))?.status) };
     const revision = appendLearningRecord(store, input, 'context', { timestamp: now, sensorRevert: { ...payload } }, { config, seed });
     const previousJob = store.getState(jobKey(input));
-    const fireplaceRevision = store.db.prepare('SELECT COALESCE(MAX(id),0) revision FROM fireplace_events WHERE input=?').get(input).revision;
+    const fireplaceRevision = store.db.prepare('SELECT COALESCE(MAX(id),0) revision FROM active_fireplace_events AS fireplace_events WHERE input=?').get(input).revision;
     const epoch = store.db.prepare('SELECT epoch FROM learning_epochs WHERE input=?').get(input)?.epoch ?? 'original';
     store.setState(jobKey(input), { status: 'pending', revision: fireplaceRevision, sensorRevision: revision, epoch,
       requestedAt: now, affectedAt: Math.min(target.at, previousJob?.affectedAt ?? target.at), requiresRebuild: true });

@@ -11,7 +11,7 @@ import { withSensorMeasurements } from './sensor-samples.js';
 import { estimateHeatPumpPerformance } from '../domain/heat-pump-performance.js';
 import { recordedEnergyGroups } from '../storage/energy-history.js';
 
-export const LEARNING_ALGORITHM = 'committed-house-v13-scoped-sensor-changes';
+export const LEARNING_ALGORITHM = 'committed-house-v14-reversible-recovery';
 export const LEARNING_WINDOW_MS = 15 * 60_000;
 const HOUR = 3_600_000;
 const PHASES = ['normal', 'preheat', 'reduction', 'recovery'];
@@ -69,10 +69,10 @@ function trajectory(store, signal, from, to, input, maxAge, minimumTime = -Infin
   const decode = row => ({ id: row.id, source: row.source, device: row.device, signal: row.signal,
     value: row.value, unit: row.unit, sourceTime: row.source_time, receivedAt: row.received_at,
     quality: JSON.parse(row.quality), raw: row.raw ? JSON.parse(row.raw) : null });
-  const rows = store.db.prepare(`SELECT * FROM observations WHERE signal=? AND source_time>=? AND source_time<=?
+  const rows = store.db.prepare(`SELECT * FROM active_observations AS observations WHERE signal=? AND source_time>=? AND source_time<=?
     AND received_at<=? AND ${scope} ORDER BY source_time,id`).all(signal, Math.max(from - maxAge, minimumTime), to, to).map(decode);
   const coverage = store.db.prepare(`SELECT c.*,c.source_time AS coverage_source_time,o.source,o.device,o.signal,o.value,o.unit,o.source_time,o.received_at,o.quality,o.raw
-    FROM recorder_coverage c JOIN observations o ON o.id=c.observation_id
+    FROM active_recorder_coverage c JOIN active_observations o ON o.id=c.observation_id
     WHERE c.signal=? AND c.start_at<=? AND c.end_at>=? AND o.received_at<=?
     AND ${input === 'simulated' ? "o.source='simulation'" : outdoor
       ? "o.source IN ('fmi','openmeteo')" : "o.source<>'simulation'"}

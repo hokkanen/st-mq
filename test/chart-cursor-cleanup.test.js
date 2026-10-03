@@ -88,8 +88,8 @@ for (const failure of ['prepare', 'prime', 'processing']) test(`scalar cursors c
   const tracker = trackedDatabase(store.db, sql => sql.includes('FROM observations o INDEXED BY observations_signal_time')
     && sql.includes('WHERE o.signal=? AND o.source_time>=?'), failure, originalError);
   const imports = trackedDatabase(tracker.facade, sql => sql.includes('SELECT r.canonical,r.source_time,r.row_number,i.id,i.kind,i.started_at')
-    && sql.includes('FROM import_rows r JOIN imports'), 'observe', originalError, false);
-  const coverage = trackedDatabase(imports.facade, sql => sql.includes('FROM transitions t LEFT JOIN observations'), 'observe', originalError, false);
+    && sql.includes('FROM active_import_rows r JOIN active_imports'), 'observe', originalError, false);
+  const coverage = trackedDatabase(imports.facade, sql => sql.includes('FROM transitions t LEFT JOIN active_observations'), 'observe', originalError, false);
   assert.throws(() => getChartData({ store: { db: coverage.facade }, input: 'offline',
     now: day.to, startDate: '2026-01-01', endDate: '2026-01-15', left: 'indoor_temperature' }), error => error === originalError);
   for (const stream of [tracker, imports, coverage]) assert.equal(stream.pending.size, 0);

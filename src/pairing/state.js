@@ -16,9 +16,16 @@ const lineagePoint = value => record(value) && NODE_PATTERN.test(value.epoch) &&
 const acceptedSnapshot = value => lineagePoint(value) && NODE_PATTERN.test(value.generation) &&
   NODE_PATTERN.test(value.nodeId) && /^[a-f0-9]{64}$/.test(value.digest);
 const stamp = value => lineagePoint(value) && NODE_PATTERN.test(value.token);
-const resetRecord = value => record(value) && ['keep', 'fresh'].includes(value.mode)
+const resetRecord = (value, receipt = false) => record(value) && ['keep', 'fresh'].includes(value.mode)
   && NODE_PATTERN.test(value.requestId) && typeof value.archiveDirectory === 'string' && isAbsolute(value.archiveDirectory)
-  && Object.keys(value).every(key => ['mode', 'requestId', 'archiveDirectory', 'completedAt'].includes(key));
+  && Object.keys(value).every(key => (receipt
+    ? ['mode', 'requestId', 'archiveDirectory', 'completedAt', 'backupCount', 'unavailableCount', 'unavailableReasons']
+    : ['mode', 'requestId', 'archiveDirectory']).includes(key))
+  && (!receipt || sequence(value.completedAt) && sequence(value.backupCount) && sequence(value.unavailableCount)
+    && Array.isArray(value.unavailableReasons) && value.unavailableReasons.length <= 3
+    && new Set(value.unavailableReasons).size === value.unavailableReasons.length
+    && value.unavailableReasons.every(reason => ['history-unavailable', 'incompatible-database', 'invalid-database'].includes(reason))
+    && (value.unavailableCount === 0 ? value.unavailableReasons.length === 0 : value.unavailableReasons.length > 0));
 const STATE_FIELDS = new Set(['version', 'pairId', 'nodeId', 'platform', 'role', 'epoch', 'sequence', 'ancestors',
   'everWritten', 'bootstrapPending', 'accepted', 'activeDbPath', 'reason', 'transition', 'release', 'actions',
   'createdAt', 'updatedAt', 'activationError', 'pendingSnapshot', 'recovery', 'pendingStamp', 'dbStamp',
@@ -110,7 +117,7 @@ export class PairState {
     if (!record(raw) || Object.keys(raw).some(key => !STATE_FIELDS.has(key)) ||
       raw.version !== 3 || raw.pairId !== this.options.pairId || !validClaim(raw) ||
       (raw.reset != null && (!resetRecord(raw.reset) || raw.role !== 'protected' || raw.transition != null)) ||
-      (raw.resetReceipt != null && (!resetRecord(raw.resetReceipt) || !sequence(raw.resetReceipt.completedAt))) ||
+      (raw.resetReceipt != null && !resetRecord(raw.resetReceipt, true)) ||
         !sequence(raw.sequence) || !Array.isArray(raw.ancestors) || !raw.ancestors.every(lineagePoint) ||
         !Array.isArray(raw.actions) || raw.actions.some(action => !record(action) ||
           !NODE_PATTERN.test(action.requestId) || !['handover', 'promote', 'check-recovery', 'recover', 'rejoin'].includes(action.name) ||

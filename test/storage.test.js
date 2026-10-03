@@ -152,17 +152,24 @@ test('backups publish complete private files and clean failed staging', async t 
   assert.equal(existsSync(destination), false, 'in-progress backup has no final filename');
   await copying;
   assert.equal(statSync(destination).mode & 0o777, 0o600);
-  assert.equal(readdirSync(dir).some(name => name.includes('.backup-')), false);
+  const portable = new DatabaseSync(destination, { readOnly: true });
+  try {
+    assert.equal(portable.prepare('PRAGMA journal_mode').get().journal_mode, 'delete');
+    assert.equal(JSON.parse(portable.prepare("SELECT value FROM state WHERE key='checkpoint'").get().value).cursor, 42);
+  } finally { portable.close(); }
+  assert.equal(existsSync(`${destination}-wal`), false);
+  assert.equal(existsSync(`${destination}-shm`), false);
+  assert.equal(readdirSync(dir).some(name => name.includes('backup-')), false);
   store.close();
   const failed = join(dir, 'failed.sqlite');
   await assert.rejects(store.backup(failed));
   assert.equal(existsSync(failed), false);
-  assert.equal(readdirSync(dir).some(name => name.includes('.backup-')), false);
+  assert.equal(readdirSync(dir).some(name => name.includes('backup-')), false);
 });
 
 test('backup refuses stale companions and concurrent destination creation without overwriting', async t => {
   const { store, dir } = fixture(t);
-  for (const suffix of ['-wal', '-shm']) {
+  for (const suffix of ['-wal', '-shm', '-journal']) {
     const destination = join(dir, `companion${suffix}.sqlite`);
     writeFileSync(`${destination}${suffix}`, 'synthetic companion');
     await assert.rejects(store.backup(destination), /new file/);
@@ -174,7 +181,18 @@ test('backup refuses stale companions and concurrent destination creation withou
   writeFileSync(destination, 'concurrent owner');
   await assert.rejects(copying, /new file|EEXIST/);
   assert.equal(readFileSync(destination, 'utf8'), 'concurrent owner');
-  assert.equal(readdirSync(dir).some(name => name.includes('.backup-')), false);
+  assert.equal(readdirSync(dir).some(name => name.includes('backup-')), false);
+});
+
+test('backup rejects a damaged current schema without publishing or rewriting the live database', async t => {
+  const { store, dir, path } = fixture(t);
+  store.db.exec('DROP INDEX observations_easee_acquisition');
+  const before = readFileSync(path), wal = readFileSync(`${path}-wal`);
+  await assert.rejects(store.backup(join(dir, 'rejected.sqlite')), { code: 'backup_source_incompatible' });
+  assert.equal(existsSync(join(dir, 'rejected.sqlite')), false);
+  assert.deepEqual(readFileSync(path), before);
+  assert.deepEqual(readFileSync(`${path}-wal`), wal);
+  assert.equal(readdirSync(dir).some(name => name.includes('backup-')), false);
 });
 
 test('CSV export is bounded, preserves quality/unknowns and refuses overwriting files', async t => {

@@ -880,6 +880,10 @@ G_warming = G / 2</code>
       </section>
       <details id="recording-details" class="recording-details">
         <summary><span>Recording details</span></summary>
+        <div class="history-recovery-opener">
+          <div><h3>Recover history</h3><p class="muted">Review a backup or another computer’s history and recover missing entries.</p></div>
+          <button id="history-recovery-open" data-admin-only class="secondary-button" type="button" aria-haspopup="dialog" aria-expanded="false" aria-controls="history-recovery-dialog">Recover history…</button>
+        </div>
         <details id="recording-adaptive-details">
           <summary>Adaptive measurements</summary>
           <div id="recording-content"></div>
@@ -936,24 +940,10 @@ G_warming = G / 2</code>
           <section id="pairing-master-controls" class="pairing-management" aria-labelledby="pairing-recovery-title" hidden>
             <h3 id="pairing-recovery-title">Check history</h3>
             <p id="pairing-recovery-intro"></p>
-            <ol class="pairing-steps">
-              <li>
-                <div class="pairing-step-copy"><h4>Compare the two histories</h4><p>Review missing, conflicting and skipped entries before making a recovery decision. A normal slave comparison is informational.</p></div>
-                <button id="pairing-check-recovery" data-admin-only class="secondary-button" type="button" aria-describedby="pairing-check-help" disabled>Check other computer for missing data</button>
-                <p id="pairing-check-help" class="muted pairing-step-help"></p>
-                <div id="pairing-preview" class="pairing-preview" hidden></div>
-              </li>
-              <li id="pairing-recover-step" hidden>
-                <div class="pairing-step-copy"><h4>Recover the checked gaps</h4><p>Import the gaps from that checked snapshot. Conflicting or unsupported entries are skipped. The current model stays available for home control while the rebuilt model catches up and is published.</p></div>
-                <button id="pairing-recover" data-admin-only type="button" aria-describedby="pairing-recover-help" disabled>Recover gaps and rebuild model</button>
-                <p id="pairing-recover-help" class="muted pairing-step-help"></p>
-              </li>
-              <li id="pairing-rejoin-step" hidden>
-                <div class="pairing-step-copy"><h4>Resume mirroring</h4><p>Replace the other database with a verified copy of this master. Recover the gaps first, or explicitly skip recovery. All remaining unmatched history is discarded; no separate archive is kept.</p></div>
-                <button id="pairing-rejoin" data-admin-only class="secondary-button" type="button" aria-describedby="pairing-rejoin-help" disabled>Resume mirroring</button>
-                <p id="pairing-rejoin-help" class="muted pairing-step-help"></p>
-              </li>
-            </ol>
+            <div class="pairing-history-action">
+              <button id="pairing-history-recovery" data-admin-only class="secondary-button" type="button" aria-haspopup="dialog" aria-expanded="false" aria-controls="history-recovery-dialog">Review history…</button>
+              <p id="pairing-check-help" class="muted"></p>
+            </div>
             <div class="pairing-role-action">
               <div><h3>Hand over control</h3><p>Move the master role to the ready slave after a final verified snapshot. The MQTT address moves with it; devices reconnect and some measurements may be missed.</p></div>
               <button id="pairing-handover" data-admin-only class="secondary-button" type="button" aria-describedby="pairing-handover-help" disabled>Hand over to the other computer</button>
@@ -1061,6 +1051,36 @@ G_warming = G / 2</code>
       <section id="heating-explorer-trial" class="heating-explorer-section heating-explorer-note" hidden><h3>One-cycle limits</h3><p id="heating-explorer-trial-description"></p><button id="heating-explorer-cancel" data-admin-only data-write-control class="secondary-button" type="button">Cancel one-cycle limits</button></section>
       <details class="heating-explorer-footnotes"><summary>How to read these estimates</summary><ul id="heating-explorer-limitations"></ul><p>Exploring does not train the model. Only recorded observations from real operation can add learning evidence. Forecasts are estimates; a stress case is not a statistical confidence interval.</p></details>
     </div>
+  </dialog>
+
+  <dialog id="history-recovery-dialog" class="control-dialog history-recovery-dialog" aria-labelledby="history-recovery-title" aria-describedby="history-recovery-help">
+    <div class="history-recovery-heading"><h2 id="history-recovery-title">Recover history</h2><button id="history-recovery-close" class="secondary-button" type="button">Close</button></div>
+    <p id="history-recovery-help" class="muted">Recover missing history into this computer. Existing history takes precedence. Review each source before applying it.</p>
+    <section class="history-recovery-source-section" aria-labelledby="history-recovery-source-label">
+      <label id="history-recovery-source-label" for="history-recovery-source">History source</label>
+      <select id="history-recovery-source" aria-describedby="history-recovery-source-help"><option value="upload">Upload a database backup</option></select>
+      <div id="history-recovery-upload"><label for="history-recovery-file">Database backup (.sqlite)</label><input id="history-recovery-file" data-admin-only data-write-control type="file" accept=".sqlite,.sqlite3,.db,application/vnd.sqlite3"></div>
+      <p id="history-recovery-source-help" class="muted"></p>
+      <label id="history-recovery-installation" class="history-recovery-checkbox"><input id="history-recovery-installation-confirm" type="checkbox"><span>This backup belongs to this installation.</span></label>
+      <div class="history-recovery-toolbar"><button id="history-recovery-check" data-admin-only data-write-control class="secondary-button" type="button" disabled>Check backup</button><button id="history-recovery-refresh" class="secondary-button" type="button">Refresh status</button></div>
+    </section>
+    <p id="history-recovery-status" role="status" aria-live="polite"></p>
+    <progress id="history-recovery-progress" aria-label="History recovery progress" hidden></progress>
+    <p id="history-recovery-background" class="muted" hidden>You can close this window. The operation continues on the server.</p>
+    <button id="history-recovery-retry" data-admin-only data-write-control class="secondary-button" type="button" hidden>Recheck the same request</button>
+    <div id="history-recovery-preview" class="history-recovery-preview" hidden></div>
+    <button id="history-recovery-apply" data-admin-only data-write-control type="button" hidden disabled>Recover gaps and rebuild model</button>
+    <button id="history-recovery-revision-apply" data-admin-only data-write-control type="button" hidden disabled>Revert recovery</button>
+    <section id="history-recovery-peer" class="history-recovery-peer" hidden>
+      <div id="pairing-rejoin-step" hidden><h3>Resume mirroring</h3><p>After reviewing recovery, replace the other computer’s database with a verified copy of this master.</p><button id="pairing-rejoin" data-admin-only class="secondary-button" type="button" aria-describedby="pairing-rejoin-help" disabled>Resume mirroring</button><p id="pairing-rejoin-help" class="muted"></p></div>
+    </section>
+    <section class="history-recovery-history" aria-labelledby="history-recovery-history-title">
+      <h3 id="history-recovery-history-title">Previous recoveries</h3>
+      <p class="muted">Review a whole recovery to revert or restore its accepted history. There is no time limit; later independent records and corrections remain.</p>
+      <ul id="history-recovery-operations" aria-label="Previous history recoveries"></ul>
+      <p id="history-recovery-empty" class="muted">No previous recoveries.</p>
+      <div class="history-recovery-toolbar"><button id="history-recovery-earlier" class="secondary-button" type="button" hidden>Earlier recoveries</button><button id="history-recovery-newest" class="secondary-button" type="button" hidden>Most recent recoveries</button></div>
+    </section>
   </dialog>
 
   <dialog id="fireplace-dialog" class="control-dialog fireplace-dialog" aria-labelledby="fireplace-title" aria-describedby="fireplace-help">

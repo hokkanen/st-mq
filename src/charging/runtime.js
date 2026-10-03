@@ -874,7 +874,13 @@ export class ChargingRuntime {
       ...(configuredBudgetCurrentA ? { configuredBudgetCurrentA } : {}) };
     const historyOptions = { now, deadlineAt, input: this.config.input, voltageV: planningVoltageV, timezone: TIME_ZONE,
       weather: this.weather, outdoorC: this.engine.latest?.outdoor_temperature?.value };
-    const historyKey = digest({ deadlineAt, weather: this.weather, voltage: planningVoltageV });
+    const selectedHistory = this.store.db.prepare('SELECT generation FROM history_selection WHERE id=1');
+    const historySelection = selectedHistory.get().generation;
+    if (historySelection !== this.historySelection) {
+      this.historySelection = historySelection;
+      this.household = []; this.historyReady = false; this.historyAt = null;
+    }
+    const historyKey = digest({ deadlineAt, weather: this.weather, voltage: planningVoltageV, historySelection });
     if (this.historyAt === null || now - this.historyAt >= 5 * MINUTE || historyKey !== this.historyKey) {
       this.historyKey = historyKey;
       if (!this.historyService) {
@@ -884,14 +890,16 @@ export class ChargingRuntime {
         const generation = ++this.historyGeneration;
         this.historyFlights.add(historyKey); this.historyError = null;
         void this.historyService.request(historyOptions).then(rows => {
-          if (this.closed || generation !== this.historyGeneration || historyKey !== this.historyKey || !rows) return;
+          if (this.closed || !this.store.db.isOpen || generation !== this.historyGeneration || historyKey !== this.historyKey || !rows
+            || selectedHistory.get().generation !== historySelection) return;
           this.household = rows; this.historyReady = true; this.historyAt = now; this.historyDeadline = deadlineAt;
         }).catch(() => {
-          if (this.closed || generation !== this.historyGeneration || historyKey !== this.historyKey) return;
+          if (this.closed || !this.store.db.isOpen || generation !== this.historyGeneration || historyKey !== this.historyKey
+            || selectedHistory.get().generation !== historySelection) return;
           this.historyError = 'household-history-unavailable'; this.historyAt = this.clock();
         }).finally(() => {
           this.historyFlights.delete(historyKey);
-          if (!this.closed && generation === this.historyGeneration) this.tick({ force: true });
+          if (!this.closed && this.store.db.isOpen && generation === this.historyGeneration) this.tick({ force: true });
         });
       }
     }

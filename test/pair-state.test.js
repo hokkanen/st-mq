@@ -16,6 +16,8 @@ test('malformed saved authority is rejected before changing state or acquiring a
   const options = { directory, databasePath, pairId: saved.pairId, platform: saved.platform };
   const accepted = { generation: randomUUID(), digest: 'a'.repeat(64), nodeId: randomUUID(),
     epoch: randomUUID(), sequence: 3 };
+  const receipt = { mode: 'fresh', requestId: randomUUID(), archiveDirectory: '/tmp/synthetic-reset-archive',
+    completedAt: 1000, backupCount: 1, unavailableCount: 0, unavailableReasons: [] };
   const invalid = [
     { sequence: -1 }, { sequence: 0.5 }, { ancestors: [null] },
     { ancestors: [{ epoch: randomUUID(), sequence: -1 }] },
@@ -28,6 +30,12 @@ test('malformed saved authority is rejected before changing state or acquiring a
     { supersededPeer: { nodeId: randomUUID(), epoch: null } },
     { actions: [null] }, { actions: [{ requestId: randomUUID(), name: 'promote', state: 'approved' }] },
     { retiredAuthority: true },
+    { resetReceipt: { ...receipt, backupCount: undefined } },
+    { resetReceipt: { ...receipt, unavailableCount: -1 } },
+    { resetReceipt: { ...receipt, unavailableCount: 1, unavailableReasons: [] } },
+    { resetReceipt: { ...receipt, unavailableCount: 1, unavailableReasons: ['private raw error'] } },
+    { resetReceipt: { ...receipt, unavailableReasons: ['invalid-database'] } },
+    { resetReceipt: { ...receipt, unavailableCount: 2, unavailableReasons: ['invalid-database', 'invalid-database'] } },
   ];
   for (const patch of invalid) {
     const raw = JSON.stringify({ ...saved, ...patch });
@@ -45,7 +53,9 @@ test('current saved state retains valid accepted history and permits a genuinely
   const state = new PairState(options);
   await state.open();
   const accepted = { generation: randomUUID(), digest: 'b'.repeat(64), nodeId: randomUUID(), epoch: randomUUID(), sequence: 5 };
-  await state.update({ accepted, bootstrapPending: undefined });
+  const resetReceipt = { mode: 'fresh', requestId: randomUUID(), archiveDirectory: '/tmp/synthetic-reset-archive',
+    completedAt: 1000, backupCount: 2, unavailableCount: 1, unavailableReasons: ['invalid-database'] };
+  await state.update({ accepted, bootstrapPending: undefined, resetReceipt });
   const nodeId = state.value.nodeId;
   await state.close();
   const restarted = new PairState(options);
@@ -53,6 +63,7 @@ test('current saved state retains valid accepted history and permits a genuinely
   try {
     assert.equal(restarted.value.nodeId, nodeId);
     assert.deepEqual(restarted.value.accepted, accepted);
+    assert.deepEqual(restarted.value.resetReceipt, resetReceipt);
     assert.equal(restarted.value.bootstrapPending, undefined);
     assert.equal(restarted.value.role, 'slave');
   } finally { await restarted.close(); }

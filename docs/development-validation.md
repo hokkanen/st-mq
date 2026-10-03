@@ -118,6 +118,7 @@ node test/browser/equipment-smoke.js --dashboard-heights-only
 node test/browser/equipment-smoke.js --caravan-only
 node test/browser/charging-tests-smoke.js
 node test/browser/home-controls-smoke.js
+node test/browser/history-recovery-smoke.js
 node test/browser/heating-explorer-smoke.js
 node test/browser/garage-smoke.js
 node test/browser/garage-smoke.js --temperature-hold-only
@@ -136,6 +137,12 @@ family restrictions, logout clearing and keyboard focus through polling. It also
 checks the diff at 320/390/1440 px in both themes; synthetic screenshots use
 `STMQ_CONFIGURATION_SCREENSHOT_DIR` when supplied. It never reads installation
 configuration or connects providers.
+
+The history-recovery suite checks the shared Recording details/Paired computers
+window, peer preselection, upload and reviewed actions, operation pagination,
+revert/restore, close/reopen progress, family restrictions, keyboard dismissal and
+focus restoration at 320/390/1440 px in both themes. It uses an isolated synthetic
+server and records temporary screenshots; it does not open household backups.
 
 The heating-explorer suite checks the Home preview opener without toggling its
 parent card, Escape and focus restoration, pinned comparisons and draft retention,

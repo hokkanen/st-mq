@@ -1,14 +1,16 @@
 import { createHash } from 'node:crypto';
 import { constants } from 'node:fs';
-import { chmod, copyFile, lstat, mkdir, open, readFile, readdir, realpath, rename, rmdir, unlink, writeFile } from 'node:fs/promises';
+import { chmod, copyFile, lstat, mkdir, mkdtemp, open, opendir, readFile, readdir, realpath, rename, rm, rmdir, unlink, writeFile } from 'node:fs/promises';
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
 import { durableJson, readReplicaPublication, syncDirectory } from '../replication/publication.js';
+import { createDatabaseBackup } from '../storage/backup.js';
 
 const UUID = /^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/;
 const SHA = /^[a-f0-9]{64}$/;
 const MANIFEST = 'reset.json';
 const SIDECARS = ['', '-wal', '-shm', '-journal'];
 const MAX_FILES = 20000;
+const BACKUP_REASONS = ['incompatible-database', 'invalid-database'];
 const within = (parent, path) => path === parent || path.startsWith(`${parent}${sep}`);
 const present = async path => { try { return await lstat(path); } catch (error) { if (error.code === 'ENOENT') return null; throw error; } };
 const failure = (code = 'pair_reset_storage_failed') => Object.assign(new Error(code), { code,
@@ -153,6 +155,13 @@ function copiedMarker(paths, path) {
     || ['.st-mq-replica', '.st-mq-paired-receiver'].some(name => path === join(paths.snapshotDirectory, name));
 }
 
+function recoveryBackupCandidates(plan) {
+  return plan.entries.filter(entry => entry.source === plan.databasePath || entry.source === plan.selectedDbPath
+    || entry.source.endsWith('.sqlite') && !basename(entry.source).startsWith('.'))
+    .map(entry => ({ source: entry.destination,
+      destination: `backups/${entry.source === plan.databasePath ? 'configured' : entry.source === plan.selectedDbPath ? 'active' : 'history'}-${createHash('sha256').update(entry.destination).digest('hex').slice(0, 16)}.sqlite` }));
+}
+
 /** The caller stops database writers first, then persists its protected reset marker
  * before calling resumeResetArchive. Creating this plan never moves source files. */
 export async function createResetArchive({ config, state, mode, requestId, clock = Date.now }) {
@@ -219,9 +228,10 @@ export async function createResetArchive({ config, state, mode, requestId, clock
     const stateFile = await open(archivedState, 'r');
     try { await stateFile.sync(); } finally { await stateFile.close(); }
     await syncDirectory(dirname(archivedState));
-    const plan = { version: 1, requestId, mode, createdAt, archiveDirectory, ...paths,
+    const plan = { version: 2, requestId, mode, createdAt, archiveDirectory, ...paths,
       selectedDbPath, keptDbPath: mode === 'keep' && selectedDbPath ? join(paths.pairDirectory, 'kept-history.sqlite') : null,
       entries, directories, complete: false };
+    plan.recoveryBackups = recoveryBackupCandidates(plan).map(item => ({ ...item, status: 'pending', bytes: null, digest: null, reason: null }));
     await durableJson(join(archiveDirectory, MANIFEST), plan);
     await syncDirectory(paths.archiveRoot);
     return plan;
@@ -231,13 +241,14 @@ export async function createResetArchive({ config, state, mode, requestId, clock
 function validatePlan(plan, archiveDirectory) {
   const pathKeys = ['databasePath', 'pairDirectory', 'snapshotDirectory', 'archiveRoot'];
   const fields = new Set(['version', 'requestId', 'mode', 'createdAt', 'archiveDirectory', ...pathKeys,
-    'selectedDbPath', 'keptDbPath', 'entries', 'directories', 'complete']);
-  if (!plan || plan.version !== 1 || !UUID.test(plan.requestId) || !['keep', 'fresh'].includes(plan.mode)
+    'selectedDbPath', 'keptDbPath', 'entries', 'directories', 'recoveryBackups', 'complete']);
+  if (!plan || plan.version !== 2 || !UUID.test(plan.requestId) || !['keep', 'fresh'].includes(plan.mode)
     || Object.keys(plan).some(key => !fields.has(key)) || !Number.isSafeInteger(plan.createdAt) || plan.createdAt < 0
     || plan.archiveDirectory !== archiveDirectory || dirname(archiveDirectory) !== plan.archiveRoot
     || pathKeys.some(key => typeof plan[key] !== 'string' || !isAbsolute(plan[key]) || plan[key] !== resolve(plan[key]) || plan[key] === '/')
     || !Array.isArray(plan.entries) || plan.entries.length > MAX_FILES || !Array.isArray(plan.directories)
-    || plan.directories.length > MAX_FILES || typeof plan.complete !== 'boolean') throw failure('pair_reset_unsafe_storage');
+    || plan.directories.length > MAX_FILES || !Array.isArray(plan.recoveryBackups)
+    || typeof plan.complete !== 'boolean') throw failure('pair_reset_unsafe_storage');
   // Recheck layout independently of potentially edited manifest destinations.
   const pairs = [[plan.pairDirectory, plan.snapshotDirectory], [plan.pairDirectory, plan.archiveRoot], [plan.snapshotDirectory, plan.archiveRoot]];
   if (pairs.some(([a, b]) => within(a, b) || within(b, a)) || within(plan.archiveRoot, plan.databasePath)) throw failure('pair_reset_unsafe_storage');
@@ -265,6 +276,17 @@ function validatePlan(plan, archiveDirectory) {
   if (plan.selectedDbPath !== null && (!allowedDatabase(plan, plan.selectedDbPath) || !sources.has(plan.selectedDbPath))
     || plan.keptDbPath !== (plan.mode === 'keep' && plan.selectedDbPath ? join(plan.pairDirectory, 'kept-history.sqlite') : null))
     throw failure('pair_reset_unsafe_storage');
+  const expectedBackups = recoveryBackupCandidates(plan);
+  if (plan.recoveryBackups.length !== expectedBackups.length) throw failure('pair_reset_unsafe_storage');
+  for (const [index, item] of plan.recoveryBackups.entries()) {
+    if (!item || Object.keys(item).sort().join(',') !== 'bytes,destination,digest,reason,source,status'
+      || item.source !== expectedBackups[index].source || item.destination !== expectedBackups[index].destination
+      || !['pending', 'complete', 'unavailable'].includes(item.status)
+      || plan.complete && item.status === 'pending'
+      || (item.status === 'complete' ? !Number.isSafeInteger(item.bytes) || item.bytes <= 0 || !SHA.test(item.digest) || item.reason !== null
+        : item.bytes !== null || item.digest !== null || (item.status === 'pending' ? item.reason !== null : !BACKUP_REASONS.includes(item.reason))))
+      throw failure('pair_reset_unsafe_storage');
+  }
 }
 
 async function syncFile(path) {
@@ -344,6 +366,94 @@ async function retainHistory(plan) {
   }
 }
 
+async function prepareRecoveryBackup(plan, item) {
+  const target = join(plan.archiveDirectory, item.destination);
+  await safeParents(dirname(target));
+  if (item.status === 'complete') { await verify(target, item); return; }
+  if (item.status === 'unavailable') return;
+  await directory(dirname(target));
+  const existing = await present(target);
+  if (existing && (!existing.isFile() || existing.isSymbolicLink())) throw failure('pair_reset_unsafe_storage');
+  // A crash after no-overwrite publication but before manifest acknowledgement
+  // leaves a completed candidate. Recreate from the retained source and compare
+  // before acknowledging it; an unrelated final file must never be adopted.
+  const working = await mkdtemp(join(plan.archiveDirectory, '.backup-source-'));
+  try {
+    const entry = plan.entries.find(entry => entry.destination === item.source);
+    const sourcePath = join(working, 'source.sqlite');
+    for (const suffix of SIDECARS) {
+      const companion = plan.entries.find(value => value.source === `${entry.source}${suffix}`);
+      if (!companion) continue;
+      const archived = join(plan.archiveDirectory, companion.destination);
+      await verify(archived, companion);
+      await copyFile(archived, `${sourcePath}${suffix}`, constants.COPYFILE_EXCL);
+      await chmod(`${sourcePath}${suffix}`, 0o600);
+    }
+    const generated = existing ? join(working, 'verified.sqlite') : target;
+    try { await createDatabaseBackup({ sourcePath, destination: generated }); }
+    catch (error) {
+      if (!['backup_source_incompatible', 'backup_source_invalid'].includes(error?.code)) throw error;
+      if (existing) throw failure();
+      item.status = 'unavailable';
+      item.reason = error.code === 'backup_source_incompatible' ? 'incompatible-database' : 'invalid-database';
+      return;
+    }
+    const actual = await fingerprint(generated);
+    if (existing) await verify(target, actual);
+    Object.assign(item, actual, { status: 'complete' });
+  } finally { await rm(working, { recursive: true, force: true }); }
+}
+
+function resetResult(plan) {
+  return { archiveDirectory: plan.archiveDirectory, keptDbPath: plan.keptDbPath,
+    recoveryBackups: plan.recoveryBackups.map(item => ({ ...item,
+      path: item.status === 'complete' ? join(plan.archiveDirectory, item.destination) : null })),
+    recoveryBackupUnavailable: plan.recoveryBackups.length ? null : 'history-unavailable' };
+}
+
+/** Discover only completed current-manifest backups in the configured private
+ * archive root. Clients receive opaque IDs; absolute paths remain server-side. */
+export async function listResetBackups(config) {
+  // Discovery uses only the current archive root. A standalone installation has
+  // no pair paths, and changing topology must not hide completed local backups.
+  const configuredRoot = archiveRoot(config);
+  const root = join(await configuredDirectory(dirname(configuredRoot)), basename(configuredRoot));
+  await safeParents(root);
+  const info = await present(root);
+  if (!info) return [];
+  if (!info.isDirectory() || info.isSymbolicLink()) throw failure('pair_reset_unsafe_storage');
+  const result = [];
+  const names = [];
+  let examined = 0;
+  for await (const entry of await opendir(root)) {
+    if (++examined > 4096) break;
+    if (entry.isDirectory() && /^\d{4}-\d{2}-\d{2}T\d{2}-\d{2}-\d{2}-\d{3}Z-[a-f0-9-]{36}$/.test(entry.name)) names.push(entry.name);
+  }
+  for (const name of names.sort().reverse().slice(0, 100)) {
+    const archiveDirectory = join(root, name);
+    try {
+      await safeParents(archiveDirectory);
+      const manifest = join(archiveDirectory, MANIFEST), info = await lstat(manifest);
+      if (!info.isFile() || info.isSymbolicLink() || info.size > 16 * 1024 * 1024) continue;
+      const plan = JSON.parse(await readFile(manifest, 'utf8'));
+      validatePlan(plan, archiveDirectory);
+      if (!plan.complete || plan.archiveRoot !== root) continue;
+      for (const item of plan.recoveryBackups) {
+        if (item.status !== 'complete') continue;
+        const path = join(archiveDirectory, item.destination);
+        await safeParents(dirname(path));
+        const info = await lstat(path);
+        if (!info.isFile() || info.isSymbolicLink() || info.size !== item.bytes) continue;
+        result.push({ id: createHash('sha256').update(`${plan.requestId}/${item.destination}`).digest('hex'), path,
+          label: `Reset archive · ${new Date(plan.createdAt).toISOString()} · ${basename(item.destination)}`,
+          createdAt: plan.createdAt, bytes: item.bytes, kind: 'reset', digest: item.digest });
+        if (result.length >= 100) return result;
+      }
+    } catch { /* An invalid or interrupted archive never becomes a donor. */ }
+  }
+  return result;
+}
+
 /** Explicit retry only. Trusted configuration and the persisted reset request
  * fence the archive manifest; files in an archive cannot redefine their scope. */
 export async function resumeResetArchive(planOrArchiveDirectory, expected) {
@@ -362,7 +472,10 @@ export async function resumeResetArchive(planOrArchiveDirectory, expected) {
     validatePlan(plan, archiveDirectory);
     if (plan.requestId !== expected.requestId || plan.mode !== expected.mode
       || Object.keys(paths).some(key => plan[key] !== paths[key])) throw failure('pair_reset_unsafe_storage');
-    if (plan.complete) return { archiveDirectory, keptDbPath: plan.keptDbPath };
+    if (plan.complete) {
+      for (const item of plan.recoveryBackups) if (item.status === 'complete') await prepareRecoveryBackup(plan, item);
+      return resetResult(plan);
+    }
     for (const item of plan.directories) await directory(join(archiveDirectory, item.destination));
     for (const entry of plan.entries) {
       await archiveEntry(plan, entry);
@@ -373,9 +486,13 @@ export async function resumeResetArchive(planOrArchiveDirectory, expected) {
       try { await rmdir(item.source); await syncDirectory(dirname(item.source)); }
       catch (error) { if (error.code !== 'ENOENT') throw error; }
     }
+    for (const item of plan.recoveryBackups) {
+      await prepareRecoveryBackup(plan, item);
+      await durableJson(manifestPath, plan);
+    }
     await retainHistory(plan);
     plan.complete = true;
     await durableJson(manifestPath, plan);
-    return { archiveDirectory, keptDbPath: plan.keptDbPath };
+    return resetResult(plan);
   });
 }

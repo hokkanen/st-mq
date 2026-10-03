@@ -8,6 +8,7 @@ import { once } from 'node:events';
 import { Store } from '../src/storage/store.js';
 import { PairManager } from '../src/pairing/manager.js';
 import { startPaired } from '../src/pairing/runtime.js';
+import { createHistoryRecovery } from '../src/app/history-recovery.js';
 import { readReplicaPublication, snapshotDigest } from '../src/replication/publication.js';
 
 const deferred = () => {
@@ -47,6 +48,11 @@ async function fixture(t, { runtimeFactory, recoveryModule, snapshotSource } = {
     startRuntime: async options => {
       gates.push(options.pairContext.canControl);
       const instance = await (runtimeFactory ?? defaultRuntime)({ index: instances.length, defaultRuntime });
+      const saved = new Map();
+      instance.store.getState = key => saved.get(key) ?? null;
+      instance.store.setState = (key, value) => saved.set(key, value);
+      instance.historyRecovery = createHistoryRecovery({ store: instance.store, getEngine: () => instance.engine,
+        canControl: options.pairContext.canControl, ...options.historyRecoveryOptions });
       instances.push(instance); return instance;
     }, managerFactory: options => {
       hooks = options.hooks;
