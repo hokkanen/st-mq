@@ -52,7 +52,7 @@ export async function connectHA({ url, token }, { timeoutMs = 15000 } = {}) {
 
 // Advanced SSH & Web Terminal's ttyd protocol. Output is returned only to the
 // caller: terminal banners, failed commands and tokens must never be logged.
-export async function runTerminal({ url, session, ingress }, script, { timeoutMs = 30000 } = {}) {
+export async function connectTerminal({ url, session, ingress }, { timeoutMs = 30000 } = {}) {
   if (!/^\/api\/hassio_ingress\/[A-Za-z0-9_-]+\/?$/.test(ingress)) throw new Error('Unexpected terminal ingress path');
   const entry = ingress.replace(/\/$/, '');
   const cookie = `ingress_session=${session}`;
@@ -69,42 +69,66 @@ export async function runTerminal({ url, session, ingress }, script, { timeoutMs
   const address = new URL(entry + '/ws', url);
   address.protocol = address.protocol === 'https:' ? 'wss:' : 'ws:';
   const socket = new WebSocket(address, ['tty'], { headers: { Cookie: cookie, Origin: new URL(url).origin } });
-  const marker = 'DEPLOY_' + randomBytes(12).toString('hex');
-  const encoded = Buffer.from(script).toString('base64');
-  return new Promise((resolve, reject) => {
-    let output = '', sent = false, done = false, sendTimer;
-    const finish = (error, result) => {
-      if (done) return;
-      done = true; clearTimeout(timer); clearTimeout(sendTimer); socket.close();
-      error ? reject(new Error(error)) : resolve(result);
-    };
-    const timer = setTimeout(() => finish('Terminal timed out; the remote command may still be running'), timeoutMs);
-    socket.on('error', () => finish('Terminal WebSocket failed'));
-    socket.on('close', () => finish('Terminal closed before command completion'));
-    socket.on('open', () => socket.send(JSON.stringify({ AuthToken: token, columns: 120, rows: 40 })));
-    socket.on('message', data => {
-      const buffer = Buffer.from(data);
-      if (buffer[0] !== 48) return;
-      output += buffer.subarray(1).toString('utf8');
-      if (output.length > 2 * 1024 * 1024) { finish('Terminal output exceeded its limit'); return; }
-      if (!sent) {
-        sent = true;
-        sendTimer = setTimeout(() => {
-          if (done) return;
-          const command = `stty -echo; printf '\\n${marker}_BEGIN\\n'; printf '%s' '${encoded}' | base64 -d | sh; printf '\\n${marker}_END:%s\\n' "$?"; stty echo\r`;
-          socket.send(Buffer.concat([Buffer.from('0'), Buffer.from(command)]));
-        }, 400);
-      }
-      const clean = output.replace(/\x1b\[[0-?]*[ -/]*[@-~]/g, '').replace(/\r/g, '');
-      const begin = '\n' + marker + '_BEGIN\n';
-      const start = clean.indexOf(begin);
-      if (start < 0) return;
-      // ttyd/tmux may repaint the completion marker directly after output
-      // that has no trailing newline. The random marker is the delimiter.
-      const end = clean.indexOf(marker + '_END:', start + begin.length);
-      if (end < 0) return;
-      const code = clean.slice(end).match(/_END:(\d+)\n/);
-      if (code) finish(null, { exitCode: Number(code[1]), output: clean.slice(start + begin.length, end).replace(/\n$/, '') });
-    });
+  let active = null, failure = null, startupDelay;
+  let resolveReady, rejectReady;
+  const ready = new Promise((resolve, reject) => { resolveReady = resolve; rejectReady = reject; });
+  const fail = message => {
+    if (failure) return;
+    failure = new Error(message);
+    clearTimeout(startupTimer); clearTimeout(startupDelay); clearInterval(heartbeat);
+    rejectReady(failure);
+    if (active) { clearTimeout(active.timer); active.reject(failure); active = null; }
+    // A timed-out or disconnected command must never be replayed on a new socket.
+    socket.terminate();
+  };
+  const startupTimer = setTimeout(() => fail('Terminal connection timed out'), timeoutMs);
+  // Rebuilds can take 15 minutes without terminal commands. Keep the connection
+  // active through ingress/proxies without sending shell input or replaying work.
+  const heartbeat = setInterval(() => {
+    if (socket.readyState === WebSocket.OPEN) socket.ping();
+  }, 20000);
+  heartbeat.unref();
+  socket.on('error', () => fail('Terminal WebSocket failed; any submitted command may still be running'));
+  socket.on('close', () => fail('Terminal closed; any submitted command may still be running'));
+  socket.on('open', () => socket.send(JSON.stringify({ AuthToken: token, columns: 120, rows: 40 })));
+  socket.on('message', data => {
+    const buffer = Buffer.from(data);
+    if (buffer[0] !== 48) return;
+    // Allow the initial terminal banner/prompt to settle once per connection.
+    if (!startupDelay) startupDelay = setTimeout(() => { clearTimeout(startupTimer); resolveReady(); }, 400);
+    const job = active;
+    if (!job) return;
+    job.output += buffer.subarray(1).toString('utf8');
+    if (job.output.length > 2 * 1024 * 1024) { fail('Terminal output exceeded its limit'); return; }
+    const clean = job.output.replace(/\x1b\[[0-?]*[ -/]*[@-~]/g, '').replace(/\r/g, '');
+    const begin = '\n' + job.marker + '_BEGIN\n';
+    const start = clean.indexOf(begin);
+    if (start < 0) return;
+    // ttyd/tmux may repaint completion directly after unterminated output.
+    const end = clean.indexOf(job.marker + '_END:', start + begin.length);
+    if (end < 0) return;
+    const code = clean.slice(end).match(/_END:(\d+)\n/);
+    if (!code) return;
+    clearTimeout(job.timer); active = null;
+    job.resolve({ exitCode: Number(code[1]), output: clean.slice(start + begin.length, end).replace(/\n$/, '') });
   });
+  await ready;
+  return {
+    close: () => fail('Terminal connection closed'),
+    run: (script, { timeoutMs: commandTimeoutMs = 30000 } = {}) => new Promise((resolve, reject) => {
+      if (failure) { reject(failure); return; }
+      if (socket.readyState !== WebSocket.OPEN) { reject(new Error('Terminal WebSocket is unavailable')); return; }
+      if (active) { reject(new Error('A terminal command is already running')); return; }
+      const marker = 'DEPLOY_' + randomBytes(12).toString('hex');
+      const encoded = Buffer.from(script).toString('base64');
+      const timer = setTimeout(() => fail('Terminal timed out; the remote command may still be running'), commandTimeoutMs);
+      active = { marker, output: '', timer, resolve, reject };
+      // Restore echo before acknowledging completion, so the next command can
+      // start immediately without racing the previous command's terminal setup.
+      const command = `(stty -echo; printf '\\n${marker}_BEGIN\\n'; printf '%s' '${encoded}' | base64 -d | sh; deploy_status=$?; stty echo; printf '\\n${marker}_END:%s\\n' "$deploy_status")\r`;
+      socket.send(Buffer.concat([Buffer.from('0'), Buffer.from(command)]), error => {
+        if (error) fail('Terminal send failed; the remote command may still be running');
+      });
+    }),
+  };
 }

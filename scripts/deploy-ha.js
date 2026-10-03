@@ -5,7 +5,7 @@ import { readFileSync, readdirSync, realpathSync, statSync, mkdtempSync, rmSync 
 import { homedir, tmpdir } from 'node:os';
 import { dirname, isAbsolute, join, relative, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { connectHA, runTerminal, shellQuote } from './lib/ha-deploy-transport.js';
+import { connectHA, connectTerminal, shellQuote } from './lib/ha-deploy-transport.js';
 
 const root = fileURLToPath(new URL('../', import.meta.url));
 const hash = value => createHash('sha256').update(value).digest('hex');
@@ -67,7 +67,7 @@ async function main(args) {
   const manifest = JSON.parse(git('show', target + ':config.json'));
   const local = mkdtempSync(join(tmpdir(), 'home-energy-deploy-'));
   const remote = '/tmp/home-energy-deploy-' + randomBytes(10).toString('hex');
-  let ha, phase = 'connection';
+  let ha, terminalConnection, phase = 'connection';
   try {
     ha = await connectHA({ url: config.url, token });
     const api = (endpoint, method = 'get', timeout = 30) => ha.call({ type: 'supervisor/api', endpoint, method, timeout }, timeout * 1000);
@@ -77,9 +77,9 @@ async function main(args) {
     validateDeploymentState(app, manifest, terminal);
     const session = (await api('/ingress/session', 'post')).session;
     if (typeof session !== 'string' || !session || /[\r\n;]/.test(session)) throw new DeploymentError('Invalid ingress session');
-    const context = { url: config.url, session, ingress: terminal.ingress_entry };
+    terminalConnection = await connectTerminal({ url: config.url, session, ingress: terminal.ingress_entry });
     const execute = async (script, timeoutMs = 30000) => {
-      const result = await runTerminal(context, script, { timeoutMs });
+      const result = await terminalConnection.run(script, { timeoutMs });
       if (result.exitCode !== 0) throw new DeploymentError('Remote command failed; inspect the terminal or Supervisor locally');
       return result.output.trim();
     };
@@ -169,7 +169,7 @@ PY`));
   } catch (error) {
     const detail = error instanceof DeploymentError ? error.message + ' ' : '';
     throw new DeploymentError(`${detail}Deployment stopped during ${phase}. No automatic rollback or restart was attempted. Inspect HA before retrying; any submitted rebuild may still be running. Any created remote deployment files and lock are retained.`);
-  } finally { ha?.close(); rmSync(local, { recursive: true, force: true }); }
+  } finally { terminalConnection?.close(); ha?.close(); rmSync(local, { recursive: true, force: true }); }
 }
 
 if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {

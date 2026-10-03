@@ -42,6 +42,9 @@ Versions follow Semantic Versioning. `-dev.N` denotes a development prerelease.
 
 ### Fixed
 
+- Home Assistant development deployments reuse one terminal connection for file
+  transfers, removing repeated connection setup and the delay before every chunk.
+  Transfer checksums, offset checks and stopped-app safeguards remain in place.
 - Simultaneous charging no longer identifies Tesla from similar power and start
   times alone. When Charger 2 supports verified current writes, identification
   temporarily uses its minimum current and requires a unique measured response;

@@ -65,9 +65,12 @@ refuses ambiguous selection. No other connection fields are accepted.
    starts it automatically.
 3. Run the command. The installed version number must match `config.json`; use
    Supervisor's ordinary installation/update flow first when versions differ.
-4. Wait for transfer, Supervisor rebuild and verification to finish. Transfer uses
-   small terminal messages and can take several minutes. Both local and HA source
-   trees must be clean, and HA's source commit must be an ancestor of local HEAD.
+4. Wait for transfer, Supervisor rebuild and verification to finish. Transfer
+   reuses one authenticated terminal connection, without reconnecting or fixed
+   delays between chunks. Small chunks stay within terminal input limits; each
+   append checks its offset and the completed file is verified by checksum. Supervisor's
+   image rebuild can still take several minutes. Both local and HA source trees
+   must be clean, and HA's source commit must be an ancestor of local HEAD.
 5. Start the app yourself in HA when ready. Deployment verification does not
    qualify runtime startup, database compatibility, pairing authority or physical
    equipment behavior. Incompatible development databases remain rejected and
@@ -92,6 +95,8 @@ The script does not automatically roll back, restart, reset storage or retry a
 possibly running rebuild. Inspect Supervisor's app status and logs locally first.
 Remote source may already have advanced while the image still contains the
 previous build. A lost response does not prove that a rebuild failed.
+Terminal timeouts or connection loss stop further commands on that connection;
+the script never reconnects and replays a command with an uncertain result.
 
 A directory named `/tmp/home-energy-deploy-<app-slug>.lock` in the terminal app
 prevents overlapping runs of this script. After confirming that the previous
