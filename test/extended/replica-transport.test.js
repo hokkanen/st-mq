@@ -80,7 +80,7 @@ test('real sqlite3_rsync protocol catches up current-schema inserts, deletes, fr
   // Native compatibility stops at the exact current schema, even on the real
   // transport. An unsupported source cannot replace the last valid publication.
   db.exec('CREATE TABLE unsupported_development_table(value TEXT)');
-  await assert.rejects(synchronizeReplica({ signal:t.signal,dbPath:source,config }), /snapshot_failed/);
+  await assert.rejects(synchronizeReplica({ signal:t.signal,dbPath:source,config }), { code: 'database_schema_invalid' });
   assert.equal((await readReplicaPublication(config.remoteDirectory)).generation,second.generation);
   db.exec('DROP TABLE unsupported_development_table');
   db.exec('VACUUM');

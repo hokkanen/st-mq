@@ -17,6 +17,25 @@ const preview = () => ({ previewId, counts: { missing: 12, conflicts: 3, duplica
 const checked = () => primary({ peer: { reachable: true, role: 'protected' }, recovery: { state: 'ready', donorRole: 'protected', preview: preview() },
   actions: { 'check-recovery': true, recover: true, handover: false, promote: false, rejoin: true } });
 const operation = (view, state = 'complete', action = 'check-recovery') => ({ ...view, uiOperation: { id, action, state } });
+
+test('schema failures explain deliberate recovery without suggesting broker fixes', () => {
+  const mismatch = pairIssueHelp({ role: 'protected', error: 'database_schema_mismatch' });
+  assert.match(mismatch, /database schema does not match/);
+  assert.match(mismatch, /fresh development databases and pairing storage/);
+  assert.match(mismatch, /cannot be migrated/);
+  assert.equal(pairIssueHelp({ role: 'slave', sync: { state: 'error', error: 'database_schema_mismatch' } }), mismatch);
+  const malformed = pairIssueHelp({ role: 'protected', error: 'database_schema_invalid' });
+  assert.match(malformed, /database structure/);
+  assert.match(malformed, /intact current-schema backup/);
+  for (const error of ['database_schema_mismatch', 'database_schema_invalid']) {
+    const summary = pairDisplay({ role: 'protected', reason: 'activation_failed', error }).summary;
+    assert.match(summary, /database/);
+    assert.doesNotMatch(summary, /retry promotion|recover gaps/i, 'an incompatible schema needs an explicit fresh setup or current backup');
+  }
+  for (const text of [mismatch, malformed, pairIssueHelp({ error: 'runtime_failed' })])
+    assert.doesNotMatch(text, /MQTT|credentials/);
+});
+
 function memoryStorage() {
   const values = new Map();
   return { getItem: key => values.get(key) ?? null, setItem: (key, value) => values.set(key, value), removeItem: key => values.delete(key) };

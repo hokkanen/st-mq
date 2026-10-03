@@ -2,6 +2,7 @@ import { parentPort, workerData } from 'node:worker_threads';
 import { DatabaseSync } from 'node:sqlite';
 import { snapshotDigest } from '../replication/publication.js';
 import { validateCurrentDatabase } from '../storage/store.js';
+import { databaseErrorDetails } from '../storage/database-errors.js';
 
 try {
   const db = new DatabaseSync(workerData.path, { readOnly: true });
@@ -14,4 +15,4 @@ try {
   const actual = await snapshotDigest(workerData.path);
   if (actual.digest !== workerData.metadata.digest || actual.bytes !== workerData.metadata.bytes) throw Error();
   parentPort.postMessage({ ok: true });
-} catch { parentPort.postMessage({ ok: false }); }
+} catch (error) { parentPort.postMessage({ ok: false, ...databaseErrorDetails(error) }); }

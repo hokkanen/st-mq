@@ -9,9 +9,10 @@ import { tmpdir } from 'node:os';
 import { PassThrough } from 'node:stream';
 import { spawn } from 'node:child_process';
 import { once } from 'node:events';
+import { createInterface } from 'node:readline';
 import { runReceiver } from '../src/replication/receiver.js';
 import { snapshotDigest, normalizeSnapshot, readReplicaPublication, verifyReplicaPublication, ownedDirectory } from '../src/replication/publication.js';
-import { createSourceSnapshot } from '../src/replication/transport.js';
+import { createSourceSnapshot, synchronizeReplica } from '../src/replication/transport.js';
 
 async function fixture(t) {
   const directory = await mkdtemp(join(tmpdir(), 'stmq-replica-test-'));
@@ -215,19 +216,59 @@ test('owned directory checks refuse unrelated nonempty folders without changing 
   assert.equal((await stat(unrelated)).mode & 0o777, 0o755);
 });
 
-test('obsolete database versions are rejected at export and receipt without changing the last publication', async t => {
+for (const scenario of [
+  { label: 'obsolete database', version: 7, code: 'database_schema_mismatch' },
+  { label: 'malformed current database', version: SCHEMA_VERSION, code: 'database_schema_invalid' },
+]) test(`${scenario.label} is rejected at export and CLI receipt with the last publication unchanged`, async t => {
   const { directory, source, replica } = await fixture(t);
   const first = await transferFixture(source, replica, directory);
-  const path = join(directory, 'obsolete.sqlite'), db = new DatabaseSync(path);
-  db.exec('CREATE TABLE old_data(id INTEGER); PRAGMA user_version=7'); db.close();
+  const publication = await readFile(first.dbPath), manifest = await readFile(join(replica, 'publication.json'));
+  const path = join(directory, 'unsupported.sqlite'), db = new DatabaseSync(path);
+  db.exec(`CREATE TABLE unsupported(id INTEGER); PRAGMA user_version=${scenario.version}`); db.close();
   const before = await readFile(path);
-  await assert.rejects(createSourceSnapshot({ dbPath: path, destination: join(directory,'obsolete-copy.sqlite') }), /snapshot_failed/);
+  const expected = { code: scenario.code, actualSchema: scenario.version, requiredSchema: SCHEMA_VERSION };
+  await assert.rejects(createSourceSnapshot({ dbPath: path, destination: join(directory,'unsupported-copy.sqlite') }), expected);
   assert.deepEqual(await readFile(path), before);
-  const receiver = session(replica); await receiver.prepare();
-  await copyFile(path, receiver.incoming);
+  const receiver = spawn(process.execPath, [resolve('scripts/replica-receiver.js'), replica], { stdio: ['pipe', 'pipe', 'ignore'] });
+  const completion = once(receiver, 'close');
+  const lines = createInterface({ input: receiver.stdout }), messages = lines[Symbol.asyncIterator]();
+  t.after(() => { lines.close(); receiver.kill('SIGKILL'); });
+  const generation = randomUUID();
+  receiver.stdin.write(`${JSON.stringify({ type: 'prepare', version: 1, generation })}\n`);
+  assert.equal(JSON.parse((await messages.next()).value).type, 'ready');
+  await copyFile(path, join(replica, `incoming-${generation}.sqlite`));
   const metadata = await snapshotDigest(path);
-  await assert.rejects(receiver.publish({ ...metadata, sourceStartedAt: Date.now(), sourceAt: Date.now() }), /Unsupported database schema/);
+  receiver.stdin.end(`${JSON.stringify({ type: 'publish', generation, ...metadata, sourceStartedAt: 1, sourceAt: 1 })}\n`);
+  assert.deepEqual(JSON.parse((await messages.next()).value), { type: 'error', ...expected });
+  assert.equal((await completion)[0], 1);
   assert.equal((await verifyReplicaPublication(replica)).generation, first.generation);
+  assert.deepEqual(await readFile(first.dbPath), publication);
+  assert.deepEqual(await readFile(join(replica, 'publication.json')), manifest);
+});
+
+test('SSH receiver errors retain only allowlisted database diagnostics through the transport', async t => {
+  const { directory, source } = await fixture(t);
+  const config = { sshHost: 'synthetic-peer', remoteDirectory: '/synthetic/replica',
+    receiverPath: '/synthetic/receiver.js', sourceDirectory: join(directory, 'work') };
+  for (const diagnostic of [
+    { code: 'database_schema_mismatch', actualSchema: 7, requiredSchema: SCHEMA_VERSION },
+    { code: 'database_schema_invalid', requiredSchema: SCHEMA_VERSION },
+  ]) {
+    const untrusted = { type: 'error', ...diagnostic, message: 'synthetic confidential details',
+      path: '/synthetic/private/path', extra: 'private' };
+    if (!Object.hasOwn(diagnostic, 'actualSchema')) untrusted.actualSchema = 'synthetic confidential details';
+    const spawnProcess = (command, args, options) => spawn(process.execPath, command === 'ssh'
+      ? ['--input-type=module', '--eval', `process.stdin.once('data', () => {
+          process.stdout.write(${JSON.stringify(`${JSON.stringify(untrusted)}\n`)});
+          process.stdin.pause();
+        });`]
+      : ['--eval', 'process.exit(0)'], options);
+    await assert.rejects(synchronizeReplica({ dbPath: source, config, spawnProcess }), error => {
+      assert.equal(error.message, diagnostic.code);
+      assert.deepEqual({ ...error }, diagnostic);
+      return true;
+    });
+  }
 });
 
 test('page digest excludes only documented volatile SQLite header fields', async t => {

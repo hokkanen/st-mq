@@ -16,7 +16,7 @@ const startupProblem = view => view?.role === 'protected' && ['activation_failed
 
 /** Only stable public error codes become instructions; raw exceptions stay private. */
 export function pairIssueHelp(view) {
-  const code = view?.error ?? view?.vip?.error;
+  const code = view?.error ?? view?.vip?.error ?? view?.sync?.error;
   return {
     vip_helper_unavailable: 'The virtual-IP helper is unavailable. Check that the address-helper socket service is running on this computer and that its socket path matches the pair configuration.',
     vip_helper_permission: 'The controller cannot access the virtual-IP helper. Check the socket permissions and the group membership of the user running the controller; sign in again after changing groups.',
@@ -31,7 +31,9 @@ export function pairIssueHelp(view) {
     vip_failed: 'The virtual IP could not be activated. Check the local network interface, helper service and matching address policy.',
     mqtt_local_required: 'Pair mode needs a broker on this computer. Set the controller’s MQTT address to its local broker, usually mqtt://127.0.0.1. Devices use the shared virtual IP.',
     mqtt_resolution_failed: 'The MQTT broker name could not be resolved. Check the configured local broker address; use mqtt://127.0.0.1 when the broker runs directly on this computer.',
-    runtime_failed: 'The controller could not start. Check the application’s terminal or service log for the startup error. Confirm that the local MQTT broker is running and accepts the configured credentials.',
+    runtime_failed: 'The controller could not start. Check the application’s terminal or service log for the reported reason and source location.',
+    database_schema_mismatch: 'The database schema does not match this application. Run the same current application on both computers and deliberately start fresh development databases and pairing storage. Earlier development databases cannot be migrated. See the fresh-development-databases instructions in docs/pairing.md.',
+    database_schema_invalid: 'The database structure does not match its declared schema. Restore an intact current-schema backup or deliberately start fresh development databases and pairing storage. See the fresh-development-databases instructions in docs/pairing.md.',
     snapshot_failed: 'Local history could not be opened for viewing. Keep the database files intact and check the application log. Any last verified snapshot remains available.',
     ocpp_handover_not_ready: ocppReadinessHelp,
   }[code] ?? (startupProblem(view) ? 'The controller could not start. Check the application’s terminal or service log for the startup error, then correct the local setup.' : '');
@@ -89,7 +91,8 @@ export function pairDisplay(view, { now = Date.now(), formatTime = at => new Dat
   if (!view) return null;
   const state = view.transition ? 'transition' : ['master', 'slave', 'protected'].includes(view.role) ? view.role : 'unknown';
   const issue = pairIssueHelp(view);
-  const summary = startupProblem(view)
+  const schemaFailure = ['database_schema_mismatch', 'database_schema_invalid'].includes(view.error ?? view.vip?.error ?? view.sync?.error);
+  const summary = schemaFailure ? issue : startupProblem(view)
     ? `${issue} Local history is preserved. After correcting the setup, retry promotion below; the other computer can stay offline.`
     : state === 'protected' && view.error === 'snapshot_failed' ? issue
     : state === 'protected' ? 'Local history is preserved. Incoming mirroring is blocked so another computer cannot overwrite it. Inspect this history before choosing recovery or promotion.'

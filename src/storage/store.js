@@ -19,8 +19,10 @@ const expectedStructure = JSON.stringify(schemaObjects(reference));
 reference.close();
 export function validateCurrentDatabase(db) {
   const version = db.prepare('PRAGMA user_version').get().user_version;
-  if (version !== SCHEMA_VERSION) throw new Error(`Unsupported database schema ${version}; this application requires schema ${SCHEMA_VERSION}. Use a new empty database and explicitly import v0.7.5 CSV files. The existing database was not changed.`);
-  if (JSON.stringify(schemaObjects(db)) !== expectedStructure) throw new Error('Malformed current database schema; use an intact same-version backup or a new empty database. The existing database was not changed.');
+  if (version !== SCHEMA_VERSION) throw Object.assign(new Error(`Unsupported database schema ${version}; this application requires schema ${SCHEMA_VERSION}. Use a new empty database; optionally import supported v0.7.5 CSV files. The existing database was not changed.`),
+    { code: 'database_schema_mismatch', actualSchema: version, requiredSchema: SCHEMA_VERSION });
+  if (JSON.stringify(schemaObjects(db)) !== expectedStructure) throw Object.assign(new Error('Malformed current database schema; use an intact same-version backup or a new empty database. The existing database was not changed.'),
+    { code: 'database_schema_invalid', actualSchema: version, requiredSchema: SCHEMA_VERSION });
   if (db.prepare('PRAGMA foreign_key_check').get()) throw new Error('Database contains dangling references; restore an intact same-version backup.');
   // Removed charging-check formats are rejected before any writable setup;
   // opening a database never strips or translates its historical evidence.

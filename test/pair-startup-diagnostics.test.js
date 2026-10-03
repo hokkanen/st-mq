@@ -1,13 +1,15 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtemp, rm, access } from 'node:fs/promises';
+import { mkdtemp, rm, access, readFile } from 'node:fs/promises';
+import { DatabaseSync } from 'node:sqlite';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { loadConfig } from '../src/app/config.js';
-import { Store } from '../src/storage/store.js';
+import { Store, SCHEMA_VERSION } from '../src/storage/store.js';
 import { startPaired } from '../src/pairing/runtime.js';
 import { startupFailureDiagnostic } from '../src/pairing/manager.js';
+import { databaseErrorDetails } from '../src/storage/database-errors.js';
 
 const now = Date.parse('2026-01-09T12:00Z');
 const failure = code => Object.assign(new Error('synthetic private diagnostic'), { code });
@@ -19,7 +21,7 @@ async function fixture(t) {
     await rm(root, { recursive: true, force: true });
   });
   async function open(name, { role = 'master', releaseError = null, brokerError = null, runtimeError = null,
-    reportStartupFailure = null } = {}) {
+    reportStartupFailure = null, openStore = false } = {}) {
     const directory = join(root, name);
     const config = { ...loadConfig({ XDG_CONFIG_HOME: root, STMQ_DATA_DIR: directory, STMQ_PORT: '0' }, directory),
       input: 'mqtt', role: 'slave', connections: { mqtt: { address: 'mqtt://127.0.0.1' } } };
@@ -28,7 +30,7 @@ async function fixture(t) {
       snapshotDirectory: join(directory, 'pair-snapshots'), platform: 'ubuntu', pairId: 'synthetic-startup-pair',
       token: 'synthetic-startup-shared-token-0123456789', peerUrl: 'http://127.0.0.1:1',
       listenHost: '127.0.0.1', port: 0, intervalMs: 60000, timeoutMs: 30000, vip: {}, mqtt: config.connections.mqtt };
-    if (role === 'master') {
+    if (role === 'master' && !await access(config.dbPath).then(() => true, () => false)) {
       const store = new Store(config.dbPath);
       try {
         if (!store.observations().length) store.observation({ source: 'synthetic', device: 'invented-room',
@@ -45,6 +47,7 @@ async function fixture(t) {
       startRuntime: async ({ config: current }) => {
         primaryStarts++;
         if (runtimeError) throw failure(runtimeError);
+        if (openStore) new Store(current.dbPath).close();
         return { store: { path: current.dbPath }, close: async () => {} };
       }, managerOptions: { announcements: () => null,
         reportStartupFailure: diagnostic => { diagnostics.push(diagnostic); return reportStartupFailure?.(diagnostic); }, vip: {
@@ -144,6 +147,72 @@ test('an asynchronously rejecting diagnostic sink cannot interrupt protected fal
   assert.equal(view.pair.error, 'runtime_failed');
   assert.equal(instance.diagnostics.length, 1);
   assert.doesNotMatch(JSON.stringify(instance.diagnostics), /synthetic asynchronous|synthetic private/);
+});
+
+test('schema diagnostics expose only numeric versions and fixed recovery guidance', () => {
+  const error = { code: 'database_schema_mismatch', actualSchema: SCHEMA_VERSION - 1, requiredSchema: SCHEMA_VERSION,
+    message: 'synthetic private credentials', path: '/private/household.sqlite', guidance: 'synthetic private recovery',
+    stack: 'Error: synthetic private credentials' };
+  const diagnostic = startupFailureDiagnostic(error, 'runtime_failed');
+  assert.equal(diagnostic.reason, 'database_schema_mismatch');
+  assert.equal(diagnostic.actualSchema, SCHEMA_VERSION - 1);
+  assert.equal(diagnostic.requiredSchema, SCHEMA_VERSION);
+  assert.match(diagnostic.guidance, /fresh development databases and pairing storage/);
+  assert.doesNotMatch(JSON.stringify(diagnostic), /private|household/);
+  const invalid = startupFailureDiagnostic({ ...error, actualSchema: 'private', requiredSchema: Infinity }, 'runtime_failed');
+  assert.equal(Object.hasOwn(invalid, 'actualSchema'), false);
+  assert.equal(Object.hasOwn(invalid, 'requiredSchema'), false);
+  for (const code of [null, {}, { toString: null }, ['database_schema_mismatch'], 19])
+    assert.equal(databaseErrorDetails({ code }), null, 'malformed diagnostic codes cannot throw or acquire a schema classification');
+  assert.deepEqual(startupFailureDiagnostic(error, 'vip_release_failed'), {
+    event: 'paired-startup-failed', reason: 'vip_release_failed',
+  }, 'failed address release remains the primary problem');
+});
+
+test('an incompatible master database reports its schema failure and stays protected across restart', async t => {
+  for (const code of ['database_schema_mismatch', 'database_schema_invalid']) await t.test(code, async t => {
+    const f = await fixture(t), initial = await f.open('controller');
+    const path = initial.app.pair.state.value.activeDbPath;
+    await f.close(initial.app);
+    const raw = new DatabaseSync(path);
+    raw.exec(code === 'database_schema_mismatch' ? `PRAGMA user_version=${SCHEMA_VERSION - 1}` : 'CREATE TABLE unexpected_synthetic_table (id)');
+    raw.close();
+    const bytes = await readFile(path);
+    const failed = await f.open('controller', { openStore: true });
+    const view = await status(failed.app);
+    assert.equal(view.readOnly, true);
+    assert.equal(view.pair.role, 'protected');
+    assert.equal(view.pair.canControl, false);
+    assert.equal(view.pair.error, code);
+    assert.equal(failed.diagnostics.length, 1);
+    assert.equal(failed.diagnostics[0].reason, code);
+    assert.equal(failed.diagnostics[0].requiredSchema, SCHEMA_VERSION);
+    assert.equal(failed.diagnostics[0].actualSchema, code === 'database_schema_mismatch' ? SCHEMA_VERSION - 1 : SCHEMA_VERSION);
+    assert.match(failed.diagnostics[0].location, /^src\/storage\/store\.js:\d+:\d+$/);
+    assert.deepEqual(await readFile(path), bytes);
+    await f.close(failed.app);
+    const restarted = await f.open('controller', { openStore: true });
+    assert.equal((await status(restarted.app)).pair.error, code);
+    assert.equal(restarted.primaryStarts(), 0);
+    assert.equal(restarted.app.pair.canControl(), false);
+    assert.deepEqual(await readFile(path), bytes);
+  });
+});
+
+test('a generic saved failure is refined by current database validation without retrying control', async t => {
+  const f = await fixture(t), initial = await f.open('controller', { runtimeError: 'runtime_failed' });
+  const path = initial.app.pair.state.value.activeDbPath;
+  await f.close(initial.app);
+  const raw = new DatabaseSync(path);
+  raw.exec(`PRAGMA user_version=${SCHEMA_VERSION - 1}`); raw.close();
+  const before = await readFile(path);
+  const restarted = await f.open('controller');
+  assert.equal(restarted.primaryStarts(), 0);
+  assert.equal(restarted.app.pair.canControl(), false);
+  assert.equal((await status(restarted.app)).pair.error, 'database_schema_mismatch');
+  assert.equal(restarted.app.pair.state.value.activationError, 'database_schema_mismatch');
+  assert.equal(restarted.diagnostics[0].actualSchema, SCHEMA_VERSION - 1);
+  assert.deepEqual(await readFile(path), before);
 });
 
 test('a failed activation retains sanitized diagnostics and protected history across supervisor restart', async t => {

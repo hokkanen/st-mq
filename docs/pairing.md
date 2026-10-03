@@ -142,6 +142,98 @@ fresh-start guidance; it is never silently skipped or reset. Pair authority stat
 uses version 3 and the encrypted peer protocol uses version 2 (`/v2/pair`). Both
 computers must run this contract; earlier formats are not translated.
 
+<a id="fresh-development-databases"></a>
+
+## Deliberate fresh start after a development schema change
+
+Use this procedure when both computers have incompatible development databases
+and you have chosen to start new history. It preserves the old files; it does
+not migrate or import them. If a same-version, current-schema master or backup
+already has the history you want, preserve that source instead of resetting it.
+Normal protected-history recovery also requires the current schema.
+
+1. Stop both applications, including any service restart/watchdog mechanism, and
+   install the same current build on both. Keep a backup of the old database,
+   its SQLite sidecars (`-wal`, `-shm`, `-journal` when present), pair state and
+   snapshots. A Home Assistant app backup must include its private app data.
+   Keep backups private. Resolve outstanding temporary equipment changes and
+   restoration duties before replacing the old runtime: a fresh database cannot
+   carry its saved pump restoration, charging ownership or commissioning state.
+   Stopping software or changing
+   storage does not confirm that equipment restored its native settings.
+2. Select unused database, pair-state and pair-snapshot locations on **both**
+   computers as described below. Keep the existing peer addresses, shared token,
+   pair ID, virtual-IP settings and integration configuration. Do not edit saved
+   `state.json` or copy an old database into the new directories.
+3. Start both applications. With empty selected storage they initially show
+   **Pair · Slave**. On Ubuntu only, choose **Promote this computer to master**
+   and confirm that no old controller still owns control or the virtual IP.
+   Wait for **Pair · Master** on Ubuntu and a verified fresh snapshot on Home
+   Assistant. Do not promote the Home Assistant computer as well.
+4. Review device setup, restoration and each feature's control permission before
+   resuming automation. New history does not recover the previous learned model,
+   dashboard control choices or live device evidence. Keep the new storage
+   settings for subsequent starts; returning to the old paths reopens old state.
+
+### Ubuntu storage
+
+Leave `STMQ_DATA_DIR` unchanged so unrelated provider tokens and local files stay
+available. Set all three overrides below in the environment that normally starts
+the application; changing only `STMQ_DATABASE_DIR` does not redirect a saved
+master's `activeDbPath`. A promoted master can store its database inside the pair
+directory as `master-<epoch>.sqlite`.
+
+For the example systemd installation, choose unused locations beneath its
+writable `/var/lib/st-mq` directory. Add or update these entries in
+`/etc/st-mq.env`, which the supplied unit loads:
+
+```sh
+STMQ_DATABASE_DIR=/var/lib/st-mq/fresh-1/database
+STMQ_PAIR_DIR=/var/lib/st-mq/fresh-1/pairing
+STMQ_PAIR_SNAPSHOT_DIR=/var/lib/st-mq/fresh-1/pair-snapshots
+```
+
+Keep this environment file private. For a different unit, use its configured
+environment source; an `EnvironmentFile` overrides a unit's `Environment`
+entries. Reload systemd if changing the unit itself. Use the actual service
+name/account, and ensure the selected parent directory is writable by that
+account. For a shell-launched checkout, use the equivalent
+environment on its usual start command, with an unused location such as
+`$PWD/var/fresh-1` instead of `/var/lib/st-mq/fresh-1`. The three variables override
+any saved `pair.directory` and `pair.snapshot_directory` configuration. Keep the
+old directories intact; choose another suffix if `fresh-1` has already been used.
+
+### Home Assistant app storage
+
+Stop **Settings → Apps → Home Energy** and keep it stopped while changing storage.
+The app's `/config` is its own app-configuration directory, exposed to suitable
+file editors or SSH environments as `/addon_configs/<actual-app-slug>`. It is
+not Home Assistant Core's `/config`. Find the actual installed app slug; do not
+substitute the repository name.
+
+Rename the existing `/addon_configs/<actual-app-slug>/st-mq` directory to an
+unused sibling such as `st-mq-before-fresh-1`. This preserves the database,
+sidecars, snapshots and exports under that directory. Leave the sibling
+`secrets.json` file in place. On next start, the app creates a new empty
+`/config/st-mq` database directory.
+
+In Home Energy's **Configuration**, change these two fields in the existing
+`pair` section while preserving its other settings:
+
+```yaml
+pair:
+  directory: /data/st-mq/pairing-fresh-1
+  snapshot_directory: /config/st-mq/pair-snapshots-fresh-1
+```
+
+Choose unused names. The old default `/data/st-mq/pairing` is private to this
+app and is normally inaccessible from another SSH app. Leave it intact; the new
+`pair.directory` selects fresh authority without deleting it. A previously
+promoted master's database may also be inside that old pair directory, which is
+why renaming `/config/st-mq` alone is insufficient. Save the configuration, then
+continue with step 3 above. If this installation overrides the database path or
+uses different storage mounts, preserve and replace those selected paths instead.
+
 ## MQTT address management
 
 The address helper accepts only acquisition or release of a locally configured

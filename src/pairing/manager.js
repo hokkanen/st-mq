@@ -11,6 +11,7 @@ import { createReplicaPublicationGuard, receiveSnapshot, SnapshotRepository, val
 import { VirtualIP, VIP_ERRORS } from './vip.js';
 import { createControllerAnnouncements } from './announcements.js';
 import { copySnapshot, ownedDirectory, readReplicaPublication, syncDirectory } from '../replication/publication.js';
+import { databaseErrorDetails, databaseErrorGuidance } from '../storage/database-errors.js';
 
 const ACTIONS = new Set(['handover', 'promote', 'check-recovery', 'recover', 'rejoin']);
 const sourceRoot = fileURLToPath(new URL('../', import.meta.url));
@@ -31,8 +32,11 @@ const publicSync = sync => ({ state: ['waiting', 'syncing', 'ready', 'error'].in
   bytes: Number.isSafeInteger(sync?.bytes) && sync.bytes >= 0 ? sync.bytes : null });
 
 /** Exceptions may contain credentials or provider payloads. Report only the
- * closed public code and a repository source location, never raw error text. */
+ * closed public code, numeric schema details and a repository source location,
+ * never raw error text. */
 export function startupFailureDiagnostic(error, code) {
+  const database = databaseErrorDetails(error);
+  if (code === 'runtime_failed' && database) code = database.code;
   const location = typeof error?.stack === 'string' ? error.stack.split('\n').slice(1).flatMap(line => {
     if (!/^\s+at /.test(line)) return [];
     const path = line.match(/(?:\(|\s)(?:file:\/\/)?(\/[^()\n]+\.js:\d+:\d+)\)?$/)?.[1];
@@ -40,6 +44,10 @@ export function startupFailureDiagnostic(error, code) {
     return relative && /^[a-zA-Z0-9_/-]+\.js:\d+:\d+$/.test(relative) ? [relative] : [];
   })[0] : null;
   return { event: 'paired-startup-failed', reason: publicPairError({ code }),
+    ...(database && code === database.code ? {
+      ...Object.fromEntries(Object.entries(database).filter(([key]) => key !== 'code')),
+      guidance: databaseErrorGuidance(database),
+    } : {}),
     ...(location ? { location: `src/${location}` } : {}) };
 }
 
@@ -93,7 +101,11 @@ export class PairManager {
         publicationVerified = true;
         await this.state.update({ pendingSnapshot: null, accepted: { generation: publication.generation,
           digest: publication.digest, epoch: pending.claim.epoch, sequence: pending.sequence, nodeId: pending.claim.nodeId } });
-      } catch { await this.state.update({ role: 'protected', reason: 'snapshot_verification_failed', bootstrapPending: false }); }
+      } catch (error) {
+        if (databaseErrorDetails(error)) this.reportFailure(error, error.code);
+        await this.state.update({ role: 'protected', reason: 'snapshot_verification_failed', bootstrapPending: false,
+          ...(databaseErrorDetails(error) ? { activationError: error.code } : {}) });
+      }
     }
     if (this.state.value.role === 'slave' && (publication === false || publication &&
         (!this.state.value.accepted || publication.generation !== this.state.value.accepted.generation))) {
@@ -107,8 +119,10 @@ export class PairManager {
         if (!publicationVerified) await verifySnapshot(publication.dbPath, publication, this.abort.signal);
         this.sync = { state: 'ready', sourceAt: publication.sourceAt, verifiedAt: publication.verifiedAt,
           bytes: publication.bytes, lastSuccessAt: null, error: null };
-      } catch {
-        await this.state.update({ role: 'protected', reason: 'snapshot_verification_failed', bootstrapPending: false });
+      } catch (error) {
+        if (databaseErrorDetails(error)) this.reportFailure(error, error.code);
+        await this.state.update({ role: 'protected', reason: 'snapshot_verification_failed', bootstrapPending: false,
+          ...(databaseErrorDetails(error) ? { activationError: error.code } : {}) });
       }
     }
     if (['checking', 'recovering'].includes(this.state.value.recovery?.state)) {
@@ -249,6 +263,7 @@ export class PairManager {
     } catch (error) {
       if (!ownsActivation()) throw pairError('authority_changed');
       this.activeAllowed = false;
+      if (code === 'runtime_failed' && databaseErrorDetails(error)) code = error.code;
       if (VIP_ERRORS.has(error?.code) || ['mqtt_local_required', 'mqtt_resolution_failed'].includes(error?.code)) code = error.code;
       try { await this.vip.release(); }
       catch (releaseError) { code = VIP_ERRORS.has(releaseError?.code) ? releaseError.code : 'vip_release_failed'; }
@@ -473,8 +488,9 @@ export class PairManager {
     const protect = async operation => {
       try { return await operation(); }
       catch (error) {
-        if (error?.code === 'verification_failed' && this.state.value.role === 'slave')
-          await this.state.update({ role: 'protected', reason: 'snapshot_verification_failed', bootstrapPending: false });
+        if ((error?.code === 'verification_failed' || databaseErrorDetails(error)) && this.state.value.role === 'slave')
+          await this.state.update({ role: 'protected', reason: 'snapshot_verification_failed', bootstrapPending: false,
+            ...(databaseErrorDetails(error) ? { activationError: error.code } : {}) });
         throw error;
       }
     };

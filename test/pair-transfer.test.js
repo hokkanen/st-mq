@@ -1,10 +1,10 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtemp, rm, readFile, writeFile } from 'node:fs/promises';
+import { mkdtemp, rm, readFile, writeFile, copyFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
-import { Store } from '../src/storage/store.js';
+import { Store, SCHEMA_VERSION } from '../src/storage/store.js';
 import { randomUUID } from 'node:crypto';
 import { createReplicaPublicationGuard, receiveSnapshot, SnapshotRepository, verifySnapshot } from '../src/pairing/snapshots.js';
 import { readReplicaPublication, snapshotDigest } from '../src/replication/publication.js';
@@ -31,6 +31,52 @@ async function fixture(t) {
 
 const acceptedSnapshot = metadata => ({ generation: metadata.generation, digest: metadata.digest,
   epoch: metadata.claim.epoch, nodeId: metadata.claim.nodeId, sequence: metadata.sequence });
+
+for (const scenario of [
+  { label: 'obsolete schema', version: 7, code: 'database_schema_mismatch' },
+  { label: 'invalid current structure', version: SCHEMA_VERSION, code: 'database_schema_invalid' },
+]) {
+  test(`paired receipt reports ${scenario.label} and preserves the last publication`, async t => {
+    const f = await fixture(t), directory = join(f.root, 'slave');
+    const current = await f.repository.create({ dbPath: f.dbPath, claim: f.claim, sequence: 1 });
+    const publication = await receiveSnapshot({ directory, metadata: current, peer: f.peer });
+    const previous = await readFile(publication.dbPath), manifest = await readFile(join(directory, 'publication.json'));
+    const path = join(f.root, 'unsupported.sqlite'), db = new DatabaseSync(path);
+    db.exec(`CREATE TABLE unsupported(id INTEGER); PRAGMA user_version=${scenario.version}`);
+    db.close();
+    const original = await readFile(path);
+    const expected = { code: scenario.code, actualSchema: scenario.version, requiredSchema: SCHEMA_VERSION };
+    await assert.rejects(f.repository.create({ dbPath: path, claim: f.claim, sequence: 2, force: true }), expected);
+    assert.deepEqual(await readFile(path), original);
+    // Model bytes offered by an incompatible peer without weakening the real
+    // export check. Transfer, verification and publication use production code.
+    const remote = new SnapshotRepository({ directory: join(f.root, 'unsupported-exports'),
+      snapshot: async ({ dbPath, destination }) => {
+        await copyFile(dbPath, destination);
+        return { ...await snapshotDigest(destination), sourceStartedAt: 1, sourceAt: 1 };
+      } });
+    await remote.init();
+    const incoming = await remote.create({ dbPath: path, claim: f.claim, sequence: 2 });
+    const peer = { request: (operation, body) => operation === 'snapshot-hashes' ? remote.hashes(body) : remote.chunk(body) };
+    await assert.rejects(receiveSnapshot({ directory, metadata: incoming, peer }), expected);
+    assert.deepEqual(await readFile(publication.dbPath), previous);
+    assert.deepEqual(await readFile(join(directory, 'publication.json')), manifest);
+    await verifySnapshot(publication.dbPath, current);
+  });
+}
+
+test('publication guard retains the schema diagnosis without changing incompatible local history', async t => {
+  const f = await fixture(t), directory = join(f.root, 'slave');
+  const metadata = await f.repository.create({ dbPath: f.dbPath, claim: f.claim, sequence: 1 });
+  const publication = await receiveSnapshot({ directory, metadata, peer: f.peer });
+  const db = new DatabaseSync(publication.dbPath);
+  db.exec('PRAGMA user_version=7'); db.close();
+  const original = await readFile(publication.dbPath), manifest = await readFile(join(directory, 'publication.json'));
+  await assert.rejects(createReplicaPublicationGuard({ directory, accepted: acceptedSnapshot(metadata) }),
+    { code: 'database_schema_mismatch', actualSchema: 7, requiredSchema: SCHEMA_VERSION });
+  assert.deepEqual(await readFile(publication.dbPath), original);
+  assert.deepEqual(await readFile(join(directory, 'publication.json')), manifest);
+});
 
 test('paired snapshot replication catches up inserts, changes and deletions exactly with changed chunks', async t => {
   const f = await fixture(t), directory = join(f.root, 'slave');

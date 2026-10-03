@@ -308,6 +308,19 @@ try {
   await evaluate("document.querySelector('#status-detail-popover .status-detail-close').click(); true");
   assert.match(await evaluate(`${$('garage-controller-reason')}.textContent`), /Some saved Garage data is unavailable/);
   sectionUnavailable = false;
+  for (const code of ['database_schema_mismatch', 'database_schema_invalid']) {
+    pair = { ...standby('protected'), reason: 'activation_failed', error: code };
+    await until(`${$('pairing-summary')}.textContent.includes('${code === 'database_schema_mismatch' ? 'database schema' : 'database structure'}')`);
+    await open();
+    for (const width of [1440, 320]) for (const theme of ['dark', 'light']) {
+      await command('browsingContext.setViewport', { context, viewport: { width, height: 1000 }, devicePixelRatio: 1 });
+      if (await evaluate('document.documentElement.dataset.theme') !== theme)
+        await evaluate("document.getElementById('theme-toggle').click(); true");
+      assert.equal(await evaluate('document.documentElement.scrollWidth <= innerWidth'), true, `${code}: recovery guidance fits ${width}px ${theme}`);
+      assert.match(await evaluate(`${$('pairing-summary')}.textContent`), /fresh development databases and pairing storage/);
+      assert.doesNotMatch(await evaluate(`${$('pairing-summary')}.textContent`), /MQTT|credentials/);
+    }
+  }
   await viewer.close();
   viewer = await startReplica({ config: { ...config, topology: 'mirror', role: 'slave', mirror: { directory } }, clock: () => now,
     readPublication: () => null, installSignalHandlers: false });

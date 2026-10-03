@@ -52,6 +52,16 @@ Before replacing a live controller, retain its backups and resolve outstanding
 equipment changes and restoration duties. Stop the previous command owner and
 commission the replacement's live integrations and feature permissions explicitly.
 
+In paired mode, `paired-startup-failed` reports `database_schema_mismatch` when
+the stored schema version differs, with numeric `actualSchema` and
+`requiredSchema` fields. `database_schema_invalid` means the current version's
+structure failed validation. The log retains a repository source
+location without printing private paths, database rows or raw exception text.
+These failures do not migrate, clear or replace the database. Restore an intact
+current-schema backup, or follow the [coordinated paired fresh-start procedure](pairing.md#deliberate-fresh-start-after-a-development-schema-change)
+for Home Assistant and Ubuntu. Deleting only `st-mq.sqlite` is insufficient when
+saved pair authority points to a different active database.
+
 ## Environment and private configuration
 
 Public defaults are in `config.json.options`; the sparse private file overrides

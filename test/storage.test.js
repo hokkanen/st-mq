@@ -28,7 +28,7 @@ test('current schema bootstraps once, checkpoints survive restart, other schemas
   for (const version of [SCHEMA_VERSION - 1, 999]) {
     const raw = new DatabaseSync(path); raw.exec(`PRAGMA user_version = ${version}`); raw.close();
     const before = readFileSync(path);
-    assert.throws(() => new Store(path), /Unsupported database schema/);
+    assert.throws(() => new Store(path), { code: 'database_schema_mismatch', actualSchema: version, requiredSchema: SCHEMA_VERSION });
     assert.deepEqual(readFileSync(path), before, 'incompatible state is rejected without rewriting the database');
   }
 });

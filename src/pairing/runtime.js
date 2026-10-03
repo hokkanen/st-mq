@@ -7,6 +7,7 @@ import { inheritConfigurationSnapshot } from '../app/configuration-preview.js';
 import { startReplica } from '../app/replica.js';
 import { createSourceSnapshot } from '../replication/transport.js';
 import { durableJson, ownedDirectory, publishSnapshot } from '../replication/publication.js';
+import { databaseErrorDetails } from '../storage/database-errors.js';
 import { requireLocalBroker } from './config.js';
 import { PairManager } from './manager.js';
 import { ocppHandoverHooks } from './ocpp.js';
@@ -148,12 +149,17 @@ export async function startPaired({ config, readConfig, clock = Date.now, provid
             const snapshot = await snapshotSource({ dbPath, destination: incoming, signal });
             if (closed || closing || signal.aborted) return;
             await publishSnapshot(directory, incoming, { generation, ...snapshot, verifiedAt: clock() });
-          } catch {
+          } catch (error) {
             if (incoming) for (const suffix of ['', '-wal', '-shm', '-journal']) await rm(`${incoming}${suffix}`, { force: true }).catch(() => {});
             if (closed || closing || signal.aborted) return;
             // Protection and its management UI must survive an unreadable
             // donor. Existing verified history remains available for viewing.
-            manager.error = 'snapshot_failed';
+            const database = databaseErrorDetails(error);
+            if (database && [null, 'runtime_failed', 'snapshot_failed'].includes(manager.error)) {
+              manager.error = database.code;
+              manager.reportFailure(error, database.code);
+              await manager.state.update({ activationError: database.code });
+            } else manager.error ??= 'snapshot_failed';
             directory = config.pair.snapshotDirectory;
           }
         }

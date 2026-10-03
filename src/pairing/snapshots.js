@@ -9,6 +9,7 @@ import { acquireReceiverLock } from '../replication/receiver.js';
 import { copySnapshot, DIGEST_ALGORITHM, durableJson, ownedDirectory, privateFile,
   publishSnapshot, readReplicaPublication, snapshotFileState, syncDirectory } from '../replication/publication.js';
 import { NODE_PATTERN, pairError, validClaim } from './state.js';
+import { databaseErrorDetails } from '../storage/database-errors.js';
 
 export const CHUNK_BYTES = 1024 * 1024;
 const MAX_DATABASE_BYTES = 64 * 1024 ** 3;
@@ -46,7 +47,10 @@ export async function verifySnapshot(path, metadata, signal) {
     };
     const abort = () => { void worker.terminate().then(() => finish(pairError('stopped'))); };
     signal?.addEventListener('abort', abort, { once: true });
-    worker.once('message', result => finish(result.ok ? null : pairError('verification_failed')));
+    worker.once('message', result => {
+      const details = databaseErrorDetails(result);
+      finish(result.ok ? null : Object.assign(pairError(details?.code ?? 'verification_failed'), details));
+    });
     worker.once('error', () => finish(pairError('verification_failed')));
     worker.once('exit', () => { if (!done) finish(pairError('verification_failed')); });
   });
@@ -88,7 +92,8 @@ export async function createReplicaPublicationGuard({ directory, accepted, signa
     return assertUnchanged;
   } catch (error) {
     if (signal?.aborted || error?.code === 'stopped') throw pairError('stopped');
-    throw pairError('verification_failed');
+    const details = databaseErrorDetails(error);
+    throw Object.assign(pairError(details?.code ?? 'verification_failed'), details);
   }
 }
 

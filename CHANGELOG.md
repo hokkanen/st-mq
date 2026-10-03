@@ -6,6 +6,14 @@ Versions follow Semantic Versioning. `-dev.N` denotes a development prerelease.
 
 ## Unreleased
 
+### Fixed
+
+- Paired startup and snapshot transfer report incompatible or malformed database
+  schemas explicitly. Startup logs include safe schema-version numbers and
+  recovery guidance; protected dashboards retain the diagnosis across restart.
+  Incompatible databases remain rejected without migration or automatic reset.
+  The pairing guide now documents deliberate fresh setup on Ubuntu and Home Assistant.
+
 ## 0.9.5-dev.3 — 2026-10-03
 
 ### Fixed

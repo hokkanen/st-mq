@@ -3,6 +3,7 @@ import { DatabaseSync, backup } from 'node:sqlite';
 import { open, rm } from 'node:fs/promises';
 import { normalizeSnapshot, snapshotDigest } from './publication.js';
 import { validateCurrentDatabase } from '../storage/store.js';
+import { databaseErrorDetails } from '../storage/database-errors.js';
 
 try {
   const file = await open(workerData.destination, 'wx', 0o600);
@@ -23,7 +24,7 @@ try {
   normalizeSnapshot(workerData.destination);
   const digest = await snapshotDigest(workerData.destination);
   parentPort.postMessage({ ok: true, ...digest, sourceStartedAt, sourceAt });
-} catch {
+} catch (error) {
   await rm(workerData.destination, { force: true }).catch(() => {});
-  parentPort.postMessage({ ok: false, code: 'snapshot_failed' });
+  parentPort.postMessage({ ok: false, code: 'snapshot_failed', ...databaseErrorDetails(error) });
 }

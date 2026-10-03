@@ -6,12 +6,14 @@ import { join, isAbsolute, resolve } from 'node:path';
 import { rm, readdir } from 'node:fs/promises';
 import { ownedDirectory, replicationError } from './publication.js';
 import { sshOptions } from './ssh-options.js';
+import { databaseErrorDetails } from '../storage/database-errors.js';
 
 const wrapper = fileURLToPath(new URL('../../scripts/replica-ssh.js', import.meta.url));
 const SAFE_PATH = /^[A-Za-z0-9_./-]+$/;
 const PUBLIC_ERRORS = new Set(['configuration_invalid', 'tool_unavailable', 'connection_failed', 'transfer_failed',
   'snapshot_failed', 'verification_failed', 'integrity_failed', 'receiver_busy', 'receiver_failed', 'snapshot_busy',
-  'directory_not_empty', 'unsafe_directory', 'invalid_publication', 'timed_out', 'stopped', 'protocol_failed']);
+  'directory_not_empty', 'unsafe_directory', 'invalid_publication', 'timed_out', 'stopped', 'protocol_failed',
+  'database_schema_mismatch', 'database_schema_invalid']);
 
 export function publicReplicationError(error) {
   return PUBLIC_ERRORS.has(error?.code) ? error.code : 'transfer_failed';
@@ -80,7 +82,10 @@ function receiverChannel(config, generation, options) {
       const line = buffer.slice(0, end); buffer = buffer.slice(end + 1);
       let message;
       try { message = JSON.parse(line); } catch { rejectAll(replicationError('protocol_failed')); continue; }
-      if (message.type === 'error') { rejectAll(replicationError(publicReplicationError(message))); continue; }
+      if (message.type === 'error') {
+        rejectAll(Object.assign(replicationError(publicReplicationError(message)), databaseErrorDetails(message)));
+        continue;
+      }
       if (waiting.length) waiting.shift().accept(message);
       else if (queued.length < 4) queued.push(message);
       else rejectAll(replicationError('protocol_failed'));
@@ -117,7 +122,10 @@ export async function createSourceSnapshot({ dbPath, destination, signal }) {
     };
     const abort = () => { void worker.terminate().then(() => finish(signal.reason)); };
     signal?.addEventListener('abort', abort, { once: true });
-    worker.once('message', value => finish(value.ok ? null : replicationError('snapshot_failed'), value));
+    worker.once('message', value => {
+      const details = databaseErrorDetails(value);
+      finish(value.ok ? null : Object.assign(replicationError(details?.code ?? 'snapshot_failed'), details), value);
+    });
     worker.once('error', () => finish(replicationError('snapshot_failed')));
     worker.once('exit', () => { if (!settled) finish(signal?.aborted ? signal.reason : replicationError('snapshot_failed')); });
   });
@@ -180,7 +188,8 @@ export async function synchronizeReplica({ dbPath, config, signal, onPhase = () 
     return { generation, digest: result.digest, bytes: result.bytes, sourceStartedAt: result.sourceStartedAt,
       sourceAt: result.sourceAt, verifiedAt: published.verifiedAt };
   } catch (error) {
-    throw replicationError(abort.signal.aborted ? publicReplicationError(abort.signal.reason) : publicReplicationError(error));
+    const reason = abort.signal.aborted ? abort.signal.reason : error;
+    throw Object.assign(replicationError(publicReplicationError(reason)), databaseErrorDetails(reason));
   } finally {
     clearTimeout(timeout);
     signal?.removeEventListener('abort', forwardAbort);
