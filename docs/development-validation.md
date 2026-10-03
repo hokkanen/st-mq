@@ -16,6 +16,11 @@ npm ci
 npm run check
 ```
 
+`npm run check` builds the dashboard before running the routine tests. Startup
+and control-authority tests verify that the actual application keeps serving its
+dashboard, so run `npm run build` once before invoking `npm test` directly in a
+fresh checkout. CI uses the same `npm run check` command.
+
 `npm test` (also `npm run test:unit`) runs the routine offline regression suite
 with at most four test files in parallel and a 60-second test deadline. Pairing
 handover, outage promotion, recovery correctness and rejoin regressions remain
@@ -382,10 +387,11 @@ pinned Supervisor check. Record exact results and skips in the release/PR or
 commit body. A source archive is built from committed files; it does not include
 local credentials, runtime data, dependencies or Git history.
 
-The native amd64 container and pinned Supervisor validator have been exercised
-with synthetic mounts and settings. Physical Raspberry Pi, arm64 execution,
-installation/update through a real Supervisor, AppArmor/network enforcement and
-Home Assistant backup/restore remain separate installation acceptance work.
+The native amd64 container, QEMU-emulated arm64 container and pinned Supervisor
+validator have been exercised with synthetic mounts and settings. Native arm64
+execution on a physical Raspberry Pi, installation/update through a real
+Supervisor, AppArmor/network enforcement and Home Assistant backup/restore
+remain separate installation acceptance work.
 Configured CI jobs alone do not establish those results. Never infer physical
 heat delivery, useful protection, device-local timing or actual cost savings
 from software fixtures.

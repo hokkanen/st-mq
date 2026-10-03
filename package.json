@@ -23,7 +23,7 @@
     "test:all": "npm test && npm run test:extended",
     "test:live": "node scripts/test-live.js",
     "history": "node scripts/history.js",
-    "check": "npm test && npm run build"
+    "check": "npm run build && npm test"
   },
   "type": "module",
   "devDependencies": {

@@ -505,9 +505,10 @@ scripts/test-addon-container.sh st-mq:development
 The check uses temporary `/data`, `/config` and `/share` mounts, synthetic options,
 the actual image startup command, authentication, current-schema persistence, restart and
 backup/restore. A separate container verifies direct database access from the
-public folder. Networking is disabled. The extended CI workflow defines AMD64
-and ARM64 jobs under QEMU. Architecture-specific execution and installed-platform
-checks remain separate; see [validation scope](docs/development-validation.md#release-validation-and-known-limits).
+public folder. Networking is disabled. Release validation passed the extended CI
+workflow's native AMD64 and QEMU-emulated ARM64 container jobs. Native ARM64
+hardware and installed-platform checks remain separate; see
+[validation scope](docs/development-validation.md#release-validation-and-known-limits).
 
 Run `bash scripts/test-homeassistant-supervisor.sh` to validate the current
 manifest, translations and saved-options behavior against pinned released
