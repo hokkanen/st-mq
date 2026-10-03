@@ -8,6 +8,10 @@ Versions follow Semantic Versioning. `-dev.N` denotes a development prerelease.
 
 ### Added
 
+- `npm run deploy:ha` deploys the committed checkout to a stopped Home Assistant
+  app through WebSocket, verifies the rebuilt image and preserves stored files.
+  Credentials stay outside the checkout; the app remains stopped.
+
 - **Recover history** opens one shared window from Recording details and Paired
   computers. Preview and recover missing history from a paired computer, a saved
   backup or an uploaded SQLite file. Earlier recoveries remain available to

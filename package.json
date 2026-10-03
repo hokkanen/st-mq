@@ -22,6 +22,7 @@
     "test:extended": "node --test --test-concurrency=2 --test-timeout=180000 test/extended/*.test.js",
     "test:all": "npm test && npm run test:extended",
     "test:live": "node scripts/test-live.js",
+    "deploy:ha": "node scripts/deploy-ha.js",
     "history": "node scripts/history.js",
     "check": "npm run build && npm test"
   },
