@@ -270,7 +270,8 @@ test('the compact status separates master connectivity from slave snapshot verif
   const sync = { sourceAt: now - 180000, verifiedAt: now - 120000, bytes: 1e6 };
   const master = pairDisplay(primary({ sync }), { now });
   assert.equal(master.peerStat, 'Other computer connected');
-  assert.equal(master.syncStat, 'MQTT active here');
+  assert.match(master.syncStat, /waiting|unconfirmed|unknown/i);
+  assert.doesNotMatch(master.syncStat, /MQTT|3 min old/);
   assert.doesNotMatch(master.sync, /Last snapshot/);
   assert.match(master.syncDetail, /connection alone does not confirm/);
   const slave = pairDisplay(standby({ sync }), { now });
@@ -283,6 +284,160 @@ test('the compact status separates master connectivity from slave snapshot verif
   assert.match(complete.attention, /Recovery complete/);
   assert.match(pairDisplay(standby({ role: 'protected' })).syncStat, /blocked/);
   assert.match(pairDisplay(standby({ sync: { state: 'error' } })).attention, /no verified snapshot is available yet/);
+});
+
+test('normal pairing and informational comparisons stay neutral while current operations show progress', () => {
+  const sync = { state: 'ready', sourceAt: now - 60_000, verifiedAt: now - 30_000 };
+  const peer = { reachable: true, role: 'slave', sync, lastSeenAt: now, syncReceivedAt: now };
+  for (const view of [primary({ peer }),
+    standby({ peer: { reachable: true, role: 'master', lastSeenAt: now }, sync }),
+    primary({ peer, recovery: { state: 'ready', donorRole: 'slave', preview: preview() } }),
+    primary({ peer, recovery: { state: 'resolved', report: {} } })]) {
+    const display = pairDisplay(view, { now });
+    assert.equal(display.tone, 'neutral');
+    assert.equal(display.roleTone, 'neutral');
+    assert.equal(display.peerTone, 'neutral');
+    assert.equal(display.syncTone, 'neutral');
+    assert.equal(display.recoveryTone, 'neutral');
+    assert.equal(display.error, false);
+  }
+  for (const view of [primary({ peer, recovery: { state: 'checking' },
+    uiOperation: { state: 'running', action: 'check-recovery', progress: { phase: 'checking' } } }),
+    primary({ peer, recovery: { state: 'recovering' },
+      uiOperation: { state: 'running', action: 'recover', progress: { phase: 'rebuilding' } } }),
+    primary({ peer: { ...peer, sync: { ...sync, state: 'syncing' } } }),
+    standby({ peer: { reachable: true, role: 'master' }, sync: { ...sync, state: 'syncing', phase: 'verifying' } }),
+    primary({ peer, transition: { kind: 'handover', phase: 'quiescing' } })]) {
+    const display = pairDisplay(view, { now });
+    assert.equal(display.tone, 'progress');
+    assert.equal(display.error, false);
+  }
+});
+
+test('protected decisions and uncertain completion need attention without being operation failures', () => {
+  for (const view of [standby({ role: 'protected' }), checked(),
+    primary({ peer: { reachable: true, role: 'protected' }, recovery: { state: 'complete', donorRole: 'protected' } }),
+    primary({ recovery: { state: 'complete', donorRole: 'protected',
+      pendingRelease: { requestId: id, previewId, discardUnrecovered: false } } })]) {
+    const display = pairDisplay(view, { now });
+    assert.equal(display.tone, 'attention');
+    assert.equal(display.error, false, 'A decision awaiting review is distinct from a failed operation');
+  }
+  const protectedDisplay = pairDisplay(standby({ role: 'protected' }), { now });
+  assert.equal(protectedDisplay.roleTone, 'attention');
+  assert.equal(protectedDisplay.syncTone, 'attention');
+  assert.equal(pairDisplay(checked(), { now }).recoveryTone, 'attention');
+});
+
+test('running protected recovery shows progress while the blocked mirror remains visible', () => {
+  const view = primary({ peer: { reachable: true, role: 'protected' },
+    recovery: { state: 'recovering', donorRole: 'protected' },
+    uiOperation: { state: 'running', action: 'recover', progress: { phase: 'rebuilding' } } });
+  const display = pairDisplay(view, { now });
+  assert.equal(display.tone, 'attention');
+  assert.equal(display.syncTone, 'attention');
+  assert.equal(display.recoveryTone, 'progress');
+  assert.equal(display.attentionTone, 'progress');
+  assert.match(display.attention, /Rebuilding the model/);
+  const failed = pairDisplay({ ...view, vip: { error: 'vip_failed' } }, { now });
+  assert.equal(failed.attentionTone, 'attention');
+  assert.doesNotMatch(failed.attention, /Rebuilding the model/);
+});
+
+test('reported stale snapshots and competing master roles require review without inventing failures', () => {
+  const sync = { state: 'stale', sourceAt: now - 60_000, verifiedAt: now - 30_000 };
+  const stale = pairDisplay(standby({ peer: { reachable: true, role: 'master' }, sync }), { now });
+  assert.equal(stale.tone, 'attention');
+  assert.equal(stale.syncTone, 'attention');
+  assert.equal(stale.error, false);
+  assert.match(stale.attention, /stale|old|age/i);
+  const competing = pairDisplay(primary({ peer: { reachable: true, role: 'master',
+    sync: { state: 'error', sourceAt: now - 60_000, verifiedAt: now - 30_000 } } }), { now });
+  assert.equal(competing.tone, 'attention');
+  assert.equal(competing.peerTone, 'attention');
+  assert.equal(competing.syncTone, 'attention');
+  assert.equal(competing.error, false, 'A master’s old replica error is not a current slave synchronization failure');
+  assert.match(competing.attention, /both.*master|also.*master|two.*master/i);
+  assert.doesNotMatch(competing.syncStat, /snapshot.*min old|Sync needs attention/i);
+});
+
+test('compact master status reports mirroring evidence independently of the active MQTT address', () => {
+  const sync = { state: 'ready', sourceAt: now - 60_000, verifiedAt: now - 30_000 };
+  const peer = { reachable: true, role: 'slave', sync, lastSeenAt: now, syncReceivedAt: now };
+  const healthy = pairDisplay(primary({ peer }), { now });
+  assert.match(healthy.syncStat, /snapshot.*1 min old/i);
+  assert.doesNotMatch(healthy.syncStat, /MQTT|up.to.date|synchronized/i);
+  for (const [change, expected] of [
+    [{ sync: { ...sync, state: 'error' } }, /sync.*attention|sync.*problem/i],
+    [{ role: 'protected' }, /blocked|protected/i],
+    [{ reachable: false }, /unknown|unavailable|unconfirmed/i],
+  ]) {
+    const display = pairDisplay(primary({ peer: { ...peer, ...change } }), { now });
+    assert.match(display.syncStat, expected);
+    assert.equal(display.syncTone, 'attention');
+    assert.equal(display.tone, 'attention');
+    assert.match(display.broker, /active on this computer/);
+    assert.equal(display.brokerTone, 'neutral');
+  }
+});
+
+test('current synchronization failures and lost contact take precedence over historical recovery results', () => {
+  const sync = { state: 'ready', sourceAt: now - 60_000, verifiedAt: now - 30_000 };
+  for (const recovery of [{ state: 'resolved', report: {} },
+    { state: 'ready', donorRole: 'slave', preview: preview() }]) {
+    const failed = pairDisplay(primary({ recovery, peer: { reachable: true, role: 'slave', sync: { ...sync, state: 'error' } } }), { now });
+    assert.equal(failed.tone, 'attention');
+    assert.match(failed.attention, /sync.*problem|sync.*attention/i);
+    assert.doesNotMatch(failed.attention, /comparison complete|recovery complete/i);
+    const unavailable = pairDisplay(primary({ recovery, peer: { reachable: false, role: 'slave', sync } }), { now });
+    assert.equal(unavailable.peerTone, 'attention');
+    assert.equal(unavailable.tone, 'attention');
+    assert.match(unavailable.attention, /unavailable|lost contact|not reachable/i);
+    assert.doesNotMatch(unavailable.attention, /comparison complete|recovery complete/i);
+  }
+});
+
+test('unknown contact and incomplete snapshot evidence never appear verified or offline', () => {
+  const unknown = pairDisplay(primary({ peer: {} }), { now });
+  assert.match(unknown.peerStat, /checking|unknown|unconfirmed/i);
+  assert.doesNotMatch(unknown.peerStat, /connected|offline|unavailable/i);
+  const unavailable = pairDisplay(primary({ peer: { reachable: false } }), { now });
+  assert.match(unavailable.peerStat, /unavailable/i);
+  assert.doesNotMatch(unavailable.peerStat, /offline/i);
+  for (const sync of [{ sourceAt: now - 60_000 }, { verifiedAt: now - 30_000 }]) {
+    for (const view of [standby({ sync }), primary({ peer: { reachable: true, role: 'slave', sync } })]) {
+      const display = pairDisplay(view, { now });
+      assert.doesNotMatch(display.syncStat, /min old|verified snapshot/i);
+      assert.match(display.syncStat, /waiting|unknown|unconfirmed/i);
+    }
+  }
+});
+
+test('reconnecting pairing panel replaces current connectivity claims and restores them only after a status update', () => {
+  const { document, $ } = fixture();
+  const panel = createPairPanel({ document, request: async () => {}, now: () => now });
+  const view = primary({ peer: { reachable: true, role: 'slave', lastSeenAt: now, syncReceivedAt: now,
+    sync: { state: 'ready', sourceAt: now - 60_000, verifiedAt: now - 30_000 } } });
+  panel.update(view);
+  assert.match($('pairing-peerStat').textContent, /connected/i);
+  assert.match($('pairing-syncStat').textContent, /snapshot.*1 min old/i);
+  panel.unavailable();
+  assert.equal($('pairing-panel').dataset.attention, 'true');
+  assert.equal($('pairing-attention').dataset.tone, 'attention');
+  assert.match($('pairing-attention').textContent, /connection.*lost/i);
+  assert.doesNotMatch($('pairing-peerStat').textContent, /connected/i);
+  assert.doesNotMatch($('pairing-syncStat').textContent, /snapshot.*min old|MQTT active/i);
+  assert.equal($('pairing-handover').disabled, true);
+  panel.update(view);
+  assert.equal($('pairing-panel').dataset.attention, 'false');
+  assert.match($('pairing-peerStat').textContent, /connected/i);
+  assert.match($('pairing-syncStat').textContent, /snapshot.*1 min old/i);
+  assert.equal($('pairing-handover').disabled, false);
+  panel.update({ ...view, peer: { reachable: true, role: 'protected' },
+    recovery: { state: 'recovering', donorRole: 'protected' },
+    uiOperation: { state: 'running', action: 'recover', progress: { phase: 'rebuilding' } } });
+  panel.unavailable();
+  assert.match($('pairing-recovery').textContent, /^Last reported:.*Recovering/i);
 });
 
 test('recovery and skipping it both require a successful checked preview, including after a failed recheck', async () => {
@@ -604,7 +759,7 @@ test('peer roles are timestamped reports and a fresh slave waits when a master i
   const peer = { reachable: true, role: 'master', lastSeenAt: now - 1000 };
   const view = standby({ bootstrapPending: true, peer, sync: { state: 'waiting' } });
   const display = pairDisplay(view, { now });
-  assert.match(display.peer, /last reported master.*connected.*Status received 2026-09-12T11:59:59.000Z/);
+  assert.match(display.peer, /last reported master.*connected.*Status received 2026-09-12T11:59:59.000Z/i);
   assert.match(display.summary, /Waiting for the first verified snapshot/);
   assert.doesNotMatch(display.summary, /Both computers start|explicitly promote one/);
   assert.match(pairActionHelp(view).promote, /Keep this computer as a slave/);

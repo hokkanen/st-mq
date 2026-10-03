@@ -182,6 +182,8 @@ try {
   assert.equal(await evaluate(`${$('pairing-details')}.open`), true, 'Native disclosure opens with Enter');
   assert.equal(await evaluate(`${$('pairing-check-recovery')}.checkVisibility()`), true);
   assert.equal(await evaluate(`${$('pairing-recover')}.disabled`), true);
+  assert.equal(await evaluate(`${$('pairing-recover-step')}.checkVisibility()`), false, 'Routine mirroring does not show unnecessary recovery steps');
+  assert.equal(await evaluate(`${$('pairing-rejoin-step')}.checkVisibility()`), false);
   assert.match(await evaluate(`${$('pairing-recover-help')}.textContent`), /check|step 1/i);
   await command('browsingContext.setViewport', { context, viewport: { width: 1440, height: 1400 }, devicePixelRatio: 1 });
   await capture('desktop-expanded');
@@ -191,6 +193,18 @@ try {
   pair = master({ peer: { reachable: false, lastSeenAt: now - 120_000 } });
   await until(`${$('pairing-peer')}.textContent.includes('unavailable')`);
   assert.equal(await evaluate(`${$('pairing-details')}.open`), true, 'Polling preserves the open disclosure');
+  for (const theme of ['dark', 'light']) {
+    if (await evaluate('document.documentElement.dataset.theme') !== theme) await evaluate("document.getElementById('theme-toggle').click(); true");
+    assert.equal(await evaluate(`getComputedStyle(${$('pairing-peerStat')}).color === getComputedStyle(${$('pairing-attention')}).color`), true,
+      'Unavailable connection and attention message use the same warning color');
+    assert.notEqual(await evaluate(`getComputedStyle(${$('pairing-peerStat')}).color`), await evaluate(`getComputedStyle(${$('pairing-broker')}).color`),
+      'Peer outage does not recolor confirmed local MQTT readiness');
+    for (const width of [1440, 768, 390, 320]) {
+      await close(); await checkLayout(width, theme, true); await open();
+      assert.equal(await evaluate('document.documentElement.scrollWidth <= innerWidth'), true, 'Unavailable peer details fit each viewport');
+      if (width === 1440 || width === 320) await capture(`peer-unavailable-${width}-${theme}`);
+    }
+  }
   pair = master(); await until(`${$('pairing-peer')}.textContent.includes('connected')`);
 
   pair = master({ recovery: { state: 'ready', donorRole: 'slave', preview: { ...preview,
@@ -198,6 +212,8 @@ try {
     peer: { reachable: true, role: 'slave', lastSeenAt: now, syncReceivedAt: now,
       sync: { state: 'ready', sourceAt: now - 60_000, verifiedAt: now - 30_000, bytes: 2e6 } } });
   await until(`${$('pairing-preview')}.textContent.includes('History comparison')`);
+  assert.equal(await evaluate(`${$('pairing-attention')}.dataset.tone`), 'neutral', 'Informational comparison does not use attention color');
+  assert.match(await evaluate(`${$('pairing-syncStat')}.textContent`), /Slave snapshot 1 min old/);
   assert.equal(await evaluate(`${$('pairing-recover')}.disabled`), true);
   assert.equal(await evaluate(`${$('pairing-rejoin')}.disabled`), true);
   assert.doesNotMatch(await evaluate(`${$('pairing-recovery')}.textContent`), /discard|then resume|recover the gaps/i);
@@ -228,6 +244,16 @@ try {
   assert.equal(actions.length, 2);
   pair = { ...checked(), uiOperation: { id: actions.at(-1).requestId, action: 'check-recovery', state: 'complete' } };
   await until(`${$('pairing-recover')}.disabled === false`);
+  assert.equal(await evaluate(`${$('pairing-recover-step')}.checkVisibility()`), true, 'Protected history exposes the complete recovery workflow');
+  assert.equal(await evaluate(`${$('pairing-rejoin-step')}.checkVisibility()`), true);
+  assert.equal(await evaluate(`${$('pairing-attention')}.dataset.tone`), 'attention');
+  for (const width of [1440, 768, 390, 320]) for (const theme of ['dark', 'light']) {
+    await close(); await checkLayout(width, theme, true); await open();
+    assert.equal(await evaluate('document.documentElement.scrollWidth <= innerWidth'), true, 'Protected recovery workflow fits each viewport');
+    assert.equal(await evaluate(`getComputedStyle(${$('pairing-rejoin')}).color === getComputedStyle(${$('pairing-attention')}).color`), true,
+      'Discarding unrecovered history is visibly an attention action');
+    if (width === 1440 || width === 320) await capture(`recovery-ready-${width}-${theme}`);
+  }
   assert.equal(await evaluate(`${$('pairing-details')}.open`), true);
   assert.equal(await evaluate(`${$('pairing-preview')}.checkVisibility()`), true);
   assert.match(await evaluate(`${$('pairing-preview')}.textContent`), /12/);
@@ -238,6 +264,7 @@ try {
   assert.equal(actions.length, 2, 'Cancelling skip preserves the checked recovery choice');
   assert.match(await confirmAction('pairing-recover', true), /gap|rebuild/i);
   await until(`${$('pairing-recovery')}.textContent.includes('Recovering')`);
+  assert.equal(await evaluate(`${$('pairing-attention')}.dataset.tone`), 'progress', 'Running recovery uses progress color while blocked mirroring remains explicit');
   assert.equal(actions.at(-1).action, 'recover');
   assert.equal(actions.at(-1).previewId, previewId, 'Recovery uses the successfully checked snapshot');
   await close();

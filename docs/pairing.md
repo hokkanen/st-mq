@@ -312,6 +312,13 @@ address ownership, snapshot age, verification and operation progress. It is
 hidden unless `controller.topology` is `pair`. A regular slave continues serving
 its last verified snapshot while the master or network is unavailable.
 
+The compact summary separates peer connectivity from reported snapshot age.
+Amber marks unavailable connections, blocked mirroring and decisions requiring
+attention; ordinary progress and informational comparisons use quieter colors.
+Expanded details group this computer, the other computer and database mirroring.
+Losing the dashboard connection replaces current-status claims with unconfirmed
+status until a new report arrives. Neither connectivity nor color grants control.
+
 The master also shows the slave's reported snapshot and verification times,
 with the time that report was received. These are observations from the peer,
 not proof that it includes writes made after that snapshot. An unreachable peer
@@ -581,6 +588,11 @@ the next ordinary snapshot applies the deletion. The comparison does not
 authorize resurrecting it. A healthy mirror containing the same records must
 not report those records as missing merely because their measurements are
 unavailable, stale or invalid.
+
+During normal mirroring, the history workflow shows only the optional check. The recovery
+and resume-mirroring steps appear when the peer reports protected history or a
+protected-history decision remains unresolved. These presentation choices do not
+change the server's readiness checks or the required confirmations.
 
 For a computer in **Protected recovery**:
 

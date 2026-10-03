@@ -921,41 +921,41 @@ G_warming = G / 2</code>
         <summary class="pairing-opener">
           <span class="pairing-heading">Paired computers <span id="pairing-title" class="pairing-role"></span></span>
           <span class="pairing-compact-stats"><span id="pairing-peerStat"></span><span id="pairing-syncStat"></span></span>
-          <span class="pairing-open-label">Details &amp; controls</span>
+          <span class="pairing-open-label">Details</span>
         </summary>
         <div class="pairing-content">
-          <p id="pairing-summary"></p>
           <div class="pairing-facts">
-            <div><h3>Connection</h3><p id="pairing-peer"></p><p id="pairing-broker"></p></div>
+            <div><h3>This computer</h3><p id="pairing-summary"></p><p id="pairing-broker"></p></div>
+            <div><h3>Other computer</h3><p id="pairing-peer"></p></div>
             <div><h3>Database mirroring</h3><p id="pairing-sync"></p><p id="pairing-syncDetail" class="muted"></p></div>
           </div>
-          <p class="muted">Mirroring copies the master’s database to the slave, including changes and deletions. After an outage, the slave catches up and verifies the copied snapshot before showing it. A verified snapshot matches the master at the time it was taken; newer measurements can still be waiting to sync.</p>
+          <p class="muted pairing-snapshot-note">Mirroring copies the master’s changes and deletions. A verified snapshot matches that point in history; newer measurements may still be waiting to sync.</p>
           <p id="pairing-phase" class="pairing-progress" role="status" aria-live="polite"></p>
           <p id="pairing-recovery" class="pairing-progress" role="status" aria-live="polite"></p>
           <p class="family-access-note">Admin access is required to manage paired computers.</p>
           <section id="pairing-master-controls" class="pairing-management" aria-labelledby="pairing-recovery-title" hidden>
-            <h3 id="pairing-recovery-title">Recover missing history</h3>
-            <p>Normal mirroring is automatic and copies this master’s changes and deletions to the slave. Manual recovery is for protected history recorded by the other computer while this master was offline. Existing master history wins overlaps.</p>
+            <h3 id="pairing-recovery-title">Check history</h3>
+            <p id="pairing-recovery-intro"></p>
             <ol class="pairing-steps">
               <li>
-                <div class="pairing-step-copy"><h4>Check the other history</h4><p>Compare a snapshot from the other computer with this master. This check changes no history. A normal slave comparison is informational; protected history can be recovered after review.</p></div>
-                <button id="pairing-check-recovery" data-admin-only type="button" aria-describedby="pairing-check-help" disabled>Check other computer for missing data</button>
+                <div class="pairing-step-copy"><h4>Compare the two histories</h4><p>Review missing, conflicting and skipped entries before making a recovery decision. A normal slave comparison is informational.</p></div>
+                <button id="pairing-check-recovery" data-admin-only class="secondary-button" type="button" aria-describedby="pairing-check-help" disabled>Check other computer for missing data</button>
                 <p id="pairing-check-help" class="muted pairing-step-help"></p>
                 <div id="pairing-preview" class="pairing-preview" hidden></div>
               </li>
-              <li>
+              <li id="pairing-recover-step" hidden>
                 <div class="pairing-step-copy"><h4>Recover the checked gaps</h4><p>Import the gaps from that checked snapshot. Conflicting or unsupported entries are skipped. The current model stays available for home control while the rebuilt model catches up and is published.</p></div>
                 <button id="pairing-recover" data-admin-only type="button" aria-describedby="pairing-recover-help" disabled>Recover gaps and rebuild model</button>
                 <p id="pairing-recover-help" class="muted pairing-step-help"></p>
               </li>
-              <li>
-                <div class="pairing-step-copy"><h4>Make the slave match the master</h4><p>Replace the other computer’s database with a verified copy of this master and resume mirroring. Normally, recover the gaps first. You may instead skip recovery after reviewing the check: all unmatched history, including recoverable gaps, will be discarded. No separate archive is kept.</p></div>
+              <li id="pairing-rejoin-step" hidden>
+                <div class="pairing-step-copy"><h4>Resume mirroring</h4><p>Replace the other database with a verified copy of this master. Recover the gaps first, or explicitly skip recovery. All remaining unmatched history is discarded; no separate archive is kept.</p></div>
                 <button id="pairing-rejoin" data-admin-only class="secondary-button" type="button" aria-describedby="pairing-rejoin-help" disabled>Resume mirroring</button>
                 <p id="pairing-rejoin-help" class="muted pairing-step-help"></p>
               </li>
             </ol>
             <div class="pairing-role-action">
-              <div><h3>Move the master role</h3><p>When both computers are available and the slave is ready, hand over deliberately. This master finishes control and transfers a final verified snapshot before the other computer starts. The MQTT address moves with the role; devices reconnect and some measurements may be missed.</p></div>
+              <div><h3>Hand over control</h3><p>Move the master role to the ready slave after a final verified snapshot. The MQTT address moves with it; devices reconnect and some measurements may be missed.</p></div>
               <button id="pairing-handover" data-admin-only class="secondary-button" type="button" aria-describedby="pairing-handover-help" disabled>Hand over to the other computer</button>
               <p id="pairing-handover-help" class="muted pairing-step-help"></p>
             </div>

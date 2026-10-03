@@ -17,6 +17,10 @@ Versions follow Semantic Versioning. `-dev.N` denotes a development prerelease.
 
 ### Fixed
 
+- Paired computers has clearer status groups, balanced mobile layouts and amber
+  emphasis for problems or decisions that need attention. The compact view shows
+  reported mirroring evidence, and normal operation keeps recovery steps out of
+  the way. Lost connections no longer leave current-status claims visible.
 - Charger 2 retains command acknowledgements arriving during replanning so its
   own confirmed stop does not incorrectly become a manual override. Whole-second
   charger timestamps no longer leave acknowledged Start/Stop commands permanently

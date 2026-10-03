@@ -124,8 +124,8 @@ export function pairDisplay(view, { now = Date.now(), formatTime = at => new Dat
           : 'This computer is a read-only slave. History, saved settings and device details are available for inspection. It never takes control automatically.'
           : 'Waiting for a confirmed local role. Management actions are unavailable.';
   const peer = view.peer ?? {};
-  const peerText = peer.reachable === true ? `Other computer: last reported ${roleName(peer.role).toLowerCase()} · connected.${stamp(peer.lastSeenAt) ? ` Status received ${formatTime(peer.lastSeenAt)}.` : ''}`
-    : `Other computer: unavailable.${stamp(peer.lastSeenAt) ? ` Last seen ${formatTime(peer.lastSeenAt)}.` : ''}`;
+  const peerText = peer.reachable === true ? `Last reported ${roleName(peer.role).toLowerCase()} · connected.${stamp(peer.lastSeenAt) ? ` Status received ${formatTime(peer.lastSeenAt)}.` : ''}`
+    : `${peer.reachable === false ? 'Other computer unavailable.' : 'Connection status unknown.'}${stamp(peer.lastSeenAt) ? ` Last seen ${formatTime(peer.lastSeenAt)}.` : ''}`;
   const vip = view.vip ?? {};
   const brokerText = vip.error ? 'Virtual-IP setup needs attention.'
     : vip.owned === true ? vip.ready === true ? 'MQTT address is active on this computer.' : 'MQTT address is assigned; waiting for readiness confirmation.'
@@ -135,13 +135,14 @@ export function pairDisplay(view, { now = Date.now(), formatTime = at => new Dat
   const peerSourceAt = stamp(peerSync?.sourceAt), peerVerifiedAt = stamp(peerSync?.verifiedAt);
   const syncText = state === 'protected' ? 'Mirroring is blocked to preserve the local history.'
     : view.role === 'master' ? peer.reachable === true && peer.role === 'protected' ? 'The other computer’s history is protected. Mirroring is blocked until recovery is resolved.'
+      : peer.reachable === false ? 'Mirroring cannot be confirmed while the other computer is unavailable.'
       : peerSync?.state === 'error' ? `The other computer reports a synchronization problem. ${peerSourceAt && peerVerifiedAt ? 'Its last verified snapshot is kept.' : 'It has not reported a verified snapshot yet.'}`
       : peerSync?.state === 'syncing' ? 'The other computer is synchronizing from this master.'
       : peer.role === 'slave' && peer.reachable === true ? 'Normal one-way mirroring is enabled. The slave receives this master’s changes and deletions.'
       : 'This master supplies the database for one-way mirroring.'
     : sync.state === 'syncing' ? phaseText[sync.phase] ?? 'Synchronizing the database.'
       : sync.state === 'error' ? `Synchronization needs attention. ${sourceAt && verifiedAt ? 'The last verified snapshot is kept.' : 'No verified snapshot is available yet.'}`
-        : sourceAt ? `Last snapshot: ${formatTime(sourceAt)} · ${Math.max(0, Math.floor((now - sourceAt) / 60_000))} minutes old.`
+        : sourceAt && verifiedAt ? `Last snapshot: ${formatTime(sourceAt)} · ${sourceAt > now ? 'snapshot clock ahead' : `${Math.floor((now - sourceAt) / 60_000)} minutes old`}.`
           : 'No verified snapshot has been reported yet.';
   const syncDetail = state === 'protected' ? 'Incoming snapshots cannot replace this history while protection is active.' : view.role === 'master'
     ? peer.role === 'protected' && peer.reachable === true ? 'Check the preserved history before explicitly replacing the other database.'
@@ -169,33 +170,63 @@ export function pairDisplay(view, { now = Date.now(), formatTime = at => new Dat
       : 'The previous recovery and verified replacement completed. Current mirroring status is shown above.',
     error: 'The check or recovery could not finish. Review the current computer roles, then check again before retrying.',
   }[recovery.state] ?? '';
-  const peerStat = peer.reachable === true ? 'Other computer connected' : 'Other computer offline';
-  const brokerStat = vip.error ? 'MQTT needs attention' : vip.owned && vip.ready ? 'MQTT active here' : 'MQTT not ready here';
-  const syncStat = state === 'protected' ? 'Mirroring blocked'
-    : view.role === 'master' ? brokerStat
-      : sync.state === 'syncing' ? 'Syncing snapshot'
-        : sync.state === 'error' ? 'Sync needs attention'
-          : sourceAt > now ? 'Snapshot clock ahead'
-            : sourceAt ? `Snapshot ${Math.max(0, Math.floor((now - sourceAt) / 60_000))} min old` : 'Waiting for first snapshot';
-  const attention = phase || (resetFailed || resetInterrupted ? 'Pairing reset needs attention · open details before retrying.'
+  const peerProtected = peer.reachable === true && peer.role === 'protected';
+  const peerAlsoMaster = view.role === 'master' && peer.reachable === true && peer.role === 'master';
+  const reportedSync = view.role === 'master' ? peerSync : sync;
+  const reportedSourceAt = view.role === 'master' ? peerSourceAt : sourceAt;
+  const reportedVerifiedAt = view.role === 'master' ? peerVerifiedAt : verifiedAt;
+  const clockAhead = reportedSourceAt > now || reportedVerifiedAt > now;
+  const syncFailed = reportedSync?.state === 'error';
+  const peerStat = peerProtected ? 'Other history protected' : peerAlsoMaster ? 'Other computer reports master'
+    : peer.reachable === true ? 'Other computer connected'
+    : peer.reachable === false ? 'Other computer unavailable' : 'Connection unknown';
+  const syncStat = state === 'protected' || peerProtected ? 'Mirroring blocked'
+    : state === 'transition' ? 'Changing roles'
+    : peerAlsoMaster ? 'Review computer roles'
+    : view.role === 'master' && peer.reachable !== true ? 'Mirroring unconfirmed'
+    : syncFailed ? 'Sync needs attention'
+    : reportedSync?.state === 'syncing' ? 'Syncing snapshot'
+    : clockAhead ? 'Snapshot clock ahead'
+    : reportedSourceAt && reportedVerifiedAt ? `${view.role === 'master' ? 'Slave snapshot' : 'Snapshot'} ${Math.floor((now - reportedSourceAt) / 60_000)} min old`
+    : view.role === 'master' ? 'Waiting for snapshot status' : 'Waiting for first snapshot';
+  const error = Boolean(resetFailed || resetInterrupted || view.error || recovery.error || recovery.state === 'error' || vip.error || syncFailed);
+  const roleTone = state === 'transition' ? 'progress'
+    : state === 'protected' || state === 'unknown' || (state === 'master' && view.canControl !== true) ? 'attention' : 'neutral';
+  const peerTone = peer.reachable === false || peerProtected || peerAlsoMaster || (peer.reachable === true && !['master', 'slave'].includes(peer.role)) ? 'attention' : 'neutral';
+  const brokerTone = vip.error ? 'attention' : state === 'transition' ? 'progress'
+    : state === 'master' && !(vip.owned === true && vip.ready === true) ? 'attention' : 'neutral';
+  const syncTone = state === 'protected' || peerProtected || peerAlsoMaster || syncFailed || reportedSync?.state === 'stale' || clockAhead || peer.reachable === false ? 'attention'
+    : reportedSync?.state === 'syncing' || state === 'transition' ? 'progress' : 'neutral';
+  const recoveryTone = recovery.pendingRelease || donorRoleChanged(view) || recovery.state === 'error' || recovery.error
+    || (['ready', 'complete'].includes(recovery.state) && (!mirrorComparison(view) || peerProtected)) ? 'attention'
+    : ['checking', 'recovering'].includes(recovery.state) ? 'progress' : 'neutral';
+  const tone = error || [roleTone, peerTone, brokerTone, syncTone, recoveryTone].includes('attention') ? 'attention'
+    : phase || syncTone === 'progress' || recoveryTone === 'progress' ? 'progress' : 'neutral';
+  const currentIssue = resetFailed || resetInterrupted ? 'Pairing reset needs attention · open details before retrying.'
     : view.error === 'ocpp_handover_not_ready' ? ocppReadinessHelp
     : startupProblem(view) ? 'Master startup needs attention · open details for the next step.'
     : state === 'protected' ? 'Local history is preserved · open details to choose the next step.'
       : recovery.pendingRelease ? 'Mirroring completion is unconfirmed · verify the saved request.'
       : donorRoleChanged(view) ? 'The other computer’s role changed · review current status before continuing.'
-      : recovery.state === 'ready' ? mirrorComparison(view) ? peer.reachable === true && peer.role === 'protected'
+      : syncFailed ? view.role === 'master' ? 'The other computer reports a synchronization problem · open details.'
+        : sourceAt && verifiedAt ? 'Sync needs attention · the last verified snapshot is kept.' : 'Sync needs attention · no verified snapshot is available yet.'
+      : error ? 'An operation needs attention · open details before trying again.'
+      : peerAlsoMaster ? 'The other computer also reports that it is master · review both roles before taking action.'
+      : peer.reachable === false ? 'Other computer unavailable · mirroring cannot be confirmed. This does not prove that it has stopped controlling equipment.'
+      : clockAhead ? 'Snapshot clock is ahead · check the clocks on both computers.'
+      : reportedSync?.state === 'stale' ? 'The last verified snapshot is old · check the connection and mirroring status.'
+      : state === 'master' && view.canControl !== true && !view.transition ? 'Master control is unavailable · waiting for local readiness.'
+      : brokerTone === 'attention' ? 'MQTT address needs attention · open details to check local readiness.' : '';
+  const attention = currentIssue || phase || (recovery.state === 'ready' ? mirrorComparison(view) ? peerProtected
         ? 'Other computer now reports protected history · check again before recovery.' : 'History comparison complete · check connection status for current mirroring.'
         : hasMissing(view) ? `Check ready · ${recovery.preview.counts.missing} missing entries · review before continuing.`
         : 'No missing entries · review protected history before resuming mirroring.'
         : recovery.state === 'complete' ? 'Recovery complete · ready to resume mirroring.'
-          : recovery.state === 'error' || view.error ? 'An operation needs attention · open details before trying again.'
-            : view.role === 'master' && peer.reachable === true && peer.role === 'protected' ? 'Other computer’s history is protected · open details to recover and resume mirroring.'
-            : view.role === 'master' && peerSync?.state === 'error' ? 'The other computer reports a synchronization problem · open details.'
-            : sync.state === 'error' && view.role !== 'master' ? sourceAt && verifiedAt
-              ? 'Sync needs attention · the last verified snapshot is kept.' : 'Sync needs attention · no verified snapshot is available yet.' : '');
+          : view.role === 'master' && peerProtected ? 'Other computer’s history is protected · open details to recover and resume mirroring.' : '');
   return { state, title: `${roleName(view.role)}${state === 'transition' ? ' · changing role' : ''}`, summary, peerStat, syncStat, attention,
+    tone, attentionTone: currentIssue ? 'attention' : phase ? 'progress' : tone, roleTone, peerTone, brokerTone, syncTone, recoveryTone,
     peer: peerText, broker: brokerText, sync: syncText, syncDetail, phase, recovery: recoveryText,
-    error: Boolean(resetFailed || resetInterrupted || view.error || recovery.error || vip.error || (view.role !== 'master' && sync.state === 'error') || peerSync?.state === 'error'),
+    error,
     preview: recovery.preview ?? null, report: recovery.report ?? null };
 }
 
@@ -373,9 +404,19 @@ export function createPairPanel({ document, request, storage, confirm, afterMuta
     if (!display) { if (resetDialog.open) resetDialog.close(); return; }
     $('pairing-panel').dataset.state = display.state;
     $('pairing-panel').setAttribute('aria-busy', String(state.busy || state.view.busy === true));
+    const unavailable = { title: 'Role unconfirmed', summary: 'Connection to this computer is lost. Reconnect to confirm its role and current status.',
+      peer: 'Current connection status is unavailable.', broker: 'MQTT address ownership is unconfirmed.',
+      sync: 'Current mirroring status is unconfirmed.', syncDetail: '', peerStat: 'Connection unknown', syncStat: 'Mirroring unconfirmed', phase: '',
+      recovery: display.recovery ? `Last reported: ${display.recovery}` : '' };
     for (const field of ['title', 'summary', 'peer', 'broker', 'sync', 'syncDetail', 'phase', 'recovery', 'peerStat', 'syncStat']) {
       const node = $(`pairing-${field}`);
-      if (node.textContent !== display[field]) node.textContent = display[field];
+      const value = !state.available && Object.hasOwn(unavailable, field) ? unavailable[field] : display[field];
+      if (node.textContent !== value) node.textContent = value;
+    }
+    for (const [field, tone] of Object.entries({ title: display.roleTone, summary: display.roleTone,
+      peer: display.peerTone, peerStat: display.peerTone, broker: display.brokerTone,
+      sync: display.syncTone, syncStat: display.syncTone, recovery: display.recoveryTone })) {
+      $(`pairing-${field}`).dataset.tone = state.available ? tone : 'attention';
     }
     const message = !state.available ? 'This computer is reconnecting. Actions are unavailable until its role is confirmed.'
       : state.message || (display.error && !pairIssueHelp(state.view) ? 'An operation needs attention. Review the current computer roles and operation status.' : '');
@@ -383,9 +424,23 @@ export function createPairPanel({ document, request, storage, confirm, afterMuta
     $('pairing-message').classList.toggle('form-error', state.error || display.error || !state.available);
     const attention = !state.available ? 'Connection to this computer lost · actions are paused.'
       : state.error && message ? message : state.pending && !display.phase ? 'An operation is awaiting confirmation · open details to check its status.' : display.attention;
-    $('pairing-attention').textContent = attention;
+    if ($('pairing-attention').textContent !== attention) $('pairing-attention').textContent = attention;
     $('pairing-attention').hidden = !attention;
-    $('pairing-panel').dataset.attention = String(Boolean(state.error || display.error || !state.available));
+    const requestAttention = state.error || !state.available || (state.pending && !display.phase);
+    const tone = requestAttention ? 'attention' : display.tone;
+    $('pairing-panel').dataset.tone = tone;
+    $('pairing-attention').dataset.tone = requestAttention ? 'attention' : display.attentionTone;
+    $('pairing-panel').dataset.attention = String(tone === 'attention');
+    const recoveryNeeded = state.view.peer?.reachable === true && state.view.peer.role === 'protected'
+      || state.view.recovery?.pendingRelease
+      || state.view.recovery?.donorRole === 'protected' && ['ready', 'recovering', 'complete', 'error'].includes(state.view.recovery.state);
+    $('pairing-master-controls').dataset.recovery = String(Boolean(recoveryNeeded));
+    $('pairing-recovery-title').textContent = recoveryNeeded ? 'Recover protected history' : 'Check history';
+    $('pairing-recovery-intro').textContent = recoveryNeeded
+      ? 'Check the other computer’s preserved history, recover any gaps, then resume mirroring. Existing master history wins overlaps.'
+      : 'Mirroring is automatic. An optional comparison checks the other snapshot without changing either database.';
+    $('pairing-recover-step').hidden = !recoveryNeeded;
+    $('pairing-rejoin-step').hidden = !recoveryNeeded;
     $('pairing-master-controls').hidden = state.view.role !== 'master';
     $('pairing-slave-controls').hidden = !['slave', 'protected'].includes(state.view.role);
     $('pairing-standby-help').textContent = state.view.reset?.pendingMode
@@ -412,6 +467,8 @@ export function createPairPanel({ document, request, storage, confirm, afterMuta
     }
     $('pairing-rejoin').textContent = state.view.recovery?.pendingRelease ? 'Verify mirroring completion'
       : checkedPreview(state.view) && hasMissing(state.view) && !mirrorComparison(state.view) ? 'Skip recovery and resume mirroring' : 'Resume mirroring';
+    $('pairing-rejoin').dataset.tone = checkedPreview(state.view) && !mirrorComparison(state.view) ? 'attention' : 'neutral';
+    $('pairing-rejoin-help').dataset.tone = $('pairing-rejoin').dataset.tone;
     for (const action of actions) {
       const button = $(`pairing-${action}`);
       button.hidden = action === 'reset' ? false : action === 'promote' ? !['slave', 'protected'].includes(state.view.role) : state.view.role !== 'master';
@@ -458,7 +515,9 @@ export function renderRecoveryReport(document, root, data, { formatTime = at => 
   const counts = document.createElement('div'); counts.className = 'pairing-preview-counts'; root.append(counts);
   if (count(data.imported) !== null) { const line = document.createElement('p'); line.textContent = `Recovered entries: ${data.imported}.`; root.append(line); }
   for (const [key, title] of fields) if (count(totals[key]) !== null) {
-    const line = document.createElement('p'); line.textContent = `${title}: ${totals[key]}.`; counts.append(line);
+    const line = document.createElement('p'); line.textContent = `${title}: ${totals[key]}.`;
+    if (!comparison && key !== 'duplicates' && totals[key] > 0) line.dataset.tone = 'attention';
+    counts.append(line);
   }
   const from = stamp(data.period?.from ?? data.from), to = stamp(data.period?.to ?? data.to);
   if (from || to) { const line = document.createElement('p'); line.textContent = `${comparison ? 'Entries only in the other snapshot span' : report ? 'Recovered entries span' : 'Missing entries span'}: ${from ? formatTime(from) : 'unknown'} – ${to ? formatTime(to) : 'unknown'}.`; root.append(line); }
