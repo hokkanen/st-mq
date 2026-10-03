@@ -137,17 +137,23 @@ export class PairPeer {
     if (Buffer.byteLength(request) > MAX_BODY) throw pairError('peer_message_too_large');
     const signals = [this.abort.signal, AbortSignal.timeout(timeoutMs)];
     if (signal) signals.push(signal);
+    let replied = false;
     try {
       const url = new URL(ROUTE, this.peerUrl);
       if (!['http:', 'https:'].includes(url.protocol) || url.username || url.password) throw pairError('peer_protocol_failed');
       const response = await this.fetchImpl(url, { method: 'POST', body: request,
-        headers: { 'Content-Type': 'application/json' }, redirect: 'error', signal: AbortSignal.any(signals) });
-      if (!response.ok) throw pairError(response.status === 401 ? 'peer_authentication_failed' : 'peer_unavailable');
+        headers: { 'Content-Type': 'application/json' }, redirect: 'manual', signal: AbortSignal.any(signals) });
+      replied = true;
+      // A replying HTTP service is reachable even when it refuses the request.
+      // Startup authority must not mistake refusal or redirects for an offline
+      // slave and activate a second controller. Never follow redirect targets.
+      if (!response.ok) throw pairError(response.status === 401 ? 'peer_authentication_failed'
+        : response.status === 503 ? 'peer_busy' : 'peer_protocol_failed');
       const result = openEnvelope(await readBounded(response.body), this.key, `${CONTEXT}:response:${id}`);
       if (result.id !== id || result.pairId !== this.pairId) throw pairError('peer_authentication_failed');
       if (!result.ok) throw pairError(PUBLIC_ERRORS.has(result.error) ? result.error : 'peer_protocol_failed');
       return result.value;
-    } catch (error) { throw pairError(PUBLIC_ERRORS.has(error?.code) ? error.code : 'peer_unavailable'); }
+    } catch (error) { throw pairError(PUBLIC_ERRORS.has(error?.code) ? error.code : replied ? 'peer_protocol_failed' : 'peer_unavailable'); }
   }
 
   async close() {

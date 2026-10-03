@@ -1,12 +1,13 @@
 import { createHash, randomUUID } from 'node:crypto';
 import { createReadStream } from 'node:fs';
-import { open, readFile, readdir, rm } from 'node:fs/promises';
+import { lstat, open, readFile, readdir, rm } from 'node:fs/promises';
 import { join } from 'node:path';
+import { isDeepStrictEqual } from 'node:util';
 import { Worker } from 'node:worker_threads';
 import { createSourceSnapshot } from '../replication/transport.js';
 import { acquireReceiverLock } from '../replication/receiver.js';
 import { copySnapshot, DIGEST_ALGORITHM, durableJson, ownedDirectory, privateFile,
-  publishSnapshot, readReplicaPublication, syncDirectory } from '../replication/publication.js';
+  publishSnapshot, readReplicaPublication, snapshotFileState, syncDirectory } from '../replication/publication.js';
 import { NODE_PATTERN, pairError, validClaim } from './state.js';
 
 export const CHUNK_BYTES = 1024 * 1024;
@@ -51,6 +52,46 @@ export async function verifySnapshot(path, metadata, signal) {
   });
 }
 
+/** Verify once off-thread; cheaply fence local changes throughout a transfer. */
+export async function createReplicaPublicationGuard({ directory, accepted, signal }) {
+  try {
+    const manifestState = async () => {
+      let manifest;
+      try { manifest = await lstat(join(directory, 'publication.json'), { bigint: true }); }
+      catch (error) { if (error.code === 'ENOENT') return null; throw error; }
+      if (!manifest.isFile() || manifest.isSymbolicLink()) throw pairError('verification_failed');
+      return [manifest.dev, manifest.ino, manifest.size, manifest.mtimeNs, manifest.ctimeNs].map(String);
+    };
+    const originalManifest = await manifestState();
+    const publication = await readReplicaPublication(directory);
+    if (!publication) {
+      if (accepted || originalManifest) throw pairError('verification_failed');
+      return async () => {
+        try {
+          if (await manifestState()) throw pairError('verification_failed');
+        } catch { throw pairError('verification_failed'); }
+      };
+    }
+    validateSnapshot(publication);
+    if (!accepted || publication.generation !== accepted.generation || publication.digest !== accepted.digest ||
+        publication.claim.epoch !== accepted.epoch || publication.claim.nodeId !== accepted.nodeId ||
+        publication.sequence !== accepted.sequence) throw pairError('verification_failed');
+    const before = [originalManifest, await snapshotFileState(publication.dbPath)];
+    const assertUnchanged = async () => {
+      try {
+        const current = [await manifestState(), await snapshotFileState(publication.dbPath)];
+        if (!isDeepStrictEqual(before, current)) throw pairError('verification_failed');
+      } catch { throw pairError('verification_failed'); }
+    };
+    await verifySnapshot(publication.dbPath, publication, signal);
+    await assertUnchanged();
+    return assertUnchanged;
+  } catch (error) {
+    if (signal?.aborted || error?.code === 'stopped') throw pairError('stopped');
+    throw pairError('verification_failed');
+  }
+}
+
 /** Immutable export generations are separate from every writable or protected DB. */
 export class SnapshotRepository {
   constructor({ directory, clock = Date.now, snapshot = createSourceSnapshot }) {
@@ -89,6 +130,7 @@ export class SnapshotRepository {
       if (!force && this.current && this.current.claim.epoch === claim.epoch && this.current.claim.role === claim.role &&
           this.clock() - this.current.sourceAt < 30000) {
         if (pin) await this.pinExport(this.current.generation);
+        await assertSource();
         return this.current;
       }
       const generation = randomUUID(), path = join(this.directory, `export-${generation}.sqlite`);
@@ -96,6 +138,7 @@ export class SnapshotRepository {
         const result = await this.snapshot({ dbPath, destination: path, signal });
         await assertSource();
         const hashes = await chunkHashes(path);
+        await assertSource();
         const metadata = validateSnapshot({ generation, ...result, claim, sequence, chunkBytes: CHUNK_BYTES });
         delete metadata.ok;
         await durableJson(join(this.directory, `export-${generation}.json`), { ...metadata, hashes });
@@ -104,6 +147,7 @@ export class SnapshotRepository {
         // restart. Pin before returning it, with no create-to-pin pruning gap.
         if (pin) await this.pinExport(generation);
         await this.pruneExports(generation);
+        await assertSource();
         this.current = metadata;
         return metadata;
       } catch (error) {

@@ -18,7 +18,6 @@ const journalHead = (store, input) => store.db.prepare('SELECT COALESCE(MAX(id),
 export function recoveryPreview({ masterPath, donorPath, input = 'mqtt', workDirectory, onProgress = () => {}, signal }) {
   return workerJob({ mode: 'preview', masterPath, donorPath, input: validInput(input), workDirectory }, { onProgress, signal });
 }
-export const previewRecovery = recoveryPreview;
 
 /** Accepted source rows commit in bounded worker batches. Until publication,
  * live learning continues appending to its original selected epoch. A crash

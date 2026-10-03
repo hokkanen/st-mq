@@ -14,7 +14,7 @@ const standby = (overrides = {}) => primary({ role: 'slave', canControl: false, 
   actions: { promote: true }, ...overrides });
 const preview = () => ({ previewId, counts: { missing: 12, conflicts: 3, duplicates: 4, skipped: 5 },
   period: { from: now - 2 * 86400_000, to: now - 86400_000 }, model: { status: 'rebuild-required', unsupported: 2 } });
-const checked = () => primary({ recovery: { state: 'ready', preview: preview() },
+const checked = () => primary({ peer: { reachable: true, role: 'protected' }, recovery: { state: 'ready', donorRole: 'protected', preview: preview() },
   actions: { 'check-recovery': true, recover: true, handover: false, promote: false, rejoin: true } });
 const operation = (view, state = 'complete', action = 'check-recovery') => ({ ...view, uiOperation: { id, action, state } });
 function memoryStorage() {
@@ -100,8 +100,8 @@ test('management capability flags are restricted by role, transition, operation 
   assert.equal(pairActionAllowed(standby({ actions: { recover: true } }), 'recover'), false);
   assert.equal(pairActionAllowed(primary({ actions: { recover: true } }), 'recover'), false);
   assert.equal(pairActionAllowed(checked(), 'recover'), true);
-  assert.equal(pairActionAllowed({ ...checked(), recovery: { state: 'ready', preview: { previewId: 'invalid' } } }, 'recover'), false);
-  assert.equal(pairActionAllowed(primary({ recovery: { state: 'complete' }, actions: { rejoin: true } }), 'rejoin'), true);
+  assert.equal(pairActionAllowed({ ...checked(), recovery: { state: 'ready', donorRole: 'protected', preview: { previewId: 'invalid' } } }, 'recover'), false);
+  assert.equal(pairActionAllowed(primary({ recovery: { state: 'complete', donorRole: 'protected' }, actions: { rejoin: true } }), 'rejoin'), true);
   for (const change of [{ busy: true }, { transition: { kind: 'handover' } }, { uiOperation: { state: 'running' } }, { role: 'unknown' }])
     assert.equal(pairActionAllowed(primary(change), 'handover'), false);
 });
@@ -256,14 +256,14 @@ test('the compact status separates master connectivity from slave snapshot verif
   assert.match(master.syncDetail, /connection alone does not confirm/);
   const slave = pairDisplay(standby({ sync }), { now });
   assert.equal(slave.syncStat, 'Snapshot 3 min old');
-  assert.match(slave.syncDetail, /Identity verified/);
+  assert.match(slave.syncDetail, /Last snapshot identity verified/);
   assert.match(pairDisplay(checked()).attention, /12 missing entries/);
   assert.match(pairDisplay(primary({ uiOperation: { state: 'running', progress: { phase: 'rebuilding' } } })).attention, /Rebuilding the model/);
-  const complete = pairDisplay(primary({ recovery: { state: 'complete' }, uiOperation: { state: 'complete', progress: { phase: 'publishing', processed: 12 } } }));
+  const complete = pairDisplay(primary({ peer: { reachable: true, role: 'protected' }, recovery: { state: 'complete', donorRole: 'protected' }, uiOperation: { state: 'complete', progress: { phase: 'publishing', processed: 12 } } }));
   assert.equal(complete.phase, '', 'a completed operation must not keep showing its old progress');
   assert.match(complete.attention, /Recovery complete/);
   assert.match(pairDisplay(standby({ role: 'protected' })).syncStat, /blocked/);
-  assert.match(pairDisplay(standby({ sync: { state: 'error' } })).attention, /last verified snapshot is kept/);
+  assert.match(pairDisplay(standby({ sync: { state: 'error' } })).attention, /no verified snapshot is available yet/);
 });
 
 test('recovery and skipping it both require a successful checked preview, including after a failed recheck', async () => {
@@ -302,7 +302,7 @@ test('a replaced preview cancels recovery or discard confirmation before sending
       request: async () => { throw new Error('must not send a stale confirmation'); } });
     controller.update(checked());
     const result = controller.run(action);
-    controller.update({ ...checked(), recovery: { state: 'ready', preview: { ...preview(), previewId: 'b'.repeat(64) } } });
+    controller.update({ ...checked(), recovery: { state: 'ready', donorRole: 'protected', preview: { ...preview(), previewId: 'b'.repeat(64) } } });
     resolve(true);
     assert.equal(await result, false);
     assert.equal(controller.snapshot().pending, null);
@@ -323,7 +323,7 @@ test('an uncertain skip request retains its discard consent and preview across r
   assert.equal(sent[1].previewId, previewId);
   const normal = createPairActions({ requestId: () => id, confirm: () => true,
     request: async (path, body) => { sent.push(body); return { status: operation(primary(), 'complete', 'rejoin') }; } });
-  normal.update(primary({ recovery: { state: 'complete' }, actions: { rejoin: true } }));
+  normal.update(primary({ recovery: { state: 'complete', donorRole: 'protected' }, actions: { rejoin: true } }));
   await normal.run('rejoin');
   assert.deepEqual(sent[2], { action: 'rejoin', requestId: id, confirmed: true });
 });
@@ -381,7 +381,7 @@ test('recovery reports render aggregate counts and periods while omitting donor 
   renderRecoveryReport(document, root, { ...preview(), imported: 12, raw: 'private household row',
     tables: [{ name: 'private field', missing: 1 }], error: 'private error' }, { report: true });
   const text = allText(root);
-  for (const phrase of ['Recovery result', 'Recovered entries: 12', 'Conflicting entries: 3', 'Already present: 4', 'Skipped entries: 5', 'Missing history period:', 'Unsupported learning entries skipped: 2']) assert(text.includes(phrase));
+  for (const phrase of ['Recovery result', 'Recovered entries: 12', 'Conflicting entries: 3', 'Already present: 4', 'Skipped entries: 5', 'Recovered entries span:', 'Unsupported learning entries skipped: 2']) assert(text.includes(phrase));
   assert.doesNotMatch(text, /private/);
   assert.match(text, /not kept as a separate archive/);
   renderRecoveryReport(document, root, null);
@@ -436,4 +436,165 @@ test('a failed protected VIP release explains uncertain ownership before retryin
   assert.match(display.summary, /history is preserved/);
   assert.match(pairActionHelp(view).promote, /Correct the setup/);
   assert.doesNotMatch(display.syncDetail, /Identity verified/);
+});
+
+test('normal slave comparisons never claim that differences require recovery or resuming mirroring', () => {
+  const { document, $ } = fixture();
+  const panel = createPairPanel({ document, request: async () => {}, now: () => now });
+  for (const missing of [0, 12]) {
+    const view = primary({ recovery: { state: 'ready', donorRole: 'slave', preview: { ...preview(), counts: { ...preview().counts, missing } } },
+      actions: { 'check-recovery': true, recover: false, rejoin: false } });
+    panel.update(view);
+    assert.match($('pairing-recovery').textContent, /normal slave.*Normal mirroring is automatic/);
+    assert.match($('pairing-rejoin-help').textContent, /does not require resuming mirroring/);
+    assert.equal($('pairing-recover').disabled, true);
+    assert.equal($('pairing-rejoin').disabled, true);
+    assert.match(allText($('pairing-preview')), /History comparison/);
+    assert.match(allText($('pairing-preview')), new RegExp(`Only in the other snapshot: ${missing}`));
+    assert.doesNotMatch(allText($('pairing-preview')), /Recovery preview|Missing entries:|Recovery includes rebuilding/);
+    assert.equal(pairActionAllowed({ ...view, actions: { recover: true, rejoin: true } }, 'recover'), false);
+    assert.equal(pairActionAllowed({ ...view, actions: { recover: true, rejoin: true } }, 'rejoin'), false);
+  }
+});
+
+test('protected no-gap previews and completed recovery explain the remaining explicit mirroring step', () => {
+  const { document, $ } = fixture();
+  const panel = createPairPanel({ document, request: async () => {}, now: () => now });
+  const view = checked();
+  view.recovery.preview.counts.missing = 0;
+  view.recovery.preview.model.status = 'unchanged';
+  view.actions.recover = false;
+  panel.update(view);
+  assert.equal($('pairing-rejoin').textContent, 'Resume mirroring');
+  assert.match($('pairing-recovery').textContent, /No missing entries.*confirm replacement/);
+  assert.match(pairConfirmation('rejoin', { discardUnrecovered: true, counts: { missing: 0 } }), /no missing entries to recover/);
+  panel.update({ ...view, recovery: { ...view.recovery, state: 'complete', report: { imported: 12, counts: {}, model: { status: 'rebuilt' } } } });
+  assert.equal($('pairing-rejoin').textContent, 'Resume mirroring');
+  assert.match($('pairing-check-help').textContent, /Resume mirroring below/);
+  assert.match($('pairing-recover-help').textContent, /Resume mirroring below/);
+  assert.doesNotMatch($('pairing-recover-help').textContent, /Run a new check/);
+  assert.match(allText($('pairing-preview')), /Recovery result.*Recovered entries: 12/);
+});
+
+test('master and slave show the same reported snapshot while unreachable or protected peers never look synchronized', () => {
+  const sync = { state: 'ready', sourceAt: now - 180000, verifiedAt: now - 120000, bytes: 1e6 };
+  const formatTime = at => new Date(at).toISOString();
+  const slave = pairDisplay(standby({ sync }), { now, formatTime });
+  const peer = { reachable: true, role: 'slave', sync, syncReceivedAt: now - 1000 };
+  const master = pairDisplay(primary({ peer }), { now, formatTime });
+  for (const display of [slave.sync + slave.syncDetail, master.sync + master.syncDetail]) {
+    assert.match(display, /2026-09-12T11:57:00.000Z/);
+    assert.match(display, /2026-09-12T11:58:00.000Z/);
+    assert.match(display, /3 minutes old/);
+  }
+  assert.match(master.syncDetail, /Status received 2026-09-12T11:59:59.000Z/);
+  assert.match(master.syncDetail, /Newer master data can still be waiting/);
+  const offline = pairDisplay(primary({ peer: { ...peer, reachable: false } }), { now });
+  assert.doesNotMatch(offline.sync + offline.syncDetail, /reports a verified|Normal one-way mirroring is enabled/);
+  const protectedPeer = pairDisplay(primary({ peer: { ...peer, role: 'protected' } }), { now });
+  assert.match(protectedPeer.sync, /protected.*Mirroring is blocked/);
+  assert.doesNotMatch(protectedPeer.syncDetail, /Identity verified/);
+  const failed = pairDisplay(primary({ peer: { ...peer, sync: { ...sync, state: 'error' } } }), { now });
+  assert.match(failed.sync, /synchronization problem.*last verified snapshot is kept/);
+  assert.equal(failed.error, true);
+  assert.match(pairDisplay(primary({ peer: { ...peer, sync: { ...sync, sourceAt: now + 60000 } } }), { now }).syncDetail, /snapshot clock ahead/);
+});
+
+test('an uncertain release remains verifiable after peer became slave and browser operation storage cleared', async () => {
+  for (const discardUnrecovered of [false, true]) {
+    const requests = [], storage = memoryStorage();
+    const recovery = { state: discardUnrecovered ? 'ready' : 'complete', donorRole: 'protected', preview: preview(),
+      pendingRelease: { requestId: id, discardUnrecovered, previewId } };
+    const saved = { action: 'rejoin', requestId: id, confirmed: true,
+      ...(discardUnrecovered ? { discardUnrecovered: true, previewId } : {}) };
+    storage.setItem('stmq-pair-pending-v1', JSON.stringify(saved));
+    const view = primary({ recovery, actions: { rejoin: true, handover: false, 'check-recovery': false },
+      recentActions: [{ requestId: id, name: 'rejoin', state: 'error' }] });
+    const controller = createPairActions({ storage, requestId: () => { throw Error('Must reuse saved release identity'); },
+      confirm: () => { throw Error('Saved release already has confirmation'); },
+      request: async (path, body) => { requests.push(body); return { status: operation(primary(), 'complete', 'rejoin') }; } });
+    controller.update(view);
+    assert.equal(controller.snapshot().pending, null, 'durable error clears the browser request receipt');
+    assert.match(controller.snapshot().message, /completion is unconfirmed.*Verify the saved request/);
+    assert.doesNotMatch(controller.snapshot().message, /remains protected/);
+    assert.match(pairDisplay(view).recovery, /completion is uncertain/);
+    assert.match(pairActionHelp(view).rejoin, /Verify the previous mirroring request/);
+    assert.equal(await controller.run('handover'), false);
+    assert.equal(await controller.run('check-recovery'), false);
+    assert.equal(await controller.run('rejoin'), true);
+    assert.deepEqual(requests, [saved]);
+    const { document, $ } = fixture();
+    const panel = createPairPanel({ document, request: async () => {}, now: () => now });
+    panel.update(view);
+    assert.equal($('pairing-rejoin').disabled, false);
+    assert.equal($('pairing-rejoin').textContent, 'Verify mirroring completion');
+  }
+});
+
+test('failed informational checks do not claim the slave has protected history and offline recovery explains reconnection', () => {
+  const view = primary({ recovery: { state: 'error', error: 'snapshot_unavailable' } });
+  const display = pairDisplay(view);
+  assert.match(display.recovery, /could not finish.*current computer roles/);
+  assert.doesNotMatch(display.recovery, /remains protected/);
+  const offline = { ...checked(), peer: { reachable: false, role: 'protected' }, actions: { recover: false } };
+  assert.equal(pairActionAllowed(offline, 'recover'), false);
+  assert.match(pairActionHelp(offline).recover, /Reconnect the other computer/);
+});
+
+test('remote replica status belongs only to a master observing its currently reported slave', () => {
+  const previousReplica = { state: 'error', sourceAt: now - 180000, verifiedAt: now - 120000, bytes: 1e6 };
+  const peer = { reachable: true, role: 'master', sync: previousReplica, syncReceivedAt: now };
+  const slave = pairDisplay(standby({ peer, sync: { state: 'ready', sourceAt: now - 60000, verifiedAt: now - 1000 } }), { now });
+  assert.equal(slave.error, false, 'a master’s old replica error is not a current slave error');
+  assert.doesNotMatch(slave.sync + slave.syncDetail, /reports a synchronization problem|slave reports/);
+  const master = pairDisplay(primary({ peer }), { now });
+  assert.equal(master.error, false);
+  assert.doesNotMatch(master.sync + master.syncDetail, /slave reports a verified|reports a synchronization problem/i);
+});
+
+test('failed first synchronization never claims that a verified snapshot has been retained', () => {
+  const failed = { state: 'error', sourceAt: null, verifiedAt: null };
+  const slave = pairDisplay(standby({ sync: failed }), { now });
+  const master = pairDisplay(primary({ peer: { reachable: true, role: 'slave', sync: failed } }), { now });
+  assert.match(slave.sync, /No verified snapshot is available yet/);
+  assert.match(master.sync, /not reported a verified snapshot yet/);
+  for (const display of [slave, master]) assert.doesNotMatch(display.sync + display.attention, /last verified snapshot is kept/);
+  const previous = pairDisplay(standby({ sync: { ...failed, sourceAt: now - 60000, verifiedAt: now - 1000 } }), { now });
+  assert.match(previous.sync, /last verified snapshot is kept/);
+});
+
+test('retired pairing snapshotAt input cannot supply current snapshot evidence', () => {
+  const display = pairDisplay(standby({ sync: { state: 'waiting', snapshotAt: now - 60000 } }), { now });
+  assert.equal(display.syncStat, 'Waiting for first snapshot');
+  assert.match(display.sync, /No verified snapshot has been reported yet/);
+  assert.doesNotMatch(display.sync, /minutes old/);
+});
+
+test('past recovery receipts stay distinct from current protection or an unavailable peer', () => {
+  for (const peer of [{ reachable: true, role: 'protected' }, { reachable: false, role: 'slave' }]) {
+    const view = primary({ peer, recovery: { state: 'resolved', report: {} } });
+    const display = pairDisplay(view, { now });
+    assert.match(display.recovery, /previous recovery.*completed.*Current mirroring status/);
+    assert.doesNotMatch(display.recovery, /Normal one-way synchronization has resumed/);
+    assert.doesNotMatch(pairActionHelp(view).recover, /No further action is needed/);
+    if (peer.role === 'protected') assert.match(display.sync, /Mirroring is blocked/);
+  }
+});
+
+test('peer roles are timestamped reports and a fresh slave waits when a master is already reported', async () => {
+  const peer = { reachable: true, role: 'master', lastSeenAt: now - 1000 };
+  const view = standby({ bootstrapPending: true, peer, sync: { state: 'waiting' } });
+  const display = pairDisplay(view, { now });
+  assert.match(display.peer, /last reported master.*connected.*Status received 2026-09-12T11:59:59.000Z/);
+  assert.match(display.summary, /Waiting for the first verified snapshot/);
+  assert.doesNotMatch(display.summary, /Both computers start|explicitly promote one/);
+  assert.match(pairActionHelp(view).promote, /Keep this computer as a slave/);
+  let confirmation;
+  const actions = createPairActions({ confirm: message => { confirmation = message; return false; }, request: async () => { throw Error('Cancelled action'); } });
+  actions.update(view);
+  await actions.run('promote');
+  assert.doesNotMatch(confirmation, /first master/);
+  assert.match(confirmation, /previous master has failed or has been stopped or isolated/);
+  const syncing = pairDisplay(standby({ sync: { state: 'syncing', sourceAt: now - 60000, verifiedAt: now - 1000 } }), { now });
+  assert.match(syncing.syncDetail, /Last snapshot identity verified/);
 });

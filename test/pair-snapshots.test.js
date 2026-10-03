@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtemp, readFile, rm, access } from 'node:fs/promises';
+import { mkdtemp, readFile, readdir, rm, access } from 'node:fs/promises';
 import { join } from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { Store } from '../src/storage/store.js';
@@ -32,6 +32,18 @@ test('export admission is reserved before source validation yields and is releas
   await first;
   await assert.rejects(f.create({ assertSource: () => { throw Error('source lost'); } }), /source lost/);
   assert.ok((await f.create({ force: true })).generation);
+});
+
+test('authority lost while retaining an export cannot publish its stale master claim', async t => {
+  const f = await fixture(t);
+  const prune = f.repository.pruneExports.bind(f.repository);
+  let authoritative = true;
+  f.repository.pruneExports = async (...args) => { await prune(...args); authoritative = false; };
+  await assert.rejects(f.create({ force: true, assertSource: () => {
+    if (!authoritative) throw Object.assign(Error('authority changed'), { code: 'authority_changed' });
+  } }), { code: 'authority_changed' });
+  assert.equal(f.repository.current, undefined);
+  assert.equal((await readdir(f.repository.directory)).some(name => name.startsWith('export-')), false);
 });
 
 test('an atomically pinned export survives later exports and repository restart until released', async t => {

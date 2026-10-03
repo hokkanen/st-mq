@@ -8,6 +8,18 @@ Versions follow Semantic Versioning. `-dev.N` denotes a development prerelease.
 
 ### Fixed
 
+- Pair recovery recognizes existing unavailable and stale observations across
+  fresh snapshots, avoiding repeated imports and misleading coverage or learning
+  conflicts. Existing history is preserved without an automatic cleanup.
+- Pairing distinguishes normal mirror comparisons from protected-history
+  recovery, prevents restoring master deletions from an ordinary mirror, and
+  preserves completed recovery when the same donor is checked again. Both
+  computers show snapshot status with its observation time; unresolved releases
+  retain their original retry request.
+- Pairing protects unexpectedly changed local snapshots before replacing them
+  and rejects malformed saved authority state before startup mutation.
+- Returning masters resolve reachable competing claims before opening equipment
+  connections, and require confirmed control and address release from the peer.
 - Pairing now explains how to correct a missing Home Assistant LAN interface
   in the app configuration and regenerate its address-helper policy by restarting.
 - Configuration and startup-recovery screens show

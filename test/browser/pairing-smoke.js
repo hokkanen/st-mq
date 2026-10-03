@@ -23,7 +23,8 @@ const master = (overrides = {}) => ({ role: 'master', canControl: true, busy: fa
   peer: { reachable: true, role: 'slave', lastSeenAt: now }, vip: { owned: true, ready: true },
   recovery: { state: 'idle' }, actions: { 'check-recovery': true, recover: false, rejoin: false, handover: true, promote: false },
   ...overrides });
-const checked = () => master({ recovery: { state: 'ready', preview },
+const checked = () => master({ peer: { reachable: true, role: 'protected', lastSeenAt: now },
+  recovery: { state: 'ready', donorRole: 'protected', preview },
   actions: { 'check-recovery': true, recover: true, rejoin: true, handover: false, promote: false } });
 const standby = role => ({ ...master(), role, canControl: false, vip: { owned: false, ready: true },
   peer: { reachable: true, role: 'master', lastSeenAt: now }, actions: { promote: true },
@@ -119,7 +120,7 @@ try {
   const close = async () => {
     if (await evaluate(`${$('pairing-details')}.open`)) await evaluate("document.querySelector('#pairing-details > summary').click(); true");
   };
-  const checkLayout = async (width, theme) => {
+  const checkLayout = async (width, theme, attention = false) => {
     await command('browsingContext.setViewport', { context, viewport: { width, height: 1000 }, devicePixelRatio: 1 });
     if (await evaluate('document.documentElement.dataset.theme') !== theme) await evaluate("document.getElementById('theme-toggle').click(); true");
     await until(`document.documentElement.dataset.theme === '${theme}'`);
@@ -128,7 +129,8 @@ try {
     assert.equal(await evaluate(`${$('pairing-panel')}.nextElementSibling.contains(${$('events')})`), true, 'Paired computers sits immediately above Event log');
     const height = await evaluate(`${$('pairing-panel')}.getBoundingClientRect().height`);
     measurements.push({ width, theme, closedHeight: height });
-    assert(height <= (width >= 1000 ? 90 : 125), `Closed pair block stays compact: ${height}px at ${width}px`);
+    const heightLimit = (width >= 1000 ? 90 : 125) + (attention ? 50 : 0);
+    assert(height <= heightLimit, `Closed pair block stays compact: ${height}px at ${width}px`);
     assert.equal(await evaluate(`${$('pairing-check-recovery')}.checkVisibility()`), false, 'Closed disclosure hides controls');
   };
   const capture = async (name, header = false, element = null) => {
@@ -183,6 +185,24 @@ try {
   assert.equal(await evaluate(`${$('pairing-details')}.open`), true, 'Polling preserves the open disclosure');
   pair = master(); await until(`${$('pairing-peer')}.textContent.includes('connected')`);
 
+  pair = master({ recovery: { state: 'ready', donorRole: 'slave', preview: { ...preview,
+    counts: { missing: 0, conflicts: 0, duplicates: 21, skipped: 0 } } },
+    peer: { reachable: true, role: 'slave', lastSeenAt: now, syncReceivedAt: now,
+      sync: { state: 'ready', sourceAt: now - 60_000, verifiedAt: now - 30_000, bytes: 2e6 } } });
+  await until(`${$('pairing-preview')}.textContent.includes('History comparison')`);
+  assert.equal(await evaluate(`${$('pairing-recover')}.disabled`), true);
+  assert.equal(await evaluate(`${$('pairing-rejoin')}.disabled`), true);
+  assert.doesNotMatch(await evaluate(`${$('pairing-recovery')}.textContent`), /discard|then resume|recover the gaps/i);
+  assert.match(await evaluate(`${$('pairing-syncDetail')}.textContent`), /verified snapshot.*Identity verified.*Status received/i);
+  for (const width of [1440, 390, 320]) for (const theme of ['dark', 'light']) {
+    await close(); await checkLayout(width, theme, true); await open();
+    assert.equal(await evaluate('document.documentElement.scrollWidth <= innerWidth'), true,
+      'Normal mirror comparison and peer snapshot status fit the viewport');
+  }
+  await capture('normal-mirror-comparison');
+  pair = master();
+  await until(`${$('pairing-preview')}.hidden`);
+
   await evaluate(`${$('pairing-check-recovery')}.click(); true`);
   await until(`${$('pairing-recovery')}.textContent.includes('Checking')`);
   assert.equal(actions.length, 1);
@@ -214,7 +234,8 @@ try {
   assert.equal(actions.at(-1).previewId, previewId, 'Recovery uses the successfully checked snapshot');
   await close();
   assert.equal(await evaluate(`${$('pairing-attention')}.checkVisibility()`), true, 'Recovery progress remains visible when folded');
-  pair = master({ recovery: { state: 'complete', report: { ...preview, imported: 12, model: { status: 'rebuilt' } } },
+  pair = master({ peer: { reachable: true, role: 'protected', lastSeenAt: now },
+    recovery: { state: 'complete', donorRole: 'protected', report: { ...preview, imported: 12, model: { status: 'rebuilt' } } },
     actions: { 'check-recovery': true, recover: false, rejoin: true },
     uiOperation: { id: actions.at(-1).requestId, action: 'recover', state: 'complete', progress: { phase: 'publishing', processed: 12 } } });
   await until(`${$('pairing-rejoin')}.textContent === 'Resume mirroring' && !${$('pairing-rejoin')}.disabled`);
@@ -226,7 +247,7 @@ try {
     await until(`${$('read-only-help')}.hidden === false && ${$('home-pump-health')}.textContent === 'Recorded snapshot'`);
     await open();
     if (role === 'slave') {
-      await until(`${$('pairing-syncDetail')}.textContent.includes('Identity verified')`);
+      await until(`${$('pairing-syncDetail')}.textContent.includes('Last snapshot identity verified')`);
       assert.match(await evaluate(`${$('pairing-syncStat')}.textContent`), /Snapshot.*min old/,
         'Durable publication remains visible after the receiver’s in-memory progress restarts');
     }

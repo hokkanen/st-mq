@@ -1,12 +1,12 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtemp, rm, readFile } from 'node:fs/promises';
+import { mkdtemp, rm, readFile, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import { Store } from '../src/storage/store.js';
 import { randomUUID } from 'node:crypto';
-import { receiveSnapshot, SnapshotRepository } from '../src/pairing/snapshots.js';
+import { createReplicaPublicationGuard, receiveSnapshot, SnapshotRepository, verifySnapshot } from '../src/pairing/snapshots.js';
 import { readReplicaPublication, snapshotDigest } from '../src/replication/publication.js';
 import { runReceiver } from '../src/replication/receiver.js';
 import { Readable, Writable } from 'node:stream';
@@ -28,6 +28,9 @@ async function fixture(t) {
   } };
   return { root, db, dbPath, repository, claim, peer, chunks: () => chunks, failAfter: value => { failAfter = value; } };
 }
+
+const acceptedSnapshot = metadata => ({ generation: metadata.generation, digest: metadata.digest,
+  epoch: metadata.claim.epoch, nodeId: metadata.claim.nodeId, sequence: metadata.sequence });
 
 test('paired snapshot replication catches up inserts, changes and deletions exactly with changed chunks', async t => {
   const f = await fixture(t), directory = join(f.root, 'slave');
@@ -72,4 +75,67 @@ test('universal gate preserves old publication and refuses legacy SSH receiver',
   } }), { code: 'protected_history' });
   assert.equal(await readFile(join(directory, 'publication.json'), 'utf8'), previous);
   await assert.rejects(runReceiver({ directory, input: Readable.from([]), output: new Writable({ write(c, e, cb) { cb(); } }) }), { code: 'protected_history' });
+});
+
+test('a changed local publication is preserved before another master snapshot can replace it', async t => {
+  const f = await fixture(t), directory = join(f.root, 'slave');
+  const metadata = await f.repository.create({ dbPath: f.dbPath, claim: f.claim, sequence: 1 });
+  const publication = await receiveSnapshot({ directory, metadata, peer: f.peer });
+  const changed = new DatabaseSync(publication.dbPath);
+  changed.prepare("UPDATE events SET payload=? WHERE id=1").run('{"local":"unrecovered history"}');
+  changed.close();
+  const preserved = await readFile(publication.dbPath), manifest = await readFile(join(directory, 'publication.json'));
+  await assert.rejects(createReplicaPublicationGuard({ directory, accepted: acceptedSnapshot(metadata) }),
+    { code: 'verification_failed' });
+  assert.deepEqual(await readFile(publication.dbPath), preserved);
+  assert.deepEqual(await readFile(join(directory, 'publication.json')), manifest);
+});
+
+test('a local change during catchup fences publication and keeps the original database available', async t => {
+  const f = await fixture(t), directory = join(f.root, 'slave');
+  const metadata = await f.repository.create({ dbPath: f.dbPath, claim: f.claim, sequence: 1 });
+  const publication = await receiveSnapshot({ directory, metadata, peer: f.peer });
+  const guard = await createReplicaPublicationGuard({ directory, accepted: acceptedSnapshot(metadata) });
+  await guard();
+  f.db.prepare('DELETE FROM events WHERE id=1').run();
+  const next = await f.repository.create({ dbPath: f.dbPath, claim: f.claim, sequence: 2, force: true });
+  let changed = false;
+  const peer = { request: async (...args) => {
+    const response = await f.peer.request(...args);
+    if (!changed) {
+      changed = true;
+      const local = new DatabaseSync(publication.dbPath);
+      local.prepare("UPDATE events SET payload=? WHERE id=1").run('{"local":"during transfer"}');
+      local.close();
+    }
+    return response;
+  } };
+  await assert.rejects(receiveSnapshot({ directory, metadata: next, peer, guard }), { code: 'verification_failed' });
+  assert.equal((await readReplicaPublication(directory)).generation, metadata.generation);
+  const local = new DatabaseSync(publication.dbPath, { readOnly: true });
+  try { assert.equal(local.prepare('SELECT payload FROM events WHERE id=1').get().payload, '{"local":"during transfer"}'); }
+  finally { local.close(); }
+});
+
+test('published snapshots require their accepted identity and reject additional SQLite journal data', async t => {
+  const f = await fixture(t), directory = join(f.root, 'slave');
+  const metadata = await f.repository.create({ dbPath: f.dbPath, claim: f.claim, sequence: 1 });
+  const publication = await receiveSnapshot({ directory, metadata, peer: f.peer });
+  await assert.rejects(createReplicaPublicationGuard({ directory, accepted: { ...acceptedSnapshot(metadata), epoch: randomUUID() } }),
+    { code: 'verification_failed' });
+  const guard = await createReplicaPublicationGuard({ directory, accepted: acceptedSnapshot(metadata) });
+  const original = await readFile(publication.dbPath);
+  await writeFile(`${publication.dbPath}-wal`, 'synthetic unclassified journal data', { mode: 0o600 });
+  await assert.rejects(guard(), { code: 'verification_failed' });
+  await assert.rejects(verifySnapshot(publication.dbPath, metadata), { code: 'verification_failed' });
+  assert.deepEqual(await readFile(publication.dbPath), original);
+});
+
+test('an empty replica guard rejects an unexpected publication instead of adopting its history', async t => {
+  const f = await fixture(t), directory = join(f.root, 'slave');
+  const guard = await createReplicaPublicationGuard({ directory, accepted: null });
+  await guard();
+  const metadata = await f.repository.create({ dbPath: f.dbPath, claim: f.claim, sequence: 1 });
+  await receiveSnapshot({ directory, metadata, peer: f.peer });
+  await assert.rejects(guard(), { code: 'verification_failed' });
 });

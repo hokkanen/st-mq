@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto';
-import { join, resolve } from 'node:path';
+import { isAbsolute, join, resolve } from 'node:path';
 import { lstat, open, readFile } from 'node:fs/promises';
 import { DatabaseSync } from 'node:sqlite';
 import { durableJson, ownedDirectory, privateFile, replicationError } from '../replication/publication.js';
@@ -10,6 +10,16 @@ export const pairError = replicationError;
 const invalidState = () => Object.assign(pairError('invalid_pair_state'), {
   message: 'Saved pair state is incompatible or invalid. Preserve its files and database; configure a fresh pair directory for a deliberate new setup. Existing state was not replaced.',
 });
+const record = value => value !== null && typeof value === 'object' && !Array.isArray(value);
+const sequence = value => Number.isSafeInteger(value) && value >= 0;
+const lineagePoint = value => record(value) && NODE_PATTERN.test(value.epoch) && sequence(value.sequence);
+const acceptedSnapshot = value => lineagePoint(value) && NODE_PATTERN.test(value.generation) &&
+  NODE_PATTERN.test(value.nodeId) && /^[a-f0-9]{64}$/.test(value.digest);
+const stamp = value => lineagePoint(value) && NODE_PATTERN.test(value.token);
+const STATE_FIELDS = new Set(['version', 'pairId', 'nodeId', 'platform', 'role', 'epoch', 'sequence', 'ancestors',
+  'everWritten', 'bootstrapPending', 'accepted', 'activeDbPath', 'reason', 'transition', 'release', 'actions',
+  'createdAt', 'updatedAt', 'activationError', 'pendingSnapshot', 'recovery', 'pendingStamp', 'dbStamp',
+  'supersededPeer', 'releaseReceipt']);
 
 /** Platform preference applies only to simultaneous active claims. */
 export function compareAuthority(left, right) {
@@ -24,11 +34,12 @@ export function validClaim(value) {
 }
 
 export function acceptsLineage(accepted, claim) {
-  if (!accepted) return true;
   if (!validClaim(claim)) return false;
+  if (!accepted) return true;
+  if (!lineagePoint(accepted) || !sequence(claim.sequence)) return false;
   if (accepted.epoch === claim.epoch) return claim.sequence >= accepted.sequence;
-  return Array.isArray(claim.ancestors) && claim.ancestors.some(item =>
-    item.epoch === accepted.epoch && Number.isSafeInteger(item.sequence) && item.sequence >= accepted.sequence);
+  return Array.isArray(claim.ancestors) && claim.ancestors.every(lineagePoint) && claim.ancestors.some(item =>
+    item.epoch === accepted.epoch && item.sequence >= accepted.sequence);
 }
 
 export class PairState {
@@ -76,9 +87,19 @@ export class PairState {
 
   async readState() {
     const raw = JSON.parse(await readFile(this.path, 'utf8'));
-    if (raw.version !== 3 || raw.pairId !== this.options.pairId || !validClaim(raw) ||
-        !Number.isSafeInteger(raw.sequence) || !Array.isArray(raw.ancestors) ||
-        !Array.isArray(raw.actions) || typeof raw.everWritten !== 'boolean') throw invalidState();
+    if (!record(raw) || Object.keys(raw).some(key => !STATE_FIELDS.has(key)) ||
+        raw.version !== 3 || raw.pairId !== this.options.pairId || !validClaim(raw) ||
+        !sequence(raw.sequence) || !Array.isArray(raw.ancestors) || !raw.ancestors.every(lineagePoint) ||
+        !Array.isArray(raw.actions) || raw.actions.some(action => !record(action) ||
+          !NODE_PATTERN.test(action.requestId) || !['handover', 'promote', 'check-recovery', 'recover', 'rejoin'].includes(action.name) ||
+          !['running', 'complete', 'error'].includes(action.state)) || typeof raw.everWritten !== 'boolean' ||
+        (raw.bootstrapPending !== undefined && typeof raw.bootstrapPending !== 'boolean') ||
+        (raw.accepted != null && !acceptedSnapshot(raw.accepted)) ||
+        (raw.activeDbPath != null && (typeof raw.activeDbPath !== 'string' || !isAbsolute(raw.activeDbPath))) ||
+        ((raw.role === 'master' || raw.everWritten) && !raw.activeDbPath) ||
+        [raw.dbStamp, raw.pendingStamp].some(value => value != null && !stamp(value)) ||
+        (raw.supersededPeer != null && (!record(raw.supersededPeer) || !NODE_PATTERN.test(raw.supersededPeer.nodeId) ||
+          !NODE_PATTERN.test(raw.supersededPeer.epoch)))) throw invalidState();
     return raw;
   }
 

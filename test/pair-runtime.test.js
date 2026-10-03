@@ -9,6 +9,7 @@ import { loadConfig } from '../src/app/config.js';
 import { Store } from '../src/storage/store.js';
 import { readReplicaPublication } from '../src/replication/publication.js';
 import { replayLearningJournal, LEARNING_WINDOW_MS } from '../src/app/committed-learning.js';
+import { pairDisplay } from '../chart/pair-status.js';
 
 const W = LEARNING_WINDOW_MS, now = Date.parse('2026-01-09T12:00Z');
 const command = (action, extra = {}) => ({ action, requestId: randomUUID(), confirmed: true, ...extra });
@@ -177,4 +178,85 @@ test('HTTP rejoin can explicitly skip checked gaps while preserving the master h
     assert.equal(replica.db.prepare('PRAGMA integrity_check').get().integrity_check, 'ok');
     assert.equal(replica.db.prepare('PRAGMA foreign_key_check').get(), undefined);
   } finally { replica.close(); }
+});
+
+test('normal mirror checks preserve unavailable evidence and never restore deliberate master deletions', async t => {
+  const f = await fixture(t), master = await f.open('master', 'master', 'hassio'), slave = await f.open('slave', 'slave', 'ubuntu');
+  connect(master, slave);
+  for (const [index, value, quality] of [[1, null, ['missing', 'unavailable']], [2, 20, ['stale']], [3, 0, []]])
+    master.store.observation({ source: 'synthetic', device: 'invented-home', signal: 'indoor_temperature',
+      value, unit: 'degC', sourceTime: now - index * W, receivedAt: now - index * W, quality });
+  await slave.pair.synchronize(master.pair.state.claim());
+  const original = master.store.observations();
+  for (let iteration = 0; iteration < 2; iteration++) {
+    await apiAction(master, command('check-recovery'));
+    const status = master.status();
+    assert.equal(status.recovery.donorRole, 'slave');
+    assert.equal(status.recovery.preview.counts.missing, 0, 'A verified mirror must not manufacture missing observations');
+    assert.equal(status.actions.recover, false);
+    assert.equal(status.actions.rejoin, false);
+    assert.doesNotMatch(pairDisplay(status).recovery, /discard|then resume|recover the gaps/i);
+    assert.equal(slave.status().role, 'slave');
+    assert.deepEqual(master.store.observations(), original, 'Checking is read-only even for unavailable measurements');
+    await slave.pair.synchronize(master.pair.state.claim());
+  }
+  const removed = master.store.db.prepare("SELECT id FROM observations WHERE source='synthetic' AND value=0").get().id;
+  master.store.db.prepare('DELETE FROM observations WHERE id=?').run(removed);
+  await apiAction(master, command('check-recovery'));
+  assert.ok(master.status().recovery.preview.counts.missing > 0, 'The old mirror still has the deliberately deleted record');
+  assert.equal(master.status().actions.recover, false, 'A snapshot difference cannot authorize importing an old master deletion');
+  assert.equal(master.status().actions.rejoin, false);
+  await assert.rejects(master.pair.action('recover', command('recover', { previewId: master.status().recovery.preview.previewId })));
+  await assert.rejects(master.pair.action('rejoin', command('rejoin', { discardUnrecovered: true,
+    previewId: master.status().recovery.preview.previewId })));
+  assert.equal(master.store.db.prepare('SELECT 1 FROM observations WHERE id=?').get(removed), undefined);
+  await master.pair.exportSnapshot({ force: true });
+  await slave.pair.synchronize(master.pair.state.claim());
+  await apiAction(master, command('check-recovery'));
+  assert.equal(master.status().recovery.preview.counts.missing, 0, 'The next ordinary mirror applies the deletion');
+  await master.pair.poll();
+  const masterStatus = master.status(), slaveStatus = slave.status();
+  assert.equal(masterStatus.peer.role, slaveStatus.role);
+  assert.equal(masterStatus.peer.sync.sourceAt, slaveStatus.sync.sourceAt);
+  assert.equal(masterStatus.peer.sync.verifiedAt, slaveStatus.sync.verifiedAt);
+  assert.equal(masterStatus.peer.sync.state, slaveStatus.sync.state);
+  assert.doesNotMatch(pairDisplay(masterStatus).sync, /blocked|needs attention/i);
+  assert.doesNotMatch(pairDisplay(slaveStatus).sync, /blocked|needs attention/i);
+});
+
+test('completed recovery stays protected without rejoin through rejected actions, restart and another check', async t => {
+  const f = await fixture(t), master = await f.open('master', 'master', 'hassio'), donor = await f.open('donor', 'master', 'ubuntu');
+  observation(master.store, now - 3 * W, 20);
+  observation(donor.store, now - 2 * W, 21);
+  connect(master, donor);
+  await donor.pair.observeClaim(master.pair.state.claim());
+  await apiAction(master, command('check-recovery'));
+  await apiAction(master, command('recover', { previewId: master.status().recovery.preview.previewId }));
+  const report = structuredClone(master.status().recovery.report);
+  await master.pair.poll(); await donor.pair.poll();
+  assert.equal(master.status().peer.role, 'protected');
+  assert.equal(donor.status().role, 'protected');
+  assert.match(pairDisplay(donor.status()).sync, /blocked/i);
+  assert.equal(master.status().actions.handover, false);
+  await assert.rejects(master.pair.action('handover', command('handover')));
+  assert.deepEqual(master.status().recovery.report, report, 'An invalid action cannot discard completed recovery evidence');
+  assert.equal(donor.status().role, 'protected');
+  await f.close(master);
+  const restarted = await f.open('master', 'master', 'hassio'); connect(restarted, donor);
+  await restarted.pair.poll(); await donor.pair.poll();
+  assert.equal(restarted.status().recovery.state, 'complete');
+  assert.deepEqual(restarted.status().recovery.report, report);
+  assert.equal(donor.status().role, 'protected', 'Restart must not silently resume mirroring');
+  await apiAction(restarted, command('check-recovery'));
+  assert.equal(restarted.status().recovery.state, 'complete', 'An unchanged checked donor retains the completed recovery');
+  assert.deepEqual(restarted.status().recovery.report, report);
+  assert.equal(restarted.status().actions.rejoin, true);
+  assert.equal(restarted.status().actions.recover, false);
+  await apiAction(restarted, command('rejoin'));
+  await restarted.pair.poll(); await donor.pair.poll();
+  assert.equal(restarted.status().recovery.state, 'resolved');
+  assert.equal(restarted.status().peer.role, 'slave');
+  assert.equal(donor.status().role, 'slave');
+  assert.equal(donor.pair.canControl(), false);
+  assert.doesNotMatch(pairDisplay(donor.status()).sync, /blocked/i);
 });

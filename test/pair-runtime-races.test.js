@@ -5,7 +5,10 @@ import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { createServer } from 'node:http';
 import { once } from 'node:events';
+import { Store } from '../src/storage/store.js';
+import { PairManager } from '../src/pairing/manager.js';
 import { startPaired } from '../src/pairing/runtime.js';
+import { readReplicaPublication, snapshotDigest } from '../src/replication/publication.js';
 
 const deferred = () => {
   let resolve, reject;
@@ -132,4 +135,53 @@ test('an unreadable protected donor retains its management API and read-only wai
   assert.equal(status.sync.state, 'waiting');
   assert.equal(f.app.engine, undefined);
   await bounded(f.app.close());
+});
+
+test('a slave gap-check export and normal catchup serialize without falsely protecting valid history', async t => {
+  const root = await mkdtemp(join(tmpdir(), 'stmq-pair-export-race-'));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const create = async name => {
+    const config = { directory: join(root, name), snapshotDirectory: join(root, `${name}-snapshots`),
+      databasePath: join(root, `${name}.sqlite`), pairId: 'fixture-pair', platform: 'ubuntu',
+      token: 'synthetic-export-race-token-0123456789abcdef', listenHost: '127.0.0.1', port: 0,
+      peerUrl: 'http://127.0.0.1:1', timeoutMs: 30000, intervalMs: 60000, vip: {} };
+    const pair = new PairManager({ config, announcements: () => null, hooks: {
+      startPrimary: async ({ dbPath }) => new Store(dbPath).close(),
+    }, vip: { acquire: async () => {}, release: async () => {}, status: () => ({ ready: true }) } });
+    t.after(() => pair.close());
+    await pair.init(); await pair.start(); clearTimeout(pair.timer);
+    return pair;
+  };
+  const master = await create('master'), slave = await create('slave');
+  master.peer.peerUrl = `http://127.0.0.1:${slave.peer.server.address().port}`;
+  slave.peer.peerUrl = `http://127.0.0.1:${master.peer.server.address().port}`;
+  await master.promote();
+  await slave.synchronize(master.state.claim());
+  assert.equal(slave.sync.state, 'ready');
+  const original = await readReplicaPublication(slave.config.snapshotDirectory);
+  const backupEntered = deferred(), resume = deferred(), publicationQueued = deferred();
+  const snapshot = slave.snapshots.snapshot;
+  let exporting = false;
+  slave.snapshots.snapshot = async options => {
+    exporting = true; backupEntered.resolve();
+    await resume.promise;
+    return snapshot(options);
+  };
+  const serialize = slave.serialized.bind(slave);
+  slave.serialized = operation => { if (exporting) publicationQueued.resolve(); return serialize(operation); };
+  const donor = slave.exportSnapshot({ force: true });
+  t.after(() => resume.resolve());
+  await bounded(backupEntered.promise, 5000);
+  const store = new Store(master.state.value.activeDbPath);
+  store.db.exec("INSERT INTO events(type,payload,at) VALUES('fixture','{}',1000)"); store.close();
+  const updated = await master.exportSnapshot({ force: true });
+  const syncing = slave.synchronize(master.state.claim());
+  await bounded(publicationQueued.promise, 5000);
+  resume.resolve();
+  const exported = await donor; await syncing;
+  assert.equal(exported.digest, original.digest);
+  assert.equal((await snapshotDigest(join(slave.snapshots.directory, `export-${exported.generation}.sqlite`))).digest, original.digest);
+  assert.equal(slave.state.value.role, 'slave');
+  assert.equal(slave.sync.state, 'ready');
+  assert.equal((await readReplicaPublication(slave.config.snapshotDirectory)).digest, updated.digest);
 });

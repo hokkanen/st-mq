@@ -81,10 +81,26 @@ export async function copySnapshot(source, destination) {
   await privateFile(destination);
 }
 
+/** Published snapshots are standalone files, never writable SQLite/WAL stores. */
+export async function snapshotFileState(path) {
+  const files = [];
+  for (const suffix of ['', '-wal', '-journal']) {
+    let info;
+    try { info = await lstat(`${path}${suffix}`, { bigint: true }); }
+    catch (error) {
+      if (suffix && error.code === 'ENOENT') { files.push(null); continue; }
+      throw error;
+    }
+    if (!info.isFile() || info.isSymbolicLink() || (!suffix && info.size < 512n) ||
+        (suffix && info.size > 0n)) throw replicationError('invalid_snapshot');
+    files.push([info.dev, info.ino, info.size, info.mtimeNs, info.ctimeNs].map(String));
+  }
+  return files;
+}
+
 /** No callers may keep SQLite connections open while hashing this standalone file. */
 export async function snapshotDigest(path) {
-  const info = await lstat(path);
-  if (!info.isFile() || info.isSymbolicLink() || info.size < 512) throw replicationError('invalid_snapshot');
+  const before = await snapshotFileState(path);
   const hash = createHash('sha256');
   let first = true;
   for await (const chunk of createReadStream(path, { highWaterMark: 1024 * 1024 })) {
@@ -101,7 +117,8 @@ export async function snapshotDigest(path) {
     }
     hash.update(chunk);
   }
-  return { digest: hash.digest('hex'), bytes: info.size, digestAlgorithm: DIGEST_ALGORITHM };
+  if (!isDeepStrictEqual(before, await snapshotFileState(path))) throw replicationError('verification_failed');
+  return { digest: hash.digest('hex'), bytes: Number(before[0][2]), digestAlgorithm: DIGEST_ALGORITHM };
 }
 
 /** Close WAL state before publication. This is only for an unpublished snapshot. */

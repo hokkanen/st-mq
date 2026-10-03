@@ -935,10 +935,10 @@ G_warming = G / 2</code>
           <p class="family-access-note">Admin access is required to manage paired computers.</p>
           <section id="pairing-master-controls" class="pairing-management" aria-labelledby="pairing-recovery-title" hidden>
             <h3 id="pairing-recovery-title">Recover missing history</h3>
-            <p>Use this when the other computer recorded history while this master was offline. Recovery is manual. The master keeps its existing history wherever the two computers disagree, imports compatible missing entries, and rebuilds the learned model from the combined history.</p>
+            <p>Normal mirroring is automatic and copies this master’s changes and deletions to the slave. Manual recovery is for protected history recorded by the other computer while this master was offline. Existing master history wins overlaps.</p>
             <ol class="pairing-steps">
               <li>
-                <div class="pairing-step-copy"><h4>Check what can be recovered</h4><p>Compare a snapshot from the other computer with this master. This check changes no history. Review the missing period, counts and skipped entries below before continuing.</p></div>
+                <div class="pairing-step-copy"><h4>Check the other history</h4><p>Compare a snapshot from the other computer with this master. This check changes no history. A normal slave comparison is informational; protected history can be recovered after review.</p></div>
                 <button id="pairing-check-recovery" data-admin-only type="button" aria-describedby="pairing-check-help" disabled>Check other computer for missing data</button>
                 <p id="pairing-check-help" class="muted pairing-step-help"></p>
                 <div id="pairing-preview" class="pairing-preview" hidden></div>

@@ -6,6 +6,11 @@ The master records measurements, learns and controls the home. The slave
 displays verified database snapshots. Losing the slave or the connection to it
 does not stop the master, and the slave never promotes itself after a timeout.
 
+Mirroring verifies a copied database snapshot; recovery checks whether another
+computer has history absent from the master. An observation recording an
+unavailable measurement is still a stored record. Its missing-value quality must
+never make an identical record appear absent or cause recovery to copy it again.
+
 Both computers select `controller.topology: "pair"`. The other topology choices
 are `standalone` for independent operation and `mirror` for one-way SSH
 synchronization. The `pair` section owns peer synchronization, snapshot storage
@@ -207,6 +212,12 @@ address ownership, snapshot age, verification and operation progress. It is
 hidden unless `controller.topology` is `pair`. A regular slave continues serving
 its last verified snapshot while the master or network is unavailable.
 
+The master also shows the slave's reported snapshot and verification times,
+with the time that report was received. These are observations from the peer,
+not proof that it includes writes made after that snapshot. An unreachable peer
+has unknown current synchronization status. During transfers or role changes,
+the panels show progress rather than claim that both databases are current.
+
 The master retries synchronization after a slave outage. Transfers are based
 on consistent snapshots, with integrity and content-identity verification
 before publication. An incomplete transfer cannot replace the last verified
@@ -219,6 +230,10 @@ Transfers reuse matching 1 MiB chunks and retain interrupted progress. Each
 received database passes SQLite integrity and SHA-256 page-content verification
 before it becomes visible. The current protocol accepts databases up to 64 GiB;
 an oversized or failed transfer leaves the last verified snapshot available.
+Before replacing or exporting a slave snapshot, pairing verifies that its
+accepted identity still matches the local publication and fences changes during
+the operation. Unexpected local database writes, journal data or replacement
+put the slave into protected recovery instead of silently overwriting it.
 
 Synchronization is asynchronous. Forced takeover can therefore start from a
 snapshot older than the last master write. A snapshot that was recently
@@ -398,7 +413,16 @@ recovery controls, handover or manual promotion. The section stays compact when
 closed and still shows important progress or attention messages. Slaves use
 the same layout, with recovery and handover performed from the master's UI.
 
-Recovery is initiated on the master:
+Checks are initiated on the master. When the other computer is a normal slave,
+the result is an informational **History comparison**. Mirroring is already
+running, so recovery and resume-mirroring actions are unavailable. A record
+present only in that older snapshot can reflect a deliberate master deletion;
+the next ordinary snapshot applies the deletion. The comparison does not
+authorize resurrecting it. A healthy mirror containing the same records must
+not report those records as missing merely because their measurements are
+unavailable, stale or invalid.
+
+For a computer in **Protected recovery**:
 
 1. **Check other computer for missing data** takes a consistent donor snapshot
    and shows counts and periods for missing, conflicting, already present and
@@ -416,6 +440,19 @@ Recovery is initiated on the master:
    master snapshot makes the other database match the master, and normal
    one-way synchronization resumes.
 
+If you stop after recovery, protection stays active. Waiting, closing the
+dashboard or restarting does not resume mirroring. A repeated check of the same
+unchanged donor keeps the completed recovery result when no further recovery is
+needed; it does not turn **Resume mirroring** into a request to skip recovery.
+New donor history requires a fresh review. Handover remains unavailable while
+the other computer is protected. Recovery and rejoin recheck the donor's role
+and identity before acting, so a preview cannot authorize a different computer
+or a newly promoted controller.
+
+The displayed period spans the earliest and latest missing entries; it is not
+necessarily one continuous recording outage. Counts describe stored records,
+not the number of measurements that were physically acquired or lost.
+
 The checked snapshot includes durable energy still in an open recorder interval.
 Recovery can retain this as immutable measured history without copying the other
 computer's accumulator or control state. Existing master intervals, including
@@ -424,7 +461,7 @@ recovery does not add their energy again. If resumed live integration straddles 
 recovered interval, that local interval is skipped without prorating; any
 uncovered remainder stays unknown and later readings resume normally.
 
-Recovery is optional after a successful check. To keep the master's history
+Recovery is optional after a successful protected-history check. To keep the master's history
 and model as they are, choose **Skip recovery and resume mirroring** after reviewing the preview
 and confirm that the other computer's unrecovered history may be discarded.
 This does not import gaps or rebuild the model. The other database is replaced
@@ -432,6 +469,10 @@ with a verified master snapshot, including removal of entries absent from the
 master. The result says that mirroring resumed without recovery; missing entries
 shown in the preview were not recovered. A pending or failed check cannot enable
 this option, and a changed donor or an outdated preview requires a new check.
+When the check finds no missing entries or learning work, recovery is unnecessary;
+**Resume mirroring** still requires confirmation before replacing protected
+history. If a release response is lost, retry the saved request. A new check
+cannot replace an unresolved release and silently abandon its outcome.
 
 Accepted historical entries are imported in bounded transactions and may
 become visible before the model rebuild finishes. An interruption can leave
@@ -480,6 +521,20 @@ communicate. A Home Assistant installation wins over an Ubuntu installation;
 with the same platform, the stable node IDs provide a deterministic winner.
 This rule applies to competing active masters, not to an ordinary returning
 slave or a successful intentional handover.
+
+A restarting computer with a saved master role checks a reachable peer before
+acquiring the virtual IP or opening equipment connections. If the peer has the
+higher-priority master claim, the restarting computer stays protected. If the
+restarting computer wins, it waits for the peer to confirm successful control
+shutdown and address release. A failed shutdown or a lost confirmation leaves
+the restarting computer protected for explicit review. Simultaneous restarts
+use the same deterministic rule. This check is bounded to ten seconds.
+
+A saved master can still start when the peer is unavailable and no competing
+claim was observed. This preserves operation without the slave; it cannot prove
+that an unreachable computer has stopped during a network partition. A reachable
+peer's refusal, invalid response or unconfirmed release does not grant startup
+permission.
 
 The winner continues with its own database. The loser immediately stops
 issuing device commands, withdraws the virtual IP and enters protected

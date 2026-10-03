@@ -27,6 +27,9 @@ const without = (row, keys) => Object.fromEntries(Object.entries(row).filter(([k
 const digest = value => createHash('sha256').update(json(value)).digest('hex');
 const dispositions = ['missing', 'conflicts', 'duplicates', 'skipped'];
 const firstUsable = rows => { for (const row of rows) if (usable(row)) return row; return null; };
+const sameObservation = (a, b) => a && b
+  && same(without(a, ['id', 'quality', 'raw']), without(b, ['id', 'quality', 'raw']))
+  && same(decode(a.quality), decode(b.quality)) && same(decode(a.raw), decode(b.raw));
 const PENDING_ENERGY = 'recorder_pending_energy';
 const HOUR = 3_600_000;
 // These are receipt-time availability events about an existing measurement.
@@ -246,6 +249,28 @@ export class HistoryMerge {
       AND o.value IS NOT NULL ORDER BY c.id DESC`).iterate(row.source, row.device, row.signal, row.source_time, row.source_time));
     return null;
   }
+  existingObservation(row, raw, mappedRaw, importId) {
+    // Presence is separate from usable measurement coverage. An unavailable
+    // record still has an exact source/receipt identity; mirroring it into a
+    // new snapshot must not turn it into another gap on every comparison.
+    // Prefer a shared row ID only after every evidence field matches. This
+    // also preserves coverage pointers in snapshots containing repeated rows.
+    for (const old of this.target.db.prepare(`SELECT * FROM observations
+      WHERE source=? AND device=? AND signal=? AND unit=? AND source_time IS ?
+        AND received_at=? AND value IS ? AND import_id IS ? AND row_number IS ?
+      ORDER BY CASE WHEN id=? THEN 0 ELSE 1 END,id`)
+      .iterate(row.source, row.device, row.signal, row.unit, row.source_time,
+        row.received_at, row.value, importId, row.row_number, row.id)) {
+      if (same(decode(old.quality), decode(row.quality))
+        && (same(decode(old.raw), raw) || same(decode(old.raw), mappedRaw))) return old;
+    }
+    return null;
+  }
+  sameObservationReference(left, right) {
+    return left === right || left !== null && right !== null
+      && sameObservation(this.target.db.prepare('SELECT * FROM observations WHERE id=?').get(left),
+        this.target.db.prepare('SELECT * FROM observations WHERE id=?').get(right));
+  }
   observationCohort(row) {
     const signals = phaseSignals(row);
     let raw; try { raw = decode(row.raw); } catch { return [row]; }
@@ -261,7 +286,17 @@ export class HistoryMerge {
     let raw; try { raw = decode(row.raw); } catch { return null; }
     if (!signals || row.import_id !== null || raw?.timeBasis === 'completed-hour'
       || !instant(raw?.intervalStart) || !instant(raw?.intervalEnd)) return null;
+    const removed = cohort.some(member => {
+      const prior = this.known('observations', member.id);
+      return prior?.disposition === 'missing' && prior.id !== null
+        && !this.target.db.prepare('SELECT 1 FROM observations WHERE id=?').get(prior.id);
+    });
+    if (removed) return 'conflicts';
+    // An existing unavailable or partial cohort is already recorded evidence.
+    // Reporting its presence imports no energy and cannot complete a phase.
+    // Only genuinely absent donor cohorts need the atomic acceptance checks.
     try {
+      if (cohort.every(member => this.existingObservation(member, decode(member.raw), decode(member.raw), null))) return null;
       for (const member of cohort) {
         this.validateObservation(member);
         this.require(member.unit === 'kWh' && decode(member.raw).basis === raw.basis
@@ -275,12 +310,7 @@ export class HistoryMerge {
     // master cohort wins as a whole; recovery never fills its other phases
     // with energy from an overlapping donor interpretation.
     const overlaps = cohort.map(member => this.observationOverlap(member, decode(member.raw)));
-    const removed = cohort.some(member => {
-      const prior = this.known('observations', member.id);
-      return prior?.disposition === 'missing' && prior.id !== null
-        && !this.target.db.prepare('SELECT 1 FROM observations WHERE id=?').get(prior.id);
-    });
-    if (removed || overlaps.some(Boolean) && !overlaps.every((old, i) => old && energyEquivalent(old, cohort[i], decode(cohort[i].raw))))
+    if (overlaps.some(Boolean) && !overlaps.every((old, i) => old && energyEquivalent(old, cohort[i], decode(cohort[i].raw))))
       return 'conflicts';
     if (cohort.length !== 3 || new Set(cohort.map(member => member.signal)).size !== 3) return 'skipped';
     return null;
@@ -297,15 +327,7 @@ export class HistoryMerge {
   }
   async observations() {
     await this.rows('observations', row => {
-      let raw = decode(row.raw); const quality = decode(row.quality);
-      this.validateObservation(row);
-      const old = this.observationOverlap(row, raw);
-      if (old) {
-        const equivalent = raw?.intervalStart != null ? energyEquivalent(old, row, raw)
-          : old.value === row.value && old.unit === row.unit && old.source_time === row.source_time
-          && same(decode(old.quality), quality) && same(decode(old.raw), raw);
-        return { id: old.id, disposition: equivalent ? 'duplicates' : 'conflicts' };
-      }
+      const raw = decode(row.raw), quality = decode(row.quality);
       let importId = null;
       if (row.import_id !== null) {
         const mapped = this.known('imports', row.import_id);
@@ -314,13 +336,25 @@ export class HistoryMerge {
       }
       // Recorder coverage pointers are local IDs. Persist the original record
       // interpretation; map its optional held-value provenance explicitly.
-      if (raw?.recorder?.coverageId != null) {
+      let mappedRaw = structuredClone(raw);
+      if (mappedRaw?.recorder?.coverageId != null) {
         const coverage = this.known('recorder_coverage', raw.recorder.coverageId);
-        raw.recorder = { ...raw.recorder, ...(coverage?.id ? { coverageId: coverage.id } : { coverageId: null }),
+        mappedRaw.recorder = { ...raw.recorder, ...(coverage?.id ? { coverageId: coverage.id } : { coverageId: null }),
           recoverySourceCoverage: String(raw.recorder.coverageId) };
       }
-      if (raw) raw = this.remap(raw);
-      const id = this.insert('observations', { ...without(row, ['id']), raw: raw === null ? null : json(raw), import_id: importId });
+      if (mappedRaw) mappedRaw = this.remap(mappedRaw);
+      const existing = this.existingObservation(row, raw, mappedRaw, importId);
+      if (existing) return { id: existing.id, disposition: 'duplicates' };
+      this.validateObservation(row);
+      const old = this.observationOverlap(row, raw);
+      if (old) {
+        const equivalent = raw?.intervalStart != null ? energyEquivalent(old, row, raw)
+          : old.value === row.value && old.unit === row.unit && old.source_time === row.source_time
+          && same(decode(old.quality), quality)
+          && (same(decode(old.raw), raw) || same(decode(old.raw), mappedRaw));
+        return { id: old.id, disposition: equivalent ? 'duplicates' : 'conflicts' };
+      }
+      const id = this.insert('observations', { ...without(row, ['id']), raw: mappedRaw === null ? null : json(mappedRaw), import_id: importId });
       return { id, disposition: 'missing', at: row.source_time };
     }, { group: row => this.observationCohort(row), prepare: cohort => this.prepareObservationCohort(cohort) });
     await this.rows('recorder_coverage', row => {
@@ -336,9 +370,23 @@ export class HistoryMerge {
           && row.source_time === observation.source_time && row.status === decode(observation.raw)?.recorder?.status
           && reportBoundary(observation, decode(observation.raw)));
       }
+      const observationId = mapped?.id ?? null;
+      // Several retained spans can encompass the same time. An exact existing
+      // source span must win the presence check before a newer, wider span is
+      // considered as a competing interpretation of a genuinely absent row.
+      for (const old of this.target.db.prepare(`SELECT * FROM recorder_coverage
+        WHERE source=? AND device=? AND signal=? AND status=? AND start_at=? AND end_at=?
+          AND source_time IS ? AND samples=? ORDER BY CASE WHEN id=? THEN 0 ELSE 1 END,id`)
+        .iterate(row.source, row.device, row.signal, row.status, row.start_at, row.end_at,
+          row.source_time, row.samples, row.id)) {
+        if (this.sameObservationReference(old.observation_id, observationId)) return { id: old.id, disposition: 'duplicates' };
+      }
       const old = this.target.db.prepare(`SELECT * FROM recorder_coverage WHERE source=? AND device=? AND signal=?
         AND start_at<=? AND end_at>=? ORDER BY id DESC LIMIT 1`).get(row.source, row.device, row.signal, row.start_at, row.end_at);
-      if (old) return { id: old.id, disposition: old.status === row.status && old.observation_id === mapped?.id ? 'duplicates' : 'conflicts' };
+      if (old) {
+        return { id: old.id, disposition: old.status === row.status
+          && this.sameObservationReference(old.observation_id, observationId) ? 'duplicates' : 'conflicts' };
+      }
       if (this.target.db.prepare(`SELECT 1 FROM recorder_coverage WHERE source=? AND device=? AND signal=?
         AND start_at<? AND end_at>? LIMIT 1`).get(row.source, row.device, row.signal, row.end_at, row.start_at)) return { disposition: 'conflicts' };
       const id = this.insert('recorder_coverage', { ...without(row, ['id']), observation_id: mapped?.id ?? null });
@@ -515,13 +563,15 @@ export class HistoryMerge {
       const old = this.target.db.prepare(`SELECT * FROM learning_cycles WHERE id=? OR
         (input=? AND started_at<=COALESCE(?,?) AND COALESCE(ended_at,started_at)>=?) ORDER BY started_at DESC LIMIT 1`)
         .get(row.id, row.input, row.ended_at, row.started_at, row.started_at);
-      if (old) return { id: old.id, disposition: same(decode(old.payload), payload) ? 'duplicates' : 'conflicts' };
       // Source cycle IDs may collide after independent operation; scope the
       // donor ID. The frozen plan, observations and command attempts remain.
-      const id = `recovered:${digest([this.digest, row.id]).slice(0, 32)}`;
+      const id = old?.id ?? `recovered:${digest([this.digest, row.id]).slice(0, 32)}`;
       this.maps.learning_cycles.set(row.id, { id, disposition: 'missing' });
       const mapped = this.remap(payload); mapped.id = id;
+      const original = structuredClone(mapped);
       if (mapped.status === 'active') { mapped.status = 'incomplete'; mapped.incompleteReason = 'recovered-interrupted-cycle'; }
+      if (old) return { id: old.id, disposition: same(decode(old.payload), original) || same(decode(old.payload), mapped)
+        ? 'duplicates' : 'conflicts' };
       this.insert('learning_cycles', { ...row, id, status: mapped.status, payload: json(mapped) });
       return { id, disposition: 'missing', at: row.started_at };
     }, { query: 'SELECT * FROM learning_cycles ORDER BY started_at,id' });
@@ -529,8 +579,13 @@ export class HistoryMerge {
       const payload = decode(row.payload);
       this.require(text(row.type) && instant(row.at) && object(payload));
       if (row.type === 'charging-session-check') assertCurrentChargingSessionCheck(payload);
-      const old = this.target.db.prepare('SELECT * FROM events WHERE type=? AND at=? ORDER BY id DESC LIMIT 1').get(row.type, row.at);
-      if (old) return { id: old.id, disposition: same(decode(old.payload), payload) ? 'duplicates' : 'conflicts' };
+      const mapped = this.remap(payload);
+      let old = null;
+      for (const candidate of this.target.db.prepare('SELECT * FROM events WHERE type=? AND at=? ORDER BY id DESC').iterate(row.type, row.at)) {
+        old ??= candidate;
+        if (same(decode(candidate.payload), mapped)) return { id: candidate.id, disposition: 'duplicates' };
+      }
+      if (old) return { id: old.id, disposition: 'conflicts' };
       if (row.type === 'charging-session-check') {
         this.require(instant(payload.start) && instant(payload.end) && payload.end > payload.start);
         const overlap = this.target.db.prepare(`SELECT id FROM events WHERE type=? AND json_valid(payload)
@@ -538,7 +593,7 @@ export class HistoryMerge {
           .get(row.type, payload.source, payload.end, payload.start);
         if (overlap) return { id: overlap.id, disposition: 'conflicts' };
       }
-      return { id: this.insert('events', { type: row.type, at: row.at, payload: json(this.remap(payload)) }), disposition: 'missing', at: row.at };
+      return { id: this.insert('events', { type: row.type, at: row.at, payload: json(mapped) }), disposition: 'missing', at: row.at };
     });
     await this.rows('charging_session_keys', row => {
       const value = decode(row.value), event = this.known('events', value?.eventId);
@@ -579,9 +634,26 @@ export class HistoryMerge {
             .get(this.input, value.sensorRevert.id, LEARNING_ALGORITHM));
           value = { ...value, sensorRevert: { ...value.sensorRevert, id: target.id } };
         }
-        const old = this.target.db.prepare('SELECT * FROM learning_journal WHERE input=? AND kind=? AND at=? ORDER BY id DESC LIMIT 1')
-          .get(this.input, row.kind, row.at);
-        if (old && same(decode(old.payload).value, value) && old.config_version === row.config_version) {
+        // Local provenance IDs change when source history is imported and
+        // again when a combined journal is published. Compare the resolved
+        // references, not coincidentally equal/different machine-local IDs.
+        const mapped = this.remap(value, { strict: row.kind !== 'context' });
+        if (row.kind === 'episode') {
+          const cycle = this.known('learning_cycles', value.id);
+          this.require(cycle?.id != null && cycle.disposition !== 'conflicts');
+          mapped.id = cycle.id;
+        }
+        let old = null, identical = false;
+        const identity = this.journalIdentity(mapped);
+        for (const candidate of this.target.db.prepare('SELECT * FROM learning_journal WHERE input=? AND kind=? AND at=? ORDER BY id DESC')
+          .iterate(this.input, row.kind, row.at)) {
+          old ??= candidate;
+          if (candidate.config_version === row.config_version
+            && same(this.journalIdentity(decode(candidate.payload).value), identity)) {
+            old = candidate; identical = true; break;
+          }
+        }
+        if (identical) {
           this.maps.learning_journal.set(row.id, { id: old.id, disposition: 'duplicates' }); disposition = 'duplicates';
         } else {
           if (row.kind === 'sample') {
@@ -611,17 +683,14 @@ export class HistoryMerge {
             else {
               // Master conflicts in resolved provenance cannot sneak in through
               // a donor model. Exclude such inputs rather than inventing them.
-              const mapped = this.remap(value, { strict: true });
               this.journal.push({ row, payload: { ...payload, value: mapped }, replacesMissing: old?.id ?? null });
               disposition = 'missing'; this.report.model.acceptedSamples++;
             }
           } else if (old) { disposition = 'conflicts'; this.maps.learning_journal.set(row.id, { id: old.id, disposition }); }
           else if (row.kind === 'episode') {
-            const cycle = this.known('learning_cycles', value.id);
-            this.require(cycle?.id != null && cycle.disposition !== 'conflicts');
-            this.journal.push({ row, payload: { ...payload, value: { ...this.remap(value, { strict: true }), id: cycle.id } } }); disposition = 'missing';
+            this.journal.push({ row, payload: { ...payload, value: mapped } }); disposition = 'missing';
           } else {
-            this.journal.push({ row, payload: { ...payload, value: this.remap(value) } }); disposition = 'missing';
+            this.journal.push({ row, payload: { ...payload, value: mapped } }); disposition = 'missing';
           }
           if (disposition === 'missing') this.maps.learning_journal.set(row.id, { id: -row.id, disposition });
         }
@@ -631,6 +700,22 @@ export class HistoryMerge {
     }
     if (this.journal.length || this.report.tables.find(row => row.name === 'fireplace_events')?.missing)
       this.report.model.status = 'rebuild-required';
+  }
+  journalIdentity(value) {
+    const result = structuredClone(value);
+    const source = id => this.target.db.prepare('SELECT COALESCE(source_entry_id,id) id FROM learning_journal_entries WHERE id=?').get(id)?.id ?? id;
+    const visit = node => {
+      if (!node || typeof node !== 'object') return;
+      for (const [key, item] of Object.entries(node)) {
+        if (key === 'journal' && Array.isArray(item)) node[key] = item.map(source);
+        else if (key === 'sensorRevert' && object(item)) node[key] = { ...item, id: source(item.id) };
+        else visit(item);
+      }
+    };
+    // Published epochs use direct immutable source pointers. Resolve only for
+    // comparison: neither original journal bytes nor their references change.
+    visit(result);
+    return result;
   }
   async run() {
     await this.imports(); await this.snapshots(); await this.observations(); await this.pendingEnergy();

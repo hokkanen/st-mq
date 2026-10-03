@@ -120,6 +120,10 @@ test('graceful handover commits final snapshot, demotion survives restart and la
   assert.equal(right.sync.state, 'ready');
   await left.action('handover', command());
   assert.equal(left.state.value.role, 'slave'); assert.equal(right.state.value.role, 'master');
+  const finalPublication = await readReplicaPublication(left.config.snapshotDirectory);
+  assert.equal(left.status().sync.state, 'ready');
+  assert.equal(left.status().sync.sourceAt, finalPublication.sourceAt);
+  assert.equal(left.status().sync.verifiedAt, finalPublication.verifiedAt);
   assert.deepEqual(left.calls.find(call => call[0] === 'stop'), ['stop', true, true]);
   assert.equal(acceptsLineage(left.state.value.accepted, right.state.claim()), true);
   await left.synchronize(right.state.claim());
@@ -360,7 +364,7 @@ test('explicit rejoin without recovery requires the checked preview and replaces
 test('an uncertain discard request cannot authorize rejoin after another recovery has completed', async t => {
   const root = await fixture(t);
   const primary = await manager(t, root, 'master', { platform: 'hassio', hooks: {
-    recoveryPreview: async () => ({ previewId: randomUUID(), counts: { missing: 0 } }),
+    recoveryPreview: async () => ({ previewId: randomUUID(), counts: { missing: 0 }, model: { status: 'rebuild-required' } }),
     recoveryApply: async () => ({ status: 'complete', imported: 0 }),
   } });
   const donor = await manager(t, root, 'donor'); connect(primary, donor);
@@ -431,7 +435,7 @@ test('explicit promotion from protected history is available without reopening a
 
 test('a stale recovery completion cannot erase changes made to the protected donor after preview', async t => {
   const root = await fixture(t), primary = await manager(t, root, 'master', { platform: 'hassio', hooks: {
-    recoveryPreview: async () => ({ previewId: randomUUID(), counts: {} }), recoveryApply: async () => ({ status: 'complete' }),
+    recoveryPreview: async () => ({ previewId: randomUUID(), counts: { missing: 1 } }), recoveryApply: async () => ({ status: 'complete' }),
   } });
   const donor = await manager(t, root, 'donor'); connect(primary, donor);
   await donor.observeClaim(primary.state.claim());
@@ -607,13 +611,23 @@ test('A10-003 delayed pre-handover poll and MQTT claim cannot demote the new pri
 
 test('A10-004 lost release acknowledgement retries the same durable operation',async t=>{
   const root=await fixture(t),primary=await manager(t,root,'master',{platform:'hassio',hooks:{
-    recoveryPreview:async()=>({previewId:randomUUID(),counts:{missing:0}}),recoveryApply:async()=>({status:'complete',imported:0}),
+    recoveryPreview:async()=>({previewId:randomUUID(),counts:{missing:0},model:{status:'rebuild-required'}}),recoveryApply:async()=>({status:'complete',imported:0}),
   }}),donor=await manager(t,root,'donor');connect(primary,donor);
   await donor.observeClaim(primary.state.claim());await primary.action('check-recovery',command());
   await primary.action('recover',{...command(),previewId:primary.state.value.recovery.preview.previewId});
   const request=primary.peer.request.bind(primary.peer),action=command();let lost=false;
   primary.peer.request=async(operation,...args)=>{const result=await request(operation,...args);if(operation==='release'&&!lost){lost=true;throw Object.assign(Error(),{code:'peer_unavailable'});}return result;};
   await assert.rejects(primary.action('rejoin',action),{code:'peer_unavailable'});
+  const pendingRelease = structuredClone(primary.state.value.recovery.releaseOperation);
+  assert.equal(primary.status().actions['check-recovery'], false);
+  await assert.rejects(primary.action('check-recovery', command()), { code: 'invalid_transition' });
+  assert.deepEqual(primary.state.value.recovery.releaseOperation, pendingRelease);
+  await primary.poll();
+  assert.equal(primary.status().peer.role, 'slave');
+  assert.equal(primary.status().actions.rejoin, true, 'the saved release can be verified after the peer already became a slave');
+  assert.equal(primary.status().actions.handover, false);
+  await assert.rejects(primary.action('handover', command()), { code: 'invalid_transition' });
+  assert.deepEqual(primary.state.value.recovery.releaseOperation, pendingRelease);
   assert.equal(donor.state.value.role,'slave');const generation=donor.state.value.accepted.generation;
   for (let n = 0; n < 3; n++) await primary.exportSnapshot({ force: true });
   await primary.snapshots.chunk({ generation, index: 0 });
@@ -631,4 +645,203 @@ test('peer snapshot requests cannot pin exports indefinitely', async t => {
   const root = await fixture(t), primary = await manager(t, root, 'master');
   const metadata = await primary.handlePeer('snapshot', { force: true, pin: true });
   await assert.rejects(access(join(primary.snapshots.directory, `export-${metadata.generation}.pin`)), { code: 'ENOENT' });
+});
+
+test('ordinary slave comparisons cannot import its older history or replace it through recovery', async t => {
+  const root = await fixture(t);
+  let imported = false;
+  const primary = await manager(t, root, 'master', { hooks: {
+    recoveryPreview: async () => ({ previewId: randomUUID(), counts: { missing: 2 }, model: { status: 'unchanged' } }),
+    recoveryApply: async () => { imported = true; },
+  } });
+  const slave = await manager(t, root, 'slave', { role: 'slave' }); connect(primary, slave);
+  await slave.synchronize(primary.state.claim());
+  await primary.poll();
+  await primary.action('check-recovery', command());
+  const recovery = primary.status().recovery;
+  assert.equal(recovery.donorRole, 'slave');
+  assert.equal(primary.status().actions.recover, false);
+  assert.equal(primary.status().actions.rejoin, false);
+  await assert.rejects(primary.action('recover', { ...command(), previewId: recovery.preview.previewId }), { code: 'invalid_transition' });
+  await assert.rejects(primary.action('rejoin', { ...command(), discardUnrecovered: true, previewId: recovery.preview.previewId }), { code: 'recovery_required' });
+  assert.equal(imported, false);
+  assert.deepEqual(primary.status().recovery, recovery);
+  assert.equal(slave.state.value.role, 'slave');
+});
+
+test('a completed protected recovery survives rechecking unchanged history and rejects stale donor roles', async t => {
+  const root = await fixture(t);
+  let missing = 1;
+  const report = { status: 'complete', imported: 1, model: { status: 'rebuilt' } };
+  const primary = await manager(t, root, 'master', { platform: 'hassio', hooks: {
+    recoveryPreview: async () => ({ previewId: randomUUID(), counts: { missing }, model: { status: 'unchanged' } }),
+    recoveryApply: async () => report,
+  } });
+  const donor = await manager(t, root, 'donor'); connect(primary, donor);
+  await donor.observeClaim(primary.state.claim());
+  await primary.action('check-recovery', command());
+  await primary.action('recover', { ...command(), previewId: primary.status().recovery.preview.previewId });
+  missing = 0;
+  await primary.action('check-recovery', command());
+  assert.equal(primary.status().recovery.state, 'complete');
+  assert.deepEqual(primary.status().recovery.report, report);
+  assert.equal(primary.status().actions.recover, false);
+  assert.equal(donor.state.value.role, 'protected', 'waiting and checking never resume mirroring');
+  const request = primary.peer.request.bind(primary.peer);
+  primary.peer.request = async () => { throw Object.assign(Error(), { code: 'peer_unavailable' }); };
+  await assert.rejects(primary.action('check-recovery', command()), { code: 'peer_unavailable' });
+  assert.equal(primary.status().recovery.state, 'error');
+  assert.deepEqual(primary.status().recovery.report, report);
+  assert.equal(primary.status().actions.recover, false);
+  assert.equal(primary.status().actions.rejoin, false);
+  primary.peer.request = request;
+  await primary.action('check-recovery', command());
+  assert.equal(primary.status().recovery.state, 'complete');
+  assert.deepEqual(primary.status().recovery.report, report);
+  await donor.action('promote', command());
+  await assert.rejects(primary.action('rejoin', command()), { code: 'invalid_transition' });
+  assert.deepEqual(primary.status().recovery.report, report);
+  assert.equal(primary.state.value.recovery.releaseOperation, undefined);
+});
+
+test('offline donor disables recovery while newer matching protected status can satisfy the fresh identity check', async t => {
+  const root = await fixture(t), primary = await manager(t, root, 'master', { platform: 'hassio', hooks: {
+    recoveryPreview: async () => ({ previewId: randomUUID(), counts: { missing: 1 } }),
+    recoveryApply: async () => ({ status: 'complete', imported: 1 }),
+  } });
+  const donor = await manager(t, root, 'donor'); connect(primary, donor);
+  await donor.observeClaim(primary.state.claim());
+  await primary.action('check-recovery', command());
+  const request = primary.peer.request.bind(primary.peer);
+  primary.peer.request = async () => { throw Object.assign(Error(), { code: 'peer_unavailable' }); };
+  await primary.poll();
+  assert.equal(primary.status().actions.recover, false);
+  primary.peer.request = async (operation, ...args) => {
+    const result = await request(operation, ...args);
+    if (operation === 'status') await primary.handlePeer('status', { claim: donor.state.claim(), sync: donor.sync });
+    return result;
+  };
+  await primary.poll();
+  assert.equal(primary.status().actions.recover, true);
+  await primary.action('recover', { ...command(), previewId: primary.status().recovery.preview.previewId });
+  assert.equal(primary.status().recovery.state, 'complete');
+});
+
+test('changed donor evidence after completed recovery requires a fresh recovery decision', async t => {
+  const root = await fixture(t);
+  let missing = 1;
+  const primary = await manager(t, root, 'master', { platform: 'hassio', hooks: {
+    recoveryPreview: async () => ({ previewId: randomUUID(), counts: { missing }, model: { status: 'unchanged' } }),
+    recoveryApply: async () => ({ status: 'complete', imported: 1 }),
+  } });
+  const donor = await manager(t, root, 'donor'); connect(primary, donor);
+  await donor.observeClaim(primary.state.claim());
+  await primary.action('check-recovery', command());
+  await primary.action('recover', { ...command(), previewId: primary.status().recovery.preview.previewId });
+  const changed = new DatabaseSync(donor.state.value.activeDbPath);
+  changed.exec("INSERT INTO observations(source,device,signal,value,unit,source_time,received_at,quality) VALUES('fixture','fixture','temperature',23,'degC',900,900,'[]')");
+  changed.close();
+  await assert.rejects(primary.action('rejoin', command()), { code: 'recovery_required' });
+  assert.equal(primary.status().recovery.pendingRelease, null, 'a definite pre-replacement rejection permits a new check');
+  missing = 2;
+  await primary.action('check-recovery', command());
+  assert.equal(primary.status().recovery.state, 'ready');
+  assert.equal(primary.status().recovery.report, null);
+  await assert.rejects(primary.action('rejoin', command()), { code: 'recovery_required' });
+  assert.equal(donor.state.value.role, 'protected');
+});
+
+test('a no-gap protected check needs explicit replacement but no recovery or rebuild', async t => {
+  const root = await fixture(t), primary = await manager(t, root, 'master', { platform: 'hassio', hooks: {
+    recoveryPreview: async () => ({ previewId: randomUUID(), counts: { missing: 0, conflicts: 2 }, model: { status: 'unchanged' } }),
+    recoveryApply: async () => { throw Error('No rebuild should run'); },
+  } });
+  const donor = await manager(t, root, 'donor'); connect(primary, donor);
+  await donor.observeClaim(primary.state.claim());
+  await primary.poll();
+  await primary.action('check-recovery', command());
+  assert.equal(primary.status().actions.recover, false);
+  assert.equal(primary.status().actions.rejoin, true);
+  await assert.rejects(primary.action('rejoin', command()), { code: 'recovery_required' });
+  assert.equal(donor.state.value.role, 'protected');
+  await primary.action('rejoin', { ...command(), discardUnrecovered: true, previewId: primary.status().recovery.preview.previewId });
+  assert.equal(donor.state.value.role, 'slave');
+});
+
+test('running replica mutations are preserved before synchronization or ordinary snapshot export', async t => {
+  for (const action of ['synchronize', 'export']) await t.test(action, async t => {
+    const root = await fixture(t), primary = await manager(t, root, 'master');
+    const slave = await manager(t, root, 'slave', { role: 'slave' }); connect(primary, slave);
+    await slave.synchronize(primary.state.claim());
+    const publication = await readReplicaPublication(slave.config.snapshotDirectory);
+    const changed = new DatabaseSync(publication.dbPath);
+    changed.exec('UPDATE observations SET value=29'); changed.close();
+    if (action === 'synchronize') await slave.synchronize(primary.state.claim());
+    else await assert.rejects(slave.exportSnapshot({ force: true }), { code: 'verification_failed' });
+    assert.equal(slave.state.value.role, 'protected');
+    assert.equal(slave.state.value.reason, 'snapshot_verification_failed');
+    const preserved = new DatabaseSync(publication.dbPath, { readOnly: true });
+    assert.equal(preserved.prepare('SELECT value FROM observations').get().value, 29); preserved.close();
+    const donor = await slave.exportSnapshot({ force: true });
+    assert.equal(donor.claim.role, 'protected', 'preserved history remains available for explicit recovery');
+  });
+});
+
+test('peer snapshot status uses observed public fields and survives slave restart without granting authority', async t => {
+  const root = await fixture(t), primary = await manager(t, root, 'master');
+  const slave = await manager(t, root, 'slave', { role: 'slave' }); connect(primary, slave);
+  await slave.synchronize(primary.state.claim());
+  slave.sync.privateDiagnostic = 'private fixture details';
+  await primary.poll();
+  const peer = primary.status().peer;
+  assert.deepEqual(peer.sync, { state: 'ready', sourceAt: slave.sync.sourceAt, verifiedAt: slave.sync.verifiedAt, bytes: slave.sync.bytes });
+  assert.equal(Number.isFinite(peer.syncReceivedAt), true);
+  assert.doesNotMatch(JSON.stringify(peer.sync), /private/);
+  await slave.close();
+  const restarted = await manager(t, root, 'slave', { role: 'slave', create: false }); connect(primary, restarted);
+  assert.equal(restarted.status().sync.state, 'ready');
+  assert.equal(restarted.status().sync.sourceAt, peer.sync.sourceAt);
+  assert.equal(restarted.canControl(), false);
+  restarted.sync = { state: 'invalid', sourceAt: -1, verifiedAt: 'invalid', bytes: -1 };
+  await primary.poll();
+  assert.deepEqual(primary.status().peer.sync, { state: 'waiting', sourceAt: null, verifiedAt: null, bytes: null });
+});
+
+test('simultaneous polls preserve newer peer status and still schedule first mirroring', async t => {
+  const root = await fixture(t), primary = await manager(t, root, 'master');
+  const slave = await manager(t, root, 'slave', { role: 'slave' }); connect(primary, slave);
+  await Promise.all([primary.poll(), slave.poll()]);
+  await slave.syncTask;
+  assert.equal(slave.status().sync.state, 'ready');
+  assert.ok(slave.state.value.accepted);
+  assert.equal(slave.state.value.role, 'slave');
+});
+
+test('restart protects a replica whose accepted authority contradicts its publication identity', async t => {
+  const root = await fixture(t), primary = await manager(t, root, 'master');
+  const slave = await manager(t, root, 'slave', { role: 'slave' }); connect(primary, slave);
+  await slave.synchronize(primary.state.claim());
+  await slave.state.update({ accepted: { ...slave.state.value.accepted, sequence: slave.state.value.accepted.sequence + 1 } });
+  await slave.close();
+  const restarted = await manager(t, root, 'slave', { role: 'slave', create: false });
+  assert.equal(restarted.state.value.role, 'protected');
+  assert.equal(restarted.state.value.reason, 'snapshot_verification_failed');
+  assert.notEqual(restarted.status().sync.state, 'ready');
+});
+
+test('delayed poll success or failure cannot replace newer role and synchronization evidence', async t => {
+  for (const failed of [false, true]) await t.test(failed ? 'failure' : 'success', async t => {
+    const root = await fixture(t), primary = await manager(t, root, 'master');
+    const slave = await manager(t, root, 'slave', { role: 'slave' }); connect(primary, slave);
+    let release;
+    primary.peer.request = async () => new Promise((resolve, reject) => { release = () => failed
+      ? reject(Object.assign(Error(), { code: 'peer_unavailable' }))
+      : resolve({ claim: slave.state.claim(), sync: { state: 'waiting' } }); });
+    const polling = primary.poll();
+    await primary.handlePeer('status', { claim: { ...slave.state.claim(), role: 'protected' }, sync: { state: 'error' } });
+    release(); await polling;
+    assert.equal(primary.status().peer.reachable, true);
+    assert.equal(primary.status().peer.role, 'protected');
+    assert.equal(primary.status().peer.sync.state, 'error');
+  });
 });
