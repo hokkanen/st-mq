@@ -1,7 +1,17 @@
 {
-  "name": "ST-MQ",
-  "version": "0.9.0",
+  "name": "st-mq",
+  "version": "0.9.5-dev.1",
+  "private": true,
+  "description": "Home energy monitoring, heating control, EV charging and historical analysis",
   "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/hokkanen/st-mq.git"
+  },
+  "homepage": "https://github.com/hokkanen/st-mq#readme",
+  "bugs": {
+    "url": "https://github.com/hokkanen/st-mq/issues"
+  },
   "scripts": {
     "dev": "vite",
     "build": "vite build",

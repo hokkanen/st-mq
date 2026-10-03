@@ -12,6 +12,21 @@ const sensors = (ids = ['indoor', 'downstairs', 'bedroom', 'garage']) => ({ devi
   id, kind: 'temperature', signal: `${id}_temperature`, connection: `mqtt:invented/${id}`, area: id === 'garage' ? 'garage' : 'home',
 })) });
 
+test('Home Assistant, npm and default container builds identify the same release', () => {
+  const json = path => JSON.parse(readFileSync(new URL(path, import.meta.url), 'utf8'));
+  const manifest = json('../config.json'), pkg = json('../package.json'), lock = json('../package-lock.json');
+  const dockerfile = readFileSync(new URL('../Dockerfile', import.meta.url), 'utf8');
+  assert.equal(pkg.name, manifest.slug);
+  assert.equal(pkg.private, true, 'The application is not published to npm');
+  assert.equal(pkg.version, manifest.version);
+  for (const entry of [lock, lock.packages['']]) {
+    assert.equal(entry.name, pkg.name);
+    assert.equal(entry.version, pkg.version);
+  }
+  assert.equal(dockerfile.match(/^ARG BUILD_VERSION=(\S+)$/m)?.[1], pkg.version);
+  if (pkg.version.includes('-')) assert.equal(manifest.stage, 'experimental');
+});
+
 test('default startup has no global mode with simulated devices, no provider connections and no real comfort target', () => {
   const cfg = loadConfig({}, '/missing-repository');
   assert.equal(cfg.input, 'simulated');

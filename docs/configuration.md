@@ -119,8 +119,8 @@ successful import and application. Omitting a key from a later import preserves
 its saved value, including an existing `!secret` reference. Supervisor resolves
 those references for runtime use while the saved options retain them. An import
 must use actual values; an explicit value replaces that field's saved reference.
-See [permanent configuration](../README.md#permanent-configuration-and-prices)
-for exact paths, reload behavior and restart requirements.
+See [Home Assistant setup](../DOCS.md) for import paths and
+[standalone startup](startup.md) for environment overrides.
 
 ## Check and review before applying
 
@@ -150,6 +150,23 @@ The admin API uses `POST /api/settings/preview` with `{}`, then
 `POST /api/settings/reload` with the returned `{"reviewId":"…"}`. The reload
 endpoint rejects an empty request or an unreviewed configuration.
 
+## Applying changes and restarting
+
+**Check & review configuration** reports whether the proposed settings can be
+applied while running. Heating strategy, comfort and learning settings,
+electricity rates, recording policy and direct-access passwords can be applied
+without restarting. With live input this includes provider connections,
+location, sensor topics, polling intervals, H66 selection and its verification
+file. Existing environment overrides continue to take precedence.
+
+Input mode, web listeners, data/database locations and process environment need
+a restart. A review containing a restart-only change cannot be partly applied.
+Finish equipment tests first. Owned temporary settings must be restored before
+reconnecting; unresolved restoration blocks the change until equipment is
+available. An active heating cycle ends, while Away/Pause intent and learning
+history remain. Password changes take effect immediately; direct-access tabs
+may need the new password. Home Assistant ingress continues to use HA login.
+
 ## Admin and family web access
 
 `controller.web_token` is the admin password for direct access.
@@ -173,8 +190,17 @@ read-only heating-plan comparisons, and may record
 firewood, remove entries within 15 minutes, operate DHWR, Away/Pause and manual
 heating, Home Automatic/Pause and Garage manual modes, garage doors and all EV card controls. Every other write, export and
 download requires admin. These permissions do not change equipment authority,
-restoration or freeze protection. The role is not configurable; see the
-[complete access policy](../README.md#connections-and-access).
+restoration or freeze protection. The role is not configurable. Native pump
+parameters, equipment tests, heating-plan one-cycle approvals, pairing,
+configuration, integration setup and electrical limits remain admin-only.
+
+Standalone loopback access permits an empty admin password when family access
+is disabled. Listening beyond loopback requires the passwords described above.
+Use a trusted local network or an authenticated HTTPS reverse proxy for remote
+direct access. Credentials are concealed in API responses; the direct-access
+browser keeps its entered password in session storage for that tab. **Log out**
+returns to the password prompt without stopping previously requested operations.
+For ingress, use Home Assistant to log out.
 
 ## Database export destination
 
@@ -383,6 +409,41 @@ saved state is reported before mutation; it is not silently reset, overwritten
 or migrated. This includes saved pair authority and standalone controller
 identity. Follow the reported guidance for a deliberate new setup with a fresh
 state directory; preserve the rejected files.
+
+## Electricity rates and historical interpretation
+
+All monetary options under `electricity` are **c/kWh excluding VAT**. VAT is entered
+as a percentage and applied once to spot, margin, tax and transfer. These are
+application defaults, not a statement of current taxes or an installation's
+electricity contract. Verify the rates and their effective dates for the installation:
+
+| Option | Excluding VAT | Including 25.5% VAT |
+| --- | ---: | ---: |
+| `margin_ct_per_kwh_ex_vat` | 0.33 | 0.41415 |
+| `tax_ct_per_kwh_ex_vat` | 2.325 | 2.917875 |
+| `day_transfer_ct_per_kwh_ex_vat` | 2.66 | 3.3383 |
+| `night_transfer_ct_per_kwh_ex_vat` | 1.56 | 1.9578 |
+| `winter_day_transfer_ct_per_kwh_ex_vat` | 3.32 | 4.1666 |
+| `other_transfer_ct_per_kwh_ex_vat` | 1.65 | 2.07075 |
+
+The numeric VAT-exclusive defaults are in `config.json`. `vat_percent` defaults
+to `25.5`; `transfer_tariff` defaults to `day-night`. Daytime is 07:00–22:00 Finnish time. Seasonal winter daytime is
+November–March, Monday–Saturday 07:00–22:00; Sundays and all other times use the
+lower seasonal rate. Seasonal is available but is not activated automatically.
+
+The optional `electricity.effective_date` is a Finnish calendar date. First-use
+rates begin today if no date is supplied; subsequent changes begin when loaded.
+Rates, transfer amounts and VAT are saved per period with an explicit tax basis
+so future changes preserve historical calculations. Missing tax basis is not
+interpreted as an older native representation. Explicit dated VAT-inclusive
+tariff facts remain valid. Unstarted scheduled changes can be revised in options.
+For chart history and timing comparisons, missing historical contract periods
+use the nearest known rates while preserving historical spot prices. If only
+today's rates are known, those rates apply to earlier readings. The historical
+local time determines the day/night or seasonal transfer rate. These price
+assumptions are labelled in the interface; known dated rates remain unchanged.
+Simulation prices remain labelled synthetic and independent of the household
+contract.
 
 ## Section map
 

@@ -16,6 +16,7 @@ assert digest(base / "LICENSE") == manifest["license_sha256"], "upstream license
 with tempfile.TemporaryDirectory(prefix="stmq-fibaro-source-check-") as temporary:
     restored = Path(temporary) / "driver"
     shutil.copytree(base / "driver", restored)
+    (restored / "config.yml.template").rename(restored / "config.yml")
     subprocess.run(
         ["patch", "--batch", "--reverse", "-p4", "-i", str(base / "changes.patch")],
         cwd=restored, check=True,

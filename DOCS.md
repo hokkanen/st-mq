@@ -3,20 +3,23 @@
 ST-MQ runs as a Home Assistant **app** (formerly called an add-on) on
 **Home Assistant OS**, on `aarch64` including Raspberry Pi 5, or `amd64`.
 Home Assistant Container has no app manager; run ST-MQ separately using the
-[standalone instructions](README.md#deployment-paths). ST-MQ is installed from
+[standalone instructions](docs/startup.md). ST-MQ is installed from
 this repository as **Home Energy**, not through HACS or as a Home Assistant Core
 integration. The project and installation slug remain `st-mq`.
 See Home Assistant's [installation types](https://www.home-assistant.io/installation/#about-installation-types).
 
-The 0.9.0 application starts with **simulated devices and Pause heating**. Default
+The 0.9.5-dev.1 development prerelease starts with **simulated devices and Pause heating**. Default
 startup launches no live controller or provider. Live automation is enabled separately in each feature after configuring its connection. See [learning and control](docs/learning-and-control.md)
 for the algorithm, native-setting restoration and equipment testing limits.
 [Automation and manual heating](docs/automation-and-manual-control.md) explains
 the independent feature controls and Garage local temperature regulation.
 
 1. Open **Settings → Apps → Install app → ⋮ → Repositories**, add
-   `https://github.com/hokkanen/st-mq`, and install **Home Energy** from the
-   **Home Energy apps** repository.
+   `https://github.com/hokkanen/st-mq#H66` for the development prerelease, after
+   that revision has been published, and install **Home Energy** from the
+   **Home Energy apps** repository. The `#H66` suffix selects the development
+   branch; omitting it selects the default branch rather than this prerelease.
+   A Git tag or GitHub prerelease does not change the branch installed by HA.
    Home Assistant builds the image locally; the host needs network access for
    the build and enough free storage. If the repository does not appear, refresh
    the app store and inspect **Settings → System → Logs → Supervisor**.
@@ -45,7 +48,7 @@ the independent feature controls and Garage local temperature regulation.
    `/app_configs/<repository-id>_st-mq/st-mq/`. Private provider token caches stay
    in `/data/st-mq/`. Both are included in the app backup; `/share` remains
    available for imports/exports. See the path and backup instructions below.
-5. Historical import is optional. The [history CLI](README.md#persistence-and-historical-data)
+5. Historical import is optional. The [CSV import guide](docs/csv-import.md)
    accepts only v0.7.5 `st-mq.csv` and `easee.csv`. With a shell inside the ST-MQ
    container, run `node scripts/history.js import --db /config/st-mq/st-mq.sqlite
    --file /share/st-mq/st-mq.csv --kind stmq`, then import `easee.csv` with
@@ -156,7 +159,7 @@ The **Configuration** section also reports live access status. Setting a valid
 password. Family can read all pages, operate firewood (removal within 15 minutes),
 DHWR, manual heating and Away/Pause, garage doors and all EV card
 controls. Other writes, exports/downloads and settings administration require
-admin; see [web access](README.md#connections-and-access).
+admin; see [web access](docs/configuration.md#admin-and-family-web-access).
 
 Changing a password applies immediately; affected direct-access tabs must use
 the new password. Clearing both and applying disables direct access while Home
@@ -281,132 +284,47 @@ Missing AUX routing, solar forecasts or complete recovery evidence stays unknown
 Learning values are stored as learned; new forecasts and models do not rewrite
 earlier learning chart samples.
 
+## Using the application
+
 Empty direct-access passwords leave port 1234 closed; Home Assistant ingress
-remains available through Home Assistant login with full ST-MQ admin access.
-Home Assistant options own permanent
-settings. Above the chart, **Home** and **Garage** each open **Heating
-configuration** from their upper summary. **Sensors & Equipment** in Home and
-**Sensors & More equipment** in Garage contain readbacks and manual tests;
-Garage's chargers sit directly below its heating summary. Home's upper summary
-includes indoor and outdoor temperatures, heating request and all-in price.
-Below those readings, a compact row shows the next selected heating-plan
-change in Finnish local time. It opens the **Heating plan explorer** for
-upcoming phases, constraint explanations and hypothetical limit comparisons.
-Family may simulate; using a scenario for one cycle requires admin access and
-current control readiness. Defaults remain configuration-owned. See [the
-explorer guide](docs/heating-plan-explorer.md). The row identifies paused,
-simulated and read-only states and does not assign a fixed end time to
-recovery. Equipment and connections headers retain their height when toggled;
-desktop balancing adds only bounded gaps between sections. Home's heating
-summary shows compressor activity, **Price control** and **Circulation**; an
-unverified request does not confirm the relay state. Garage separates its
-saved and effective room targets from native pump feedback. It has persistent
-**Normal / Away**, a normal target editor, native controls and independent
-**Freeze protection** directly below **Normal temperature**. The live fold shows
-rear/front air readings, estimated pipe temperatures and reserves. It explains
-the minimum target and independent Heat/On rescue: during normal room regulation,
-an 8°C saved target with a 5°C protection minimum remains 8°C, even during rescue. Startup uncertainty does not
-mean pipes were measured frozen; recovery needs ten safe minutes at both
-locations. Stale or invalid configured protection selects native 16°C Heat/On,
-without replacing the saved target. Unusable room input or an out-of-range
-calculated external temperature also uses native 16°C in HEAT, preserving power
-unless protection requests rescue.
+remains available through Home Assistant login with full application admin
+access. Saved app options own permanent settings. See the
+[configuration guide](docs/configuration.md) for reviewed changes, password
+roles, electricity rates and the controls that retain independent intent.
 
-The live fold contains **Pipe model & settings**, comparing `garage.protection` in
-configuration with actual sender readback. It also explains pipe estimates,
-reserve and the fixed model safety factor of 2: cooling counts at twice the
-nominal heat-transfer rate and warming at half. The factor is a model assumption,
-not a configurable or independently reported parameter. A link opens
-**Connections & configuration → Garage freeze protection**, below **Floor
-preheating**, for installation and setup; that section links back to Garage. Edit
-configuration and use **Apply reviewed configuration** to change them; there is no
-dashboard parameter editor. Pipe estimates require fresh, established model
-evidence from the protection sender. A target increase shows moisture guidance
-for roughly 24 hours;
-the selected mode has no expiry. The BLU H&T development feed supplies
-temperature only.
+Home uses Automatic/Pause and scoped manual heating; Garage uses persistent
+Normal/Away targets with independent local frost protection. Each charging
+integration and Caravan Automatic power has its own permission. Opening a
+connection or selecting live input does not enable all controls.
 
-Home uses **Automatic / Paused**, **Schedule & away**, a folded **Manual heating
-override**, and **Heating strategy & comfort** before the heat model. Pause can
-last indefinitely or end at a scheduled resume time. Manual modes share the
-automatic equipment actions; Preheat ends at its original floor lease deadline.
-Action receipts remain for 24 hours and reconcile device feedback. Configuration
-owns the Gentle/Balanced/More savings strategy and comfort limits. Home's
-**Overall comfort reference** and **Room references & limits** show learned
-references with configured drop/rise allowances.
+- [Home heating and restoration](docs/automation-and-manual-control.md)
+- [Heating plan explorer](docs/heating-plan-explorer.md)
+- [Garage targets, equipment and protection](docs/garage.md)
+- [Charging setup, controls and reports](docs/charging.md)
+- [Charts, recording and unknown data](docs/recording.md)
+- [MQTT equipment setup](docs/mqtt-equipment.md)
 
-The Home learning summary opens learning outcomes, model inputs and current
-coefficients. Current coefficients come from existing learning state; the UI
-adds no coefficient storage. Historical coefficient chart axes separately replay
-the saved journal with its matching algorithm.
-Both charger cards open their
-schedule, readings and preferences. Charger 1's **Automatic charging** is off by
-default and separately permits native Easee schedules, independently of the heating automation permissions. Charger 2 is the physical Shelly EVSE with separately
-commissioned MQTT control. BMW CarData and TeslaMate supply vehicle evidence for
-either charger. See [charging](docs/charging.md).
-**Data & settings** summarizes provider health; each provider row opens its series
-and source details. Its **Connections & configuration** fold contains MQTT setup,
-configuration reload and electricity rates. Its **Charging** section, above
-**Home floor preheating**, explains charger setup and the BMW/Tesla feed requirements,
-shows live field readiness and opens guided physical charging tests. The **Away until** and **Resume automatic heating at** controls use
-Finnish time even when the remote browser is in another timezone. Apply changes
-saves them together; **Home now** and **Automatic now** cancel
-them independently. They persist in the database; scheduled deadlines end Away or resume Automatic,
-including after a restart. Nonexistent or repeated clock-change times require
-another picker time; the API also accepts an explicit UTC offset.
+Current outdoor temperature uses FMI station observations, with an Open-Meteo
+model estimate as backup. H66 outdoor measurements do not supply outdoor
+control, learning or new recorded temperature history. Provider details retain
+source ages, unknown states and backup/retry information; refreshing the page
+or reconnecting does not make cached observations fresh.
 
-Away removes occupied drop penalties and compares predicted cost, including
-recovery and auxiliary heating, with continuous native operation. It restores
-occupied requirements when the return falls within the available forecast horizon.
-Data/model confidence requirements still apply. Pause requests normal native
-operation without price reductions and restores owned native settings. `active`
-operates real configured MQTT equipment for either live input.
-Overall and room comfort references are inferred; the shared maximum drop and
-rise both default to 1.5 °C while occupied.
-Unsupported warm-weather temperature plateaus are excluded from new reference
-candidates. Cached provider readings keep their source timestamps through outages
-and restarts. FMI forecast publication, model analysis and valid times are stored
-separately. The Open-Meteo forecast records fetch time separately because its
-JSON response does not supply a documented issuance timestamp. Missing prices and
-forecast intervals remain gaps; tomorrow's prices appear only when published.
+The controller distinguishes broker delivery, native readback and physical heat
+production. H66 restoration needs a reachable application and gateway; there is
+no documented device-local expiry. Compressor-only reduction can skip the
+native 14-day high-temperature water cycle under the current control design.
+Read the [learning and control limits](docs/learning-and-control.md) before live
+commissioning. The planned SONOFF floor interface remains unsupported, so floor
+activation and commissioning are unavailable.
 
-The outdoor card labels **H66 outdoor sensor**, **FMI nearby station**, or
-**Open-Meteo model estimate** in that priority order. H66 register `0007` supplies
-the house sensor reading when fresh. The station and model fallback describe the
-surrounding area. Missing or stale H66 readings fall back automatically; a fresh
-H66 reading regains priority. With valid configured coordinates, this chain owns
-outdoor temperature. Indoor and garage sensors publish through local MQTT. FMI
-requires a fresh station reading within 50 km. Open-Meteo needs no key or
-registration for noncommercial use within the free API limits; no weather token
-setting is needed. **Connection & provider details** names each selected provider and shows
-**Using backup**, a concise primary error and the next scheduled primary retry.
-Per-source retries are bounded, honor rate limits and persist through restarts.
-
-Normal automated tests stay offline. The separate [live testing section](docs/live-testing.md)
-checks the configured APIs and keys without starting the controller or connecting
-to MQTT. From a repository checkout, run `npm run test:live`, or select services
-with `npm run test:live -- --services fmi-forecast,fmi-observation`. See the
-[progress log](docs/PROGRESS.md) for actual live results. Successful API checks do
-not commission physical control or establish Raspberry Pi/Home Assistant runtime;
-the x86 container checks cover a different deployment environment.
-For the offline suite, browser checks and container prerequisites, see
-[development validation](docs/development-validation.md).
-
-The Dockerfile uses an explicit Node 22.23.2 Alpine base, a finite frontend build
-and `npm ci`. It does not depend on `BUILD_FROM` or a retired `build.yaml`;
-current Supervisor builds use the Dockerfile directly. It contains no architecture-specific native SQLite addon.
-Node's own SQLite and Intl time-zone support are exercised in the container smoke
-check. Development has not installed or started this app on the owner's HA.
-
-The controller owns tariff commands and temporary native changes. Broker delivery
-is distinguished from native register readback and physical compressor activity.
-The documented C60 mapping and mocked tests do not establish installed relay or
-firmware behavior; use the timed device tests to check the installed integration.
-Original ROOM, DHW start/stop and operating mode are restored after reduction.
-Restoration needs the running application and connection; there is no documented
-H66 device-side expiry. Compressor-only reduction can skip the native 14-day
-high-temperature water cycle; this is an intended, accepted design risk.
-See [learning and control](docs/learning-and-control.md) for the complete details.
+Normal tests are offline. The separately invoked [live diagnostics](docs/live-testing.md)
+check configured APIs without starting the controller or connecting to MQTT;
+API access does not commission physical equipment. The Dockerfile uses an
+explicit Node 22 Alpine base, a finite frontend build and `npm ci`, with no
+`BUILD_FROM` argument or retired `build.yaml`. See
+[development validation](docs/development-validation.md) for the independent
+browser, container and Supervisor boundaries.
 
 ## SSH database access and backups
 
@@ -492,7 +410,7 @@ required by the change from “add-ons” to “apps”.
 | `Dockerfile`, `.dockerignore` | Reproducible application image and build context. Startup runs `node src/main.js`; no `run.sh` is required. |
 | `README.md`, `DOCS.md`, `CHANGELOG.md`, `icon.png`, `logo.png` | App store presentation, setup guidance, release history and branding. |
 | `integrations/homeassistant/` | Optional MQTT automation generators and the pinned Tuya Local adapter. Install only the integrations you use; installing ST-MQ does not install them into Core. |
-| `scripts/test-addon-container.sh`, `scripts/browser-ingress-smoke.js`, `test/extended/supervisor/` | Isolated deployment, ingress and upstream Supervisor configuration checks. |
+| `scripts/test-addon-container.sh`, `test/browser/ingress-smoke.js`, `test/extended/supervisor/` | Isolated deployment, ingress and upstream Supervisor configuration checks. |
 
 The manifest maps writable `app_config` explicitly to ST-MQ's `/config` and
 `share:rw` to `/share`.
@@ -565,7 +483,8 @@ The check uses temporary `/data`, `/config` and `/share` mounts, synthetic optio
 the actual image startup command, authentication, current-schema persistence, restart and
 backup/restore. A separate container verifies direct database access from the
 public folder. Networking is disabled. The extended CI workflow defines AMD64
-and ARM64 jobs under QEMU. For actual run results, see [the progress log](docs/PROGRESS.md).
+and ARM64 jobs under QEMU. Architecture-specific execution and installed-platform
+checks remain separate; see [validation scope](docs/development-validation.md#release-validation-and-known-limits).
 
 Run `bash scripts/test-homeassistant-supervisor.sh` to validate the current
 manifest, translations and saved-options behavior against pinned released
@@ -575,4 +494,5 @@ for prerequisites and scope. Neither these fixtures nor
 an ordinary Docker run establish a real Supervisor installation, protection
 policy, backup/restore, or physical Raspberry Pi operation. A disposable Home
 Assistant OS installation is the remaining acceptance environment for those
-checks; this audit does not install or restart the household's app.
+checks. Running these isolated validators does not install or restart an
+existing app.

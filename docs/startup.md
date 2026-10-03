@@ -1,9 +1,57 @@
-# Startup and an occupied web port
+# Standalone startup and troubleshooting
 
 For Home Assistant installation and saved app options, see [the setup guide](../DOCS.md).
 The shell commands below are for standalone Linux. In Home Assistant, start,
 stop and restart ST-MQ through **Settings → Apps → Home Energy** and read its **Logs**
 tab. Restarting Home Assistant Core alone does not restart the ST-MQ app.
+
+## Run locally
+
+Use Node.js 22.19 or newer. The container baseline is Node 22; CI also checks
+Node 24. SQLite is built into Node. From the repository root:
+
+```sh
+npm ci
+npm run build
+npm start
+```
+
+Open `http://127.0.0.1:1234`. Without an explicit input selection, startup uses
+simulated devices with Home heating paused. Simulation and offline input do not
+connect to providers. Live acquisition uses `STMQ_INPUT=providers`; choosing an
+input does not grant automation permission. Configure each integration and
+feature's authority separately before operating equipment.
+
+For UI development, run `npm start` and `npm run dev` in separate terminals.
+Vite proxies `/api` to the backend; `npm run preview` alone does not provide it.
+The normal server serves the completed UI build.
+
+## Environment and private configuration
+
+Public defaults are in `config.json.options`; the sparse private file overrides
+them. Keep private files outside the checkout, with file mode `0600` and directory
+mode `0700`. See [configuration](configuration.md) for ownership, review/apply,
+electricity rates and the admin/family access policy.
+
+| Variable | Default / purpose |
+| --- | --- |
+| `STMQ_INPUT` | `simulated`; also `offline`, `mqtt`, or `providers` |
+| `STMQ_DATA_DIR` | `./var`, or `/data/st-mq` in the app |
+| `STMQ_DATABASE_DIR` | Same as data directory on Linux; `/config/st-mq` in HA |
+| `STMQ_PORT` | `1234` |
+| `STMQ_HOST` | `127.0.0.1` on standalone; optional app direct access listens on `0.0.0.0` |
+| `STMQ_API_TOKEN` | Admin password; overrides `controller.web_token`; at least 24 characters for direct network access |
+| `STMQ_FAMILY_API_TOKEN` | Optional family password; overrides `controller.web_family_token`; distinct from admin and at least 24 characters for direct network access |
+| `STMQ_CONFIG` | Standalone private override JSON; defaults to `$XDG_CONFIG_HOME/st-mq/secrets.json`, or `~/.config/st-mq/secrets.json`. In the app, overrides only the initial/fallback Supervisor export path. |
+| `STMQ_MAX_DROP_C` | Occupied preferred drop; overrides `controller.max_drop_c` (default 1.5°C) |
+| `STMQ_H66_DEVICE` | Exact H66 topic prefix; enables H66 alongside a configured MQTT broker |
+| `STMQ_H66_VERIFICATION` | Optional JSON path with verified register scaling/evidence |
+
+[deploy/st-mq.service](../deploy/st-mq.service) is a standalone systemd example.
+Adapt its paths and service account before installing it. Stop the previous
+command owner before commissioning a replacement instance.
+
+## An occupied web port
 
 `STMQ_INPUT=providers npm start` runs a new ST-MQ process. It does not replace an
 instance already running in another terminal or as a service. The default web
@@ -21,7 +69,10 @@ If it is your existing ST-MQ instance, use its dashboard or stop it cleanly befo
 restarting. Use Ctrl-C in its original terminal. For a service, restart the unit
 that owns that process. For an identified detached ST-MQ process, send `SIGTERM`
 and wait for it to exit before starting again. Graceful shutdown closes MQTT and
-restores any temporary equipment settings owned by the instance. Avoid `kill -9`.
+reconciles temporary equipment restoration owned by the instance. Ordinary
+stop/restart preserves native Easee OCPP configuration and outstanding charger
+restrictions; only explicit integration changes request cloud handback. Avoid
+`kill -9`.
 Do not stop an unfamiliar process or a separate production installation.
 
 ST-MQ checks its web listeners before constructing the controller, opening device

@@ -1,3 +1,5 @@
+import { lockControl, unlockControl } from './control-locks.js';
+
 const tokenKey = 'stmq-token';
 const loggedOutKey = 'stmq-logged-out';
 const denied = message => Object.assign(new Error(message), { status: 403 });
@@ -112,7 +114,7 @@ export function bindPasswordVisibility({ input, button }) {
  * Read-only navigation remains outside the explicitly marked mutation scopes. */
 export function createAccessControls({ document, Observer = globalThis.MutationObserver }) {
   let access;
-  const remembered = new Map();
+  const remembered = new Map(), owner = Symbol('admin-access');
   function apply() {
     const restricted = access?.role !== 'admin';
     document.body.dataset.accessRole = access?.role ?? 'unknown';
@@ -121,28 +123,24 @@ export function createAccessControls({ document, Observer = globalThis.MutationO
       const controls = scope.matches('button,input,select,textarea,a') ? [scope] : scope.querySelectorAll('button,input,select,textarea,a');
       for (const control of controls) {
         if (restricted) {
-          if (!remembered.has(control)) remembered.set(control, { disabled: control.disabled, href: control.getAttribute('href'), title: control.getAttribute('title') });
-          if ('disabled' in control && !control.disabled) control.disabled = true;
+          if (!remembered.has(control)) remembered.set(control, { href: control.getAttribute('href') });
+          lockControl(control, owner, 'Admin required');
           if (control.hasAttribute('href')) control.removeAttribute('href');
-          if (control.getAttribute('aria-disabled') !== 'true') control.setAttribute('aria-disabled', 'true');
-          if (control.getAttribute('title') !== 'Admin required') control.setAttribute('title', 'Admin required');
         }
       }
     }
     if (!restricted) {
       for (const [control, previous] of remembered) {
-        if ('disabled' in control) control.disabled = previous.disabled;
+        unlockControl(control, owner);
         if (previous.href !== null) control.setAttribute('href', previous.href);
-        if (previous.title !== null) control.setAttribute('title', previous.title); else control.removeAttribute('title');
-        control.removeAttribute('aria-disabled');
       }
       remembered.clear();
-    } else for (const [control, previous] of remembered) {
-      if (!control.isConnected) remembered.delete(control);
+    } else for (const control of remembered.keys()) {
+      if (!control.isConnected) { unlockControl(control, owner); remembered.delete(control); }
       else if (!control.closest('[data-admin-only]')) {
         // The owning renderer removed the restriction and set current availability.
-        control.removeAttribute('aria-disabled'); control.removeAttribute('data-access-locked');
-        if (previous.title !== null) control.setAttribute('title', previous.title); else control.removeAttribute('title');
+        unlockControl(control, owner, { preserveDisabled: true });
+        control.removeAttribute('data-access-locked');
         remembered.delete(control);
       }
     }

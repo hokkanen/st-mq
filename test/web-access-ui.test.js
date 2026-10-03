@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import { getEventListeners } from 'node:events';
 import { assertWebRequest, webRequestAllowed, createWebSession, bindPasswordVisibility, createAccessControls } from '../chart/web-access.js';
 import { createPollingRequest, fetchJsonResponse } from '../chart/network.js';
+import { createReadOnlyControls } from '../chart/dashboard-access.js';
 
 const admin = { role: 'admin', source: 'password' }, family = { role: 'family', source: 'password' };
 const status = { equipment: { devices: [{ id: 'door', kind: 'door', area: 'garage', controls: { cover: { open: true, close: true, stop: false } } },
@@ -239,4 +240,35 @@ test('a configured control moving into the family scope loses stale admin restri
   fixture.scopes.push(control); fixture.rerender();
   assert.equal(control.disabled, true);
   controls.close();
+});
+
+test('admin and read-only restrictions release independently in either order without retaining stale locks', () => {
+  for (const initial of ['unknown', 'family-replica']) {
+    for (const acquireOrder of ['access-first', 'replica-first']) {
+      for (const releaseOrder of ['access-first', 'replica-first']) {
+        const fixture = accessFixture(), control = fixture.nodes.get('export');
+        const unsupported = fixture.nodes.get('native-write');
+        unsupported.setAttribute('title', 'Native control unavailable');
+        unsupported.setAttribute('aria-disabled', 'true');
+        const access = createAccessControls(fixture), replica = createReadOnlyControls(fixture);
+        const acquireAccess = () => access.update(initial === 'unknown' ? undefined : family);
+        const acquireReplica = () => replica.update(initial === 'unknown' ? undefined : { role: 'slave' });
+        const releaseAccess = () => access.update(admin), releaseReplica = () => replica.update({ role: 'master' });
+        const acquire = acquireOrder === 'access-first' ? [acquireAccess, acquireReplica] : [acquireReplica, acquireAccess];
+        const release = releaseOrder === 'access-first' ? [releaseAccess, releaseReplica] : [releaseReplica, releaseAccess];
+        acquire.forEach(apply => apply());
+        release[0]();
+        assert.equal(control.disabled, true, `${acquireOrder}/${releaseOrder}: remaining restriction stays enforced`);
+        assert.equal(control.getAttribute('aria-disabled'), 'true');
+        release[1]();
+        assert.equal(control.disabled, false, `${acquireOrder}/${releaseOrder}: both permissions restore the native enabled state`);
+        assert.equal(control.getAttribute('title'), null);
+        assert.equal(control.getAttribute('aria-disabled'), null);
+        assert.equal(unsupported.disabled, true, 'Native unavailability survives both access transitions');
+        assert.equal(unsupported.getAttribute('title'), 'Native control unavailable');
+        assert.equal(unsupported.getAttribute('aria-disabled'), 'true');
+        access.close(); replica.close();
+      }
+    }
+  }
 });

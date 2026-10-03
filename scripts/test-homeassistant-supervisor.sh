@@ -24,6 +24,16 @@ if [[ $(git -C "$stmq_source" rev-parse HEAD) != "$stmq_revision" ]] \
 fi
 stmq_image="stmq-supervisor-validator:$stmq_version"
 node "$stmq_root/test/extended/supervisor/generate-options.js" > "$stmq_work/options.json"
+# Share only public filenames for discovery checks, never ignored local data.
+node --input-type=module - "$stmq_root" > "$stmq_work/repository-paths.json" <<'NODE'
+import { execFileSync } from 'node:child_process';
+import { existsSync } from 'node:fs';
+import { basename, join } from 'node:path';
+const root = process.argv[2];
+const paths = execFileSync('git', ['-C', root, 'ls-files', '--cached', '--others', '--exclude-standard', '-z'], { encoding: 'utf8' })
+  .split('\0').filter(path => path && basename(path).startsWith('config.') && existsSync(join(root, path)));
+process.stdout.write(JSON.stringify([...new Set(paths)]));
+NODE
 docker build --file "$stmq_root/test/extended/supervisor/Dockerfile" \
   --tag "$stmq_image" "$stmq_source"
 docker run --rm --network none --read-only --cap-drop ALL \
@@ -34,5 +44,6 @@ docker run --rm --network none --read-only --cap-drop ALL \
   --mount "type=bind,source=$stmq_root/translations,target=/translations,readonly" \
   --mount "type=bind,source=$stmq_root/repository.yaml,target=/repository.yaml,readonly" \
   --mount "type=bind,source=$stmq_work/options.json,target=/generated-options.json,readonly" \
+  --mount "type=bind,source=$stmq_work/repository-paths.json,target=/repository-paths.json,readonly" \
   --mount "type=bind,source=$stmq_root/test/extended/supervisor/validate_options.py,target=/validate_options.py,readonly" \
   "$stmq_image" python /validate_options.py /manifest.json

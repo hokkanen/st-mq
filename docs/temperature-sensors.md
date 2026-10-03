@@ -88,7 +88,7 @@ including the interruption. New feed and managed OFF admission or renewal requir
 connected, usable evidence. A transport-only probe outage alone does not request
 ON or clear external input; invalid evidence, expired permission and protection
 failures still do. See the
-[external-temperature contract](garage-adapter.md#permanent-external-room-temperature).
+[external-temperature contract](garage-adapter.md#bluetooth-and-local-regulation).
 
 The installed room sensors have a 70-minute maximum delay for unchanged values.
 ST-MQ's five-minute grace makes the expiry exactly 75 minutes after the last

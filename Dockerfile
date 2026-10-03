@@ -14,7 +14,7 @@ COPY scripts/build-sqlite-rsync.js /build-sqlite-rsync.js
 RUN node /build-sqlite-rsync.js --output /usr/local/bin/sqlite3_rsync
 
 FROM node:22.23.2-alpine
-ARG BUILD_VERSION=0.9.0
+ARG BUILD_VERSION=0.9.5-dev.1
 ARG BUILD_ARCH
 LABEL io.hass.version="${BUILD_VERSION}" io.hass.type="app" io.hass.arch="aarch64|amd64"
 ENV NODE_ENV=production STMQ_ADDON=1 STMQ_HOST=0.0.0.0 STMQ_DATA_DIR=/data/st-mq STMQ_DATABASE_DIR=/config/st-mq
@@ -25,7 +25,11 @@ COPY package.json package-lock.json ./
 RUN npm ci --omit=dev && npm cache clean --force
 COPY --from=build /st-mq/dist ./dist
 COPY src/ ./src/
-COPY scripts/ ./scripts/
+# Runtime and supported administration utilities only. Validation fixtures are
+# mounted separately by scripts/test-addon-container.sh.
+COPY scripts/history.js scripts/pair-vip.js scripts/pair-vip-addon \
+     scripts/replica-receiver.js scripts/replica-ssh.js scripts/replica-verify.js \
+     scripts/test-live.js ./scripts/
 COPY docs/floor-preheat.md ./docs/floor-preheat.md
 COPY test/live/ ./test/live/
 COPY config.json ./

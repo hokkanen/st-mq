@@ -1,20 +1,30 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { bindDatabaseExport } from '../chart/database-export.js';
+import { createAccessControls } from '../chart/web-access.js';
+import { createReadOnlyControls } from '../chart/dashboard-access.js';
 
 const filename = 'stmq-2026-09-25T15-04-32-123Z.sqlite';
 const path = `/example/exports/${filename}`;
 function fixture(request, windowOverrides = {}) {
-  const button = () => ({ disabled: false, addEventListener(_event, handler) { this.click = handler; } });
+  const button = () => ({ disabled: false, isConnected: true, dataset: {}, attributes: new Map(),
+    getAttribute(name) { return this.attributes.get(name) ?? null; },
+    hasAttribute(name) { return this.attributes.has(name); },
+    setAttribute(name, value) { this.attributes.set(name, value); },
+    removeAttribute(name) { this.attributes.delete(name); },
+    matches: () => true, closest() { return this; },
+    addEventListener(_event, handler) { this.click = handler; } });
   const saveButton = button(), downloadButton = button(), classes = new Set();
   const message = { textContent: '', classList: { add: value => classes.add(value), remove: value => classes.delete(value) } };
   const links = [], blobs = [], timers = [], revoked = [];
   const document = {
+    querySelectorAll: selector => selector === '[data-write-control]' ? [saveButton] : [saveButton, downloadButton],
+    getElementById: () => ({}), addEventListener() {}, removeEventListener() {},
     createElement(tag) {
       assert.equal(tag, 'a');
       return { click() { this.clicked = true; }, remove() { this.removed = true; } };
     },
-    body: { append: link => links.push(link) },
+    body: { dataset: {}, append: link => links.push(link) },
   };
   const window = {
     URL: { createObjectURL: blob => { blobs.push(blob); return 'blob:database-copy'; }, revokeObjectURL: url => revoked.push(url) },
@@ -22,7 +32,7 @@ function fixture(request, windowOverrides = {}) {
     ...windowOverrides,
   };
   bindDatabaseExport({ saveButton, downloadButton, message, request, window, document });
-  return { saveButton, downloadButton, message, classes, links, blobs, timers, revoked };
+  return { document, saveButton, downloadButton, message, classes, links, blobs, timers, revoked };
 }
 
 test('save local copy uses POST and reports the server path without initiating a browser download', async () => {
@@ -70,6 +80,55 @@ test('both buttons stay disabled until the pending export completes', async () =
   await pending;
   assert(!view.saveButton.disabled);
   assert(!view.downloadButton.disabled);
+});
+
+test('a view-only instance permits downloading while preserving the local-save restriction', async () => {
+  const requests = [];
+  const view = fixture(async method => {
+    requests.push(method);
+    return new Response('synthetic database bytes', { headers: { 'content-disposition': `attachment; filename="${filename}"` } });
+  });
+  const replica = createReadOnlyControls({ document: view.document, Observer: null });
+  replica.update({ role: 'slave' });
+  await view.downloadButton.click();
+  assert.deepEqual(requests, ['GET']);
+  assert.equal(view.blobs.length, 1);
+  assert.equal(view.saveButton.disabled, true);
+  assert.equal(view.downloadButton.disabled, false);
+  replica.close();
+});
+
+test('rerendering buttons cannot admit concurrent exports while the request is pending', async () => {
+  let complete, calls = 0;
+  const view = fixture(() => { calls++; return new Promise(resolve => { complete = resolve; }); });
+  const pending = view.saveButton.click();
+  view.saveButton.disabled = view.downloadButton.disabled = false;
+  await view.downloadButton.click();
+  await view.saveButton.click();
+  assert.equal(calls, 1);
+  complete(Response.json({ filename, path }));
+  await pending;
+});
+
+test('permissions changing during export remain authoritative when the request completes', async () => {
+  for (const restriction of ['family', 'replica']) {
+    let complete;
+    const view = fixture(() => new Promise(resolve => { complete = resolve; }));
+    const access = createAccessControls({ document: view.document, Observer: null });
+    const replica = createReadOnlyControls({ document: view.document, Observer: null });
+    access.update({ role: 'admin' }); replica.update({ role: 'master' });
+    const pending = view.saveButton.click();
+    if (restriction === 'family') access.update({ role: 'family' });
+    else replica.update({ role: 'slave' });
+    complete(Response.json({ filename, path }));
+    await pending;
+    assert.equal(view.saveButton.disabled, true, `${restriction}: completing export retains write restrictions`);
+    assert.equal(view.downloadButton.disabled, restriction === 'family');
+    access.update({ role: 'admin' }); replica.update({ role: 'master' });
+    assert.equal(view.saveButton.disabled, false, `${restriction}: releasing permissions does not revive an old pending lock`);
+    assert.equal(view.downloadButton.disabled, false);
+    access.close(); replica.close();
+  }
 });
 
 test('supporting browsers choose a timestamped destination before requesting and stream the download', async () => {

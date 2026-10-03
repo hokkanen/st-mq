@@ -425,7 +425,9 @@ maximum. The resulting zero-current restriction can last until the scheduled
 economic release; the ordinary 90-second correlation-pause expiry does not end
 that economic hold. See the
 [identification lifecycle](charging.md#vehicle-assignment) and the
-[commissioning record](audit/OCPP-SETUP.md) for the physical validation scope.
+[qualification scope](#qualification-scope) for the physical validation scope.
+
+### Qualification scope
 
 A bounded live experiment verified a private virtual-tag start, physical
 charging, a transaction-scoped zero-current pause, and resumed charging after
@@ -436,8 +438,7 @@ establish behavior for every firmware, vehicle, phase arrangement or paired
 hardware takeover. A separate user-assisted test suspended the server for about
 four minutes: after unplug/replug, Easee app Start waited for approval and did
 not charge while OCPP still owned authorization. Resuming the server allowed a
-remote-start request to be accepted again. See the
-[setup validation record](audit/OCPP-SETUP.md).
+remote-start request to be accepted again.
 
 While ST-MQ was connected, the owner also used Easee app Pause and Resume;
 native status changed between `Charging` and `SuspendedEVSE`. App controls are
@@ -449,6 +450,22 @@ session merely because it reports `SuspendedEVSE`.
 The owner declined a separate Equalizer load test. The app reported Equalizer
 available, so continued local balancing is assumed for this installation; that
 availability report does not verify behavior under competing household loads.
+
+Additional bounded application checks confirmed normal-current charging,
+vehicle identification and native pause readback. They did not validate an exact
+0.15 kWh physical cutoff or positive-current limiting. The current software can
+recover an observed transaction from distinct fresh meter reports, but hardware
+acceptance of a pause profile for a recovered transaction identifier remains
+unverified. Recovery does not invent a missing StartTransaction event, meter
+baseline or authorization history.
+
+These results cover particular installed equipment and supervised conditions.
+They do not verify paired-hardware takeover, all firmware/vehicle combinations,
+radio or network fault behavior, or future economic pauses while the application
+is unavailable. Earlier experiments that disabled OCPP during shutdown do not
+describe current behavior: ordinary stop, restart and handover preserve OCPP.
+Only explicit native-control deactivation or connection reconfiguration owns
+cloud handback.
 
 ### Endpoint and pairing
 

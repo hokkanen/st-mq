@@ -1,16 +1,12 @@
-.parcel-cache/
+# Reproducible builds, dependencies and local runtime state (including symlinks).
 dist/
 node_modules/
+/var
+
+# Household CSV imports and database snapshots belong outside the checkout.
 share/
-var/
-# Private operational notes and household data exports stay local.
-/notes
-/prompt
-CODEX/
-workspace/
-*.sqlite
-*.sqlite-wal
-*.sqlite-shm
+*.csv
+*.sqlite*
 .env
 .env.*
 !.env.example

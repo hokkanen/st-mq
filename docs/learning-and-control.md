@@ -188,7 +188,7 @@ Three kinds of evidence remain distinct:
 
 Economic dispatch requires all three checks, within a duration supported by at
 least three training/held-out response and advance forecast episodes. Counterfactual
-savings still remain estimates. See [the audit and design decisions](learning-model-audit.md).
+savings still remain estimates. See [model design and limits](learning-model-design.md).
 
 The normal indoor reference comes from occupied, normally heated periods. Actual
 fractional compressor runtime contributes evidence; a brief run cannot count as

@@ -1,8 +1,13 @@
+import { lockControl, unlockControl } from './control-locks.js';
+
 /** Both actions share one pending request; downloads stream when a picker is available. */
 export function bindDatabaseExport({ saveButton, downloadButton, message, request, window, document }) {
+  let pending = false;
+  const owner = Symbol('database-export');
   async function run(method) {
-    if (saveButton.disabled || downloadButton.disabled) return;
-    saveButton.disabled = downloadButton.disabled = true;
+    if (pending || (method === 'POST' ? saveButton : downloadButton).disabled) return;
+    pending = true;
+    lockControl(saveButton, owner); lockControl(downloadButton, owner);
     message.classList.remove('form-error');
     message.textContent = method === 'POST' ? 'Saving a database copy on the server…' : 'Preparing a database download…';
     let output;
@@ -47,7 +52,8 @@ export function bindDatabaseExport({ saveButton, downloadButton, message, reques
         message.textContent = error.message || 'Database export failed. Please try again.';
       }
     } finally {
-      saveButton.disabled = downloadButton.disabled = false;
+      pending = false;
+      unlockControl(saveButton, owner); unlockControl(downloadButton, owner);
     }
   }
   saveButton.addEventListener('click', () => run('POST'));

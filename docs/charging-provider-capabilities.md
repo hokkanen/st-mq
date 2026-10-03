@@ -20,7 +20,7 @@ for RFID-free startup; the default `rfid` mode requires configured tags.
 Native pause expiry releases the restriction and leaves positive charging
 current to the charger, vehicle and Equalizer. Cloud readings can back up local
 telemetry; control does not switch back merely because telemetry does. The
-[Easee setup record](audit/OCPP-SETUP.md) separates bounded live observations from
+[Easee qualification scope](charging-easee.md#qualification-scope) separates bounded live observations from
 synthetic protocol validation and untested installation conditions.
 Normal service stop, restart and paired handover keep OCPP enabled. While the
 controller is offline, new charging or Easee app Start can remain blocked waiting

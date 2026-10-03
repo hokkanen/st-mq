@@ -367,9 +367,9 @@ Charts read both finalized intervals and eligible durable tails. Zero is known
 covered consumption, while missing telemetry remains a gap. Estimated auxiliary
 power and heat-pump operating rows also use compact scalar coverage, stopping at
 the last confirmed report's deadline. Extending a span refreshes chart caches
-without inserting duplicate observations. See the
-[27 September recorder audit](audit/RECORDER-IDLE-2026-09-27.md) for storage
-findings, the retained recording costs and synthetic validation.
+without inserting duplicate observations. See
+[retained storage costs](#retained-storage-costs) for the durability and
+reconstruction data that compact observation counts do not remove.
 
 TeslaMate and BMW remain read-only vehicle evidence for either physical charger.
 Their feed health, timestamps, plug events and home scope control applicability
@@ -1226,7 +1226,7 @@ session reference, independently of recorded interval energy.
 
 ## Synthetic year benchmark
 
-Run `node scripts/benchmark-recorder.js --days 365 --max-seconds 180` for an
+Run `node scripts/benchmarks/recorder.js --days 365 --max-seconds 180` for an
 isolated synthetic benchmark. It creates and removes its own temporary database;
 it does not open production history or configuration. `--profile` profiles query
 work only and reports the hottest functions. It also measures the uncached
@@ -1334,7 +1334,7 @@ This projection creates no new recordings and does not enter household demand,
 charger timing comparisons or heating learning.
 
 
-## Chart and storage review (September 2026)
+## Chart projections and retained evidence
 
 The explorer separates everyday electricity, room, caravan and garage pump views
 from Home saved learning inputs, replayed coefficients and equipment
@@ -1376,8 +1376,8 @@ water flow. Floor override contacts describe electrical readback, not valve
 position or heating delivery. External feed failures and recoveries remain
 diagnostics outside adaptive measurements. These views add no heat estimates
 or learning inputs.
-This review does not delete historical evidence, introduce a second schema, or
-backfill charts from current live readings.
+Chart projections do not replace retained evidence or backfill history from
+current live readings.
 
 ## Single-file database export
 
@@ -1419,3 +1419,50 @@ An export includes private history and saved application state. Retain the match
 software version for model replay; restore remains the existing offline operation
 into a new database path. The export does not contain the separate private
 configuration file or external token files.
+
+## Retained storage costs
+
+The annual recording budget is a soft growth objective, not a hard storage cap.
+Exact changes, imports, learning journals, source revisions and diagnostics can
+exceed it. Compaction reduces unnecessary future observations; it does not
+rewrite history, reclaim existing database pages or establish physical flash-write
+savings.
+
+Every accepted electrical interval durably updates its pending sum and acquisition
+cursor. Deferring these writes would risk loss or double counting after a crash.
+SQLite WAL/FULL synchronization and atomic publication remain part of that
+contract. Learning inputs retain resolved configuration, seeds and original
+meaning even when another record has the same configuration digest.
+
+Decision events retain each controller decision. Their current use also supplies
+replica status freshness, so deduplicating repeated summaries requires a separate
+heartbeat design. State checkpoints and hourly recording statistics have their
+own bounded retention; they are not a reason to delete reconstruction inputs.
+Recovery indexes also consume space on scalar observations. Any index or journal
+representation change needs current-schema validation and an intentional fresh
+development database when incompatible; no cleanup should add a migration or
+silently remove evidence.
+
+## History CLI backups and exports
+
+These commands operate on the current database contract:
+
+```sh
+npm run history -- export --output /tmp/indoor.csv --signal indoor_temperature
+npm run history -- backup --output /tmp/st-mq-backup.sqlite
+npm run history -- restore --input /tmp/st-mq-backup.sqlite --db /tmp/restored.sqlite
+STMQ_INPUT=offline npm start
+```
+
+Select `--db <path>` when the default database is not the intended source.
+Backups use SQLite's online backup API and publish only a completed copy. Restore
+to a new path while the target application is stopped; validate the result before
+switching the configured database. Keep backups on separate storage. An existing
+incompatible or malformed database is rejected before mutation.
+
+Raw observation queries are bounded to 5,000 observations; `/api/history` limits
+a request to 31 days. `/api/chart` accepts inclusive calendar dates with a named
+`view` or an individual `left` projection, not both. Its 100–2,000 drawing buckets
+per series summarize up to 3,660 calendar days without deleting source history.
+There is no general automatic history deletion policy. Monitor growth and use
+tested backups/exports. For supported old exports, see [0.7.5 CSV import](csv-import.md).

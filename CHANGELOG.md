@@ -1,95 +1,69 @@
-# Unreleased
+# Changelog
 
-- Refresh Home Assistant app installation, configuration, MQTT bridge and backup
-  instructions, English configuration help and current packaging metadata.
-  `config.json` and `translations/en.yaml` remain supported Home Assistant files.
-- Preserve existing Home Assistant secret references when verifying configuration
-  imports and recovering an interrupted save with Supervisor 2026.09.3. Handle
-  expired ingress sessions even when Supervisor returns a plain-text error.
-- Validate the manifest, translations, repository metadata and option handling
-  against pinned, released Supervisor code in continuous integration.
+Release notes describe changes relevant to users. Detailed implementation and
+validation history is available in Git; unfinished work belongs in GitHub issues.
+Versions follow Semantic Versioning. `-dev.N` denotes a development prerelease.
 
-The release entries below describe historical behavior. Use [setup](DOCS.md) and
-the [configuration guide](docs/configuration.md) for the current development
-contract; old settings and database formats are not migration instructions.
+## Unreleased
 
-# 0.9.0
+## 0.9.5-dev.1 — 2026-10-03
 
-- Add separate admin and family passwords for direct access, a password visibility
-  toggle and logout. Family retains full viewing and household firewood, DHWR,
-  temporary heating including Away/Pause, garage door and EV card controls;
-  all other writes, exports and downloads require admin. Home Assistant ingress
-  retains full admin access. Existing heating and freeze protections remain active.
-- Validate development on Node 22 and 24 with real SQLite/SSH replication,
-  browser, live-provider, Garage simulation and native add-on container checks;
-  document commands and limits in [development validation](docs/development-validation.md).
-- Fix Node 24 snapshot-worker startup, charger deployment configuration loading,
-  stale charger readiness, hidden recirculation stop requests and Firefox status
-  popup dismissal during refresh. Reject individually future-dated Garage sensor
-  evidence and deduplicate energy retries without a source identity.
-- Use compact Home/Garage summaries, expandable provider rows and separate
-  equipment folds. Show tariff control above recirculation and Garage learning
-  before Garage settings; distinguish requested heating from device confirmation.
-- Add opt-in Charger 1 native Easee scheduling, persistent per-charger preferences,
-  recorded-energy charge progress and household-load forecasts. Charger 2 remains
-  observation-only. Charging permission is independent of heating mode.
-- Add independent Garage learning, thermal-reserve protection and episode planning.
-  The provisional Pill contract supports simulation and read-only inspection;
-  physical Garage control remains unavailable.
-- Enable live DHWR watts from `stmq/home/dhwr/status/power`, with event-only freshness and
-  no power history or inferred switch confirmation. Document the SmartThings
-  forwarding Rule and include a sanitized recreation template; retain ST-MQ's
-  timed ON/OFF commands and requested-circulation chart history.
+First public development prerelease after 0.7.5. The intervening 0.8.x/0.9.0
+work is consolidated into this release; it is not a production-support promise.
 
-- Add separate Upstairs, Downstairs and Bedroom temperatures, a stable
-  configured indoor average and individual room comfort checks. Record sensor
-  replacements, moves and calibration changes as replayable measurement boundaries.
-- Allow the learned normal temperature to adapt gradually in either direction
-  from repeated normal heating, including changes to floor circulation thermostats.
-  Retain report coverage and reversible sensor changes in the current
-  `committed-house-v9-reversible-sensors` learning journal; earlier algorithms
-  retain their documented archival boundaries.
-- Use FMI temperature and solar forecasts with keyless Open-Meteo ICON Seamless
-  fallback, including missing solar intervals. Prefer H66 outdoor temperature,
-  then FMI nearby stations, then Open-Meteo model estimates. Remove the obsolete
-  weather-token setting and label sensors, station readings and estimates.
-- Enable active MQTT tariff control with conservative operation when H66 is absent.
-- Add coupled ROOM/DHWR preheating, cost-aware reduction and recovery, persistent
-  H66 setting restoration, and timed tests for ROOM, DHW start/stop and mode.
-- Use a shared adaptive thermal model with outdoor temperature and cloud-aware
-  global solar-radiation forecast, chronological validation and bounded trials.
-- Track complete-cycle estimated profit, the observed space-heating AUX subgroup,
-  recovery cost prediction error and learned normal indoor temperature in history.
-- Add learning/provider details, solar and learning chart axes, routed compressor
-  shading, AUX power fill, a pump-mode strip and daily price-timing benchmarks.
-- Upgrade SQLite to schema 12; record observations, learning journals, source
-  corrections, cycles and restoration obligations durably.
+### Added
 
-Active mode must be selected in configuration. Device tests use real commands.
-H66 integration follows the documented C60 MQTT profile and has been tested with
-mocked devices, not the installed pump. Native overrides have software restoration,
-not device-side leases. Compressor-only reductions may skip the native 14-day
-high-temperature water cycle, as explicitly accepted for this controller design.
+- One Node application for standalone Linux and the Home Assistant **Home Energy**
+  app, with a shared dashboard, simulated startup and independent feature controls.
+- Home thermal learning with deterministic journal reconstruction, reversible
+  source corrections, price-based heating plans and complete-cycle assessments.
+- Durable Garage Normal/Away targets and the `shelly-cn105/v2` integration for
+  device-local regulation and independent frost protection.
+- Coordinated Easee and Shelly EVSE charging, connection-scoped vehicle identity,
+  manual controls, native-instruction handover and retained session reports.
+- SQLite recording with source timestamps, quality and unknown-state handling;
+  adaptive storage, chart exploration, database export and same-version backups.
+- Read-only SSH mirroring and paired operation with explicit manual handover,
+  recovery and command-authority fencing.
+- Separate admin/family direct access, configuration preview before application,
+  MQTT equipment setup and optional Home Assistant device bridges.
 
-# 0.8.3
+### Changed
 
-- Put the Home Assistant database in the public add-on folder for Terminal & SSH
-  access. Migrate the existing private database consistently and retain the
-  original. Keep `/share/st-mq` for imports/exports and credentials private.
-- Use cold add-on backups and test mounted startup, migration, restart and restore.
-- Move permanent settings and electricity rates into add-on options / standalone
-  configuration. All monetary inputs explicitly exclude VAT. Default margin is
-  0.33 c/kWh, tax 2.325 c/kWh and VAT 25.5%. Day/night remains the default; seasonal
-  rates are configurable. Rate changes preserve historical calculations.
-- Remove obsolete temperature-to-hours configuration and update add-on help.
-- Add persistent Finnish-time Away until and Pause until controls, automatic
-  expiry and independent cancellation. Away planning removes occupied drop
-  penalties and retains recovery/auxiliary costs; model confidence gates remain.
-- Reduce the dashboard middle section to Home control, Electricity and Data &
-  learning. Rates and the occupied temperature drop are reported read-only.
-- Run read-only H66 acquisition alongside prices, weather and other providers.
-- Retain dark startup, the single-day chart picker and the revised chart colours.
+- Home heating starts paused; Garage uses manual modes. Charging Automatic and
+  Caravan Automatic power have their own equipment-bound choices.
+- Ordinary application stop, restart and pair handover preserve native Easee OCPP
+  configuration. New connections and explicit **Use automatic** handovers require
+  fresh native evidence; later external charging instructions retain priority.
+- Home Assistant packaging uses the current `app_config` mount and assigned
+  ingress port, preserves existing Supervisor `!secret` references, and validates
+  nested defaults, English translations and imports against pinned upstream code.
+- Documentation separates installation, current behavior, contributor guidance
+  and release notes. Completed TODO/progress/audit diaries and obsolete local
+  copies are removed from the checkout.
 
-Upgrade: review add-on options, remove a retained `temp_to_hours` key if shown,
-and restart. Database paths and SSH/backup instructions are in `DOCS.md`.
-Physical heat-pump and DHWR commands remain disabled.
+### Fixed
+
+- Admin and read-only UI restrictions now compose correctly, so clearing one
+  restriction does not leave a permitted control locked or release another
+  restriction. Database downloads remain available when saving a server-side
+  copy is restricted, and export completion preserves active access locks.
+
+### Compatibility and limitations
+
+- Read-only `st-mq.csv` and `easee.csv` import from 0.7.5 remains supported, with
+  provenance, duplicate handling and interruption recovery. The old runtime,
+  configuration and development databases are not supported upgrade inputs.
+- There are no development database migrations or automatic resets. Incompatible
+  databases fail before mutation; use a deliberate fresh database and reimport
+  supported original CSV sources when needed.
+- The SONOFF floor-preheating integration remains pending and cannot be enabled
+  or commissioned. Home/Garage models and equipment safeguards still need their
+  installation-specific checks.
+- Local OCPP needs the controller for new-session authorization; native pause
+  expiry does not restore cloud control. Shelly recovery requires a working
+  application/device connection. See the maintained charging guides for limits.
+- Automated and synthetic tests do not establish installed Home Assistant OS,
+  physical Raspberry Pi, firmware, wiring, heat delivery or energy savings.
+  See [development validation](docs/development-validation.md) for current
+  checks and the remaining release validation work.

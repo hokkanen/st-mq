@@ -26,6 +26,7 @@ from supervisor.apps.validate import SCHEMA_APP_CONFIG, SCHEMA_APP_TRANSLATIONS
 from supervisor.const import REQUEST_FROM
 from supervisor.exceptions import APIError
 from supervisor.homeassistant.secrets import HomeAssistantSecrets
+from supervisor.store.data import StoreData
 from supervisor.store.validate import SCHEMA_REPOSITORY_CONFIG
 from supervisor.utils.yaml import read_yaml_file
 
@@ -103,6 +104,18 @@ class SupervisorOptions(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.config['schema'], MANIFEST['schema'])
         self.assertFalse(self.config['hassio_api'])
         self.assertEqual(self.config['hassio_role'], 'default')
+
+    async def test_repository_discovers_only_the_root_app_manifest(self):
+        # Recreate the public config.* filenames only, without mounting source
+        # or household data. Exercise upstream recursive discovery unchanged.
+        repository = self.directory / 'repository'
+        for relative in json.loads(Path('/repository-paths.json').read_text()):
+            path = repository / relative
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.touch()
+        store = StoreData(SimpleNamespace(run_in_executor=asyncio.to_thread))
+        discovered = await store._find_app_configs(repository, 'fixture')
+        self.assertEqual([path.relative_to(repository).as_posix() for path in discovered], ['config.json'])
 
     def test_recursive_ui_schema_preserves_every_field(self):
         self.assertEqual(ui_paths(UiOptions(self.coresys)(self.config['schema'])), schema_paths(MANIFEST['schema']))

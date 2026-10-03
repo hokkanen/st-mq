@@ -15,6 +15,7 @@ setup, MQTT forwarding, report deadlines, verification and rollback.
 | Path | Purpose |
 | --- | --- |
 | [driver/](driver) | Complete buildable source, including profiles, fingerprints, supporting subdrivers and upstream SDK tests |
+| [build.py](build.py) | Build a ZIP in an external directory without uploading |
 | [changes.patch](changes.patch) | Exact complete difference from pinned upstream source |
 | [upstream.json](upstream.json) | Pinned revision and original source/license digests |
 | [LICENSE](LICENSE) | Original Apache-2.0 license |
@@ -25,6 +26,11 @@ complete package alongside its patch makes it buildable without fetching upstrea
 source and preserves the support files used by the original alarm implementation.
 No separate driver repository is required. Generated ZIPs, authentication and
 installation-specific backups remain outside Git.
+
+The driver manifest is stored as `driver/config.yml.template` so Home Assistant
+does not discover it as a second app. The build helper restores SmartThings'
+required `config.yml` filename in an external temporary directory; all packaged
+source bytes remain unchanged.
 
 Upstream is
 [SmartThingsCommunity/SmartThingsEdgeDrivers](https://github.com/SmartThingsCommunity/SmartThingsEdgeDrivers/tree/19bb6f9b75a4a7590dfb5c5f9aed3bbf3308c77c/drivers/SmartThings/zwave-smoke-alarm),
@@ -65,11 +71,12 @@ From the st-mq repository root, use Python 3.8+ with PyYAML, `patch`, and Lua
 
 ```bash
 python3 integrations/smartthings/fibaro-temperature/tests/verify_source.py
-smartthings edge:drivers:package --build-only /tmp/stmq-fibaro-temperature.zip integrations/smartthings/fibaro-temperature/driver
+python3 integrations/smartthings/fibaro-temperature/build.py /tmp/stmq-fibaro-temperature.zip
 sha256sum /tmp/stmq-fibaro-temperature.zip
 ```
 
-`--build-only` creates the ZIP without uploading it. The package contains the
+The helper invokes `--build-only`, creating the ZIP without uploading it, and
+refuses an existing output or a destination inside the checkout. The package contains the
 26 deployable files; the CLI excludes the upstream `driver/src/test/` files.
 Keep the exact artifact, digest and upload response in a private installation
 backup. ZIP timestamps can change the archive digest between builds; source
@@ -108,8 +115,9 @@ git diff --check
 ```
 
 The resulting `drivers/SmartThings/zwave-smoke-alarm` directory is the modified
-package. Compare it with `driver/`, or copy it there in a restoration checkout,
-retain the upstream root `LICENSE` beside this README, and rerun the verifier
+package. Compare it with `driver/`, accounting for the `config.yml.template`
+filename. If copying it into a restoration checkout, rename `config.yml` to
+`config.yml.template`, retain the upstream root `LICENSE` beside this README, and rerun the verifier
 from the st-mq root. Apply the complete `changes.patch` here; any older standalone
 temperature-only patch elsewhere in repository history is not the current driver.
 

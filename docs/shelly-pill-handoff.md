@@ -1,4 +1,4 @@
-# Heat-pump local-control handoff
+# CN105 heat-pump controller integration
 
 The separate [shelly-cn105-mqtt repository](https://github.com/hokkanen/shelly-cn105-mqtt)
 implements `shelly-cn105/v2`. Its first public package release is **1.3.0**;

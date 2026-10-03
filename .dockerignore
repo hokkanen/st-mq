@@ -1,17 +1,14 @@
 .git
-.parcel-cache
-HASS_files
 node_modules
 var
-CODEX
 data
 share
 dist
 **/dist
 **/share
-**/.parcel-cache
 **/*.csv
 .env
+.env.*
 *.sqlite*
 
 **/secrets.json
@@ -20,3 +17,5 @@ dist
 **/options.json.*
 *.key
 *.pem
+*.p12
+*.pfx

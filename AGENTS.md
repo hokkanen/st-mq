@@ -7,7 +7,7 @@ Apply the relevant linked contracts as part of the task, including delegated wor
 ## Authority and scope
 
 Within repository documentation, this file governs the foundations; linked feature
-contracts define their detailed behavior. Historical handoffs, audit results, TODOs,
+contracts define their detailed behavior. Historical handoffs, audit results, task records,
 examples, existing code and tests do not silently amend these decisions. If they
 conflict, flag the discrepancy and align affected work with the current contract.
 An implementation or passing test is not proof that a foundation is satisfied.
@@ -51,8 +51,9 @@ by the owner:
    work, or use best judgment is not approval to disregard a foundation.
 5. For an approved lasting change, update this file and affected contracts,
    implementation and validation together. Record the reason and scope in the
-   task's issue/TODO entry. A one-task exception does not silently become a new
-   general rule; record its limits without exposing private information.
+   task's issue or pull-request description (or commit body for direct work).
+   A one-task exception does not silently become a new general rule; record its
+   limits without exposing private information.
 
 Ask about a material ambiguity in a foundation when the existing contracts and
 session do not resolve it. Do not create approval gates for routine implementation
@@ -130,7 +131,8 @@ within the supported contract still need provenance and atomic current replay.
 Before and after each relevant change, inspect producers, consumers, state,
 configuration, UI, tests and documentation for obsolete compatibility paths.
 Delete them as part of the affected implementation instead of adding wrappers.
-Document removal, retained current capabilities and tests in the issue tracker.
+Document removal, retained current capabilities and tests in the issue,
+pull request or commit body.
 Do not resolve a failing legacy-preservation test by restoring prohibited code.
 Do not overstate unrun tests or treat current guard tests as proof of completeness.
 
@@ -441,8 +443,10 @@ that establish the changed behavior; documentation-only work calls for consisten
 link and diff checks, not a new runtime test suite. Use the existing
 [validation guide](docs/development-validation.md) for code and deployment changes.
 Report what ran and what remains unverified; never claim exhaustive compliance
-from a narrow guard test. Update the issue/TODO record with the change, retained
-capabilities, relevant removals and validation.
+from a narrow guard test. Record the change, retained capabilities, relevant
+removals and validation in the issue, pull request or commit body. Track unfinished
+work in issues and user-facing release changes in `CHANGELOG.md`; do not keep a
+completed-task diary in the checkout.
 
 ### Required commits for AI tasks
 

@@ -124,7 +124,7 @@ condition.
 
 ## Storage
 
-Run `node scripts/benchmark-fireplace-storage.js` for a synthetic, uncapped SQLite
+Run `node scripts/benchmarks/fireplace-storage.js` for a synthetic, uncapped SQLite
 comparison. It retains full learning-window resolution and includes source events,
 indexes, algorithm identifiers and bounded checkpoint overhead. It does not copy
 household data. The results are workload estimates, not a hard upper bound on a

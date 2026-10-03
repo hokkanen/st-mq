@@ -109,9 +109,14 @@ source tests. From the st-mq repository root:
 
 ```bash
 python3 integrations/smartthings/fibaro-temperature/tests/verify_source.py
-smartthings edge:drivers:package --build-only /tmp/stmq-fibaro-temperature.zip integrations/smartthings/fibaro-temperature/driver
+python3 integrations/smartthings/fibaro-temperature/build.py /tmp/stmq-fibaro-temperature.zip
 sha256sum /tmp/stmq-fibaro-temperature.zip
 ```
+
+The helper builds without uploading. It stages SmartThings' required `config.yml`
+outside the checkout from `driver/config.yml.template`, preventing Home Assistant
+from detecting it as another app manifest. Choose a new ZIP path outside the
+repository; existing outputs are never overwritten.
 
 Keep deployment requests, responses, errors, identifiers, original assignments,
 preferences and logs outside Git in a new private backup directory. Use directory
