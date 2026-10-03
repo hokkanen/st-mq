@@ -42,8 +42,9 @@ Implemented 2026-10-03 — Preserve heat-pump command receipts and source-age li
   protection ownership, clock stalls, compact recording, SQLite reopen and
   idempotent recovery. Independent review found no remaining concrete issue.
 - Mitsubishi browser checks pass at 320/390/1440px in both themes. Read-only replay
-  accepts all 714 captured messages from the installed new build; compressor
-  fields retain one recording lifetime with no jitter-generated policy rows.
+  accepts all 994 captured messages from the installed new build. Compressor
+  activity/frequency compact 109/111 reports into 14/17 rows; conservative
+  recorded lifetimes remain 118–119 seconds, with one/zero policy boundaries.
   These automated and replay checks do not establish physical heating performance.
 - Final combined main check after the concurrent floor-controller change passes
   4,239 tests with one optional upstream parser skip and the production build.
@@ -51,6 +52,12 @@ Implemented 2026-10-03 — Preserve heat-pump command receipts and source-age li
   actual applied/native-confirmed results through injected late transport-callback
   failures, including a consumed challenge. Driver hardware qualification and
   its observation limits are recorded in the driver repository's docs/status.md.
+- The installed driver passed reversible controls, real age-expiry fault
+  injection, supervisor recovery, MQTT-disabled reboot, protection fallback
+  ordering/rejection, command bursts and a ten-minute final soak. Original
+  settings and exact source readback were verified. Actual heat delivery, pipe
+  safety, physical probe/wiring faults and radio-loss behavior remain unverified;
+  the whole application service was not redeployed as part of the driver task.
 
 Implemented 2026-10-03 — Keep collapsed dashboard sections closed on refresh
 - Reproduce Garage heat reopening in Chromium after following a protection
