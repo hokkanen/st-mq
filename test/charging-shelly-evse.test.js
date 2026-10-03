@@ -70,6 +70,41 @@ function fixture(t, extra={}) {
     async ready(){client.emit('connect');client.emit('message','test/evse/online',Buffer.from('true'),{retain:true});await adapter.refresh();},
     notify(role,value,packet={}){if (['start_charging','current_limit'].includes(role) && !packet.retain) settingClock.set(role,{value,at:now});client.emit('message','test/evse/events/rpc',Buffer.from(JSON.stringify({src:'synthetic-evse',method:'NotifyStatus',params:{[`${roleTypes[role]}:${ids[role]}`]:{value,last_update_ts:now/1000}}})),packet);}};
 }
+test('missing startup planning evidence preserves an adopted Shelly program through its original transitions', async t => {
+  const f = fixture(t, { limiterEnabled: false }); await f.ready();
+  advanceCommandClock(f);
+  let saved = null, controller;
+  const attach = () => createShellyController({ adapter: f.adapter, initialState: saved,
+    clock: f.now, canControl: () => true, saveState: value => { saved = structuredClone(value); } });
+  controller = attach(); t.after(() => controller.close());
+  const original = { id: 'adopted-shelly-program', startAt: NOW + 30 * 60_000, deadlineAt: NOW + 120 * 60_000,
+    periods: [{ startAt: NOW + 30 * 60_000, endAt: NOW + 60 * 60_000 },
+      { startAt: NOW + 90 * 60_000, endAt: null }], feasible: true };
+  await controller.update({ enabled: true, plan: original });
+  assert.equal(f.fields.start_charging, false);
+  assert.equal(saved.execution.planId, original.id);
+  await controller.close(); controller = attach();
+  f.setNow(NOW + 60_000);
+  const missing = { id: 'missing-inputs', startAt: f.now(), deadlineAt: original.deadlineAt,
+    periods: [{ startAt: f.now(), endAt: null }], reason: 'electrical-telemetry-unavailable', feasible: false, provisional: true };
+  const writesBefore = f.writes.filter(row => row.method === 'Boolean.Set').length;
+  await controller.update({ enabled: true, plan: missing });
+  assert.equal(f.fields.start_charging, false);
+  assert.equal(saved.execution.planId, original.id);
+  assert.equal(f.writes.filter(row => row.method === 'Boolean.Set').length, writesBefore);
+  f.setNow(NOW + 30 * 60_000);
+  assert.equal((await controller.update({ enabled: true, plan: missing })).phase, 'active');
+  assert.equal(f.fields.start_charging, true);
+  f.setNow(NOW + 60 * 60_000);
+  assert.equal((await controller.update({ enabled: true, plan: missing })).phase, 'waiting');
+  assert.equal(f.fields.start_charging, false);
+  f.setNow(NOW + 90 * 60_000);
+  const released = await controller.update({ enabled: true, plan: missing });
+  assert.equal(released.phase, 'released');
+  assert.equal(released.provisional, false);
+  assert.equal(f.fields.start_charging, true);
+});
+
 test('MQTT diagnostics distinguish subscription health from charger availability and use real routes', async t => {
   const f = fixture(t);
   assert.deepEqual(f.adapter.snapshot().mqtt, { brokerConnected: false, subscribed: false,

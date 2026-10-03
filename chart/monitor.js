@@ -99,6 +99,7 @@ const controlErrors = new Map();
 const heatingResults = new Map();
 const heatingErrorRequests = new Map();
 let refreshSequence = 0;
+let pairStatusRevision = 0;
 let lastReplicaSnapshot;
 const dirtyTemporary = new Set();
 const temporaryFields = { awayUntilLocal: 'away-until', pauseUntilLocal: 'pause-until' };
@@ -757,6 +758,7 @@ function render(s) {
   chargingDiagnostics.update(s); chargingTests.update(s); chargingSetup.render(s);
   $('error').hidden = true;
   pairPanel.update(pairPanelView(s));
+  ++pairStatusRevision;
   historyRecovery.update({ ...s, webAccess });
   const replica = renderReplicaStatus(document, s, { formatTime: time });
   if (replica) garageDoors.close();
@@ -892,10 +894,22 @@ async function refresh({ forceChart = false, background = false } = {}) {
   const request = requestStatus({ background });
   if (!request) return;
   const sequence = ++refreshSequence;
+  const pairRevision = pairStatusRevision;
+  let s;
   try {
-    const s = await request;
-    if (sequence !== refreshSequence) return;
-    communication.received();
+    s = await request;
+  } catch (error) {
+    if (sequence === refreshSequence) {
+      // The faster pairing poll may already have confirmed this computer while
+      // this older status request was pending.
+      if (pairRevision === pairStatusRevision) pairPanel.unavailable();
+      showError(error);
+    }
+    return;
+  }
+  if (sequence !== refreshSequence) return;
+  communication.received();
+  try {
     const replica = render(s);
     const snapshot = replica ? replicaSnapshotKey(s) ?? 'replica-unavailable' : 'master';
     const replaced = snapshot !== lastReplicaSnapshot;
@@ -906,20 +920,28 @@ async function refresh({ forceChart = false, background = false } = {}) {
     lastReplicaSnapshot = snapshot;
     if (replica && !replica.available) return;
     await Promise.all([historyChart.refresh(s, { force: forceChart || replaced }), events()]);
-  } catch (error) { if (sequence === refreshSequence) { pairPanel.unavailable(); showError(error); } }
+  } catch (error) {
+    // Chart, event and rendering failures do not invalidate a received local
+    // pairing report or its confirmed MQTT address ownership.
+    if (sequence === refreshSequence) showError(error);
+  }
 }
 let pairPollBusy = false;
 async function refreshPairing() {
   if (lastStatus?.topology !== 'pair' || pairPollBusy) return;
   pairPollBusy = true;
+  const pairRevision = pairStatusRevision;
+  let received = false;
   try {
     const pair = await api('/api/pair');
+    received = true;
     const previous = lastStatus.pair ?? {};
     const changed = pair.role !== previous.role || pair.canControl !== previous.canControl || Boolean(pair.transition) !== Boolean(previous.transition);
     lastStatus = { ...lastStatus, pair };
     readOnlyControls.update(lastStatus);
     garageDoors.update({ ...equipmentPanel.actions.snapshot(), status: lastStatus });
     pairPanel.update(pairPanelView(lastStatus));
+    ++pairStatusRevision;
     historyRecovery.update({ ...lastStatus, webAccess });
     renderInstanceRole(document, lastStatus);
     if (isReadOnlyReplica(lastStatus)) {
@@ -927,7 +949,11 @@ async function refreshPairing() {
       renderReplicaStatus(document, lastStatus, { formatTime: time });
     }
     if (changed) await refresh({ forceChart: true });
-  } catch { pairPanel.unavailable(); }
+  } catch (error) {
+    if (session.locked) return;
+    if (!received && pairRevision === pairStatusRevision) pairPanel.unavailable();
+    if (received) showError(error);
+  }
   finally { pairPollBusy = false; }
 }
 $('auth').addEventListener('submit', event => {

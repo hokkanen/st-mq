@@ -47,8 +47,10 @@ function fixture(t, vehicleId) {
   const view = () => runtime.status().chargers.find(row => row.id === 'charger1');
   const run = () => runtime.physicalTests.status().runs[0];
   const settle = async () => {
+    await runtime.planningFlight;
     for (const charger of Object.values(runtime.chargers)) await charger.reconcileFlight;
     await new Promise(resolve => setImmediate(resolve));
+    await runtime.planningFlight;
     for (const charger of Object.values(runtime.chargers)) await charger.reconcileFlight;
   };
   const production = () => {
@@ -127,7 +129,7 @@ for (const vehicleId of ['bmw', 'tesla']) test(`${vehicleId}: guide readings and
   f.runtime.prices = Array.from({ length: 12 }, (_, index) => ({ start: START + index * HOUR,
     end: START + (index + 1) * HOUR, price: 10 + index }));
   f.runtime.pricesInitialized = true;
-  f.runtime.updatePlan(f.now); await f.settle();
+  await f.runtime.updatePlan(f.now); await f.settle();
   assert.ok(f.view().plan.periods.length, 'The ordinary production planner supplies actual periods');
   assert.equal(f.view().values.minimumSoc.value, 85);
   assert.equal(f.run().recommendation.state, 'available', f.run().recommendation.message);

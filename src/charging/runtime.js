@@ -3,7 +3,10 @@ import { acceptVehicleReading, validateBmwChargingHistory, bmwHomeContext, bmwId
 import { chargingConfiguration } from './config.js';
 import { TIME_ZONE } from '../domain/prices.js';
 import { CHARGER_DEFINITIONS, buildCharger } from './model.js';
-import { planChargers, forecastFixedPlans } from './planner.js';
+import { forecastFixedPlans } from './planner.js';
+import { createChargingPlannerService } from './planner-service.js';
+import { chargingPlannerInput, chargingPlanValidUntil } from './planner-input.js';
+import { chargingPlanInputsUnavailable } from './plan-inputs.js';
 import { createChargingController } from './controller.js';
 import { easeeChargerTelemetry, effectiveScheduleFingerprint } from './easee.js';
 import { teslamateVehicleTelemetry } from './teslamate.js';
@@ -192,6 +195,8 @@ export class ChargingRuntime {
     this.historyService = store.path && store.path !== ':memory:' ? createHouseholdForecastService({ store }) : null;
     this.historyGeneration = 0; this.historyReady = false; this.historyFlights = new Set();
     this.household = []; this.historyAt = null; this.coordination = null; this.closed = false;
+    this.plannerService = createChargingPlannerService();
+    this.planningGeneration = 0;
   }
   refreshSettings() {
     this.settings = chargingSettingsFromConfiguration(this.configuration, { priority: this.controls.priority,
@@ -270,9 +275,11 @@ export class ChargingRuntime {
         },
         getMaximumAmps: scheduleCeiling,
         getIdentification: snapshot => this.identificationControl(item, snapshot),
-        getPlan: snapshot => {
-          try { this.updatePlan(this.clock(), { sourceId: id }); }
+        getPlan: async snapshot => {
+          item.awaitingPlan = true;
+          try { await this.updatePlan(this.clock(), { sourceId: id }); }
           catch { this.error = 'charging-planning-unavailable'; return null; }
+          finally { item.awaitingPlan = false; }
           return this.pricesInitialized ? item.plan : null;
         },
         getAllocation: () => this.allocationContext() });
@@ -832,10 +839,46 @@ export class ChargingRuntime {
     });
   }
   updatePlan(now = this.clock(), { sourceId } = {}) {
-    let views = this.views(now);
+    if (this.closed) return Promise.resolve();
+    // Accepted observations/progress must survive a restart even while an old
+    // numerical search is still running. They are independent of plan adoption.
+    if (this.planningFlight) this.refreshPlanningState(now);
+    this.planningRequest = { now, sourceId, generation: ++this.planningGeneration };
+    if (!this.planningFlight) {
+      this.planningFlight = (async () => {
+        while (this.planningRequest && !this.closed) {
+          const request = this.planningRequest; this.planningRequest = null;
+          await this.calculatePlan(request.now, request);
+          // A cached result can settle immediately. Repeated input changes must
+          // still let native replies, requests and timers run between retries.
+          if (this.planningRequest && !this.closed) await new Promise(resolve => setImmediate(resolve));
+        }
+      })().finally(() => { this.planningFlight = null; });
+    }
+    return this.planningFlight;
+  }
+  planningEvidence() {
+    const views = this.views(this.clock());
+    const external = views.find(view => view.capabilities.externalLoadBalancing);
+    const supply = external?.telemetry.providerConnected === false ? {} : external?.telemetry.supply ?? {};
+    return digest({ revision: this.revision, canControl: this.canControl(),
+      inputs: chargingPlannerInput({ chargers: views, supply }),
+      sessions: views.map(view => {
+        // A completed unchanged native read is not a new physical connection.
+        // Keep all source/session boundaries; omit only its receipt clock.
+        const { observedAt, ...session } = view.control?.session ?? {};
+        return [view.association, view.request, view.controls, session,
+          view.control?.manual, view.control?.owned, view.control?.pending,
+          view.control?.execution, view.control?.takeover];
+      }),
+      prices: priceSnapshot(this.prices), historyReady: this.historyReady, historyError: this.historyError,
+      historyAt: this.historyAt });
+  }
+  refreshPlanningState(now) {
+    const views = this.views(now);
     for (const view of views) {
       const item = this.charger(view.id), pluggedIn = view.values.connected.value;
-      item.newEpisode = pluggedIn === false && (item.wasPluggedIn !== false || item.plan?.deadlineAt <= now)
+      item.newEpisode ||= pluggedIn === false && (item.wasPluggedIn !== false || item.plan?.deadlineAt <= now)
         || pluggedIn === true && item.wasPluggedIn === false;
       if (item.newEpisode) item.plan = null;
       const manual = view.control?.manual;
@@ -847,7 +890,12 @@ export class ChargingRuntime {
       item.progress = updateChargingProgress(item.progress, raw, now, this.readEnergy).state;
       if (typeof pluggedIn === 'boolean') item.wasPluggedIn = pluggedIn;
     }
-    views = this.views(now).map(view => {
+    this.persist();
+  }
+  async calculatePlan(now, { sourceId, generation }) {
+    const current = () => !this.closed && this.store.db.isOpen && generation === this.planningGeneration;
+    this.refreshPlanningState(now);
+    const views = this.views(now).map(view => {
       const attempt = this.charger(view.id).takeoverAttempt;
       if (!attempt || !this.takeoverCurrent(this.charger(view.id), attempt)) return view;
       // Plan the explicitly requested handover without claiming native success.
@@ -937,6 +985,17 @@ export class ChargingRuntime {
         ...['connected', 'maximumCurrentA', 'nativeCurrentA', 'vehicleCurrentA', 'vehicleNotBefore'].map(key => view.values[key]?.value ?? null)]) });
     const previousAllocations = this.allocationScope === allocationScope ? this.coordination?.allocations ?? [] : [];
     const planning = { now, prices: this.prices, household: this.household, supply, priority: this.settings.priority, previousAllocations };
+    const evidence = this.planningEvidence();
+    const acceptResult = result => {
+      if (!current() || !result) return false;
+      const at = this.clock();
+      if (selectedHistory.get().generation !== historySelection || evidence !== this.planningEvidence() || at < now
+        || at >= chargingPlanValidUntil({ now: result.at, chargers: planningViews }, result)) {
+        this.planningRequest = { now: at, generation: ++this.planningGeneration };
+        return false;
+      }
+      return true;
+    };
     // A running native period keeps its permission until an accepted price
     // revision changes it. Optimize its peer around that actual obligation.
     const fixedPeriods = Object.fromEntries(views.flatMap(view => {
@@ -944,7 +1003,8 @@ export class ChargingRuntime {
       return periods && !item.newEpisode && !view.control?.provisional && activePeriod(view.control, now)
         && !priceReplans.has(view.id) ? [[view.id, periods]] : [];
     }));
-    let result = planChargers({ ...planning, chargers: planningViews, previousPeriods, fixedPeriods });
+    let result = await this.plannerService.request({ ...planning, chargers: planningViews, previousPeriods, fixedPeriods });
+    if (!acceptResult(result)) return;
     const adoptedPeriods = Object.fromEntries(views.flatMap(view => {
       const periods = confirmedPeriods(view, now);
       return periods ? [[view.id, periods]] : [];
@@ -979,7 +1039,8 @@ export class ChargingRuntime {
     }
     if (priceReplans.size && (!priceRevisionWorthwhile || priceRevisionDeferred)) {
       for (const id of priceReplans) if (adoptedPeriods[id]) fixedPeriods[id] = adoptedPeriods[id];
-      result = planChargers({ ...planning, chargers: planningViews, previousPeriods, fixedPeriods });
+      result = await this.plannerService.request({ ...planning, chargers: planningViews, previousPeriods, fixedPeriods });
+      if (!acceptResult(result)) return;
     }
     const environment = { supply: { budget: supply?.estimate?.available ? supply.estimate.budgetCurrentA : supply?.availableCurrentA,
         voltageV: planningVoltageV, allocationA: supply?.allocationA, quality: supply?.estimate?.quality },
@@ -1011,8 +1072,10 @@ export class ChargingRuntime {
       // A cold archive rebuild must not briefly release and reinstall a known
       // delayed start. Keep the confirmed instruction until its replacement can
       // be assessed; fresh controller reads still enforce manual priority.
-      const retainedInstruction = control?.owned ?? this.savedOwnership(view.id)?.owned;
-      if (!this.historyReady && retainedInstruction && item.plan && !item.newEpisode) continue;
+      const savedControl = this.savedOwnership(view.id);
+      const retainedInstruction = control?.owned ?? control?.execution ?? savedControl?.owned ?? savedControl?.execution;
+      if (retainedInstruction && item.plan && !item.newEpisode
+        && (!this.historyReady || chargingPlanInputsUnavailable(result.plans[view.id]))) continue;
       const handbackDue = Number.isSafeInteger(control?.manual?.resumeAt) && now >= control.manual.resumeAt;
       // A manual native instruction is separate from the automatic plan. Keep
       // the last automatic context until the controller verifies handback.
@@ -1104,7 +1167,7 @@ export class ChargingRuntime {
     const sessions = Object.fromEntries(views.map(view => [view.id, view.request?.sessionId ?? null]));
     const requests = Object.fromEntries(views.map(view => [view.id, { sessionId: view.request?.sessionId ?? null,
       revision: view.request?.revision ?? null, automatic: view.settings.enabled, chargeNow: view.request?.chargeNow === true }]));
-    const context = calculation => ({ at: now, sessions, requests, priority: this.settings.priority, feasible: calculation.feasible,
+    const context = calculation => ({ at: calculation.at, sessions, requests, priority: this.settings.priority, feasible: calculation.feasible,
       solver: calculation.solver, allocations: calculation.allocations, assumptions: calculation.assumptions,
       plans: Object.fromEntries(Object.entries(calculation.plans).map(([id, plan]) => [id, {
         feasible: plan.feasible, deadlineAt: plan.deadlineAt, requiredGridKwh: plan.requiredGridKwh,
@@ -1125,8 +1188,9 @@ export class ChargingRuntime {
       const item = this.charger(view.id);
       item.sessionCost = updateSessionCost(item.sessionCost, view, now, this.prices, this.readEnergy);
     }
-    this.fenceChangedCommands(now, sourceId);
-    this.persist(); this.scheduleWakeup(now);
+    this.fenceChangedCommands(this.clock(), sourceId);
+    for (const item of Object.values(this.chargers)) item.newEpisode = false;
+    this.persist(); this.scheduleWakeup(this.clock());
   }
   invalidateCommands() {
     for (const item of Object.values(this.chargers)) {
@@ -1145,7 +1209,9 @@ export class ChargingRuntime {
           reservation: this.settings.priority === 'charger2' ? 0 : current?.chargers?.charger1?.currentA ?? 0 } : {}) });
       const changed = item.commandBasis !== undefined && item.commandBasis !== basis;
       item.commandBasis = basis;
-      if (!changed || id === sourceId || !item.controller || item.backendTransition || this.closed) continue;
+      // All controllers awaiting this calculation will receive the new result.
+      // Revoke only instructions that already left planning for native preflight.
+      if (!changed || id === sourceId || item.awaitingPlan || !item.controller || item.backendTransition || this.closed) continue;
       item.controller.invalidate?.(); item.lastReconcileAt = null;
       if (item.reconcileFlight) { item.reconcileAgain = true; continue; }
       if (item.reconcileQueued) continue;
@@ -1181,9 +1247,11 @@ export class ChargingRuntime {
     if (!this.flushStreamEvidence()) { this.scheduleStreamReconcile(1000); return; }
     if (Array.isArray(weather) && digest(weather) !== digest(this.weather)) { this.weather = weather; this.historyAt = null; }
     if (Array.isArray(prices)) { this.prices = prices; this.pricesInitialized = true; }
+    let planning;
     try {
-      this.updatePlan(now);
-      this.error = null;
+      planning = this.updatePlan(now).then(() => {
+        if (!this.closed) this.error = null;
+      }).catch(() => { if (!this.closed) this.error = 'charging-planning-unavailable'; });
     } catch { this.error = 'charging-planning-unavailable'; }
     if (force) for (const item of Object.values(this.chargers))
       if (item.reconcileFlight && !item.backendTransition) item.reconcileAgain = true;
@@ -1192,6 +1260,7 @@ export class ChargingRuntime {
     for (const [id, item] of Object.entries(this.chargers)) if (item.controller && !item.backendTransition && !item.reconcileFlight && (force || item.lastReconcileAt === null
       || now - item.lastReconcileAt >= (item.identification?.phase === 'pausing' || item.identification?.probe?.endedAt === null ? 2000 : MINUTE)))
       void this.reconcile(id).catch(() => { item.error = 'charging-reconciliation-unavailable'; });
+    return planning;
   }
   allocationContext() {
     const first = this.chargers.charger1?.controller?.status()?.snapshot, supply = first?.supply;
@@ -1258,7 +1327,7 @@ export class ChargingRuntime {
       try { this.persist(); } catch (error) { item.replan = true; throw error; }
     }
     item.error = null;
-    try { this.updatePlan(this.clock(), { sourceId: id }); this.error = null; } catch { this.error = 'charging-planning-unavailable'; }
+    try { await this.updatePlan(this.clock(), { sourceId: id }); this.error = null; } catch { this.error = 'charging-planning-unavailable'; }
   }
   checkControlAuthority() {
     if (this.closed || !this.canControl() || !['mqtt', 'providers'].includes(this.config.input))
@@ -1281,7 +1350,7 @@ export class ChargingRuntime {
       this.revision = previous.revision; this.refreshSettings(); throw error;
     }
     this.invalidateCommands();
-    try { this.updatePlan(); } catch { this.error = 'charging-planning-unavailable'; }
+    try { await this.updatePlan(); } catch { this.error = 'charging-planning-unavailable'; }
     await this.reconcile();
   }
   async setSettings(input) {
@@ -1297,7 +1366,7 @@ export class ChargingRuntime {
     this.revision++; this.refreshSettings();
     try { this.persist(); } catch (error) { this.controls = previous; this.revision = previousRevision; this.refreshSettings(); throw error; }
     this.invalidateCommands();
-    try { this.updatePlan(); } catch { this.error = 'charging-planning-unavailable'; }
+    try { await this.updatePlan(); } catch { this.error = 'charging-planning-unavailable'; }
     await this.reconcile();
   }
   async setChargerSettings(id, input) {
@@ -1325,7 +1394,7 @@ export class ChargingRuntime {
     item.request.chargeNow = true; item.request.revision++; this.revision++; item.plan = null;
     try { this.persist(); } catch (error) { item.request = previous; item.plan = previousPlan; this.revision = previousRevision; throw error; }
     this.invalidateCommands();
-    try { this.updatePlan(); } catch { this.error = 'charging-planning-unavailable'; }
+    try { await this.updatePlan(); } catch { this.error = 'charging-planning-unavailable'; }
     // Release scheduling immediately even when price/history work is unavailable.
     await this.reconcile();
   }
@@ -1371,7 +1440,7 @@ export class ChargingRuntime {
     item.plan = control?.released ? previousPlan : previousPlan && activePeriod(control, this.clock())
       ? { ...previousPlan, ...(Object.hasOwn(input.changes, 'readyBy') ? { replanReadyBy: checked.readyBy } : {}) } : null;
     try { this.persist(); } catch (error) { item.request = previous; item.plan = previousPlan; this.revision = previousRevision; throw error; }
-    this.invalidateCommands(); this.updatePlan(); await this.reconcile();
+    this.invalidateCommands(); await this.updatePlan(); await this.reconcile();
   }
   async resume(id, input) {
     this.charger(id);
@@ -1425,7 +1494,7 @@ export class ChargingRuntime {
     item.takeoverAttempt = attempt;
     this.invalidateCommands();
     try {
-      this.updatePlan();
+      await this.updatePlan();
       await this.reconcile(id, { takeover: attempt.token });
       if (!this.takeoverCurrent(item, attempt))
         throw new Error('Charging controls or connection changed during takeover. Review the current status.');
@@ -1436,7 +1505,7 @@ export class ChargingRuntime {
       if (item.takeoverAttempt === attempt) delete item.takeoverAttempt;
       // No takeover permission survives this request or a restart. Subsequent
       // reconciliation uses actual native evidence and preserves newer choices.
-      try { this.updatePlan(); } catch { this.error = 'charging-planning-unavailable'; }
+      try { await this.updatePlan(); } catch { this.error = 'charging-planning-unavailable'; }
     }
     await Promise.all(Object.keys(this.chargers).filter(peer => peer !== id).map(peer => this.reconcile(peer)));
   }
@@ -1468,6 +1537,8 @@ export class ChargingRuntime {
   }
   async close() {
     this.closed = true; clearInterval(this.timer); clearTimeout(this.boundaryTimer); clearTimeout(this.streamTimer);
+    await this.plannerService.close();
+    await this.planningFlight?.catch(() => {});
     await this.historyService?.close();
     await Promise.all(Object.values(this.chargers).map(async item => { await item.controller?.close(); await item.adapterFlight; }));
   }

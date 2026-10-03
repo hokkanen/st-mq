@@ -318,6 +318,9 @@ attention; ordinary progress and informational comparisons use quieter colors.
 Expanded details group this computer, the other computer and database mirroring.
 Losing the dashboard connection replaces current-status claims with unconfirmed
 status until a new report arrives. Neither connectivity nor color grants control.
+Chart and event-history failures do not invalidate a successful local status
+report. A late failed request also cannot overwrite newer pairing evidence.
+An intentionally stopped peer affects the other-computer status independently.
 
 The master also shows the slave's reported snapshot and verification times,
 with the time that report was received. These are observations from the peer,

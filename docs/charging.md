@@ -210,7 +210,11 @@ After a master-host failure, the promoted computer needs its own working broker,
 device connections and credentials; see [paired operation](pairing.md). Cached
 data is not fresh device evidence. Reachable chargers can continue with manual
 inputs. Missing shared prices or usable property-capacity forecasts select
-provisional release; an unknown charger current alone uses the
+provisional release only when no existing adopted instruction needs preserving.
+For the same confirmed physical connection, an adopted schedule retains its
+original pauses and release times while these inputs recover, including after
+restart. Missing evidence does not authorize an early start or renew a pause.
+A modeled deadline shortfall remains a separate release decision; an unknown charger current alone uses the
 [planning assumption](#maximum-available-current-assumption).
 An unreachable charger cannot receive a release, and an unavailable OCPP
 authorization server can block new charging. Shelly EVSE controller-loss behavior
@@ -700,6 +704,15 @@ delivery estimates, a later known lower limit, joint per-phase allocation and
 the unchanged command-readiness gates.
 
 ### Joint allocation and execution
+
+The expensive joint search runs in one local worker, with one active calculation
+and only the latest pending request. Repeated equivalent inputs reuse a bounded
+cache for at most 30 seconds and never across a schedule, allocation or deadline
+boundary. Results retain their calculation time. Changed requests, connections,
+native instructions, authority, source selection or expired results are checked
+before publication; stale work cannot replace the current plan. Accepted session
+evidence and progress are saved independently while planning runs. Device
+readback and command fencing remain authoritative.
 
 The implementation is a bounded search over a declared slot/current model, **not a globally exact continuous-time optimizer**. Results expose the search kind, relaxed cost lower bound, feasible candidate cost and upper bound on the cost gap where available. Search pruning can miss a better joint candidate; reported feasibility is conditional on the recorded assumptions. Synthetic exhaustive small-horizon comparisons validate representative cases. There is no one-cent pause penalty or mandatory one-cent saving hurdle. Practical minimum economic runs/gaps remain 15 minutes; equal-cost choices prefer stability.
 

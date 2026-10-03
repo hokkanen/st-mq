@@ -100,6 +100,56 @@ test('pending start is replanned on new inputs without waiting until unplug', as
   assert.equal(result.phase, 'waiting'); assert.equal(result.owned.planId, 'new-soc'); assert.equal(h.writes.length, 2);
 });
 
+test('restart retains the confirmed Easee start while planning inputs are missing and replans after recovery', async () => {
+  for (const periods of [undefined, [{ startAt: NOW + 3 * 3600_000, endAt: null }]]) {
+    const h = harness();
+    await h.update({ plan: { id: 'adopted-before-restart', startAt: NOW + 3 * 3600_000, periods } });
+    h.now += 60_000; h.restart();
+    const missing = { id: 'missing-startup-inputs', startAt: h.now, feasible: false, provisional: true,
+      reason: 'electrical-telemetry-unavailable', periods: [{ startAt: h.now, endAt: null }] };
+    const waiting = await h.update({ plan: missing });
+    assert.equal(waiting.phase, 'waiting');
+    assert.equal(waiting.owned.planId, 'adopted-before-restart');
+    assert.equal(waiting.owned.startAt, NOW + 3 * 3600_000);
+    assert.equal(h.writes.length, 1, 'Input loss must not clear or rewrite the confirmed delay');
+    const recovered = await h.update({ plan: { id: 'recovered-inputs', startAt: NOW + 4 * 3600_000 } });
+    assert.equal(recovered.owned.startAt, NOW + 4 * 3600_000);
+    assert.equal(h.writes.length, 2);
+    await h.controller.close();
+  }
+});
+
+test('missing inputs keep every transition of an adopted Easee program', async () => {
+  const h = harness(), original = { id: 'adopted-periods', startAt: NOW + 3600_000,
+    periods: [{ startAt: NOW + 3600_000, endAt: NOW + 2 * 3600_000 },
+      { startAt: NOW + 3 * 3600_000, endAt: null }] };
+  await h.update({ plan: original });
+  const missing = { id: 'missing-inputs', startAt: NOW, feasible: false, provisional: true,
+    reason: 'price-coverage-unavailable', periods: [{ startAt: NOW, endAt: null }] };
+  h.restart(); h.now = NOW + 3600_000; h.schedules.enabled = 'none'; h.mode = 3;
+  assert.equal((await h.update({ plan: missing })).phase, 'active');
+  h.now = NOW + 2 * 3600_000; h.mode = 2;
+  const paused = await h.update({ plan: missing });
+  assert.equal(paused.phase, 'paused');
+  assert.equal(paused.owned.startAt, NOW + 3 * 3600_000);
+  h.restart(); h.now = NOW + 3 * 3600_000; h.schedules.enabled = 'none'; h.mode = 3;
+  const released = await h.update({ plan: missing });
+  assert.equal(released.phase, 'released');
+  assert.equal(released.provisional, false);
+  assert.equal(h.writes.length, 2);
+  await h.controller.close();
+});
+
+test('a modeled deadline shortfall can release the confirmed Easee delay', async () => {
+  const h = harness(); await h.update(); h.restart();
+  const released = await h.update({ plan: { id: 'shortfall', startAt: h.now,
+    reason: 'insufficient-time', feasible: false, provisional: true, periods: [{ startAt: h.now, endAt: null }] } });
+  assert.equal(released.phase, 'provisional');
+  assert.equal(h.schedules.enabled, 'none');
+  assert.equal(h.writes.length, 2);
+  await h.controller.close();
+});
+
 test('OFF rereads and relinquishes only the exact confirmed owned restriction', async () => {
   const h = harness(); await h.update(); h.mode = 3;
   const result = await h.update({ enabled: false });

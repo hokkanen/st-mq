@@ -38,6 +38,14 @@ Versions follow Semantic Versioning. `-dev.N` denotes a development prerelease.
 
 ### Fixed
 
+- Charging searches run in a local worker and avoid repeated unchanged work,
+  keeping dashboard requests and device replies responsive. Joint planning is
+  faster without reducing its search or changing selected schedules.
+- Existing charging pauses and programmed release times survive missing startup
+  prices or electrical readings for the same confirmed connection.
+- Paired computers keeps successful local status when chart/history requests
+  fail, and ignores older failed reads after a newer status arrives. An offline
+  peer remains a separate status.
 - Charger 2 keeps physical connection readings available when another charger
   read fails, and accepts confirmed unchanged state without losing its original
   timestamp. Both charger cards show clearly labeled configured defaults while

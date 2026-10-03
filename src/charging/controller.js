@@ -2,6 +2,7 @@ import { resolveChargingDeadline } from './settings.js';
 import { TIME_ZONE } from '../domain/prices.js';
 import { delayedScheduleFor, easeeScheduleTakeoverSupported, easeeTakeoverFingerprint, effectiveScheduleFingerprint, manualScheduleWindow, nextLocalOccurrence, scheduleFingerprint } from './easee.js';
 import { createHash } from 'node:crypto';
+import { chargingPlanInputsUnavailable } from './plan-inputs.js';
 
 const copy = value => structuredClone(value);
 const isTime = value => Number.isSafeInteger(value) && value >= 0;
@@ -665,6 +666,15 @@ export function createChargingController({ adapter, initialState = null, saveSta
       }
       let plan = typeof getPlan === 'function' ? await getPlan(copy(snapshot)) : desired.plan;
       now = clock();
+      if (chargingPlanInputsUnavailable(plan) && !state.provisional) {
+        // Reuse only this connection's adopted program. It keeps its original
+        // transitions while missing prices/electrical readings recover; those
+        // missing inputs are not a new instruction to release a native pause.
+        if (state.execution) plan = { ...copy(state.execution), startAt: state.execution.periods[0].startAt };
+        else if (ownsCurrent() && state.owned.purpose !== 'identification'
+          && state.owned.confirmedAt >= state.session.connectedAt)
+          plan = { id: state.owned.planId, startAt: state.owned.startAt };
+      }
       const priceExecution = priceRevisionExecution(plan, now);
       if (plan?.priceRevision && !priceExecution) plan = null;
       if (state.released && !state.provisional && !priceExecution) {

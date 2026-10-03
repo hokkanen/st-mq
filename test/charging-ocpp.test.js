@@ -65,6 +65,62 @@ const appState = (at, enabled) => ({ readAt: at, enabled, enabledAt: at, stopped
   controlKnown: true, faulted: false, authorizationBlocked: false, schedule: null });
 const writes = f => f.calls.filter(row => row.action !== 'GetCompositeSchedule');
 
+test('missing planning inputs retain an uncertain native install through restart and readback recovery', async () => {
+  const first = fixture(), startAt = START + 30 * MINUTE;
+  first.intercept((action, _payload, _options, result) => {
+    if (action === 'SetChargingProfile') { result(); throw new Error('Synthetic lost acknowledgement'); }
+    return result();
+  });
+  const original = plan(startAt);
+  await first.controller.update({ enabled: true, plan: original });
+  assert.equal(first.stored.pending.action, 'install');
+  const restarted = fixture({ initialState: first.stored });
+  for (const [id, profile] of first.profiles) restarted.profiles.set(id, structuredClone(profile));
+  restarted.advance(31_000);
+  const retained = await restarted.controller.update({ enabled: true, plan: {
+    ...plan(restarted.now), reason: 'electrical-telemetry-unavailable', feasible: false, provisional: true,
+  } });
+  assert.equal(retained.phase, 'paused');
+  assert.equal(retained.owned.startAt, startAt);
+  assert.equal(retained.pending, null);
+  assert.equal(retained.execution.planId, original.id);
+  assert.equal(writes(restarted).some(row => row.action === 'ClearChargingProfile'), false);
+  await Promise.all([first.controller.close(), restarted.controller.close()]);
+});
+
+test('missing inputs retain every native execution transition without replacing the original program', async () => {
+  const f = fixture(), original = plan(START + 30 * MINUTE, { periods: [
+    { startAt: START + 30 * MINUTE, endAt: START + 60 * MINUTE },
+    { startAt: START + 90 * MINUTE, endAt: null },
+  ] });
+  await f.controller.update({ enabled: true, plan: original });
+  const missing = { ...plan(START), reason: 'equalizer-allowance-unavailable', feasible: false, provisional: true };
+  f.advance(30 * MINUTE);
+  assert.equal((await f.controller.update({ enabled: true, plan: missing })).phase, 'active');
+  f.advance(30 * MINUTE);
+  const paused = await f.controller.update({ enabled: true, plan: missing });
+  assert.equal(paused.phase, 'paused');
+  assert.equal(paused.owned.startAt, START + 90 * MINUTE);
+  assert.equal(paused.execution.planId, original.id);
+  f.advance(30 * MINUTE);
+  const final = await f.controller.update({ enabled: true, plan: missing });
+  assert.equal(final.phase, 'released');
+  assert.equal(final.provisional, false);
+  await f.controller.close();
+});
+
+test('a modeled shortfall still releases the adopted native pause', async () => {
+  const f = fixture();
+  await f.controller.update({ enabled: true, plan: plan(START + 30 * MINUTE) });
+  const released = await f.controller.update({ enabled: true, plan: {
+    ...plan(START), reason: 'insufficient-time', feasible: false, provisional: true,
+  } });
+  assert.equal(released.phase, 'provisional');
+  assert.equal(released.owned, null);
+  assert.equal(writes(f).at(-1).action, 'ClearChargingProfile');
+  await f.controller.close();
+});
+
 test('the retired resume control field is rejected before native mutation', () => {
   const f = fixture();
   for (const resume of [true, false]) assert.throws(() => f.controller.update({ enabled: true, resume }), /Unsupported charging control field: resume/);

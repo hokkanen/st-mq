@@ -30,6 +30,8 @@ const standby = role => ({ ...master(), role, canControl: false, vip: { owned: f
   peer: { reachable: true, role: 'master', lastSeenAt: now }, actions: { promote: true },
   sync: { state: 'ready', sourceAt: now - 60_000, verifiedAt: now - 30_000, bytes: 2e6 } });
 let sectionUnavailable = false;
+const failedReads = new Set();
+let delayedRead;
 let topology = 'pair', pair = master(), app, viewer, proxy, socket, command, ownsBrowser = false, requestId = 0;
 
 try {
@@ -50,6 +52,13 @@ try {
   proxy = createServer(async (request, response) => {
     const json = (status, value) => { response.writeHead(status, { 'Content-Type': 'application/json' }); response.end(JSON.stringify(value)); };
     try {
+      const path = new URL(request.url, 'http://127.0.0.1').pathname;
+      if (delayedRead?.path === path) {
+        const delayed = delayedRead; delayedRead = undefined; delayed.started();
+        await delayed.release;
+        return json(503, { error: 'Synthetic delayed read failure' });
+      }
+      if (failedReads.has(path)) return json(503, { error: 'Synthetic read unavailable' });
       if (request.url === '/favicon.ico') { response.writeHead(204); response.end(); return; }
       if (request.url === '/api/pair' && request.method === 'GET') return json(200, topology === 'pair' ? pair : null);
       if (request.url === '/api/history-recovery' && request.method === 'GET') return json(200, {
@@ -199,6 +208,54 @@ try {
   pair = master({ peer: { reachable: false, lastSeenAt: now - 120_000 } });
   await until(`${$('pairing-peer')}.textContent.includes('unavailable')`);
   assert.equal(await evaluate(`${$('pairing-details')}.open`), true, 'Polling preserves the open disclosure');
+  await evaluate(`window.pairingDisconnects = []; window.pairingObserver = new MutationObserver(() => {
+    const summary = ${$('pairing-summary')}.textContent;
+    if (summary.includes('Connection to this computer is lost')) window.pairingDisconnects.push(summary);
+  }); window.pairingObserver.observe(${$('pairing-panel')}, { subtree: true, childList: true }); true`);
+  failedReads.add('/api/events');
+  await evaluate("window.dispatchEvent(new Event('online')); true");
+  await until(`!${$('error')}.hidden && ${$('error')}.textContent.includes('Synthetic read unavailable')`);
+  assert.equal(await evaluate(`${$('pairing-broker')}.textContent.includes('unconfirmed')`), false,
+    'An event-history failure preserves successful local MQTT ownership evidence');
+  failedReads.add('/api/chart');
+  await evaluate(`${$('range-yesterday')}.click(); true`);
+  await until(`${$('chart-status')}.textContent.includes('Unable to load selected dates')`);
+  assert.equal(await evaluate('window.pairingDisconnects.length'), 0,
+    'History and chart errors cannot flash a local disconnect when only the peer is offline');
+  failedReads.clear();
+  await evaluate(`${$('range-today')}.click(); window.dispatchEvent(new Event('online')); true`);
+  await until(`${$('error')}.hidden`);
+
+  // Both poll directions can settle out of order. A later successful report
+  // must survive failure of the request that was already pending before it.
+  for (const path of ['/api/status', '/api/pair']) {
+    let started, release;
+    const waiting = new Promise(resolve => { started = resolve; });
+    delayedRead = { path, started, release: new Promise(resolve => { release = resolve; }) };
+    if (path === '/api/status') await evaluate("window.dispatchEvent(new Event('online')); true");
+    await waiting;
+    // A changed peer caption proves the other poll rendered the newer report.
+    pair = master();
+    if (path === '/api/pair') await evaluate("window.dispatchEvent(new Event('online')); true");
+    await until(`${$('pairing-peer')}.textContent.includes('connected')`);
+    release();
+    if (path === '/api/status') await until(`!${$('error')}.hidden && ${$('error')}.textContent.includes('Synthetic delayed read failure')`);
+    else await new Promise(resolve => setTimeout(resolve, 100));
+    assert.equal(await evaluate('window.pairingDisconnects.length'), 0,
+      `${path}: an older failed read cannot invalidate a newer successful local report`);
+    pair = master({ peer: { reachable: false, lastSeenAt: now - 120_000 } });
+    await evaluate("window.dispatchEvent(new Event('online')); true");
+    await until(`${$('pairing-peer')}.textContent.includes('unavailable') && ${$('error')}.hidden`);
+  }
+  await evaluate('window.pairingObserver.disconnect(); true');
+  failedReads.add('/api/status'); failedReads.add('/api/pair');
+  await evaluate("window.dispatchEvent(new Event('online')); true");
+  await until(`${$('pairing-summary')}.textContent.includes('Connection to this computer is lost')`);
+  assert.match(await evaluate(`${$('pairing-broker')}.textContent`), /unconfirmed/);
+  assert.equal(await evaluate(`${$('pairing-handover')}.disabled`), true, 'Actual local read failure still fences pairing actions');
+  failedReads.clear();
+  await evaluate("window.dispatchEvent(new Event('online')); true");
+  await until(`${$('pairing-peer')}.textContent.includes('unavailable') && !${$('pairing-broker')}.textContent.includes('unconfirmed') && ${$('error')}.hidden`);
   for (const theme of ['dark', 'light']) {
     if (await evaluate('document.documentElement.dataset.theme') !== theme) await evaluate("document.getElementById('theme-toggle').click(); true");
     assert.equal(await evaluate(`getComputedStyle(${$('pairing-peerStat')}).color === getComputedStyle(${$('pairing-attention')}).color`), true,
@@ -416,7 +473,7 @@ try {
   assert.deepEqual(errors, []);
   console.log(JSON.stringify({ result: 'pairing-browser-smoke-passed', measurements, screenshots,
     checked: ['actual built dashboard', 'all topology and role headers', 'mode-specific synchronization panels and read-only controls', 'role beside operating mode', 'compact desktop/mobile dark/light layout',
-      'placement above events', 'keyboard disclosure', 'poll preserves disclosure', 'failed/running checks never enable recovery',
+      'placement above events', 'keyboard disclosure', 'poll preserves disclosure', 'secondary read failures preserve local pairing evidence', 'older failed reads cannot erase newer status', 'local status failure and recovery', 'failed/running checks never enable recovery',
       'successful preview unlocks recovery', 'skip recovery requires explicit discard confirmation',
       'recovery sends checked identity', 'closed progress and failures', 'matching protected/slave layout without master controls', 'actual immutable ReplicaViewer projection',
       'visible Data and settings plus Garage', 'mutation event fencing', 'read-only downloads and navigation', 'centered protected badge', '320px protected layout and startup guidance', 'reset choices and archive receipt', 'fresh reset restoration and final confirmation', 'reset cancellation and focus', '320px reset dialog in both themes', 'all cards readable before the first snapshot', 'unavailable settings and charging preserve dashboard access'] }));

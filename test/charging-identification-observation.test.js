@@ -129,7 +129,7 @@ async function fixture(t, transport, vehicle = 'bmw', { retainedOnly = false, he
     const plan = () => ({ id: 'synthetic-economic-plan', feasible: true, startAt: normalCharging ? START : FUTURE,
       periods: [{ startAt: normalCharging ? START : FUTURE, endAt: null }] });
     runtime.chargers.charger1.plan = plan();
-    runtime.updatePlan = () => { runtime.telemetry(now); runtime.chargers.charger1.plan = plan(); };
+    runtime.updatePlan = async () => { runtime.telemetry(now); runtime.chargers.charger1.plan = plan(); };
     runtime.teslaCapture = { snapshot: () => structuredClone(tesla) };
     runtime.setMqttStatus({ connected: true, subscribed: true }, 'bmw');
     if (vehicle === 'bmw') {

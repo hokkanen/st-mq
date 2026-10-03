@@ -2,6 +2,7 @@ import { createHash, randomUUID } from 'node:crypto';
 import { shellyCurrentLimit } from './shelly-limit.js';
 import { createMqttAdmission } from '../acquisition/mqtt-admission.js';
 import { shellyProfile, supportedShellyStates } from './shelly-profile.js';
+import { chargingPlanInputsUnavailable } from './plan-inputs.js';
 const finite = Number.isFinite;
 const copy = value => structuredClone(value);
 const TYPES = { current_limit: 'Number', start_charging: 'Boolean', work_state: 'Enum', phase_info: 'Object' };
@@ -850,7 +851,9 @@ export function createShellyController({ adapter, initialState, saveState = () =
         const chargeNow = Number.isSafeInteger(input.chargeNow?.connectedAt)
           && input.chargeNow.connectedAt === snapshot.session?.connectedAt;
         const restoringUnscheduled = state.owned?.sessionId === sessionId && (!input.enabled || chargeNow);
-        const plan = !identification && typeof getPlan === 'function' ? await getPlan(copy(snapshot)) : input.plan;
+        let plan = !identification && typeof getPlan === 'function' ? await getPlan(copy(snapshot)) : input.plan;
+        if (!identification && chargingPlanInputsUnavailable(plan) && state.execution && !state.provisional)
+          plan = { ...copy(state.execution), startAt: state.execution.periods[0].startAt };
         const context = typeof getAllocation === 'function' ? await getAllocation(copy(snapshot)) : input.allocation ?? {};
         if (takeoverRequested && (closed || intentRevision !== revision || !canControl() || !takeoverStatus(adapter.snapshot()).available
           || takeoverToken(adapter.snapshot()) !== acceptedTakeoverToken)) {

@@ -1,4 +1,5 @@
 import { createHash, randomInt } from 'node:crypto';
+import { chargingPlanInputsUnavailable } from './plan-inputs.js';
 import { resolveChargingDeadline } from './settings.js';
 import { TIME_ZONE } from '../domain/prices.js';
 import { easeeScheduleTakeoverSupported, effectiveScheduleFingerprint, manualScheduleWindow, nextLocalOccurrence, normalizeScheduleState } from './easee.js';
@@ -381,6 +382,20 @@ export function createOcppChargingController({ adapter, initialState = null, sav
     state = next;
   }
   const canWrite = current => !closed && current === generation && canControl();
+  function retainExecution(plan) {
+    if (!chargingPlanInputsUnavailable(plan) || state.provisional) return plan;
+    const pending = state.pending?.action === 'install' ? state.pending : null;
+    if (pending && pending.instruction.purpose !== 'identification'
+      && pending.instruction.transactionId === state.session?.transactionId
+      && pending.instruction.requestedAt >= state.session.connectedAt)
+      return { ...clone(pending.execution), startAt: pending.instruction.startAt };
+    if (state.execution) return { ...clone(state.execution), startAt: state.execution.periods[0].startAt };
+    const owned = state.owned;
+    if (owned && owned.purpose !== 'identification' && owned.transactionId === state.session?.transactionId
+      && owned.requestedAt >= state.session.connectedAt)
+      return { startAt: owned.startAt };
+    return plan;
+  }
   function permitStart(plan, current) {
     const now = clock(), app = snapshot?.appControl;
     if (!canWrite(current) || !snapshot?.online || snapshot.pluggedIn !== true
@@ -673,7 +688,7 @@ export function createOcppChargingController({ adapter, initialState = null, sav
       }
       await refreshIdentification();
       if (closed || current !== generation) return status();
-      const startPlan = typeof getPlan === 'function' ? await getPlan(clone(snapshot)) : desired.plan;
+      const startPlan = retainExecution(typeof getPlan === 'function' ? await getPlan(clone(snapshot)) : desired.plan);
       permitStart(startPlan, current);
       const instruction = state.pending?.instruction ?? state.owned;
       const wrongSession = instruction && snapshot.transactionConfirmed && instruction.transactionId !== snapshot.transactionId;

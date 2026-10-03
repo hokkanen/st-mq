@@ -55,7 +55,7 @@ function fixture(t, { saved = null, app = appState(AT), transactionId = null } =
   const controller = adapter.createController({ initialState: saved, canControl: () => true, clock: () => now,
     saveState: value => { persisted = structuredClone(value); } });
   t.after(() => controller.close());
-  return { controller, commands, takeovers,
+  return { controller, commands, takeovers, profiles,
     get saved() { return structuredClone(persisted); },
     get startAllowed() { return Boolean(permission && permission.until > now && permission.guard()); },
     get permission() { return permission; },
@@ -80,6 +80,51 @@ test('automatic wait denies transaction startup until its scheduled period begin
   assert.equal(f.startAllowed, true);
   f.controller.invalidate();
   assert.equal(f.startAllowed, false, 'A subsequent control edit immediately revokes queued authorization');
+});
+
+test('missing startup planning inputs preserve an adopted native pause and deny early authorization', async t => {
+  for (const reason of ['electrical-telemetry-unavailable', 'equalizer-allowance-unavailable', 'price-coverage-unavailable']) {
+    const first = fixture(t, { transactionId: 7 }), startAt = AT + 30 * MINUTE;
+    const original = plan(startAt);
+    await first.controller.update({ enabled: true, plan: original });
+    const restarted = fixture(t, { saved: first.saved, transactionId: 7 });
+    for (const [id, profile] of first.profiles) restarted.profiles.set(id, structuredClone(profile));
+    restarted.advance(MINUTE); restarted.reconnect(); restarted.transaction(7);
+    const missing = { id: 'synthetic-missing-inputs', reason, startAt: AT + MINUTE, feasible: false,
+      provisional: true, periods: [{ startAt: AT + MINUTE, endAt: null }] };
+    const waiting = await restarted.controller.update({ enabled: true, plan: missing });
+    assert.equal(waiting.phase, 'paused', reason);
+    assert.equal(waiting.execution.planId, original.id);
+    assert.equal(waiting.owned.startAt, startAt);
+    assert.equal(restarted.startAllowed, false);
+    assert.equal(restarted.commands.some(command => command.action !== 'GetCompositeSchedule'), false,
+      'A verified retained profile needs no schedule write');
+    restarted.advance(29 * MINUTE);
+    const released = await restarted.controller.update({ enabled: true, plan: missing });
+    assert.equal(released.phase, 'released');
+    assert.equal(restarted.startAllowed, true, 'The original start still authorizes charging without a rebuilt forecast');
+    assert.equal(released.provisional, false);
+  }
+});
+
+test('fresh connections retain provisional startup while recovered inputs can install an economic pause', async t => {
+  const f = fixture(t, { transactionId: 7 });
+  const missing = { ...plan(AT), reason: 'electrical-telemetry-unavailable', feasible: false, provisional: true };
+  const provisional = await f.controller.update({ enabled: true, plan: missing });
+  assert.equal(provisional.phase, 'provisional');
+  assert.equal(f.startAllowed, true);
+  f.advance(MINUTE);
+  const recovered = await f.controller.update({ enabled: true, plan: plan(AT + 30 * MINUTE) });
+  assert.equal(recovered.phase, 'paused');
+  assert.equal(f.startAllowed, false);
+  assert.equal(recovered.provisional, false);
+  f.advance(MINUTE); f.connected(false);
+  await f.controller.update({ enabled: true, plan: missing });
+  f.advance(MINUTE); f.connected(true); f.transaction(8);
+  const nextConnection = await f.controller.update({ enabled: true, plan: missing });
+  assert.equal(nextConnection.phase, 'provisional');
+  assert.equal(f.startAllowed, true, 'A confirmed new vehicle connection cannot inherit the previous program');
+  assert.equal(nextConnection.execution, null);
 });
 
 test('unsupported Easee schedules block native takeover without offering an unusable action', async t => {

@@ -86,12 +86,12 @@ const editSession = (runtime, id, changes) => {
 };
 const packet = (soc, at, readingId = 'reading-1', extra = {}) => JSON.stringify({ provider: 'bmw-cardata', soc, measuredAt: at, readingId, ...extra });
 
-test('Charger 2 voltage cannot fill the shared startup estimate or Charger 1 readings', t => {
+test('Charger 2 voltage cannot fill the shared startup estimate or Charger 1 readings', async t => {
   const f = fixture(), runtime = f.create(); t.after(() => runtime.close());
   const voltage = value => ({value,available:true,measuredAt:f.clock(),source:'shelly-evse'});
   runtime.chargers.charger2.adapter = { normalize: () => ({providerConnected:true,
     voltageV:voltage(241),phaseVoltageV:voltage([241,237,229])}) };
-  runtime.tick({prices});
+  await runtime.tick({prices});
   assert.deepEqual(runtime.coordination.assumptions.voltage.voltageV,[null,null,null]);
   assert.equal(chargerView(runtime).values.voltageV.available,false);
   assert.equal(chargerView(runtime,'charger2').values.voltageV.value,241,'own live reading remains local');
@@ -562,7 +562,7 @@ test('forecast failure cannot block confirmed release times or independent charg
   const confirmed = chargerView(runtime).control.owned;
   assert.ok(confirmed?.startAt > initialNow);
   const beforeReads = adapter.calls.filter(call => call.kind === 'read').length;
-  runtime.updatePlan = () => { throw new Error('forecast unavailable'); };
+  runtime.updatePlan = async () => { throw new Error('forecast unavailable'); };
   runtime.allocationContext = () => { throw new Error('second-charger forecast unavailable'); };
   f.setNow(confirmed.startAt);
   runtime.tick({ force: true });
@@ -776,7 +776,7 @@ test('a future second controller has independent plans and ownership while Equal
         if (closed) return;
         state.snapshot = await adapter.read();
         state.session = { connected: true, connectedAt: initialNow };
-        const plan = getPlan();
+        const plan = await getPlan();
         state.phase = enabled ? plan?.state ?? 'unavailable' : 'off';
         state.owned = enabled && plan?.state === 'waiting' ? { planId: plan.id, startAt: plan.startAt } : null;
         secondDecisions.push({ enabled, planId: plan?.id, phase: state.phase });
@@ -902,7 +902,7 @@ test('retained active Charger 2 periods refresh assumptions when current becomes
     const state = { phase: 'off', released: false, execution: null, snapshot: null, session: { connected: true, connectedAt: initialNow } };
     return { status: () => structuredClone(state), close: async () => {}, async update({ enabled }) {
       state.snapshot = await adapter.read();
-      const plan = getPlan();
+      const plan = await getPlan();
       if (!enabled || !plan?.periods?.length) return;
       state.execution = { planId: plan.id, periods: structuredClone(plan.periods), finalStartAt: plan.finalStartAt, deadlineAt: plan.deadlineAt };
       state.released = plan.periods.some(row => row.startAt <= f.clock() && (row.endAt === null || row.endAt > f.clock()));
@@ -996,7 +996,7 @@ test('measured energy lowers the remaining requirement once and survives restart
   assert.ok(Math.abs(progress.creditedGridKwh - .1) < 1e-9);
   assert.ok(Math.abs(chargerView(runtime).requiredGridKwh - (raw - .1)) < 1e-9);
   assert.equal(chargerView(runtime).values.soc.value, 20);
-  runtime.updatePlan(); runtime.updatePlan();
+  await runtime.updatePlan(); await runtime.updatePlan();
   assert.deepEqual(chargerView(runtime).progress, progress, 'Repeated status and planning reads cannot double-credit a sample');
   await runtime.close();
   f.setNow(initialNow + 3 * HOUR); adapter.setObservation({ powerMeasuredAt: f.clock() });
@@ -1062,7 +1062,7 @@ test('manual handback crossing ready-by preserves the original overdue connectio
   assert.equal(chargerView(runtime).control.manual, null);
   assert.equal(chargerView(runtime).plan.deadlineAt, initialNow + 4 * HOUR);
   const newDeadline = chargerView(runtime).plan.deadlineAt;
-  runtime.updatePlan();
+  await runtime.updatePlan();
   assert.equal(chargerView(runtime).plan.deadlineAt, newDeadline, 'The consumed handback marker cannot roll the deadline twice');
 });
 
@@ -1116,7 +1116,7 @@ test('vehicle timer changes during a pause revise the remaining confirmed period
   assert.equal(original.periods.length, 2);
   const runningPlan = structuredClone(chargerView(runtime).plan);
   Object.assign(timer, { value: initialNow + 2.5 * HOUR, available: true });
-  runtime.updatePlan();
+  await runtime.updatePlan();
   const { allocations: oldAllocation, intervals: oldResources, ...runningInstruction } = runningPlan;
   const { allocations: liveAllocation, intervals: liveResources, ...currentInstruction } = chargerView(runtime).plan;
   assert.deepEqual(currentInstruction, runningInstruction, 'A changed vehicle timer does not rewrite an already active instruction');
@@ -1130,7 +1130,7 @@ test('vehicle timer changes during a pause revise the remaining confirmed period
   assert.equal(paused.startAt, initialNow + 2 * HOUR);
   assert.equal(chargerView(runtime).control.phase, 'paused');
   Object.assign(timer, { value: initialNow + 2.5 * HOUR, available: true });
-  runtime.updatePlan();
+  await runtime.updatePlan();
   const revised = chargerView(runtime).plan;
   assert.notEqual(revised.id, paused.id);
   assert.ok(revised.startAt >= timer.value, 'The new car timer must constrain the remaining start even though price and energy inputs did not change');
@@ -1139,7 +1139,7 @@ test('vehicle timer changes during a pause revise the remaining confirmed period
   const confirmed = chargerView(runtime).control.execution;
   assert.deepEqual(confirmed.periods[0], original.periods[0], 'The completed period remains in execution history');
   Object.assign(timer, { available: false });
-  runtime.updatePlan();
+  await runtime.updatePlan();
   assert.equal(chargerView(runtime).plan.startAt, initialNow + 2 * HOUR, 'Removing the timer allows the cheaper earlier remaining start again');
 });
 
@@ -1179,22 +1179,24 @@ test('recovery selection invalidates ready household forecasts and fences an old
   const f = fixture(), runtime = f.create(), finishes = [];
   runtime.historyService = { request: () => new Promise(resolve => { finishes.push(resolve); }), close() {} };
   t.after(() => runtime.close());
-  runtime.updatePlan();
+  await runtime.updatePlan();
   assert.equal(finishes.length, 1);
   const oldRows = [];
   f.store.db.prepare('UPDATE history_selection SET generation=? WHERE id=1').run('synthetic-reverted');
   finishes[0](oldRows);
   await new Promise(resolve => setImmediate(resolve));
+  await runtime.planningFlight;
   assert.notEqual(runtime.household, oldRows, 'a result from before publication never becomes the current forecast');
   assert.equal(runtime.historyReady, false);
   assert.equal(finishes.length, 2, 'the completed stale request immediately schedules the selected history');
   const currentRows = [];
   finishes[1](currentRows);
   await new Promise(resolve => setImmediate(resolve));
+  await runtime.planningFlight;
   assert.equal(runtime.household, currentRows);
   assert.equal(runtime.historyReady, true);
   f.store.db.prepare('UPDATE history_selection SET generation=? WHERE id=1').run('synthetic-restored');
-  runtime.updatePlan();
+  await runtime.updatePlan();
   assert.equal(finishes.length, 3, 'restoring refreshes history without waiting five minutes or changing the deadline');
   assert.equal(runtime.historyReady, false, 'planning waits for a reference built from the new selection');
   assert.notEqual(runtime.household, currentRows);
@@ -1210,7 +1212,7 @@ test('household forecast callbacks settle safely after the database closes befor
     let finish, fail, ticks = 0;
     runtime.historyService = { request: () => new Promise((resolve, reject) => { finish = resolve; fail = reject; }), close() {} };
     t.after(async () => { await runtime.close(); if (store.db.isOpen) store.close(); });
-    runtime.updatePlan();
+    await runtime.updatePlan();
     runtime.tick = () => { ticks++; };
     store.close();
     assert.equal(runtime.closed, false, 'database closure can precede runtime disposal');
@@ -1645,7 +1647,7 @@ test('Charge Now works with automatic OFF across restart without enabling automa
   const f = fixture(preferences), runtime = f.create(), adapter = fakeAdapter(f.clock); t.after(() => runtime.close());
   await runtime.setAdapter('charger1', adapter); await runtime.reconcile();
   assert.equal(chargerView(runtime).control.phase, 'off');
-  runtime.updatePlan = () => { throw new Error('forecast unavailable'); };
+  runtime.updatePlan = async () => { throw new Error('forecast unavailable'); };
   await runtime.chargeNow('charger1', requestScope(chargerView(runtime)));
   assert.equal(runtime.settings.chargers.charger1.enabled, false);
   assert.equal(chargerView(runtime).control.phase, 'released');

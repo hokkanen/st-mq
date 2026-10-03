@@ -80,6 +80,14 @@ measurement-existence check must not reconstruct report availability. These
 paths run on the server's main thread: regressions can delay HTTP responses and
 provider downloads even when chart calculations run in a worker.
 
+For charging search throughput, run `node scripts/benchmarks/charging-planner.js`.
+The synthetic 24-hour workload includes two chargers, 96 price intervals and six
+household scenarios, and reports full searches and fixed forecasts for each
+priority. `test/charging-planner-service.test.js` separately checks that the real
+worker leaves the main thread responsive, coalesces queued requests and expires
+cached results at relevant boundaries. These offline checks do not establish
+native Raspberry Pi 5 timing or physical charger behavior.
+
 ### Heat-pump controller and sender contracts
 
 Run the Garage adapter, sender and configuration tests from this repository:
