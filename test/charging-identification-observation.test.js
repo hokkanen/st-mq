@@ -364,8 +364,8 @@ for (const transport of ['cloud', 'ocpp']) {
     f.publish({ charging: true }, f.now - 1000);
     assert.ok(item.reconcileFlight, 'The start report requests a fresh physical reading immediately');
     await item.reconcileFlight;
-    assert.equal(attempt(f).phase, 'observing'); assert.equal(installs(f).length, 1);
-    assert.ok(attempt(f).pause, 'Fresh physical proof ends the pause without waiting for BMW');
+    assert.equal(attempt(f).phase, 'pausing'); assert.equal(installs(f).length, 1);
+    assert.ok(attempt(f).pause, 'Fresh physical proof retains the bounded pause while BMW observes the stop');
   });
 
   test(`${transport}: automatic OFF and Charge now still perform identification, then release`, async t => {
@@ -408,8 +408,9 @@ for (const transport of ['cloud', 'ocpp']) {
     const initial = structuredClone(attempt(f)), written = installs(f).length;
     f.setNow(f.now + 5000); await f.restart(); await f.update();
     assert.equal(attempt(f).id, initial.id); assert.equal(attempt(f).pauseUntil, initial.pauseUntil);
-    assert.equal(installs(f).length, written + (transport === 'cloud' ? 1 : 0),
-      'Physical confirmation returns to the economic hold; OCPP already installed that return');
+    assert.equal(installs(f).length, written,
+      'Restart retains the existing bounded pause and any installed economic return');
+    assert.equal(attempt(f).phase, 'pausing');
     f.setNow(initial.pauseUntil + 1000); await f.update();
     assert.equal(attempt(f).phase, 'observing');
     await f.restart(); await f.update(); assert.equal(attempt(f).id, initial.id);
@@ -480,6 +481,53 @@ for (const transport of ['cloud', 'ocpp']) {
     assert.equal(attempt(f).phase, 'observing'); assert.equal(f.view().id, null);
     f.publish({ charging: false }, stopAt + 2000); await f.update();
     assert.equal(f.view().id, 'bmw'); assert.equal(attempt(f).phase, 'completed');
+  });
+
+  test(`${transport}: confirmed physical stop stays paused for a delayed BMW response and then restores ordinary charging`, async t => {
+    const f = await fixture(t, transport, 'bmw', { normalCharging: true, autoCharge: true });
+    f.setNow(START + 1000); await f.update();
+    const initial = structuredClone(attempt(f)), stopAt = f.physical.at;
+    f.setNow(stopAt + 30_000); await f.update();
+    assert.equal(attempt(f).phase, 'pausing'); assert.equal(attempt(f).action, 'pause');
+    assert.equal(attempt(f).pauseUntil, initial.pauseUntil);
+    assert.equal(f.physical.charging, false); assert.equal(f.view().id, null);
+    assert.equal(installs(f).length, 1);
+    f.setNow(stopAt + 60_000); f.publish({ charging: false }, stopAt + 2000);
+    const completed = await f.update();
+    assert.equal(f.view().id, 'bmw'); assert.equal(attempt(f).phase, 'completed');
+    assert.equal(f.runtime.vehicleFeeds.bmw.reading.fields.charging.negativeEvent.measuredAt, stopAt + 2000);
+    assert.equal(completed.owned, null);
+    await f.update(); assert.equal(f.physical.charging, true);
+    assert.ok(f.now < initial.pauseUntil, 'Positive identity releases the pause before its deadline');
+  });
+
+  test(`${transport}: BMW silence expires the confirmed pause without renewing it across restart`, async t => {
+    const f = await fixture(t, transport, 'bmw', { normalCharging: true, autoCharge: true });
+    f.setNow(START + 1000); await f.update();
+    const initial = structuredClone(attempt(f));
+    f.setNow(START + 30_000); await f.update();
+    assert.equal(f.physical.charging, false); assert.ok(attempt(f).pause);
+    f.setNow(START + 60_000); await f.restart(); await f.update();
+    assert.equal(attempt(f).phase, 'pausing'); assert.equal(f.physical.charging, false);
+    assert.equal(attempt(f).pauseUntil, initial.pauseUntil); assert.equal(installs(f).length, 1);
+    f.setNow(initial.pauseUntil + 1000); await f.update(); await f.update();
+    assert.equal(attempt(f).phase, 'observing'); assert.equal(attempt(f).action, null);
+    assert.equal(f.physical.charging, true); assert.equal(f.view().id, null);
+    assert.equal(attempt(f).attempt, 1); assert.equal(installs(f).length, 1);
+  });
+
+  test(`${transport}: a held identification pause returns to economic waiting when BMW remains silent`, async t => {
+    const f = await fixture(t, transport, 'bmw', { autoCharge: true });
+    f.setNow(START + 1000); await f.update();
+    const initial = structuredClone(attempt(f));
+    f.setNow(START + 30_000); await f.update();
+    assert.equal(attempt(f).phase, 'pausing'); assert.equal(f.physical.charging, false);
+    assert.equal(installs(f).length, 1);
+    f.setNow(initial.pauseUntil + 1000); const control = await f.update();
+    assert.equal(attempt(f).phase, 'observing'); assert.equal(attempt(f).action, null);
+    assert.equal(control.owned.startAt, FUTURE); assert.notEqual(control.owned.purpose, 'identification');
+    assert.equal(f.physical.charging, false); assert.equal(f.view().id, null);
+    assert.equal(installs(f).length, transport === 'cloud' ? 2 : 1);
   });
 
   test(`${transport}: failed attempt persistence cannot issue an identification command`, async t => {

@@ -571,7 +571,8 @@ test('physical Charger 2 explanations preserve native vehicle constraints and di
   const withoutLimiter = Object.fromEntries(view(charger('charger2', { capabilities: { scheduling: true, currentControl: false } })).explanations);
   assert.match(withoutLimiter['Automatic charging'], /charger’s own current limits and schedules remain in effect/);
   assert.doesNotMatch(withoutLimiter['Automatic charging'], /limiter can remain active/);
-  assert.match(withoutLimiter['Charging current'], /This page does not change charging current/);
+  assert.match(withoutLimiter['Charging current'], /identification can temporarily use the verified minimum current.*separately from the optional household current limiter.*restored afterward/);
+  assert.doesNotMatch(withoutLimiter['Charging current'], /This page does not change charging current/);
   assert.doesNotMatch(withoutLimiter['Charging current'], /adjusts Shelly’s current/);
 });
 
@@ -1236,6 +1237,77 @@ test('active probing describes normal current and the controller energy allowanc
   assert.doesNotMatch(view(item).vehicle.detail, /minimum.current|6 A|three phases/);
 });
 
+test('minimum-current identification distinguishes a requested setting from measured Tesla evidence', () => {
+  const document = documentFixture(), $ = id => document.getElementById(id);
+  const panel = createChargingPanel({ document, request: async () => status() });
+  const item = { ...connected('charger2'), capabilities: { scheduling: true, currentControl: false },
+    vehicle: { state: 'identifying', id: null }, telemetry: { identificationCurrentReady: true },
+    identification: { phase: 'waiting', active: true, available: true,
+      currentTest: { phase: 'proposed', appliedCurrentA: 6, originalCurrentA: 16, expiresAt: now + 90_000 } } };
+  for (const phase of ['proposed', 'applying']) {
+    item.identification.currentTest.phase = phase;
+    panel.update(status(item));
+    assert.equal($('charger2-identification-state').textContent, 'Confirming');
+    assert.match($('charger2-identification-status').textContent, /temporary 6 A.*confirmation is pending.*ends by 21:01/);
+    assert.doesNotMatch($('charger2-identification-status').textContent, /charger confirmed/);
+    assert($('charger2-identify').disabled);
+  }
+  item.identification.currentTest.phase = 'active'; item.identification.reason = 'current-ambiguous';
+  panel.update(status(item));
+  assert.equal($('charger2-identification-state').textContent, 'Checking');
+  assert.match($('charger2-identification-status').textContent, /confirmed a temporary 6 A current limit.*fresh measured draw.*distinguish the two chargers.*readings overlap.*restored afterward/);
+  assert.match($('charger2-readings').textContent, /Identification currentTemporary minimum available/);
+  assert.equal(view(item).event, 'Comparing measured current');
+  assert.doesNotMatch($('charger2-vehicle').textContent, /Tesla identified/);
+  panel.close();
+});
+
+test('current restoration remains visible after identification and unplug until its obligation ends', () => {
+  const document = documentFixture(), $ = id => document.getElementById(id);
+  const panel = createChargingPanel({ document, request: async () => status() });
+  const item = { ...connected('charger2'), vehicle: { state: 'identified', id: 'tesla', label: 'Tesla' },
+    identification: { phase: 'completed', active: false, available: true,
+      currentTest: { phase: 'restoring', appliedCurrentA: 6, originalCurrentA: 16, restoreCurrentA: 12 } } };
+  for (const phase of ['restoring', 'active']) {
+    item.identification.currentTest.phase = phase;
+    panel.update(status(item));
+    assert.equal($('charger2-identification-state').textContent, 'Recovery pending');
+    assert.match($('charger2-identification-status').textContent, /awaiting restoration to 12 A.*confirmation is still required.*newer external current instructions keep priority/);
+    assert($('charger2-identify').disabled);
+    assert.match($('charger2-identify').title, /temporary identification settings/);
+  }
+  item.identification.currentTest.phase = 'uncertain'; panel.update(status(item));
+  assert.equal($('charger2-identification-state').textContent, 'Review required');
+  assert.match($('charger2-identification-status').textContent, /outcome.*unknown.*actual current setting.*record remains pending/);
+  assert.doesNotMatch($('charger2-identification-status').textContent, /controller retries/);
+  assert($('charger2-identify').disabled);
+  item.identification.currentTest.phase = 'restoring';
+  item.values.connected = reading(false); panel.update(status(item));
+  assert.equal($('charger2-identification-state').textContent, 'Recovery pending');
+  assert.equal($('charger2-identification').dataset.state, 'attention');
+  item.values.connected = reading(true);
+  for (const phase of ['restored', 'superseded']) {
+    item.identification.currentTest.phase = phase; panel.update(status(item));
+    assert.equal($('charger2-identification-state').textContent, 'Ready');
+    assert.equal($('charger2-identification').dataset.state, 'normal');
+    assert.equal($('charger2-identify').disabled, false);
+  }
+  panel.close();
+});
+
+test('pending current identification names missing readiness, observations and ambiguity separately', () => {
+  const item = { ...connected('charger2'), identification: { phase: 'waiting', active: true, available: false } };
+  for (const [reason, expected] of [
+    ['current-control-unavailable', /current-control readiness.*optional household current limiter has separate settings/],
+    ['current-evidence-pending', /fresh measured charger current.*current setting alone does not identify/],
+    ['current-ambiguous', /Both chargers could match.*independent evidence/],
+  ]) {
+    item.identification.reason = reason;
+    assert.match(view(item).identification.detail, expected);
+    assert.equal(view(item).identification.state, 'Pending');
+  }
+});
+
 test('finished probing keeps historical matching pending and the ordinary charging plan visible', () => {
   const document = documentFixture(), $ = id => document.getElementById(id);
   const panel = createChargingPanel({ document, request: async () => status() });
@@ -1662,7 +1734,7 @@ test('Identify follows session settings, supports an identified vehicle with aut
   finish(status({ ...item, identification: { phase: 'pausing', available: true, active: true, attempted: true } })); await pending;
   assert(button.disabled); assert.equal($('charger1-vehicle').textContent, 'Easee · BMW identified');
   assert.equal($('charger1-identification-state').textContent, 'Confirming');
-  assert.match($('charger1-identification-status').textContent, /brief pause.*confirms the physical stop.*charging choice resumes.*vehicle evidence.*BMW event reports may arrive later/);
+  assert.match($('charger1-identification-status').textContent, /brief pause.*vehicle stop evidence.*90-second deadline.*identity ends the pause sooner.*charging choice then resumes.*BMW event reports may arrive later/);
   assert.match($('charger1-state').textContent, /Identifying/);
   panel.close(); assert(!button.listeners.has('click'));
 });

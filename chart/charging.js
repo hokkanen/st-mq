@@ -58,9 +58,21 @@ const takeoverPendingMessage = 'Automatic scheduling requested. Waiting for char
 const sessionTargetFor = charger => charger.vehicle?.state === 'identified' && charger.vehicle.id === 'bmw'
   && charger.values?.connected?.value === true && Number.isSafeInteger(charger.targetSelection?.connectedAt)
   ? charger.targetSelection : null;
-function identificationPresentation(charger) {
+const currentTestOutstanding = charger => ['proposed', 'applying', 'active', 'restoring', 'uncertain'].includes(charger.identification?.currentTest?.phase);
+function identificationPresentation(charger, { now = Date.now(), timezone = 'Europe/Helsinki' } = {}) {
   const identification = charger.identification;
-  if (!identification || charger.values?.connected?.value === false) return null;
+  if (!identification) return null;
+  const currentTest = identification.currentTest;
+  if (currentTest?.phase === 'uncertain') return {
+    label: 'Review charging current', state: 'Review required', activity: 'Current setting unconfirmed', recovery: true,
+    detail: 'The outcome of the temporary identification current change is unknown. Review the charger’s actual current setting. The restoration record remains pending until the instruction can be reconciled; newer external current instructions keep priority.',
+  };
+  if (currentTestOutstanding(charger) && (currentTest.phase === 'restoring'
+    || identification.active !== true || charger.values?.connected?.value === false)) return {
+    label: 'Current recovery pending', state: 'Recovery pending', activity: 'Restoring charging current', recovery: true,
+    detail: `The temporary identification current limit is awaiting restoration${finite(currentTest.restoreCurrentA ?? currentTest.originalCurrentA) ? ` to ${number(currentTest.restoreCurrentA ?? currentTest.originalCurrentA, 'A')}` : ''}. Fresh charger confirmation is still required. The controller retries when the charger is reachable; newer external current instructions keep priority.`,
+  };
+  if (charger.values?.connected?.value === false) return null;
   if (identification.pauseOutstanding && charger.control?.reason === 'identification-resume-required') return {
     label: 'Review charger pause', state: 'Review required', activity: 'Review charger pause', recovery: true,
     detail: 'The identification pause could not be released safely because another stop instruction may be active. Review the charger status. The “Use automatic” button in Charging controls becomes available when the charger can confirm the change.',
@@ -69,6 +81,16 @@ function identificationPresentation(charger) {
     || identification.reason === 'charger-unavailable' || ['uncertain', 'unavailable'].includes(charger.control?.phase));
   if (recovery) return { label: 'Pause recovery pending', state: 'Recovery pending', activity: 'Pause recovery pending', recovery: true,
     detail: 'Release of the identification pause is awaiting confirmation. The controller will restore the current charging choice when the charger is reachable. Other stop instructions keep priority.' };
+  if (['proposed', 'applying', 'active'].includes(currentTest?.phase)) {
+    const limit = finite(currentTest.appliedCurrentA) ? number(currentTest.appliedCurrentA, 'A') : 'its verified minimum';
+    const scope = validTime(currentTest.expiresAt) ? ` This check ends by ${chargingTime(currentTest.expiresAt, timezone, now)}.` : '';
+    const pending = currentTest.phase !== 'active';
+    return { label: 'Identifying vehicle', state: pending ? 'Confirming' : 'Checking',
+      activity: pending ? 'Current limit requested' : 'Comparing measured current',
+      detail: `${pending ? `A temporary ${limit} current limit is requested for this connection; charger confirmation is pending.`
+        : `The charger confirmed a temporary ${limit} current limit. Identification still needs fresh measured draw and matching Tesla readings that distinguish the two chargers.`}${identification.reason === 'current-ambiguous' ? ' The current readings overlap, so the vehicle remains unidentified.' : ''}${scope} The previous setting is restored afterward, unless a newer external instruction takes priority.`,
+    };
+  }
   const waiting = {
     'manual-stop': ['Stop instruction active', 'A stop instruction is preventing the identification test. Live vehicle matching continues.'],
     'unsupported': ['Live matching only', 'This charger cannot run an identification test. Waiting for live vehicle matching.'],
@@ -81,10 +103,13 @@ function identificationPresentation(charger) {
     'another-identification-active': ['Waiting for other charger', 'Waiting for the other charger’s identification test to finish.'],
     'economic-plan-pending': ['Waiting for charging plan', 'Waiting for the current charging plan before deciding whether a brief charging test is needed.'],
     'evidence-capacity': ['Identification history full', 'This connection has reached the limit for stored identification events. Additional automatic tests are stopped; normal charging follows the current choice.'],
+    'current-control-unavailable': ['Waiting for current control', 'The temporary identification current limit is unavailable. Fresh current-control readiness is required; the optional household current limiter has separate settings. Live vehicle matching continues.'],
+    'current-evidence-pending': ['Waiting for measured current', 'Waiting for fresh measured charger current and Tesla readings. A current setting alone does not identify a vehicle.'],
+    'current-ambiguous': ['Current readings overlap', 'Both chargers could match the Tesla current report. Identification remains pending until independent evidence distinguishes the connection.'],
   }[identification.reason] ?? ['Waiting for charging', 'Waiting for the vehicle to start charging. Its own timer or charging limit stays in effect.'];
   const blocked = ['manual-stop', 'unsupported', 'telemetry-unavailable', 'vehicle-feed-stale', 'bmw-home-unknown',
     'bmw-away', 'bmw-not-plugged', 'charger-unavailable', 'another-identification-active',
-    'economic-plan-pending', 'evidence-capacity'].includes(identification.reason);
+    'economic-plan-pending', 'evidence-capacity', 'current-control-unavailable', 'current-evidence-pending', 'current-ambiguous'].includes(identification.reason);
   if (identification.phase === 'observing') return {
     label: 'Identification pending', state: 'Pending', activity: 'Waiting for matching reports',
     detail: `${({
@@ -101,7 +126,7 @@ function identificationPresentation(charger) {
       : identification.phase === 'pausing' ? charger.values?.charging?.value === true ? 'Pause requested' : 'Confirming vehicle'
           : 'Checking vehicle',
     detail: identification.phase === 'waiting' || blocked ? waiting[1]
-      : identification.phase === 'pausing' ? 'A brief pause is checking the physical response. Once the charger confirms the physical stop, the current charging choice resumes. Matching vehicle evidence remains accepted; BMW event reports may arrive later.'
+      : identification.phase === 'pausing' ? 'A brief pause waits for corresponding vehicle stop evidence, until its 90-second deadline. A confirmed identity ends the pause sooner; the current charging choice then resumes. Matching vehicle evidence remains accepted afterward; BMW event reports may arrive later.'
         : identification.probe && identification.probe.endedAt === null
           ? 'The extra charging test uses the charger’s normal current settings and has a 0.15 kWh energy budget, with a safety deadline. The controller ends the test when useful vehicle evidence arrives or a limit is reached; identification can still finish afterward.'
           : 'Normal charging continues while identification waits, without a short charging timeout. Charging will pause briefly as soon as enough evidence is available, if a pause is needed.',
@@ -115,7 +140,7 @@ function identificationPresentation(charger) {
 }
 function vehiclePresentation(charger, { now, timezone } = {}) {
   const vehicle = charger.vehicle;
-  const identification = identificationPresentation(charger);
+  const identification = identificationPresentation(charger, { now, timezone });
   const home = vehicle?.homeContext;
   const homeDetail = home?.source === 'last-known'
     ? ` Using BMW’s last confirmed home location from ${chargingTime(home.measuredAt, timezone, now)} while its current location is unavailable. Matching charging evidence is still required for this connection.` : '';
@@ -244,7 +269,7 @@ export function chargerDisplay(charger, { now = Date.now(), timezone = 'Europe/H
     ? `${Number(resumeAt) <= now ? 'Manual priority ended; waiting for charger confirmation' : `Manual window ends ${time(resumeAt)}`}. Automatic charging remains off.`
     : Number(resumeAt) <= now ? 'Manual priority expired; automatic handover awaiting confirmation.'
       : `Automatic control resumes ${time(resumeAt)}${cycleCapped ? ' at the ready-by boundary' : ''}.`;
-  const identification = identificationPresentation(charger);
+  const identification = identificationPresentation(charger, { now, timezone });
   let state = connected === false ? 'Not connected' : connected === true ? 'Connected' : 'Connection unknown';
   let event = '', eventAt = null, eventKind = null;
   let pauseUnconfirmed = false;
@@ -445,7 +470,7 @@ export function chargerDisplay(charger, { now = Date.now(), timezone = 'Europe/H
     })[assumptions.supply] ?? 'The night forecast combines the available supply with expected household use; the last reported allowance describes current conditions.';
     explanations.push(['Current allocation', `${provider === 'easee' ? 'Equalizer' : 'The external load balancer'} controls the current and protects the property supply. The reported allowance, charger limit and actual draw are separate: a limit does not promise that current is available now. ${supported ? `${basis} ` : ''}The charging limit caps the forecast. Automatic charging does not change the external limits.`]);
   } else if (shelly && supported && charger.capabilities?.currentControl) explanations.push(['Charging current', 'This application adjusts Shelly’s current using the configured supply limits, available measurements and shared charger priority. It respects known vehicle and charger limits and pauses when the available current is below the charging minimum. Missing or stale measurements use the configured fallback; this is not a guarantee of property fuse protection. Actual draw can be lower than the selected current.']);
-  else explanations.push(['Charging current', `Known vehicle and charger current limits constrain the forecast. When current is unknown, the forecast assumes the charger’s maximum within available shared property capacity. This estimates delivery and completion, not a confirmed current setting. Power is the measured charging rate.${charger.capabilities?.currentControl === true ? '' : ' This page does not change charging current.'}`]);
+  else explanations.push(['Charging current', `Known vehicle and charger current limits constrain the forecast. When current is unknown, the forecast assumes the charger’s maximum within available shared property capacity. This estimates delivery and completion, not a confirmed current setting. Power is the measured charging rate.${shelly && supported ? ' Vehicle identification can temporarily use the verified minimum current, separately from the optional household current limiter. The previous setting is restored afterward, respecting newer external instructions.' : charger.capabilities?.currentControl === true ? '' : ' This page does not change charging current.'}`]);
   const socSource = retainedVehicleReference ? `Estimated from last known vehicle charge${hasProgress ? ' and measured energy' : ''}`
     : estimatedSoc ? `Estimated from ${vehicleCharge(soc) ? 'vehicle charge' : chargeReferenceLabel(soc)} and measured energy`
     : vehicleCharge(soc) ? sourceLabel(soc, charger.vehicle) : manualChargeReference(soc) ? 'Manual charge reference' : 'Configured starting charge';
@@ -822,12 +847,12 @@ export function createChargingPanel({ document, request, beforeRequest = () => {
       device.chargeNow.title = !supported ? 'Monitoring only' : !writable() || charger.readOnly ? 'View only'
         : !connectedSession(charger) ? 'Connect a vehicle'
           : chargeNowActive ? 'Charge now is on until unplugging. Turn off to use automatic charging.' : 'Turn on immediate charging until unplugging.';
-      const identification = identificationPresentation(charger);
+      const identification = identificationPresentation(charger, { now: status?.now, timezone: status?.charging?.timezone });
       const connected = charger.values?.connected?.value, pauseOutstanding = charger.identification?.pauseOutstanding === true;
       device.identify.disabled = locked || charger.readOnly === true || !connectedSession(charger)
-        || charger.identification?.available !== true || charger.identification?.active === true || pauseOutstanding;
+        || charger.identification?.available !== true || charger.identification?.active === true || pauseOutstanding || currentTestOutstanding(charger);
       device.identify.title = !writable() || charger.readOnly ? 'View only'
-        : identification?.recovery ? 'Waiting for the identification pause to be released'
+        : identification?.recovery ? 'Waiting for the temporary identification settings to be restored'
           : connected === false ? 'Connect a vehicle' : !connectedSession(charger) ? 'Waiting for charger readings'
           : charger.identification?.active ? 'Identification is already in progress'
             : charger.identification?.available !== true ? 'Identification is currently unavailable' : 'Check which vehicle is connected. This may briefly pause charging.';
@@ -958,6 +983,8 @@ export function createChargingPanel({ document, request, beforeRequest = () => {
       if (charger.telemetry?.commissioning) rows.push(['EVSE readiness', !charger.telemetry.commissioning.controlReady ? 'Control unavailable'
         : charger.capabilities?.currentControl && charger.telemetry.commissioning.currentControlReady !== true
           ? 'Current limiter unavailable' : 'Start/stop available'], ['Controller loss', 'Autonomous fallback unverified']);
+      if (typeof charger.telemetry?.identificationCurrentReady === 'boolean') rows.push(['Identification current', charger.telemetry.identificationCurrentReady
+        ? 'Temporary minimum available' : 'Temporary minimum unavailable', 'This readiness is separate from the optional household current limiter. Charger settings and measured draw must both be confirmed during the identification check.']);
       if (charger.values?.vehicleNotBefore?.available) rows.push(['Vehicle may accept from', chargingTime(charger.values.vehicleNotBefore.value, charging.timezone, next.now)]);
       if (charger.values?.vehicleCurrentA?.available) rows.push(['Vehicle current ceiling', number(charger.values.vehicleCurrentA.value, 'A')]);
       if (charger.sessionCost) rows.push(['Connection delivered', number(charger.sessionCost.deliveredGridKwh, 'kWh')]);

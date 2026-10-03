@@ -42,6 +42,15 @@ Versions follow Semantic Versioning. `-dev.N` denotes a development prerelease.
 
 ### Fixed
 
+- Simultaneous charging no longer identifies Tesla from similar power and start
+  times alone. When Charger 2 supports verified current writes, identification
+  temporarily uses its minimum current and requires a unique measured response;
+  the original setting is restored afterward. Ambiguous evidence stays pending.
+- BMW identification holds its pause for up to 90 seconds for the vehicle's
+  response, with a fixed deadline preserved across restart. Charger 2's own
+  same-value system updates no longer repeatedly yield to manual control, while
+  newer external instructions keep priority. Fresh charger snapshots also keep
+  their correct observation time.
 - Charging searches run in a local worker and avoid repeated unchanged work,
   keeping dashboard requests and device replies responsive. Joint planning is
   faster without reducing its search or changing selected schedules.

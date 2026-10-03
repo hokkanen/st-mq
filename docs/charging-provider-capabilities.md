@@ -8,9 +8,9 @@
 | Recorded energy check | Stored phase-energy sum versus final native session meter | Not applicable: records native meter increments without power integration | Never a physical meter reference |
 | Connection lifecycle | Timestamped Easee state | Supported physical work-state mapping | Corroborating vehicle edges |
 | Economic control | Exclusive cloud delayed starts or native OCPP expiring 0 A transaction pauses | EVSE start/stop over MQTT RPC | No vehicle writes |
-| Active vehicle identification | One bounded attempt per physical connection; native expiring pause | Same attempt lifecycle; application-managed start-permission pause | Independent live vehicle evidence |
+| Active vehicle identification | One bounded attempt per physical connection; native expiring pause | Same attempt lifecycle; verified minimum-current test and application-managed start-permission pause | Independent live actual current/phase evidence or correlated BMW start/stop |
 | Identification pause recovery | Ordinary correlation pause expires after 90–91 seconds; an extra probe's final economic pause lasts until scheduled release | Persisted restoration obligation; an application/MQTT outage can extend the stop until safe recovery | No charger control |
-| Current changes by ST-MQ | Native OCPP imposes expiring 0 A pauses; released charging uses native current limits | Native current by default; optional verified current limiter | Read native limits only |
+| Current changes by ST-MQ | Native OCPP imposes expiring 0 A pauses; released charging uses native current limits | Native current by default; scoped 6 A identification test and optional economic current limiter | Read native limits and actual current only |
 | SoC/capacity/target | Assigned vehicle or explicit fallback | Assigned vehicle or explicit fallback | Applicable vehicle evidence |
 | Supply voltage | Physical installation evidence | Physical installation evidence | Never used for home supply |
 
@@ -80,15 +80,23 @@ raise a native current limit. Enabled native schedules own start/stop until
 removed; removal gives the app release priority for the current connection.
 Shelly schedule windows are not inferred from unverified cron semantics.
 
-Optional `limiterEnabled:true` enables current writes. It additionally requires
+Optional `limiterEnabled:true` enables economic current limiting. It additionally requires
 reported writable numeric capabilities supporting the integration's 6 A minimum
 and 1 A step, sufficient native maximum, and disabled native `auto_balance`.
 Missing step metadata blocks this optional capability, not basic start/stop.
+The scoped minimum-current identification test has separate readiness,
+independently of `limiterEnabled`: it writes exactly the reported 6 A minimum
+and restores the previously observed native setting. It requires writable role
+mapping, a verified numeric range and disabled native `auto_balance`. Missing
+`meta.ui.step` does not prevent those exact-value operations; contradictory
+reported step metadata still blocks them. It never changes the economic limiter
+preference or permits unrestricted current commands.
 Configure the installation's phase order, fuse ratings, margins and
 `additiveCurrentVerified` for the load model; these cannot be discovered from
 charger RPC. With the limiter disabled, a known native current setting limits
-the delivery estimate and the controller sends no current-setting RPC or 12 A
-fallback. An unknown current setting uses the charger's configured maximum
+the delivery estimate and ordinary economic control sends no current-setting RPC
+or 12 A fallback. The identification reduction and its saved restoration are
+the bounded exception. An unknown current setting uses the charger's configured maximum
 within forecast per-phase property headroom, following the
 [maximum-available-current assumption](charging.md#maximum-available-current-assumption).
 That estimate grants no command readiness or control authority.
@@ -153,6 +161,12 @@ leaves the schedules intact; uncertain commands retain their durable record.
 Superseded schedules remain disabled until externally changed again. A saved
 native permission reference prevents an old Stop from regaining priority after
 restart or unplugging; genuinely newer source evidence takes priority again.
+Native setting reports retain their command-source evidence. A same-value
+`sys` update is a device refresh and does not revoke saved command ownership.
+A newer external update, including an explicit same-value selection, retains
+manual priority; unknown provenance is not attributed to this application.
+Status-read timestamps describe the completed read, so querying a snapshot
+does not manufacture a future timestamp that rejects fresh evidence.
 Known session ownership survives application or MQTT restart. Later manual
 instructions retain priority until unplugging or Use automatic; a genuinely
 missing saved session can take automatic control after fresh native evidence.
@@ -177,15 +191,38 @@ Vehicle identification uses the same one-attempt lifecycle as Easee, including
 when Automatic charging is OFF or Charge now is selected. Waiting for the
 vehicle to allow charging consumes no delivered-energy budget. Ordinary
 authorized charging has no short identification timeout. Extra charging during
-an economic delay uses normal charging current and a 0.15 kWh allowance,
+an economic delay uses native limits and a 0.15 kWh allowance,
 with a separate safety duration and metering-loss cutoff. These application guards
 depend on working communication and can be delayed by an outage. Suitable BMW evidence
 permits an earlier pause. The stop and its restoration obligation are saved before
 dispatch and remain scoped to the equipment, physical connection and attempt.
 Identification requires fresh physical noncharging evidence and the independent
-vehicle response, in addition to native start-permission readback. A physical
-stop returns control to the current charging choice without waiting for BMW;
-matching timestamped reports remain usable until unplugging.
+vehicle response, in addition to native start-permission readback. With a BMW
+baseline, physical confirmation retains the bounded pause until independent
+identity confirmation or its original deadline, so BMW can observe the stop.
+It ends probe-energy accounting immediately. A stop without a BMW baseline
+returns to the current charging choice immediately; matching timestamped reports
+remain usable until unplugging. Delayed receipt does not relax the source-time
+correlation or turn silence into identification.
+
+When Tesla context and verified current capability permit, Charger 2 first uses
+the supported 6 A minimum for a bounded comparison. The saved test owns only
+that connection, original setting and fixed 90-second deadline. A setting
+acknowledgement cannot identify a car: fresh measured phase currents must settle
+at the minimum, fresh Tesla actual current from after the readback must agree
+uniquely, and energized-phase count and power must corroborate the comparison.
+Held pre-test Tesla current, similar peer current or missing peer measurements
+leave identification pending. A unique response may identify Tesla on either
+charger; it never identifies BMW by elimination. Charger 1's positive current
+remains owned by its native controls and Equalizer.
+
+Completion or expiry restores the original current subject to current limits;
+with the economic limiter enabled, its current safe ceiling also applies.
+A newer external current instruction supersedes the saved restoration. The
+scope, deadline, original setting and uncertain dispatch/readback survive
+restart; the test does not repeat automatically. There is no native current-test
+expiry, so an outage can prolong the reduction. Recovery needs fresh native
+evidence and command authority; an uncertain write is not blindly repeated.
 
 The Shelly identification pause has a 90–91 second application deadline and no
 charger-side expiry. If the application or broker connection is unavailable,
@@ -207,11 +244,14 @@ additive-current behavior before enabling the installation load model.
 
 The bounded 2 October 2026 live setup confirmed the expected roles, working MQTT,
 source-clocked three-phase measurements and physical Boolean stop/resume. Firmware
-1.7.1 omitted `meta.ui.step`: basic start/stop no longer depends on that metadata,
-but optional current limiting remains unavailable. A stop reported `charger_end`
+1.7.1 omitted `meta.ui.step`: basic start/stop and the scoped exact-minimum and
+original-setting operations do not depend on that UI metadata. General economic
+current allocation remains unavailable without a verified supported step.
+A stop reported `charger_end`
 while plugged in; the profile preserves that connection. Native session-energy
 comparisons are not implemented; recording uses lifetime-meter increments.
-No new live hardware verification was performed for the automatic readiness and
-app-priority changes. Private identities and raw captures remain outside Git.
+No new live hardware verification was performed for the automatic readiness,
+command-provenance or minimum-current identification changes. Private identities
+and raw captures remain outside Git.
 
 No autonomous 12 A controller-loss mechanism has been verified. The implemented 12 A telemetry-loss policy requires ST-MQ and a reachable controllable charger. It is explicitly not a hardware protection guarantee. Automatic readiness does not establish autonomous outage behavior or qualify installation wiring.

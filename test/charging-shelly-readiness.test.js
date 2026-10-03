@@ -10,8 +10,8 @@ const PREFIX = 'test/readiness-evse';
 const TYPES = { current_limit: 'Number', start_charging: 'Boolean', work_state: 'Enum', phase_info: 'Object' };
 
 function fixture(t, configuration = {}) {
-  let now = NOW;
-  const client = new EventEmitter(), saved = new Map(), calls = [], measuredAt = {};
+  let now = NOW, clockStep = 0;
+  const client = new EventEmitter(), saved = new Map(), calls = [], measuredAt = {}, commandSources = {};
   const info = { id: DEVICE, model: 'synthetic-model', fw_id: 'synthetic-firmware' };
   const service = { id: 0, auto_balance: { enable: false }, auto_charge: true,
     global_charge_limit: 0, global_time_limit: 0 };
@@ -43,7 +43,8 @@ function fixture(t, configuration = {}) {
       measuredAt[frame.params.role] = now;
       result = null;
     }
-    else result = { value: fields[frame.params.role], last_update_ts: (measuredAt[frame.params.role] ?? now) / 1000 };
+    else result = { value: fields[frame.params.role], last_update_ts: (measuredAt[frame.params.role] ?? now) / 1000,
+      ...(commandSources[frame.params.role] ? { source: commandSources[frame.params.role] } : {}) };
     const reply = Buffer.from(JSON.stringify({ id: frame.id, src: DEVICE, dst: frame.src, result }));
     done?.();
     queueMicrotask(() => client.emit('message', `${frame.src}/rpc`, reply, {}));
@@ -52,13 +53,14 @@ function fixture(t, configuration = {}) {
     enabled: true, deviceId: DEVICE, topicPrefix: PREFIX, ...configuration,
   } } }).chargers.charger2;
   const adapter = createShellyEvseAdapter({ config, client, broker: { address: 'mqtt://synthetic-readiness' },
-    clock: () => now, canControl: () => true,
+    clock: () => { const at = now; now += clockStep; return at; }, canControl: () => true,
     store: { getState: key => structuredClone(saved.get(key)),
       setState: (key, value) => saved.set(key, structuredClone(value)), transaction: fn => fn(), event() {} },
     engine: { recorder: { recordEnergy() {}, energyGap() {} }, voltage: { ingest() {} } },
   });
   t.after(() => adapter.close());
-  return { adapter, client, info, service, serviceStatus, schedules, components, fields, calls, measuredAt,
+  return { adapter, client, info, service, serviceStatus, schedules, components, fields, calls, measuredAt, commandSources, now: () => now,
+    setClockStep(value) { clockStep = value; },
     advance(milliseconds) { now += milliseconds; },
     mutations: () => calls.filter(call => call.method.endsWith('.Set')),
     async ready() {
@@ -67,13 +69,13 @@ function fixture(t, configuration = {}) {
       await adapter.refresh();
     },
     async refresh() { now += 1000; await adapter.refresh(); },
-    notify(role, value) {
+    notify(role, value, source = null) {
       now += 1000;
       fields[role] = value;
-      measuredAt[role] = now;
+      measuredAt[role] = now; commandSources[role] = source;
       client.emit('message', `${PREFIX}/events/rpc`, Buffer.from(JSON.stringify({ src: DEVICE,
         method: 'NotifyStatus', params: {
-          [`${TYPES[role].toLowerCase()}:${components[role].id}`]: { value, last_update_ts: now / 1000 },
+          [`${TYPES[role].toLowerCase()}:${components[role].id}`]: { value, last_update_ts: now / 1000, ...(source ? { source } : {}) },
         } })), {});
     },
     command(role, value, extra = {}) {
@@ -622,4 +624,163 @@ test('a native current choice arriving between acceptance and readback retains i
   assert.equal(f.fields.current_limit, 8, 'readback must not claim a newer native choice as an owned instruction');
   assert.equal(f.mutations().length, before);
   assert.equal(controller.status().manualCurrentA, 8);
+});
+
+
+test('Shelly snapshot access preserves the last completed acquisition time with a ticking clock', async t => {
+  const f = fixture(t); f.setClockStep(1); await f.ready();
+  const evaluatedAt = f.now();
+  const first = f.adapter.snapshot(), second = f.adapter.snapshot();
+  assert.ok(first.readAt <= evaluatedAt, 'A status view cannot create evidence after the runtime evaluation time');
+  assert.equal(first.readAt, second.readAt, 'Repeated status access is not acquisition');
+  assert.ok(second.fields.work_state.measuredAt <= second.readAt);
+  assert.ok(second.fields.work_state.receivedAt <= second.readAt);
+  f.advance(1000); await f.adapter.refresh();
+  assert.ok(f.adapter.snapshot().readAt > first.readAt);
+});
+
+test('Shelly preserves native command source separately from measurement provenance', async t => {
+  const f = fixture(t); f.commandSources.start_charging = 'sys'; await f.ready();
+  let field = f.adapter.snapshot().fields.start_charging;
+  assert.equal(field.source, 'shelly-evse'); assert.equal(field.commandSource, 'sys');
+  f.notify('start_charging', false, 'rpc');
+  field = f.adapter.snapshot().fields.start_charging;
+  assert.equal(field.source, 'shelly-evse'); assert.equal(field.commandSource, 'rpc');
+  assert.equal(field.measuredAt, f.now());
+  f.notify('start_charging', false);
+  assert.equal(f.adapter.snapshot().fields.start_charging.commandSource, null, 'Missing origin is unknown');
+});
+
+test('Shelly system permission refresh does not remove automatic ownership but a new RPC stop does', async t => {
+  const f = fixture(t); await f.ready();
+  const publish = f.client.publish;
+  f.client.publish = (...args) => { if (JSON.parse(args[1]).method.endsWith('.Set')) f.advance(1); publish(...args); };
+  const controller = createShellyController({ adapter: f.adapter, canControl: () => true, clock: f.now });
+  t.after(() => controller.close());
+  const plan = { id: 'echo-scheduling', deadlineAt: NOW + 3_600_000,
+    periods: [{ startAt: NOW + 60_000, endAt: null }] };
+  let view = await controller.update({ enabled: true, plan });
+  assert.equal(view.manual, null); assert.equal(f.fields.start_charging, false);
+  f.notify('start_charging', false, 'sys'); view = await controller.update({ enabled: true, plan });
+  assert.equal(view.manual, null); assert.equal(view.ownsInstruction, true);
+  f.notify('start_charging', false, 'rpc'); view = await controller.update({ enabled: true, plan });
+  assert.equal(view.manual.kind, 'stop'); assert.equal(view.manual.commandSource, 'rpc');
+  assert.equal(view.ownsInstruction, false);
+});
+
+test('Shelly minimum-current identification uses live verified RPC capability with economic limiting disabled', async t => {
+  const f = fixture(t); await f.ready();
+  const publish = f.client.publish;
+  f.client.publish = (...args) => { if (JSON.parse(args[1]).method.endsWith('.Set')) f.advance(1); publish(...args); };
+  const connectedAt = f.adapter.snapshot().session.connectedAt;
+  let request = { id: 'real-rpc-minimum', connectedAt, phase: 'charging', minimumCurrent: true }, saved;
+  const controller = createShellyController({ adapter: f.adapter, canControl: () => true, clock: f.now,
+    getIdentification: () => request, saveState: value => { saved = structuredClone(value); } });
+  t.after(() => controller.close());
+  assert.equal(f.adapter.capabilities.currentControl, false);
+  assert.equal(f.adapter.snapshot().identificationCurrentReady, true);
+  await assert.rejects(f.command('current_limit', 6));
+  let view = await controller.update({ enabled: false });
+  assert.equal(view.currentTest.phase, 'active'); assert.equal(f.fields.current_limit, 6);
+  assert.equal(saved.currentTest.originalCurrentA, 16);
+  assert.equal(f.adapter.capabilities.currentControl, false);
+  request = null; view = await controller.update({ enabled: false });
+  assert.equal(view.currentTest.phase, 'restored'); assert.equal(f.fields.current_limit, 16);
+  assert.deepEqual(f.mutations().map(call => [call.method, call.params.value]), [['Number.Set', 6], ['Number.Set', 16]]);
+});
+
+test('Shelly scoped minimum and exact restoration do not require optional UI step metadata', async t => {
+  for (const metadata of ['missing-step', 'missing-ui', 'missing-meta']) await t.test(metadata, async t => {
+    const f = fixture(t); f.fields.current_limit = 12;
+    if (metadata === 'missing-step') delete f.components.current_limit.meta.ui.step;
+    if (metadata === 'missing-ui') delete f.components.current_limit.meta.ui;
+    if (metadata === 'missing-meta') f.components.current_limit.meta = null;
+    await f.ready();
+    const publish = f.client.publish;
+    f.client.publish = (...args) => { if (JSON.parse(args[1]).method.endsWith('.Set')) f.advance(1); publish(...args); };
+    let request = { id: 'exact-minimum-without-ui-step', connectedAt: f.adapter.snapshot().session.connectedAt,
+      phase: 'charging', minimumCurrent: true }, saved;
+    const controller = createShellyController({ adapter: f.adapter, canControl: () => true, clock: f.now,
+      getIdentification: () => request, saveState: value => { saved = structuredClone(value); } });
+    t.after(() => controller.close());
+    assert.equal(f.adapter.snapshot().currentControlReady, false);
+    assert.equal(f.adapter.snapshot().identificationCurrentReady, true);
+    assert.equal(f.adapter.normalize().identificationCurrentReady, true);
+    await assert.rejects(f.command('current_limit', 10), 'No general 1 A write capability is inferred');
+    let view = await controller.update({ enabled: false });
+    assert.equal(view.currentTest.phase, 'active'); assert.equal(f.fields.current_limit, 6);
+    await assert.rejects(f.command('current_limit', 10, { identificationCurrent: {
+      ...saved.currentTest, phase: 'restoring', restoreCurrentA: 10,
+    } }), 'A scoped restore cannot synthesize an intermediate numeric limit');
+    request = null; view = await controller.update({ enabled: false });
+    assert.equal(view.currentTest.phase, 'restored'); assert.equal(f.fields.current_limit, 12);
+    assert.equal(f.adapter.snapshot().currentControlReady, false);
+    assert.deepEqual(f.mutations().map(call => [call.method, call.params.value]), [['Number.Set', 6], ['Number.Set', 12]]);
+  });
+});
+
+test('Shelly scoped minimum retains writable range and native balancing guards without UI step metadata', async t => {
+  const changes = [
+    ['missing minimum', f => { delete f.components.current_limit.min; }],
+    ['different minimum', f => { f.components.current_limit.min = 7; }],
+    ['missing maximum', f => { delete f.components.current_limit.max; }],
+    ['invalid range', f => { f.components.current_limit.max = 5; }],
+    ['read-only role', f => { f.components.current_limit.access = 'cr'; }],
+    ['native balancing', f => { f.service.auto_balance.enable = true; }],
+    ['different declared step', f => { f.components.current_limit.meta.ui.step = 2; }],
+    ['invalid declared step', f => { f.components.current_limit.meta.ui.step = null; }],
+    ['native limit below minimum', f => { f.fields.current_limit = 0; }],
+  ];
+  for (const [label, change] of changes) await t.test(label, async t => {
+    const f = fixture(t); delete f.components.current_limit.meta.ui.step; change(f); await f.ready();
+    assert.equal(f.adapter.snapshot().identificationCurrentReady, false);
+    const controller = createShellyController({ adapter: f.adapter, canControl: () => true, clock: f.now,
+      getIdentification: () => ({ id: 'blocked-without-step', connectedAt: f.adapter.snapshot().session.connectedAt,
+        phase: 'charging', minimumCurrent: true }) });
+    t.after(() => controller.close());
+    await controller.update({ enabled: false });
+    assert.equal(f.mutations().filter(call => call.method === 'Number.Set').length, 0);
+  });
+});
+
+test('Shelly scoped current restoration waits for renewed exact-write capability after metadata changes', async t => {
+  const f = fixture(t); f.fields.current_limit = 12; delete f.components.current_limit.meta.ui.step; await f.ready();
+  const publish = f.client.publish;
+  f.client.publish = (...args) => { if (JSON.parse(args[1]).method.endsWith('.Set')) f.advance(1); publish(...args); };
+  let request = { id: 'restoration-capability-loss', connectedAt: f.adapter.snapshot().session.connectedAt,
+    phase: 'charging', minimumCurrent: true };
+  const controller = createShellyController({ adapter: f.adapter, canControl: () => true, clock: f.now,
+    getIdentification: () => request });
+  t.after(() => controller.close());
+  await controller.update({ enabled: false }); assert.equal(f.fields.current_limit, 6);
+  f.components.current_limit.access = 'cr'; request = null;
+  let view = await controller.update({ enabled: false });
+  assert.equal(view.currentTest.phase, 'active'); assert.equal(view.handoverConfirmed, false);
+  assert.equal(f.mutations().length, 1);
+  f.components.current_limit.access = 'crw'; view = await controller.update({ enabled: false });
+  assert.equal(view.currentTest.phase, 'restored'); assert.equal(f.fields.current_limit, 12);
+  assert.equal(f.mutations().length, 2);
+});
+
+test('Shelly a same-event readback without source preserves known system provenance but newer missing-source events remain unknown', async t => {
+  const f = fixture(t); await f.ready();
+  const publish = f.client.publish;
+  f.client.publish = (...args) => { if (JSON.parse(args[1]).method.endsWith('.Set')) f.advance(1); publish(...args); };
+  const controller = createShellyController({ adapter: f.adapter, canControl: () => true, clock: f.now });
+  t.after(() => controller.close());
+  const plan = { id: 'source-omission', deadlineAt: NOW + 3_600_000,
+    periods: [{ startAt: NOW + 60_000, endAt: null }] };
+  await controller.update({ enabled: true, plan });
+  f.notify('start_charging', false, 'sys');
+  const sourceAt = f.adapter.snapshot().fields.start_charging.measuredAt;
+  delete f.commandSources.start_charging;
+  let view = await controller.update({ enabled: true, plan });
+  assert.equal(view.snapshot.fields.start_charging.commandSource, 'sys');
+  assert.equal(view.snapshot.fields.start_charging.measuredAt, sourceAt);
+  assert.equal(view.manual, null); assert.equal(view.ownsInstruction, true);
+  f.notify('start_charging', false);
+  view = await controller.update({ enabled: true, plan });
+  assert.equal(view.snapshot.fields.start_charging.commandSource, null);
+  assert.equal(view.manual.kind, 'stop'); assert.equal(view.manual.origin, 'unknown');
+  assert.equal(view.ownsInstruction, false);
 });

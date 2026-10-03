@@ -5,9 +5,9 @@ import { shellyProfile } from '../src/charging/shelly-profile.js';
 import { createShellyController } from '../src/charging/shelly-evse.js';
 
 const NOW = 1_800_000_000_000;
-function fixture(t) {
+function fixture(t, overrides = {}) {
   const config = shellyProfile(chargingConfiguration({ chargers: { charger2: { enabled: true, limiterEnabled: true,
-    deviceId: 'synthetic-shelly', topicPrefix: 'synthetic/shelly' } } }).chargers.charger2);
+    deviceId: 'synthetic-shelly', topicPrefix: 'synthetic/shelly', ...overrides } } }).chargers.charger2);
   const f = { now: NOW, permitted: true, online: true, controlReady: true, nativeScheduleActive: false,
     request: { id: 'synthetic-identification', connectedAt: NOW, phase: 'pausing', pauseUntil: NOW + 90_000 },
     session: { sessionId: 'synthetic-session', connected: true, connectedAt: NOW, lastDisconnectedAt: null },
@@ -18,7 +18,7 @@ function fixture(t) {
     phase_info: field({ total_power: 8.28, phase_a: { current: 12 }, phase_b: { current: 12 }, phase_c: { current: 12 } }) };
   f.change = (role, value) => { f.fields[role] = { ...field(structuredClone(value)), measuredAt: f.now, receivedAt: f.now }; };
   f.snapshot = () => ({ association: 'synthetic-shelly', transport: 'shelly-evse', online: f.online,
-    controlReady: f.controlReady, currentControlReady: f.controlReady, nativeScheduleFingerprint: f.nativeScheduleActive ? 'synthetic-schedule' : null, identificationReady: f.online && f.controlReady, nativeScheduleActive: f.nativeScheduleActive,
+    controlReady: f.controlReady, currentControlReady: f.controlReady, identificationCurrentReady: f.identificationCurrentReady !== false && f.controlReady, nativeScheduleFingerprint: f.nativeScheduleActive ? 'synthetic-schedule' : null, identificationReady: f.online && f.controlReady, nativeScheduleActive: f.nativeScheduleActive,
     fields: structuredClone(f.fields), session: structuredClone(f.session), readAt: f.now,
     pluggedIn: f.session.connected, charging: f.fields.work_state.value === 'charger_charging',
     statusAt: f.fields.work_state.measuredAt, powerKw: f.fields.phase_info.value.total_power,
@@ -294,4 +294,152 @@ test('Shelly stops an already drawing probe when a current RPC crosses its deadl
   await f.update();
   assert.deepEqual(f.writes.map(call => [call.role, call.value]), [['current_limit', f.fields.current_limit.value], ['start_charging', false]]);
   assert.equal(f.fields.start_charging.value, false);
+});
+
+
+test('Shelly minimum-current identification has a fixed saved deadline independent of the economic limiter', async t => {
+  const f = fixture(t, { limiterEnabled: false });
+  f.request = { id: 'minimum-current-test', connectedAt: NOW, phase: 'charging', minimumCurrent: true };
+  f.beforePublish = (_method, params) => {
+    if (params.role !== 'current_limit') return;
+    assert.equal(f.saved.currentTest.pending.value, params.value);
+    assert.equal(f.saved.currentTest.originalCurrentA, 12);
+    assert.equal(f.saved.currentTest.expiresAt, NOW + 90_000);
+  };
+  let view = await f.update();
+  assert.equal(view.currentTest.phase, 'active'); assert.equal(f.fields.current_limit.value, 6);
+  assert.equal(view.currentTest.confirmedAt, NOW + 1);
+  assert.equal(f.adapter.config.limiterEnabled, false);
+  f.now += 20_000; f.restart(); view = await f.update();
+  assert.equal(view.currentTest.phase, 'active'); assert.equal(view.currentTest.expiresAt, NOW + 90_000);
+  assert.equal(f.writes.length, 1);
+  f.now = NOW + 90_001; view = await f.update();
+  assert.equal(view.currentTest.phase, 'restored'); assert.equal(f.fields.current_limit.value, 12);
+  assert.deepEqual(f.writes.map(row => [row.role, row.value]), [['current_limit', 6], ['current_limit', 12]]);
+  f.now += 10_000; f.restart(); view = await f.update();
+  assert.equal(view.currentTest.phase, 'restored'); assert.equal(f.writes.length, 2, 'The same id cannot renew the test');
+});
+
+test('Shelly a verified minimum already in place needs no numeric write and ends before the BMW pause', async t => {
+  const f = fixture(t, { limiterEnabled: false }); f.change('current_limit', 6);
+  f.request = { id: 'already-minimum', connectedAt: NOW, phase: 'charging', minimumCurrent: true };
+  let view = await f.update();
+  assert.equal(view.currentTest.phase, 'active'); assert.equal(view.currentTest.confirmedAt, NOW);
+  assert.equal(f.writes.length, 0);
+  f.now += 15_000; f.request = { ...f.request, phase: 'pausing', pauseUntil: f.now + 90_000 };
+  view = await f.update();
+  assert.equal(view.currentTest.phase, 'restored');
+  assert.deepEqual(f.writes.map(row => [row.role, row.value]), [['start_charging', false]]);
+});
+
+test('Shelly identification current restoration survives cancellation, unplug and a new session without granting start', async t => {
+  for (const ending of ['cancel', 'unplug', 'new-session']) await t.test(ending, async t => {
+    const f = fixture(t, { limiterEnabled: false });
+    f.request = { id: 'current-scope', connectedAt: NOW, phase: 'charging', minimumCurrent: true };
+    await f.update(); f.now += 1000; f.request = null;
+    if (ending === 'unplug') { f.session.connected = false; f.session.sessionId = null; f.change('work_state', 'charger_free'); }
+    if (ending === 'new-session') { f.session.sessionId = 'new-current-session'; f.session.connectedAt = f.now; }
+    f.restart(); const view = await f.update();
+    assert.equal(view.currentTest.phase, 'restored'); assert.equal(f.fields.current_limit.value, 12);
+    assert.deepEqual(f.writes.map(row => row.role), ['current_limit', 'current_limit']);
+  });
+});
+
+test('Shelly a new native current selection supersedes minimum-current restoration including equal values', async t => {
+  for (const value of [6, 8]) await t.test(`${value} A`, async t => {
+    const f = fixture(t, { limiterEnabled: false });
+    f.request = { id: 'current-native-change', connectedAt: NOW, phase: 'charging', minimumCurrent: true };
+    await f.update(); f.now += 1000; f.change('current_limit', value);
+    f.fields.current_limit.commandSource = 'rpc'; f.request = null;
+    const view = await f.update();
+    assert.equal(view.currentTest.phase, 'superseded'); assert.equal(f.fields.current_limit.value, value);
+    assert.equal(f.writes.length, 1);
+  });
+});
+
+test('Shelly system refresh preserves current-test ownership and automatic pause ownership', async t => {
+  const f = fixture(t, { limiterEnabled: false });
+  f.request = { id: 'system-refresh', connectedAt: NOW, phase: 'charging', minimumCurrent: true };
+  await f.update(); f.now += 1000;
+  for (const role of ['current_limit', 'start_charging']) {
+    f.change(role, f.fields[role].value); f.fields[role].commandSource = 'sys';
+  }
+  let view = await f.update();
+  assert.equal(view.manual, null); assert.equal(view.currentTest.phase, 'active'); assert.equal(f.writes.length, 1);
+  f.request = { ...f.request, phase: 'pausing', pauseUntil: f.now + 90_000 };
+  await f.update(); f.now += 1000; f.change('start_charging', false); f.fields.start_charging.commandSource = 'sys';
+  view = await f.update(); assert.equal(view.manual, null); assert.equal(view.ownsInstruction, true);
+  f.restart(); view = await f.update(); assert.equal(view.manual, null); assert.equal(view.ownsInstruction, true);
+});
+
+test('Shelly minimum-current writes require verified capability and preserve native limits', async t => {
+  for (const block of ['capability', 'below-minimum', 'authority', 'manual-stop', 'native-schedule']) await t.test(block, async t => {
+    const f = fixture(t, { limiterEnabled: false });
+    f.request = { id: 'blocked-current-test', connectedAt: NOW, phase: 'charging', minimumCurrent: true };
+    if (block === 'capability') f.identificationCurrentReady = false;
+    if (block === 'below-minimum') f.change('current_limit', 0);
+    if (block === 'authority') f.permitted = false;
+    if (block === 'manual-stop') f.change('start_charging', false);
+    if (block === 'native-schedule') f.nativeScheduleActive = true;
+    await f.update(); assert.equal(f.writes.filter(row => row.role === 'current_limit').length, 0);
+  });
+});
+
+test('Shelly a lost minimum-current reply remains uncertain across restart without repeating or restoring it', async t => {
+  const f = fixture(t, { limiterEnabled: false });
+  f.request = { id: 'lost-current-reply', connectedAt: NOW, phase: 'charging', minimumCurrent: true };
+  f.afterPublish = () => { throw Object.assign(Error('lost reply'), { code: 'evse-command-unconfirmed' }); };
+  let view = await f.update(); assert.equal(view.currentTest.phase, 'uncertain'); assert.equal(f.writes.length, 1);
+  f.afterPublish = null; f.request = null; f.now += 100_000; f.restart();
+  view = await f.update(); assert.equal(view.currentTest.phase, 'uncertain'); assert.equal(f.writes.length, 1);
+  f.now++; f.change('current_limit', 10); view = await f.update();
+  assert.equal(view.currentTest.phase, 'superseded'); assert.equal(f.writes.length, 1);
+});
+
+test('Shelly accepted minimum-current readback recovers across restart and restores once', async t => {
+  const f = fixture(t, { limiterEnabled: false });
+  f.request = { id: 'current-read-failure', connectedAt: NOW, phase: 'charging', minimumCurrent: true };
+  f.afterPublish = () => { f.failRead = true; };
+  let view = await f.update(); assert.equal(view.currentTest.phase, 'uncertain');
+  assert.equal(f.saved.currentTest.pending.acceptedAt, NOW + 1);
+  f.afterPublish = null; f.restart(); view = await f.update();
+  assert.equal(view.currentTest.phase, 'active'); assert.equal(f.writes.length, 1);
+  f.request = null; view = await f.update();
+  assert.equal(view.currentTest.phase, 'restored'); assert.equal(f.writes.length, 2);
+});
+
+test('Shelly invalid current-test state is rejected without a device write', async t => {
+  const f = fixture(t, { limiterEnabled: false });
+  f.request = { id: 'validate-current', connectedAt: NOW, phase: 'charging', minimumCurrent: true };
+  await f.update(); const good = structuredClone(f.saved);
+  for (const patch of [{ expiresAt: NOW + 91_000 }, { originalCurrentA: 5 }, { appliedCurrentA: 7 }, { unknown: true }]) {
+    const invalid = { ...good, currentTest: { ...good.currentTest, ...patch } };
+    assert.throws(() => createShellyController({ adapter: f.adapter, initialState: invalid }), /unsupported-shelly-ownership/);
+  }
+  assert.equal(f.writes.length, 1);
+});
+
+
+test('Shelly current-test publication is revoked by expiry, external Stop, or changed native current', async t => {
+  for (const change of ['deadline', 'stop', 'current', 'authority']) await t.test(change, async t => {
+    const f = fixture(t, { limiterEnabled: false });
+    f.request = { id: 'racing-current', connectedAt: NOW, phase: 'charging', minimumCurrent: true };
+    f.beforePublish = () => {
+      if (change === 'deadline') f.now = NOW + 90_000;
+      if (change === 'stop') { f.now++; f.change('start_charging', false); }
+      if (change === 'current') { f.now++; f.change('current_limit', 8); }
+      if (change === 'authority') f.permitted = false;
+    };
+    const view = await f.update();
+    assert.equal(f.writes.length, 0);
+    if (change === 'stop') { assert.equal(f.fields.start_charging.value, false); assert.equal(view.manual.kind, 'stop'); }
+  });
+});
+
+test('Shelly minimum-current persistence failure sends no command', async t => {
+  const f = fixture(t, { limiterEnabled: false });
+  f.request = { id: 'unsaved-current', connectedAt: NOW, phase: 'charging', minimumCurrent: true };
+  f.saveHook = state => { if (state.currentTest) throw Error('synthetic persistence failure'); };
+  await assert.rejects(f.update(), /synthetic persistence failure/);
+  assert.equal(f.writes.length, 0);
 });

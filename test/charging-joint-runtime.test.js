@@ -441,7 +441,7 @@ test('a native Charger 2 timer retains authority during peer priority and Charge
     && command.role === 'start_charging' && command.value === true).length, 0, 'Peer changes never bypass the native timer');
 });
 
-test('BMW on Charger 1 and Tesla on Charger 2 keep independent identities through overlapping charging and unplug', async t => {
+test('independent BMW evidence and a verified Tesla minimum-current response retain both identities through overlapping charging and unplug', async t => {
   const f = await fixture(t, { limiter: false });
   await f.connect('charger1');
   f.bmw({ atHome: true, pluggedIn: true, charging: true, soc: 20, chargeLimitSoc: 80, usableCapacityKwh: 10 });
@@ -451,12 +451,18 @@ test('BMW on Charger 1 and Tesla on Charger 2 keep independent identities throug
   assert.equal(f.view('charger1').vehicle.id, 'bmw');
   const bmwRequest = structuredClone(f.view('charger1').request);
 
-  f.advance(3 * MINUTE); await f.connect('charger2');
-  f.tesla(); await f.settle();
-  assert.equal(f.view('charger2').vehicle.id, 'tesla');
-  const teslaRequest = structuredClone(f.view('charger2').request);
   f.advance(1000); f.cars.charger1.allows = true; await f.settle();
   f.bmw({ charging: true }); await f.settle();
+  f.advance(3 * MINUTE); await f.connect('charger2');
+  f.tesla({ charger_actual_current: 8, charger_phases: 3 }); await f.settle();
+  assert.equal(f.view('charger2').vehicle.id, null, 'Similar power and start timing cannot identify the second connected car');
+  assert.equal(f.fields.current_limit.value, 6, 'The scoped comparison uses the verified minimum with economic limiting disabled');
+  f.advance(6000); f.tesla({ charger_actual_current: 6, charger_phases: 3 }); await f.settle();
+  assert.equal(f.view('charger2').vehicle.id, null, 'A first current sample must settle and remain consistent');
+  f.advance(6000); await f.settle();
+  assert.equal(f.view('charger2').vehicle.id, 'tesla');
+  assert.equal(f.fields.current_limit.value, 16, 'Identification restores the previous native current setting');
+  const teslaRequest = structuredClone(f.view('charger2').request);
   assert.equal(f.view('charger1').vehicle.id, 'bmw');
   assert.equal(f.view('charger2').vehicle.id, 'tesla');
   assert.equal(f.view('charger1').values.charging.value, true);
@@ -475,8 +481,9 @@ test('simultaneous indistinguishable power cannot assign one Tesla to either phy
   const f = await fixture(t, { limiter: false });
   await f.connect('charger1'); await f.connect('charger2'); f.tesla(); await f.settle();
   for (const id of ['charger1', 'charger2']) {
-    assert.equal(f.view(id).vehicle.state, 'conflict');
+    assert.equal(f.view(id).vehicle.state, 'identifying');
     assert.equal(f.view(id).vehicle.id, null);
+    assert.equal(f.runtime.chargers[id].vehicleConflict, null, 'Weak coincident power does not manufacture a saved identity conflict');
     assert.equal(f.view(id).values.connected.value, true, 'Ambiguous identity does not erase the real connection');
   }
 });

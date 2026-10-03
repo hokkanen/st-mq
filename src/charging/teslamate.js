@@ -4,7 +4,7 @@ const NUMERIC = { battery_level: 100, charge_limit_soc: 100, charge_current_requ
   charge_current_request_max: 100, charger_actual_current: 100, charger_phases: 3, charger_voltage: 500,
   charger_power: 350, charge_energy_added: 1000 };
 const FIELDS = new Set([...Object.keys(NUMERIC), 'healthy', 'scheduled_charging_start_time', 'plugged_in', 'geofence', 'charging_state', 'state']);
-const IDENTITY_FIELDS = new Set(['plugged_in', 'geofence', 'charging_state', 'state', 'charger_power']);
+const IDENTITY_FIELDS = new Set(['plugged_in', 'geofence', 'charging_state', 'state', 'charger_power', 'charger_actual_current']);
 const CHANGE_ONLY_FIELDS = new Set([...IDENTITY_FIELDS, 'battery_level', 'charge_limit_soc']);
 export function decodeChargingTeslaField(field, payload) {
   if (!FIELDS.has(field)) return undefined;

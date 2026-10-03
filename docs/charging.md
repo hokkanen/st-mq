@@ -158,7 +158,11 @@ revisions and observed native instruction. A newer observed instruction fences
 it. Charger APIs do not supply an atomic cross-client lock: a concurrent external
 edit must still be detected through source clocks, schedule revisions and
 readback. Observed stop/enable changes do not prove which app or person caused
-them. Vehicle timers and targets, faults, electrical limits and authorization
+them. Shelly's native command-source evidence distinguishes same-value `sys`
+refreshes from newer external instructions. A system refresh preserves existing
+ownership; an external instruction, including a repeated selection of the same
+value, retains priority. Missing provenance is not attributed to the application.
+Vehicle timers and targets, faults, electrical limits and authorization
 remain authoritative. Unsupported native schedule shapes stay visible as blocked
 rather than being silently removed. See the [Easee takeover constraints](charging-easee.md#ownership-and-manual-controls)
 and [Shelly command contract](charging-provider-capabilities.md#mqtt-and-commands).
@@ -487,9 +491,15 @@ formats are rejected; there is no migration or automatic database reset.
 
 ## Vehicle assignment
 
-The observer evaluates both charging points together, including while automatic charging is OFF and hours after connection. Assignment requires positive corroboration: applicable vehicle home/plug/start evidence and physical charging behavior. Similar powers on two charging points can remain ambiguous. A negative Tesla match never identifies BMW or the other charger by elimination.
+The observer evaluates both charging points together, including while automatic charging is OFF and hours after connection. Assignment requires positive corroboration: applicable vehicle home/plug/start evidence and physical charging behavior. Similar powers or currents on two charging points can remain ambiguous. A negative Tesla match never identifies BMW or the other charger by elimination.
 
 Assignments carry the physical association, plug epoch and vehicle-feed identity. Changing the configured Tesla car, broker, topic namespace or home-zone configuration cannot lend a replacement source’s readings to a saved match. Genuine disconnect/reconnect events are retained even between planner ticks or MQTT subscription admission and invalidate the old scope. Pause/resume within a connected work state remains one session. Explicit conflicting evidence withdraws certainty. A remembered identity alone cannot authorize a new connection, and current vehicle fields are withdrawn when the upstream feed is unhealthy.
+
+A conclusive unique Tesla current test can replace an older mistaken assignment
+and clear the corresponding saved conflict. The displaced connection resumes
+observation for independent BMW evidence without renewing its test budget. Fresh
+evidence supporting competing assignments remains ambiguous; provider silence
+alone cannot correct an assignment.
 
 TeslaMate has transport, subscription, live logger-health and per-field evidence
 checks. Sleeping while healthy is distinct from unhealthy. A reconnect requires
@@ -502,8 +512,11 @@ matches the physical start within 30 seconds can corroborate matching reported
 power throughout that physical connection; elapsed time does not expire that
 historical correlation. Identification still requires current healthy, plugged,
 home and charging context plus fresh positive local power agreeing with the
-Tesla report. Retained starts and power cannot supply the match. Repeated
-identical publications and same-value recovery after an unknown gap preserve
+Tesla report. This power/start correlation identifies Tesla only when every
+other observed charging point is confirmed disconnected. Two connected cars
+require the unique current comparison below; similar starts and powers cannot
+identify one prematurely. Retained starts and power cannot supply the match.
+Repeated identical publications and same-value recovery after an unknown gap preserve
 their original provenance; consumed power cannot identify another connection.
 TeslaMate's receipt clock cannot place a report delivered late at an earlier
 physical event. The saved correlation must already agree at the original
@@ -512,6 +525,35 @@ not require a new GPS observation simply because the car has stayed home.
 BMW source timestamps, home scope and consumed plug/start events serve the same
 connection separation. Neither feed's remote voltage or power fills missing
 household electrical measurements.
+
+When current-write capability is verified, Charger 2 can temporarily use its
+supported minimum of 6 A to distinguish simultaneous charging. This is scoped
+to the physical connection and identification attempt, independently of the
+optional economic current limiter. Charger 1 retains its native positive-current
+settings and Equalizer control. The test requires a writable role and a verified
+numeric range, but can use the exact reported minimum and previous native setting
+without UI step metadata. Native load balancing, contradictory capabilities,
+faults or unavailable control block it; identification does not invent a current
+command or enable the economic limiter.
+
+Confirmation requires fresh measured phase currents after the minimum-setting
+readback, fresh live Tesla actual-current evidence from that test, compatible
+energized-phase count and corroborating power. The physical readings must settle
+and continue to agree on a later observation. Requested current and the pilot
+ceiling are not measured draw. A Tesla current held from before the test cannot
+identify either charger, even if its value matches. Each other observed charger
+must have fresh distinguishing current evidence, confirmed zero draw or a
+confirmed disconnect. Equal currents, missing peer measurements or ambiguous
+phase evidence leave identification pending. A unique Tesla match can identify
+either charger; BMW still requires its own positive evidence.
+
+The current test saves the original setting, equipment/session scope and fixed
+90-second deadline before a write. Positive identification or expiry returns
+the setting to the original value, bounded by current native and applicable
+limiter restrictions. Restart never renews the test. A newer external current
+instruction supersedes restoration; uncertain dispatch/readback remains visible
+instead of triggering a blind retry. Shelly has no native expiry for this setting:
+an application or MQTT outage can prolong the reduction until safe recovery.
 
 Easee cloud scheduling, local OCPP and the supported Shelly EVSE use the same
 vehicle matcher, pending status, consumed-evidence checks and session boundaries.
@@ -538,7 +580,8 @@ Easee cloud, local OCPP and Shelly EVSE support one automatic active attempt per
 physical connection, including when Automatic charging is OFF or Charge now is selected.
 An already confirmed passive match skips the test. Otherwise, live charger
 readiness and plausible at-home vehicle context allow one bounded charging
-test using the charger's normal current settings.
+test using the charger's native limits, with the scoped Charger 2 minimum-current
+comparison when its verified capability and Tesla context permit it.
 Probe readiness can use a healthy, at-home vehicle whose last valid unplugged
 report predates the actual physical connection: BMW uses the report's source
 timestamp, TeslaMate its original receipt timestamp. That old negative report
@@ -566,7 +609,7 @@ test leaves its budget unused; loss during an active test never renews its limit
 
 When normal charging is permitted, it proceeds under native current limits;
 waiting for either vehicle has no short charging timeout or identification energy budget.
-A fresh Tesla power match can finish immediately. A usable BMW charging baseline
+A conclusive Tesla match can finish immediately. A usable BMW charging baseline
 can trigger one brief, confirmed pause while the same connection is charging.
 Startup can use live ongoing BMW charging without inventing a
 missing historical start edge. Matching charger and vehicle stop evidence is
@@ -577,9 +620,9 @@ and its optional electrical limiter when enabled throughout the test.
 
 When the charging plan is delaying charge, the extra test temporarily permits
 charging under the existing charger, vehicle and local load-balancing limits.
-Identification does not select a lower positive current. OCPP continues to use
-its established zero-current pause and release commands; Shelly retains native current settings and its
-optional electrical limiter when enabled. A conclusive vehicle match ends the extra test immediately and
+OCPP continues to use its established zero-current pause and release commands.
+Shelly uses the verified minimum-current comparison when available, preserving
+its native limits and optional electrical limiter. A conclusive vehicle match ends the extra test immediately and
 returns to the current charging choice. A usable BMW baseline triggers its
 correlation pause; absent a match, the shared 0.15 kWh extra-energy allowance
 ends probing for either vehicle.
@@ -599,10 +642,14 @@ is installed. Restart or telemetry loss cannot renew the recorded allowance.
 A brief identification pause during ordinary charging has a deadline
 90 seconds later, rounded up to the next whole second. Easee cloud and OCPP
 enforce that expiry at the charger. Shelly's pause uses its start permission and
-is released by the application; its outage behavior is described below. A
-physically confirmed stop ends the temporary pause immediately and applies the
-current charging choice, without waiting for BMW delivery. During an economic
-delay, that choice is the scheduled pause. The zero-current OCPP restriction that
+is released by the application; its outage behavior is described below. With a
+usable BMW baseline, physical stop confirmation retains the pause until a
+positive identity match or the original deadline, giving BMW time to observe
+and report the stop. Manual supersession retains priority. Physical confirmation
+ends extra-energy accounting; it does not renew the pause or change source-time
+matching tolerance. If a probe ends without a BMW baseline, its confirmed stop
+returns immediately to the current charging choice. During an economic delay,
+that choice is the scheduled pause. The zero-current OCPP restriction that
 ends an extra probe can therefore last until the planned economic release; it
 does not expire after the ordinary 90-second identification pause.
 Probe limits leave **Identification pending**
@@ -786,7 +833,9 @@ The final period is an open release. Reaching the planning minimum or ready-by d
 ## Charger 2 current allocation
 
 Basic start/stop leaves native current settings and native load balancing in
-charge. Planning uses the known applicable native current setting, or the
+charge. The bounded identification current test above is a separate scoped
+action and can operate with the economic limiter disabled when its own
+capability checks pass. Planning uses the known applicable native current setting, or the
 [maximum-available-current assumption](#maximum-available-current-assumption)
 when it is unknown; scheduling sends Boolean start/stop only. The allocation
 below applies with `limiterEnabled:true`;

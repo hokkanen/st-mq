@@ -251,15 +251,19 @@ for (const transport of ['cloud', 'ocpp']) {
   });
 
   for (const vehicle of ['tesla', 'bmw']) {
-    test(`${transport}: one ${vehicle} matching two chargers is ambiguous for both`, t => {
+    test(`${transport}: ${vehicle === 'tesla' ? 'similar Tesla power leaves both chargers unidentified' : 'one BMW matching two chargers conflicts on both'}`, t => {
       const f = fixture(t, transport);
       f.attach(f.runtime, 'charger2');
       if (vehicle === 'tesla') f.startTesla();
       else { f.startBmw({ freshPlug: true }); f.pause(); f.publish({ charging: false }, STOP + 4000); }
-      assert.equal(f.vehicle('charger1').state, 'conflict');
-      assert.equal(f.vehicle('charger2').state, 'conflict');
+      assert.equal(f.vehicle('charger1').state, vehicle === 'tesla' ? 'unidentified' : 'conflict');
+      assert.equal(f.vehicle('charger2').state, vehicle === 'tesla' ? 'unidentified' : 'conflict');
       assert.equal(f.vehicle('charger1').id, null);
       assert.equal(f.vehicle('charger2').id, null);
+      if (vehicle === 'tesla') for (const item of Object.values(f.runtime.chargers)) {
+        assert.equal(item.vehicleMatch, null, 'Similar power does not create a positive Tesla assignment');
+        assert.equal(item.vehicleConflict, null, 'Without affirmative identity evidence there is no persisted conflict');
+      }
     });
 
     test(`${transport}: ${vehicle} identity survives restart only after the same physical session is observed`, t => {

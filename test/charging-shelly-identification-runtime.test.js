@@ -116,7 +116,7 @@ const starts = f => f.writes.filter(row => row.params.role === 'start_charging' 
 
 test('Shelly identifies BMW through real RPC pause evidence and adopts the economic hold', async t => {
   const f = await fixture(t); f.setNow(START + 1000); await f.update();
-  assert.equal(f.item().identification.phase, 'observing'); assert.equal(stops(f).length, 1);
+  assert.equal(f.item().identification.phase, 'pausing'); assert.equal(stops(f).length, 1);
   assert.equal(f.card().vehicle.id, null);
   assert.equal(f.card().identification.pauseRecovery, 'controller');
   assert.equal(f.card().identification.pauseOutstanding, true);
@@ -133,7 +133,7 @@ test('Shelly waiting survives a vehicle timer and starts testing when charging b
   f.setNow(START + 30 * MINUTE); await f.update();
   assert.equal(f.item().identification.phase, 'waiting'); assert.equal(f.card().vehicle.state, 'identifying');
   f.start(); f.setNow(f.now + 1000); await f.update();
-  assert.equal(f.item().identification.phase, 'observing'); assert.equal(stops(f).length, 1);
+  assert.equal(f.item().identification.phase, 'pausing'); assert.equal(stops(f).length, 1);
 });
 
 test('Shelly economic zero allocation cannot block the short identification observation', async t => {
@@ -156,6 +156,30 @@ test('Shelly identifies with Automatic OFF and promptly resumes its own pause', 
   assert.equal(f.card().identification.pauseOutstanding, false);
 });
 
+test('Shelly holds the confirmed stop long enough for delayed BMW delivery and promptly restores its start permission', async t => {
+  const f = await fixture(t, { enabled: false }); f.setNow(START + 1000); await f.update();
+  const stopAt = f.fields.work_state.at, deadline = f.item().identification.pauseUntil;
+  f.setNow(stopAt + 30_000); await f.update();
+  assert.equal(f.item().identification.phase, 'pausing'); assert.equal(starts(f).length, 0);
+  assert.equal(f.fields.start_charging.value, false); assert.equal(f.card().vehicle.id, null);
+  f.setNow(stopAt + 60_000); f.publish({ charging: false }, stopAt + 2000); await f.update();
+  assert.equal(f.card().vehicle.id, 'bmw'); assert.equal(f.item().identification.phase, 'completed');
+  assert.equal(f.runtime.vehicleFeeds.bmw.reading.fields.charging.negativeEvent.measuredAt, stopAt + 2000);
+  assert.equal(f.fields.start_charging.value, true); assert.equal(starts(f).length, 1);
+  assert.ok(f.now < deadline);
+});
+
+test('Shelly bounded BMW pause returns to economic waiting without releasing charging on silence', async t => {
+  const f = await fixture(t); f.setNow(START + 1000); await f.update();
+  const deadline = f.item().identification.pauseUntil;
+  f.setNow(START + 60_000); await f.update();
+  assert.equal(f.item().identification.phase, 'pausing'); assert.equal(f.fields.start_charging.value, false);
+  f.setNow(deadline + 1000); await f.update();
+  assert.equal(f.item().identification.phase, 'observing'); assert.equal(f.item().controller.status().reason, 'economic-wait');
+  assert.equal(f.fields.start_charging.value, false); assert.equal(starts(f).length, 0);
+  assert.equal(f.card().vehicle.id, null); assert.equal(f.item().identification.attempt, 1);
+});
+
 test('Shelly Charge now includes identification and then releases without an economic delay', async t => {
   const f = await fixture(t); f.setNow(START + 1000);
   f.runtime.telemetry(f.now); f.item().request.chargeNow = true;
@@ -168,6 +192,9 @@ test('Shelly restart resumes the same absolute pause and timeout never retries a
   const before = structuredClone(f.item().identification);
   f.setNow(f.now + 5000); await f.restart(); await f.update();
   assert.equal(f.item().identification.id, before.id); assert.equal(stops(f).length, 1);
+  assert.equal(f.item().identification.phase, 'pausing');
+  assert.equal(f.fields.start_charging.value, false);
+  assert.equal(f.item().identification.pauseUntil, before.pauseUntil);
   f.setNow(before.pauseUntil + 1000); await f.update();
   assert.equal(f.item().identification.phase, 'observing'); assert.equal(starts(f).length, 1);
   await f.restart(); await f.update(); assert.equal(f.item().identification.id, before.id);
@@ -256,7 +283,7 @@ test('Shelly manual Identify can recheck an identified vehicle without dropping 
   f.setNow(f.now + 1000); await f.runtime.identifyVehicle('charger2', f.input());
   assert.equal(f.card().vehicle.id, 'bmw'); assert.equal(f.item().identification.attempt, 2);
   f.setNow(f.now + 1000); f.publish({ charging: true }, f.now - 500); await f.update();
-  assert.equal(f.item().identification.phase, 'observing'); await f.confirm();
+  assert.equal(f.item().identification.phase, 'pausing'); await f.confirm();
   assert.equal(f.item().identification.phase, 'completed'); assert.equal(stops(f).length, 2);
 });
 

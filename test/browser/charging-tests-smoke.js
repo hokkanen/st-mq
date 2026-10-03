@@ -105,14 +105,14 @@ try {
       if (input.tagName === 'SELECT') input.dispatchEvent(new Event('change', { bubbles: true }));
     }
   })()`);
-  const screenshot = async (name, selector, { preserveScroll = false } = {}) => {
+  const screenshot = async (name, selector, { preserveScroll = false, viewport = false } = {}) => {
     // Fixed-position dialogs must be captured at document scroll zero: Chrome
     // otherwise clips background content at the dialog's document coordinates.
-    await evaluate(`window.scrollTo(0, 0); ${preserveScroll ? '' : `document.querySelector(${JSON.stringify(selector)}).scrollTop = 0;`} true`);
+    await evaluate(`${viewport ? `document.querySelector(${JSON.stringify(selector)}).scrollIntoView({block:'center'});` : 'window.scrollTo(0, 0);'} ${preserveScroll ? '' : `document.querySelector(${JSON.stringify(selector)}).scrollTop = 0;`} true`);
     await pause(80);
-    const clip = await evaluate(`(() => { const r = document.querySelector(${JSON.stringify(selector)}).getBoundingClientRect();
+    const clip = viewport ? null : await evaluate(`(() => { const r = document.querySelector(${JSON.stringify(selector)}).getBoundingClientRect();
       return { x: r.x + scrollX, y: r.y + scrollY, width: r.width, height: r.height, scale: 1 }; })()`);
-    const shot = await send('Page.captureScreenshot', { format: 'png', captureBeyondViewport: true, clip });
+    const shot = await send('Page.captureScreenshot', { format: 'png', captureBeyondViewport: !viewport, ...(clip ? {clip} : {}) });
     writeFileSync(join(artifacts, `${name}.png`), Buffer.from(shot.data, 'base64'));
   };
   const fits = async selector => assert.equal(await evaluate(`(() => {
@@ -123,7 +123,8 @@ try {
   await send('Runtime.enable'); await send('Page.enable');
   await send('Page.addScriptToEvaluateOnNewDocument', { source: `
     globalThis.chargingFixture = { reads: 0, mutations: [], reportMutations: [], reportReads: [], deletedReports: [], declarationChecks: [], runs: [], readOnly: false, family: false, connected: false, archived: false,
-      noChargers: false, vehicleReadings: {}, diagnosticsAvailable: true, recent: [], second: { current: null, recent: [] } };
+      noChargers: false, vehicleReadings: {}, diagnosticsAvailable: true, recent: [], second: { current: null, recent: [] },
+      currentTest: null, currentTestConnected: true };
     const N = ${now};
     const field = (value, receipt = false) => ({ value, available: true, measuredAt: receipt ? null : N - 60000,
       receivedAt: N - 30000, retained: false, timeBasis: receipt ? 'receipt-only' : 'measurement' });
@@ -277,6 +278,19 @@ try {
         if (chargingFixture.readyBySession && charger.id === 'charger1') {
           charger.request = {sessionId:'ready-by-browser-session',revision:1,chargeNow:false};
           charger.capabilities.scheduling = true;
+        }
+        if (chargingFixture.currentTest && charger.id === 'charger2') {
+          const currentTest = chargingFixture.currentTest;
+          const active = ['proposed','applying','active'].includes(currentTest.phase);
+          charger.values.connected = field(chargingFixture.currentTestConnected);
+          charger.values.charging = field(chargingFixture.currentTestConnected);
+          charger.capabilities = {...charger.capabilities,scheduling:true,currentControl:false};
+          charger.controls = {enabled:true,revision:1};
+          charger.request = chargingFixture.currentTestConnected ? {sessionId:currentTest.sessionId,revision:1,chargeNow:false} : null;
+          charger.vehicle = {id:null,state:chargingFixture.currentTestConnected ? 'identifying' : 'disconnected'};
+          charger.identification = {phase:active ? 'waiting' : 'completed',active,available:!active,
+            reason:active ? 'current-evidence-pending' : null,currentTest};
+          charger.telemetry = {...charger.telemetry,identificationCurrentReady:true};
         }
       }
       if (chargingFixture.noChargers) status.charging.chargers = [];
@@ -1133,6 +1147,55 @@ try {
     'Saving, un-saving and deleting reports do not change production inputs, identity, schedules or charger control');
   await keyPress('Escape');
 
+  // A confirmed current setting does not identify Tesla. Exercise the actual
+  // card while its temporary setting is applied, restored and uncertain,
+  // including the remaining restoration obligation after physical unplugging.
+  const currentTestMutations = await evaluate('chargingFixture.mutations.length');
+  await evaluate(`chargingFixture.currentTest = {
+    id:'synthetic-browser-current-test',connectedAt:${now - 60000},sessionId:'synthetic-current-session',
+    phase:'applying',startedAt:${now - 10000},expiresAt:${now + 80000},confirmedAt:null,
+    originalCurrentA:16,appliedCurrentA:6,permissionAt:${now - 12000},restoreCurrentA:null,pending:null
+  }; chargingFixture.currentTestConnected=true`);
+  await poll();
+  await evaluate(`for(let node=document.getElementById('charger2-identification');node;node=node.parentElement)
+    if(node.tagName==='DETAILS') node.open=true`);
+  assert.equal(await evaluate("document.getElementById('charger2-identification-state').textContent"), 'Confirming');
+  assert.match(await evaluate("document.getElementById('charger2-identification-status').textContent"), /temporary 6 A.*confirmation is pending/);
+  assert.equal(await evaluate("document.getElementById('charger2-identify').disabled"), true);
+  for (const width of [320,390,1440]) for (const theme of ['light','dark']) {
+    await send('Emulation.setDeviceMetricsOverride',{width,height:1000,deviceScaleFactor:1,mobile:false});
+    await evaluate(`document.documentElement.dataset.theme='${theme}'`);
+    for (const phase of ['active','restoring','uncertain']) {
+      await evaluate(`Object.assign(chargingFixture.currentTest,{phase:'${phase}',confirmedAt:${now - 5000},
+        restoreCurrentA:${phase === 'active' ? 'null' : '16'}}); chargingFixture.currentTestConnected=${phase === 'active'}`);
+      await poll();
+      const state = await evaluate("document.getElementById('charger2-identification-state').textContent");
+      const detail = await evaluate("document.getElementById('charger2-identification-status').textContent");
+      if (phase === 'active') {
+        assert.equal(state,'Checking');
+        assert.match(detail,/confirmed a temporary 6 A current limit.*fresh measured draw.*matching Tesla readings.*restored afterward/);
+        assert.doesNotMatch(await evaluate("document.getElementById('charger2-vehicle').textContent"),/Tesla identified/);
+      } else if (phase === 'restoring') {
+        assert.equal(state,'Recovery pending');
+        assert.match(detail,/awaiting restoration to 16 A.*confirmation is still required.*newer external current instructions/);
+      } else {
+        assert.equal(state,'Review required');
+        assert.match(detail,/outcome.*unknown.*actual current setting.*record remains pending/);
+        assert.doesNotMatch(detail,/controller retries/);
+      }
+      assert.equal(await evaluate("document.getElementById('charger2-identify').disabled"),true,
+        'Another identification attempt cannot hide or replace an unresolved current change');
+      await fits('#charger2-device'); await fits('#charger2-identification');
+      await screenshot(`identification-current-${phase}-${width}-${theme}`,'#charger2-identification',{viewport:true});
+    }
+  }
+  await evaluate("chargingFixture.currentTest.phase='restored'"); await poll();
+  assert.equal(await evaluate("document.getElementById('charger2-identification-state').textContent"),'Not connected');
+  assert.doesNotMatch(await evaluate("document.getElementById('charger2-identification-status').textContent"),/restoration|unknown/);
+  assert.equal(await evaluate('chargingFixture.mutations.length'),currentTestMutations,
+    'Inspecting current identification and recovery never sends a charger instruction');
+  await evaluate('chargingFixture.currentTest=null'); await poll();
+
   await send('Emulation.setDeviceMetricsOverride', { width: 320, height: 1000, deviceScaleFactor: 1, mobile: false });
   await evaluate("for (const fold of document.querySelectorAll('#charging-setup-bmw-details details')) fold.open = true");
   await fits('#charging-setup-content'); await screenshot('setup-descriptors-320', '#charging-setup-details');
@@ -1160,6 +1223,7 @@ try {
     'all-seven-event-filters-and-material-finding-cause', 'active-and-completed-report-saving', 'saved-session-selector',
     'family-report-management-disabled', 'explicit-saved-report-deletion-and-cancel', 'expired-unsave-confirmation', 'report-actions-preserve-production-charging',
     'modal-switching-focus-and-exact-linked-run', 'long-expanded-details-fit-all-viewports', 'sticky-heading-keeps-history-and-close-action-visible',
+    'minimum-current-setting-distinct-from-Tesla-evidence', 'current-restoration-after-unplug', 'uncertain-current-review-without-false-retry-promise',
     '320-390-1440-light-dark-layouts' ] }));
 } finally {
   socket?.close(); for (const task of pending.values()) clearTimeout(task.timer);

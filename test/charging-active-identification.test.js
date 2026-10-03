@@ -121,11 +121,12 @@ test('meter resets cannot renew a probe and missing physical telemetry requests 
   validateIdentificationState(state);
 });
 
-test('backwards clock adjustments and restart preserve confirmed pause evidence after immediate restoration', () => {
+test('backwards clock adjustments and restart preserve the confirmed pause and its original deadline', () => {
   const { state } = pausedFixture();
-  assert.equal(state.phase, 'observing'); assert.equal(state.action, null);
+  assert.equal(state.phase, 'pausing'); assert.equal(state.action, 'pause');
   let resumed = advanceIdentification(JSON.parse(JSON.stringify(state)), input({ now: START + 4000 }));
   assert.equal(resumed.lastAt, state.lastAt); assert.equal(resumed.pauseUntil, state.pauseUntil);
+  assert.equal(resumed.phase, 'pausing'); assert.equal(resumed.action, 'pause');
   resumed = advanceIdentification(resumed, input({ now: state.pauseUntil + 120 * MINUTE }));
   assert.equal(resumed.phase, 'observing'); assert.equal(resumed.completedAt, null);
   assert.deepEqual(resumed.pause, state.pause);
@@ -149,12 +150,63 @@ test('missing charging telemetry does not renew an unconfirmed pause', () => {
   assert.equal(state.action, null);
 });
 
-test('confirmed physical stop releases the pause immediately without waiting for BMW', () => {
+test('confirmed physical stop retains the bounded BMW observation pause until its original deadline', () => {
   const { state } = pausedFixture();
-  assert.equal(state.phase, 'observing'); assert.equal(state.action, null);
-  const later = advanceIdentification(state, input({ now: START + MINUTE, charging: true, powerKw: 11 }));
-  assert.equal(later.phase, 'observing'); assert.equal(later.action, null);
+  assert.equal(state.phase, 'pausing'); assert.equal(state.action, 'pause');
+  const later = advanceIdentification(state, input({ now: START + MINUTE, charging: false, powerKw: 0 }));
+  assert.equal(later.phase, 'pausing'); assert.equal(later.action, 'pause');
   assert.deepEqual(later.pause, state.pause);
+  assert.equal(later.pauseUntil, state.pauseUntil);
+  const expired = advanceIdentification(later, input({ now: state.pauseUntil, charging: false, powerKw: 0 }));
+  assert.equal(expired.phase, 'observing'); assert.equal(expired.action, null);
+  assert.equal(expired.reason, 'pause-timeout');
+});
+
+test('BMW reports arriving during the bounded hold retain source clocks and release promptly after a positive match', () => {
+  for (const delay of [30_000, 60_000]) {
+    const { state, reading } = pausedFixture(), now = state.pause.stoppedAt + delay;
+    const measuredAt = reading.fields.charging.negativeEvent.measuredAt;
+    reading.fields.charging.negativeEvent.receivedAt = now;
+    const held = advanceIdentification(state, input({ now, charging: false, powerKw: 0 }));
+    assert.equal(held.phase, 'pausing');
+    assert.ok(matchActiveBmwPause(reading, { state: held, now }));
+    assert.equal(reading.fields.charging.negativeEvent.measuredAt, measuredAt);
+    const completed = advanceIdentification(held, input({ now, identified: true }));
+    assert.equal(completed.phase, 'completed'); assert.equal(completed.action, null);
+    assert.ok(completed.completedAt < state.pauseUntil);
+    assert.deepEqual(completed.pause, state.pause);
+  }
+});
+
+test('a positive identity or explicit manual stop ends a held BMW pause without extending it', () => {
+  for (const condition of [{ identified: true }, { manualStop: true }]) {
+    const { state } = pausedFixture();
+    const ended = advanceIdentification(state, input({ now: START + 10_000, ...condition }));
+    assert.equal(ended.action, null);
+    assert.equal(ended.phase, condition.identified ? 'completed' : 'observing');
+    assert.equal(ended.pauseUntil, state.pauseUntil);
+  }
+});
+
+test('physical stop ends probe accounting but preserves its BMW pause and economic return across restart', () => {
+  const { reading, options } = fixture(), candidate = prepareActiveBmwCandidate(reading, options);
+  let state = advanceIdentification(null, probeInput({ now: options.now, charging: true, candidate,
+    energyKwh: 2, powerKw: 7 }));
+  const deadline = state.pauseUntil, probe = structuredClone(state.probe);
+  const pause = { connectedAt: START, requestedAt: START + 4000, confirmedAt: START + 7000,
+    stoppedAt: START + 6000, startAt: probe.returnStartAt };
+  state = advanceIdentification(state, probeInput({ now: START + 8000, charging: false, powerKw: 0, pause }));
+  assert.equal(state.phase, 'pausing'); assert.equal(state.action, 'pause');
+  assert.equal(state.probe.endedAt, START + 8000);
+  const usedKwh = state.chargeUsedKwh;
+  state = advanceIdentification(JSON.parse(JSON.stringify(state)), probeInput({ now: START + MINUTE,
+    charging: false, powerKw: 0, energyKwh: 2.02, pause }));
+  assert.equal(state.phase, 'pausing'); assert.equal(state.pauseUntil, deadline);
+  assert.equal(state.chargeUsedKwh, usedKwh); assert.equal(state.probe.returnStartAt, probe.returnStartAt);
+  state = advanceIdentification(state, probeInput({ now: deadline, charging: false, powerKw: 0 }));
+  assert.equal(state.phase, 'observing'); assert.equal(state.action, null);
+  assert.equal(state.probe.endedAt, START + 8000);
+  validateIdentificationState(state);
 });
 
 test('a probe without physical draw still stops at its safety duration and retains the single allowance', () => {

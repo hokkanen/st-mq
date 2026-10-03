@@ -75,8 +75,9 @@ const observe = (state, reason, now) => ({ ...state, phase: 'observing', reason,
   ...(state.probe ? { probe: { ...state.probe, endedAt: state.probe.endedAt ?? now } } : {}) });
 
 /** Identification lasts for a connection. Only extra charging has a probe
- * budget. A confirmed physical stop immediately restores ordinary control;
- * independent BMW evidence may arrive at any later point in the connection. */
+ * budget. A BMW correlation pause retains its original bounded deadline after
+ * physical confirmation so the vehicle can observe the stop. Independent BMW
+ * evidence may also arrive later in the same connection. */
 export function advanceIdentification(previous, { connectedAt, now, connected = true, identified = false,
   manualRetry = false, manualStop = false, available = true, charging = false, energyKwh = null, powerKw = null,
   normalCharging = true, probeAllowed = false, probeReturnAt = null, probeDurationMs = IDENTIFICATION_CHARGE_LIMIT_MS,
@@ -114,14 +115,18 @@ export function advanceIdentification(previous, { connectedAt, now, connected = 
     && pause.requestedAt >= (state.candidate?.capturedAt ?? state.startedAt)
     && pause.confirmedAt <= now && pause.stoppedAt <= now && pause.stoppedAt < state.pauseUntil) {
     state.pause = structuredClone(pause);
-    return observe(state, state.reason ?? 'awaiting-evidence', now);
+    if (!state.candidate) return observe(state, state.reason ?? 'awaiting-evidence', now);
+    if (state.probe) state.probe.endedAt ??= now;
+    state.reason ??= 'awaiting-evidence';
   }
   if (state.phase === 'pausing' && state.probe?.endedAt === null && physicalStopped && physicalFresh
     && (state.chargeUsedKwh > 0 || state.chargingStartedAt !== null && state.chargingStartedAt >= state.probe.startedAt)) {
     // An independently observed stop may precede command confirmation.
     // Current zero/withholding evidence ends the extra charging, but cannot
     // manufacture the causal pause proof required by active vehicle matching.
-    return observe(state, state.reason ?? 'awaiting-evidence', now);
+    // A candidate still needs its already bounded observation window.
+    if (!state.candidate) return observe(state, state.reason ?? 'awaiting-evidence', now);
+    state.probe.endedAt = now;
   }
   if (state.phase === 'observing') {
     // A probe that never obtained physical charging can still use one ordinary

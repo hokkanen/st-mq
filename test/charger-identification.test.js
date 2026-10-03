@@ -26,9 +26,14 @@ test('passive assignment continues hours after plug with automatic OFF on either
     assert.equal(view.settings.enabled,false);assert.equal(view.provider,id==='charger1'?'easee':'shelly-evse');
   }
 });
-test('equal-power chargers remain explicitly ambiguous rather than inferring the other charger',t=>{
+test('equal-power chargers remain unidentified without inferring either vehicle',t=>{
   const f=fixture(t);Object.assign(f.physical.charger2,{connected:true,session:NOW});f.charge('charger1',NOW+1000);f.charge('charger2',NOW+1000);
-  for(const id of ['charger1','charger2']) {assert.equal(f.view(id).vehicle.id,null);assert.equal(f.view(id).vehicle.state,'conflict');}
+  for(const id of ['charger1','charger2']) {
+    assert.equal(f.view(id).vehicle.id,null);assert.equal(f.view(id).vehicle.state,'unidentified');
+    assert.equal(f.runtime.chargers[id].vehicleMatch,null);
+    assert.equal(f.runtime.chargers[id].vehicleConflict,null,'Similar power alone is not conflicting positive identity evidence');
+    assert.equal(f.view(id).values.soc.source,'manual-fallback');
+  }
 });
 test('physical cable swap changes assignment without borrowing session energy, deadline or ownership',t=>{
   const f=fixture(t);f.charge('charger1',NOW+1000);const old=f.view('charger1').request;

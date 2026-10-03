@@ -270,6 +270,9 @@ export function easeeChargerTelemetry(snapshot = {}, { now = Date.now() } = {}) 
     maxCurrentA: signal(maxCurrentA, [22, 23, 24, 47, 104]),
     availableCurrentA: signal(equalizerKnown ? Math.min(...limits.equalizerAvailableA) : null, [230, 231, 232], 'easee-equalizer'),
     actualCurrentA: signal(snapshot.supply?.chargerCurrentA?.reduce((sum, value) => sum + value, 0) / 3, [183, 184, 185]),
+    phaseCurrentA: { ...signal(snapshot.supply?.chargerCurrentA, [183, 184, 185]),
+      inputs: [183, 184, 185].map((id, index) => ({ measuredAt: snapshot.supply?.observationTimes?.charger?.[index]
+        ?? snapshot.observations?.[id]?.at ?? null })) },
     phases: { value: 3, available: true, source: 'installation-assumption', assumed: true },
     voltageV: { ...signal(voltageV, [], 'easee-equalizer'), timeBasis: 'derived-observations',
       inputs: [34, 35, 36].map((id, index) => ({ id, measuredAt: snapshot.supply?.observationTimes?.voltage?.[index] ?? null })) },

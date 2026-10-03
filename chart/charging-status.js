@@ -47,7 +47,8 @@ export const CHARGING_CONTROL_CAUSES = {
 
 /** Waiting for vehicle evidence does not suspend ordinary price scheduling. */
 export const chargingIdentificationInProgress = charger => charger.identification?.active === true
-  && (charger.identification.phase !== 'waiting' || charger.identification.probe?.endedAt === null);
+  && (charger.identification.phase !== 'waiting' || charger.identification.probe?.endedAt === null
+    || ['proposed', 'applying', 'active'].includes(charger.identification.currentTest?.phase));
 
 /** An OCPP transaction is needed to apply a profile, not to display a plan. */
 export const chargingTransactionWaiting = charger => charger.control?.errorCode === 'transaction-unconfirmed'
