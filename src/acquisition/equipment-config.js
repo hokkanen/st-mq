@@ -103,8 +103,10 @@ export function equipmentConfiguration(input = {}) {
     let temperatureControl = null;
     if (row.temperature_control !== undefined) {
       schema(row.temperature_control, ['sensor_device_id'], 'dehumidifier temperature control');
-      if (kind !== 'dehumidifier' || !controlsDehumidifier) throw new Error('Temperature control requires a controllable dehumidifier');
-      temperatureControl = { sensorDeviceId: signal(row.temperature_control.sensor_device_id) };
+      if (Object.hasOwn(row.temperature_control, 'sensor_device_id')) {
+        if (kind !== 'dehumidifier' || !controlsDehumidifier) throw new Error('Temperature control requires a controllable dehumidifier');
+        temperatureControl = { sensorDeviceId: signal(row.temperature_control.sensor_device_id) };
+      }
     }
     if (controlsCover && (kind !== 'door' || protocol !== 'mqtt')) throw new Error('Cover control requires MQTT door equipment');
     if (kind === 'dehumidifier' && protocol !== 'mqtt' || controlsDehumidifier && kind !== 'dehumidifier')

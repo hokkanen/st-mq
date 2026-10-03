@@ -3,7 +3,7 @@
 ![ST-MQ icon](icon.png)
 
 ST-MQ is a local home-energy controller under development for a Raspberry Pi 5
-Home Assistant add-on and standalone Linux. Current behavior is described below
+Home Assistant app (formerly add-on) and standalone Linux. Current behavior is described below
 and in the linked feature guides. Audit implementation decisions are recorded in
 [the audit ledger](docs/audit/README.md).
 
@@ -503,8 +503,10 @@ averages without correcting history or training/calibrating the house model.
 ## Persistence and historical data
 
 Standalone databases are in `var/`; Home Assistant uses `/config/st-mq/` in the
-public add-on folder, accessible through SSH under
-`/addon_configs/<repository-id>_st-mq/st-mq/`. Simulation
+public app folder, accessible through the current official Terminal & SSH app
+under `/app_configs/<repository-id>_st-mq/st-mq/`. Third-party file tools may
+instead mount `/addon_configs`; see [the path table](DOCS.md#ssh-database-access-and-backups).
+Simulation
 uses `simulation.sqlite`; real/offline household history uses `st-mq.sqlite`.
 Override the database directory with `STMQ_DATABASE_DIR`. Private provider token
 caches remain in `STMQ_DATA_DIR` (`/data/st-mq` in HA). Only the explicitly selected
@@ -514,7 +516,7 @@ database deliberately and re-import supported v0.7.5 CSVs. `/share/st-mq` remain
 folder for historical CSVs and exported backups. See [SSH access and backups](DOCS.md#ssh-database-access-and-backups).
 These databases and supplied CSVs are excluded from Git and Docker contexts.
 Keep private configuration outside the repository. Standalone uses the permanent
-`secrets.json` described below; Home Assistant owns its saved add-on options.
+`secrets.json` described below; Home Assistant owns its saved app options.
 Historical encrypted configuration is covered by the archival audit in
 [secret handling](docs/secret-handling.md); it is not the current configuration workflow.
 
@@ -566,20 +568,22 @@ node scripts/benchmark-history.js var/st-mq.sqlite
 | Variable | Default / purpose |
 | --- | --- |
 | `STMQ_INPUT` | `simulated`; also `offline`, `mqtt`, or `providers` |
-| `STMQ_DATA_DIR` | `./var`, or `/data/st-mq` in the add-on |
+| `STMQ_DATA_DIR` | `./var`, or `/data/st-mq` in the app |
 | `STMQ_DATABASE_DIR` | Same as data directory on Linux; `/config/st-mq` in HA |
 | `STMQ_PORT` | `1234` |
-| `STMQ_HOST` | `127.0.0.1` on standalone; optional add-on direct access listens on `0.0.0.0` |
+| `STMQ_HOST` | `127.0.0.1` on standalone; optional app direct access listens on `0.0.0.0` |
 | `STMQ_API_TOKEN` | Admin password; overrides `controller.web_token`; at least 24 characters for direct network access |
 | `STMQ_FAMILY_API_TOKEN` | Optional family password; overrides `controller.web_family_token`; distinct from admin and at least 24 characters for direct network access |
-| `STMQ_CONFIG` | Standalone private override JSON; defaults to `$XDG_CONFIG_HOME/st-mq/secrets.json`, or `~/.config/st-mq/secrets.json`. In the add-on, overrides only the initial/fallback Supervisor export path. |
+| `STMQ_CONFIG` | Standalone private override JSON; defaults to `$XDG_CONFIG_HOME/st-mq/secrets.json`, or `~/.config/st-mq/secrets.json`. In the app, overrides only the initial/fallback Supervisor export path. |
 | `STMQ_MAX_DROP_C` | Occupied preferred drop; overrides `controller.max_drop_c` (default 1.5°C) |
 | `STMQ_H66_DEVICE` | Exact H66 topic prefix; enables H66 alongside a configured MQTT broker |
 | `STMQ_H66_VERIFICATION` | Optional JSON path with verified register scaling/evidence |
 
-Home Assistant ingress grants full admin access using the existing Home Assistant
-login. Optional direct
-add-on access on port 1234 is enabled only with a valid `controller.web_token`;
+Every accepted Home Assistant ingress session grants full ST-MQ admin access.
+Home Assistant shows the sidebar entry to administrators, but that visibility
+setting does not restrict ingress authorization. Family restrictions apply only
+to direct access with the family password; see [Home Assistant access details](DOCS.md#home-assistant-files-and-permissions).
+Optional direct app access at `http://<HA-host-address>:1234` is enabled only with a valid `controller.web_token`;
 clearing both web tokens and applying configuration disables direct access while
 ingress remains available. Standalone loopback access permits an empty admin
 token when family access is disabled; listening beyond loopback requires a token
@@ -788,7 +792,7 @@ a rejected key. The suite uses no MQTT and sends no equipment commands.
 
 `config.json` is public: its `options` object contains shared application
 defaults, including standard MQTT topics and equipment definitions. Its metadata
-and `schema` describe the Home Assistant add-on. Keep installation credentials,
+and `schema` describe the Home Assistant app. Keep installation credentials,
 private identifiers and your own overrides in `secrets.json`, using a **plain JSON
 options object** without the manifest's outer `options` wrapper. Despite its name,
 this file can also hold non-secret choices such as Garage enablement and approval.
@@ -808,23 +812,25 @@ and **Apply reviewed configuration** merges it over `config.json.options`, and n
 deletes it. Environment overrides take precedence. The UI displays the actual
 paths used by the running instance.
 
-In Home Assistant, edit and **save** add-on options, then choose **Check & review
+In Home Assistant, edit and **save** app options, then choose **Check & review
 configuration** followed by **Apply reviewed configuration**. The check fetches the freshly saved Supervisor options;
 it does not depend on the startup export in `/data/options.json`. For an import,
-upload a sparse `secrets.json` using SSH to the exact add-on configuration path
-shown in ST-MQ, normally `/addon_configs/<actual-add-on-slug>/secrets.json`.
-ST-MQ sees this as `/config/secrets.json`. Apply reads the fresh saved options,
+upload a sparse `secrets.json` using SSH to the exact app configuration path
+shown in ST-MQ, normally `/app_configs/<actual-app-slug>/secrets.json` in
+the official Terminal & SSH app; some third-party file tools use `/addon_configs`
+for the same folder. ST-MQ sees this as `/config/secrets.json`. Apply reads the fresh saved options,
 merges the uploaded values, saves the result in Home Assistant, and applies the
 supported settings. The uploaded file is removed only after successful import
 and application. A failed import keeps it for correction; if cleanup alone fails,
 the UI reports that the applied file needs manual removal. Home Assistant keeps
 the imported values after the upload is removed. See [Home Assistant setup](DOCS.md).
 
-Supervisor remains authoritative in the add-on, including when `STMQ_CONFIG`
+Supervisor remains authoritative in the app, including when `STMQ_CONFIG`
 selects an alternative startup export for tooling. Existing Home Assistant
-`!secret` references are resolved for runtime use; saving an import follows
-Supervisor's normal behavior of storing the resolved values. Uploaded JSON must
-contain actual values. Home Assistant rejects explicit `null`, including for
+`!secret` references are resolved separately for runtime use; saving an import
+preserves existing references in fields the import does not replace. An explicit
+imported value replaces its corresponding reference. Uploaded JSON must contain
+actual values, not new `!secret` references. Home Assistant rejects explicit `null`, including for
 optional fields; use an empty string for optional text, or remove the field in
 Home Assistant's settings. Ubuntu supports `null` for optional fields.
 
@@ -832,7 +838,7 @@ Objects merge recursively. Missing keys retain the lower layer's value, arrays
 replace the lower layer's whole array, and explicit empty values clear fields
 where that field permits an empty value. For example, omitting a saved MQTT
 password preserves it during an HA import; providing `"pw": ""` clears it. To
-disable direct add-on access, set
+disable direct app access, set
 `"controller": { "web_token": "", "web_family_token": "" }` and apply.
 On Ubuntu, removing a key from the permanent file restores the public default
 on the next application. Invalid values reject the change; no private values are
@@ -955,16 +961,22 @@ cycle metrics. No battery dispatch is implemented.
 
 ## Deployment paths
 
-See [Home Assistant setup](DOCS.md). A local container build needs no `BUILD_FROM`
-argument:
+On Home Assistant OS, select **Home Energy** under **Settings → Apps → Install
+app** after adding `https://github.com/hokkanen/st-mq` as the **Home Energy apps**
+repository. The project and installation slug remain `st-mq`. See [Home Assistant
+setup](DOCS.md) for installation, ingress, storage, backups and troubleshooting.
+Home Assistant Container has no app manager; use standalone ST-MQ alongside it.
+A local container build needs no `BUILD_FROM` argument:
 
 ```sh
 docker build -t st-mq:development .
 ```
 
 The same Node core and SQLite schema run in both targets. The container supports
-`amd64` and `aarch64`; this development host validates x86 execution only. CI
-builds and runs the isolated mounted add-on smoke check for both architectures.
+`amd64` and `aarch64`. The extended CI workflow defines isolated mounted app
+checks for both architectures; consult [validation results](docs/PROGRESS.md)
+for checks actually run. Container checks do not establish a physical Raspberry
+Pi or Supervisor installation.
 Run `scripts/test-addon-container.sh st-mq:development` to check a local image.
 [deploy/st-mq.service](deploy/st-mq.service)
 is an example standalone systemd unit to adapt to an installation; it has not been

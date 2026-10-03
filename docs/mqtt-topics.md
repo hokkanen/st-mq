@@ -24,14 +24,15 @@ Every command needs a subsequent power report to verify its result; timed
 circulation and its durable OFF obligation remain independent. See [DHWR setup](dhwr-mqtt.md).
 
 [BMW CarData](bmw-cardata.md) publishes retained QoS 1 JSON on the established
-vehicle feed `stmq/garage/charger1/vehicle`: charge percentage, vehicle target,
-usable capacity and the original measurement timestamps.
+vehicle feed `stmq/vehicles/bmw`: charge percentage, vehicle target,
+usable capacity and the original measurement timestamps. Configure the matching
+`charging.vehicles.bmw.mqttTopic`; the feed belongs to the vehicle, not a charger.
 
 ## Caravan devices
 
 Caravan air uses the Shelly BLU bridge topic `stmq/garage/caravan_air/state`
 and read-only query `stmq/garage/caravan_air/get`. Reinstall the generated bridge with this prefix at cutover.
-The future dehumidifier uses the separate `stmq/garage/caravan_dehumidifier` prefix
+The dehumidifier uses the separate `stmq/garage/caravan_dehumidifier` prefix
 with `/state` snapshots, `/set` commands, `/get` readback queries and `/availability`.
 See the [payload and confirmation contract](caravan-dehumidifier.md). It does not
 share the Caravan energy plug’s native `stmq/garage/caravan` prefix.
@@ -49,12 +50,12 @@ and availability topics. Both public door configurations select this
 protocol. The optional HA air-temperature publisher is available separately;
 ST-MQ's default garage temperature source remains native Shelly MQTT.
 
-The three HA status publishers and two cover-command handlers use the new topics.
-Legacy routes remain until their readers and writers migrate. The four legacy
-door status publishers and four separate legacy operation handlers are different
-automations; migrating status alone does not make the operation handlers redundant.
-The legacy temperature publisher uses source changes instead of a minute timer.
-Home Assistant publishing changes do not restart or migrate ST-MQ. Exact
+Generate status publishers and cover-command handlers using the current topics.
+An external installation may still have older routes; retire them once their
+readers and writers have been changed. Status publishing and command handling
+are separate automations, so changing one does not change the other. The optional
+temperature publisher reacts to source changes and read-only status requests.
+Home Assistant publishing changes do not restart or reconfigure ST-MQ. Exact
 [SmartThings door settings](homeassistant-mqtt.md#smartthings-door-settings) include
 both directions and the JSON format change.
 

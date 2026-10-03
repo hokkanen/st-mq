@@ -5,6 +5,30 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { loadConfig } from '../src/app/config.js';
 import { validateOptionFields } from '../src/app/configuration-source.js';
+import { equipmentConfiguration } from '../src/acquisition/equipment-config.js';
+
+test('empty Home Assistant temperature-control objects grant no wiring or authority', () => {
+  const manifest = JSON.parse(readFileSync(new URL('../config.json', import.meta.url), 'utf8'));
+  const options = manifest.options.equipment;
+  const resolved = equipmentConfiguration(options).devices;
+  for (const device of options.devices) {
+    assert.ok(Object.hasOwn(device, 'temperature_control'), `Supervisor requires the object for ${device.id}`);
+    if (Object.keys(device.temperature_control).length === 0)
+      assert.equal(resolved.find(row => row.id === device.id).temperatureControl, null);
+  }
+  const sensor = structuredClone(options.devices.find(row => row.kind === 'temperature'));
+  assert.throws(() => equipmentConfiguration({ devices: [{ ...sensor,
+    temperature_control: { sensor_device_id: 'fixture_sensor' } }] }), /controllable dehumidifier/);
+  for (const temperature_control of [null, [], { retired_sensor: 'fixture_sensor' }])
+    assert.throws(() => equipmentConfiguration({ devices: [{ ...sensor, temperature_control }] }), /temperature control/);
+
+  const dehumidifier = structuredClone(options.devices.find(row => row.kind === 'dehumidifier'));
+  const withoutBinding = equipmentConfiguration({ devices: [{ ...dehumidifier, temperature_control: {} }] }).devices[0];
+  assert.equal(withoutBinding.temperatureControl, null);
+  assert.equal(withoutBinding.controlsDehumidifier, true, 'An absent sensor binding preserves explicit native device control');
+  for (const sensor_device_id of ['', null, undefined])
+    assert.throws(() => equipmentConfiguration({ devices: [{ ...dehumidifier, temperature_control: { sensor_device_id } }] }));
+});
 
 test('public equipment defaults work with broker-only private settings and preserve indoor membership', t => {
   const directory = mkdtempSync(join(tmpdir(), 'stmq-public-equipment-'));

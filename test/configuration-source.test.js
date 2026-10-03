@@ -38,7 +38,8 @@ function fixture(t) {
     if (state.failSave) return { ok: false, json: async () => ({ result: 'error', message: 'synthetic-private-validation-error' }) };
     state.lastSavedOptions = JSON.parse(request.body).options;
     assert.equal(JSON.stringify(state.lastSavedOptions).includes(':null'), false, 'Supervisor rejects explicit null, including optional fields');
-    state.current = resolveReferences(state.lastSavedOptions);
+    // Supervisor 2026.09.3 saves references; only options/config resolves them.
+    state.current = structuredClone(state.lastSavedOptions);
     if (state.changeReadback) state.current.controller.max_drop_c = 1;
     if (state.failAfterSave) throw new Error('synthetic-network-timeout-after-save');
     return { ok: true, json: async () => ({ result: 'ok', data: {} }) };
@@ -84,7 +85,7 @@ test('HA import validates before saving, merges current options and deletes only
   assert.equal(transaction.config.options.mqtt.pw, 'synthetic-new-password');
   assert.equal(transaction.config.options.controller.learning_trials, false);
   assert.deepEqual(transaction.config.options.easee.charger_voltage_ids, []);
-  assert.equal(transaction.config.configuration.externalImportPath, '/addon_configs/synthetic_st-mq/secrets.json');
+  assert.equal(transaction.config.configuration.externalImportPath, '/app_configs/synthetic_st-mq/secrets.json');
   assert.equal(transaction.config.configuration.environment, 'home-assistant');
   assert.equal(JSON.stringify(transaction.config.configuration).includes('synthetic-new-password'), false);
   await transaction.persist();
@@ -154,9 +155,12 @@ test('existing HA secret references resolve for runtime and follow Supervisor sa
   assert.equal(imported.config.options.controller.web_token, 'synthetic-resolved-web-token-value');
   await imported.persist();
   assert.equal(f.state.lastSavedOptions.controller.web_token, '!secret synthetic_existing_web_token');
-  assert.equal(f.state.current.controller.web_token, 'synthetic-resolved-web-token-value');
+  assert.equal(f.state.current.controller.web_token, '!secret synthetic_existing_web_token');
   await imported.complete();
   assert.equal(existsSync(f.paths.importPath), false);
+  f.state.secretValues.synthetic_existing_web_token = 'fixture-rotated-ha-web-token';
+  const reloaded = await f.source.prepare();
+  assert.equal(reloaded.config.options.controller.web_token, 'fixture-rotated-ha-web-token');
 });
 
 test('HA validates resolved field names before rendering unsupported value errors', async t => {
@@ -169,7 +173,7 @@ test('HA validates resolved field names before rendering unsupported value error
   assert.equal(f.posts(), 0);
 });
 
-test('receipt recognizes interrupted Supervisor save after existing references were resolved', async t => {
+test('receipt recognizes interrupted Supervisor save while existing references remain stored', async t => {
   const f = fixture(t);
   f.state.current.mqtt.pw = '!secret synthetic_existing_password';
   f.state.secretValues.synthetic_existing_password = 'synthetic-resolved-mqtt-password';

@@ -1,29 +1,58 @@
-// Synthetic frontend fixture only. The proxy models HA's URL prefix and status
-// metadata; Supervisor imports and trusted-ingress authentication have separate
-// server tests. Requires an isolated Chrome DevTools listener, as the learning
-// browser smoke does. No household configuration or live providers are used.
+// Synthetic HA fixture: real add-on runtime, ingress listener and configuration
+// imports behind a local proxy, with an in-memory Supervisor API. Requires an
+// isolated Chrome DevTools listener. No household configuration or live providers.
 import assert from 'node:assert/strict';
 import { createServer } from 'node:http';
 import { existsSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { start } from '../src/main.js';
-import { loadConfig } from '../src/app/config.js';
+import { configurationSource, loadConfig } from '../src/app/config.js';
+import { createConfigurationSource } from '../src/app/configuration-source.js';
 import { seedChartFixture } from './lib/chart-fixture.js';
 
 const directory = mkdtempSync(join(tmpdir(), 'stmq-ingress-browser-'));
-const privatePath = join(directory, 'secrets.json');
+const privatePath = join(directory, 'supervisor-options.json');
+const importPath = join(directory, 'secrets.json');
 const prefix = '/api/hassio_ingress/synthetic-browser-session/';
-const uploadPath = '/addon_configs/synthetic_repository_st-mq/secrets.json';
+const uploadPath = '/app_configs/synthetic_repository_st-mq/secrets.json';
 const now = Date.parse('2026-09-07T12:00:00Z');
 const requests = [], pending = new Map(), errors = [];
 let app, proxy, socket, id = 0, rejectStatus = false, cleanupPending = false, metadataAvailable = true, stallReads = null;
 
 try {
   writeFileSync(privatePath, '{}', { mode: 0o600 });
-  const config = loadConfig({ STMQ_CONFIG: privatePath, STMQ_DATA_DIR: directory,
-    STMQ_PORT: '0', STMQ_INPUT: 'simulated' }, directory);
+  const env = { STMQ_ADDON: '1', STMQ_CONFIG: privatePath, STMQ_DATA_DIR: directory,
+    STMQ_DATABASE_DIR: directory, STMQ_HOST: '127.0.0.1', STMQ_PORT: '0', STMQ_INPUT: 'simulated',
+    STMQ_INGRESS_HOST: '127.0.0.1', STMQ_INGRESS_PORT: '0', SUPERVISOR_TOKEN: 'fixture-supervisor-token' };
+  const config = loadConfig(env, directory);
+  let savedOptions = {};
+  const source = createConfigurationSource({ env, cwd: directory,
+    paths: { defaultsPath: fileURLToPath(new URL('../config.json', import.meta.url)), privatePath, importPath,
+      receiptPath: join(directory, 'configuration-import.json') },
+    buildConfig(options, information) {
+      const candidatePath = join(directory, 'candidate.json');
+      writeFileSync(candidatePath, JSON.stringify(options), { mode: 0o600 });
+      const candidate = loadConfig({ ...env, STMQ_CONFIG: candidatePath }, directory);
+      candidate.configuration = information;
+      return candidate;
+    },
+    async fetchImpl(url, request) {
+      assert.equal(request.headers.Authorization, 'Bearer fixture-supervisor-token');
+      assert.equal(url, `http://supervisor/addons/self/${request.method === 'POST' ? 'options' : 'info'}`);
+      if (request.method === 'POST') savedOptions = JSON.parse(request.body).options;
+      return { ok: true, json: async () => ({ result: 'ok', data: request.method === 'POST' ? {}
+        : { slug: 'synthetic_repository_st-mq', options: structuredClone(savedOptions) } }) };
+    },
+  });
+  configurationSource(config).prepare = args => source.prepare(args);
   app = await start({ config, clock: () => now });
+  assert.equal(app.webAccess.status().ingress.enabled, true);
+  assert.equal(app.webAccess.status().direct.enabled, false);
+  // Model the trusted Supervisor TCP peer; spoofed headers cannot grant this.
+  app.webAccess.ingressServer.on('connection', connection =>
+    Object.defineProperty(connection, 'remoteAddress', { value: '172.30.32.2' }));
   seedChartFixture(app.store, now);
   const upstream = `http://127.0.0.1:${app.server.address().port}`;
   proxy = createServer(async (request, response) => {
@@ -37,16 +66,15 @@ try {
         response.writeHead(200, { 'Content-Type': 'application/json' }); response.write('{'); return;
       }
       if (rejectStatus && path === '/api/status') {
-        response.writeHead(401, { 'Content-Type': 'application/json' }); response.end('{"error":"Synthetic expired HA session"}'); return;
+        response.writeHead(401, { 'Content-Type': 'text/plain' }); response.end('401: Unauthorized'); return;
       }
       const chunks = []; for await (const chunk of request) chunks.push(chunk);
       const body = Buffer.concat(chunks);
       assert.ok(body.length < 64 * 1024, 'Fixture requests stay bounded');
-      const headers = {};
+      const headers = { 'X-Forwarded-Host': request.headers.host, 'X-Forwarded-Proto': 'http',
+        'X-Ingress-Path': prefix.slice(0, -1) };
       if (request.headers['content-type']) headers['Content-Type'] = request.headers['content-type'];
-      // The upstream is an isolated standalone fixture. Its same-origin checks
-      // see its own URL, just as a properly configured proxy presents it.
-      if (request.headers.origin) headers.Origin = upstream;
+      if (request.headers.origin) headers.Origin = request.headers.origin;
       const result = await fetch(`${upstream}${path}`, { method: request.method, headers,
         ...(body.length ? { body } : {}), signal: AbortSignal.timeout(10_000) });
       const forwarded = Object.fromEntries([...result.headers].filter(([key]) => !['content-length', 'content-encoding', 'transfer-encoding', 'connection'].includes(key)));
@@ -109,8 +137,8 @@ try {
   const instructions = await evaluate("document.getElementById('settings-configuration-steps').textContent");
   assert.ok(instructions.includes(uploadPath), 'UI renders the actual Supervisor slug supplied by status');
   assert.deepEqual(await evaluate("[...document.querySelectorAll('#settings-location dt, #settings-location dd')].map(node => node.textContent)"),
-    ['Folder', '/addon_configs/synthetic_repository_st-mq', 'File name', 'secrets.json', 'Full path', uploadPath,
-      'Inside add-on', '/config/secrets.json']);
+    ['Folder', '/app_configs/synthetic_repository_st-mq', 'File name', 'secrets.json', 'Full path', uploadPath,
+      'Inside app', '/config/secrets.json']);
   assert.equal(await evaluate("document.getElementById('settings-location-message').hidden"), true);
   assert.match(instructions, /freshly saved options/);
   assert.match(instructions, /Omitted fields keep saved values/);
@@ -118,7 +146,7 @@ try {
   assert.match(await evaluate("document.getElementById('settings-access').textContent"), /Host dashboard access.*host login.*Direct access is disabled/);
   assert.equal(await evaluate("document.getElementById('settings-reload').textContent"), 'Check & review configuration');
 
-  writeFileSync(privatePath, '{"controller":{"max_drop_c":0.6}}', { mode: 0o600 });
+  writeFileSync(importPath, '{"controller":{"max_drop_c":0.6}}', { mode: 0o600 });
   cleanupPending = true;
   await evaluate("document.getElementById('settings-reload').click()");
   await until("!document.getElementById('settings-review').hidden && !document.getElementById('settings-review-apply').disabled");
@@ -127,7 +155,9 @@ try {
   assert.equal(await evaluate("document.getElementById('drop').textContent"), '0.6 °C');
   assert.equal(await evaluate("document.getElementById('settings-import-warning').hidden"), false);
   assert.match(await evaluate("document.getElementById('settings-import-warning').textContent"), /uploaded secrets.json could not be removed/);
-  assert.equal(existsSync(privatePath), true, 'Standalone fixture retains its private file');
+  assert.equal(savedOptions.controller.max_drop_c, 0.6, 'Reviewed import is saved to Supervisor');
+  assert.equal(existsSync(importPath), false, 'Successful import removes only the uploaded file');
+  assert.equal(existsSync(privatePath), true, 'Supervisor startup export remains intact');
 
   await evaluate("document.getElementById('recording-details').open = true; document.getElementById('recording-overview-details').open = true; document.getElementById('energy-audit-details').open = true;");
   await until("document.getElementById('recording-overview-message').textContent.includes('Database snapshot:')");
@@ -136,7 +166,7 @@ try {
     assert.ok(requests.some(request => request.path.startsWith(`${prefix}${path}`)), `Browser requested ${path} through ingress`);
   }
   assert.ok(requests.some(request => request.method === 'POST' && request.path === `${prefix}api/settings/reload`));
-  assert.ok(requests.some(request => new RegExp(`^${prefix}theme-[a-f0-9]+\\.js$`).test(request.path)), 'Early theme loads inside ingress');
+  assert.ok(requests.some(request => request.path.startsWith(`${prefix}theme-`) && request.path.endsWith('.js')), 'Early theme loads inside ingress');
   assert.ok(requests.some(request => request.path.startsWith(`${prefix}index-`) && request.path.endsWith('.js')), 'Built application module loads inside ingress');
   assert.ok(requests.some(request => request.path.startsWith(`${prefix}index-`) && request.path.endsWith('.css')), 'Built styles load inside ingress');
   assert.ok(requests.every(request => request.path.startsWith(prefix)), 'All application requests retain the ingress prefix');
@@ -180,7 +210,7 @@ try {
   assert.deepEqual(errors, []);
   console.log(JSON.stringify({ result: 'ingress-browser-smoke-passed', checks: ['built theme, CSS and module assets under ingress prefix',
     'chart, events, recording, audits and configuration API requests under ingress prefix', 'actual upload path in instructions',
-    'Home Assistant login without token prompt', 'Apply configuration updates visible state', 'persistent import cleanup warning', 'explicit restart guidance when backend path metadata is missing',
+    'trusted ingress listener without direct access or token prompt', 'reviewed configuration import saves to Supervisor and updates visible state', 'persistent import cleanup warning', 'explicit restart guidance when backend path metadata is missing',
     'configuration paths fit mobile width', 'stalled initial chart/events do not block status polling',
     'whole-body read timeout retries and monitoring staleness recovers online', 'expired HA session directs user back to Home Assistant'] }));
   await send('Page.close');

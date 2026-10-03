@@ -44,7 +44,20 @@ export function withReadDeadline(operation, { signal, timeoutMs = READ_TIMEOUT_M
 export function fetchJsonResponse(url, options = {}, { fetchImpl = fetch, timeoutMs = READ_TIMEOUT_MS } = {}) {
   const execute = async signal => {
     const response = await fetchImpl(url,{...options,signal});
-    return {response,result:await response.json()};
+    // Expired HA ingress sessions return a plain-text 401 from Supervisor.
+    // Authentication must not depend on decoding (or waiting for) its body.
+    if (response.status === 401) {
+      void response.body?.cancel().catch(() => {});
+      return {response,result:{}};
+    }
+    let result;
+    try { result = await response.json(); }
+    catch (error) {
+      if (response.ok) throw error;
+      // Proxies can also return HTML/text for gateway and other HTTP errors.
+      result = {};
+    }
+    return {response,result};
   };
   return (options.method ?? 'GET') === 'GET' ? withReadDeadline(execute,{signal:options.signal,timeoutMs}) : execute(options.signal);
 }

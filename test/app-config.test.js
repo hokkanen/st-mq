@@ -210,7 +210,7 @@ test('add-on family credentials are validated after authoritative configuration 
   for (const controller of [{ web_family_token: 'synthetic-family-password-at-least-24' },
     { web_token: admin, web_family_token: admin }, { web_token: admin, web_family_token: 'synthetic-short' }]) {
     writeFileSync(path, JSON.stringify({ controller }), { mode: 0o600 });
-    const config = loadConfig({ STMQ_ADDON: '1', STMQ_CONFIG: path }, directory);
+    const config = loadConfig({ STMQ_ADDON: '1', STMQ_CONFIG: path, STMQ_INGRESS_PORT: '8099' }, directory);
     await assert.rejects(configurationSource(config).prepare({ startup: true }), /web token/);
   }
   const addon = JSON.parse(readFileSync(new URL('../config.json', import.meta.url), 'utf8'));
@@ -324,15 +324,45 @@ test('add-on allows ingress bootstrap with no direct token and validates the can
   t.after(() => rmSync(directory, { recursive: true, force: true }));
   const path = join(directory, 'secrets.json');
   writeFileSync(path, JSON.stringify({ controller: { web_token: '' } }));
-  const config = loadConfig({ STMQ_ADDON: '1', STMQ_CONFIG: path }, directory);
+  const config = loadConfig({ STMQ_ADDON: '1', STMQ_CONFIG: path, STMQ_INGRESS_PORT: '8099' }, directory);
   assert.equal(config.host, '0.0.0.0');
   assert.equal(config.token, '');
   assert.equal(config.ingressPort, 8099);
   const initial = await configurationSource(config).prepare({ startup: true });
   assert.equal(initial.config.token, '');
   writeFileSync(path, JSON.stringify({ controller: { web_token: 'synthetic-short' } }));
-  const invalid = loadConfig({ STMQ_ADDON: '1', STMQ_CONFIG: path }, directory);
+  const invalid = loadConfig({ STMQ_ADDON: '1', STMQ_CONFIG: path, STMQ_INGRESS_PORT: '8099' }, directory);
   await assert.rejects(configurationSource(invalid).prepare({ startup: true }), /at least 24/);
+});
+
+test('HA discovers its assigned ingress port and rejects missing, invalid or conflicting assignments', async t => {
+  const directory = mkdtempSync(join(tmpdir(), 'stmq-ingress-discovery-'));
+  t.after(() => rmSync(directory, { recursive: true, force: true }));
+  const path = join(directory, 'fixture-options.json');
+  writeFileSync(path, '{}', { mode: 0o600 });
+  const env = { STMQ_ADDON: '1', STMQ_CONFIG: path, SUPERVISOR_TOKEN: 'fixture-supervisor-token' };
+  let assignedPort = 47001, unavailable = false;
+  t.mock.method(globalThis, 'fetch', async (url, request) => {
+    assert.equal(url, 'http://supervisor/addons/self/info');
+    assert.equal(request.headers.Authorization, 'Bearer fixture-supervisor-token');
+    if (unavailable) throw new Error('fixture-supervisor-unavailable');
+    return { ok: true, json: async () => ({ result: 'ok', data: {
+      slug: 'fixture_st-mq', options: {}, ingress_port: assignedPort,
+    } }) };
+  });
+  const source = configurationSource(loadConfig(env, directory));
+  assert.equal((await source.prepare({ startup: true })).config.ingressPort, 47001);
+  assignedPort = 47002;
+  assert.equal((await source.prepare()).config.ingressPort, 47002);
+  for (assignedPort of [undefined, null, 0, -1, 65536, '47001', 47001.5])
+    await assert.rejects(source.prepare({ startup: true }), /assigned ingress port/);
+  assignedPort = 1234;
+  await assert.rejects(source.prepare({ startup: true }), /different from the direct port/);
+  unavailable = true;
+  await assert.rejects(source.prepare({ startup: true }), /assigned ingress port/);
+  // Isolated fixtures may explicitly choose an ephemeral listener without HA.
+  const isolated = configurationSource(loadConfig({ ...env, STMQ_INGRESS_PORT: '0' }, directory));
+  assert.equal((await isolated.prepare({ startup: true })).config.ingressPort, 0);
 });
 
 test('standalone startup rejects unknown settings and malformed JSON without exposing their values', t => {
@@ -361,7 +391,13 @@ test('add-on schema has explicit VAT basis, public database mount and no old sch
   const addon = JSON.parse(readFileSync(new URL('../config.json', import.meta.url), 'utf8'));
   assert.equal(addon.backup, 'cold');
   assert.ok(addon.map.includes('share:rw'));
-  assert.ok(addon.map.includes('addon_config:rw'));
+  assert.deepEqual(addon.map.find(mapping => mapping.type === 'app_config'),
+    { type: 'app_config', read_only: false, path: '/config' });
+  assert.equal(addon.host_network, true);
+  assert.equal(addon.ingress_port, 0, 'Supervisor assigns an ingress port without a fixed host-port collision');
+  assert.equal(addon.ports, undefined, 'Host networking uses application listeners, not port mappings');
+  assert.equal(addon.webui, 'http://[HOST]:[PORT:1234]');
+  assert.equal(addon.panel_admin, true, 'Show the panel only to HA administrators; ingress sessions retain app admin access');
   assert.equal(addon.options.temp_to_hours, undefined);
   assert.equal(addon.schema.temp_to_hours, undefined);
   assert.equal(addon.options.electricity.margin_ct_per_kwh_ex_vat, 0.33);

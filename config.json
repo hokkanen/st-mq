@@ -1,6 +1,6 @@
 {
-  "name": "ST-MQ",
-  "description": "Home energy monitoring, learned heating scheduling and read-only H66 acquisition",
+  "name": "Home Energy",
+  "description": "Home energy monitoring, heating control, EV charging and historical analysis",
   "version": "0.9.0",
   "url": "https://github.com/hokkanen/st-mq",
   "slug": "st-mq",
@@ -12,19 +12,18 @@
   "boot": "auto",
   "init": false,
   "ingress": true,
-  "ingress_port": 8099,
+  "ingress_port": 0,
   "panel_icon": "mdi:home-lightning-bolt",
-  "panel_title": "ST-MQ",
-  "ports": {
-    "1234/tcp": 1234
-  },
-  "ports_description": {
-    "1234/tcp": "Direct web access; enabled only when a web token is configured"
-  },
+  "panel_title": "Home Energy",
+  "panel_admin": true,
   "webui": "http://[HOST]:[PORT:1234]",
   "map": [
     "share:rw",
-    "addon_config:rw"
+    {
+      "type": "app_config",
+      "read_only": false,
+      "path": "/config"
+    }
   ],
   "backup": "cold",
   "timeout": 30,
@@ -235,6 +234,7 @@
           "enabled": true,
           "connection": "mqtt:stmq/home/smoke1/status/temperature",
           "signal": "indoor_temperature",
+          "temperature_control": {},
           "max_age_seconds": 4500,
           "mqtt": {},
           "readings": []
@@ -247,6 +247,7 @@
           "enabled": true,
           "connection": "mqtt:stmq/home/smoke3/status/temperature",
           "signal": "downstairs_temperature",
+          "temperature_control": {},
           "max_age_seconds": 4500,
           "mqtt": {},
           "readings": []
@@ -259,6 +260,7 @@
           "enabled": true,
           "connection": "mqtt:stmq/home/smoke2/status/temperature",
           "signal": "bedroom_temperature",
+          "temperature_control": {},
           "max_age_seconds": 4500,
           "mqtt": {},
           "readings": []
@@ -272,6 +274,7 @@
           "connection": "shelly:stmq/home/tariff",
           "tariff_control": true,
           "reduction_on": true,
+          "temperature_control": {},
           "mqtt": {},
           "readings": []
         },
@@ -282,6 +285,7 @@
           "kind": "power",
           "enabled": true,
           "connection": "mqtt:stmq/home/dhwr/status/power",
+          "temperature_control": {},
           "max_age_seconds": 0,
           "record": false,
           "mqtt": {},
@@ -296,6 +300,7 @@
           "connection": "shelly:stmq/garage/temperatures",
           "temperature_id": 100,
           "signal": "garage_temperature",
+          "temperature_control": {},
           "max_age_seconds": 120,
           "mqtt": {},
           "readings": [
@@ -317,6 +322,7 @@
           "kind": "temperature",
           "connection": "mqtt:stmq/garage/caravan_air/state",
           "signal": "caravan_temperature",
+          "temperature_control": {},
           "max_age_seconds": 180,
           "mqtt": {
             "state_path": "temperature",
@@ -357,6 +363,7 @@
           "enabled": true,
           "connection": "shelly:stmq/garage/caravan",
           "switch_control": true,
+          "temperature_control": {},
           "mqtt": {},
           "readings": []
         },
@@ -368,6 +375,7 @@
           "enabled": true,
           "connection": "mqtt:stmq/garage/door1/status/contact",
           "cover_control": true,
+          "temperature_control": {},
           "mqtt": {
             "command_topic": "stmq/garage/door1/command/cover",
             "open_payload": "open",
@@ -390,6 +398,7 @@
           "enabled": true,
           "connection": "mqtt:stmq/garage/door2/status/contact",
           "cover_control": true,
+          "temperature_control": {},
           "mqtt": {
             "command_topic": "stmq/garage/door2/command/cover",
             "open_payload": "open",
@@ -696,7 +705,7 @@
           "dehumidifier_control": "bool?",
           "manufacturer": "str?",
           "temperature_control": {
-            "sensor_device_id": "str"
+            "sensor_device_id": "str?"
           },
           "max_age_seconds": "int(0,86400)?",
           "record": "bool?",

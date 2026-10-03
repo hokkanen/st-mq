@@ -1385,9 +1385,11 @@ Open **Recording details → Export database** and choose:
 
 - **Save local copy** saves on the server, in `recording.export_directory`.
   The default `"~"` means the home folder of the operating-system account running
-  the application, including inside an add-on/container. Set an absolute path or
+  the application, including inside a Home Assistant app/container. Set an absolute path or
   a home-relative path such as `"~/database-exports"` in configuration to choose
-  another location. The saved file's full path is shown after success.
+  another location. For Home Assistant, use `/config/st-mq/exports` or
+  `/share/st-mq`; the container account's home is not a persistent app mount.
+  The saved file's full path is shown after success.
 - **Download database** saves to the browser's computer. Supporting browsers
   prompt for a destination and stream directly to the selected file. Other
   browsers buffer the response and use their usual download settings.

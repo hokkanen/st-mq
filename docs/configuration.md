@@ -15,7 +15,7 @@ other fields. There is no separate file to maintain for each feature.
 | --- | --- |
 | `config.json.options` | Shared defaults, standard MQTT topics, equipment definitions and engineering defaults. Changes here affect installations that have no override. |
 | Standalone `secrets.json` | Credentials, private locations/device identifiers and only the installation choices you want to supply or override. Non-secret overrides are allowed. |
-| Saved Home Assistant add-on options | The authoritative installation settings in the add-on. An uploaded sparse `secrets.json` is an import into these settings. |
+| Saved Home Assistant app options | The authoritative installation settings in the app. An uploaded sparse `secrets.json` is an import into these settings. |
 | Environment variables | Explicit process/deployment overrides, taking precedence over file settings. |
 | Dashboard controls | Temporary session/deadline overrides, labeled native-device actions and the explicitly documented persistent device-bound choices below. Controller defaults remain configuration-owned. |
 | `config.json.schema` and manifest metadata | Software configuration: accepted fields, types, ranges and Home Assistant packaging. These are not installation overrides. |
@@ -90,9 +90,15 @@ default. Removing such a value lets future shared defaults take effect.
 
 Objects merge recursively; arrays replace the complete array. In particular,
 `equipment.devices` is a complete inventory when overridden, not a patch to one
-device. Prefer the public inventory for common equipment definitions. An empty
-object does not clear an inherited object. Explicit `false`, zero and permitted
-empty strings override defaults. Standalone supports `null` only for optional
+device. Prefer the public inventory for common equipment definitions. In Home
+Assistant's Configuration YAML editor, every equipment entry needs the schema's
+object/list containers: use `mqtt: {}`, `readings: []` and
+`temperature_control: {}` when that entry has no corresponding setup. An empty
+temperature-control binding does not enable appliance automation. Sparse JSON
+imports through ST-MQ fill missing required containers before saving to Supervisor;
+when editing Home Assistant's YAML directly, supply those containers yourself.
+An empty object does not clear an inherited object. Explicit `false`, zero and
+permitted empty strings override defaults. Standalone supports `null` only for optional
 fields; Home Assistant rejects `null`. Do not add JSON comments or invented
 section headings as fields: the configuration validator rejects unknown keys.
 
@@ -103,10 +109,17 @@ and merges it without expanding or rewriting it. Removing an override restores
 the shared default on the next application. Keep the directory at mode `0700`
 and the file at `0600`.
 
-In Home Assistant, save add-on options and then choose **Apply reviewed configuration**.
+In Home Assistant, save options under **Settings → Apps → Home Energy → Configuration**,
+then use **Check & review configuration** and **Apply reviewed configuration**
+in ST-MQ. The English form labels/descriptions come from `translations/en.yaml`;
+the YAML editor uses the exact option keys in `config.json.schema`. These files
+are still supported by the current Home Assistant app format.
 An uploaded private file merges into those saved options and is removed after
 successful import and application. Omitting a key from a later import preserves
-its saved value. See [permanent configuration](../README.md#permanent-configuration-and-prices)
+its saved value, including an existing `!secret` reference. Supervisor resolves
+those references for runtime use while the saved options retain them. An import
+must use actual values; an explicit value replaces that field's saved reference.
+See [permanent configuration](../README.md#permanent-configuration-and-prices)
 for exact paths, reload behavior and restart requirements.
 
 ## Check and review before applying
@@ -141,7 +154,7 @@ endpoint rejects an empty request or an unreviewed configuration.
 
 `controller.web_token` is the admin password for direct access.
 `controller.web_family_token` is an optional family password, empty by default.
-Set both in the existing private configuration or saved add-on options; family
+Set both in the existing private configuration or saved app options; family
 access requires a nonempty admin password and the two must differ. On network
 listeners each configured password must have at least 24 characters. Environment
 variables `STMQ_API_TOKEN` and `STMQ_FAMILY_API_TOKEN` override their respective
@@ -149,8 +162,11 @@ fields, including explicit empty values.
 
 Choose **Apply reviewed configuration** as admin to rotate or clear passwords without
 restarting. Clearing the family password disables family login; clearing both
-disables direct add-on access. Home Assistant ingress retains full admin access
-through Home Assistant authentication, independently of these passwords.
+disables direct app access. Every accepted Home Assistant ingress session has
+full ST-MQ admin access, independently of these passwords or the Home Assistant
+user's administrator flag. The administrator-only sidebar entry controls
+visibility, not ingress authorization. The family role applies only to direct
+access with the family password; see [Home Assistant access details](../DOCS.md#home-assistant-files-and-permissions).
 
 Family reads all application data with credentials concealed, may calculate
 read-only heating-plan comparisons, and may record
@@ -164,9 +180,12 @@ restoration or freeze protection. The role is not configurable; see the
 
 In **Export database**, **Save local copy** writes to the server directory in
 `recording.export_directory`. Its shared default, `"~"`, means the home folder
-of the operating-system account running the server. In an add-on or container,
+of the operating-system account running the server. In an app or container,
 this is that account's home inside the container. Choose a persistent directory
 available to the server when copies must survive container replacement.
+For Home Assistant, use `/config/st-mq/exports` to include local exports with the
+ST-MQ app backup, or `/share/st-mq` and back up Share separately. `"~"` and
+`"~/database-copies"` point inside the container and are not persistent app mounts.
 
 To change the destination, merge an override such as
 `"recording": { "export_directory": "~/database-copies" }` into the existing

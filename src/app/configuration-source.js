@@ -5,6 +5,7 @@ import { homedir } from 'node:os';
 import { dirname, isAbsolute, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { isDeepStrictEqual } from 'node:util';
+import { homeAssistantOptions } from './homeassistant-options.js';
 
 const bundledDefaults = fileURLToPath(new URL('../../config.json', import.meta.url));
 const forbiddenKeys = new Set(['__proto__', 'prototype', 'constructor']);
@@ -200,11 +201,11 @@ function containsReferences(options) {
 export function createConfigurationSource({ env, cwd, buildConfig, paths = configurationPaths(env, cwd),
   fetchImpl = (...args) => fetch(...args) }) {
   const environment = { ...env }, addon = env.STMQ_ADDON === '1';
-  let slug = null;
+  let slug = null, supervisorIngressPort;
   const publicInfo = () => ({ environment: addon ? 'home-assistant' : 'ubuntu', defaultsPath: paths.defaultsPath,
     privatePath: paths.privatePath, importPath: paths.importPath,
     privateFileRole: addon ? 'startup-fallback' : 'permanent-overrides',
-    externalImportPath: slug ? `/addon_configs/${slug}/secrets.json` : null });
+    externalImportPath: slug ? `/app_configs/${slug}/secrets.json` : null });
   async function supervisor(method, endpoint, body) {
     if (!environment.SUPERVISOR_TOKEN) throw new Error('Supervisor authentication is unavailable.');
     let response;
@@ -222,6 +223,7 @@ export function createConfigurationSource({ env, cwd, buildConfig, paths = confi
     const info = await supervisor('GET', 'info');
     if (!object(info?.options)) throw new Error('Supervisor did not return this add-on’s settings.');
     if (typeof info.slug === 'string' && /^[a-zA-Z0-9_-]+$/.test(info.slug)) slug = info.slug;
+    supervisorIngressPort = info.ingress_port;
     return mergeOptions({}, info.options);
   }
   const source = {
@@ -237,10 +239,17 @@ export function createConfigurationSource({ env, cwd, buildConfig, paths = confi
       }
       const file = snapshot(paths.importPath);
       let current;
+      supervisorIngressPort = undefined;
       try { current = await currentOptions(); }
       catch (error) {
         if (!startup || file) throw error;
         current = privateOptions(paths.privatePath, Boolean(environment.STMQ_CONFIG));
+      }
+      const runtime = {};
+      if (defaults.ingress_port === 0 && environment.STMQ_INGRESS_PORT === undefined) {
+        if (!Number.isInteger(supervisorIngressPort) || supervisorIngressPort < 1 || supervisorIngressPort > 65535)
+          throw new Error('Home Assistant Supervisor must provide an assigned ingress port before the application can start. Check Supervisor availability and restart the app.');
+        runtime.ingressPort = supervisorIngressPort;
       }
       const receipt = file ? readReceipt(paths.receiptPath) : null;
       const sameReceipt = sameFile(file, receipt);
@@ -253,17 +262,19 @@ export function createConfigurationSource({ env, cwd, buildConfig, paths = confi
         validateOptionFields(file.options, defaults.schema);
         validateHomeAssistantValues(file.options);
       }
-      const options = mergeOptions(defaults.options, file && !saved ? mergeOptions(current, file.options) : current);
+      const options = homeAssistantOptions(mergeOptions(defaults.options,
+        file && !saved ? mergeOptions(current, file.options) : current), defaults.schema);
       let resolvedCurrent = current;
       if (containsReferences(current)) {
         resolvedCurrent = await supervisor('GET', 'options/config');
         validateOptionFields(resolvedCurrent, defaults.schema);
         validateHomeAssistantValues(resolvedCurrent);
       }
-      const runtimeOptions = mergeOptions(defaults.options, file && !saved ? mergeOptions(resolvedCurrent, file.options) : resolvedCurrent);
+      const runtimeOptions = homeAssistantOptions(mergeOptions(defaults.options,
+        file && !saved ? mergeOptions(resolvedCurrent, file.options) : resolvedCurrent), defaults.schema);
       validateOptionFields(runtimeOptions, defaults.schema);
       validateHomeAssistantValues(runtimeOptions);
-      const config = buildConfig(runtimeOptions, publicInfo(), source);
+      const config = buildConfig(runtimeOptions, publicInfo(), source, runtime);
       let persisted = !file || saved;
       return { config, imported: Boolean(file),
         async persist() {
@@ -272,10 +283,13 @@ export function createConfigurationSource({ env, cwd, buildConfig, paths = confi
           // Do not replace HA settings changed while main checked the runtime.
           if (!isDeepStrictEqual(await currentOptions(), current)) throw new Error('Home Assistant settings changed. Apply configuration again.');
           writeReceipt(paths.receiptPath, receiptFor(file, 'saving', {
-            previousDigest: currentDigest, optionsDigest: optionsDigest(runtimeOptions) }));
+            // Supervisor preserves !secret references in its saved options.
+            // Receipts compare that representation, while runtime values are
+            // resolved separately through options/config.
+            previousDigest: currentDigest, optionsDigest: optionsDigest(options) }));
           await supervisor('POST', 'options', { options });
           const verified = mergeOptions(defaults.options, await currentOptions());
-          if (!isDeepStrictEqual(verified, runtimeOptions)) throw new Error('Supervisor settings could not be verified. The import file was retained.');
+          if (!isDeepStrictEqual(verified, options)) throw new Error('Supervisor settings could not be verified. The import file was retained.');
           writeReceipt(paths.receiptPath, receiptFor(file, 'saved'));
           persisted = true;
         },

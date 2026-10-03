@@ -49,7 +49,8 @@ test('deployment metadata uses an explicit Node base, persistent storage and bot
   assert.deepEqual(addon.arch, ['aarch64', 'amd64']);
   assert.equal(addon.options.controller.input, 'simulated');
   assert.equal(Object.hasOwn(addon.options.controller, 'mode'), false);
-  assert.ok(addon.map.includes('addon_config:rw'));
+  assert.deepEqual(addon.map.find(mapping => mapping.type === 'app_config'),
+    { type: 'app_config', read_only: false, path: '/config' });
   assert.ok(addon.map.includes('share:rw'));
   assert.equal(addon.backup, 'cold');
   assert.equal(addon.version, JSON.parse(readFileSync('package.json', 'utf8')).version);

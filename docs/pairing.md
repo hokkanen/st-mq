@@ -24,7 +24,7 @@ Use two fixed management addresses and reserve a third, unused IPv4 address as
 the broker's virtual IP on their common LAN/subnet. Keep that address outside
 the DHCP allocation range. Devices and other MQTT clients use the virtual IP.
 ST-MQ itself connects to the broker on its own computer, through loopback, a
-local interface address or the Home Assistant `core-mosquitto` add-on. ST-MQ
+local interface address or the Home Assistant `core-mosquitto` app. ST-MQ
 rejects a remote broker or its own virtual IP as the controller's broker.
 
 Configure equivalent MQTT users, permissions and required listeners on both
@@ -84,10 +84,10 @@ that runtime may start; copied active settings cannot activate a slave.
 On the second machine, also select `controller.topology: "pair"`. Swap
 `peer_url` and `listen_host` to its own and the other machine's fixed addresses,
 and use the same pair ID, private token and virtual IP. Interface names and
-storage paths are machine-local and may differ. The add-on's local broker address
+storage paths are machine-local and may differ. The app's local broker address
 may be
 `mqtt://core-mosquitto`.
-Set `vip_socket` to an empty string in the add-on; it uses its bundled helper
+Set `vip_socket` to an empty string in the app; it uses its bundled helper
 directly. Standalone Linux defaults to the restricted local helper socket.
 
 Generate a fresh random pairing token of at least 32 characters with a password
@@ -126,7 +126,7 @@ directory to force a role change; use the explicit management actions.
 | `pair.vip_address` | `STMQ_PAIR_VIP_ADDRESS` | Required IPv4 address |
 | `pair.vip_prefix` | `STMQ_PAIR_VIP_PREFIX` | `24` |
 | `pair.vip_helper` | `STMQ_PAIR_VIP_HELPER` | `/usr/local/bin/st-mq-vip` |
-| `pair.vip_socket` | `STMQ_PAIR_VIP_SOCKET` | `/run/st-mq-vip/socket` on standalone Linux; empty in the add-on |
+| `pair.vip_socket` | `STMQ_PAIR_VIP_SOCKET` | `/run/st-mq-vip/socket` on standalone Linux; empty in the app |
 
 Restart after changing pair configuration. The pair state directory must be
 separate from the database directory and `pair.snapshot_directory`. Pair mode
@@ -190,10 +190,10 @@ group, and its policy restricts requests to the configured address. Update the
 installed helper code with ST-MQ releases; it must not point to a checkout that
 the unprivileged application user can modify.
 
-The Home Assistant add-on uses host networking and `NET_ADMIN`/`NET_RAW` for
+The Home Assistant app uses host networking and `NET_ADMIN`/`NET_RAW` for
 this feature. Its broker still runs on the same Home Assistant host, and the
-bundled address helper runs directly inside the add-on.
-On paired add-on startup, ST-MQ creates the root-owned policy from the validated
+bundled address helper runs directly inside the app.
+On paired app startup, ST-MQ creates the root-owned policy from the validated
 local virtual-IP settings.
 
 Do not run an independent automatic VIP failover configuration alongside
@@ -234,7 +234,7 @@ protection; lost protection inputs require restoration. An existing external
 temperature sample or manual timed OFF lease keeps its original local expiry
 while the replacement host reacquires fresh state. Promotion cannot renew either
 permission from copied observations. See [charging outages](charging.md#missing-vehicle-feeds-and-takeover)
-and [garage protection](garage.md#sensors-doors-and-protection).
+and [garage protection](garage.md#independent-freeze-protection).
 
 Home heating restoration still requires a reachable H66 gateway and broker.
 H66 has no documented device-side expiry for ST-MQ's temporary setting writes;
@@ -368,7 +368,7 @@ does not clear protection or promote the computer automatically.
 | Address assignment or announcement failed | Check the helper's network capabilities and the installed `iproute2` / `iputils-arping` tools. |
 | Address release failed | Keep this computer protected. Check the helper and address ownership before promoting either computer. |
 | MQTT broker must be local | Point this controller at its local broker, such as `mqtt://127.0.0.1`, with credentials in the separate MQTT fields. Devices use the virtual IP. |
-| MQTT name cannot be resolved | Check the local broker hostname; `core-mosquitto` is the Home Assistant add-on alias. |
+| MQTT name cannot be resolved | Check the local broker hostname; `core-mosquitto` is the Home Assistant app alias. |
 
 Fix saved configuration outside the dashboard, restart when configuration changed,
 then explicitly retry promotion after confirming that no other controller owns

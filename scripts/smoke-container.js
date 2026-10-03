@@ -6,6 +6,7 @@ import { join } from 'node:path';
 import { createHash } from 'node:crypto';
 import { DatabaseSync } from 'node:sqlite';
 import { Store } from '../src/storage/store.js';
+import { HeatingAutomation } from '../src/app/automation.js';
 import { providerFixture } from './lib/provider-fixture.js';
 
 // This script is packaged for repeatable container checks. All fixture writes
@@ -31,6 +32,8 @@ async function seedAddon() {
   assert.equal(existsSync('/config/st-mq/st-mq.sqlite'), false);
   const options = JSON.parse(readFileSync('/st-mq/config.json', 'utf8')).options;
   const now = Date.now();
+  const temporary = { awayUntil: new Date(now + 24 * 3_600_000).toISOString(),
+    pauseUntil: new Date(now + 3_600_000).toISOString() };
   options.controller = { ...options.controller, input: 'offline',
     web_token: 'synthetic-container-test-token-no-household-access', max_drop_c: 0.7 };
   options.electricity = { ...options.electricity, margin_ct_per_kwh_ex_vat: 0.37, effective_date: '' };
@@ -44,11 +47,17 @@ async function seedAddon() {
     for (const row of await fixture.providerOptions.outdoor()) current.observation(row);
     current.setState('provider:market', await fixture.providerOptions.market());
     current.setState('provider:weather', await fixture.providerOptions.weather());
+    // The history viewer cannot edit controls. Seed a current-format paused
+    // state so its persistence can be checked without granting live authority.
+    current.setState('occupancy:offline', { mode: 'away', returnAt: temporary.awayUntil });
+    const automation = new HeatingAutomation({ store: current, config: loadConfig(), clock: () => now,
+      targetIdentity: () => createHash('sha256').update('fixture-offline-heating-target').digest('hex') });
+    automation.set('home', false, { pauseUntil: Date.parse(temporary.pauseUntil), now });
     current.setState('container-fixture', { synthetic: true, marker: 'retained-through-restart-and-restore' });
     current.event('container-fixture', { synthetic: true }, now);
   } finally { current.close(); }
   writeJson('/data/st-mq/easee-tokens.json', { accessToken: 'synthetic-access', refreshToken: 'synthetic-refresh' }, { flag: 'wx' });
-  writeJson(fixtureMarker, { kind: 'synthetic-addon-container-smoke', now,
+  writeJson(fixtureMarker, { kind: 'synthetic-addon-container-smoke', now, ...temporary,
     optionsDigest: digest('/data/options.json'),
     tokenDigest: digest('/data/st-mq/easee-tokens.json') }, { flag: 'wx' });
 }
@@ -73,13 +82,20 @@ async function probeAddon({ restarted = false, restored = false } = {}) {
   assert.equal((await fetch(`${base}/api/status`, { headers: { Authorization: 'Bearer wrong-synthetic-token' } })).status, 401);
   const html = await (await fetch(`${base}/`)).text();
   assert.match(html, /<title>Home Energy<\/title>/);
-  const assetPaths = [...html.matchAll(/(?:src|href)="([^\"]+\.(?:js|css))"/g)].map(match => match[1]);
+  // Dashboard links may point to public firmware downloads. Only script/link
+  // elements are page assets; the networkless fixture must never follow a
+  // user-operated download link to an external repository.
+  const assetPaths = [...html.matchAll(/<(?:script|link)\b[^>]*\b(?:src|href)="([^\"]+\.(?:js|css))"/g)].map(match => match[1]);
   assert.ok(assetPaths.length >= 3, 'Built scripts, theme and style must be referenced');
-  for (const path of assetPaths) assert.equal((await fetch(new URL(path, base))).status, 200, path);
+  for (const path of assetPaths) {
+    const url = new URL(path, base);
+    assert.equal(url.origin, base, 'Dashboard assets must be packaged locally');
+    assert.equal((await fetch(url)).status, 200, path);
+  }
   assert.equal((await fetch(`${base}/data/options.json`)).status, 404);
   const status = await fetch(`${base}/api/status`, { headers }).then(response => response.json());
   assert.equal(status.automation.home.enabled, false);
-  assert.equal(status.automation.garage.enabled, false);
+  assert.equal(status.automation.garage, undefined, 'Garage has manual heating, not economic automation');
   assert.equal(status.input, 'offline');
   assert.equal(status.settings.comfort.maxDropC, 0.7, 'Options control the preferred drop');
   assert.equal(status.contract.periods.at(-1).marginCtPerKwh, 0.37, 'Options control actual price layers');
@@ -100,26 +116,23 @@ async function probeAddon({ restarted = false, restored = false } = {}) {
   for (const destination of ['/config/st-mq/easee-tokens.json', '/share/st-mq/easee-tokens.json', '/config/options.json', '/share/st-mq/options.json']) {
     assert.equal(existsSync(destination), false, `Secrets must not be copied to ${destination}`);
   }
-  if (restarted) {
-    assert.equal(status.settings.occupancy.mode, 'away');
-    assert.equal(status.settings.occupancy.returnAt, marker.awayUntil);
-    assert.equal(status.override.expiresAt, Date.parse(marker.pauseUntil));
-    assert.equal(status.contract.periods.length, 1, 'Restart must not append duplicate rate periods');
-  } else {
-    const temporary = { awayUntil: new Date(Date.now() + 24 * 3_600_000).toISOString(),
-      pauseUntil: new Date(Date.now() + 3_600_000).toISOString() };
+  assert.equal(status.settings.occupancy.mode, 'away');
+  assert.equal(status.settings.occupancy.returnAt, marker.awayUntil);
+  assert.equal(status.automation.home.pause.expiresAt, Date.parse(marker.pauseUntil));
+  assert.equal(status.automation.home.available, false, 'Saved state cannot authorize history-viewer control');
+  assert.equal(status.contract.periods.length, 1, 'Restart must not append duplicate rate periods');
+  if (!restarted) {
     const response = await fetch(`${base}/api/temporary`, { method: 'POST',
-      headers: { ...headers, 'Content-Type': 'application/json' }, body: JSON.stringify(temporary) });
-    assert.equal(response.status, 200);
-    const updated = await response.json();
+      headers: { ...headers, 'Content-Type': 'application/json' }, body: JSON.stringify({ awayUntil: null, pauseUntil: null }) });
+    assert.equal(response.status, 409, 'The history viewer rejects control edits');
+    const updated = await fetch(`${base}/api/status`, { headers }).then(result => result.json());
     assert.equal(updated.settings.occupancy.mode, 'away');
-    assert.equal(updated.override.mode, 'normal');
+    assert.equal(updated.automation.home.pause.expiresAt, Date.parse(marker.pauseUntil));
     assert.equal(updated.automation.home.enabled, false);
-  assert.equal(updated.automation.garage.enabled, false);
+    assert.equal(updated.automation.garage, undefined);
     for (const path of ['/api/settings', '/api/contract']) {
       assert.equal((await fetch(`${base}${path}`, { method: 'POST', headers: { ...headers, 'Content-Type': 'application/json' }, body: '{}' })).status, 405);
     }
-    writeJson(fixtureMarker, { ...marker, ...temporary });
   }
   isolatedFixture();
 }
@@ -129,7 +142,7 @@ function inspectSharedFiles() {
   assert.equal(existsSync('/data/options.json'), false, 'SSH-equivalent container has no private data mount');
   assert.equal(existsSync('/data/st-mq/easee-tokens.json'), false);
   const paths = ['/config/st-mq/st-mq.sqlite', '/share/st-mq/container-backup.sqlite', '/config/restored/st-mq.sqlite'];
-  let observations;
+  let observations, savedAutomation, savedOccupancy;
   for (const path of paths) {
     // All writers are stopped. Immutable mode allows these cold snapshots to be
     // read from a read-only mount without creating WAL sidecars; never use it on
@@ -138,8 +151,17 @@ function inspectSharedFiles() {
     try {
       assert.equal(db.prepare('PRAGMA quick_check').get().quick_check, 'ok');
       assert.equal(readState(db, 'container-fixture').marker, 'retained-through-restart-and-restore');
-      assert.equal(readState(db, 'occupancy:offline').mode, 'away');
-      assert.equal(readState(db, 'override:offline').mode, 'normal');
+      const occupancy = readState(db, 'occupancy:offline');
+      assert.equal(occupancy.mode, 'away');
+      savedOccupancy ??= occupancy;
+      assert.deepEqual(occupancy, savedOccupancy, 'Snapshot/restore must preserve the exact temporary occupancy');
+      const automation = readState(db, 'automation:offline');
+      assert.equal(automation.version, 3);
+      assert.equal(automation.features.home.enabled, false);
+      assert.ok(automation.features.home.pause.expiresAt > Date.now());
+      savedAutomation ??= automation;
+      assert.deepEqual(automation, savedAutomation, 'Snapshot/restore must preserve the exact current automation state');
+      assert.equal(readState(db, 'override:offline'), null, 'Retired pause storage must stay absent');
       assert.equal(readState(db, 'contract:offline').periods.at(-1).marginCtPerKwh, 0.37);
       const count = db.prepare('SELECT COUNT(*) AS count FROM observations').get().count;
       assert.ok(count >= 2);
@@ -168,9 +190,10 @@ assert.equal(existsSync('/st-mq/test/live/providers.test.js'), true, 'Opt-in liv
 const addonManifest = JSON.parse(readFileSync('/st-mq/config.json', 'utf8'));
 assert.equal(addonManifest.init, false);
 assert.equal(addonManifest.ingress, true);
-assert.equal(addonManifest.ingress_port, 8099);
+assert.equal(addonManifest.ingress_port, 0);
 assert.equal(addonManifest.backup, 'cold');
-assert.ok(addonManifest.map.includes('addon_config:rw'));
+assert.deepEqual(addonManifest.map.find(mapping => mapping.type === 'app_config'),
+  { type: 'app_config', read_only: false, path: '/config' });
 assert.ok(addonManifest.map.includes('share:rw'));
 assert.ok(addonManifest.arch.includes(process.arch === 'arm64' ? 'aarch64' : 'amd64'));
 
@@ -223,7 +246,7 @@ try {
   const headers = config.token ? { Authorization: `Bearer ${config.token}` } : {};
   const status = await fetch(`${base}/api/status`, { headers }).then(response => response.json());
   assert.equal(status.automation.home.enabled, false);
-  assert.equal(status.automation.garage.enabled, false);
+  assert.equal(status.automation.garage, undefined);
   assert.equal(status.providers.market.status, 'fallback');
   assert.equal(status.providers.market.source, 'elering');
   assert.equal(status.providers.weather.source, 'fmi');

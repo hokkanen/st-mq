@@ -34,6 +34,27 @@ test('ingress login errors direct users back to Home Assistant without requestin
   assert.match(authenticationMessage(false), /password/);
 });
 
+test('HA ingress plaintext 401 and unfinished error bodies reach authentication handling immediately', async () => {
+  for (const response of [new Response('401: Unauthorized', { status: 401 }),
+    new Response(new ReadableStream({ start(controller) { controller.enqueue(new TextEncoder().encode('401:')); } }), { status: 401 })]) {
+    const result = await fetchJsonResponse('/api/status', {}, { fetchImpl: async () => response });
+    assert.equal(result.response.status, 401);
+    assert.deepEqual(result.result, {});
+    assert.equal(response.bodyUsed, true);
+  }
+});
+
+test('non-JSON proxy failures preserve their HTTP status while successful malformed JSON still fails', async () => {
+  const failed = await fetchJsonResponse('/api/status', {}, {
+    fetchImpl: async () => new Response('<html>Gateway unavailable</html>', { status: 502 }),
+  });
+  assert.equal(failed.response.status, 502);
+  assert.deepEqual(failed.result, {});
+  await assert.rejects(fetchJsonResponse('/api/status', {}, {
+    fetchImpl: async () => new Response('malformed successful response'),
+  }), SyntaxError);
+});
+
 test('slow status reads survive repeated timer polls without accumulating requests', async () => {
   const requests = [];
   const poll = createPollingRequest(() => new Promise(resolve => requests.push(resolve)));

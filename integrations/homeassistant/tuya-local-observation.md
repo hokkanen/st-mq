@@ -47,20 +47,30 @@ in `tuya-local-observation.json`. An unknown or partially patched source is
 rejected before mutation. Review a changed upstream source before updating the
 adapter; a matching version label alone is insufficient.
 
-Copy the installer and its three bundle files with their relative layout intact,
-then first run a read-only check:
+Run the installer in an environment with Python 3 and write access to Home
+Assistant Core's `custom_components/tuya_local` directory, such as a suitable
+Terminal & SSH session. The current official Terminal & SSH app exposes Core's
+configuration at `/homeassistant`, used below. If your file tool instead maps
+Core's configuration to `/config`, substitute that prefix. ST-MQ's app container
+has its own `/config` and cannot patch Core.
+
+Copy `scripts/apply-tuya-local-observation.py` and the three files
+`integrations/homeassistant/tuya-local-observation.json`,
+`integrations/homeassistant/tuya-local-observation.patch` and
+`integrations/homeassistant/tuya-local-desd8lw.yaml` with their relative layout
+intact. Run from the copied bundle's root, first checking without writing:
 
 ```sh
 python3 scripts/apply-tuya-local-observation.py \
-  --integration-dir /config/custom_components/tuya_local --check
+  --integration-dir /homeassistant/custom_components/tuya_local --check
 ```
 
 Apply with a private backup directory outside this repository and the integration:
 
 ```sh
 python3 scripts/apply-tuya-local-observation.py \
-  --integration-dir /config/custom_components/tuya_local \
-  --backup-dir /config/private-backups/tuya-local-observation
+  --integration-dir /homeassistant/custom_components/tuya_local \
+  --backup-dir /homeassistant/private-backups/tuya-local-observation
 ```
 
 The installer performs no network calls, Home Assistant restart, service call or

@@ -32,8 +32,11 @@ Installation entity IDs and credentials stay outside the repository. Set up the
 local integration and bridge in this order:
 
 1. Install the [DESD8LW profile](../integrations/homeassistant/tuya-local-desd8lw.yaml)
-   as `custom_components/tuya_local/devices/electriq_desd8lw_dehumidifier.yaml`
-   and select that profile for the appliance. It creates a native humidifier,
+   into Home Assistant Core's configuration directory at
+   `custom_components/tuya_local/devices/electriq_desd8lw_dehumidifier.yaml`
+   and select that profile for the appliance. The current official Terminal &
+   SSH app exposes Core's folder at `/homeassistant`; some other file tools
+   expose `/config`. ST-MQ's own `/config` is a different app folder. It creates a native humidifier,
    a **Fan speed** select and a measured-humidity sensor. The select writes only
    fan speed, so changing it does not implicitly switch the appliance on.
 2. Apply the [received-observation adapter](../integrations/homeassistant/tuya-local-observation.md).
@@ -45,8 +48,12 @@ local integration and bridge in this order:
    prefix, humidifierEntity, fanSpeedEntity, deviceIdentity })`, with prefix
    `stmq/garage/caravan_dehumidifier`. `humidifierEntity` must be the native
    `humidifier` entity and `fanSpeedEntity` its same-device `select` entity.
-   Review and install their full JSON through Home Assistant's automation
-   configuration interface. Its MQTT integration must use the controller's broker.
+   Review and install each generated object as a separate automation using
+   Home Assistant's **Edit in YAML** editor, as described in
+   [installing the automations](homeassistant-mqtt.md#installing-the-automations).
+   Its MQTT integration must use the controller's broker and the standard
+   `homeassistant/status` birth/will topic. ST-MQ app installation does not
+   install the profile, source patch or these Core automations.
 
 `deviceIdentity` is the lowercase SHA-256 digest of the UTF-8 Tuya Local native
 `unique_id`; for this appliance without a child device ID, that is the configured

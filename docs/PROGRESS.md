@@ -5,7 +5,34 @@ Current development validation and reproducible commands are recorded in
 describe historical checkpoints; use [README](../README.md) and the feature
 guides for current behavior.
 
-## Current implementation, 29 September 2026 — local Garage control
+## Current implementation, 3 October 2026 — Home Assistant app compatibility
+
+Home Assistant displays the app as **Home Energy**. Its `st-mq` slug, current
+database format and internal `/config` and `/data` storage paths are unchanged.
+The packaging uses the current `app_config` mount and app image label, an
+explicit administrator-visible panel and Supervisor-assigned ingress port. The configuration
+translations remain supported and now describe current equipment, control and
+configuration behavior. Setup guides use the current official SSH app's
+`/app_configs`, `/local_apps` and `/homeassistant` mounts and explain third-party
+tools' alternate mount names.
+
+The audit found and fixed two configuration failures using the actual released
+Supervisor 2026.09.3 implementation: the shipped equipment defaults omitted a
+required nested object, and import verification assumed saved secret references
+were replaced by resolved values. Empty collection defaults now serialize sparse
+imports correctly without granting equipment authority. Existing secret
+references remain saved references and resolve separately for runtime use.
+Plain-text expired-ingress responses now reach the Home Assistant login guidance.
+
+The pinned Supervisor runner is part of pull-request validation and currently
+passes 13 checks covering manifest/defaults, all 259 option paths, English
+translations, repository metadata, host-network web UI resolution, actual option
+API handling, secret rotation, sparse-import serialization and lost-save replies.
+See [development validation](development-validation.md) for commands and [TODO](../TODO)
+for the completed task's regression/browser/container results. These fixtures
+do not constitute an installation or hardware test on Home Assistant OS.
+
+## Implementation, 29 September 2026 — local Garage control
 
 Garage now has permanent Normal/Away targets and independent local frost
 protection. The heat-pump controller uses native BTHome components, durable

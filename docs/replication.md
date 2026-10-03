@@ -40,7 +40,7 @@ node scripts/build-sqlite-rsync.js --output "$HOME/.local/bin/sqlite3_rsync"
 
 The builder verifies official source archive checksums before compilation. Make
 the binary available on each computer's PATH, including noninteractive SSH
-sessions, or configure its absolute path below. The add-on image includes the
+sessions, or configure its absolute path below. The app image includes the
 tool and SSH client already.
 
 On the slave, choose a **dedicated, initially empty directory** for received
@@ -65,7 +65,7 @@ and strict host-key checking. Keep SSH keys and configuration outside the checko
 Use a persistent SSH configuration/key location when running in a container.
 Set `mirror.ssh_config` to its absolute path; this is honored by both SSH
 channels. An SSH config can specify `IdentityFile` and `UserKnownHostsFile` paths
-inside that persistent directory. For the add-on, `/config/mirror-ssh/config`
+inside that persistent directory. For the Home Assistant app, `/config/mirror-ssh/config`
 and its private directory survive container replacement. Provision the key and
 known host entry there before selecting mirror topology.
 
@@ -206,7 +206,7 @@ digest detects content mismatch and is not a substitute for authentication.
 The default topology is `standalone`, which does not synchronize databases.
 `mirror` has no `enabled` flag: selecting the topology starts the appropriate
 master or slave runtime. No remote computer is configured by installation.
-The add-on can send to a Linux slave; an add-on viewer also works when its
+The app can send to a Linux slave; a Home Assistant app viewer also works when its
 configured snapshot directory is populated by a receiver with access to that
 directory. The viewer itself does not start an SSH server.
 

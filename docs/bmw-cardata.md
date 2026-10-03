@@ -311,6 +311,11 @@ override. They are not converted or reset automatically.
 Build the automation with privately discovered entity IDs and the verified home
 reference. Validate the generated template through Home Assistant's template API,
 save the automation, read it back, and verify live and retained MQTT publication.
+Install the generated object as one Core automation using **Edit in YAML**;
+see [installing the automations](homeassistant-mqtt.md#installing-the-automations).
+The MQTT integration must use the same broker as ST-MQ and its standard
+`homeassistant/status` birth/will topic. The ST-MQ app does not install this
+publisher automatically.
 The automation uses standard [`mqtt.publish`](https://www.home-assistant.io/integrations/mqtt/#examples)
 and [automation triggers](https://www.home-assistant.io/docs/automation/trigger/).
 It reacts to entity changes, Home Assistant startup, MQTT birth and a five-minute

@@ -1,3 +1,18 @@
+# Unreleased
+
+- Refresh Home Assistant app installation, configuration, MQTT bridge and backup
+  instructions, English configuration help and current packaging metadata.
+  `config.json` and `translations/en.yaml` remain supported Home Assistant files.
+- Preserve existing Home Assistant secret references when verifying configuration
+  imports and recovering an interrupted save with Supervisor 2026.09.3. Handle
+  expired ingress sessions even when Supervisor returns a plain-text error.
+- Validate the manifest, translations, repository metadata and option handling
+  against pinned, released Supervisor code in continuous integration.
+
+The release entries below describe historical behavior. Use [setup](DOCS.md) and
+the [configuration guide](docs/configuration.md) for the current development
+contract; old settings and database formats are not migration instructions.
+
 # 0.9.0
 
 - Add separate admin and family passwords for direct access, a password visibility

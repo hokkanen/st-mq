@@ -1,6 +1,16 @@
 name: Offline validation
 on: [push, pull_request]
 jobs:
+  homeassistant:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Validate app manifest, translations and options with released Supervisor
+        run: bash scripts/test-homeassistant-supervisor.sh
   secrets:
     runs-on: ubuntu-latest
     steps:

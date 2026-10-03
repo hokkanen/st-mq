@@ -246,7 +246,7 @@ export function indoorSensorWeightsConfiguration(input, connections = {}) {
 
 // Public manifest defaults are overlaid by one private source. Environment
 // overrides remain authoritative; temporary occupancy stays in the database.
-function buildConfiguration(options, env, cwd, configuration, source, { bootstrap = false } = {}) {
+function buildConfiguration(options, env, cwd, configuration, source, { bootstrap = false, ingressPort: supervisorIngressPort } = {}) {
   const addon = env.STMQ_ADDON === '1';
   rejectRetiredTopologyEnvironment(env);
   validateTopologyOptions(options);
@@ -303,7 +303,7 @@ function buildConfiguration(options, env, cwd, configuration, source, { bootstra
     if ((addon || !['127.0.0.1', '::1', 'localhost'].includes(host)) && familyToken.length < 24)
       throw new Error('Network family access requires a web token with at least 24 characters.');
   }
-  const ingressPort = Number(env.STMQ_INGRESS_PORT ?? 8099);
+  const ingressPort = Number(env.STMQ_INGRESS_PORT ?? supervisorIngressPort ?? 8099);
   if (!Number.isInteger(ingressPort) || ingressPort < 0 || ingressPort > 65535 || addon && ingressPort !== 0 && ingressPort === port)
     throw new Error('The ingress port must be valid and different from the direct port.');
   const databaseName = input === 'simulated' ? 'simulation.sqlite' : 'st-mq.sqlite';
@@ -347,7 +347,7 @@ export function loadConfig(env = process.env, cwd = process.cwd()) {
   const sourceEnvironment = { ...env };
   const paths = configurationPaths(sourceEnvironment, cwd);
   const source = createConfigurationSource({ env: sourceEnvironment, cwd, paths,
-    buildConfig: (options, information, owner) => buildConfiguration(options, sourceEnvironment, cwd, information, owner) });
+    buildConfig: (options, information, owner, runtime) => buildConfiguration(options, sourceEnvironment, cwd, information, owner, runtime) });
   const { options } = readConfigurationOptions(sourceEnvironment, cwd, paths);
   return buildConfiguration(options, sourceEnvironment, cwd, source.publicInfo(), source, { bootstrap: sourceEnvironment.STMQ_ADDON === '1' });
 }

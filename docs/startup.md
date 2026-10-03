@@ -1,5 +1,10 @@
 # Startup and an occupied web port
 
+For Home Assistant installation and saved app options, see [the setup guide](../DOCS.md).
+The shell commands below are for standalone Linux. In Home Assistant, start,
+stop and restart ST-MQ through **Settings → Apps → Home Energy** and read its **Logs**
+tab. Restarting Home Assistant Core alone does not restart the ST-MQ app.
+
 `STMQ_INPUT=providers npm start` runs a new ST-MQ process. It does not replace an
 instance already running in another terminal or as a service. The default web
 address is `127.0.0.1:1234`; `STMQ_INPUT` selects data acquisition and does not
@@ -35,9 +40,20 @@ STMQ_INPUT=simulated STMQ_PORT=1235 STMQ_DATA_DIR=/tmp/st-mq-demo \
   STMQ_DATABASE_DIR=/tmp/st-mq-demo npm start
 ```
 
-Do not work around a duplicate live controller by changing only its port. Home
-Assistant's separate ingress listener uses `STMQ_INGRESS_PORT` (default `8099`);
-an ingress bind conflict names that setting in the error.
+Do not work around a duplicate live controller by changing only its port.
+
+The Home Assistant app uses host networking, so its listeners share the host's
+port space. The manifest declares `ingress_port: 0`; Supervisor assigns an
+available port and ST-MQ retrieves it before binding. No manual ingress port
+setup is needed. If Supervisor cannot provide a valid assignment, startup fails
+with an actionable error instead of choosing a fixed port. `STMQ_INGRESS_PORT`
+is an explicit override for isolated container fixtures and custom deployments.
+
+Direct access still uses host port 1234 and is opened only when an admin password
+is configured. Host-network listeners cannot be remapped through the app's
+Network settings. Resolve a conflicting direct listener before restarting
+ST-MQ. Startup also rejects an ingress assignment that collides with another
+ST-MQ listener.
 
 The Node.js experimental SQLite warning is informational and is unrelated to
 `EADDRINUSE`. The port conflict is the startup failure to resolve.

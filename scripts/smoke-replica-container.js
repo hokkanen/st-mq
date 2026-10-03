@@ -24,7 +24,7 @@ try {
   assert.equal(status.role, 'slave');
   assert.equal(status.sync.state, 'waiting');
   assert.equal(status.automation.home.enabled, false);
-  assert.equal(status.automation.garage.enabled, false);
+  assert.equal(status.automation.garage, undefined);
   assert.equal(app.engine, undefined);
   assert.equal((await fetch(`${endpoint}/`)).status, 200);
   assert.equal((await fetch(`${endpoint}/api/heating-test`, { method: 'POST',

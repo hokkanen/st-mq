@@ -8,6 +8,15 @@ in the repository. These automations publish observations and answer cache
 queries; they do not operate doors or force device refreshes. The same factory
 also creates separate cover-command handlers for SmartThings and ST-MQ controls.
 
+These are Home Assistant Core automations. Installing the ST-MQ app does not
+install them. First configure the [MQTT integration](https://www.home-assistant.io/integrations/mqtt/)
+under **Settings → Devices & services** and connect it to the same broker as
+ST-MQ. Configure ST-MQ's broker login separately in its saved app options. Keep
+Home Assistant's birth/will topic `homeassistant/status` with payloads `online`
+and `offline`: the generated triggers and default bridge availability use it.
+If that topic has been customized, update both the generated definitions and
+ST-MQ's matching bridge topic before enabling the publishers.
+
 ## Topics and payloads
 
 | Feed | Prefix | State topic suffix | Value |
@@ -84,12 +93,11 @@ expiry. Source, bridge and broker outages invalidate them immediately. Recovery
 requires a live source availability report and a live snapshot, preserving the
 original source timestamp while starting a new availability span. A query timeout
 also invalidates the source; it cannot keep silently disconnected contacts usable.
-Openings and outages break closed-door continuity even when both happen between
-temperature reports. The model records that compact evidence and excludes affected
-learning/validation intervals. Unknown configured door status blocks a new garage
-heating pause, and an open door blocks a start below 2°C outside. During an existing
-pause, independent temperature/reserve protection determines restoration. The explicit garage
-algorithm epoch is described in [reconstruction and versioning](reconstruction-and-versioning.md).
+Door observations supply the live equipment display and recorded contact history.
+Garage uses manual Normal/Away targets and independent device-local frost
+protection; there is no Garage economic controller or learned model. A door
+contact does not grant heating-control authority or confirm pump protection.
+See [Garage heating](garage.md).
 
 ## Door commands
 
@@ -101,8 +109,9 @@ continues accepting only the read-only `status_update` request.
 The operation handlers call HA's explicit `cover.open_cover` / `cover.close_cover`
 actions. They check source availability and the source's advertised capabilities
 before dispatch. A `stop` branch calls `cover.stop_cover` only if HA advertises
-Stop support. Both currently installed Meross entities support Open and Close only;
-neither supports Stop or percentage positioning. No toggle pulse emulates Stop.
+Stop support. The public ST-MQ configuration exposes Open and Close only.
+Check the installed cover's capabilities before enabling Stop; no toggle pulse
+emulates it and the bridge does not provide percentage positioning.
 
 ST-MQ enables the door buttons with `cover_control: true`, `mqtt.command_topic`,
 `mqtt.open_payload: "open"`, `mqtt.close_payload: "closed"` and
@@ -168,31 +177,44 @@ HA route for the existing rear temperature signal:
 }
 ```
 
-Before selecting this route, verify genuine source reports satisfy the garage's
-two-minute freshness requirement and that the sensor represents the intended
-protection location. Replace the existing route for that signal when enabling it.
-A change-only feed can become stale while HA remains online. Queries containing
-cached source timestamps cannot extend temperature validity.
+Before selecting this equipment/history route, verify genuine source reports
+satisfy the configured freshness limit and represent the stated location. Replace
+the existing route for that signal when enabling it. This optional HA feed does
+not replace the pump controller's native BTHome regulation or sender frost
+protection. A change-only feed can become stale while HA remains online. Queries
+containing cached source timestamps cannot extend temperature validity.
 
-## Installation and migration
+## Installing the automations
 
-Generate the three definitions with the private source entity identifiers and
-install them alongside the existing automations. The previous status publishers
-remain available for separate production consumers until their migration starts.
-The four legacy door automations are unchanged. The legacy temperature automation
-uses its source state trigger instead of a minute timer, preserving its source,
-topic, payload and retention. No minute temperature publisher remains. The new
-topics can be verified with read-only status requests, including source timestamps,
-availability and query replies, without moving either door.
+Generate one `garageMqttAutomation({ id, label, sourceEntity, prefix, kind })`
+per source. Use `kind: "contact"` and the door prefixes above for each cover;
+the optional `sensor.*` air source uses `kind: "temperature"`. Generate a separate
+`garageCoverAutomation({ id, label, sourceEntity, prefix })` for each door whose
+commands you intend to expose. IDs must be unique lowercase identifiers.
 
-The two new cover handlers are separate from those publishers. The four older
-open/close handlers on `to_hass/garage_doorN/action` remain until SmartThings moves
-to the new command routes. Remove old status publishers only after their readers
-migrate, and old command handlers only after their writers migrate. Changing one
-direction does not migrate the other.
+The builders return ordinary automation objects with `triggers`, `conditions`
+and `actions`. Generate them on a development computer with Node and this
+checkout, using privately maintained entity mappings. Import each object as one
+automation through **Settings → Automations & scenes → Create automation →
+Create new automation → ⋮ → Edit in YAML**. JSON objects are valid YAML; paste
+one complete automation object, not an array of all the objects. Save and inspect
+its trace after a read-only `status_update` query. Alternatively, merge the
+objects as individual entries into the existing `automations.yaml` list and
+reload automations. Do not replace unrelated automations. See Home Assistant's
+[automation editor instructions](https://www.home-assistant.io/docs/automation/editor/).
 
-Private configuration and automation backups belong in
-`~/.config/st-mq/ha-door-migration` and `~/.config/st-mq/ha-door-controls`, with directory mode `0700` and file mode
-`0600`. Do not copy household entity identifiers or exported automations into Git.
-See the [topic migration guide](mqtt-topics.md) for the separate manual SmartThings
-changes and ST-MQ cutover steps.
+Install and verify status publishers before command handlers. Clear any retained
+message on a `/command/cover` topic before enabling its handler; the HA MQTT
+trigger does not expose the retained flag. Status requests must not be retained.
+Verify source timestamps, availability and query replies without moving a door.
+Only then enable the explicitly configured movement controls and check them as
+a separate installation test.
+
+If another system still uses older MQTT topics, coordinate its publishers and
+subscribers separately. Retire each external route after its consumers move;
+ST-MQ accepts only the currently configured protocol. Installing these
+Home Assistant automations does not change ST-MQ's saved options or restart it.
+
+Keep generated automations, source entity mappings and pre-edit backups outside
+Git, in a private directory with mode `0700` and files with mode `0600`. See the
+[topic cutover guide](mqtt-topics.md) for the separate manual SmartThings changes.

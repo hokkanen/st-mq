@@ -1,4 +1,12 @@
-# Home Assistant add-on setup
+# Home Assistant app setup
+
+ST-MQ runs as a Home Assistant **app** (formerly called an add-on) on
+**Home Assistant OS**, on `aarch64` including Raspberry Pi 5, or `amd64`.
+Home Assistant Container has no app manager; run ST-MQ separately using the
+[standalone instructions](README.md#deployment-paths). ST-MQ is installed from
+this repository as **Home Energy**, not through HACS or as a Home Assistant Core
+integration. The project and installation slug remain `st-mq`.
+See Home Assistant's [installation types](https://www.home-assistant.io/installation/#about-installation-types).
 
 The 0.9.0 application starts with **simulated devices and Pause heating**. Default
 startup launches no live controller or provider. Live automation is enabled separately in each feature after configuring its connection. See [learning and control](docs/learning-and-control.md)
@@ -6,28 +14,45 @@ for the algorithm, native-setting restoration and equipment testing limits.
 [Automation and manual heating](docs/automation-and-manual-control.md) explains
 the independent feature controls and Garage local temperature regulation.
 
-1. Build/install ST-MQ through the repository's existing add-on mechanism on
-   `aarch64` (Raspberry Pi 5) or `amd64`.
+1. Open **Settings → Apps → Install app → ⋮ → Repositories**, add
+   `https://github.com/hokkanen/st-mq`, and install **Home Energy** from the
+   **Home Energy apps** repository.
+   Home Assistant builds the image locally; the host needs network access for
+   the build and enough free storage. If the repository does not appear, refresh
+   the app store and inspect **Settings → System → Logs → Supervisor**.
+   This follows Home Assistant's [third-party app installation](https://www.home-assistant.io/common-tasks/os/#installing-a-third-party-app-repository).
+   For a local development installation, place the checkout in the local-app
+   folder, `/local_apps/st-mq` in the current official Terminal & SSH app
+   (`/addons/st-mq` in tools using the older mount), then choose **Check for
+   updates** in the app store. It appears in **Local apps**.
 2. Leave `controller.web_token` and `controller.web_family_token` empty to use
-   Home Assistant ingress with full admin access through your existing Home
-   Assistant login. Set an admin password of at least 24 characters in `web_token`
-   for direct access on the mapped port 1234. Optionally set a different family
+   Home Assistant ingress through your Home Assistant login. Every accepted
+   ingress session has full ST-MQ admin access. Save settings on the app's **Configuration**
+   tab. Set an admin password of at least 24 characters in `web_token`
+   for optional direct access at `http://<HA-host-address>:1234`. Optionally set a different family
    password of at least 24 characters in `web_family_token`. Leave
    `controller.input: simulated` for initial review; Home defaults to Pause; Garage control is disabled by default.
-3. Start the add-on and choose **Open Web UI** in Home Assistant. Ingress needs no
-   separate application password. Direct access, when enabled, asks for either
+3. Start ST-MQ and choose **Open Web UI** in Home Assistant. Ingress needs no
+   separate application password or router port forwarding. **Start on boot**
+   keeps ST-MQ running after a host restart; **Show in sidebar** adds the
+   **Home Energy** entry and is optional.
+   Direct access, when enabled, asks for either
    configured password and selects its role. The **Home Energy** UI clearly labels simulation.
    The header button switches between dark and light themes. The browser remembers
    the last choice across page loads, with green dark as the initial default.
 4. The working database is under `/config/st-mq/`, in Home Assistant's public
-   add-on folder. Terminal & SSH exposes it under
-   `/addon_configs/<repository-id>_st-mq/st-mq/`. Private provider token caches stay
-   in `/data/st-mq/`. Both are included in the add-on backup; `/share` remains
+   app folder. Terminal & SSH exposes it under
+   `/app_configs/<repository-id>_st-mq/st-mq/`. Private provider token caches stay
+   in `/data/st-mq/`. Both are included in the app backup; `/share` remains
    available for imports/exports. See the path and backup instructions below.
-5. Import history explicitly with `node scripts/history.js import --db
-   /config/st-mq/st-mq.sqlite --file /share/st-mq/st-mq-corrected.csv --kind stmq`,
-   then import Easee with `--kind easee`. Input files are never included in the
-   application image.
+5. Historical import is optional. The [history CLI](README.md#persistence-and-historical-data)
+   accepts only v0.7.5 `st-mq.csv` and `easee.csv`. With a shell inside the ST-MQ
+   container, run `node scripts/history.js import --db /config/st-mq/st-mq.sqlite
+   --file /share/st-mq/st-mq.csv --kind stmq`, then import `easee.csv` with
+   `--kind easee`. Terminal & SSH is a separate container and does not contain
+   ST-MQ's Node executable or history script. Alternatively prepare a fresh
+   database from those CSVs with the same ST-MQ version on standalone Linux,
+   close its writer, and copy it into the public app folder while ST-MQ is stopped. Source CSVs stay outside the image.
 6. Choose `controller.input: offline` to view imported history without device
    connections. Choose `providers` or `mqtt` for live temperatures and prices.
    Keep Home on **Paused** while reviewing plans. Configure the
@@ -52,11 +77,12 @@ the independent feature controls and Garage local temperature regulation.
    Temperature and global radiation forecasts use FMI first, then Open-Meteo
    ICON Seamless. Missing FMI radiation can use Open-Meteo while retaining FMI
    temperature. Radiation includes cloud effects and uses W/m². Current outdoor
-   temperature uses H66 first, then FMI, then an Open-Meteo model estimate. Device
+   temperature uses FMI station observations, then an Open-Meteo model estimate;
+   H66 outdoor readings are excluded from the model's outdoor observation feed. Device
    temperatures arrive through MQTT, Easee collection runs every 15 seconds,
    outdoor weather every five minutes, forecasts every 30 minutes, prices hourly
    and H66 snapshot requests every minute.
-8. Configure `electricity` in add-on options. Every monetary field explicitly
+8. Configure `electricity` in app options. Every monetary field explicitly
    **excludes VAT**; `vat_percent` applies VAT once to spot, margin, tax and transfer.
    Defaults are margin **0.33 c/kWh ex VAT**, tax **2.325 c/kWh ex VAT**, and
    **25.5% VAT**. These produce 0.41415 and 2.917875 c/kWh including VAT.
@@ -68,9 +94,8 @@ the independent feature controls and Garage local temperature regulation.
    change them in options, then use **Data & settings → Connections & configuration →
    Configuration → Check & review configuration**, inspect the diff, then choose
    **Apply reviewed configuration** (admin only).
-   Old browser-saved values cannot override
-   these settings. `temp_to_hours` is no longer used; remove it from saved add-on
-   options if an upgrade still displays the old key.
+   Browser-saved values cannot override these settings. Unknown or retired
+   options are rejected; remove obsolete keys before starting the current version.
 
 **Check & review configuration** reads freshly saved Home Assistant options from
 Supervisor and validates them without changing the runtime or saving imports.
@@ -79,7 +104,7 @@ configuration** to reconnect providers after reviewing the changes. A changed so
 or a review older than five minutes requires another check; restart-only changes
 disable application. Save options in Home Assistant before checking. This workflow
 does not rely on `/data/options.json`, which Supervisor exports
-when starting the add-on. **Applies without restart** lists price-control mode,
+when starting the app. **Applies without restart** lists price-control mode,
 comfort limits, learning settings, electricity rates, recording interval, storage
 budget and the direct-access token. With live input, provider connections,
 location, sensor topics, polling intervals, H66 device selection and its
@@ -93,10 +118,12 @@ automatic heating cycle ends, while Away and pause choices and learning history
 remain. Startup environment overrides still apply.
 
 You can also import private settings through the same check, review and apply
-workflow. In Terminal & SSH, upload `secrets.json` to this add-on's configuration
-folder. The UI displays the exact path, such as
-`/addon_configs/<actual-add-on-slug>/secrets.json`; inside ST-MQ it is
-`/config/secrets.json`. This is next to the `st-mq/` database folder, not inside it.
+workflow. In Terminal & SSH, upload `secrets.json` to this app's configuration
+folder. The UI displays the current official Terminal & SSH path, such as
+`/app_configs/<actual-app-slug>/secrets.json`; inside ST-MQ it is
+`/config/secrets.json`. Some third-party SSH/file apps expose `/addon_configs`
+instead; keep the same slug and filename under that app's mounted prefix.
+This is next to the `st-mq/` database folder, not inside it.
 Use a **plain JSON options object without an outer `options` wrapper**. Keep the
 file private while transferring it. For example, a sparse settings import can be:
 
@@ -109,13 +136,19 @@ file private while transferring it. For example, a sparse settings import can be
 
 Only provided fields override saved options. Nested objects merge recursively;
 arrays replace saved arrays; explicit empty values clear fields where an empty
-value is valid. Omitted fields preserve saved values. Invalid JSON or settings
-reject the import. Apply merges the upload over freshly saved Supervisor options,
+value is valid. Before saving an import, ST-MQ fills missing schema-required
+object/list containers with empty objects/lists, such as equipment `mqtt: {}`,
+`readings: []` and `temperature_control: {}`. This only completes the Supervisor
+configuration shape; it does not create device wiring or control permission.
+Omitted fields preserve saved values. Invalid JSON or settings reject the import. Apply merges the upload over freshly saved Supervisor options,
 saves the imported result in Home Assistant, then applies supported settings.
 The uploaded file is deleted only after successful import and application. If
 import or application fails, it stays for correction. If only file removal fails,
 the UI reports successful application and asks you to delete the upload. Imported
-values persist in Home Assistant after the file is removed.
+values persist in Home Assistant after the file is removed. Existing `!secret`
+references in untouched saved fields remain references; runtime values are
+resolved through Supervisor. The import must contain actual values, not new
+`!secret` references. Providing a value replaces that field's saved reference.
 
 The **Configuration** section also reports live access status. Setting a valid
 `controller.web_token` and applying enables direct admin access on port 1234.
@@ -248,8 +281,9 @@ Missing AUX routing, solar forecasts or complete recovery evidence stays unknown
 Learning values are stored as learned; new forecasts and models do not rewrite
 earlier learning chart samples.
 
-An empty direct-access token keeps port 1234 disabled; Home Assistant ingress
-remains available through HA login. Home Assistant options own permanent
+Empty direct-access passwords leave port 1234 closed; Home Assistant ingress
+remains available through Home Assistant login with full ST-MQ admin access.
+Home Assistant options own permanent
 settings. Above the chart, **Home** and **Garage** each open **Heating
 configuration** from their upper summary. **Sensors & Equipment** in Home and
 **Sensors & More equipment** in Garage contain readbacks and manual tests;
@@ -359,10 +393,10 @@ For the offline suite, browser checks and container prerequisites, see
 [development validation](docs/development-validation.md).
 
 The Dockerfile uses an explicit Node 22.23.2 Alpine base, a finite frontend build
-and `npm ci`. Legacy Supervisor `BUILD_FROM` injection cannot replace Node with an
-incompatible base. It contains no architecture-specific native SQLite addon.
+and `npm ci`. It does not depend on `BUILD_FROM` or a retired `build.yaml`;
+current Supervisor builds use the Dockerfile directly. It contains no architecture-specific native SQLite addon.
 Node's own SQLite and Intl time-zone support are exercised in the container smoke
-check. Development has not installed or started this add-on on the owner's HA.
+check. Development has not installed or started this app on the owner's HA.
 
 The controller owns tariff commands and temporary native changes. Broker delivery
 is distinguished from native register readback and physical compressor activity.
@@ -376,23 +410,30 @@ See [learning and control](docs/learning-and-control.md) for the complete detail
 
 ## SSH database access and backups
 
-The folder arrangement follows Home Assistant's [public add-on configuration
-support](https://developers.home-assistant.io/docs/apps/configuration/#add-on-advanced-options).
-Unlike `/share` alone, this folder is included in an add-on backup.
+The folder arrangement follows Home Assistant's [public app configuration
+support](https://developers.home-assistant.io/docs/apps/configuration/#app-advanced-options).
+This `/config` is ST-MQ's own app folder, not Home Assistant Core's configuration
+folder. It is included when **Home Energy** is selected for backup; `/share` is a separate
+backup selection.
 
 | Purpose | Inside ST-MQ | In Terminal & SSH |
 | --- | --- | --- |
-| Active household database | `/config/st-mq/st-mq.sqlite` | `/addon_configs/<repository-id>_st-mq/st-mq/st-mq.sqlite` |
+| Active household database | `/config/st-mq/st-mq.sqlite` | `/app_configs/<repository-id>_st-mq/st-mq/st-mq.sqlite` |
 | Simulation database | `/config/st-mq/simulation.sqlite` | Same public folder, `simulation.sqlite` |
 | Options and provider tokens | `/data/options.json`, `/data/st-mq/` | Private to ST-MQ |
-| Temporary settings import | `/config/secrets.json` | `/addon_configs/<actual-add-on-slug>/secrets.json` |
+| Temporary settings import | `/config/secrets.json` | `/app_configs/<actual-app-slug>/secrets.json` |
 | CSV imports and exported backups | `/share/st-mq/` | `/share/st-mq/` |
 
-Find the installation folder with `ls -d /addon_configs/*_st-mq` in a current
-Terminal & SSH add-on. Locally installed add-ons use `local_st-mq`; a Git repository
-uses its repository identifier. The old `/root/share` spelling was a terminal
-convenience; `/share` is the shared mount. Add-on metadata keeps the `st-mq` slug so
-upgrades keep the installation identity.
+The current official [Terminal & SSH app](https://github.com/home-assistant/addons/blob/master/ssh/config.yaml)
+mounts other apps' configuration at `/app_configs`; find ST-MQ with
+`ls -d /app_configs/*_st-mq`. Some third-party tools, including
+[Advanced SSH & Web Terminal](https://github.com/hassio-addons/addon-ssh/blob/main/ssh/config.yaml),
+still use `/addon_configs`; use that mounted prefix with the same ST-MQ folder
+name. Locally installed apps use `local_st-mq`; a Git repository uses its
+repository identifier. The configuration screen supplies ST-MQ's actual slug
+with the current official path. `/share` is the shared import/export mount. The `st-mq` slug preserves installation identity.
+Keep private subdirectories at mode `0700` and files at `0600`; use an
+appropriately privileged file tool instead of making the database world-readable.
 
 ST-MQ opens only the explicitly selected current database path. It does not
 discover or relocate development databases. An incompatible or malformed
@@ -400,10 +441,19 @@ database is rejected unchanged. For a clean development start, select a fresh
 path and re-import the supported v0.7.5 CSV files if needed. Current-schema
 backup/restore remains available; restoration never overwrites an existing file.
 
-Use Home Assistant's add-on backup for ordinary recovery. The manifest requests
-**cold backup**, so Supervisor stops ST-MQ while capturing its database and starts
-it again afterward. Include the Share folder separately if its imports/exports
-also need backing up.
+Use **Settings → System → Backups** and include **Home Energy** for ordinary recovery.
+The manifest requests **cold backup**, so Supervisor stops a running ST-MQ while
+capturing its database and starts it again afterward. Acquisition and ST-MQ
+control are unavailable during that stop; independent device protection remains
+with the devices. Include **Share** separately if its imports/exports also need
+backing up. Restore ST-MQ together with its options and private data. Database
+exports alone do not include provider tokens or Supervisor options.
+
+For a browser download, use **Recording details → Export database → Download
+database**. For **Save local copy**, configure `recording.export_directory` as
+`/config/st-mq/exports` (included with the app) or `/share/st-mq` (separate Share
+backup). The shared default `"~"` resolves inside the container and is not a
+persistent backup location there.
 
 These commands run **inside the ST-MQ container**, where Node and the history
 administration script are installed:
@@ -421,17 +471,88 @@ file while ST-MQ is running: recent committed data may be in its `-wal` file.
 
 For manual edits or raw file copies, stop ST-MQ through Home Assistant first and
 make a backup. Work on a copy, run `PRAGMA quick_check;`, and retain the original
-until the edited copy is verified. Restoring the complete HA add-on backup is the
+until the edited copy is verified. Restoring the complete HA app backup is the
 usual route; the history CLI can restore a snapshot to a new database path.
-Options are owned by Supervisor: edit and save them through add-on configuration,
+Options are owned by Supervisor: edit and save them through app configuration,
 or upload the sparse import described above, then choose **Apply reviewed configuration**.
 The temporary upload is not a permanent settings file; Supervisor retains the
 successfully imported values.
 
-`config.json`, `translations/en.yaml`, `repository.yaml`, `Dockerfile` and this
-document are the maintained HA-specific files. `HASS_files/` is an old empty local
-folder; no required installation helpers live there. The manifest keeps the
-compatible `addon_config` mapping name, also called `app_config` by newer HA.
+## Home Assistant files and permissions
+
+The [current app format](https://developers.home-assistant.io/docs/apps/configuration/)
+still supports `config.json` and `translations/en.yaml`; renaming them is not
+required by the change from “add-ons” to “apps”.
+
+| File or directory | Current purpose |
+| --- | --- |
+| `config.json` | App identity, architectures, startup, ingress, mounts, capabilities, shared defaults and Supervisor option schema. |
+| `translations/en.yaml` | English names and descriptions for the app's Configuration form; `configuration` keys follow the schema. There is no `network` section because host networking has no remappable ports. It does not translate the ST-MQ dashboard. |
+| `repository.yaml` | Repository name, URL and maintainer shown in the app store. |
+| `Dockerfile`, `.dockerignore` | Reproducible application image and build context. Startup runs `node src/main.js`; no `run.sh` is required. |
+| `README.md`, `DOCS.md`, `CHANGELOG.md`, `icon.png`, `logo.png` | App store presentation, setup guidance, release history and branding. |
+| `integrations/homeassistant/` | Optional MQTT automation generators and the pinned Tuya Local adapter. Install only the integrations you use; installing ST-MQ does not install them into Core. |
+| `scripts/test-addon-container.sh`, `scripts/browser-ingress-smoke.js`, `test/extended/supervisor/` | Isolated deployment, ingress and upstream Supervisor configuration checks. |
+
+The manifest maps writable `app_config` explicitly to ST-MQ's `/config` and
+`share:rw` to `/share`.
+Current [Supervisor mount handling](https://github.com/home-assistant/supervisor/blob/64ea3be4322537fd5dcfbf620c4dc25490c1f56d/supervisor/docker/app.py)
+uses `app_config`; the older `addon_config` name is deprecated. ST-MQ's own
+`/config` and stored app directory stay the same; file tools expose them under
+their chosen `/app_configs` or `/addon_configs` mount. ST-MQ does not mount
+Home Assistant Core's configuration. The historical
+`HASS_files/` folder is not part of the installation.
+
+Host networking and `NET_ADMIN` / `NET_RAW` support the optional paired-host
+virtual MQTT address; see [pairing](docs/pairing.md#mqtt-address-management).
+Home Assistant port remapping does not change listeners in host-network mode.
+Direct HTTP uses host port 1234 when enabled. Supervisor assigns an available
+ingress port because the manifest declares `ingress_port: 0`; ST-MQ reads that
+assignment before opening listeners. The ingress listener accepts only the
+Supervisor proxy.
+
+Home Assistant shows the **Home Energy** sidebar entry to administrators, but
+`panel_admin` controls visibility only. Every accepted ingress session has full
+ST-MQ admin access, including sessions obtained by authenticated Home Assistant
+nonadministrators. Family restrictions apply only to direct access with the
+family password; ingress does not apply that role. This follows the current
+[Core ingress API permissions](https://github.com/home-assistant/core/blob/2026.9.4/homeassistant/components/hassio/websocket_api.py)
+and [Supervisor session handling](https://github.com/home-assistant/supervisor/blob/2026.09.3/supervisor/api/ingress.py).
+
+Leave protection mode enabled; neither Docker API access nor unrestricted
+host access is needed. Reading and saving ST-MQ's own options uses Supervisor's
+self endpoints with its default app role, without management access to other
+apps or a Home Assistant Core API token.
+
+## MQTT and optional Home Assistant integrations
+
+For live MQTT input, configure `mqtt.address`, `mqtt.user` and `mqtt.pw` in ST-MQ's
+saved options. The default `mqtt://core-mosquitto` targets Home Assistant's
+Mosquitto broker app; supply a login allowed by that broker. ST-MQ does not copy
+credentials from Home Assistant's MQTT integration. A separate broker needs its
+own reachable address. `simulated` and `offline` modes need no broker.
+
+The optional [door publishers](docs/homeassistant-mqtt.md), [BMW CarData feed](docs/bmw-cardata.md)
+and [Caravan dehumidifier bridge](docs/caravan-dehumidifier.md) require Home
+Assistant Core's MQTT integration connected to the same broker. Source entities
+and generated household automations remain private. These bridges are separate
+from the ST-MQ app and from its English configuration descriptions.
+
+## Startup and troubleshooting
+
+Use ST-MQ's **Logs** tab or **Settings → System → Logs** to inspect startup errors.
+Restart or stop the app from **Settings → Apps → Home Energy**; restarting Home Assistant
+Core alone does not restart ST-MQ. If a host port is occupied, resolve the existing
+listener before retrying; see [startup](docs/startup.md). A database-format error
+requires an explicit fresh path or compatible backup, never deletion by startup.
+
+After saving options, use the review/apply workflow above for supported live
+changes, or restart for input/topology and other startup-only settings. If ingress
+reports the app is unavailable, first confirm ST-MQ is running and inspect its
+startup log. An unavailable Supervisor or invalid ingress assignment blocks
+startup; ST-MQ does not guess a fixed port. Port 1234 is deliberately closed
+while direct passwords are empty;
+use **Open Web UI** through ingress in that case.
 
 ## Reproducing deployment checks
 
@@ -443,6 +564,15 @@ scripts/test-addon-container.sh st-mq:development
 The check uses temporary `/data`, `/config` and `/share` mounts, synthetic options,
 the actual image startup command, authentication, current-schema persistence, restart and
 backup/restore. A separate container verifies direct database access from the
-public folder. Networking is disabled. CI builds and runs this for AMD64 and
-ARM64 under QEMU; local x86 results alone do not prove installation on a physical
-Raspberry Pi or the owner's Supervisor.
+public folder. Networking is disabled. The extended CI workflow defines AMD64
+and ARM64 jobs under QEMU. For actual run results, see [the progress log](docs/PROGRESS.md).
+
+Run `bash scripts/test-homeassistant-supervisor.sh` to validate the current
+manifest, translations and saved-options behavior against pinned released
+Supervisor **2026.09.3**, without starting Supervisor. This check also runs on
+pushes and pull requests. See [development validation](docs/development-validation.md#home-assistant-supervisor-contract)
+for prerequisites and scope. Neither these fixtures nor
+an ordinary Docker run establish a real Supervisor installation, protection
+policy, backup/restore, or physical Raspberry Pi operation. A disposable Home
+Assistant OS installation is the remaining acceptance environment for those
+checks; this audit does not install or restart the household's app.

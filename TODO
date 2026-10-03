@@ -1,3 +1,39 @@
+Implemented 2026-10-03 — Home Assistant app compatibility and documentation audit
+- F1/F3/F4/F5/F7/F8: validate the current application against released Supervisor
+  2026.09.3. Fix shipped equipment defaults rejected for missing nested objects;
+  complete sparse imports with current empty object/list defaults without
+  granting temperature-control authority or translating retired fields.
+- Preserve existing !secret references during import save/readback and interrupted
+  save recovery; resolve them separately for runtime use and subsequent rotation.
+  Discover Supervisor's assigned ingress port before listening, reject missing
+  assignments, and handle plain-text expired-session responses in the dashboard.
+- Refresh the Home Energy app/repository labels, supported English translations,
+  app_config mount and Docker app label. Remove ignored host port mappings and
+  the fixed ingress-port assumption. Preserve st-mq identity, /config and /data
+  contents, direct passwords, standalone behavior, cold backups and control gates.
+- Update installation, configuration, file relevance, current SSH mount paths,
+  backups, exports and Core MQTT bridge instructions. Clarify that panel_admin
+  governs visibility; every accepted ingress session retains application admin
+  access, while family restrictions use the direct family password. Keep dated
+  audit/release evidence historical and remove obsolete current Garage guidance.
+- Add a pinned upstream Supervisor runner to pull-request CI. Its 13 checks pass
+  all 259 schema paths, defaults, English translations, repository metadata,
+  actual API secret behavior, generated sparse imports and web UI URL resolution.
+- Validation: npm run check passes 4,248 tests with one optional upstream Tuya
+  parser check skipped and the production build (existing bundle-size advisory).
+  All 9 extended tests pass with required real MQTT/SSH/SQLite prerequisites.
+  The HA ingress browser suite passes with an actual app listener and synthetic
+  Supervisor, including reviewed imports, mobile paths, stalled requests and 401
+  recovery. The actual amd64/Node22 image passes shipped CMD startup, auth/assets,
+  restart, clean shutdown, cold backup/export/restore, exact saved-state checks,
+  isolated provider fixtures and the read-only replica/tooling checks. Update
+  stale container assertions to the current Garage and history-viewer contract.
+- Documentation link/anchor and diff checks pass. No live HA OS installation,
+  physical Raspberry Pi, arm64 execution, household credentials or equipment
+  were used. The arm64 workflow remains configured; live Supervisor install,
+  AppArmor/network enforcement and actual HA backup operation remain installation
+  checks, not claims established by these fixtures. No deployment or push.
+
 Implemented 2026-10-03 — Prepare the CN105 driver's first public release links
 - F3/F4/F5/F8: document driver package 1.3.0 independently of its unchanged
   shelly-cn105/v2 contract and link the handoff to the driver's ST-MQ integration

@@ -1,150 +1,308 @@
 configuration:
   controller:
-    name: Home controller
+    name: Home heating and access
     description: >-
-      Start with simulated input and Pause heating. Home Assistant ingress grants
-      admin access through your HA login. topology selects standalone, mirror or
-      pair. Standalone runs independently as master. Mirror uses
-      SSH to send snapshots from a master to a read-only slave; roles are fixed
-      by mirror.role. Pair uses the peer connection for synchronization and
-      manual handover. Both new pair computers start as slaves; manually promote
-      one to become the first master. Saved pair state determines later roles.
-      Neither mirror nor pair takes over automatically. Topology and mirror.role
-      configuration changes require a restart.
-      Leave web_token and web_family_token
-      empty to keep direct port 1234 disabled, or set web_token to an admin
-      password of at least 24 characters. Optionally set web_family_token to a
-      different password of at least 24 characters for family access. Family can
-      view all pages and operate firewood, DHWR, Home Automatic/Pause, Garage Normal/Away, manual heating, schedules,
-      garage doors and EV card controls. Other writes, exports and downloads
-      require admin. Save options, then choose Apply configuration in the
-      application. Password changes apply immediately; clearing both passwords
-      disables direct access while ingress stays
-      available. Input changes require restarting the add-on. Providers input reads online
-      sensors, electricity prices and weather. MQTT input adds read-only H66
-      readings and needs the exact installed H66 device prefix. An optional
-      reviewed h66_verification_file confirms installed register meanings;
-      relative paths are inside this add-on's SSH-accessible /config folder.
-      Choose Automatic separately for Home and Garage in the dashboard.
-      max_drop_c is the preferred occupied
-      temperature drop in °C (default 1.5); away periods have no comfort-drop
-      limit. The comfort reference is learned from continuous normal heating.
-      Away until and Pause until are temporary dashboard controls.
+      Start with simulated input and Home heating automation paused. Home
+      Assistant ingress grants application admin access through your Home Assistant
+      admin login. Home Automatic/Pause, Garage Normal/Away, charging Automatic
+      and Caravan Automatic power are independent dashboard controls. Save
+      options, then use Data & settings → Check & review configuration → Apply
+      reviewed configuration. Input, topology and mirror role changes require
+      a restart. Configuration does not grant permission to control equipment.
+    fields:
+      input:
+        name: Input source
+        description: >-
+          simulated uses synthetic data without device connections; offline
+          reads recorded data without device connections. providers uses live
+          sensors, prices and weather; mqtt also enables H66 readings when its
+          installed device prefix is configured.
+      topology:
+        name: Computer topology
+        description: >-
+          standalone runs independently. mirror sends database snapshots over
+          SSH from a fixed master to a read-only slave. pair synchronizes two
+          computers with explicit manual handover. Neither mode takes over
+          automatically. New pairs start with both computers as slaves.
+      web_token:
+        name: Direct-access admin password
+        description: >-
+          At least 24 characters. Leave both web passwords empty to disable
+          direct access on port 1234 while keeping ingress available. Password
+          changes take effect when reviewed configuration is applied.
+      web_family_token:
+        name: Direct-access family password
+        description: >-
+          Optional password of at least 24 characters, different from the admin
+          password. Requires an admin password. Family can view pages and use
+          everyday heating, charging and equipment controls. Configuration,
+          database exports and administrative changes require admin access.
+      max_drop_c:
+        name: Preferred occupied temperature drop (°C)
+        description: >-
+          Preferred drop below the learned normal-heating comfort reference.
+          Away periods have no comfort-drop limit. Away and Pause deadlines
+          are dashboard controls, not configuration defaults.
+      h66_device:
+        name: Installed H66 device prefix
+        description: >-
+          Exact installed MQTT prefix. Leave empty when H66 is not used. MQTT
+          input and the configured broker are required for H66 acquisition.
+      h66_verification_file:
+        name: Reviewed H66 register verification file
+        description: >-
+          Optional reviewed installation evidence for register meanings.
+          Relative paths are resolved inside this app's /config folder.
+      floor_preheat:
+        name: Floor preheat installation
+        description: >-
+          Enable only after commissioning the floor-valve integration.
+          Commissioning is installation approval; fresh device evidence and
+          active leases are still required for control.
   garage:
     name: Garage heating and doors
     description: >-
-      Configure manual heating, the Away target, temperature freshness, local
-      protection and pump/sender connections. door_travel_seconds is the full
-      opening and closing time shared by both doors for linear visual movement
-      (default 18 seconds, range 1–300). This is an animation assumption, not a
-      measured position or command confirmation. Save options, then choose
-      Apply reviewed configuration in the application.
-  electricity:
-    name: Electricity rates — c/kWh EXCLUDING VAT
-    description: >-
-      Enter every monetary value in cents/kWh excluding VAT, including margin,
-      electricity tax and all transfer rates. VAT is added once using vat_percent
-      (default 25.5). Defaults are margin 0.33 (0.41415 including VAT) and tax
-      2.325 (2.917875 including VAT). Default day/night transfer rates correspond
-      to 3.34/1.96 including VAT. Seasonal winter-day/other rates correspond to
-      4.17/2.07 including VAT. Daytime is 07:00–22:00 Finnish time; seasonal
-      winter daytime is November–March, Monday–Saturday, with no holiday
-      exceptions. transfer_tariff selects day-night or seasonal. Leave
-      effective_date empty to apply changed rates with Apply configuration or at restart; first setup
-      begins at today's Finnish midnight. An explicit YYYY-MM-DD date starts
-      at Finnish midnight. Later rate changes apply now or in the future;
-      elapsed history is preserved. A future configured change can be edited
-      before it starts. To cancel it, restore the current rates and clear the
-      effective date. Previous rate snapshots remain available for history.
-  geoloc:
-    name: Location for prices and weather
-    description: >-
-      The country code selects ENTSO-E and Elering electricity prices.
-      Coordinates select FMI temperature and solar radiation forecasts, with
-      Open-Meteo ICON as backup. Neither weather service needs an API key.
-      Current outdoor temperature uses the H66 sensor first, then a fresh FMI
-      nearby station reading, then an Open-Meteo model estimate.
-  mqtt:
-    name: MQTT broker and temperature sensors
-    description: >-
-      MQTT input subscribes to the installed H66 using this broker address,
-      username and password. Home Automatic/Pause and Garage Normal/Away are independent
-      dashboard controls; manual commands remain available while paused.
-      Configure temperature sensors as equipment devices with exact MQTT
-      connections. Providers input can use these sensors without an H66 device.
-      Indoor topics expect a genuine report every 70 minutes, allowing 300 seconds
-      of delay. Change temperature_report_interval_minutes and
-      temperature_report_grace_seconds to match the publisher; interval 0 disables
-      the deadline for sensors that report only changes.
-  entsoe:
-    name: ENTSO-E API token (recommended)
-    description: >-
-      ENTSO-E is the primary electricity price source. Direct Elering prices
-      are the backup and need no API key; supported countries are FI, EE, LV
-      and LT. The optional domain overrides the country-derived bidding zone;
-      omit it to use country_code. Elering only substitutes the same zone.
-  easee:
-    name: Easee consumption readings (optional)
-    description: >-
-      Provide device IDs and either user/password or access_token/refresh_token
-      to collect charger and Equalizer readings. Leave device IDs empty when
-      unused. Token renewals are cached privately and options.json is not rewritten.
-      Separately enabling Automatic charging on Charger 1 permits native Easee
-      schedules, independently of heating mode; it is off by default.
-      Stale measurements remain marked stale. charger_voltage_ids may contain three verified phase-to-neutral observation IDs; leave empty to allocate by currents. Use [194, 195, 196] only after verifying the charger uses the documented TN terminal mapping. Cumulative kWh is diagnostic-only and never corrects or trains the model.
+      Configure manual Normal/Away heating, the Away target, temperature
+      freshness, local frost protection and pump/sender connections. The heat
+      pump controller maintains the requested target locally; Garage has no
+      automatic price scheduling. Save options, then check and apply reviewed
+      configuration in Data & settings.
+    fields:
+      enabled:
+        name: Enable Garage integration
+        description: >-
+          Enables the configured Garage integration. Commands still require
+          fresh adapter evidence; this setting does not confirm local protection.
+      awayTargetC:
+        name: Away temperature (°C)
+        description: >-
+          Configured preset for Garage Away. The Normal temperature and selected
+          mode are separate durable dashboard choices.
+      door_travel_seconds:
+        name: Door travel time (seconds)
+        description: >-
+          Full opening and closing time shared by both doors for the visual
+          movement estimate; default 18 seconds, range 1–300. This is not a
+          measured position or command confirmation.
+      protection:
+        name: Local frost protection assumptions
+        description: >-
+          Installation approval, pipe geometry, margin and heat-transfer
+          assumptions applied to the sender. Approve only after review of the
+          installation. Actual sender readback determines protection status.
+      adapter:
+        name: Heat pump MQTT connection
+        description: >-
+          Exact Shelly CN105 state, telemetry and command topics. The electrical
+          source selects native power or counter evidence; none leaves
+          electrical telemetry available only for diagnostics.
+      sender:
+        name: Garage sensor and protection sender
+        description: >-
+          Exact sender state and command topics, with the maximum accepted age
+          of its status. Repeatedly reading a cached value does not renew evidence.
   charging:
     name: Charging defaults, reports and vehicle feeds
     description: >-
       Shared and vehicle-specific defaults set ready-by time, starting charge,
-      target charge and usable capacity. Session edits stay with the current
-      connection; Automatic charging and priority are independent dashboard choices.
-      BMW CarData and TeslaMate provide vehicle evidence for either charger.
-      Charger 2 requires explicit enablement and commissioning for control.
-      report_retention_days keeps completed session reports for 30 days by default
-      (1 to 3650); saved reports and active sessions do not expire automatically.
-  recording:
-    name: Historical recording
+      target charge and usable battery capacity. Session edits stay with the
+      current connection. Automatic charging and charger priority are separate
+      durable dashboard choices. BMW CarData and TeslaMate provide vehicle
+      evidence for either charger.
+    fields:
+      report_retention_days:
+        name: Completed report retention (days)
+        description: >-
+          Keeps ordinary completed reports for 30 days by default, from 1 to
+          3650. Saved reports and active sessions do not expire automatically.
+      defaults:
+        name: Shared charging defaults
+        description: >-
+          readyBy is the local ready-by time; manualSoc is starting charge (%),
+          minimumSoc is target charge (%) and capacityKwh is usable capacity.
+          Session edits do not replace these configuration defaults.
+      chargers:
+        name: Charger connections
+        description: >-
+          Charger 1 uses Easee settings. Charger 2 needs explicit enablement,
+          MQTT identity and topic. Control readiness comes from live native
+          evidence. Optional current limiting also needs reviewed phase/fuse
+          settings and compatible numeric control capabilities.
+      vehicles:
+        name: Vehicle feeds and default overrides
+        description: >-
+          BMW CarData uses its independent MQTT feed; Tesla uses the TeslaMate
+          settings. Vehicle defaults override shared defaults only for that
+          vehicle. A feed does not permanently assign a vehicle to a charger.
+  electricity:
+    name: Electricity rates — c/kWh excluding VAT
     description: >-
-      annual_budget_gb is a soft rolling database-growth target in
-      decimal GB/year (default 10), not a calendar-year quota. The independent
-      recorder adjusts continuous measurement thresholds. States and settings
-      retain exact changes; unchanged values have no forced recording interval.
-      Source outages remain missing; no timer creates new measurements.
+      Enter margin, electricity tax and every transfer rate in cents/kWh
+      excluding VAT. VAT is added once using vat_percent. Daytime is
+      07:00–22:00 Finnish time; seasonal winter daytime is November–March,
+      Monday–Saturday, with no holiday exceptions. transfer_tariff selects
+      day-night or seasonal. Elapsed price history is preserved.
+    fields:
+      effective_date:
+        name: Rate effective date
+        description: >-
+          Leave empty to apply changed rates when reviewed configuration is
+          applied or the app restarts; first setup begins at today's Finnish
+          midnight. YYYY-MM-DD starts at Finnish midnight on that date. Later
+          changes must start now or in the future. To cancel a future change,
+          restore current rates and clear this date.
+  geoloc:
+    name: Location for prices and weather
+    description: >-
+      Country selects the electricity bidding zone. Coordinates select FMI
+      temperature and solar forecasts, with Open-Meteo ICON as backup. Neither
+      weather service needs an API key. Outdoor temperature prefers the H66
+      sensor, then a fresh nearby FMI station reading, then an Open-Meteo model
+      estimate. Keep precise coordinates in private installation configuration.
+  mqtt:
+    name: MQTT broker and temperature sensors
+    description: >-
+      Configure the broker address and credentials explicitly. The default
+      core-mosquitto host names Home Assistant's Mosquitto app; this application does not
+      discover broker credentials. Equipment devices specify exact MQTT topics.
+      Providers input can use MQTT sensors without H66. Manual commands and
+      each subsystem's automatic-control permission remain separate.
+    fields:
+      address:
+        name: Broker URL
+        description: >-
+          Use mqtt:// or mqtts:// followed by the broker address and optional
+          port. Both computers in a pair need their own local broker.
+      temperature_report_interval_minutes:
+        name: Expected temperature report interval (minutes)
+        description: >-
+          Maximum expected interval between genuine indoor sensor reports;
+          default 70 minutes. Zero disables this deadline for publishers that
+          report only changes; other freshness checks still apply.
+      temperature_report_grace_seconds:
+        name: Temperature report grace (seconds)
+        description: >-
+          Extra allowance after the expected report interval; default 300
+          seconds. Match the interval and grace to the actual publisher.
+  entsoe:
+    name: ENTSO-E electricity prices
+    description: >-
+      ENTSO-E is the primary price source; configure its API token here. Direct
+      Elering prices are the backup and need no API key for FI, EE, LV and LT.
+      Optional domain overrides the country-derived bidding zone. Elering only
+      substitutes prices from that same zone.
+  easee:
+    name: Easee charger and Equalizer
+    description: >-
+      Configure user/password and device IDs for Easee readings and Charger 1.
+      Leave unused device IDs empty. Renewed login tokens are cached privately;
+      Supervisor options are not rewritten. Charging Automatic is a separate
+      dashboard choice, initially off. With Automatic enabled, a fresh physical
+      connection can take over earlier native charging instructions after
+      confirmation; later external instructions retain priority. Use automatic
+      explicitly requests renewed control for the current connection.
+    fields:
+      charger_voltage_ids:
+        name: Verified phase voltage observation IDs
+        description: >-
+          Optional three verified phase-to-neutral observation IDs. Leave empty
+          to allocate by currents. Use [194, 195, 196] only after verifying the
+          documented TN terminal mapping for the installed charger.
+      local_ocpp:
+        name: Native local OCPP connection
+        description: >-
+          Local OCPP is enabled by default and needs a charger-reachable
+          endpoint and reviewed native setup. Leave server_url empty to use
+          the detected address, or the shared virtual IP in pair mode. Host networking uses the
+          configured listener port directly, normally 9001. Ingress does not
+          carry OCPP. Authorization and charger safety restrictions remain
+          active. Restarting this application preserves the current native connection.
+  teslamate:
+    name: TeslaMate vehicle evidence
+    description: >-
+      Read TeslaMate MQTT vehicle evidence through the configured broker.
+      carId selects the TeslaMate vehicle; homeGeofence must match TeslaMate's
+      home geofence name. namespace is its optional TeslaMate MQTT namespace.
+      maxAgeMs limits evidence freshness. This feed does not grant authority
+      to start charging or assign a vehicle without fresh connection evidence.
+  equipment:
+    name: Equipment inventory and MQTT connections
+    description: >-
+      Define sensors, switches, meters, doors and Caravan equipment with exact
+      MQTT or Shelly connections. Standard defaults use generic equipment topics.
+      Overriding devices replaces the entire inventory, not one entry. Device
+      identity, supported capabilities and fresh observations determine which
+      controls are available. Polling cached readings does not renew freshness.
+    fields:
+      devices:
+        name: Complete equipment inventory
+        description: >-
+          Each device has a stable id, area, kind and connection. Configure
+          signal/readings and MQTT paths for its actual payload. Explicit
+          control flags describe wiring and capabilities. Caravan automatic
+          power and its thresholds are independent dashboard choices.
   acquisition:
     name: Provider acquisition intervals
     description: >-
-      Easee polls every 15 seconds by default; outdoor weather every 5 minutes,
-      forecasts every 30 minutes and prices hourly. Missing next-day prices
-      are checked every 15 minutes. Source timestamps determine freshness.
-      electricity_source_max_age_seconds limits holding an old power estimate;
-      electricity_max_gap_seconds bounds integration across acquisition gaps.
-  mirror:
-    name: Database mirroring over SSH
+      Default intervals are 15 seconds for Easee, 5 minutes for outdoor weather,
+      30 minutes for forecasts and 60 minutes for prices. Missing next-day
+      prices are retried every 15 minutes. Source timestamps determine
+      freshness. electricity_source_max_age_seconds limits held power
+      estimates; electricity_max_gap_seconds limits integration across gaps;
+      electricity_telemetry_max_age_seconds limits electrical telemetry age.
+  recording:
+    name: Historical recording and exports
     description: >-
-      Used when controller.topology is mirror on both computers. The master
-      sends snapshots using sqlite3_rsync over SSH. Set mirror.role to master
-      on the sender and slave on the receiver. Configure ssh_host,
-      remote_directory and receiver_path there. ssh_config optionally selects
-      an absolute SSH configuration path. The slave displays received snapshots
-      without connecting to equipment and has no takeover workflow. Its
-      directory defaults to mirror inside the database directory. stale_seconds
-      marks old snapshots as stale. interval_seconds and timeout_seconds apply
-      to the master. Select standalone or pair in controller.topology to stop
-      SSH mirroring; there is no separate enable flag.
+      annual_budget_gb is a soft rolling database-growth target in decimal
+      GB/year, default 10. The recorder adjusts continuous measurement
+      thresholds. States and settings retain exact changes; source outages
+      remain missing. This target is not a calendar-year quota or history
+      retention policy.
+    fields:
+      export_directory:
+        name: Server export directory
+        description: >-
+          Destination for Save local copy in Export database. In Home Assistant,
+          use a persistent path such as /share/st-mq/exports or
+          /config/st-mq/exports. The shared default ~ is the server account's
+          home inside the container and does not survive image replacement.
+          Download database instead saves through the browser.
   pair:
     name: Paired computers with manual takeover
     description: >-
-      Used when controller.topology is pair on both computers. Configure a shared
-      pair_id and private token, the other computer's fixed HTTP peer_url, and
-      the shared virtual IP settings. Peer messages and snapshots are encrypted.
-      Both computers need their own local MQTT broker and controller settings.
-      The master controls equipment; the slave keeps a read-only standby ready
-      for manual handover or promotion. It never takes over automatically.
-      Both new computers start as slaves. Manually promote one to initialize the
-      first master; saved pair state governs later roles across restarts. Pair
-      roles are not configuration settings. directory stores local pair state
-      and work, defaulting to pairing in
-      the data directory. snapshot_directory stores received snapshots,
-      defaulting to pair-snapshots in the database directory. stale_seconds
-      marks old snapshots as stale. Pair mode has its own synchronization and
-      uses its own snapshot settings. There is no separate enable flag.
+      Used with controller.topology pair. Configure a shared pair_id and private
+      token, the other computer's fixed HTTP peer_url, and virtual IP settings.
+      Peer payloads are encrypted. Each computer needs its own local broker and
+      installation settings. The master controls equipment; the slave remains
+      read-only until an explicit handover or promotion. New pairs start with
+      two slaves; manually promote one first. Saved pair state governs later
+      roles. Host networking uses port directly, normally 1244. The app requests
+      NET_ADMIN and NET_RAW capabilities for virtual IP management.
+    fields:
+      directory:
+        name: Private pair state directory
+        description: >-
+          Leave empty to use /data/st-mq/pairing in Home Assistant. Contains
+          local pair state and work, separate from received snapshots.
+      snapshot_directory:
+        name: Received snapshot directory
+        description: >-
+          Leave empty to use /config/st-mq/pair-snapshots in Home Assistant.
+          stale_seconds marks old snapshots stale. Pair has its own
+          synchronization and does not use mirror settings.
+  mirror:
+    name: Database mirroring over SSH
+    description: >-
+      Used with controller.topology mirror on both computers. Set role master
+      on the sender and slave on the receiver. The master sends SQLite
+      snapshots over SSH using ssh_host, remote_directory and receiver_path.
+      ssh_config optionally selects an absolute SSH configuration path.
+      The slave displays snapshots without equipment connections or takeover.
+      Role changes require restart. Select standalone or pair to stop mirroring.
+    fields:
+      directory:
+        name: Local mirror directory
+        description: >-
+          Leave empty to use mirror inside the database directory, normally
+          /config/st-mq/mirror in Home Assistant. stale_seconds marks old
+          snapshots stale; interval_seconds and timeout_seconds apply to the master.

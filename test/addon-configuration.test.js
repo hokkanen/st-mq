@@ -98,7 +98,7 @@ test('add-on bootstrap with no token exposes ingress and leaves direct access di
   const response = await fetch(`${endpoint(app.webAccess.ingressServer)}/api/status`);
   assert.equal(response.status, 200);
   const status = await response.json();
-  assert.equal(status.settingsReload.configuration.externalImportPath, '/addon_configs/synthetic_st-mq/secrets.json');
+  assert.equal(status.settingsReload.configuration.externalImportPath, '/app_configs/synthetic_st-mq/secrets.json');
   assert.equal(f.posts, 0);
 });
 
@@ -120,6 +120,16 @@ test('startup import is saved before storage/runtime and removed only after succ
   assert.equal(existsSync(f.paths.importPath), false);
   assert.deepEqual(f.events, ['prepare-startup', 'persist', 'supervisor-save', 'persisted', 'complete']);
   assert.equal((await fetch(`${endpoint(app.server)}/api/status`, { headers: authorization(firstToken) })).status, 200);
+});
+
+test('sparse equipment import saves the nested containers required by current Supervisor', async t => {
+  const f = fixture(t);
+  const device = { id: 'fixture_sensor', area: 'garage', kind: 'temperature', connection: 'mqtt:fixture/temperature' };
+  f.writeImport({ equipment: { devices: [device] } });
+  await f.launch();
+  assert.deepEqual(f.saved.equipment.devices, [{ ...device, temperature_control: {}, mqtt: {}, readings: [] }]);
+  assert.equal(f.posts, 1);
+  assert.equal(existsSync(f.paths.importPath), false);
 });
 
 test('physical charger deployment configuration reloads without retired topic or efficiency translations',async t=>{

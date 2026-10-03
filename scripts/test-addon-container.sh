@@ -22,7 +22,9 @@ cleanup() {
 }
 trap cleanup EXIT
 mkdir -p "$stmq_work/data" "$stmq_work/config" "$stmq_work/share"
-stmq_mounts=(--platform "$stmq_platform" --network none --env STMQ_CONTAINER_FIXTURE=1
+# A networkless fixture has no Supervisor to allocate an ingress port. Production
+# discovers its assigned port from Supervisor; only this disposable test fixes it.
+stmq_mounts=(--platform "$stmq_platform" --network none --env STMQ_CONTAINER_FIXTURE=1 --env STMQ_INGRESS_PORT=8099
   --mount "type=bind,source=$stmq_work/data,target=/data"
   --mount "type=bind,source=$stmq_work/config,target=/config"
   --mount "type=bind,source=$stmq_work/share,target=/share")
@@ -39,6 +41,9 @@ if ! docker exec "$stmq_container" node scripts/smoke-container.js probe-restart
   docker logs "$stmq_container"; exit 1
 fi
 docker stop --time 10 "$stmq_container" >/dev/null
+[[ $(docker inspect --format '{{.State.ExitCode}}' "$stmq_container") == 0 ]] || {
+  echo 'The add-on must stop cleanly before taking a cold backup.' >&2; exit 1;
+}
 
 # Cold backup is the add-on's Supervisor backup policy. The shipped offline CLI
 # uses SQLite snapshots and never starts providers, MQTT or equipment control.
@@ -52,6 +57,9 @@ if ! docker exec "$stmq_container" node scripts/smoke-container.js probe-restore
   docker logs "$stmq_container"; exit 1
 fi
 docker stop --time 10 "$stmq_container" >/dev/null
+[[ $(docker inspect --format '{{.State.ExitCode}}' "$stmq_container") == 0 ]] || {
+  echo 'The restored add-on must stop cleanly.' >&2; exit 1;
+}
 # A separate container sees the public add-on folder and share exactly as an SSH
 # add-on can, with no private /data mount and read-only access to these files.
 docker run --rm --platform "$stmq_platform" --network none --env STMQ_CONTAINER_FIXTURE=1 \
