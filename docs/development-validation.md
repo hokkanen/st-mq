@@ -112,6 +112,7 @@ These scripts start their own disposable Chrome processes:
 ```sh
 node test/browser/access-smoke.js
 node test/browser/configuration-smoke.js
+node test/browser/configuration-recovery-smoke.js
 node test/browser/equipment-smoke.js
 node test/browser/equipment-smoke.js --dashboard-heights-only
 node test/browser/equipment-smoke.js --caravan-only
@@ -321,6 +322,11 @@ node test/browser/pairing-smoke.js ws://127.0.0.1:39124/session
 
 Stop any remaining disposable browser processes and remove their profiles afterward. Screenshots
 from synthetic fixtures go to ignored `var/` or reported temporary paths.
+The configuration recovery browser fixture checks both environment-specific
+flows at 320, 390 and 1440 pixels in both themes against synthetic API responses;
+real HTTP recovery tests cover authentication, startup and source persistence.
+Set `STMQ_RECOVERY_SCREENSHOT_DIR` to an external temporary directory to retain
+its screenshots.
 
 ## Containers and Garage simulations
 
@@ -380,6 +386,14 @@ OS installation before claiming installed-platform validation. The app container
 and ingress browser fixtures cover their own boundaries.
 
 ## Release validation and known limits
+
+Configuration recovery checks use invalid synthetic configuration on both
+platforms. Verify that no database or equipment runtime starts, HA recovery
+requires the actual ingress proxy, and Linux recovery stays on authenticated
+loopback access. Cover reviewed replacement of incompatible saved options,
+private backup, stale reviews, retained invalid uploads and explicit restart;
+keep ordinary merge-import and database-rejection coverage intact. Recovery
+browser checks must use isolated fixtures, never an installed household app.
 
 Before a release, run the routine and extended Node suites, the affected browser
 suites, the application containers for each advertised architecture, and the

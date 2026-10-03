@@ -6,11 +6,17 @@ import { dirname, isAbsolute, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { isDeepStrictEqual } from 'node:util';
 import { homeAssistantOptions } from './homeassistant-options.js';
+import { configurationSourceChanges } from './configuration-preview.js';
 
 const bundledDefaults = fileURLToPath(new URL('../../config.json', import.meta.url));
 const forbiddenKeys = new Set(['__proto__', 'prototype', 'constructor']);
 const MAX_CONFIGURATION_BYTES = 1024 * 1024;
 const object = value => value !== null && typeof value === 'object' && !Array.isArray(value);
+
+function fromSource(source, read) {
+  try { return read(); }
+  catch (error) { error.configurationSource ??= source; throw error; }
+}
 
 export function mergeOptions(defaults, overrides) {
   if (!object(defaults) || !object(overrides)) throw new Error('Configuration must be a JSON object.');
@@ -94,9 +100,11 @@ export function configurationPaths(env, cwd) {
 }
 
 function manifest(path) {
-  const value = parseOptions(readFileSync(path, 'utf8'));
-  if (!object(value.options) || !object(value.schema)) throw new Error('Public config.json must contain options and schema objects.');
-  return value;
+  return fromSource('defaults', () => {
+    const value = parseOptions(readFileSync(path, 'utf8'));
+    if (!object(value.options) || !object(value.schema)) throw new Error('Public config.json must contain options and schema objects.');
+    return value;
+  });
 }
 
 function privateOptions(path, required) {
@@ -104,7 +112,7 @@ function privateOptions(path, required) {
     if (required) throw new Error('STMQ_CONFIG must name an existing configuration file.');
     return {};
   }
-  return parseOptions(readFileSync(path, 'utf8'), { allowWrapper: true });
+  return fromSource('private-file', () => parseOptions(readFileSync(path, 'utf8'), { allowWrapper: true }));
 }
 
 export function readConfigurationOptions(env, cwd, paths = configurationPaths(env, cwd)) {
@@ -127,7 +135,7 @@ function snapshot(path) {
     if (!stat.isFile() || stat.size > MAX_CONFIGURATION_BYTES) throw new Error('invalid-file');
     const bytes = readFileSync(descriptor);
     if (bytes.length > MAX_CONFIGURATION_BYTES) throw new Error('invalid-file');
-    return { options: parseOptions(bytes.toString('utf8')), digest: createHash('sha256').update(bytes).digest('hex'),
+    return { options: parseOptions(bytes.toString('utf8')), bytes, digest: createHash('sha256').update(bytes).digest('hex'),
       device: stat.dev, inode: stat.ino, size: stat.size, modified: stat.mtimeMs };
   } catch (error) {
     if (error.code === 'ENOENT') return null;
@@ -144,9 +152,12 @@ function readReceipt(path) {
   try {
     const value = JSON.parse(readFileSync(path, 'utf8'));
     if (/^[a-f0-9]{64}$/.test(value.digest) && ['saving', 'saved', 'applied'].includes(value.state)
+      && ['merge', 'replace'].includes(value.operation)
+      && (value.operation !== 'replace' || /^[a-f0-9-]{36}$/.test(value.backupId))
+      && (value.state !== 'saving' || [value.previousDigest, value.optionsDigest].every(digest => /^[a-f0-9]{64}$/.test(digest)))
       && ['device', 'inode', 'size', 'modified'].every(key => Number.isFinite(value[key]))) return value;
     throw new Error('invalid-receipt');
-  } catch (error) { if (error.code !== 'ENOENT') throw new Error('The private configuration import receipt could not be read.'); }
+  } catch (error) { if (error.code !== 'ENOENT') throw new Error('The private configuration import receipt is unreadable or incompatible. Preserve and move configuration-import.json aside, then review the import again.'); }
   return null;
 }
 
@@ -171,6 +182,21 @@ function optionsDigest(options) {
   const canonical = value => Array.isArray(value) ? value.map(canonical)
     : object(value) ? Object.fromEntries(Object.keys(value).sort().map(key => [key, canonical(value[key])])) : value;
   return createHash('sha256').update(JSON.stringify(canonical(options))).digest('hex');
+}
+
+function replacementBackupPath(receiptPath, backupId) {
+  return resolve(dirname(receiptPath), 'configuration-backups', backupId);
+}
+
+function preserveReplacement(receiptPath, backupId, current, file) {
+  const directory = replacementBackupPath(receiptPath, backupId);
+  try {
+    mkdirSync(dirname(directory), { recursive: true, mode: 0o700 });
+    mkdirSync(directory, { mode: 0o700 });
+    writeFileSync(resolve(directory, 'supervisor-options.json'), `${JSON.stringify(current)}\n`, { mode: 0o600, flag: 'wx' });
+    writeFileSync(resolve(directory, 'secrets.json'), file.bytes, { mode: 0o600, flag: 'wx' });
+    return directory;
+  } catch { throw new Error('The existing Home Assistant settings and import file could not be preserved. No replacement was saved.'); }
 }
 
 function visitValues(options, visit, path = '') {
@@ -203,7 +229,7 @@ export function createConfigurationSource({ env, cwd, buildConfig, paths = confi
   const environment = { ...env }, addon = env.STMQ_ADDON === '1';
   let slug = null, supervisorIngressPort;
   const publicInfo = () => ({ environment: addon ? 'home-assistant' : 'ubuntu', defaultsPath: paths.defaultsPath,
-    privatePath: paths.privatePath, importPath: paths.importPath,
+    privatePath: paths.privatePath, importPath: paths.importPath, receiptPath: paths.receiptPath,
     privateFileRole: addon ? 'startup-fallback' : 'permanent-overrides',
     externalImportPath: slug ? `/app_configs/${slug}/secrets.json` : null });
   async function supervisor(method, endpoint, body) {
@@ -219,25 +245,42 @@ export function createConfigurationSource({ env, cwd, buildConfig, paths = confi
     if (!response.ok || result.result !== 'ok') throw new Error(`Supervisor could not ${method === 'POST' ? 'save' : 'read'} the configuration.`);
     return result.data;
   }
-  async function currentOptions() {
+  async function supervisorInfo() {
     const info = await supervisor('GET', 'info');
-    if (!object(info?.options)) throw new Error('Supervisor did not return this add-on’s settings.');
+    if (!object(info)) throw new Error('Supervisor did not return this add-on’s information.');
     if (typeof info.slug === 'string' && /^[a-zA-Z0-9_-]+$/.test(info.slug)) slug = info.slug;
     supervisorIngressPort = info.ingress_port;
-    return mergeOptions({}, info.options);
+    return info;
+  }
+  async function currentOptions() {
+    const info = await supervisorInfo();
+    if (!object(info?.options)) throw new Error('Supervisor did not return this add-on’s settings.');
+    // A replacement must be able to preserve invalid saved fields without
+    // interpreting them. Validation still precedes every use as configuration.
+    return structuredClone(info.options);
   }
   const source = {
     publicInfo,
-    async prepare({ startup = false } = {}) {
+    async recoveryInfo() {
+      if (addon) await supervisorInfo();
+      return { ...publicInfo(), ingressPort: addon && Number.isInteger(supervisorIngressPort)
+        && supervisorIngressPort >= 1 && supervisorIngressPort <= 65535 ? supervisorIngressPort : null };
+    },
+    async prepare({ startup = false, replacement = false } = {}) {
       const defaults = manifest(paths.defaultsPath);
-      validateOptionFields(defaults.options, defaults.schema);
+      fromSource('defaults', () => validateOptionFields(defaults.options, defaults.schema));
       if (!addon) {
+        if (replacement) throw new Error('Standalone configuration is corrected in its permanent private file.');
         const overrides = privateOptions(paths.privatePath, Boolean(environment.STMQ_CONFIG));
-        validateOptionFields(overrides, defaults.schema);
-        return { config: buildConfig(mergeOptions(defaults.options, overrides), publicInfo(), source), imported: false,
+        fromSource('private-file', () => validateOptionFields(overrides, defaults.schema));
+        const options = mergeOptions(defaults.options, overrides);
+        return { config: buildConfig(options, publicInfo(), source), imported: false, replacement: false,
+          recoveryChanges: configurationSourceChanges(defaults.options, options, defaults.schema),
+          reviewFingerprint: optionsDigest({ options, overrides }), backupPath: null,
           async persist() {}, async complete() { return { cleanupPending: false }; } };
       }
-      const file = snapshot(paths.importPath);
+      const file = fromSource('import-file', () => snapshot(paths.importPath));
+      if (replacement && !file) throw new Error('Upload a current secrets.json file before reviewing replacement of Home Assistant settings.');
       let current;
       supervisorIngressPort = undefined;
       try { current = await currentOptions(); }
@@ -251,38 +294,60 @@ export function createConfigurationSource({ env, cwd, buildConfig, paths = confi
           throw new Error('Home Assistant Supervisor must provide an assigned ingress port before the application can start. Check Supervisor availability and restart the app.');
         runtime.ingressPort = supervisorIngressPort;
       }
-      const receipt = file ? readReceipt(paths.receiptPath) : null;
+      const receipt = file ? fromSource('import-receipt', () => readReceipt(paths.receiptPath)) : null;
       const sameReceipt = sameFile(file, receipt);
-      const currentDigest = optionsDigest(mergeOptions(defaults.options, current));
+      const currentDigest = optionsDigest(current);
       const uncertain = sameReceipt && receipt.state === 'saving';
       if (uncertain && ![receipt.previousDigest, receipt.optionsDigest].includes(currentDigest))
         throw new Error('Home Assistant settings changed during an interrupted import. Remove the retained import file to load the current settings.');
       const saved = sameReceipt && (!uncertain || currentDigest === receipt.optionsDigest);
+      const requestedOperation = replacement ? 'replace' : 'merge';
+      if (sameReceipt && receipt.operation !== requestedOperation && !saved)
+        throw new Error('An interrupted import used a different operation. Review that same import operation again, or preserve and remove the retained file before proceeding.');
+      if (sameReceipt && saved && replacement && receipt.operation !== requestedOperation)
+        throw new Error('This file has already been merged. Upload a new copy before reviewing replacement of Home Assistant settings.');
       if (file && !saved) {
-        validateOptionFields(file.options, defaults.schema);
-        validateHomeAssistantValues(file.options);
+        fromSource('import-file', () => {
+          validateOptionFields(file.options, defaults.schema);
+          validateHomeAssistantValues(file.options);
+        });
       }
-      const options = homeAssistantOptions(mergeOptions(defaults.options,
-        file && !saved ? mergeOptions(current, file.options) : current), defaults.schema);
+      const input = file && !saved ? replacement ? file.options : mergeOptions(current, file.options) : current;
+      const options = homeAssistantOptions(mergeOptions(defaults.options, input), defaults.schema);
       let resolvedCurrent = current;
-      if (containsReferences(current)) {
+      if (!(replacement && !saved) && containsReferences(current)) {
         resolvedCurrent = await supervisor('GET', 'options/config');
-        validateOptionFields(resolvedCurrent, defaults.schema);
-        validateHomeAssistantValues(resolvedCurrent);
+        fromSource('home-assistant-options', () => {
+          validateOptionFields(resolvedCurrent, defaults.schema);
+          validateHomeAssistantValues(resolvedCurrent);
+        });
       }
       const runtimeOptions = homeAssistantOptions(mergeOptions(defaults.options,
-        file && !saved ? mergeOptions(resolvedCurrent, file.options) : resolvedCurrent), defaults.schema);
-      validateOptionFields(runtimeOptions, defaults.schema);
-      validateHomeAssistantValues(runtimeOptions);
+        file && !saved ? replacement ? file.options : mergeOptions(resolvedCurrent, file.options) : resolvedCurrent), defaults.schema);
+      // Saved !secret references may resolve to any supported scalar type.
+      // Validate their actual values only after Supervisor has resolved them.
+      fromSource('home-assistant-options', () => {
+        validateOptionFields(runtimeOptions, defaults.schema);
+        validateHomeAssistantValues(runtimeOptions);
+      });
       const config = buildConfig(runtimeOptions, publicInfo(), source, runtime);
       let persisted = !file || saved;
-      return { config, imported: Boolean(file),
+      const operation = saved ? receipt.operation : requestedOperation;
+      const backupId = operation === 'replace' ? saved ? receipt.backupId : randomUUID() : null;
+      const receiptDetails = { operation, ...(backupId ? { backupId } : {}) };
+      const transaction = { config, imported: Boolean(file), replacement: operation === 'replace',
+        recoveryChanges: configurationSourceChanges(current, options, defaults.schema),
+        reviewFingerprint: optionsDigest({ current, options, runtimeOptions, operation: requestedOperation,
+          file: file ? receiptFor(file, 'review') : null }),
+        backupPath: saved && backupId ? replacementBackupPath(paths.receiptPath, backupId) : null,
         async persist() {
           if (persisted) return;
           if (!sameFile(file, snapshot(paths.importPath))) throw new Error('The import file changed. Apply configuration again.');
           // Do not replace HA settings changed while main checked the runtime.
           if (!isDeepStrictEqual(await currentOptions(), current)) throw new Error('Home Assistant settings changed. Apply configuration again.');
+          if (replacement) transaction.backupPath = preserveReplacement(paths.receiptPath, backupId, current, file);
           writeReceipt(paths.receiptPath, receiptFor(file, 'saving', {
+            ...receiptDetails,
             // Supervisor preserves !secret references in its saved options.
             // Receipts compare that representation, while runtime values are
             // resolved separately through options/config.
@@ -290,20 +355,21 @@ export function createConfigurationSource({ env, cwd, buildConfig, paths = confi
           await supervisor('POST', 'options', { options });
           const verified = mergeOptions(defaults.options, await currentOptions());
           if (!isDeepStrictEqual(verified, options)) throw new Error('Supervisor settings could not be verified. The import file was retained.');
-          writeReceipt(paths.receiptPath, receiptFor(file, 'saved'));
+          writeReceipt(paths.receiptPath, receiptFor(file, 'saved', receiptDetails));
           persisted = true;
         },
         async complete() {
           if (!file) return { cleanupPending: false };
           if (!persisted) throw new Error('Configuration must be saved before completing its import.');
           try {
-            writeReceipt(paths.receiptPath, receiptFor(file, 'applied'));
+            writeReceipt(paths.receiptPath, receiptFor(file, 'applied', receiptDetails));
             const present = snapshot(paths.importPath);
             if (sameFile(file, present)) unlinkSync(paths.importPath);
             return { cleanupPending: Boolean(present && !sameFile(file, present)) };
           } catch { return { cleanupPending: true }; }
         },
       };
+      return transaction;
     },
   };
   return source;

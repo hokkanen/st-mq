@@ -18,7 +18,7 @@ function fixture(t) {
   writeFileSync(paths.defaultsPath, JSON.stringify({ options: defaults, schema }));
   writeFileSync(paths.privatePath, JSON.stringify({ controller: { max_drop_c: 0.5 } }));
   const state = { current: mergeOptions(defaults, { mqtt: { user: 'synthetic-existing-user', pw: 'synthetic-existing-password' } }),
-    requests: [], failSave: false, failRead: false, changeReadback: false, failAfterSave: false, secretValues: {} };
+    requests: [], failSave: false, failRead: false, changeReadback: false, failAfterSave: false, secretValues: {}, ingressPort: 8127 };
   const resolveReferences = value => typeof value === 'string' && value.startsWith('!secret ')
     ? state.secretValues[value.slice(8)] : Array.isArray(value) ? value.map(resolveReferences)
       : value && typeof value === 'object' ? Object.fromEntries(Object.entries(value).map(([key, item]) => [key, resolveReferences(item)])) : value;
@@ -32,7 +32,8 @@ function fixture(t) {
       if (url === 'http://supervisor/addons/self/options/config')
         return { ok: true, json: async () => ({ result: 'ok', data: resolveReferences(state.current) }) };
       assert.equal(url, 'http://supervisor/addons/self/info');
-      return { ok: true, json: async () => ({ result: 'ok', data: { slug: 'synthetic_st-mq', options: structuredClone(state.current) } }) };
+      return { ok: true, json: async () => ({ result: 'ok', data: { slug: 'synthetic_st-mq', ingress_port: state.ingressPort,
+        options: structuredClone(state.current) } }) };
     }
     assert.equal(url, 'http://supervisor/addons/self/options');
     if (state.failSave) return { ok: false, json: async () => ({ result: 'error', message: 'synthetic-private-validation-error' }) };
@@ -173,6 +174,49 @@ test('HA validates resolved field names before rendering unsupported value error
   assert.equal(f.posts(), 0);
 });
 
+test('HA numeric and boolean secret references resolve before validation and remain stored during merge', async t => {
+  const f = fixture(t);
+  f.state.current.controller.max_drop_c = '!secret fixture_drop_limit';
+  f.state.current.controller.learning_trials = '!secret fixture_learning_choice';
+  f.state.secretValues.fixture_drop_limit = 0.6;
+  f.state.secretValues.fixture_learning_choice = false;
+  const loaded = await f.source.prepare();
+  assert.equal(loaded.config.options.controller.max_drop_c, 0.6);
+  assert.equal(loaded.config.options.controller.learning_trials, false);
+  f.upload({ mqtt: { user: 'fixture-imported-user' } });
+  const merged = await f.source.prepare();
+  assert.equal(merged.config.options.controller.max_drop_c, 0.6);
+  assert.equal(merged.config.options.controller.learning_trials, false);
+  await merged.persist();
+  assert.equal(f.state.lastSavedOptions.controller.max_drop_c, '!secret fixture_drop_limit');
+  assert.equal(f.state.lastSavedOptions.controller.learning_trials, '!secret fixture_learning_choice');
+  await merged.complete();
+  f.state.secretValues.fixture_drop_limit = 20;
+  await assert.rejects(f.source.prepare(), error => error.message === 'Invalid configuration field: controller.max_drop_c.'
+    && error.configurationSource === 'home-assistant-options');
+  f.upload({ controller: { max_drop_c: 0.9, learning_trials: true } });
+  const replaced = await f.source.prepare({ replacement: true });
+  assert.equal(replaced.config.options.controller.max_drop_c, 0.9);
+  assert.equal(replaced.config.options.controller.learning_trials, true);
+  await replaced.persist();
+  assert.equal(f.state.current.controller.max_drop_c, 0.9);
+  assert.equal(f.state.current.controller.learning_trials, true);
+});
+
+test('recovery fingerprint rejects resolved secret rotation even when saved references stay unchanged', async t => {
+  const f = fixture(t);
+  f.state.current.controller.web_token = '!secret fixture_admin_password';
+  f.state.secretValues.fixture_admin_password = 'fixture-first-resolved-admin-password';
+  const first = await f.source.prepare();
+  assert.equal((await f.source.prepare()).reviewFingerprint, first.reviewFingerprint);
+  f.state.secretValues.fixture_admin_password = 'fixture-second-resolved-admin-password';
+  const second = await f.source.prepare();
+  assert.notEqual(second.reviewFingerprint, first.reviewFingerprint);
+  assert.equal(f.state.current.controller.web_token, '!secret fixture_admin_password');
+  assert.doesNotMatch(JSON.stringify([first.recoveryChanges, second.recoveryChanges]), /fixture-/);
+  assert.equal(f.posts(), 0);
+});
+
 test('receipt recognizes interrupted Supervisor save while existing references remain stored', async t => {
   const f = fixture(t);
   f.state.current.mqtt.pw = '!secret synthetic_existing_password';
@@ -308,4 +352,159 @@ test('standalone validates defaults and private overrides, then retains its perm
   const manifest = { options: { ...f.defaults, unexpected: 'synthetic-value' }, schema: f.schema };
   writeFileSync(f.paths.defaultsPath, JSON.stringify(manifest));
   await assert.rejects(source.prepare(), /Unknown configuration field in root/);
+});
+
+test('recovery location and assigned ingress port do not require valid Home Assistant settings', async t => {
+  const f = fixture(t);
+  f.state.current = null;
+  const info = await f.source.recoveryInfo();
+  assert.equal(info.environment, 'home-assistant');
+  assert.equal(info.ingressPort, 8127);
+  assert.equal(info.externalImportPath, '/app_configs/synthetic_st-mq/secrets.json');
+  assert.equal(info.privatePath, f.paths.privatePath);
+  assert.equal(Object.hasOwn(info, 'options'), false);
+  f.state.ingressPort = 0;
+  assert.equal((await f.source.recoveryInfo()).ingressPort, null);
+  f.state.failRead = true;
+  await assert.rejects(f.source.recoveryInfo(), /could not be reached/);
+});
+
+test('explicit HA replacement discards unsupported settings only after review and preserves private originals', async t => {
+  const f = fixture(t);
+  f.state.current.easee.access_token = 'fixture-retired-native-token';
+  f.state.current.mqtt.user = '!secret fixture-unresolvable-old-user';
+  f.state.current['fixture-private-unknown-field'] = 'fixture-private-unknown-value';
+  f.upload({ controller: { max_drop_c: 0.8 }, mqtt: { pw: 'fixture-new-mqtt-password' } });
+  const current = structuredClone(f.state.current), uploaded = readFileSync(f.paths.importPath);
+  await assert.rejects(f.source.prepare(), error => /(?:Unknown|Invalid) configuration field/.test(error.message)
+    && error.configurationSource === 'home-assistant-options');
+  const resolvedBeforeReplacement = f.state.requests.filter(request => request.url.endsWith('options/config')).length;
+  const transaction = await f.source.prepare({ replacement: true });
+  assert.equal(transaction.replacement, true);
+  assert.equal(transaction.config.options.controller.max_drop_c, 0.8);
+  assert.equal(transaction.config.options.mqtt.user, '');
+  assert.equal(Object.hasOwn(transaction.config.options.easee, 'access_token'), false);
+  assert.equal(f.state.requests.filter(request => request.url.endsWith('options/config')).length, resolvedBeforeReplacement);
+  assert.equal(f.posts(), 0);
+  assert.equal(transaction.backupPath, null);
+  assert.deepEqual(f.state.current, current);
+  assert.deepEqual(readFileSync(f.paths.importPath), uploaded);
+  assert.ok(transaction.recoveryChanges.some(change => change.path === 'easee.[unsupported field]' && change.redacted));
+  assert.equal(/fixture-|access_token/.test(JSON.stringify(transaction.recoveryChanges)), false);
+  await transaction.persist();
+  assert.equal(f.posts(), 1);
+  assert.deepEqual(JSON.parse(readFileSync(join(transaction.backupPath, 'supervisor-options.json'), 'utf8')), current);
+  assert.deepEqual(readFileSync(join(transaction.backupPath, 'secrets.json')), uploaded);
+  assert.equal(statSync(transaction.backupPath).mode & 0o777, 0o700);
+  for (const file of ['secrets.json', 'supervisor-options.json'])
+    assert.equal(statSync(join(transaction.backupPath, file)).mode & 0o777, 0o600);
+  assert.equal(existsSync(f.paths.importPath), true, 'saving recovery settings does not claim runtime application');
+  assert.equal(/fixture-|access_token/.test(readFileSync(f.paths.receiptPath, 'utf8')), false);
+  const startup = await f.create().prepare({ startup: true });
+  assert.equal(startup.config.options.controller.max_drop_c, 0.8);
+  await startup.persist();
+  await startup.complete();
+  assert.equal(f.posts(), 1);
+  assert.equal(existsSync(f.paths.importPath), false);
+  assert.equal(existsSync(join(transaction.backupPath, 'supervisor-options.json')), true);
+});
+
+test('HA replacement rejects absent or incompatible imports without changing saved settings', async t => {
+  const f = fixture(t);
+  f.state.current.easee.access_token = 'fixture-retired-native-token';
+  const current = structuredClone(f.state.current);
+  await assert.rejects(f.source.prepare({ replacement: true }), /Upload a current secrets.json/);
+  for (const patch of [{ easee: { access_token: 'fixture-imported-retired-token' } },
+    { controller: { role: 'master' } }, { controller: { max_drop_c: 20 } }]) {
+    f.upload(patch);
+    const bytes = readFileSync(f.paths.importPath);
+    await assert.rejects(f.source.prepare({ replacement: true }), error => /Unknown|Retired|Invalid/.test(error.message)
+      && error.configurationSource === 'import-file');
+    assert.deepEqual(readFileSync(f.paths.importPath), bytes);
+  }
+  assert.equal(f.posts(), 0);
+  assert.deepEqual(f.state.current, current);
+});
+
+test('replacement review fingerprint detects settings changes even when candidate stays identical', async t => {
+  const f = fixture(t);
+  f.upload({ controller: { max_drop_c: 0.8 } });
+  const before = await f.source.prepare({ replacement: true });
+  assert.equal((await f.source.prepare({ replacement: true })).reviewFingerprint, before.reviewFingerprint);
+  const merge = await f.source.prepare();
+  assert.notEqual(merge.reviewFingerprint, before.reviewFingerprint);
+  f.state.current.easee['fixture-unknown-key'] = 'fixture-unknown-value';
+  const after = await f.source.prepare({ replacement: true });
+  assert.deepEqual(after.config, before.config);
+  assert.notEqual(after.reviewFingerprint, before.reviewFingerprint);
+  await assert.rejects(before.persist(), /settings changed/);
+  f.upload({ controller: { max_drop_c: 0.7 } });
+  await assert.rejects(after.persist(), /file changed/);
+  assert.equal(f.posts(), 0);
+});
+
+test('failed replacement save can be retried but cannot silently become a merge', async t => {
+  const f = fixture(t);
+  f.upload({ controller: { max_drop_c: 0.8 } });
+  const first = await f.source.prepare({ replacement: true });
+  f.state.failSave = true;
+  await assert.rejects(first.persist(), /could not save/);
+  const firstBackup = first.backupPath;
+  assert.equal(existsSync(firstBackup), true);
+  await assert.rejects(f.create().prepare({ startup: true }), /different operation/);
+  f.state.failSave = false;
+  const retry = await f.create().prepare({ replacement: true });
+  await retry.persist();
+  assert.notEqual(retry.backupPath, firstBackup);
+  assert.equal(existsSync(firstBackup), true);
+  assert.equal(f.posts(), 2);
+});
+
+test('interrupted replacement recognizes a completed Supervisor save without repeating it', async t => {
+  const f = fixture(t);
+  f.state.current.easee.access_token = 'fixture-retired-token';
+  f.upload({ controller: { max_drop_c: 0.8 } });
+  const first = await f.source.prepare({ replacement: true });
+  f.state.failAfterSave = true;
+  await assert.rejects(first.persist(), /could not be reached/);
+  const startup = await f.create().prepare({ startup: true });
+  await startup.persist();
+  assert.equal(startup.backupPath, first.backupPath);
+  assert.equal(startup.config.options.controller.max_drop_c, 0.8);
+  assert.equal(f.posts(), 1);
+  assert.equal(existsSync(f.paths.importPath), true);
+  await startup.complete();
+  assert.equal(existsSync(f.paths.importPath), false);
+});
+
+test('receipt without operation identity is rejected without guessing or changing configuration', async t => {
+  const f = fixture(t);
+  f.upload({ controller: { max_drop_c: 0.8 } });
+  const first = await f.source.prepare();
+  await first.persist();
+  const receipt = JSON.parse(readFileSync(f.paths.receiptPath, 'utf8'));
+  delete receipt.operation;
+  writeFileSync(f.paths.receiptPath, JSON.stringify(receipt));
+  await assert.rejects(f.create().prepare(), /receipt is unreadable or incompatible/);
+  assert.equal(f.posts(), 1);
+  assert.equal(existsSync(f.paths.importPath), true);
+});
+
+test('standalone recovery rechecks corrected permanent configuration and keeps it in place', async t => {
+  const f = fixture(t);
+  const source = createConfigurationSource({ env: {}, cwd: '.', paths: f.paths,
+    buildConfig: (options, configuration) => ({ options, configuration }) });
+  writeFileSync(f.paths.privatePath, '{"easee":{"access_token":"fixture-retired-token"}}');
+  await assert.rejects(source.prepare(), /Unknown configuration field in easee/);
+  const info = await source.recoveryInfo();
+  assert.equal(info.environment, 'ubuntu');
+  assert.equal(info.privatePath, f.paths.privatePath);
+  assert.equal(info.ingressPort, null);
+  writeFileSync(f.paths.privatePath, '{"controller":{"max_drop_c":0.7}}');
+  const review = await source.prepare();
+  assert.equal(review.recoveryChanges.find(change => change.path === 'controller.max_drop_c').after, 0.7);
+  writeFileSync(f.paths.privatePath, '{"controller":{"max_drop_c":0.8}}');
+  assert.notEqual((await source.prepare()).reviewFingerprint, review.reviewFingerprint);
+  await assert.rejects(source.prepare({ replacement: true }), /permanent private file/);
+  assert.equal(existsSync(f.paths.privatePath), true);
 });

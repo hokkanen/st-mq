@@ -4,7 +4,7 @@ import { resolve, dirname } from 'node:path';
 import { homedir } from 'node:os';
 import { isDeepStrictEqual } from 'node:util';
 import { Store } from './storage/store.js';
-import { loadConfig, configurationReader, configurationSource } from './app/config.js';
+import { loadConfig, configurationReader, configurationSource, configurationLoader } from './app/config.js';
 import { Engine } from './app/engine.js';
 import { createEquipmentTests } from './app/equipment-tests.js';
 import { createWebAccess } from './app/web-access.js';
@@ -18,7 +18,7 @@ import { createConfigurationReviews, configurationRestartRequired, configuration
 
 export async function start({ config = loadConfig(), readConfig = configurationReader(config),
   clock = Date.now, providerOptions = {}, mqttOptions = {}, pairContext = null, pairOptions = {},
-  installSignalHandlers = true, shutdownSignal = null } = {}) {
+  installSignalHandlers = true, shutdownSignal = null, startupTransaction = null } = {}) {
   const validateTopology = candidate => {
     if (!['standalone', 'mirror', 'pair'].includes(candidate.topology ?? 'standalone')) throw new Error('Invalid local topology');
     if (candidate.role !== undefined && !['master', 'slave'].includes(candidate.role)) throw new Error('Invalid local instance role');
@@ -30,7 +30,7 @@ export async function start({ config = loadConfig(), readConfig = configurationR
   const source = pairContext?.configurationSource ?? (readConfig === configurationReader(config) ? configurationSource(config) : null);
   let startupImport = null;
   if (config.addon && source && !pairContext) {
-    startupImport = await source.prepare({ startup: true });
+    startupImport = startupTransaction ?? await source.prepare({ startup: true });
     config = startupImport.config;
     validateTopology(config);
     await startupImport.persist();
@@ -493,6 +493,21 @@ export async function start({ config = loadConfig(), readConfig = configurationR
   }
 }
 
+// Only configuration preparation failures enter recovery. Once runtime startup
+// begins, storage, authority and equipment failures retain their normal handling.
+export async function launch({ env = process.env, cwd = process.cwd(), source = configurationLoader(env, cwd),
+  installSignalHandlers = true, ...runtimeOptions } = {}) {
+  let transaction;
+  try {
+    transaction = await source.prepare({ startup: true });
+    await transaction.persist();
+  } catch (error) {
+    const { startConfigurationRecovery } = await import('./app/configuration-recovery.js');
+    return startConfigurationRecovery({ source, error, env, installSignalHandlers });
+  }
+  return start({ ...runtimeOptions, config: transaction.config, startupTransaction: transaction, installSignalHandlers });
+}
+
 if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1])).href) {
-  start().catch(error => { console.error(error.message); process.exitCode = 1; });
+  launch().catch(error => { console.error(error.message); process.exitCode = 1; });
 }

@@ -32,7 +32,7 @@ The normal server serves the completed UI build.
 prerelease in a separate checkout, select its tag explicitly:
 
 ```sh
-git clone --branch v0.9.5-dev.1 https://github.com/hokkanen/st-mq.git st-mq-dev
+git clone --branch v0.9.5-dev.2 https://github.com/hokkanen/st-mq.git st-mq-dev
 cd st-mq-dev
 npm ci
 npm run build
@@ -76,6 +76,39 @@ electricity rates and the admin/family access policy.
 [deploy/st-mq.service](../deploy/st-mq.service) is a standalone systemd example.
 Adapt its paths and service account before installing it. Stop the previous
 command owner before commissioning a replacement instance.
+
+## Configuration recovery
+
+Invalid configuration opens a recovery page while recording, provider connections
+and equipment control remain inactive. Open `http://127.0.0.1:1234`, or use the
+valid `STMQ_PORT` shown in the startup log. Recovery always binds to loopback,
+even if the failed configuration requested network access.
+
+The log gives the path of a temporary access-key file with mode `0600` in a
+private directory. Read it as the account running the application and enter the
+key on the page; the key itself is never logged. Correct the permanent
+configuration file identified by the page, then check and review it. Restart the
+application after validation succeeds. If the problem is an environment override,
+correct the service or shell environment before restarting.
+
+The private key directory uses a writable `STMQ_DATA_DIR` when configured, so
+the supplied systemd service's `PrivateTmp` setting does not hide it. If that
+directory is unavailable, recovery falls back to temporary storage; a service
+with private temporary storage then requires access through its mount namespace.
+
+For a remote Linux installation, forward its recovery port through SSH, for example:
+
+```sh
+ssh -N -L 1234:127.0.0.1:1234 user@linux-host
+```
+
+Then open `http://127.0.0.1:1234` on your own computer and use the key read through
+your SSH session. Adjust ports to match the recovery listener and an available
+local port. The normal configured access policy returns after successful restart.
+See [configuration recovery](configuration.md#configuration-recovery) for Home
+Assistant's separate ingress and replacement workflow. A database-format error
+still requires a deliberate fresh path or compatible backup; recovery never
+deletes or converts it.
 
 ## An occupied web port
 

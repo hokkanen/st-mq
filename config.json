@@ -1,7 +1,7 @@
 {
   "name": "Home Energy",
   "description": "Home energy monitoring, heating control, EV charging and historical analysis",
-  "version": "0.9.5-dev.1",
+  "version": "0.9.5-dev.2",
   "stage": "experimental",
   "url": "https://github.com/hokkanen/st-mq",
   "slug": "st-mq",

@@ -122,6 +122,38 @@ must use actual values; an explicit value replaces that field's saved reference.
 See [Home Assistant setup](../DOCS.md) for import paths and
 [standalone startup](startup.md) for environment overrides.
 
+## Configuration recovery
+
+If startup cannot load valid configuration, the application serves only a
+configuration recovery screen. It does not open the recording database, connect
+to equipment or start control. The screen explains the failure, identifies the
+configuration source and lets you check corrected settings before restarting.
+Database and other runtime failures are not configuration recovery cases.
+
+In Home Assistant, open **Home Energy → Open Web UI**. Recovery accepts only
+Home Assistant ingress; direct access stays closed. Correct and save the app's
+options, or copy a current `secrets.json` to the upload path shown by the screen.
+If saved options contain incompatible fields, choose the explicit replacement
+workflow: the uploaded options replace saved installation overrides, and omitted
+settings use public defaults. Review that full replacement before saving. The
+previous saved options are backed up privately before replacement. A normal
+import still merges and cannot remove an omitted incompatible field.
+
+On standalone Linux, recovery listens only on `127.0.0.1`, using a valid
+`STMQ_PORT` or port `1234`. The startup log identifies a temporary private access-key
+file, readable only by the account running the application. Read that file locally
+and enter its key in the recovery page. The key changes for each process; do not
+share it or include it in diagnostic output. For a remote machine, use an SSH
+tunnel as described in [standalone startup](startup.md#configuration-recovery).
+Correct the permanent file at the path displayed by the screen. Environment
+errors require correcting the launch environment and restarting.
+
+Checking and reviewing do not authorize equipment control. Saving a reviewed
+Home Assistant replacement also leaves the application in recovery; restart it
+explicitly after the configuration is ready. Failed imports remain available for
+correction. Recovery does not translate retired settings, migrate or reset a
+database, or remove existing equipment restoration obligations.
+
 ## Check and review before applying
 
 In **Data & settings → Connections & configuration → Configuration**, admins

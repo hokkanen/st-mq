@@ -8,7 +8,7 @@ this repository as **Home Energy**, not through HACS or as a Home Assistant Core
 integration. The project and installation slug remain `st-mq`.
 See Home Assistant's [installation types](https://www.home-assistant.io/installation/#about-installation-types).
 
-The 0.9.5-dev.1 development prerelease starts with **simulated devices and Pause heating**. Default
+The 0.9.5-dev.2 development prerelease starts with **simulated devices and Pause heating**. Default
 startup launches no live controller or provider. Live automation is enabled separately in each feature after configuring its connection. See [learning and control](docs/learning-and-control.md)
 for the algorithm, native-setting restoration and equipment testing limits.
 [Automation and manual heating](docs/automation-and-manual-control.md) explains
@@ -17,7 +17,7 @@ the independent feature controls and Garage local temperature regulation.
 1. Open **Settings → Apps → Install app → ⋮ → Repositories**, add
    `https://github.com/hokkanen/st-mq` and install **Home Energy** from the
    **Home Energy apps** repository. The default branch, `main`, contains the
-   integrated H66 work and the 0.9.5-dev.1 development prerelease. An existing
+   integrated H66 work and the 0.9.5-dev.2 development prerelease. An existing
    repository configured with `#H66` needs the default repository source for
    this release.
    A Git tag or GitHub prerelease does not change the branch installed by HA.
@@ -99,7 +99,7 @@ the independent feature controls and Garage local temperature regulation.
    Configuration → Check & review configuration**, inspect the diff, then choose
    **Apply reviewed configuration** (admin only).
    Browser-saved values cannot override these settings. Unknown or retired
-   options are rejected; remove obsolete keys before starting the current version.
+   options prevent normal operation; use configuration recovery to correct them.
 
 **Check & review configuration** reads freshly saved Home Assistant options from
 Supervisor and validates them without changing the runtime or saving imports.
@@ -128,6 +128,8 @@ folder. The UI displays the current official Terminal & SSH path, such as
 `/config/secrets.json`. Some third-party SSH/file apps expose `/addon_configs`
 instead; keep the same slug and filename under that app's mounted prefix.
 This is next to the `st-mq/` database folder, not inside it.
+If startup configuration is invalid, **Open Web UI** opens configuration recovery
+instead of the dashboard; see [startup and troubleshooting](#startup-and-troubleshooting).
 Use a **plain JSON options object without an outer `options` wrapper**. Keep the
 file private while transferring it. For example, a sparse settings import can be:
 
@@ -487,13 +489,25 @@ Core alone does not restart ST-MQ. If a host port is occupied, resolve the exist
 listener before retrying; see [startup](docs/startup.md). A database-format error
 requires an explicit fresh path or compatible backup, never deletion by startup.
 
+An invalid configuration leaves **Open Web UI** available through Home Assistant
+ingress with only configuration recovery displayed. No recording database,
+provider connection or equipment controller starts. Correct saved app options
+and check them again, or upload a valid current `secrets.json` to the path shown
+on the recovery page. To remove incompatible saved options, explicitly review
+and save a replacement from that upload: omitted settings return to public
+defaults. The previous options are backed up privately before replacement.
+Ordinary merging preserves omitted saved fields, so it cannot clear them.
+Restart **Home Energy** after validation and saving succeed. Invalid uploads
+remain for correction, and no old configuration or database is converted.
+
 After saving options, use the review/apply workflow above for supported live
 changes, or restart for input/topology and other startup-only settings. If ingress
 reports the app is unavailable, first confirm ST-MQ is running and inspect its
 startup log. An unavailable Supervisor or invalid ingress assignment blocks
 startup; ST-MQ does not guess a fixed port. Port 1234 is deliberately closed
 while direct passwords are empty;
-use **Open Web UI** through ingress in that case.
+use **Open Web UI** through ingress in that case. Recovery always uses ingress,
+regardless of configured direct-access passwords.
 
 ## Reproducing deployment checks
 

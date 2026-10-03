@@ -75,6 +75,9 @@ function changesBetween(before, after, rule, path = '', changes = []) {
   }
   return changes;
 }
+export function configurationSourceChanges(before, after, sourceSchema = schema) {
+  return changesBetween(before, after, sourceSchema);
+}
 function sourceValue(options, path) { return path.split('.').reduce((value, key) => value?.[key], options); }
 
 export function configurationValidationMessage(error) {

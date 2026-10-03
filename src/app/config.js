@@ -343,11 +343,17 @@ function buildConfiguration(options, env, cwd, configuration, source, { bootstra
   return config;
 }
 
+export function configurationLoader(env = process.env, cwd = process.cwd(), dependencies = {}) {
+  const sourceEnvironment = { ...env };
+  const paths = dependencies.paths ?? configurationPaths(sourceEnvironment, cwd);
+  return createConfigurationSource({ ...dependencies, env: sourceEnvironment, cwd, paths,
+    buildConfig: (options, information, owner, runtime) => buildConfiguration(options, sourceEnvironment, cwd, information, owner, runtime) });
+}
+
 export function loadConfig(env = process.env, cwd = process.cwd()) {
   const sourceEnvironment = { ...env };
   const paths = configurationPaths(sourceEnvironment, cwd);
-  const source = createConfigurationSource({ env: sourceEnvironment, cwd, paths,
-    buildConfig: (options, information, owner, runtime) => buildConfiguration(options, sourceEnvironment, cwd, information, owner, runtime) });
+  const source = configurationLoader(sourceEnvironment, cwd, { paths });
   const { options } = readConfigurationOptions(sourceEnvironment, cwd, paths);
   return buildConfiguration(options, sourceEnvironment, cwd, source.publicInfo(), source, { bootstrap: sourceEnvironment.STMQ_ADDON === '1' });
 }

@@ -6,6 +6,23 @@ Versions follow Semantic Versioning. `-dev.N` denotes a development prerelease.
 
 ## Unreleased
 
+## 0.9.5-dev.2 — 2026-10-03
+
+### Fixed
+
+- The README icon uses a public absolute image URL so it also appears in Home
+  Assistant's app information section.
+- Invalid startup configuration now opens a configuration recovery screen instead
+  of preventing access to the UI. Home Assistant uses its authenticated ingress;
+  standalone Linux uses loopback access with a temporary private access key.
+- Recovery can review and explicitly replace incompatible saved Home Assistant
+  options with a current `secrets.json` import. Omitted settings return to shared
+  defaults, and the previous saved options are backed up privately before replacement.
+  Ordinary imports continue to merge into saved settings.
+- Recovery keeps equipment control and recording inactive until configuration is
+  valid and the application is restarted. Invalid uploads remain available for
+  correction; old configuration formats are not translated and databases are not reset.
+
 ## 0.9.5-dev.1 — 2026-10-03
 
 First public development prerelease after 0.7.5. The intervening 0.8.x/0.9.0

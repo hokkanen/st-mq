@@ -1,6 +1,6 @@
 {
   "name": "st-mq",
-  "version": "0.9.5-dev.1",
+  "version": "0.9.5-dev.2",
   "private": true,
   "description": "Home energy monitoring, heating control, EV charging and historical analysis",
   "license": "MIT",
