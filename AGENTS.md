@@ -222,6 +222,21 @@ permission to act. See [the configuration guide](docs/configuration.md).
   Charge now is a session action independent of the Automatic charging switch.
   It still respects live control authority, device readiness and native limits.
   Integration setup, commissioning and electrical limits remain configured.
+- When future charging current is unknown, economic scheduling assumes the
+  maximum the charger can deliver within its configured/verified ceiling and
+  forecast property headroom on every phase after household and peer load. Use
+  that assumption to estimate delivery, duration and completion and select cheap
+  periods. Do not invent hidden vehicle timers or lower current settings, reserve
+  permanent worst-case peer demand, or release both chargers merely because one
+  charger's current or control readiness is unavailable. Keep that charger in
+  the joint forecast; label assumed delivery and revise it when usable evidence
+  arrives. Known applicable native, vehicle and electrical restrictions remain
+  authoritative. Battery-request defaults retain their configured ownership.
+  A modeled deadline shortfall or missing shared price/capacity evidence is
+  distinct from an unknown charging-current restriction. This is an optimistic
+  planning assumption, never evidence of current draw, command readiness,
+  accepted scheduling or guaranteed completion. See
+  [the charging planning contract](docs/charging.md#maximum-available-current-assumption).
 - Both charger cards use one shared component with capability-driven differences.
   With Automatic enabled, each new confirmed physical connection takes automatic
   control, superseding earlier charging instructions and native charger schedules,

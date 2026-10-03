@@ -31,11 +31,19 @@ function electrical(charger, supply = {}) {
   // Both supported installations use three-phase charging, including while the
   // vehicle is unplugged and Easee has no active output phase observation.
   const phases = { mask: [1, 1, 1], count: 3, known: true };
-  const ceiling = value(charger, 'maximumCurrentA');
+  const reportedCeiling = value(charger, 'maximumCurrentA');
+  const configuredCeiling = charger.configuration?.maximumCurrentA;
+  const ceilings = [reportedCeiling, configuredCeiling].filter(current => finite(current) && current >= 0);
+  const ceiling = ceilings.length ? Math.min(...ceilings) : null;
   const selected = value(charger, 'currentA');
   // Equalizer's momentary allowance is not tomorrow's available current. Its
   // fixed hardware ceiling and the property forecast define future headroom.
-  const current = charger.capabilities.externalLoadBalancing || charger.capabilities.currentControl ? ceiling : selected;
+  // Missing current is a planning assumption, never a reason to invent a low
+  // limit or immediately release both chargers. Keep measurements untouched and
+  // never turn this optimistic delivery estimate into current-write capability.
+  const currentAssumed = selected === null && !charger.capabilities.externalLoadBalancing;
+  const usesMaximum = charger.capabilities.externalLoadBalancing || charger.capabilities.currentControl || selected === null;
+  const current = usesMaximum ? ceiling : selected;
   const allocation = charger.capabilities.externalLoadBalancing ? asPhases(supply.allocationA) : null;
   const currentA = finite(current) ? Math.min(current, finite(ceiling) ? ceiling : Infinity,
     allocation ? Math.min(...allocation) : Infinity,
@@ -47,7 +55,10 @@ function electrical(charger, supply = {}) {
     : value(charger, 'voltageV') ?? supply.voltageV;
   const voltageV = three(observedVoltage) ? observedVoltage.reduce((sum, item) => sum + item, 0) / 3 : observedVoltage;
   const available = finite(currentA) && currentA >= 0 && finite(voltageV) && voltageV >= 200 && voltageV <= 250;
-  return { phases, currentA, voltageV, available, powerKw: available ? 3 * voltageV * currentA / 1000 : null };
+  const assumptions = (currentAssumed || usesMaximum && reportedCeiling === null && finite(configuredCeiling)) && currentA > 0 ? [{ code: 'maximum-available-current', maximumCurrentA: currentA,
+    source: reportedCeiling === null || finite(configuredCeiling) && configuredCeiling < reportedCeiling ? 'configured-maximum' : 'reported-maximum' }] : [];
+  return { phases, currentA, voltageV, available, currentAssumed, assumptions,
+    powerKw: available ? 3 * voltageV * currentA / 1000 : null };
 }
 
 /** Forecast a charger's automatic/native activity. A minimum finish is an
@@ -59,7 +70,7 @@ export function forecastCharger({ now, deadlineAt, charger, supply = {} } = {}) 
   const base = { state: 'none', reason: null, known: true, startAt: null, endAt: null, finishAt: null,
     currentA: 0, phaseCurrentA: [0, 0, 0], phases: electric.phases?.count ?? null, voltageV: electric.voltageV,
     powerKw: 0, gridEnergyKwh: charger.requiredGridKwh, requiredGridKwh: charger.requiredGridKwh,
-    controlled: Boolean(charger.settings.enabled && charger.capabilities.scheduling), warnings };
+    controlled: Boolean(charger.settings.enabled && charger.capabilities.scheduling), assumptions: electric.assumptions, warnings };
   if (value(charger, 'connected') === false) return { ...base, reason: 'not-connected' };
   if (charger.control?.manual?.kind === 'stop' || charger.telemetry?.manualStop === true)
     return { ...base, reason: 'manual-stop' };
@@ -146,14 +157,14 @@ function draw(headroom, mask, current) { mask.forEach((item, index) => { headroo
 function allocateOne(active, resource, at) {
   const headroom = [...resource.phaseHeadroomA], currents = {}, suggestions = {};
   let admissible = true;
-  const fixed = active.filter(item => !item.charger.capabilities.externalLoadBalancing && !item.charger.capabilities.currentControl);
+  const fixed = active.filter(item => !item.charger.capabilities.externalLoadBalancing && !item.charger.capabilities.currentControl && !item.electric.currentAssumed);
   for (const item of fixed) {
     const requested = item.electric.currentA, available = headroomFor(headroom, item.electric.phases.mask);
     if (available + EPS < requested) admissible = false;
     currents[item.charger.id] = available + EPS >= requested && requested >= MIN_CURRENT_A ? requested : 0;
     draw(headroom, item.electric.phases.mask, currents[item.charger.id]);
   }
-  const flexible = active.filter(item => item.charger.capabilities.currentControl && !item.charger.capabilities.externalLoadBalancing);
+  const flexible = active.filter(item => (item.charger.capabilities.currentControl || item.electric.currentAssumed) && !item.charger.capabilities.externalLoadBalancing);
   const external = active.find(item => item.charger.capabilities.externalLoadBalancing);
   const priority = active[0]?.priority ?? 'balanced';
   const pressure = item => item.remaining / Math.max(1 / 60, (item.targetAt - Math.max(at, value(item.charger, 'vehicleNotBefore') ?? at)) / HOUR);
@@ -227,7 +238,7 @@ function allocateOne(active, resource, at) {
     currents[item.charger.id] = current >= MIN_CURRENT_A ? current : 0;
     draw(headroom, item.electric.phases.mask, currents[item.charger.id]);
   }
-  for (const item of flexible) suggestions[item.charger.id] = Math.floor(currents[item.charger.id]);
+  for (const item of flexible.filter(item => item.charger.capabilities.currentControl)) suggestions[item.charger.id] = Math.floor(currents[item.charger.id]);
   return { currents, suggestions, admissible, phaseCurrentA: resource.phaseHeadroomA.map((current, index) => current - headroom[index]) };
 }
 
@@ -269,7 +280,7 @@ function allocate(active, resource, at) {
     for (const id of Object.keys(currents)) currents[id] = 0;
     phaseCurrentA.fill(0);
     const executable = active.map(item => suggestions[item.charger.id] === undefined ? item : { ...item,
-      electric: { ...item.electric, currentA: suggestions[item.charger.id] },
+      electric: { ...item.electric, currentA: suggestions[item.charger.id], currentAssumed: false },
       charger: { ...item.charger, capabilities: { ...item.charger.capabilities, currentControl: false } } });
     for (const scenario of resource.scenarios) {
       const distribution = allocateOne(executable, scenario, at);
@@ -602,6 +613,7 @@ export function planChargers({ now, chargers = [], prices = [], household = [], 
       startAt: state === 'released' ? now : null, finishAt: forecasts[charger.id].finishAt,
       deadlineAt: charger.deadlineAt, targetAt, minimumSoc: value(charger, 'minimumSoc'),
       requiredGridKwh: charger.requiredGridKwh, costCents: null, feasible: null, soc: charger.values.soc,
+      assumptions: electrical(charger, supply).assumptions,
       warnings: [], accounting: [], allocations: [], intervals: [], periods: state === 'released' ? [{startAt: now, endAt: null}] : [], finalStartAt: state === 'released' ? now : null, continueAfterMinimum: true };
   }
   // Permission to move charging periods is separate from physical current
@@ -613,7 +625,7 @@ export function planChargers({ now, chargers = [], prices = [], household = [], 
     const canSchedule = shouldPlan(charger, now), economic = canSchedule && !forecastOnly, forecast = forecasts[charger.id];
     const electric = electrical(charger, supply);
     const explicit = hasPeriods(fixedPeriods[charger.id]) && !manualActive(charger, now);
-    const observed = !economic && (charger.capabilities.externalLoadBalancing || charger.capabilities.currentControl)
+    const observed = !economic && (charger.capabilities.externalLoadBalancing || charger.capabilities.currentControl || electric.currentAssumed)
       && electric.available && (forecast.charging || forecast.scheduled) && finite(forecast.startAt);
     if (value(charger, 'connected') !== true || nativeStopped(charger) || !(economic || explicit || observed)) return [];
     const locked = explicit ? fixedPeriods[charger.id] : observed

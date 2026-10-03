@@ -19,16 +19,18 @@ export function shellyAssociation(config, broker) {
 export function createShellyEvseAdapter({ config, broker, client, store, engine, clock = Date.now, canControl = () => false } = {}) {
   config = shellyProfile(config);
   const association = shellyAssociation(config, broker), key = `charging:shelly:${association}`;
-  let state = store.getState(key) ?? { version: 1, association, fields: {}, connection: null, counter: null, sessionSequence: 0 };
-  if (state.version !== 1 || state.association !== association
+  let state = store.getState(key) ?? { version: 2, association, fields: {}, connection: null, counter: null, sessionSequence: 0 };
+  if (state.version !== 2 || state.association !== association
     || ['checkSession', 'sessionCheck'].some(key => Object.hasOwn(state, key))
     || state.counter && Object.hasOwn(state.counter, 'powerW')
     || Object.keys(state.fields ?? {}).some(role => !Object.hasOwn(TYPES, role))) throw fail('unsupported-shelly-state');
   state = copy(state);
-  let connected = false, admitted = false, online = false, closed = false, generation = 0, discovered = false, controlReady = false;
-  let error = null, info = null, service = null, serviceStatus = null, nativeSchedules = null, serviceAt = null, currentConfig = null, polling = null, buffer = [], componentRoles = new Map(), pendingEvents = [];
+  let connected = false, admitted = false, online = false, closed = false, generation = 0, discovered = false, controlReady = false,
+    readinessRevision = 0;
+  let error = null, meterError = null, info = null, service = null, serviceStatus = null, nativeSchedules = null, serviceAt = null, currentConfig = null, polling = null, buffer = [], componentRoles = new Map(), pendingEvents = [];
   let profileSupported = false, currentWritable = false, currentControlReady = false;
   const source = `stmq-evse-${randomUUID()}`, pending = new Map();
+  const fieldRevisions = new Map(), fieldGenerations = new Map();
   let subscriptionStatus = 'disconnected', lastLiveAt = null;
   const topics = [
     { role: 'RPC responses', topic: `${source}/rpc`, direction: 'subscribe' },
@@ -66,14 +68,16 @@ export function createShellyEvseAdapter({ config, broker, client, store, engine,
   }
   const chargingSchedules = () => Array.isArray(nativeSchedules?.jobs)
     ? nativeSchedules.jobs.filter(job => job.enable && scheduleKind(job) !== 'unrelated') : [];
-  const live = field => {
+  const live = (field, now = clock()) => {
     const value = state.fields[field];
-    return value && !value.retained && value.measuredAt > 0 && value.measuredAt <= clock() && clock() - value.measuredAt <= config.maxAgeMs;
+    return value && !value.retained && value.measuredAt > 0 && value.measuredAt <= now && now - value.measuredAt <= config.maxAgeMs;
   };
   function rejectPending(reason) { for (const item of pending.values()) { clearTimeout(item.timer); item.reject(fail(reason)); } pending.clear(); }
-  async function rpc(method, params = {}, { mutation = false, guard = () => true, beforePublish = () => {} } = {}) {
+  async function rpc(method, params = {}, { mutation = false, guard = () => true, beforePublish = () => {}, statusReadback = false } = {}) {
     if (MUTATIONS.has(method) && !mutation) throw fail('invalid-evse-command');
     if (!METHODS.has(method) || mutation && !MUTATIONS.has(method)) throw fail('unsupported-evse-method');
+    if (statusReadback && (params.owner !== `service:${config.serviceId}` || !TYPES[params.role]
+      || method !== `${TYPES[params.role]}.GetStatus`)) throw fail('unsupported-evse-method');
     const permitted = () => ready() && knownWorkState() && settingFresh('start_charging') && settingFresh('current_limit')
       && (method !== 'Number.Set' || config.limiterEnabled && currentReady());
     if (!connected || !admitted || closed || mutation && (!online || !permitted() || !canControl() || !guard())) throw fail('evse-control-unavailable');
@@ -90,44 +94,65 @@ export function createShellyEvseAdapter({ config, broker, client, store, engine,
     if (!connected || !admitted || closed || epoch !== generation || mutation && (!online || !permitted() || !canControl() || !guard())) throw fail('evse-command-revoked');
     return new Promise((resolve, reject) => {
       const timer = setTimeout(() => { pending.delete(id); reject(fail('evse-command-unconfirmed')); }, 5000);
-      timer.unref?.(); pending.set(id, { resolve, reject, timer, generation: epoch });
+      if (mutation && params.role) fieldRevisions.set(params.role, (fieldRevisions.get(params.role) ?? 0) + 1);
+      timer.unref?.(); pending.set(id, { resolve, reject, timer, generation: epoch,
+        readback: statusReadback ? { role: params.role, generation: epoch,
+          revision: fieldRevisions.get(params.role) ?? 0, requestedAt: clock() } : null });
       // No offline queue, retention or automatic application-level retry.
       try { client.publish(`${config.topicPrefix}/rpc`, JSON.stringify({ id, src: source, method, params }), { qos: 0, retain: false }, error => {
         if (error && pending.has(id)) { clearTimeout(timer); pending.delete(id); reject(fail('evse-publish-unconfirmed')); }
       }); } catch { clearTimeout(timer); pending.delete(id); reject(fail('evse-publish-unconfirmed')); }
     });
   }
-  function accept(role, result, receivedAt = clock(), retained = false) {
-    if (!TYPES[role] || !result || !Object.hasOwn(result, 'value')) return false;
+  function accept(role, result, receivedAt = clock(), retained = false, readback = null) {
+    if (!TYPES[role] || !result || !Object.hasOwn(result, 'value')) {
+      if (readback) throw fail('evse-read-unavailable');
+      return false;
+    }
     const measuredAt = finite(result.last_update_ts) && result.last_update_ts > 0 ? Math.round(result.last_update_ts * 1000) : null;
     const previous = state.fields[role];
-    if (measuredAt === null || measuredAt > receivedAt) return false;
-    if (previous?.measuredAt > measuredAt) return false;
+    if (readback && (readback.generation !== generation || readback.revision !== (fieldRevisions.get(role) ?? 0))) return false;
+    const setting = ['start_charging', 'current_limit', 'work_state'].includes(role);
+    if (measuredAt === null || measuredAt > receivedAt) {
+      if (readback && setting) throw fail('evse-read-unavailable');
+      return false;
+    }
+    const sameValue = previous && JSON.stringify(previous.value) === JSON.stringify(result.value);
+    if (previous?.measuredAt >= measuredAt && sameValue && readback && setting
+      && (previous.measuredAt === measuredAt && !previous.retained || role === 'current_limit')) {
+      // A correlated query confirms the current setting even when its update
+      // clock predates the latest matching notification. Preserve both source
+      // clocks; this is receipt freshness, never a new instruction or plug edge.
+      const before = copy(previous);
+      previous.receivedAt = receivedAt; previous.retained = false;
+      previous.readback = { requestedAt: readback.requestedAt, measuredAt, receivedAt };
+      try { persist(); } catch (cause) { state.fields[role] = before; throw cause; }
+      fieldGenerations.set(role, generation);
+      return false;
+    }
+    if (previous?.measuredAt > measuredAt) {
+      if (readback && setting && !sameValue) throw fail('conflicting-evse-reading');
+      return false;
+    }
     if (previous?.measuredAt === measuredAt) {
-      if (JSON.stringify(previous.value) !== JSON.stringify(result.value)) throw fail('conflicting-evse-reading');
+      if (!sameValue) throw fail('conflicting-evse-reading');
       // A first live reading can replace retained evidence without inventing
       // a different source timestamp or losing the plug boundary.
-      if (!previous.retained || retained) {
-        // Setting/state readback renews receipt evidence, never the physical source clock.
-        if (!retained && ['start_charging', 'current_limit', 'work_state'].includes(role)) {
-          const before = previous.receivedAt; previous.receivedAt = receivedAt;
-          try { persist(); } catch (cause) { previous.receivedAt = before; throw cause; }
-        }
-        return false;
-      }
+      if (!previous.retained || retained) return false;
     }
     let value = result.value;
     if (role === 'phase_info') {
       if (!value || !['phase_a', 'phase_b', 'phase_c'].every(key => ['voltage', 'current', 'power'].every(field => finite(value[key]?.[field]) && value[key][field] >= 0))
         || !finite(value.total_power) || value.total_power < 0 || !finite(value.total_act_energy) || value.total_act_energy < 0) throw fail('invalid-evse-electrical-units');
-      if (['phase_a', 'phase_b', 'phase_c'].some(key => value[key].voltage > 300 || value[key].current > 100 || value[key].power > 30000)) throw fail('invalid-evse-electrical-range');
+      if (value.total_power > 90 || PHASE_KEYS.some(key => value[key].voltage > 300 || value[key].current > 100 || value[key].power > 30)) throw fail('invalid-evse-electrical-range');
     } else if (role === 'start_charging' && typeof value !== 'boolean'
       || role === 'current_limit' && (!finite(value) || value < 0)
       || role === 'work_state' && typeof value !== 'string') throw fail('invalid-evse-reading');
-    const prior = copy(state);
+    const prior = copy(state), priorMeterError = meterError;
     try {
       const record = () => {
         state.fields[role] = { value: copy(value), measuredAt, receivedAt, retained, source: 'shelly-evse' };
+        if (readback && setting) state.fields[role].readback = { requestedAt: readback.requestedAt, measuredAt, receivedAt };
         if (role === 'work_state' && !retained && discovered && profileSupported) {
           const connectedValue = config.disconnectedStates.includes(value) ? false
             : [...config.connectedStates, ...config.chargingStates].includes(value) ? true : null;
@@ -142,13 +167,15 @@ export function createShellyEvseAdapter({ config, broker, client, store, engine,
         }
         if (role === 'phase_info' && !retained) {
           const before = state.counter, total = value.total_act_energy;
-          const phasePowers = config.phaseMap.map(index => value[PHASE_KEYS[index]].power / 1000);
+          // This EVSE role reports kW already; it is not a generic Shelly W meter.
+          const phasePowers = config.phaseMap.map(index => value[PHASE_KEYS[index]].power);
           let acceptedEnergy = false;
           if (before && measuredAt > before.at && measuredAt - before.at <= config.maxAgeMs * 2 && total >= before.value) {
             const energy = total - before.value;
             const plausible = config.maximumCurrentA * 3 * 300 / 1000 * (measuredAt - before.at) / 3600000 * 1.2;
             if (energy <= plausible + .001) {
               acceptedEnergy = true;
+              meterError = null;
               // The three phase allocations preserve the native meter delta.
               // The measured total is their sum, not another history series.
               const weights = before.phasePowers?.map((power, index) => (power + phasePowers[index]) / 2);
@@ -168,8 +195,8 @@ export function createShellyEvseAdapter({ config, broker, client, store, engine,
                 store.event('charging-energy-unallocated', { source: 'shelly-evse', device: association,
                   start: before.at, end: measuredAt, referenceKwh: energy, reason: 'unknown-phase-share' }, receivedAt);
               }
-            } else { error = 'evse-counter-jump'; }
-          } else if (before && total < before.value) { error = 'evse-counter-reset'; }
+            } else { meterError = 'evse-counter-jump'; }
+          } else if (before && total < before.value) { meterError = 'evse-counter-reset'; }
           if (before && !acceptedEnergy) engine.recorder.energyGap?.({
             source: 'shelly-evse', device: association, prefix: 'ev2', start: before.at, end: measuredAt, receivedAt,
             quality: [total < before.value ? 'meter-counter-reset' : measuredAt - before.at > config.maxAgeMs * 2 ? 'meter-report-gap' : 'invalid-meter-delta'] });
@@ -178,7 +205,9 @@ export function createShellyEvseAdapter({ config, broker, client, store, engine,
         persist();
       };
       if (store.transaction) store.transaction(record); else record();
-    } catch (cause) { state = prior; throw cause; }
+    } catch (cause) { state = prior; meterError = priorMeterError; throw cause; }
+    fieldRevisions.set(role, (fieldRevisions.get(role) ?? 0) + 1);
+    if (!retained) fieldGenerations.set(role, generation);
     return true;
   }
   function receive(topic, payload, packet = {}, receivedAt = clock()) {
@@ -189,7 +218,7 @@ export function createShellyEvseAdapter({ config, broker, client, store, engine,
       if (!admission.admit(topic, payload, packet, clock())) return;
       if (!packet.retain && ['true', 'false'].includes(payload.toString())) lastLiveAt = receivedAt;
       online = payload.toString() === 'true'; if (!online) {
-        discovered = controlReady = false; rejectPending('evse-offline');
+        discovered = controlReady = false; readinessRevision++; rejectPending('evse-offline');
       } return;
     }
     let frame; try { frame = JSON.parse(payload); } catch { return; }
@@ -202,7 +231,16 @@ export function createShellyEvseAdapter({ config, broker, client, store, engine,
       if (!admission.admit(topic, payload, packet, clock(), { correlated: true })) return;
       lastLiveAt = receivedAt;
       pending.delete(frame.id); clearTimeout(item.timer);
-      if (frame.error) item.reject(fail('evse-rpc-rejected')); else item.resolve(frame.result);
+      if (frame.error) item.reject(fail('evse-rpc-rejected'));
+      else {
+        try {
+          if (item.readback) accept(item.readback.role, frame.result, receivedAt, false, item.readback);
+          item.resolve(frame.result);
+        } catch (cause) {
+          controlReady = false; readinessRevision++; error = cause.code ?? 'evse-read-unavailable';
+          item.reject(cause);
+        }
+      }
       return;
     }
     if (topic === `${config.topicPrefix}/events/rpc` && ['NotifyStatus', 'NotifyFullStatus'].includes(frame.method)) {
@@ -212,7 +250,7 @@ export function createShellyEvseAdapter({ config, broker, client, store, engine,
       if (!packet.retain) lastLiveAt = receivedAt;
       if (!discovered) {
         if (pendingEvents.length < 128) pendingEvents.push({ admissionCheckpoint, params: frame.params, at: receivedAt, retained: packet.retain === true });
-        else { eventOverflow = true; controlReady = false; error = 'evse-event-overflow'; }
+        else { eventOverflow = true; controlReady = false; readinessRevision++; error = 'evse-event-overflow'; }
       } else if (!admitNotification(frame.params, receivedAt, packet.retain === true)) admission.restore(admissionCheckpoint);
     }
   }
@@ -222,14 +260,14 @@ export function createShellyEvseAdapter({ config, broker, client, store, engine,
       const role = componentRoles.get(key);
       if (!role) continue;
       try { accept(role, value, at, retained); }
-      catch (cause) { accepted = false; controlReady = false; error = cause.code ?? 'evse-recording-unavailable'; }
+      catch (cause) { accepted = false; controlReady = false; readinessRevision++; error = cause.code ?? 'evse-recording-unavailable'; }
     }
     return accepted;
   }
 
   async function refresh() {
     if (polling || !connected || !admitted || closed) return polling;
-    const epoch = generation;
+    const epoch = generation, readinessAtStart = readinessRevision;
     polling = (async () => {
       if (!discovered) {
         [info, service, currentConfig] = await Promise.all([rpc('Shelly.GetDeviceInfo'), rpc('Service.GetConfig', { id: config.serviceId }),
@@ -260,19 +298,23 @@ export function createShellyEvseAdapter({ config, broker, client, store, engine,
       const nativeAvailable = serviceStatus?.state === 'running'
         && (serviceStatus.errors === undefined || Array.isArray(serviceStatus.errors) && serviceStatus.errors.length === 0)
         && (serviceStatus.flags === undefined || Array.isArray(serviceStatus.flags) && serviceStatus.flags.length === 0);
-      controlReady = !eventOverflow && discovered && profileSupported && service?.id === config.serviceId && nativeAvailable;
+      const eligible = !eventOverflow && discovered && profileSupported && service?.id === config.serviceId && nativeAvailable;
+      // Healthy polling keeps existing readiness. Recovery cannot reopen the
+      // command gate using cached settings before all native reads complete.
+      controlReady = controlReady && eligible;
       currentControlReady = currentWritable && /[w*]/.test(currentConfig?.access ?? '')
         && componentRoles.get(`number:${currentConfig?.id}`) === 'current_limit' && currentConfig.owner === `service:${config.serviceId}`
         && currentConfig?.min === config.minimumCurrentA
         && finite(currentConfig?.max) && currentConfig.max >= config.maximumCurrentA
         && currentConfig?.meta?.ui?.step === config.currentStepA && service?.auto_balance?.enable === false;
-      if (!controlReady) error = eventOverflow ? 'evse-event-overflow' : !nativeAvailable ? 'evse-native-restriction' : 'evse-profile-unsupported';
-      else if (['evse-event-overflow', 'evse-native-restriction', 'evse-profile-unsupported', 'evse-read-unavailable'].includes(error)) error = null;
+      if (!eligible) error = eventOverflow ? 'evse-event-overflow' : !nativeAvailable ? 'evse-native-restriction' : 'evse-profile-unsupported';
       for (const role of Object.keys(TYPES)) {
-        const result = await rpc(`${TYPES[role]}.GetStatus`, { owner: `service:${config.serviceId}`, role });
+        await rpc(`${TYPES[role]}.GetStatus`, { owner: `service:${config.serviceId}`, role }, { statusReadback: true });
         if (epoch !== generation) return;
-        accept(role, result, clock());
       }
+      // A notification error during any await invalidates this refresh too.
+      // Its later successful replies must not erase the newer failure.
+      if (eligible && readinessAtStart === readinessRevision) { controlReady = true; error = null; }
     })().catch(cause => { controlReady = false; error = cause.code ?? 'evse-read-unavailable'; }).finally(() => { polling = null; });
     return polling;
   }
@@ -296,12 +338,12 @@ export function createShellyEvseAdapter({ config, broker, client, store, engine,
   const timer = setInterval(() => {
     void refresh().then(() => engine.charging?.tick({ force: true }));
   }, 5000); timer.unref?.();
-  const settingFresh = role => {
+  const settingFresh = (role, now = clock()) => {
     const field = state.fields[role];
-    return field && !field.retained && field.measuredAt > 0 && field.measuredAt <= clock()
-      && field.receivedAt <= clock() && clock() - field.receivedAt <= config.maxAgeMs;
+    return field && fieldGenerations.get(role) === generation && !field.retained && field.measuredAt > 0 && field.measuredAt <= now
+      && field.receivedAt <= now && now - field.receivedAt <= config.maxAgeMs;
   };
-  const knownWorkState = () => discovered && profileSupported && settingFresh('work_state')
+  const knownWorkState = (now = clock()) => discovered && profileSupported && settingFresh('work_state', now)
     && [...config.connectedStates, ...config.chargingStates, ...config.disconnectedStates].includes(state.fields.work_state.value);
   const basicReady = () => Boolean(connected && admitted && online && ready() && knownWorkState()
     && settingFresh('start_charging') && settingFresh('current_limit'));
@@ -312,7 +354,7 @@ export function createShellyEvseAdapter({ config, broker, client, store, engine,
     charging: knownWorkState()
       ? config.chargingStates.includes(state.fields.work_state.value) : null,
     statusAt: state.fields.work_state?.measuredAt ?? null,
-    powerKw: finite(state.fields.phase_info?.value?.total_power) ? state.fields.phase_info.value.total_power / 1000 : null,
+    powerKw: finite(state.fields.phase_info?.value?.total_power) ? state.fields.phase_info.value.total_power : null,
     powerAt: state.fields.phase_info?.measuredAt ?? null,
     mqtt: { brokerConnected: connected, subscribed: admitted, subscriptionStatus, lastLiveAt }, topics: copy(topics),
     readAt: clock(), nativeScheduleActive: chargingSchedules().length > 0,
@@ -322,7 +364,7 @@ export function createShellyEvseAdapter({ config, broker, client, store, engine,
     nativeScheduleTakeoverSupported: Boolean(Array.isArray(nativeSchedules?.jobs)
       && (!chargingSchedules().length || Number.isSafeInteger(nativeSchedules.rev) && nativeSchedules.rev >= 0
         && chargingSchedules().every(job => scheduleKind(job) === 'charging'))),
-    fields: copy(state.fields), session: copy(state.connection),
+    fields: copy(state.fields), session: copy(state.connection), meterError,
     error: error ?? (ready() && !knownWorkState() ? 'evse-work-state-unavailable'
       : ready() && (!settingFresh('start_charging') || !settingFresh('current_limit')) ? 'evse-read-unavailable' : null), generation,
     commissioning: { profileSupported, identityMatched: discovered, controlReady: basicReady(), currentControlReady: basicReady() && currentReady(),
@@ -350,9 +392,9 @@ export function createShellyEvseAdapter({ config, broker, client, store, engine,
         const phase = physical?.[PHASE_KEYS[nativePhase]], suffix = `l${index + 1}`;
         return [[`ev2_current_${suffix}`, reading(phase?.current, 'A')],
           [`ev2_voltage_${suffix}`, reading(phase?.voltage, 'V')],
-          [`ev2_active_power_${suffix}`, reading(finite(phase?.power) ? phase.power / 1000 : null, 'kW')]];
+          [`ev2_active_power_${suffix}`, reading(phase?.power, 'kW')]];
       }),
-      ['ev2_active_power', reading(finite(physical?.total_power) ? physical.total_power / 1000 : null, 'kW')],
+      ['ev2_active_power', reading(physical?.total_power, 'kW')],
       ['ev2_import_energy_counter', reading(physical?.total_act_energy, 'kWh')],
     ]);
   };
@@ -383,8 +425,8 @@ export function createShellyEvseAdapter({ config, broker, client, store, engine,
     }, capabilities: { scheduling: true, currentControl: config.limiterEnabled, externalLoadBalancing: false },
     normalize(_snapshot, { now = clock() } = {}) {
       const physical = state.fields.phase_info, phases = physical?.value;
-      const knownState = knownWorkState();
-      const usable = role => ['work_state', 'current_limit'].includes(role) ? state.fields[role] && !state.fields[role].retained && now - state.fields[role].receivedAt <= config.maxAgeMs : live(role);
+      const knownState = knownWorkState(now);
+      const usable = role => ['work_state', 'current_limit'].includes(role) ? settingFresh(role, now) : live(role, now);
       const signal = (value, role) => ({ ...(state.fields[role] ?? {}), value: online && usable(role) ? value : null,
         available: online && Boolean(usable(role)) && value != null, source: 'shelly-evse' });
       return { source: 'shelly-evse', providerConnected: online && admitted, association,
@@ -393,7 +435,7 @@ export function createShellyEvseAdapter({ config, broker, client, store, engine,
         actualCurrentA: signal(phases ? Math.max(...['phase_a', 'phase_b', 'phase_c'].map(key => phases[key].current)) : null, 'phase_info'),
         voltageV: signal(phases ? Math.min(...['phase_a', 'phase_b', 'phase_c'].map(key => phases[key].voltage)) : null, 'phase_info'),
         phaseVoltageV: signal(phases ? config.phaseMap.map(index => phases[PHASE_KEYS[index]].voltage) : null, 'phase_info'),
-        powerKw: signal(phases ? phases.total_power / 1000 : null, 'phase_info'),
+        powerKw: signal(phases?.total_power, 'phase_info'),
         phaseMeasurements: phases ?? null, commissioning: snapshot().commissioning };
     },
     liveCurrents() { const field = state.fields.phase_info;

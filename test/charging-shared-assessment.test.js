@@ -212,6 +212,54 @@ test('missing peer or joint evidence cannot verify priority, overlap or joint fe
   assert.equal(sharedChargingAssessment(f.view.chargers, f.view.coordination, f.now()).overlap, 'unknown');
 });
 
+test('configured ceilings validate assumption-based joint forecasts without creating current readback evidence', t => {
+  const f = fixture(t); f.plug(); f.coordinate();
+  const charger = f.view.chargers[1];
+  charger.configuration = { maximumCurrentA: 16 };
+  charger.capabilities.currentControl = false;
+  charger.control.snapshot.controlReady = false;
+  charger.values.maximumCurrentA = { value: null, available: false };
+  charger.values.currentA = { value: null, available: false };
+  for (const context of [f.view.coordination, f.view.coordination.proposed, f.view.coordination.adopted])
+    delete context.allocations[0].chargers.charger2.currentLimitA;
+  const before = structuredClone(f.view);
+  const assessment = sharedChargingAssessment(f.view.chargers, f.view.coordination, f.now());
+  assert.equal(assessment.proposed.state, 'feasible');
+  assert.equal(assessment.adopted.state, 'feasible');
+  assert.equal(assessment.execution.state, 'unknown');
+  assert.equal(assessment.execution.reportedCurrentA, null);
+  assert.deepEqual(f.view, before, 'Model validation cannot manufacture a measurement or control capability');
+});
+
+test('joint model validation keeps known tighter limits and cannot invent an unconfigured ceiling', t => {
+  const f = fixture(t); f.plug(); f.coordinate();
+  const charger = f.view.chargers[1];
+  charger.configuration = { maximumCurrentA: 16 };
+  charger.capabilities.currentControl = false;
+  charger.values.maximumCurrentA = { value: null, available: false };
+  charger.values.currentA = { value: null, available: false };
+  for (const context of [f.view.coordination, f.view.coordination.proposed, f.view.coordination.adopted]) {
+    Object.assign(context.allocations[0].chargers.charger2, { currentA: 8, powerKw: 5.52 });
+    delete context.allocations[0].chargers.charger2.currentLimitA;
+  }
+  assert.equal(sharedChargingAssessment(f.view.chargers, f.view.coordination, f.now()).proposed.state, 'feasible');
+  const baseline = structuredClone(charger);
+  for (const [name, restrict] of [
+    ['reported ceiling', current => { current.values.maximumCurrentA = f.reading(6); }],
+    ['configured ceiling', current => { current.values.maximumCurrentA = f.reading(16); current.configuration.maximumCurrentA = 6; }],
+    ['native user limit', current => { current.values.nativeCurrentA = f.reading(6); }],
+    ['vehicle limit', current => { current.values.vehicleCurrentA = f.reading(6); }],
+    ['known basic current', current => { current.values.currentA = f.reading(6); }],
+    ['no ceiling', current => { delete current.configuration.maximumCurrentA; }],
+    ['invalid configured ceiling', current => { current.configuration.maximumCurrentA = -1; }],
+  ]) {
+    Object.assign(charger, structuredClone(baseline)); restrict(charger);
+    const assessment = sharedChargingAssessment(f.view.chargers, f.view.coordination, f.now());
+    assert.equal(assessment.proposed.state, 'inconsistent', name);
+    assert.equal(assessment.adopted.state, 'inconsistent', name);
+  }
+});
+
 test('an existing current-format passive report lacks new shared evidence until observed, without read-time writes', t => {
   const f = fixture(t); f.plug(); f.coordinate();
   let diagnostics = f.createDiagnostics(); diagnostics.observe(f.view.chargers, f.now(), f.view.coordination);
@@ -321,5 +369,7 @@ test('shared presentation distinguishes measured overlap, modeled priority and r
   const text = chargingSharedText(sharedChargingAssessment(f.view.chargers, f.view.coordination, f.now()), 'charger1');
   assert.match(text, /Shared priority: Charger 2/); assert.match(text, /Charger 2 draw/);
   assert.match(text, /combined cost 50 cents/); assert.match(text, /Planner-reported cost lower bound 45 cents/);
-  assert.match(text, /do not prove physical delivery or global optimality/);
+  assert.match(text, /reported limits and configured ceilings/);
+  assert.match(text, /maximum available within shared property capacity as a delivery estimate/);
+  assert.match(text, /do not confirm charger readiness, physical delivery or global optimality/);
 });

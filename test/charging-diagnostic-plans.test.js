@@ -32,6 +32,44 @@ function fixture() {
 }
 const delta = (report, field) => report.plans.at(-1).changes.find(row => row.field === field);
 
+test('planner reasons, safe warnings and maximum-current assumptions survive revision and restart', () => {
+  const f = fixture(), view = charger();
+  Object.assign(view.plan, { feasible: true, provisional: false, reason: 'cheapest-feasible-start', warnings: [], assumptions: [] });
+  f.observe(view);
+  Object.assign(view.plan, { reason: 'electrical-telemetry-unavailable', feasible: false, provisional: true,
+    state: 'release', startAt: at + MINUTE, periods: [{ startAt: at + MINUTE, endAt: null }],
+    warnings: ['synthetic-private-label: charging current or AC voltage is unavailable; charging is allowed now.',
+      'private upstream payload', 'private upstream payload'],
+    assumptions: [{ code: 'maximum-available-current', maximumCurrentA: 16, source: 'configured-maximum', privateId: 'private-id' }] });
+  const report = f.observe(view, at + MINUTE), plan = report.plans.at(-1);
+  assert.equal(plan.reason, 'charging-periods', 'change cause remains separate from the planner reason');
+  assert.equal(plan.plannerReason, 'electrical-telemetry-unavailable');
+  assert.deepEqual(plan.warnings, ['A charger: charging current or AC voltage is unavailable; charging is allowed now.',
+    'Additional planning warning details were not retained.']);
+  assert.deepEqual(plan.assumptions, [{ code: 'maximum-available-current', maximumCurrentA: 16, source: 'configured-maximum' }]);
+  assert.deepEqual(delta(report, 'plannerReason'), { field: 'plannerReason', before: 'cheapest-feasible-start', after: 'electrical-telemetry-unavailable' });
+  assert.equal(report.planning.state, 'degraded');
+  assert(!JSON.stringify(report).includes('private'));
+  f.restart();
+  const resumed = f.observe(view, at + 2 * MINUTE);
+  assert.equal(resumed.plans.length, report.plans.length);
+  assert.deepEqual(resumed.plans.at(-1), plan);
+});
+
+test('changed planning assumptions record meaning without inventing changed charging periods or a release', () => {
+  const f = fixture(), view = charger();
+  Object.assign(view.plan, { feasible: true, provisional: false, reason: 'cheapest-feasible-start', warnings: [], assumptions: [] });
+  f.observe(view);
+  view.plan.assumptions = [{ code: 'maximum-available-current', maximumCurrentA: 16, source: 'reported-maximum' }];
+  const report = f.observe(view, at + MINUTE);
+  assert.equal(report.plans.length, 2);
+  assert(delta(report, 'assumptions'));
+  assert(!delta(report, 'periods'));
+  assert.equal(report.planning.state, 'assumed');
+  assert.equal(report.plans.at(-1).provisional, false);
+  assert.equal(f.observe(view, at + 2 * MINUTE).plans.length, 2);
+});
+
 test('disabled charging records an explicit no-schedule baseline without quarter-hour price churn', () => {
   const { observe } = fixture(), view = charger(false), originalPrices = structuredClone(view.plan.priceSnapshot);
   let report = observe(view);

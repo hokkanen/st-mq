@@ -8,6 +8,19 @@ Versions follow Semantic Versioning. `-dev.N` denotes a development prerelease.
 
 ### Fixed
 
+- Charger 2 keeps its native kW readings in the correct units, fixing near-zero
+  power displays, Tesla power matching and recorded power. Correlated current
+  readbacks can confirm an unchanged setting without inventing a newer device
+  timestamp; meter-counter warnings no longer hide control readiness.
+- Unknown charger current uses the maximum available within known limits and
+  shared property capacity when planning cheaper periods. An unavailable second
+  charger remains in that forecast instead of forcing immediate BMW charging.
+  Cards label assumed current and unconfirmed proposed schedules; session reports
+  retain the planning reason, warnings and assumptions.
+- The corrected power interpretation requires database schema 19 and current
+  Shelly acquisition state. Earlier development databases are rejected before
+  mutation and need an intentional fresh start; no history is silently rescaled,
+  migrated or deleted.
 - Pair recovery recognizes existing unavailable and stale observations across
   fresh snapshots, avoiding repeated imports and misleading coverage or learning
   conflicts. Existing history is preserved without an automatic cleanup.

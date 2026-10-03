@@ -72,9 +72,9 @@ async function fixture(t, { limiter = true } = {}) {
     const state = !cars.charger2.connected ? 'charger_free' : amps2() > 0 ? 'charger_charging'
       : !fields.start_charging.value ? 'charger_pause' : 'charger_wait';
     if (fields.work_state.value !== state) fields.work_state = { value: state, at: now };
-    return { total_power: amps2() * 690, total_act_energy: 0,
+    return { total_power: amps2() * .69, total_act_energy: 0,
       ...Object.fromEntries(['phase_a', 'phase_b', 'phase_c'].map(phase => [phase,
-        { voltage: 230, current: amps2(), power: amps2() * 230 }])) };
+        { voltage: 230, current: amps2(), power: amps2() * .23 }])) };
   };
   const roles = ['current_limit', 'start_charging', 'work_state', 'phase_info'];
   client.subscribe = (topics, _options, cb) => cb(null, topics.map(topic => ({ topic, qos: 0 })));

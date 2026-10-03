@@ -54,9 +54,17 @@ function model(context, chargers, peers, now) {
       || row.phaseHeadroomA.some(available => !finite(available) || currents.reduce((sum, current) => sum + current, 0) > available + 1e-6)) valid = false;
     for (const id of IDS) {
       const allocation = row.chargers?.[id]; if (!allocation) continue;
-      const charger = chargers.find(item => item.id === id), ceiling = value(charger, 'maximumCurrentA');
+      const charger = chargers.find(item => item.id === id);
+      // The joint forecast can use a configured ceiling while a native reading
+      // is unavailable. Validate that model against the tightest known ceiling;
+      // this does not renew telemetry or establish executable current control.
+      const ceilings = [value(charger, 'maximumCurrentA'), charger?.configuration?.maximumCurrentA]
+        .filter(current => finite(current) && current >= 0 && current <= 200);
+      const ceiling = ceilings.length ? Math.min(...ceilings) : null;
       const native = value(charger, 'vehicleNotBefore');
       const limits = ['nativeCurrentA', 'vehicleCurrentA'].map(key => value(charger, key)).filter(finite);
+      const selected = value(charger, 'currentA');
+      if (!charger?.capabilities?.externalLoadBalancing && !charger?.capabilities?.currentControl && finite(selected)) limits.push(selected);
       if (!finite(allocation.powerKw) || allocation.powerKw < 0 || ceiling === null || allocation.currentA > ceiling + 1e-6
         || limits.some(limit => allocation.currentA > limit + 1e-6)
         || time(native) && row.start < native && allocation.powerKw > 0 && peers.find(peer => peer.id === id)?.drawing !== true) valid = false;

@@ -29,9 +29,9 @@ async function fixture(t, { charging = true, retainedOnly = false, enabled = tru
     phase_info: {} }).map(([role, value]) => [role, { value, at: START }]));
   const physical = running => {
     fields.work_state = { value: running ? 'charger_charging' : 'charger_pause', at: now };
-    fields.phase_info = { at: now, value: { total_power: running ? 6900 : 0, total_act_energy: 0,
+    fields.phase_info = { at: now, value: { total_power: running ? 6.9 : 0, total_act_energy: 0,
       ...Object.fromEntries(['phase_a', 'phase_b', 'phase_c'].map(phase => [phase,
-        { voltage: 230, current: running ? 10 : 0, power: running ? 2300 : 0 }])) } };
+        { voltage: 230, current: running ? 10 : 0, power: running ? 2.3 : 0 }])) } };
   };
   physical(charging);
   const schedules = { rev: 1, jobs: [] }, serviceStatus = { state: 'running' };

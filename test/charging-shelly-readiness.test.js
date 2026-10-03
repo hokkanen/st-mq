@@ -24,10 +24,10 @@ function fixture(t, configuration = {}) {
     phase_info: { id: 203, owner: 'service:0', access: 'cr' },
   };
   const fields = { current_limit: 16, start_charging: true, work_state: 'charger_charging',
-    phase_info: { total_power: 8280, total_act_energy: 4,
-      phase_a: { voltage: 230, current: 12, power: 2760 },
-      phase_b: { voltage: 230, current: 12, power: 2760 },
-      phase_c: { voltage: 230, current: 12, power: 2760 } } };
+    phase_info: { total_power: 8.28, total_act_energy: 4,
+      phase_a: { voltage: 230, current: 12, power: 2.76 },
+      phase_b: { voltage: 230, current: 12, power: 2.76 },
+      phase_c: { voltage: 230, current: 12, power: 2.76 } } };
   client.subscribe = (topics, _options, done) => done(null, topics.map(topic => ({ topic, qos: 0 })));
   client.publish = (topic, payload, options, done) => {
     const frame = JSON.parse(payload);
@@ -58,7 +58,7 @@ function fixture(t, configuration = {}) {
     engine: { recorder: { recordEnergy() {}, energyGap() {} }, voltage: { ingest() {} } },
   });
   t.after(() => adapter.close());
-  return { adapter, info, service, serviceStatus, schedules, components, fields, calls, measuredAt,
+  return { adapter, client, info, service, serviceStatus, schedules, components, fields, calls, measuredAt,
     advance(milliseconds) { now += milliseconds; },
     mutations: () => calls.filter(call => call.method.endsWith('.Set')),
     async ready() {
@@ -81,6 +81,207 @@ function fixture(t, configuration = {}) {
     },
   };
 }
+
+test('correlated current readback keeps a stable 6 A setting usable without rewriting its source clock', async t => {
+  const f = fixture(t);
+  f.fields.current_limit = 6;
+  await f.ready();
+  f.notify('current_limit', 6);
+  const observedAt = f.adapter.snapshot().fields.current_limit.measuredAt;
+  // The native status response uses the original update second while the
+  // notification dated the same setting one second later.
+  f.measuredAt.current_limit = observedAt - 1000;
+  for (let repeat = 0; repeat < 3; repeat++) {
+    f.advance(16000);
+    assert.equal(f.adapter.snapshot().controlReady, false);
+    await f.adapter.refresh();
+    const snapshot = f.adapter.snapshot(), field = snapshot.fields.current_limit;
+    assert.equal(snapshot.controlReady, true);
+    assert.equal(snapshot.identificationReady, true);
+    assert.equal(field.value, 6);
+    assert.equal(field.measuredAt, observedAt, 'No new source event or instruction is invented');
+    assert.equal(field.readback.measuredAt, observedAt - 1000, 'The actual RPC source clock is preserved too');
+    assert.equal(field.readback.receivedAt, snapshot.readAt);
+    assert.equal(field.readback.requestedAt, snapshot.readAt);
+    assert.equal(f.adapter.normalize(null).currentA.value, 6);
+  }
+  assert.equal(f.mutations().length, 0, 'Reconciliation must not change the native setting');
+});
+
+test('unsolicited same-clock setting notifications cannot renew expired receipt evidence', async t => {
+  const f = fixture(t); await f.ready();
+  f.advance(16000);
+  for (const [role, type] of Object.entries(TYPES)) {
+    if (role === 'phase_info') continue;
+    f.client.emit('message', `${PREFIX}/events/rpc`, Buffer.from(JSON.stringify({ src: DEVICE,
+      method: 'NotifyStatus', params: { [`${type.toLowerCase()}:${f.components[role].id}`]:
+        { value: f.fields[role], last_update_ts: NOW / 1000 } } })), {});
+    assert.equal(f.adapter.snapshot().fields[role].receivedAt, NOW);
+  }
+  assert.equal(f.adapter.snapshot().controlReady, false);
+  await assert.rejects(f.command('start_charging', true));
+  await f.adapter.refresh();
+  assert.equal(f.adapter.snapshot().controlReady, true, 'Only a new correlated read confirms the current settings');
+});
+
+test('an older contradictory current reply blocks commands until a matching readback arrives', async t => {
+  const f = fixture(t); await f.ready();
+  f.notify('current_limit', 6);
+  const before = f.adapter.snapshot().fields.current_limit;
+  f.fields.current_limit = 16; f.measuredAt.current_limit = NOW;
+  await f.refresh();
+  assert.equal(f.adapter.snapshot().controlReady, false);
+  assert.equal(f.adapter.snapshot().error, 'conflicting-evse-reading');
+  assert.deepEqual(f.adapter.snapshot().fields.current_limit, before);
+  await assert.rejects(f.command('start_charging', true));
+  f.fields.current_limit = 6;
+  await f.refresh();
+  assert.equal(f.adapter.snapshot().controlReady, true);
+  assert.equal(f.adapter.snapshot().error, null);
+  assert.equal(f.adapter.snapshot().fields.current_limit.measuredAt, before.measuredAt);
+  assert.equal(f.mutations().length, 0);
+});
+
+test('recovery waits for all setting readbacks while a healthy refresh keeps existing readiness', async t => {
+  for (const recovering of [false, true]) await t.test(recovering ? 'conflicting readback recovery' : 'healthy polling', async t => {
+    const f = fixture(t); await f.ready();
+    f.notify('current_limit', 6);
+    if (recovering) {
+      f.fields.current_limit = 16; f.measuredAt.current_limit = NOW;
+      await f.refresh();
+      assert.equal(f.adapter.snapshot().controlReady, false);
+      f.fields.current_limit = 6;
+    }
+    const publish = f.client.publish;
+    let releaseCurrent, releaseWork, currentRequested, workRequested;
+    const currentPending = new Promise(resolve => { currentRequested = resolve; });
+    const workPending = new Promise(resolve => { workRequested = resolve; });
+    f.client.publish = (topic, payload, options, done) => {
+      const frame = JSON.parse(payload);
+      if (!['Number.GetStatus', 'Enum.GetStatus'].includes(frame.method)) return publish(topic, payload, options, done);
+      const release = () => publish(topic, payload, options, done);
+      if (frame.method === 'Number.GetStatus') { releaseCurrent = release; currentRequested(); }
+      else { releaseWork = release; workRequested(); }
+    };
+    const refresh = f.adapter.refresh(); await currentPending;
+    assert.equal(f.adapter.snapshot().controlReady, !recovering);
+    if (recovering) {
+      assert.equal(f.adapter.snapshot().error, 'conflicting-evse-reading');
+      await assert.rejects(f.command('start_charging', true));
+    }
+    releaseCurrent(); await workPending;
+    assert.equal(f.adapter.snapshot().controlReady, !recovering, 'A partial recovery must not reopen command admission');
+    if (recovering) await assert.rejects(f.command('start_charging', true));
+    releaseWork(); await refresh;
+    assert.equal(f.adapter.snapshot().controlReady, true);
+    assert.equal(f.adapter.snapshot().error, null);
+    assert.equal(f.mutations().length, 0);
+  });
+});
+
+test('a conflicting native event during refresh cannot be cleared by the remaining successful replies', async t => {
+  for (const heldMethod of ['Service.GetStatus', 'Number.GetStatus']) await t.test(heldMethod, async t => {
+    const f = fixture(t); await f.ready();
+    const publish = f.client.publish;
+    let release, announced;
+    const requested = new Promise(resolve => { announced = resolve; });
+    f.client.publish = (topic, payload, options, done) => {
+      const frame = JSON.parse(payload);
+      if (frame.method !== heldMethod) return publish(topic, payload, options, done);
+      f.client.publish = publish;
+      release = () => publish(topic, payload, options, done); announced();
+    };
+    const refresh = f.adapter.refresh(); await requested;
+    f.client.emit('message', `${PREFIX}/events/rpc`, Buffer.from(JSON.stringify({ src: DEVICE,
+      method: 'NotifyStatus', params: { 'number:200': { value: 6, last_update_ts: NOW / 1000 } } })), {});
+    assert.equal(f.adapter.snapshot().controlReady, false);
+    release(); await refresh;
+    assert.equal(f.adapter.snapshot().controlReady, false);
+    assert.equal(f.adapter.snapshot().error, 'conflicting-evse-reading');
+    await assert.rejects(f.command('start_charging', true));
+    await f.adapter.refresh();
+    assert.equal(f.adapter.snapshot().controlReady, true, 'A subsequent complete healthy refresh can recover');
+  });
+});
+
+test('a native event during a pending query fences its delayed setting reply even at the same value', async t => {
+  for (const value of [6, 16]) await t.test(`${value} A event`, async t => {
+    const f = fixture(t); f.fields.current_limit = 6; await f.ready();
+    const publish = f.client.publish;
+    let release, announced;
+    const requested = new Promise(resolve => { announced = resolve; });
+    f.client.publish = (topic, payload, options, done) => {
+      const frame = JSON.parse(payload);
+      if (frame.method !== 'Number.GetStatus') return publish(topic, payload, options, done);
+      f.client.publish = publish;
+      done?.();
+      release = () => f.client.emit('message', `${frame.src}/rpc`, Buffer.from(JSON.stringify({
+        id: frame.id, src: DEVICE, dst: frame.src, result: { value: 6, last_update_ts: NOW / 1000 },
+      })), {});
+      announced();
+    };
+    const refresh = f.adapter.refresh();
+    await requested;
+    f.notify('current_limit', value);
+    const observed = f.adapter.snapshot().fields.current_limit;
+    f.advance(16000);
+    release(); await refresh;
+    assert.deepEqual(f.adapter.snapshot().fields.current_limit, observed);
+    assert.equal(f.adapter.snapshot().controlReady, false, 'A delayed query cannot refresh a later native event');
+    await assert.rejects(f.command('start_charging', true));
+    assert.equal(f.mutations().length, 0);
+  });
+});
+
+test('a reply from a disconnected MQTT generation cannot confirm the new connection', async t => {
+  const f = fixture(t); await f.ready();
+  const publish = f.client.publish;
+  let release, announced;
+  const requested = new Promise(resolve => { announced = resolve; });
+  f.client.publish = (topic, payload, options, done) => {
+    const frame = JSON.parse(payload);
+    if (frame.method !== 'Number.GetStatus') return publish(topic, payload, options, done);
+    done?.();
+    release = () => f.client.emit('message', `${frame.src}/rpc`, Buffer.from(JSON.stringify({
+      id: frame.id, src: DEVICE, dst: frame.src, result: { value: 6, last_update_ts: NOW / 1000 },
+    })), {});
+    announced();
+  };
+  const refresh = f.adapter.refresh(); await requested;
+  const before = f.adapter.snapshot().fields.current_limit;
+  f.client.emit('offline'); await refresh;
+  f.client.emit('connect');
+  release();
+  assert.deepEqual(f.adapter.snapshot().fields.current_limit, before);
+  assert.equal(f.adapter.snapshot().controlReady, false);
+  f.client.emit('offline'); await f.adapter.refresh();
+});
+
+test('a setting query started before command dispatch cannot refresh the pre-command value', async t => {
+  const f = fixture(t, { limiterEnabled: true, additiveCurrentVerified: true });
+  await f.ready();
+  const publish = f.client.publish;
+  let release, announced;
+  const requested = new Promise(resolve => { announced = resolve; });
+  f.client.publish = (topic, payload, options, done) => {
+    const frame = JSON.parse(payload);
+    if (frame.method !== 'Number.GetStatus') return publish(topic, payload, options, done);
+    f.client.publish = publish; done?.();
+    release = () => f.client.emit('message', `${frame.src}/rpc`, Buffer.from(JSON.stringify({
+      id: frame.id, src: DEVICE, dst: frame.src, result: { value: 16, last_update_ts: NOW / 1000 },
+    })), {});
+    announced();
+  };
+  const refresh = f.adapter.refresh(); await requested;
+  f.advance(1000); await f.command('current_limit', 6);
+  const before = f.adapter.snapshot().fields.current_limit;
+  f.advance(16000); release(); await refresh;
+  assert.deepEqual(f.adapter.snapshot().fields.current_limit, before);
+  assert.equal(f.adapter.snapshot().controlReady, false);
+  await f.adapter.refresh();
+  assert.equal(f.adapter.snapshot().fields.current_limit.value, 6);
+  assert.equal(f.adapter.snapshot().controlReady, true);
+});
 
 test('Shelly discovers basic control without manual commissioning or current-step metadata', async t => {
   const f = fixture(t);

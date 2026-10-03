@@ -28,6 +28,8 @@ export function validateCurrentDatabase(db) {
     assertCurrentChargingSessionCheck(JSON.parse(row.payload));
   for (const row of db.prepare("SELECT value FROM state WHERE key GLOB 'charging:shelly:*'").iterate()) {
     const state = JSON.parse(row.value);
+    if (!state || state.version !== 2)
+      throw new Error('Unsupported Shelly acquisition state; start a fresh development database or restore a compatible backup. The existing database was not changed.');
     if (Object.hasOwn(state, 'checkSession') || Object.hasOwn(state, 'sessionCheck')
       || state.counter && Object.hasOwn(state.counter, 'powerW')
       || Object.keys(state.fields ?? {}).some(role => !['current_limit', 'start_charging', 'work_state', 'phase_info'].includes(role)))

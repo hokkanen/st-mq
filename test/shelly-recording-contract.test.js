@@ -15,7 +15,7 @@ function fixture(t) {
 test('Shelly native meter recording reopens without session-check state or history', t => {
   const { path, store } = fixture(t);
   const key = 'charging:shelly:synthetic-association';
-  const state = { version: 1, fields: { phase_info: { measuredAt: 2000 } },
+  const state = { version: 2, fields: { phase_info: { measuredAt: 2000 } },
     counter: { at: 2000, value: 10, phasePowers: [1, 1, 1] } };
   store.setState(key, state);
   for (let phase = 1; phase <= 3; phase++) store.observation({ source: 'shelly-evse', device: 'synthetic-association',
@@ -37,7 +37,7 @@ test('removed Shelly checks and accumulator state reject database open without c
     { fields: { energy_charge: { value: 1 } } }, { fields: { time_charge: { value: 1 } } }];
   for (const state of [null, ...retiredStates]) {
     const { path, store } = fixture(t);
-    if (state) store.setState('charging:shelly:synthetic-association', { version: 1, ...state });
+    if (state) store.setState('charging:shelly:synthetic-association', { version: 2, ...state });
     else store.event('charging-session-check', { version: 1, source: 'shelly-evse', start: 1000, end: 2000,
       estimatedKwh: 1, referenceKwh: 1, complete: true, quality: [],
       recordingBasis: 'native-meter-counter-phase-allocation', referenceBasis: 'native-session-energy' }, 2000);
@@ -47,5 +47,18 @@ test('removed Shelly checks and accumulator state reject database open without c
       assert.throws(() => new Store(path, { readOnly }), /Unsupported .*session-check.*fresh development database/);
       assert.deepEqual(readFileSync(path), before);
     }
+  }
+});
+
+test('Shelly acquisition state with the retired power interpretation rejects before database mutation', t => {
+  const { path, store } = fixture(t);
+  store.setState('charging:shelly:synthetic-association', { version: 1,
+    fields: { phase_info: { value: { total_power: 4.138 }, measuredAt: 2000 } },
+    counter: { at: 2000, value: 10, phasePowers: [.001402, .001379, .001357] } });
+  store.close();
+  const before = readFileSync(path);
+  for (const readOnly of [false, true]) {
+    assert.throws(() => new Store(path, { readOnly }), /Unsupported Shelly .*fresh development database/);
+    assert.deepEqual(readFileSync(path), before);
   }
 });

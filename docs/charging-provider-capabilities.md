@@ -33,12 +33,16 @@ The Charger 2 profile targets the [Top AC Portable EV Charger](https://shelly-ap
 The device documentation's `phase_info` response supplies `phase_a`, `phase_b` and
 `phase_c`, each with `voltage`, `current` and `power`, plus `total_power` and
 `total_act_energy`. The public provider status exposes phase currents (A), voltages
-(V), active powers (converted from W to kW), total active power, the accumulated
+(V), native active powers (kW), total active power (kW), the accumulated
 total (kWh). `phaseMap`
 assigns the native phases to installation L1–L3. Original measurement and receipt
 times remain visible; missing, retained, stale or disconnected readings are
 unavailable even when charger control is available. Conversely, valid read-only
 measurements do not require permission to control charging.
+The EVSE `phase_info` profile already uses kW for both phase and total power;
+generic Shelly watt conversions do not apply. The adapter uses that one unit
+contract for display, vehicle matching and meter-allocation weights, without
+guessing a unit from the magnitude. Lifetime energy remains kWh.
 
 The provider list uses four groups: phase currents, phase voltages, active power
 and recorded phase energy. The power group includes total and phase readings;
@@ -82,24 +86,43 @@ and 1 A step, sufficient native maximum, and disabled native `auto_balance`.
 Missing step metadata blocks this optional capability, not basic start/stop.
 Configure the installation's phase order, fuse ratings, margins and
 `additiveCurrentVerified` for the load model; these cannot be discovered from
-charger RPC. With the limiter disabled, planning reserves the native charging
-current and the controller sends no current-setting RPC or 12 A fallback.
+charger RPC. With the limiter disabled, a known native current setting limits
+the delivery estimate and the controller sends no current-setting RPC or 12 A
+fallback. An unknown current setting uses the charger's configured maximum
+within forecast per-phase property headroom, following the
+[maximum-available-current assumption](charging.md#maximum-available-current-assumption).
+That estimate grants no command readiness or control authority.
 With an enabled but unavailable limiter, control waits for its requirements.
 
 Manual `verified`, model/firmware pins, state lists, `minimumCurrentA` and
 `currentStepA` are retired configuration fields and are rejected. Readiness is
 computed from actual supported capabilities. An older development database must
-be replaced explicitly with a fresh schema 18 database; it is never migrated or
+be replaced explicitly with a fresh schema 19 database; it is never migrated or
 reset automatically. This prevents previous commissioning/ownership records from
-authorizing the new control contract.
+authorizing the new control contract. Shelly acquisition state version 2 also
+rejects the earlier incorrect power interpretation and derived meter weights;
+controller ownership and restoration obligations remain a separate contract.
 
 Every refresh reads service configuration/status, numeric current capabilities
 and [schedules](https://shelly-api-docs.shelly.cloud/gen2/ComponentsAndServices/Schedule/).
 The source contract requires positive native `last_update_ts` values in seconds.
 Zero/unknown timestamps are unavailable. A correlated read renews setting receipt
-evidence without changing its original source clock. Physical current retains
-its measurement age. MQTT electrical acquisition and lifetime-meter recording
-remain useful independently of control availability.
+evidence without changing its original source clock. An unchanged current-limit
+reply can have an older update timestamp than its matching notification; the
+adapter preserves both timestamps while confirming the current value from the
+new query. This cannot establish a new native instruction or confirm a command
+whose dispatch is newer than the preserved setting clock. Same-clock unsolicited
+notifications do not renew freshness. Replies are fenced by MQTT generation,
+the setting revision at request publication and intervening command dispatch;
+an older contradictory reply cannot overwrite a newer native setting or grant
+control. After a readback failure, command readiness returns only after a full
+successful refresh; healthy polling preserves existing readiness. A newer
+notification error cannot be cleared by an earlier refresh. Physical current
+and power retain their measurement age. Meter reset
+or jump warnings are separate from command-readiness errors and clear after a
+valid subsequent increment, while recorded gaps remain intact. MQTT electrical
+acquisition and lifetime-meter recording remain useful independently of control
+availability.
 
 ## MQTT and commands
 

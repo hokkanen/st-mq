@@ -31,6 +31,21 @@ function fixture() {
     observe: (view, at = now) => readCompleteReport(observer, observer.observe([view], at).chargers[0].current) };
 }
 
+test('draw following a degraded price-plan release does not certify scheduling as expected', () => {
+  const { observe } = fixture(), view = charger();
+  Object.assign(view.plan, { state: 'release', reason: 'electrical-telemetry-unavailable', feasible: false, provisional: true });
+  const report = observe(view);
+  assert.equal(report.coverage.initialRelease.state, 'verified', 'physical response remains independently observed');
+  assert.equal(report.planning.state, 'degraded');
+  assert.equal(report.behavior, 'explained');
+  const summary = chargingReportSummary(report);
+  assert.equal(summary.label, 'Scheduling limited');
+  assert.notEqual(summary.state, 'good');
+  assert.match(summary.behavior, /Observed draw checks do not establish/);
+  Object.assign(view.plan, { reason: 'cheapest-feasible-start', feasible: true, provisional: false });
+  assert.equal(observe(refresh(view, now + MINUTE), now + MINUTE).planning.state, 'available');
+});
+
 test('observes independently of controls, persists bounded normalized evidence and never stores raw identity', () => {
   const { observe, data } = fixture(), view = charger();
   view.values.soc.vin = 'private-vin'; view.control.snapshot.credentials = 'private-secret';

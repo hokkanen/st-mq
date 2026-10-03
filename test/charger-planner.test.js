@@ -90,6 +90,95 @@ test('published per-phase planning voltage isolates schedules from live voltage 
   assert.equal(missing.plans.first.reason, 'electrical-telemetry-unavailable', 'An explicitly missing phase cannot be revived from raw telemetry');
 });
 
+test('unknown charger current assumes its maximum within phase headroom without granting current commands', () => {
+  const charger = { ...make('charger2', { capabilities: { externalLoadBalancing: false, currentControl: false },
+    telemetry: { currentA: null } }), requiredGridKwh: 6.9 };
+  const before = structuredClone(charger);
+  const result = run([charger], { supply: { ...supply, configuredBudgetCurrentA: [12, 10, 14] },
+    prices: prices([40, 40, 1, 1, 40, 40]) });
+  const plan = result.plans.charger2;
+  assert.equal(plan.feasible, true);
+  assert.equal(plan.provisional, false, 'an assumption is not an immediate-release instruction');
+  assert.equal(plan.state, 'waiting');
+  assert.equal(plan.startAt, now + 2 * HOUR);
+  assert.ok(Math.abs(plan.finishAt - (now + 3 * HOUR)) < 1);
+  assert.deepEqual(plan.assumptions, [{ code: 'maximum-available-current', maximumCurrentA: 16, source: 'reported-maximum' }]);
+  assert.ok(result.allocations.some(row => row.chargers.charger2?.currentA === 10));
+  assert.ok(result.allocations.every(row => row.phaseCurrentA.every(current => current <= 10)));
+  assert.deepEqual(result.currentLimits, []);
+  assert.deepEqual(charger, before, 'planning cannot turn a guessed current into telemetry or adapter authority');
+  const installed = forecastFixedPlans({ now, chargers: [charger], supply: { ...supply, configuredBudgetCurrentA: [12, 10, 14] },
+    prices: prices([40, 40, 1, 1, 40, 40]), periodsByCharger: { charger2: plan.periods } });
+  assert.equal(installed.plans.charger2.feasible, true);
+  assert.deepEqual(installed.plans.charger2.assumptions, plan.assumptions);
+});
+
+test('a connected peer with unknown current keeps both requests in cheap shared-capacity planning', () => {
+  const first = { ...make('charger1'), requiredGridKwh: 4 };
+  const second = { ...make('charger2', { capabilities: { externalLoadBalancing: false, currentControl: false },
+    telemetry: { currentA: null }, control: { phase: 'unavailable' } }), requiredGridKwh: 4 };
+  const result = run([first, second], { supply: { ...supply, configuredBudgetCurrentA: [10, 12, 14] },
+    prices: prices([40, 40, 1, 1, 40, 40]) });
+  for (const plan of Object.values(result.plans)) {
+    assert.equal(plan.feasible, true);
+    assert.equal(plan.state, 'waiting');
+    assert.equal(plan.provisional, false);
+    assert.ok(plan.startAt >= now + 2 * HOUR);
+  }
+  assert.ok(result.allocations.every(row => row.phaseCurrentA.every(current => current <= 10 + 1e-7)));
+  assert.deepEqual(result.currentLimits, []);
+});
+
+test('configured charger ceiling supplies a labelled planning fallback while native measurements stay unknown', () => {
+  const charger = make('charger2', { capabilities: { externalLoadBalancing: false, currentControl: false },
+    configuration: { maximumCurrentA: 16 }, telemetry: { currentA: null, maxCurrentA: null }, requiredGridKwh: 4 });
+  const plan = run([charger]).plans.charger2;
+  assert.equal(charger.values.maximumCurrentA.available, false);
+  assert.equal(charger.values.currentA.available, false);
+  assert.equal(plan.state, 'waiting');
+  assert.equal(plan.feasible, true);
+  assert.deepEqual(plan.assumptions, [{ code: 'maximum-available-current', maximumCurrentA: 16, source: 'configured-maximum' }]);
+});
+
+test('maximum-current assumptions retain known native and vehicle limits and disappear after readback', () => {
+  const second = { ...make('charger2', { capabilities: { externalLoadBalancing: false, currentControl: false },
+    telemetry: { currentA: null, vehicleCurrentA: { value: 6, available: true } } }), requiredGridKwh: 4.14 };
+  const assumed = run([second]);
+  assert.equal(assumed.plans.charger2.feasible, true);
+  assert.ok(assumed.allocations.every(row => row.chargers.charger2.currentA <= 6));
+  second.values.currentA = { value: 6, available: true };
+  const observed = run([second]);
+  assert.deepEqual(observed.plans.charger2.assumptions, []);
+  assert.equal(observed.plans.charger2.finishAt, assumed.plans.charger2.finishAt);
+  second.values.currentA = { value: 0, available: true };
+  const blocked = run([second]);
+  assert.equal(blocked.plans.charger2.feasible, false, 'valid zero is a known limit, not missing evidence');
+  assert.deepEqual(blocked.plans.charger2.assumptions, []);
+});
+
+test('a known fixed current remains fixed when only its maximum readback is unavailable', () => {
+  const charger = make('charger2', { capabilities: { externalLoadBalancing: false, currentControl: false },
+    configuration: { maximumCurrentA: 16 }, telemetry: { currentA: 16, maxCurrentA: null } });
+  const result = run([charger], { supply: { ...supply, configuredBudgetCurrentA: [10, 10, 10] } });
+  assert.equal(result.plans.charger2.feasible, false);
+  assert.equal(result.plans.charger2.deliveredGridKwh, 0);
+  assert.deepEqual(result.plans.charger2.assumptions, []);
+  assert.deepEqual(result.currentLimits, []);
+});
+
+test('a released peer with unknown current participates in joint delivery instead of reserving its ceiling forever', () => {
+  const first = { ...make('charger1', { deadlineAt: now + HOUR }), requiredGridKwh: 2 };
+  const second = { ...make('charger2', { deadlineAt: now + HOUR, capabilities: { externalLoadBalancing: false, currentControl: false },
+    telemetry: { currentA: null, charging: true }, control: { released: true, phase: 'released' } }), requiredGridKwh: 2 };
+  const result = run([first, second], { supply: { ...supply, configuredBudgetCurrentA: [16, 16, 16] },
+    prices: [{ start: now, end: now + HOUR / 2, price: 40 }, { start: now + HOUR / 2, end: now + HOUR, price: 1 }] });
+  assert.equal(result.plans.charger1.feasible, true);
+  assert.equal(result.plans.charger1.state, 'waiting');
+  assert.ok(result.plans.charger1.startAt >= now + HOUR / 2);
+  assert.equal(result.plans.charger2.state, 'released', 'forecasting does not take over its existing permission');
+  assert.deepEqual(result.currentLimits, []);
+});
+
 test('present peer current from measured power uses live voltage while its future forecast uses estimated voltage', () => {
   const charger = make('peer', { preferences: { enabled: false },
     telemetry: { voltageV: 240, actualCurrentA: null, powerKw: 7.2, charging: true } });
@@ -205,7 +294,8 @@ test('unknown uncontrolled connection or current creates no phantom load and can
     telemetry: { connected: null, scheduledStartAt: now + HOUR, currentA: null } });
   const result = run([make(), scheduled]);
   assert.equal(result.plans.first.feasible, true);
-  assert.ok(result.warnings.some(warning => warning.includes('scheduled load cannot be estimated')));
+  assert.deepEqual(result.forecasts.observed.assumptions,
+    [{ code: 'maximum-available-current', maximumCurrentA: 16, source: 'reported-maximum' }]);
 });
 
 test('manual minimum completion never implies an unknown vehicle target will stop drawing power', () => {

@@ -91,6 +91,23 @@ test('one event section contains full plan details exactly once and filtering re
   assert.equal(timeline.children.length, 1); assert.match(textOf(timeline), /Controller pause/);
 });
 
+test('plan detail shows the actual planning reason and estimated maximum-current basis', async () => {
+  const f = setup();
+  f.records.set('current', [{ id: 1, at: now, kind: 'plan', code: 'schedule-state',
+    plan: { at: now, reason: 'schedule-state', plannerReason: 'cheapest-feasible-start', feasible: true, provisional: false,
+      changes: [], automatic: true, scheduleState: 'proposed', periods: [{ startAt: now + 3600_000, endAt: null }],
+      assumptions: [{ code: 'maximum-available-current', maximumCurrentA: 16, source: 'configured-maximum' }],
+      warnings: ['Only published electricity prices are used. The pending schedule will be reconsidered when more prices arrive.'] } }]);
+  await f.open();
+  const text = textOf(f.dialog.querySelector('.charging-report-timeline'));
+  assert.match(text, /Planning reason: Cheapest feasible charging start/);
+  assert.match(text, /up to 16 A per phase within known limits and forecast shared property capacity/);
+  assert.match(text, /Uses the configured maximum when current is unknown/);
+  assert.match(text, /Completion is estimated/);
+  assert.match(text, /Only published electricity prices/);
+  assert(!text.includes('Provisional release;'));
+});
+
 test('polling preserves expanded event, nested rates, focused node and scroll', async () => {
   const f = setup(); await f.open();
   const timeline = f.dialog.querySelector('.charging-report-timeline'), item = timeline.children[0], details = item.querySelector('details'), summary = details.querySelector('summary');

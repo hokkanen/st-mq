@@ -56,6 +56,19 @@ const STATE_LABELS = { disabled: 'Automatic off', unknown: 'Unknown', none: 'No 
   'charge-now': 'Charge now', provisional: 'Provisional release' };
 const SCHEDULE_LABELS = { none: 'No controller charging schedule', proposed: 'Proposed charging periods',
   installed: 'Controller execution plan', unknown: 'Schedule state unknown' };
+const PLAN_CAUSES = { 'control-unsupported': 'Scheduling control is unsupported', disabled: 'Automatic charging is off',
+  observing: 'Observing only', manual: 'Manual instructions have priority', released: 'Charging permission released',
+  disconnected: 'Vehicle disconnected', unavailable: 'Planning reason unavailable', 'charge-now': 'Charge now requested',
+  'cheapest-feasible-periods': 'Cheapest feasible charging periods', 'cheapest-feasible-start': 'Cheapest feasible charging start',
+  'minimum-already-satisfied': 'Requested charge is already satisfied', 'vehicle-start-after-deadline': 'Vehicle start is after ready-by',
+  'multiple-external-load-balancers': 'Multiple external load balancers cannot be allocated together',
+  'connection-unavailable': 'Connection information is unavailable', 'electrical-telemetry-unavailable': 'Charging electrical inputs are unavailable',
+  'equalizer-allowance-unavailable': 'Property current allowance is unavailable', 'insufficient-time': 'Forecast capacity cannot meet ready-by',
+  'price-coverage-unavailable': 'Applicable electricity prices are unavailable', 'household-history-loading': 'Household forecast is being prepared',
+  'household-history-unavailable': 'Household forecast is unavailable' };
+const planningAssumptions = rows => (Array.isArray(rows) ? rows : []).filter(row => row?.code === 'maximum-available-current'
+  && Number.isFinite(row.maximumCurrentA)).map(row =>
+  `Assumes up to ${number(row.maximumCurrentA)} A per phase within known limits and forecast shared property capacity. Uses the ${row.source === 'configured-maximum' ? 'configured' : 'reported'} maximum when current is unknown. Completion is estimated.`).join(' ');
 
 const IDENTIFICATION_CAUSES = {
   identified: 'Vehicle identified', 'manual-stop': 'Manual Stop has priority', unsupported: 'Only passive matching is available',
@@ -117,6 +130,8 @@ export function chargingReportFacts(report, timezone = 'Europe/Helsinki') {
     : current.reportedCharging === false ? ' · Charger status reports not charging' : ' · Charger status unknown';
   return [
     ['Control at last assessment', controlText(current)],
+    ...(report.planning?.plannerReason ? [['Planning reason', PLAN_CAUSES[report.planning.plannerReason] ?? 'Planning reason unavailable']] : []),
+    ...(report.planning?.assumptions?.length ? [['Planning assumptions', planningAssumptions(report.planning.assumptions)]] : []),
     ['Vehicle', `${vehicleName(current.vehicleId)} · ${actual}`],
     ...(current.identification ? [['Identification', [EVENTS[current.identification] ?? 'Identification state unknown',
       IDENTIFICATION_CAUSES[current.identificationReason]].filter(Boolean).join(' · ')]] : []),
@@ -154,7 +169,10 @@ export function chargingPlanChanges(changes, timezone = 'Europe/Helsinki') {
     prices: ['Planning electricity rates', value => priceText(value, timezone)],
     priceAvailability: ['Price availability', value => priceText(value, timezone)],
     feasible: ['Ready-by forecast', value => value === true ? 'Target feasible' : value === false ? 'Shortfall forecast' : 'Unknown'],
-    provisional: ['Provisional release', value => value === true ? 'Requested' : value === false ? 'Not requested' : 'Unknown'] };
+    provisional: ['Provisional release', value => value === true ? 'Requested' : value === false ? 'Not requested' : 'Unknown'],
+    plannerReason: ['Planning reason', value => PLAN_CAUSES[value] ?? 'Planning reason unavailable'],
+    warnings: ['Planning warnings', value => Array.isArray(value) && value.length ? value.join(' ') : 'None recorded'],
+    assumptions: ['Planning assumptions', value => planningAssumptions(value) || 'No current assumption recorded'] };
   return (Array.isArray(changes) ? changes : []).flatMap(change => {
     const definition = fields[change?.field];
     if (!definition || JSON.stringify(change.before) === JSON.stringify(change.after)) return [];
@@ -171,6 +189,9 @@ export function chargingPlanPresentation(plan, timezone = 'Europe/Helsinki') {
     vehicle: `${vehicleName(plan?.vehicleId)}${plan?.vehicleId ? '' : ' · these inputs do not establish the vehicle’s actual battery charge'}`,
     deadline: Number.isFinite(plan?.deadlineAt) ? `Ready by ${time(plan.deadlineAt, timezone)}` : 'Ready-by occurrence unavailable',
     periods: periodText(plan?.periods, timezone),
+    plannerReason: plan?.plannerReason ? `Planning reason: ${PLAN_CAUSES[plan.plannerReason] ?? 'Unavailable'}` : 'Planning reason was not recorded.',
+    assumptions: planningAssumptions(plan?.assumptions),
+    warnings: Array.isArray(plan?.warnings) ? plan.warnings.join(' ') : '',
     periodLabel: plan?.scheduleState === 'installed' ? 'Periods adopted by the controller · physical execution is checked separately'
       : plan?.scheduleState === 'proposed' ? 'Proposed periods · execution not confirmed by this snapshot'
         : plan?.scheduleState === 'none' ? 'No controller charging schedule' : 'Schedule state unknown',
@@ -180,13 +201,18 @@ export function chargingPlanPresentation(plan, timezone = 'Europe/Helsinki') {
 export function chargingReportSummary(report, available = true) {
   if (!available) return { label: 'Report unavailable', state: 'unknown', outcome: 'Session diagnostics could not be saved.', behavior: 'Evidence incomplete' };
   if (!report) return { label: 'Session report', state: 'quiet', outcome: 'No session observed yet', behavior: 'Observation starts with a confirmed connection.' };
+  const degraded = report.planning?.state === 'degraded';
   const label = report.attentionCount ? `${report.attentionCount} ${report.attentionCount === 1 ? 'issue' : 'issues'}`
     : report.evidenceStale || report.behavior === 'insufficient-evidence' ? 'Evidence incomplete'
+      : degraded ? 'Scheduling limited'
       : report.recoveredCount ? report.findings?.some(row => row.resolvedAt !== null && row.resolution === 'request-changed') ? 'Past issue' : 'Recovered issue'
         : report.behavior === 'expected' ? 'Checks passed' : 'Session report';
   return { label, state: report.attentionCount ? 'attention' : report.evidenceStale || report.behavior === 'insufficient-evidence' ? 'unknown'
+    : degraded ? 'unknown'
     : report.behavior === 'expected' ? 'good' : 'quiet', outcome: OUTCOMES[report.outcome?.state] ?? 'Completion unknown',
-    behavior: report.evidenceStale ? 'Observation is no longer current' : BEHAVIOR[report.behavior] ?? 'Evidence incomplete' };
+    behavior: report.evidenceStale ? 'Observation is no longer current' : degraded
+      ? 'Price scheduling is limited. Observed draw checks do not establish that the schedule met the request.'
+      : BEHAVIOR[report.behavior] ?? 'Evidence incomplete' };
 }
 
 /** Observational report UI. Reading a report never identifies a vehicle or
@@ -379,17 +405,19 @@ export function createChargingDiagnosticsPanel({ document, request, onOpenTest =
       const stamp = make('time'), header = make('strong'), changes = make('ul', '', 'charging-report-changes'), unchanged = make('p', 'Charging periods unchanged', 'muted');
       const detail = make('div', '', 'charging-report-plan-detail'), summary = make('p', '', 'muted'), body = make('div');
       const clocks = make('p', '', 'muted charging-report-period'), settings = make('p'), state = make('p'), vehicleStart = make('p'), energy = make('p');
+      const plannerReason = make('p'), assumptions = make('p'), warnings = make('p');
       const rates = make('details', '', 'charging-report-rates'), rateSummary = make('summary', 'Recorded planning electricity rates'), rateRows = make('p', '', 'charging-report-period'); rates.append(rateSummary, rateRows);
       const control = make('p'), vehicle = make('p', '', 'muted'), inputs = make('p'), deadline = make('p', '', 'muted'), periodLabel = make('p', '', 'charging-report-period-label'), periods = make('p', '', 'charging-report-period'), notes = make('p', '', 'muted');
-      summary.hidden = true; summary.append(stamp, header); body.append(changes, unchanged, control, state, vehicle, inputs, clocks, settings, deadline, vehicleStart, energy, periodLabel, periods, rates, notes);
+      summary.hidden = true; summary.append(stamp, header); body.append(changes, unchanged, control, state, plannerReason, assumptions, warnings, vehicle, inputs, clocks, settings, deadline, vehicleStart, energy, periodLabel, periods, rates, notes);
       detail.append(summary, body); node.append(detail);
-      parts.set(node, { stamp, header, changes, unchanged, control, state, vehicle, inputs, clocks, settings, deadline, vehicleStart, energy, periodLabel, periods, rates, rateRows, notes });
+      parts.set(node, { stamp, header, changes, unchanged, control, state, plannerReason, assumptions, warnings, vehicle, inputs, clocks, settings, deadline, vehicleStart, energy, periodLabel, periods, rates, rateRows, notes });
     }
     const p = parts.get(node), view = chargingPlanPresentation(plan, timezone);
     setText(p.stamp, `${time(plan.at, timezone)} · `); p.stamp.dateTime = validTime(plan.at) ? new Date(plan.at).toISOString() : '';
     setText(p.header, changeTitle(view.changes, view.title));
     changesInto(p.changes, view.changes); p.unchanged.hidden = !view.periodsUnchanged;
-    for (const key of ['control', 'vehicle', 'inputs', 'deadline', 'periodLabel', 'periods']) setText(p[key], view[key]);
+    for (const key of ['control', 'vehicle', 'inputs', 'deadline', 'periodLabel', 'periods', 'plannerReason', 'assumptions', 'warnings']) setText(p[key], view[key]);
+    p.assumptions.hidden = !view.assumptions; p.warnings.hidden = !view.warnings;
     p.periods.hidden = plan.scheduleState === 'none';
     setText(p.state, `Planner state: ${STATE_LABELS[plan.state] ?? 'Unknown'} · Planning inputs ${plan.inputStatus ?? 'unknown'}`);
     setText(p.clocks, [['soc', 'Charge input'], ['target', 'Target'], ['capacity', 'Capacity']].map(([key, label]) => {
@@ -400,7 +428,7 @@ export function createChargingDiagnosticsPanel({ document, request, onOpenTest =
     setText(p.vehicleStart, plan.nativeStartKnown === true ? Number.isFinite(plan.nativeStartAt) ? `Reported vehicle start constraint: ${time(plan.nativeStartAt, timezone)}` : 'Vehicle reports no start constraint.' : 'Vehicle start constraint unknown.');
     setText(p.energy, `Required grid energy estimate: ${Number.isFinite(plan.requiredGridKwh) ? `${number(plan.requiredGridKwh)} kWh` : 'Unavailable'}`);
     setText(p.rateRows, Array.isArray(plan.priceIntervals) ? priceText(plan.priceIntervals, timezone) : 'Planning electricity rates unavailable.');
-    const notes = [plan.provisional === true ? 'Provisional release with incomplete planning inputs.' : '', plan.feasible === false ? 'The forecast could not meet the requested target by ready-by.' : ''].filter(Boolean).join(' ');
+    const notes = [plan.provisional === true ? 'Provisional release; price scheduling could not be maintained.' : '', plan.feasible === false ? 'Requested readiness is not established by this forecast.' : ''].filter(Boolean).join(' ');
     setText(p.notes, notes); p.notes.hidden = !notes; return node;
   }
   function render() {

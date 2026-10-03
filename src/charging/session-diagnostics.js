@@ -33,6 +33,44 @@ const CONTROL_REASONS = new Set([...CONTROL_ERRORS, 'manual-stop', 'manual-relea
   'native-current-limit', 'vehicle-current-limit', 'hardware-restriction', 'fuse-limit', 'priority-allocation', 'telemetry-fallback',
   'vehicle-not-before', 'identification-pause', 'identification-waiting', 'identification-charging',
   'economic-wait', 'charge-now', 'economic-window', 'no-headroom', 'supply-unavailable', 'within-limit']);
+const PLAN_REASONS = new Set(['control-unsupported', 'disabled', 'observing', 'manual', 'released', 'disconnected', 'unavailable',
+  'charge-now', 'cheapest-feasible-periods', 'cheapest-feasible-start', 'minimum-already-satisfied',
+  'vehicle-start-after-deadline', 'multiple-external-load-balancers', 'connection-unavailable',
+  'electrical-telemetry-unavailable', 'equalizer-allowance-unavailable', 'insufficient-time', 'price-coverage-unavailable',
+  'household-history-loading', 'household-history-unavailable']);
+// Planning warnings are application-owned explanations, but their prefixes may
+// contain private installation labels. Keep only exact supported wording.
+const PLAN_WARNINGS = [
+  'Only one externally balanced charger can be included in a shared allocation.',
+  'Automatic connection information is required before changing a charger schedule.',
+  'Equalizer available current is unavailable; charging is allowed now.',
+  'A readiness deadline has passed; charging is allowed now.',
+  'No published electricity prices cover the remaining readiness horizon.',
+  'No published electricity prices cover an eligible charging time before ready-by; charging is allowed now.',
+  'Only published electricity prices are used. The pending schedule will be reconsidered when more prices arrive.',
+  'The requested target exceeds the reported vehicle limit.',
+  'Predicted charging capacity cannot deliver this minimum by its ready-by time.',
+  'Household history is unavailable. Charging is allowed while preparation retries.',
+  'Household history is being prepared. Charging is allowed until the forecast is ready.',
+];
+const CHARGER_PLAN_WARNINGS = [
+  'its scheduled load cannot be estimated until current and voltage are available.',
+  'charging power cannot be estimated until current and voltage are available.',
+  'charging current or AC voltage is unavailable; charging is allowed now.',
+  'its vehicle timer prevents charging before ready-by; the controller allows charging now and the vehicle still controls its start.',
+];
+function planningEvidence(plan) {
+  const warnings = [...new Set((Array.isArray(plan?.warnings) ? plan.warnings : []).map(warning => {
+    if (PLAN_WARNINGS.includes(warning)) return warning;
+    const detail = CHARGER_PLAN_WARNINGS.find(text => typeof warning === 'string' && warning.endsWith(`: ${text}`));
+    return detail ? `A charger: ${detail}` : 'Additional planning warning details were not retained.';
+  }))];
+  const assumptions = (Array.isArray(plan?.assumptions) ? plan.assumptions : []).filter(row =>
+    row?.code === 'maximum-available-current' && Number.isFinite(row.maximumCurrentA) && row.maximumCurrentA > 0
+    && row.maximumCurrentA <= 1000 && ['reported-maximum', 'configured-maximum'].includes(row.source))
+    .slice(0, 1).map(({ code, maximumCurrentA, source }) => ({ code, maximumCurrentA, source }));
+  return { plannerReason: plan?.reason == null ? null : PLAN_REASONS.has(plan.reason) ? plan.reason : 'unavailable', warnings, assumptions };
+}
 const time = value => Number.isSafeInteger(value) && value >= 0;
 const number = value => Number.isFinite(value) ? value : null;
 const at = value => time(value) ? value : null;
@@ -77,6 +115,7 @@ function planFor(view, now) {
   const deadlineAt = inputAvailable ? at(view.deadlineAt ?? plan?.deadlineAt) : null;
   const priceEvidence = inputAvailable && automatic === true && rows.length ? priceIntervals(plan?.priceSnapshot, now, deadlineAt) : null;
   return { at: now, reason: 'initial-plan', state, automatic, chargeNow, scheduleState,
+    ...planningEvidence(inputAvailable ? plan : null),
     inputStatus: inputAvailable ? 'available' : 'unavailable', settings, changes: [], periods: rows, deadlineAt,
     provisional: inputAvailable && plan?.provisional === true,
     feasible: inputAvailable && typeof plan?.feasible === 'boolean' ? plan.feasible : null,
@@ -151,6 +190,9 @@ function planChanges(history, next, now) {
   change('state', stateMeaning(known.state), stateMeaning(next.state));
   change('feasible', known.feasible, next.feasible);
   change('provisional', known.provisional, next.provisional);
+  change('plannerReason', known.plannerReason, next.plannerReason);
+  change('warnings', known.warnings, next.warnings);
+  change('assumptions', known.assumptions, next.assumptions);
   if (known.scheduleState !== 'unknown' && next.scheduleState !== 'unknown') change('schedule', known.scheduleState, next.scheduleState);
   const periodChanges = !equal(remainingPeriods(known.periods, now), remainingPeriods(next.periods, now));
   if (periodChanges) changes.push({ field: 'periods', before: clone(known.periods), after: clone(next.periods) });
@@ -455,10 +497,17 @@ function publicReport(record, now) {
   const stale = result.endedAt === null && !fresh(result.observedAt, now, 3 * MINUTE);
   const active = result.findings.filter(row => row.resolvedAt === null);
   const issues = result.findings.filter(row => row.severity === 'attention');
+  const plan = record.planContext?.at(-1);
+  // Stored public summaries already contain this projection; only observer
+  // checkpoints carry the private comparison context used to produce it.
+  if (record.planContext) result.planning = { at: plan?.at ?? null,
+    state: !plan || plan.inputStatus !== 'available' ? 'unknown' : plan.automatic !== true || plan.chargeNow === true ? 'inactive'
+      : plan.feasible === false || plan.provisional === true ? 'degraded' : plan.assumptions?.length ? 'assumed' : 'available',
+    plannerReason: plan?.plannerReason ?? null, warnings: clone(plan?.warnings ?? []), assumptions: clone(plan?.assumptions ?? []) };
   result.behavior = active.some(row => row.severity === 'attention') ? 'attention'
     : stale || !result.current?.physicalFresh || result.current?.charging === null || result.current?.pending || result.current?.error
       || result.current?.expectation === 'unknown' || active.some(row => row.severity === 'unknown') ? 'insufficient-evidence'
-      : active.some(row => row.severity === 'explained') || issues.length ? 'explained'
+      : active.some(row => row.severity === 'explained') || issues.length || result.planning?.state === 'degraded' ? 'explained'
         : result.coverage.initialRelease.state === 'verified' || result.coverage.pause.state === 'verified' ? 'expected' : 'observing';
   result.attentionCount = active.filter(row => row.severity === 'attention').length;
   result.recoveredCount = issues.reduce((sum, row) => sum + row.count - (row.resolvedAt === null ? 1 : 0), 0);

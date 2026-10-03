@@ -5,6 +5,7 @@ import { chargingConfiguration } from '../src/charging/config.js';
 import { createShellyEvseAdapter, createShellyController, shellyAssociation } from '../src/charging/shelly-evse.js';
 import { shellyProfile } from '../src/charging/shelly-profile.js';
 import { shellyCurrentLimit } from '../src/charging/shelly-limit.js';
+import { matchTeslaSession } from '../src/charging/vehicle.js';
 import { Engine } from '../src/app/engine.js';
 import { Store } from '../src/storage/store.js';
 import { Recorder } from '../src/storage/recorder.js';
@@ -36,7 +37,7 @@ function fixture(t, extra={}) {
   const roleTypes={current_limit:'number',start_charging:'boolean',work_state:'enum',phase_info:'object'};
   const roles=Object.keys(roleTypes), ids=Object.fromEntries(roles.map((role,i)=>[role,i+200]));
   const settingClock = new Map();
-  const fields={current_limit:16,start_charging:true,work_state:'charger_charging',phase_info:{total_power:8280,total_act_energy:0,phase_a:{voltage:230,current:12,power:2760},phase_b:{voltage:230,current:12,power:2760},phase_c:{voltage:230,current:12,power:2760}}};
+  const fields={current_limit:16,start_charging:true,work_state:'charger_charging',phase_info:{total_power:8.28,total_act_energy:0,phase_a:{voltage:230,current:12,power:2.76},phase_b:{voltage:230,current:12,power:2.76},phase_c:{voltage:230,current:12,power:2.76}}};
   client.subscribe=(topics,_opts,cb)=>{client.topics=topics;cb(null,topics.map(topic=>({topic,qos:0})));};
   client.publish=(topic,payload,options,cb)=>{
     const frame=JSON.parse(payload);writes.push({...frame,topic,options});let result;
@@ -131,15 +132,40 @@ test('official-shaped role RPC discovers capabilities and canonical C2 energy ne
   assert.equal(f.energy[0].energies.reduce((sum,value)=>sum+value,0),.002);
   await f.adapter.refresh();assert.equal(f.energy.length,1);
   f.setNow(NOW+2000);f.fields.phase_info.total_act_energy=0;await f.adapter.refresh();assert.equal(f.energy.length,1);
-  assert.equal(f.adapter.snapshot().error,'evse-counter-reset');
+  assert.equal(f.adapter.snapshot().meterError,'evse-counter-reset');
+  assert.equal(f.adapter.snapshot().error,null,'Meter quality must not mask control readiness');
   assert.equal(f.gaps.length,1);assert.equal(f.gaps[0].prefix,'ev2');
   assert.deepEqual(f.gaps[0].quality,['meter-counter-reset']);
+  f.setNow(NOW+3000);f.fields.phase_info.total_act_energy=.002;await f.adapter.refresh();
+  assert.equal(f.adapter.snapshot().meterError,null,'The next accepted meter increment clears the transient warning');
+});
+
+test('native kW power agrees with phase current and supplies independent Tesla matching evidence', async t => {
+  const f = fixture(t);
+  Object.assign(f.fields.phase_info, { total_power: 4.138,
+    phase_a: { current: 6.1, voltage: 230, power: 1.402 },
+    phase_b: { current: 6.0, voltage: 230, power: 1.379 },
+    phase_c: { current: 5.9, voltage: 230, power: 1.357 } });
+  await f.ready();
+  const physical = f.adapter.normalize(null);
+  assert.equal(physical.powerKw.value, 4.138);
+  assert.equal(f.adapter.snapshot().powerKw, 4.138);
+  assert.equal(physical.actualCurrentA.value, 6.1);
+  assert.equal(f.adapter.readings().ev2_active_power.value, 4.138);
+  assert.equal(matchTeslaSession({ association: 'synthetic-tesla', healthy: true,
+    pluggedIn: true, charging: true, atHome: true, actualPowerKw: 4,
+    fields: { charger_power: { value: 4, receivedAt: NOW, retained: false },
+      plugged_in: { value: true, receivedAt: NOW, retained: false } } },
+  { physical, connectedAt: NOW, chargingAt: [NOW], now: NOW }), true);
+  assert.throws(() => f.adapter.accept('phase_info', { last_update_ts: (NOW + 1000) / 1000,
+    value: { ...f.fields.phase_info, total_power: 4138 } }, NOW + 1000),
+  /invalid-evse-electrical-range/, 'The EVSE profile never guesses an alternative watt unit');
 });
 test('retired Shelly session state and unused cached native counters reject before mutation', () => {
   const configuration = config(), broker = { address: 'mqtt://synthetic' };
   const association = shellyAssociation(configuration, broker);
-  const current = { version: 1, association, fields: {}, connection: null, counter: null, sessionSequence: 0 };
-  for (const obsolete of [{ sessionCheck: null }, { sessionCheck: { version: 1 } }, { checkSession: null },
+  const current = { version: 2, association, fields: {}, connection: null, counter: null, sessionSequence: 0 };
+  for (const obsolete of [{ version: 1 }, { sessionCheck: null }, { sessionCheck: { version: 1 } }, { checkSession: null },
     { counter: { powerW: 0 } }, { fields: { energy_charge: { value: 0 } } },
     { fields: { time_charge: { value: 0 } } }]) {
     let writes = 0;
@@ -152,10 +178,10 @@ test('retired Shelly session state and unused cached native counters reject befo
 test('native Shelly phases expose current, voltage and active power in installed L1–L3 order', async t => {
   const f = fixture(t, { phaseMap: [2, 0, 1] });
   f.serviceStatus.errors = ['synthetic-native-fault'];
-  Object.assign(f.fields.phase_info, { total_power: 6000, total_act_energy: 42.5,
-    phase_a: { current: 10, voltage: 231, power: 2200 },
-    phase_b: { current: 8, voltage: 228, power: 1700 },
-    phase_c: { current: 9, voltage: 233, power: 2100 } });
+  Object.assign(f.fields.phase_info, { total_power: 6.0, total_act_energy: 42.5,
+    phase_a: { current: 10, voltage: 231, power: 2.2 },
+    phase_b: { current: 8, voltage: 228, power: 1.7 },
+    phase_c: { current: 9, voltage: 233, power: 2.1 } });
   await f.ready();
   const readings = f.adapter.readings();
   assert.deepEqual([1, 2, 3].map(n => readings[`ev2_current_l${n}`].value), [9, 10, 8]);
@@ -184,9 +210,9 @@ test('native Shelly phases expose current, voltage and active power in installed
 test('C2 phase energy follows measured changing phase shares in installation order and conserves its native total', async t => {
   const f = fixture(t, { phaseMap: [2, 0, 1] }); await f.ready();
   f.setNow(NOW + 1000);
-  Object.assign(f.fields.phase_info, { total_power: 6000, total_act_energy: .002,
-    phase_a: { voltage: 230, current: 4, power: 1000 }, phase_b: { voltage: 230, current: 9, power: 2000 },
-    phase_c: { voltage: 230, current: 13, power: 3000 } });
+  Object.assign(f.fields.phase_info, { total_power: 6.0, total_act_energy: .002,
+    phase_a: { voltage: 230, current: 4, power: 1.0 }, phase_b: { voltage: 230, current: 9, power: 2.0 },
+    phase_c: { voltage: 230, current: 13, power: 3.0 } });
   await f.adapter.refresh();
   assert.equal(f.energy.length, 1);
   const [phases] = f.energy;
@@ -203,8 +229,8 @@ test('C2 single-phase and skewed allocations remain nonnegative and conserve the
   for (const [delta, shares] of [[.000565, [14, 0, 0]], [.000565, [0, 14, 0]], [.000565, [0, 0, 14]],
     [.000224, [6, 2, 16]], [.000333, [1e-12, 30, 1]], [.000999, [30, 1, 1e-12]]]) {
     const f = fixture(t);
-    ['phase_a', 'phase_b', 'phase_c'].forEach((name, index) => f.fields.phase_info[name].power = shares[index] * 100);
-    f.fields.phase_info.total_power = shares.reduce((sum, value) => sum + value, 0) * 100;
+    ['phase_a', 'phase_b', 'phase_c'].forEach((name, index) => f.fields.phase_info[name].power = shares[index] / 10);
+    f.fields.phase_info.total_power = shares.reduce((sum, value) => sum + value, 0) / 10;
     await f.ready();
     f.setNow(NOW + 1000); f.fields.phase_info.total_act_energy = delta; await f.adapter.refresh();
     assert.equal(f.energy.length, 1);
@@ -262,7 +288,7 @@ test('C2 phase records and unallocated diagnostics commit with their source curs
   const sample = (at, total, powers) => ({ last_update_ts: at / 1000, value: {
     total_act_energy: total, total_power: powers.reduce((sum, power) => sum + power, 0),
     ...Object.fromEntries(['phase_a', 'phase_b', 'phase_c'].map((name, index) => [name,
-      { voltage: 230, current: powers[index] / 230, power: powers[index] }])) } });
+      { voltage: 230, current: powers[index] * 1000 / 230, power: powers[index] }])) } });
   adapter.accept('phase_info', sample(NOW, 0, [0, 0, 0]), NOW);
   adapter.accept('work_state', { value: 'charger_charging', last_update_ts: NOW / 1000 }, NOW);
   const key = `charging:shelly:${adapter.association}`;
@@ -293,7 +319,7 @@ test('C2 phase records and unallocated diagnostics commit with their source curs
   adapter.close(); engine.recorder = new Recorder(store); adapter = create();
   assert.equal(adapter.accept('phase_info', unallocated, NOW + 1500), false);
   assert.equal(store.events().length, 1, 'Restart does not duplicate exceptional evidence');
-  const allocated = sample(NOW + 2000, .003, [1000, 2000, 3000]);
+  const allocated = sample(NOW + 2000, .003, [1, 2, 3]);
   store.setState = failCursorSave;
   assert.throws(() => adapter.accept('phase_info', allocated, NOW + 2250), /Synthetic cursor persistence failure/);
   assert.equal(store.observations().length, 3, 'A failed cursor cannot leave any phase energy credited');

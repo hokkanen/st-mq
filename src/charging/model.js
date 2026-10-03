@@ -116,7 +116,9 @@ export function buildCharger({ definition, settings, telemetry = {}, automaticSo
     values.connected = chargerValue(null, { reason: 'property-location-unknown' });
   const requiredGridKwh = values.capacityKwh.value * Math.max(0, values.minimumSoc.value - values.soc.value) / 100 / CHARGING_EFFICIENCY;
   return { id: definition.id, label: definition.label ?? definition.id, provider: definition.provider ?? source,
-    capabilities, settings: structuredClone(settings), targetSelection, configuration: { efficiency: CHARGING_EFFICIENCY }, values, automatic, requiredGridKwh,
+    capabilities, settings: structuredClone(settings), targetSelection, configuration: { efficiency: CHARGING_EFFICIENCY,
+      ...(finite(configuration?.maximumCurrentA) && configuration.maximumCurrentA >= 0
+        ? { maximumCurrentA: configuration.maximumCurrentA } : {}) }, values, automatic, requiredGridKwh,
     deadlineAt: finite(deadlineAt) ? deadlineAt : resolveChargingDeadline(now, settings.readyBy, timezone),
     control, telemetry };
 }

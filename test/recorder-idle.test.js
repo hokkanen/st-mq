@@ -147,9 +147,9 @@ async function shellyFixture(t) {
   const {store,recorder}=fixture(t),client=new EventEmitter();let now=START;
   const config=chargingConfiguration({chargers:{charger2:{enabled:true,deviceId:'synthetic-evse',topicPrefix:'test/evse',
     }}}).chargers.charger2;
-  const phase={total_power:2,total_act_energy:0,phase_a:{voltage:230,current:0,power:2},
+  const phase={total_power:.002,total_act_energy:0,phase_a:{voltage:230,current:0,power:.002},
     phase_b:{voltage:230,current:0,power:0},phase_c:{voltage:230,current:0,power:0}};
-  const fields={current_limit:16,start_charging:false,work_state:'paused',phase_info:phase};
+  const fields={current_limit:16,start_charging:false,work_state:'charger_pause',phase_info:phase};
   const ids=Object.fromEntries(Object.keys(fields).map((role,i)=>[role,i+200]));
   client.subscribe=(topics,_options,cb)=>cb(null,topics.map(topic=>({topic,qos:0})));
   client.publish=(_topic,payload,_options,cb)=>{

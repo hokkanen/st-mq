@@ -1083,7 +1083,8 @@ export class ChargingRuntime {
     for (const [id, periods] of Object.entries(desiredPeriods)) {
       const item = this.charger(id), assessed = proposed.plans[id];
       if (assessed && digest(remainingPeriods(periods, now)) === digest(remainingPeriods(assessed.periods, now)))
-        item.plan = { ...item.plan, allocations: assessed.allocations ?? [], intervals: assessed.intervals ?? [] };
+        item.plan = { ...item.plan, allocations: assessed.allocations ?? [], intervals: assessed.intervals ?? [],
+          assumptions: structuredClone(assessed.assumptions ?? []) };
     }
     // A C2 command must be sized against C1's confirmed permission. Use C2's
     // requested periods prospectively so its old waiting execution cannot

@@ -153,7 +153,10 @@ cheapest feasible charging periods. Unchanged settings keep their original
 receipt/provenance while live TeslaMate health establishes feed availability.
 This is not a complete weekly schedule: the standard MQTT feed does not expose
 all recurrence rules and end times. An absent start does not prove that every
-vehicle-side restriction is disabled.
+vehicle-side restriction is disabled. For planning, an unknown restriction does
+not create an assumed timer or reduced current; the
+[maximum-available-current assumption](#maximum-available-current-assumption)
+applies until usable evidence establishes a restriction.
 
 BMW CarData offers charging-profile/window information subject to vehicle
 capabilities, but the current [BMW bridge](bmw-cardata.md) forwards battery and
@@ -186,7 +189,9 @@ live logger-health reports. Physical charger metering remains independent.
 After a master-host failure, the promoted computer needs its own working broker,
 device connections and credentials; see [paired operation](pairing.md). Cached
 data is not fresh device evidence. Reachable chargers can continue with manual
-inputs, and missing prices or supply forecasts select provisional release.
+inputs. Missing shared prices or usable property-capacity forecasts select
+provisional release; an unknown charger current alone uses the
+[planning assumption](#maximum-available-current-assumption).
 An unreachable charger cannot receive a release, and an unavailable OCPP
 authorization server can block new charging. Shelly EVSE controller-loss behavior
 remains unverified; software cannot promise an autonomous hardware fallback.
@@ -361,6 +366,13 @@ the report's coverage. A same-version restart retains the existing connection,
 identity and confirmed outcomes while fresh sources reconnect. A new database
 cannot reconstruct an overnight session from a stopped charger or a retained
 full-battery reading.
+
+Planning snapshots retain the planner's actual reason, bounded public warnings
+and maximum-current assumptions separately from the reason a revision was
+recorded. Reports show a degraded planning result when a provisional release or
+modeled shortfall prevents the requested price schedule. Successful physical
+start/stop checks do not turn that result into a blanket **Checks passed**.
+Assumed feasible delivery remains an estimate, separate from confirmed control.
 
 Planning snapshots list concrete changes to settings, vehicle inputs, remaining
 periods and applicable prices. Removing elapsed price intervals, refreshing a
@@ -621,7 +633,53 @@ choice, which survives restart and new vehicle connections for the same physical
 chargers. Automatic charging is also a persistent dashboard choice; the four
 ready-by and battery defaults remain configuration-owned.
 
-The planner first respects device/vehicle limits, manual permission, native start times and credible capacity. It protects both deadlines where the modeled opportunities allow that. Actual all-in electricity cost then governs period selection. Priority must not buy more expensive energy merely to favor a charger. In infeasible cases, charger priority favors its remaining request; balanced mode shares normalized shortfall. Eligible charging time and grid-energy need determine pressure. Shared budgets below two minimum currents use bounded time slices rather than invalid sub-minimum simultaneous commands.
+The planner first respects known applicable device/vehicle limits, manual permission, native start times and credible capacity. It protects both deadlines where the modeled opportunities allow that. Actual all-in electricity cost then governs period selection. Priority must not buy more expensive energy merely to favor a charger. In infeasible cases, charger priority favors its remaining request; balanced mode shares normalized shortfall. Eligible charging time and grid-energy need determine pressure. Shared budgets below two minimum currents use bounded time slices rather than invalid sub-minimum simultaneous commands.
+
+### Maximum-available-current assumption
+
+When a connected charger's future charging current is unknown, assume the
+maximum it can deliver within its configured/verified charger ceiling and the
+forecast property headroom on each phase after household and peer load. Apply
+the same rule to either charger, including a newly connected charger whose
+current readback or control readiness is unavailable. Use the assumed current
+for delivered-energy estimates, charging duration, completion and selection of
+cheap periods. The joint allocation shares the available property capacity;
+it does not give each charger the same spare capacity independently.
+
+This is an optimistic delivery forecast. It is not a permanent worst-case
+reservation of the peer's maximum draw. Do not invent hidden vehicle timers,
+unknown low current settings or speculative restrictions and then release
+economic pauses to compensate. Missing vehicle identification or battery inputs
+continue to use the applicable configured request defaults and existing session
+anchors. Known applicable native/manual, vehicle, cable, installation and
+electrical limits still constrain the forecast, including a confirmed 6 A
+setting or a known vehicle not-before time. Observed low draw by itself does
+not establish a lasting current restriction.
+
+Expose the maximum-available-current assumption with the proposed plan, keep
+estimated delivery and completion distinct from measured progress, and recompute
+when usable limit, household-load, peer or vehicle evidence changes. A missing
+charger-current input must not alone mark a price plan infeasible or select an
+immediate release. Control readiness is separate: an unavailable charger can
+have an assumption-based forecast without an accepted schedule, and that
+forecast supplies no authority to send commands or proof of physical response.
+
+A real modeled deadline shortfall, a known restrictive timer, or absence of
+usable shared prices/property-capacity evidence still needs its specific
+feasibility or fallback result. Do not collapse those reasons into an unknown
+charger-current restriction. Actual draw and confirmed execution continue to
+govern immediate electrical allocation; a forecast never establishes that an
+unavailable charger has paused or accepted a lower current.
+
+Regression coverage must include a feasible delayed Charger 1 plan followed by
+Charger 2 connecting with unknown current and unavailable control. With usable
+prices, property headroom and sufficient modeled opportunity, both requests
+remain represented and Charger 1 keeps a feasible price schedule instead of
+being released solely because Charger 2 is unready. Also cover max-available
+delivery estimates, a later known lower limit, joint per-phase allocation and
+the unchanged command-readiness gates.
+
+### Joint allocation and execution
 
 The implementation is a bounded search over a declared slot/current model, **not a globally exact continuous-time optimizer**. Results expose the search kind, relaxed cost lower bound, feasible candidate cost and upper bound on the cost gap where available. Search pruning can miss a better joint candidate; reported feasibility is conditional on the recorded assumptions. Synthetic exhaustive small-horizon comparisons validate representative cases. There is no one-cent pause penalty or mandatory one-cent saving hurdle. Practical minimum economic runs/gaps remain 15 minutes; equal-cost choices prefer stability.
 
@@ -688,15 +746,17 @@ current electrical readings and integration paths that genuinely require it.
 Neither smoothing nor schedule stability can relax native limits, telemetry
 freshness, control authority, changed session requests or a missed deadline.
 
-Easee's Equalizer, charger and vehicle determine the available charging current. Native OCPP economic pauses impose an expiring 0 A restriction; identification probes briefly release the owned pause at normal current before returning to that economic pause or normal charging. This never raises native limits or changes circuit protection or fuse settings. Current already drawn by an automatic-OFF, manually running or post-target peer remains a load until physical evidence says otherwise. Forecast household load, gross configured capacity and current net allowance are distinct. A clipped zero Equalizer allowance does not establish an exact gross budget. Missing rates or capacity produce provisional decisions, not free electricity or invented assured readiness.
+Easee's Equalizer, charger and vehicle determine the available charging current. Native OCPP economic pauses impose an expiring 0 A restriction; identification probes briefly release the owned pause at normal current before returning to that economic pause or normal charging. This never raises native limits or changes circuit protection or fuse settings. Current already drawn by an automatic-OFF, manually running or post-target peer remains a load until physical evidence says otherwise. Forecast household load, gross configured capacity and current net allowance are distinct. A clipped zero Equalizer allowance does not establish an exact gross budget. Missing shared rates or usable property capacity produce provisional decisions, not free electricity or invented assured readiness; unknown charging-current restrictions use the maximum-available-current planning assumption.
 
 The final period is an open release. Reaching the planning minimum or ready-by deadline does not issue a final stop. Extra actual energy remains metered and priced. Unknown future post-target consumption cannot have a guaranteed optimized bill. Later economic pauses require ST-MQ and the provider to be available; the UI distinguishes the proposed plan, dispatched request, readback and observed physical response.
 
 ## Charger 2 current allocation
 
 Basic start/stop leaves native current settings and native load balancing in
-charge. The planner reserves the reported native current, and scheduling sends
-Boolean start/stop only. The allocation below applies with `limiterEnabled:true`;
+charge. Planning uses the known applicable native current setting, or the
+[maximum-available-current assumption](#maximum-available-current-assumption)
+when it is unknown; scheduling sends Boolean start/stop only. The allocation
+below applies with `limiterEnabled:true`;
 missing current-control capabilities block that mode rather than bypass it.
 
 Commissioning must verify three-phase association, phase order, installation fuse ratings and whether the property and charging-current magnitudes support the additive model. For each phase, the modeled non-EV base is `B = property − Easee − Shelly`. The absolute Shelly ceiling is the tightest `fuse − margin − B`, then any planned Easee reservation and hardware, vehicle and native user limits. The calculation includes Shelly's existing draw; it does not mistake incremental spare margin for an absolute setpoint.
@@ -722,13 +782,15 @@ Price revisions are canonicalized by publication authority over their actual cov
 Current-format sessions, requests, assignments, costs and uncertain commands recover only within the same physical/source association. Device, MQTT broker/root, integration profile/service or phase association changes cannot borrow old ownership. A potentially dispatched command is reconciled with native readback before another intention; it is never blindly replayed.
 
 Pre-1.0 native state is not migrated. The current charging state remains version 6
-and database schema 18; the physical adapter uses its own explicitly scoped
+and database schema 19; the physical adapter uses its own explicitly scoped
 current state. New optional control choices default to OFF/Balanced when absent;
 recorded presentation never supplies control permission. Retired configuration switches for automatic charging and
 priority, dashboard overrides of permanent battery defaults, old pseudo-C2
 settings, charger-bound vehicle topics, efficiency overrides, unscoped verdicts
-and aliases are rejected. No database reset or data migration is needed for the
-new control choices. Only the v0.7.5 `easee.csv` and
+and aliases are rejected. Incompatible development databases, including those
+with the earlier Shelly power-unit interpretation, are rejected before mutation
+and require an intentional fresh start; no conversion or repair is attempted.
+Only the v0.7.5 `easee.csv` and
 `st-mq.csv` import paths are supported historical boundaries. Imported
 C1/property history retains its provenance and does not become a Shelly observation.
 

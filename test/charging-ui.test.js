@@ -22,6 +22,20 @@ const sessionPayload = (id, changes, extra = {}) => ({ scope: 'session', associa
 const view = item => chargerDisplay(item, { now });
 const active = () => { const item = charger(); return { ...item, settings: { ...item.settings, enabled: true },
   values: { ...item.values, connected: reading(true) }, plan: { startAt, finishAt: deadlineAt, deadlineAt } }; };
+
+test('assumed current keeps proposed periods visible while charger control is unavailable', () => {
+  const item = { ...active(), id: 'charger2', provider: 'shelly-evse', control: { phase: 'unavailable', reason: 'evse-read-unavailable' },
+    identification: { active: true, phase: 'waiting', reason: 'charger-unavailable' },
+    plan: { startAt, finishAt: deadlineAt - 3600000, deadlineAt, feasible: true,
+      assumptions: [{ code: 'maximum-available-current', maximumCurrentA: 16, source: 'configured-maximum' }],
+      periods: [{ startAt, endAt: null }] } };
+  const display = view(item);
+  assert.match(display.readiness, /Estimate only.*control unconfirmed/);
+  assert.equal(display.periodRows.length, 1);
+  assert.ok(display.rows.some(([name, value]) => name === 'Planning current' && /16 A per phase.*assumed/.test(value)));
+  assert.ok(display.notes.some(note => /periods are proposed/.test(note)));
+  assert.doesNotMatch(display.state, /Paused|Scheduled/);
+});
 function bmwTarget({ conflict = true, connectedAt = now - 60_000, rawValue = 100 } = {}) {
   const item = active(), source = conflict ? 'bmw-target-filter' : 'bmw-cardata';
   const selected = { value: conflict ? 85 : rawValue, source, measuredAt: now - 30_000, receivedAt: now, readingId: 'target-selected' };
@@ -548,7 +562,8 @@ test('physical Charger 2 explanations preserve native vehicle constraints and di
   assert.match(details['Use automatic'],/button in Charging controls replaces.*automatic scheduling.*schedules stay disabled/);
   assert.match(details['Charger confirmation'],/pending until the charger confirms.*measurements.*started or paused/);
   assert.match(details['Automatic charging'],/Turning it off stops price scheduling.*limiter can remain active.*pause charging/);
-  assert.match(details['Unavailable data'],/current limits, the configured fallback and native restrictions/);
+  assert.match(details['Unavailable data'],/unknown charging current uses the charger’s maximum within forecast shared property capacity/);
+  assert.match(details['Unavailable data'],/live current limiter retains its own configured fallback and native restrictions/);
   assert.match(details['Charging current'],/adjusts Shelly’s current.*pauses.*below the charging minimum/);
   assert.match(details['Other charging'],/automatic scheduling off/);
   assert.match(details['Target & completion'],/does not change the vehicle’s own charge limit/);

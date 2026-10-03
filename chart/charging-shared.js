@@ -39,5 +39,5 @@ export function chargingSharedText(shared, focus) {
         : execution === 'not-exercised' ? 'Charger 2 current sharing has not been exercised.' : 'Charger 2 allocation readback is unconfirmed.';
   return [`Shared priority: ${priorityName(current.selectedPriority)}.`, peerText, overlap, consistency,
     ...(shared?.priorityChanges ? [`Observed priority changes: ${shared.priorityChanges}.`] : []), readback, ...models, bounds,
-    'Allocation checks describe the model; they do not prove physical delivery or global optimality.'].join(' ');
+    'Allocation checks use reported limits and configured ceilings. Unknown current uses the maximum available within shared property capacity as a delivery estimate. Model checks do not confirm charger readiness, physical delivery or global optimality.'].join(' ');
 }

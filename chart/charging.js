@@ -181,6 +181,8 @@ function householdReferenceText(reference, now) {
 export function chargerDisplay(charger, { now = Date.now(), timezone = 'Europe/Helsinki', assumptions = {} } = {}) {
   const values = charger.values ?? {}, settings = charger.settings ?? {}, control = charger.control ?? {};
   const plan = charger.plan ?? {}, forecast = charger.forecast ?? {}, soc = values.soc ?? {};
+  const currentAssumption = (plan.assumptions ?? []).find(item => item.code === 'maximum-available-current'
+    && finite(item.maximumCurrentA) && item.maximumCurrentA >= 0);
   const time = value => chargingTime(value, timezone, now);
   const connected = values.connected?.value, charging = connected === true && values.charging?.value === true;
   const supported = charger.capabilities?.scheduling === true, enabled = supported && settings.enabled === true;
@@ -201,8 +203,9 @@ export function chargerDisplay(charger, { now = Date.now(), timezone = 'Europe/H
   const execution = enabled && !yielded ? control.execution : null;
   const ownedPeriods = (execution?.periods ?? owned?.periods ?? []).filter(period => validTime(period.startAt));
   const ownedStart = validTime(owned?.startAt) ? owned.startAt : ownedPeriods[0]?.startAt;
+  const estimateOnly = Boolean(currentAssumption && (uncertain || identificationActive));
   const periods = ownedPeriods.length ? ownedPeriods : ownedStart != null ? [{ startAt: ownedStart, endAt: null }]
-    : !yielded && !uncertain ? (plan.periods ?? []).filter(period => validTime(period.startAt)) : [];
+    : !yielded && (!uncertain || estimateOnly) ? (plan.periods ?? []).filter(period => validTime(period.startAt)) : [];
   const currentPeriod = periods.find(period => Number(period.startAt) <= now && (!validTime(period.endAt) || Number(period.endAt) > now));
   const nextPeriod = periods.find(period => Number(period.startAt) > now);
   const betweenPeriods = !currentPeriod && nextPeriod && periods.some(period => Number(period.startAt) <= now);
@@ -295,7 +298,7 @@ export function chargerDisplay(charger, { now = Date.now(), timezone = 'Europe/H
   else event = supported ? 'Automatic charging OFF' : 'Monitoring';
   if (handoverUnconfirmed) state = 'Handover unconfirmed';
   const showMetrics = connected === true;
-  const showPlan = enabled && showMetrics && !identificationActive && !yielded && (!uncertain || ownedStart != null);
+  const showPlan = enabled && showMetrics && (!identificationActive || estimateOnly) && !yielded && (!uncertain || ownedStart != null || estimateOnly);
   const currentForecast = forecastAbsent || Object.hasOwn(forecast, 'feasible') ? forecast : plan;
   const deadlineAt = plan.deadlineAt ?? charger.deadlineAt;
   const risk = showPlan && !targetReached
@@ -305,10 +308,12 @@ export function chargerDisplay(charger, { now = Date.now(), timezone = 'Europe/H
   const readiness = !deadline ? '' : targetReached ? 'Target reached'
     : risk ? `${number(minimum, '%')} by ready-by is at risk`
       : currentForecast.feasible === true && currentFinish && !uncertain && !pauseUnconfirmed && !revisionPending && !identificationActive
-        ? 'Expected on time' : 'Readiness being checked';
+        ? currentAssumption ? 'Estimated on time at assumed current' : 'Expected on time'
+        : estimateOnly ? 'Estimate only · control unconfirmed' : 'Readiness being checked';
   const readingTime = showMetrics && vehicleCharge(referenceSoc) ? validTime(referenceSoc.measuredAt) ? `Charge measured ${chargingReadingTime(referenceSoc.measuredAt, timezone)}`
     : validTime(referenceSoc.receivedAt) ? `Charge received ${chargingReadingTime(referenceSoc.receivedAt, timezone)} · measurement time unknown` : 'Charge measurement time unknown' : '';
   const rows = [];
+  if (showPlan && currentAssumption) rows.push(['Planning current', `Up to ${number(currentAssumption.maximumCurrentA, 'A per phase')} assumed · shared capacity may reduce it`]);
   if (activeManual && validTime(manual.detectedAt)) rows.push(['Manual change noticed', chargingReadingTime(manual.detectedAt, timezone)]);
   if (charging && finite(values.actualCurrentA?.value)) rows.push(['Drawing now', number(values.actualCurrentA.value, 'A per phase')]);
   if (charger.capabilities?.externalLoadBalancing && finite(values.availableCurrentA?.value))
@@ -348,6 +353,10 @@ export function chargerDisplay(charger, { now = Date.now(), timezone = 'Europe/H
       && !(targetReached && /cannot deliver|insufficient.*time|target at risk/i.test(note))
       && !(currentForecast !== plan && currentForecast.feasible !== false && /cannot deliver|insufficient.*time|target at risk/i.test(note))) : [];
   if (shortfallNote && !uncertain) notes.push(shortfallNote);
+  if (enabled && showMetrics && currentAssumption && !yielded)
+    notes.push('The forecast assumes maximum available charging current within shared property capacity. Actual delivery and completion remain estimates.');
+  if (showPlan && estimateOnly)
+    notes.push('These periods are proposed. Charger control must be confirmed before the schedule can be applied.');
   let problem = uncertain || handoverUnconfirmed ? chargingControlReason(control.reason) || 'The charger instruction could not be confirmed. Another reading will be requested.' : '';
   if (pauseUnconfirmed) problem = 'The pause between charging periods has not been confirmed. Waiting for a fresh charger instruction and reading.';
   if (control.reason === 'identification-resume-required') problem = 'Review the charger pause under Identification below.';
@@ -413,7 +422,7 @@ export function chargerDisplay(charger, { now = Date.now(), timezone = 'Europe/H
     ['Charger confirmation', 'A requested change remains pending until the charger confirms its settings. Charging measurements show whether charging has actually started or paused. Failed or unconfirmed changes remain visible for review.'],
     ['Automatic charging', `Automatic charging and shared priority stay in effect until changed, including after unplugging and restart. The switch changes the scheduling preference without replacing other charger instructions. Turning it off stops price scheduling without sending a stop instruction. ${shelly && charger.capabilities?.currentControl ? 'The configured current limiter can remain active and may still pause charging.' : shelly ? 'The charger’s own current limits and schedules remain in effect.' : 'Only restrictions set by this application are removed. If removal cannot be confirmed, the handover remains unconfirmed.'}`],
     ['Charge now', 'The “Charge now” button requests immediate charging with automatic scheduling on or off. It stays on until you turn it off or unplug. Turning it off returns to automatic scheduling and enables Automatic charging if needed. Other charger instructions and vehicle limits still apply.'],
-    ['Unavailable data', `Missing price or power forecasts, or too little time, do not add a price delay. ${shelly ? 'Charging remains subject to current limits, the configured fallback and native restrictions. ' : ''}A disabled charger, fault or authorization requirement must be resolved first. An unreachable charger cannot receive a release command. Failed or uncertain changes remain visible until reconciled.`],
+    ['Unavailable data', `An unknown charging current uses the charger’s maximum within forecast shared property capacity to select lower-cost periods. Unknown vehicle restrictions are not invented. Known limits still apply; assumptions do not grant command permission. Missing prices or property-capacity evidence, or an actual readiness shortfall, can require a separate fallback. ${shelly ? 'The live current limiter retains its own configured fallback and native restrictions. ' : ''}A disabled charger, fault or authorization requirement must be resolved first. Failed or uncertain changes remain visible until reconciled.`],
   );
   if (charger.capabilities?.externalLoadBalancing) {
     const limiter = provider === 'easee' ? 'Equalizer' : 'the external load balancer';
@@ -426,7 +435,7 @@ export function chargerDisplay(charger, { now = Date.now(), timezone = 'Europe/H
     })[assumptions.supply] ?? 'The night forecast combines the available supply with expected household use; the last reported allowance describes current conditions.';
     explanations.push(['Current allocation', `${provider === 'easee' ? 'Equalizer' : 'The external load balancer'} controls the current and protects the property supply. The reported allowance, charger limit and actual draw are separate: a limit does not promise that current is available now. ${supported ? `${basis} ` : ''}The charging limit caps the forecast. Automatic charging does not change the external limits.`]);
   } else if (shelly && supported && charger.capabilities?.currentControl) explanations.push(['Charging current', 'This application adjusts Shelly’s current using the configured supply limits, available measurements and shared charger priority. It respects known vehicle and charger limits and pauses when the available current is below the charging minimum. Missing or stale measurements use the configured fallback; this is not a guarantee of property fuse protection. Actual draw can be lower than the selected current.']);
-  else explanations.push(['Charging current', `Selected current is the vehicle or charger’s requested current, capped by its reported maximum. Actual draw can be lower. Power is the measured charging rate; the target forecast uses available current and voltage.${charger.capabilities?.currentControl === true ? '' : ' This page does not change charging current.'}`]);
+  else explanations.push(['Charging current', `Known vehicle and charger current limits constrain the forecast. When current is unknown, the forecast assumes the charger’s maximum within available shared property capacity. This estimates delivery and completion, not a confirmed current setting. Power is the measured charging rate.${charger.capabilities?.currentControl === true ? '' : ' This page does not change charging current.'}`]);
   const socSource = retainedVehicleReference ? `Estimated from last known vehicle charge${hasProgress ? ' and measured energy' : ''}`
     : estimatedSoc ? `Estimated from ${vehicleCharge(soc) ? 'vehicle charge' : chargeReferenceLabel(soc)} and measured energy`
     : vehicleCharge(soc) ? sourceLabel(soc, charger.vehicle) : manualChargeReference(soc) ? 'Manual charge reference' : 'Configured starting charge';

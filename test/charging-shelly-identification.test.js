@@ -15,13 +15,13 @@ function fixture(t) {
     physicalPause: true };
   const field = value => ({ value, measuredAt: NOW, receivedAt: NOW, retained: false });
   f.fields = { start_charging: field(true), current_limit: field(12), work_state: field('charger_charging'),
-    phase_info: field({ total_power: 8280, phase_a: { current: 12 }, phase_b: { current: 12 }, phase_c: { current: 12 } }) };
+    phase_info: field({ total_power: 8.28, phase_a: { current: 12 }, phase_b: { current: 12 }, phase_c: { current: 12 } }) };
   f.change = (role, value) => { f.fields[role] = { ...field(structuredClone(value)), measuredAt: f.now, receivedAt: f.now }; };
   f.snapshot = () => ({ association: 'synthetic-shelly', transport: 'shelly-evse', online: f.online,
     controlReady: f.controlReady, currentControlReady: f.controlReady, nativeScheduleFingerprint: f.nativeScheduleActive ? 'synthetic-schedule' : null, identificationReady: f.online && f.controlReady, nativeScheduleActive: f.nativeScheduleActive,
     fields: structuredClone(f.fields), session: structuredClone(f.session), readAt: f.now,
     pluggedIn: f.session.connected, charging: f.fields.work_state.value === 'charger_charging',
-    statusAt: f.fields.work_state.measuredAt, powerKw: f.fields.phase_info.value.total_power / 1000,
+    statusAt: f.fields.work_state.measuredAt, powerKw: f.fields.phase_info.value.total_power,
     powerAt: f.fields.phase_info.measuredAt });
   f.adapter = { association: 'synthetic-shelly', config, snapshot: f.snapshot,
     async refresh() {
@@ -44,7 +44,7 @@ function fixture(t) {
       f.change(params.role, params.value);
       if (params.role === 'start_charging' && f.physicalPause) {
         f.change('work_state', params.value ? 'charger_charging' : 'charger_pause');
-        f.change('phase_info', { total_power: params.value ? 8280 : 0,
+        f.change('phase_info', { total_power: params.value ? 8.28 : 0,
           ...Object.fromEntries(['a', 'b', 'c'].map(key => [`phase_${key}`, { current: params.value ? 12 : 0 }])) });
       }
       await f.afterPublish?.(method, params);

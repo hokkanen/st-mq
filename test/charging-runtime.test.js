@@ -7,6 +7,8 @@ import { normalizeScheduleState, scheduleFingerprint, delayedScheduleFor, easeeC
 import { Store } from '../src/storage/store.js';
 import { Recorder } from '../src/storage/recorder.js';
 import { VoltageEstimator } from '../src/storage/voltage.js';
+import { createShellyController } from '../src/charging/shelly-evse.js';
+import { shellyProfile } from '../src/charging/shelly-profile.js';
 
 const HOUR = 3_600_000, initialNow = Date.parse('2026-01-15T00:00:00Z');
 function fixture(charging = {}, saved = {}, automatic = {}) {
@@ -812,6 +814,122 @@ test('a future second controller has independent plans and ownership while Equal
   await assert.rejects(editSession(runtime, 'charger2', { enabled: false }), /Invalid session field/);
   assert.equal(runtime.settings.chargers.charger1.enabled, true);
   assert.equal(chargerView(runtime).control.phase, 'waiting');
+});
+
+test('a second plug with unavailable current preserves BMW price scheduling and uses an unapplied maximum-current plan', async t => {
+  const f = fixture({ defaults: { capacityKwh: 10, manualSoc: 20, minimumSoc: 80, readyBy: '06:00' },
+    vehicles: { bmw: { defaults: { capacityKwh: 10 } } },
+    chargers: { charger2: { enabled: true, deviceId: 'synthetic-unknown-current', topicPrefix: 'test/unknown-current',
+      maximumCurrentA: 16, limiterEnabled: false } } }, {}, { charger1: true, charger2: true });
+  const runtime = f.create(), firstAdapter = fakeAdapter(f.clock), commands = [];
+  t.after(() => runtime.close());
+  let connectedAt = null, currentA = null;
+  const field = value => ({ value, available: value !== null, source: 'shelly-evse', measuredAt: f.clock(), receivedAt: f.clock() });
+  const secondAdapter = {
+    association: runtime.chargers.charger2.association,
+    config: shellyProfile(runtime.configuration.chargers.charger2),
+    capabilities: { scheduling: true, currentControl: false, externalLoadBalancing: false },
+    snapshot: () => ({ association: secondAdapter.association, generation: 1, transport: 'shelly-evse',
+      online: true, readAt: f.clock(), pluggedIn: connectedAt !== null, controlReady: false, identificationReady: false,
+      error: 'evse-control-unavailable', nativeScheduleActive: false,
+      session: { connected: connectedAt !== null, connectedAt, sessionId: connectedAt === null ? null : 'synthetic-second-session' },
+      fields: { start_charging: field(true), work_state: field(connectedAt === null ? 'charger_free' : 'charger_wait'),
+        ...(currentA === null ? {} : { current_limit: field(currentA) }) } }),
+    normalize: () => ({ providerConnected: true, source: 'shelly-evse', connected: field(connectedAt !== null),
+      currentA: field(currentA), maximumCurrentA: field(null), charging: field(false), powerKw: field(0),
+      voltageV: field(230), capabilities: secondAdapter.capabilities }),
+    refresh: async () => {},
+    rpc: async (...args) => { commands.push(args); throw new Error('An unavailable charger must not receive commands'); },
+    createController: options => createShellyController({ ...options, adapter: secondAdapter }),
+  };
+  await runtime.setAdapter('charger1', firstAdapter);
+  await runtime.setAdapter('charger2', secondAdapter);
+  await runtime.reconcile();
+  // This regression starts after identification; its independent matcher is
+  // covered elsewhere. Preserve the real connection and vehicle-feed scope.
+  const firstItem = runtime.chargers.charger1;
+  firstItem.vehicleMatch = { id: 'bmw', vehicleAssociation: runtime.vehicleFeeds.bmw.association,
+    scope: firstItem.request.scope, association: firstItem.association,
+    connectedAt: chargerView(runtime).control.session.connectedAt, matchedAt: f.clock() };
+  runtime.tick({ prices }); await runtime.reconcile();
+  const before = chargerView(runtime);
+  assert.equal(before.vehicle.id, 'bmw');
+  assert.equal(before.plan.feasible, true);
+  assert.equal(before.control.phase, 'waiting');
+  assert(before.plan.startAt >= initialNow + HOUR);
+  const initialReleases = firstAdapter.calls.filter(call => call.kind === 'clear').length;
+
+  f.setNow(initialNow + 60_000); connectedAt = f.clock();
+  runtime.tick({ prices, force: true }); await runtime.reconcile();
+  const first = chargerView(runtime), second = chargerView(runtime, 'charger2');
+  assert.equal(first.vehicle.id, 'bmw');
+  assert.equal(first.plan.feasible, true); assert.equal(first.plan.provisional, false);
+  assert.equal(first.plan.state, 'waiting'); assert.equal(first.control.phase, 'waiting');
+  assert(first.plan.startAt >= initialNow + HOUR);
+  assert.equal(firstAdapter.calls.filter(call => call.kind === 'clear').length, initialReleases);
+  assert.equal(second.values.currentA.available, false);
+  assert.equal(second.values.maximumCurrentA.available, false, 'The configured maximum is not a reported measurement');
+  assert.equal(second.plan.feasible, true); assert.equal(second.plan.provisional, false);
+  assert.equal(second.plan.state, 'waiting');
+  assert.deepEqual(second.plan.assumptions, [{ code: 'maximum-available-current', maximumCurrentA: 16, source: 'configured-maximum' }]);
+  assert.equal(second.control.phase, 'unavailable'); assert.equal(second.control.execution, null);
+  assert.deepEqual(commands, [], 'The production controller does not apply a forecast without readiness');
+
+  f.setNow(initialNow + 2 * 60_000); currentA = 6;
+  runtime.tick({ prices, force: true }); await runtime.reconcile();
+  const observed = chargerView(runtime, 'charger2');
+  assert.equal(observed.values.currentA.value, 6);
+  assert.deepEqual(observed.plan.assumptions, []);
+  assert(observed.plan.allocations.some(row => row.currentA === 6));
+  assert(observed.plan.allocations.every(row => row.currentA <= 6));
+  assert.equal(chargerView(runtime).plan.feasible, true);
+  assert.equal(chargerView(runtime).control.phase, 'waiting');
+  assert.deepEqual(commands, []);
+});
+
+test('retained active Charger 2 periods refresh assumptions when current becomes known and unavailable again', async t => {
+  const f = fixture({ defaults: { capacityKwh: 10, manualSoc: 20, minimumSoc: 80, readyBy: '06:00' },
+    chargers: { charger2: { enabled: true, deviceId: 'synthetic-retained-current', topicPrefix: 'test/retained-current',
+      maximumCurrentA: 16, limiterEnabled: false } } }, {}, { charger2: true });
+  const runtime = f.create(), firstAdapter = fakeAdapter(f.clock), secondAdapter = fakeAdapter(f.clock);
+  t.after(() => runtime.close());
+  let currentA = null;
+  firstAdapter.setObservation({ pluggedIn: false, mode: 1 });
+  secondAdapter.capabilities = { scheduling: true, currentControl: false, externalLoadBalancing: false };
+  secondAdapter.normalize = snapshot => ({ connected: snapshot.pluggedIn, currentA, maximumCurrentA: null,
+    voltageV: 230, charging: false, powerKw: 0, providerConnected: true, capabilities: secondAdapter.capabilities });
+  secondAdapter.createController = ({ adapter, getPlan }) => {
+    const state = { phase: 'off', released: false, execution: null, snapshot: null, session: { connected: true, connectedAt: initialNow } };
+    return { status: () => structuredClone(state), close: async () => {}, async update({ enabled }) {
+      state.snapshot = await adapter.read();
+      const plan = getPlan();
+      if (!enabled || !plan?.periods?.length) return;
+      state.execution = { planId: plan.id, periods: structuredClone(plan.periods), finalStartAt: plan.finalStartAt, deadlineAt: plan.deadlineAt };
+      state.released = plan.periods.some(row => row.startAt <= f.clock() && (row.endAt === null || row.endAt > f.clock()));
+      state.phase = state.released ? 'released' : 'waiting';
+    } };
+  };
+  await runtime.setAdapter('charger1', firstAdapter);
+  await runtime.setAdapter('charger2', secondAdapter);
+  await runtime.reconcile(); runtime.tick({ prices }); await runtime.reconcile();
+  const initial = chargerView(runtime, 'charger2');
+  assert.equal(initial.plan.state, 'waiting');
+  assert.equal(initial.plan.assumptions[0].maximumCurrentA, 16);
+  f.setNow(initial.plan.startAt + 60_000);
+  runtime.tick({ prices }); await runtime.reconcile();
+  const active = chargerView(runtime, 'charger2');
+  assert.equal(active.control.phase, 'released');
+  const periods = structuredClone(active.plan.periods), planId = active.plan.id;
+  for (const [reading, expectedAssumptions] of [[6, []], [null, [{ code: 'maximum-available-current', maximumCurrentA: 16, source: 'configured-maximum' }]]]) {
+    currentA = reading; f.setNow(f.clock() + 60_000);
+    runtime.tick({ prices, force: true }); await runtime.reconcile();
+    const view = chargerView(runtime, 'charger2');
+    assert.equal(view.control.phase, 'released');
+    assert.equal(view.plan.id, planId, 'A current observation does not replace retained charging permission');
+    assert.deepEqual(view.plan.periods, periods);
+    assert.deepEqual(view.plan.assumptions, expectedAssumptions);
+    assert.deepEqual(view.forecast.assumptions, expectedAssumptions);
+  }
 });
 
 test('an uncertain second connection with no reported schedule creates no competing reservation', async t => {
