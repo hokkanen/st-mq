@@ -1,4 +1,4 @@
-import { chargingControlReason } from './charging-status.js';
+import { chargingControlReason, chargingIdentificationInProgress, chargingTransactionWaiting } from './charging-status.js';
 
 const finite = Number.isFinite;
 const timestamp = value => value == null || value === '' || !finite(new Date(value).getTime()) ? null : new Date(value).getTime();
@@ -78,6 +78,7 @@ export function chargerSummary(charger, view, { now = Date.now(), formatTime = v
   const connected = values.connected?.value === true, charging = connected && values.charging?.value === true;
   const chargeNow = connected && charger.request?.chargeNow === true;
   const identificationActive = connected && charger.identification?.active === true;
+  const identificationInProgress = connected && chargingIdentificationInProgress(charger);
   const phase = control.phase ?? '', manual = enabled || chargeNow || identificationActive ? control.manual ?? control.manualOverride : null;
   const unknownInstruction = ['unknown', 'takeover-unconfirmed'].includes(manual?.kind);
   const takeoverUnconfirmed = manual?.kind === 'takeover-unconfirmed';
@@ -98,13 +99,16 @@ export function chargerSummary(charger, view, { now = Date.now(), formatTime = v
       : 'Automatic scheduling could not take over. Review the current charger status before trying again.');
   } else if (view.identification?.recovery) {
     roleLabel = view.identification.label; roleState = 'uncertain'; roleDetail = view.identification.detail;
+  } else if (enabled && chargingTransactionWaiting(charger)) {
+    roleLabel = 'Approval pending'; roleState = 'uncertain';
+    roleDetail = 'The charging plan is available. A confirmed charger transaction is still needed before its charging profile can be applied. With local plug-and-charge, start approval waits until the plan or an allowed charging action calls for charging.';
   } else if (handoverUnconfirmed || handoverPending || uncertain) {
     roleLabel = handoverUnconfirmed || takeoverUnconfirmed ? 'Handover unconfirmed' : handoverPending ? 'Handover pending' : 'Control unconfirmed';
     roleState = 'uncertain';
     roleDetail = (view.state === 'Pause unconfirmed' ? view.problem : chargingControlReason(control.reason)) || (handoverUnconfirmed ? 'Automatic charging is off, but the charger has not confirmed the handover.'
       : handoverPending ? `Manual priority has ended. Waiting for charger confirmation.${enabled ? '' : ' Automatic charging remains off.'}`
         : chargeNow ? 'The immediate charging instruction is awaiting confirmation.' : 'The charger’s current automatic instruction is awaiting confirmation.');
-  } else if (identificationActive && !yielded) {
+  } else if ((identificationInProgress || identificationActive && !enabled && !chargeNow) && !yielded) {
     roleLabel = charger.identification.phase === 'waiting' ? 'Identification pending' : 'Identifying'; roleState = 'controlled';
     roleDetail = `${view.vehicle.detail} Automatic charging remains ${enabled ? 'on' : 'off'}.${chargeNow ? ' Charge now remains selected.' : ''}`;
   } else if (chargeNow && !yielded) {
@@ -123,7 +127,7 @@ export function chargerSummary(charger, view, { now = Date.now(), formatTime = v
   if (!connected) completion = { value: 'No estimate', detail: values.connected?.value === false ? 'Not connected' : 'Waiting for readings', at: null };
   else if (reached) completion = { value: 'Reached', detail: view.energyNote || 'Target reached', at: null };
   else if (roleState === 'uncertain') completion = { value: 'Checking', detail: roleLabel, at: null };
-  else if (identificationActive) completion = { value: 'Checking', detail: 'Waiting for identification', at: null };
+  else if (identificationInProgress) completion = { value: 'Checking', detail: 'Waiting for identification', at: null };
   else {
     // A current missing forecast explicitly invalidates an older plan estimate.
     const forecastAbsent = Object.hasOwn(charger, 'forecast') && forecast === null;

@@ -31,6 +31,15 @@ capability requirements. See [provider capabilities and setup](charging-provider
 
 Both charger cards show the physical connection, assigned vehicle or uncertainty, current request, measured/estimated progress, connection cost and control state. The Automatic charging switch governs economic scheduling. Vehicle identification and metering continue with automatic charging OFF. The separately configured Charger 2 limiter can remain active with economic scheduling OFF.
 
+An unavailable vehicle feed leaves identification pending without suspending
+ordinary scheduling. The configured battery defaults and any current session
+edits still supply the request; proposed periods remain visible. An actual
+identification charging test or pause retains its separate progress and recovery
+status. A local OCPP connection awaiting a transaction also shows its proposed
+periods, alongside pending charging approval; it does not claim the native
+profile is applied or that completion is confirmed. Plug-and-charge approval
+waits until the price plan or an allowed charging action calls for charging.
+
 A live local OCPP connection status newer than the last disconnect restores
 Charger 1's physical session and readings even while its transaction is
 unconfirmed. Native scheduling still waits for transaction evidence newer than

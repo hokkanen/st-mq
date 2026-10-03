@@ -111,8 +111,12 @@ evidence without changing its original source clock. An unchanged current-limit
 reply can have an older update timestamp than its matching notification; the
 adapter preserves both timestamps while confirming the current value from the
 new query. This cannot establish a new native instruction or confirm a command
-whose dispatch is newer than the preserved setting clock. Same-clock unsolicited
-notifications do not renew freshness. Replies are fenced by MQTT generation,
+whose dispatch is in a later source-clock second. When a native timestamp has
+whole-second precision, a matching correlated read requested after the command
+acknowledgement can confirm an update in that same second. It preserves the
+original timestamp; an older second or an unsolicited observation cannot supply
+that confirmation. Same-clock unsolicited notifications do not renew freshness.
+Replies are fenced by MQTT generation,
 the setting revision at request publication and intervening command dispatch;
 an older contradictory reply cannot overwrite a newer native setting or grant
 control. After a readback failure, command readiness returns only after a full
@@ -148,6 +152,13 @@ An unreadable or invalid state cannot supply that permission. Takeover follows
 the economic plan, which can keep start permission false
 during a planned pause. It does not alter a current limit as part of takeover.
 Relay writes, service configuration writes and vehicle writes remain forbidden.
+
+A reply to an already dispatched command is retained even if replanning revokes
+that command's intent while the reply is in flight. Revocation stops further
+work; the next reconciliation still requires native readback, preserves newer
+external instructions and never replays the old command. An acknowledgement
+alone does not confirm the setting or its physical effect.
+
 Commands use QoS 0, `retain:false`, no offline queue and no automatic application
 retry. Durable intent records association, session, revision and absolute expiry;
 authority and scope are rechecked after awaits immediately before publication.

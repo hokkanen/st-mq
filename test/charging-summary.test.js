@@ -17,6 +17,46 @@ function summary(item) {
 }
 const notice = item => chargingNotice(item, chargerDisplay(item, { now }), summary(item));
 
+test('missing vehicle feeds leave both chargers planned with configured inputs', () => {
+  for (const id of ['charger1', 'charger2']) {
+    const item = charger({ id, vehicle: { state: 'identifying', id: null },
+      identification: { phase: 'waiting', active: true, available: false, reason: 'vehicle-feed-stale' },
+      plan: { state: 'waiting', startAt, finishAt, deadlineAt, feasible: true,
+        periods: [{ startAt, endAt: null }] } });
+    const display = chargerDisplay(item, { now }), result = summary(item);
+    assert.equal(display.periodRows.length, 1);
+    assert.equal(result.roleLabel, 'Controlled');
+    assert.equal(result.completion.at, finishAt);
+    assert.match(result.activity, /Starts/);
+    assert.equal(item.vehicle.id, null, 'A plan never establishes vehicle identity');
+    assert.match(notice(item).label, /Identification/);
+  }
+});
+
+test('OCPP approval pending shows proposed periods without claiming applied control or completion', () => {
+  const item = charger({ control: { phase: 'unavailable', errorCode: 'transaction-unconfirmed',
+    reason: 'Waiting for a current transaction confirmed on this connection.',
+    snapshot: { transport: 'ocpp', transactionConfirmed: false } },
+    identification: { phase: 'waiting', active: true, available: false },
+    plan: { state: 'waiting', startAt, finishAt, deadlineAt, feasible: true,
+      periods: [{ startAt, endAt: null }] } });
+  const display = chargerDisplay(item, { now }), result = summary(item);
+  assert.equal(display.periodRows.length, 1);
+  assert.equal(display.eventKind, 'proposed');
+  assert.match(display.event, /Planned start.*approval pending/);
+  assert.equal(result.roleLabel, 'Approval pending');
+  assert.match(result.roleDetail, /start approval waits until the plan/);
+  assert.equal(result.roleState, 'uncertain');
+  assert.equal(result.completion.at, null);
+  assert.notEqual(display.readiness, 'Expected on time');
+  assert.notEqual(summary({ ...item, plan: null }).roleLabel, 'Approval pending', 'A missing plan is not advertised as available');
+  for (const errorCode of ['status-stale', 'read-failed']) {
+    const unavailable = chargerDisplay({ ...item, control: { ...item.control, errorCode } }, { now });
+    assert.equal(unavailable.periodRows.length, 0);
+    assert.equal(unavailable.state, 'Control unavailable');
+  }
+});
+
 test('a summary warning explains uncertainty without claiming a stale healthy forecast', () => {
   const result = notice(charger({ control: { phase: 'unconfirmed', reason: 'Waiting for a fresh charger reading.' } }));
   assert.equal(result.state, 'attention'); assert.equal(result.label, 'Charger needs attention');

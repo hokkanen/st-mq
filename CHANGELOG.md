@@ -8,6 +8,13 @@ Versions follow Semantic Versioning. `-dev.N` denotes a development prerelease.
 
 ### Fixed
 
+- Charger 2 retains command acknowledgements arriving during replanning so its
+  own confirmed stop does not incorrectly become a manual override. Whole-second
+  charger timestamps no longer leave acknowledged Start/Stop commands permanently
+  unconfirmed when a matching post-command query confirms the setting. Missing
+  vehicle feeds no longer hide charging periods while identification is pending.
+  Charger 1 displays proposed periods while waiting for OCPP charging approval,
+  without claiming the profile has already been applied.
 - Paired startup and snapshot transfer report incompatible or malformed database
   schemas explicitly. Startup logs include safe schema-version numbers and
   recovery guidance; protected dashboards retain the diagnosis across restart.

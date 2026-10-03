@@ -6,6 +6,7 @@ import { ChargingRuntime } from '../src/charging/runtime.js';
 import { createOcppScheduleAdapter } from '../src/charging/ocpp.js';
 import { createShellyController, createShellyEvseAdapter } from '../src/charging/shelly-evse.js';
 import { createChargingTeslaCapture } from '../src/charging/teslamate.js';
+import { chargerDisplay } from '../chart/charging.js';
 
 const START = Date.parse('2026-01-15T00:00:00Z'), MINUTE = 60_000, HOUR = 60 * MINUTE;
 const triple = value => [value, value, value];
@@ -187,6 +188,33 @@ async function fixture(t, { limiter = true } = {}) {
       capture.receive(capture.topic.replace('#', key), String(value), {}); runtime.persist(); },
   };
 }
+
+test('Shelly schedules, takes over and starts with no TeslaMate or BMW evidence', async t => {
+  const f = await fixture(t);
+  await f.automatic('charger2', true); await f.plan(); await f.connect('charger2'); await f.plan();
+  let view = f.view('charger2');
+  assert.equal(view.vehicle.id, null);
+  assert.equal(f.runtime.teslaCapture.snapshot().healthy, false);
+  assert.equal(view.control.reason, 'economic-wait');
+  assert.equal(f.fields.start_charging.value, false);
+  assert.ok(view.plan.periods.length > 0);
+  assert.ok(chargerDisplay(view, { now: f.now }).periodRows.length > 0, 'Missing vehicle feeds must not hide the plan');
+  f.advance(1000);
+  f.fields.start_charging = { value: false, at: f.now };
+  await f.settle();
+  view = f.view('charger2');
+  assert.equal(view.control.manual.kind, 'stop');
+  await f.runtime.useAutomatic('charger2', { ...f.scope('charger2'), controlRevision: view.controls.revision,
+    takeoverToken: view.control.takeover.token });
+  view = f.view('charger2');
+  assert.equal(view.control.manual, null);
+  assert.equal(view.control.reason, 'economic-wait');
+  assert.equal(view.vehicle.id, null);
+  f.advance(view.plan.periods[0].startAt - f.now);
+  await f.settle();
+  assert.equal(f.fields.start_charging.value, true);
+  assert.equal(f.view('charger2').vehicle.id, null, 'Charging permission must not fabricate a vehicle match');
+});
 
 test('editing a request updates the other charger through the real OCPP and Shelly controllers', async t => {
   const f = await fixture(t);

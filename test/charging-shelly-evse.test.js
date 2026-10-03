@@ -66,6 +66,7 @@ function fixture(t, extra={}) {
   const adapter=createShellyEvseAdapter({config:config(extra),broker:{address:'mqtt://synthetic'},client,store,engine,clock:()=>now,canControl:()=>authority});
   t.after(()=>adapter.close());
   return {adapter,client,fields,writes,energy,gaps,voltages,events,values,service,serviceStatus,schedules,now:()=>now,setNow:value=>now=value,setAuthority:value=>authority=value,setFail:value=>failSave=value,
+    setSourceTime(role, at) { settingClock.set(role, { value: fields[role], at }); },
     async ready(){client.emit('connect');client.emit('message','test/evse/online',Buffer.from('true'),{retain:true});await adapter.refresh();},
     notify(role,value,packet={}){if (['start_charging','current_limit'].includes(role) && !packet.retain) settingClock.set(role,{value,at:now});client.emit('message','test/evse/events/rpc',Buffer.from(JSON.stringify({src:'synthetic-evse',method:'NotifyStatus',params:{[`${roleTypes[role]}:${ids[role]}`]:{value,last_update_ts:now/1000}}})),packet);}};
 }
@@ -911,6 +912,94 @@ test('a newer queued update cannot leave Shelly takeover pending or retain an ob
   assert.equal(controller.status().takeover.state, 'confirmed');
   await controller.update({ enabled: true });
   assert.equal(controller.status().takeover.state, undefined, 'later status describes current control rather than the old successful click');
+});
+
+test('Shelly preserves an accepted stop when replanning revokes the in-flight intent', async t => {
+  const f = fixture(t); await f.ready();
+  f.setNow(NOW + 1000);
+  let saved;
+  const controller = createShellyController({ adapter: f.adapter, clock: f.now, canControl: () => true,
+    saveState: value => { saved = structuredClone(value); } });
+  t.after(() => controller.close());
+  const rpc = f.adapter.rpc;
+  f.adapter.rpc = async (...args) => {
+    const result = await rpc(...args);
+    if (args[0] === 'Boolean.Set') controller.invalidate();
+    return result;
+  };
+  const plan = { periods: [{ startAt: NOW + 3600_000, endAt: null }] };
+  await controller.update({ enabled: true, plan });
+  assert.equal(saved.pending.stage, 'accepted', 'The native reply remains evidence after intent revocation');
+  assert.equal(saved.pending.acceptedAt, NOW + 1000);
+  f.adapter.rpc = rpc;
+  f.setNow(NOW + 2000);
+  const result = await controller.update({ enabled: true, plan });
+  assert.equal(result.pending, null);
+  assert.equal(result.manual, null, 'Our acknowledged and read-back stop is not a manual stop');
+  assert.equal(result.ownedPause, true);
+  assert.equal(result.reason, 'economic-wait');
+  assert.equal(f.writes.filter(row => row.method === 'Boolean.Set').length, 1, 'Do not replay the stop');
+});
+
+test('Shelly confirms whole-second setting clocks only with post-acknowledgement correlated readback', async t => {
+  for (const mode of ['rounded', 'takeover', 'older-second', 'uncorrelated', 'restart', 'newer-stop']) await t.test(mode, async t => {
+    const f = fixture(t);
+    if (mode === 'takeover') f.schedules.jobs = [nativeChargingJob()];
+    await f.ready(); f.setNow(NOW + 2029);
+    let saved;
+    const options = { adapter: f.adapter, clock: f.now, canControl: () => true,
+      saveState: value => { saved = structuredClone(value); } };
+    let controller = createShellyController(options); t.after(() => controller.close());
+    const rpc = f.adapter.rpc;
+    f.adapter.rpc = async (...args) => {
+      const result = await rpc(...args);
+      if (args[0] === 'Boolean.Set') {
+        f.setSourceTime('start_charging', Math.floor(f.now() / 1000) * 1000 - (mode === 'older-second' ? 1000 : 0));
+        f.setNow(f.now() + 205);
+        if (mode === 'restart' || mode === 'newer-stop') controller.invalidate();
+      }
+      return result;
+    };
+    if (mode === 'uncorrelated') {
+      const snapshot = f.adapter.snapshot;
+      f.adapter.snapshot = () => {
+        const value = snapshot(); delete value.fields.start_charging.readback; return value;
+      };
+    }
+    const plan = { periods: [{ startAt: NOW + 3600_000, endAt: null }] };
+    let result = await controller.update({ enabled: true, plan,
+      ...(mode === 'takeover' ? { takeover: controller.status().takeover.token } : {}) });
+    if (mode === 'restart' || mode === 'newer-stop') {
+      assert.equal(saved.pending.stage, 'accepted');
+      await controller.close(); controller = createShellyController({ ...options, initialState: saved });
+      f.setNow(NOW + 3000);
+      if (mode === 'newer-stop') f.notify('start_charging', false);
+      result = await controller.update({ enabled: true, plan });
+    }
+    if (['rounded', 'takeover', 'restart'].includes(mode)) {
+      assert.equal(result.pending, null);
+      assert.equal(result.manual, null);
+      assert.equal(result.reason, 'economic-wait');
+      assert.equal(result.lastStartAt, NOW + 2000, 'Keep the original source clock');
+      if (mode === 'takeover') {
+        assert.equal(result.takeover.state, 'confirmed');
+        assert.equal(f.schedules.jobs[0].enable, false);
+      }
+    } else {
+      assert.equal(result.reason, 'evse-command-unconfirmed');
+      assert.ok(result.pending, 'Old or uncorrelated observations cannot confirm the command');
+      if (mode === 'newer-stop') assert.equal(result.manual.kind, 'stop');
+    }
+    assert.equal(f.writes.filter(row => row.method === 'Boolean.Set').length, 1);
+    if (mode === 'rounded') {
+      f.setNow(NOW + 3600_029);
+      const started = await controller.update({ enabled: true, plan: { periods: [{ startAt: f.now(), endAt: null }] } });
+      assert.equal(f.fields.start_charging, true);
+      assert.equal(started.pending, null);
+      assert.equal(started.lastStartAt, NOW + 3600_000);
+      assert.equal(f.writes.filter(row => row.method === 'Boolean.Set').length, 2);
+    }
+  });
 });
 
 test('Shelly takeover reports rejected or unconfirmed schedule removal and never starts charging', async t => {

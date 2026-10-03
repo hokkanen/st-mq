@@ -1626,7 +1626,7 @@ test('identification remains pending while waiting and an inconclusive result st
   panel.update(status({ ...item, identification: { phase: 'waiting', reason: 'waiting-for-charging', active: true, available: false } }));
   assert.match($('charger1-vehicle').textContent, /Identification pending/);
   assert.match($('charger1-identification-status').textContent, /vehicle to start charging.*timer/);
-  assert.match($('charger1-state').textContent, /Identification pending/);
+  assert.match($('charger1-state').textContent, /Charge now/);
   assert.equal($('charger1-charge-now-state').textContent, 'ON'); assert($('charger1-identify').disabled);
   panel.update(status({ ...item, identification: { phase: 'inconclusive', active: false, available: true, attempted: true } }));
   assert.match($('charger1-vehicle').textContent, /Identification inconclusive/);

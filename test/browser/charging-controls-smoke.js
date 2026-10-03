@@ -50,6 +50,17 @@ fixture.setCase = name => {
     controls: { priority: 'balanced', revision: 1 }, chargers: [charger('charger1', 'easee'), charger('charger2', 'shelly-evse')] } };
   for (const item of fixture.status.charging.chargers) {
     if (name === 'ordinary') item.control = { phase: 'waiting', owned: { startAt: now + 3600000 }, takeover: { available: true, token: 'native:' + item.id } };
+    if (['missing-vehicle-feed', 'approval-pending'].includes(name)) {
+      item.control = { phase: 'waiting', owned: { startAt: now + 3600000 } };
+      item.vehicle = { state: 'identifying', id: null };
+      item.identification = { phase: 'waiting', active: true, available: false, reason: 'vehicle-feed-stale' };
+      item.values.soc = reading(20, 'manual-fallback');
+      item.plan.periods = [{ startAt: now + 3600000, endAt: null }];
+      if (name === 'approval-pending' && item.id === 'charger1') item.control = {
+        phase: 'unavailable', errorCode: 'transaction-unconfirmed',
+        reason: 'Waiting for a current transaction confirmed on this connection.',
+        snapshot: { transport: 'ocpp', transactionConfirmed: false } };
+    }
     if (name === 'manual-start') { item.control.reason = 'manual-release'; item.control.manual = { kind: 'release' }; }
     if (name === 'manual-window') { item.control.reason = 'native-schedule'; item.control.manual = { kind: 'window', startsAt: now + 3600000, resumeAt: now + 7200000 }; }
     if (name === 'long') { item.control.reason = longText; item.control.manual.reason = longText; item.label += ' with a long synthetic descriptive name'; }
@@ -138,7 +149,7 @@ try {
   for (const width of [320, 390, 1440]) for (const theme of ['dark', 'light']) {
     await send('Emulation.setDeviceMetricsOverride', { width, height: 1000, deviceScaleFactor: 1, mobile: false });
     await evaluate(`document.documentElement.dataset.theme = '${theme}'`);
-    for (const state of ['ordinary', 'long', 'manual-stop', 'manual-start', 'manual-window', 'pending', 'blocked', 'handover-timeout', 'handover-cancelled', 'handover-protocol', 'unavailable', 'estimate', 'readonly', 'disconnected', 'unknown-connection', 'missing-token', 'monitoring', 'uncertain', 'startup-stop', 'unavailable-startup-stop']) {
+    for (const state of ['ordinary', 'missing-vehicle-feed', 'approval-pending', 'long', 'manual-stop', 'manual-start', 'manual-window', 'pending', 'blocked', 'handover-timeout', 'handover-cancelled', 'handover-protocol', 'unavailable', 'estimate', 'readonly', 'disconnected', 'unknown-connection', 'missing-token', 'monitoring', 'uncertain', 'startup-stop', 'unavailable-startup-stop']) {
       await evaluate(`chargingFixture.setCase('${state}'); document.querySelectorAll('.charging-device').forEach(card => card.open = true)`);
       const layout = await evaluate(`(() => {
         const cards = [...document.querySelectorAll('.charging-device')];
@@ -169,6 +180,15 @@ try {
       }
       assert.deepEqual(layout.cards[0].action, layout.cards[1].action, 'Both providers render the same action and capability state');
       assert.equal(layout.cards[0].action.label, 'Use automatic');
+      if (['missing-vehicle-feed', 'approval-pending'].includes(state)) {
+        for (const id of ['charger1', 'charger2']) {
+          assert.match(await evaluate(`document.getElementById('${id}-vehicle').textContent`), /Identification pending/);
+          assert.match(await evaluate(`document.getElementById('${id}-periods').textContent`), /Period 1/);
+        }
+        if (state === 'approval-pending') assert.match(layout.cards[0].event, /Planned start.*approval pending/);
+        else assert.equal(await evaluate(`document.getElementById('charger1-event-label').textContent`), 'Starts');
+        assert.equal(await evaluate(`document.getElementById('charger2-event-label').textContent`), 'Starts');
+      }
       const actionVisible = ['long', 'manual-stop', 'manual-start', 'manual-window', 'startup-stop'].includes(state);
       assert.equal(layout.cards[0].action.visible, actionVisible, `${state}: takeover is offered only for a replaceable external instruction`);
       if (actionVisible) assert.equal(layout.cards[0].action.helpVisible, true, `${state}: the available action has an explanation`);

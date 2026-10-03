@@ -511,6 +511,15 @@ export function createShellyController({ adapter, initialState, saveState = () =
   const fresh = field => field?.measuredAt > 0 && field.measuredAt <= clock() && field.receivedAt <= clock()
     && clock() - field.receivedAt <= adapter.config.maxAgeMs && !field.retained;
   const physicalFresh = field => fresh(field) && clock() - field.measuredAt <= adapter.config.maxAgeMs;
+  const commandReadback = (field, pending) => field.measuredAt >= pending.dispatchedAt
+    // Integer native timestamps locate an update within a whole second. A
+    // correlated read after acknowledgement can confirm that setting without
+    // rounding the source clock forward or accepting an older second/cache.
+    || pending.stage === 'accepted' && time(pending.acceptedAt)
+      && field.measuredAt === Math.floor(pending.dispatchedAt / 1000) * 1000
+      && field.readback?.measuredAt === field.measuredAt
+      && field.readback.requestedAt >= pending.acceptedAt
+      && field.readback.receivedAt >= field.readback.requestedAt;
   const takeoverToken = snapshot => hash([snapshot.association, snapshot.generation, snapshot.session?.sessionId,
     snapshot.session?.connectedAt, snapshot.fields.start_charging?.value, snapshot.fields.start_charging?.measuredAt,
     snapshot.fields.current_limit?.value, snapshot.fields.current_limit?.measuredAt,
@@ -691,7 +700,7 @@ export function createShellyController({ adapter, initialState, saveState = () =
                 snapshot = adapter.snapshot();
                 const readback = snapshot.fields.start_charging;
                 if (!takeoverContextCurrent() || !snapshot.controlReady || !fresh(readback) || readback.value !== false
-                  || readback.measuredAt < state.pending.dispatchedAt || readback.measuredAt > state.pending.acceptedAt
+                  || !commandReadback(readback, state.pending) || readback.measuredAt > state.pending.acceptedAt
                   || scheduleToken(snapshot) !== expectedSchedule || snapshot.nativeScheduleRevision !== expectedScheduleRevision)
                   throw fail('evse-command-unconfirmed');
                 start = copy(readback); expectedStart = copy(readback);
@@ -741,7 +750,7 @@ export function createShellyController({ adapter, initialState, saveState = () =
             state.execution = null; state.provisional = false;
             state.phase = 'uncertain'; state.reason = pending.owned ? 'identification-resume-required' : 'evse-command-unconfirmed'; await persist(); return;
           }
-          else if (fresh(readback) && readback.value === pending.value && readback.measuredAt >= pending.dispatchedAt) {
+          else if (fresh(readback) && readback.value === pending.value && commandReadback(readback, pending)) {
             state.executionStage = 'read-back';
             if (pending.role === 'start_charging') {
               state.lastStart = pending.value; state.lastStartAt = readback.measuredAt; state.ownedPause = pending.value === false;
@@ -896,11 +905,14 @@ export function createShellyController({ adapter, initialState, saveState = () =
                   throw cause;
                 }
               } });
-          if (!guard()) return false;
+          // Revoking an intent cannot erase a reply to an already sent command.
+          // Save its acknowledgement before stopping work; the next reconcile
+          // still requires native readback and must not replay the command.
           state.pending.stage = 'accepted'; state.pending.acceptedAt = clock(); await persist();
+          if (!guard()) return false;
           await adapter.refresh();
           const readback = adapter.snapshot().fields[role];
-          if (!fresh(readback) || readback.value !== value || readback.measuredAt < state.commandAt) throw fail('evse-command-unconfirmed');
+          if (!fresh(readback) || readback.value !== value || !commandReadback(readback, state.pending)) throw fail('evse-command-unconfirmed');
           if (role === 'start_charging' && value === false && readback.measuredAt > state.pending.acceptedAt) {
             if (state.pending.owned) state.owned ??= copy(state.pending.owned);
             state.manual = { kind: 'stop', detectedAt: readback.measuredAt };

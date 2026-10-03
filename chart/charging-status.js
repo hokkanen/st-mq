@@ -45,6 +45,16 @@ export const CHARGING_CONTROL_CAUSES = {
   'supply-unavailable': 'Supply information unavailable', 'within-limit': 'Within the available current limit',
 };
 
+/** Waiting for vehicle evidence does not suspend ordinary price scheduling. */
+export const chargingIdentificationInProgress = charger => charger.identification?.active === true
+  && (charger.identification.phase !== 'waiting' || charger.identification.probe?.endedAt === null);
+
+/** An OCPP transaction is needed to apply a profile, not to display a plan. */
+export const chargingTransactionWaiting = charger => charger.control?.errorCode === 'transaction-unconfirmed'
+  && charger.control?.snapshot?.transport === 'ocpp' && charger.values?.connected?.value === true
+  && charger.plan?.periods?.some(period => Number.isFinite(period.startAt)) === true
+  && !charger.control.manual && !['pending', 'blocked'].includes(charger.control.takeover?.state);
+
 const CONTROL_DETAILS = {
   'charging-plan-unavailable': 'Automatic control is waiting for a charging plan. Existing charger restrictions remain in place.',
   'takeover-unavailable': 'Automatic control is waiting for fresh charger readings and control access. Existing restrictions remain in place.',
