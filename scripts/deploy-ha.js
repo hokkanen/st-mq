@@ -75,7 +75,7 @@ async function main(args) {
     const app = await api(`/addons/${selectApp(apps, config.app_slug, 'app').slug}/info`);
     const terminal = await api(`/addons/${selectApp(apps, config.terminal_slug, 'terminal').slug}/info`);
     validateDeploymentState(app, manifest, terminal);
-    const session = (await api('/ingress/session')).session;
+    const session = (await api('/ingress/session', 'post')).session;
     if (typeof session !== 'string' || !session || /[\r\n;]/.test(session)) throw new DeploymentError('Invalid ingress session');
     const context = { url: config.url, session, ingress: terminal.ingress_entry };
     const execute = async (script, timeoutMs = 30000) => {
