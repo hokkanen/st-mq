@@ -142,7 +142,7 @@ function run() {
       const historicalMatch = history && archived.get(path)?.has(id);
       if (historicalMatch) archivedSnapshots++;
       const privateName = /^(?:secrets|options)\.json(?:\..*)?$/.test(path.split('/').at(-1));
-      const privateData = privateName || path === 'workspace/consumption.csv' || archived.has(path);
+      const privateData = privateName || path.split('/').at(-1).toLowerCase() === 'consumption.csv' || archived.has(path);
       if (!historicalMatch && (privateData || status.retiredData)) {
         report(ref, path, 'private configuration/data must remain outside Git; only inventoried historical blobs are allowed in history', id);
       }

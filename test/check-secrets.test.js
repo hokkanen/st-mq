@@ -71,6 +71,20 @@ test('safe current checkout needs no encryption attributes or filter and reads i
   assert.equal(repo.check('--staged').code, 0);
 });
 
+test('household consumption CSV is rejected anywhere in current files and deleted history', t => {
+  const repo = repository(t);
+  repo.stage('archive/Consumption.csv', 'time,value\nfixture-time,1\n');
+  assert.equal(repo.check('--staged').code, 1);
+  repo.commit();
+  repo.git('rm', 'archive/Consumption.csv');
+  repo.stage('public.txt', 'fixture-public\n');
+  repo.commit();
+  assert.equal(repo.check('--staged').code, 0);
+  const result = repo.check('--history', 'HEAD');
+  assert.equal(result.code, 1);
+  assert.match(result.output, /archive\/Consumption.csv.*private configuration/);
+});
+
 test('inventoried historical bytes need no encryption attributes, executable or key', t => {
   const repo = repository(t);
   repo.stage('data/options.json', ciphertext);
