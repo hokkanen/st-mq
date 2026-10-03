@@ -60,7 +60,7 @@ function fixture(t, { disk = false } = {}) {
       adapter.receive('synthetic/cn105/state', JSON.stringify({
         schema: 'shelly-cn105/v2', deviceId: 'synthetic-pump', bootId: 'synthetic-boot-a',
         sessionId: 'synthetic-session', sequence: ++sequence, observedAt: now,
-        challenge: { value: `challenge-${sequence}` },
+        challenge: { value: `challenge-${sequence}`, expiresInMs: 15_000 },
         control: { targetC: 10, externalEnabled: true, effectiveTargetC: 10, status: 'active', sensorTemperatureC: 9,
           sensorAgeMs: 100, externalTemperatureC: 16, frostAvailable: false, frostActive: false },
         health: { nativeFresh: true, pumpAgeMs: 100 }, readback: { complete: true, ageMs: 100 },
@@ -152,6 +152,33 @@ test('cached reports and source-age timestamps never extend compressor activity 
   assert.deepEqual(chart.shading.compressorGarage, [{ start: BASE + 10_000, end: BASE + 2 * MINUTE }]);
   assert(chart.series[ACTIVE].some(point => point.x === BASE + 2 * MINUTE && point.y === null));
   assert(chart.series[ACTIVE].filter(point => point.y !== null).every(point => point.observedAt === BASE));
+});
+
+test('stable cached compressor timestamps remain one measurement and genuine newer reports extend coverage', t => {
+  const f = fixture(t);
+  f.at(1000); f.send({ compressorFrequency: publishedField(5, BASE + 900) });
+  f.at(16_000); f.send({ compressorFrequency: publishedField(5, BASE + 900, { ageMs: 15_100 }) });
+  assert.equal(f.emitted.filter(row => row.signal === FREQUENCY).length, 1, 'a cache publication creates no new evidence');
+  f.at(31_000); f.send({ compressorFrequency: publishedField(5, BASE + 30_900, { ageMs: 100 }) });
+  assert.equal(f.emitted.filter(row => row.signal === FREQUENCY).length, 2);
+  assert.equal(f.rows(FREQUENCY).length, 1, 'equal values compact without discarding their new measurement coverage');
+  f.at(3 * MINUTE);
+  const points = f.chart(FREQUENCY).series[FREQUENCY];
+  assert(points.some(point => point.x === BASE + 150_900 && point.y === null), 'coverage expires from the last real measurement');
+});
+
+test('a backwards compressor source clock stays rejected instead of being retimed to receipt', t => {
+  const f = fixture(t);
+  f.at(1000); f.send({ compressorFrequency: publishedField(5, BASE + 900) });
+  f.at(16_000); f.send({ compressorFrequency: publishedField(5, BASE + 400, { ageMs: 15_600 }) });
+  const rejected = f.rows(FREQUENCY).at(-1);
+  assert.equal(rejected.sourceTime, BASE + 400);
+  assert.equal(rejected.receivedAt, BASE + 16_000);
+  assert.equal(rejected.raw.recorder.status, 'stale');
+  assert.equal(rejected.raw.recorder.originalSourceTime, BASE + 400);
+  f.at(31_000); f.send({ compressorFrequency: publishedField(6, BASE + 30_900, { ageMs: 100 }) });
+  assert.equal(f.rows(FREQUENCY).at(-1).raw.recorder.status, 'fresh');
+  assert.equal(f.rows(FREQUENCY).at(-1).sourceTime, BASE + 30_900);
 });
 
 test('unavailable or malformed compressor readings create gaps, never a recorded or plotted idle state', async t => {

@@ -7,7 +7,7 @@ export const GARAGE_TEST_ADAPTER = { driver: 'shelly-cn105', stateTopic: 'test/p
 export function garageV2Fixture(options = {}) {
   let now = GARAGE_TEST_AT, sequence = 0;
   const publications = [], observations = [], snapshots = [];
-  const adapter = createGarageAdapter({ settings: GARAGE_TEST_ADAPTER, clock: () => now,
+  const adapter = createGarageAdapter({ settings: GARAGE_TEST_ADAPTER, clock: () => now, monotonicClock: () => now - GARAGE_TEST_AT,
     productionTransport: createShellyCn105Transport({ settings: GARAGE_TEST_ADAPTER,
       publish: async (topic, payload, settings) => { publications.push({ topic, ...JSON.parse(payload), settings }); } }),
     onObservation: row => observations.push(row), onState: value => snapshots.push(value), ...options });
@@ -20,7 +20,8 @@ export function garageV2Fixture(options = {}) {
   const update = (overrides = {}, packet = {}) => {
     const native = Object.fromEntries(Object.entries({ power: 'off', mode: 'heat', targetC: 17, fan: 'auto', vane: 'auto' })
       .map(([key, value]) => [key, { value, measuredAt: now - 100 }]));
-    const value = { ...state, sequence: ++sequence, observedAt: now, native, challenge: { value: `challenge-${sequence}` },
+    const value = { ...state, sequence: ++sequence, observedAt: now, native,
+      challenge: { value: `challenge-${sequence}`, expiresInMs: 15_000 },
       ...overrides, control: { ...state.control, ...overrides.control },
       health: { ...state.health, ...overrides.health }, readback: { ...state.readback, ...overrides.readback } };
     return adapter.receive(GARAGE_TEST_ADAPTER.stateTopic, JSON.stringify(value), packet, now);

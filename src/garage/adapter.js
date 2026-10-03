@@ -1,6 +1,7 @@
 import { randomUUID, createHash } from 'node:crypto';
 import { SHELLY_CN105_CONTRACT, GARAGE_FIELDS, garageAdapterSettings,
-  decodeGarageEnvelope, decodeGarageField, finiteTime, freshField, validateGarageAdapterSnapshot, decodeGarageControl } from './contract.js';
+  decodeGarageEnvelope, decodeGarageField, finiteTime, freshField, validateGarageAdapterSnapshot,
+  decodeGarageControl, decodeGarageChallenge } from './contract.js';
 import { isShellyCn105Transport } from './shelly-cn105.js';
 import { GARAGE_NATIVE_SETTINGS, validateGarageNativeSetting, garageNativeOptions } from './native-settings.js';
 import { createGarageElectrical } from './electrical.js';
@@ -20,6 +21,7 @@ function measured(field, at) {
  * The application sends only explicit, challenge-bound edits; connection and
  * shutdown never actuate. */
 export function createGarageAdapter({ settings: input = {}, clock = Date.now, canControl = () => true,
+  monotonicClock = () => performance.now(),
   onObservation = () => {}, onEnergy = () => {}, onState = () => {}, onEquipmentDiagnostic = () => {},
   persisted = null, productionTransport = null } = {}) {
   const settings = garageAdapterSettings(input);
@@ -46,6 +48,12 @@ export function createGarageAdapter({ settings: input = {}, clock = Date.now, ca
   const changed = () => onState(snapshot());
   const fresh = now => connected && subscribed && !stopped && state && !state.retained
     && state.observedAt <= now && now - state.observedAt < settings.maxAgeMs;
+  // Status can remain useful for two minutes, but a command token only lasts
+  // fifteen seconds. Keep time for delivery and never extend it after a clock
+  // adjustment or a repeated publication of the same token.
+  const challengeFresh = now => state?.challenge
+    && state.challengeExpiresAt - Math.max(now, clock()) > 1000
+    && state.challengeDeadline - monotonicClock() > 1000;
   function health(now) {
     return Object.fromEntries([['deviceOnline', 'device'], ['driverProgressing', 'driver'], ['pumpCommunicating', 'pump']]
       .map(([name, field]) => [name, Boolean(fresh(now) && freshField(state.health[field], now, settings.maxAgeMs)
@@ -57,7 +65,7 @@ export function createGarageAdapter({ settings: input = {}, clock = Date.now, ca
     if (!canControl()) reasons.push('This instance is read-only.');
     if (!fresh(now)) reasons.push('Waiting for fresh heat-pump controller status.');
     if (!health(now).pumpCommunicating) reasons.push('Waiting for heat-pump communication.');
-    if (!state?.challenge || state.challenge === usedChallenge) reasons.push('Waiting for a fresh command challenge.');
+    if (!challengeFresh(now) || state.challenge === usedChallenge) reasons.push('Waiting for a fresh command challenge.');
     if (pending(lastCommand) && now - lastCommand.requestedAt >= 30_000) {
       lastCommand = { ...lastCommand, status: 'uncertain', reason: 'Heat-pump controller confirmation timed out.' }; changed();
     }
@@ -98,6 +106,7 @@ export function createGarageAdapter({ settings: input = {}, clock = Date.now, ca
         ...(definition.values ? { values: options[key] ?? [] } : { min: definition.min, max: definition.max, step: .5 }) }])) };
   }
   async function send(action, fields, now) {
+    now = Math.max(now, clock());
     const reasons = blockers(now);
     if (reasons.length) throw Object.assign(new Error(reasons[0]), { statusCode: 409 });
     const command = { schema: SHELLY_CN105_CONTRACT, bootId: state.bootId, challenge: state.challenge,
@@ -105,6 +114,11 @@ export function createGarageAdapter({ settings: input = {}, clock = Date.now, ca
     usedChallenge = state.challenge;
     lastCommand = { commandId: command.commandId, action, ...fields, requestedAt: now, status: 'published', reason: null };
     changed();
+    if (!challengeFresh(clock())) {
+      lastCommand = { ...lastCommand, status: 'rejected', reason: 'The command challenge expired before sending. Wait for fresh controller status.' };
+      changed();
+      throw Object.assign(new Error(lastCommand.reason), { statusCode: 409 });
+    }
     try { await transport.send(command); }
     catch {
       lastCommand = { ...lastCommand, status: 'uncertain', reason: 'Command delivery is unconfirmed.' }; changed();
@@ -142,23 +156,26 @@ export function createGarageAdapter({ settings: input = {}, clock = Date.now, ca
       if (pending(lastCommand)) lastCommand = { ...lastCommand, status: 'uncertain', reason: 'The heat-pump controller restarted.' };
     }
     if (topic === settings.stateTopic) {
-      const control = decodeGarageControl(value.control);
+      const control = decodeGarageControl(value.control), challenge = decodeGarageChallenge(value.challenge);
       if (!control || !value.native || typeof value.health?.nativeFresh !== 'boolean' || typeof value.readback?.complete !== 'boolean'
-        || typeof value.challenge?.value !== 'string'
-        || !value.challenge.value || value.challenge.value.length > 128) return false;
+        || !challenge) return false;
       const native = Object.fromEntries(Object.entries(GARAGE_NATIVE_SETTINGS).map(([key, definition]) => {
         const field = measured(value.native[key], receivedAt);
         return [key, field && (definition.values ? definition.values.includes(field.value)
           : Number.isFinite(field.value) && field.value >= 10 && field.value <= 31) ? field : null];
       }));
       const pumpClock = measured({ value: true, measuredAt: value.readback.measuredAt, ageMs: value.readback.ageMs }, receivedAt);
+      const remaining = Math.max(0, challenge.expiresInMs - (receivedAt - value.observedAt));
+      const sameChallenge = state?.challenge === challenge.value;
+      const challengeExpiresAt = Math.min(receivedAt + remaining, sameChallenge ? state.challengeExpiresAt : Infinity);
+      const challengeDeadline = Math.min(monotonicClock() + remaining, sameChallenge ? state.challengeDeadline : Infinity);
       state = { deviceId: value.deviceId, bootId: value.bootId, observedAt: value.observedAt, receivedAt, retained: false,
         control, native, nativeOptions: value.capabilities?.manualOptions,
         manualControls: value.capabilities?.manualControls,
         health: { device: { value: true, measuredAt: value.observedAt }, driver: { value: true, measuredAt: value.observedAt },
           pump: { value: value.health.nativeFresh === true && value.readback.complete === true && pumpClock !== null,
             measuredAt: pumpClock?.measuredAt ?? value.observedAt } },
-        challenge: value.challenge.value };
+        challenge: challenge.value, challengeExpiresAt, challengeDeadline };
       lastObservedState = state;
       if (value.health.nativeFresh !== true) invalidateTelemetry('pump-not-communicating', receivedAt);
       if (native.power) onObservation({ source: 'garage-adapter', device: value.deviceId, signal: 'garage_native_power',

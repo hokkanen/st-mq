@@ -33,6 +33,102 @@ test('readback confirms durable target, challenges are single use, no disconnect
   assert.equal(f.publications.length, 1);
 });
 
+test('command expiry and delivery headroom block edits while controller readback remains fresh', async () => {
+  const f = garageV2Fixture(); f.update();
+  f.at(GARAGE_TEST_AT + 13_999);
+  assert.equal(f.adapter.status().controlAvailable, true);
+  f.at(GARAGE_TEST_AT + 14_000);
+  assert.equal(f.adapter.status().controlAvailable, false);
+  assert.equal(f.adapter.status().health.pumpCommunicating, true);
+  assert.equal(f.adapter.status().control.targetC, 10);
+  await assert.rejects(f.adapter.setControl({ targetC: 5, externalEnabled: true }), /fresh command challenge/);
+  assert.throws(() => f.adapter.setNativeSetting({ setting: 'power', value: 'off' }), /fresh command challenge/);
+  f.at(GARAGE_TEST_AT + 30_000);
+  assert.equal(f.adapter.status().lastCommand, null, 'an unsent expired request never becomes uncertain');
+  assert.equal(f.publications.length, 0);
+  f.update();
+  await f.adapter.setControl({ targetC: 5, externalEnabled: true });
+  assert.equal(f.publications.length, 1, 'only the new explicit request uses the refreshed challenge');
+});
+
+test('source transit delay and repeated publications cannot renew command authority', async () => {
+  const f = garageV2Fixture();
+  f.at(GARAGE_TEST_AT + 14_000);
+  assert.equal(f.update({ observedAt: GARAGE_TEST_AT }), true);
+  await assert.rejects(f.adapter.setControl({ targetC: 5, externalEnabled: true }), /fresh command challenge/);
+  f.update({ challenge: { value: 'fixture-shared-challenge', expiresInMs: 15_000 } });
+  f.at(GARAGE_TEST_AT + 22_000);
+  f.update({ challenge: { value: 'fixture-shared-challenge', expiresInMs: 15_000 } });
+  f.at(GARAGE_TEST_AT + 28_000);
+  assert.equal(f.adapter.status().controlAvailable, false, 'the first deadline still bounds a republished token');
+  assert.equal(f.publications.length, 0);
+});
+
+test('monotonic expiry fences wall-clock rollback and timestamp-free controller state', async () => {
+  let elapsed = 0;
+  const f = garageV2Fixture({ monotonicClock: () => elapsed });
+  f.update({ observedAt: null, observedAgeMs: 0 });
+  elapsed = 5000; f.at(GARAGE_TEST_AT + 5000);
+  assert.equal(f.adapter.status().controlAvailable, true);
+  elapsed = 14_000; f.at(GARAGE_TEST_AT + 1000);
+  assert.equal(f.adapter.status().controlAvailable, false);
+  await assert.rejects(f.adapter.setControl({ targetC: 5, externalEnabled: true }, GARAGE_TEST_AT), /fresh command challenge/);
+  assert.equal(f.publications.length, 0);
+});
+
+test('expiry is checked again after persisting the request and before MQTT publication', async () => {
+  let f;
+  f = garageV2Fixture({ onState(snapshot) {
+    if (snapshot.lastCommand?.status === 'published') f.at(GARAGE_TEST_AT + 15_000);
+  } });
+  f.update();
+  await assert.rejects(f.adapter.setControl({ targetC: 5, externalEnabled: true }), /expired before sending/);
+  assert.equal(f.publications.length, 0);
+  assert.equal(f.adapter.status().lastCommand.status, 'rejected');
+});
+
+test('unsupported or malformed challenge expiry never authorizes a command', () => {
+  for (const challenge of [
+    { value: 'fixture-token' }, { value: 'fixture-token', expiresInMs: -1 },
+    { value: 'fixture-token', expiresInMs: 15_001 }, { value: 'fixture-token', expiresInMs: 1.5 },
+    { value: 'fixture-token', expiresInMs: '15000' }, { value: null, expiresInMs: 15_000 },
+    { value: 'fixture-token', expiresInMs: 15_000, expiresAt: GARAGE_TEST_AT + 15_000 },
+  ]) {
+    const f = garageV2Fixture();
+    assert.equal(f.update({ challenge }), false);
+    assert.equal(f.adapter.status().controlAvailable, false);
+  }
+});
+
+test('a consumed challenge does not discard applied readback or native confirmation', async () => {
+  for (const action of ['control', 'set']) {
+    const f = garageV2Fixture(); f.update();
+    if (action === 'control') await f.adapter.setControl({ targetC: 5, externalEnabled: true });
+    else await f.adapter.setNativeSetting({ setting: 'power', value: 'off' });
+    f.at(GARAGE_TEST_AT + 1000);
+    assert.equal(f.update({ challenge: { value: null, expiresInMs: 0 },
+      control: { targetC: 5, effectiveTargetC: 5 },
+      result: { commandId: f.publications[0].commandId, status: action === 'control' ? 'applied' : 'native-confirmed', reason: null } }), true);
+    assert.equal(f.adapter.status().lastCommand.status, action === 'control' ? 'applied' : 'native-confirmed');
+    assert.equal(f.adapter.status().controlAvailable, false);
+    assert.equal(f.adapter.status().control.targetC, 5);
+    assert.equal(f.adapter.status().native.power, 'off');
+  }
+});
+
+test('explicit driver expiry rejection completes the attempt without waiting or replaying', async () => {
+  const f = garageV2Fixture(); f.update();
+  await f.adapter.setControl({ targetC: 5, externalEnabled: true });
+  f.at(GARAGE_TEST_AT + 2000);
+  f.update({ result: { commandId: f.publications[0].commandId, status: 'rejected', reason: 'challenge-expired' } });
+  assert.equal(f.adapter.status().lastCommand.status, 'rejected');
+  assert.equal(f.adapter.status().lastCommand.reason, 'challenge-expired');
+  assert.equal(f.adapter.status().controlAvailable, true);
+  f.at(GARAGE_TEST_AT + 35_000); f.update();
+  assert.equal(f.adapter.status().lastCommand.status, 'rejected');
+  assert.equal(f.publications.length, 1);
+});
+
 test('native OFF and mode choices are explicit; external-owned thermostat and unsupported settings are unavailable', async () => {
   const f = garageV2Fixture(); f.update();
   assert.equal(f.adapter.nativeControls().settings.targetC.available, false);

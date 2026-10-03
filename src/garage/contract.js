@@ -7,6 +7,12 @@ const controlStates = ['starting', 'disabled', 'sensor-stale', 'sensor-range', '
 const controlFields = ['targetC', 'externalEnabled', 'effectiveTargetC', 'status', 'sensorTemperatureC',
   'sensorAgeMs', 'externalTemperatureC', 'externalAcknowledged', 'frostConfigured', 'frostAvailable', 'frostActive', 'frostRescue'];
 const object = value => value !== null && typeof value === 'object' && !Array.isArray(value);
+export function decodeGarageChallenge(value) {
+  if (!object(value) || Object.keys(value).sort().join(',') !== 'expiresInMs,value'
+    || !Number.isSafeInteger(value.expiresInMs) || value.expiresInMs < 0 || value.expiresInMs > 15_000
+    || !(value.value === null ? value.expiresInMs === 0 : identity(value.value))) return null;
+  return { value: value.value, expiresInMs: value.expiresInMs };
+}
 export function decodeGarageControl(value) {
   if (!object(value) || Object.keys(value).some(key => !controlFields.includes(key))
     || !validGarageTarget(value.targetC) || typeof value.externalEnabled !== 'boolean'
