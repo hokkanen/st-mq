@@ -5,11 +5,13 @@ can be read frequently while history retains a compact approximation. Only
 durably recorded values and their saved interpretation feed the learner. Recording a
 garage temperature or a diagnostic does not make it a fitted model input.
 
-This version is still in development. Existing experimental SQLite contents do
-not require compatibility work. The eventual production migration starts from
-the old Easee and st-mq CSV exports; the existing 0.7.5 installation continues
-running independently until that migration. CSV parsing, source timestamps,
-units, quality flags and import provenance remain supported.
+This release remains in development. Incompatible development SQLite databases
+are rejected before mutation and require a deliberate fresh start; they are not
+migrated or reset automatically. The only supported historical input is
+read-only import of version 0.7.5 `easee.csv` and `st-mq.csv` into the current
+schema. Preserve the source files, timestamps, units, quality and import
+provenance. An older runtime or database is not a supported upgrade input; see
+[CSV import](csv-import.md).
 
 ## Acquisition schedules
 

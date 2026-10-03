@@ -26,6 +26,32 @@ For UI development, run `npm start` and `npm run dev` in separate terminals.
 Vite proxies `/api` to the backend; `npm run preview` alone does not provide it.
 The normal server serves the completed UI build.
 
+## Moving from an earlier version
+
+`main` includes the H66 development work. To evaluate the published development
+prerelease in a separate checkout, select its tag explicitly:
+
+```sh
+git clone --branch v0.9.5-dev.1 https://github.com/hokkanen/st-mq.git st-mq-dev
+cd st-mq-dev
+npm ci
+npm run build
+```
+
+Keep existing installation configuration, databases and original CSV exports
+outside this checkout. The current version accepts only its current configuration
+and database formats; it does not translate 0.7.5 settings or migrate earlier
+development databases. Review [configuration](configuration.md), select a fresh
+database directory explicitly when needed, and use [CSV import](csv-import.md)
+only for the two supported 0.7.5 exports. Incompatible databases remain unchanged.
+Current-format backup/restore and restart remain supported.
+
+Begin with simulated input and separate data/database paths when evaluating
+alongside an existing installation, as shown in the isolated-start example below.
+Before replacing a live controller, retain its backups and resolve outstanding
+equipment changes and restoration duties. Stop the previous command owner and
+commission the replacement's live integrations and feature permissions explicitly.
+
 ## Environment and private configuration
 
 Public defaults are in `config.json.options`; the sparse private file overrides

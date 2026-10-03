@@ -17,10 +17,12 @@ write action and requires the active master. Missing live device state is shown
 as unavailable, and any local configuration defaults are labeled separately
 from settings recorded by the master.
 
-Both computers should run the same ST-MQ release. The viewer checks the database
+Use the same ST-MQ release on both computers. The viewer checks the database
 schema without migrating it. If a new snapshot cannot be opened, an already
 running viewer keeps its previous readable generation and reports the problem.
-The separate production 0.7.5 installation and CSV imports are unaffected.
+An older runtime or database is not a supported replication peer. Historical
+version 0.7.5 data enters through the supported [read-only CSV import](csv-import.md)
+on the master, which records it in the current schema before replication.
 
 ## Set up two standalone Linux computers
 

@@ -32,11 +32,12 @@ control permission are separate choices.
 
 ## Install
 
-For this development prerelease, after the prepared revision is published, add
-`https://github.com/hokkanen/st-mq#H66` under **Settings → Apps → Install app →
-⋮ → Repositories** in Home Assistant OS, then select **Home Energy**. The `#H66`
-suffix selects the prerelease branch. The URL without a suffix selects the
-repository's default branch and does not select this prerelease automatically.
+Add `https://github.com/hokkanen/st-mq` under **Settings → Apps → Install app →
+⋮ → Repositories** in Home Assistant OS, then select **Home Energy**. The
+repository's default branch, `main`, includes the integrated H66 development work
+and publishes this development prerelease. Installations configured with `#H66`
+need the default repository source for this release; a tag does not change their
+configured source.
 Follow [Home Assistant setup](DOCS.md) for installation, saved options, ingress,
 backups and MQTT integration. Home Assistant Container has no app manager; use
 standalone ST-MQ alongside it.
@@ -44,6 +45,8 @@ standalone ST-MQ alongside it.
 For standalone Linux, use Node.js **22.19 or newer**:
 
 ```sh
+git clone --branch v0.9.5-dev.1 https://github.com/hokkanen/st-mq.git
+cd st-mq
 npm ci
 npm run build
 npm start
@@ -95,6 +98,11 @@ development databases are rejected before mutation and require a deliberate
 fresh start; there is no automatic migration or reset. Same-version backup,
 restore, restart and learning reconstruction remain supported. The two 0.7.5 CSV
 imports are the historical exception; keep original exports outside the checkout.
+Existing 0.7.5 installations need a fresh current configuration and database,
+with any supported CSV history imported explicitly. Review
+[Home Assistant installation changes](DOCS.md#moving-from-an-earlier-version) or
+[standalone installation changes](docs/startup.md#moving-from-an-earlier-version)
+before replacing a running controller.
 
 ## Deployment paths
 

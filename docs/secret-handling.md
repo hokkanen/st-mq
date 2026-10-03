@@ -44,6 +44,16 @@ were not rewritten. The private old-to-new commit map remains at
 `.git/security-audit/h66-repair.json`. Do not merge unsanitized ancestry back into
 H66; deleting a secret from the tip does not remove earlier copies.
 
+For the 2026-10-03 publication of `v0.9.5-dev.1`, the owner approved replacing
+`main` with H66's sanitized history using an exact `--force-with-lease` guard.
+The sanitized equivalent of the former main tip has the same files and is
+already an ancestor of H66. This integrates the development work without
+merging the exposed household CSV ancestry back into the release. Existing
+tags, other branches, clones and caches are outside this repair's scope; this
+publication does not establish that the earlier exposure has been removed
+from them. Existing clones must not merge their old main history into the
+published branch; see [contributor guidance](../CONTRIBUTING.md).
+
 The 2026-09-27 removal deletes the local repository key, its worktree links and
 encryption filter configuration. A scan of all locally stored Git objects found
 no key copies, so no history rewrite is needed. This does not remove keys from

@@ -9,7 +9,10 @@ Versions follow Semantic Versioning. `-dev.N` denotes a development prerelease.
 ## 0.9.5-dev.1 — 2026-10-03
 
 First public development prerelease after 0.7.5. The intervening 0.8.x/0.9.0
-work is consolidated into this release; it is not a production-support promise.
+work from H66 is integrated into `main` and consolidated into this release; it is not
+a production-support promise. Home Assistant's default repository now follows
+this development version; installations configured with `#H66` need the default
+repository source for this release.
 
 ### Added
 
@@ -56,7 +59,9 @@ work is consolidated into this release; it is not a production-support promise.
   configuration and development databases are not supported upgrade inputs.
 - There are no development database migrations or automatic resets. Incompatible
   databases fail before mutation; use a deliberate fresh database and reimport
-  supported original CSV sources when needed.
+  supported original CSV sources when needed. Existing 0.7.5 installations also
+  require current configuration; preserve backups and review the
+  [installation change guidance](DOCS.md#moving-from-an-earlier-version).
 - The SONOFF floor-preheating integration remains pending and cannot be enabled
   or commissioned. Home/Garage models and equipment safeguards still need their
   installation-specific checks.

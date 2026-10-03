@@ -15,10 +15,11 @@ for the algorithm, native-setting restoration and equipment testing limits.
 the independent feature controls and Garage local temperature regulation.
 
 1. Open **Settings → Apps → Install app → ⋮ → Repositories**, add
-   `https://github.com/hokkanen/st-mq#H66` for the development prerelease, after
-   that revision has been published, and install **Home Energy** from the
-   **Home Energy apps** repository. The `#H66` suffix selects the development
-   branch; omitting it selects the default branch rather than this prerelease.
+   `https://github.com/hokkanen/st-mq` and install **Home Energy** from the
+   **Home Energy apps** repository. The default branch, `main`, contains the
+   integrated H66 work and the 0.9.5-dev.1 development prerelease. An existing
+   repository configured with `#H66` needs the default repository source for
+   this release.
    A Git tag or GitHub prerelease does not change the branch installed by HA.
    Home Assistant builds the image locally; the host needs network access for
    the build and enough free storage. If the repository does not appear, refresh
@@ -395,6 +396,28 @@ Options are owned by Supervisor: edit and save them through app configuration,
 or upload the sparse import described above, then choose **Apply reviewed configuration**.
 The temporary upload is not a permanent settings file; Supervisor retains the
 successfully imported values.
+
+## Moving from an earlier version
+
+Back up the installed app, its options and any original CSV exports before
+replacing it. Publishing 0.9.5-dev.1 on `main` makes it available from the default
+repository; it does not convert an existing installation's saved options or
+database. An app configured with `#H66` needs the default repository source for
+this release; publishing a tag does not change that setting.
+
+The 0.7.5 runtime and configuration are not upgrade inputs. Configure the current
+version from its current options and use a fresh database, then optionally import
+the supported original [0.7.5 CSV files](docs/csv-import.md). Unknown or retired
+settings and incompatible development databases are rejected, without automatic
+translation or reset. Select a fresh database directory explicitly and retain the
+old data; do not delete a database merely to clear a startup error. A matching
+current-format backup can still be restored using the backup workflow above.
+
+Review outstanding equipment changes and restoration duties before replacing a
+live controller. Keep one command owner, begin evaluation with simulated input,
+and commission live integrations and each feature's control permission
+separately. Changing an application version does not verify installed equipment
+or grant new control authority.
 
 ## Home Assistant files and permissions
 

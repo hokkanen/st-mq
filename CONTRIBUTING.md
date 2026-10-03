@@ -43,4 +43,26 @@ implementation detail and test evidence, and `CHANGELOG.md` for changes users
 need to know about. Do not recreate completed-task diaries in the repository.
 A release uses matching package, lockfile, app and container versions; development
 prereleases advance as `0.9.5-dev.1`, `0.9.5-dev.2`, and so on. Tag releases as
-`v<version>` only as part of an authorized publication.
+`v<version>` only as part of an authorized publication. Publish the release commit
+on `main`, and mark `-dev.N` GitHub releases as prereleases. Home Assistant follows
+its configured repository branch and reads the app manifest version; a Git tag
+alone does not publish an app update. Record validation results and remaining
+installation limits with the release.
+
+## Existing clones after the 0.9.5-dev.1 publication
+
+The release replaces the former `main` ancestry with the sanitized H66 history.
+Keep local work, but do not merge or pull the former `main` history into the
+published branch. Use a fresh clone, or fetch the published history and create
+a separate worktree for review:
+
+```sh
+git fetch origin
+git worktree add --detach ../st-mq-current origin/main
+```
+
+This leaves the existing checkout and its local changes in place. Start new
+development branches from the published history. Review any local changes
+before transferring them so private files or retired ancestry are not
+reintroduced. See [the historical repair scope](docs/secret-handling.md#historical-repair-scope)
+for the publication boundary and limits concerning other refs and clones.
