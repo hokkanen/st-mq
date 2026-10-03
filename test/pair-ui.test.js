@@ -415,6 +415,18 @@ test('startup failures explain the local fix without implying divergent or lost 
   assert.equal(pairIssueHelp({ error: 'private exception with invented credentials' }), '');
 });
 
+test('missing interface recovery uses the local platform configuration workflow', () => {
+  const failure = standby({ role: 'protected', reason: 'activation_failed', error: 'vip_interface_missing' });
+  const addon = pairDisplay({ ...failure, platform: 'hassio' }, { now }).summary;
+  assert.match(addon, /pair\.vip_interface.*Home Assistant.*app’s Configuration/);
+  assert.match(addon, /restart the app.*helper policy is regenerated at startup/);
+  assert.match(addon, /history is preserved/);
+  assert.doesNotMatch(addon, /both pair settings and the helper policy/);
+  const standalone = pairDisplay({ ...failure, platform: 'ubuntu' }, { now }).summary;
+  assert.match(standalone, /ip route show default.*both pair settings and the helper policy/);
+  assert.doesNotMatch(standalone, /policy is regenerated/);
+});
+
 
 test('a failed protected VIP release explains uncertain ownership before retrying promotion', () => {
   const view = standby({ role: 'protected', reason: 'vip_release_failed', error: 'vip_release_failed' });

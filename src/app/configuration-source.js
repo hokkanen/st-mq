@@ -231,7 +231,7 @@ export function createConfigurationSource({ env, cwd, buildConfig, paths = confi
   const publicInfo = () => ({ environment: addon ? 'home-assistant' : 'ubuntu', defaultsPath: paths.defaultsPath,
     privatePath: paths.privatePath, importPath: paths.importPath, receiptPath: paths.receiptPath,
     privateFileRole: addon ? 'startup-fallback' : 'permanent-overrides',
-    externalImportPath: slug ? `/app_configs/${slug}/secrets.json` : null });
+    externalImportPath: slug ? `/addon_configs/${slug}/secrets.json` : null });
   async function supervisor(method, endpoint, body) {
     if (!environment.SUPERVISOR_TOKEN) throw new Error('Supervisor authentication is unavailable.');
     let response;

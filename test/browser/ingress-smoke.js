@@ -16,7 +16,7 @@ const directory = mkdtempSync(join(tmpdir(), 'stmq-ingress-browser-'));
 const privatePath = join(directory, 'supervisor-options.json');
 const importPath = join(directory, 'secrets.json');
 const prefix = '/api/hassio_ingress/synthetic-browser-session/';
-const uploadPath = '/app_configs/synthetic_repository_st-mq/secrets.json';
+const uploadPath = '/addon_configs/synthetic_repository_st-mq/secrets.json';
 const now = Date.parse('2026-09-07T12:00:00Z');
 const requests = [], pending = new Map(), errors = [];
 let app, proxy, socket, id = 0, rejectStatus = false, cleanupPending = false, metadataAvailable = true, stallReads = null;
@@ -137,7 +137,7 @@ try {
   const instructions = await evaluate("document.getElementById('settings-configuration-steps').textContent");
   assert.ok(instructions.includes(uploadPath), 'UI renders the actual Supervisor slug supplied by status');
   assert.deepEqual(await evaluate("[...document.querySelectorAll('#settings-location dt, #settings-location dd')].map(node => node.textContent)"),
-    ['Folder', '/app_configs/synthetic_repository_st-mq', 'File name', 'secrets.json', 'Full path', uploadPath,
+    ['Folder', '/addon_configs/synthetic_repository_st-mq', 'File name', 'secrets.json', 'Full path', uploadPath,
       'Inside app', '/config/secrets.json']);
   assert.equal(await evaluate("document.getElementById('settings-location-message').hidden"), true);
   assert.match(instructions, /freshly saved options/);

@@ -106,18 +106,18 @@ test('configuration instructions use the actual standalone private path and pres
 test('Home Assistant configuration instructions distinguish sparse import, saved options and live access', () => {
   const reload = { available: true,
     configuration: { environment: 'home-assistant', defaultsPath: '/st-mq/config.json', privatePath: '/data/options.json',
-      importPath: '/config/secrets.json', externalImportPath: '/app_configs/example_st-mq/secrets.json' },
+      importPath: '/config/secrets.json', externalImportPath: '/addon_configs/example_st-mq/secrets.json' },
     access: { ingress: { enabled: true }, direct: { enabled: false, tokenRequired: true } } };
   const scope = settingsReloadScope({ settingsReload: reload });
-  assert.match(scope.instructions.join(' '), /\/app_configs\/example_st-mq\/secrets.json/);
+  assert.match(scope.instructions.join(' '), /\/addon_configs\/example_st-mq\/secrets.json/);
   assert.match(scope.instructions.join(' '), /freshly saved options/);
   assert.match(scope.instructions.join(' '), /Omitted fields keep saved values, arrays replace saved arrays/);
   assert.match(scope.instructions.join(' '), /failed import keeps the file/);
   assert.match(scope.access.join(' '), /host login/);
   assert.match(scope.access.join(' '), /Direct access is disabled/);
   assert.deepEqual(scope.location.rows, [
-    { label: 'Folder', value: '/app_configs/example_st-mq' }, { label: 'File name', value: 'secrets.json' },
-    { label: 'Full path', value: '/app_configs/example_st-mq/secrets.json' },
+    { label: 'Folder', value: '/addon_configs/example_st-mq' }, { label: 'File name', value: 'secrets.json' },
+    { label: 'Full path', value: '/addon_configs/example_st-mq/secrets.json' },
     { label: 'Inside app', value: '/config/secrets.json' },
   ]);
   assert.equal(scope.location.message, '');
@@ -136,7 +136,7 @@ test('configuration location reports missing metadata explicitly without guessin
     const scope = settingsReloadScope({ settingsReload: { available: true, configuration } });
     assert.equal(scope.location.message, 'Restart the controller to load configuration paths, then refresh this page');
     assert.deepEqual(scope.location.rows, []);
-    assert.doesNotMatch(scope.instructions.join(' '), /undefined|null|\/home\/|\/app_configs\/|\/config\/secrets/);
+    assert.doesNotMatch(scope.instructions.join(' '), /undefined|null|\/home\/|\/addon_configs\/|\/config\/secrets/);
   }
 });
 

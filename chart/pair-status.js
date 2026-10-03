@@ -19,7 +19,9 @@ export function pairIssueHelp(view) {
     vip_helper_permission: 'The controller cannot access the virtual-IP helper. Check the socket permissions and the group membership of the user running the controller; sign in again after changing groups.',
     vip_policy_invalid: 'The virtual-IP helper policy could not be read safely. Check its JSON, root ownership and permissions, then restart the helper service.',
     vip_policy_mismatch: 'The virtual-IP settings do not match the helper policy. Use the same address, network interface and prefix in both files on this computer.',
-    vip_interface_missing: 'The configured network interface does not exist here. Check this computer’s LAN interface with ip route show default and use it in both pair settings and the helper policy.',
+    vip_interface_missing: view?.platform === 'hassio'
+      ? 'The configured network interface does not exist here. Set pair.vip_interface to this Home Assistant computer’s LAN interface in the app’s Configuration, then restart the app. Its virtual-IP helper policy is regenerated at startup.'
+      : 'The configured network interface does not exist here. Check this computer’s LAN interface with ip route show default and use it in both pair settings and the helper policy.',
     vip_command_failed: 'The virtual IP could not be assigned. Check that the configured LAN interface is up and the address and prefix belong to that network. Review the address-helper service log for the failed network operation.',
     vip_announce_failed: 'The virtual IP could not be announced on the LAN. Check the address-helper service log and that its network announcement tool is installed and permitted.',
     vip_release_failed: 'The virtual IP could not be released. Check the address-helper service and its policy. Keep the other controller stopped until this computer’s address ownership is resolved.',

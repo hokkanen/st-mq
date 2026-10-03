@@ -290,6 +290,23 @@ configuration:
           Leave empty to use /config/st-mq/pair-snapshots in Home Assistant.
           stale_seconds marks old snapshots stale. Pair has its own
           synchronization and does not use mirror settings.
+      vip_interface:
+        name: Local LAN interface
+        description: >-
+          Use this computer's LAN interface name. The other paired computer
+          may use a different name. After changing it, restart the app to
+          regenerate its virtual-IP helper policy.
+      vip_address:
+        name: Shared MQTT virtual IP
+        description: >-
+          Use the same reserved, unused LAN IPv4 address on both computers,
+          outside the DHCP allocation range. MQTT devices use this address;
+          this app connects to its local broker. Restart after changing it.
+      vip_socket:
+        name: Address-helper socket
+        description: >-
+          Leave empty in Home Assistant to use the bundled helper directly.
+          Standalone Linux uses /run/st-mq-vip/socket.
   mirror:
     name: Database mirroring over SSH
     description: >-

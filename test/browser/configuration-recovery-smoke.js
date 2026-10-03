@@ -15,7 +15,7 @@ const accessKey = 'fixture-recovery-access-key';
 const prefix = '/fixture/ingress/';
 const requests = [], errors = [], layouts = [], pending = new Map();
 const pause = ms => new Promise(resolve => setTimeout(resolve, ms));
-let environment = 'home-assistant', failApply = false, sequence = 0, browser, socket, receipt = null;
+let environment = 'home-assistant', failApply = false, sequence = 0, browser, socket, receipt = null, missingSlug = false;
 const server = createServer(async (request, response) => {
   response.setHeader('Cache-Control', 'no-store');
   response.setHeader('Content-Security-Policy', `default-src 'none'; script-src 'nonce-${nonce}'; style-src 'nonce-${nonce}'; connect-src 'self'; base-uri 'none'; form-action 'self'`);
@@ -36,7 +36,7 @@ const server = createServer(async (request, response) => {
     reply(200, {
       environment, error: receipt ? '' : 'Unknown configuration field in easee: [unsupported field].', receipt,
       privatePath: '/fixture/private/configuration/secrets.json', importPath: '/config/secrets.json',
-      externalImportPath: '/app_configs/fixture_home_energy/secrets.json',
+      externalImportPath: missingSlug ? null : '/addon_configs/fixture_home_energy/secrets.json',
     });
   } else if (request.url.endsWith('/preview')) {
     if (environment === 'home-assistant' && !body.replacement) {
@@ -144,7 +144,18 @@ try {
   await send('Page.navigate', { url });
   await until("document.getElementById('configuration') && !document.getElementById('configuration').hidden");
   assert.equal(await evaluate("document.getElementById('access-panel').hidden"), true, 'HA does not ask for Linux access key');
-  assert.match(await evaluate("document.getElementById('external-import-path').textContent"), /fixture_home_energy/);
+  assert.equal(await evaluate("document.getElementById('external-import-path').textContent"),
+    '/addon_configs/fixture_home_energy/secrets.json', 'Recovery shows the file-tool upload path and complete JSON filename');
+  assert.equal(await evaluate("document.getElementById('import-path').textContent"), '/config/secrets.json',
+    'The in-container import path remains distinct from the upload path');
+  missingSlug = true;
+  await send('Page.navigate', { url });
+  await until("document.getElementById('configuration') && !document.getElementById('configuration').hidden");
+  assert.equal(await evaluate("document.getElementById('external-import-path').textContent"),
+    '/addon_configs/<actual-app-slug>/secrets.json', 'Missing slug uses the same external mount in its placeholder');
+  missingSlug = false;
+  await send('Page.navigate', { url });
+  await until("document.getElementById('configuration') && !document.getElementById('configuration').hidden");
   assert.equal(await evaluate("document.querySelector('input[name=\"import-mode\"]:checked').value"), 'merge');
   await click('check');
   await until("!document.getElementById('check').disabled && document.getElementById('receipt').classList.contains('error')");

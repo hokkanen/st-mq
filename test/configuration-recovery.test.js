@@ -119,7 +119,7 @@ test('HA incompatible saved fields require reviewed replacement and normal resta
   assert.equal((await fetch(f.root())).status, 403, 'A direct peer cannot impersonate ingress');
   await f.access();
   const status = await (await f.api()).json();
-  assert.equal(status.externalImportPath, '/app_configs/fixture_st-mq/secrets.json');
+  assert.equal(status.externalImportPath, '/addon_configs/fixture_st-mq/secrets.json');
   assert.match(status.error, /Unknown configuration field in easee/);
   assert.equal((await f.api('/preview', { replacement: false })).status, 400);
   const preview = await f.api('/preview', { replacement: true });

@@ -98,7 +98,7 @@ test('add-on bootstrap with no token exposes ingress and leaves direct access di
   const response = await fetch(`${endpoint(app.webAccess.ingressServer)}/api/status`);
   assert.equal(response.status, 200);
   const status = await response.json();
-  assert.equal(status.settingsReload.configuration.externalImportPath, '/app_configs/synthetic_st-mq/secrets.json');
+  assert.equal(status.settingsReload.configuration.externalImportPath, '/addon_configs/synthetic_st-mq/secrets.json');
   assert.equal(f.posts, 0);
 });
 

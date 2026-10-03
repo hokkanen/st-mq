@@ -86,7 +86,7 @@ test('HA import validates before saving, merges current options and deletes only
   assert.equal(transaction.config.options.mqtt.pw, 'synthetic-new-password');
   assert.equal(transaction.config.options.controller.learning_trials, false);
   assert.deepEqual(transaction.config.options.easee.charger_voltage_ids, []);
-  assert.equal(transaction.config.configuration.externalImportPath, '/app_configs/synthetic_st-mq/secrets.json');
+  assert.equal(transaction.config.configuration.externalImportPath, '/addon_configs/synthetic_st-mq/secrets.json');
   assert.equal(transaction.config.configuration.environment, 'home-assistant');
   assert.equal(JSON.stringify(transaction.config.configuration).includes('synthetic-new-password'), false);
   await transaction.persist();
@@ -360,7 +360,7 @@ test('recovery location and assigned ingress port do not require valid Home Assi
   const info = await f.source.recoveryInfo();
   assert.equal(info.environment, 'home-assistant');
   assert.equal(info.ingressPort, 8127);
-  assert.equal(info.externalImportPath, '/app_configs/synthetic_st-mq/secrets.json');
+  assert.equal(info.externalImportPath, '/addon_configs/synthetic_st-mq/secrets.json');
   assert.equal(info.privatePath, f.paths.privatePath);
   assert.equal(Object.hasOwn(info, 'options'), false);
   f.state.ingressPort = 0;

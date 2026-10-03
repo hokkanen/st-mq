@@ -6,6 +6,14 @@ Versions follow Semantic Versioning. `-dev.N` denotes a development prerelease.
 
 ## Unreleased
 
+### Fixed
+
+- Pairing now explains how to correct a missing Home Assistant LAN interface
+  in the app configuration and regenerate its address-helper policy by restarting.
+- Configuration and startup-recovery screens show
+  `/addon_configs/<app-slug>/secrets.json` for Home Assistant uploads. The
+  in-app import path remains `/config/secrets.json`.
+
 ## 0.9.5-dev.2 — 2026-10-03
 
 ### Fixed

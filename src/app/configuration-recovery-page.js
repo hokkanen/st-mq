@@ -130,7 +130,7 @@ function recoveryClient() {
       if (!status.error) $('startup-state').textContent = 'The controller is waiting for a restart to load the reviewed configuration.';
       $('ha-instructions').hidden = !ha;
       $('linux-instructions').hidden = ha;
-      $('external-import-path').textContent = status.externalImportPath || '/app_configs/<actual-app-slug>/secrets.json';
+      $('external-import-path').textContent = status.externalImportPath || '/addon_configs/<actual-app-slug>/secrets.json';
       $('import-path').textContent = status.importPath || '/config/secrets.json';
       $('private-path').textContent = status.privatePath || '';
       $('access-note').textContent = status.accessNote || '';
