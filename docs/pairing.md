@@ -146,6 +146,14 @@ computers must run this contract; earlier formats are not translated.
 
 ## Deliberate fresh start after a development schema change
 
+The paired dashboard's **Reset pairing… → Start fresh** is the preferred way
+to start over. It archives the database and pairing storage together, including
+promoted databases hidden in private app storage. No manual path changes are
+needed. See [Reset pairing](#reset-pairing) for the two choices, restoration
+requirements and archive locations. The manual procedure below remains useful
+when the dashboard cannot start because of invalid configuration or unavailable
+storage.
+
 Use this procedure when both computers have incompatible development databases
 and you have chosen to start new history. It preserves the old files; it does
 not migrate or import them. If a same-version, current-schema master or backup
@@ -445,6 +453,66 @@ network fencing device in this feature. If two live computers are separated
 by a network partition, they cannot negotiate authority until communication
 returns. Manual promotion cannot eliminate that interval of possible
 simultaneous control.
+
+## Reset pairing
+
+The admin-only **Reset pairing…** action changes only this computer. It keeps
+configuration, peer addresses, shared credentials, provider tokens and the other
+computer's data unchanged. A confirmation is required; a changed pairing role
+or history invalidates an open confirmation.
+
+| Choice | History | Result |
+| --- | --- | --- |
+| **Keep local history** | Archives previous pairing files and retains a separate active copy of the selected local database, including its saved learning and control records. | A new pairing identity in **Protected recovery** when history exists. Explicit promotion or protected recovery is required; ordinary mirroring cannot overwrite the retained history. |
+| **Start fresh** | Archives local databases, SQLite sidecars, pairing files and snapshots. Nothing in those archives is automatically deleted. | A new pairing identity as an empty, read-only slave. It may receive a verified snapshot from an existing master; otherwise explicitly promote exactly one computer. |
+
+Neither choice promotes the computer. Both forget the previous pairing authority,
+accepted-snapshot lineage, saved errors and unfinished pairing operations. Keep
+local history does not migrate or repair an incompatible database: its schema
+error remains until a deliberate fresh start. No reset automatically imports
+archived history. [History recovery](#protected-history-and-manual-recovery)
+remains a separate, explicit operation for supported current-format history.
+
+The action stops the local runtime and synchronization, attempts ordinary graceful
+restoration when this computer has control, and releases its virtual IP before
+moving files. Starting fresh requires confirmation that temporary equipment
+changes have been resolved. Known saved restoration obligations on a former
+controller block a fresh start even after confirmation; retain the database or
+resolve those duties first. An incompatible or unreadable database is never
+decoded to infer equipment state. Its physical state must be checked separately;
+archiving records does not restore equipment. A slave's recorded copy does not
+transfer its master's physical obligations to the slave.
+
+Archives use private permissions and are named by time and operation ID:
+
+- Home Assistant: `/config/reset-archives/<archive>/` inside the app, normally
+  accessible as `/addon_configs/<actual-app-slug>/reset-archives/<archive>/`.
+- Ubuntu: `<dataDir>/reset-archives/<archive>/`.
+
+The result displays the specific archive path for 24 hours. Archives include the
+original `state.json`, the configured database when present, the actual promoted
+or published database, and their SQLite companion files. Configuration and
+unrelated files in the data directory are excluded. Keep mode uses a separate
+copy of the selected database; the archived copy stays inactive. On the same
+filesystem, files are renamed; between filesystems, each copy is verified and
+flushed before the original filesystem entry is removed. Permanent deletion of
+archives is manual. Ensure enough free space for the archive and retained copy.
+
+An interrupted archive remains protected across restart. The dashboard offers
+retry of the same choice using the same archive; it never resumes control or
+finishes a reset automatically. Unreadable pairing state can open a protected
+management page without interpreting or rewriting the rejected state. In that
+case **Keep local history** is unavailable because the active history cannot be
+identified reliably; **Start fresh** archives the configured storage intact.
+Invalid configuration, unsafe paths or storage permissions can still require
+repair outside the dashboard. Nested pairing/snapshot/archive paths and symlinks
+are refused rather than guessing which files to move.
+
+After resetting only one computer, the other may protect its previous lineage.
+Review its retained history before recovery or its own explicit reset. Resetting
+both computers fresh requires selecting a master again. Existing manual recovery
+and rejoin behavior is unchanged; reset archives are never used as disposable
+snapshot files or removed by replica retention.
 
 ## Protected history and manual recovery
 

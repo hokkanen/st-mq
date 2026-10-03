@@ -21,7 +21,7 @@ const operation = (view, state = 'complete', action = 'check-recovery') => ({ ..
 test('schema failures explain deliberate recovery without suggesting broker fixes', () => {
   const mismatch = pairIssueHelp({ role: 'protected', error: 'database_schema_mismatch' });
   assert.match(mismatch, /database schema does not match/);
-  assert.match(mismatch, /fresh development databases and pairing storage/);
+  assert.match(mismatch, /Reset pairing → Start fresh/);
   assert.match(mismatch, /cannot be migrated/);
   assert.equal(pairIssueHelp({ role: 'slave', sync: { state: 'error', error: 'database_schema_mismatch' } }), mismatch);
   const malformed = pairIssueHelp({ role: 'protected', error: 'database_schema_invalid' });
@@ -616,4 +616,186 @@ test('peer roles are timestamped reports and a fresh slave waits when a master i
   assert.match(confirmation, /previous master has failed or has been stopped or isolated/);
   const syncing = pairDisplay(standby({ sync: { state: 'syncing', sourceAt: now - 60000, verifiedAt: now - 1000 } }), { now });
   assert.match(syncing.syncDetail, /Last snapshot identity verified/);
+});
+
+
+const resetToken = 'b'.repeat(64);
+const resettable = (overrides = {}) => standby({ role: 'protected', reason: 'activation_failed', error: 'database_schema_mismatch',
+  reset: { token: resetToken, blockedReason: null }, actions: { reset: true, promote: true }, ...overrides });
+
+test('reset remains a management action on each role but requires current server capability and token', () => {
+  for (const role of ['master', 'slave', 'protected']) assert.equal(pairActionAllowed(resettable({ role }), 'reset'), true);
+  for (const overrides of [{ actions: { reset: false } }, { reset: {} }, { reset: { token: 'synthetic invalid review' } },
+    { busy: true }, { uiOperation: { state: 'running' } }])
+    assert.equal(pairActionAllowed(resettable(overrides), 'reset'), false);
+  assert.equal(isPairManagementRequest('/api/pair/action', { action: 'reset', requestId: id }, { topology: 'pair' }), true);
+  assert.match(pairConfirmation('reset', { mode: 'keep' }), /database and saved settings remain intact/);
+  assert.match(pairConfirmation('reset', { mode: 'fresh' }), /Archives are kept until you manually delete/);
+  assert.doesNotMatch(pairConfirmation('reset', { mode: 'fresh' }), /permanently delete|automatically promote/i);
+});
+
+test('fresh reset requires explicit restoration acknowledgement and carries the reviewed token', async () => {
+  const sent = [], confirmations = [];
+  const controller = createPairActions({ requestId: () => id, confirm: message => { confirmations.push(message); return true; },
+    request: async (path, body) => { sent.push(body); return { status: operation(standby(), 'complete', 'reset') }; } });
+  controller.update(resettable());
+  assert.equal(await controller.run('reset', { mode: 'fresh' }), false);
+  assert.equal(await controller.run('reset', { mode: 'unrecognized', restorationConfirmed: true }), false);
+  assert.equal(sent.length, 0);
+  assert.equal(confirmations.length, 0);
+  assert.equal(await controller.run('reset', { mode: 'fresh', restorationConfirmed: true }), true);
+  assert.deepEqual(sent, [{ action: 'reset', requestId: id, confirmed: true, mode: 'fresh', resetToken, restorationConfirmed: true }]);
+  assert.match(confirmations[0], /Local recording and control stop/);
+});
+
+test('keep reset preserves the database without claiming authority or requiring fresh-start consent', async () => {
+  let body, message;
+  const controller = createPairActions({ requestId: () => id, confirm: text => { message = text; return true; },
+    request: async (path, data) => { body = data; return { status: operation(resettable(), 'complete', 'reset') }; } });
+  controller.update(resettable());
+  assert.equal(await controller.run('reset', { mode: 'keep' }), true);
+  assert.deepEqual(body, { action: 'reset', requestId: id, confirmed: true, mode: 'keep', resetToken });
+  assert.match(message, /stays in Protected recovery/);
+  assert.match(message, /other computer are unchanged/);
+});
+
+test('reset confirmation is cancelled when the authority token changes or the connection is lost', async () => {
+  for (const disconnect of [false, true]) {
+    let answer, sent = 0;
+    const controller = createPairActions({ confirm: () => new Promise(resolve => { answer = resolve; }),
+      request: async () => { sent++; } });
+    controller.update(resettable());
+    const task = controller.run('reset', { mode: 'keep' });
+    if (disconnect) controller.unavailable(); else controller.update(resettable({ reset: { token: 'c'.repeat(64) } }));
+    answer(true);
+    assert.equal(await task, false);
+    assert.equal(sent, 0);
+  }
+});
+
+test('an uncertain fresh reset reuses the exact consent and request after a reload', async () => {
+  const storage = memoryStorage(), sent = [];
+  const first = createPairActions({ storage, requestId: () => id, confirm: () => true,
+    request: async (path, body) => { sent.push(body); throw new TypeError('response lost'); } });
+  first.update(resettable());
+  await first.run('reset', { mode: 'fresh', restorationConfirmed: true });
+  const restored = createPairActions({ storage, confirm: () => { throw Error('Already confirmed'); },
+    request: async (path, body) => { sent.push(body); return { status: operation(standby(), 'complete', 'reset') }; } });
+  restored.update(standby({ reset: { token: 'c'.repeat(64) } }));
+  assert.equal(await restored.retry(), true);
+  assert.equal(sent.length, 2);
+  assert.deepEqual(sent[1], sent[0]);
+  assert.equal(restored.snapshot().pending, null);
+});
+
+test('incomplete saved reset consent is rejected, and an interrupted reset can only resume the same mode', async () => {
+  for (const fields of [{ mode: 'fresh', resetToken }, { mode: 'old', resetToken, restorationConfirmed: true }, { mode: 'keep', resetToken: 'bad' }]) {
+    const storage = memoryStorage();
+    storage.setItem('stmq-pair-pending-v1', JSON.stringify({ action: 'reset', requestId: id, confirmed: true, ...fields }));
+    assert.equal(createPairActions({ storage, request: async () => {} }).snapshot().pending, null);
+  }
+  const controller = createPairActions({ confirm: () => true, request: async () => { throw Error('Wrong reset mode'); } });
+  controller.update(resettable({ reset: { token: resetToken, pendingMode: 'keep' } }));
+  assert.equal(await controller.run('reset', { mode: 'fresh', restorationConfirmed: true }), false);
+});
+
+test('reset panel displays completed archive receipts for one day and stays available on protected schema errors', () => {
+  const { document, $ } = fixture();
+  const panel = createPairPanel({ document, request: async () => {}, now: () => now });
+  const lastResult = { mode: 'fresh', completedAt: now - 1000, archiveDirectory: '/config/st-mq/reset-archives/synthetic-reset' };
+  panel.update(resettable({ reset: { token: resetToken, lastResult } }));
+  assert.equal($('pairing-reset').hidden, false);
+  assert.equal($('pairing-reset').disabled, false);
+  assert.equal($('pairing-reset-receipt').hidden, false);
+  assert.match($('pairing-reset-receipt').textContent, /synthetic-reset/);
+  assert.match($('pairing-reset-receipt').textContent, /manually delete/);
+  panel.update(resettable({ reset: { token: resetToken, lastResult: { ...lastResult, completedAt: now - 86400_001 } } }));
+  assert.equal($('pairing-reset-receipt').hidden, true);
+  assert.equal($('pairing-reset-receipt').textContent, '');
+  panel.unavailable();
+  assert.equal($('pairing-reset').disabled, true);
+});
+
+
+test('reset failures explain known recovery steps without displaying arbitrary error text', () => {
+  for (const [errorCode, message] of [['pair_reset_storage_failed', /disk space and storage permissions/],
+    ['pair_reset_unsafe_storage', /storage locations cannot be safely archived/],
+    ['pair_reset_history_unavailable', /database could not be identified/],
+    ['pair_reset_restoration_required', /outstanding temporary equipment changes/],
+    ['pair_reset_failed', /Existing files remain preserved/]]) {
+    const view = resettable({ uiOperation: { action: 'reset', state: 'error', errorCode, error: 'secret unrelated detail' } });
+    assert.match(pairIssueHelp(view), message);
+    assert.match(pairDisplay(view).summary, message);
+    assert.equal(pairDisplay(view).error, true);
+    assert.doesNotMatch(JSON.stringify(pairDisplay(view)), /secret unrelated detail/);
+  }
+  assert.doesNotMatch(pairIssueHelp(resettable({ uiOperation: { action: 'reset', state: 'error', errorCode: 'private unknown detail' } })), /private unknown detail/);
+});
+
+
+test('a restarted interrupted reset remains visible instead of suggesting ordinary promotion', () => {
+  const view = resettable({ reason: 'pairing_reset_pending', error: null,
+    reset: { token: resetToken, pendingMode: 'fresh' }, actions: { reset: true, promote: false } });
+  assert.match(pairDisplay(view).summary, /previous pairing reset did not finish/);
+  assert.match(pairDisplay(view).attention, /Pairing reset needs attention/);
+  assert.equal(pairDisplay(view).error, true);
+  assert.match(pairActionHelp(view).reset, /Retry the same choice/);
+  const { document, $ } = fixture();
+  const panel = createPairPanel({ document, request: async () => {} }); panel.update(view);
+  assert.match($('pairing-standby-help').textContent, /Complete the interrupted reset/);
+  assert.equal($('pairing-reset-keep').disabled, true);
+  assert.equal($('pairing-promote').disabled, true);
+});
+
+
+test('unreadable old pairing state blocks keep-history but still permits explicitly confirmed fresh archival', async () => {
+  const view = resettable({ reset: { token: resetToken, keepBlockedReason: 'invalid_pair_state' } });
+  const sent = [];
+  const controller = createPairActions({ confirm: () => true, request: async (path, body) => { sent.push(body); return { status: operation(standby(), 'complete', 'reset') }; } });
+  controller.update(view);
+  assert.equal(await controller.run('reset', { mode: 'keep' }), false);
+  assert.equal(sent.length, 0);
+  assert.equal(await controller.run('reset', { mode: 'fresh', restorationConfirmed: true }), true);
+  assert.equal(sent[0].mode, 'fresh');
+  const { document, $ } = fixture();
+  const panel = createPairPanel({ document, request: async () => {} }); panel.update(view);
+  assert.equal($('pairing-reset').disabled, false);
+  assert.equal($('pairing-reset-keep').disabled, true);
+  assert.match($('pairing-reset-keep-help').textContent, /previous pairing state is unreadable/);
+  assert.match($('pairing-reset-keep-help').textContent, /without reading the old format/);
+  $('pairing-reset-restoration').checked = true; panel.update(view);
+  assert.equal($('pairing-reset-fresh').disabled, false);
+});
+
+
+test('stale interrupted transitions permit an explicitly offered reset while ordinary promotion stays fenced', () => {
+  const view = resettable({ transition: { kind: 'handover', phase: 'quiescing' } });
+  assert.equal(pairActionAllowed(view, 'reset'), true);
+  assert.equal(pairActionAllowed(view, 'promote'), false);
+  assert.equal(pairActionAllowed({ ...view, busy: true }, 'reset'), false);
+  assert.equal(pairActionAllowed({ ...view, uiOperation: { state: 'running' } }, 'reset'), false);
+  const { document, $ } = fixture();
+  const panel = createPairPanel({ document, request: async () => {} }); panel.update(view);
+  assert.equal($('pairing-reset').disabled, false);
+  assert.match($('pairing-standby-help').textContent, /Reset pairing → Start fresh/);
+  assert.doesNotMatch($('pairing-standby-help').textContent, /retry promotion/);
+  panel.update(resettable({ error: null, reset: { token: resetToken, keepBlockedReason: 'invalid_pair_state' } }));
+  assert.match($('pairing-standby-help').textContent, /Saved pairing state is unreadable/);
+});
+
+
+test('durable reset receipt resolves a pending browser request after server restart without retrying it', async () => {
+  const storage = memoryStorage();
+  const first = createPairActions({ storage, requestId: () => id, confirm: () => true,
+    request: async () => { throw new TypeError('response lost'); } });
+  first.update(resettable()); await first.run('reset', { mode: 'keep' });
+  const restored = createPairActions({ storage, request: async () => { throw Error('Must not repeat completed reset'); } });
+  const lastResult = { requestId: id, mode: 'fresh', completedAt: now, archiveDirectory: '/config/st-mq/reset-archives/synthetic-reset' };
+  restored.update(resettable({ reset: { token: resetToken, lastResult } }));
+  assert.notEqual(restored.snapshot().pending, null, 'A different reset mode cannot acknowledge this request');
+  restored.update(resettable({ reset: { token: resetToken, lastResult: { ...lastResult, mode: 'keep' } } }));
+  assert.equal(restored.snapshot().pending, null);
+  assert.equal(restored.snapshot().error, false);
+  assert.match(restored.snapshot().message, /Operation completed/);
+  assert.equal(storage.getItem('stmq-pair-pending-v1'), null);
 });

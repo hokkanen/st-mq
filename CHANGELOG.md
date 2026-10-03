@@ -6,6 +6,15 @@ Versions follow Semantic Versioning. `-dev.N` denotes a development prerelease.
 
 ## Unreleased
 
+### Added
+
+- **Reset pairing…** offers **Keep local history** or **Start fresh** from the
+  paired dashboard, including protected startup failures. Both archive the
+  previous pairing files; Start fresh also archives local databases and snapshots
+  before returning as a slave. Archives remain until manually deleted and are
+  accessible through Home Assistant's app-configuration folder. Retained history
+  stays protected, and neither choice automatically promotes the computer.
+
 ### Fixed
 
 - Charger 2 retains command acknowledgements arriving during replanning so its

@@ -970,6 +970,14 @@ G_warming = G / 2</code>
               <p id="pairing-promote-help" class="muted pairing-step-help"></p>
             </div>
           </section>
+          <section class="pairing-management" aria-labelledby="pairing-reset-heading">
+            <div class="pairing-role-action pairing-reset-action">
+              <div><h3 id="pairing-reset-heading">Reset this computer’s pairing</h3><p>Keep local history protected, or archive it and start as an empty slave. Configuration and credentials stay in place. This never promotes either computer.</p></div>
+              <button id="pairing-reset" data-admin-only class="secondary-button" type="button" aria-describedby="pairing-reset-help" disabled>Reset pairing…</button>
+              <p id="pairing-reset-help" class="muted pairing-step-help"></p>
+            </div>
+            <p id="pairing-reset-receipt" class="pairing-reset-receipt" role="status" aria-live="polite" hidden></p>
+          </section>
           <p id="pairing-message" role="status" aria-live="polite"></p>
           <button id="pairing-retry" data-admin-only class="secondary-button" type="button" disabled hidden>Recheck the same request</button>
         </div>
@@ -982,6 +990,24 @@ G_warming = G / 2</code>
     </section>
   </main>
   <footer>Finnish local time · Europe/Helsinki · Weather: <a href="https://en.ilmatieteenlaitos.fi/open-data">FMI</a> / <a href="https://open-meteo.com/">Open-Meteo</a> (DWD ICON)</footer>
+  <dialog id="pairing-reset-dialog" class="pairing-reset-dialog" aria-labelledby="pairing-reset-title" aria-describedby="pairing-reset-description">
+    <h2 id="pairing-reset-title">Reset pairing</h2>
+    <p id="pairing-reset-description">This stops local recording and control. The other computer is unchanged. Choose what happens to this computer’s history.</p>
+    <section class="pairing-reset-choice">
+      <h3>Keep local history</h3>
+      <p>Preserve the database and saved settings. Archive the old pairing state and keep history protected until you explicitly choose recovery or promotion. An incompatible database remains incompatible.</p>
+      <button id="pairing-reset-keep" data-admin-only class="secondary-button" type="button" aria-describedby="pairing-reset-keep-help">Keep local history</button>
+      <p id="pairing-reset-keep-help" class="muted" role="status"></p>
+    </section>
+    <section class="pairing-reset-choice">
+      <h3>Start fresh</h3>
+      <p>Archive the database and pairing state, then start as an empty slave. History, learning and saved dashboard choices start empty locally; a master can supply its history through mirroring. Archives remain until you manually delete them.</p>
+      <label class="pairing-reset-restoration" data-admin-only><input id="pairing-reset-restoration" type="checkbox"> <span>I have resolved any temporary equipment changes. Archiving data does not restore equipment.</span></label>
+      <button id="pairing-reset-fresh" data-admin-only class="secondary-button" type="button" disabled>Start fresh…</button>
+    </section>
+    <p id="pairing-reset-dialog-help" class="muted" role="status"></p>
+    <div class="confirmation-actions"><button id="pairing-reset-cancel" class="secondary-button" type="button" autofocus>Cancel</button></div>
+  </dialog>
   <dialog id="garage-doors-dialog" class="control-dialog garage-doors-dialog" aria-labelledby="garage-doors-title" aria-describedby="garage-doors-help">
     <h2 id="garage-doors-title">Garage doors</h2>
     <p id="garage-doors-help" class="muted">Viewed from the driveway. Tap a door to operate it.</p>

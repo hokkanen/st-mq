@@ -1,5 +1,7 @@
 import { confirmAction } from './confirmation.js';
-const actions = ['check-recovery', 'recover', 'handover', 'promote', 'rejoin'];
+const actions = ['check-recovery', 'recover', 'handover', 'promote', 'rejoin', 'reset'];
+const validResetToken = value => typeof value === 'string' && /^[a-f0-9]{64}$/i.test(value);
+const resetModes = ['keep', 'fresh'];
 const pendingKey = 'stmq-pair-pending-v1';
 const uuid = /^[a-f0-9]{8}-[a-f0-9]{4}-[1-5][a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/i;
 const validPreviewId = value => typeof value === 'string' && (/^[a-f0-9]{64}$/i.test(value) || uuid.test(value));
@@ -16,7 +18,8 @@ const startupProblem = view => view?.role === 'protected' && ['activation_failed
 
 /** Only stable public error codes become instructions; raw exceptions stay private. */
 export function pairIssueHelp(view) {
-  const code = view?.error ?? view?.vip?.error ?? view?.sync?.error;
+  const resetCode = view?.uiOperation?.action === 'reset' && view.uiOperation.state === 'error' ? view.uiOperation.errorCode : null;
+  const code = resetCode ?? view?.error ?? view?.vip?.error ?? view?.sync?.error;
   return {
     vip_helper_unavailable: 'The virtual-IP helper is unavailable. Check that the address-helper socket service is running on this computer and that its socket path matches the pair configuration.',
     vip_helper_permission: 'The controller cannot access the virtual-IP helper. Check the socket permissions and the group membership of the user running the controller; sign in again after changing groups.',
@@ -32,8 +35,13 @@ export function pairIssueHelp(view) {
     mqtt_local_required: 'Pair mode needs a broker on this computer. Set the controller’s MQTT address to its local broker, usually mqtt://127.0.0.1. Devices use the shared virtual IP.',
     mqtt_resolution_failed: 'The MQTT broker name could not be resolved. Check the configured local broker address; use mqtt://127.0.0.1 when the broker runs directly on this computer.',
     runtime_failed: 'The controller could not start. Check the application’s terminal or service log for the reported reason and source location.',
-    database_schema_mismatch: 'The database schema does not match this application. Run the same current application on both computers and deliberately start fresh development databases and pairing storage. Earlier development databases cannot be migrated. See the fresh-development-databases instructions in docs/pairing.md.',
-    database_schema_invalid: 'The database structure does not match its declared schema. Restore an intact current-schema backup or deliberately start fresh development databases and pairing storage. See the fresh-development-databases instructions in docs/pairing.md.',
+    database_schema_mismatch: 'The database schema does not match this application. Run the same current application on both computers. Use Reset pairing → Start fresh to archive the old database and pairing state. Earlier development databases cannot be migrated.',
+    database_schema_invalid: 'The database structure does not match its declared schema. Restore an intact current-schema backup, or use Reset pairing → Start fresh to archive the old database and pairing state.',
+    pair_reset_failed: 'The pairing reset could not finish. Existing files remain preserved. Review the reset status below and retry the same choice.',
+    pair_reset_storage_failed: 'The pairing archive could not be completed. Existing files remain protected. Check available disk space and storage permissions, then retry the same reset choice.',
+    pair_reset_unsafe_storage: 'The configured storage locations cannot be safely archived. Check that the database, pairing storage and archive locations are separate before retrying.',
+    pair_reset_history_unavailable: 'The local history database could not be identified. Keep local history cannot continue. Start fresh can archive existing files without opening the old database.',
+    pair_reset_restoration_required: 'Resolve outstanding temporary equipment changes before starting fresh. Keep local history preserves their restoration records. Archiving records does not restore equipment.',
     snapshot_failed: 'Local history could not be opened for viewing. Keep the database files intact and check the application log. Any last verified snapshot remains available.',
     ocpp_handover_not_ready: ocppReadinessHelp,
   }[code] ?? (startupProblem(view) ? 'The controller could not start. Check the application’s terminal or service log for the startup error, then correct the local setup.' : '');
@@ -50,7 +58,9 @@ export function isPairManagementRequest(path, body, status) {
 }
 
 export function pairActionAllowed(view, action) {
-  if (!view || view.busy || view.transition || view.uiOperation?.state === 'running' || view.actions?.[action] !== true) return false;
+  if (!view || view.busy || view.uiOperation?.state === 'running' || view.actions?.[action] !== true) return false;
+  if (action === 'reset') return ['master', 'slave', 'protected'].includes(view.role) && validResetToken(view.reset?.token);
+  if (view.transition) return false;
   if (action === 'promote') return ['slave', 'protected'].includes(view.role);
   if (view.role !== 'master') return false;
   if (action === 'recover') return view.recovery?.donorRole === 'protected' && checkedPreview(view);
@@ -58,7 +68,10 @@ export function pairActionAllowed(view, action) {
   return ['check-recovery', 'handover'].includes(action);
 }
 
-export function pairConfirmation(action, { discardUnrecovered = false, counts = {}, bootstrapPending = false } = {}) {
+export function pairConfirmation(action, { discardUnrecovered = false, counts = {}, bootstrapPending = false, mode } = {}) {
+  if (action === 'reset') return mode === 'fresh'
+    ? 'Archive this computer’s database and pairing state, then start as an empty slave? Local recording and control stop. Current history, learning and saved dashboard choices leave the active database. Archives are kept until you manually delete them; configuration and credentials stay in place. The other computer is unchanged and may supply its database through mirroring. This computer will not become master automatically.'
+    : 'Reset pairing and keep local history? Local recording and control stop. The database and saved settings remain intact. Old pairing state is archived. This computer stays in Protected recovery until you explicitly choose recovery or promotion. Configuration, credentials and the other computer are unchanged.';
   if (action === 'promote' && bootstrapPending) return 'Promote this computer to the pair’s first master? Confirm that the other computer is not already master or controlling equipment. Only one computer may be master. This starts local recording and enables control according to this computer’s operating mode. Leave the other computer as a read-only slave; it will synchronize from this master.';
   if (action === 'rejoin' && discardUnrecovered) {
     const missing = count(counts.missing);
@@ -75,7 +88,7 @@ export function pairConfirmation(action, { discardUnrecovered = false, counts = 
 const phaseText = {
   'check-recovery': 'Checking the other computer for missing history.', recover: 'Recovering gaps and rebuilding the model.',
   handover: 'Handing control to the other computer.', promote: 'Preparing this computer to become master.',
-  rejoin: 'Preparing a verified master copy to resume mirroring.',
+  rejoin: 'Preparing a verified master copy to resume mirroring.', reset: 'Archiving the previous pairing state and resetting this computer.',
   importing: 'Importing missing history.', 'catching-up': 'Catching the rebuilt model up to current observations.',
   publishing: 'Publishing the verified recovery result.',
   checking: 'Checking the other computer for missing history.', recovering: 'Recovering missing history.',
@@ -92,7 +105,11 @@ export function pairDisplay(view, { now = Date.now(), formatTime = at => new Dat
   const state = view.transition ? 'transition' : ['master', 'slave', 'protected'].includes(view.role) ? view.role : 'unknown';
   const issue = pairIssueHelp(view);
   const schemaFailure = ['database_schema_mismatch', 'database_schema_invalid'].includes(view.error ?? view.vip?.error ?? view.sync?.error);
-  const summary = schemaFailure ? issue : startupProblem(view)
+  const resetFailed = view.uiOperation?.action === 'reset' && view.uiOperation.state === 'error';
+  const resetInterrupted = ['pairing_reset_pending', 'pairing_reset_failed'].includes(view.reason);
+  const summary = (schemaFailure || resetFailed) && issue ? issue
+    : resetInterrupted ? 'The previous pairing reset did not finish. Existing files remain preserved and this computer cannot control equipment. Review Reset pairing below to complete recovery.'
+    : startupProblem(view)
     ? `${issue} Local history is preserved. After correcting the setup, retry promotion below; the other computer can stay offline.`
     : state === 'protected' && view.error === 'snapshot_failed' ? issue
     : state === 'protected' ? 'Local history is preserved. Incoming mirroring is blocked so another computer cannot overwrite it. Inspect this history before choosing recovery or promotion.'
@@ -160,7 +177,8 @@ export function pairDisplay(view, { now = Date.now(), formatTime = at => new Dat
         : sync.state === 'error' ? 'Sync needs attention'
           : sourceAt > now ? 'Snapshot clock ahead'
             : sourceAt ? `Snapshot ${Math.max(0, Math.floor((now - sourceAt) / 60_000))} min old` : 'Waiting for first snapshot';
-  const attention = phase || (view.error === 'ocpp_handover_not_ready' ? ocppReadinessHelp
+  const attention = phase || (resetFailed || resetInterrupted ? 'Pairing reset needs attention · open details before retrying.'
+    : view.error === 'ocpp_handover_not_ready' ? ocppReadinessHelp
     : startupProblem(view) ? 'Master startup needs attention · open details for the next step.'
     : state === 'protected' ? 'Local history is preserved · open details to choose the next step.'
       : recovery.pendingRelease ? 'Mirroring completion is unconfirmed · verify the saved request.'
@@ -177,7 +195,7 @@ export function pairDisplay(view, { now = Date.now(), formatTime = at => new Dat
               ? 'Sync needs attention · the last verified snapshot is kept.' : 'Sync needs attention · no verified snapshot is available yet.' : '');
   return { state, title: `${roleName(view.role)}${state === 'transition' ? ' · changing role' : ''}`, summary, peerStat, syncStat, attention,
     peer: peerText, broker: brokerText, sync: syncText, syncDetail, phase, recovery: recoveryText,
-    error: Boolean(view.error || recovery.error || vip.error || (view.role !== 'master' && sync.state === 'error') || peerSync?.state === 'error'),
+    error: Boolean(resetFailed || resetInterrupted || view.error || recovery.error || vip.error || (view.role !== 'master' && sync.state === 'error') || peerSync?.state === 'error'),
     preview: recovery.preview ?? null, report: recovery.report ?? null };
 }
 
@@ -188,6 +206,10 @@ export function pairActionHelp(view) {
   const wait = locked ? 'Wait for the current operation to finish.' : null;
   const checked = checkedPreview(view);
   return {
+    reset: (view?.busy || view?.uiOperation?.state === 'running' ? 'Wait for the current operation to finish.' : null) ?? (view?.reset?.pendingMode ? 'A reset was interrupted. Retry the same choice to finish using the retained archive.'
+      : view?.reset?.blockedReason ? 'Reset is unavailable until the current operation or storage problem is resolved.'
+      : view?.actions?.reset === true ? 'Choose whether to keep local history or archive it and start fresh. Neither choice promotes this computer.'
+      : 'Reset is unavailable until this computer’s state is confirmed.'),
     check: wait ?? (view?.recovery?.pendingRelease ? 'Verify the pending mirroring request before starting another check.'
       : view?.actions?.['check-recovery'] === true ? view?.peer?.role === 'slave' ? 'Compare the slave snapshot with this master. Normal mirroring does not need manual recovery.'
         : recovery === 'complete' ? 'Recovery finished. Resume mirroring below; checking again does not resume it.' : 'Ready to compare. You can run this check again to refresh the preview.'
@@ -240,10 +262,12 @@ function restoredOperation(storage) {
     const body = JSON.parse(storage?.getItem(pendingKey) ?? 'null');
     if (!actions.includes(body?.action) || !uuid.test(body?.requestId ?? '')) return null;
     if (body.action !== 'check-recovery' && body.confirmed !== true) return null;
+    if (body.action === 'reset' && (!resetModes.includes(body.mode) || !validResetToken(body.resetToken) || (body.mode === 'fresh' && body.restorationConfirmed !== true))) return null;
     if (body.action === 'recover' && !validPreviewId(body.previewId)) return null;
     if (body.action === 'rejoin' && body.discardUnrecovered === true && !validPreviewId(body.previewId)) return null;
     return { action: body.action, requestId: body.requestId,
       ...(body.action !== 'check-recovery' ? { confirmed: true } : {}),
+      ...(body.action === 'reset' ? { mode: body.mode, resetToken: body.resetToken, ...(body.mode === 'fresh' ? { restorationConfirmed: true } : {}) } : {}),
       ...(body.action === 'recover' ? { previewId: body.previewId } : {}),
       ...(body.action === 'rejoin' && body.discardUnrecovered === true ? { discardUnrecovered: true, previewId: body.previewId } : {}) };
   } catch { return null; }
@@ -260,8 +284,11 @@ export function createPairActions({ request, storage, confirm = message => confi
   function acceptStatus(next) {
     view = next; available = true;
     const durable = pending && next.recentActions?.find(operation => operation.requestId === pending.requestId);
+    const resetReceipt = pending?.action === 'reset' && next.reset?.lastResult?.requestId === pending.requestId
+      && next.reset.lastResult.mode === pending.mode ? next.reset.lastResult : null;
     const operation = next.uiOperation?.id === pending?.requestId ? next.uiOperation
-      : durable ? { ...durable, id: durable.requestId } : null;
+      : durable ? { ...durable, id: durable.requestId }
+        : resetReceipt ? { id: resetReceipt.requestId, state: 'complete' } : null;
     if (pending && operation?.id === pending.requestId && ['complete', 'error'].includes(operation.state)) {
       error = operation.state === 'error';
       message = error ? pairIssueHelp(next) ? '' : next.recovery?.pendingRelease
@@ -277,10 +304,13 @@ export function createPairActions({ request, storage, confirm = message => confi
     busy = true; notify();
     if (body) {
       const confirmation = body.action === 'rejoin' && view.recovery?.pendingRelease?.requestId === body.requestId ? null : pairConfirmation(body.action, { discardUnrecovered: body.discardUnrecovered,
-        counts: view.recovery?.preview?.counts, bootstrapPending: view.bootstrapPending && !(view.peer?.reachable === true && view.peer.role === 'master') });
+        counts: view.recovery?.preview?.counts, mode: body.mode, bootstrapPending: view.bootstrapPending && !(view.peer?.reachable === true && view.peer.role === 'master') });
       let accepted = !confirmation;
       try { if (confirmation) accepted = await confirm(confirmation); } catch { /* A blocked dialog is a cancelled action. */ }
       if (!accepted || !available || !pairActionAllowed(view, body.action)) { busy = false; notify(); return false; }
+      if (body.action === 'reset' && (body.resetToken !== view.reset?.token || (view.reset?.pendingMode && view.reset.pendingMode !== body.mode) || (body.mode === 'keep' && view.reset?.keepBlockedReason))) {
+        busy = false; error = true; message = 'This computer’s pairing state changed. Review the current status before resetting it.'; notify(); return false;
+      }
       if ((body.previewId && body.previewId !== view.recovery?.preview?.previewId)
           || (body.discardUnrecovered && !checkedPreview(view))
           || (body.action === 'rejoin' && !body.discardUnrecovered && view.recovery?.state !== 'complete')) {
@@ -312,9 +342,10 @@ export function createPairActions({ request, storage, confirm = message => confi
   return { snapshot,
     update(next) { if (next) acceptStatus(next); else { view = null; available = false; } notify(); },
     unavailable() { available = false; notify(); }, retry: () => send(),
-    run(action) {
+    run(action, options = {}) {
       if (busy || pending || !available || !actions.includes(action) || !pairActionAllowed(view, action)) return Promise.resolve(false);
-      return send({ action, requestId: action === 'rejoin' && view.recovery?.pendingRelease ? view.recovery.pendingRelease.requestId : requestId(), ...(action !== 'check-recovery' ? { confirmed: true } : {}),
+      if (action === 'reset' && (!resetModes.includes(options.mode) || (options.mode === 'fresh' && options.restorationConfirmed !== true) || (view.reset?.pendingMode && view.reset.pendingMode !== options.mode) || (options.mode === 'keep' && view.reset?.keepBlockedReason))) return Promise.resolve(false);
+      return send({ action, ...(action === 'reset' ? { mode: options.mode, resetToken: view.reset.token, ...(options.mode === 'fresh' ? { restorationConfirmed: true } : {}) } : {}), requestId: action === 'rejoin' && view.recovery?.pendingRelease ? view.recovery.pendingRelease.requestId : requestId(), ...(action !== 'check-recovery' ? { confirmed: true } : {}),
         ...(action === 'recover' ? { previewId: view.recovery.preview.previewId } : {}),
         ...(action === 'rejoin' && checkedPreview(view) ? { discardUnrecovered: true, previewId: view.recovery.preview.previewId } : {}) });
     } };
@@ -323,10 +354,23 @@ export function createPairActions({ request, storage, confirm = message => confi
 export function createPairPanel({ document, request, storage, confirm, afterMutation, formatTime, now = () => Date.now() }) {
   const $ = id => document.getElementById(id);
   const controller = createPairActions({ request, storage, confirm, afterMutation, onChange: render });
+  const resetDialog = $('pairing-reset-dialog');
+  function resetDialogState(state) {
+    const allowed = state.available && !state.busy && !state.pending && pairActionAllowed(state.view, 'reset');
+    $('pairing-reset-keep').disabled = !allowed || state.view?.reset?.pendingMode === 'fresh' || Boolean(state.view?.reset?.keepBlockedReason);
+    $('pairing-reset-fresh').disabled = !allowed || state.view?.reset?.pendingMode === 'keep' || $('pairing-reset-restoration').checked !== true;
+    $('pairing-reset-restoration').disabled = !allowed || state.view?.reset?.pendingMode === 'keep';
+    $('pairing-reset-keep-help').textContent = state.view?.reset?.keepBlockedReason === 'invalid_pair_state'
+      ? 'The previous pairing state is unreadable, so the active history cannot be identified. Start fresh archives the configured storage without reading the old format.'
+      : state.view?.reset?.keepBlockedReason ? 'The active history cannot be identified safely. Keep local history is unavailable.' : '';
+    $('pairing-reset-dialog-help').textContent = !state.available ? 'Reconnect before resetting this computer.'
+      : state.view?.reset?.pendingMode ? 'Finish the interrupted reset using the same choice. The existing archive is retained.'
+      : !allowed ? 'This computer’s state changed. Close this dialog and review its status.' : '';
+  }
   function render(state) {
     const display = pairDisplay(state.view, { now: now(), formatTime });
     $('pairing-panel').hidden = !display;
-    if (!display) return;
+    if (!display) { if (resetDialog.open) resetDialog.close(); return; }
     $('pairing-panel').dataset.state = display.state;
     $('pairing-panel').setAttribute('aria-busy', String(state.busy || state.view.busy === true));
     for (const field of ['title', 'summary', 'peer', 'broker', 'sync', 'syncDetail', 'phase', 'recovery', 'peerStat', 'syncStat']) {
@@ -344,7 +388,13 @@ export function createPairPanel({ document, request, storage, confirm, afterMuta
     $('pairing-panel').dataset.attention = String(Boolean(state.error || display.error || !state.available));
     $('pairing-master-controls').hidden = state.view.role !== 'master';
     $('pairing-slave-controls').hidden = !['slave', 'protected'].includes(state.view.role);
-    $('pairing-standby-help').textContent = startupProblem(state.view)
+    $('pairing-standby-help').textContent = state.view.reset?.pendingMode
+      ? 'Complete the interrupted reset with the same choice below. Local control and incoming mirroring remain blocked while the archive is incomplete.'
+      : state.view.reset?.keepBlockedReason === 'invalid_pair_state'
+      ? 'Saved pairing state is unreadable. Use Reset pairing → Start fresh to archive the configured storage and start as a slave. No previous authority is restored.'
+      : ['database_schema_mismatch', 'database_schema_invalid'].includes(state.view.error ?? state.view.sync?.error)
+      ? 'The database cannot be used by this application. Use Reset pairing → Start fresh to archive it, or restore an intact current-schema backup. Keeping local history does not change its schema.'
+      : startupProblem(state.view)
       ? 'Startup stopped before this computer could become master. This does not mean that history has diverged. Fix the reported setup problem, then explicitly retry promotion. All database and settings edits remain disabled until it succeeds.'
       : state.view.bootstrapPending
       ? state.view.peer?.reachable === true && state.view.peer.role === 'master'
@@ -354,7 +404,7 @@ export function createPairPanel({ document, request, storage, confirm, afterMuta
       ? 'If another computer is the master, use its Paired computers section to check this computer’s history and recover missing entries before resuming mirroring. If this computer should become master instead, promote it below using the preserved local history.'
       : 'This computer reads the last copied snapshot and does not record measurements or send commands. While the master is unavailable, the history remains readable and grows older. Mirroring catches up when the master returns, provided the histories have not diverged.';
     const help = pairActionHelp(state.view);
-    for (const field of ['check', 'recover', 'rejoin', 'handover', 'promote']) {
+    for (const field of ['check', 'recover', 'rejoin', 'handover', 'promote', 'reset']) {
       const node = $(`pairing-${field}-help`);
       node.textContent = !state.available ? 'Reconnect to this computer before starting an action.'
         : state.busy || state.pending ? 'Wait for the current request to be confirmed before starting another action.' : help[field];
@@ -364,15 +414,35 @@ export function createPairPanel({ document, request, storage, confirm, afterMuta
       : checkedPreview(state.view) && hasMissing(state.view) && !mirrorComparison(state.view) ? 'Skip recovery and resume mirroring' : 'Resume mirroring';
     for (const action of actions) {
       const button = $(`pairing-${action}`);
-      button.hidden = action === 'promote' ? !['slave', 'protected'].includes(state.view.role) : state.view.role !== 'master';
+      button.hidden = action === 'reset' ? false : action === 'promote' ? !['slave', 'protected'].includes(state.view.role) : state.view.role !== 'master';
       button.disabled = !state.available || state.busy || Boolean(state.pending) || !pairActionAllowed(state.view, action);
     }
+    resetDialogState(state);
+    const receipt = state.view.reset?.lastResult;
+    const showReceipt = receipt && resetModes.includes(receipt.mode) && typeof receipt.archiveDirectory === 'string' && stamp(receipt.completedAt) && receipt.completedAt <= now() && now() - receipt.completedAt <= 86400_000;
+    $('pairing-reset-receipt').hidden = !showReceipt;
+    $('pairing-reset-receipt').textContent = showReceipt ? `${receipt.mode === 'keep' ? 'Pairing reset; local history kept protected.' : 'Started fresh as a slave.'} Archive: ${receipt.archiveDirectory}. Archives are kept until you manually delete them.` : '';
     $('pairing-retry').hidden = !state.pending || (state.view.uiOperation?.id === state.pending.requestId && state.view.uiOperation.state === 'running');
     $('pairing-retry').disabled = !state.available || state.busy;
     const report = ['complete', 'resolved'].includes(state.view.recovery?.state) ? display.report : null;
     renderRecoveryReport(document, $('pairing-preview'), report ?? display.preview, { formatTime, report: Boolean(report), comparison: mirrorComparison(state.view) });
   }
-  for (const action of actions) $(`pairing-${action}`).addEventListener('click', () => { void controller.run(action); });
+  for (const action of actions.filter(action => action !== 'reset')) $(`pairing-${action}`).addEventListener('click', () => { void controller.run(action); });
+  $('pairing-reset').addEventListener('click', () => {
+    const state = controller.snapshot();
+    if (!state.available || state.busy || state.pending || !pairActionAllowed(state.view, 'reset') || resetDialog.open) return;
+    $('pairing-reset-restoration').checked = false; resetDialogState(state);
+    resetDialog.showModal(); $('pairing-reset-cancel').focus();
+  });
+  $('pairing-reset-cancel').addEventListener('click', () => resetDialog.close());
+  resetDialog.addEventListener('close', () => $('pairing-reset').focus());
+  $('pairing-reset-restoration').addEventListener('change', () => resetDialogState(controller.snapshot()));
+  for (const mode of resetModes) $(`pairing-reset-${mode}`).addEventListener('click', () => {
+    if ($(`pairing-reset-${mode}`).disabled) return;
+    const restorationConfirmed = $('pairing-reset-restoration').checked === true;
+    resetDialog.close();
+    void controller.run('reset', { mode, ...(mode === 'fresh' ? { restorationConfirmed } : {}) });
+  });
   $('pairing-retry').addEventListener('click', () => { void controller.retry(); });
   render(controller.snapshot());
   return controller;

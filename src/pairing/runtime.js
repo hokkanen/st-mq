@@ -1,5 +1,5 @@
 import { join } from 'node:path';
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import { existsSync } from 'node:fs';
 import { mkdir, rm } from 'node:fs/promises';
 import { configurationSource } from '../app/config.js';
@@ -11,9 +11,13 @@ import { databaseErrorDetails } from '../storage/database-errors.js';
 import { requireLocalBroker } from './config.js';
 import { PairManager } from './manager.js';
 import { ocppHandoverHooks } from './ocpp.js';
+import { archiveRoot, createResetArchive, resumeResetArchive, selectResetDatabase } from './reset-storage.js';
+import { resetRestorationStatus } from './reset-safety.js';
 
-const ACTIONS = new Set(['check-recovery', 'recover', 'handover', 'promote', 'rejoin']);
-const requestError = message => Object.assign(new Error(message), { statusCode: 409 });
+const ACTIONS = new Set(['check-recovery', 'recover', 'handover', 'promote', 'rejoin', 'reset']);
+const RESET_ERRORS = new Set(['pair_reset_storage_failed', 'pair_reset_unsafe_storage',
+  'pair_reset_history_unavailable', 'pair_reset_restoration_required', 'pair_reset_failed']);
+const requestError = message => Object.assign(new Error(message), { statusCode: 409, publicMessage: message });
 
 async function prepareAddonVipPolicy(config) {
   if (!config.addon || config.pair.vip.socketPath) return;
@@ -26,10 +30,13 @@ async function prepareAddonVipPolicy(config) {
 export async function startPaired({ config, readConfig, clock = Date.now, providerOptions, mqttOptions,
   startRuntime, installSignalHandlers = true, managerFactory = options => new PairManager(options),
   validateBroker = requireLocalBroker, recoveryModule = () => import('../recovery/service.js'),
-  managerOptions = {}, prepareVipPolicy = prepareAddonVipPolicy, snapshotSource = createSourceSnapshot } = {}) {
+  managerOptions = {}, prepareVipPolicy = prepareAddonVipPolicy, snapshotSource = createSourceSnapshot,
+  resetStorage = { createResetArchive, resumeResetArchive, selectResetDatabase } } = {}) {
   let runtime = null, manager, closed = false, recoveryRunning = false, latestOperation = null;
   let primaryPath = config.dbPath;
   let closing = null;
+  let resetPending = null;
+  const resetSession = randomUUID();
   const startupAbort = new AbortController();
   let finishStartup;
   const startupSettled = new Promise(resolve => { finishStartup = resolve; });
@@ -47,38 +54,70 @@ export async function startPaired({ config, readConfig, clock = Date.now, provid
   }
   const operations = new Map(), handlers = new Map();
   const runtimeConfiguration = next => inheritConfigurationSnapshot(next, { ...next, role: 'master', dbPath: primaryPath });
+  function resetStatus() {
+    const state = manager.state?.value;
+    const token = createHash('sha256').update(JSON.stringify([resetSession, state?.nodeId, state?.epoch, state?.role,
+      state?.accepted?.generation, state?.transition, state?.recovery?.releaseOperation?.requestId,
+      state?.reset, state?.resetReceipt?.requestId])).digest('hex');
+    return { token, archiveDirectory: archiveRoot(config), pendingMode: state?.reset?.mode ?? null,
+      keepBlockedReason: manager.state?.invalid ? 'invalid_pair_state' : null,
+      blockedReason: manager.busy || manager.stopping || closed || closing || resetPending ? 'busy' : null,
+      lastResult: state?.resetReceipt ?? null };
+  }
   const context = {
     canControl: () => !closed && Boolean(manager?.canControl()),
     recovering: () => recoveryRunning,
     configurationSource: configurationSource(config), runtimeConfiguration,
-    status: () => ({ ...manager.status(), ...(latestOperation ? { uiOperation: latestOperation } : {}) }),
+    status: () => {
+      const status = manager.status(), reset = resetStatus();
+      return { ...status, actions: { ...status.actions, reset: !reset.blockedReason }, reset,
+        ...(latestOperation ? { uiOperation: latestOperation } : {}) };
+    },
     requestAction(input) {
       if (!input || typeof input !== 'object' || Array.isArray(input)
-        || Object.keys(input).some(key => !['action', 'requestId', 'confirmed', 'previewId', 'discardUnrecovered'].includes(key))
+        || Object.keys(input).some(key => !['action', 'requestId', 'confirmed', 'previewId', 'discardUnrecovered',
+          'mode', 'resetToken', 'restorationConfirmed'].includes(key))
+        || (input.action !== 'reset' && ['mode', 'resetToken', 'restorationConfirmed'].some(key => key in input))
+        || (input.action === 'reset' && (!['keep', 'fresh'].includes(input.mode)
+          || typeof input.resetToken !== 'string' || !/^[a-f0-9]{64}$/.test(input.resetToken)
+          || ['previewId', 'discardUnrecovered'].some(key => key in input)
+          || ('restorationConfirmed' in input && input.restorationConfirmed !== true)))
         || ('discardUnrecovered' in input && (input.action !== 'rejoin' || input.discardUnrecovered !== true))
         || !ACTIONS.has(input.action) || !/^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/.test(input.requestId ?? ''))
         throw requestError('Choose a paired action with a unique request ID.');
       if (input.action !== 'check-recovery' && input.confirmed !== true)
         throw requestError('Confirm this paired action before continuing.');
+      if (input.action === 'reset' && input.mode === 'fresh' && input.restorationConfirmed !== true)
+        throw requestError('Confirm that temporary equipment changes have been resolved before starting fresh.');
       const previous = operations.get(input.requestId);
       if (previous && !(previous.action === 'rejoin' && input.action === 'rejoin' && previous.state === 'error')) {
-        if (previous.action !== input.action) throw requestError('This request ID belongs to another action.');
+        if (previous.action !== input.action || previous.mode !== input.mode) throw requestError('This request ID belongs to another action.');
         latestOperation = previous;
+        return context.status();
+      }
+      const receipt = manager.state?.value?.resetReceipt;
+      if (receipt?.requestId === input.requestId) {
+        if (input.action !== 'reset' || input.mode !== receipt.mode) throw requestError('This request ID belongs to another action.');
+        latestOperation = { id: input.requestId, action: 'reset', mode: receipt.mode, state: 'complete',
+          finishedAt: receipt.completedAt, result: receipt };
         return context.status();
       }
       if (closed || closing || [...operations.values()].some(value => value.state === 'running'))
         throw requestError('A paired operation is already running.');
-      const operation = { id: input.requestId, action: input.action, state: 'running', startedAt: clock() };
+      if (input.action === 'reset') assertReset(input);
+      const operation = { id: input.requestId, action: input.action, ...(input.mode ? { mode: input.mode } : {}), state: 'running', startedAt: clock() };
       operations.set(input.requestId, operation); latestOperation = operation;
       // Let the acceptance response leave the current listener before a handover
       // closes that listener and reopens the read-only view on the same port.
       setImmediate(() => {
-        const done = Promise.resolve().then(() => manager.action(input.action, input));
+        const done = Promise.resolve().then(() => input.action === 'reset' ? resetPairing(input) : manager.action(input.action, input));
         void done.then(result => {
           operation.state = result?.ok === false ? 'error' : 'complete'; operation.finishedAt = clock();
+          if (input.action === 'reset') operation.result = result;
           if (result?.ok === false) operation.error = 'This operation did not complete. Review the current state before starting another action.';
         }, error => {
           operation.state = 'error'; operation.finishedAt = clock();
+          if (input.action === 'reset') operation.errorCode = RESET_ERRORS.has(error?.code) ? error.code : 'pair_reset_failed';
           operation.error = error?.publicMessage ?? 'The paired operation did not complete. Check its status and retry when ready.';
         }).finally(() => {
           while (operations.size > 64) {
@@ -140,7 +179,11 @@ export async function startPaired({ config, readConfig, clock = Date.now, provid
       const signal = replicaAbort.signal;
       runtimeStarting = (async () => {
         let directory = config.pair.snapshotDirectory;
-        if ((role ?? manager.status().role) === 'protected' && dbPath && existsSync(dbPath)) {
+        if (manager.state?.invalid || manager.state?.value?.reset) {
+          // Partial archives are never interpreted as a new database or replica.
+          directory = join(config.pair.directory, 'reset-view');
+          await ownedDirectory(directory, '.st-mq-reset-view');
+        } else if ((role ?? manager.status().role) === 'protected' && dbPath && existsSync(dbPath)) {
           let incoming;
           try {
             directory = join(config.pair.directory, 'protected-view');
@@ -199,7 +242,89 @@ export async function startPaired({ config, readConfig, clock = Date.now, provid
       } finally { recoveryRunning = false; }
     },
   };
-  manager = managerFactory({ config: config.pair, hooks, clock, ...managerOptions });
+  const makeManager = state => managerFactory({ config: config.pair, hooks, clock, ...managerOptions, ...(state ? { state } : {}) });
+  manager = makeManager();
+
+  function assertReset(input) {
+    const status = resetStatus();
+    if (status.blockedReason || manager.demoting) throw requestError('Wait for the current paired operation to finish before resetting.');
+    if (input.resetToken !== status.token) throw requestError('Pairing changed while this confirmation was open. Review the reset again.');
+    if (status.pendingMode && input.mode !== status.pendingMode)
+      throw requestError('Finish the interrupted reset with its original choice before starting another reset.');
+    if (status.keepBlockedReason && input.mode === 'keep')
+      throw requestError('The previous pairing state is unreadable. Start fresh archives the configured storage without interpreting that state.');
+  }
+
+  async function resetPairing(input) {
+    assertReset(input);
+    const old = manager;
+    old.busy = true;
+    old.phase = 'reset';
+    resetPending = performReset(old, input);
+    try { return await resetPending; }
+    finally { resetPending = null; }
+  }
+
+  async function performReset(old, input) {
+    let original, result, failure;
+    try {
+      old.prepareShutdown();
+      // Retain command authority only for ordinary graceful restoration. It is
+      // revoked before archiving, and a completed close alone is not proof that
+      // every physical obligation has been resolved.
+      await hooks.stopControl({ restore: old.canControl() });
+      old.activeAllowed = false;
+      await old.vip.release();
+      if (old.vip.status().owned !== false) throw requestError('The virtual address could not be released. Pairing was not reset.');
+      await old.close({ preserveState: true });
+      await old.snapshots.mutations;
+      original = structuredClone(old.state.value);
+      if (!original.reset && input.mode === 'fresh' && original.everWritten) {
+        const source = await resetStorage.selectResetDatabase(config, original).catch(error => {
+          if (error.code !== 'pair_reset_history_unavailable') throw error;
+          return null; // Unknown history remains opaque; explicit equipment-safe confirmation is required above.
+        });
+        if (resetRestorationStatus(source) === 'pending')
+          throw Object.assign(requestError('Temporary equipment changes still require restoration. Keep local history, or resolve them before starting fresh.'),
+            { code: 'pair_reset_restoration_required' });
+      }
+      requireOpen();
+      let journal = original.reset;
+      if (!journal) {
+        const plan = await resetStorage.createResetArchive({ config, state: original, mode: input.mode,
+          requestId: input.requestId, clock });
+        journal = { requestId: input.requestId, mode: input.mode, archiveDirectory: plan.archiveDirectory };
+        await old.state.beginReset(journal);
+      }
+      result = await resetStorage.resumeResetArchive(journal.archiveDirectory,
+        { config, requestId: journal.requestId, mode: journal.mode });
+      const receipt = { ...journal, requestId: input.requestId, completedAt: clock() };
+      await old.state.resetPairing({ activeDbPath: result.keptDbPath, receipt });
+      primaryPath = result.keptDbPath ?? config.dbPath;
+      result = receipt;
+    } catch (error) {
+      failure = error;
+      hooks.revokeControl(); old.activeAllowed = false;
+      await hooks.stopControl({ restore: false }).catch(() => {});
+      await old.vip.release().catch(() => {});
+      await old.close({ preserveState: true }).catch(() => {});
+      // No failure, including archive I/O or interrupted shutdown, reinstates a
+      // former master. The pending journal retains the explicit retry operation.
+      await old.state.update({ role: 'protected', reason: old.state.value.reset ? 'pairing_reset_pending' : 'pairing_reset_failed',
+        transition: null, activationError: null }).catch(() => {});
+    }
+    // The same SQLite lock remains held across manager replacement. There is no
+    // interval in which another process can adopt these paths during a reset.
+    manager = makeManager(old.state);
+    if (!closing) {
+      try { await manager.init({ stateOpen: true }); await manager.start(); }
+      catch (error) { failure ??= error; }
+    }
+    if (failure) throw failure?.publicMessage ? failure
+      : requestError('Pairing reset did not complete. The old files remain preserved. Review the state and retry.');
+    return result;
+  }
+
   function close() {
     if (closing) return closing;
     // Manager chooses the appropriate restoring/nonrestoring shutdown while its
@@ -209,6 +334,7 @@ export async function startPaired({ config, readConfig, clock = Date.now, provid
     for (const [signal, handler] of handlers) process.removeListener(signal, handler);
     closing = (async () => {
       await startupSettled;
+      if (resetPending) await resetPending.catch(() => {});
       const errors = [];
       try { await hooks.stopControl({ restore: manager.canControl() }); } catch (error) { errors.push(error); }
       try { await manager.close(); } catch (error) { errors.push(error); }
@@ -224,12 +350,12 @@ export async function startPaired({ config, readConfig, clock = Date.now, provid
   try {
     await prepareVipPolicy(config);
     requireOpen();
-    await manager.init();
+    await manager.init({ allowInvalidState: true });
     requireOpen();
     await manager.start();
     requireOpen();
     finishStartup();
-    return { pair: manager, get store() { return runtime?.store; }, get engine() { return runtime?.engine; },
+    return { get pair() { return manager; }, get store() { return runtime?.store; }, get engine() { return runtime?.engine; },
       get server() { return runtime?.server; }, get webAccess() { return runtime?.webAccess; }, close,
       status: context.status, requestAction: context.requestAction };
   } catch (error) { finishStartup(); try { await close(); } catch (cleanupError) { error.cleanupError = cleanupError; } throw error; }

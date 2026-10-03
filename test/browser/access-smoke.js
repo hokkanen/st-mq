@@ -25,7 +25,7 @@ try {
   config.topology = 'pair'; // Synthetic pairContext below owns authority; no peer transport starts.
   const pair = { role: 'master', canControl: true, busy: false,
     peer: { reachable: true, role: 'slave', lastSeenAt: now }, vip: { owned: true, ready: true },
-    recovery: { state: 'idle' }, actions: { 'check-recovery': true, recover: false, rejoin: false, handover: true, promote: false } };
+    recovery: { state: 'idle' }, reset: { token: 'b'.repeat(64) }, actions: { 'check-recovery': true, recover: false, rejoin: false, handover: true, promote: false, reset: true } };
   app = await start({ config, clock: () => now, pairContext: { status: () => pair,
     canControl: () => true, recovering: () => false,
     requestAction: () => { throw new Error('The browser fixture must never dispatch pairing operations.'); } } });
@@ -268,8 +268,18 @@ try {
       assert(states.length > 0);
       assert.equal(states.every(Boolean), role === 'family', `${role}: ${selector}`);
     }
-    for (const selector of ['#pairing-check-recovery', '#pairing-handover', '.provider-local-adopt'])
+    for (const selector of ['#pairing-check-recovery', '#pairing-handover', '#pairing-reset', '.provider-local-adopt'])
       assert.equal(await evaluate(`document.querySelector(${JSON.stringify(selector)}).disabled`), role === 'family', `${role}: ${selector}`);
+    if (role === 'family') {
+      await evaluate("document.getElementById('pairing-reset').dispatchEvent(new MouseEvent('click', { bubbles: true })); true");
+      assert.equal(await evaluate("document.getElementById('pairing-reset-dialog').open"), false, 'Family synthetic clicks cannot open reset');
+    } else {
+      await evaluate("document.getElementById('pairing-reset').click(); true");
+      assert.equal(await evaluate("document.getElementById('pairing-reset-dialog').open"), true, 'Admin can review reset choices');
+      assert.equal(await evaluate("document.getElementById('pairing-reset-keep').disabled"), false);
+      assert.equal(await evaluate("document.getElementById('pairing-reset-fresh').disabled"), true, 'Consent is required even for admin');
+      await evaluate("document.getElementById('pairing-reset-cancel').click(); true");
+    }
     for (const id of ['charger1-charge-now', 'charger1-enabled', 'charger1-setting-readyBy-choose', 'charger1-identify',
       'charger1-setting-readyBy', 'charger1-setting-manualSoc', 'charger1-setting-minimumSoc', 'charger1-setting-capacityKwh'])
       assert.equal(await evaluate(`document.getElementById(${JSON.stringify(id)}).disabled`), false, `${role}: EV card ${id} remains available`);

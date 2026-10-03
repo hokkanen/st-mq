@@ -8,7 +8,7 @@ export const NODE_PATTERN = /^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a
 export const ROLES = new Set(['master', 'slave', 'protected']);
 export const pairError = replicationError;
 const invalidState = () => Object.assign(pairError('invalid_pair_state'), {
-  message: 'Saved pair state is incompatible or invalid. Preserve its files and database; configure a fresh pair directory for a deliberate new setup. Existing state was not replaced.',
+  message: 'Saved pair state is incompatible or invalid. Preserve its files and database. Use Reset pairing → Start fresh in the dashboard, or configure a fresh pair directory for a deliberate new setup. Existing state was not replaced.',
 });
 const record = value => value !== null && typeof value === 'object' && !Array.isArray(value);
 const sequence = value => Number.isSafeInteger(value) && value >= 0;
@@ -16,10 +16,13 @@ const lineagePoint = value => record(value) && NODE_PATTERN.test(value.epoch) &&
 const acceptedSnapshot = value => lineagePoint(value) && NODE_PATTERN.test(value.generation) &&
   NODE_PATTERN.test(value.nodeId) && /^[a-f0-9]{64}$/.test(value.digest);
 const stamp = value => lineagePoint(value) && NODE_PATTERN.test(value.token);
+const resetRecord = value => record(value) && ['keep', 'fresh'].includes(value.mode)
+  && NODE_PATTERN.test(value.requestId) && typeof value.archiveDirectory === 'string' && isAbsolute(value.archiveDirectory)
+  && Object.keys(value).every(key => ['mode', 'requestId', 'archiveDirectory', 'completedAt'].includes(key));
 const STATE_FIELDS = new Set(['version', 'pairId', 'nodeId', 'platform', 'role', 'epoch', 'sequence', 'ancestors',
   'everWritten', 'bootstrapPending', 'accepted', 'activeDbPath', 'reason', 'transition', 'release', 'actions',
   'createdAt', 'updatedAt', 'activationError', 'pendingSnapshot', 'recovery', 'pendingStamp', 'dbStamp',
-  'supersededPeer', 'releaseReceipt']);
+  'supersededPeer', 'releaseReceipt', 'reset', 'resetReceipt']);
 
 /** Platform preference applies only to simultaneous active claims. */
 export function compareAuthority(left, right) {
@@ -51,10 +54,16 @@ export class PairState {
     this.queue = Promise.resolve();
   }
 
-  async open() {
+  async open({ allowInvalid = false } = {}) {
     // Reject retired role/state contracts before creating locks or changing files.
+    let invalid = false;
     try { await this.readState(); }
-    catch (error) { if (error.code !== 'ENOENT') throw invalidState(); }
+    catch (error) {
+      if (error.code !== 'ENOENT') {
+        if (!allowInvalid) throw invalidState();
+        invalid = true;
+      }
+    }
     await ownedDirectory(this.directory, '.st-mq-pair');
     const lockPath = join(this.directory, '.node-lock.sqlite');
     try { const file = await open(lockPath, 'wx', 0o600); await file.close(); }
@@ -63,6 +72,17 @@ export class PairState {
     this.lock = new DatabaseSync(lockPath);
     try { this.lock.exec('PRAGMA busy_timeout=0; CREATE TABLE IF NOT EXISTS lock (id); BEGIN EXCLUSIVE'); }
     catch { this.lock.close(); this.lock = null; throw pairError('pair_already_running'); }
+    if (invalid) {
+      // The management page gets a noncontrolling, in-memory identity. No
+      // fields from the rejected contract grant paths, history or authority.
+      this.invalid = true;
+      this.value = { version: 3, pairId: this.options.pairId, nodeId: randomUUID(), platform: this.options.platform,
+        role: 'protected', epoch: randomUUID(), sequence: 0, ancestors: [], everWritten: true,
+        bootstrapPending: false, accepted: null, activeDbPath: this.options.databasePath,
+        reason: 'invalid_pair_state', activationError: 'invalid_pair_state', transition: null,
+        release: null, actions: [], createdAt: this.clock() };
+      return this.value;
+    }
     try {
       const raw = await this.readState();
       this.value = raw;
@@ -88,7 +108,9 @@ export class PairState {
   async readState() {
     const raw = JSON.parse(await readFile(this.path, 'utf8'));
     if (!record(raw) || Object.keys(raw).some(key => !STATE_FIELDS.has(key)) ||
-        raw.version !== 3 || raw.pairId !== this.options.pairId || !validClaim(raw) ||
+      raw.version !== 3 || raw.pairId !== this.options.pairId || !validClaim(raw) ||
+      (raw.reset != null && (!resetRecord(raw.reset) || raw.role !== 'protected' || raw.transition != null)) ||
+      (raw.resetReceipt != null && (!resetRecord(raw.resetReceipt) || !sequence(raw.resetReceipt.completedAt))) ||
         !sequence(raw.sequence) || !Array.isArray(raw.ancestors) || !raw.ancestors.every(lineagePoint) ||
         !Array.isArray(raw.actions) || raw.actions.some(action => !record(action) ||
           !NODE_PATTERN.test(action.requestId) || !['handover', 'promote', 'check-recovery', 'recover', 'rejoin'].includes(action.name) ||
@@ -104,8 +126,39 @@ export class PairState {
   }
 
   update(patch) {
+    if (this.invalid) return Promise.reject(invalidState());
     const operation = this.queue.then(async () => {
       const next = { ...this.value, ...(typeof patch === 'function' ? patch(this.value) : patch), updatedAt: this.clock() };
+      await durableJson(this.path, next);
+      this.value = next;
+      return next;
+    });
+    this.queue = operation.catch(() => {});
+    return operation;
+  }
+
+  /** Original rejected bytes have already been archived by the explicit reset. */
+  async beginReset(reset) {
+    const next = { ...this.value, role: 'protected', reason: 'pairing_reset_pending', transition: null,
+      activationError: null, release: null, reset, updatedAt: this.clock() };
+    await this.queue;
+    await durableJson(this.path, next);
+    this.value = next;
+    this.invalid = false;
+  }
+
+  /** A deliberate reset creates a new authority identity, never an old claim. */
+  async resetPairing({ activeDbPath, receipt }) {
+    const operation = this.queue.then(async () => {
+      const retained = Boolean(activeDbPath);
+      const next = { version: 3, pairId: this.options.pairId, nodeId: randomUUID(),
+        platform: this.options.platform, role: retained ? 'protected' : 'slave',
+        epoch: randomUUID(), sequence: 0, ancestors: [], everWritten: retained,
+        bootstrapPending: !retained, accepted: null,
+        activeDbPath: activeDbPath ?? this.options.databasePath,
+        reason: retained ? 'pairing_reset' : null, activationError: null,
+        transition: null, release: null, actions: [], createdAt: this.clock(), updatedAt: this.clock(),
+        reset: null, resetReceipt: receipt };
       await durableJson(this.path, next);
       this.value = next;
       return next;

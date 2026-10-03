@@ -15,7 +15,7 @@ import { seedChartFixture } from '../../scripts/lib/chart-fixture.js';
 
 const directory = mkdtempSync(join(tmpdir(), 'stmq-pairing-browser-'));
 const screenshots = mkdtempSync(join(tmpdir(), 'stmq-pairing-screenshots-'));
-const now = Date.now(), previewId = 'a'.repeat(64);
+const now = Date.now(), previewId = 'a'.repeat(64), resetToken = 'b'.repeat(64);
 const actions = [], pending = new Map(), errors = [], prompts = [], measurements = [];
 const preview = { previewId, counts: { missing: 12, conflicts: 3, duplicates: 4, skipped: 2 },
   period: { from: now - 8 * 86400_000, to: now - 86400_000 }, model: { status: 'rebuild-required', unsupported: 2 } };
@@ -56,7 +56,15 @@ try {
         const chunks = []; let bytes = 0;
         for await (const chunk of request) { bytes += chunk.length; assert(bytes <= 4096); chunks.push(chunk); }
         const body = JSON.parse(Buffer.concat(chunks).toString()); actions.push(body);
-        assert(['check-recovery', 'recover', 'rejoin'].includes(body.action), 'Fixture only accepts the tested management actions');
+        assert(['check-recovery', 'recover', 'rejoin', 'reset'].includes(body.action), 'Fixture only accepts the tested management actions');
+        if (body.action === 'reset') {
+          assert.equal(body.resetToken, resetToken); assert.equal(body.confirmed, true);
+          if (body.mode === 'fresh') assert.equal(body.restorationConfirmed, true);
+          pair = { ...standby(body.mode === 'keep' ? 'protected' : 'slave'), reason: body.mode === 'keep' ? 'pairing_reset' : null,
+            reset: { token: resetToken, lastResult: { mode: body.mode, completedAt: Date.now(), archiveDirectory: '/config/st-mq/reset-archives/synthetic-reset' } },
+            actions: { promote: true, reset: true }, uiOperation: { id: body.requestId, action: 'reset', state: 'complete' } };
+          return json(200, { status: pair });
+        }
         pair = { ...pair, busy: true, uiOperation: { id: body.requestId, action: body.action, state: 'running' },
           recovery: { ...pair.recovery, state: body.action === 'check-recovery' ? 'checking' : 'recovering' } };
         return json(202, { status: pair });
@@ -317,10 +325,57 @@ try {
       if (await evaluate('document.documentElement.dataset.theme') !== theme)
         await evaluate("document.getElementById('theme-toggle').click(); true");
       assert.equal(await evaluate('document.documentElement.scrollWidth <= innerWidth'), true, `${code}: recovery guidance fits ${width}px ${theme}`);
-      assert.match(await evaluate(`${$('pairing-summary')}.textContent`), /fresh development databases and pairing storage/);
+      assert.match(await evaluate(`${$('pairing-summary')}.textContent`), /Reset pairing → Start fresh/);
       assert.doesNotMatch(await evaluate(`${$('pairing-summary')}.textContent`), /MQTT|credentials/);
     }
   }
+  pair = { ...standby('protected'), error: 'database_schema_mismatch', reason: 'activation_failed',
+    actions: { promote: true, reset: true }, reset: { token: resetToken, blockedReason: null } };
+  await until(`${$('pairing-reset')}.disabled === false`);
+  await open();
+  const beforeResets = actions.length;
+  for (const width of [1440, 320]) for (const theme of ['dark', 'light']) {
+    await command('browsingContext.setViewport', { context, viewport: { width, height: 1000 }, devicePixelRatio: 1 });
+    if (await evaluate('document.documentElement.dataset.theme') !== theme)
+      await evaluate("document.getElementById('theme-toggle').click(); true");
+    await evaluate(`${$('pairing-reset')}.click(); true`);
+    await until(`${$('pairing-reset-dialog')}.open`);
+    assert.equal(await evaluate("document.activeElement.id"), 'pairing-reset-cancel', 'Reset dialog opens with Cancel focused');
+    assert.equal(await evaluate(`${$('pairing-reset-fresh')}.disabled`), true, 'Fresh reset needs explicit restoration acknowledgement');
+    assert.equal(await evaluate('document.documentElement.scrollWidth <= innerWidth'), true, 'Reset choices fit the viewport');
+    assert.equal(await evaluate(`(() => { const dialog = ${$('pairing-reset-dialog')}; return dialog.scrollWidth <= dialog.clientWidth; })()`), true, 'Reset dialog text does not overflow');
+    if (width === 320) await capture(`reset-choices-${theme}`);
+    await evaluate(`${$('pairing-reset-cancel')}.click(); true`);
+    await until(`${$('pairing-reset-dialog')}.open === false`);
+    assert.equal(await evaluate('document.activeElement.id'), 'pairing-reset', 'Cancel restores focus to reset button');
+  }
+  assert.equal(actions.length, beforeResets, 'Reviewing or cancelling reset choices sends no mutation');
+  await evaluate(`${$('pairing-reset')}.click(); ${$('pairing-reset-keep')}.click(); true`);
+  await until("document.querySelector('.confirmation-dialog[open] #confirmation-description') !== null");
+  assert.match(await evaluate("document.getElementById('confirmation-description').textContent"), /database and saved settings remain intact/);
+  await evaluate("document.querySelector('.confirmation-dialog[open] .confirmation-actions button:last-child').click(); true");
+  await until(`${$('pairing-reset-receipt')}.textContent.includes('local history kept protected')`);
+  assert.equal(actions.at(-1).mode, 'keep');
+  assert.equal(actions.at(-1).restorationConfirmed, undefined);
+  assert.equal(pair.role, 'protected');
+  assert.equal(await evaluate(`${$('pairing-reset-receipt')}.hidden`), false);
+  await evaluate(`${$('pairing-reset')}.click(); ${$('pairing-reset-restoration')}.click(); ${$('pairing-reset-fresh')}.click(); true`);
+  await until("document.querySelector('.confirmation-dialog[open] #confirmation-description') !== null");
+  assert.match(await evaluate("document.getElementById('confirmation-description').textContent"), /Archives are kept until you manually delete/);
+  await evaluate("document.querySelector('.confirmation-dialog[open] .confirmation-actions button:first-child').click(); true");
+  await until(`${$('pairing-reset')}.disabled === false`);
+  assert.equal(actions.length, beforeResets + 1, 'Fresh final confirmation can be cancelled');
+  await evaluate(`${$('pairing-reset')}.click(); true`);
+  assert.equal(await evaluate(`${$('pairing-reset-restoration')}.checked`), false, 'Opening the dialog clears old fresh-start consent');
+  await evaluate(`${$('pairing-reset-restoration')}.click(); ${$('pairing-reset-fresh')}.click(); true`);
+  await until("document.querySelector('.confirmation-dialog[open] #confirmation-description') !== null");
+  await evaluate("document.querySelector('.confirmation-dialog[open] .confirmation-actions button:last-child').click(); true");
+  await until(`${$('pairing-reset-receipt')}.textContent.includes('Started fresh as a slave')`);
+  assert.equal(actions.at(-1).mode, 'fresh');
+  assert.equal(actions.at(-1).restorationConfirmed, true);
+  assert.equal(pair.role, 'slave');
+  assert.match(await evaluate(`${$('pairing-reset-receipt')}.textContent`), /synthetic-reset/);
+
   await viewer.close();
   viewer = await startReplica({ config: { ...config, topology: 'mirror', role: 'slave', mirror: { directory } }, clock: () => now,
     readPublication: () => null, installSignalHandlers: false });
@@ -344,7 +399,7 @@ try {
       'placement above events', 'keyboard disclosure', 'poll preserves disclosure', 'failed/running checks never enable recovery',
       'successful preview unlocks recovery', 'skip recovery requires explicit discard confirmation',
       'recovery sends checked identity', 'closed progress and failures', 'matching protected/slave layout without master controls', 'actual immutable ReplicaViewer projection',
-      'visible Data and settings plus Garage', 'mutation event fencing', 'read-only downloads and navigation', 'centered protected badge', '320px protected layout and startup guidance', 'all cards readable before the first snapshot', 'unavailable settings and charging preserve dashboard access'] }));
+      'visible Data and settings plus Garage', 'mutation event fencing', 'read-only downloads and navigation', 'centered protected badge', '320px protected layout and startup guidance', 'reset choices and archive receipt', 'fresh reset restoration and final confirmation', 'reset cancellation and focus', '320px reset dialog in both themes', 'all cards readable before the first snapshot', 'unavailable settings and charging preserve dashboard access'] }));
   await command('browser.close'); ownsBrowser = false;
 } finally {
   if (ownsBrowser) { try { await command('browser.close'); } catch {} }

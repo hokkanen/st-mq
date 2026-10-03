@@ -81,8 +81,11 @@ export class PairManager {
     this.startupChecking = false;
   }
 
-  async init() {
-    await this.state.open();
+  async init({ stateOpen = false, allowInvalidState = false } = {}) {
+    if (!stateOpen) await this.state.open({ allowInvalid: allowInvalidState });
+    // An interrupted explicit reset has no usable publication or authority.
+    // Only another confirmed reset may resume its archive operation.
+    if (this.state.invalid || this.state.value.reset) return this.status();
     await this.snapshots.init();
     await ownedDirectory(this.config.snapshotDirectory, '.st-mq-replica');
     const marker = await open(join(this.config.snapshotDirectory, '.st-mq-paired-receiver'), 'a', 0o600);
@@ -153,7 +156,7 @@ export class PairManager {
           // diagnostics inaccessible. No controller is started on this path.
           this.error = VIP_ERRORS.has(error?.code) ? error.code : 'vip_failed';
           this.reportFailure(error, this.error);
-          await this.state.update({ role: 'protected', reason: 'vip_release_failed', activationError: this.error });
+          if (!this.state.invalid) await this.state.update({ role: 'protected', reason: 'vip_release_failed', activationError: this.error });
         }
         await this.startReplica();
       }
@@ -311,7 +314,7 @@ export class PairManager {
     const recovery = this.publicRecovery();
     const primary = local.role === 'master' && this.canControl();
     const bootstrapPending = canBootstrap(local);
-    const free = !this.busy && !this.closed && !this.stopping;
+    const free = !this.busy && !this.closed && !this.stopping && !local.reset && !this.state.invalid;
     const checked = local.recovery?.metadata?.claim;
     const protectedDonor = recovery.donorRole === 'protected' && (!this.peerState.reachable
       || this.peerState.role === 'protected' && this.peerState.nodeId === checked?.nodeId && this.peerState.epoch === checked?.epoch);
@@ -582,6 +585,7 @@ export class PairManager {
 
   async runAction(name, body = {}) {
     if (this.closed || this.stopping) throw pairError('stopped');
+    if (this.state.invalid || this.state.value.reset) throw pairError('protected_history');
     if (!ACTIONS.has(name)) throw pairError('invalid_action');
     if (!NODE_PATTERN.test(body.requestId ?? '')) throw pairError('invalid_request_id');
     const previous = this.state.value.actions.find(item => item.requestId === body.requestId);
@@ -812,6 +816,7 @@ export class PairManager {
 
   async handlePeer(operation, body) {
     if (this.closed || this.stopping) throw pairError('stopped');
+    if ((this.state.invalid || this.state.value.reset) && operation !== 'status') throw pairError('protected_history');
     if (operation === 'status') {
       if (body.claim) {
         await this.observeClaim(body.claim);
@@ -919,13 +924,13 @@ export class PairManager {
     this.syncAbort?.abort(pairError('stopped'));
   }
 
-  async close() {
+  async close({ preserveState = false } = {}) {
     this.prepareShutdown();
     this.closed = true;
     this.activeAllowed = false;
     await Promise.allSettled([this.peer.close(), this.announcements?.close(), this.vip.release()]);
     await Promise.allSettled([this.polling, this.syncTask, this.demoting, ...this.localActions]);
     await this.lock;
-    await this.state.close();
+    if (!preserveState) await this.state.close();
   }
 }

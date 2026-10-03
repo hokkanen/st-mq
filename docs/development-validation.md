@@ -320,6 +320,16 @@ node test/browser/chart-smoke.js ws://127.0.0.1:39124/session
 node test/browser/pairing-smoke.js ws://127.0.0.1:39124/session
 ```
 
+The pairing suite checks the production dashboard with synthetic API responses,
+including reset choices on protected computers, cancellation and focus restoration,
+explicit equipment-restoration acknowledgement before Start fresh, final confirmation,
+and the retained archive receipt. Both choices are checked at desktop and 320-pixel
+widths in light and dark themes. The access suite checks that only administrators
+can open reset controls, including synthetic click attempts by family users.
+Pairing UI unit tests additionally fence stale reset confirmations, preserve an
+uncertain request across reloads and omit unrecognized error details. Backend reset
+tests exercise actual storage and runtime behavior separately from these UI fixtures.
+
 Stop any remaining disposable browser processes and remove their profiles afterward. Screenshots
 from synthetic fixtures go to ignored `var/` or reported temporary paths.
 The configuration recovery browser fixture checks both environment-specific

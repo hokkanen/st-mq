@@ -1695,10 +1695,10 @@ button.garage-door-action:disabled { opacity: 1; cursor: default; }
 .heating-hold-warning-strong { font-weight: 500; }
 .heating-hold-warning strong { font-weight: 650; }
 #heating-held-summary { margin: 18px 0 0; }
-.confirmation-dialog { width: min(440px, calc(100vw - 32px)); max-height: calc(100dvh - 40px); padding: 22px; border: 1px solid var(--border); border-top: 3px solid var(--stale); border-radius: 10px; color: var(--text); background: var(--surface); box-shadow: 0 18px 60px #0006; }
-.confirmation-dialog::backdrop { background: #0007; }
-.confirmation-dialog h2, .confirmation-dialog h3 { margin: 0 0 10px; font-size: 18px; font-weight: 550; letter-spacing: -.2px; }
-.confirmation-dialog p { margin: 8px 0; font-size: 13px; line-height: 1.65; white-space: pre-line; }
+.confirmation-dialog, .pairing-reset-dialog { width: min(440px, calc(100vw - 32px)); max-height: calc(100dvh - 40px); padding: 22px; border: 1px solid var(--border); border-top: 3px solid var(--stale); border-radius: 10px; color: var(--text); background: var(--surface); box-shadow: 0 18px 60px #0006; }
+.confirmation-dialog::backdrop, .pairing-reset-dialog::backdrop { background: #0007; }
+.confirmation-dialog h2, .confirmation-dialog h3, .pairing-reset-dialog h2, .pairing-reset-dialog h3 { margin: 0 0 10px; font-size: 18px; font-weight: 550; letter-spacing: -.2px; }
+.confirmation-dialog p, .pairing-reset-dialog p { margin: 8px 0; font-size: 13px; line-height: 1.65; white-space: pre-line; }
 .confirmation-dialog strong { color: var(--stale); font-weight: 650; }
 .confirmation-actions { display: flex; justify-content: flex-end; gap: 10px; margin-top: 20px; }
 .confirmation-actions button { margin: 0; min-width: 100px; }
@@ -2057,3 +2057,11 @@ body[data-access-role="family"] .family-access-note { display: block; margin: 12
 .zone-content .feature-automation .heating-mode-buttons-two { grid-template-columns: repeat(2, minmax(0, 1fr)); }
 
 #heating-test-details:has(#home-manual-override-details[open]) #heating-held-summary { display: none; }
+
+.pairing-reset-action { margin-top: 0; padding-top: 0; border-top: 0; }
+.pairing-reset-receipt { overflow-wrap: anywhere; }
+.pairing-reset-dialog .pairing-reset-choice { margin-top: 18px; padding-top: 16px; border-top: 1px solid var(--border); }
+.pairing-reset-dialog .pairing-reset-choice h3 { font-size: 14px; margin-bottom: 4px; }
+.pairing-reset-dialog .pairing-reset-choice button { margin-top: 4px; max-width: 100%; }
+.pairing-reset-restoration { display: flex; flex-direction: row; align-items: flex-start; gap: 10px; font-size: 12px; line-height: 1.5; }
+.pairing-reset-restoration input { flex: none; margin: 1px 0 0; min-height: 18px; width: 18px; height: 18px; padding: 0; }
