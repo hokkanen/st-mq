@@ -124,12 +124,12 @@ test('recorded event contacts seed past days and invalid readback interrupts the
 test('floor contacts and garage defrost use recorded periodic coverage and preserve missing states', t => {
   const store = new Store(':memory:'); t.after(() => store.close());
   const recorder = new Recorder(store);
-  for (const signal of ['floor_living_0_active', 'garage_native_defrost']) recorder.record({
+  for (const signal of ['floor_groundfloor_1_active', 'garage_native_defrost']) recorder.record({
     source: signal.startsWith('floor') ? 'floor-override' : 'garage-adapter', device: 'synthetic-equipment', signal,
     value: 1, unit: 'state', sourceTime: start, receivedAt: start,
     raw: { reportIntervalMs: 90_000, reportGraceMs: 0, diagnosticAvailable: true },
   });
-  for (const [view, signal] of [['control', 'floor_living_0_active'], ['garage', 'garage_native_defrost']]) {
+  for (const [view, signal] of [['control', 'floor_groundfloor_1_active'], ['garage', 'garage_native_defrost']]) {
     const points = query(store, { view }).series[signal];
     assert(points.some(point => point.x === start && point.y === 1));
     assert(points.some(point => point.x === start + 90_000 && point.y === null));

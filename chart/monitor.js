@@ -1077,7 +1077,6 @@ bindDatabaseExport({ saveButton: $('database-export-save'), downloadButton: $('d
   } });
 for (const [id, path, filename] of [
   ['floor-preheat-guide', '/api/downloads/floor-preheat-guide', 'floor-preheat.md'],
-  ['floor-preheat-script', '/api/downloads/floor-lease-script', 'floor-lease.js'],
 ]) $(id).addEventListener('click', async () => {
   try {
     assertWebRequest(webAccess, path, undefined, lastStatus);

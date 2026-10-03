@@ -34,7 +34,6 @@ test('A11-H01 development proxy stays on loopback and checks origin before forwa
 test('development commissioning downloads require the API and cannot bypass access through public files', async t => {
   const resources = new Map(await Promise.all([
     ['/api/downloads/floor-preheat-guide', '../docs/floor-preheat.md'],
-    ['/api/downloads/floor-lease-script', '../scripts/shelly/floor-lease.js'],
   ].map(async ([path, relative]) => [path, await readFile(new URL(relative, import.meta.url), 'utf8')])));
   const requests = [];
   const backend = httpServer((request, response) => {
@@ -55,7 +54,7 @@ test('development commissioning downloads require the API and cannot bypass acce
       proxy: { '/api': { ...configuration.server.proxy['/api'], target } } } });
   t.after(() => server.close()); await server.listen();
   const origin = `http://127.0.0.1:${server.httpServer.address().port}`;
-  for (const relative of ['../docs/floor-preheat.md', '../scripts/shelly/floor-lease.js', '../scripts/check-secrets.js']) {
+  for (const relative of ['../docs/floor-preheat.md', '../scripts/check-secrets.js']) {
     for (const suffix of ['', '?url', '?raw']) {
       assert.equal((await fetch(`${origin}/@fs${new URL(relative, import.meta.url).pathname}${suffix}`)).status, 403,
         'Device downloads cannot escape API authorization through Vite file serving');

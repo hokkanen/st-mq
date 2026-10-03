@@ -246,7 +246,7 @@ try {
     const fold = document.getElementById('garage-protection-configuration-details');
     return [fold.parentElement.id, fold.previousElementSibling.id, fold.querySelector(':scope > summary > span').textContent];
   })()`), ['connections-details', 'floor-preheat-details', 'Garage freeze protection'],
-  'Installation has its own configuration fold below Floor preheating');
+  'Installation has its own configuration fold below Home floor preheating');
   assert.deepEqual(await evaluate(`(() => {
     const settings = document.getElementById('garage-protection-settings-details');
     return [Boolean(settings.closest('#garage-control')), Boolean(settings.closest('#garage-protection-details')),
@@ -462,7 +462,7 @@ try {
       'Three concise heating readings and keyboard evidence', 'Distinct rear observation and expiring controller regulation input',
       'Garage parameters and Home-style calculation details, with fixed factor separate from readback',
       'Missing, false, mismatching and confirmed sender readback',
-      'Live protection below Normal temperature and separate setup below Floor preheating',
+      'Live protection below Normal temperature and separate setup below Home floor preheating',
       'Bidirectional keyboard links and hash navigation', 'Closed sections stay closed on reload, including ancestors and dashboard reset',
       'Generic device roles with a tested sender example',
       '8 °C selected / 5 °C minimum rescue keeps the target at 8 °C', 'Separate native 16 °C fallback',

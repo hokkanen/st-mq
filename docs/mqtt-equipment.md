@@ -374,7 +374,10 @@ requires fresh power on and a matching fan report. Separate settings and native
 sensor values stay live-only. Unknown, stale or unsupported state remains a gap,
 as does missing humidity agreement with the Caravan Shelly BLU. These caravan
 measurements are excluded from Home learning. Actual tariff relay feedback is recorded on changes, separately from requested
-heating control. All four floor override outputs likewise retain exact changes. The
+heating control. All four floor override outputs likewise retain exact changes
+when supported contact feedback is available. The planned single ground-floor
+device is awaiting integration; its four connections remain unknown. See
+[Home floor preheating](floor-preheat.md). The
 [garage adapter](garage-adapter.md) records interpreted indoor temperature and
 compressor frequency adaptively, compressor/defrost states on exact changes and
 external-feed abnormalities as events. It records qualified dedicated electrical

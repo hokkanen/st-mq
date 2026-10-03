@@ -80,12 +80,6 @@
       "floor_preheat": {
         "enabled": false,
         "commissioned": false,
-        "storage": {
-          "topic_prefix": ""
-        },
-        "living": {
-          "topic_prefix": ""
-        },
         "renew_seconds": 300,
         "lease_seconds": 900
       }
@@ -532,12 +526,6 @@
       "floor_preheat": {
         "enabled": "bool",
         "commissioned": "bool",
-        "storage": {
-          "topic_prefix": "str?"
-        },
-        "living": {
-          "topic_prefix": "str?"
-        },
         "renew_seconds": "int(30,450)",
         "lease_seconds": "int(60,900)"
       }

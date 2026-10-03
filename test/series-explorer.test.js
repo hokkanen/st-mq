@@ -11,7 +11,8 @@ test('explorer exposes every supported history once and resolves a bounded catal
     assert(HISTORY_AXIS_BY_KEY[row.requestKey].signals.includes(row.signal));
     assert(row.unit && row.basis && row.description, row.signal);
   }
-  for (const signal of [...ENERGY_SIGNALS, 'garage_native_indoor_temperature', 'dhwr_active', 'floor_storage_1_active'])
+  for (const signal of [...ENERGY_SIGNALS, 'garage_native_indoor_temperature', 'dhwr_active',
+    'floor_groundfloor_1_active', 'floor_groundfloor_2_active', 'floor_groundfloor_3_active', 'floor_groundfloor_4_active'])
     assert(EXPLORER_SERIES_BY_KEY[signal], signal);
   assert(!EXPLORER_SERIES_BY_KEY.garage_power, 'live-only power does not acquire fabricated history');
 });

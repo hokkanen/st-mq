@@ -313,7 +313,7 @@ either charger. See [charging](docs/charging.md).
 **Data & settings** summarizes provider health; each provider row opens its series
 and source details. Its **Connections & configuration** fold contains MQTT setup,
 configuration reload and electricity rates. Its **Charging** section, above
-**Floor preheating**, explains charger setup and the BMW/Tesla feed requirements,
+**Home floor preheating**, explains charger setup and the BMW/Tesla feed requirements,
 shows live field readiness and opens guided physical charging tests. The **Away until** and **Resume automatic heating at** controls use
 Finnish time even when the remote browser is in another timezone. Apply changes
 saves them together; **Home now** and **Automatic now** cancel

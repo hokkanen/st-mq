@@ -1,3 +1,5 @@
+import { FLOOR_PREHEAT_CIRCUITS, FLOOR_PREHEAT_SIGNALS } from './floor-circuits.js';
+
 // Shared chart catalogue. Recorder priority is deliberately absent: every
 // included measurement receives the same normalized reconstruction objective.
 const h66 = [
@@ -39,7 +41,7 @@ export const AUDIT_SIGNALS = Object.freeze(['property_import_energy_counter']);
 export const COUNTER_SIGNALS = Object.freeze([...h66.filter(([, , unit]) => unit === 'h').map(([signal]) => signal),
   ...AUDIT_SIGNALS, 'garage_native_energy']);
 export const RECORDED_EVIDENCE_SIGNALS = Object.freeze(['dhwr_active', 'heat_savings_active',
-  ...['living', 'storage'].flatMap(group => [0, 1].map(output => `floor_${group}_${output}_active`)),
+  ...FLOOR_PREHEAT_SIGNALS,
   'garage_native_defrost', 'garage_native_energy', 'garage_energy']);
 export const CARAVAN_DEHUMIDIFIER_STATES = Object.freeze({ 0: 'Off', 1: 'Low', 2: 'Medium', 3: 'High' });
 export const SESSION_CHECK_INFO = Object.freeze({
@@ -76,10 +78,10 @@ export const SIGNAL_INFO = Object.freeze(Object.fromEntries([
   ['garage_energy', { label: 'Garage heat-pump interval energy', color: 'garagePump', unit: 'kWh', group: 'Garage heat pump', role: 'Recorded energy', kind: 'Recorded', detail: 'Dedicated garage electricity over each recorded interval, from counter differences or integrated power. Native accuracy and provisional evidence remain explicit' }],
   ['dhwr_active', { label: 'Hot-water circulation feedback', unit: 'state', group: 'Control', role: 'Equipment context', kind: 'Recorded', detail: 'Measured electrical load or reported switch state, kept separate from circulation requests; neither proves water flow' }],
   ['heat_savings_active', { label: 'Tariff-control relay feedback', unit: 'state', group: 'Control', role: 'Equipment context', kind: 'Recorded', detail: 'Reported tariff-control contact; not a measurement of compressor activity or heat delivery' }],
-  ...['living', 'storage'].flatMap(group => [0, 1].map(output => [`floor_${group}_${output}_active`, {
-    label: `${group === 'living' ? 'Living' : 'Storage'} floor override · output ${output}`, unit: 'state', group: 'Control', role: 'Equipment context', kind: 'Recorded',
+  ...FLOOR_PREHEAT_CIRCUITS.map(({ id, label, lengthM }) => [`floor_groundfloor_${id}_active`, {
+    label: `${label} ${lengthM} m · floor circuit ${id}`, unit: 'state', group: 'Control', role: 'Equipment context', kind: 'Recorded',
     detail: 'Reported electrical override contact: 1 on, 0 off; missing readback remains unknown. This does not prove valve position or water flow',
-  }])),
+  }]),
   ['auxiliary_power', { label: 'Auxiliary power estimate', unit: 'kW', group: 'Electricity', role: 'Equipment context', kind: 'Calculated', detail: 'Saved estimate from verified auxiliary output and rated capacity' }],
   ...PHASE_ENERGY_SIGNALS.map(signal => [signal, { label: `${signal.startsWith('property') ? 'Property' : signal.startsWith('ev2') ? 'Charger 2' : 'Charger 1'} L${signal.at(-1)} energy`, unit: 'kWh', group: 'Electricity', role: 'Recorded energy', kind: 'Recorded', detail: signal.startsWith('ev2') ? 'Native total meter energy allocated using measured phase-power shares; estimated phase distribution whose three-phase sum preserves measured total consumption' : 'Estimated energy over the recorded interval' }]),
   ...AUDIT_SIGNALS.map(signal=>[signal,{label:'Property meter counter',unit:'kWh',group:'Meter checks',role:'Audit only',kind:'Recorded',detail:'Reported cumulative meter value; never used to correct energy or train'}]),

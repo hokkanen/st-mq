@@ -3,11 +3,12 @@ import { isReadOnlyReplica } from './replica-status.js';
 import { setStatusDetail } from './status-details.js';
 import { temperatureReadingStatus } from './temperature-status.js';
 import { TEMPERATURE_SENSORS } from '../src/domain/indoor-sensors.js';
+import { FLOOR_PREHEAT_DEVICE, FLOOR_PREHEAT_CIRCUITS } from '../src/domain/floor-circuits.js';
 import { createCaravanContents, dehumidifierCommandAllowed, temperatureControlAllowed, temperatureControlValueAllowed } from './caravan.js';
 
 const clock = new Intl.DateTimeFormat('en-GB', { timeZone: 'Europe/Helsinki', month: 'short', day: 'numeric',
   hour: '2-digit', minute: '2-digit', timeZoneName: 'shortOffset' });
-const labels = { temperature: 'Temperatures', door: 'Door', switch: 'Switch', power: 'Power meter', metered_switch: 'Energy meter', dehumidifier: 'Dehumidifier', heat_pump: 'Heat pump', vehicle: 'Vehicle', charger: 'Charger', sender: 'Sender', floor_override: 'Floor override' };
+const labels = { temperature: 'Temperatures', door: 'Door', switch: 'Switch', power: 'Power meter', metered_switch: 'Energy meter', dehumidifier: 'Dehumidifier', heat_pump: 'Heat pump', vehicle: 'Vehicle', charger: 'Charger', sender: 'Sender', floor_override: 'Floor preheating' };
 const pretty = text => String(text ?? '').replaceAll(/[_-]/g, ' ');
 const recentResult = actionReceiptRecent;
 function equipmentStateReading(device, now) {
@@ -17,7 +18,7 @@ function equipmentStateReading(device, now) {
     && Number.isFinite(reading.observedAt) && (!Number.isFinite(now) || reading.observedAt <= now) ? reading : null;
 }
 export const equipmentSource = device => ['Shelly', 'MQTT-shelly', 'shelly-mqtt'].includes(device.source) ? 'Shelly'
-  : ['H66', 'Mitsubishi', 'Simulation', 'TeslaMate', 'BMW CarData', 'Shelly EVSE'].includes(device.source) ? device.source : 'MQTT';
+  : ['H66', 'Mitsubishi', 'Simulation', 'TeslaMate', 'BMW CarData', 'Shelly EVSE', 'SONOFF'].includes(device.source) ? device.source : 'MQTT';
 const temperatureKeys = { indoor_temperature: 'upstairs', downstairs_temperature: 'downstairs', bedroom_temperature: 'bedroom',
   garage_temperature: 'garage', garage_temperature_2: 'garageFront', outdoor_temperature: 'outdoor' };
 const temperatureIds = { upstairs: 'indoor_temperature', indoor: 'indoor_temperature', downstairs: 'downstairs_temperature',
@@ -30,36 +31,16 @@ export function equipmentDevices(status = {}) {
     devices.set(device.id, { ...device, area: device.area });
   }
   const floor = status.preheatValves ?? {};
-  for (const group of ['living', 'storage']) {
-    const reported = floor.devices?.find(device => device.group === group);
-    const enabled = floor.enabled === true, commissioned = floor.commissioned === true;
-    const available = reported?.available === true;
-    const label = group === 'storage' ? 'Storage area floor valves' : 'Living area floor valves';
-    devices.set(`floor-override:${group}`, { id: `floor-override:${group}`, label,
-      group, area: 'home', kind: 'floor_override', source: 'Shelly', model: 'Shelly Pro 2 v0',
-      enabled, commissioned, available, topics: [], controls: { switch: false, tariff: false },
-      lastReportAt: reported?.at,
-      connectionState: floor.restorationPending ? { label: 'Release pending', state: 'attention' }
-        : floor.brokerMismatch ? { label: 'Broker changed', state: 'attention' }
-          : typeof floor.enabled !== 'boolean' ? { label: 'Status unavailable', state: 'pending' }
-            : !enabled ? { label: 'Not enabled', state: 'pending' }
-              : typeof floor.commissioned !== 'boolean' ? { label: 'Commissioning status unavailable', state: 'pending' }
-                : !commissioned ? { label: 'Needs commissioning', state: 'pending' }
-                  : !available ? { label: 'Awaiting local-script readback', state: 'attention' }
-                    : { label: floor.active ? 'Preheating' : 'Ready', state: 'available' },
-      recent: !Array.isArray(floor.devices) ? 'Device mapping unavailable'
-        : !reported ? 'Device mapping not configured' : 'Waiting for a live script report',
-      connectionDetail: [0, 1].map(id => {
-          const output = available ? reported?.channels?.find(channel => channel.id === id)?.output : null;
-          return `Output ${id}: ${output === true ? 'override on' : output === false ? 'override off' : 'unknown'}`;
-        }).join('; ') + '.',
-      readings: Object.fromEntries([0, 1].map(id => {
-        const output = reported?.channels?.find(channel => channel.id === id)?.output;
-        return [`floor_${group}_${id}_active`, { label: `Output ${id}`, unit: 'state',
-          value: typeof output === 'boolean' ? Number(output) : null, stale: !available, observedAt: reported?.at }];
-      })),
-    });
-  }
+  const floorId = `floor-override:${FLOOR_PREHEAT_DEVICE.group}`;
+  devices.set(floorId, { ...FLOOR_PREHEAT_DEVICE, id: floorId, area: 'home', kind: 'floor_override',
+    enabled: false, commissioned: false, available: false, topics: [], readings: {},
+    controls: { switch: false, tariff: false },
+    connectionState: floor.restorationPending ? { label: 'Release pending', state: 'attention' }
+      : { label: floor.integrationSupported === false ? 'Setup pending' : 'Status unavailable', state: 'pending' },
+    recent: floor.restorationPending ? 'Previous override release is unconfirmed' : '1 device · 4 floor circuits',
+    connectionDetail: FLOOR_PREHEAT_CIRCUITS.map(circuit =>
+      `${circuit.id}: ${circuit.label} · ${circuit.lengthM} m`).join('; ') + '. Lengths describe pipe inside the floor.',
+  });
   return [...devices.values()];
 }
 
@@ -406,7 +387,7 @@ function vehicleConnection({ reception = {}, enabled = true, label, source, deta
 
 /** Device purpose stays separate from changing connection-check results. */
 export function equipmentConnectionIntroduction(device) {
-  if (device.kind === 'floor_override') return 'Floor-heating valves report their override contacts through Shelly MQTT. Living and Storage preheat together. Contact readback does not verify valve movement, water flow or thermostat restoration.';
+  if (device.kind === 'floor_override') return 'One SONOFF 4CH PRO R3 is planned for the four ground-floor heating circuits. Preheating remains unavailable until communication and automatic release are verified.';
   if (device.connectionDetail) return device.connectionDetail;
   if (device.controls?.tariff || device.controlsHeat || device.role === 'heat_savings')
     return 'Heating requests and relay readback use MQTT. Reported relay state confirms whether the requested mode was applied.';
@@ -606,7 +587,7 @@ export function createEquipmentPanel({ document, request, onStatus, beforeReques
   };
   const floorSetupLink = () => {
     const paragraph = make('p', '', 'floor-setup-link');
-    const link = make('a', 'Floor preheating status & setup →');
+    const link = make('a', 'Home floor preheating status & setup →');
     link.href = '#floor-preheat-details'; link.setAttribute('data-open-floor-setup', '');
     link.addEventListener('click', event => {
       if (event.button || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return;
@@ -886,7 +867,8 @@ export function createEquipmentPanel({ document, request, onStatus, beforeReques
       }
       if (group.list.children[index] !== node.row) group.list.insertBefore(node.row, group.list.children[index] ?? null);
       node.name.textContent = device.label ?? labels[device.kind] ?? 'MQTT connection';
-      node.metadata.textContent = [labels[device.kind] ?? pretty(device.kind || 'connection'), equipmentSource(device)].join(' · ');
+      node.metadata.textContent = [labels[device.kind] ?? pretty(device.kind || 'connection'),
+        device.kind === 'floor_override' ? device.model : equipmentSource(device)].join(' · ');
       renderTopics(node.topics, device.topics); node.topics.hidden = !device.topics.length;
       const mqtt = device.mqttStatus;
       node.packets.textContent = [mqtt?.subscriptionStatus ? `Subscription: ${pretty(mqtt.subscriptionStatus)}` : '',

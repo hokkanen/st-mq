@@ -1,3 +1,23 @@
+Implemented 2026-10-03 — One SONOFF controller for Home floor preheating
+- Rename the shared setup section to Home floor preheating and present one
+  SONOFF 4CH PRO R3 for ground-floor circuits. Channels 1–4 identify Living
+  106 m, Living 62 m, Storage 38 m and Storage 80 m of floor pipe. Reuse the
+  Garage hardware-card styling, with a compact circuit table and setup folds.
+- F1/F4/F5: remove the retired two-device configuration, Shelly floor script,
+  download route and device-specific instructions. Share the new topology with
+  equipment/status/history; use distinct circuit series without translating old
+  device observations or granting the replacement any previous authority.
+- The SONOFF firmware/control interface remains unspecified. Mark setup pending,
+  reject activation and commissioning, and emit no guessed commands or contact
+  observations. Keep pending physical releases visible and blocking, including
+  without MQTT, after teardown/restart and when durable state is malformed.
+  Retain thermal assumptions, generic heating restoration and the setup guide.
+- Validation: full npm run check passes 4,235 tests with one optional check
+  skipped and the production build (existing bundle-size advisory). Focused
+  regressions after the final restoration guard pass. Equipment and access
+  Chromium suites pass; floor layouts reviewed at 320/390/1440 px in both themes.
+  All checks used offline fixtures; no device commissioning or live operation.
+
 Implemented 2026-10-03 — Keep collapsed dashboard sections closed on refresh
 - Reproduce Garage heat reopening in Chromium after following a protection
   link, closing its destination and refreshing. The retained URL fragment was

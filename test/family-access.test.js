@@ -161,11 +161,10 @@ test('family denies exports and every remaining write before any operation is di
   assert.deepEqual(f.calls, []);
 });
 
-test('documentation and device-script downloads require admin and preserve exact source bytes', async t => {
+test('setup guide downloads require admin and preserve exact source bytes', async t => {
   const f = await fixture(t);
   for (const [path, source] of [
     ['/api/downloads/floor-preheat-guide', '../docs/floor-preheat.md'],
-    ['/api/downloads/floor-lease-script', '../scripts/shelly/floor-lease.js'],
   ]) {
     const expected = await readFile(new URL(source, import.meta.url));
     const anonymous = await fetch(`${endpoint(f.access.server)}${path}`);

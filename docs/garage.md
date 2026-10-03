@@ -150,7 +150,7 @@ validates and persists them; matching fresh readback confirms the configuration.
 A command acknowledgement alone does not establish that protection is ready.
 
 The live fold links to **Connections & configuration → Garage freeze protection**,
-directly below **Floor preheating**, for installation and setup. That section
+directly below **Home floor preheating**, for installation and setup. That section
 links back to Garage for live readings, settings and model details.
 Closing a linked section or its parent clears that section's URL anchor, so a
 refresh does not reopen it. The dashboard reset does the same; direct section

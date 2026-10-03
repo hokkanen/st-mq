@@ -157,7 +157,7 @@ try {
       const eye = document.getElementById('password-visibility').getBoundingClientRect();
       const pairs = [
         ['h66-test-register', 'h66-test-value'], ['garage-native-setting', 'garage-native-temperature'],
-        ['sensor-change-signal', 'sensor-change-reason'], ['floor-preheat-guide', 'floor-preheat-script'],
+        ['sensor-change-signal', 'sensor-change-reason'],
       ].flatMap(([first, second]) => {
         const left = controls.find(control => control.id === first), right = controls.find(control => control.id === second);
         if (!left || !right || right.x < left.right - 1 || Math.abs(left.y - right.y) > Math.max(left.height, right.height)) return [];
@@ -341,7 +341,7 @@ try {
   assert.equal(await evaluate("document.getElementById('token').type"), 'password');
   await auditLayout('family');
   await auditDynamicLayout('family');
-  for (const id of ['database-export-download', 'database-export-save', 'settings-reload', 'floor-preheat-guide', 'floor-preheat-script'])
+  for (const id of ['database-export-download', 'database-export-save', 'settings-reload', 'floor-preheat-guide'])
     assert.equal(await evaluate(`document.getElementById('${id}').disabled`), true, `${id} requires admin`);
   for (const id of ['away-until', 'pause-until'])
     assert.equal(await evaluate(`document.getElementById('${id}').disabled`), false, `${id} stays available to family`);

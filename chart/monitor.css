@@ -1473,6 +1473,15 @@ button.garage-door-action:disabled { opacity: 1; cursor: default; }
 .floor-preheat-facts > div { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1.5fr); gap: 12px; padding: 6px 0; border-bottom: 1px solid var(--border); }
 .floor-preheat-facts dt { color: var(--muted); }
 .floor-preheat-facts dd { margin: 0; }
+.floor-preheat-hardware { margin: 0 0 18px; }
+.floor-preheat-circuits { width: 100%; table-layout: fixed; border-collapse: collapse; margin: 0 0 18px; font-size: 12px; }
+.floor-preheat-circuits caption { text-align: left; font-weight: 600; margin-bottom: 10px; }
+.floor-preheat-circuits caption span { display: block; color: var(--muted); font-size: 11px; font-weight: 400; }
+.floor-preheat-circuits th, .floor-preheat-circuits td { padding: 8px 4px; border-bottom: 1px solid var(--border); text-align: left; font-weight: 400; }
+.floor-preheat-circuits thead th { color: var(--muted); font-size: 10px; }
+.floor-preheat-circuits th:first-child { width: 24%; padding-left: 0; }
+.floor-preheat-circuits th:last-child, .floor-preheat-circuits td:last-child { text-align: right; padding-right: 0; font-variant-numeric: tabular-nums; }
+.floor-channel { display: inline-flex; align-items: center; justify-content: center; width: 24px; height: 24px; border: 1px solid var(--border); border-radius: 5px; color: var(--muted); font-size: 11px; }
 .floor-preheat-limit { padding-left: 12px; border-left: 2px solid var(--border); }
 .floor-preheat-downloads { display: flex; flex-wrap: wrap; align-items: stretch; gap: 8px; margin: 16px 0; }
 .floor-preheat-downloads button { margin: 0; max-width: 100%; font-size: 12px; }
@@ -2003,11 +2012,11 @@ body[data-access-role="family"] .family-access-note { display: block; margin: 12
 .garage-protection-steps p { margin: 0; color: var(--muted); }
 .garage-protection-steps p + p { margin-top: 8px; }
 .garage-protection-hardware { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; margin: 14px 0; }
-.garage-protection-hardware > div { min-width: 0; padding: 12px; border: 1px solid var(--border); border-radius: 8px; background: var(--surface-soft); }
-.garage-protection-hardware dt { color: var(--muted); font-size: 10px; }
-.garage-protection-hardware dd { display: grid; gap: 4px; margin: 6px 0 0; }
-.garage-protection-hardware strong { font-size: 12px; font-weight: 600; }
-.garage-protection-hardware span, .garage-protection-hardware small { color: var(--muted); font-size: 11px; }
+.equipment-setup-hardware > div { min-width: 0; padding: 12px; border: 1px solid var(--border); border-radius: 8px; background: var(--surface-soft); }
+.equipment-setup-hardware dt { color: var(--muted); font-size: 10px; }
+.equipment-setup-hardware dd { display: grid; gap: 4px; margin: 6px 0 0; }
+.equipment-setup-hardware strong { font-size: 12px; font-weight: 600; }
+.equipment-setup-hardware span, .equipment-setup-hardware small { color: var(--muted); font-size: 11px; }
 .garage-protection [data-state="attention"] { color:var(--stale); }
 .garage-warming-warning { line-height:1.55; }
 

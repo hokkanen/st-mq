@@ -178,7 +178,7 @@ under `garage.protection` in configuration. The live fold shows rear/front air
 readings, pipe estimates and reserves. Its **Pipe model & settings** compares
 configured and reported parameters and explains the pipe calculation and fixed
 safety factor of 2. It links to **Connections & configuration → Garage freeze
-protection**, below **Floor preheating**, for installation and setup; that section
+protection**, below **Home floor preheating**, for installation and setup; that section
 links back to Garage.
 Each heat pump has an overview and detailed readings. Garage's chargers sit
 below its heating summary. Equipment remains in **Sensors & Equipment** (Home)

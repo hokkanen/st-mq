@@ -1,4 +1,5 @@
 import { CHART_VIEW_BY_KEY } from '../src/domain/chart-views.js';
+import { FLOOR_PREHEAT_SIGNALS } from '../src/domain/floor-circuits.js';
 import { stackPowerSeries } from './power-stack.js';
 import { isInterpolatedTemperature } from '../src/domain/chart-temperatures.js';
 import { temperatureIntervalKnots } from './temperature-curves.js';
@@ -207,7 +208,7 @@ export function historyStateLabel(key, value) {
   if (['compressor_active', 'garage_compressor_active', 'heating_pump_active', 'alarm_active'].includes(key)) return value === 1 ? 'Active' : value === 0 ? 'Inactive' : `Unknown (${value})`;
   if (key === 'model_valve_override') return ['Normal valve mode', 'Pooled override confirmed', 'Partial override', 'Unconfirmed override'][value] ?? 'Unknown valve mode';
   if (key === 'dhwr_request') return value === 1 ? 'On requested' : value === 0 ? 'Off requested' : `Unknown (${value})`;
-  if (['dhwr_active', 'heat_savings_active', 'garage_native_defrost'].includes(key) || /^floor_(living|storage)_[01]_active$/.test(key))
+  if (['dhwr_active', 'heat_savings_active', 'garage_native_defrost'].includes(key) || FLOOR_PREHEAT_SIGNALS.includes(key))
     return value === 1 ? 'Active' : value === 0 ? 'Inactive' : `Unknown (${value})`;
   return null;
 }

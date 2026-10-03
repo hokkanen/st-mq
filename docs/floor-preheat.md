@@ -1,8 +1,36 @@
-# Ground-floor valve preheating
+# Home floor preheating
 
-The floor override controls two dedicated Shelly Pro 2 v0 devices, each with outputs 0 and 1. Their logical names are **Storage** and **Living**. Initially, all four outputs form one pooled treatment: all must confirm ON before the controller records successful activation. These are override contacts: **OFF must release control to the original thermostats**, leaving ordinary heating electrically possible. Relay ON/OFF feedback does not prove valve travel, water flow or delivered heat. The other ground-floor loops remain at their existing fixed valve settings.
+The planned ground-floor circuit controller is **one SONOFF 4CH PRO R3** with
+four connections. The dashboard presents this device in **Data & settings →
+Connections & configuration → Home floor preheating**, directly above
+**Garage freeze protection**.
 
-The adapter and device script are implemented and exercised in an API harness. They have **not been installed or verified on household equipment**. Keep the feature disabled until the wiring, firmware and failure tests below pass. The separate heat-pump ROOM setting retains its own host-side restoration; local Shelly expiry releases only the valve overrides. It cannot restore ROOM across a host or H66 communication failure.
+| Connection | Floor circuit | Pipe length |
+| --- | --- | --- |
+| 1 | Living | 106 m |
+| 2 | Living | 62 m |
+| 3 | Storage | 38 m |
+| 4 | Storage | 80 m |
+
+Lengths identify the pipe laid inside each floor circuit. They are installation
+labels, not measured flow, heated floor area or validated thermal capacity.
+The four circuits are intended to form one pooled preheating treatment; all four
+must have fresh ON confirmation before an override can be considered active.
+Other ground-floor loops retain their existing fixed valve settings.
+
+**Device integration is pending.** The hardware selection and circuit mapping do
+not establish a supported firmware, control interface or local expiry mechanism.
+Floor control remains unavailable until those capabilities are implemented and
+verified. Configuration currently rejects enabling floor control or marking it
+commissioned. There is no device script to download or install from this
+application for this setup.
+
+The contacts must override the original thermostats only while preheating is
+active. **OFF must release the override and leave ordinary thermostat-controlled
+heating electrically possible.** Reported relay states establish electrical
+contact feedback, not valve travel, water flow or delivered heat. The dashboard
+therefore describes a confirmed OFF contact as **Override off**; unavailable
+feedback remains unknown.
 
 ## Thermal model and control settings
 
@@ -35,9 +63,10 @@ DHW-routed compressor heat is excluded from space heating as a deliberate simpli
 assumption.
 
 Thermal configuration and relay permission are independent. Keep
-`floor_preheat.enabled` and `floor_preheat.commissioned` false until the physical
-checks below pass. Configuring the slab does not activate any output or establish
-usable storage from room temperature alone.
+`controller.floor_preheat.enabled` and `controller.floor_preheat.commissioned`
+false until a supported integration is available and the physical checks below
+pass. Configuring the slab does not activate any output or establish usable
+storage from room temperature alone.
 
 Normal DHWR scheduling continues during preheat. During tariff reduction it is
 suppressed and DHW demand settings are reduced. Space heating resumes immediately
@@ -51,112 +80,81 @@ pause price control; this selects Normal heating and restores the captured nativ
 settings. A timed circulation run can then be started if needed. The deadline is not extended by ongoing estimated
 thermal recovery.
 
-## Renewal and failback
+## Required control and restoration behavior
 
-During automatic preheat, the controller renews an active lease every **5 minutes**. Each renewal expires locally after **15 minutes**, or at the planned preheat end, whichever comes first. Five-minute renewals do not cycle the relay: they reaffirm ON and its deadline. This allows missed renewals while bounding unwanted extra heating more tightly than a 50-minute timeout. Changing these defaults requires validating the installed firmware again; software accepts no local lease above 15 minutes.
+The integration must provide a bounded device-local lease for all four contacts.
+The planned automatic renewal interval is **5 minutes**, with each lease expiring
+after at most **15 minutes** or at the planned preheat end, whichever comes first.
+Renewal must maintain the existing ON state without cycling contacts. Loss of the
+host, connection or control process must not leave an indefinite override.
+A supported implementation must demonstrate this behavior on the installed
+firmware; these timing settings alone do not provide it.
 
-Manual **Preheat** deliberately uses one lease without renewal, including while
-Home is paused. Repeated clicks do not extend its original deadline or stack the
-ROOM increase. Normal or Reduced can end it sooner; ending Pause or restoration
-requirements can also end it early. At lease expiry, the controller probes both
-devices before requesting release, so a host OFF cannot conceal a failed local
-expiry. ROOM restoration starts at the same deadline independently of the floor
-probe. The 24-hour report distinguishes contacts already OFF, host fallback and
-missing evidence; relay readback does not prove valve movement or water flow.
-Manual heating bypasses savings and forecast selection while retaining native
-limits, equipment readiness and restoration duties.
+Manual **Preheat** uses one fixed lease, including while Home is paused. Repeated
+requests must not extend its original deadline or stack the ROOM increase. Normal
+or Reduced can end it sooner. ROOM restoration starts at the same deadline even
+if floor release cannot be confirmed. Local contact expiry cannot restore the
+heat pump's ROOM setting through a failed host or H66 connection.
 
-Each device runs [the local script](../scripts/shelly/floor-lease.js), with three complementary protections:
+Before any activation, the integration must persist the release obligation and
+bind command ownership to the current device, connection and treatment. It must
+reject stale or repeated activation commands, confirm each contact from fresh
+device feedback, and release all owned contacts after cancellation, partial
+activation, lost feedback, restart or expired permission. Missing release
+confirmation keeps the obligation pending and blocks a replacement treatment.
+Changing device identity or connection must never transfer old authority to the
+replacement device or erase a pending physical obligation.
 
-- A one-second local watchdog ends a lease at its absolute deadline or monotonic uptime deadline, and releases on lost/stepped clock, unexpected relay state or unsafe relay configuration.
-- Every ON also carries a native `Switch.Set` `toggle_after` timer, with a configured native auto-off backup. The native timer remains a fallback if the script stops. Power-on state is OFF.
-- A persistent boot generation, monotonically increasing command sequence, owner identity and fresh issuance timestamp reject old ON commands. Duplicate ON delivery never extends a lease. An expired/released owner cannot restart in the same script session. A new episode needs a new owner identity.
+Contact history must record all four connections separately, preserving exact
+state and quality changes. ON and OFF require actual feedback; commands,
+configuration, cached status and elapsed time cannot establish a physical state.
+Missing, stale and unsupported evidence remains unknown. An interrupted or partial
+activation is not evidence of successful pooled floor heating.
 
-The device rejects ON if its UTC clock is absent or differs from the host timestamp by more than the protocol allowance (5 seconds into the future or 30 seconds old). UTC clock steps exceeding 5 seconds relative to uptime release an existing lease. NTP and the host clock must be reliable. A release is accepted even without a valid clock.
+The four current series are `floor_groundfloor_1_active` through
+`floor_groundfloor_4_active`, in connection order. They remain unknown until a
+supported integration supplies actual contact feedback. Any existing pending
+physical release obligation remains visible; changing the planned hardware does
+not confirm release or authorize commands to an unverified interface.
 
-The host persists the release obligation before publishing any ON. Its obligation includes a SHA-256 scope digest of the broker address and username; neither raw account details nor passwords are stored in this scope marker. It uses fresh request-correlated device readback for both outputs on both devices, rejecting retained, duplicated, stale and unrelated statuses. It polls every 30 seconds when ticked; feedback expires after 90 seconds. Call the adapter's `tick` at least once per minute. Tick performs polling and release retries, **not autonomous preheat renewal**: the currently admitted preheat decision must keep calling `lease`.
+## Configuration
 
-History stores all four electrical outputs as exact changes, independently of
-the adaptive recorder: `floor_storage_0_active`, `floor_storage_1_active`,
-`floor_living_0_active` and `floor_living_1_active`. Values are 1 for reported ON,
-0 for reported OFF and null for unknown. Only correlated device replies establish
-an output; requests do not. Repeated unchanged replies extend report coverage.
-Startup, disconnection, expired feedback and invalid channels create explicit
-unknown periods, and quality changes are retained. A release reply can establish
-OFF even when the device clock is unavailable, with that quality stated. Old
-device mappings retained only for restoration cannot populate current outputs.
-These records describe electrical override contacts, not valve travel or flow.
+The current `controller.floor_preheat` settings are `enabled`, `commissioned`,
+`renew_seconds` and `lease_seconds`. Both flags must remain false; the timing
+defaults are 300 and 900 seconds respectively. There are no device address,
+firmware or MQTT topic settings for the pending integration. Keep shared defaults
+in the application configuration rather than copying them into the private file.
+Retired device mappings are rejected instead of being reused for the new device.
 
-Cancellation, manual owner replacement, failed/partial activation, lost readback, restart and expired permission release all owned channels. Lost OFF acknowledgement keeps the durable obligation pending and blocks a replacement treatment until release is confirmed. Broker reconnection performs release before resuming control. An interrupted attempt is not evidence of an all-open treatment. On an unreachable device, the local deadline remains the independent release mechanism.
+## Setup and commissioning
 
-## Private configuration and MQTT
+The **Home floor preheating** section shows the single device, its four circuit
+connections and current control availability. Configuration records installation
+intent; it does not verify wiring, firmware capabilities or local failback.
+Keep control disabled while integration is pending.
 
-Device identities belong only in the private configuration file. This invented example shows the `controller.floor_preheat` shape:
+1. Confirm the installed device and the four numbered circuit connections against
+   the table above. Have the wiring checked so each OFF state restores the
+   thermostat path independently of the host, connection and device power. Check
+   actuator power and travel delays, leaving other fixed valve settings unchanged.
+2. Establish a supported firmware and control interface, including independent
+   contact feedback, safe startup, bounded local expiry and rejection of stale
+   activation. Verify compatible relay modes and remove competing schedules or
+   command writers. Do not assume a general-purpose timer provides the required
+   ownership, renewal and failure behavior.
+3. With a supported integration available, verify all four ON/OFF readings and
+   renewal without relay cycling. Confirm expiry both at a short planned end and
+   at the maximum lease deadline, independently of host release commands.
+4. Test host termination, connection loss, device restart, failed renewal,
+   duplicate or delayed activation, one failed contact and lost release feedback.
+   Observe actual override release and native thermostat operation. Electrical
+   readback alone cannot prove that valves moved or water flowed.
+5. Record the reviewed installation and commissioning outcome privately. Only
+   then enable a supervised treatment, checking supply and floor limits, occupied
+   room temperatures, hydraulic redistribution, valve delays and the complete
+   recovery. Evidence must cover the selected circuit configuration throughout
+   charging, reduction and recovery.
 
-```json
-{
-  "controller": {
-    "floor_preheat": {
-      "enabled": false,
-      "commissioned": false,
-      "renew_seconds": 300,
-      "lease_seconds": 900,
-      "storage": { "topic_prefix": "invented-floor-storage" },
-      "living": { "topic_prefix": "invented-floor-living" }
-    }
-  }
-}
-```
-
-Do not copy the invented prefixes as real device identities. Each actual prefix must match that device's MQTT configuration. Each group maps exactly to switch components 0 and 1. Do not map either device to another equipment role or another command writer.
-
-| Topic relative to each private prefix | Direction | Content |
-| --- | --- | --- |
-| `/stmq/floor/command` | Host → device | JSON `probe`, `lease` or `release`, protocol `stmq-floor-v1` |
-| `/stmq/floor/status` | Device → host | Request-correlated boot, clock, lease and per-channel relay readback |
-| `/online` | Device → host | Native availability; OFF invalidates existing feedback |
-
-Commands and script statuses use QoS 1 and are never retained. The script obtains its prefix from `Shelly.getComponentConfig('mqtt')`. Existing retained commands must be removed during commissioning. Restrict broker write permissions to the intended host and device; this replay protocol is not an authentication mechanism. Disable alternate schedules, webhooks, cloud automations and direct relay ON writers on these dedicated outputs. A direct native ON bypasses the lease admission protocol; the running watchdog releases an unowned ON, but a stopped script cannot intercept such commands.
-
-## Changing the broker or account
-
-Release and verify all four outputs before changing the MQTT broker address or username. If a release obligation survives a restart with a different broker/account, the adapter sends no floor commands through the new route and blocks new leases. It keeps the original obligation pending. Reconnect using the original broker address and username, verify the acknowledged OFF release, and then apply the migration. A password-only rotation does not change the scope marker. Local expiry still releases the original devices if the original broker is unreachable; that alone does not fabricate host readback or clear its obligation.
-
-A release obligation without a broker scope also blocks activation: matching topic names do not establish which broker owns the outputs. Verify the original outputs are OFF before deliberately resetting an obligation whose route cannot be established.
-
-## Commissioning
-
-The dashboard has one shared section at **Data & settings → Connections &
-configuration → Floor preheating**. It separates current floor-control status,
-commissioning recorded in configuration, normal override behaviour and an ordered
-**Install & commission** checklist. Both floor equipment and MQTT entries link
-there. The checklist includes downloads of this full guide and the exact device
-script shipped with the application; they also work in the production UI.
-
-Relay OFF is displayed as **Override off**. Fresh contact feedback does not prove
-physical thermostat restoration, and a commissioning flag records the operator's
-checks rather than running them. Pending release remains visible even when floor
-control is disabled.
-This is not an ordinary Shelly ON/OFF integration: the local floor-lease script
-must be installed and run at startup on both devices before commissioning can
-succeed. The native 900-second auto-off is an independent backup to the script;
-neither a working MQTT connection nor an ON readback establishes correct expiry.
-
-
-1. Have the installed wiring checked: each of the four OFF states must restore the thermostat path independently of the host, broker and device power. Confirm device/output-to-actuator mapping, including any output driving more than one water loop. Check actuator power and travel delays. Leave the other fixed valve settings unchanged.
-2. With control disabled and outputs disconnected from the override loads where needed for safe testing, identify the actual model/firmware. Verify that this Pro 2 v0 firmware supports scripting, KVS, MQTT script subscriptions and `Switch.Set` timers. The supplied code uses the documented Gen2 APIs; harness tests cannot certify firmware behavior.
-3. Configure both switch components with `initial_state: "off"`, `in_mode: "detached"`, `auto_on: false`, `auto_off: true`, `auto_off_delay: 900`. Confirm readback of those settings and absence of other relay control paths. The script checks these settings and refuses a lease if they are unsafe; it does not silently rewrite them.
-4. Initialize the KVS key **`stmq_floor_boot_v1` to numeric `0` once**, before commissioning. Upload the script and enable startup execution. Check that every script/device restart increments this persistent value and begins OFF. Never reset or restore this key on a commissioned device: reinitialization requires clearing old commands and recommissioning. KVS failure must prevent activation.
-5. Verify both clocks, MQTT topics, ON readback, OFF readback and renewal of a still-ON native timer. The script uses absolute deadlines and supplies a remaining `toggle_after`; verify this behavior on the installed firmware. Confirm expiry at a deliberately short plan end as well as the 15-minute ceiling.
-6. Test host termination, broker/network loss, script stop, power cycle, missing/stepped UTC clock, stale/retained commands, delayed duplicate ON, failed renewal, one failed output and lost OFF acknowledgement. Observe actual override release and native thermostat operation; electrical status alone is insufficient. Test native auto-off after script failure separately.
-7. Record the commissioning outcome and hydraulic configuration epoch privately. Then set `commissioned: true` and `enabled: true` for a supervised short treatment, checking supply/floor limits, occupied-room temperatures, hydraulic redistribution, valve delays and the complete recovery. Equipment-response evidence must cover the selected valve configuration throughout charging, reduction and recovery.
-
-The initial software treatment is pooled. Separate Storage/Living experimentation, direct valve-position/flow sensing and automatic tuning of a separate slab parameter need their own evidence; they are not established by successful MQTT commands.
-
-## Integration API and tests
-
-`createFloorOverride` in [floor-override.js](../src/control/floor-override.js) accepts durable `getState`/`setState`, a publish callback, normalized settings, a clock, an authority callback and a broker identity. The acquisition layer supplies the broker address and username for the private scope digest. Its methods are `setConnected`, `ingest`, `status`, `lease`, `finishLease`, `release`, `tick` and `close`; `topics` includes subscriptions needed for both current mappings and outstanding older mappings. `lease({owner, until})` uses a stable unique episode owner and an absolute millisecond deadline. It resolves with `confirmed: true` only after all four outputs confirm. Disabled/uncommissioned activation throws `FLOOR_DISABLED`; a normal release with no obligation is a no-op. `close({restore: false})` stops without device writes and preserves outstanding obligations for the successor; normal close requests release before disconnecting.
-
-Run `node --test test/floor-override.test.js test/floor-integration.test.js test/floor-recording.test.js`. The tests execute the uploadable script against mocked official API shapes and independent native timers, alongside the host adapter, and verify actual SQLite history. They establish software behavior, not equipment commissioning.
-
-References: Shelly's [MQTT scripting API](https://shelly-api-docs.shelly.cloud/gen2/Scripts/APIs/MQTT/), [Switch configuration and timers](https://shelly-api-docs.shelly.cloud/gen2/ComponentsAndServices/Switch/), [KVS storage](https://shelly-api-docs.shelly.cloud/gen2/ComponentsAndServices/KVS/) and [system time/status](https://shelly-api-docs.shelly.cloud/gen2/ComponentsAndServices/Sys/).
+The initial treatment remains pooled. Independent Living/Storage control,
+valve-position or flow sensing and automatic tuning of slab parameters need
+separate implementation and evidence.

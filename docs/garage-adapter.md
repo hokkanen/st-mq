@@ -58,7 +58,7 @@ source reports unavailable. A BLU H&T supplies temperature only.
 ## Sender installation
 
 Use **Connections & configuration → Garage freeze protection**, directly below
-**Floor preheating**, for installation and setup guidance.
+**Home floor preheating**, for installation and setup guidance.
 The linked **Garage → Freeze protection** fold, below **Normal temperature**,
 contains live air/pipe/reserve readings and explains active protection. Its
 **Pipe model & settings** compares configured and reported parameters and explains

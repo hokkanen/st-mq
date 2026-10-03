@@ -75,8 +75,6 @@ const names = {
   garage_pipe_front_temperature: 'Front pipe temperature estimate',
   learning_profit: 'Space-heating benefit after recovery', learning_aux_profit: 'Space-heating benefit with auxiliary recovery',
   learning_recovery_error: 'Space-heating recovery-cost prediction error', learning_indoor_temperature: 'Learned normal indoor temperature',
-  ...Object.fromEntries(['living', 'storage'].flatMap(group => [0, 1].map(output =>
-    [`floor_${group}_${output}_active`, `${group === 'living' ? 'Living' : 'Storage'} floor override · output ${output}`]))),
 };
 export function recordedSignalInfo(signal, unit) {
   const info = SIGNAL_INFO[signal];

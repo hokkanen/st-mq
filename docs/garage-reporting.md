@@ -22,7 +22,7 @@ The live fold includes **Pipe model & settings**, comparing configured and repor
 parameters from `garage.protection`. Its model details explain the pipe estimate,
 reserve and fixed safety factor of 2, separately from the sender's parameter
 readback. A link opens **Connections & configuration → Garage freeze protection**,
-below **Floor preheating**, for installation and setup; that section links back
+below **Home floor preheating**, for installation and setup; that section links back
 to Garage. Settings are read-only; ST-MQ applies only loaded configuration and
 requires matching fresh readback for confirmation. Offline or missing protection
 is unavailable. With the BLU H&T test source, temperature control works while

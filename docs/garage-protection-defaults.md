@@ -31,7 +31,7 @@ Its **Calculation & assumptions** fold explains how these inputs produce the
 estimates.
 
 The live fold links to **Connections & configuration → Garage freeze protection**,
-below **Floor preheating**, for installation and setup. That section links back
+below **Home floor preheating**, for installation and setup. That section links back
 to Garage for live protection, settings and model details.
 
 The geometry and heat-transfer values are explicit engineering assumptions,

@@ -288,12 +288,6 @@ function buildConfiguration(options, env, cwd, configuration, source, { bootstra
     }
   }
   const floorPreheat = floorOverrideConfiguration(options.controller?.floor_preheat);
-  const occupiedTopics = [...(connections.equipment?.devices ?? []).filter(device => device.enabled && (device.controlsSwitch || device.controlsHeat || device.controlsCover))
-      .flatMap(device => [device.prefix, device.mqtt?.commandTopic]), connections.mqtt?.dhwr_topic].filter(Boolean);
-  for (const device of floorPreheat.devices) if (occupiedTopics.some(topic => topic === device.topicPrefix
-    || topic.startsWith(`${device.topicPrefix}/`) || device.topicPrefix.startsWith(`${topic}/`)))
-    throw new Error('Floor override devices must have dedicated MQTT prefixes separate from other equipment controls');
-  if (floorPreheat.enabled && ['mqtt', 'providers'].includes(input) && !connections.mqtt?.address) throw new Error('Floor overrides require the existing MQTT broker connection');
   const port = Number(env.STMQ_PORT ?? 1234);
   if (!Number.isInteger(port) || port < 0 || port > 65535) throw new Error('Invalid STMQ_PORT');
   const host = env.STMQ_HOST ?? (addon ? '0.0.0.0' : '127.0.0.1');

@@ -208,7 +208,7 @@ rear/front readings and explains protection behavior. Its **Pipe model & setting
 compares configured and reported parameters and explains the pipe calculation,
 including its fixed safety factor of 2. That factor is a model assumption, not a
 configurable or independently reported parameter. The live fold links to
-**Connections & configuration → Garage freeze protection**, below **Floor
+**Connections & configuration → Garage freeze protection**, below **Home floor
 preheating**, for installation and setup; that section links back to Garage.
 Installation approval, margin, pipe geometry and heat transfer come only from
 `garage.protection`;

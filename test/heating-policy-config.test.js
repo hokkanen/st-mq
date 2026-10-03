@@ -11,8 +11,6 @@ import { Engine } from '../src/app/engine.js';
 import { floorOverrideConfiguration } from '../src/control/floor-override.js';
 import { initialAdaptiveModel } from '../src/control/adaptive-learning.js';
 
-const floorMapping = { storage: { topic_prefix: 'invented-floor-storage' }, living: { topic_prefix: 'invented-floor-living' } };
-
 test('Home defaults to Balanced and Garage rejects every automatic savings strategy', () => {
   assert.equal(validateSettings().savingsStrategy, 'balanced');
   assert.equal(Object.hasOwn(garageSettings(), 'savingsStrategy'), false);
@@ -96,16 +94,14 @@ test('one bounded recovery hold configures hot-water restrictions and optional A
     assert.throws(() => controlConfiguration({ recovery_hold_minutes: value }));
 });
 
-test('floor control has strict flags, two exclusive device mappings and bounded renewal periods', () => {
+test('floor plan rejects unsupported activation, retired mappings and invalid renewal periods', () => {
   for (const key of ['enabled', 'commissioned']) for (const value of ['true', 'false', 0, 1, null, []])
-    assert.throws(() => floorOverrideConfiguration({ ...floorMapping, [key]: value }));
+    assert.throws(() => floorOverrideConfiguration({ [key]: value }));
   for (const value of [null, [], 'configuration']) assert.throws(() => floorOverrideConfiguration(value));
-  assert.throws(() => floorOverrideConfiguration({ storage: 'invented-device' }));
-  assert.throws(() => floorOverrideConfiguration({ enabled: true, storage: floorMapping.storage }));
-  for (const prefix of ['invented-floor-storage', 'invented-floor-storage/child'])
-    assert.throws(() => floorOverrideConfiguration({ storage: floorMapping.storage, living: { topic_prefix: prefix } }));
-  for (const prefix of ['invented/#', 'invented/+', ' invented', 'invented with space', '/invented', 'invented/'])
-    assert.throws(() => floorOverrideConfiguration({ storage: { topic_prefix: prefix } }));
+  for (const key of ['storage', 'living', 'device', 'unknown'])
+    assert.throws(() => floorOverrideConfiguration({ [key]: {} }), /Unsupported floor override/);
+  for (const key of ['enabled', 'commissioned'])
+    assert.throws(() => floorOverrideConfiguration({ [key]: true }), /SONOFF.*not available/);
   for (const values of [{ renew_seconds: 29 }, { renew_seconds: 451 }, { renew_seconds: '300' }, { renew_seconds: null },
     { lease_seconds: 901 }, { lease_seconds: null }, { renew_seconds: 300, lease_seconds: 599 }])
     assert.throws(() => floorOverrideConfiguration(values));
@@ -126,8 +122,9 @@ test('public defaults expose floor thermal priors while physical overrides stay 
   assert.equal(model.floor.nativeCapacityKwhPerC, 8.832);
   assert.equal(publicConfig.options.controller.floor_preheat.enabled, false);
   assert.equal(publicConfig.options.controller.floor_preheat.commissioned, false);
-  assert.equal(publicConfig.options.controller.floor_preheat.storage.topic_prefix, '');
-  assert.equal(publicConfig.options.controller.floor_preheat.living.topic_prefix, '');
+  assert.deepEqual(Object.keys(publicConfig.options.controller.floor_preheat), ['enabled', 'commissioned', 'renew_seconds', 'lease_seconds']);
+  assert.deepEqual(Object.keys(publicConfig.schema.controller.floor_preheat), ['enabled', 'commissioned', 'renew_seconds', 'lease_seconds']);
+  assert.equal(floorOverrideConfiguration(publicConfig.options.controller.floor_preheat).devices.length, 1);
   assert.equal(publicConfig.schema.controller.floor_preheat.lease_seconds, 'int(60,900)');
   assert.equal(controlConfiguration().floorThermalPriors, undefined);
   assert.equal(initialAdaptiveModel(controlConfiguration()).floor.enabled, false);
@@ -142,7 +139,7 @@ test('private thermal priors load into physical model assumptions without silent
     floor_thermal_priors: { capacity_kwh_per_c: 2.4, native_capacity_kwh_per_c: 6,
       exchange_kw_per_c: 0.2, ground_loss_kw_per_c: 0.03, ground_c: 9,
       open_allocation_fraction: 0.45, closed_allocation_fraction: 0.04 },
-    floor_preheat: { enabled: false, commissioned: false, ...floorMapping },
+    floor_preheat: { enabled: false, commissioned: false },
   } };
   const original = JSON.stringify(options); writeFileSync(path, original, { mode: 0o600 });
   const config = loadConfig({ STMQ_CONFIG: path }, directory);
@@ -184,22 +181,21 @@ test('configured priors are preserved exactly instead of accepted then silently 
   assert.equal(initialAdaptiveModel(control).floor.groundC, -3);
 });
 
-test('live floor mappings cannot share another control role or omit their MQTT broker', t => {
-  const directory = mkdtempSync(join(tmpdir(), 'stmq-floor-role-config-'));
+test('configuration loads the one-device floor plan without invented transport and rejects retired mappings', t => {
+  const directory = mkdtempSync(join(tmpdir(), 'stmq-floor-plan-config-'));
   t.after(() => rmSync(directory, { recursive: true, force: true }));
   const path = join(directory, 'fixture.json');
-  const base = { controller: { input: 'providers', floor_preheat: { enabled: true, commissioned: false, ...floorMapping } },
-    mqtt: { address: 'mqtt://invented.invalid' }, equipment: { devices: [] } };
-  const read = options => {
-    writeFileSync(path, JSON.stringify(options), { mode: 0o600 });
+  const read = floor_preheat => {
+    writeFileSync(path, JSON.stringify({ controller: { input: 'simulated', floor_preheat } }), { mode: 0o600 });
     return loadConfig({ STMQ_CONFIG: path }, directory);
   };
-  assert.equal(read(base).floorPreheat.devices.length, 2);
-  for (const extra of [
-    { equipment: { devices: [{ id: 'fixture', kind: 'switch', connection: 'shelly:invented-floor-storage', switch_control: true }] } },
-    { equipment: { devices: [{ id: 'fixture', kind: 'switch', connection: 'mqtt:invented/other-state', switch_control: true,
-      mqtt: { command_topic: 'invented-floor-storage/command/switch:0', on_payload: 'ON', off_payload: 'OFF' } }] } },
-    { mqtt: { address: 'mqtt://invented.invalid', dhwr_topic: 'invented-floor-storage/command/switch:0' } },
-  ]) assert.throws(() => read({ ...base, ...extra }), /dedicated MQTT prefixes/);
-  assert.throws(() => read({ ...base, mqtt: { address: '' } }), /MQTT broker/);
+  const plan = read({ enabled: false, commissioned: false }).floorPreheat;
+  assert.equal(plan.devices.length, 1);
+  assert.equal(plan.devices[0].model, 'SONOFF 4CH PRO R3');
+  assert.deepEqual(plan.devices[0].channels, [1, 2, 3, 4]);
+  assert.equal(plan.integrationSupported, false);
+  for (const key of ['storage', 'living', 'device'])
+    assert.throws(() => read({ [key]: { topic_prefix: 'fixture-retired-prefix' } }), /Unknown configuration field/);
+  for (const key of ['enabled', 'commissioned'])
+    assert.throws(() => read({ [key]: true }), /SONOFF.*not available/);
 });

@@ -285,6 +285,11 @@ defaults leave the explicit slab disabled until its physical priors are configur
 Automatic floor-preheat candidates require a configured slab within the reserve
 capacity budget; a deliberate manual override uses commissioned device authority
 without pretending its thermal behavior is already validated.
+The planned single SONOFF 4CH PRO R3 covers the four ground-floor circuits.
+Its control integration is pending, so floor activation remains unavailable;
+configuration or commissioning intent cannot establish support. See
+[Home floor preheating](floor-preheat.md) for the circuit mapping and required
+control behavior.
 
 Home's **Heating strategy & comfort** separates the decision policy from the
 **Home heat model**. **Savings strategy** offers **Gentle**, **Balanced** (default)
@@ -324,16 +329,18 @@ Equipment duty ratios and AUX exposure calibration remain separate adaptive
 quantities. Saved nominal compressor kW and recovery multipliers remain reporting
 diagnostics; they do not replace the fixed source electrical-input map.
 
-Each floor ON command carries a **device-local 15-minute lease**, normally renewed
-every **5 minutes** while preheat remains authorized; each lease is capped at the planned end. A controller crash or lost
-network therefore lets the Shelly turn its override off without a later server
-command. Commissioned OFF wiring returns authority to the room thermostats; stored
-heat still releases afterward. Device readback and lease/timer verification remain
-separate from MQTT acknowledgement. Relay readback does not measure valve movement,
-water flow or delivered heat. Local expiry releases only the valve overrides:
+The floor integration must provide a **device-local 15-minute lease**, renewed
+every **5 minutes** while automatic preheat remains authorized and capped at the
+planned end. It must release the override after a controller crash or lost
+connection without depending on a later host command. This capability is a
+requirement for the planned device, not verified behavior. Commissioned OFF
+wiring must return authority to the room thermostats; stored heat can still
+release afterward. Device readback and lease/timer verification remain separate
+from command acknowledgement. Relay readback does not measure valve movement,
+water flow or delivered heat. Local expiry can release only the valve overrides:
 H66 ROOM has no device-side lease and relies on durable application restoration
-and retries after communication returns. The two groups are one treatment for learning,
-not two independently fitted thermal stores.
+and retries after communication returns. All four ground-floor circuits form one
+treatment and one selected-slab state for learning.
 
 With little evidence, automatic action requires enabled learning trials, usable
 recorded temperature/equipment evidence and remaining allowance. Initial trials

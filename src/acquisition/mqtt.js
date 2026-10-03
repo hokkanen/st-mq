@@ -170,9 +170,7 @@ export async function startMqtt({ engine, store, config, connect = mqtt.connect,
         || !connected || stopping || stopped || generation !== connectionGeneration ? new Error('MQTT subscription unavailable') : null));
     } catch { finish(new Error('MQTT subscription failed')); }
   })));
-  const floorOverride = createFloorOverride({ store, publish: (topic, payload, options) => publish(topic, payload, { ...options, noReplay: true }),
-    settings: config.floorPreheat ?? floorOverrideConfiguration(), clock: () => engine.clock(), canControl, brokerIdentity: { address, username },
-    onObservation: observation => engine.ingest(observation) });
+  const floorOverride = createFloorOverride({ store, settings: config.floorPreheat ?? floorOverrideConfiguration() });
   engine.floorOverride = floorOverride;
   if (engine.executor) engine.executor.floorOverride = floorOverride;
   const equipment = equipmentSettings ? createEquipmentCapture({ engine, store, settings: equipmentSettings, publish, canControl,
@@ -444,8 +442,10 @@ export async function startMqtt({ engine, store, config, connect = mqtt.connect,
       clearInterval(shellyMaintenance);
       clearInterval(floorMaintenance);
       await floorOverride.close({ restore: false });
-      if (engine.floorOverride === floorOverride) engine.floorOverride = null;
-      if (engine.executor?.floorOverride === floorOverride) engine.executor.floorOverride = null;
+      // Physical release duties still guard heating while MQTT is unavailable.
+      const floorUnavailable = createFloorOverride({ store, settings: config.floorPreheat });
+      if (engine.floorOverride === floorOverride) engine.floorOverride = floorUnavailable;
+      if (engine.executor?.floorOverride === floorOverride) engine.executor.floorOverride = floorUnavailable;
       await garage?.close();
       await garageSender?.close();
       if (garage) engine.garage?.setAdapter?.(null);

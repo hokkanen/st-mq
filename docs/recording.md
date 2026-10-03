@@ -614,6 +614,9 @@ unobserved chart options or mix exact contacts into the adaptive table.
   without a numeric tolerance. This includes the four individual floor override
   outputs and actual tariff relay feedback. Contact readback proves an electrical
   output, not valve position, water flow or successful heat reduction.
+  The planned ground-floor device has connections 1–4; its floor series remain
+  unknown until a supported integration provides contact feedback. See
+  [Home floor preheating](floor-preheat.md).
 - Hot-water circulation feedback: initial state and exact state, quality or
   availability changes. Unchanged ON/OFF reports extend compact coverage;
   periodic feeds retain their configured deadline and event-only feeds retain

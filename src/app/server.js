@@ -141,7 +141,6 @@ export function createAppServer({ engine, getEngine = () => engine, store, chart
           return json(403, { error: 'Admin access is required for this action.' });
         const downloads = {
           '/api/downloads/floor-preheat-guide': ['../../docs/floor-preheat.md', 'floor-preheat.md', 'text/markdown'],
-          '/api/downloads/floor-lease-script': ['../../scripts/shelly/floor-lease.js', 'floor-lease.js', 'text/javascript'],
         };
         if (req.method === 'GET' && downloads[url.pathname]) {
           const [source, filename, type] = downloads[url.pathname];

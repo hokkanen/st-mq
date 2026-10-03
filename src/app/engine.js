@@ -1,4 +1,5 @@
 import { weatherAcquisitionIdentity } from '../acquisition/weather-identity.js';
+import { createFloorOverride, floorOverrideObligation, floorOverrideStatus } from '../control/floor-override.js';
 import { HeatingAutomation } from './automation.js';
 import { dhwrEligible } from '../control/dhwr.js';
 import { restoreAdaptiveCheckpoint } from '../control/adaptive-learning.js';
@@ -442,7 +443,9 @@ export class Engine {
       }
     }
     this.plant = config.input === 'simulated' ? new SimulatedPlant(store.getState('simulation:plant') ?? {}) : null;
-    this.executor = new Executor({ input: config.input, store, plant: this.plant, commandTransport, config: this.control, clock });
+    this.floorOverride = createFloorOverride({ store, settings: config.floorPreheat });
+    this.executor = new Executor({ input: config.input, store, plant: this.plant, commandTransport,
+      floorOverride: this.floorOverride, config: this.control, clock });
     this.startupRestorationPending = this.executor.status().restorationPending;
     this.latest = Object.create(null);
     this.lastKnownTemperatures = Object.create(null);
@@ -697,14 +700,12 @@ export class Engine {
     });
   }
   preheatValveStatus(now = this.clock()) {
-    return this.floorOverride?.status(now) ?? { enabled: this.config.floorPreheat?.enabled === true,
-      commissioned: false, connected: false, available: false, active: false, devices: [],
-      renewSeconds: 300, leaseSeconds: 900, restorationPending: false };
+    return this.floorOverride?.status(now) ?? floorOverrideStatus(this.config.floorPreheat, floorOverrideObligation(this.store));
   }
   floorOverrideMode(now = this.clock()) {
     const status = this.preheatValveStatus(now);
     if (status.active) return 'on';
-    if (!status.enabled && !status.restorationPending && !status.devices.length) return 'off';
+    if (!status.enabled && !status.restorationPending && (!status.devices.length || status.configured === false)) return 'off';
     if (!status.devices.every(device => device.available) || status.restorationPending) return 'unknown';
     const values = status.devices.flatMap(device => device.channels ?? []).map(channel => channel.output);
     return values.length === 4 && values.every(value => value === false) ? 'off' : 'partial';

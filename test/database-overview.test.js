@@ -143,7 +143,7 @@ test('recording inventory partitions every current observation writer without co
   const exact = ['indoor_temperature', 'downstairs_temperature', 'bedroom_temperature', 'garage_temperature',
     'garage_temperature_2', 'compressor_active', 'heating_pump_active', 'dhw_routing', 'room_setting', 'alarm_code',
     'auxiliary_output', 'compressor_hours', 'garage_native_energy', 'auxiliary_power', 'heat_savings_active',
-    'garage_door1_open', 'garage_door2_open', ...['living', 'storage'].flatMap(group => [0, 1].map(id => `floor_${group}_${id}_active`))];
+    'garage_door1_open', 'garage_door2_open', ...[1, 2, 3, 4].map(id => `floor_groundfloor_${id}_active`)];
   for (const signal of exact) recorder.record({ source: 'mqtt-equipment', device: 'private-example-device', signal,
     value: 1, unit: /active|open|routing/.test(signal) ? 'state' : signal === 'alarm_code' ? 'code' : 'degC',
     sourceTime: at, receivedAt: at, quality: [] });

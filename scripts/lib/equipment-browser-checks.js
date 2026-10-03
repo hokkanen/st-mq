@@ -18,47 +18,42 @@ async function checkFloorPreheatingBrowser({ evaluate, command, context, refresh
     assert.equal(await evaluate("document.querySelector('#home-manual-controls #floor-commissioning-details')"), null, 'Hardware setup is outside everyday heating controls');
     assert.match(await evaluate("document.getElementById('floor-preheat-state').textContent"), /unavailable|waiting|unknown/i, 'Missing status cannot report disabled or commissioned hardware');
     await evaluate(`(() => {const f=window.equipmentUiFixture;f.status.preheatValves={enabled:false,commissioned:false,
-      connected:false,available:false,active:false,restorationPending:false,renewSeconds:300,leaseSeconds:900,devices:[]};return true;})()`);
+      integrationSupported:false,connected:false,available:false,active:false,restorationPending:false,
+      devices:[{group:'groundfloor',model:'SONOFF 4CH PRO R3',available:false,
+        channels:[1,2,3,4].map(id=>({id,output:null}))}]};return true;})()`);
     await refresh();
-    assert.match(await evaluate("document.getElementById('floor-preheat-state').textContent"), /not enabled|disabled/i);
-    assert.match(await evaluate("document.getElementById('floor-preheat-commissioning-status').textContent"), /not|needed|required/i);
+    assert.equal(await evaluate("document.getElementById('floor-preheat-state').textContent"), 'Setup pending');
+    assert.equal(await evaluate("document.querySelector('#floor-preheat-details > summary > span').textContent"), 'Home floor preheating');
+    assert.match(await evaluate("document.getElementById('floor-preheat-commissioning-status').textContent"), /not recorded/i);
+    assert.equal(await evaluate("document.querySelectorAll('#floor-preheat-details .equipment-setup-hardware > div').length"), 1);
+    assert.deepEqual(await evaluate("[...document.querySelectorAll('.floor-preheat-circuits tbody tr')].map(row=>[...row.cells].map(cell=>cell.textContent))"),
+      [['1','Living','106 m'],['2','Living','62 m'],['3','Storage','38 m'],['4','Storage','80 m']]);
+    assert.doesNotMatch(await evaluate("document.getElementById('floor-preheat-details').textContent"), /Shelly|both devices|two outputs/i);
+    const floorCards = '#equipment-connections [data-device-id^="floor-override:"]';
+    assert.equal(await evaluate(`document.querySelectorAll('${floorCards}').length`), 1);
+    assert.equal(await evaluate(`document.querySelectorAll('${floorCards} [data-open-floor-setup]').length`), 1);
+    assert.equal(await evaluate("document.querySelectorAll('#home-equipment-readings [data-device-id^=\"floor-override:\"]').length"), 0,
+      'The planned device is not presented as observed equipment');
     await evaluate("window.equipmentUiFixture.status.preheatValves.restorationPending=true;true");
     await refresh();
-    assert.match(await evaluate("document.getElementById('floor-preheat-state').textContent"), /release pending/i, 'Disabling control does not hide an outstanding release');
-    assert.equal(await evaluate("[...document.querySelectorAll('#equipment-connections [data-device-id^=\"floor-override:\"] .equipment-device-status')].every(node=>/release pending/i.test(node.textContent))"), true);
-    await evaluate(`(() => {const f=window.equipmentUiFixture;f.status.preheatValves={enabled:true,commissioned:true,
-      connected:true,available:true,active:false,restorationPending:false,renewSeconds:240,leaseSeconds:600,
-      devices:['living','storage'].map(group=>({group,available:true,at:f.now,channels:[0,1].map(id=>({id,output:false}))}))};return true;})()`);
+    assert.match(await evaluate("document.getElementById('floor-preheat-state').textContent"), /release pending/i);
+    assert.match(await evaluate(`document.querySelector('${floorCards} .equipment-device-status').textContent`), /release pending/i);
+    await evaluate("window.equipmentUiFixture.status.preheatValves.restorationPending=false;true");
     await refresh();
-    assert.match(await evaluate("document.getElementById('floor-preheat-renewal').textContent"), /4.*10|240.*600/, 'Renewal information uses configured timing');
-    const floorCards = '#home-equipment-readings [data-device-id^="floor-override:"]';
-    assert.equal(await evaluate(`document.querySelectorAll('${floorCards}').length`), 2);
-    assert.deepEqual(await evaluate(`[...document.querySelectorAll('${floorCards} .status-detail-label')].map(node=>node.textContent)`), ['Override off','Override off','Override off','Override off']);
-    assert.equal(await evaluate(`document.querySelectorAll('${floorCards} [data-open-floor-setup]').length`), 2);
-    assert.equal(await evaluate("document.querySelectorAll('#equipment-connections [data-device-id^=\"floor-override:\"] [data-open-floor-setup]').length"), 2);
-    await evaluate(`document.getElementById('home-equipment-details').open=true;document.querySelectorAll('${floorCards}').forEach(node=>node.open=true);true`);
-    assert.equal(await evaluate(`Array.from(document.querySelectorAll('${floorCards} .equipment-switch-buttons button')).every(node=>node.disabled&&!node.checkVisibility())`), true, 'Floor contacts have no manual lease-bypass controls');
-    for (const source of ['#home-equipment-readings','#equipment-connections']) {
-      await evaluate(`(() => {document.getElementById('connections-details').open=${source === '#equipment-connections'};
-        document.getElementById('mqtt-devices-details').open=true;document.getElementById('floor-preheat-details').open=false;
-        const link=document.querySelector('${source} [data-device-id="floor-override:living"] [data-open-floor-setup]');
-        link.closest('details').open=true;link.click();return true;})()`);
-      await settle();
-      assert.equal(await evaluate("document.getElementById('connections-details').open&&document.getElementById('floor-preheat-details').open"), true, 'A floor-device link opens the setup ancestors');
-      assert.equal(await evaluate("document.activeElement===document.querySelector('#floor-preheat-details > summary')"), true, 'Setup navigation puts keyboard focus on its destination');
-      assert.equal(await evaluate("document.querySelector('#floor-preheat-details > summary').checkVisibility()"), true);
-    }
+    await evaluate(`(() => {document.getElementById('connections-details').open=true;
+      document.getElementById('mqtt-devices-details').open=true;document.getElementById('floor-preheat-details').open=false;
+      const link=document.querySelector('${floorCards} [data-open-floor-setup]');
+      link.closest('details').open=true;link.click();return true;})()`);
+    await settle();
+    assert.equal(await evaluate("document.getElementById('connections-details').open&&document.getElementById('floor-preheat-details').open"), true);
+    assert.equal(await evaluate("document.activeElement===document.querySelector('#floor-preheat-details > summary')"), true);
     await evaluate("document.getElementById('floor-commissioning-details').open=true;document.querySelector('#floor-commissioning-details > summary').focus();true");
     await refresh();
-    assert.equal(await evaluate("document.getElementById('floor-commissioning-details').open"), true, 'Polling preserves the commissioning checklist');
-    assert.equal(await evaluate("document.activeElement===document.querySelector('#floor-commissioning-details > summary')"), true, 'Polling preserves checklist keyboard focus');
-    await evaluate("window.equipmentUiFixture.status.preheatValves.devices.forEach(device=>{device.available=false;device.channels.forEach(channel=>channel.output=null);});window.equipmentUiFixture.status.preheatValves.available=false;true");
-    await refresh();
-    assert.match(await evaluate("document.getElementById('floor-preheat-state').textContent"), /waiting|unavailable|readback/i);
-    assert.doesNotMatch(await evaluate("document.getElementById('floor-preheat-commissioning-status').textContent"), /not recorded|needs commissioning|not commissioned/i, 'Losing readback does not erase the commissioning record');
+    assert.equal(await evaluate("document.getElementById('floor-commissioning-details').open"), true);
+    assert.equal(await evaluate("document.activeElement===document.querySelector('#floor-commissioning-details > summary')"), true);
+    assert.equal(await evaluate("document.getElementById('floor-preheat-script')"), null, 'Retired hardware script is not offered');
     for (const [id, route, source] of [
       ['floor-preheat-guide','floor-preheat-guide','../../docs/floor-preheat.md'],
-      ['floor-preheat-script','floor-lease-script','../../scripts/shelly/floor-lease.js'],
     ]) {
       const download = await evaluate(`(async()=>{const button=document.getElementById('${id}'),token=sessionStorage.getItem('stmq-token')??'';
         const response=await window.equipmentUiFixture.fetch(new URL('api/downloads/${route}',location.href),
@@ -71,7 +66,7 @@ async function checkFloorPreheatingBrowser({ evaluate, command, context, refresh
     }
     for (const theme of ['dark','light']) {
       await evaluate(`document.documentElement.dataset.theme='${theme}';true`);
-      for (const width of [1440,320]) {
+      for (const width of [1440,390,320]) {
         await command('browsingContext.setViewport',{context,viewport:{width,height:1100},devicePixelRatio:1}); await settle();
         await evaluate("document.getElementById('floor-preheat-details').scrollIntoView({block:'start'});true"); await settle();
         assert.equal(await evaluate('document.documentElement.scrollWidth<=innerWidth'), true, `Floor commissioning fits at ${width}px in ${theme} theme`);

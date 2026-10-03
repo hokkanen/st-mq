@@ -1,4 +1,5 @@
 import { MODEL_COEFFICIENT_INFO, PHASE_ENERGY_SIGNALS } from './history-series.js';
+import { FLOOR_PREHEAT_SIGNALS } from './floor-circuits.js';
 
 // A view declares its subject, compatible quantities and intentional context.
 // The same definition bounds server queries and drives the chart controls.
@@ -52,7 +53,7 @@ view('auxiliary', 'Auxiliary output', 'Home heating', 'Reported heater output al
   ['auxiliary_output'], water, ['operatingMode', 'compressorHome'], ['auxiliary_output', 'supply_temperature', 'heating_setpoint', 'operatingMode']);
 view('control', 'Control requests & operation', 'Home controls & diagnostics', 'Inspect requests and equipment readback separately. A requested reduction does not prove that the compressor stopped.', '', [], home,
   ['controller_phase', 'heating_pump_active', 'operatingMode', 'compressorHome', 'dhwr', 'dhwr_active', 'heat_savings_active',
-    'floor_living_0_active', 'floor_living_1_active', 'floor_storage_0_active', 'floor_storage_1_active', 'alarm_active'],
+    ...FLOOR_PREHEAT_SIGNALS, 'alarm_active'],
   ['model_indoor_temperature', 'controller_phase', 'heating_pump_active', 'operatingMode', 'compressorHome']);
 view('settings', 'Temperature settings', 'Home controls & diagnostics', 'Recorded temperature settings, shown as smooth curves. Interpolation is for display; settings change at their recorded times.', '', [],
   ['room_setting', 'heating_curve', 'maximum_supply_setting', 'heat_stop_setting', 'tariff_reduction_setting', 'dhw_start_setting', 'dhw_stop_setting'], ['operatingMode'],

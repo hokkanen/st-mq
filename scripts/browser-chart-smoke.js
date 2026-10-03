@@ -18,6 +18,7 @@ import { addFireplace } from '../src/app/fireplace.js';
 import { recordChargingSessionCheck } from '../src/app/charging-session-checks.js';
 import { equipmentConfiguration } from '../src/acquisition/equipment-config.js';
 import { CHART_VIEWS, CHART_VIEW_BY_KEY } from '../src/domain/chart-views.js';
+import { FLOOR_PREHEAT_SIGNALS } from '../src/domain/floor-circuits.js';
 import { EXPLORER_SERIES } from '../chart/series-explorer.js';
 
 // Requires a separately started isolated Firefox BiDi listener. This script
@@ -41,8 +42,8 @@ function seedRecordingFixture(app) {
   for(const [device,value] of [['private-recording-probe-a',18],['private-recording-probe-b',19]])
     record('workshop_temperature',value,'degC',device);
   record('workshop_temperature',45,'%', 'private-recording-probe-a');
-  for(const group of ['living','storage']) for(const output of [0,1])
-    record(`floor_${group}_${output}_active`,output,'state',`private-floor-${group}`,'floor-override');
+  for(const [index,signal] of FLOOR_PREHEAT_SIGNALS.entries())
+    record(signal,index % 2,'state','fixture-floor-groundfloor','floor-override');
   record('garage_native_defrost',0,'state','private-pump','garage-adapter');
   for (let interval = 0; interval < 2; interval++) app.engine.recorder.recordEnergy({
     source:'shelly-mqtt',device:'private-caravan-meter',prefix:'caravan',start:now-(2-interval)*60_000,
@@ -315,8 +316,7 @@ try {
   await until("document.querySelectorAll('#recording-overview-content .recording-data-group').length>=8");
   assert.equal(await evaluate("document.getElementById('recording-overview-details').open"),true,'native summary opens by keyboard');
   assert.equal(await evaluate("window.recordingFixture.requests"),1);
-  for(const group of ['living','storage']) for(const output of [0,1]) {
-    const key=`floor_${group}_${output}_active`;
+  for(const key of FLOOR_PREHEAT_SIGNALS) {
     assert.match(await evaluate(`document.querySelector('[data-dataset-id="${key}"]').textContent`),/Every change/);
   }
   assert.match(await evaluate("document.querySelector('[data-dataset-id=dhwr_active]').textContent"),/2 records.*Every change/);
