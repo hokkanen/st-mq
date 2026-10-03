@@ -32,7 +32,7 @@ The normal server serves the completed UI build.
 prerelease in a separate checkout, select its tag explicitly:
 
 ```sh
-git clone --branch v0.9.5-dev.2 https://github.com/hokkanen/st-mq.git st-mq-dev
+git clone --branch v0.9.5-dev.3 https://github.com/hokkanen/st-mq.git st-mq-dev
 cd st-mq-dev
 npm ci
 npm run build

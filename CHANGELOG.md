@@ -6,6 +6,8 @@ Versions follow Semantic Versioning. `-dev.N` denotes a development prerelease.
 
 ## Unreleased
 
+## 0.9.5-dev.3 — 2026-10-03
+
 ### Fixed
 
 - Charger 2 keeps its native kW readings in the correct units, fixing near-zero

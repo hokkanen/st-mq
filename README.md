@@ -7,7 +7,7 @@ ST-MQ is a local home-energy controller for Home Assistant OS and standalone
 Linux. Its dashboard and Home Assistant app are named **Home Energy**; the
 repository and installation slug are `st-mq`.
 
-**0.9.5-dev.2 is the current development prerelease.** It is
+**0.9.5-dev.3 is the current development prerelease.** It is
 intended for evaluation and installation-specific commissioning. Default startup
 uses simulated devices with Home heating paused. Live input and each feature's
 control permission are separate choices.
@@ -46,7 +46,7 @@ standalone ST-MQ alongside it.
 For standalone Linux, use Node.js **22.19 or newer**:
 
 ```sh
-git clone --branch v0.9.5-dev.2 https://github.com/hokkanen/st-mq.git
+git clone --branch v0.9.5-dev.3 https://github.com/hokkanen/st-mq.git
 cd st-mq
 npm ci
 npm run build
