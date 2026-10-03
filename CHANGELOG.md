@@ -17,6 +17,10 @@ Versions follow Semantic Versioning. `-dev.N` denotes a development prerelease.
 
 ### Fixed
 
+- Reset pairing accepts configured storage-directory links, including a checkout's
+  `var` link to persistent storage. Internal links and overlapping physical paths
+  remain protected, and changing a directory link cannot redirect an interrupted
+  archive operation.
 - Paired computers has clearer status groups, balanced mobile layouts and amber
   emphasis for problems or decisions that need attention. The compact view shows
   reported mirroring evidence, and normal operation keeps recovery steps out of

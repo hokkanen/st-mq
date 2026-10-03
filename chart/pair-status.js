@@ -39,7 +39,7 @@ export function pairIssueHelp(view) {
     database_schema_invalid: 'The database structure does not match its declared schema. Restore an intact current-schema backup, or use Reset pairing → Start fresh to archive the old database and pairing state.',
     pair_reset_failed: 'The pairing reset could not finish. Existing files remain preserved. Review the reset status below and retry the same choice.',
     pair_reset_storage_failed: 'The pairing archive could not be completed. Existing files remain protected. Check available disk space and storage permissions, then retry the same reset choice.',
-    pair_reset_unsafe_storage: 'The configured storage locations cannot be safely archived. Check that the database, pairing storage and archive locations are separate before retrying.',
+    pair_reset_unsafe_storage: 'The configured storage locations cannot be safely archived. Check for overlapping storage locations or symbolic links inside the files being archived before retrying.',
     pair_reset_history_unavailable: 'The local history database could not be identified. Keep local history cannot continue. Start fresh can archive existing files without opening the old database.',
     pair_reset_restoration_required: 'Resolve outstanding temporary equipment changes before starting fresh. Keep local history preserves their restoration records. Archiving records does not restore equipment.',
     snapshot_failed: 'Local history could not be opened for viewing. Keep the database files intact and check the application log. Any last verified snapshot remains available.',

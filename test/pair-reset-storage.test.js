@@ -178,6 +178,112 @@ test('reset storage rejects symlinks, unsafe nesting and active paths outside co
   });
 });
 
+async function configuredAlias(t) {
+  const f = await fixture(t);
+  const physical = join(f.root, 'physical-var'), alias = join(f.root, 'var');
+  await mkdir(physical, { mode: 0o700 });
+  await symlink(physical, alias);
+  Object.assign(f.config, { dataDir: alias, databaseDir: alias, dbPath: join(alias, 'st-mq.sqlite') });
+  f.config.pair = { directory: join(alias, 'pairing'), snapshotDirectory: join(alias, 'pair-snapshots') };
+  f.state.activeDbPath = f.config.dbPath;
+  await file(join(f.config.pair.directory, 'state.json'), JSON.stringify(f.state));
+  await file(join(f.config.pair.directory, '.st-mq-pair'), '');
+  await file(join(f.config.pair.directory, '.node-lock.sqlite'), 'stable lock');
+  await file(join(f.config.pair.snapshotDirectory, '.st-mq-replica'), '');
+  await file(join(f.config.pair.snapshotDirectory, '.st-mq-paired-receiver'), '');
+  await file(f.config.dbPath, 'history behind configured alias');
+  return { ...f, physical, alias };
+}
+
+test('explicit configured storage ancestors may be symlinks for both reset choices', async t => {
+  for (const mode of ['keep', 'fresh']) await t.test(mode, async t => {
+    const { config, physical, alias, create } = await configuredAlias(t);
+    const actualDatabase = join(physical, 'st-mq.sqlite');
+    const plan = await create(mode);
+    assert.equal(plan.databasePath, actualDatabase);
+    assert.equal(plan.pairDirectory, join(physical, 'pairing'));
+    assert.equal(plan.snapshotDirectory, join(physical, 'pair-snapshots'));
+    assert.equal(plan.archiveRoot, join(physical, 'reset-archives'));
+    assert.equal(plan.selectedDbPath, actualDatabase);
+    const result = await resume(plan, config);
+    assert.equal(await readFile(archived(plan, actualDatabase), 'utf8'), 'history behind configured alias');
+    if (mode === 'keep') {
+      assert.equal(result.keptDbPath, join(physical, 'pairing', 'kept-history.sqlite'));
+      assert.equal(await readFile(result.keptDbPath, 'utf8'), 'history behind configured alias');
+    } else {
+      assert.equal(result.keptDbPath, null);
+      await absent(actualDatabase);
+    }
+    assert.equal((await lstat(alias)).isSymbolicLink(), true, 'the configured alias itself remains intact');
+    assert.equal(await readFile(join(physical, 'pairing', '.node-lock.sqlite'), 'utf8'), 'stable lock');
+  });
+});
+
+test('an explicitly configured pairing directory alias is canonicalized without moving the alias', async t => {
+  const { root, config, create } = await fixture(t);
+  const actualPair = config.pair.directory, alias = join(root, 'configured-pairing');
+  await symlink(actualPair, alias);
+  config.pair.directory = alias;
+  const plan = await create('keep');
+  assert.equal(plan.pairDirectory, actualPair);
+  const result = await resume(plan, config);
+  assert.equal(result.keptDbPath, join(actualPair, 'kept-history.sqlite'));
+  assert.equal(await readFile(result.keptDbPath, 'utf8'), 'database bytes');
+  assert.equal((await lstat(alias)).isSymbolicLink(), true);
+});
+
+test('fresh reset can clear saved pairing storage through an alias after the database was manually removed', async t => {
+  const { config, physical, create } = await configuredAlias(t);
+  await rm(config.dbPath);
+  const plan = await create('fresh');
+  assert.equal(plan.selectedDbPath, null);
+  const result = await resume(plan, config);
+  assert.equal(result.keptDbPath, null);
+  await absent(join(physical, 'st-mq.sqlite'));
+  assert.equal(await readFile(join(physical, 'pairing', '.node-lock.sqlite'), 'utf8'), 'stable lock');
+  assert.ok((await readFile(join(plan.archiveDirectory, 'pairing', 'state.json'), 'utf8')).includes('activeDbPath'));
+});
+
+test('configured aliases do not permit symlinks inside pairing storage', async t => {
+  const { root, config, physical, create } = await configuredAlias(t);
+  const unrelated = join(root, 'unrelated', 'history.sqlite');
+  await file(unrelated, 'unrelated history');
+  await symlink(unrelated, join(config.pair.directory, 'linked-history.sqlite'));
+  await assert.rejects(create('fresh'), { code: 'pair_reset_unsafe_storage' });
+  assert.equal(await readFile(unrelated, 'utf8'), 'unrelated history');
+  assert.equal(await readFile(join(physical, 'st-mq.sqlite'), 'utf8'), 'history behind configured alias');
+  await absent(join(physical, 'reset-archives'));
+});
+
+test('different configured root spellings cannot resolve to the same physical storage', async t => {
+  const { root, config, create } = await fixture(t);
+  const alias = join(root, 'same-pairing-storage');
+  await symlink(config.pair.directory, alias);
+  config.pair.snapshotDirectory = alias;
+  await assert.rejects(create('fresh'), { code: 'pair_reset_unsafe_storage' });
+  assert.equal(await readFile(config.dbPath, 'utf8'), 'database bytes');
+  assert.equal(await readFile(join(config.pair.directory, '.node-lock.sqlite'), 'utf8'), 'stable lock');
+  await absent(archiveRoot(config));
+});
+
+test('retargeting a configured root alias after review cannot redirect an archive retry', async t => {
+  const { root, config, physical, alias, create } = await configuredAlias(t);
+  const plan = await create('fresh');
+  const replacement = join(root, 'replacement-var');
+  await mkdir(replacement, { mode: 0o700 });
+  await rm(alias);
+  await symlink(replacement, alias);
+  const before = await readdir(plan.archiveDirectory);
+  await assert.rejects(resume(plan, config), { code: 'pair_reset_unsafe_storage' });
+  assert.deepEqual(await readdir(plan.archiveDirectory), before);
+  assert.deepEqual(await readdir(replacement), [], 'a changed alias is rejected before creating destination files');
+  assert.equal(await readFile(join(physical, 'st-mq.sqlite'), 'utf8'), 'history behind configured alias');
+  await rm(alias);
+  await symlink(physical, alias);
+  await resume(plan, config);
+  assert.equal(await readFile(archived(plan, join(physical, 'st-mq.sqlite')), 'utf8'), 'history behind configured alias');
+});
+
 test('edited archive manifests cannot escape the archive or move the live state and lock', async t => {
   for (const kind of ['destination', 'source', 'lock']) await t.test(kind, async t => {
     const { config, create } = await fixture(t);

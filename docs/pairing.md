@@ -512,8 +512,12 @@ management page without interpreting or rewriting the rejected state. In that
 case **Keep local history** is unavailable because the active history cannot be
 identified reliably; **Start fresh** archives the configured storage intact.
 Invalid configuration, unsafe paths or storage permissions can still require
-repair outside the dashboard. Nested pairing/snapshot/archive paths and symlinks
-are refused rather than guessing which files to move.
+repair outside the dashboard. Configured directory aliases, such as a checkout's
+`var` symbolic link to persistent storage, are resolved to their physical locations.
+Overlapping physical pairing/snapshot/archive paths, links within their contents,
+and a link at the derived `reset-archives` directory are refused. The archive
+records its physical source locations; retargeting a configured directory link
+blocks a pending reset until its original location is restored.
 
 After resetting only one computer, the other may protect its previous lineage.
 Review its retained history before recovery or its own explicit reset. Resetting

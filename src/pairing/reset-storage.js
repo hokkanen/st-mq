@@ -1,7 +1,7 @@
 import { createHash } from 'node:crypto';
 import { constants } from 'node:fs';
-import { chmod, copyFile, lstat, mkdir, open, readFile, readdir, rename, rmdir, unlink, writeFile } from 'node:fs/promises';
-import { basename, dirname, isAbsolute, join, resolve, sep } from 'node:path';
+import { chmod, copyFile, lstat, mkdir, open, readFile, readdir, realpath, rename, rmdir, unlink, writeFile } from 'node:fs/promises';
+import { basename, dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
 import { durableJson, readReplicaPublication, syncDirectory } from '../replication/publication.js';
 
 const UUID = /^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/;
@@ -27,10 +27,35 @@ export function archiveRoot(config) {
   return resolve(config.addon ? dirname(config.databaseDir) : config.dataDir, 'reset-archives');
 }
 
-function locations(config) {
-  const value = { databasePath: config.dbPath, pairDirectory: config.pair.directory,
+/** Resolve only the configured directory boundary, including an absent suffix.
+ * Links discovered within its contents are still rejected by the archive walk. */
+async function configuredDirectory(path) {
+  const info = await present(path);
+  if (info) {
+    if (!info.isDirectory() && !info.isSymbolicLink()) throw failure('pair_reset_unsafe_storage');
+    const resolved = await realpath(path);
+    if (!(await lstat(resolved)).isDirectory()) throw failure('pair_reset_unsafe_storage');
+    return resolved;
+  }
+  const parent = dirname(path);
+  if (parent === path) throw failure('pair_reset_unsafe_storage');
+  return join(await configuredDirectory(parent), basename(path));
+}
+
+async function locations(config) {
+  const configured = { databasePath: config.dbPath, pairDirectory: config.pair.directory,
     snapshotDirectory: config.pair.snapshotDirectory, archiveRoot: archiveRoot(config) };
-  if (Object.values(value).some(path => typeof path !== 'string' || !isAbsolute(path) || path !== resolve(path) || path === '/'))
+  if (Object.values(configured).some(path => typeof path !== 'string' || !isAbsolute(path) || path !== resolve(path) || path === '/'))
+    throw failure('pair_reset_unsafe_storage');
+  const value = {
+    databasePath: join(await configuredDirectory(dirname(configured.databasePath)), basename(configured.databasePath)),
+    pairDirectory: await configuredDirectory(configured.pairDirectory),
+    snapshotDirectory: await configuredDirectory(configured.snapshotDirectory),
+    // This leaf is derived by the application, not a configured alias. Refuse a
+    // link at reset-archives itself rather than redirecting the archive silently.
+    archiveRoot: join(await configuredDirectory(dirname(configured.archiveRoot)), basename(configured.archiveRoot)),
+  };
+  if (Object.values(value).some(path => path === '/'))
     throw failure('pair_reset_unsafe_storage');
   const { pairDirectory, snapshotDirectory, archiveRoot: root, databasePath } = value;
   if (within(pairDirectory, snapshotDirectory) || within(snapshotDirectory, pairDirectory)
@@ -39,6 +64,17 @@ function locations(config) {
     || within(root, databasePath) || databasePath === pairDirectory || databasePath === snapshotDirectory)
     throw failure('pair_reset_unsafe_storage');
   return value;
+}
+
+function selectedDatabase(config, paths, path) {
+  if (typeof path !== 'string' || !isAbsolute(path) || path !== resolve(path)) throw failure('pair_reset_unsafe_storage');
+  if (path === config.dbPath) return paths.databasePath;
+  for (const [configured, physical] of [[config.pair.directory, paths.pairDirectory],
+    [config.pair.snapshotDirectory, paths.snapshotDirectory]]) {
+    if (within(configured, path)) return join(physical, relative(configured, path));
+  }
+  // Keep-mode paths saved by an earlier reset already use their physical root.
+  return path;
 }
 
 function allowedDatabase(paths, path) {
@@ -50,13 +86,13 @@ function allowedDatabase(paths, path) {
 /** This selects current authority/publication metadata; it never parses an old database. */
 export async function selectResetDatabase(config, state) {
   return checked(async () => {
-    const paths = locations(config);
+    const paths = await locations(config);
     await safeParents(paths.pairDirectory);
     await safeParents(paths.snapshotDirectory);
     let selected;
     if ((state?.role === 'master' || state?.role === 'protected' && state.everWritten) && state.activeDbPath) {
-      if (!allowedDatabase(paths, state.activeDbPath)) throw failure('pair_reset_unsafe_storage');
-      selected = state.activeDbPath;
+      selected = selectedDatabase(config, paths, state.activeDbPath);
+      if (!allowedDatabase(paths, selected)) throw failure('pair_reset_unsafe_storage');
     } else {
       const manifest = await present(join(paths.snapshotDirectory, 'publication.json'));
       if (manifest && (!manifest.isFile() || manifest.isSymbolicLink())) throw failure('pair_reset_unsafe_storage');
@@ -122,7 +158,7 @@ function copiedMarker(paths, path) {
 export async function createResetArchive({ config, state, mode, requestId, clock = Date.now }) {
   return checked(async () => {
     if (!['keep', 'fresh'].includes(mode) || !UUID.test(requestId)) throw failure('pair_reset_unsafe_storage');
-    const paths = locations(config);
+    const paths = await locations(config);
     for (const path of [dirname(paths.databasePath), paths.pairDirectory, paths.snapshotDirectory, paths.archiveRoot]) await safeParents(path);
     let selectedDbPath;
     try { selectedDbPath = await selectResetDatabase(config, state); }
@@ -314,7 +350,7 @@ export async function resumeResetArchive(planOrArchiveDirectory, expected) {
   return checked(async () => {
     if (!expected?.config || !UUID.test(expected.requestId) || !['keep', 'fresh'].includes(expected.mode))
       throw failure('pair_reset_unsafe_storage');
-    const paths = locations(expected.config);
+    const paths = await locations(expected.config);
     const archiveDirectory = typeof planOrArchiveDirectory === 'string' ? planOrArchiveDirectory : planOrArchiveDirectory?.archiveDirectory;
     if (typeof archiveDirectory !== 'string' || !isAbsolute(archiveDirectory) || archiveDirectory !== resolve(archiveDirectory)
       || dirname(archiveDirectory) !== paths.archiveRoot)

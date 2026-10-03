@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtemp, mkdir, readFile, writeFile, readdir, rm } from 'node:fs/promises';
+import { mkdtemp, mkdir, readFile, writeFile, readdir, rm, symlink } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { randomUUID } from 'node:crypto';
@@ -187,4 +187,27 @@ test('keeping incompatible history archives it without making the obsolete forma
   assert.equal(app.status().error, 'database_schema_mismatch');
   assert.equal(app.pair.canControl(), false);
   assert.deepEqual(await readFile(app.pair.state.value.activeDbPath), original);
+});
+
+test('a linked data directory supports keep, explicit promotion, then fresh reset without changing the alias', async t => {
+  const f = await fixture(t), physical = f.config.dataDir, alias = join(f.root, 'var');
+  await mkdir(physical); await symlink(physical, alias);
+  f.config.dataDir = alias; f.config.databaseDir = alias; f.config.dbPath = join(alias, 'st-mq.sqlite');
+  Object.assign(f.config.pair, { directory: join(alias, 'pairing'), snapshotDirectory: join(alias, 'pair-snapshots'),
+    databasePath: f.config.dbPath });
+  const app = await f.open(); await promote(app);
+  app.store.event('synthetic-linked-storage', { value: 3 }, Date.now());
+  const kept = await completed(app, command(app, 'keep'));
+  assert.equal(kept.state, 'complete', kept.error);
+  assert.equal(app.pair.state.value.activeDbPath, join(physical, 'pairing', 'kept-history.sqlite'));
+  assert.equal(app.status().role, 'protected');
+  await promote(app);
+  assert.equal(app.store.db.prepare("SELECT COUNT(*) AS n FROM events WHERE type='synthetic-linked-storage'").get().n, 1);
+  const fresh = await completed(app, command(app, 'fresh'));
+  assert.equal(fresh.state, 'complete', fresh.error);
+  assert.equal(app.status().role, 'slave');
+  assert.equal(app.status().bootstrapPending, true);
+  assert.equal(fresh.result.archiveDirectory.startsWith(join(physical, 'reset-archives') + '/'), true);
+  assert.equal((await readdir(join(alias, 'reset-archives'))).length, 2);
+  await assert.rejects(readFile(f.config.dbPath), { code: 'ENOENT' });
 });
