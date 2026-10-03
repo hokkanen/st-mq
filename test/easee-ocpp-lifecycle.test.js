@@ -22,16 +22,18 @@ const deferred = () => {
   return { promise, resolve };
 };
 
-function fixture(t, { streaming = false } = {}) {
+function fixture(t, { streaming = false, authorizationMode = 'plug-and-charge' } = {}) {
   const config = { dataDir: '/unused-fixture-directory', connections: { easee: {
     charger_id: CHARGER, access_token: 'fixture-access-token', local_ocpp: {
-      server_url: 'ws://192.0.2.10:9001/ocpp', password: 'fixture-ocpp-pass', authorization_mode: 'plug-and-charge',
+      server_url: 'ws://192.0.2.10:9001/ocpp', password: 'fixture-ocpp-pass', authorization_mode: authorizationMode,
+      authorization_tags: authorizationMode === 'rfid' ? ['fixture-rfid-tag'] : [],
     },
   } } };
   const events = [], providers = [], states = new Map(), listeners = [];
   let now = AT, permitted = true, current = null, version = 0, schedule = { enabled: 'none' };
   let transition = async () => {}, applyHook = async () => {}, beforeRequest = async () => {};
   let cloudObservations = null, cloudOffline = false, nativeRequest = null, streamRows = null;
+  let streamObservation = null;
   let readSetupState = () => states.get('setup');
   const stateFor = key => ({ get: () => clone(states.get(key) ?? null), set: value => states.set(key, clone(value)) });
   const newHttp = () => createHttp({ allowOcppSetup: true, allowChargerScheduling: true, allowChargerTakeover: true, canControl: () => permitted,
@@ -85,7 +87,10 @@ function fixture(t, { streaming = false } = {}) {
     const configured = clone(config); configured.connections.easee.local_ocpp.enabled = enabled;
     const installation = ocppInstallation(configured);
     const provider = createDeviceProviders({ connections: configured.connections, http, clock: () => now, canControl: () => permitted,
-      streamFactory: streaming ? () => ({ start() {}, close() {}, snapshot: () => clone(streamRows), reconcile() {}, status: () => ({ connected: true }) }) : null, ocppInstallation: installation, ocppState: stateFor('transactions'), ocppSetupState: stateFor('setup'),
+      streamFactory: streaming ? options => {
+        streamObservation = options.onObservation;
+        return { start() {}, close() {}, snapshot: () => clone(streamRows), reconcile() {}, status: () => ({ connected: true }) };
+      } : null, ocppInstallation: installation, ocppState: stateFor('transactions'), ocppSetupState: stateFor('setup'),
       ocppFactory: options => {
         let ready = false, closed = false;
         let control = { connectionId: 'fixture-native-connection', connectorStatus: 'Available', timestamp: now,
@@ -118,6 +123,7 @@ function fixture(t, { streaming = false } = {}) {
     get current() { return current; }, get now() { return now; }, advance: ms => { now += ms; },
     get observations() { return clone(cloudObservations); }, set observations(value) { cloudObservations = clone(value); },
     set streamRows(value) { streamRows = clone(value); }, set cloudOffline(value) { cloudOffline = value; },
+    emitObservation(observation) { streamObservation?.(CHARGER, observation); },
     set nativeRequest(value) { nativeRequest = value; },
     set schedule(value) { schedule = clone(value); }, set transition(value) { transition = value; },
     set applyHook(value) { applyHook = value; }, set beforeRequest(value) { beforeRequest = value; },
@@ -439,6 +445,88 @@ test('production native start authorization is fenced by live status, reconnect 
     x.physical('Preparing', 0, null);
     if (change === 'app-pause') { x.observe({ 48: 16, 96: 0 }); x.f.streamRows = x.f.observations; }
     assert.equal(canStart(), false, `${change}: a recovered connection cannot reuse authorization issued before the interruption`);
+  }
+});
+
+test('native pending approval waits for the plan and recovers a saved blocked takeover', async t => {
+  const x = await nativeAppFixture(t);
+  x.physical('Preparing', 0, null); x.observe({ 109: 8, 96: 55, 100: 'B', 120: 0 }); await x.refresh();
+  const blocked = await x.controller.update({ enabled: true, plan: x.plan });
+  assert.equal(blocked.errorCode, 'takeover-unavailable');
+  assert.equal(blocked.appControl.authorizationBlocked, true);
+  assert.ok(blocked.automaticTakeover);
+  const saved = x.saved; await x.controller.close();
+  x.f.advance(1000); x.observe({ 109: 7 }); await x.refresh();
+  const restarted = x.createController(saved); t.after(() => restarted.close());
+  const waiting = await restarted.update({ enabled: true, plan: x.plan });
+  assert.equal(waiting.automaticTakeover, null);
+  assert.equal(waiting.appControl.authorizationBlocked, false);
+  assert.equal(waiting.errorCode, 'transaction-unconfirmed');
+  assert.equal(x.listener.options.canStart(), false, 'Pending approval does not permit charging before its period');
+  x.f.advance(x.plan.startAt - x.f.now); x.physical('Preparing', 0, null); await x.refresh();
+  const starting = await restarted.update({ enabled: true, plan: x.plan });
+  assert.equal(x.listener.options.canStart(), true, 'The open period can approve its own native transaction');
+  assert.equal(starting.errorCode, 'transaction-unconfirmed', 'Permission is not proof that charging started');
+  assert.deepEqual(x.nativeWrites(), []);
+});
+
+test('native startup permission survives pending-approval updates while retaining current-limit instruction clocks', async t => {
+  for (const changes of [{ 109: 7 }, { 96: 55 }, { 109: 7, 96: 55 }]) {
+    const x = await nativeAppFixture(t, { streaming: true });
+    x.physical('Preparing', 0, null); x.observe({ 109: 2, 100: 'B', 120: 0 }); await x.refresh();
+    x.f.streamRows = x.f.observations; x.provider.startStreaming();
+    const immediate = { ...x.plan, startAt: AT, periods: [{ startAt: AT, endAt: null }] };
+    await x.controller.update({ enabled: true, plan: immediate });
+    const canStart = x.listener.options.canStart;
+    assert.equal(canStart(), true);
+    x.f.advance(1000); x.observe(changes); x.f.streamRows = x.f.observations;
+    assert.equal(canStart(), true, 'Waiting for local approval cannot revoke the approval being supplied');
+    x.f.advance(1000); x.observe({ 109: 3, 96: 0 }); x.f.streamRows = x.f.observations;
+    assert.equal(canStart(), true, 'Normal approval completion is not an external instruction');
+    // Both native app commands can land between authorization checks. Their
+    // current-setting source clock still invalidates the earlier permission.
+    x.f.advance(1000); x.observe({ 48: 0, 96: 52 }); x.f.streamRows = x.f.observations;
+    x.f.advance(1000); x.observe({ 48: 16, 96: 0 }); x.f.streamRows = x.f.observations;
+    assert.equal(canStart(), false, 'A Stop/Resume sequence cannot reuse permission from before those instructions');
+  }
+});
+
+test('pending native approval preserves de-authentication, faults, manual pause, RFID and cloud restrictions', async t => {
+  for (const [changes, status] of [[{ 109: 8 }, 'Preparing'], [{ 109: 5, 96: 56 }, 'Faulted'],
+    [{ 31: false }, 'Preparing'], [{ 48: 0, 96: 52 }, 'Preparing']]) {
+    const x = await nativeAppFixture(t, { streaming: true });
+    x.physical('Preparing', 0, null); x.observe({ 109: 7, 96: 55, 100: 'B', 120: 0 }); await x.refresh();
+    x.f.streamRows = x.f.observations; x.provider.startStreaming();
+    await x.controller.update({ enabled: true, plan: { ...x.plan, startAt: AT, periods: [{ startAt: AT, endAt: null }] } });
+    assert.equal(x.listener.options.canStart(), true);
+    x.f.advance(1000); x.observe(changes); x.physical(status, 0, null); x.f.streamRows = x.f.observations;
+    assert.equal(x.listener.options.canStart(), false);
+  }
+  const rfid = await nativeAppFixture(t, { authorizationMode: 'rfid' });
+  rfid.physical('Preparing', 0, null); rfid.observe({ 109: 7, 96: 55, 100: 'B', 120: 0 }); await rfid.refresh();
+  const blocked = await rfid.controller.update({ enabled: true,
+    plan: { ...rfid.plan, startAt: AT, periods: [{ startAt: AT, endAt: null }] } });
+  assert.equal(blocked.snapshot.appControl.authorizationBlocked, true);
+  assert.equal(rfid.listener.options.canStart(), false);
+  const f = fixture(t); f.observations = rfid.f.observations;
+  const cloud = f.make(false), snapshot = await cloud.chargerScheduleControl().read();
+  assert.equal(snapshot.authorizationBlocked, true, 'Cloud scheduling cannot supply native approval');
+});
+
+test('native startup observes transient Stop and de-authorization edges before the next permission check', async t => {
+  for (const [id, value, recovered] of [[96, 53, 55], [109, 8, 7]]) {
+    const x = await nativeAppFixture(t, { streaming: true });
+    x.physical('Preparing', 0, null); x.observe({ 109: 7, 96: 55, 100: 'B', 120: 0 }); await x.refresh();
+    x.f.streamRows = x.f.observations; x.provider.startStreaming();
+    await x.controller.update({ enabled: true, plan: { ...x.plan, startAt: AT, periods: [{ startAt: AT, endAt: null }] } });
+    assert.equal(x.listener.options.canStart(), true);
+    x.f.advance(1000); x.observe({ [id]: value }); x.f.streamRows = x.f.observations;
+    x.f.emitObservation({ id, value, previousValue: recovered, measuredAt: x.f.now,
+      previousMeasuredAt: AT, receivedAt: x.f.now });
+    x.f.advance(1000); x.observe({ [id]: recovered }); x.f.streamRows = x.f.observations;
+    x.f.emitObservation({ id, value: recovered, previousValue: value, measuredAt: x.f.now,
+      previousMeasuredAt: x.f.now - 1000, receivedAt: x.f.now });
+    assert.equal(x.listener.options.canStart(), false, 'A transient restriction requires a fresh controller decision');
   }
 });
 

@@ -343,6 +343,16 @@ the site operator. `easee.local_ocpp.authorization_mode` selects authorization:
   accepted transaction retries keep their original durable reply. Configured RFID
   tags retain their independent authorization rules.
 
+  While this local plug-and-charge controller owns authorization, Easee's
+  **Awaiting Authentication** mode (7) and **Pending authorization** reason (55)
+  describe approval the controller must supply. They do not independently block
+  an otherwise permitted start. The current plan, physical connection and fresh
+  native instructions still determine permission; a future charging period keeps
+  waiting. De-authenticating mode (8), faults, external stops and RFID restrictions
+  retain their existing meaning. Cloud scheduling cannot grant this local
+  authorization. These values follow the documented
+  [Easee enumerations](https://developer.easee.com/docs/enumerations).
+
 Without an explicit password, standalone ST-MQ creates a private
 `easee-ocpp-credentials.json` file in its data directory; paired computers derive
 the same purpose-specific password from their shared pairing token and charger

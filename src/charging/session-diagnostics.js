@@ -20,11 +20,16 @@ const CONTROL_ERRORS = new Set(['read-failed', 'command-failed', 'readback-faile
   'start-passed', 'ambiguous-start', 'start-out-of-range', 'charger-fault', 'charging-authorization', 'incomplete-state',
   'charger-stopped', 'pause-unconfirmed',
   'offline', 'transaction-unconfirmed', 'composite-unavailable', 'profile-rejected', 'retry-limit', 'storage-failed',
+  'takeover-stale', 'takeover-unavailable', 'takeover-unconfirmed', 'resume-current-limit', 'status-stale',
+  'ocpp-request-timeout', 'ocpp-request-aborted', 'ocpp-request-failed', 'ocpp-request-revoked',
+  'ocpp-disconnected', 'ocpp-reconfigured', 'ocpp-unavailable', 'ocpp-queue-full',
   'provider-offline', 'evse-control-unavailable', 'evse-command-revoked', 'evse-command-unconfirmed',
   'evse-publish-unconfirmed', 'evse-rpc-rejected', 'evse-profile-unsupported', 'evse-current-control-unavailable', 'evse-work-state-unavailable', 'evse-read-unavailable',
   'evse-native-restriction', 'evse-native-schedule-unavailable', 'evse-event-overflow', 'evse-component-mapping-unverified',
   'identification-resume-required', 'command-unconfirmed']);
 const CONTROL_REASONS = new Set([...CONTROL_ERRORS, 'manual-stop', 'manual-release', 'manual-enable', 'manual-charge-now', 'manual-schedule', 'native-schedule',
+  'takeover-pause-prepare', 'takeover-pause-install', 'takeover-pause-confirm', 'takeover-native-check',
+  'takeover-native-handover', 'takeover-native-confirm', 'takeover-state-save',
   'native-current-limit', 'vehicle-current-limit', 'hardware-restriction', 'fuse-limit', 'priority-allocation', 'telemetry-fallback',
   'vehicle-not-before', 'identification-pause', 'identification-waiting', 'identification-charging',
   'economic-wait', 'charge-now', 'economic-window', 'no-headroom', 'supply-unavailable', 'within-limit']);
@@ -196,7 +201,8 @@ function observation(view, now) {
   const physicalFresh = providerLive && fresh(readAt, now);
   const rawError = control.errorCode || view.error || (CONTROL_ERRORS.has(control.reason) ? control.reason : null);
   const errorCode = rawError ? CONTROL_ERRORS.has(rawError) ? rawError : 'control-error' : null;
-  const reasonCode = CONTROL_REASONS.has(control.reason) ? control.reason : errorCode;
+  const reasonCode = CONTROL_REASONS.has(control.reasonCode) ? control.reasonCode
+    : CONTROL_REASONS.has(control.reason) ? control.reason : errorCode;
   const controlAvailability = snapshot.online === false || view.telemetry?.providerConnected === false
     || errorCode !== null || snapshot.controlReady === false || snapshot.faulted === true || snapshot.authorizationBlocked === true
     || ['unavailable', 'uncertain', 'ownership-uncertain'].includes(control.phase) ? 'unavailable'

@@ -907,6 +907,59 @@ test('native Use automatic confirms an economic zero profile before clearing the
   assert.equal(later.phase, 'yielded'); assert.equal(f.nativeCalls.length, 1);
 });
 
+test('native handover preserves timeout, cancellation and protocol failures at pause installation and confirmation', async () => {
+  for (const [action, step, expectedAccepted] of [
+    ['SetChargingProfile', 'takeover-pause-install', false],
+    ['GetCompositeSchedule', 'takeover-pause-confirm', true],
+  ]) for (const [code, message] of [
+    ['ocpp-request-timeout', /command timeout/],
+    ['ocpp-request-aborted', /command was cancelled/],
+    ['ocpp-request-failed', /protocol error/],
+  ]) {
+    const f = fixture({ nativeTakeover: true }); f.app(stoppedApp(START));
+    const prior = await f.controller.update({ enabled: false, plan: plan(START + 30 * MINUTE) });
+    f.intercept((command, payload, options, result) => {
+      if (command === action) throw Object.assign(new Error('private upstream response'), { code });
+      return result();
+    });
+    const result = await f.controller.update({ enabled: true, takeover: prior.takeover.token });
+    assert.equal(result.errorCode, code); assert.equal(result.reasonCode, step);
+    assert.match(result.reason, message);
+    assert.match(result.reason, action === 'SetChargingProfile' ? /could not install the planned charging pause/ : /could not confirm the planned charging pause/);
+    assert.equal(result.takeover.state, 'blocked'); assert.equal(result.phase, 'unconfirmed');
+    assert.equal(f.nativeCalls.length, 0, 'A failed planned pause cannot clear the existing native stop');
+    assert.equal(result.snapshot.appControl.stopped, true);
+    assert.equal(f.stored.pending.action, 'install'); assert.equal(f.stored.pending.accepted, expectedAccepted);
+    assert.equal(f.stored.pending.instruction.transactionId, 7, 'The durable transaction-scoped obligation remains recoverable');
+    assert.doesNotMatch(JSON.stringify(result), /private upstream response/);
+  }
+});
+
+test('native handover sanitizes unsupported upstream codes without losing the failed step', async () => {
+  for (const code of ['https://private.example.invalid/private-token', 'toString']) {
+    const f = fixture({ nativeTakeover: true }); f.app(stoppedApp(START));
+    const prior = await f.controller.update({ enabled: false, plan: plan(START + 30 * MINUTE) });
+    f.intercept(() => { throw Object.assign(new Error('private upstream response'), { code }); });
+    const result = await f.controller.update({ enabled: true, takeover: prior.takeover.token });
+    assert.equal(result.errorCode, 'command-failed'); assert.equal(result.reasonCode, 'takeover-pause-install');
+    assert.doesNotMatch(JSON.stringify(result), /private upstream response|private\.example|private-token|toString/);
+    assert.equal(f.nativeCalls.length, 0);
+  }
+});
+
+test('native handover identifies the final readback failure and retains uncertain write ownership', async () => {
+  const f = fixture({ nativeTakeover: ({ appControl }) => ({ ...appControl, stopped: false, enabled: true }) });
+  f.app(stoppedApp(START));
+  const prior = await f.controller.update({ enabled: false, plan: plan(START + 30 * MINUTE) });
+  const result = await f.controller.update({ enabled: true, takeover: prior.takeover.token });
+  assert.equal(result.errorCode, 'readback-mismatch'); assert.equal(result.reasonCode, 'takeover-native-confirm');
+  assert.equal(result.takeover.state, 'blocked'); assert.ok(f.stored.takeoverPending); assert.ok(f.stored.owned);
+  assert.equal(f.nativeCalls.length, 1);
+  const later = await f.controller.update({ enabled: true });
+  assert.equal(later.errorCode, 'takeover-unconfirmed'); assert.equal(later.reasonCode, null);
+  assert.equal(f.nativeCalls.length, 1, 'Uncertain handover cannot be replayed by ordinary polling');
+});
+
 test('native Use automatic permanently removes a native schedule when the plan is open', async () => {
   const f = fixture({ nativeTakeover: true });
   f.app({ ...appState(START, true), schedule: { ...noNativeSchedule(), enabled: 'daily', daily: { timezone: 'UTC',
@@ -937,6 +990,8 @@ test('native Use automatic never claims success after unconfirmed cloud handover
   const prior = await f.controller.update({ enabled: false, plan: plan(START + 30 * MINUTE) });
   const result = await f.controller.update({ enabled: true, takeover: prior.takeover.token });
   assert.equal(result.takeover.state, 'blocked'); assert.equal(f.nativeCalls.length, 1);
+  assert.equal(result.errorCode, 'readback-failed'); assert.equal(result.reasonCode, 'takeover-native-handover');
+  assert.match(result.reason, /could not replace the previous charger instructions/);
   await f.controller.update({ enabled: true }); assert.equal(f.nativeCalls.length, 1);
 });
 

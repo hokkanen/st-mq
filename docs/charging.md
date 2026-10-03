@@ -126,6 +126,13 @@ outcomes remain visible independently of the button; success requires charger
 readback. Compact status labels omit terminal periods, while explanations and
 action receipts use complete sentences.
 
+For local OCPP, a handover that needs an economic wait must first install and
+confirm its zero-current pause before clearing the existing native stop. A failed
+step keeps the handover blocked. Its message identifies the failed operation and
+distinguishes a timeout, cancelled command and protocol failure. Session reports
+retain the supported error code and operation for later diagnosis; older generic
+failures cannot establish which of those causes occurred.
+
 Automatic and explicit handover are bound to the current equipment, connection, request/control
 revisions and observed native instruction. A newer observed instruction fences
 it. Charger APIs do not supply an atomic cross-client lock: a concurrent external

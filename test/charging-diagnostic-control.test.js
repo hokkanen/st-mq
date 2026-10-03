@@ -2,6 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { diagnosticStore, diagnosticRows, readCompleteReport } from './support/charging-report-fixture.js';
 import { ChargingSessionDiagnostics } from '../src/charging/session-diagnostics.js';
+import { chargingControlLabel } from '../chart/charging-status.js';
 
 const MINUTE = 60_000, START = Date.parse('2026-10-01T18:00:00Z');
 const reading = (value, at = START, extra = {}) => ({ value, available: true, source: 'easee-ocpp', measuredAt: at, receivedAt: at, ...extra });
@@ -92,6 +93,39 @@ test('control context changes are recorded without phase changes and ordinary re
   assert.equal(controls(report).at(-1).availability, 'available');
 });
 
+test('native handover diagnostics retain exact transport failures and distinct steps across restart', () => {
+  const f = fixture(); f.view.control.phase = 'unconfirmed'; f.view.control.handoverConfirmed = false;
+  f.view.control.reason = 'private upstream response';
+  const expected = [];
+  let report, at = START;
+  for (const code of ['ocpp-request-timeout', 'ocpp-request-aborted', 'ocpp-request-failed']) {
+    for (const step of ['takeover-pause-install', 'takeover-pause-confirm']) {
+      f.view.control.errorCode = code; f.view.control.reasonCode = step;
+      expected.push([code, step]); report = f.observe(at); at += 1000;
+      assert.deepEqual(controls(report).map(row => [row.errorCode, row.reasonCode]), expected);
+      assert.equal(report.current.errorCode, code); assert.equal(report.current.reasonCode, step);
+      assert.notEqual(chargingControlLabel(code), 'Charger needs attention');
+      assert.match(chargingControlLabel(step), /Handover step:/);
+    }
+  }
+  f.restart(); report = f.observe(at);
+  assert.deepEqual(controls(report).map(row => [row.errorCode, row.reasonCode]), expected);
+  assert.doesNotMatch(JSON.stringify([...f.states.values()]), /private upstream response/);
+});
+
+test('a changed handover step updates the recorded cause within the same unresolved finding', () => {
+  const f = fixture(); Object.assign(f.view.control, { phase: 'unconfirmed', errorCode: 'ocpp-request-timeout', reasonCode: 'takeover-pause-install' });
+  f.observe(); f.sample(START + 2 * MINUTE); f.observe(START + 2 * MINUTE);
+  f.sample(START + 3 * MINUTE); let report = f.observe(START + 3 * MINUTE);
+  assert.equal(report.findings.find(row => row.code === 'control-unconfirmed').context.reasonCode, 'takeover-pause-install');
+  f.view.control.reasonCode = 'takeover-pause-confirm';
+  f.sample(START + 4 * MINUTE); report = f.observe(START + 4 * MINUTE);
+  const finding = report.findings.find(row => row.code === 'control-unconfirmed');
+  assert.equal(finding.context.reasonCode, 'takeover-pause-confirm'); assert.equal(finding.count, 1);
+  const changed = report.timeline.find(row => row.kind === 'finding-update' && row.code === 'control-unconfirmed');
+  assert.equal(changed.context.errorCode, 'ocpp-request-timeout'); assert.equal(changed.context.reasonCode, 'takeover-pause-confirm');
+});
+
 test('charge-now and unavailable commissioning are independent of automatic permission', () => {
   const f = fixture(); f.view.settings.enabled = false; f.view.request.chargeNow = true;
   f.view.control.snapshot.controlReady = false; f.view.control.reason = 'evse-profile-unsupported';
@@ -109,11 +143,11 @@ test('native app priority and native current policy retain their supported diagn
 
 test('unrecognized provider error and reason text never enter stored report evidence', () => {
   const f = fixture(); f.view.control.errorCode = 'https://private.example.invalid/device/private-serial?token=private-token';
-  f.view.control.reason = 'private-message'; f.view.error = 'private-runtime-detail';
+  f.view.control.reason = 'private-message'; f.view.control.reasonCode = 'private-operation'; f.view.error = 'private-runtime-detail';
   const event = controls(f.observe()).at(-1);
   assert.equal(event.errorCode, 'control-error'); assert.equal(event.reasonCode, 'control-error');
   const saved = JSON.stringify([...f.states.values()]);
-  for (const privateValue of ['private.example', 'private-serial', 'private-token', 'private-message', 'private-runtime-detail']) assert.ok(!saved.includes(privateValue));
+  for (const privateValue of ['private.example', 'private-serial', 'private-token', 'private-message', 'private-operation', 'private-runtime-detail']) assert.ok(!saved.includes(privateValue));
 });
 
 test('unavailable runtime or adapter control cannot confirm release or pause from a saved phase', () => {

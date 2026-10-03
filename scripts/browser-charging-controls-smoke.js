@@ -55,6 +55,17 @@ fixture.setCase = name => {
     if (name === 'long') { item.control.reason = longText; item.control.manual.reason = longText; item.label += ' with a long synthetic descriptive name'; }
     if (name === 'pending') item.control.takeover = { available: false, token: null, state: 'pending' };
     if (name === 'blocked') item.control.takeover = { available: false, token: null, state: 'blocked', reason: longText };
+    if (name.startsWith('handover-')) {
+      const failure = {
+        'handover-timeout': ['ocpp-request-timeout', 'The local charger did not reply before the command timeout; its outcome is unknown.'],
+        'handover-cancelled': ['ocpp-request-aborted', 'The local charger command was cancelled; an already sent command may still take effect.'],
+        'handover-protocol': ['ocpp-request-failed', 'The local charger returned a protocol error for the command.'],
+      }[name];
+      const reason = 'Automatic handover could not confirm the planned charging pause. ' + failure[1];
+      item.control = { phase: 'unconfirmed', errorCode: failure[0], reasonCode: 'takeover-pause-confirm', reason,
+        manual: { kind: 'stop' }, pending: { action: 'install' },
+        takeover: { available: false, token: null, state: 'blocked', reason } };
+    }
     if (name === 'unavailable') item.control.takeover = { available: false, token: null, reason: 'Fresh charger readings are unavailable. Check the connection and try again.' };
     if (name === 'estimate') {
       item.control = { phase: 'waiting', owned: { startAt: now + 3600000 }, takeover: { available: true, token: 'native:' + item.id } };
@@ -127,7 +138,7 @@ try {
   for (const width of [320, 390, 1440]) for (const theme of ['dark', 'light']) {
     await send('Emulation.setDeviceMetricsOverride', { width, height: 1000, deviceScaleFactor: 1, mobile: false });
     await evaluate(`document.documentElement.dataset.theme = '${theme}'`);
-    for (const state of ['ordinary', 'long', 'manual-stop', 'manual-start', 'manual-window', 'pending', 'blocked', 'unavailable', 'estimate', 'readonly', 'disconnected', 'unknown-connection', 'missing-token', 'monitoring', 'uncertain', 'startup-stop', 'unavailable-startup-stop']) {
+    for (const state of ['ordinary', 'long', 'manual-stop', 'manual-start', 'manual-window', 'pending', 'blocked', 'handover-timeout', 'handover-cancelled', 'handover-protocol', 'unavailable', 'estimate', 'readonly', 'disconnected', 'unknown-connection', 'missing-token', 'monitoring', 'uncertain', 'startup-stop', 'unavailable-startup-stop']) {
       await evaluate(`chargingFixture.setCase('${state}'); document.querySelectorAll('.charging-device').forEach(card => card.open = true)`);
       const layout = await evaluate(`(() => {
         const cards = [...document.querySelectorAll('.charging-device')];
@@ -168,6 +179,17 @@ try {
         assert.equal(layout.cards[0].action.disabled, false);
         assert.equal(layout.cards[0].action.usesStandardSize, true, 'Use automatic keeps the standard secondary-button size');
       }
+      if (state.startsWith('handover-')) {
+        const expectedCause = { 'handover-timeout': /command timeout/, 'handover-cancelled': /command was cancelled/,
+          'handover-protocol': /protocol error/ }[state];
+        for (const id of ['charger1', 'charger2']) {
+          assert.equal(await evaluate(`document.getElementById('${id}-problem').checkVisibility()`), true);
+          const problem = await evaluate(`document.getElementById('${id}-problem').textContent`);
+          assert.match(problem, /could not confirm the planned charging pause/, 'The failed handover step is visible');
+          assert.match(problem, expectedCause, 'The underlying failure remains distinguishable');
+          assert.doesNotMatch(problem, /ocpp-request-/, 'Ordinary UI uses readable causes');
+        }
+      }
       if (state === 'startup-stop' || state === 'unavailable-startup-stop') {
         for (const id of ['charger1', 'charger2']) {
           assert.equal(await evaluate(`document.getElementById('${id}-problem').checkVisibility()`), true, 'A pre-existing stop remains explained independently of takeover availability');
@@ -183,7 +205,7 @@ try {
           await evaluate("document.querySelector('.status-detail-close').click()");
         }
       }
-      if (['ordinary', 'long', 'manual-stop', 'estimate', 'uncertain', 'startup-stop', 'unavailable-startup-stop'].includes(state)) {
+      if (['ordinary', 'long', 'manual-stop', 'estimate', 'uncertain', 'startup-stop', 'unavailable-startup-stop', 'handover-timeout'].includes(state)) {
         const metrics = await send('Page.getLayoutMetrics');
         const shot = await send('Page.captureScreenshot', { format: 'png', captureBeyondViewport: true,
           clip: { x: 0, y: 0, width, height: Math.min(metrics.cssContentSize.height, 12000), scale: 1 } });

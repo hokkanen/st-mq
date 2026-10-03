@@ -272,7 +272,7 @@ export function createDeviceProviders({ connections = {}, http, tokenStore, cloc
       const permitted = Boolean(permission && !closed && controlBackend === 'native' && canControl()
         && permission.until > clock() && permission.guard() && current?.connectionId === permission.connectionId
         && ['Preparing', 'Charging', 'SuspendedEV', 'SuspendedEVSE'].includes(current.connectorStatus)
-        && appSignature(nativeAppControl()) === permission.appSignature);
+        && startAppSignature(nativeAppControl()) === permission.appSignature);
       if (!permitted) nativeStartPermission = null;
       return permitted;
     },
@@ -376,7 +376,17 @@ export function createDeviceProviders({ connections = {}, http, tokenStore, cloc
         // Equalizer 31 is current, while charger 31 is enablement. Never route
         // electrical samples or private provider identifiers into session events.
         if (!closed && canControl() && deviceId === easee.charger_id
-          && [31, 48, 96, 100, 109, 250].includes(observation.id)) onChargerObservation(observation);
+          && [31, 48, 96, 100, 109, 250].includes(observation.id)) {
+          const { id, value, measuredAt } = observation;
+          const restriction = [31, 250].includes(id) && [false, 0].includes(value)
+            || id === 48 && value === 0 || id === 96 && [53, 56].includes(value)
+            || id === 100 && value === 'A' || id === 109 && [0, 1, 5, 8].includes(value);
+          // Preserve a live Stop/de-authorization edge even if its matching
+          // recovery arrives before the next OCPP authorization check.
+          if (restriction && Number.isSafeInteger(measuredAt) && measuredAt >= nativeStartPermission?.issuedAt
+            && measuredAt <= clock()) nativeStartPermission = null;
+          onChargerObservation(observation);
+        }
       },
       products: electricalDevices.map(device => ({ id: device.id,
         ids: [...new Set([...device.ids, ...(device.prefix === 'ev1' ? CHARGING_OBSERVATION_IDS : [])])] })) });
@@ -573,6 +583,7 @@ export function createDeviceProviders({ connections = {}, http, tokenStore, cloc
     canControl: () => !closed && !invalidOcppSetup && canControl() && controlBackend === 'native',
   });
   let nativeCloudSnapshot = null, nativeCloudSchedule = null, nativeCloudFlight = null, nextNativeCloudRead = 0;
+  let nativeDynamicChargerAt = null;
   function refreshNativeCloudTelemetry({ force = false } = {}) {
     if (closed) return null;
     if (nativeCloudFlight) return force ? nativeCloudFlight.then(() => refreshNativeCloudTelemetry({ force: true })) : nativeCloudFlight;
@@ -602,23 +613,40 @@ export function createDeviceProviders({ connections = {}, http, tokenStore, cloc
         cloud = chargingSnapshot([...previous, ...rows], null, now);
       } catch {}
     }
+    nativeDynamicChargerAt = cloud?.observations?.[48]?.at ?? null;
     const schedule = nativeCloudSchedule && now - nativeCloudSchedule.readAt <= 60_000 ? nativeCloudSchedule.schedule : null;
     if (!cloud && !schedule) return null;
+    // In native plug-and-charge, pending authentication is the approval this
+    // controller supplies. Treating it as an external refusal prevents the
+    // permission needed to send RemoteStartTransaction. De-authentication and
+    // other restrictions retain their independent authority.
+    const pendingLocalApproval = controlBackend === 'native' && localConfig?.authorization_mode === 'plug-and-charge'
+      && ['Preparing', 'Charging', 'SuspendedEV', 'SuspendedEVSE'].includes(local.controlSnapshot?.()?.connectorStatus)
+      && cloud?.mode !== 8 && (cloud?.mode === 7 || cloud?.reason === 55);
     return { readAt: Math.max(cloud?.readAt ?? 0, schedule ? nativeCloudSchedule.readAt : 0),
       enabled: cloud?.enabled ?? null, enabledAt: cloud?.observations?.[31]?.at ?? null,
       stopped: cloud?.stopped === true,
       stopAt: cloud ? Math.max(cloud.observations?.[31]?.at ?? 0, cloud.observations?.[48]?.at ?? 0, cloud.reasonAt ?? 0) : null,
       controlKnown: cloud?.controlKnown === true, faulted: cloud?.faulted === true,
-      authorizationBlocked: cloud?.authorizationBlocked === true, schedule };
+      authorizationBlocked: cloud?.authorizationBlocked === true && !pendingLocalApproval, schedule };
   }
   const appSignature = value => value ? JSON.stringify([value.controlKnown, value.enabled, value.enabledAt, value.stopped, value.stopAt, value.faulted,
     value.authorizationBlocked, value.schedule ? effectiveScheduleFingerprint(value.schedule) : null]) : null;
+  // Pending approval advances ReasonForNoCurrent's clock without creating a
+  // Stop instruction. Keep startup permission through that transition; a real
+  // stop, enablement change, fault or schedule still fences it immediately.
+  // Keep the current-setting clock separately: a Stop/Resume between checks
+  // cannot borrow a permission issued before those commands.
+  const startAppSignature = value => JSON.stringify([appSignature(value ? { ...value,
+    stopAt: value.stopped ? value.stopAt : null } : null), nativeDynamicChargerAt]);
   const nativeScheduleControl = ocppInstallation ? createOcppScheduleAdapter({ scope: ocppInstallation.scope, clock,
     canControl: () => !closed && canControl() && controlBackend === 'native',
     setStartPermission: (snapshot, options = {}) => {
+      const current = snapshot ? nativeAppControl() : null;
       nativeStartPermission = snapshot && typeof options.guard === 'function' && Number.isSafeInteger(options.until)
-        ? { connectionId: snapshot.connectionId, appSignature: appSignature(snapshot.appControl),
-          until: options.until, guard: options.guard } : null;
+        && appSignature(snapshot.appControl) === appSignature(current)
+        ? { connectionId: snapshot.connectionId, appSignature: startAppSignature(snapshot.appControl),
+          issuedAt: clock(), until: options.until, guard: options.guard } : null;
     },
     request: (...args) => local.request(...args),
     takeoverNative: async ({ expectedAppControl, signal, canMutate, beforeWrite }) => {

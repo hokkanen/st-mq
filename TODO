@@ -1,3 +1,41 @@
+Implemented 2026-10-03 — Unblock native charging approval and retain handover failure causes
+- Reproduce the native startup regression introduced by 0820218: an enabled
+  plug-and-charge controller with a connected vehicle, no transaction and no
+  external restriction treats pending authentication as a reason to withhold
+  the very approval it owns. Classify that pending state in the native provider;
+  preserve cloud/RFID restrictions, de-authentication, faults, manual ownership,
+  plan timing, connection fencing and durable transaction confirmation.
+- Keep startup permission through an ordinary pending-authorization observation
+  without confusing reason-clock updates with a native stop. New external
+  instructions still revoke it. Exercise the production provider and local
+  OCPP protocol with synthetic observations and a real loopback connection.
+- Preserve supported OCPP failure codes and identify the failed automatic
+  handover step. Keep pause installation/readback ahead of clearing an existing
+  native stop; uncertain outcomes retain their durable obligations. Carry the
+  safe code and step into session diagnostics and readable UI explanations.
+  Previously recorded generic errors remain unknown; timing alone cannot
+  distinguish timeout, cancellation and protocol failure.
+- F1/F3/F4/F5/F8: no configuration defaults, permission grants, development-state
+  migrations, new native commands or historical-result rewrites. Remove the
+  circular native approval gate and generic error collapse while retaining
+  existing transaction, session, takeover and restoration contracts. Installation
+  evidence is inspected read-only; fixtures contain no household identifiers.
+- Validation: npm run check passes 4,228 offline tests with one optional upstream
+  Tuya parser check skipped; production build passes with the existing bundle-size
+  advisory. The real loopback OCPP regression fails against 0820218 and passes
+  with this fix. Both charging controls and guided/report browser sweeps pass at
+  320/390/1440px in both themes; timeout/cancellation/protocol explanations remain
+  readable. Full validation caught and corrected an added async boundary that
+  disturbed ordinary joint planning; preserve the original reconciliation order.
+- The owner subsequently authorized testing the plugged-in vehicle. Restarted
+  the running controller with its original configuration after offline validation;
+  confirmed accepted native authorization, a real transaction and fresh positive
+  measured power. Normal identification completed and its owned pause was cleared.
+  The vehicle then reported waiting without drawing power, consistent with the
+  owner's possible vehicle schedule; sustained charging and that schedule remain
+  unverified. The physical session, Automatic choice and Charge now state were
+  preserved. No vehicle schedule, electrical limit or configuration was changed.
+
 Implemented 2026-10-02 — Preserve charging ownership through restart and take control on plug-in
 - With Automatic enabled, each confirmed new physical connection supersedes
   earlier charging instructions and supported native charger schedules, including
