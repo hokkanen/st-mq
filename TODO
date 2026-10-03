@@ -1,3 +1,18 @@
+Implemented 2026-10-03 — Prepare the CN105 driver's first public release links
+- F3/F4/F5/F8: document driver package 1.3.0 independently of its unchanged
+  shelly-cn105/v2 contract and link the handoff to the driver's ST-MQ integration
+  guide. Keep device-local regulation/protection, durable target confirmation,
+  current source provenance and private configuration ownership unchanged.
+- Verify cross-repository documentation and dashboard destinations against both
+  local trees using the canonical hokkanen/shelly-cn105-mqtt and hokkanen/st-mq
+  main URLs. All 14 unique repository/document/source destinations exist locally;
+  no stale alternate repository URL or missing target was found.
+- Validation: documentation/source consistency and git diff --check passed.
+  Runtime/UI behavior is unchanged. Public deep links require publication of
+  the driver repository and the matching current ST-MQ documentation on main;
+  the older public ST-MQ tree does not yet contain those documentation paths.
+  No repository creation, pushing, deployment or household probing was performed.
+
 Implemented 2026-10-03 — One SONOFF controller for Home floor preheating
 - Rename the shared setup section to Home floor preheating and present one
   SONOFF 4CH PRO R3 for ground-floor circuits. Channels 1–4 identify Living

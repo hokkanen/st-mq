@@ -1,7 +1,10 @@
 # Heat-pump local-control handoff
 
 The separate [shelly-cn105-mqtt repository](https://github.com/hokkanen/shelly-cn105-mqtt)
-implements `shelly-cn105/v2`.
+implements `shelly-cn105/v2`. Its first public package release is **1.3.0**;
+package and MQTT contract versions are separate. Follow the driver's
+[ST-MQ connection guide](https://github.com/hokkanen/shelly-cn105-mqtt/blob/main/docs/integrations/stmq.md)
+for the matching controller/sender topics and configuration ownership.
 ST-MQ owns persistent Garage Normal/Away selections and sends their real targets.
 The heat-pump controller owns local regulation and native pump commands; it has
 no mode labels, price planner, timed OFF leases or externally renewed temperature permissions.
