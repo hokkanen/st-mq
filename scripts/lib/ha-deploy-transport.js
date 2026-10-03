@@ -99,10 +99,12 @@ export async function runTerminal({ url, session, ingress }, script, { timeoutMs
       const begin = '\n' + marker + '_BEGIN\n';
       const start = clean.indexOf(begin);
       if (start < 0) return;
-      const end = clean.indexOf('\n' + marker + '_END:', start + begin.length);
+      // ttyd/tmux may repaint the completion marker directly after output
+      // that has no trailing newline. The random marker is the delimiter.
+      const end = clean.indexOf(marker + '_END:', start + begin.length);
       if (end < 0) return;
       const code = clean.slice(end).match(/_END:(\d+)\n/);
-      if (code) finish(null, { exitCode: Number(code[1]), output: clean.slice(start + begin.length, end) });
+      if (code) finish(null, { exitCode: Number(code[1]), output: clean.slice(start + begin.length, end).replace(/\n$/, '') });
     });
   });
 }

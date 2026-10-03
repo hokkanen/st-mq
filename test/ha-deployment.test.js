@@ -86,7 +86,7 @@ test('authentication timeout closes the connection', async t => {
   await assert.rejects(connectHA({ url, token: 'synthetic-test-token' }, { timeoutMs: 25 }), /authentication timed out/);
 });
 
-test('terminal handles fragmented frames, ignores banners and returns the exact exit status', async t => {
+for (const trailingNewline of [true, false]) test(`terminal handles fragmented frames and exit status with trailing newline ${trailingNewline}`, async t => {
   let sentScript;
   const url = await fixture(t, socket => {
     socket.on('message', raw => {
@@ -95,7 +95,7 @@ test('terminal handles fragmented frames, ignores banners and returns the exact 
       const marker = text.match(/DEPLOY_[a-f0-9]+/)[0];
       const encoded = text.match(/printf '%s' '([A-Za-z0-9+/=]+)'/)[1];
       sentScript = Buffer.from(encoded, 'base64').toString();
-      for (const part of [`\r\n${marker}_BEGIN\r\n`, 'safe res', `ult\r\n${marker}_END:`, '7\r\n']) socket.send(Buffer.from('0' + part));
+      for (const part of [`\r\n${marker}_BEGIN\r\n`, 'safe res', `ult${trailingNewline ? '\r\n' : ''}${marker}_END:`, '7\r\n']) socket.send(Buffer.from('0' + part));
     });
   }, (req, res) => {
     assert.equal(req.headers.cookie, 'ingress_session=synthetic-session');
