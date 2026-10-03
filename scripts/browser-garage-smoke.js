@@ -158,6 +158,37 @@ try {
   await send('Emulation.setDeviceMetricsOverride', { width: 1440, height: 1200, deviceScaleFactor: 1, mobile: false });
   await send('Page.navigate', { url: `http://127.0.0.1:${app.server.address().port}/` });
   await until(`globalThis.garageFixture?.poll && document.getElementById('garage-mode-normal-target')?.textContent === '10 °C'`);
+  const reload = async () => {
+    await evaluate('globalThis.beforeDisclosureReload = true');
+    await send('Page.reload');
+    await until(`!globalThis.beforeDisclosureReload && globalThis.garageFixture?.poll
+      && document.getElementById('garage-mode-normal-target')?.textContent === '10 °C'`);
+  };
+  // A section link must not override a later collapse on refresh. Exercise the
+  // real browser: it also reveals details ancestors when following fragments.
+  for (const [target, parent] of [
+    ['garage-protection-details', 'garage-heating-details'],
+    ['garage-protection-settings-details', 'garage-heating-details'],
+    ['garage-protection-configuration-details', 'connections-details'],
+    ['floor-preheat-details', 'connections-details'],
+  ]) {
+    await evaluate(`location.hash = '${target}'`);
+    await until(`document.getElementById('${target}').open && document.getElementById('${parent}').open`);
+    await reload();
+    assert.equal(await evaluate(`document.getElementById('${target}').open && document.getElementById('${parent}').open`),
+      true, `${target} remains a working direct link`);
+    for (const close of [target, parent, 'dashboard-reset']) {
+      await evaluate(`location.hash = '${target}'`);
+      await until(`document.getElementById('${target}').open && document.getElementById('${parent}').open`);
+      await evaluate(close === 'dashboard-reset' ? `document.getElementById('dashboard-reset').click()`
+        : `document.querySelector('#${close} > summary').click()`);
+      await until(`location.hash === ''`);
+      await reload();
+      assert.equal(await evaluate(`document.getElementById('${parent}').open`), false,
+        `${target} does not reopen after closing ${close} and refreshing`);
+      assert.equal(await evaluate('location.hash'), '', 'Closing the destination removes its stale fragment');
+    }
+  }
   await checkDashboardDisclosures({ evaluate, keyPress, until });
   assert.equal(await evaluate(`document.getElementById('garage-heating-details').open`), false);
   await evaluate(`document.getElementById('garage-heating-details').open = true`);
@@ -432,7 +463,8 @@ try {
       'Garage parameters and Home-style calculation details, with fixed factor separate from readback',
       'Missing, false, mismatching and confirmed sender readback',
       'Live protection below Normal temperature and separate setup below Floor preheating',
-      'Bidirectional keyboard links and hash navigation', 'Generic device roles with a tested sender example',
+      'Bidirectional keyboard links and hash navigation', 'Closed sections stay closed on reload, including ancestors and dashboard reset',
+      'Generic device roles with a tested sender example',
       '8 °C selected / 5 °C minimum rescue keeps the target at 8 °C', 'Separate native 16 °C fallback',
       'Uncertain/stale estimates remain unavailable',
       '320/390/768/1440px layouts in both themes', 'Read-only controls', 'No browser exceptions'] }));

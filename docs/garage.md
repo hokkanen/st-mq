@@ -152,6 +152,9 @@ A command acknowledgement alone does not establish that protection is ready.
 The live fold links to **Connections & configuration → Garage freeze protection**,
 directly below **Floor preheating**, for installation and setup. That section
 links back to Garage for live readings, settings and model details.
+Closing a linked section or its parent clears that section's URL anchor, so a
+refresh does not reopen it. The dashboard reset does the same; direct section
+links still open their destination.
 
 Use the [heat-pump controller and sender repository](https://github.com/hokkanen/shelly-cn105-mqtt)
 for [sender setup](https://github.com/hokkanen/shelly-cn105-mqtt/blob/main/docs/sender.md)

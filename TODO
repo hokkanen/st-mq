@@ -1,3 +1,20 @@
+Implemented 2026-10-03 — Keep collapsed dashboard sections closed on refresh
+- Reproduce Garage heat reopening in Chromium after following a protection
+  link, closing its destination and refreshing. The retained URL fragment was
+  reopening the destination and ancestors; the PWA hides this address context.
+- Clear a linked destination's fragment when its section or an ancestor closes,
+  including dashboard reset. Cover Garage protection, pipe settings, installation
+  and Floor preheating through shared disclosure handling. Preserve direct links,
+  unrelated folds, keyboard focus, query/ingress paths and browser history state.
+  Let newer fragment navigation finish before processing queued close events.
+- F1/F3/F7: remove stale navigation state without introducing saved fold settings,
+  compatibility paths or controller/configuration changes. No hardware actions.
+- Validation: all 25 focused disclosure/Garage UI tests, production build and
+  Garage/Home Chromium sweeps pass, including reloads after closing destinations,
+  parents and dashboard reset for all four section links. The new reload regression
+  fails before the fix. Responsive checks cover both themes; the existing bundle
+  size advisory remains. No installed PWA or live equipment verification.
+
 Implemented 2026-10-03 — Unblock native charging approval and retain handover failure causes
 - Reproduce the native startup regression introduced by 0820218: an enabled
   plug-and-charge controller with a connected vehicle, no transaction and no

@@ -63,14 +63,14 @@ test('the initial expanded state and the panel visibility agree', () => {
 test('dashboard reset closes comparisons and native folds without changing comparison choices', () => {
   const f = fixture(), resetButton = new Button(), scrolls = [];
   const otherFold = { open: true };
-  const document = {
+  const document = Object.assign(new EventTarget(), {
     querySelectorAll(selector) {
       assert.equal(selector, 'details[open]');
       return [f.details, otherFold].filter(fold => fold.open);
     },
     getElementById(id) { assert.equal(id, 'comparison-toggle'); return f.button; },
     defaultView: { scrollTo(options) { scrolls.push(options); } },
-  };
+  });
   const reset = createDashboardReset({ document, button: resetButton });
   f.button.click();
   resetButton.click();
@@ -92,4 +92,41 @@ test('dashboard reset closes comparisons and native folds without changing compa
   assert.equal(otherFold.open, true);
   assert.equal(scrolls.length, 2, 'Disposal removes the dashboard reset listener');
   f.controller.close();
+});
+
+test('closing a linked fold clears only its hidden destination and preserves the URL context', async () => {
+  const target = {}, summaryTarget = {}, state = { navigation: 'fixture-entry' }, replacements = [];
+  const fold = { tagName: 'DETAILS', open: true,
+    contains: node => node === target || node === summaryTarget,
+    querySelector: () => ({ contains: node => node === summaryTarget }) };
+  const view = { setTimeout, location: { pathname: '/fixture-ingress/dashboard/', search: '?view=heating', hash: '#pipe%20settings' },
+    history: { state, replaceState(value, title, url) { replacements.push([value, title, url]); view.location.hash = ''; } } };
+  const document = Object.assign(new EventTarget(), {
+    defaultView: view, getElementById: id => id === 'pipe settings' ? target : id === 'summary' ? summaryTarget : null,
+  });
+  const controller = createDashboardReset({ document });
+  const toggle = async node => {
+    const event = new Event('toggle'); Object.defineProperty(event, 'target', { value: node }); document.dispatchEvent(event);
+    await new Promise(resolve => setTimeout(resolve, 0));
+  };
+  await toggle(fold);
+  assert.equal(view.location.hash, '#pipe%20settings', 'Opening retains the direct link');
+  fold.open = false;
+  await toggle({ ...fold, contains: () => false });
+  assert.equal(view.location.hash, '#pipe%20settings', 'Closing an unrelated fold retains the destination');
+  await toggle(fold);
+  assert.deepEqual(replacements, [[state, '', '/fixture-ingress/dashboard/?view=heating']]);
+  for (const hash of ['#summary', '#missing', '#%invalid']) {
+    view.location.hash = hash; await toggle(fold);
+    assert.equal(view.location.hash, hash, 'Visible, unknown and malformed destinations are left alone');
+  }
+  view.location.hash = '#pipe%20settings';
+  const pendingToggle = toggle(fold);
+  fold.open = true; await pendingToggle;
+  assert.equal(view.location.hash, '#pipe%20settings', 'A newer navigation that reopens the fold keeps its fragment');
+  fold.open = false;
+  const closingToggle = toggle(fold);
+  controller.close(); await closingToggle;
+  await toggle(fold);
+  assert.equal(view.location.hash, '#pipe%20settings', 'Disposal removes the capture listener');
 });
