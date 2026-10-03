@@ -1394,11 +1394,15 @@ current live readings.
 
 ## Recover history from a backup or paired computer
 
-Open **Recording details → Recover history…** to review and recover missing
-history. Standalone controllers and active paired masters use this same window.
+Open the **Recover history** fold within **Recording details**, then choose
+**Open recovery…** to review and recover missing history. Its description and
+launcher stay inside that fold. Standalone controllers and active paired masters
+use this same window.
 **Paired computers → Review history…** opens it with the other computer selected.
-The window follows the Fireplace dialog's open/close behavior; closing it does
-not cancel work already running on the server. Admin access is required, and
+The **Recover history** view holds source selection, the checked preview and its
+action. **Previous recoveries** holds earlier operations and their revert/restore
+reviews. The window follows the Fireplace dialog's open/close behavior; closing
+it does not cancel work already running on the server. Admin access is required, and
 read-only computers cannot apply history changes.
 
 Choose a verified reset-archive backup, a local copy from the configured export
@@ -1418,7 +1422,7 @@ dashboard permissions, pairing role or equipment-control state. A normal paired
 slave is available for comparison only; protected paired history also requires
 the separate [resume-mirroring decision](pairing.md#protected-history-and-manual-recovery).
 
-**Previous recoveries** retains each recovery for later review. Select
+Switch to **Previous recoveries** for later review of a recovery. Select
 **Review revert**, inspect its effect, then confirm **Revert recovery** to exclude
 its accepted evidence from current history and rebuild the model. **Review
 restore → Restore recovery** includes that evidence again where current evidence

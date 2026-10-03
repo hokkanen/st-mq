@@ -599,8 +599,10 @@ Protected recovery and transitions are shown separately from normal roles.
 Open **Paired computers**, just above **Event log**, for connection and snapshot details,
 recovery controls, handover or manual promotion. **Review history…** opens the
 same [Recover history window](recording.md#recover-history-from-a-backup-or-paired-computer)
-as **Recording details**, with the peer preselected. The section stays compact
-when closed and still shows important progress or attention messages. Slaves use
+as the **Recover history** fold in **Recording details**, with the peer preselected
+in the **Recover history** view. It uses the same aligned action layout as
+handover and reset; protected history receives attention emphasis. The section
+stays compact when closed and still shows important progress or attention messages. Slaves use
 the same layout, with recovery and handover performed from the master's UI.
 
 Checks are initiated on the master. When the other computer is a normal slave,

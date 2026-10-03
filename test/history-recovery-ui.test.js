@@ -202,3 +202,201 @@ test('earlier recovery pages use an opaque cursor and polling keeps that page se
   assert.equal(requests[2], requests[1]);
   assert.equal($('history-recovery-newest').hidden, false);
 });
+
+test('recovery sources and previous recoveries have separate views that persist through polling and reopening', async () => {
+  const { document, $ } = fixture(), requests = [];
+  const operation = { id: 'earlier-recovery', source, startedAt: 1, active: true, canRevert: true };
+  const panel = createHistoryRecoveryPanel({ document, request: async (path, body) => {
+    requests.push({ path, body }); return view({ operations: [operation] });
+  } });
+  panel.update(admin); await panel.open();
+  assert.equal($('history-recovery-source-section').hidden, false);
+  assert.equal($('history-recovery-history').hidden, true);
+  assert.equal($('history-recovery-tab-recover').attributes['aria-pressed'], 'true');
+  $('history-recovery-tab-history').click();
+  assert.equal($('history-recovery-source-section').hidden, true);
+  assert.equal($('history-recovery-history').hidden, false);
+  assert.equal($('history-recovery-tab-history').attributes['aria-pressed'], 'true');
+  assert.equal($('history-recovery-apply').hidden, true);
+  assert.equal($('history-recovery-peer').hidden, true);
+  panel.tick(); await new Promise(resolve => setImmediate(resolve));
+  assert.equal($('history-recovery-history').hidden, false);
+  panel.close(); await panel.open();
+  assert.equal($('history-recovery-history').hidden, false);
+  assert.equal($('history-recovery-source-section').hidden, true);
+  assert(requests.every(item => item.body === undefined), 'Changing views and reopening only inspect saved state');
+});
+
+test('explicit paired entry opens its comparison instead of an unrelated saved revision review', async () => {
+  const { document, $ } = fixture();
+  const peer = { role: 'master', canControl: true, peer: { role: 'slave', reachable: true },
+    actions: { 'check-recovery': true, recover: false, rejoin: false },
+    recovery: { state: 'ready', donorRole: 'slave', preview } };
+  const operation = { id: 'earlier-recovery', source, startedAt: 1, active: true, canRevert: true };
+  const panel = createHistoryRecoveryPanel({ document, request: async () => view({ peer,
+    sources: [source, { id: 'peer', kind: 'peer', label: 'Paired computer', available: true }], operations: [operation],
+    preview: { previewId, recoveryId: operation.id, counts: { affected: 7 } },
+    job: { kind: 'review-revert', status: 'complete', operationId: operation.id } }) });
+  panel.update({ ...admin, topology: 'pair', pair: peer });
+  await panel.open();
+  assert.equal($('history-recovery-revision-apply').hidden, false);
+  panel.close();
+  await panel.open({ sourceId: 'peer', trigger: $('pairing-history-recovery') });
+  assert.equal($('history-recovery-tab-recover').attributes['aria-pressed'], 'true');
+  assert.equal($('history-recovery-source-section').hidden, false);
+  assert.equal($('history-recovery-history').hidden, true);
+  assert.equal($('history-recovery-source').value, 'peer');
+  assert.equal($('history-recovery-revision-apply').hidden, true);
+  assert.match(text($('history-recovery-preview')), /History comparison/);
+  assert.doesNotMatch(text($('history-recovery-preview')), /Revert recovery|Affected records/);
+  assert.doesNotMatch($('history-recovery-status').textContent, /Reverting|Restoring/);
+  panel.close();
+  assert.equal(document.activeElement, $('pairing-history-recovery'));
+});
+
+test('selecting another source clears the previous source review, result message and recovery action', async () => {
+  const { document, $ } = fixture(), requests = [];
+  const other = { id: 'other-backup', kind: 'backup', label: 'Another saved backup', available: true };
+  const panel = createHistoryRecoveryPanel({ document, request: async (path, body) => {
+    requests.push({ path, body }); return view({ sources: [source, other] });
+  } });
+  panel.update(admin); await panel.open();
+  assert.equal($('history-recovery-apply').hidden, false);
+  assert.match($('history-recovery-status').textContent, /Check complete/);
+  $('history-recovery-installation-confirm').checked = true;
+  $('history-recovery-source').value = other.id;
+  $('history-recovery-source').listeners.get('change')();
+  assert.equal($('history-recovery-preview').hidden, true);
+  assert.equal($('history-recovery-apply').hidden, true);
+  assert.equal($('history-recovery-installation-confirm').checked, false);
+  assert.equal($('history-recovery-check').disabled, true);
+  assert.doesNotMatch($('history-recovery-status').textContent, /Check complete|History recovery complete/);
+  panel.tick(); await new Promise(resolve => setImmediate(resolve));
+  assert.equal($('history-recovery-preview').hidden, true);
+  assert.equal($('history-recovery-source').value, other.id);
+  assert(requests.every(item => item.body === undefined), 'Selecting a source never checks or applies it automatically');
+});
+
+test('reviewing a previous recovery keeps its revision separate from source recovery actions', async () => {
+  const { document, $ } = fixture(), requests = [];
+  const operation = { id: 'earlier-recovery', source, startedAt: 1, active: true, canRevert: true };
+  let current = view({ operations: [operation] });
+  const panel = createHistoryRecoveryPanel({ document, request: async (path, body) => {
+    requests.push({ path, body });
+    if (body) current = view({ operations: [operation], preview: { previewId, recoveryId: operation.id, counts: { affected: 7 } },
+      job: { kind: body.action, status: 'complete', operationId: operation.id } });
+    return current;
+  } });
+  panel.update(admin); await panel.open();
+  $('history-recovery-tab-history').click();
+  $('history-recovery-operations').children[0].children[1].click();
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(requests.at(-1).body.action, 'review-revert');
+  assert.equal(requests.at(-1).body.operationId, operation.id);
+  assert.equal($('history-recovery-source-section').hidden, true);
+  assert.equal($('history-recovery-history').hidden, false);
+  assert.equal($('history-recovery-revision-apply').hidden, false);
+  assert.equal($('history-recovery-apply').hidden, true);
+  assert.equal($('history-recovery-peer').hidden, true);
+  assert.match(text($('history-recovery-preview')), /Revert recovery.*Affected records: 7/);
+  $('history-recovery-tab-recover').click();
+  assert.equal($('history-recovery-source-section').hidden, false);
+  assert.equal($('history-recovery-history').hidden, true);
+  assert.equal($('history-recovery-revision-apply').hidden, true);
+  assert.doesNotMatch($('history-recovery-status').textContent, /Reverting|Restoring/);
+  $('history-recovery-tab-history').click();
+  assert.equal($('history-recovery-revision-apply').hidden, false);
+  assert.match(text($('history-recovery-preview')), /Revert recovery.*Affected records: 7/);
+});
+
+test('a newer review of another recovery cannot authorize the locally selected revision', async () => {
+  const { document, $ } = fixture();
+  const first = { id: 'first-recovery', source, startedAt: 1, active: true, canRevert: true };
+  const second = { ...first, id: 'second-recovery', startedAt: 2 };
+  const reviewed = operation => view({ operations: [second, first],
+    preview: { previewId: operation === first ? previewId : 'b'.repeat(64), recoveryId: operation.id, counts: { affected: 7 } },
+    job: { kind: 'review-revert', status: 'complete', operationId: operation.id } });
+  const panel = createHistoryRecoveryPanel({ document, request: async () => reviewed(first) });
+  panel.update(admin); await panel.open();
+  assert.equal($('history-recovery-revision-apply').hidden, false);
+  assert.equal($('history-recovery-revision-apply').disabled, false);
+  panel.controller.update(reviewed(second));
+  assert($('history-recovery-revision-apply').hidden || $('history-recovery-revision-apply').disabled,
+    'A different recovery must be reviewed explicitly before applying its change');
+});
+
+test('completed revert and restore show the corrected recovery outcome and affected records', async () => {
+  for (const action of ['revert', 'restore']) {
+    const { document, $ } = fixture();
+    const operation = { id: 'earlier-recovery', source, startedAt: 1, active: action === 'revert', canRevert: true, canRestore: true };
+    const report = { recoveryId: operation.id, active: action === 'restore', counts: { affected: 7 },
+      period: { from: 1, to: 1000 }, model: { status: 'rebuilt' } };
+    let current = view({ operations: [operation], preview: { ...report, previewId },
+      job: { kind: `review-${action}`, status: 'complete', operationId: operation.id } });
+    const panel = createHistoryRecoveryPanel({ document, request: async () => current });
+    panel.update(admin); await panel.open();
+    assert.equal($('history-recovery-revision-apply').hidden, false);
+    current = view({ operations: [{ ...operation, active: action === 'restore' }], preview: null,
+      job: { kind: action, status: 'complete', operationId: operation.id, result: report } });
+    panel.controller.update(current);
+    const resultText = text($('history-recovery-preview'));
+    assert.match(resultText, action === 'revert' ? /Recovery reverted/ : /Recovery restored/);
+    assert.match(resultText, /Affected records: 7/);
+    assert.doesNotMatch(resultText, /Recovered entries span|Recovery result|Missing entries span/);
+    assert.equal($('history-recovery-history').hidden, false);
+    assert.equal($('history-recovery-source-section').hidden, true);
+    assert.equal($('history-recovery-revision-apply').hidden, true);
+    assert.equal($('history-recovery-revision-apply').disabled, true);
+    panel.close(); await panel.open();
+    assert.match(text($('history-recovery-preview')), action === 'revert' ? /Recovery reverted/ : /Recovery restored/);
+  }
+});
+
+test('a fresh dialog restores correction context and attaches the outcome when its recovery identity arrives', async () => {
+  for (const action of ['revert', 'restore']) for (const initialStatus of ['running', 'complete']) {
+    const { document, $ } = fixture(), requests = [];
+    const operation = { id: 'earlier-recovery', source, startedAt: 1, active: action === 'restore', canRevert: true, canRestore: true };
+    const result = { recoveryId: operation.id, active: action === 'restore', counts: { affected: 7 }, model: { status: 'rebuilt' } };
+    const job = { id, requestId: id, kind: action, status: initialStatus,
+      ...(initialStatus === 'running' ? { progress: { phase: 'rebuilding' } } : { result }) };
+    const panel = createHistoryRecoveryPanel({ document, request: async (path, body) => {
+      requests.push({ path, body }); return view({ operations: [operation], preview: null, busy: initialStatus === 'running', job });
+    } });
+    panel.update(admin); await panel.open();
+    assert.equal($('history-recovery-history').hidden, false);
+    assert.equal($('history-recovery-source-section').hidden, true);
+    if (initialStatus === 'running') {
+      assert.equal($('history-recovery-preview').hidden, true);
+      assert.match($('history-recovery-status').textContent, /Rebuilding/);
+      panel.controller.update(view({ operations: [operation], preview: null, busy: false,
+        job: { ...job, status: 'complete', result } }));
+    }
+    const outcome = text($('history-recovery-preview'));
+    assert.equal($('history-recovery-preview').hidden, false);
+    assert.match(outcome, action === 'revert' ? /Recovery reverted/ : /Recovery restored/);
+    assert.match(outcome, /Affected records: 7/);
+    assert.doesNotMatch(outcome, /Recovered entries span|Recovery result/);
+    assert.equal($('history-recovery-revision-apply').hidden, true);
+    assert(requests.every(item => item.body === undefined), 'Restoring correction context never repeats the change');
+  }
+});
+
+test('current paired work never presents an older completed recovery job as its progress', async () => {
+  for (const previousKind of ['check', 'revert']) {
+    const { document, $ } = fixture();
+    const peer = { role: 'master', canControl: true, busy: true, peer: { reachable: true, role: 'protected' },
+      actions: { 'check-recovery': false, recover: false, rejoin: false }, recovery: { state: 'checking', donorRole: 'protected' },
+      uiOperation: { state: 'running', action: 'check-recovery', progress: { phase: 'snapshotting' } } };
+    const panel = createHistoryRecoveryPanel({ document, request: async () => view({ peer, busy: true,
+      sources: [{ id: 'peer', kind: 'peer', label: 'Paired computer', available: false }],
+      job: { kind: previousKind, status: 'complete', source }, preview: null }) });
+    panel.update({ ...admin, topology: 'pair', pair: peer });
+    await panel.open({ sourceId: 'peer', trigger: $('pairing-history-recovery') });
+    assert.equal($('history-recovery-progress').hidden, false);
+    assert.equal($('history-recovery-preview').hidden, true);
+    assert.equal($('history-recovery-check').disabled, true);
+    assert.equal($('history-recovery-notice').hidden, false);
+    assert($('history-recovery-status').textContent.length > 0);
+    assert.doesNotMatch($('history-recovery-status').textContent, /Check complete|Recovery reverted|Recovery restored|History recovery complete/);
+  }
+});

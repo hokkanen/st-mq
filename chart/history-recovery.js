@@ -1,5 +1,6 @@
 import { confirmAction } from './confirmation.js';
-import { renderRecoveryReport, pairActionAllowed } from './pair-status.js';
+import { pairActionAllowed } from './pair-status.js';
+import { renderRecoveryReport } from './history-recovery-report.js';
 
 const pendingKey = 'stmq-history-recovery-pending';
 const actions = new Set(['check', 'recover', 'review-revert', 'revert', 'review-restore', 'restore']);
@@ -124,9 +125,10 @@ export function createHistoryRecoveryPanel({ document, request, upload, storage,
   const $ = id => document.getElementById(id), dialog = $('history-recovery-dialog'), selector = $('history-recovery-source');
   const rows = new Map();
   let dashboard, opener, selected = 'upload', uploaded = null, uploadBusy = false, refreshing = false, rendered, sourceKey;
-  let revision = null, sourceDirty = false, uploadError = '', pageCursor = null;
+  let revision = null, sourceDirty = false, uploadError = '', pageCursor = null, mode = 'recover', focusReview = false;
   const controller = createHistoryRecoveryActions({ request, storage, confirm: confirm ?? (message =>
-    confirmAction({ document, title: 'Confirm history change', message, action: 'Confirm' })), afterMutation, onChange: render });
+    confirmAction({ document, title: 'Confirm history change', message,
+      action: message.startsWith('Revert') ? 'Revert recovery' : message.startsWith('Restore') ? 'Restore recovery' : 'Recover history' })), afterMutation, onChange: render });
   const admin = () => dashboard?.webAccess?.role === 'admin';
   const sources = state => [{ id: 'upload', kind: 'upload-choice', label: 'Upload a database backup', available: true },
     ...(state.view?.sources ?? []), ...(uploaded && !(state.view?.sources ?? []).some(source => source.id === uploaded.id) ? [uploaded] : [])];
@@ -148,54 +150,90 @@ export function createHistoryRecoveryPanel({ document, request, upload, storage,
     }
     selector.value = selected; selector.disabled = blocked;
     const choice = source(state), peer = selected === 'peer';
+    const job = state.view?.job, revisionJob = ['review-revert', 'review-restore', 'revert', 'restore'].includes(job?.kind);
+    if (revision && !revision.id && revisionJob) {
+      const recoveredId = job.operationId ?? state.view?.preview?.recoveryId ?? job.result?.recoveryId;
+      if (recoveredId) revision = { ...revision, id: recoveredId };
+    }
+    const selectedJob = !sourceDirty && ['check', 'recover'].includes(job?.kind) && job?.source?.id === selected;
+    const relevantJob = mode === 'history' ? revisionJob : selectedJob;
+    const revisionView = mode === 'history' && revision;
+    $('history-recovery-source-section').hidden = mode !== 'recover';
+    $('history-recovery-history').hidden = mode !== 'history';
+    for (const name of ['recover', 'history']) $('history-recovery-tab-' + name).setAttribute('aria-pressed', String(mode === name));
     $('history-recovery-upload').hidden = selected !== 'upload';
     $('history-recovery-file').disabled = blocked;
-    $('history-recovery-installation').hidden = peer;
+    $('history-recovery-installation').hidden = peer || selected === 'upload';
     $('history-recovery-installation-confirm').disabled = blocked;
     $('history-recovery-check').disabled = blocked || selected === 'upload' || !choice || choice.available === false
       || !peer && !$('history-recovery-installation-confirm').checked;
     $('history-recovery-check').textContent = peer ? 'Check other computer' : 'Check backup';
     $('history-recovery-dialog').setAttribute('aria-busy', String(state.busy || running || uploadBusy));
-    const status = uploadError || state.message || (uploadBusy ? 'Uploading a private copy…' : recoveryJobText(state.view));
+    const status = uploadError || state.message || (uploadBusy ? 'Uploading a private copy…'
+      : running && job?.status !== 'running' ? 'A history operation is in progress…'
+      : running || relevantJob ? recoveryJobText(state.view) : '');
     $('history-recovery-status').textContent = !admin() ? 'Admin access is required to recover history.'
       : !state.connected ? 'Recovery status is unavailable. Reconnect to check the saved outcome.'
         : readonly ? 'History recovery is read-only on this computer.' : status;
-    $('history-recovery-status').classList.toggle('form-error', !!uploadError || state.error || ['error', 'interrupted'].includes(state.view?.job?.status));
+    const tone = !state.connected || readonly || uploadError || state.error || relevantJob && ['error', 'interrupted'].includes(job?.status) ? 'attention'
+      : running || uploadBusy || state.busy ? 'progress' : 'neutral';
+    $('history-recovery-notice').dataset.tone = tone;
+    $('history-recovery-notice').hidden = !$('history-recovery-status').textContent && !state.pending;
     $('history-recovery-progress').hidden = !running && !uploadBusy;
     $('history-recovery-background').hidden = !running;
     $('history-recovery-refresh').disabled = state.busy || uploadBusy;
     $('history-recovery-retry').hidden = !state.pending;
     $('history-recovery-retry').disabled = state.busy || !state.connected || readonly;
     $('history-recovery-source-help').textContent = peer
-      ? 'Check a normal slave for comparison. Recovering protected history requires a separate confirmation before mirroring resumes.'
-      : 'Use a compatible database from this installation. A backup may also contain entries that were deliberately removed later.';
+      ? 'Normal slave history is comparison only. Protected history can be recovered before a separate decision to resume mirroring.'
+      : 'Use a backup from this installation and software version. Checking does not change recorded history.';
     const currentPair = pair(state), peerRecovery = currentPair?.recovery;
     const comparison = peer && peerRecovery?.donorRole === 'slave';
-    const checked = revision ? state.view?.preview : peer ? peerRecovery?.preview : state.view?.preview;
+    const checked = revisionView ? state.view?.preview : peer ? peerRecovery?.preview : state.view?.preview;
     const result = peer ? peerRecovery?.report : state.view?.job?.result?.report ?? state.view?.job?.result;
     const finished = peer ? ['complete', 'resolved'].includes(peerRecovery?.state) : state.view?.job?.status === 'complete' && mutation(state.view?.job?.kind);
-    const selectedJob = !sourceDirty && (!state.view?.job?.source?.id || state.view.job.source.id === selected);
-    const reviewed = !sourceDirty && (peer || selectedJob) && !running ? (finished ? result : checked) : null;
-    const isRevision = revision && state.view?.job?.kind === `review-${revision.active ? 'restore' : 'revert'}` && state.view?.job?.status === 'complete';
-    if (isRevision) renderRevision(checked);
+    const reviewed = mode === 'recover' && !sourceDirty && (peer || selectedJob) && !running ? (finished ? result : checked) : null;
+    const isRevision = revisionView && checked?.recoveryId === revision.id
+      && job?.kind === `review-${revision.active ? 'restore' : 'revert'}` && job?.status === 'complete';
+    const revisionComplete = revisionView && job?.result?.recoveryId === revision.id
+      && job?.kind === (revision.active ? 'restore' : 'revert') && job?.status === 'complete';
+    if (isRevision || revisionComplete) renderRevision(isRevision ? checked : job.result, revisionComplete);
     else renderRecoveryReport(document, $('history-recovery-preview'), reviewed,
       { formatTime, report: finished, comparison, source: peer ? 'peer' : 'backup' });
-    const canRecover = peer ? pairActionAllowed(currentPair, 'recover')
+    const canRecover = mode === 'recover' && !sourceDirty && (peer ? pairActionAllowed(currentPair, 'recover')
       : selectedJob && !!checked?.previewId && state.view?.job?.kind === 'check' && state.view?.job?.status === 'complete'
-        && (total(checked.counts?.missing) > 0 || checked.model?.status === 'rebuild-required');
-    $('history-recovery-apply').hidden = !canRecover || !!revision || comparison;
+        && (total(checked.counts?.missing) > 0 || checked.model?.status === 'rebuild-required'));
+    $('history-recovery-apply').hidden = !canRecover || comparison;
     $('history-recovery-apply').disabled = blocked || !canRecover;
     $('history-recovery-revision-apply').hidden = !isRevision;
-    $('history-recovery-revision-apply').disabled = blocked || !checked?.previewId;
+    $('history-recovery-revision-apply').disabled = blocked || !isRevision || !checked?.previewId;
     $('history-recovery-revision-apply').textContent = revision?.active ? 'Restore recovery' : 'Revert recovery';
-    $('history-recovery-peer').hidden = !peer;
+    $('history-recovery-revision-apply').dataset.tone = revision?.active ? 'neutral' : 'attention';
+    $('history-recovery-peer').hidden = mode !== 'recover' || !peer || !(peerRecovery?.pendingRelease
+      || currentPair?.peer?.role === 'protected' && currentPair?.peer?.reachable === true
+      || peerRecovery?.donorRole === 'protected' && ['ready', 'recovering', 'complete', 'error'].includes(peerRecovery?.state));
+    $('history-recovery-review').hidden = $('history-recovery-preview').hidden;
+    const operation = revisionView && state.view?.operations?.find(item => item.id === revision.id);
+    const revisionSource = operation?.source?.label ?? (isRevision ? checked : job?.result)?.source?.label ?? 'Previous recovery';
+    const operationTime = operation?.startedAt ?? operation?.createdAt;
+    $('history-recovery-review-source').textContent = revisionView
+      ? `${revisionSource}${Number.isFinite(operationTime) ? ` · ${formatTime(operationTime)}` : ''}`
+      : choice?.label ?? (peer ? 'Paired computer' : 'Selected backup');
+    if (focusReview && !$('history-recovery-review').hidden) {
+      focusReview = false;
+      $('history-recovery-review').focus({ preventScroll: true });
+      $('history-recovery-review').scrollIntoView?.({ block: 'nearest' });
+    }
     renderOperations(state, blocked);
   }
-  function renderRevision(data) {
+  function renderRevision(data, complete = false) {
     const root = $('history-recovery-preview'); root.replaceChildren(); root.hidden = !data;
     if (!data) return;
-    const title = document.createElement('h3'); title.textContent = revision.active ? 'Restore recovery — review' : 'Revert recovery — review';
-    const detail = document.createElement('p'); detail.textContent = revision.active
+    const title = document.createElement('h3'); title.textContent = complete ? revision.active ? 'Recovery restored' : 'Recovery reverted'
+      : revision.active ? 'Restore recovery — review' : 'Revert recovery — review';
+    const detail = document.createElement('p'); detail.textContent = complete ? revision.active
+      ? 'This recovery’s accepted history is included again where current evidence permits.'
+      : 'This recovery’s accepted history is excluded. The original evidence remains available for restoration.' : revision.active
       ? 'Include the selected recovery’s accepted history again. Later independent observations and corrections remain.'
       : 'Exclude the selected recovery’s accepted history. Later independent observations and corrections remain.';
     root.append(title, detail);
@@ -209,7 +247,8 @@ export function createHistoryRecoveryPanel({ document, request, upload, storage,
       line.textContent = `Cycle assessments: ${assessments}. Original recorded outcomes and forecasts remain available.`; root.append(line);
     }
     const model = document.createElement('p'); model.className = 'muted';
-    model.textContent = 'The model is rebuilt from the selected history before publication. Current settings and control permissions remain in place.'; root.append(model);
+    model.textContent = complete ? 'The revised history and rebuilt model have been published. Later independent records and corrections remain.'
+      : 'The model is rebuilt before publication. Later independent records, current settings and control permissions remain in place.'; root.append(model);
   }
   function renderOperations(state, blocked) {
     const operations = state.view?.operations ?? [], retained = new Set(operations.map(item => item.id));
@@ -230,6 +269,7 @@ export function createHistoryRecoveryPanel({ document, request, upload, storage,
           const current = controller.snapshot().view?.operations?.find(value => value.id === operation.id);
           if (!current || button.disabled) return;
           revision = { id: current.id, active: current.active === false }; sourceDirty = false;
+          mode = 'history'; focusReview = true;
           void controller.run(revision.active ? 'review-restore' : 'review-revert', { operationId: current.id });
         });
         info.append(title, at, detail); item.append(info, button); row = { item, title, at, detail, button }; rows.set(operation.id, row);
@@ -241,6 +281,7 @@ export function createHistoryRecoveryPanel({ document, request, upload, storage,
       row.detail.textContent = operation.active === false ? 'Reverted · history retained for restoration'
         : ['interrupted', 'error', 'failed'].includes(operation.status) ? 'Interrupted · accepted history can be reviewed'
           : 'Included in current history';
+      row.detail.dataset.tone = ['interrupted', 'error', 'failed'].includes(operation.status) && operation.active !== false ? 'attention' : 'neutral';
       row.button.textContent = operation.active === false ? 'Review restore' : 'Review revert';
       row.button.disabled = blocked || (operation.active === false ? operation.canRestore === false : operation.canRevert === false);
       row.button.setAttribute('aria-label', `${row.button.textContent}: ${row.title.textContent}, ${row.at.textContent}`);
@@ -256,19 +297,25 @@ export function createHistoryRecoveryPanel({ document, request, upload, storage,
   async function open({ sourceId, trigger } = {}) {
     if (!admin() || dialog.open) return;
     opener = trigger ?? $('history-recovery-open');
-    if (sourceId) { selected = sourceId; sourceDirty = false; revision = null; }
+    if (sourceId) { selected = sourceId; sourceDirty = false; revision = null; mode = 'recover'; }
     dialog.showModal(); opener.setAttribute('aria-expanded', 'true'); $('history-recovery-close').focus();
     await refresh();
     if (!dialog.open) return;
     const state = controller.snapshot();
-    if (!sourceId && state.view?.job?.source?.id) selected = state.view.job.source.id;
-    if (state.view?.job?.kind?.startsWith('review-')) revision = { id: state.view.job.operationId ?? state.view.preview?.recoveryId,
-      active: state.view.job.kind === 'review-restore' };
+    if (!sourceId && !sourceDirty && state.view?.job?.source?.id) selected = state.view.job.source.id;
+    if (!sourceId && !sourceDirty && ['review-revert', 'review-restore', 'revert', 'restore'].includes(state.view?.job?.kind) && !revision) {
+      revision = { id: state.view.job.operationId ?? state.view.preview?.recoveryId ?? state.view.job.result?.recoveryId,
+        active: ['review-restore', 'restore'].includes(state.view.job.kind) };
+      mode = 'history';
+    }
     render(state);
   }
   selector.addEventListener('change', () => {
     selected = selector.value; sourceDirty = true; revision = null; uploadError = '';
     $('history-recovery-installation-confirm').checked = false; render(controller.snapshot());
+  });
+  for (const name of ['recover', 'history']) $('history-recovery-tab-' + name).addEventListener('click', () => {
+    mode = name; focusReview = false; render(controller.snapshot());
   });
   $('history-recovery-installation-confirm').addEventListener('change', () => render(controller.snapshot()));
   $('history-recovery-file').addEventListener('change', async () => {

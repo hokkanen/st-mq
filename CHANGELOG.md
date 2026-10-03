@@ -26,6 +26,10 @@ Versions follow Semantic Versioning. `-dev.N` denotes a development prerelease.
 
 ### Changed
 
+- History recovery now has a compact entry inside its own Recording details fold
+  and an aligned action in Paired computers. The shared window separates new
+  recovery from previous recoveries, keeps reviews tied to their source, and
+  presents clearer counts, progress and revert/restore outcomes on small screens.
 - Reversible recovery uses SQLite schema 20 and learning algorithm
   `committed-house-v14-reversible-recovery`. Earlier development databases require
   a deliberate fresh start; they are rejected without migration or automatic

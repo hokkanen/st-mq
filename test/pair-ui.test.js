@@ -1,7 +1,8 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { createPairActions, createPairPanel, isPairManagementRequest, pairActionAllowed, pairAllowsControl,
-  pairConfirmation, pairDisplay, pairIssueHelp, renderRecoveryReport, pairActionHelp } from '../chart/pair-status.js';
+  pairConfirmation, pairDisplay, pairIssueHelp, pairActionHelp } from '../chart/pair-status.js';
+import { renderRecoveryReport } from '../chart/history-recovery-report.js';
 import { isReadOnlyReplica, replicaDisplay, chartObservationTime } from '../chart/replica-status.js';
 
 const now = Date.parse('2026-09-12T12:00:00Z');
@@ -556,6 +557,9 @@ test('recovery reports render aggregate counts and periods while omitting donor 
   for (const phrase of ['Recovery result', 'Recovered entries: 12', 'Conflicting entries: 3', 'Already present: 4', 'Skipped entries: 5', 'Recovered entries span:', 'Unsupported learning entries skipped: 2']) assert(text.includes(phrase));
   assert.doesNotMatch(text, /private/);
   assert.match(text, /not kept as a separate archive/);
+  renderRecoveryReport(document, root, { counts: { missing: 0 }, from: now - 60000, to: now });
+  assert.match(allText(root), /Missing entries: 0/);
+  assert.doesNotMatch(allText(root), /entries span:/, 'Retired flattened bounds cannot supply current report provenance');
   renderRecoveryReport(document, root, null);
   assert.equal(root.hidden, true);
   assert.equal(root.children.length, 0);
@@ -642,7 +646,7 @@ test('protected no-gap previews and completed recovery explain the remaining exp
   assert.match(pairConfirmation('rejoin', { discardUnrecovered: true, counts: { missing: 0 } }), /no missing entries to recover/);
   panel.update({ ...view, recovery: { ...view.recovery, state: 'complete', report: { imported: 12, counts: {}, model: { status: 'rebuilt' } } } });
   assert.equal($('pairing-rejoin').textContent, 'Resume mirroring');
-  assert.match($('pairing-check-help').textContent, /Resume mirroring below/);
+  assert.match($('pairing-check-help').textContent, /Open history.*resume mirroring/);
   assert.equal($('pairing-history-recovery').textContent, 'Recover history…');
 });
 

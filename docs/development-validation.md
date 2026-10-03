@@ -139,10 +139,12 @@ checks the diff at 320/390/1440 px in both themes; synthetic screenshots use
 configuration or connects providers.
 
 The history-recovery suite checks the shared Recording details/Paired computers
-window, peer preselection, upload and reviewed actions, operation pagination,
-revert/restore, close/reopen progress, family restrictions, keyboard dismissal and
-focus restoration at 320/390/1440 px in both themes. It uses an isolated synthetic
-server and records temporary screenshots; it does not open household backups.
+window, nested recording disclosure, separate recovery/history views, peer
+preselection, upload and reviewed actions, operation pagination, revert/restore,
+close/reopen progress, family restrictions, keyboard dismissal and focus restoration
+at 320/390/768/1440 px in both themes, including short phone viewports. It uses an
+isolated synthetic server and records temporary screenshots; it does not open
+household backups.
 
 The heating-explorer suite checks the Home preview opener without toggling its
 parent card, Escape and focus restoration, pinned comparisons and draft retention,

@@ -162,7 +162,7 @@ export function pairDisplay(view, { now = Date.now(), formatTime = at => new Dat
     ready: mirrorComparison(view) ? view.peer?.reachable === true && view.peer.role === 'protected'
       ? 'This comparison used a normal slave snapshot. The other computer now reports protected history; run a new check before recovery.'
       : 'Comparison complete. The checked snapshot came from a normal slave. Normal mirroring is automatic; its current connection status is shown above. Differences can reflect snapshot age or master deletions. This check does not authorize importing them.'
-      : hasMissing(view) ? 'Check complete. Review the preview below, then recover the gaps or explicitly discard them and resume mirroring.'
+      : hasMissing(view) ? 'Check complete. Open history to review the gaps before recovering or resuming mirroring.'
       : 'No missing entries were found. Review any conflicting or skipped history, then confirm replacement to resume mirroring.',
     recovering: 'Recovering gaps and rebuilding the model. Home control continues with the available model.',
     complete: 'Recovery is complete. Review the result, then resume mirroring to make the slave match the master.',
@@ -434,11 +434,11 @@ export function createPairPanel({ document, request, storage, confirm, afterMuta
     const recoveryNeeded = state.view.peer?.reachable === true && state.view.peer.role === 'protected'
       || state.view.recovery?.pendingRelease
       || state.view.recovery?.donorRole === 'protected' && ['ready', 'recovering', 'complete', 'error'].includes(state.view.recovery.state);
-    $('pairing-master-controls').dataset.recovery = String(Boolean(recoveryNeeded));
-    $('pairing-recovery-title').textContent = recoveryNeeded ? 'Recover protected history' : 'Check history';
+    $('pairing-recovery-title').textContent = recoveryNeeded ? 'Protected history' : 'History';
+    $('pairing-recovery-title').dataset.tone = recoveryNeeded ? 'attention' : 'neutral';
     $('pairing-recovery-intro').textContent = recoveryNeeded
-      ? 'Check the other computer’s preserved history, recover any gaps, then resume mirroring. Existing master history wins overlaps.'
-      : 'Mirroring is automatic. An optional comparison checks the other snapshot without changing either database.';
+      ? 'Review the other computer’s preserved history and recover any gaps before resuming mirroring.'
+      : 'Compare the other computer’s snapshot with this master. Normal mirroring is automatic.';
     $('pairing-rejoin-step').hidden = !recoveryNeeded;
     $('pairing-master-controls').hidden = state.view.role !== 'master';
     $('pairing-slave-controls').hidden = !['slave', 'protected'].includes(state.view.role);
@@ -458,11 +458,16 @@ export function createPairPanel({ document, request, storage, confirm, afterMuta
       ? 'If another computer is the master, use its Paired computers section to check this computer’s history and recover missing entries before resuming mirroring. If this computer should become master instead, promote it below using the preserved local history.'
       : 'This computer reads the last copied snapshot and does not record measurements or send commands. While the master is unavailable, the history remains readable and grows older. Mirroring catches up when the master returns, provided the histories have not diverged.';
     const help = pairActionHelp(state.view);
-    for (const field of ['check', 'rejoin', 'handover', 'promote', 'reset']) {
+    for (const field of ['rejoin', 'handover', 'promote', 'reset']) {
       const node = $(`pairing-${field}-help`);
       node.textContent = !state.available ? 'Reconnect to this computer before starting an action.'
         : state.busy || state.pending ? 'Wait for the current request to be confirmed before starting another action.' : help[field];
     }
+    $('pairing-check-help').textContent = !state.available ? 'Reconnect to this computer to review its history.'
+      : state.busy || state.pending || state.view.busy || state.view.uiOperation?.state === 'running' ? 'Open to follow the current operation.'
+      : state.view.recovery?.state === 'complete' ? 'Open history to review the result and resume mirroring.'
+      : state.view.peer?.reachable !== true ? 'Reconnect the other computer to run a new check.'
+      : recoveryNeeded ? 'Existing master history takes precedence.' : 'Opens with the other computer selected.';
     $('pairing-rejoin').textContent = state.view.recovery?.pendingRelease ? 'Verify mirroring completion'
       : checkedPreview(state.view) && hasMissing(state.view) && !mirrorComparison(state.view) ? 'Skip recovery and resume mirroring' : 'Resume mirroring';
     $('pairing-rejoin').dataset.tone = checkedPreview(state.view) && !mirrorComparison(state.view) ? 'attention' : 'neutral';
@@ -504,44 +509,4 @@ export function createPairPanel({ document, request, storage, confirm, afterMuta
   $('pairing-retry').addEventListener('click', () => { void controller.retry(); });
   render(controller.snapshot());
   return controller;
-}
-
-/** Render only whitelisted aggregates, never a donor record or serialized error. */
-export function renderRecoveryReport(document, root, data, { formatTime = at => new Date(at).toISOString(), report = false, comparison = false, source = 'peer' } = {}) {
-  root.replaceChildren(); root.hidden = !data;
-  if (!data) return;
-  const heading = document.createElement('h3'); heading.textContent = comparison ? 'History comparison' : data.recoverySkipped ? 'Mirroring resumed without recovery' : report ? 'Recovery result' : 'Recovery preview'; root.append(heading);
-  const fields = [...(!report || data.recoverySkipped ? [['missing', comparison ? 'Only in the other snapshot' : data.recoverySkipped ? 'Missing entries not recovered' : 'Missing entries']] : []), ['conflicts', comparison ? 'Different entries' : 'Conflicting entries'], ['duplicates', 'Already present'], ['skipped', 'Skipped entries']];
-  const totals = data.counts ?? {};
-  const counts = document.createElement('div'); counts.className = 'pairing-preview-counts'; root.append(counts);
-  if (count(data.imported) !== null) { const line = document.createElement('p'); line.textContent = `Recovered entries: ${data.imported}.`; root.append(line); }
-  for (const [key, title] of fields) if (count(totals[key]) !== null) {
-    const line = document.createElement('p'); line.textContent = `${title}: ${totals[key]}.`;
-    if (!comparison && key !== 'duplicates' && totals[key] > 0) line.dataset.tone = 'attention';
-    counts.append(line);
-  }
-  const from = stamp(data.period?.from ?? data.from), to = stamp(data.period?.to ?? data.to);
-  if (from || to) { const line = document.createElement('p'); line.textContent = `${comparison ? 'Entries only in the other snapshot span' : report ? 'Recovered entries span' : 'Missing entries span'}: ${from ? formatTime(from) : 'unknown'} – ${to ? formatTime(to) : 'unknown'}.`; root.append(line); }
-  if (data.model?.status === 'rebuild-required' && !data.recoverySkipped && !comparison) {
-    const line = document.createElement('p');
-    line.textContent = report ? 'The recovered learning history is used to rebuild the model. Check the recovery status above for completion.' : 'Recovery includes rebuilding the learned model.';
-    root.append(line);
-  }
-  if (data.model?.status === 'rebuilt') {
-    const line = document.createElement('p'); line.textContent = 'The rebuilt model has caught up and is published.'; root.append(line);
-  }
-  if (count(data.model?.unsupported) > 0) {
-    const line = document.createElement('p'); line.textContent = `Unsupported learning entries skipped: ${data.model.unsupported}.`; root.append(line);
-  }
-  if (count(data.sourceAssessment?.skippedLearningRecords) > 0) {
-    const line = document.createElement('p');
-    line.textContent = `${data.sourceAssessment.skippedLearningRecords} learning records use another input and are skipped. Their original history remains separate.`;
-    root.append(line);
-  }
-  const policy = document.createElement('p'); policy.className = 'muted';
-  policy.textContent = comparison ? 'This is a comparison with a normal slave snapshot. Differences can reflect snapshot age or master deletions. Mirroring applies the master’s history automatically; these entries are not imported.'
-    : data.recoverySkipped ? 'Gap recovery was deliberately skipped. The master history and model were kept; the other computer’s unmatched history was discarded, without a separate archive.'
-    : source === 'backup' ? 'Existing history takes precedence. The source backup stays unchanged. Conflicting or unsupported entries are skipped; recorded gaps remain unknown where no usable evidence exists.'
-      : 'Existing master history wins overlaps. Skipped donor entries are not kept as a separate archive after successful recovery and verified mirroring.';
-  root.append(policy);
 }
