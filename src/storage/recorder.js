@@ -303,14 +303,25 @@ export class Recorder {
         polls*Number(state.status==='stale'),polls*Number(state.status==='failed'),polls*Number(state.status==='unavailable'));
   }
 
-  coverage(state, o, status, freshUpdate = true) {
+  coverage(state, o, status, freshUpdate = true, reportPolicyChanged = false) {
     // Coverage describes successful source updates and availability separately
     // from the value approximation. An unchanged OLD timestamp never advances
     // measurement freshness, even though its HTTP request succeeded.
     const at = o.receivedAt, observed = Number.isFinite(o.sourceTime) ? o.sourceTime : null;
     // Polling a cached MQTT reading is not another detector report. Keep the
     // compact span's endpoint on the actual report's source and receipt clocks.
-    if (temperatureReportMaxAge(o) !== null && status === 'fresh' && !freshUpdate) return;
+    if (temperatureReportMaxAge(o) !== null && status === 'fresh' && !freshUpdate) {
+      if (reportPolicyChanged) {
+        // A revised remaining lifetime changes availability from this receipt,
+        // but is not another source measurement or an edit of earlier history.
+        state.coverageId = Number(this.store.db.prepare(`INSERT INTO recorder_coverage
+          (source,device,signal,status,start_at,end_at,source_time,observation_id,samples) VALUES(?,?,?,?,?,?,?,?,0)`)
+          .run(o.source,o.device,o.signal,status,at,at,observed,state.last?.id ?? null).lastInsertRowid);
+        state.coverageObservationId = state.last?.id ?? null;
+        state.status = status;
+      }
+      return;
+    }
     // If recording is configured less often than source freshness, two fresh
     // polls can still surround an unobserved gap. Preserve separate spans even
     // when both polls map to the same saved value. Receipt must also precede
@@ -381,18 +392,31 @@ export class Recorder {
       // Repeated unavailable/stale polls compact into coverage, never fake data.
       if (!fresh && s.last && !transition && !force) reason = null;
       const prior = s.last;
+      const reportPolicyChanged = periodic && prior && temperatureReportMaxAge({ raw: prior.semanticQuality }) !== temperatureReportMaxAge(o);
+      const cachedPolicyChange = reportPolicyChanged && fresh && !freshUpdate;
       let committed = null;
       if (reason) {
         const raw = compactRaw(o.raw, o);
-        raw.recorder = { version: VERSION, policy: policy.id, reason, threshold: exact ? null : threshold,
-          originalSourceTime: o.sourceTime, status, temporalBasis: 'source-observation' };
+        if (cachedPolicyChange) {
+          const report = this.store.db.prepare(`SELECT c.end_at,c.source_time,o.source_time AS original_source_time,o.raw
+            FROM recorder_coverage c JOIN observations o ON o.id=c.observation_id WHERE c.id=?`).get(s.coverageId);
+          const previousRaw = report?.raw ? JSON.parse(report.raw) : {};
+          Object.assign(raw, { timeBasis: 'report-policy-change', reportPolicyChangedAt: o.receivedAt,
+            originalReportSourceTime: o.sourceTime,
+            originalReportReceivedAt: report?.source_time === report?.original_source_time
+              ? previousRaw.originalReportReceivedAt ?? report?.end_at ?? prior.receivedAt : report?.end_at ?? prior.receivedAt,
+            originalReportTimeBasis: previousRaw.originalReportTimeBasis ?? previousRaw.timeBasis ?? o.raw?.timeBasis });
+        }
+        raw.recorder = { version: VERSION, policy: policy.id, reason: cachedPolicyChange ? 'report-policy-change' : reason,
+          threshold: exact ? null : threshold, originalSourceTime: o.sourceTime, status,
+          temporalBasis: cachedPolicyChange ? 'policy-change' : 'source-observation' };
         committed = { ...o, raw, quality: fresh ? o.quality : flags([...o.quality,status]) };
         committed.id = this.store.observation(committed);
         s.last = { id:committed.id,value:o.value,sourceTime:o.sourceTime,receivedAt:o.receivedAt,
           quality:o.quality,usableForControl:o.raw?.usableForControl,semanticQuality:semanticQuality(o.raw) };
         s.unit=o.unit;
       }
-      this.coverage(s,o,status,freshUpdate);
+      this.coverage(s,o,status,freshUpdate,reportPolicyChanged);
       if (periodic) s.reportUnavailableSince = fresh ? null : s.reportUnavailableSince ?? o.receivedAt;
       const elapsed = s.lastPollAt === null ? 0 : Math.min(o.receivedAt - s.lastPollAt,sourceAge(o));
       // Error is the held saved value at every acquisition, time weighted so

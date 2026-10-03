@@ -6,12 +6,13 @@ import { mitsubishiControl, mitsubishiResult } from '../chart/mitsubishi.js';
 import { garageSettings } from '../src/garage/settings.js';
 import { validateGarageModeState } from '../src/garage/room-temperature.js';
 import { garageV2Fixture, GARAGE_TEST_AT, GARAGE_TEST_ADAPTER } from './helpers/garage-v2.js';
+import { createShellyCn105Transport } from '../src/garage/shelly-cn105.js';
 function fixture(t, options = {}) {
   const store = new Store(':memory:'); t.after(() => store.close());
   const engine = { latest: {}, recorder: { recordEnergy: value => value }, ingest: row => { engine.latest[row.signal] = row; } };
   const config = { input: 'mqtt', garage: { enabled: true, awayTargetC: 5, adapter: GARAGE_TEST_ADAPTER }, connections: {}, ...options.config };
   let runtime = null;
-  const f = garageV2Fixture({ onState: value => runtime?.adapterChanged(value) });
+  const f = garageV2Fixture({ ...options.adapter, onState: value => runtime?.adapterChanged(value) });
   const recreate = () => { runtime = new GarageRuntime({ engine, store, config, clock: f.now, canControl: () => true }); runtime.setAdapter(f.adapter); return runtime; };
   recreate(); f.update();
   return { ...f, engine, store, config, runtime, recreate };
@@ -36,6 +37,56 @@ test('Away is explicit and indefinite, Normal target survives reboot, and neithe
   assert(f.publications.every(command => command.action === 'control'));
   assert.equal(restarted.status().warmingWarning.toC, 10);
   assert.equal(f.adapter.status().native.power, 'off');
+});
+
+test('negative controller receipts arriving before publication completion cannot persist a mode or target edit', async t => {
+  for (const status of ['rejected', 'failed', 'uncertain']) for (const request of [{ mode: 'away' }, { mode: 'normal', targetC: 12 }]) {
+    let command, finish;
+    const f = fixture(t, { adapter: { productionTransport: createShellyCn105Transport({ settings: GARAGE_TEST_ADAPTER,
+      publish: (_topic, payload) => new Promise(resolve => { command = JSON.parse(payload); finish = resolve; }) }) } });
+    const previous = f.store.getState(f.runtime.keys.mode);
+    const pending = f.runtime.setHeating(request);
+    f.update({ result: { commandId: command.commandId, status, reason: 'fixture-controller-result' } });
+    finish();
+    await assert.rejects(pending, error => error.statusCode === (status === 'rejected' ? 409 : 503));
+    assert.deepEqual(f.store.getState(f.runtime.keys.mode), previous);
+    assert.deepEqual(f.runtime.selection, previous);
+    assert.equal(f.adapter.status().lastCommand.status, status);
+    assert.equal(f.engine.latest.garage_away_mode, undefined);
+    assert.equal(f.store.events().filter(event => event.type === 'garage-mode-changed').length, 0);
+    assert.equal(f.runtime.busy, false);
+    assert.deepEqual(f.recreate().selection, previous, 'restart retains the previously selected intent');
+  }
+});
+
+test('disconnect followed by a late publication failure leaves the previous mode durable', async t => {
+  let reject;
+  const f = fixture(t, { adapter: { productionTransport: createShellyCn105Transport({ settings: GARAGE_TEST_ADAPTER,
+    publish: () => new Promise((_resolve, failed) => { reject = failed; }) }) } });
+  const previous = f.store.getState(f.runtime.keys.mode);
+  const pending = f.runtime.setHeating({ mode: 'away' });
+  f.adapter.setConnected(false);
+  reject(new Error('fixture-delayed-publication-failure'));
+  await assert.rejects(pending, /MQTT disconnected/);
+  assert.deepEqual(f.store.getState(f.runtime.keys.mode), previous);
+  assert.deepEqual(f.runtime.selection, previous);
+  assert.equal(f.adapter.status().lastCommand.status, 'uncertain');
+  assert.equal(f.engine.latest.garage_away_mode, undefined);
+  assert.equal(f.store.events().filter(event => event.type === 'garage-mode-changed').length, 0);
+  assert.equal(f.runtime.busy, false);
+});
+
+test('durable controller confirmation still permits the mode edit after a late publication failure', async t => {
+  let reject;
+  const f = fixture(t, { adapter: { productionTransport: createShellyCn105Transport({ settings: GARAGE_TEST_ADAPTER,
+    publish: () => new Promise((_resolve, failed) => { reject = failed; }) }) } });
+  const pending = f.runtime.setHeating({ mode: 'away' });
+  f.update({ control: { targetC: 5, effectiveTargetC: 5 } });
+  reject(new Error('fixture-delayed-publication-failure'));
+  await pending;
+  assert.equal(f.store.getState(f.runtime.keys.mode).mode, 'away');
+  assert.equal(f.runtime.status().targetConfirmed, true);
+  assert.equal(f.adapter.status().lastCommand.status, 'applied');
 });
 
 test('warming advisory survives restart and expires independently from mode; lowering temperature does not erase it', async t => {

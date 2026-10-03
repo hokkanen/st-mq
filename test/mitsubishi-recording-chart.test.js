@@ -12,6 +12,7 @@ import { HISTORY_AXIS_BY_KEY } from '../src/domain/history-series.js';
 import { historyDatasets, historyStateLabel } from '../chart/history-model.js';
 
 const MINUTE = 60_000, BASE = Date.parse('2026-09-24T09:00:00Z');
+const COVERAGE_AGE = 119_000; // Two-minute maximum with the publisher's one-second UTC precision reserve.
 const ACTIVE = 'garage_compressor_active', FREQUENCY = 'garage_compressor_frequency';
 
 // Independent synthetic transcription of cnPublishTelemetry/cnField in the Pill
@@ -25,7 +26,7 @@ function publishedField(value, measuredAt, extra = {}) {
     accuracyVerified: false, meterScope: 'unverified', ...extra };
 }
 
-function fixture(t, { disk = false } = {}) {
+function fixture(t, { disk = false, monotonicClock } = {}) {
   const directory = disk ? mkdtempSync(join(tmpdir(), 'mitsubishi-history-test-')) : null;
   const path = directory ? join(directory, 'history.sqlite') : ':memory:';
   let store = new Store(path), recorder = new Recorder(store), now = BASE, sequence = 0;
@@ -37,7 +38,7 @@ function fixture(t, { disk = false } = {}) {
   const adapter = createGarageAdapter({
     settings: { driver: 'shelly-cn105', stateTopic: 'synthetic/cn105/state',
       telemetryTopic: 'synthetic/cn105/telemetry', maxAgeMs: 2 * MINUTE },
-    clock: () => now,
+    clock: () => now, ...(monotonicClock ? { monotonicClock } : {}),
     onObservation(observation) { emitted.push(observation); results.push(Engine.prototype.ingest.call(engine, observation)); },
   });
   adapter.setConnected(true);
@@ -118,7 +119,7 @@ test('publisher-shaped on/off reports survive SQLite reopen and draw the compres
     if (axis === ACTIVE) {
       assert(chart.series[ACTIVE].some(point => point.x === BASE && point.y === 1));
       assert(chart.series[ACTIVE].some(point => point.x === BASE + MINUTE && point.y === 0));
-      assert(chart.series[ACTIVE].some(point => point.x === BASE + 3 * MINUTE && point.y === null));
+      assert(chart.series[ACTIVE].some(point => point.x === BASE + MINUTE + COVERAGE_AGE && point.y === null));
       const dataset = historyDatasets(chart.series, { leftSignals: [ACTIVE], rightSignals: [] }).find(row => row.key === ACTIVE);
       assert.equal(dataset.stepped, true);
       assert.equal(dataset.spanGaps, false);
@@ -149,8 +150,8 @@ test('cached reports and source-age timestamps never extend compressor activity 
   assert.equal(row.raw.timeBasis, 'receipt-minus-source-age');
   assert(row.quality.includes('reconstructed-source-time'));
   const chart = f.chart();
-  assert.deepEqual(chart.shading.compressorGarage, [{ start: BASE + 10_000, end: BASE + 2 * MINUTE }]);
-  assert(chart.series[ACTIVE].some(point => point.x === BASE + 2 * MINUTE && point.y === null));
+  assert.deepEqual(chart.shading.compressorGarage, [{ start: BASE + 10_000, end: BASE + COVERAGE_AGE }]);
+  assert(chart.series[ACTIVE].some(point => point.x === BASE + COVERAGE_AGE && point.y === null));
   assert(chart.series[ACTIVE].filter(point => point.y !== null).every(point => point.observedAt === BASE));
 });
 
@@ -164,7 +165,66 @@ test('stable cached compressor timestamps remain one measurement and genuine new
   assert.equal(f.rows(FREQUENCY).length, 1, 'equal values compact without discarding their new measurement coverage');
   f.at(3 * MINUTE);
   const points = f.chart(FREQUENCY).series[FREQUENCY];
-  assert(points.some(point => point.x === BASE + 150_900 && point.y === null), 'coverage expires from the last real measurement');
+  assert(points.some(point => point.x === BASE + 30_900 + COVERAGE_AGE && point.y === null), 'coverage expires from the last real measurement');
+});
+
+test('coarse UTC and source-age jitter retain one stable coverage policy', t => {
+  const f = fixture(t);
+  for (let i = 0; i < 10; i++) {
+    f.at(i * 30_000);
+    f.send({ compressorActive: publishedField(true, BASE + i * 30_000, { ageMs: i % 2 ? 919 : 0 }) });
+    f.at(i * 30_000 + 1000);
+    f.send({ compressorActive: publishedField(true, BASE + i * 30_000, { ageMs: 1537 }) });
+  }
+  assert.equal(f.rows().length, 1, 'rounding jitter does not create policy observations');
+  assert.equal(f.rows()[0].raw.reportIntervalMs, COVERAGE_AGE);
+  const coverage = f.store.db.prepare('SELECT samples FROM recorder_coverage WHERE signal=?').all(ACTIVE);
+  assert.deepEqual(coverage.map(row => row.samples), [10], 'only actual newer measurements extend the span');
+});
+
+test('monotonic source age shortens recorded coverage when source UTC is newer than the real measurement', t => {
+  const f = fixture(t, { disk: true });
+  f.at(1000);
+  f.send({ compressorActive: publishedField(true, BASE, { ageMs: 119_000 }) });
+  assert.equal(f.rows()[0].sourceTime, BASE, 'retain the original source timestamp');
+  f.reopen();
+  f.at(30_000);
+  assert.deepEqual(f.chart().shading.compressorGarage, [{ start: BASE + 1000, end: BASE + 2000 }]);
+  f.send({ compressorActive: publishedField(true, BASE + 30_000, { ageMs: 300_000 }) });
+  assert.equal(f.adapter.status().telemetry.compressorActive.diagnosticAvailable, false);
+  assert(f.rows().at(-1).quality.includes('stale'));
+  f.reopen();
+  f.at(MINUTE);
+  assert.deepEqual(f.chart().shading.compressorGarage, [{ start: BASE + 1000, end: BASE + 2000 }],
+    'an expired monotonic age never becomes fresh chart evidence');
+});
+
+test('a repeated cached reading persists a shorter source-age deadline without becoming another measurement', t => {
+  let elapsed = 0;
+  const f = fixture(t, { disk: true, monotonicClock: () => elapsed });
+  f.at(1000);
+  f.send({ compressorActive: publishedField(true, BASE, { ageMs: 1000 }) });
+  elapsed = 110_000;
+  f.at(51_000);
+  f.send({ compressorActive: publishedField(true, BASE, { ageMs: 111_000 }) });
+  assert.equal(f.rows().length, 2, 'changed coverage policy is preserved');
+  assert(f.rows().every(row => row.sourceTime === BASE), 'the cached reading keeps its original source time');
+  assert.equal(f.rows().at(-1).raw.reportIntervalMs, 60_000);
+  assert.equal(f.rows().at(-1).raw.recorder.temporalBasis, 'policy-change');
+  assert.equal(f.rows().at(-1).raw.recorder.reason, 'report-policy-change');
+  assert.equal(f.rows().at(-1).raw.originalReportSourceTime, BASE);
+  assert.equal(f.rows().at(-1).raw.originalReportReceivedAt, BASE + 1000);
+  const coverage = f.store.db.prepare('SELECT samples FROM recorder_coverage WHERE signal=?').all(ACTIVE);
+  assert.deepEqual(coverage.map(row => row.samples), [1, 0], 'the coverage boundary adds no independent measurement');
+  const earlier = f.chart(ACTIVE, { now: BASE + 30_000 });
+  assert.deepEqual(earlier.shading.compressorGarage, [{ start: BASE + 1000, end: BASE + 30_000 }],
+    'the later policy boundary leaves an earlier as-of view unchanged');
+  elapsed = 115_000; f.at(56_000);
+  f.send({ compressorActive: publishedField(true, BASE, { ageMs: 110_000 }) });
+  assert.equal(f.rows().length, 2, 'a later cached report cannot extend the shorter deadline');
+  f.reopen();
+  f.at(3 * MINUTE);
+  assert.deepEqual(f.chart().shading.compressorGarage, [{ start: BASE + 1000, end: BASE + MINUTE }]);
 });
 
 test('a backwards compressor source clock stays rejected instead of being retimed to receipt', t => {
@@ -188,6 +248,8 @@ test('unavailable or malformed compressor readings create gaps, never a recorded
     ['invalid value', { value: 0 }],
     ['unverified decoder', { decodeVerified: false }],
     ['stale source', { measuredAt: BASE, ageMs: 2 * MINUTE }, 2 * MINUTE],
+    ['expired source age with recent UTC', { ageMs: 3 * MINUTE }],
+    ['invalid source age', { ageMs: -1 }],
     ['stale publisher', { quality: 'stale' }],
     ['unknown publisher', { quality: 'unknown' }],
     ['future source', { measuredAt: BASE + 2 * MINUTE }],
@@ -202,8 +264,9 @@ test('unavailable or malformed compressor readings create gaps, never a recorded
     assert.equal(f.rows().at(-1).value, null);
     assert.equal(f.rows().at(-1).raw.usableForControl, false);
     const chart = f.chart();
-    assert.deepEqual(chart.shading.compressorGarage, [{ start: BASE, end: BASE + receivedOffset }]);
-    assert(chart.series[ACTIVE].some(point => point.x === BASE + receivedOffset && point.y === null));
+    const deadline = Math.min(receivedOffset, COVERAGE_AGE);
+    assert.deepEqual(chart.shading.compressorGarage, [{ start: BASE, end: BASE + deadline }]);
+    assert(chart.series[ACTIVE].some(point => point.x === BASE + deadline && point.y === null));
     assert(!chart.series[ACTIVE].some(point => point.y === 0), name);
   });
 });
@@ -221,10 +284,10 @@ test('missing reports stay gaps when fresh running resumes and retained or dupli
   f.at(8 * MINUTE);
   const chart = f.chart();
   assert.deepEqual(chart.shading.compressorGarage, [
-    { start: BASE, end: BASE + 2 * MINUTE },
-    { start: BASE + 5 * MINUTE, end: BASE + 7 * MINUTE },
+    { start: BASE, end: BASE + COVERAGE_AGE },
+    { start: BASE + 5 * MINUTE, end: BASE + 5 * MINUTE + COVERAGE_AGE },
   ]);
-  assert(chart.series[ACTIVE].some(point => point.x === BASE + 2 * MINUTE && point.y === null));
+  assert(chart.series[ACTIVE].some(point => point.x === BASE + COVERAGE_AGE && point.y === null));
   assert(chart.series[ACTIVE].some(point => point.x === BASE + 5 * MINUTE && point.y === 1));
   assert(!chart.series[ACTIVE].some(point => point.y === 0));
   assert(f.chart(ACTIVE, { viewFrom: BASE + 3 * MINUTE, viewTo: BASE + 4 * MINUTE })

@@ -14,6 +14,12 @@ Acknowledgement follows successful persistence; active regulation additionally
 requires sensor evidence and native readback. A `set` command changes a single
 native field (power, mode, target, fan or vane), preserving unrelated fields.
 Acceptance, serial acknowledgement and confirmed native settings are distinct.
+Confirmed receipts survive delayed MQTT publication failures; each transport
+completion remains bound to its original command. A rejection, failure or uncertain
+outcome already known at publication completion leaves the room-mode selection
+unchanged. Native target edits are
+unavailable during HEAT regulation or an active HEAT protection floor, and in
+any mode during local frost rescue, including the unavailable-protection fallback.
 There are no leases, renewals, timed power restoration or Normal/Away labels in
 the heat-pump controller. ST-MQ owns those labels and sends only the resulting
 target.
@@ -23,6 +29,13 @@ target.
 Native BTHome sensor components provide values and received-measurement times.
 Repeated cache reads do not refresh them. Unchanged new reports do. Offline
 startup and wall-clock changes must not turn cached values into new measurements.
+Reported monotonic source ages bound native and telemetry freshness alongside
+their original UTC timestamps. Transit and local elapsed time consume the
+remaining lifetime; recorded coverage retains the same deadline after restart.
+Recording reserves one second for the publisher's coarse UTC and rounds stricter
+lifetimes down to whole seconds, keeping normal cached reports compact.
+Shortened deadlines for cached readings are policy boundaries, not additional
+measurements. Current-schema history recovery preserves those boundaries.
 The local loop uses elapsed time, bounds serial work and retries, and preserves
 one owner of the CN105 UART. It confirms native 17°C before sending measured
 room temperature + 17°C - effective target, with encoding/range validation.

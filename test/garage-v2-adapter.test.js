@@ -2,6 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { garageV2Fixture, GARAGE_TEST_AT, GARAGE_TEST_ADAPTER } from './helpers/garage-v2.js';
 import { createGarageAdapter } from '../src/garage/adapter.js';
+import { createShellyCn105Transport } from '../src/garage/shelly-cn105.js';
 import { Store } from '../src/storage/store.js';
 import { Engine } from '../src/app/engine.js';
 import { garageAdapterSettings, validateGarageAdapterSnapshot } from '../src/garage/contract.js';
@@ -76,6 +77,67 @@ test('monotonic expiry fences wall-clock rollback and timestamp-free controller 
   assert.equal(f.publications.length, 0);
 });
 
+test('reported source age bounds native and telemetry freshness without rewriting source UTC', () => {
+  let elapsed = 0;
+  const f = garageV2Fixture({ monotonicClock: () => elapsed });
+  const measuredAt = GARAGE_TEST_AT - 1000;
+  f.update({ native: { power: { value: 'off', measuredAt, ageMs: 119_000 } },
+    readback: { measuredAt, ageMs: 119_000 } });
+  f.adapter.receive(GARAGE_TEST_ADAPTER.telemetryTopic, JSON.stringify({
+    schema: 'shelly-cn105/v2', deviceId: 'synthetic-pill', bootId: 'boot-one', sequence: 2,
+    observedAt: GARAGE_TEST_AT, fields: { compressorActive: {
+      value: true, measuredAt, ageMs: 119_000, supported: true, decodeVerified: true, unit: 'boolean',
+    } },
+  }));
+  assert.equal(f.adapter.status().native.power, 'off');
+  assert.equal(f.adapter.status().health.pumpCommunicating, true);
+  assert.equal(f.adapter.status().telemetry.compressorActive.diagnosticAvailable, true);
+  elapsed = 1000;
+  assert.equal(f.adapter.status().native.power, null);
+  assert.equal(f.adapter.status().health.pumpCommunicating, false);
+  assert.equal(f.adapter.status().telemetry.compressorActive.diagnosticAvailable, false);
+  assert.equal(f.adapter.status().telemetry.compressorActive.sourceTime, measuredAt);
+  assert.equal(f.adapter.snapshot().native.power.measuredAt, measuredAt);
+  validateGarageAdapterSnapshot(f.adapter.snapshot());
+  assert.equal(f.observations.find(row => row.signal === 'garage_compressor_active').raw.reportIntervalMs, 2000,
+    'recorded coverage ends at the actual remaining lifetime');
+  elapsed = 120_000;
+  assert.equal(f.adapter.status().health.driverProgressing, false, 'a stalled wall clock cannot extend publisher freshness');
+  assert.equal(f.adapter.status().control, null);
+});
+
+test('expired or malformed source ages cannot revive after source UTC moves back into range', () => {
+  for (const ageMs of [120_000, 300_000, -1, 1.5, '1000']) {
+    const f = garageV2Fixture();
+    f.update({ native: { power: { value: 'off', measuredAt: GARAGE_TEST_AT, ageMs } },
+      readback: { measuredAt: GARAGE_TEST_AT, ageMs } });
+    assert.equal(f.adapter.status().native.power, null);
+    assert.equal(f.adapter.status().health.pumpCommunicating, false);
+    assert.equal(f.adapter.status().controlAvailable, false);
+    const power = f.observations.find(row => row.signal === 'garage_native_power');
+    assert(power.quality.includes('stale'));
+  }
+  const delayed = garageV2Fixture();
+  delayed.update({ observedAt: GARAGE_TEST_AT - 10_000,
+    native: { power: { value: 'off', measuredAt: GARAGE_TEST_AT - 10_000, ageMs: 110_000 } },
+    readback: { measuredAt: GARAGE_TEST_AT - 10_000, ageMs: 110_000 } });
+  assert.equal(delayed.adapter.status().health.pumpCommunicating, false, 'transit also consumes the source-age deadline');
+  assert.equal(delayed.adapter.status().native.power, null);
+});
+
+test('republishing the same native measurement cannot renew its monotonic deadline', () => {
+  let elapsed = 0;
+  const f = garageV2Fixture({ monotonicClock: () => elapsed });
+  const measuredAt = GARAGE_TEST_AT - 1000;
+  const state = ageMs => ({ native: { power: { value: 'off', measuredAt, ageMs } }, readback: { measuredAt, ageMs } });
+  f.update(state(119_000));
+  elapsed = 1000;
+  f.update(state(0));
+  assert.equal(f.adapter.status().native.power, null);
+  assert.equal(f.adapter.status().health.pumpCommunicating, false);
+  assert.equal(f.adapter.status().controlAvailable, false);
+});
+
 test('expiry is checked again after persisting the request and before MQTT publication', async () => {
   let f;
   f = garageV2Fixture({ onState(snapshot) {
@@ -116,6 +178,63 @@ test('a consumed challenge does not discard applied readback or native confirmat
   }
 });
 
+test('a late publication failure preserves device confirmation and its original request receipt', async () => {
+  for (const action of ['control', 'set']) {
+    const publications = [];
+    const f = garageV2Fixture({ productionTransport: createShellyCn105Transport({ settings: GARAGE_TEST_ADAPTER,
+      publish: (_topic, payload) => new Promise((resolve, reject) => publications.push({ ...JSON.parse(payload), resolve, reject })) }) });
+    f.update();
+    const first = action === 'control' ? f.adapter.setControl({ targetC: 5, externalEnabled: true })
+      : f.adapter.setNativeSetting({ setting: 'power', value: 'off' });
+    const commandId = publications[0].commandId;
+    f.at(GARAGE_TEST_AT + 1000);
+    f.update({ control: { targetC: 5, effectiveTargetC: 5 },
+      ...(action === 'set' ? { result: { commandId, status: 'native-confirmed', reason: null } } : {}) });
+    const confirmed = f.adapter.status().lastCommand;
+    assert.equal(confirmed.status, action === 'control' ? 'applied' : 'native-confirmed');
+    publications[0].reject(new Error('fixture-delayed-publication-failure'));
+    assert.deepEqual(await first, confirmed);
+    assert.deepEqual(f.adapter.status().lastCommand, confirmed);
+
+    f.update();
+    const previous = f.adapter.setNativeSetting({ setting: 'power', value: 'off' });
+    f.update({ result: { commandId: publications[1].commandId, status: 'native-confirmed', reason: null } });
+    const previousReceipt = f.adapter.status().lastCommand;
+    const newest = f.adapter.setNativeSetting({ setting: 'power', value: 'on' });
+    const newestReceipt = f.adapter.status().lastCommand;
+    publications[1].reject(new Error('fixture-older-publication-failure'));
+    assert.deepEqual(await previous, previousReceipt);
+    assert.deepEqual(f.adapter.status().lastCommand, newestReceipt, 'older publication cannot mutate the newer command');
+    publications[2].resolve();
+    assert.deepEqual(await newest, newestReceipt);
+    assert.equal(publications.length, 3, 'no attempt is replayed');
+  }
+});
+
+test('a publication failure before device evidence remains uncertain without replay', async () => {
+  const f = garageV2Fixture({ productionTransport: createShellyCn105Transport({ settings: GARAGE_TEST_ADAPTER,
+    publish: async () => { throw new Error('fixture-publication-failure'); } }) });
+  f.update();
+  await assert.rejects(f.adapter.setControl({ targetC: 5, externalEnabled: true }), /delivery is unconfirmed/);
+  assert.equal(f.adapter.status().lastCommand.status, 'uncertain');
+});
+
+test('a final rejection or disconnect cannot turn publication failure into successful delivery', async () => {
+  for (const outcome of ['rejected', 'failed', 'disconnected']) {
+    let command, reject;
+    const f = garageV2Fixture({ productionTransport: createShellyCn105Transport({ settings: GARAGE_TEST_ADAPTER,
+      publish: (_topic, payload) => { command = JSON.parse(payload); return new Promise((_resolve, fail) => { reject = fail; }); } }) });
+    f.update();
+    const request = f.adapter.setControl({ targetC: 5, externalEnabled: true });
+    if (outcome === 'disconnected') f.adapter.setConnected(false);
+    else f.update({ result: { commandId: command.commandId, status: outcome, reason: 'fixture-driver-rejection' } });
+    const receipt = f.adapter.status().lastCommand;
+    reject(new Error('fixture-transport-failure'));
+    await assert.rejects(request, /MQTT disconnected|fixture-driver-rejection/);
+    assert.deepEqual(f.adapter.status().lastCommand, receipt, 'preserve the actual failure receipt');
+  }
+});
+
 test('explicit driver expiry rejection completes the attempt without waiting or replaying', async () => {
   const f = garageV2Fixture(); f.update();
   await f.adapter.setControl({ targetC: 5, externalEnabled: true });
@@ -141,6 +260,30 @@ test('native OFF and mode choices are explicit; external-owned thermostat and un
   f.at(GARAGE_TEST_AT + 1000);
   f.update({ result: { commandId: sent.commandId, status: 'native-confirmed', reason: null } });
   assert.equal(f.adapter.status().lastCommand.status, 'native-confirmed');
+});
+
+test('native target edits respect active heating regulation and independent freeze protection', async () => {
+  for (const [mode, externalEnabled, frostActive, frostRescue, allowed] of [
+    ['heat', true, false, false, false], ['heat', false, true, false, false],
+    ['heat', false, false, true, false], ['cool', false, false, true, false],
+    ['cool', true, true, true, false], ['heat', false, false, false, true],
+    ['cool', true, false, false, true], ['cool', false, true, false, true],
+  ]) {
+    const f = garageV2Fixture();
+    f.update({ control: { externalEnabled, frostActive, frostRescue },
+      native: { mode: { value: mode, measuredAt: GARAGE_TEST_AT - 100 },
+        targetC: { value: 17, measuredAt: GARAGE_TEST_AT - 100 } } });
+    const target = f.adapter.nativeControls().settings.targetC;
+    assert.equal(target.available, allowed, JSON.stringify({ mode, externalEnabled, frostActive, frostRescue }));
+    if (allowed) {
+      await f.adapter.setNativeSetting({ setting: 'targetC', value: 18 });
+      assert.equal(f.publications[0].field, 'targetC');
+    } else {
+      assert.match(target.reason, frostActive || frostRescue ? /freeze protection/ : /Normal target/);
+      assert.throws(() => f.adapter.setNativeSetting({ setting: 'targetC', value: 18 }), /freeze protection|Normal target/);
+      assert.equal(f.publications.length, 0);
+    }
+  }
 });
 
 test('stale status does not describe regulation as current, replayed boots and sequences cannot restore authority', () => {

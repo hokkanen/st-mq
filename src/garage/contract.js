@@ -97,6 +97,14 @@ export function garageAdapterSettings(input = {}) {
   return result;
 }
 export const finiteTime = value => Number.isSafeInteger(value) && value >= 0;
+export function garageFieldRemainingMs(field, receivedAt, maxAgeMs, observedAt = receivedAt) {
+  if (field?.ageMs != null && !finiteTime(field.ageMs)) return 0;
+  const measuredAt = finiteTime(field?.measuredAt) ? field.measuredAt
+    : finiteTime(field?.ageMs) && field.ageMs <= receivedAt ? receivedAt - field.ageMs : null;
+  if (measuredAt === null || measuredAt > receivedAt) return 0;
+  const sourceAge = finiteTime(field?.ageMs) ? field.ageMs + Math.max(0, receivedAt - observedAt) : 0;
+  return Math.max(0, maxAgeMs - Math.max(receivedAt - measuredAt, sourceAge));
+}
 const identity = value => typeof value === 'string' && value.length > 0 && value.length <= 128 && !/[\u0000-\u001f]/.test(value);
 export function decodeGarageEnvelope(payload, { receivedAt, schema = SHELLY_CN105_CONTRACT } = {}) {
   if (Buffer.byteLength(payload instanceof Uint8Array ? payload : String(payload ?? '')) > 32_768) return null;
@@ -114,7 +122,7 @@ export function decodeGarageEnvelope(payload, { receivedAt, schema = SHELLY_CN10
     || !Number.isSafeInteger(value.sequence) || value.sequence < 0) return null;
   return value;
 }
-export function decodeGarageField(field, definition, { receivedAt, retained = false, maxAgeMs, bootId, schema = SHELLY_CN105_CONTRACT }) {
+export function decodeGarageField(field, definition, { receivedAt, observedAt = receivedAt, retained = false, maxAgeMs, bootId, schema = SHELLY_CN105_CONTRACT }) {
   let timeBasis = 'source-measured';
   if (field?.measuredAt == null && finiteTime(field?.ageMs) && field.ageMs <= receivedAt) {
     field = { ...field, measuredAt: receivedAt - field.ageMs };
@@ -133,6 +141,9 @@ export function decodeGarageField(field, definition, { receivedAt, retained = fa
   if (!finiteTime(field?.measuredAt)) quality.push('source-time-unknown');
   else if (field.measuredAt > receivedAt) quality.push('future-source-time');
   else if (receivedAt - field.measuredAt >= maxAgeMs) quality.push('stale');
+  if (field?.ageMs != null && !finiteTime(field.ageMs)) quality.push('source-age-invalid');
+  else if (finiteTime(field?.ageMs) && field.ageMs + Math.max(0, receivedAt - observedAt) >= maxAgeMs
+    && !quality.includes('stale')) quality.push('stale');
   if (retained) quality.push('retained');
   const validNumber = definition.string ? typeof field?.value === 'string' && /^[0-9a-f]{1,128}$/i.test(field.value)
     : definition.boolean ? typeof field?.value === 'boolean'
@@ -142,7 +153,8 @@ export function decodeGarageField(field, definition, { receivedAt, retained = fa
   // installed accuracy or promoting it to control/learning evidence.
   const diagnosticAvailable = !['unknown', 'unsupported', 'invalid', 'stale'].includes(field?.quality)
     && supported && field?.decodeVerified === true && field?.unit === expectedUnit && validNumber
-    && finiteTime(field.measuredAt) && field.measuredAt <= receivedAt && receivedAt - field.measuredAt < maxAgeMs && !retained;
+    && finiteTime(field.measuredAt) && field.measuredAt <= receivedAt
+    && garageFieldRemainingMs(field, receivedAt, maxAgeMs, observedAt) > 0 && !retained;
   return { signal: definition.signal, value: validNumber && supported && field?.unit === expectedUnit ? field.value : null,
     unit: definition.unit, sourceTime: finiteTime(field?.measuredAt) ? field.measuredAt : null, receivedAt,
     quality, supported, diagnosticAvailable, usable: diagnosticAvailable && field?.quality !== 'observed-unverified',

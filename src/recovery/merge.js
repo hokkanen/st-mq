@@ -8,6 +8,7 @@ import { Recorder, RECORDING_VERSION } from '../storage/recorder.js';
 import { recordingPolicy, recordingStreamKey, RECORDING_POLICIES } from '../domain/recording-policy.js';
 import { ENERGY_SIGNALS } from '../domain/history-series.js';
 import { assertCurrentChargingSessionCheck } from '../app/charging-session-checks.js';
+import { temperatureReportMaxAge } from '../domain/temperature-reports.js';
 
 export const RECOVERY_POLICY = 'master-wins-gaps-only-v1';
 const json = JSON.stringify;
@@ -28,6 +29,18 @@ const dispositions = ['missing', 'conflicts', 'duplicates', 'skipped'];
 const firstUsable = rows => { for (const row of rows) if (usable(row)) return row; return null; };
 const PENDING_ENERGY = 'recorder_pending_energy';
 const HOUR = 3_600_000;
+// These are receipt-time availability events about an existing measurement.
+// Their source timestamp deliberately repeats; it is not a conflicting sample.
+const reportBoundary = (row, raw) => raw?.recorder?.version === RECORDING_VERSION
+  && Object.hasOwn(RECORDING_POLICIES, raw.recorder.policy) && ['fresh', 'unavailable'].includes(raw.recorder.status)
+  && (raw.recorder.temporalBasis === 'policy-change' && raw.recorder.reason === 'report-policy-change'
+    && raw.timeBasis === 'report-policy-change' && raw.reportPolicyChangedAt === row.received_at
+    || raw.recorder.temporalBasis === 'transport-recovery' && raw.recorder.reason === 'mqtt-transport-recovery'
+    && raw.timeBasis === 'mqtt-transport-recovery' && raw.transportRecoveredAt === row.received_at)
+  && temperatureReportMaxAge({ raw }) !== null
+  && instant(raw.originalReportSourceTime) && instant(raw.originalReportReceivedAt)
+  && raw.originalReportSourceTime <= raw.originalReportReceivedAt && raw.originalReportReceivedAt <= row.received_at
+  && (row.source_time === raw.originalReportSourceTime || row.source_time === null && row.value === null);
 const phaseSignals = row => /^(property|ev1|ev2)_energy_l[123]$/.test(row.signal)
   ? [1, 2, 3].map(phase => row.signal.replace(/l[123]$/, `l${phase}`)) : null;
 const energyEquivalent = (old, row, raw) => {
@@ -174,6 +187,34 @@ export class HistoryMerge {
   }
   observationOverlap(row, raw) {
     const db = this.target.db;
+    if (reportBoundary(row, raw)) {
+      // Master receipt decisions, intervening outages, contrary values and
+      // newer measurements win over the donor's held-value event.
+      const atReceipt = db.prepare(`SELECT * FROM observations WHERE source=? AND device=? AND signal=?
+        AND received_at=? ORDER BY id DESC LIMIT 1`).get(row.source, row.device, row.signal, row.received_at);
+      if (atReceipt) return atReceipt;
+      const latest = db.prepare(`SELECT * FROM observations WHERE source=? AND device=? AND signal=?
+        AND received_at>=? AND received_at<? ORDER BY received_at DESC,id DESC LIMIT 1`)
+        .get(row.source, row.device, row.signal, raw.originalReportReceivedAt, row.received_at);
+      if (latest && !usable(latest)) return latest;
+      const newer = firstUsable(db.prepare(`SELECT * FROM observations WHERE source=? AND device=? AND signal=?
+        AND source_time>? AND received_at<=? ORDER BY source_time DESC,id DESC`)
+        .iterate(row.source, row.device, row.signal, raw.originalReportSourceTime, row.received_at));
+      if (newer) return newer;
+      const covered = firstUsable(db.prepare(`SELECT o.* FROM recorder_coverage c JOIN observations o ON o.id=c.observation_id
+        WHERE c.source=? AND c.device=? AND c.signal=? AND c.status='fresh'
+        AND c.source_time>? AND c.end_at<=? ORDER BY c.id DESC`)
+        .iterate(row.source, row.device, row.signal, raw.originalReportSourceTime, row.received_at));
+      if (covered) return covered;
+      for (const previous of db.prepare(`SELECT * FROM observations WHERE source=? AND device=? AND signal=?
+        AND source_time=? AND received_at<=? AND value IS NOT NULL ORDER BY id DESC`)
+        .iterate(row.source, row.device, row.signal, raw.originalReportSourceTime, row.received_at)) {
+        if (!reportBoundary(previous, decode(previous.raw)) && usable(previous)
+          && row.value !== null && (previous.value !== row.value || previous.unit !== row.unit
+            || !same(decode(previous.quality), decode(row.quality)))) return previous;
+      }
+      return null;
+    }
     if (instant(raw?.intervalStart) && instant(raw?.intervalEnd) && raw.intervalEnd > raw.intervalStart) {
       // Never prorate donor totals over partially overlapping master energy.
       const hourly = raw.timeBasis === 'completed-hour';
@@ -194,8 +235,11 @@ export class HistoryMerge {
         .find(pending => pending.signal === row.signal && validEnergyQuality(decode(pending.quality))
           && decode(pending.raw).intervalStart < raw.intervalEnd && pending.source_time > raw.intervalStart) ?? null;
     }
-    const point = firstUsable(db.prepare(`SELECT * FROM observations WHERE source=? AND device=? AND signal=? AND source_time IS ?
-      AND value IS NOT NULL ORDER BY id DESC`).iterate(row.source, row.device, row.signal, row.source_time));
+    const point = firstUsable((function* () {
+      for (const previous of db.prepare(`SELECT * FROM observations WHERE source=? AND device=? AND signal=? AND source_time IS ?
+        AND value IS NOT NULL ORDER BY id DESC`).iterate(row.source, row.device, row.signal, row.source_time))
+        if (!reportBoundary(previous, decode(previous.raw))) yield previous;
+    })());
     if (point) return point;
     if (row.source_time !== null) return firstUsable(db.prepare(`SELECT o.* FROM recorder_coverage c JOIN observations o ON o.id=c.observation_id
       WHERE c.source=? AND c.device=? AND c.signal=? AND c.start_at<=? AND c.end_at>? AND c.status='fresh'
@@ -282,9 +326,16 @@ export class HistoryMerge {
     await this.rows('recorder_coverage', row => {
       this.require([row.source, row.device, row.signal].every(text) && ['fresh', 'stale', 'failed', 'unavailable'].includes(row.status)
         && instant(row.start_at) && instant(row.end_at)
-        && row.end_at >= row.start_at && Number.isSafeInteger(row.samples) && row.samples > 0);
+        && row.end_at >= row.start_at && Number.isSafeInteger(row.samples) && row.samples >= 0);
       const mapped = row.observation_id === null ? null : this.known('observations', row.observation_id);
       this.require(row.observation_id === null || mapped?.id != null && mapped.disposition !== 'conflicts');
+      if (row.samples === 0) {
+        const observation = mapped?.id == null ? null : this.target.db.prepare('SELECT * FROM observations WHERE id=?').get(mapped.id);
+        this.require(observation && row.start_at === row.end_at && row.start_at === observation.received_at
+          && row.source === observation.source && row.device === observation.device && row.signal === observation.signal
+          && row.source_time === observation.source_time && row.status === decode(observation.raw)?.recorder?.status
+          && reportBoundary(observation, decode(observation.raw)));
+      }
       const old = this.target.db.prepare(`SELECT * FROM recorder_coverage WHERE source=? AND device=? AND signal=?
         AND start_at<=? AND end_at>=? ORDER BY id DESC LIMIT 1`).get(row.source, row.device, row.signal, row.start_at, row.end_at);
       if (old) return { id: old.id, disposition: old.status === row.status && old.observation_id === mapped?.id ? 'duplicates' : 'conflicts' };

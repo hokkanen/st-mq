@@ -18,6 +18,40 @@ Implemented 2026-10-03 — One SONOFF controller for Home floor preheating
   Chromium suites pass; floor layouts reviewed at 320/390/1440 px in both themes.
   All checks used offline fixtures; no device commissioning or live operation.
 
+Implemented 2026-10-03 — Preserve heat-pump command receipts and source-age limits
+- F2/F3/F4/F5: preserve applied and native-confirmed receipts when MQTT publication
+  finishes late. Bind callbacks to their own attempt; known rejected, failed or
+  uncertain outcomes cannot persist a new mode or target selection. Unconfirmed
+  delivery still fails without replay after failure, reconnect or restart.
+- Match native thermostat availability to current controller ownership: room
+  regulation or an active protection floor owns HEAT targets; frost rescue and
+  unavailable-protection fallback own targets in any mode. Explain protection
+  separately from the Normal target and retain ordinary non-HEAT edits.
+- Honor monotonic source age alongside original UTC for native readback and
+  telemetry, accounting for transit and elapsed time. Cached reports cannot renew
+  a deadline. Recording reserves one second for coarse UTC and rounds stricter
+  limits down to whole seconds, keeping normal cached readings compact.
+- Preserve shorter cached-reading deadlines as policy boundaries with their
+  original measurement and receipt provenance, adding zero independent samples.
+  Current-schema history recovery retains those boundaries while protecting
+  master outages, contrary measurements and newer compacted reports. Keep the
+  current snapshot format; introduce no migration, replay or new authority.
+- Validation: isolated task-only npm run check passes 4,264 tests with one optional
+  upstream Tuya parser check skipped, plus the production build (existing bundle
+  size advisory). Regression checks cover receipt races, failed mode persistence,
+  protection ownership, clock stalls, compact recording, SQLite reopen and
+  idempotent recovery. Independent review found no remaining concrete issue.
+- Mitsubishi browser checks pass at 320/390/1440px in both themes. Read-only replay
+  accepts all 714 captured messages from the installed new build; compressor
+  fields retain one recording lifetime with no jitter-generated policy rows.
+  These automated and replay checks do not establish physical heating performance.
+- Final combined main check after the concurrent floor-controller change passes
+  4,239 tests with one optional upstream parser skip and the production build.
+  Live adapter checks against deployed Pill build 2.0.0+b8e00605ae55d57c preserve
+  actual applied/native-confirmed results through injected late transport-callback
+  failures, including a consumed challenge. Driver hardware qualification and
+  its observation limits are recorded in the driver repository's docs/status.md.
+
 Implemented 2026-10-03 — Keep collapsed dashboard sections closed on refresh
 - Reproduce Garage heat reopening in Chromium after following a protection
   link, closing its destination and refreshing. The retained URL fragment was

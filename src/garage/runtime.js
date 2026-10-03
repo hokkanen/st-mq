@@ -86,6 +86,13 @@ export class GarageRuntime {
     this.busy = true;
     try {
       const result = await this.adapter.setControl({ targetC, externalEnabled: true }, now);
+      // A device result can arrive before publication finishes. A resolved
+      // transport promise does not turn a failed or uncertain edit into intent.
+      if (['rejected', 'failed', 'uncertain'].includes(result.status))
+        throw Object.assign(new Error(result.status === 'rejected'
+          ? 'The heat-pump controller rejected the room target.'
+          : 'The room target change is unconfirmed. Check the controller status before trying again.'),
+        { statusCode: result.status === 'rejected' ? 409 : 503 });
       const next = { version: 1, adapterKey: this.adapterKey, targetIdentity: adapter.targetIdentity,
         mode: input.mode, normalTargetC, awayTargetC: this.settings.awayTargetC, changedAt: now,
         warmingWarning: previous?.warmingWarning ?? null };
