@@ -998,6 +998,12 @@ Price revisions are canonicalized by publication authority over their actual cov
 
 Current-format sessions, requests, assignments, costs and uncertain commands recover only within the same physical/source association. Device, MQTT broker/root, integration profile/service or phase association changes cannot borrow old ownership. A potentially dispatched command is reconciled with native readback before another intention; it is never blindly replayed.
 
+Shelly command confirmation requires its acknowledged setting and fresh native
+readback within the same adapter generation and physical connection. An unrelated
+connected work-state update does not erase that confirmation. Pending observations
+still withhold readiness for further commands, and physical charging or stopping
+requires its own fresh measurement.
+
 Pre-1.0 native state is not migrated. The current charging state remains version 6
 and database schema 20; the physical adapter uses its own explicitly scoped
 current state. New optional control choices default to OFF/Balanced when absent;

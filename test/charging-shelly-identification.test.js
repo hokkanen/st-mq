@@ -19,6 +19,7 @@ function fixture(t, overrides = {}) {
   f.change = (role, value) => { f.fields[role] = { ...field(structuredClone(value)), measuredAt: f.now, receivedAt: f.now }; };
   f.snapshot = () => ({ association: 'synthetic-shelly', transport: 'shelly-evse', online: f.online,
     controlReady: f.controlReady, currentControlReady: f.controlReady, identificationCurrentReady: f.identificationCurrentReady !== false && f.controlReady, nativeScheduleFingerprint: f.nativeScheduleActive ? 'synthetic-schedule' : null, identificationReady: f.online && f.controlReady, nativeScheduleActive: f.nativeScheduleActive,
+    notificationPending: [...(f.notificationPending ?? [])],
     fields: structuredClone(f.fields), session: structuredClone(f.session), readAt: f.now,
     pluggedIn: f.session.connected, charging: f.fields.work_state.value === 'charger_charging',
     statusAt: f.fields.work_state.measuredAt, powerKw: f.fields.phase_info.value.total_power,
@@ -60,6 +61,41 @@ function fixture(t, overrides = {}) {
   f.update = input => f.controller.update({ enabled: false, allocation: {}, ...input });
   return f;
 }
+
+test('confirmed 6 A waits for unrelated work-state readiness before proposing the next Start', async t => {
+  const f = fixture(t, { limiterEnabled: false });
+  f.change('current_limit', 16); f.request = null;
+  await f.update({ enabled: true, plan: { periods: [{ startAt: NOW + 3600_000, endAt: null }] } });
+  assert.equal(f.fields.start_charging.value, false, 'The controller owns the initial economic pause');
+  f.writes.length = 0;
+  f.request = { id: 'synthetic-next-command', connectedAt: NOW, phase: 'waiting', minimumCurrent: true };
+  const proposed = [], refresh = f.adapter.refresh;
+  let delayedWorkState = false;
+  f.saveHook = state => { if (state.pending?.role === 'start_charging') proposed.push(state.pending.stage); };
+  f.adapter.refresh = async () => {
+    await refresh();
+    if (!delayedWorkState && f.saved?.currentTest?.pending?.acceptedAt != null
+      && f.fields.current_limit.value === 6) {
+      delayedWorkState = true;
+      f.notificationPending = ['work_state']; f.controlReady = false;
+    }
+  };
+  let view = await f.update();
+  assert.equal(delayedWorkState, true, 'The current ACK and readback precede the unrelated readiness loss');
+  assert.equal(view.currentTest.phase, 'active', 'Unrelated pending work state does not make the confirmed current uncertain');
+  const deadline = view.currentTest.expiresAt;
+  assert.equal(f.fields.current_limit.value, 6);
+  assert.equal(f.fields.start_charging.value, false);
+  assert.equal(view.pending, null);
+  assert.deepEqual(proposed, [], 'An unavailable next command is not journaled as proposed or dispatched');
+  assert.deepEqual(f.writes.map(row => [row.role, row.value]), [['current_limit', 6]]);
+  f.now += 1000; f.notificationPending = []; f.controlReady = true;
+  view = await f.update();
+  assert.equal(view.currentTest.phase, 'active');
+  assert.equal(view.currentTest.expiresAt, deadline, 'Readiness recovery never renews the comparison deadline');
+  assert.equal(view.pending, null);
+  assert.deepEqual(f.writes.map(row => [row.role, row.value]), [['current_limit', 6], ['start_charging', true]]);
+});
 
 test('a newly selected economic wait stops a current comparison before restoring its higher current', async t => {
   const f = fixture(t, { limiterEnabled: false });

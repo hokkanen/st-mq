@@ -1644,6 +1644,96 @@ test('a witnessed false-to-true pair revokes a prepared automatic takeover even 
   assert.equal(f.writes.filter(row => row.method === 'Boolean.Set').length, 0);
 });
 
+for (const transition of ['connected work', 'disconnect', 'replug'])
+test(`confirmed permission remains distinct from pending ${transition} readback`, async t => {
+  const f = fixture(t, { limiterEnabled: false }); f.fields.start_charging = false;
+  f.sources.set('start_charging', 'rpc'); await f.ready();
+  let saved;
+  const controller = createShellyController({ adapter: f.adapter, clock: f.now, canControl: () => true,
+    saveState: value => { saved = structuredClone(value); } }); t.after(() => controller.close());
+  await controller.update({ enabled: false });
+  const refresh = f.adapter.refresh; let events = 0; const readiness = [];
+  f.adapter.refresh = async options => {
+    await refresh(options);
+    if (!f.writes.some(row => row.method === 'Boolean.Set') || events >= 2) return;
+    f.setNow(f.now() + 1);
+    if (transition === 'connected work') f.delta('work_state', { value: events ? 'charger_charging' : 'charger_wait' });
+    else {
+      f.delta('work_state', { value: 'charger_free' });
+      if (transition === 'replug') { f.setNow(f.now() + 1); f.delta('work_state', { value: 'charger_charging' }); }
+    }
+    readiness.push(f.adapter.snapshot().controlReady);
+    events++;
+  };
+  f.setNow(NOW + 1000);
+  const result = await controller.update({ enabled: true, takeover: controller.status().takeover.token,
+    plan: { id: 'synthetic-work-overlap', deadlineAt: NOW + 7200_000, periods: [{ startAt: NOW, endAt: null }] } });
+  assert.equal(f.writes.filter(row => row.method === 'Boolean.Set').length, 1);
+  assert.equal(f.adapter.snapshot().fields.start_charging.value, true, 'Permission has a correlated native readback');
+  if (transition === 'connected work') {
+    assert.equal(saved.pending, null, 'An unrelated connected-state query cannot erase permission confirmation');
+    assert.equal(result.takeover.state, 'confirmed');
+    assert.equal(result.manual, null);
+    assert.ok(readiness.length > 0 && readiness.every(value => value === false),
+      'Pending work readback still fences subsequent mutation until the queued query settles');
+  } else {
+    assert.equal(result.takeover.state, 'blocked');
+    assert.equal(saved.pending?.stage, 'accepted', 'A changed physical session cannot confirm the old scoped command');
+  }
+});
+
+for (const outcome of ['connected work', 'external Stop', 'external current', 'native schedule', 'fault'])
+test(`automatic takeover waits for final work readback: ${outcome}`, async t => {
+  const f = fixture(t, { limiterEnabled: false }); f.fields.start_charging = false;
+  f.sources.set('start_charging', 'rpc'); await f.ready();
+  let saved;
+  const controller = createShellyController({ adapter: f.adapter, clock: f.now, canControl: () => true,
+    saveState: value => { saved = structuredClone(value); } }); t.after(() => controller.close());
+  await controller.update({ enabled: false });
+  const refresh = f.adapter.refresh, publish = f.client.publish;
+  let injected = false, hold = false, release, resolved = false;
+  f.client.publish = (topic, payload, options, done) => {
+    const frame = JSON.parse(payload);
+    if (hold && frame.method === 'Enum.GetStatus') {
+      release = () => { hold = false; publish(topic, payload, options, done); }; return;
+    }
+    publish(topic, payload, options, done);
+  };
+  f.adapter.refresh = async options => {
+    await refresh(options);
+    if (injected || !f.writes.some(row => row.method === 'Boolean.Set')) return;
+    injected = true; hold = true; f.setNow(f.now() + 1);
+    f.delta('work_state', { value: 'charger_wait' });
+  };
+  f.setNow(NOW + 1000);
+  const action = controller.update({ enabled: true, takeover: controller.status().takeover.token,
+    plan: { id: 'held-final-work-read', deadlineAt: NOW + 7200_000,
+      periods: [{ startAt: NOW, endAt: null }] } }).then(value => { resolved = true; return value; });
+  await new Promise(resolve => setImmediate(resolve));
+  try {
+    assert.equal(saved.pending, null, 'The acknowledged permission already has its own correlated readback');
+    assert.equal(f.adapter.snapshot().controlReady, false, 'The held work read still blocks all new writes');
+    assert.equal(resolved, false, 'The explicit action must wait for its bounded final readiness query');
+    assert.equal(typeof release, 'function');
+    f.setNow(f.now() + 1);
+    if (outcome === 'external Stop') f.delta('start_charging', { value: false, source: 'rpc' });
+    if (outcome === 'external current') f.delta('current_limit', { value: 10, source: 'rpc' });
+    if (outcome === 'native schedule') { f.schedules.jobs.push({ id: 1, enable: true, timespec: '0 0 * * * *', calls: [] }); f.schedules.rev++; }
+    if (outcome === 'fault') f.delta('work_state', { value: 'synthetic_fault' });
+  } finally { release?.(); }
+  const result = await action;
+  assert.equal(f.writes.filter(row => row.method === 'Boolean.Set').length, 1, 'Readback recovery never repeats Start');
+  assert.equal(saved.pending, null, 'Later evidence does not rewrite the confirmed command as uncertain');
+  if (outcome === 'connected work') {
+    assert.equal(result.takeover.state, 'confirmed'); assert.equal(result.manual, null);
+    assert.equal(f.adapter.snapshot().controlReady, true);
+  } else {
+    assert.equal(result.takeover.state, 'blocked');
+    if (outcome === 'external Stop') assert.equal(result.manual?.kind, 'stop');
+    if (outcome === 'external current') assert.equal(f.fields.current_limit, 10);
+  }
+});
+
 
 test('an explicit null source survives a matching readback which omits origin', async t => {
   const f = fixture(t); f.sources.set('start_charging', 'rpc'); await f.ready();

@@ -818,13 +818,19 @@ export function createShellyController({ adapter, initialState, saveState = () =
   const fresh = field => field?.invalidatedAt === undefined && field?.measuredAt > 0 && field.measuredAt <= clock() && field.receivedAt <= clock()
     && clock() - field.receivedAt <= adapter.config.maxAgeMs && !field.retained;
   const physicalFresh = field => fresh(field) && clock() - field.measuredAt <= adapter.config.maxAgeMs;
-  async function refreshCommandReadback() {
+  async function refreshCommandReadback(role, scope) {
     await adapter.refresh({ force: true });
     // A delayed notification may arrive after the confirmation query started.
     // Its revision correctly fences that reply. Join the queued read, with at
     // most one further forced refresh; an unresolved result never retries Set.
-    if (adapter.snapshot().notificationPending?.length) await adapter.refresh({ force: true });
-    if (adapter.snapshot().notificationPending?.length) throw fail('evse-command-unconfirmed');
+    if (adapter.snapshot().notificationPending?.includes(role)) await adapter.refresh({ force: true });
+    const actual = adapter.snapshot();
+    // Confirm only this setting. Other pending fields still close mutation
+    // readiness, while an actual disconnect/replug always breaks the scope.
+    if (actual.notificationPending?.includes(role) || !actual.online
+      || actual.association !== scope.association || actual.generation !== scope.generation
+      || actual.session?.connected !== scope.session?.connected || actual.session?.sessionId !== scope.session?.sessionId
+      || actual.session?.connectedAt !== scope.session?.connectedAt) throw fail('evse-command-unconfirmed');
   }
   const takeoverToken = snapshot => hash([snapshot.association, snapshot.generation, snapshot.session?.sessionId,
     snapshot.session?.connectedAt, snapshot.fields.start_charging?.value, snapshot.fields.start_charging?.measuredAt,
@@ -1027,7 +1033,7 @@ export function createShellyController({ adapter, initialState, saveState = () =
       await adapter.rpc('Number.Set', { owner: `service:${adapter.config.serviceId}`, role: 'current_limit', value: target },
         { mutation: true, identificationCurrent: copy(test), guard });
       test.pending.acceptedAt = clock(); await persist();
-      await refreshCommandReadback();
+      await refreshCommandReadback('current_limit', snapshot);
       const actual = adapter.snapshot().fields.current_limit;
       if (!fresh(actual) || !shellyCurrentCommandReadback(actual, test.pending)) throw fail('evse-command-unconfirmed');
       test.pending = null; test.phase = restoring ? 'restored' : 'active';
@@ -1063,6 +1069,7 @@ export function createShellyController({ adapter, initialState, saveState = () =
         let snapshot = adapter.snapshot();
         await manageCurrentTest({ snapshot, intentRevision, early: true });
         snapshot = adapter.snapshot();
+        const controlScope = snapshot;
         let acceptedTakeoverToken = null, takeoverPlan = null;
         if (takeoverRequested && (!takeoverCurrent || !canControl() || !takeoverStatus(snapshot).available || input.takeover !== takeoverToken(snapshot))) {
           takeoverResult = { state: 'blocked', reason: takeoverStatus(snapshot).available ? 'evse-takeover-changed'
@@ -1163,7 +1170,7 @@ export function createShellyController({ adapter, initialState, saveState = () =
                     try { await persist(); } catch (cause) { state.pending = prior; throw cause; }
                   } });
                 state.pending.stage = 'accepted'; state.pending.acceptedAt = clock(); await persist();
-                await refreshCommandReadback();
+                await refreshCommandReadback('start_charging', snapshot);
                 snapshot = adapter.snapshot();
                 const externalPermission = await reconcilePermissionEvents(snapshot, state.pending);
                 const readback = snapshot.fields.start_charging;
@@ -1394,6 +1401,7 @@ export function createShellyController({ adapter, initialState, saveState = () =
           && adapter.snapshot().association === state.association;
         const guard = () => liveIntent() && adapter.snapshot().notificationRevision === expectedNotificationRevision;
         const command = async (role, value, reason, owned = null) => {
+          if (!adapter.snapshot().controlReady) return false;
           const expiresAt = clock() + 10000;
           state.pending = { association: state.association, sessionId, revision: intentRevision, expiresAt, role, value, reason,
             stage: 'proposed', ...(owned ? { owned: copy(owned) } : {}) };
@@ -1441,7 +1449,7 @@ export function createShellyController({ adapter, initialState, saveState = () =
           // still requires native readback and must not replay the command.
           state.pending.stage = 'accepted'; state.pending.acceptedAt = clock(); await persist();
           if (!liveIntent()) return false;
-          await refreshCommandReadback();
+          await refreshCommandReadback(role, snapshot);
           const after = adapter.snapshot();
           if (await reconcilePermissionEvents(after, state.pending)) throw fail('evse-command-unconfirmed');
           const readback = after.fields[role];
@@ -1532,8 +1540,28 @@ export function createShellyController({ adapter, initialState, saveState = () =
               : identification ? identification.phase === 'waiting' ? 'identification-waiting' : 'identification-charging'
                 : pause && economic && !inWindow ? 'economic-wait' : chargeNow && !pause ? 'charge-now' : limitation.reason;
           if (takeoverRequested) {
-            const after = adapter.snapshot();
-            const confirmed = canControl() && takeoverStatus(after).available && !state.pending && !state.manual && !after.nativeScheduleActive
+            let after = adapter.snapshot();
+            const confirmedSchedule = scheduleToken(after), confirmedScheduleRevision = after.nativeScheduleRevision;
+            // A setting can be confirmed while an independent work-state delta
+            // still needs native readback. Finish one bounded read-only refresh
+            // before deciding the whole takeover; this grants no new command.
+            if (!state.pending && after.notificationPending?.length) {
+              await adapter.refresh({ force: true });
+              after = adapter.snapshot();
+            }
+            if (await reconcilePermissionEvents(after)) {
+              state.phase = 'manual'; state.reason = state.manual?.kind === 'instruction-unconfirmed'
+                ? 'evse-command-unconfirmed' : `manual-${state.manual?.kind}`;
+              state.released = false;
+            }
+            after = adapter.snapshot();
+            const confirmed = !closed && intentRevision === revision && canControl()
+              && after.association === controlScope.association && after.generation === controlScope.generation
+              && after.session?.sessionId === controlScope.session?.sessionId
+              && after.session?.connectedAt === controlScope.session?.connectedAt
+              && takeoverStatus(after).available && !state.pending && !state.manual && !after.nativeScheduleActive
+              && scheduleToken(after) === confirmedSchedule && after.nativeScheduleRevision === confirmedScheduleRevision
+              && !after.permissionEvents?.some(event => event.sequence > (state.permissionEventCursor ?? 0))
               && sameSetting(after.fields.start_charging, { value: state.lastStart, measuredAt: state.lastStartAt })
               && sameSetting(after.fields.current_limit, { value: state.lastCurrent, measuredAt: state.lastCurrentAtSource });
             takeoverResult = { state: confirmed ? 'confirmed' : 'blocked', reason: confirmed ? null : 'evse-takeover-changed' };
