@@ -9,9 +9,9 @@ const DEVICE = 'synthetic-readiness-evse';
 const PREFIX = 'test/readiness-evse';
 const TYPES = { current_limit: 'Number', start_charging: 'Boolean', work_state: 'Enum', phase_info: 'Object' };
 
-function fixture(t, configuration = {}) {
-  let now = NOW, clockStep = 0;
-  const client = new EventEmitter(), saved = new Map(), calls = [], measuredAt = {}, commandSources = {};
+function fixture(t, configuration = {}, { saved = new Map(), initialNow = NOW } = {}) {
+  let now = initialNow, clockStep = 0;
+  const client = new EventEmitter(), calls = [], measuredAt = {}, commandSources = {};
   const info = { id: DEVICE, model: 'synthetic-model', fw_id: 'synthetic-firmware' };
   const service = { id: 0, auto_balance: { enable: false }, auto_charge: true,
     global_charge_limit: 0, global_time_limit: 0 };
@@ -59,7 +59,7 @@ function fixture(t, configuration = {}) {
     engine: { recorder: { recordEnergy() {}, energyGap() {} }, voltage: { ingest() {} } },
   });
   t.after(() => adapter.close());
-  return { adapter, client, info, service, serviceStatus, schedules, components, fields, calls, measuredAt, commandSources, now: () => now,
+  return { adapter, client, info, service, serviceStatus, schedules, components, fields, calls, measuredAt, commandSources, saved, now: () => now,
     setClockStep(value) { clockStep = value; },
     advance(milliseconds) { now += milliseconds; },
     mutations: () => calls.filter(call => call.method.endsWith('.Set')),
@@ -461,6 +461,91 @@ test('native insert establishes a connected noncharging session with Auto charge
   assert.deepEqual(f.adapter.snapshot().session, inserted.session);
   assert.equal(f.adapter.snapshot().charging, true);
   assert.equal(f.service.auto_charge, false);
+});
+
+async function savedUnrecognizedInsert(t) {
+  const prior = fixture(t);
+  prior.fields.work_state = 'charger_free';
+  await prior.ready();
+  prior.notify('work_state', 'unrecognized_insert');
+  await prior.adapter.close();
+  // Model a current-format native observation saved before this exact enum
+  // was qualified. Its later source event did not establish a connection.
+  for (const state of prior.saved.values()) state.fields.work_state.value = 'charger_insert';
+  return prior.saved;
+}
+
+test('fresh exact readback reconciles a saved newly qualified insert once without renewing its source boundary', async t => {
+  const saved = await savedUnrecognizedInsert(t);
+  const recover = async initialNow => {
+    const f = fixture(t, {}, { saved, initialNow });
+    f.service.auto_charge = false;
+    f.fields.work_state = 'charger_insert';
+    f.fields.start_charging = false;
+    f.measuredAt.work_state = NOW + 1000;
+    await f.ready();
+    return f;
+  };
+  const f = await recover(NOW + 20_000), snapshot = f.adapter.snapshot();
+  assert.equal(snapshot.session.connected, true);
+  assert.equal(snapshot.session.connectedAt, NOW + 1000);
+  assert.equal(snapshot.session.lastDisconnectedAt, NOW);
+  assert.equal(snapshot.fields.work_state.measuredAt, NOW + 1000);
+  assert.equal(snapshot.fields.work_state.readback.requestedAt, NOW + 20_000);
+  for (let poll = 0; poll < 3; poll++) {
+    f.advance(16_000); await f.refresh();
+    assert.deepEqual(f.adapter.snapshot().session, snapshot.session);
+  }
+  await f.adapter.close();
+  const restarted = await recover(f.now() + 1000);
+  assert.deepEqual(restarted.adapter.snapshot().session, snapshot.session);
+  assert.equal(restarted.adapter.snapshot().fields.work_state.measuredAt, NOW + 1000);
+  assert.equal(f.mutations().length + restarted.mutations().length, 0);
+});
+
+test('connection recovery rejects an older matching readback, later disconnect and unknown or fault states', async t => {
+  for (const kind of ['older-readback', 'later-disconnect', 'unknown', 'fault']) await t.test(kind, async t => {
+    const saved = await savedUnrecognizedInsert(t);
+    for (const state of saved.values()) {
+      if (kind === 'later-disconnect') state.connection.lastDisconnectedAt = NOW + 2000;
+      if (kind === 'unknown') state.fields.work_state.value = 'unknown_future_state';
+      if (kind === 'fault') state.fields.work_state.value = 'charger_error';
+    }
+    const f = fixture(t, {}, { saved, initialNow: NOW + 20_000 });
+    f.fields.work_state = kind === 'unknown' ? 'unknown_future_state' : kind === 'fault' ? 'charger_error' : 'charger_insert';
+    f.measuredAt.work_state = kind === 'older-readback' ? NOW + 500 : NOW + 1000;
+    await f.ready();
+    assert.equal(f.adapter.snapshot().session.connected, false);
+    assert.equal(f.adapter.snapshot().session.sessionId, null);
+    if (kind === 'unknown' || kind === 'fault') {
+      assert.equal(f.adapter.snapshot().controlReady, false);
+      await assert.rejects(f.command('start_charging', true));
+    }
+    assert.equal(f.mutations().length, 0);
+  });
+});
+
+test('connection readback persistence failure rolls back both freshness and the recovered session', async t => {
+  const saved = await savedUnrecognizedInsert(t);
+  const previous = structuredClone([...saved.values()][0].fields.work_state);
+  const set = saved.set.bind(saved);
+  saved.set = (key, state) => {
+    if (state.connection?.connected) throw Error('Synthetic connection persistence failure');
+    return set(key, state);
+  };
+  const f = fixture(t, {}, { saved, initialNow: NOW + 20_000 });
+  f.fields.work_state = 'charger_insert';
+  f.measuredAt.work_state = NOW + 1000;
+  await f.ready();
+  assert.equal(f.adapter.snapshot().session.connected, false);
+  assert.deepEqual(f.adapter.snapshot().fields.work_state, previous);
+  assert.equal(f.adapter.snapshot().controlReady, false);
+  assert.equal([...saved.values()][0].connection.connected, false);
+  saved.set = set;
+  await f.refresh();
+  assert.equal(f.adapter.snapshot().session.connectedAt, NOW + 1000);
+  assert.equal(f.adapter.snapshot().session.connected, true);
+  assert.equal(f.mutations().length, 0);
 });
 
 test('charger_end preserves the physical connection and unknown or fault work states do not invent an unplug', async t => {

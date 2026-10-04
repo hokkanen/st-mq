@@ -119,6 +119,19 @@ export function createShellyEvseAdapter({ config, broker, client, store, engine,
       }); } catch { clearTimeout(timer); pending.delete(id); reject(fail('evse-publish-unconfirmed')); }
     });
   }
+  function reconcileConnection(value, measuredAt, receivedAt) {
+    if (!discovered || !profileSupported) return;
+    const connectedValue = config.disconnectedStates.includes(value) ? false
+      : [...config.connectedStates, ...config.chargingStates].includes(value) ? true : null;
+    if (connectedValue === null || state.connection?.connected === connectedValue
+      || connectedValue && finite(state.connection?.lastDisconnectedAt) && measuredAt <= state.connection.lastDisconnectedAt
+      || !connectedValue && finite(state.connection?.connectedAt) && measuredAt < state.connection.connectedAt) return;
+    engine.recorder.flush?.(receivedAt, { force: true, source: 'shelly-evse', device: association, prefix: 'ev2' });
+    state.sessionSequence++;
+    state.connection = { connected: connectedValue, connectedAt: connectedValue ? measuredAt : null,
+      lastDisconnectedAt: connectedValue ? state.connection?.lastDisconnectedAt ?? null : measuredAt,
+      sessionId: connectedValue ? `${association}:${measuredAt}:${state.sessionSequence}` : null };
+  }
   function accept(role, result, receivedAt = clock(), retained = false, readback = null) {
     if (!TYPES[role] || !result || !Object.hasOwn(result, 'value')) {
       if (readback) throw fail('evse-read-unavailable');
@@ -138,14 +151,21 @@ export function createShellyEvseAdapter({ config, broker, client, store, engine,
       // A correlated query confirms the current setting even when its update
       // clock predates the latest matching notification. Preserve both source
       // clocks; this is receipt freshness, never a new instruction or plug edge.
-      const before = copy(previous);
+      const before = copy(state);
       previous.receivedAt = receivedAt; previous.retained = false;
       previous.readback = { requestedAt: readback.requestedAt, measuredAt, receivedAt };
       // Missing optional origin in a readback does not erase provenance of
       // this exact source event. A newer source clock still starts with unknown
       // origin when the device omits it.
       if (previous.measuredAt === measuredAt && typeof result.source === 'string') previous.commandSource = result.source;
-      try { persist(); } catch (cause) { state.fields[role] = before; throw cause; }
+      try {
+        // Current discovery can qualify a previously unknown native state.
+        // An exact, live readback may reconcile its original physical boundary;
+        // an older matching reply cannot establish a connection.
+        if (role === 'work_state' && !retained && previous.measuredAt === measuredAt)
+          reconcileConnection(previous.value, measuredAt, receivedAt);
+        persist();
+      } catch (cause) { state = before; throw cause; }
       fieldGenerations.set(role, generation);
       readAt = receivedAt;
       return false;
@@ -188,18 +208,7 @@ export function createShellyEvseAdapter({ config, broker, client, store, engine,
         state.fields[role] = { value: copy(value), measuredAt, receivedAt, retained, source: 'shelly-evse',
           commandSource: typeof result.source === 'string' ? result.source : null };
         if (readback && setting) state.fields[role].readback = { requestedAt: readback.requestedAt, measuredAt, receivedAt };
-        if (role === 'work_state' && !retained && discovered && profileSupported) {
-          const connectedValue = config.disconnectedStates.includes(value) ? false
-            : [...config.connectedStates, ...config.chargingStates].includes(value) ? true : null;
-          if (connectedValue !== null && state.connection?.connected !== connectedValue) {
-            engine.recorder.flush?.(receivedAt, { force: true, source: 'shelly-evse', device: association,
-              prefix: 'ev2' });
-            state.sessionSequence++;
-            state.connection = { connected: connectedValue, connectedAt: connectedValue ? measuredAt : null,
-              lastDisconnectedAt: connectedValue ? state.connection?.lastDisconnectedAt ?? null : measuredAt,
-              sessionId: connectedValue ? `${association}:${measuredAt}:${state.sessionSequence}` : null };
-          }
-        }
+        if (role === 'work_state' && !retained) reconcileConnection(value, measuredAt, receivedAt);
         if (role === 'phase_info' && !retained) {
           const before = state.counter, total = value.total_act_energy;
           // This EVSE role reports kW already; it is not a generic Shelly W meter.

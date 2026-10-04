@@ -132,7 +132,7 @@ test('Shelly inserted with native Auto charge disabled can run an authorized ide
   assert.equal(starts(f).length, 1, 'Automatic identification owns the explicit Start');
   assert.equal(f.fields.start_charging.value, true);
   assert.equal(f.adapter.snapshot().charging, true);
-  assert.equal(f.card().vehicle.id, null, 'A new connection cannot reuse old vehicle identity');
+  assert.equal(f.card().vehicle.id, null, 'A Start acknowledgement alone does not identify a vehicle');
   f.setNow(f.now + 1000); f.publish({ charging: true }, f.now);
   f.setNow(f.now + 1000); await f.update();
   assert.equal(f.item().identification.phase, 'pausing');

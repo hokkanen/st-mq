@@ -73,6 +73,9 @@ recognizes these states except `charger_insert`. That additional state is qualif
 by the native enum's Insert label and a verified unplug/replug transition with
 Auto charge disabled, false start permission and zero measured power. It establishes
 a connection, not charging or permission to start.
+After current device discovery, an exact live readback can establish a previously
+unrecognized connection using its original source time. It must follow the last
+confirmed disconnect; polling and restart do not renew an established session.
 Unknown or fault states cannot authorize commands or establish an unplug.
 
 For external scheduling, disable native Auto charge in the charger setup; the

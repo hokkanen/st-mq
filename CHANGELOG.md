@@ -44,6 +44,8 @@ Versions follow Semantic Versioning. `-dev.N` denotes a development prerelease.
 
 - A charger connected with native Auto charge disabled is now recognized while
   waiting for permission, so automatic identification can start from that state.
+  A fresh native read also recovers that connection after restart when its state
+  was previously unrecognized, preserving the original plug time and stop fences.
 - Idle charger meter updates no longer repeatedly count unchanged property
   capacity evidence, which could lower the forecast and bring charging forward.
 - After identifying Tesla on Charger 1, the 6 A comparison can hand Charger 2
