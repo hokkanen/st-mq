@@ -55,6 +55,13 @@ connection, with an active connector status. Its original start time and
 authorization remain unknown. Transaction confirmation does not restart the
 physical session or reset its settings, deadline, progress or cost.
 
+An admitted OCPP status up to one second ahead of the local clock remains
+unavailable until its original source time. Reads and command acknowledgements
+may wait once for that time before checking the original connection, transaction
+and instruction guards again. The wait cannot renew a request deadline, resend
+a command or borrow evidence from a replacement connection. A further future
+status, timeout, abort or genuine instruction change still fails closed.
+
 Each card’s **How charging works** section explains its scheduling, current
 limits and pause recovery. Easee cloud delays and local OCPP pauses can release
 on the charger without a new command; Shelly pauses need a live application

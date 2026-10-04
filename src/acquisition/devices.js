@@ -573,6 +573,12 @@ export function createDeviceProviders({ connections = {}, http, tokenStore, cloc
   }
   const scheduleControl = createEaseeScheduleAdapter({ request: easeeAuthenticated, readObservations,
     chargerId: easee.charger_id, equalizerId: easee.equalizer_id, clock, canControl: () => !invalidOcppSetup && canControl() });
+  async function settleNativeClock({ signal } = {}) {
+    const remaining = local.controlClockDelayMs?.() ?? 0;
+    if (!(remaining > 0 && remaining <= 1000)) return false;
+    await delay(remaining, undefined, { signal: openSignal(signal) });
+    return true;
+  }
   // Native OCPP still needs the vendor API to clear vendor Start/Stop and
   // schedules on an explicit handover. It never installs a cloud schedule.
   const nativeTakeoverControl = createEaseeScheduleAdapter({
@@ -582,12 +588,7 @@ export function createDeviceProviders({ connections = {}, http, tokenStore, cloc
         ? { enabled: 'none' } : result;
     }, readObservations, chargerId: easee.charger_id, equalizerId: easee.equalizer_id, clock,
     canControl: () => !closed && !invalidOcppSetup && canControl() && controlBackend === 'native',
-    settleReadback: async ({ signal }) => {
-      const remaining = local.controlClockDelayMs?.() ?? 0;
-      if (!(remaining > 0 && remaining <= 1000)) return false;
-      await delay(remaining, undefined, { signal: openSignal(signal) });
-      return true;
-    },
+    settleReadback: settleNativeClock,
   });
   let nativeCloudSnapshot = null, nativeCloudSnapshotEpoch = null, nativeCloudSchedule = null, nativeCloudFlight = null, nextNativeCloudRead = 0;
   let nativeDynamicChargerAt = null;
@@ -724,9 +725,12 @@ export function createDeviceProviders({ connections = {}, http, tokenStore, cloc
         && (!unchangedStatus || current.connectorStatus === snapshot.connectorStatus && current.timestamp === snapshot.statusAt
           && appSignature(nativeAppControl()) === appSignature(snapshot.appControl)));
     },
-    readSnapshot: async ({ forceAppRefresh = false } = {}) => {
+    readSnapshot: async ({ signal, forceAppRefresh = false } = {}) => {
       if (forceAppRefresh) await refreshNativeCloudTelemetry({ force: true });
       else refreshNativeCloudTelemetry();
+      // Ordinary polling needs the same one-shot clock barrier as takeover.
+      // Preserve unknown if another future status arrives during the wait.
+      await settleNativeClock({ signal });
       const current = local.controlSnapshot?.(), now = clock();
       const power = current?.readings.find(row => row.id === 120);
       const cloud = nativeCloudSnapshot && now - nativeCloudSnapshot.readAt <= 300_000 ? nativeCloudSnapshot : null;

@@ -221,7 +221,10 @@ export function createEaseeOcpp({ config: input, chargerId, clock = Date.now, ca
   const currentTime = () => new Date(clock()).toISOString();
   function finishRequest(call, code, result) {
     if (!call?.resolve || call.settled) return;
-    call.settled = true; clearTimeout(call.timeout); call.signal?.removeEventListener('abort', call.abort);
+    call.settled = true; clearTimeout(call.timeout); clearTimeout(call.replyTimer); call.signal?.removeEventListener('abort', call.abort);
+    // A received reply no longer occupies the wire after abort/timeout, even
+    // when its authority check was waiting for an admitted status clock.
+    if (call.replyId && pendingCalls.get(call.replyId) === call) pendingCalls.delete(call.replyId);
     if (code) call.reject(requestError(code)); else call.resolve(result);
   }
   function rejectRequests(code) {
@@ -429,6 +432,25 @@ export function createEaseeOcpp({ config: input, chargerId, clock = Date.now, ca
     // enrollment. OCPP expiryDate removes it from the authorization cache.
     ? { status: permittedBy(canStart) ? 'Accepted' : 'Blocked', expiryDate: currentTime() }
     : { status: configuredTag(tag) ? 'Accepted' : 'Invalid' };
+  function completeResponse(id, pending, frame, waited = false) {
+    if (pendingCalls.get(id) !== pending) return;
+    pendingCalls.delete(id);
+    if (pending.resolve) {
+      const expired = waited && (clock() < pending.queuedAt || clock() - pending.queuedAt >= CALL_TIMEOUT_MS);
+      const revoked = !refreshAuthority() || pending.connection !== socket || !transportFresh()
+        || waited && clock() < connectorStatusAt || !permittedBy(pending.guard);
+      finishRequest(pending, expired ? 'ocpp-request-timeout' : revoked ? 'ocpp-request-revoked'
+        : frame[0] === 4 ? 'ocpp-request-failed' : null, frame[2]);
+    }
+    if (pending.action === 'ChangeConfiguration') {
+      const status = frame[0] === 3 ? frame[2]?.status : null;
+      if (status === 'Accepted') configurationFailures.delete(pending.key);
+      else configurationFailures.add(pending.key);
+    } else if (pending.action === 'RemoteStartTransaction' && pending.transition === statusTransition) {
+      remoteStartStatus = frame[0] === 3 && frame[2]?.status === 'Accepted' ? 'accepted' : 'rejected';
+    }
+    sendNextCall();
+  }
   function receive(data, binary) {
     refreshAuthority();
     if (!canControl() || closed) { socket?.close(1008, 'Unavailable'); return; }
@@ -444,19 +466,20 @@ export function createEaseeOcpp({ config: input, chargerId, clock = Date.now, ca
         socket.close(1002, 'Invalid OCPP response'); return;
       }
       const pending = pendingCalls.get(frame[1]);
-      if (!pending) return;
+      if (!pending || pending.replyId) return;
       lastMessageAt = clock();
-      pendingCalls.delete(frame[1]);
-      if (pending.resolve) finishRequest(pending, pending.connection !== socket || !stateReady || !permittedBy(pending.guard)
-        ? 'ocpp-request-revoked' : frame[0] === 4 ? 'ocpp-request-failed' : null, frame[2]);
-      if (pending.action === 'ChangeConfiguration') {
-        const status = frame[0] === 3 ? frame[2]?.status : null;
-        if (status === 'Accepted') configurationFailures.delete(pending.key);
-        else configurationFailures.add(pending.key);
-      } else if (pending.action === 'RemoteStartTransaction' && pending.transition === statusTransition) {
-        remoteStartStatus = frame[0] === 3 && frame[2]?.status === 'Accepted' ? 'accepted' : 'rejected';
+      const remaining = connectorStatusAt - clock();
+      if (pending.resolve && !pending.settled && frame[0] === 3 && pending.connection === socket && transportFresh()
+        && remaining > 0 && remaining <= MAX_FUTURE_MS) {
+        // A command can produce its own status before its ACK. Keep that ACK
+        // quarantined once, on the original pending request and deadline. No
+        // command is replayed; every original fence is checked after the wait.
+        pending.replyId = frame[1];
+        pending.replyTimer = setTimeout(() => completeResponse(frame[1], pending, frame, true), remaining);
+        pending.replyTimer.unref();
+      } else {
+        completeResponse(frame[1], pending, frame);
       }
-      sendNextCall();
       return;
     }
     const [, id, action, payload] = frame;

@@ -992,6 +992,60 @@ test('production OCPP handover confirms an advanced native resume clock behind i
     'The confirmed handover is retained without repeating the resume');
 });
 
+test('ordinary native reads await admitted status time without publishing a cached false disconnect', { timeout: 2000 }, async t => {
+  const x = await nativeAppFixture(t), { f, listener, adapter } = x;
+  const waiting = deferred(), sourceAt = f.now + 138, receivedAt = f.now;
+  listener.control = { ...listener.control, connectorStatus: 'SuspendedEVSE', timestamp: sourceAt, receivedAt };
+  listener.onClockWait = () => waiting.resolve();
+  let settled = false;
+  const reading = adapter.read().then(value => { settled = true; return value; });
+  await waiting.promise;
+  assert.equal(settled, false); assert.equal(listener.controlSnapshot(), null);
+  f.advance(138);
+  const result = await reading;
+  assert.equal(result.online, true); assert.equal(result.connectorStatus, 'SuspendedEVSE');
+  assert.equal(result.statusAt, sourceAt); assert.equal(result.statusReceivedAt, receivedAt);
+  assert.equal(result.readAt, f.now, 'Read completion uses the actual clock after the wait');
+});
+
+test('ordinary native clock wait remains abortable and does not renew for a new future status', { timeout: 2000 }, async t => {
+  for (const change of ['abort', 'provider-close', 'later-future-status']) {
+    const x = await nativeAppFixture(t), { f, listener, adapter } = x;
+    const waiting = deferred(), signal = new AbortController(); let waits = 0;
+    listener.control = { ...listener.control, timestamp: f.now + 138 };
+    listener.onClockWait = () => { waits++; waiting.resolve(); };
+    const reading = adapter.read({ signal: signal.signal });
+    await waiting.promise;
+    if (change === 'abort') { signal.abort(); await assert.rejects(reading); }
+    else if (change === 'provider-close') {
+      const rejected = assert.rejects(reading); await x.provider.close(); await rejected;
+    }
+    else {
+      f.advance(138); listener.control = { ...listener.control, timestamp: f.now + 500 };
+      assert.equal((await reading).online, false, 'Unknown remains unknown when another future status supersedes the waited status');
+    }
+    assert.equal(waits, 1, 'The read never extends its wait for a newer timestamp');
+  }
+});
+
+test('ordinary native clock wait retains newer stream Stop and connection identity', { timeout: 2000 }, async t => {
+  for (const change of ['native-stop', 'reconnect']) {
+    const x = await nativeAppFixture(t, { streaming: true }), { f, listener, adapter } = x;
+    f.streamRows = f.observations; x.provider.startStreaming();
+    const original = await adapter.read(), waiting = deferred();
+    listener.control = { ...listener.control, timestamp: f.now + 138 };
+    listener.onClockWait = () => waiting.resolve();
+    const reading = adapter.read(); await waiting.promise; f.advance(138);
+    if (change === 'native-stop') { x.observe({ 48: 0, 96: 53 }); f.streamRows = f.observations; }
+    else listener.control = { ...listener.control, connectionId: 'replacement-fixture-connection' };
+    const after = await reading;
+    if (change === 'native-stop') {
+      assert.equal(after.appControl.stopped, true); assert.equal(after.appControl.stopAt, f.now);
+    } else assert.notEqual(after.connectionId, original.connectionId);
+    assert.equal(x.nativeWrites().length, 0, 'Waiting for a read grants no command permission');
+  }
+});
+
 test('production OCPP handover waits for admitted status clock skew without replaying Resume', async t => {
   const x = await nativeAppFixture(t), { f, controller, listener } = x;
   x.observe({ 31: true, 48: 0, 96: 53, 109: 2 }); x.physical('SuspendedEVSE', 0); await x.refresh();

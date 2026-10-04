@@ -799,6 +799,99 @@ test('native send-only guard rejects a queued natural stop but accepts a stop af
   assert.equal(sendChecks, 1, 'Status proof is checked at wire send, never after its expected physical effect');
 });
 
+test('an admitted future stop status defers the received native acknowledgement without replay', async t => {
+  const { f, client } = await readyRequests(t);
+  await client.call('StatusNotification', { ...preparing, status: 'Charging' });
+  const connection = f.local.controlSnapshot().connectionId;
+  const current = () => f.local.controlSnapshot()?.connectionId === connection;
+  let settled = false;
+  const next = once(client.ws, 'message'), request = resultOf(f.local.request('SetChargingProfile', { connectorId: 1 }, { guard: current }))
+    .then(value => { settled = true; return value; });
+  await next; const command = client.calls.at(-1);
+  await client.call('StatusNotification', { ...preparing, status: 'SuspendedEVSE', timestamp: new Date(at + 138).toISOString() });
+  respond(client, command, { status: 'Accepted' });
+  respond(client, command, { status: 'Rejected' });
+  await client.call('Heartbeat', {});
+  assert.equal(settled, false, 'The first received acknowledgement awaits present-time status, without accepting a duplicate');
+  assert.equal(f.local.controlSnapshot(), null);
+  f.now = at + 138;
+  assert.deepEqual(await request, { value: { status: 'Accepted' } });
+  assert.equal(f.local.controlSnapshot().timestamp, at + 138);
+  assert.equal(client.calls.filter(call => call[2] === 'SetChargingProfile').length, 1);
+});
+
+test('native acknowledgement clock wait retains external instruction, reconnect and abort fences', async t => {
+  for (const change of ['native-stop', 'reconnect', 'abort']) {
+    const { f, client } = await readyRequests(t), signal = new AbortController();
+    await client.call('StatusNotification', { ...preparing, status: 'Charging' });
+    const connection = f.local.controlSnapshot().connectionId; let nativeStop = false;
+    const next = once(client.ws, 'message');
+    const request = resultOf(f.local.request('SetChargingProfile', { connectorId: 1 }, {
+      signal: signal.signal, guard: () => !nativeStop && f.local.controlSnapshot()?.connectionId === connection,
+    }));
+    await next; const command = client.calls.at(-1);
+    await client.call('StatusNotification', { ...preparing, status: 'SuspendedEVSE', timestamp: new Date(at + 138).toISOString() });
+    respond(client, command, { status: 'Accepted' }); await client.call('Heartbeat', {});
+    if (change === 'native-stop') nativeStop = true;
+    if (change === 'reconnect') await f.connect({ autoReply: telemetryOnly });
+    if (change === 'abort') signal.abort();
+    f.now = at + 138;
+    assert.deepEqual(await request, { code: change === 'native-stop' ? 'ocpp-request-revoked'
+      : change === 'reconnect' ? 'ocpp-disconnected' : 'ocpp-request-aborted' }, change);
+    assert.equal(client.calls.filter(call => call[2] === 'SetChargingProfile').length, 1);
+  }
+});
+
+test('native acknowledgement clock wait never renews for another future status or an expired original request', async t => {
+  for (const change of ['later-future-status', 'original-deadline']) {
+    const { f, client } = await readyRequests(t);
+    await client.call('StatusNotification', { ...preparing, status: 'Charging' });
+    const connection = f.local.controlSnapshot().connectionId;
+    const next = once(client.ws, 'message'), request = resultOf(f.local.request('SetChargingProfile', { connectorId: 1 }, {
+      guard: () => f.local.controlSnapshot()?.connectionId === connection,
+    }));
+    await next; const command = client.calls.at(-1);
+    await client.call('StatusNotification', { ...preparing, status: 'SuspendedEVSE', timestamp: new Date(at + 138).toISOString() });
+    respond(client, command, { status: 'Accepted' }); await client.call('Heartbeat', {});
+    f.now = at + 138;
+    if (change === 'later-future-status')
+      await client.call('StatusNotification', { ...preparing, status: 'Charging', timestamp: new Date(at + 500).toISOString() });
+    else f.now = at + 15_000;
+    assert.deepEqual(await request, { code: change === 'later-future-status' ? 'ocpp-request-revoked' : 'ocpp-request-timeout' });
+    assert.equal(client.calls.filter(call => call[2] === 'SetChargingProfile').length, 1);
+  }
+});
+
+test('aborting a quarantined acknowledgement releases the received reply and never stalls the next native read', async t => {
+  const { f, client } = await readyRequests(t), signal = new AbortController();
+  await client.call('StatusNotification', { ...preparing, status: 'Charging' });
+  let next = once(client.ws, 'message');
+  const request = resultOf(f.local.request('SetChargingProfile', { connectorId: 1 }, { signal: signal.signal }));
+  await next; const command = client.calls.at(-1);
+  await client.call('StatusNotification', { ...preparing, status: 'SuspendedEVSE', timestamp: new Date(at + 138).toISOString() });
+  respond(client, command, { status: 'Accepted' }); await client.call('Heartbeat', {});
+  const count = client.calls.length, queued = f.local.request('GetConfiguration', {});
+  await client.call('Heartbeat', {}); assert.equal(client.calls.length, count, 'The reply wait retains wire serialization');
+  next = once(client.ws, 'message'); signal.abort();
+  assert.deepEqual(await request, { code: 'ocpp-request-aborted' }); await next;
+  assert.equal(client.calls.at(-1)[2], 'GetConfiguration');
+  f.now = at + 138; respond(client, client.calls.at(-1), { configurationKey: [] });
+  assert.deepEqual(await queued, { configurationKey: [] });
+  assert.equal(client.calls.filter(call => call[2] === 'SetChargingProfile').length, 1);
+});
+
+test('closing the native adapter cancels a quarantined acknowledgement without a late completion', async t => {
+  const { f, client } = await readyRequests(t);
+  await client.call('StatusNotification', { ...preparing, status: 'Charging' });
+  const next = once(client.ws, 'message'), request = resultOf(f.local.request('SetChargingProfile', { connectorId: 1 }));
+  await next; const command = client.calls.at(-1);
+  await client.call('StatusNotification', { ...preparing, status: 'SuspendedEVSE', timestamp: new Date(at + 138).toISOString() });
+  respond(client, command, { status: 'Accepted' }); await client.call('Heartbeat', {});
+  await f.local.close();
+  assert.deepEqual(await request, { code: 'ocpp-disconnected' });
+  f.now = at + 138; assert.equal(f.local.controlSnapshot(), null);
+});
+
 test('aborting an in-flight native request rejects the caller but retains wire serialization until its reply', async t => {
   const { f, client } = await readyRequests(t), controller = new AbortController();
   let next = once(client.ws, 'message');
