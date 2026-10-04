@@ -166,8 +166,13 @@ edit must still be detected through source clocks, schedule revisions and
 readback. Observed stop/enable changes do not prove which app or person caused
 them. Shelly's native command-source evidence distinguishes same-value `sys`
 refreshes from newer external instructions. A system refresh preserves existing
-ownership; an external instruction, including a repeated selection of the same
-value, retains priority. Missing provenance is not attributed to the application.
+ownership; observed external instructions retain priority. Detecting a repeated
+selection of the same value requires newer native instruction evidence. If a
+repeated Shelly Stop leaves the value `false`, source `rpc` and update timestamp
+unchanged, the status API cannot distinguish that command from the existing
+automatic pause. Polling freshness cannot supply the missing instruction. This
+is an unresolved detection limitation; genuinely observed native Stop still
+prevents automatic resumption. Missing provenance is not attributed to the application.
 Vehicle timers and targets, faults, electrical limits and authorization
 remain authoritative. Unsupported native schedule shapes stay visible as blocked
 rather than being silently removed. See the [Easee takeover constraints](charging-easee.md#ownership-and-manual-controls)

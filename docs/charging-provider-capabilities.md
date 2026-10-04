@@ -180,8 +180,18 @@ native permission reference prevents an old Stop from regaining priority after
 restart or unplugging; genuinely newer source evidence takes priority again.
 Native setting reports retain their command-source evidence. A same-value
 `sys` update is a device refresh and does not revoke saved command ownership.
-A newer external update, including an explicit same-value selection, retains
-manual priority; unknown provenance is not attributed to this application.
+A newer external update retains manual priority, including a repeated selection
+of the same value when newer native instruction evidence is available. The
+[Boolean status API](https://shelly-api-docs.shelly.cloud/gen2/DynamicComponents/Virtual/Boolean/)
+reports a value-update timestamp, not a command sequence. A successful external
+`Boolean.Set(false)` can leave an existing `false` value, `rpc` source and
+`last_update_ts` unchanged without a notification. The status API then cannot
+distinguish the repeated Stop from an owned automatic pause; a later scheduled
+start cannot be fenced by that unobserved instruction. Polling receipt freshness
+must not invent a newer instruction or source timestamp. This detection limit
+does not weaken the priority of genuinely observed external Stop instructions
+over automatic charging and identification restoration. Unknown provenance is
+not attributed to this application.
 Status-read timestamps describe the completed read, so querying a snapshot
 does not manufacture a future timestamp that rejects fresh evidence.
 Known session ownership survives application or MQTT restart. Later manual

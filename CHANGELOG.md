@@ -136,6 +136,13 @@ Versions follow Semantic Versioning. `-dev.N` denotes a development prerelease.
   Incompatible databases remain rejected without migration or automatic reset.
   The pairing guide now documents deliberate fresh setup on Ubuntu and Home Assistant.
 
+### Known limitations
+
+- A repeated native Stop while Shelly is already automatically paused may leave
+  its status unchanged. The application cannot detect that new instruction and
+  may resume at the scheduled time. This provider observability limitation remains
+  open in [issue #2](https://github.com/hokkanen/st-mq/issues/2).
+
 ## 0.9.5-dev.3 — 2026-10-03
 
 ### Fixed
