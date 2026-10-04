@@ -11,7 +11,7 @@ import { Store } from '../src/storage/store.js';
 import { Recorder } from '../src/storage/recorder.js';
 const NOW = 1800000000000;
 const config = extra => shellyProfile(chargingConfiguration({chargers:{charger2:{enabled:true, deviceId:'synthetic-evse',topicPrefix:'test/evse',
-  additiveCurrentVerified:true,marginA:[0,0,0],...extra}}}).chargers.charger2);
+  limiterEnabled:false,additiveCurrentVerified:true,marginA:[0,0,0],...extra}}}).chargers.charger2);
 const reading = currents => ({currents,times:[NOW,NOW,NOW],healthy:true});
 test('phase limiter preserves absolute Shelly capacity, reservation and minimum-current boundary', () => {
   const args={config:config(),now:NOW,property:reading([34,30,32]),easee:reading([12,12,12]),shelly:reading([12,12,12])};
@@ -53,6 +53,7 @@ function fixture(t, extra={}) {
   const client=new EventEmitter(), values=new Map(), writes=[], energy=[], gaps=[], voltages=[], events=[];
   const roleTypes={current_limit:'number',start_charging:'boolean',work_state:'enum',phase_info:'object'};
   const roles=Object.keys(roleTypes), ids=Object.fromEntries(roles.map((role,i)=>[role,i+200]));
+  const currentComponent={id:ids.current_limit,owner:'service:0',access:'crw',min:6,max:16,meta:{ui:{step:1}}};
   const settingClock = new Map(), sources = new Map();
   const fields={current_limit:16,start_charging:true,work_state:'charger_charging',phase_info:{total_power:8.28,total_act_energy:0,phase_a:{voltage:230,current:12,power:2.76},phase_b:{voltage:230,current:12,power:2.76},phase_c:{voltage:230,current:12,power:2.76}}};
   client.subscribe=(topics,_opts,cb)=>{client.topics=topics;cb(null,topics.map(topic=>({topic,qos:0})));};
@@ -66,7 +67,7 @@ function fixture(t, extra={}) {
       assert.ok(job);assert.deepEqual(frame.params,{id:job.id,enable:false});job.enable=false;result={rev:++schedules.rev};
     }
     else if(frame.method==='Service.GetStatus')result=structuredClone(serviceStatus);
-    else if(frame.method.endsWith('.GetConfig'))result={id:ids[frame.params.role],owner:'service:0',access:'crw',min:6,max:16,meta:{ui:{step:1}},options:['charger_free','charger_wait','charger_pause','charger_charging','charger_end']};
+    else if(frame.method.endsWith('.GetConfig'))result=frame.params.role==='current_limit'?structuredClone(currentComponent):{id:ids[frame.params.role],owner:'service:0',access:'crw',min:6,max:16,meta:{ui:{step:1}},options:['charger_free','charger_wait','charger_pause','charger_charging','charger_end']};
     else if(frame.method.endsWith('.Set')) {fields[frame.params.role]=frame.params.value;settingClock.set(frame.params.role,{value:frame.params.value,at:now});result=null;}
     else {
       const role=frame.params.role, value=fields[role];
@@ -83,7 +84,7 @@ function fixture(t, extra={}) {
   const createAdapter=()=>createShellyEvseAdapter({config:config(extra),broker:{address:'mqtt://synthetic'},client,store,engine,clock:()=>now,canControl:()=>authority});
   let adapter=createAdapter();
   t.after(()=>adapter.close());
-  return {get adapter(){return adapter;},client,fields,writes,energy,gaps,voltages,events,values,service,serviceStatus,schedules,sources,now:()=>now,setNow:value=>now=value,setAuthority:value=>authority=value,setFail:value=>failSave=value,
+  return {get adapter(){return adapter;},client,fields,writes,energy,gaps,voltages,events,values,service,serviceStatus,schedules,sources,currentComponent,now:()=>now,setNow:value=>now=value,setAuthority:value=>authority=value,setFail:value=>failSave=value,
     restartAdapter() { adapter.close(); adapter=createAdapter(); },
     setSourceTime(role, at) { settingClock.set(role, { value: fields[role], at }); },
     delta(role, delta, { eventAt = now, retained = false, apply = true, method = 'NotifyStatus' } = {}) {
@@ -508,6 +509,54 @@ test('native restrictions block control and external auto balance blocks only cu
    await assert.rejects(f.adapter.rpc('Number.Set',{owner:'service:0',role:'current_limit',value:10},{mutation:true}));
  }
  assert.equal(f.writes.some(row=>row.method==='Service.SetConfig'||row.method.endsWith('.Set')),false);
+});
+test('supported Shelly numeric control confirms variable setpoints without optional UI metadata', async t => {
+  for (const metadata of ['missing-step', 'missing-ui', 'null-meta']) await t.test(metadata, async t => {
+    const f = fixture(t, { limiterEnabled: true });
+    if (metadata === 'missing-step') delete f.currentComponent.meta.ui.step;
+    if (metadata === 'missing-ui') delete f.currentComponent.meta.ui;
+    if (metadata === 'null-meta') f.currentComponent.meta = null;
+    await f.ready(); advanceCommandClock(f);
+    assert.equal(f.adapter.snapshot().currentControlReady, true);
+    assert.equal(f.writes.some(row => row.method.endsWith('.Set')), false, 'Discovery does not actuate the charger');
+    const controller = createShellyController({ adapter: f.adapter, clock: f.now, canControl: () => true });
+    t.after(() => controller.close());
+    for (const allocationA of [10, 8]) {
+      const before = f.now();
+      const view = await controller.update({ enabled: false, allocation: { allocationA } });
+      const readback = f.adapter.snapshot().fields.current_limit;
+      assert.equal(f.fields.current_limit, allocationA);
+      assert.equal(readback.value, allocationA);
+      assert.ok(readback.measuredAt > before);
+      assert.ok(readback.readback.requestedAt >= readback.measuredAt);
+      assert.ok(readback.readback.receivedAt >= readback.readback.requestedAt);
+      assert.equal(view.pending, null, 'The numeric command has a correlated native readback');
+      assert.equal(f.fields.start_charging, true);
+      assert.deepEqual(f.adapter.normalize().phaseCurrentA.value, [12, 12, 12],
+        'A confirmed setpoint does not manufacture the corresponding physical current');
+    }
+    assert.deepEqual(f.writes.filter(row => row.method.endsWith('.Set')).map(row => [row.method, row.params.value]),
+      [['Number.Set', 10], ['Number.Set', 8]]);
+  });
+});
+
+test('withdrawing optional UI step preserves supported current writes but contradictory metadata revokes publication', async t => {
+  for (const [label, change] of [
+    ['different step', f => { f.currentComponent.meta.ui.step = 2; }],
+    ['invalid step', f => { f.currentComponent.meta.ui.step = null; }],
+    ['different profile', f => { f.adapter.config.profile = 'unsupported-profile'; }],
+    ['different component owner', f => { f.currentComponent.owner = 'service:1'; }],
+    ['native balancing', f => { f.service.auto_balance.enable = true; }],
+  ]) await t.test(label, async t => {
+    const f = fixture(t, { limiterEnabled: true }); await f.ready();
+    delete f.currentComponent.meta.ui.step; await f.adapter.refresh();
+    assert.equal(f.adapter.snapshot().currentControlReady, true);
+    await assert.rejects(f.adapter.rpc('Number.Set', { owner: 'service:0', role: 'current_limit', value: 10 }, {
+      mutation: true, beforePublish: async () => { change(f); await f.adapter.refresh(); },
+    }), { code: 'evse-command-revoked' });
+    assert.equal(f.adapter.snapshot().currentControlReady, false);
+    assert.equal(f.writes.some(row => row.method.endsWith('.Set')), false);
+  });
 });
 test('a lower native current choice survives explicit automatic takeover',async t=>{
  const f=fixture(t,{limiterEnabled:true});f.fields.current_limit=8;await f.ready();

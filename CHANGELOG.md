@@ -30,6 +30,10 @@ Versions follow Semantic Versioning. `-dev.N` denotes a development prerelease.
 
 ### Changed
 
+- Shelly current adjustment now defaults on independently of Automatic scheduling,
+  including Charge now. Charger 2 priority uses household headroom without
+  reserving Charger 1's draw; Equalizer must reduce Charger 1. Explicit basic-mode
+  configuration, native limits and commissioning requirements remain supported.
 - History recovery now has a compact entry inside its own Recording details fold
   and an aligned action in Paired computers. The shared window separates new
   recovery from previous recoveries, keeps reviews tied to their source, and
@@ -42,6 +46,12 @@ Versions follow Semantic Versioning. `-dev.N` denotes a development prerelease.
 
 ### Fixed
 
+- Supported Shelly chargers can adjust current when optional UI step metadata is
+  absent. Contradictory native capabilities still prevent current writes.
+- Shelly allocation uses the latest admitted phase readings without advancing
+  their timestamps or waiting for a cached cloud snapshot. Ordinary charger polls
+  reuse applicable plans and avoid unnecessary peer polling. Uncommissioned load
+  models retain their configured fallback ceiling in delivery forecasts.
 - Shelly Start confirmation accepts a matching late notification within the same
   native timestamp second only after an acknowledged command and a fresh query
   after that notification. This prevents an owned Start appearing as native Enable.

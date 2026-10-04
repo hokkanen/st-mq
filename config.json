@@ -128,7 +128,7 @@
           "associationVersion": 1,
           "serviceId": 0,
           "maximumCurrentA": 16,
-          "limiterEnabled": false,
+          "limiterEnabled": true,
           "fallbackCurrentA": 12,
           "mainFuseA": [
             25,

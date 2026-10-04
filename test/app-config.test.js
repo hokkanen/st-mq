@@ -477,6 +477,26 @@ test('sparse charging defaults load and reload solely from configuration', async
   assert.deepEqual(transaction.config.charging.chargers.charger1, {});
 });
 
+test('sparse EVSE configuration uses current adjustment by default and preserves an explicit opt-out on reload', async t => {
+  const directory = mkdtempSync(join(tmpdir(), 'stmq-current-adjustment-default-'));
+  t.after(() => rmSync(directory, { recursive: true, force: true }));
+  const path = join(directory, 'fixture.json');
+  const charger2 = { enabled: true, deviceId: 'synthetic-default-evse', topicPrefix: 'synthetic/default-evse' };
+  writeFileSync(path, JSON.stringify({ charging: { chargers: { charger2 } } }));
+  const config = loadConfig({ STMQ_CONFIG: path }, directory);
+  assert.equal(config.charging.chargers.charger2.limiterEnabled, true);
+  assert.equal(config.charging.chargers.charger2.additiveCurrentVerified, false);
+  const contents = JSON.stringify({ charging: { chargers: { charger2: { ...charger2, limiterEnabled: false } } } });
+  writeFileSync(path, contents);
+  const optedOut = (await configurationSource(config).prepare()).config;
+  assert.equal(optedOut.charging.chargers.charger2.limiterEnabled, false);
+  assert.equal(readFileSync(path, 'utf8'), contents, 'Loading cannot rewrite the installation choice');
+  writeFileSync(path, JSON.stringify({ charging: { chargers: { charger2 } } }));
+  const defaultsRestored = (await configurationSource(optedOut).prepare()).config;
+  assert.equal(defaultsRestored.charging.chargers.charger2.limiterEnabled, true);
+  assert.equal(defaultsRestored.charging.chargers.charger2.additiveCurrentVerified, false);
+});
+
 
 test('retired global mode settings fail before granting any feature permission', t => {
   assert.throws(() => validateSettings({ mode: 'active' }), /Unknown heating setting: mode/);

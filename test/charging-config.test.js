@@ -1,16 +1,39 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
 import { chargingConfiguration } from '../src/charging/config.js';
 import { chargingSettings, chargingSettingsFromConfiguration } from '../src/charging/settings.js';
 import { teslamateConfiguration } from '../src/app/config.js';
 test('physical EVSE defaults keep acquisition disabled and discover control readiness', () => {
   const config = chargingConfiguration();
   assert.equal(config.chargers.charger2.enabled, false);
+  assert.equal(config.chargers.charger2.limiterEnabled, true);
+  assert.equal(config.chargers.charger2.additiveCurrentVerified, false);
   assert.equal(Object.hasOwn(config.chargers.charger2, 'verified'), false);
   assert.equal(Object.hasOwn(config.chargers.charger2, 'sessionEnergyVerified'), false);
   assert.equal(config.chargers.charger2.fallbackCurrentA, 12);
   assert.deepEqual(chargingConfiguration(config), config);
   assert.equal(config.vehicles.bmw.mqttTopic, 'stmq/vehicles/bmw');
+});
+test('public charging defaults enable current adjustment without granting commissioning or charging permission', () => {
+  const manifest = JSON.parse(readFileSync(new URL('../config.json', import.meta.url), 'utf8'));
+  const defaults = manifest.options.charging.chargers.charger2;
+  assert.equal(defaults.limiterEnabled, true);
+  assert.deepEqual(chargingConfiguration(manifest.options.charging).chargers.charger2,
+    chargingConfiguration().chargers.charger2);
+  const enabled = chargingConfiguration({ chargers: { charger2: {
+    enabled: true, deviceId: 'synthetic-default-evse', topicPrefix: 'synthetic/default-evse',
+  } } });
+  assert.equal(enabled.chargers.charger2.limiterEnabled, true);
+  assert.equal(enabled.chargers.charger2.additiveCurrentVerified, false);
+  assert.equal(chargingSettingsFromConfiguration(enabled).chargers.charger2.enabled, false);
+});
+test('current adjustment retains explicit configuration opt-out and rejects non-boolean permission', () => {
+  const config = chargingConfiguration({ chargers: { charger2: { limiterEnabled: false } } });
+  assert.equal(config.chargers.charger2.limiterEnabled, false);
+  assert.deepEqual(chargingConfiguration(config), config);
+  for (const limiterEnabled of [null, 0, 1, 'false', 'true'])
+    assert.throws(() => chargingConfiguration({ chargers: { charger2: { limiterEnabled } } }), /limiterEnabled/);
 });
 test('retired Shelly commissioning assertions are rejected even when disabled', () => {
   for (const key of ['sessionEnergyVerified', 'verified', 'model', 'firmware', 'connectedStates', 'disconnectedStates', 'chargingStates', 'minimumCurrentA', 'currentStepA'])

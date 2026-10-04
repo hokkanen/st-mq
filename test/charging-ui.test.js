@@ -571,7 +571,7 @@ test('physical Charger 2 explanations preserve native vehicle constraints and di
   const withoutLimiter = Object.fromEntries(view(charger('charger2', { capabilities: { scheduling: true, currentControl: false } })).explanations);
   assert.match(withoutLimiter['Automatic charging'], /charger’s own current limits and schedules remain in effect/);
   assert.doesNotMatch(withoutLimiter['Automatic charging'], /limiter can remain active/);
-  assert.match(withoutLimiter['Charging current'], /identification can temporarily use the verified minimum current.*separately from the optional household current limiter.*restored afterward/);
+  assert.match(withoutLimiter['Charging current'], /identification can temporarily use the verified minimum current.*separately from the household current limiter.*restored afterward/);
   assert.doesNotMatch(withoutLimiter['Charging current'], /This page does not change charging current/);
   assert.doesNotMatch(withoutLimiter['Charging current'], /adjusts Shelly’s current/);
 });
@@ -1299,7 +1299,7 @@ test('current restoration remains visible after identification and unplug until 
 test('pending current identification names missing readiness, observations and ambiguity separately', () => {
   const item = { ...connected('charger2'), identification: { phase: 'waiting', active: true, available: false } };
   for (const [reason, expected] of [
-    ['current-control-unavailable', /current-control readiness.*optional household current limiter has separate settings/],
+    ['current-control-unavailable', /current-control readiness.*household current limiter has separate settings/],
     ['current-evidence-pending', /fresh measured charger current.*current setting alone does not identify/],
     ['current-ambiguous', /Both chargers could match.*independent evidence/],
     ['peer-transition-pending', /other charger is changing state.*current charging choice still applies/],

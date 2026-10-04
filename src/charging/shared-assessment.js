@@ -66,7 +66,9 @@ function model(context, chargers, peers, now) {
       // The joint forecast can use a configured ceiling while a native reading
       // is unavailable. Validate that model against the tightest known ceiling;
       // this does not renew telemetry or establish executable current control.
-      const ceilings = [value(charger, 'maximumCurrentA'), charger?.configuration?.maximumCurrentA]
+      const ceilings = [value(charger, 'maximumCurrentA'), charger?.configuration?.maximumCurrentA,
+        charger?.configuration?.limiterEnabled === true && charger.configuration.additiveCurrentVerified === false
+          ? charger.configuration.fallbackCurrentA : null]
         .filter(current => finite(current) && current >= 0 && current <= 200);
       const ceiling = ceilings.length ? Math.min(...ceilings) : null;
       const native = value(charger, 'vehicleNotBefore');
@@ -116,7 +118,26 @@ function execution(chargers, coordination, now) {
   const charger = chargers.find(row => row.id === 'charger2'), control = charger?.control;
   const current = charger?.values?.currentA, measuredAt = current?.measuredAt ?? current?.receivedAt;
   const allocation = coordination?.allocations?.find(row => row.start <= now && row.end > now)?.chargers?.charger2;
-  const expectedCurrentA = number(allocation?.currentLimitA);
+  // Compare readback with the live current entitlement when current adjustment
+  // owns it. Forecast sharing remains separately assessed above; it need not
+  // equal live household headroom. An old priority is not a new instruction.
+  const adjusted = charger?.configuration?.limiterEnabled === true || control?.limiter?.priority != null;
+  const limit = control?.limiter;
+  const liveLimitReady = limit && PRIORITIES.includes(coordination?.priority)
+    && limit.priority === coordination.priority && time(limit.evaluatedAt)
+    && limit.evaluatedAt <= now && now - limit.evaluatedAt <= 15_000
+    && control?.snapshot?.controlReady === true && control.snapshot.currentControlReady === true
+    && !['unavailable', 'uncertain'].includes(control.phase) && control.devicePermissionHeld !== true;
+  let expectedCurrentA = adjusted || coordination?.priority === 'charger2'
+    ? liveLimitReady ? number(limit.currentA) : null
+    : number(allocation?.currentLimitA);
+  if (adjusted && expectedCurrentA !== null) {
+    const vehicle = value(charger, 'vehicleCurrentA');
+    const ceilings = [value(charger, 'maximumCurrentA'), charger?.configuration?.maximumCurrentA,
+      value(charger, 'nativeCurrentA'), vehicle === null ? null : vehicle > 0 ? Math.max(6, vehicle) : 0]
+      .filter(value => finite(value) && value >= 0);
+    expectedCurrentA = Math.min(expectedCurrentA, ...ceilings);
+  }
   const base = { state: 'unknown', expectedCurrentA, reportedCurrentA: null, measuredAt: null, expectationAt: now };
   if (value(charger, 'connected') === false) return { ...base, state: 'not-exercised' };
   if (!fresh(coordination?.at, now) || coordination?.sessions?.charger2 !== charger?.request?.sessionId

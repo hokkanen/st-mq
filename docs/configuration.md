@@ -325,6 +325,15 @@ changing equipment identity clears its control choices. These are not
 configuration fields. Charger 2's configured `enabled` field controls its
 physical integration and does not grant scheduling or commissioning permission.
 
+`charging.chargers.charger2.limiterEnabled` defaults to `true`: current follows
+property load and shared charger priority during ordinary charging and Charge
+now, independently of Automatic scheduling. An explicit `false` opts into basic
+native-current start/stop. The installation's phase mapping, fuse ratings and
+additive-current commissioning still require verification; changing the default
+does not manufacture that evidence. Unknown or stale load data uses the configured
+fallback ceiling. With Charger 2 priority, Shelly excludes Charger 1's draw from
+its available headroom, and Charger 1's Equalizer must yield.
+
 For example, merge only these intentional choices into your configuration:
 
 ```json

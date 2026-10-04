@@ -247,6 +247,8 @@ test('joint model validation keeps known tighter limits and cannot invent an unc
   for (const [name, restrict] of [
     ['reported ceiling', current => { current.values.maximumCurrentA = f.reading(6); }],
     ['configured ceiling', current => { current.values.maximumCurrentA = f.reading(16); current.configuration.maximumCurrentA = 6; }],
+    ['uncommissioned fallback', current => { Object.assign(current.configuration,
+      { limiterEnabled: true, additiveCurrentVerified: false, fallbackCurrentA: 6 }); }],
     ['native user limit', current => { current.values.nativeCurrentA = f.reading(6); }],
     ['vehicle limit', current => { current.values.vehicleCurrentA = f.reading(6); }],
     ['known basic current', current => { current.values.currentA = f.reading(6); }],
@@ -391,4 +393,50 @@ test('shared presentation distinguishes measured overlap, modeled priority and r
   assert.match(text, /reported limits and configured ceilings/);
   assert.match(text, /maximum available within shared property capacity as a delivery estimate/);
   assert.match(text, /do not confirm charger readiness, physical delivery or global optimality/);
+});
+
+test('Shelly-priority execution checks its fresh live ceiling instead of a lower forecast suggestion', t => {
+  const f = fixture(t); f.plug(); f.coordinate('charger2');
+  const charger = f.view.chargers[1];
+  charger.values.currentA = f.reading(16, 'shelly-evse');
+  charger.control.snapshot.currentControlReady = true;
+  charger.control.limiter = { currentA: 16, priority: 'charger2', evaluatedAt: f.now() };
+  const assess = () => sharedChargingAssessment(f.view.chargers, f.view.coordination, f.now()).execution;
+  assert.equal(f.view.coordination.allocations[0].chargers.charger2.currentLimitA, 6);
+  assert.equal(assess().expectedCurrentA, 16);
+  assert.equal(assess().state, 'consistent');
+  charger.values.nativeCurrentA = f.reading(8);
+  assert.equal(assess().expectedCurrentA, 8);
+  assert.equal(assess().state, 'inconsistent', 'Native ceilings remain binding');
+  delete charger.values.nativeCurrentA;
+  charger.control.limiter.currentA = 12;
+  assert.equal(assess().state, 'inconsistent', 'Fallback remains a real ceiling');
+  charger.values.currentA = f.reading(12, 'shelly-evse');
+  assert.equal(assess().state, 'consistent');
+  for (const limiter of [undefined, { currentA: 16, priority: 'balanced', evaluatedAt: f.now() },
+    { currentA: 16, priority: 'charger2', evaluatedAt: f.now() - 90_000 },
+    { currentA: 16, priority: 'charger2', evaluatedAt: f.now() + 1 }]) {
+    charger.control.limiter = limiter;
+    assert.equal(assess().state, 'unknown', 'Missing, old or different-priority assessments do not verify an instruction');
+  }
+  charger.control.limiter = { currentA: 16, priority: 'charger2', evaluatedAt: f.now() };
+  charger.control.snapshot.currentControlReady = false;
+  assert.equal(assess().state, 'unknown', 'An unavailable actuator cannot confirm a current allocation');
+  charger.control.snapshot.currentControlReady = true;
+  charger.control.devicePermissionHeld = true;
+  assert.equal(assess().state, 'unknown');
+  charger.control.devicePermissionHeld = false;
+  f.coordinate('balanced');
+  charger.control.limiter = { currentA: 8, priority: 'balanced', evaluatedAt: f.now() };
+  charger.values.currentA = f.reading(8, 'shelly-evse');
+  assert.equal(assess().expectedCurrentA, 8);
+  assert.equal(assess().state, 'consistent', 'Unscheduled balanced sharing can also differ from the forecast');
+});
+
+test('enabled current adjustment stays unknown before its limiter and coordination initialize', t => {
+  const f = fixture(t); f.plug();
+  f.view.chargers[1].configuration = { limiterEnabled: true, maximumCurrentA: 16 };
+  const result = sharedChargingAssessment(f.view.chargers, undefined, f.now());
+  assert.equal(result.execution.state, 'unknown');
+  assert.equal(result.execution.expectedCurrentA, null);
 });

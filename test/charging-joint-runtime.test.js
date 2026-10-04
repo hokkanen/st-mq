@@ -46,10 +46,11 @@ test('Shelly startup validates adopted execution before reading or writing devic
 // Production runtime, planner, controllers, transport adapters and vehicle feeds.
 // Only the physical devices/broker and acquisition clocks are simulated. Device
 // settings keep their source clocks; reads do not manufacture native changes.
-async function fixture(t, { limiter = true, budgetA = 16 } = {}) {
+async function fixture(t, { limiter = true, budgetA = 16, notifyRuntime = false } = {}) {
   let now = START, runtime, heldOcppWrite = null, revokedOcppWrites = 0, rejectShellyWrites = false;
   const store = new Store(':memory:'), client = new EventEmitter();
   const commands = [], profiles = new Map(), reads = { charger1: 0, charger2: 0 };
+  const household = { currentA: 0, sourceAt: null };
   const cars = { charger1: { connected: false, allows: true, demandA: 8, connectedAt: null },
     charger2: { connected: false, allows: true, demandA: 8, connectedAt: null } };
   const config = { input: 'mqtt', connections: {
@@ -68,7 +69,7 @@ async function fixture(t, { limiter = true, budgetA = 16 } = {}) {
   const amps2 = () => cars.charger2.connected && cars.charger2.allows && fields.start_charging.value
     ? Math.min(cars.charger2.demandA, fields.current_limit.value) : 0;
   const amps1 = () => cars.charger1.connected && cars.charger1.allows && !paused()
-    ? Math.max(0, Math.min(cars.charger1.demandA, budgetA - amps2())) : 0;
+    ? Math.max(0, Math.min(cars.charger1.demandA, budgetA - household.currentA - amps2())) : 0;
   const physical2 = () => {
     const state = !cars.charger2.connected ? 'charger_free' : amps2() > 0 ? 'charger_charging'
       : !fields.start_charging.value ? 'charger_pause' : 'charger_wait';
@@ -108,6 +109,9 @@ async function fixture(t, { limiter = true, budgetA = 16 } = {}) {
     runtime = new ChargingRuntime({ engine: {}, store, config, clock: () => now });
     runtime.teslaCapture = capture;
     const scope = runtime.chargers.charger1.association;
+    const supply = () => ({ availableCurrentA: triple(Math.max(0, budgetA - household.currentA - amps2())),
+      propertyCurrentA: triple(household.currentA + amps1() + amps2()), chargerCurrentA: triple(amps1()),
+      voltageV: triple(230), observationTimes: { allowance: triple(now), property: triple(household.sourceAt ?? now), charger: triple(now), voltage: triple(now) } });
     const snapshot = () => {
       reads.charger1++;
       return { transport: 'ocpp', scope, connectionId: 'synthetic-joint-socket', readAt: now, online: true,
@@ -116,8 +120,7 @@ async function fixture(t, { limiter = true, budgetA = 16 } = {}) {
         transactionStartedAt: cars.charger1.connectedAt, transactionConfirmed: cars.charger1.connected,
         pluggedIn: cars.charger1.connected, powerKw: amps1() * .69, powerAt: now,
         appControl: null, limits: { chargerA: 16, cableA: 16, circuitA: triple(16), allocationA: 32, equalizerAvailableA: triple(Math.max(0, budgetA - amps2())) },
-        supply: { availableCurrentA: triple(Math.max(0, budgetA - amps2())), propertyCurrentA: triple(amps1() + amps2()), chargerCurrentA: triple(amps1()),
-          voltageV: triple(230), observationTimes: { allowance: triple(now), property: triple(now), charger: triple(now), voltage: triple(now) } } };
+        supply: supply() };
     };
     ocpp = createOcppScheduleAdapter({ scope, readSnapshot: snapshot, clock: () => now, canControl: () => true,
       isCurrent: value => value.transactionId === (cars.charger1.connected ? cars.charger1.connectedAt / 1000 : null),
@@ -145,9 +148,11 @@ async function fixture(t, { limiter = true, budgetA = 16 } = {}) {
           chargingRateUnit: 'A', duration: payload.duration,
           chargingSchedulePeriod: [{ startPeriod: 0, limit: paused() ? 0 : 16 }, ...ends.map(end => ({ startPeriod: (end - now) / 1000, limit: 16 }))] } };
       } });
+    ocpp.readCurrentSupply = () => ({ online: true, supply: supply() });
     if (!shelly) {
       shelly = createShellyEvseAdapter({ config: runtime.configuration.chargers.charger2, broker: config.connections.mqtt,
-        client, store, engine: { recorder: { recordEnergy() {}, energyGap() {}, flush() {} } }, clock: () => now, canControl: () => true });
+        client, store, engine: { get charging() { return notifyRuntime ? runtime : null; },
+          recorder: { recordEnergy() {}, energyGap() {}, flush() {} } }, clock: () => now, canControl: () => true });
       client.emit('connect'); client.emit('message', 'synthetic/joint/evse/online', Buffer.from('true'), { retain: true });
       await shelly.refresh();
     }
@@ -162,7 +167,8 @@ async function fixture(t, { limiter = true, budgetA = 16 } = {}) {
     for (const item of Object.values(runtime.chargers)) await item.reconcileFlight;
   };
   t.after(async () => { await runtime.close(); shelly.close(); capture.close(); store.close(); });
-  return { get runtime() { return runtime; }, get now() { return now; }, cars, commands, fields, schedules, reads, view, automatic, scope, settle,
+  return { get runtime() { return runtime; }, get now() { return now; }, cars, household, commands, fields, schedules, reads, view, automatic, scope, settle,
+    closeAdapter() { shelly.close(); },
     get revokedOcppWrites() { return revokedOcppWrites; },
     rejectShellyWrites(value) { rejectShellyWrites = value; },
     holdNextOcppWrite() {
@@ -323,6 +329,225 @@ test('an infeasible shared deadline follows the selected priority in forecasts a
   }
   assert.ok(f.commands.filter(command => command.role === 'current_limit').every(command => command.value >= 6),
     'A zero allocation pauses instead of sending an unsupported current');
+});
+
+for (const mode of ['native', 'charge-now', 'automatic'])
+  test(`live Shelly priority ignores conservative forecast caps during ${mode} charging`, async t => {
+    const f = await fixture(t, { budgetA: 25 });
+    await f.connect('charger1'); await f.connect('charger2'); await f.priority('charger2');
+    if (mode === 'charge-now') await f.runtime.chargeNow('charger2', f.scope('charger2'));
+    if (mode === 'automatic') {
+      await f.automatic('charger2', true); await f.plan();
+      const starts = f.view('charger2').plan.periods[0].startAt;
+      if (starts > f.now) f.advance(starts - f.now);
+      await f.settle();
+    }
+    await f.plan();
+    f.cars.charger1.demandA = 16; f.cars.charger2.demandA = 16;
+    f.household.currentA = 9;
+    // A forecast can reserve capacity for a secondary deadline or assume a
+    // higher household scenario. It is deliberately distinct from the live
+    // property/peer/meter inputs above.
+    f.runtime.coordination.allocations = [{ start: f.now, end: f.now + MINUTE,
+      chargers: { charger1: { currentA: 8 }, charger2: { currentA: 8, currentLimitA: 8 } } }];
+    f.advance(5000);
+    await f.runtime.reconcileShellyObservation();
+    assert.equal(f.fields.current_limit.value, 16);
+    assert.equal(f.fields.start_charging.value, true);
+    assert.equal(f.view('charger2').control.limiter.currentA, 16);
+    assert.equal(f.runtime.allocationContext().allocationA, null);
+    assert.equal(f.runtime.allocationContext().reservationA, 0);
+  });
+
+for (const chargeNow of [false, true])
+  test(`directional priority changes real current allocation with Automatic off and Charge now ${chargeNow}`, async t => {
+    const f = await fixture(t);
+    await f.connect('charger1'); await f.connect('charger2');
+    f.cars.charger1.demandA = 16; f.cars.charger2.demandA = 16;
+    if (chargeNow) await f.runtime.chargeNow('charger2', f.scope('charger2'));
+    await f.priority('charger1'); await f.plan();
+    assert.equal(f.fields.start_charging.value, false);
+    assert.equal(f.view('charger1').values.actualCurrentA.value, 16);
+    await f.priority('charger2'); await f.plan();
+    assert.equal(f.fields.start_charging.value, true);
+    assert.equal(f.fields.current_limit.value, 16);
+    assert.equal(f.view('charger1').values.actualCurrentA.value, 0, 'Native Equalizer yields the peer current');
+    assert.equal(f.view('charger2').request.chargeNow === true, chargeNow);
+  });
+
+test('balanced live allocation resumes a priority-owned native pause without enabling Automatic', async t => {
+  const f = await fixture(t);
+  await f.connect('charger1'); await f.connect('charger2');
+  f.cars.charger1.demandA = 16; f.cars.charger2.demandA = 16;
+  await f.priority('charger1'); await f.plan();
+  assert.equal(f.fields.start_charging.value, false);
+  assert.equal(f.view('charger2').control.ownedPause, true);
+  const stoppedAt = f.now;
+  f.advance(5000); await f.priority('balanced');
+  assert.equal(f.fields.current_limit.value, 8);
+  assert.equal(f.fields.start_charging.value, true);
+  assert.deepEqual(f.runtime.allocationContext().easee.currents, [8, 8, 8], 'Fresh source phases confirm Equalizer recovery');
+  assert.equal(f.view('charger2').settings.enabled, false);
+  assert.ok(f.commands.some(row => row.role === 'start_charging' && row.value === true && row.at > stoppedAt));
+  f.advance(5000); f.fields.start_charging = { value: false, at: f.now, source: 'rpc' };
+  await f.settle();
+  await f.priority('charger1'); f.advance(5000); await f.priority('balanced');
+  assert.equal(f.fields.start_charging.value, false, 'A later native Stop revokes the previous owned resume duty');
+  assert.equal(f.view('charger2').control.manual.kind, 'stop');
+});
+
+test('balanced live allocation lets a confirmed open peer recover from zero Equalizer allowance', async t => {
+  const f = await fixture(t);
+  await f.connect('charger1'); await f.connect('charger2');
+  f.cars.charger1.demandA = 16; f.cars.charger2.demandA = 16;
+  await f.runtime.chargeNow('charger1', f.scope('charger1'));
+  await f.priority('charger2'); await f.plan();
+  assert.equal(f.fields.current_limit.value, 16);
+  assert.equal(f.view('charger1').values.actualCurrentA.value, 0);
+  f.advance(5000); await f.priority('balanced');
+  assert.equal(f.fields.current_limit.value, 8);
+  assert.equal(f.fields.start_charging.value, true);
+  assert.deepEqual(f.runtime.allocationContext().easee.currents, [8, 8, 8]);
+  assert.equal(f.view('charger1').request.chargeNow, true);
+});
+
+test('balanced live allocation retains a running turn below two valid pilots', async t => {
+  const f = await fixture(t, { budgetA: 11 });
+  await f.connect('charger1'); await f.connect('charger2');
+  f.cars.charger1.demandA = 16; f.cars.charger2.demandA = 16;
+  await f.runtime.chargeNow('charger1', f.scope('charger1'));
+  await f.priority('charger2'); await f.plan();
+  assert.equal(f.fields.current_limit.value, 11);
+  f.advance(5000); await f.priority('balanced');
+  const commands = f.commands.length;
+  for (let sample = 0; sample < 3; sample++) {
+    f.advance(5000); await f.runtime.reconcileShellyObservation();
+    assert.equal(f.fields.current_limit.value, 11);
+    assert.equal(f.fields.start_charging.value, true);
+    assert.deepEqual(f.runtime.allocationContext().easee.currents, [0, 0, 0]);
+  }
+  assert.equal(f.commands.slice(commands).some(row => row.role === 'start_charging'), false);
+});
+
+test('balanced live allocation does not reserve an idle peer merely because it is connected', async t => {
+  const f = await fixture(t);
+  await f.connect('charger1'); await f.connect('charger2');
+  f.cars.charger1.demandA = 0; f.cars.charger2.demandA = 16;
+  await f.priority('charger2'); await f.plan();
+  f.advance(5000); await f.priority('balanced');
+  assert.equal(f.runtime.allocationContext().peerDemandA, null);
+  assert.equal(f.fields.current_limit.value, 16);
+  assert.equal(f.fields.start_charging.value, true);
+});
+
+test('ordinary load adjustment responds before the minute tick without cloud reads or economic replanning', async t => {
+  const f = await fixture(t, { budgetA: 25 });
+  await f.connect('charger1'); await f.connect('charger2'); await f.priority('charger2'); await f.plan();
+  f.cars.charger2.demandA = 16;
+  const beforeReads = f.reads.charger1;
+  const planning = t.mock.method(f.runtime, 'updatePlan');
+  f.household.currentA = 17; f.advance(5000);
+  await f.runtime.reconcileShellyObservation();
+  assert.equal(f.fields.current_limit.value, 8);
+  assert.equal(f.reads.charger1, beforeReads);
+  assert.equal(planning.mock.callCount(), 0, 'A live current correction reuses the still-valid same-session plan');
+  f.household.currentA = 20; f.advance(5000);
+  await f.runtime.reconcileShellyObservation();
+  assert.equal(f.fields.start_charging.value, false, 'Sub-minimum headroom pauses instead of writing an invalid current');
+  f.household.currentA = 0; f.advance(5000);
+  await f.runtime.reconcileShellyObservation();
+  assert.equal(f.fields.current_limit.value, 16);
+  assert.equal(f.fields.start_charging.value, true, 'Recovered headroom resumes only the controller-owned fuse pause');
+  assert.ok(f.commands.filter(row => row.role === 'current_limit').every(row => row.value >= 6));
+  f.advance(5000); f.fields.start_charging = { value: false, at: f.now, source: 'rpc' };
+  const count = f.commands.length;
+  await f.runtime.reconcileShellyObservation();
+  assert.equal(f.fields.start_charging.value, false);
+  assert.equal(f.view('charger2').control.manual.kind, 'stop');
+  assert.equal(f.commands.slice(count).some(row => row.role === 'start_charging' && row.value), false);
+  assert.ok(planning.mock.callCount() > 0, 'A newer native instruction invalidates the cached plan basis');
+});
+
+test('ordinary current adjustment retains source age and never promotes stale property data into headroom', async t => {
+  const f = await fixture(t, { budgetA: 25 });
+  await f.connect('charger2'); await f.priority('charger2'); await f.plan();
+  f.household.sourceAt = f.now - MINUTE;
+  f.advance(5000); await f.runtime.reconcileShellyObservation();
+  assert.equal(f.fields.current_limit.value, 12);
+  assert.equal(f.view('charger2').control.limiter.fallback, true);
+  assert.equal(f.runtime.allocationContext().property.times[0], f.household.sourceAt);
+});
+
+test('the existing Shelly poll drives one serialized local reconciliation and stops after close', async t => {
+  t.mock.timers.enable({ apis: ['setInterval'] });
+  const f = await fixture(t, { budgetA: 25, notifyRuntime: true });
+  await f.connect('charger2'); await f.priority('charger2'); await f.plan();
+  const controller = f.runtime.chargers.charger2.controller;
+  const originalUpdate = controller.update;
+  let release, entered = 0;
+  const held = new Promise(resolve => { release = resolve; });
+  controller.update = async input => { entered++; await held; return originalUpdate(input); };
+  const readsBefore = f.reads.charger1;
+  const planning = t.mock.method(f.runtime, 'updatePlan');
+  f.household.currentA = 17; f.advance(5000); t.mock.timers.tick(5000);
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(entered, 1);
+  f.advance(5000); t.mock.timers.tick(5000);
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(entered, 1, 'A second poll cannot queue or revoke the in-flight current command');
+  release(); await f.runtime.chargers.charger2.reconcileFlight;
+  assert.equal(f.fields.current_limit.value, 8);
+  assert.equal(f.reads.charger1, readsBefore);
+  assert.equal(planning.mock.callCount(), 0);
+  await f.runtime.close();
+  f.advance(5000); t.mock.timers.tick(5000);
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(entered, 1, 'A closed runtime cannot receive more controller updates from the adapter poll');
+  f.closeAdapter();
+  const finalReads = f.reads.charger2;
+  f.advance(5000); t.mock.timers.tick(5000);
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(f.reads.charger2, finalReads, 'Closing the adapter stops its existing poll timer');
+});
+
+test('current reconciliation replans at the original cache deadline and discards a disconnected Charge now scope', async t => {
+  const f = await fixture(t, { budgetA: 25 });
+  await f.connect('charger2'); await f.priority('charger2'); await f.runtime.chargeNow('charger2', f.scope('charger2')); await f.plan();
+  const originalSession = f.view('charger2').request.sessionId;
+  const planning = t.mock.method(f.runtime, 'updatePlan');
+  f.advance(31_000); await f.runtime.reconcileShellyObservation();
+  assert.ok(planning.mock.callCount() > 0, 'The faster limiter loop does not extend the accepted planning cache');
+  f.cars.charger2.connected = false;
+  f.advance(5000); await f.runtime.reconcileShellyObservation();
+  assert.equal(f.view('charger2').request, null);
+  f.advance(5000); f.cars.charger2.connected = true; f.cars.charger2.connectedAt = f.now;
+  await f.runtime.reconcileShellyObservation();
+  assert.notEqual(f.view('charger2').request.sessionId, originalSession);
+  assert.notEqual(f.view('charger2').request.chargeNow, true);
+});
+
+test('settled disconnected polling reuses its bounded empty plan without charging or replanning', async t => {
+  const f = await fixture(t);
+  await f.plan();
+  const before = f.commands.length;
+  const planning = t.mock.method(f.runtime, 'updatePlan');
+  f.advance(5000); await f.runtime.reconcileShellyObservation();
+  assert.equal(planning.mock.callCount(), 0);
+  assert.equal(f.commands.length, before);
+  assert.equal(f.view('charger2').request, null);
+});
+
+test('a failed local reconciliation retains its diagnostic without replaying a command', async t => {
+  const f = await fixture(t);
+  await f.connect('charger2'); await f.plan();
+  const controller = f.runtime.chargers.charger2.controller;
+  t.mock.method(controller, 'update', async () => { throw new Error('Synthetic state persistence unavailable'); });
+  const commands = f.commands.length;
+  f.advance(5000);
+  await assert.rejects(f.runtime.reconcileShellyObservation(), /Synthetic state persistence unavailable/);
+  assert.equal(f.view('charger2').error, 'charging-reconciliation-unavailable');
+  assert.equal(f.runtime.chargers.charger2.reconcileFlight, null);
+  assert.equal(f.commands.length, commands);
 });
 
 for (const limiter of [true, false]) for (const priority of ['balanced', 'charger1', 'charger2'])

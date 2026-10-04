@@ -65,6 +65,18 @@ const appState = (at, enabled) => ({ readAt: at, enabled, enabledAt: at, stopped
   controlKnown: true, faulted: false, authorizationBlocked: false, schedule: null });
 const writes = f => f.calls.filter(row => row.action !== 'GetCompositeSchedule');
 
+test('OCPP preserves explicit balancing evidence and rejects malformed metadata', async t => {
+  const f = fixture(); t.after(() => f.controller.close());
+  for (const externalLoadBalancing of [true, false, null]) {
+    f.snapshot({ externalLoadBalancing });
+    assert.equal((await f.adapter.read()).externalLoadBalancing, externalLoadBalancing);
+  }
+  for (const externalLoadBalancing of [0, 1, 'true', 'false', {}]) {
+    f.snapshot({ externalLoadBalancing });
+    await assert.rejects(f.adapter.read(), { code: 'read-failed' });
+  }
+});
+
 test('missing planning inputs retain an uncertain native install through restart and readback recovery', async () => {
   const first = fixture(), startAt = START + 30 * MINUTE;
   first.intercept((action, _payload, _options, result) => {

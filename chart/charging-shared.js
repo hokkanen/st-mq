@@ -33,8 +33,8 @@ export function chargingSharedText(shared, focus) {
     ? `Planner-reported cost lower bound ${amount(solver.costLowerBoundCents)} cents; gap bound ${amount(solver.costGapBoundCents)} cents.`
     : 'A joint cost bound is unavailable.';
   const execution = current.execution?.state;
-  const readback = execution === 'consistent' ? 'Charger 2 current readback respects its active shared allocation.'
-    : execution === 'inconsistent' ? 'Charger 2 current readback exceeds its active shared allocation.'
+  const readback = execution === 'consistent' ? 'Charger 2 current readback respects its active current ceiling.'
+    : execution === 'inconsistent' ? 'Charger 2 current readback exceeds its active current ceiling.'
       : execution === 'settling' ? 'Charger 2 allocation change is settling.'
         : execution === 'not-exercised' ? 'Charger 2 current sharing has not been exercised.' : 'Charger 2 allocation readback is unconfirmed.';
   return [`Shared priority: ${priorityName(current.selectedPriority)}.`, peerText, overlap, consistency,

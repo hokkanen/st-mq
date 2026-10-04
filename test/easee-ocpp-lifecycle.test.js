@@ -10,6 +10,7 @@ import { createDeviceProviders } from '../src/acquisition/devices.js';
 import { createHttp } from '../src/acquisition/http.js';
 import { ocppInstallation } from '../src/acquisition/easee-ocpp-setup.js';
 import { CHARGING_OBSERVATION_IDS } from '../src/charging/easee.js';
+import { updateSupplyEstimate } from '../src/charging/supply.js';
 import { ChargingRuntime } from '../src/charging/runtime.js';
 import { loadConfig } from '../src/app/config.js';
 import { start } from '../src/main.js';
@@ -23,9 +24,9 @@ const deferred = () => {
   return { promise, resolve };
 };
 
-function fixture(t, { streaming = false, authorizationMode = 'plug-and-charge' } = {}) {
+function fixture(t, { streaming = false, authorizationMode = 'plug-and-charge', equalizer = false } = {}) {
   const config = { dataDir: '/unused-fixture-directory', connections: { easee: {
-    charger_id: CHARGER, access_token: 'fixture-access-token', local_ocpp: {
+    charger_id: CHARGER, access_token: 'fixture-access-token', ...(equalizer ? { equalizer_id: 'fixture-equalizer' } : {}), local_ocpp: {
       server_url: 'ws://192.0.2.10:9001/ocpp', password: 'fixture-ocpp-pass', authorization_mode: authorizationMode,
       authorization_tags: authorizationMode === 'rfid' ? ['fixture-rfid-tag'] : [],
     },
@@ -36,6 +37,7 @@ function fixture(t, { streaming = false, authorizationMode = 'plug-and-charge' }
   let cloudObservations = null, cloudOffline = false, nativeRequest = null, streamRows = null, commandSourceAt = null;
   let resumeCurrentDelayReads = 0, pendingResumeCurrentAt = null;
   let streamObservation = null;
+  let streamConnected = true, streamDisconnect = null;
   let readSetupState = () => states.get('setup');
   const stateFor = key => ({ get: () => clone(states.get(key) ?? null), set: value => states.set(key, clone(value)) });
   const newHttp = () => createHttp({ allowOcppSetup: true, allowChargerScheduling: true, allowChargerTakeover: true, canControl: () => permitted,
@@ -43,6 +45,9 @@ function fixture(t, { streaming = false, authorizationMode = 'plug-and-charge' }
       const path = new URL(url).pathname, method = options.method, body = options.body ? JSON.parse(options.body) : null;
       events.push({ type: 'http', path, method, body });
       await beforeRequest();
+      if (path === '/api/equalizers/fixture-equalizer/config') return Response.json({ maxAllocatedCurrent: 27 });
+      if (path === '/state/fixture-equalizer/observations') return Response.json({ observations:
+        [31, 32, 33, 34, 35, 36].map(id => ({ id, value: id < 34 ? 5 : 230, timestamp: new Date(AT).toISOString() })) });
       if (path === `/local-ocpp/v1/connection-details/${CHARGER}`) {
         if (method === 'GET') return current ? Response.json(clone(current)) : new Response(null, { status: 404 });
         assert(readSetupState()?.intent, 'Durable setup intent precedes the HTTP store');
@@ -99,7 +104,10 @@ function fixture(t, { streaming = false, authorizationMode = 'plug-and-charge' }
     const provider = createDeviceProviders({ connections: configured.connections, http, clock: () => now, canControl: () => permitted,
       streamFactory: streaming ? options => {
         streamObservation = options.onObservation;
-        return { start() {}, close() {}, snapshot: () => clone(streamRows), reconcile() {}, status: () => ({ connected: true }) };
+        streamDisconnect = options.onDisconnect;
+        return { start() {}, close() {}, snapshot: (device, ids) => !streamConnected ? null
+          : streamRows instanceof Map ? clone(streamRows.get(device)?.filter(row => ids.includes(row.id)) ?? null) : clone(streamRows),
+        reconcile() {}, status: () => ({ connected: streamConnected }) };
       } : null, ocppInstallation: installation, ocppState: stateFor('transactions'), ocppSetupState: stateFor('setup'),
       ocppFactory: options => {
         let ready = false, closed = false;
@@ -135,6 +143,7 @@ function fixture(t, { streaming = false, authorizationMode = 'plug-and-charge' }
     set commandSourceAt(value) { commandSourceAt = value; },
     set resumeCurrentDelayReads(value) { resumeCurrentDelayReads = value; },
     set streamRows(value) { streamRows = clone(value); }, set cloudOffline(value) { cloudOffline = value; },
+    set streamConnected(value) { if (streamConnected && !value) streamDisconnect?.(); streamConnected = value; },
     emitObservation(observation) { streamObservation?.(CHARGER, observation); },
     set nativeRequest(value) { nativeRequest = value; },
     set schedule(value) { schedule = clone(value); }, set transition(value) { transition = value; },
@@ -272,6 +281,117 @@ test('provider preserves OCPP message receipt clocks instead of replacing them w
   assert.equal(values.powerKw.value, 0);
   assert.equal(values.powerKw.measuredAt, AT - 1000);
   assert.equal(values.powerKw.receivedAt, AT - 800);
+});
+
+test('native OCPP restart retains supply history while cloud metadata is missing and recovers its configured balancing evidence', async t => {
+  const f = fixture(t, { equalizer: true });
+  f.observations = [[80, 344], [141, 1], [250, true], [22, 16], [23, 16], [24, 16],
+    [230, 20], [231, 20], [232, 20], [183, 0], [184, 0], [185, 0]]
+    .map(([id, value]) => ({ id, value, timestamp: new Date(AT).toISOString() }));
+  const physical = () => { f.listeners.at(-1).control = {
+    connectionId: 'supply-restart-socket', connectorStatus: 'SuspendedEVSE', timestamp: f.now,
+    receivedAt: f.now, transaction: null,
+    readings: [120, 183, 184, 185].map(id => ({ id, value: 0, timestamp: new Date(AT).toISOString(), receivedAt: AT })),
+  }; };
+  const first = f.make(); await first.reconcileOcpp(); physical();
+  const baseline = await first.chargerScheduleControl().read({ forceAppRefresh: true });
+  assert.equal(baseline.externalLoadBalancing, true);
+  const established = updateSupplyEstimate(null, baseline, f.now);
+  assert.equal(established.available, true);
+  assert.equal(established.samples.length, 1);
+  await first.close(); f.advance(1000);
+  const restarted = f.make(); await restarted.reconcileOcpp(); physical();
+  f.cloudOffline = true;
+  const absent = await restarted.chargerScheduleControl().read({ forceAppRefresh: true });
+  assert.equal(absent.online, true, 'Local OCPP remains connected during the cloud metadata gap');
+  assert.equal(absent.externalLoadBalancing, null);
+  const held = updateSupplyEstimate(JSON.parse(JSON.stringify(established)), absent, f.now);
+  assert.equal(held.available, false);
+  assert.deepEqual(held.samples, established.samples);
+  assert.equal(held.measuredAt, established.measuredAt);
+  f.cloudOffline = false; f.advance(1000);
+  const recovered = await restarted.chargerScheduleControl().read({ forceAppRefresh: true });
+  assert.equal(recovered.externalLoadBalancing, true);
+  const restored = updateSupplyEstimate(held, recovered, f.now);
+  assert.equal(restored.available, true);
+  assert.deepEqual(restored.samples, established.samples);
+  assert.equal(restored.measuredAt, established.measuredAt, 'Metadata recovery cannot renew source observations');
+});
+
+test('native current supply reads admitted stream and OCPP samples without polling or refreshing their clocks', async t => {
+  const f = fixture(t, { equalizer: true, streaming: true });
+  f.observations = [[80, 344], [141, 1], [250, true], [22, 16], [23, 16], [24, 16],
+    [230, 20], [231, 20], [232, 20], [183, 0], [184, 0], [185, 0]]
+    .map(([id, value]) => ({ id, value, timestamp: new Date(AT).toISOString() }));
+  const provider = f.make(); await provider.reconcileOcpp();
+  const adapter = provider.chargerScheduleControl();
+  await adapter.read({ forceAppRefresh: true });
+  provider.startStreaming(); await new Promise(resolve => setImmediate(resolve));
+  const rows = (ids, values, at = f.now) => ids.map((id, index) => ({
+    id, value: values[index], unit: 'A', timestamp: new Date(at).toISOString(),
+  }));
+  const physical = readings => { f.listeners.at(-1).control = {
+    connectionId: 'current-supply-socket', connectorStatus: 'Charging', timestamp: f.now,
+    receivedAt: f.now, transaction: null, readings,
+  }; };
+  f.advance(1000);
+  let property = rows([31, 32, 33], [20, 21, 22]);
+  const charger = rows([183, 184, 185], [3, 4, 5]);
+  physical(charger);
+  const stream = () => { f.streamRows = new Map([
+    ['fixture-equalizer', property.some(row => row.id === 250) ? property
+      : [...property, { id: 250, value: true, timestamp: new Date(AT).toISOString() }]],
+    [CHARGER, [...rows([183, 184, 185], [9, 9, 9]), { id: 250, value: true, timestamp: new Date(AT).toISOString() }]],
+  ]); };
+  stream();
+  let httpCount = f.events.filter(row => row.type === 'http').length;
+  let reading = adapter.readCurrentSupply();
+  assert.equal(reading.online, true);
+  assert.deepEqual(reading.supply.propertyCurrentA, [20, 21, 22]);
+  assert.deepEqual(reading.supply.chargerCurrentA, [3, 4, 5], 'Admitted local meter samples precede cloud charger samples');
+  assert.deepEqual(reading.supply.currentSources, { property: 'easee-stream', charger: 'easee-ocpp' });
+  f.advance(1000); property = rows([31, 32, 33], [25, 26, 27]); stream();
+  reading = adapter.readCurrentSupply();
+  assert.deepEqual(reading.supply.propertyCurrentA, [25, 26, 27], 'A new stream sample is visible without controller/cloud polling');
+  const sourceTimes = structuredClone(reading.supply.observationTimes);
+  f.advance(20_000);
+  assert.deepEqual(adapter.readCurrentSupply().supply.observationTimes, sourceTimes,
+    'Repeated getters leave old samples old so the limiter can choose fallback');
+  assert.equal(f.events.filter(row => row.type === 'http').length, httpCount);
+  for (const invalid of [
+    rows([31, 32, 33], [null, 20, 20]), rows([31, 32], [20, 20]),
+    rows([31, 32, 33], [20, 20, 20], f.now + 1000),
+    rows([31, 32, 33], [20, 20, 20]).map(row => ({ ...row, unit: 'W' })),
+    [...rows([31, 32, 33], [20, 20, 20]), ...rows([31], [21])],
+    [...rows([31, 32, 33], [20, 20, 20]), { id: 250, value: false, timestamp: new Date(f.now).toISOString() }],
+  ]) {
+    property = invalid; stream();
+    assert.equal(adapter.readCurrentSupply().supply.propertyCurrentA, null,
+      'Unknown live evidence cannot borrow an older cached property value');
+  }
+  property = rows([31, 32, 33], [20, 20, 20]); stream();
+  physical(rows([183], [null]));
+  assert.equal(adapter.readCurrentSupply().supply.chargerCurrentA, null,
+    'An invalid local meter sample cannot be replaced by a different source');
+  physical([]);
+  assert.deepEqual(adapter.readCurrentSupply().supply.chargerCurrentA, [9, 9, 9],
+    'An independent admitted stream can supply phases when no local phases exist');
+  f.streamConnected = false;
+  assert.equal(adapter.readCurrentSupply().supply.propertyCurrentA, null,
+    'Disconnect fences cached supply from before the acquisition boundary');
+  assert.equal(f.events.filter(row => row.type === 'http').length, httpCount);
+  await adapter.read({ forceAppRefresh: true });
+  httpCount = f.events.filter(row => row.type === 'http').length;
+  reading = adapter.readCurrentSupply();
+  assert.deepEqual(reading.supply.propertyCurrentA, [5, 5, 5]);
+  assert.deepEqual(reading.supply.observationTimes.property, [AT, AT, AT]);
+  assert.equal(reading.supply.currentSources.property, 'easee-cloud');
+  assert.equal(f.events.filter(row => row.type === 'http').length, httpCount);
+  await provider.close();
+  reading = adapter.readCurrentSupply();
+  assert.equal(reading.online, false);
+  assert.equal(reading.supply.propertyCurrentA, null);
+  assert.equal(reading.supply.chargerCurrentA, null);
 });
 
 test('unconfirmed native cleanup retains its listener and commissioning obligation without applying OcppOff', async t => {

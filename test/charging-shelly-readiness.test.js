@@ -50,7 +50,7 @@ function fixture(t, configuration = {}, { saved = new Map(), initialNow = NOW } 
     queueMicrotask(() => client.emit('message', `${frame.src}/rpc`, reply, {}));
   };
   const config = chargingConfiguration({ chargers: { charger2: {
-    enabled: true, deviceId: DEVICE, topicPrefix: PREFIX, ...configuration,
+    enabled: true, deviceId: DEVICE, topicPrefix: PREFIX, limiterEnabled: false, ...configuration,
   } } }).chargers.charger2;
   const adapter = createShellyEvseAdapter({ config, client, broker: { address: 'mqtt://synthetic-readiness' },
     clock: () => { const at = now; now += clockStep; return at; }, canControl: () => true,
@@ -412,7 +412,7 @@ test('Shelly discovers basic control without manual commissioning or current-ste
   await f.command('start_charging', false);
   assert.deepEqual(f.mutations().map(call => [call.method, call.params.value]), [['Boolean.Set', false]]);
   await assert.rejects(f.command('current_limit', 10));
-  assert.equal(f.mutations().length, 1, 'missing numeric capability cannot authorize a current write');
+  assert.equal(f.mutations().length, 1, 'Explicitly disabled current adjustment cannot authorize an ordinary numeric write');
 });
 
 test('basic start/stop preserves native load balancing and native settings', async t => {
@@ -628,8 +628,10 @@ test('numeric mutations require enabled load management and live supported capab
 
 test('unsupported numeric capabilities disable current control without blocking basic stop', async t => {
   const cases = [
-    ['missing step', component => { delete component.meta.ui.step; }],
     ['different step', component => { component.meta.ui.step = 2; }],
+    ['null step', component => { component.meta.ui.step = null; }],
+    ['string step', component => { component.meta.ui.step = '1'; }],
+    ['zero step', component => { component.meta.ui.step = 0; }],
     ['different minimum', component => { component.min = 8; }],
     ['lower native maximum', component => { component.max = 12; }],
     ['read-only current', component => { component.access = 'cr'; }],
@@ -643,6 +645,24 @@ test('unsupported numeric capabilities disable current control without blocking 
     await assert.rejects(f.command('current_limit', 10));
     assert.equal(f.mutations().length, 0);
     await f.command('start_charging', false);
+    assert.equal(f.mutations().length, 1);
+  });
+});
+
+test('supported current writes remain available when optional UI step metadata is absent or withdrawn', async t => {
+  for (const metadata of ['missing-step', 'missing-ui', 'missing-meta']) await t.test(metadata, async t => {
+    const f = fixture(t, { limiterEnabled: true, additiveCurrentVerified: true });
+    await f.ready();
+    assert.equal(f.adapter.snapshot().currentControlReady, true);
+    if (metadata === 'missing-step') delete f.components.current_limit.meta.ui.step;
+    if (metadata === 'missing-ui') delete f.components.current_limit.meta.ui;
+    if (metadata === 'missing-meta') f.components.current_limit.meta = null;
+    await f.refresh();
+    assert.equal(f.adapter.snapshot().currentControlReady, true);
+    await f.command('current_limit', 10);
+    assert.deepEqual(f.mutations().map(call => call.params.value), [10]);
+    assert.equal(f.fields.current_limit, 10);
+    await assert.rejects(f.command('current_limit', 10.5), 'Whole-ampere RPC admission still applies');
     assert.equal(f.mutations().length, 1);
   });
 });
@@ -662,7 +682,7 @@ test('callers cannot bypass actuation admission by omitting or clearing the muta
 test('native current capability changes are rechecked on every refresh', async t => {
   const cases = [
     ['lower maximum', component => { component.max = 12; }],
-    ['withdrawn step', component => { delete component.meta.ui.step; }],
+    ['contradictory step', component => { component.meta.ui.step = 2; }],
     ['read-only current', component => { component.access = 'cr'; }],
     ['component replacement', component => { component.id = 299; }],
     ['service replacement', component => { component.owner = 'service:1'; }],
@@ -822,10 +842,10 @@ test('Shelly scoped minimum and exact restoration do not require optional UI ste
     const controller = createShellyController({ adapter: f.adapter, canControl: () => true, clock: f.now,
       getIdentification: () => request, saveState: value => { saved = structuredClone(value); } });
     t.after(() => controller.close());
-    assert.equal(f.adapter.snapshot().currentControlReady, false);
+    assert.equal(f.adapter.snapshot().currentControlReady, true);
     assert.equal(f.adapter.snapshot().identificationCurrentReady, true);
     assert.equal(f.adapter.normalize().identificationCurrentReady, true);
-    await assert.rejects(f.command('current_limit', 10), 'No general 1 A write capability is inferred');
+    await assert.rejects(f.command('current_limit', 10), 'Disabled load management still rejects unscoped numeric writes');
     let view = await controller.update({ enabled: false });
     assert.equal(view.currentTest.phase, 'active'); assert.equal(f.fields.current_limit, 6);
     await assert.rejects(f.command('current_limit', 10, { identificationCurrent: {
@@ -833,7 +853,7 @@ test('Shelly scoped minimum and exact restoration do not require optional UI ste
     } }), 'A scoped restore cannot synthesize an intermediate numeric limit');
     request = null; view = await controller.update({ enabled: false });
     assert.equal(view.currentTest.phase, 'restored'); assert.equal(f.fields.current_limit, 12);
-    assert.equal(f.adapter.snapshot().currentControlReady, false);
+    assert.equal(f.adapter.snapshot().currentControlReady, true);
     assert.deepEqual(f.mutations().map(call => [call.method, call.params.value]), [['Number.Set', 6], ['Number.Set', 12]]);
   });
 });

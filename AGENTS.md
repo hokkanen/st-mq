@@ -222,6 +222,16 @@ permission to act. See [the configuration guide](docs/configuration.md).
   Charge now is a session action independent of the Automatic charging switch.
   It still respects live control authority, device readiness and native limits.
   Integration setup, commissioning and electrical limits remain configured.
+- Charging current adjusts to property loading and shared charger priority by
+  default, independently of Automatic scheduling and including Charge now.
+  Charger 1 retains native Equalizer current control. With Charger 2 priority,
+  Shelly uses the headroom remaining after household demand, excluding Charger
+  1's draw; Equalizer must reduce Charger 1 as needed. A forecast allocation or
+  temporary combined excess caused by Charger 1 must not reduce Shelly's live
+  entitlement. Native, vehicle and electrical limits still apply. Current
+  adjustment requires supported capabilities and commissioned, fresh load
+  evidence; unavailable evidence uses the configured fallback, never invented
+  headroom. An explicit configuration opt-out remains supported.
 - When future charging current is unknown, economic scheduling assumes the
   maximum the charger can deliver within its configured/verified ceiling and
   forecast property headroom on every phase after household and peer load. Use

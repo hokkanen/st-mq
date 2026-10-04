@@ -61,7 +61,7 @@ export function createShellyEvseAdapter({ config, broker, client, store, engine,
   let connected = false, admitted = false, online = false, closed = false, generation = 0, discovered = false, controlReady = false,
     readinessRevision = 0;
   let error = null, meterError = null, info = null, service = null, serviceStatus = null, nativeSchedules = null, serviceAt = null, currentConfig = null, polling = null, buffer = [], componentRoles = new Map(), pendingEvents = [];
-  let profileSupported = false, currentWritable = false, currentControlReady = false, minimumCurrentWritable = false;
+  let profileSupported = false, currentWritable = false, currentControlReady = false;
   const source = `stmq-evse-${randomUUID()}`, pending = new Map();
   const fieldRevisions = new Map(), fieldGenerations = new Map();
   const notificationBaselines = new Map(), notificationPending = new Map(Object.entries(state.notificationPending ?? {}));
@@ -77,7 +77,7 @@ export function createShellyEvseAdapter({ config, broker, client, store, engine,
   let overflow = false, eventOverflow = false;
   const ready = () => controlReady && !eventOverflow && !state.permissionOverflow && finite(serviceAt) && clock() >= serviceAt && clock() - serviceAt <= config.maxAgeMs;
   const currentReady = () => ready() && currentControlReady;
-  const identificationCurrentReady = () => ready() && minimumCurrentWritable
+  const identificationCurrentReady = () => currentReady()
     && Number.isSafeInteger(state.fields.current_limit?.value)
     && state.fields.current_limit.value >= currentConfig.min
     && state.fields.current_limit.value <= Math.min(config.maximumCurrentA, currentConfig.max);
@@ -364,7 +364,10 @@ export function createShellyEvseAdapter({ config, broker, client, store, engine,
     if (notificationRefreshQueued) return;
     notificationRefreshQueued = true;
     queueMicrotask(() => {
-      void refresh({ force: true }).finally(() => { notificationRefreshQueued = false; engine.charging?.tick({ force: true }); });
+      void refresh({ force: true }).finally(() => {
+        notificationRefreshQueued = false;
+        void engine.charging?.reconcileShellyObservation?.().catch(() => {});
+      });
     });
   }
   function admitNotification(params, at, retained, method = 'NotifyStatus') {
@@ -491,13 +494,12 @@ export function createShellyEvseAdapter({ config, broker, client, store, engine,
           && finite(currentConfig?.max) && currentConfig.max >= config.maximumCurrentA
           && service?.auto_balance?.enable === false;
         const reportedStep = currentConfig?.meta?.ui?.step;
-        currentControlReady = writableRange && reportedStep === config.currentStepA;
-        // Number.min is an allowed numeric endpoint. The scoped test writes
-        // only that exact minimum and the previously observed native setting;
-        // it needs no inferred UI step or arbitrary positive-current allocation.
-        // An explicitly different step remains unsupported, while absence is
-        // valid optional UI metadata rather than missing RPC write authority.
-        minimumCurrentWritable = writableRange && (reportedStep === undefined || reportedStep === config.currentStepA);
+        // Top AC supports numeric current writes within the native range.
+        // Number's optional UI metadata is not RPC write authority; its absence
+        // does not withdraw the supported profile's whole-ampere setpoints.
+        // An explicitly contradictory step still blocks numeric control.
+        currentControlReady = config.profile === 'top-ac-portable' && writableRange
+          && (reportedStep === undefined || reportedStep === config.currentStepA);
         if (!eligible) error = eventOverflow ? 'evse-event-overflow' : !nativeAvailable ? 'evse-native-restriction' : 'evse-profile-unsupported';
       };
       // Physical state and metering remain observable when a control-only read
@@ -536,7 +538,7 @@ export function createShellyEvseAdapter({ config, broker, client, store, engine,
   }
   client.on('connect', connect); client.on('message', receive); client.on('offline', disconnect); client.on('close', disconnect);
   const timer = setInterval(() => {
-    void refresh().then(() => engine.charging?.tick({ force: true }));
+    void refresh().then(() => engine.charging?.reconcileShellyObservation?.()).catch(() => {});
   }, 5000); timer.unref?.();
   const settingFresh = (role, now = clock()) => {
     const field = state.fields[role];
@@ -1146,7 +1148,7 @@ export function createShellyController({ adapter, initialState, saveState = () =
             await persist(); return;
           } else {
             if (claim.fingerprint === null) { state.automaticTakeover = { ...claim, fingerprint }; await persist(); }
-            takeoverPlan = typeof getPlan === 'function' ? await getPlan(copy(snapshot), { takeover: true }) : input.plan;
+            takeoverPlan = typeof getPlan === 'function' ? await getPlan(copy(snapshot), { takeover: true, refresh: input.refreshPlan !== false }) : input.plan;
             if (!takeoverPlan?.periods?.length) {
               state.phase = 'unavailable'; state.reason = 'charging-plan-unavailable'; await persist(); return;
             }
@@ -1176,7 +1178,7 @@ export function createShellyController({ adapter, initialState, saveState = () =
             await persist();
             if (snapshot.nativeScheduleActive) {
               if (typeof adapter.disableNativeSchedules !== 'function') throw fail('evse-native-schedule-unsupported');
-              takeoverPlan ??= typeof getPlan === 'function' ? await getPlan(copy(snapshot), { takeover: true }) : input.plan;
+              takeoverPlan ??= typeof getPlan === 'function' ? await getPlan(copy(snapshot), { takeover: true, refresh: input.refreshPlan !== false }) : input.plan;
               if (!takeoverGuard()) throw fail('evse-takeover-changed');
               const openPeriod = takeoverPlan?.periods?.some(period => period.startAt <= clock()
                 && (period.endAt === null || period.endAt > clock()));
@@ -1364,7 +1366,7 @@ export function createShellyController({ adapter, initialState, saveState = () =
         const chargeNow = Number.isSafeInteger(input.chargeNow?.connectedAt)
           && input.chargeNow.connectedAt === snapshot.session?.connectedAt;
         const restoringUnscheduled = state.owned?.sessionId === sessionId && (!input.enabled || chargeNow);
-        let plan = !identification && typeof getPlan === 'function' ? await getPlan(copy(snapshot)) : input.plan;
+        let plan = !identification && typeof getPlan === 'function' ? await getPlan(copy(snapshot), { refresh: input.refreshPlan !== false }) : input.plan;
         if (!identification && chargingPlanInputsUnavailable(plan) && state.execution && !state.provisional)
           plan = { ...copy(state.execution), startAt: state.execution.periods[0].startAt };
         const context = typeof getAllocation === 'function' ? await getAllocation(copy(snapshot)) : input.allocation ?? {};
@@ -1403,7 +1405,7 @@ export function createShellyController({ adapter, initialState, saveState = () =
             test.probeDeadlineAt = identification.probeUntil;
             await persist();
           }
-          if (!identification && typeof getPlan === 'function') plan = await getPlan(copy(snapshot));
+          if (!identification && typeof getPlan === 'function') plan = await getPlan(copy(snapshot), { refresh: input.refreshPlan !== false });
         }
         // A native instruction received while the current-test RPC was pending
         // must fence the remaining start/stop work in this same reconcile.

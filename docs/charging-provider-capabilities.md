@@ -10,7 +10,7 @@
 | Economic control | Exclusive cloud delayed starts or native OCPP expiring 0 A transaction pauses | EVSE start/stop over MQTT RPC | No vehicle writes |
 | Active vehicle identification | One bounded attempt per physical connection; native expiring pause | Same attempt lifecycle; verified minimum-current test and application-managed start-permission pause | Independent live actual current/phase evidence or correlated BMW start/stop |
 | Identification pause recovery | Ordinary correlation pause expires after 90–91 seconds; an extra probe's final economic pause lasts until scheduled release | Persisted restoration obligation; an application/MQTT outage can extend the stop until safe recovery | No charger control |
-| Current changes by ST-MQ | Native OCPP imposes expiring 0 A pauses; released charging uses native current limits | Native current by default; scoped 6 A identification test and optional economic current limiter | Read native limits and actual current only |
+| Current changes by ST-MQ | Native OCPP imposes expiring 0 A pauses; released charging uses native current limits | Property-load and priority adjustment by default; scoped 6 A identification test | Read native limits and actual current only |
 | SoC/capacity/target | Assigned vehicle or explicit fallback | Assigned vehicle or explicit fallback | Applicable vehicle evidence |
 | Supply voltage | Physical installation evidence | Physical installation evidence | Never used for home supply |
 
@@ -104,14 +104,21 @@ raise a native current limit. Enabled native schedules own start/stop until
 removed; removal gives the app release priority for the current connection.
 Shelly schedule windows are not inferred from unverified cron semantics.
 
-Optional `limiterEnabled:true` enables economic current limiting. It additionally requires
-reported writable numeric capabilities supporting the integration's 6 A minimum
-and 1 A step, sufficient native maximum, and disabled native `auto_balance`.
-Missing step metadata blocks this optional capability, not basic start/stop.
+`limiterEnabled:true` is the default and enables current adjustment independently
+of economic scheduling, including Charge now. It requires the supported Top AC
+profile, a writable native range with a 6 A minimum and sufficient maximum, and
+disabled native `auto_balance`. The profile uses integer ampere settings.
+The [Number API](https://shelly-api-docs.shelly.cloud/gen2/DynamicComponents/Virtual/Number/)
+defines `meta` as optional presentation metadata, and the
+[Top AC API](https://shelly-api-docs.shelly.cloud/gen2/Devices/ShellyX/XT1/TopACPortableEVCharger/)
+documents `Number.Set` for `current_limit`. Missing `meta.ui.step` therefore does
+not block these supported writes; a supplied value other than numeric 1 does.
+Discovery and command preflight retain the same identity, range, native balancing
+and freshness checks. Explicit `limiterEnabled:false` retains basic start/stop.
 The advertised pilot current and the vehicle's selected draw are separate.
 A positive vehicle setting below the 6 A pilot minimum can use a valid 6 A
 offer while the vehicle retains its own lower limit. Basic scheduling leaves
-the existing native current setting unchanged; the optional limiter may offer
+the existing native current setting unchanged; the enabled limiter may offer
 6 A. A known zero vehicle restriction still blocks charging. Native charger,
 electrical and shared-allocation ceilings below 6 A still require a pause and
 are never rounded up. Expected delivered energy retains the lower vehicle
@@ -340,8 +347,9 @@ additive-current behavior before enabling the installation load model.
 The bounded 2 October 2026 live setup confirmed the expected roles, working MQTT,
 source-clocked three-phase measurements and physical Boolean stop/resume. Firmware
 1.7.1 omitted `meta.ui.step`: basic start/stop and the scoped exact-minimum and
-original-setting operations do not depend on that UI metadata. General economic
-current allocation remains unavailable without a verified supported step.
+original-setting operations do not depend on that UI metadata. General current
+allocation also accepts absent UI step metadata for the supported profile while
+requiring the native range and all other capability checks.
 A stop reported `charger_end`
 while plugged in; the profile preserves that connection. Native session-energy
 comparisons are not implemented; recording uses lifetime-meter increments.

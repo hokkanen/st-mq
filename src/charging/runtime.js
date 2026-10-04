@@ -29,6 +29,7 @@ import { readPlanningVoltage } from '../storage/voltage.js';
 import { validateJointTeslaComparison, jointTeslaComparisonScope } from './joint-identification.js';
 
 const MINUTE = 60_000;
+const CURRENT_RECONCILE_MS = 5000;
 // The CarData Home Assistant bridge publishes unchanged facts every five
 // minutes. Broker connectivity alone cannot prove that bridge is still alive.
 const VEHICLE_FEED_MAX_AGE_MS = 10 * MINUTE;
@@ -303,7 +304,9 @@ export class ChargingRuntime {
         },
         getMaximumAmps: scheduleCeiling,
         getIdentification: snapshot => this.identificationControl(item, snapshot),
-        getPlan: async snapshot => {
+        getPlan: async (snapshot, { refresh = true, takeover = false } = {}) => {
+          if (!refresh && !takeover && this.currentPlanReusable(item, snapshot))
+            return this.controlPlan(item, this.pricesInitialized ? item.plan : null);
           item.awaitingPlan = true;
           try { await this.updatePlan(this.clock(), { sourceId: id }); }
           catch { this.error = 'charging-planning-unavailable'; return this.controlPlan(item, null); }
@@ -1618,7 +1621,10 @@ export class ChargingRuntime {
       item.sessionCost = updateSessionCost(item.sessionCost, view, observedAt, this.prices, this.readEnergy);
     }
     this.fenceChangedCommands(this.clock(), sourceId);
-    for (const item of Object.values(this.chargers)) item.newEpisode = false;
+    for (const item of Object.values(this.chargers)) {
+      item.newEpisode = false;
+      item.limiterPlanBasis = this.currentPlanBasis(item);
+    }
     this.persist(); this.scheduleWakeup(this.clock());
   }
   invalidateCommands() {
@@ -1634,7 +1640,7 @@ export class ChargingRuntime {
         enabled: item.controls.enabled, chargeNow: item.request?.chargeNow === true,
         periods: remainingPeriods(item.plan?.periods, now).map(row => [row.startAt <= now ? 'open' : row.startAt, row.endAt]),
         provisional: item.plan?.provisional === true,
-        ...(id === 'charger2' ? { current: current?.chargers?.charger2?.currentLimitA ?? null,
+        ...(id === 'charger2' ? { current: this.settings.priority === 'charger2' ? null : current?.chargers?.charger2?.currentLimitA ?? null,
           reservation: this.settings.priority === 'charger2' ? 0 : current?.chargers?.charger1?.currentA ?? 0 } : {}) });
       const changed = item.commandBasis !== undefined && item.commandBasis !== basis;
       item.commandBasis = basis;
@@ -1708,14 +1714,71 @@ export class ChargingRuntime {
     return planning;
   }
   allocationContext() {
-    const first = this.chargers.charger1?.controller?.status()?.snapshot, supply = first?.supply;
-    const view = this.views().find(row => row.id === 'charger2');
+    const firstItem = this.chargers.charger1;
+    // This adapter method reads admitted local source evidence only. It must
+    // never perform provider requests or advance a measurement's source clock.
+    const first = firstItem?.adapter?.readCurrentSupply?.() ?? firstItem?.controller?.status()?.snapshot, supply = first?.supply;
+    const views = this.views(), view = views.find(row => row.id === 'charger2'), peer = views.find(row => row.id === 'charger1');
     const now = this.clock(), active = this.coordination?.allocations?.find(row => row.start <= now && row.end > now);
+    const control = view?.control, peerControl = peer?.control, peerSnapshot = peerControl?.snapshot;
+    const unscheduled = !view?.settings.enabled || view?.request?.chargeNow === true || Boolean(control?.manual);
+    const liveBalanced = this.settings.priority === 'balanced' && unscheduled && control?.manual?.kind !== 'stop'
+      && (control?.snapshot?.fields?.start_charging?.value === true || control?.ownedPause === true);
+    const peerScoped = peer?.request && peerControl?.session?.connected === true
+      && peerControl.session.connectedAt === sessionConnectedAt(peer.request)
+      && peerSnapshot?.online === true && Number.isSafeInteger(peerSnapshot.readAt)
+      && peerSnapshot.readAt <= now && now - peerSnapshot.readAt <= MINUTE;
+    const peerRestricted = peerControl?.manual?.kind === 'stop' || peerSnapshot?.stopped === true
+      || peerSnapshot?.appControl?.stopped === true || peerSnapshot?.appControl?.enabled === false
+      || peerSnapshot?.faulted || peerSnapshot?.authorizationBlocked
+      || peer?.values.vehicleCurrentA?.value === 0 || peer?.values.nativeCurrentA?.value === 0
+      || peer?.values.vehicleNotBefore?.value > now;
+    const peerOpen = !peerControl?.pending && !peerControl?.errorCode && (['enable', 'charge-now'].includes(peerControl?.manual?.kind)
+      || ['active', 'released', 'charging'].includes(peerControl?.phase)
+        && (peerControl.released === true || peerControl.execution?.periods?.some(row => row.startAt <= now
+          && (row.endAt === null || row.endAt > now))));
+    const peerCeilings = [peer?.values.maximumCurrentA?.value, peer?.values.nativeCurrentA?.value,
+      peer?.values.vehicleCurrentA?.value].filter(value => Number.isFinite(value) && value >= 0);
+    const peerDemandA = peerScoped && !peerRestricted && peerOpen && peerCeilings.length ? Math.min(...peerCeilings) : null;
     return { property: { healthy: first?.online === true, currents: supply?.propertyCurrentA, times: supply?.observationTimes?.property },
       easee: { healthy: first?.online === true, currents: supply?.chargerCurrentA, times: supply?.observationTimes?.charger },
       vehicleCurrentA: view?.values.vehicleCurrentA?.value, notBefore: view?.values.vehicleNotBefore?.value,
-      allocationA: active?.chargers?.charger2?.currentLimitA ?? null,
+      priority: this.settings.priority,
+      liveBalanced, peerDemandA,
+      allocationA: this.settings.priority === 'charger2' ? null : active?.chargers?.charger2?.currentLimitA ?? null,
       reservationA: this.settings.priority === 'charger2' ? 0 : active?.chargers?.charger1?.currentA ?? 0 };
+  }
+  currentPlanBasis(item) {
+    const control = item.controller?.status();
+    return digest({ association: item.association, request: item.request, controls: item.controls,
+      priority: this.settings.priority, authority: this.canControl(),
+      connected: control?.session?.connected, connectedAt: control?.session?.connectedAt,
+      manual: control?.manual, nativeSchedule: control?.snapshot?.nativeScheduleActive,
+      ready: control?.snapshot?.controlReady, devicePermissionHeld: control?.devicePermissionHeld,
+      identification: [item.identification?.id, item.identification?.phase, item.vehicleMatch?.id],
+      currentTest: [control?.currentTest?.id, control?.currentTest?.phase] });
+  }
+  currentPlanReusable(item, snapshot = item.controller?.status()?.snapshot) {
+    const sameConnection = snapshot?.session?.connected === false ? item.request == null
+      : snapshot?.session?.connected === true && item.request
+        && snapshot.session.connectedAt === sessionConnectedAt(item.request);
+    if (item.replan || !sameConnection
+      || item.limiterPlanBasis !== this.currentPlanBasis(item)) return false;
+    if (!this.pricesInitialized) return true;
+    const calculation = this.coordination;
+    return Number.isSafeInteger(calculation?.at) && this.clock() >= calculation.at
+      && this.clock() < chargingPlanValidUntil({ now: calculation.at, chargers: [] }, {
+        allocations: calculation.allocations, plans: item.plan ? { charger2: item.plan } : {} });
+  }
+  async reconcileShellyObservation() {
+    const item = this.chargers.charger2;
+    if (this.closed || !this.canControl() || !item?.controller || item.adapterPending || item.backendTransition || item.reconcileFlight
+      || this.clock() - (item.lastReconcileAt ?? -Infinity) < CURRENT_RECONCILE_MS) return;
+    // The ordinary current loop neither queues behind a slow native command
+    // nor polls Charger 1's cloud. Current-test/pause deadlines keep their
+    // existing scheduler; the controller retains all native command fences.
+    try { await this.reconcile('charger2', { refreshPlan: false }); }
+    catch (error) { item.error = 'charging-reconciliation-unavailable'; throw error; }
   }
   async reconcile(id, options = {}) {
     if (id === undefined) { await Promise.all(Object.keys(this.chargers).map(key => this.reconcile(key))); return; }
@@ -1741,7 +1804,7 @@ export class ChargingRuntime {
       }
     }
   }
-  async reconcileCharger(id, { replan = false, takeover = null } = {}) {
+  async reconcileCharger(id, { replan = false, takeover = null, refreshPlan = true } = {}) {
     const item = this.charger(id);
     if (item.backendTransition) return;
     if (item.adapterPending) await item.adapterFlight;
@@ -1760,7 +1823,7 @@ export class ChargingRuntime {
     // it is never a command to change Equalizer's live allowance.
     const maximumAmps = scheduleCeiling(controller.status()?.snapshot);
     await controller.update({ enabled: settings.enabled, plan: this.pricesInitialized ? item.plan : null,
-      timezone: TIME_ZONE, readyBy: settings.readyBy, maximumAmps, takeover, replan: replan || item.replan, controlsRevision,
+      timezone: TIME_ZONE, readyBy: settings.readyBy, maximumAmps, takeover, replan: replan || item.replan, controlsRevision, refreshPlan,
       chargeNow: item.request?.chargeNow === true ? { connectedAt: sessionConnectedAt(item.request) } : null,
       allocation: id === 'charger2' ? this.allocationContext() : undefined,
       vehicleDisconnect: item.vehicleDisconnect ? { ...item.vehicleDisconnect,
@@ -1782,7 +1845,9 @@ export class ChargingRuntime {
       try { this.persist(); } catch (error) { item.replan = true; throw error; }
     }
     item.error = null;
-    try { await this.updatePlan(this.clock(), { sourceId: id }); this.error = null; } catch { this.error = 'charging-planning-unavailable'; }
+    if (refreshPlan || !this.currentPlanReusable(item)) {
+      try { await this.updatePlan(this.clock(), { sourceId: id }); this.error = null; } catch { this.error = 'charging-planning-unavailable'; }
+    }
   }
   checkControlAuthority() {
     if (this.closed || !this.canControl() || !['mqtt', 'providers'].includes(this.config.input))

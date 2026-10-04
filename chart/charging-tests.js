@@ -28,7 +28,7 @@ const findingLabels = {
   'vehicle-limit-differs-from-preparation': 'The vehicle reported a different target. Review the target below.',
   'shared-priority-mismatch': 'A joint model did not reflect the selected shared priority. Review the shared charging evidence.',
   'shared-allocation-inconsistent': 'A shared allocation or cost bound was inconsistent with its recorded inputs.',
-  'shared-current-mismatch': 'Charger 2 current readback exceeded its shared allocation after settling.',
+  'shared-current-mismatch': 'Charger 2 current readback exceeded its active current ceiling after settling.',
 };
 const endReasons = {
   'equipment-changed': 'The configured physical charger changed.',

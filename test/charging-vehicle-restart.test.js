@@ -355,7 +355,10 @@ test('a confirmed same-session outcome survives adapter startup and unavailable 
   const restarted = f.create();
   assertUnassigned(restarted);
   restarted.persist();
-  const unavailable = restarted.status().diagnostics.chargers.find(row => row.id === 'charger1').current;
+  const diagnostics = restarted.status().diagnostics;
+  assert.notEqual(diagnostics.available, false, 'The observer remains available before its charger adapters are initialized');
+  assert.equal(diagnostics.error, undefined, 'An uninitialized peer limiter cannot prevent the report from observing unknown physical state');
+  const unavailable = diagnostics.chargers.find(row => row.id === 'charger1').current;
   assert.equal(unavailable.id, previous.id);
   assert.equal(unavailable.outcome.state, 'target-confirmed', 'Unknown startup defaults do not retract the historical confirmed target');
   assert.equal(unavailable.outcome.target, 100);
@@ -363,6 +366,8 @@ test('a confirmed same-session outcome survives adapter startup and unavailable 
   assert.equal(unavailable.current.physicalFresh, false);
 
   f.readback(false); await f.attach(restarted);
+  assert.equal(restarted.status().diagnostics.error, undefined);
+  assert.equal(restarted.status().diagnostics.chargers.find(row => row.id === 'charger1').current.current.physicalFresh, false);
   assert.equal(restarted.chargers.charger1.request.sessionId, sessionId);
   assert.equal(restarted.status().diagnostics.chargers.find(row => row.id === 'charger1').current.id, previous.id);
   f.readback(true); await restarted.reconcile();

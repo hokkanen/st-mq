@@ -24,12 +24,12 @@ provide automatic cloud authorization during an outage.
 
 Charger 2 is disabled by default. Once its MQTT device identity and topic are
 configured, supported start/stop readiness is checked automatically. Native app
-changes retain priority; optional current limiting has separate installation and
+changes retain priority; current adjustment defaults on and has separate installation and
 capability requirements. See [provider capabilities and setup](charging-provider-capabilities.md).
 
 ## Dashboard and requests
 
-Both charger cards show the physical connection, assigned vehicle or uncertainty, current request, measured/estimated progress, connection cost and control state. The Automatic charging switch governs economic scheduling. Vehicle identification and metering continue with automatic charging OFF. The separately configured Charger 2 limiter can remain active with economic scheduling OFF.
+Both charger cards show the physical connection, assigned vehicle or uncertainty, current request, measured/estimated progress, connection cost and control state. The Automatic charging switch governs economic scheduling. Vehicle identification and metering continue with automatic charging OFF. Charger 2 current adjustment defaults on independently of that switch, including Charge now and native running. Charger 1 retains its native Equalizer current control.
 
 When the physical connection is unknown or disconnected, the compact card still
 shows configured starting charge, target, capacity and ready-by defaults. These
@@ -440,6 +440,9 @@ lower/gap bounds where available. These are model checks, not proof of delivered
 energy or exact global optimality. Delayed vehicle-timer recommendations integrate
 the selected charger's exact allocation slices, including gaps assigned to its
 peer. Missing allocation evidence cannot be replaced with peak charging power.
+Current readback is compared with a fresh, ready controller's active ceiling for
+the selected priority; that live ceiling can differ from the forecast. Missing
+limiter startup state or stale assessment evidence leaves the result unknown.
 Shared evidence survives a same-version restart and stays bound to each physical
 connection. Existing version-2 assessments and session reports without this new
 optional evidence retain unknown shared coverage until independently observed;
@@ -621,7 +624,7 @@ household electrical measurements.
 When current-write capability is verified, Charger 2 can temporarily use its
 supported minimum of 6 A to distinguish simultaneous charging. This is scoped
 to the physical connection and identification attempt, independently of the
-optional economic current limiter. Charger 1 retains its native positive-current
+separately configured current limiter. Charger 1 retains its native positive-current
 settings and Equalizer control. The test requires a writable role and a verified
 numeric range, but can use the exact reported minimum and previous native setting
 without UI step metadata. Native load balancing, contradictory capabilities,
@@ -787,13 +790,13 @@ an unsettled peer are displayed separately; ordinary charging can continue while
 an identification action is blocked.
 Shelly requires available start/stop control,
 fresh physical readings and available MQTT, and retains native restrictions
-and its optional electrical limiter when enabled throughout the test.
+and its configured electrical limiter when enabled throughout the test.
 
 When the charging plan is delaying charge, the extra test temporarily permits
 charging under the existing charger, vehicle and local load-balancing limits.
 OCPP continues to use its established zero-current pause and release commands.
 Shelly uses the verified minimum-current comparison when available, preserving
-its native limits and optional electrical limiter. A conclusive vehicle match ends the extra test immediately and
+its native limits and configured electrical limiter. A conclusive vehicle match ends the extra test immediately and
 returns to the current charging choice. A usable BMW baseline triggers its
 correlation pause; absent a match, the shared 0.15 kWh extra-energy allowance
 ends probing for either vehicle.
@@ -1055,10 +1058,13 @@ The final period is an open release. Reaching the planning minimum or ready-by d
 
 ## Charger 2 current allocation
 
-Basic start/stop leaves native current settings and native load balancing in
-charge. The bounded identification current test above is a separate scoped
-action and can operate with the economic limiter disabled when its own
-capability checks pass. Planning uses the known applicable native current setting, or the
+Current adjustment defaults on (`limiterEnabled:true`) and follows property load
+and the shared charger priority independently of Automatic scheduling, including
+Charge now. An explicit `limiterEnabled:false` selects basic start/stop, leaving
+native current settings and native load balancing in charge. The bounded
+identification current test above is a separate scoped action and can operate
+with the limiter disabled when its own capability checks pass. In basic mode,
+planning uses the known applicable native current setting, or the
 [maximum-available-current assumption](#maximum-available-current-assumption)
 when it is unknown; scheduling sends Boolean start/stop only. The allocation
 below applies with `limiterEnabled:true`;
@@ -1066,11 +1072,49 @@ missing current-control capabilities block that mode rather than bypass it.
 
 Commissioning must verify three-phase association, phase order, installation fuse ratings and whether the property and charging-current magnitudes support the additive model. For each phase, the modeled non-EV base is `B = property − Easee − Shelly`. The absolute Shelly ceiling is the tightest `fuse − margin − B`, then any planned Easee reservation and hardware, vehicle and native user limits. The calculation includes Shelly's existing draw; it does not mistake incremental spare margin for an absolute setpoint.
 
-Shelly priority excludes Easee's present draw from this fuse test. A temporary property total above the fuse while non-Easee load fits does not cause ST-MQ to fight Equalizer by reducing Shelly. An explicit secondary-deadline reservation can still reduce Shelly and is labeled separately. Equalizer response and actual installation protection are not guaranteed by this model.
+Shelly priority excludes Easee's present draw from this fuse test. If household
+demand excluding both chargers leaves 16 A on every phase, Shelly may take 16 A
+within its own limits, and Equalizer must reduce Charger 1. A temporary property
+total above the limit caused by Charger 1, a conservative forecast allocation or
+a secondary deadline reservation must not lower Shelly's live entitlement in
+this priority. Economic scheduling still chooses permitted charging periods;
+forecast delivery remains an estimate. Equalizer response and actual installation
+protection are not guaranteed by this model.
 
-A common current is rounded down to the verified step. The integration supports a reported 6 A minimum and 1 A step; missing or different quantization makes optional current control unavailable. Values below the verified minimum cause an EVSE pause, not an invalid current RPC. Decreases act promptly. Increases ramp by the configured step budget after dwell; resumption also requires dwell and permission. Native lower current choices, start/stop, energy/time caps, faults and schedules retain authority. Enabled native schedules conservatively own start/stop until disabled/removed; ST-MQ does not guess their cron window or rewrite them. Current limiting remains separate.
+For unscheduled charging in Balanced priority, including Charge now, coherent
+live headroom is shared with the peer's measured draw or its confirmed open
+charging instruction. Unused peer capacity remains available to Shelly. A
+controller-owned current pause can resume when that share reaches 6 A; an
+external Stop cannot. A connected idle car alone is not evidence of requested
+current. If total headroom cannot support two 6 A pilots, retain the existing
+charging turn instead of repeatedly stopping and starting both cars. Scheduled
+Automatic charging continues to use the joint planned allocation.
+
+A common current is rounded down to the supported profile's 1 A step. The native
+range must report a 6 A minimum and a sufficient maximum. Shelly's optional
+`meta.ui.step` describes UI presentation: an absent value does not disable
+supported integer current writes, while contradictory reported metadata blocks
+them. Values below 6 A cause an EVSE pause, not an invalid current RPC. Decreases
+do not wait for the increase dwell; increases ramp by the configured step budget
+after dwell, and resumption also requires dwell and permission. Native lower
+current choices, start/stop, energy/time caps, faults and schedules retain
+authority. Enabled native schedules conservatively own start/stop until
+disabled/removed; ST-MQ does not guess their cron window or rewrite them.
+Current limiting remains separate.
+
+The existing five-second Shelly poll and incoming native changes reconcile
+current against the latest admitted phase observations. They do not add a second
+timer, poll the other charger's cloud or repeatedly run the economic search when
+the session, authority and bounded plan remain applicable. Original source clocks
+and the separate identification deadlines remain authoritative. Command and
+readback delays can extend response time; this is not independent fuse protection.
 
 Coherent current inputs default to a 15-second age and 5-second skew bound, with 1 A per-phase margin. Unknown, stale, misaligned or non-additive inputs select the owner's configured fallback ceiling, initially **12 A**. Known tighter limits still apply. Fallback does not start a stopped vehicle or bypass its native timer. It is not guaranteed fuse protection.
+
+An explicitly uncommissioned additive model keeps that configured fallback as a
+known ceiling in the delivery forecast too. A commissioned installation with
+temporarily missing telemetry retains the documented optimistic future-headroom
+assumption; the live controller still falls back until usable evidence returns.
 
 If the process, broker or charger is unavailable, ST-MQ cannot apply a new fallback. **Autonomous controller-loss behavior is unverified.** There is no invented watchdog, command TTL or broker-will guarantee. Actual last-setpoint, reboot and outage behavior must be established with the arrived hardware before unattended deployment. The status reports this separately from a successfully requested telemetry-loss fallback.
 

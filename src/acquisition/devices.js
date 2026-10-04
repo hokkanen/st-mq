@@ -582,17 +582,20 @@ export function createDeviceProviders({ connections = {}, http, tokenStore, cloc
     }, readObservations, chargerId: easee.charger_id, equalizerId: easee.equalizer_id, clock,
     canControl: () => !closed && !invalidOcppSetup && canControl() && controlBackend === 'native',
   });
-  let nativeCloudSnapshot = null, nativeCloudSchedule = null, nativeCloudFlight = null, nextNativeCloudRead = 0;
+  let nativeCloudSnapshot = null, nativeCloudSnapshotEpoch = null, nativeCloudSchedule = null, nativeCloudFlight = null, nextNativeCloudRead = 0;
   let nativeDynamicChargerAt = null;
   function refreshNativeCloudTelemetry({ force = false } = {}) {
     if (closed) return null;
     if (nativeCloudFlight) return force ? nativeCloudFlight.then(() => refreshNativeCloudTelemetry({ force: true })) : nativeCloudFlight;
     if (!force && nextNativeCloudRead > clock()) return null;
     nextNativeCloudRead = clock() + 60_000;
+    const epoch = electricityEpoch;
     // Cloud evidence supplements the local connection; failures never grant app
     // priority or prevent exact-ID native cleanup. No cloud schedules are written.
     nativeCloudFlight = Promise.allSettled([
-      scheduleControl.readTelemetry({ signal: lifetime.signal, forceRest: force }).then(snapshot => { nativeCloudSnapshot = snapshot; }),
+      scheduleControl.readTelemetry({ signal: lifetime.signal, forceRest: force }).then(snapshot => {
+        nativeCloudSnapshot = snapshot; nativeCloudSnapshotEpoch = epoch;
+      }),
       easeeAuthenticated(`${API}/api/chargers/${encodeURIComponent(easee.charger_id)}/schedules`,
         { method: 'GET', signal: lifetime.signal }).then(value => {
         nativeCloudSchedule = { readAt: clock(), schedule: normalizeScheduleState(value?.enabled === 'ocpp.direct' ? { enabled: 'none' } : value) };
@@ -639,7 +642,50 @@ export function createDeviceProviders({ connections = {}, http, tokenStore, cloc
   // cannot borrow a permission issued before those commands.
   const startAppSignature = value => JSON.stringify([appSignature(value ? { ...value,
     stopAt: value.stopped ? value.stopAt : null } : null), nativeDynamicChargerAt]);
+  function readCurrentSupply() {
+    const now = clock(), current = !closed && controlBackend === 'native' ? local.controlSnapshot?.() : null;
+    const unknown = () => ({ currents: null, times: [null, null, null], source: null });
+    const phases = (rows, ids, source) => {
+      const values = ids.map(id => {
+        const candidates = (rows ?? []).filter(row => row.id === id).map(row => ({
+          value: number(row.value), at: sourceTime(row.timestamp), unit: row.unit,
+        })).sort((a, b) => (b.at ?? -Infinity) - (a.at ?? -Infinity));
+        const selected = candidates[0];
+        return selected && selected.at !== null && selected.at <= now && selected.value !== null
+          && selected.value >= 0 && selected.value <= 1000 && (selected.unit == null || selected.unit === 'A')
+          && !candidates.some(row => row.at === selected.at && (row.value !== selected.value || row.unit !== selected.unit))
+          ? selected : { value: null, at: selected?.at ?? null };
+      });
+      return { currents: values.every(row => row.value !== null) ? values.map(row => row.value) : null,
+        times: values.map(row => row.at), source };
+    };
+    const cloud = current && nativeCloudSnapshotEpoch === electricityEpoch && nativeCloudSnapshot?.online === true
+      && now >= nativeCloudSnapshot.readAt && now - nativeCloudSnapshot.readAt <= 300_000 ? nativeCloudSnapshot.supply : null;
+    const cached = (kind, field) => cloud ? {
+      currents: Array.isArray(cloud[field]) ? [...cloud[field]] : null,
+      times: [...(cloud.observationTimes?.[kind] ?? [null, null, null])], source: 'easee-cloud',
+    } : unknown();
+    const streamed = (device, ids) => {
+      if (!current || !supplied(device)) return null;
+      const rows = stream?.snapshot(device, [...ids, 250], { requiredIds: [] });
+      if (!rows) return stream?.status()?.connected === true ? [] : null;
+      const online = rows.find(row => row.id === 250), at = sourceTime(online?.timestamp);
+      return at !== null && at <= now && [true, 1, 'true', '1'].includes(online?.value) ? rows : [];
+    };
+    const propertyRows = streamed(easee.equalizer_id, [31, 32, 33]);
+    const chargerRows = streamed(easee.charger_id, [183, 184, 185]);
+    const nativeRows = current?.readings?.filter(row => [183, 184, 185].includes(row.id)) ?? [];
+    const property = propertyRows !== null ? phases(propertyRows, [31, 32, 33], 'easee-stream') : cached('property', 'propertyCurrentA');
+    const charger = nativeRows.length ? phases(nativeRows, [183, 184, 185], 'easee-ocpp')
+      : chargerRows !== null ? phases(chargerRows, [183, 184, 185], 'easee-stream') : cached('charger', 'chargerCurrentA');
+    // Reading this view performs no provider request and never renews a source
+    // clock. The limiter separately applies its age/skew and additive gates.
+    return { online: Boolean(current), supply: { propertyCurrentA: property.currents, chargerCurrentA: charger.currents,
+      observationTimes: { property: property.times, charger: charger.times },
+      currentSources: { property: property.source, charger: charger.source } } };
+  }
   const nativeScheduleControl = ocppInstallation ? createOcppScheduleAdapter({ scope: ocppInstallation.scope, clock,
+    readCurrentSupply,
     canControl: () => !closed && canControl() && controlBackend === 'native',
     setStartPermission: (snapshot, options = {}) => {
       const current = snapshot ? nativeAppControl() : null;
@@ -691,6 +737,7 @@ export function createDeviceProviders({ connections = {}, http, tokenStore, cloc
         transactionConfirmedAt: current?.transaction?.confirmedAt ?? null,
         transactionConfirmed: current?.transaction?.confirmed === true,
         appControl: nativeAppControl(),
+        externalLoadBalancing: cloud?.externalLoadBalancing ?? null,
         powerKw: power?.value ?? null, powerAt: power ? sourceTime(power.timestamp) : null, powerReceivedAt: power?.receivedAt ?? null,
         ...(cloud ? { limits: cloud.limits } : {}),
         supply: { ...cloud?.supply, chargerCurrentA: vector([183, 184, 185]), voltageV: vector([194, 195, 196]),

@@ -8,7 +8,14 @@ export function vehiclePilotLimit(vehicleCurrentA, minimumCurrentA) {
     ? vehicleCurrentA === 0 ? 0 : Math.max(minimumCurrentA, vehicleCurrentA) : null;
 }
 /** A phase-aligned additive model, admitted only after installation verification. */
-export function shellyCurrentLimit({ config, property, easee, shelly, now, reservationA = 0, vehicleCurrentA = null, nativeCurrentA = null, allocationA = null } = {}) {
+export function shellyCurrentLimit({ config, property, easee, shelly, now, priority, liveBalanced = false, peerDemandA = null,
+  reservationA = 0, vehicleCurrentA = null, nativeCurrentA = null, allocationA = null } = {}) {
+  // Charger 1's Equalizer yields to Shelly in this priority. A forecast's
+  // conservative household scenario or deadline reservation is not a native
+  // restriction on Shelly's independently measured live entitlement.
+  if (priority === 'charger2') { allocationA = null; reservationA = 0; }
+  const shareLive = priority === 'balanced' && liveBalanced === true;
+  if (shareLive) { allocationA = null; reservationA = 0; }
   const vehiclePilotA = vehiclePilotLimit(vehicleCurrentA, config.minimumCurrentA);
   const knownCeilings = [config.maximumCurrentA, vehiclePilotA, nativeCurrentA, allocationA].filter(v => Number.isFinite(v) && v >= 0);
   const known = Math.min(...knownCeilings);
@@ -27,6 +34,18 @@ export function shellyCurrentLimit({ config, property, easee, shelly, now, reser
       ceiling = Math.min(known, ...headroom);
       reason = ceiling < known ? 'fuse-limit' : known === allocationA ? 'priority-allocation'
         : known === nativeCurrentA ? 'native-current-limit' : known === vehiclePilotA ? 'vehicle-current-limit' : 'hardware-restriction';
+      if (shareLive) {
+        const shares = headroom.map((available, phase) => {
+          const peer = Math.max(easee.currents[phase], Number.isFinite(peerDemandA) && peerDemandA > 0 ? peerDemandA : 0);
+          // A confirmed open peer instruction can demand current even while
+          // Equalizer is yielding all capacity to Shelly. With less than two
+          // valid pilots, preserve the current peer's turn instead of cycling.
+          return available < 2 * config.minimumCurrentA ? available - easee.currents[phase]
+            : Math.max(available / 2, available - peer);
+        });
+        const shared = Math.min(ceiling, ...shares);
+        if (shared < ceiling) { ceiling = shared; reason = 'priority-allocation'; }
+      }
       if (Number.isFinite(reservationA) && reservationA > 0 && Math.min(...headroom) - reservationA < ceiling) {
         ceiling = Math.min(...headroom) - reservationA; reason = 'priority-allocation';
       }
@@ -35,6 +54,8 @@ export function shellyCurrentLimit({ config, property, easee, shelly, now, reser
   if (fallback) { ceiling = Math.min(known, config.fallbackCurrentA); reason = 'telemetry-fallback'; }
   const currentA = Math.max(0, Math.floor((ceiling + 1e-9) / config.currentStepA) * config.currentStepA);
   return { currentA: currentA < config.minimumCurrentA ? 0 : currentA, pause: currentA < config.minimumCurrentA,
+    priority: ['balanced', 'charger1', 'charger2'].includes(priority) ? priority : null,
+    evaluatedAt: Number.isSafeInteger(now) && now >= 0 ? now : null,
     reason, pauseReason: currentA < config.minimumCurrentA ? 'below-minimum-current' : null,
     fallback, guaranteedProtection: false, modelAvailable: !fallback, controllerLossFallback: 'unverified', baseCurrentA: base, phaseHeadroomA: headroom,
     missing: inputs.map((input, i) => !input?.healthy || !vector(input.currents) ? ['property', 'easee', 'shelly'][i] : null).filter(Boolean) };

@@ -1521,7 +1521,7 @@ test('minimum-current runtime waits for a configured peer whose adapter has not 
 
 test('minimum-current runtime identifies and restores with absent optional UI step metadata', async t => {
   const f = await fixture(t, { stepMetadata: false });
-  assert.equal(f.adapter.snapshot().currentControlReady, false);
+  assert.equal(f.adapter.snapshot().currentControlReady, true);
   assert.equal(f.adapter.snapshot().identificationCurrentReady, true);
   let control = await f.update(); assert.equal(control.currentTest.phase, 'active');
   f.advance(6000); await f.sampleTesla(6);
@@ -1530,7 +1530,7 @@ test('minimum-current runtime identifies and restores with absent optional UI st
   assert.equal(f.item('charger1').vehicleMatch, null);
   control = await f.update(); assert.equal(control.currentTest.phase, 'restored');
   assert.equal(f.fields.current_limit.value, 12);
-  assert.equal(f.adapter.snapshot().currentControlReady, false);
+  assert.equal(f.adapter.snapshot().currentControlReady, true);
   assert.deepEqual(f.writes.map(row => [row.role, row.value]), [['current_limit', 6], ['current_limit', 12]]);
 });
 

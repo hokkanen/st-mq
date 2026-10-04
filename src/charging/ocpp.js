@@ -64,9 +64,10 @@ const coversZero = (composite, from, until) => composite.startAt <= from && comp
 
 function snapshotFor(value, scope, now) {
   if (!fields(value, ['transport', 'scope', 'connectionId', 'readAt', 'online', 'connectorStatus', 'statusAt', 'statusReceivedAt',
-    'transactionId', 'transactionStartedAt', 'transactionConfirmedAt', 'transactionProvenance', 'transactionConfirmed', 'pluggedIn', 'powerKw', 'powerAt', 'powerReceivedAt', 'appControl', 'limits', 'supply'])
+    'transactionId', 'transactionStartedAt', 'transactionConfirmedAt', 'transactionProvenance', 'transactionConfirmed', 'pluggedIn', 'powerKw', 'powerAt', 'powerReceivedAt', 'appControl', 'limits', 'supply', 'externalLoadBalancing'])
     || value.transport !== 'ocpp' || value.scope !== scope || typeof value.online !== 'boolean'
     || !time(value.readAt) || value.readAt > now || ![true, false, null].includes(value.pluggedIn)
+    || value.externalLoadBalancing !== undefined && ![true, false, null].includes(value.externalLoadBalancing)
     || value.online && (!text(value.connectionId) || !STATUSES.includes(value.connectorStatus)
       || !time(value.statusAt) || value.statusAt > now || !fresh(value.readAt, now))
     || value.transactionId !== null && !id(value.transactionId)
@@ -117,11 +118,12 @@ async function handoverOperation(step, operation) {
 }
 
 export function createOcppScheduleAdapter({ request, readSnapshot, isCurrent = () => false,
-  scope, clock = Date.now, canControl = () => false, takeoverNative, setStartPermission = () => {} } = {}) {
+  scope, clock = Date.now, canControl = () => false, takeoverNative, setStartPermission = () => {}, readCurrentSupply } = {}) {
   if (!scopeValid(scope) || typeof request !== 'function' || typeof readSnapshot !== 'function') throw fail('invalid-ocpp-adapter');
   const adapter = {
     scope, ownershipNamespace: 'ocpp', supportsTakeover: typeof takeoverNative === 'function',
     capabilities: { scheduling: true, currentControl: false, externalLoadBalancing: true },
+    ...(typeof readCurrentSupply === 'function' ? { readCurrentSupply } : {}),
     setStartPermission,
     async read({ signal, forceAppRefresh = false } = {}) { return snapshotFor(await readSnapshot({ signal, forceAppRefresh }), scope, clock()); },
     async composite(snapshot, until, { signal, guard = () => true } = {}) {

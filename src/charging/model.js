@@ -118,7 +118,11 @@ export function buildCharger({ definition, settings, telemetry = {}, automaticSo
   return { id: definition.id, label: definition.label ?? definition.id, provider: definition.provider ?? source,
     capabilities, settings: structuredClone(settings), targetSelection, configuration: { efficiency: CHARGING_EFFICIENCY,
       ...(finite(configuration?.maximumCurrentA) && configuration.maximumCurrentA >= 0
-        ? { maximumCurrentA: configuration.maximumCurrentA } : {}) }, values, automatic, requiredGridKwh,
+        ? { maximumCurrentA: configuration.maximumCurrentA } : {}),
+      ...(typeof configuration?.limiterEnabled === 'boolean' ? { limiterEnabled: configuration.limiterEnabled } : {}),
+      ...(typeof configuration?.additiveCurrentVerified === 'boolean' ? { additiveCurrentVerified: configuration.additiveCurrentVerified } : {}),
+      ...(finite(configuration?.fallbackCurrentA) && configuration.fallbackCurrentA >= 0
+        ? { fallbackCurrentA: configuration.fallbackCurrentA } : {}) }, values, automatic, requiredGridKwh,
     deadlineAt: finite(deadlineAt) ? deadlineAt : resolveChargingDeadline(now, settings.readyBy, timezone),
     control, telemetry };
 }

@@ -10,7 +10,7 @@ export function chargingPlannerInput(options) {
       sessionCost: fields(charger.sessionCost, ['recordedGridKwh']),
       settings: fields(charger.settings, ['enabled']),
       capabilities: fields(charger.capabilities, ['scheduling', 'currentControl', 'externalLoadBalancing', 'maxSchedulePeriods']),
-      configuration: fields(charger.configuration, ['maximumCurrentA']),
+      configuration: fields(charger.configuration, ['maximumCurrentA', 'limiterEnabled', 'additiveCurrentVerified', 'fallbackCurrentA']),
       request: fields(charger.request, ['chargeNow']),
       control: { ...fields(charger.control, ['released', 'provisional']),
         phase: ['released', 'charging'].includes(charger.control?.phase) ? charger.control.phase : null,
