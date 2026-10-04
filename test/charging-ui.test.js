@@ -928,6 +928,7 @@ test('Charger 2 popups explain manual priority and unconfirmed instructions with
   const item = connected('charger2'); item.settings.enabled = true;
   for (const [reason, manual, expected] of [
     ['manual-stop', { kind: 'stop' }, /stop instruction is preventing automatic scheduling/i],
+    ['device-permission-held', null, /charger withdrew charging permission.*no replacement Start is sent/i],
     ['native-schedule', { kind: 'schedule' }, /charger’s own schedule has priority/i],
     ['evse-command-unconfirmed', null, /outcome is still unknown.*fresh reading/i],
     ['telemetry-fallback', null, /configured fallback.*fresh measurements/i],

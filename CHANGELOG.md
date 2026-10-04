@@ -48,11 +48,14 @@ Versions follow Semantic Versioning. `-dev.N` denotes a development prerelease.
 - Vehicle identification can combine a unique measured Tesla current match with
   BMW's own matching start/stop evidence to resolve both chargers when their
   transitions overlap. Missing or contradictory evidence remains unresolved.
-- Fresh Shelly connections can keep their identification attempt through one
-  bounded device-originated Stop/Enable sequence after confirmed 6 A and Start.
-  The owner-approved exception waits at 6 A without repeating Start or extending
-  the test. Other native instructions, faults and the original deadlines still
-  apply; the matching native-action ambiguity remains documented.
+- Shelly device-originated `sys` Stop/Enable changes are handled throughout a
+  connection, including repeated cycles and normal charging. A device Stop blocks
+  replacement Start until fresh permission returns. Identification keeps its
+  original limits; unrelated native instructions and protection still apply.
+  The owner-approved source ambiguity remains documented.
+- Charging planning can find split charging opportunities around household load
+  peaks when continuous periods would incorrectly report a missed deadline.
+  Fixed native current, per-phase headroom and minimum run/gap limits still apply.
 - Delayed charging calculations now check live identification with the current
   observation time. A fresh charger read arriving during a calculation no longer
   interrupts the 6 A comparison; its original deadline and forecast times remain

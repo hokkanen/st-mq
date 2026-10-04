@@ -85,11 +85,13 @@ the integration reads it and does not silently rewrite it. A connected charger
 may then remain in `charger_insert` until an authorized Start.
 Disabling Auto charge does not establish that every later device-generated
 permission change is an echo of an application command. The owner-approved
-[first-start exception](charging.md#shelly-first-start-permission-sequence) may
-preserve one identification attempt through a strictly bounded `sys` false-to-true
-pair after confirmed 6 A and Start. It waits without another Start and retains
-the original deadlines; matching native-action ambiguity is explicitly accepted.
-All other permission changes keep ordinary native priority. This exception does
+[system permission exception](charging.md#shelly-system-permission-changes)
+classifies fresh supported `sys` permission changes as device transitions at any
+time or current, including repeated cycles. False or unknown device permission
+blocks replacement Start; fresh Enable clears only that device hold. Existing
+identification attempts keep their original deadlines, and interrupted pauses
+cannot supply continuous stop evidence. Other instructions retain native priority;
+matching native-action ambiguity is explicitly accepted. This exception does
 not establish a firmware cause or cure for the
 [reported permission changes](https://github.com/hokkanen/st-mq/issues/1).
 
@@ -222,6 +224,9 @@ restart or unplugging; genuinely newer source evidence takes priority again.
 Native setting reports retain their command-source evidence. A same-value
 `sys` update without an intervening observed permission change is a device refresh
 and does not revoke saved command ownership.
+Fresh `sys` edges follow the [system permission exception](charging.md#shelly-system-permission-changes),
+which preserves physical stops and unrelated native instructions. It does not
+extend the exception to native current changes or uncertain application commands.
 A newer external update retains manual priority, including a repeated selection
 of the same value when newer native instruction evidence is available. The
 [Boolean status API](https://shelly-api-docs.shelly.cloud/gen2/DynamicComponents/Virtual/Boolean/)

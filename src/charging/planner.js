@@ -632,9 +632,52 @@ function availableIntervals(job, intervals, simulation = null) {
   return result;
 }
 
+function availablePeriodCandidate(jobs, intervals) {
+  const periods = {};
+  let split = false;
+  for (const job of jobs) {
+    const id = job.charger.id;
+    if (job.fixedPeriods) { periods[id] = job.fixedPeriods; continue; }
+    const earliest = Math.max(intervals[0].start, value(job.charger, 'vehicleNotBefore') ?? intervals[0].start);
+    const fixedCurrent = !job.charger.capabilities.externalLoadBalancing
+      && !job.charger.capabilities.currentControl && !job.electric.currentAssumed;
+    if (!fixedCurrent) { periods[id] = [{ startAt: earliest, endAt: null }]; continue; }
+
+    // A fixed pilot cannot cross a forecast interval that cannot accommodate
+    // it. Continuous-start candidates therefore miss useful earlier windows.
+    // Seed their full opportunity independently of the peer's chosen draw;
+    // the joint simulator must then validate the actual shared allocation.
+    const windows = mergePeriods(availableIntervals(job, intervals)
+      .filter(row => row.powerKw > EPS && row.end > earliest)
+      .map(row => ({ startAt: Math.max(earliest, row.start), endAt: row.end })));
+    if (!windows.length || windows.at(-1).endAt < intervals.at(-1).end) return null;
+    const practical = [];
+    for (let index = windows.length - 1; index >= 0; index--) {
+      const startAt = Math.ceil(windows[index].startAt / 1000) * 1000;
+      const endAt = Math.floor(Math.min(windows[index].endAt,
+        practical.length ? practical[0].startAt - MIN_PAUSE_MS : Infinity) / 1000) * 1000;
+      if (endAt <= startAt) {
+        if (index === windows.length - 1) return null;
+        continue;
+      }
+      if (practical.length && endAt - startAt < MIN_PERIOD_MS) continue;
+      practical.unshift({ startAt, endAt });
+    }
+    if (!practical.length) return null;
+    const limit = job.charger.capabilities.maxSchedulePeriods;
+    if (Number.isInteger(limit) && limit > 0 && practical.length > limit) return null;
+    practical.at(-1).endAt = null;
+    periods[id] = practical;
+    split ||= practical.length > 1;
+  }
+  if (!split) return null;
+  const starts = Object.fromEntries(Object.entries(periods).map(([id, rows]) => [id, rows[0].startAt]));
+  return { ...simulate({ starts, periods, jobs, intervals }), starts, periods };
+}
+
 function splitCandidate(best, jobs, intervals) {
   let selected = { ...best, periods: Object.fromEntries(jobs.map(job => [job.charger.id,
-    job.fixedPeriods ?? [{ startAt: best.starts[job.charger.id], endAt: null }]])) };
+    job.fixedPeriods ?? best.periods[job.charger.id]])) };
   // Practical period consolidation and joint control use bounded coordinate
   // improvement; every improvement runs through the same
   // phase-aware simulator, with the feasible continuous plan always available.
@@ -876,6 +919,16 @@ export function planChargers({ now, chargers = [], prices = [], household = [], 
     best = { ...best, ...simulate({ starts: best.starts, periods: best.periods, jobs, intervals }) };
     continuous = best;
     best = splitCandidate(best, jobs, intervals);
+    if (!best.feasible) {
+      // One additional seed, only after the usual bounded search fails. Its
+      // native constraints and practical windows use the same simulator and
+      // priority/cost comparison; a successful existing plan is untouched.
+      const available = availablePeriodCandidate(jobs, intervals);
+      if (available) {
+        const candidate = splitCandidate(available, jobs, intervals);
+        if (compare(candidate, best, jobs) < 0) best = candidate;
+      }
+    }
   }
   // Reassess all retained periods together so stability cannot spend the same
   // shared headroom twice. This applies only to future schedules with unchanged

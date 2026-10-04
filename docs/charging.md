@@ -168,9 +168,9 @@ them. Shelly's native command-source evidence distinguishes same-value `sys`
 refreshes from newer external instructions. A system refresh preserves existing
 ownership only when no intervening permission change was observed; a Stop followed
 by Enable cannot disappear because one poll sees the same final value.
-The sole exception is the owner-approved
-[first-start sequence](#shelly-first-start-permission-sequence), which preserves
-the observed edges and their provenance. Other observed external instructions
+The owner-approved [system permission exception](#shelly-system-permission-changes)
+classifies fresh `sys` changes separately while preserving the observed edges,
+physical permission and their provenance. Other observed external instructions
 retain priority. Detecting a repeated
 selection of the same value requires newer native instruction evidence. If a
 repeated Shelly Stop leaves the value `false`, source `rpc` and update timestamp
@@ -199,56 +199,56 @@ A positive vehicle request below 6 A uses a valid 6 A pilot allowance while the
 vehicle limits its own draw; planning estimates that lower delivery and reserves
 the pilot allowance. Explicit zero and electrical limits still prevent starting.
 
-### Shelly first-start permission sequence
+### Shelly system permission changes
 
-The Top AC Portable profile has produced a `sys` false-to-true start-permission
-sequence shortly after an acknowledged and confirmed application Start, despite
-native Auto charge being disabled. The exposed fields do not reliably distinguish
-that sequence from an independently requested native action with the same values,
-source and timing. On 2026-10-04 the owner approved the following narrow exception
-to ordinary native-instruction priority so a fresh connection can finish its
-identification attempt. This does not attribute the sequence to a person or prove
-its firmware cause.
+The Top AC Portable profile has produced `sys` false-to-true start-permission
+sequences after confirmed application Starts, including ordinary charging long
+after connection with native Auto charge disabled. On 2026-10-04 the owner
+explicitly broadened the earlier first-start exception: fresh supported `sys`
+permission changes are device transitions at any connection age and current,
+including repeated cycles and changes outside identification. There is no plug,
+first-Start or ten-second eligibility window.
 
-Eligibility requires the supported Top AC Portable profile, freshly confirmed
-`auto_charge:false`, and the first application identification Start within
-60 seconds of a newly confirmed physical connection. The current test must already
-have confirmed its active 6 A setting. The Start must have both acknowledgement
-and fresh true native readback before the exception can apply. The scope retains
-the equipment, physical connection, transport generation, identification attempt
-and current test; ordinary polling, **Identify**, **Charge now** and **Use automatic**
-cannot create another eligible Start in that connection.
+Classification and physical permission remain separate. A genuine device Stop
+blocks replacement Start while permission is false or unknown, including with
+**Charge now**. Fresh true permission can clear only that device hold; it does
+not supply automatic authority, clear a separate native Stop, or itself request
+another Start. A false-only hold has no retry timer. Restart preserves the
+restriction until fresh device evidence resolves it; a restored record cannot
+manufacture a new physical connection, observation or control permission.
+An initially observed false setting on a new connection, with no intervening
+device Stop, is not such a hold. Normal connection authority can still start a
+charger whose native Auto charge is disabled.
 
-At most one ordered `sys` false-to-true pair may preserve the attempt. Its fixed
-deadline is ten seconds after that Start's acknowledgement, capped by the original
-current-test and any probe deadline. Both edges and the final fresh true native
-readback must arrive within that deadline. The pair may span polls or arrive in
-one notification batch. Effective command source follows the native partial
-notification contract; an omitted unchanged source is not invented new provenance.
+A same-value `sys` refresh of an uninterrupted, application-owned Stop preserves
+that pause and its original resume deadline. A true edge interrupts its physical
+confirmation, even if a later false edge arrives in the same batch before polling.
+That sequence cannot furnish continuous application-owned stop evidence or a new
+BMW identification witness. Valid earlier historical evidence stays unchanged.
+Effective command source follows the native partial-notification contract; omitted
+unchanged attributes do not create new provenance. Retained, stale, unknown or
+invalidated readings cannot release a hold or supply new control evidence.
+Events admitted and saved while fresh retain their historical meaning after an
+outage: a recorded interruption still invalidates the earlier continuous pause,
+and a held Stop still needs a fresh correlated query before release.
 
-While only the false edge is known, control waits with the confirmed 6 A setting.
-It sends no replacement Start, cannot restore a higher current or renew any
-identification deadline, and preserves raw permission and physical observations.
-An explicit startup-pending classification keeps this same attempt waiting;
-it does not create an application-owned pause or furnish BMW stop-correlation
-evidence. Final true native readback permits the existing attempt to continue
-under its original energy allowance and deadlines.
+Identification may continue through a device permission cycle only within its
+existing attempt, current-test/probe deadlines and energy allowance. The cycle
+does not renew a deadline, create another attempt or authorize an extra Start.
+Original expiry and current-restoration obligations still apply. Fresh physical
+zero remains necessary before raising current while stopped.
 
-Non-`sys` or unknown permission provenance, an intervening current instruction,
-a schedule change, a fault or authorization restriction, a late or second pair,
-disconnection or transport-generation change ends eligibility. A false-only
-sequence times out as native Stop; the application never retries Start to complete
-the pair. Restart removes live eligibility, and persisted consumption prevents
-rearming it in the same physical connection. All existing current-restoration
-obligations remain; fresh physical zero is still required before raising the
-limit when stopped. These guards do not bypass vehicle restrictions, native caps,
-electrical limits or observation readiness.
+Other native instructions, current reductions, schedules, faults, authorization,
+vehicle restrictions and electrical limits retain their existing authority.
+Unknown command outcomes remain fenced; a system event cannot retroactively
+acknowledge an uncertain application write. Queue and persistence failures retain
+their conservative command gates.
 
-The remaining ambiguity is explicit: an independent native action matching every
-eligible `sys` edge and timing condition can receive this same classification.
-No reliable actor signal is claimed. The exception does not change detection of
-a repeated native Stop while permission is already false; that separate unresolved
-limitation remains as described above.
+The exposed source is not a reliable actor identity. An independent native action
+reported as `sys` can receive the same classification; the owner accepted this
+ambiguity when widening the exception. No firmware cause or firmware fix is
+claimed. The separate limitation detecting a repeated native Stop while permission
+is already false remains as described above.
 
 ### Schedules inside the vehicle
 
@@ -962,6 +962,14 @@ evidence and progress are saved independently while planning runs. Device
 readback and command fencing remain authoritative.
 
 The implementation is a bounded search over a declared slot/current model, **not a globally exact continuous-time optimizer**. Results expose the search kind, relaxed cost lower bound, feasible candidate cost and upper bound on the cost gap where available. Search pruning can miss a better joint candidate; reported feasibility is conditional on the recorded assumptions. Synthetic exhaustive small-horizon comparisons validate representative cases. There is no one-cent pause penalty or mandatory one-cent saving hurdle. Practical minimum economic runs/gaps remain 15 minutes; equal-cost choices prefer stability.
+
+If the ordinary search finds no feasible schedule, one additional candidate uses
+the separate windows in which a fixed native current fits every forecast phase
+and scenario. This recovers earlier charging opportunities that a later household
+peak would exclude from a continuous period. The joint simulator still checks
+peer allocation, native restrictions, fixed periods and schedule limits; the same
+service, priority and cost comparison selects the result. This bounded fallback
+does not add search work to already-feasible plans or promise exhaustive recovery.
 
 Running-session readiness and price-driven interruption decisions reassess both
 adopted executions together with the selected priority. A cheaper replacement

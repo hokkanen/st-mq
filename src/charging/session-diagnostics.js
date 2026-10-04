@@ -30,6 +30,7 @@ const CONTROL_ERRORS = new Set(['read-failed', 'command-failed', 'readback-faile
   'evse-notification-readback-required', 'evse-permission-event-overflow',
   'identification-resume-required', 'command-unconfirmed']);
 const CONTROL_REASONS = new Set([...CONTROL_ERRORS, 'manual-stop', 'manual-release', 'manual-enable', 'manual-charge-now', 'manual-schedule', 'native-schedule',
+  'device-permission-held',
   'takeover-pause-prepare', 'takeover-pause-install', 'takeover-pause-confirm', 'takeover-native-check',
   'takeover-native-handover', 'takeover-native-confirm', 'takeover-state-save',
   'native-current-limit', 'vehicle-current-limit', 'hardware-restriction', 'fuse-limit', 'priority-allocation', 'telemetry-fallback',

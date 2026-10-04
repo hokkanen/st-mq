@@ -1426,7 +1426,7 @@ test('source-only and full-status deltas never refresh held values or phase meas
   assert.equal(f.adapter.snapshot().permissionEvents.at(-1).commandSource, null, 'Explicit null removes origin');
 });
 
-test('a native false-to-true notification pair between reconciles keeps native authority across restart', async t => {
+test('an external RPC false-to-true notification pair between reconciles keeps native authority across restart', async t => {
   const f = fixture(t, { limiterEnabled: false }); f.sources.set('start_charging', 'rpc'); await f.ready();
   let saved;
   const attach = () => createShellyController({ adapter: f.adapter, initialState: saved, clock: f.now,
@@ -1435,12 +1435,12 @@ test('a native false-to-true notification pair between reconciles keeps native a
   const plan = { id: 'notification-plan', startAt: NOW, deadlineAt: NOW + 3600_000,
     periods: [{ startAt: NOW, endAt: null }], feasible: true };
   await controller.update({ enabled: true, plan });
-  f.setNow(NOW + 125); f.delta('start_charging', { value: false, source: 'sys' });
+  f.setNow(NOW + 125); f.delta('start_charging', { value: false, source: 'rpc' });
   f.setNow(NOW + 250); f.delta('start_charging', { value: true });
   await controller.close(); controller = attach();
   const result = await controller.update({ enabled: true, plan });
   assert.equal(result.manual?.kind, 'enable');
-  assert.equal(result.manual.origin, 'device');
+  assert.equal(result.manual.origin, 'external-command');
   assert.equal(result.manual.detectedAt, NOW + 250);
   assert.equal(result.ownedPause, false);
   assert.equal(f.adapter.snapshot().permissionEvents.length, 0, 'Remove events only after the controller saves its cursor');
