@@ -818,6 +818,14 @@ export function createShellyController({ adapter, initialState, saveState = () =
   const fresh = field => field?.invalidatedAt === undefined && field?.measuredAt > 0 && field.measuredAt <= clock() && field.receivedAt <= clock()
     && clock() - field.receivedAt <= adapter.config.maxAgeMs && !field.retained;
   const physicalFresh = field => fresh(field) && clock() - field.measuredAt <= adapter.config.maxAgeMs;
+  async function refreshCommandReadback() {
+    await adapter.refresh({ force: true });
+    // A delayed notification may arrive after the confirmation query started.
+    // Its revision correctly fences that reply. Join the queued read, with at
+    // most one further forced refresh; an unresolved result never retries Set.
+    if (adapter.snapshot().notificationPending?.length) await adapter.refresh({ force: true });
+    if (adapter.snapshot().notificationPending?.length) throw fail('evse-command-unconfirmed');
+  }
   const takeoverToken = snapshot => hash([snapshot.association, snapshot.generation, snapshot.session?.sessionId,
     snapshot.session?.connectedAt, snapshot.fields.start_charging?.value, snapshot.fields.start_charging?.measuredAt,
     snapshot.fields.current_limit?.value, snapshot.fields.current_limit?.measuredAt, snapshot.notificationRevision,
@@ -1019,7 +1027,7 @@ export function createShellyController({ adapter, initialState, saveState = () =
       await adapter.rpc('Number.Set', { owner: `service:${adapter.config.serviceId}`, role: 'current_limit', value: target },
         { mutation: true, identificationCurrent: copy(test), guard });
       test.pending.acceptedAt = clock(); await persist();
-      await adapter.refresh({ force: true });
+      await refreshCommandReadback();
       const actual = adapter.snapshot().fields.current_limit;
       if (!fresh(actual) || !shellyCurrentCommandReadback(actual, test.pending)) throw fail('evse-command-unconfirmed');
       test.pending = null; test.phase = restoring ? 'restored' : 'active';
@@ -1155,7 +1163,7 @@ export function createShellyController({ adapter, initialState, saveState = () =
                     try { await persist(); } catch (cause) { state.pending = prior; throw cause; }
                   } });
                 state.pending.stage = 'accepted'; state.pending.acceptedAt = clock(); await persist();
-                await adapter.refresh({ force: true });
+                await refreshCommandReadback();
                 snapshot = adapter.snapshot();
                 const externalPermission = await reconcilePermissionEvents(snapshot, state.pending);
                 const readback = snapshot.fields.start_charging;
@@ -1426,7 +1434,7 @@ export function createShellyController({ adapter, initialState, saveState = () =
           // still requires native readback and must not replay the command.
           state.pending.stage = 'accepted'; state.pending.acceptedAt = clock(); await persist();
           if (!liveIntent()) return false;
-          await adapter.refresh({ force: true });
+          await refreshCommandReadback();
           const after = adapter.snapshot();
           if (await reconcilePermissionEvents(after, state.pending)) throw fail('evse-command-unconfirmed');
           const readback = after.fields[role];

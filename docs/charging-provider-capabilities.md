@@ -179,7 +179,9 @@ that evidence. A notification event clock is not a replacement value-update
 clock. Changed deltas fence older reads and obtain fresh native readback without
 making unchanged values or electrical measurements fresh. Expected notifications
 from an in-flight application command still require that command's acknowledgement
-and correlated readback before they can confirm it.
+and correlated readback before they can confirm it. If a notification arrives
+during that read, await a new correlated read after the notification; do not
+replay the device command to obtain confirmation.
 Preserve observed permission transitions until the controller consumes them,
 including a false-to-true sequence between polls whose final value matches the
 earlier value. Unavailable, malformed or overflowing event evidence cannot grant

@@ -1562,6 +1562,74 @@ test('a delayed pre-notification read cannot overwrite a changed permission with
   assert.equal(f.adapter.snapshot().controlReady, true);
 });
 
+for (const scenario of ['own Start', 'own Stop', 'external Stop', 'rejected recovery'])
+test(`post-ACK confirmation waits for a query after the late notification: ${scenario}`, async t => {
+  const f = fixture(t, { limiterEnabled: false });
+  f.fields.start_charging = scenario === 'own Stop';
+  f.sources.set('start_charging', 'rpc'); await f.ready();
+  let saved;
+  const controller = createShellyController({ adapter: f.adapter, clock: f.now, canControl: () => true,
+    saveState: value => { saved = structuredClone(value); } }); t.after(() => controller.close());
+  await controller.update({ enabled: false });
+  const publish = f.client.publish; let sent = false, reads = 0, fenced = false;
+  f.setNow(NOW + 1321);
+  f.client.publish = (topic, payload, options, done) => {
+    const frame = JSON.parse(payload);
+    if (frame.method === 'Boolean.Set') {
+      sent = true; publish(topic, payload, options, done);
+      f.setSourceTime('start_charging', NOW + 1000);
+      f.setNow(NOW + 1347); return;
+    }
+    if (sent && frame.method === 'Boolean.GetStatus') {
+      reads++;
+      if (reads === 1) {
+        f.writes.push({ ...frame, topic, options }); done?.();
+        queueMicrotask(() => {
+          const ownValue = scenario !== 'own Stop';
+          f.setNow(NOW + 2121);
+          f.delta('start_charging', { value: ownValue }, { eventAt: NOW + 1340, apply: false });
+          if (scenario === 'external Stop') {
+            f.setNow(NOW + 2200); f.delta('start_charging', { value: false, source: 'rpc' });
+          }
+          f.setNow(NOW + 2299);
+          f.client.emit('message', `${frame.src}/rpc`, Buffer.from(JSON.stringify({ id: frame.id,
+            src: 'synthetic-evse', dst: frame.src,
+            result: { value: ownValue, source: 'rpc', last_update_ts: (NOW + 1000) / 1000 } })), {});
+          fenced = !f.adapter.snapshot().controlReady;
+          assert.equal(f.adapter.snapshot().fields.start_charging.value, !ownValue,
+            'The pre-event query must not confirm even our own accepted command');
+        });
+        return;
+      }
+      if (scenario === 'rejected recovery') {
+        f.writes.push({ ...frame, topic, options }); done?.();
+        queueMicrotask(() => f.client.emit('message', `${frame.src}/rpc`, Buffer.from(JSON.stringify({ id: frame.id,
+          src: 'synthetic-evse', dst: frame.src, error: { code: -1, message: 'synthetic read failure' } })), {}));
+        return;
+      }
+    }
+    publish(topic, payload, options, done);
+  };
+  const result = await controller.update({ enabled: true, takeover: controller.status().takeover.token,
+    plan: { id: 'late-notification', deadlineAt: NOW + 7200_000,
+      periods: [{ startAt: scenario === 'own Stop' ? NOW + 3600_000 : NOW, endAt: null }] } });
+  assert.equal(fenced, true);
+  assert.equal(f.writes.filter(row => row.method === 'Boolean.Set').length, 1, 'Never replay the mutation');
+  if (scenario === 'external Stop') {
+    assert.equal(result.manual?.kind, 'stop'); assert.equal(f.fields.start_charging, false);
+  } else if (scenario === 'rejected recovery') {
+    assert.equal(saved.pending?.stage, 'accepted'); assert.equal(result.reason, 'evse-command-unconfirmed');
+    assert.equal(f.adapter.snapshot().controlReady, false);
+  } else {
+    assert.equal(saved.pending, null, 'The already accepted command is confirmed by a later correlated query');
+    assert.equal(result.manual, null); assert.equal(result.takeover.state, 'confirmed');
+    assert.equal(f.adapter.snapshot().controlReady, true);
+    assert.equal(f.adapter.snapshot().fields.start_charging.measuredAt, NOW + 1000);
+    assert.ok(f.adapter.snapshot().fields.start_charging.readback.requestedAt >= NOW + 2121);
+  }
+  assert.ok(reads >= 2 && reads <= 4, 'Recovery has a bounded number of read-only queries');
+});
+
 test('a witnessed false-to-true pair revokes a prepared automatic takeover even when native scalars are unchanged', async t => {
   const f = fixture(t, { limiterEnabled: false }); f.sources.set('start_charging', 'sys'); await f.ready();
   const controller = createShellyController({ adapter: f.adapter, clock: f.now, canControl: () => true }); t.after(() => controller.close());

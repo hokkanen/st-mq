@@ -45,7 +45,8 @@ Versions follow Semantic Versioning. `-dev.N` denotes a development prerelease.
 - Shelly partial status notifications retain their event time and unchanged
   attributes without replacing native value clocks. Brief permission changes
   between polls remain visible to control, and held electrical values do not
-  become fresh measurements.
+  become fresh measurements. A command's own notification arriving during
+  readback waits for fresh confirmation without repeating the command.
 - A charger connected with native Auto charge disabled is now recognized while
   waiting for permission, so automatic identification can start from that state.
   A fresh native read also recovers that connection after restart when its state
