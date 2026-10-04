@@ -42,6 +42,11 @@ Versions follow Semantic Versioning. `-dev.N` denotes a development prerelease.
 
 ### Fixed
 
+- Charger 2 confirms its 6 A identification setting before starting from an
+  economic pause, including while Tesla still reports an old unplugged value.
+  Its original probe deadline uses the confirmed ceiling; restoration waits for
+  fresh zero draw when returning to the pause. **Charge now** lets an active
+  identification finish before restoring normal current and continuing charging.
 - Charging can resume after Tesla reports the current available from a stopped
   charger; that supply-dependent value no longer becomes a vehicle restriction.
   A positive vehicle request below 6 A can use the charger's minimum pilot while
@@ -58,6 +63,9 @@ Versions follow Semantic Versioning. `-dev.N` denotes a development prerelease.
 - An ordinary Easee scheduled pause can remain confirmed when a stopped charger
   receives a revised release time. Fresh zero draw and native profile readback
   confirm the continuing pause without inventing a new vehicle stop response.
+- A bounded identification test retains its accepted return to economic waiting
+  after an inconclusive result or restart. A provisional forecast caused during
+  the test can no longer restart charging immediately after the test stops.
 - Charger identification can use corroborated live Tesla charging evidence when
   TeslaMate's plug topic still holds an older unplugged value, while preserving
   that original report and rejecting newer disconnect evidence. BMW identification

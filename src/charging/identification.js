@@ -25,10 +25,12 @@ const validCandidate = value => exactKeys(value, candidateKeys) && ['start', 'on
 const validPause = value => exactKeys(value, pauseKeys) && pauseKeys.every(key => time(value[key]))
   && value.requestedAt >= value.connectedAt && value.confirmedAt >= value.requestedAt
   && value.stoppedAt >= value.requestedAt && value.startAt > value.stoppedAt;
-const validProbe = value => exactKeys(value, probeKeys) && ['startedAt', 'deadlineAt', 'returnStartAt'].every(key => time(value[key]))
+const validProbe = value => exactKeys(value, Object.hasOwn(value ?? {}, 'returnSupersededAt') ? [...probeKeys, 'returnSupersededAt'] : probeKeys)
+  && ['startedAt', 'deadlineAt', 'returnStartAt'].every(key => time(value[key]))
   && value.deadlineAt > value.startedAt
   && value.deadlineAt <= value.startedAt + IDENTIFICATION_CHARGE_LIMIT_MS && value.returnStartAt > value.deadlineAt
-  && (value.endedAt === null || time(value.endedAt) && value.endedAt >= value.startedAt);
+  && (value.endedAt === null || time(value.endedAt) && value.endedAt >= value.startedAt)
+  && (value.returnSupersededAt === undefined || time(value.returnSupersededAt) && value.returnSupersededAt >= value.startedAt);
 
 /** Probe state is optional until this connection first needs extra charging.
  * Absence grants no probe permission or renewed budget. */
@@ -46,7 +48,7 @@ export function validateIdentificationState(state) {
     || state.chargePowerKw !== null && (!Number.isFinite(state.chargePowerKw) || state.chargePowerKw < 0)
     || state.reason !== null && !reasons.includes(state.reason)
     || state.probe != null && (!validProbe(state.probe) || state.probe.startedAt < state.startedAt
-      || state.probe.startedAt > state.lastAt || state.probe.endedAt > state.lastAt)
+      || state.probe.startedAt > state.lastAt || state.probe.endedAt > state.lastAt || state.probe.returnSupersededAt > state.lastAt)
     || state.candidate !== null && (!validCandidate(state.candidate) || state.candidate.connectedAt !== state.connectedAt
       || state.candidate.capturedAt < state.startedAt || state.candidate.capturedAt > state.lastAt || state.pauseUntil === null)
     || state.pause !== null && (!validPause(state.pause) || state.pause.connectedAt !== state.connectedAt
@@ -80,7 +82,7 @@ const finish = (state, phase, reason, now) => ({ ...state, phase, reason, action
  * passive evidence can still complete the saved attempt. */
 export function advanceIdentification(previous, { connectedAt, now, connected = true, identified = false,
   manualRetry = false, manualStop = false, interrupted = false, available = true, charging = false, energyKwh = null, powerKw = null,
-  normalCharging = true, probeAllowed = false, probeReturnAt = null, probeDurationMs = IDENTIFICATION_CHARGE_LIMIT_MS,
+  normalCharging = true, chargeNow = false, probeAllowed = false, probeReturnAt = null, probeDurationMs = IDENTIFICATION_CHARGE_LIMIT_MS,
   physicalFresh = true, physicalStopped = false, candidate = null, pause = null } = {}) {
   validateIdentificationState(previous);
   if (!connected || !time(connectedAt) || !time(now) || connectedAt > now) return null;
@@ -129,8 +131,13 @@ export function advanceIdentification(previous, { connectedAt, now, connected = 
     if (!state.candidate) return finish(state, 'inconclusive', state.reason ?? 'awaiting-evidence', now);
     state.probe.endedAt = now;
   }
-  if (normalCharging && state.probe && state.probe.endedAt === null && state.phase !== 'pausing')
-    return finish(state, 'inconclusive', 'interrupted', now);
+  if (normalCharging && state.probe && state.probe.endedAt === null && state.phase !== 'pausing') {
+    if (!chargeNow) return finish(state, 'inconclusive', 'interrupted', now);
+    // Charge now removes the economic need for extra-energy accounting, but
+    // keeps the same identification attempt and its separate current-test
+    // deadline. Ordinary charging follows when that attempt finishes.
+    state.probe.endedAt = now;
+  }
   const probeDuration = Math.min(IDENTIFICATION_CHARGE_LIMIT_MS, Math.max(1000, Math.floor(probeDurationMs)));
   if (!normalCharging && available && physicalFresh && probeAllowed && !state.probe && state.pauseUntil === null
     && time(probeReturnAt) && probeReturnAt > now + probeDuration) {

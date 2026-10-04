@@ -429,7 +429,8 @@ test('Shelly invalid current-test state is rejected without a device write', asy
   const f = fixture(t, { limiterEnabled: false });
   f.request = { id: 'validate-current', connectedAt: NOW, phase: 'charging', minimumCurrent: true };
   await f.update(); const good = structuredClone(f.saved);
-  for (const patch of [{ expiresAt: NOW + 91_000 }, { originalCurrentA: 5 }, { appliedCurrentA: 7 }, { unknown: true }]) {
+  for (const patch of [{ expiresAt: NOW + 91_000 }, { originalCurrentA: 5 }, { appliedCurrentA: 7 },
+    { probeDeadlineAt: NOW }, { probeDeadlineAt: NOW + 80_001 }, { probeDeadlineAt: null }, { unknown: true }]) {
     const invalid = { ...good, currentTest: { ...good.currentTest, ...patch } };
     assert.throws(() => createShellyController({ adapter: f.adapter, initialState: invalid }), /unsupported-shelly-ownership/);
   }

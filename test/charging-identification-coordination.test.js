@@ -180,6 +180,29 @@ test('a live probe keeps its original return through its own provisional forecas
   assert.deepEqual(f.runtime.identificationChargingChoice(f.peer, NOW), { normalCharging: true });
 });
 
+test('a retained probe return is bounded by connection, original time and deliberate supersession', () => {
+  const f = fixture(), connectedAt = NOW - 300_000, returnStartAt = NOW + 600_000;
+  f.peer.identification = { id: 'synthetic-return', connectedAt, phase: 'inconclusive', lastAt: NOW,
+    probe: { startedAt: NOW - 100_000, deadlineAt: NOW - 20_000, returnStartAt, endedAt: NOW - 10_000 } };
+  f.peer.request = { scope: `synthetic:${connectedAt}`, deadlineAt: returnStartAt + 600_000 };
+  f.control.session = { connected: true, connectedAt };
+  const proposed = { id: 'synthetic-shortfall', feasible: false, provisional: true, startAt: NOW,
+    periods: [{ startAt: NOW, endAt: null }] };
+  const retained = f.runtime.controlPlan(f.peer, proposed, NOW);
+  assert.equal(retained.startAt, returnStartAt);
+  assert.equal(f.runtime.controlPlan(f.peer, null, NOW).startAt, returnStartAt, 'Restart before prices arrive still owes the captured return');
+  assert.equal(f.runtime.controlPlan(f.peer, proposed, returnStartAt), proposed);
+  f.control.session.connectedAt++;
+  assert.equal(f.runtime.controlPlan(f.peer, proposed, NOW), proposed, 'A new physical connection inherits no old return');
+  f.control.session.connectedAt = connectedAt;
+  f.control.manual = { kind: 'charge-now' };
+  assert.equal(f.runtime.controlPlan(f.peer, proposed, NOW), proposed, 'A newer native instruction retains priority');
+  f.control.manual = null;
+  f.runtime.supersedeProbeReturn(f.peer, NOW);
+  assert.equal(f.peer.identification.probe.returnSupersededAt, NOW);
+  assert.equal(f.runtime.controlPlan(f.peer, proposed, NOW), proposed);
+});
+
 test('Automatic off and Charge now remain independent of an active probe return', () => {
   for (const mode of ['off', 'charge-now']) {
     const f = fixture();

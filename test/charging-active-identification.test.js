@@ -45,6 +45,35 @@ test('a scheduled vehicle remains pending indefinitely without spending its one 
   validateIdentificationState(state);
 });
 
+test('probe return supersession preserves its source clock and rejects invalid or future clocks', () => {
+  const state = advanceIdentification(null, probeInput({ charging: true, powerKw: 4 }));
+  state.probe.returnSupersededAt = START;
+  validateIdentificationState(state);
+  const resumed = advanceIdentification(JSON.parse(JSON.stringify(state)), probeInput({ now: START + 1000, charging: true, powerKw: 4 }));
+  assert.equal(resumed.probe.returnSupersededAt, START);
+  for (const at of [null, -1, START - 1, START + 1, NaN]) {
+    const invalid = structuredClone(state); invalid.probe.returnSupersededAt = at;
+    assert.throws(() => validateIdentificationState(invalid), /Unsupported saved charging identification/);
+  }
+});
+
+test('Charge now ends extra-energy accounting without cancelling the active identification attempt', () => {
+  const original = advanceIdentification(null, probeInput({ charging: true, powerKw: 4 }));
+  let state = advanceIdentification(original, input({ now: START + 5000, charging: true, powerKw: 4,
+    normalCharging: true, chargeNow: true }));
+  assert.equal(state.id, original.id); assert.equal(state.phase, 'charging'); assert.equal(state.action, 'allow');
+  assert.equal(state.completedAt, null); assert.equal(state.reason, null);
+  assert.equal(state.probe.endedAt, START + 5000);
+  assert.equal(state.probe.deadlineAt, original.probe.deadlineAt);
+  const used = state.chargeUsedKwh;
+  state = advanceIdentification(JSON.parse(JSON.stringify(state)), input({ now: START + 60_000,
+    charging: true, powerKw: 11, normalCharging: true, chargeNow: true }));
+  assert.equal(state.phase, 'charging'); assert.equal(state.chargeUsedKwh, used);
+  state = advanceIdentification(state, input({ now: START + 90_000, charging: true,
+    normalCharging: true, chargeNow: true, interrupted: true }));
+  assert.equal(state.phase, 'inconclusive'); assert.equal(state.id, original.id);
+});
+
 test('unavailable telemetry and explicit stop withhold charging permission while waiting', () => {
   for (const overrides of [{ available: false }, { manualStop: true }]) {
     const state = advanceIdentification(null, input({ charging: true, ...overrides }));

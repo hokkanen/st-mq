@@ -10,7 +10,7 @@ const START = 1_800_000_000_000, MINUTE = 60_000, FUTURE = START + 60 * MINUTE;
 // Exercise the real MQTT RPC adapter, controller, vehicle ingestion and runtime.
 // Only the broker/device and economic price result are synthetic.
 async function fixture(t, { charging = true, retainedOnly = false, enabled = true } = {}) {
-  let now = START, runtime, failSave = false, vehicleAllows = charging;
+  let now = START, runtime, failSave = false, vehicleAllows = charging, planOverride = null;
   const data = new Map(), writes = [], client = new EventEmitter();
   const config = { input: 'mqtt', connections: { mqtt: { address: 'mqtt://synthetic.invalid', user: 'synthetic-user' } },
     charging: { vehicles: { bmw: { mqttTopic: 'synthetic/identification/bmw' } }, chargers: { charger2: {
@@ -76,8 +76,9 @@ async function fixture(t, { charging = true, retainedOnly = false, enabled = tru
     runtime.chargers.charger2.controls.enabled = enabled; runtime.refreshSettings();
     runtime.updatePlan = () => {
       runtime.telemetry(now);
-      runtime.chargers.charger2.plan = { id: 'synthetic-economic-plan', feasible: true, startAt: FUTURE,
-        periods: [{ startAt: FUTURE, endAt: null }] };
+      runtime.chargers.charger2.plan = planOverride ? structuredClone(planOverride)
+        : { id: 'synthetic-economic-plan', feasible: true, startAt: FUTURE, deadlineAt: FUTURE + 60 * MINUTE,
+          periods: [{ startAt: FUTURE, endAt: null }] };
     };
     runtime.setMqttStatus({ connected: true, subscribed: true }, 'bmw');
     if (!runtime.vehicleFeeds.bmw.reading) {
@@ -98,6 +99,7 @@ async function fixture(t, { charging = true, retainedOnly = false, enabled = tru
   const card = () => runtime.status().chargers.find(row => row.id === 'charger2');
   return { get runtime() { return runtime; }, get now() { return now; }, adapter, fields, writes, schedules, serviceStatus,
     item, card, publish, setNow: value => { now = value; }, setFail: value => { failSave = value; },
+    setPlan: value => { planOverride = structuredClone(value); },
     async update() { await runtime.reconcile('charger2'); return item().controller.status(); },
     async restart() { runtime.persist(); await runtime.close(); await create(); },
     async offline() { client.emit('offline'); },
@@ -147,6 +149,54 @@ test('Shelly economic zero allocation cannot block the short identification obse
   assert.equal(f.fields.start_charging.value, true, 'The probe may release the initial economic hold');
   assert.equal(f.fields.current_limit.value, 12, 'The identification probe uses the existing normal limiter allowance');
   assert.ok(f.item().identification.probe.deadlineAt > f.now);
+});
+
+for (const restart of [false, true]) test(`Shelly restores a probe's accepted wait despite its own provisional forecast${restart ? ' across restart' : ''}`, async t => {
+  const f = await fixture(t, { retainedOnly: true });
+  f.publish({ atHome: true }, f.now);
+  await f.update(); await f.update();
+  const probe = structuredClone(f.item().identification.probe);
+  assert.equal(probe.returnStartAt, FUTURE);
+  f.setPlan({ id: 'synthetic-probe-shortfall', feasible: false, provisional: true, reason: 'insufficient-time', deadlineAt: FUTURE + MINUTE,
+    startAt: f.now, periods: [{ startAt: f.now, endAt: null }] });
+  f.setNow(probe.deadlineAt); await f.update();
+  f.setNow(f.now + 5000); await f.update();
+  assert.equal(f.item().identification.phase, 'inconclusive');
+  assert.equal(f.fields.start_charging.value, false);
+  const startsBefore = starts(f).length;
+  if (restart) await f.restart();
+  for (let poll = 0; poll < 3; poll++) { f.setNow(f.now + 20_000); await f.update(); }
+  assert.equal(f.item().plan.provisional, true, 'The new forecast stays visible with its real uncertainty');
+  assert.equal(f.item().controller.status().reason, 'economic-wait');
+  assert.equal(f.item().controller.status().execution.periods[0].startAt, FUTURE);
+  assert.equal(f.fields.start_charging.value, false); assert.equal(starts(f).length, startsBefore);
+  assert.equal(f.item().identification.probe.returnSupersededAt, undefined);
+  f.setFail(true);
+  await assert.rejects(f.runtime.chargeNow('charger2', f.input()), /storage unavailable/);
+  f.setFail(false);
+  assert.equal(f.item().identification.probe.returnSupersededAt, undefined, 'A failed save cannot discard the physical return duty');
+  assert.equal(f.fields.start_charging.value, false); assert.equal(starts(f).length, startsBefore);
+  await f.runtime.chargeNow('charger2', f.input());
+  assert.equal(f.fields.start_charging.value, true, 'An explicit session action can supersede the captured wait');
+  assert.ok(Number.isSafeInteger(f.item().identification.probe.returnSupersededAt));
+  const supersededAt = f.item().identification.probe.returnSupersededAt;
+  await f.restart(); await f.update();
+  assert.equal(f.item().identification.probe.returnSupersededAt, supersededAt);
+});
+
+test('a feasible replacement can supersede the probe return after its stop is confirmed', async t => {
+  const f = await fixture(t, { retainedOnly: true });
+  f.publish({ atHome: true }, f.now); await f.update(); await f.update();
+  const deadline = f.item().identification.probe.deadlineAt;
+  f.setPlan({ id: 'synthetic-feasible-replacement', feasible: true, startAt: START, deadlineAt: FUTURE + MINUTE,
+    periods: [{ startAt: START, endAt: null }] });
+  f.setNow(deadline); await f.update();
+  assert.equal(f.fields.start_charging.value, false, 'A new proposal cannot bypass the required return stop');
+  f.setNow(f.now + 20_000); await f.update();
+  if (f.fields.start_charging.value === false) { f.setNow(f.now + 20_000); await f.update(); }
+  assert.equal(f.fields.start_charging.value, true);
+  assert.ok(Number.isSafeInteger(f.item().identification.probe.returnSupersededAt));
+  assert.equal(f.item().controller.status().execution.planId, 'synthetic-feasible-replacement');
 });
 
 test('Shelly identifies with Automatic OFF and promptly resumes its own pause', async t => {

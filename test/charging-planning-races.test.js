@@ -116,6 +116,21 @@ test('an unchanged native read receipt does not discard useful planning work', a
   assert.equal(f.runtime.coordination.solver.testRequest, 0);
 });
 
+test('a failed replan still returns a captured probe obligation when no execution snapshot remains', async t => {
+  const f = await fixture(t), item = f.runtime.chargers.charger1, returnStartAt = AT + HOUR;
+  f.controllers.charger1.control.execution = null;
+  item.request = { scope: `${item.association}:${AT}`, sessionId: `${item.association}:${AT}`, deadlineAt: AT + 2 * HOUR };
+  item.identification = { id: 'synthetic-return-after-failed-plan', connectedAt: AT, phase: 'inconclusive',
+    probe: { startedAt: AT, deadlineAt: AT + 60_000, returnStartAt, endedAt: AT + 70_000 } };
+  f.setNow(AT + 80_000);
+  f.runtime.updatePlan = async () => { throw Error('synthetic planning unavailable'); };
+  const plan = await f.controllers.charger1.getPlan();
+  assert.equal(plan.startAt, returnStartAt);
+  assert.deepEqual(plan.periods, [{ startAt: returnStartAt, endAt: null }]);
+  assert.equal(f.runtime.error, 'charging-planning-unavailable');
+  assert.equal(item.awaitingPlan, false);
+});
+
 test('a changed joint program still revokes a controller that already reached native preflight', async t => {
   const f = await fixture(t), item = f.runtime.chargers.charger2;
   const before = f.controllers.charger2.invalidations;

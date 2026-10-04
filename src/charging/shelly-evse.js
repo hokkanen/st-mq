@@ -501,11 +501,14 @@ const currentTestKeys = ['id', 'connectedAt', 'sessionId', 'phase', 'startedAt',
   'originalCurrentA', 'appliedCurrentA', 'permissionAt', 'restoreCurrentA', 'pending'];
 function validCurrentTest(value) {
   if (value == null) return true;
+  const keys = value.probeDeadlineAt === undefined ? currentTestKeys : [...currentTestKeys, 'probeDeadlineAt'];
   return typeof value === 'object' && !Array.isArray(value)
-    && Object.keys(value).length === currentTestKeys.length && Object.keys(value).every(key => currentTestKeys.includes(key))
+    && Object.keys(value).length === keys.length && Object.keys(value).every(key => keys.includes(key))
     && token(value.id) && value.id.length <= 128 && token(value.sessionId)
     && time(value.connectedAt) && time(value.startedAt) && value.startedAt >= value.connectedAt
     && value.expiresAt === value.startedAt + CURRENT_TEST_MS
+    && (value.probeDeadlineAt === undefined || time(value.probeDeadlineAt)
+      && value.probeDeadlineAt > value.startedAt && value.probeDeadlineAt <= value.expiresAt - 10_000)
     && ['proposed', 'applying', 'active', 'restoring', 'restored', 'superseded', 'uncertain'].includes(value.phase)
     && (value.confirmedAt === null || time(value.confirmedAt) && value.confirmedAt >= value.startedAt)
     && (value.permissionAt === null || time(value.permissionAt))
@@ -655,8 +658,10 @@ export function createShellyController({ adapter, initialState, saveState = () =
   async function refreshIdentification(snapshot) {
     const request = typeof getIdentification === 'function' ? await getIdentification(copy(snapshot)) : null, now = clock();
     if (request != null && (!request || typeof request !== 'object' || Array.isArray(request)
-      || Object.keys(request).some(key => !['id', 'connectedAt', 'phase', 'pauseUntil', 'mode', 'probeUntil', 'returnStartAt', 'minimumCurrent'].includes(key))
+      || Object.keys(request).some(key => !['id', 'connectedAt', 'phase', 'pauseUntil', 'mode', 'probeUntil', 'returnStartAt', 'minimumCurrent', 'prepareOnly'].includes(key))
       || request.minimumCurrent !== undefined && typeof request.minimumCurrent !== 'boolean'
+      || request.prepareOnly !== undefined && (request.prepareOnly !== true || request.minimumCurrent !== true
+        || request.mode !== undefined || request.phase === 'pausing')
       || !token(request.id) || request.id.length > 128 || !time(request.connectedAt) || request.connectedAt > now
       || !['waiting', 'charging', 'pausing'].includes(request.phase)
       || request.phase === 'pausing' && (!time(request.pauseUntil) || request.pauseUntil - now > 5 * 60_000)
@@ -668,7 +673,8 @@ export function createShellyController({ adapter, initialState, saveState = () =
     identification = request && request.connectedAt === snapshot.session?.connectedAt && snapshot.session?.connected === true
       && (request.phase !== 'pausing' || request.pauseUntil > now) ? copy(request) : null;
   }
-  async function manageCurrentTest({ snapshot, intentRevision, request = null, context = null, early = false }) {
+  async function manageCurrentTest({ snapshot, intentRevision, request = null, context = null, early = false,
+    releaseProbe = false }) {
     let test = state.currentTest;
     const current = snapshot.fields.current_limit;
     const terminal = () => !test || ['restored', 'superseded'].includes(test.phase);
@@ -733,6 +739,19 @@ export function createShellyController({ adapter, initialState, saveState = () =
     let target = test.appliedCurrentA;
     const restoring = ending || test.phase === 'restoring';
     if (restoring) {
+      // A probe budget based on the confirmed low ceiling must retain it until
+      // the accepted economic wait has fresh zero-draw evidence. Raising the
+      // pilot while the car is still stopping could exceed the energy allowance.
+      // The probe deadline retains this duty across restart and native Stop,
+      // even when that stop clears the economic execution.
+      const waiting = state.execution?.periods?.length && !state.execution.periods.some(period => period.startAt <= clock()
+        && (period.endAt === null || period.endAt > clock()));
+      const permission = snapshot.fields.start_charging, physical = snapshot.fields.phase_info, work = snapshot.fields.work_state;
+      const stopped = permission?.value === false && fresh(permission) && physicalFresh(physical)
+        && physical.measuredAt >= permission.measuredAt && fresh(work)
+        && adapter.config.connectedStates.includes(work.value) && !adapter.config.chargingStates.includes(work.value)
+        && physical.value.total_power === 0 && PHASE_KEYS.every(key => physical.value[key]?.current < .5);
+      if (!releaseProbe && sameSession() && (waiting || test.probeDeadlineAt !== undefined) && !stopped) return;
       target = Math.min(test.originalCurrentA, adapter.config.maximumCurrentA);
       if (adapter.config.limiterEnabled) {
         const liveContext = context ?? (typeof getAllocation === 'function' ? await getAllocation(copy(snapshot)) : null);
@@ -1046,8 +1065,36 @@ export function createShellyController({ adapter, initialState, saveState = () =
         if (!identification && chargingPlanInputsUnavailable(plan) && state.execution && !state.provisional)
           plan = { ...copy(state.execution), startAt: state.execution.periods[0].startAt };
         const context = typeof getAllocation === 'function' ? await getAllocation(copy(snapshot)) : input.allocation ?? {};
-        await manageCurrentTest({ snapshot, intentRevision, request: identification, context });
+        const minimumRequest = identification?.minimumCurrent === true && identification.phase !== 'pausing'
+          ? identification.id : null;
+        let minimumBlocked = false;
+        await manageCurrentTest({ snapshot, intentRevision, request: identification, context,
+          releaseProbe: !input.enabled || chargeNow || ['enable', 'charge-now'].includes(state.manual?.kind) });
         snapshot = adapter.snapshot(); start = snapshot.fields.start_charging; current = snapshot.fields.current_limit;
+        if (minimumRequest) {
+          // Confirm the reduced native pilot before the runtime creates the
+          // original probe deadline or grants a cold start. A failed/uncertain
+          // current write cannot fall through to the previous higher setting.
+          await refreshIdentification(snapshot);
+          if (closed || intentRevision !== revision) return;
+          const test = state.currentTest;
+          const prepared = test?.id === minimumRequest && test.phase === 'active'
+            && fresh(current) && current.value === test.appliedCurrentA && current.measuredAt === test.permissionAt;
+          if (!prepared || identification?.prepareOnly) {
+            // Block a start, while still processing a native Stop or zero
+            // electrical/vehicle ceiling below. Preparation cannot mask them.
+            minimumBlocked = true;
+          }
+          if (!minimumBlocked && identification?.mode === 'probe') {
+            if (test.probeDeadlineAt !== undefined && test.probeDeadlineAt !== identification.probeUntil)
+              throw fail('invalid-identification-request');
+            // This durable physical obligation outlives the runtime attempt,
+            // including a native Stop that clears the economic execution.
+            test.probeDeadlineAt = identification.probeUntil;
+            await persist();
+          }
+          if (!identification && typeof getPlan === 'function') plan = await getPlan(copy(snapshot));
+        }
         // A native instruction received while the current-test RPC was pending
         // must fence the remaining start/stop work in this same reconcile.
         if (start.measuredAt > (state.lastStartAt ?? 0) && !systemEcho(start, state.lastStart)) {
@@ -1089,7 +1136,7 @@ export function createShellyController({ adapter, initialState, saveState = () =
         const allowStart = (economic && inWindow || identification && !identificationPause
           || state.ownedPause && !pause && (!state.automaticPermission || !input.enabled || nativeRelease))
           && !nativeBlocked && state.manual?.kind !== 'stop';
-        const shouldStart = !pause && allowStart && !snapshot.nativeScheduleActive;
+        const shouldStart = !pause && allowStart && !snapshot.nativeScheduleActive && !minimumBlocked;
         let expectedStart = copy(start), expectedCurrent = copy(current);
         const guard = () => !closed && intentRevision === revision && canControl() && adapter.snapshot().session?.sessionId === sessionId
           && adapter.snapshot().association === state.association;

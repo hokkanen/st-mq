@@ -620,6 +620,12 @@ An already confirmed passive match skips the test. Otherwise, live charger
 readiness and plausible at-home vehicle context allow one bounded charging
 test using the charger's native limits, with the scoped Charger 2 minimum-current
 comparison when its verified capability and Tesla context permit it.
+For a stopped Charger 2, the same plausible context permits preparation before
+Tesla reports positive current. The controller confirms the scoped 6 A setting
+before granting an identification start. Failed or uncertain current readback
+cannot fall through to a start at the previous higher setting. Preparation never
+supplies vehicle identity; fresh independent current and physical evidence are
+still required.
 Probe readiness can use a healthy, at-home vehicle whose last valid unplugged
 report predates the actual physical connection: BMW uses the report's source
 timestamp, TeslaMate its original receipt timestamp. That old negative report
@@ -689,7 +695,13 @@ Equalizer authority remain in effect. The controller monitors energy and its
 persisted absolute deadline, then reinstates the economic pause. The practical
 deadline is usually much shorter than five minutes: it uses the reported hardware
 current ceiling, or the adapter's conservative maximum, across three phases at
-at least 253 V and reserves ten seconds for stopping. This calculation does not
+at least 253 V and reserves ten seconds for stopping. A prepared Shelly 6 A test
+creates that original deadline only after native current readback and can use
+the confirmed lower ceiling. It also leaves ten seconds before the current
+test's fixed restoration deadline. The 6 A restriction remains until the
+economic stop has fresh physical zero-draw evidence, including after native Stop
+or restart; command acknowledgement alone cannot restore the higher current.
+A later native current choice still supersedes the temporary setting. This calculation does not
 set charging current or claim that actual draw reaches the ceiling. These guards
 require the running controller and working charger communication; an outage can
 extend extra charging. No positive-current OCPP profile or autonomous probe cutoff
@@ -707,6 +719,14 @@ returns immediately to the current charging choice. During an economic delay,
 that choice is the scheduled pause. The zero-current OCPP restriction that
 ends an extra probe can therefore last until the planned economic release; it
 does not expire after the ordinary 90-second identification pause.
+The captured economic return survives a terminal identification result and
+restart. Temporary probe current or load can change the proposed forecast, but
+a provisional forecast cannot release that accepted wait. A feasible replacement
+is eligible only after the probe has stopped and its temporary current setting
+has been restored; confirmed adoption supersedes the old return. Explicit
+session or control edits also supersede it, with that time saved in the probe
+record. Native instructions retain priority, and the return belongs only to the
+same physical connection and ends at its original release time.
 Exhaustion, completion of the minimum-current comparison, interruption or the
 pause deadline ends active testing for that attempt. An unresolved attempt shows
 **Identification inconclusive** while normal control uses session/default battery inputs.
@@ -719,6 +739,12 @@ and **Use automatic** cannot reopen an ended attempt. Choosing **Identify** or a
 new physical connection permits a new attempt. There is at most one bounded
 charging probe, one minimum-current comparison and one BMW pause per attempt.
 Normal scheduled charging can supply additional evidence after the probe budget is exhausted.
+**Charge now** during preparation or an active test permits ordinary charging
+without cancelling identification. It ends the extra-energy probe accounting
+and economic return obligation while retaining the current test's original
+identity and deadline. A successful match or exhausted test restores the normal
+current and continues charging. A newer native Enable or physical disconnection
+retains its separate supersession meaning.
 
 The attempt, consumed budget, absolute deadlines and physical evidence survive a current-version
 restart. A known connection resumes its pending attempt or completed outcome;

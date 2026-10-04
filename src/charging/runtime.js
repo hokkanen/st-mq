@@ -292,9 +292,9 @@ export class ChargingRuntime {
         getPlan: async snapshot => {
           item.awaitingPlan = true;
           try { await this.updatePlan(this.clock(), { sourceId: id }); }
-          catch { this.error = 'charging-planning-unavailable'; return null; }
+          catch { this.error = 'charging-planning-unavailable'; return this.controlPlan(item, null); }
           finally { item.awaitingPlan = false; }
-          return this.pricesInitialized ? item.plan : null;
+          return this.controlPlan(item, this.pricesInitialized ? item.plan : null);
         },
         getAllocation: () => this.allocationContext() });
       item.lastReconcileAt = null;
@@ -304,6 +304,39 @@ export class ChargingRuntime {
       if (generation === item.adapterGeneration) item.adapterPending = false;
     });
     return item.adapterFlight;
+  }
+  probeReturn(item, now = this.clock()) {
+    const attempt = item.identification, probe = attempt?.probe, control = item.controller?.status();
+    return probe && probe.returnSupersededAt === undefined && now < probe.returnStartAt
+      && item.controls.enabled && !item.request?.chargeNow && item.request?.scope
+      && sessionConnectedAt(item.request) === attempt.connectedAt
+      && control?.session?.connected === true && control.session.connectedAt === attempt.connectedAt
+      && !control.manual ? probe : null;
+  }
+  controlPlan(item, plan, now = this.clock()) {
+    const probe = this.probeReturn(item, now);
+    if (!probe) return plan;
+    const control = item.controller.status(), test = control.currentTest;
+    const currentRestored = !test || test.id !== item.identification.id
+      || ['restored', 'superseded'].includes(test.phase);
+    const restored = probe.endedAt !== null && control.pauseConfirmed === true && !control.pending && currentRestored;
+    if (restored && plan?.feasible === true && plan.provisional !== true) return plan;
+    // A probe may change its own forecast through the temporary current or
+    // measured load. That forecast cannot cancel the accepted return to wait,
+    // including after the attempt becomes terminal or the process restarts.
+    // This is the applied program; the proposed forecast remains visible.
+    const execution = control.execution;
+    const retained = execution?.periods?.find(row => row.startAt > now)?.startAt === probe.returnStartAt ? execution : null;
+    const deadlineAt = retained?.deadlineAt ?? item.request?.deadlineAt;
+    return { id: retained?.planId ?? item.identification.id, startAt: probe.returnStartAt,
+      periods: retained ? structuredClone(retained.periods) : [{ startAt: probe.returnStartAt, endAt: null }],
+      ...(deadlineAt != null ? { deadlineAt } : {}), reason: 'identification-return' };
+  }
+  supersedeProbeReturn(item, now = this.clock()) {
+    if (item.identification?.probe && item.identification.probe.returnSupersededAt === undefined) {
+      item.identification.lastAt = Math.max(now, item.identification.lastAt);
+      item.identification.probe.returnSupersededAt = item.identification.lastAt;
+    }
   }
   identificationAvailable(item, now = this.clock()) {
     const control = item.controller?.status(), snapshot = control?.snapshot;
@@ -318,21 +351,23 @@ export class ChargingRuntime {
       && !['Faulted', 'Unavailable', 'Reserved'].includes(snapshot.connectorStatus)
       && !control.vehicleDisconnect?.awaitingConnection);
   }
-  identificationFeedReason(item, now) {
-    const bmw = this.vehicleFeeds.bmw, reading = bmw?.reading, tesla = this.teslaCapture?.snapshot();
+  teslaIdentificationFeedReady(item, now) {
+    const tesla = this.teslaCapture?.snapshot();
     const session = item?.controller?.status()?.session, connectedAt = session?.connectedAt;
-    const priorPlug = (field, at) => session?.connected === true
+    const plug = tesla?.fields?.plugged_in;
+    const previousUnplug = tesla?.pluggedIn === false && plug?.value === false
+      && plug.timeBasis === 'receipt-only' && plug.measuredAt === null
+      && Number.isSafeInteger(plug.sequence) && plug.sequence > 0 && session?.connected === true
       && Number.isSafeInteger(connectedAt) && connectedAt >= 0 && connectedAt <= now
-      && Number.isSafeInteger(at) && at >= 0 && at < connectedAt
-      && Number.isSafeInteger(field?.receivedAt) && field.receivedAt >= 0 && field.receivedAt <= now
-      && typeof field.retained === 'boolean';
-    const teslaPlug = tesla?.fields?.plugged_in;
-    const previousTeslaUnplug = tesla?.pluggedIn === false && teslaPlug?.value === false
-      && teslaPlug.timeBasis === 'receipt-only' && teslaPlug.measuredAt === null
-      && Number.isSafeInteger(teslaPlug.sequence) && teslaPlug.sequence > 0
-      && priorPlug(teslaPlug, teslaPlug.receivedAt);
-    if (tesla?.connected === true && tesla.healthy === true && tesla.atHome === true
-      && (teslamateConnectionContext(tesla, { now }) || previousTeslaUnplug)) return null;
+      && Number.isSafeInteger(plug.receivedAt) && plug.receivedAt >= 0 && plug.receivedAt < connectedAt
+      && typeof plug.retained === 'boolean';
+    return Boolean(tesla?.connected === true && tesla.healthy === true && tesla.atHome === true
+      && (teslamateConnectionContext(tesla, { now }) || previousUnplug));
+  }
+  identificationFeedReason(item, now) {
+    const bmw = this.vehicleFeeds.bmw, reading = bmw?.reading;
+    const session = item?.controller?.status()?.session, connectedAt = session?.connectedAt;
+    if (this.teslaIdentificationFeedReady(item, now)) return null;
     if (!vehicleFeedAvailable(bmw, now)) return 'vehicle-feed-stale';
     if (reading?.fields?.charging?.historyOverflowAt != null) return 'evidence-capacity';
     if (reading?.atHome === false || reading?.atHome === null && reading.fields?.atHome?.lastKnown?.value === false) return 'bmw-away';
@@ -343,15 +378,22 @@ export class ChargingRuntime {
     // identity matchers still require their own positive plug evidence.
     const previousBmwUnplug = reading?.pluggedIn === false
       && typeof bmwPlug?.readingId === 'string' && bmwPlug.readingId.length > 0 && bmwPlug.readingId.length <= 128
-      && priorPlug(bmwPlug, bmwPlug.measuredAt);
+      && session?.connected === true
+      && Number.isSafeInteger(connectedAt) && connectedAt >= 0 && connectedAt <= now
+      && Number.isSafeInteger(bmwPlug.measuredAt) && bmwPlug.measuredAt >= 0
+      && bmwPlug.measuredAt < connectedAt
+      && Number.isSafeInteger(bmwPlug.receivedAt) && bmwPlug.receivedAt >= 0 && bmwPlug.receivedAt <= now
+      && typeof bmwPlug.retained === 'boolean';
     if (!bmwIdentityContextValid(reading, now) && !previousBmwUnplug) return 'bmw-not-plugged';
     return null;
   }
   identificationFeedReady(item, now) { return this.identificationFeedReason(item, now) === null; }
   minimumCurrentIdentification(item, now = this.clock()) {
     if (item?.definition.id !== 'charger2' || item.vehicleMatch && item.identification?.attempt <= 1) return false;
-    const tesla = this.teslaCapture?.snapshot(), control = item.controller?.status();
-    return Boolean(tesla?.healthy === true && tesla.atHome === true && teslamateConnectionContext(tesla, { now })
+    const control = item.controller?.status();
+    // Preparation is not vehicle identity. A stopped car cannot publish the
+    // positive draw that the subsequent matcher must independently observe.
+    return Boolean(this.teslaIdentificationFeedReady(item, now)
       && control?.snapshot?.identificationCurrentReady === true && this.identificationAvailable(item, now)
       && !(control.currentTest && control.currentTest.id === item.identification?.id
         && item.vehicleEvidence?.teslaCurrentResolvedTestId === control.currentTest.id)
@@ -478,9 +520,13 @@ export class ChargingRuntime {
     const state = item.identification;
     this.persist();
     this.scheduleWakeup(now);
-    if (!state?.action || !this.identificationAvailable(item, now)) return null;
+    if (!state || !this.identificationAvailable(item, now)) return null;
     if (!this.identificationTurn(item)) return null;
     const minimumCurrent = this.minimumCurrentIdentification(item, now);
+    const choice = this.identificationChargingChoice(item, now);
+    const preparingMinimum = minimumCurrent && !state.probe && ['waiting', 'charging'].includes(state.phase)
+      && !choice.normalCharging && choice.probeReturnAt > now;
+    if (!state.action && !preparingMinimum) return null;
     // Passive observation must preserve the accepted economic program. Only
     // an actual bounded test may acquire temporary charging permission.
     if (state.phase !== 'pausing' && state.probe?.endedAt !== null && !minimumCurrent) return null;
@@ -488,6 +534,7 @@ export class ChargingRuntime {
       ...(state.probe && (state.probe.endedAt === null || state.phase === 'pausing') && ['ocpp', 'shelly-evse'].includes(snapshot?.transport) ? { mode: 'probe',
         probeUntil: state.probe.deadlineAt, returnStartAt: state.probe.returnStartAt } : {}),
       ...(minimumCurrent ? { minimumCurrent: true } : {}),
+      ...(preparingMinimum ? { prepareOnly: true } : {}),
       ...(state.phase === 'pausing' ? { pauseUntil: state.pauseUntil } : {}) };
   }
   async pauseForBackendChange(id) {
@@ -896,18 +943,28 @@ export class ChargingRuntime {
         const control = item.controller.status(), physical = result[id];
         const available = !item.vehicleEvidence?.historyOverflow && this.identificationAvailable(item, now) && this.identificationFeedReady(item, now)
           && this.identificationTurn(item);
-        const candidate = !this.minimumCurrentIdentification(item, now) && this.identificationPauseAvailable(item, result, now)
+        const minimumCurrent = this.minimumCurrentIdentification(item, now);
+        const candidate = !minimumCurrent && this.identificationPauseAvailable(item, result, now)
           && this.identificationBmwCandidate(item, physical, now);
         const choice = this.identificationChargingChoice(item, now);
-        const probeAllowed = item.controller.supportsIdentification;
+        const currentTest = control.currentTest, currentLimit = control.snapshot?.fields?.current_limit;
+        const minimumReady = minimumCurrent && currentTest && currentTest.id === item.identification?.id
+          && currentTest.phase === 'active' && currentTest.connectedAt === control.session.connectedAt
+          && currentTest.sessionId === control.session.sessionId && Number.isSafeInteger(currentTest.confirmedAt)
+          && currentTest.confirmedAt <= now && currentTest.expiresAt > now + 10_000
+          && currentLimit?.value === currentTest.appliedCurrentA
+          && currentLimit.measuredAt === currentTest.permissionAt && currentLimit.measuredAt <= now;
+        const probeAllowed = item.controller.supportsIdentification && (!minimumCurrent || minimumReady);
         const voltage = control.snapshot?.supply?.voltageV;
-        // Bound probe energy by the hardware ceiling even when the separate
-        // minimum-current test requests a lower limit. A requested setting is
-        // never proof of actual draw.
+        // A minimum-current probe is created only after native readback. Its
+        // original budget can use that confirmed ceiling, and must end before
+        // the fixed current-test restoration deadline. Requests and expected
+        // vehicle demand never establish the electrical bound.
         const limits = [physical.maxCurrentA?.available ? physical.maxCurrentA.value : null,
           physical.maximumCurrentA?.available ? physical.maximumCurrentA.value : null,
           control.snapshot?.limits?.chargerA, control.snapshot?.limits?.cableA,
-          ...(control.snapshot?.limits?.circuitA ?? [])].filter(value => Number.isFinite(value) && value > 0);
+          ...(control.snapshot?.limits?.circuitA ?? []), minimumReady ? currentLimit.value : null]
+          .filter(value => Number.isFinite(value) && value > 0);
         const maximumA = limits.length ? Math.min(...limits) : item.adapter.config?.maximumCurrentA ?? 32;
         const probeCeilingKw = maximumA * 3 * Math.max(253, ...(Array.isArray(voltage) ? voltage.filter(Number.isFinite) : [])) / 1000;
         const physicalFresh = physical.powerKw?.available === true && Number.isFinite(physical.powerKw.measuredAt)
@@ -921,13 +978,14 @@ export class ChargingRuntime {
             : control.snapshot?.transport === 'shelly-evse' && control.snapshot.fields?.start_charging?.value === false
               && control.snapshot.fields.start_charging.measuredAt >= probeStartedAt);
         item.identification = advanceIdentification(item.identification, {
-          ...choice, probeAllowed,
+          ...choice, probeAllowed, chargeNow: item.request?.chargeNow === true,
           interrupted: control.currentTest?.id === item.identification?.id && Boolean(control.currentTest)
             && (control.currentTest.expiresAt <= now
               || item.vehicleEvidence?.teslaCurrentResolvedTestId === control.currentTest.id
               || ['restoring', 'restored', 'superseded', 'uncertain'].includes(control.currentTest.phase)
               || !available),
-          probeDurationMs: Math.floor((IDENTIFICATION_ENERGY_LIMIT_KWH / probeCeilingKw * 3600 - 10) * 1000), physicalFresh, physicalStopped,
+          probeDurationMs: Math.min(Math.floor((IDENTIFICATION_ENERGY_LIMIT_KWH / probeCeilingKw * 3600 - 10) * 1000),
+            minimumReady ? currentTest.expiresAt - now - 10_000 : Infinity), physicalFresh, physicalStopped,
           connectedAt: control.session.connectedAt, now, connected: true, identified: reidentifying ? freshIdentity : Boolean(vehicleId),
           available, manualStop: Boolean(control.manual || control.snapshot?.manualStop || control.snapshot?.stopped),
           charging: physicalFresh && physical.powerKw.value > .5 && physical.charging?.available === true && physical.charging.value === true,
@@ -1555,6 +1613,16 @@ export class ChargingRuntime {
         reconnected: item.vehicleDisconnect.source === 'easee-stream' ? item.vehicleDisconnect.reconnected
           : bmwReconnectEvent(item.vehicleDisconnect, this.vehicleFeeds.bmw.reading, { now: this.clock() }) } : null });
     if (this.closed || controller !== item.controller) return;
+    const control = controller.status(), probe = this.probeReturn(item), execution = control.execution;
+    if (probe?.endedAt != null && item.plan?.feasible === true && item.plan.provisional !== true
+      && !control.pending && execution && execution.planId === item.plan.id
+      && JSON.stringify(execution.periods) === JSON.stringify(item.plan.periods)
+      && (control.pauseConfirmed || control.released || control.phase === 'active')
+      && execution.periods.find(row => row.endAt === null || row.endAt > this.clock())?.startAt !== probe.returnStartAt) {
+      const previousIdentification = structuredClone(item.identification);
+      this.supersedeProbeReturn(item);
+      try { this.persist(); } catch (error) { item.identification = previousIdentification; throw error; }
+    }
     if (item.replan && item.controls.revision === controlsRevision && controller.status()?.planningRevision === controlsRevision) {
       item.replan = false;
       try { this.persist(); } catch (error) { item.replan = true; throw error; }
@@ -1573,13 +1641,16 @@ export class ChargingRuntime {
       || typeof input.enabled !== 'boolean') throw new Error('Invalid automatic charging control.');
     if (input.association !== item.association || input.revision !== item.controls.revision)
       throw new Error('Charging controls changed; refresh before editing.');
-    const previous = { controls: { ...item.controls }, replan: item.replan, request: copyRequest(item.request), plan: item.plan, revision: this.revision };
+    const previous = { controls: { ...item.controls }, replan: item.replan, request: copyRequest(item.request), plan: item.plan,
+      identification: structuredClone(item.identification), revision: this.revision };
+    this.supersedeProbeReturn(item);
     item.controls = { enabled: input.enabled, revision: item.controls.revision + 1 };
     item.replan = input.enabled && (item.replan || previous.request?.chargeNow === true || !previous.controls.enabled);
     if (item.request?.chargeNow) { delete item.request.chargeNow; item.request.revision++; }
     item.plan = null; this.revision++; this.refreshSettings();
     try { this.persist(); } catch (error) {
-      Object.assign(item, { controls: previous.controls, replan: previous.replan, request: previous.request, plan: previous.plan });
+      Object.assign(item, { controls: previous.controls, replan: previous.replan, request: previous.request, plan: previous.plan,
+        identification: previous.identification });
       this.revision = previous.revision; this.refreshSettings(); throw error;
     }
     this.invalidateCommands();
@@ -1595,9 +1666,15 @@ export class ChargingRuntime {
       || Object.entries(this.chargers).some(([id, item]) => input.associations[id] !== item.association)
       || input.revision !== this.controls.revision) throw new Error('Charging controls changed; refresh before editing.');
     const previous = { ...this.controls }, previousRevision = this.revision;
+    const identification = Object.fromEntries(Object.entries(this.chargers).map(([id, item]) => [id, structuredClone(item.identification)]));
+    for (const item of Object.values(this.chargers)) this.supersedeProbeReturn(item);
     this.controls = { ...this.controls, priority: input.priority, revision: this.controls.revision + 1 };
     this.revision++; this.refreshSettings();
-    try { this.persist(); } catch (error) { this.controls = previous; this.revision = previousRevision; this.refreshSettings(); throw error; }
+    try { this.persist(); } catch (error) {
+      this.controls = previous; this.revision = previousRevision;
+      for (const [id, state] of Object.entries(identification)) this.chargers[id].identification = state;
+      this.refreshSettings(); throw error;
+    }
     this.invalidateCommands();
     try { await this.updatePlan(); } catch { this.error = 'charging-planning-unavailable'; }
     await this.reconcile();
@@ -1623,9 +1700,13 @@ export class ChargingRuntime {
       || !view.capabilities.scheduling || !item.controller || item.backendTransition)
       throw new Error('Charge Now requires a supported charger and control authority.');
     if (view.values.connected.value !== true) throw new Error('Connect a vehicle before choosing Charge Now.');
-    const previous = copyRequest(item.request), previousRevision = this.revision, previousPlan = item.plan;
+    const previous = copyRequest(item.request), previousRevision = this.revision, previousPlan = item.plan,
+      previousIdentification = structuredClone(item.identification);
+    this.supersedeProbeReturn(item);
     item.request.chargeNow = true; item.request.revision++; this.revision++; item.plan = null;
-    try { this.persist(); } catch (error) { item.request = previous; item.plan = previousPlan; this.revision = previousRevision; throw error; }
+    try { this.persist(); } catch (error) {
+      item.request = previous; item.plan = previousPlan; item.identification = previousIdentification; this.revision = previousRevision; throw error;
+    }
     this.invalidateCommands();
     try { await this.updatePlan(); } catch { this.error = 'charging-planning-unavailable'; }
     // Release scheduling immediately even when price/history work is unavailable.
@@ -1664,7 +1745,9 @@ export class ChargingRuntime {
     const { item } = this.checkedSession(id, input);
     if (Object.keys(input.changes).some(key => !['manualSoc', 'capacityKwh', 'minimumSoc', 'readyBy'].includes(key))) throw new Error('Invalid session field');
     const checked = mergeChargingSettings(this.settings, { chargers: { [id]: input.changes } }).chargers[id];
-    const previous = copyRequest(item.request), previousRevision = this.revision, previousPlan = item.plan;
+    const previous = copyRequest(item.request), previousRevision = this.revision, previousPlan = item.plan,
+      previousIdentification = structuredClone(item.identification);
+    this.supersedeProbeReturn(item);
     for (const key of Object.keys(input.changes)) item.request.overrides[key] = checked[key];
     if (Object.hasOwn(input.changes, 'manualSoc')) item.request.anchorAt = this.clock();
     if (Object.hasOwn(input.changes, 'readyBy')) item.request.deadlineAt = resolveChargingDeadline(this.clock(), checked.readyBy, TIME_ZONE);
@@ -1672,7 +1755,9 @@ export class ChargingRuntime {
     const control = item.controller?.status();
     item.plan = control?.released ? previousPlan : previousPlan && activePeriod(control, this.clock())
       ? { ...previousPlan, ...(Object.hasOwn(input.changes, 'readyBy') ? { replanReadyBy: checked.readyBy } : {}) } : null;
-    try { this.persist(); } catch (error) { item.request = previous; item.plan = previousPlan; this.revision = previousRevision; throw error; }
+    try { this.persist(); } catch (error) {
+      item.request = previous; item.plan = previousPlan; item.identification = previousIdentification; this.revision = previousRevision; throw error;
+    }
     this.invalidateCommands(); await this.updatePlan(); await this.reconcile();
   }
   async resume(id, input) {
@@ -1682,10 +1767,16 @@ export class ChargingRuntime {
     if (!view.capabilities.scheduling) throw new Error(`${view.label} does not support automatic scheduling`);
     if (!view.settings.enabled) throw new Error('Enable automatic charging before resuming');
     const item = this.charger(id);
+    const previousIdentification = structuredClone(item.identification);
+    this.supersedeProbeReturn(item);
     if (item.request?.chargeNow) {
       const previous = copyRequest(item.request), previousRevision = this.revision, previousPlan = item.plan;
       delete item.request.chargeNow; item.request.revision++; this.revision++; item.plan = null;
-      try { this.persist(); } catch (error) { item.request = previous; item.plan = previousPlan; this.revision = previousRevision; throw error; }
+      try { this.persist(); } catch (error) {
+        item.request = previous; item.plan = previousPlan; item.identification = previousIdentification; this.revision = previousRevision; throw error;
+      }
+    } else {
+      try { this.persist(); } catch (error) { item.identification = previousIdentification; throw error; }
     }
     this.invalidateCommands();
     // Cancelling Charge now returns our session choice to planning. It does not
@@ -1714,12 +1805,14 @@ export class ChargingRuntime {
     if (takeover.token !== input.takeoverToken)
       throw new Error('The charger instruction changed. Review the current status before taking over.');
     const previous = { controls: item.controls, request: copyRequest(item.request), plan: item.plan,
-      replan: item.replan, revision: this.revision };
+      identification: structuredClone(item.identification), replan: item.replan, revision: this.revision };
+    this.supersedeProbeReturn(item);
     item.controls = { enabled: true, revision: item.controls.revision + 1 };
     delete item.request.chargeNow;
     item.request.revision++; item.plan = null; item.replan = true; this.revision++; this.refreshSettings();
     try { this.persist(); } catch (error) {
-      Object.assign(item, { controls: previous.controls, request: previous.request, plan: previous.plan, replan: previous.replan });
+      Object.assign(item, { controls: previous.controls, request: previous.request, plan: previous.plan,
+        identification: previous.identification, replan: previous.replan });
       this.revision = previous.revision; this.refreshSettings(); throw error;
     }
     const attempt = { token: input.takeoverToken, controller: item.controller, association: item.association,
