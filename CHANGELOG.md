@@ -42,6 +42,9 @@ Versions follow Semantic Versioning. `-dev.N` denotes a development prerelease.
 
 ### Fixed
 
+- Shelly Start confirmation accepts a matching late notification within the same
+  native timestamp second only after an acknowledged command and a fresh query
+  after that notification. This prevents an owned Start appearing as native Enable.
 - Vehicle identification can combine a unique measured Tesla current match with
   BMW's own matching start/stop evidence to resolve both chargers when their
   transitions overlap. Missing or contradictory evidence remains unresolved.

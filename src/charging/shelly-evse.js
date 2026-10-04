@@ -835,8 +835,23 @@ export function createShellyController({ adapter, initialState, saveState = () =
       state.permissionEventCursor = event.sequence;
       if (event.sessionId !== snapshot.session?.sessionId || event.connectedAt !== snapshot.session?.connectedAt
         || !time(event.connectedAt) || event.eventAt < event.connectedAt) continue;
+      const field = snapshot.fields.start_charging;
+      // A value-only notification has the device's event clock, while dispatch
+      // and acknowledgement use our receipt clock. An earlier fractional time
+      // in the same native setting second can still be our confirmed Start.
+      // Require a correlated query after both ACK and this notification; never
+      // round the event forward, absorb a Stop, or use an old cached readback.
+      const confirmedStartEcho = command === pending && command?.value === true && event.value === true
+        && event.commandSource === 'rpc' && field?.commandSource === 'rpc'
+        && event.eventAt < command.dispatchedAt && event.receivedAt >= command.dispatchedAt
+        && Math.floor(event.eventAt / 1000) === Math.floor(command.dispatchedAt / 1000)
+        && fresh(field) && field.value === true && field.measuredAt === Math.floor(event.eventAt / 1000) * 1000
+        && field.readback?.measuredAt === field.measuredAt
+        && field.readback.requestedAt >= Math.max(command.acceptedAt, event.receivedAt)
+        && field.readback.receivedAt >= field.readback.requestedAt
+        && commandReadback(field, command);
       const own = !external && command?.sessionId === event.sessionId && command.value === event.value
-        && event.eventAt >= command.dispatchedAt && event.eventAt <= command.acceptedAt;
+        && (event.eventAt >= command.dispatchedAt && event.eventAt <= command.acceptedAt || confirmedStartEcho);
       const systemRefresh = !external && event.value !== null && event.commandSource === 'sys' && event.value === lastValue;
       lastValue = event.value;
       if (own || systemRefresh) continue;

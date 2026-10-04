@@ -13,9 +13,9 @@ const COMPONENTS = { current_limit: ['Number', 200], start_charging: ['Boolean',
 
 // Only the EVSE/broker and economic result are synthetic. Permission events pass
 // through the real MQTT parser, persistent queue, controller and runtime matcher.
-async function fixture(t, { initiallyPermitted = false, autoCharge = false, startOutcome = 'confirmed' } = {}) {
-  let now = START, measuredCurrentA = 0, runtime, newerStartInjected = false;
-  const data = new Map(), writes = [], client = new EventEmitter();
+async function fixture(t, { initiallyPermitted = false, autoCharge = false, startOutcome = 'confirmed', startEcho = null } = {}) {
+  let now = START, measuredCurrentA = 0, runtime, newerStartInjected = false, pendingStartEcho = null;
+  const data = new Map(), writes = [], echoTrace = [], client = new EventEmitter();
   const schedules = { rev: 1, jobs: [] }, serviceStatus = { state: 'running' };
   const service = { id: 0, auto_balance: { enable: false }, auto_charge: autoCharge };
   const currentCapability = { access: 'crw' };
@@ -46,6 +46,10 @@ async function fixture(t, { initiallyPermitted = false, autoCharge = false, star
       options: ['charger_free', 'charger_insert', 'charger_wait', 'charger_pause', 'charger_end', 'charger_charging'] };
     else if (frame.method.endsWith('.Set')) {
       writes.push({ method: frame.method, ...frame.params, at: now });
+      if (role === 'start_charging' && frame.params.value === true && startEcho) {
+        pendingStartEcho = { dispatchedAt: now, nativeAt: now - (startEcho === 'different native second' ? 1083 : 83) };
+        echoTrace.push(pendingStartEcho);
+      }
       now += 100;
       fields[role] = { value: frame.params.value, at: Math.floor(now / 1000) * 1000, source: 'rpc' };
       if (role === 'start_charging') fields.work_state = { value: frame.params.value ? 'charger_wait' : 'charger_pause', at: fields[role].at };
@@ -56,6 +60,27 @@ async function fixture(t, { initiallyPermitted = false, autoCharge = false, star
       }
       result = null;
     } else {
+      if (role === 'start_charging' && pendingStartEcho) {
+        const echo = pendingStartEcho; pendingStartEcho = null;
+        echo.readRequestedAt = now;
+        // ACK has already arrived. During its correlated readback, the EVSE
+        // publishes a value-only echo whose native clock is slightly behind
+        // the application's dispatch clock. Receipt time remains independent.
+        now += 140; echo.receivedAt = now;
+        client.emit('message', `${PREFIX}/events/rpc`, Buffer.from(JSON.stringify({ src: DEVICE, method: 'NotifyStatus',
+          params: { ts: echo.nativeAt / 1000, 'boolean:201': { value: true,
+            ...(startEcho === 'unknown source' ? { source: 'synthetic-unknown' } : {}) } } })), {});
+        echo.event = structuredClone(adapter.snapshot().permissionEvents.at(-1));
+        if (startEcho === 'external Stop during readback') {
+          now += 17;
+          fields.start_charging = { value: false, at: Math.floor(now / 1000) * 1000, source: 'rpc' };
+          fields.work_state = { value: 'charger_pause', at: now };
+          client.emit('message', `${PREFIX}/events/rpc`, Buffer.from(JSON.stringify({ src: DEVICE, method: 'NotifyStatus',
+            params: { ts: now / 1000, 'boolean:201': { value: false, source: 'rpc' } } })), {});
+          echo.externalStopAt = now;
+        }
+        now += 265; echo.readReceivedAt = now;
+      }
       if (role === 'start_charging' && fields[role].value === true && startOutcome === 'newer native instruction' && !newerStartInjected) {
         // A different RPC client repeats Start after our acknowledgement but
         // before the first confirmation query. The returned clock tells them apart.
@@ -66,8 +91,11 @@ async function fixture(t, { initiallyPermitted = false, autoCharge = false, star
           ? null : fields[role].value, last_update_ts: fields[role].at / 1000,
           ...(fields[role].source !== undefined ? { source: fields[role].source } : {}) };
     }
-    done?.(); queueMicrotask(() => client.emit('message', `${frame.src}/rpc`, Buffer.from(JSON.stringify({
-      id: frame.id, src: DEVICE, dst: frame.src, result })), {}));
+    done?.(); queueMicrotask(() => {
+      if (role === 'start_charging' && frame.method.endsWith('.Set') && pendingStartEcho)
+        pendingStartEcho.acknowledgedAt = now;
+      client.emit('message', `${frame.src}/rpc`, Buffer.from(JSON.stringify({ id: frame.id, src: DEVICE, dst: frame.src, result })), {});
+    });
   };
   const capture = createChargingTeslaCapture({ settings: config.connections.teslamate,
     clock: () => now, brokerIdentity: 'synthetic-startup-broker' });
@@ -97,7 +125,7 @@ async function fixture(t, { initiallyPermitted = false, autoCharge = false, star
   publishTesla({ healthy: true, geofence: 'Home', plugged_in: true, charging_state: 'Stopped',
     charger_phases: 3, charger_power: 0, charger_actual_current: 0 });
   await create();
-  return { get now() { return now; }, get runtime() { return runtime; }, adapter, fields, writes, schedules,
+  return { get now() { return now; }, get runtime() { return runtime; }, adapter, fields, writes, schedules, echoTrace,
     service, serviceStatus, currentCapability, publishTesla,
     item: () => runtime.chargers.charger2,
     advance(ms) { now += ms; },
@@ -113,11 +141,11 @@ async function fixture(t, { initiallyPermitted = false, autoCharge = false, star
       const key = runtime.ownershipKey('charger2'), saved = structuredClone(data.get(key));
       delete saved.startup; data.set(key, saved);
     },
-    permission(value, source = 'sys', { omitSource = false } = {}) {
-      fields.start_charging = { value, at: Math.floor(now / 1000) * 1000,
+    permission(value, source = 'sys', { omitSource = false, eventAt = now } = {}) {
+      fields.start_charging = { value, at: Math.floor(eventAt / 1000) * 1000,
         source: omitSource ? fields.start_charging.source : source };
       client.emit('message', `${PREFIX}/events/rpc`, Buffer.from(JSON.stringify({ src: DEVICE, method: 'NotifyStatus',
-        params: { ts: now / 1000, 'boolean:201': { value, ...(omitSource ? {} : { source }) } } })), {});
+        params: { ts: eventAt / 1000, 'boolean:201': { value, ...(omitSource ? {} : { source }) } } })), {});
     },
     current(value, source = 'rpc', { sourceOnly = false } = {}) {
       fields.current_limit = sourceOnly ? { ...fields.current_limit, source }
@@ -141,6 +169,90 @@ async function startedFixture(t, options) {
   assert.equal(f.fields.start_charging.value, true);
   return f;
 }
+
+test('a value-only own Start echo with an earlier native clock waits for its acknowledged correlated readback', async t => {
+  const f = await startedFixture(t, { startEcho: 'own Start' });
+  const control = f.item().controller.status(), echo = f.echoTrace[0], attempt = structuredClone(f.item().identification);
+  assert.equal(f.echoTrace.length, 1);
+  assert.equal(echo.nativeAt, echo.dispatchedAt - 83);
+  assert.ok(echo.receivedAt > echo.acknowledgedAt);
+  assert.ok(echo.readRequestedAt >= echo.acknowledgedAt && echo.readReceivedAt > echo.receivedAt);
+  assert.equal(echo.event.commandSource, 'rpc', 'No SYS off/on exception is involved');
+  assert.equal(control.snapshot.fields.start_charging.measuredAt, Math.floor(echo.dispatchedAt / 1000) * 1000);
+  assert.ok(control.snapshot.fields.start_charging.readback.requestedAt >= Math.max(echo.acknowledgedAt, echo.receivedAt),
+    'A query sent before the notification cannot supply the required confirmation');
+  assert.equal(control.manual, null, 'The confirmed own Start is not an independent native Enable');
+  assert.equal(control.currentTest.phase, 'active');
+  assert.equal(f.item().identification.completedAt, null);
+  assert.equal(f.fields.current_limit.value, 6);
+  assert.equal(f.item().vehicleMatch, null);
+  f.advance(1000); await f.update();
+  assert.equal(f.item().controller.status().manual, null);
+  assert.equal(f.item().identification.id, attempt.id);
+  assert.equal(f.item().identification.attempt, attempt.attempt);
+  assert.equal(f.item().controller.status().currentTest.expiresAt, control.currentTest.expiresAt);
+  assert.equal(f.writes.filter(row => row.role === 'start_charging' && row.value === true).length, 1);
+});
+
+test('a late duplicate value-only Start echo cannot repeat the command or renew identification authority', async t => {
+  const f = await startedFixture(t);
+  const before = f.item().controller.status(), attempt = structuredClone(f.item().identification);
+  const start = f.writes.find(row => row.role === 'start_charging' && row.value === true);
+  assert.equal(before.pending, null, 'The original Start is already durably confirmed');
+  f.advance(500); const receivedAt = f.now;
+  f.permission(true, 'rpc', { omitSource: true, eventAt: start.at - 83 });
+  assert.ok(start.at - 83 >= before.snapshot.fields.start_charging.measuredAt);
+  assert.equal(f.adapter.snapshot().permissionEvents.length, 0,
+    'After confirmed true/rpc readback, a duplicate value-only notification is not another instruction');
+  await f.update();
+  const after = f.item().controller.status();
+  assert.equal(after.manual, null);
+  assert.ok(after.snapshot.fields.start_charging.readback.requestedAt >= receivedAt);
+  assert.equal(after.snapshot.fields.start_charging.measuredAt, before.snapshot.fields.start_charging.measuredAt);
+  assert.equal(after.currentTest.phase, 'active');
+  assert.equal(after.currentTest.expiresAt, before.currentTest.expiresAt);
+  assert.equal(after.startup?.expiresAt, before.startup?.expiresAt);
+  assert.equal(f.item().identification.id, attempt.id);
+  assert.equal(f.item().identification.attempt, attempt.attempt);
+  assert.equal(f.item().identification.completedAt, null);
+  assert.equal(f.writes.filter(row => row.role === 'start_charging' && row.value === true).length, 1);
+});
+
+for (const startEcho of ['unknown source', 'different native second'])
+test(`a Start notification with ${startEcho} cannot borrow the command's acknowledgement`, async t => {
+  const f = await fixture(t, { startEcho });
+  await f.update(); await f.reconnect({ startDelayMs: 3000 }); await f.update();
+  assert.equal(f.echoTrace.length, 1);
+  assert.equal(f.item().controller.status().manual?.kind, 'enable');
+  assert.notEqual(f.item().controller.status().startup?.phase, 'armed');
+  assert.equal(f.item().vehicleMatch, null);
+  assert.equal(f.writes.filter(row => row.role === 'start_charging' && row.value === true).length, 1);
+});
+
+test('an external Stop during the own Start echo readback remains authoritative despite native clock skew', async t => {
+  const f = await fixture(t, { startEcho: 'external Stop during readback' });
+  await f.update(); await f.reconnect(); await f.update();
+  const echo = f.echoTrace[0];
+  assert.ok(echo.externalStopAt > echo.acknowledgedAt);
+  assert.equal(f.item().controller.status().manual?.kind, 'stop');
+  assert.equal(f.fields.start_charging.value, false);
+  assert.equal(f.item().vehicleMatch, null);
+  f.advance(1000); await f.update();
+  assert.equal(f.fields.start_charging.value, false);
+  assert.equal(f.writes.filter(row => row.role === 'start_charging' && row.value === true).length, 1,
+    'An acknowledgement cannot justify retrying Start through an independent Stop');
+});
+
+test('a later external Stop supersedes a confirmed own Start with a clock-skewed value-only echo', async t => {
+  const f = await startedFixture(t, { startEcho: 'own Start' });
+  f.advance(1000); f.permission(false, 'rpc'); await f.update();
+  assert.equal(f.item().controller.status().manual?.kind, 'stop');
+  assert.equal(f.fields.start_charging.value, false);
+  await f.restart(); f.advance(1000); await f.update();
+  assert.equal(f.item().controller.status().manual?.kind, 'stop');
+  assert.equal(f.fields.start_charging.value, false);
+  assert.equal(f.writes.filter(row => row.role === 'start_charging' && row.value === true).length, 1);
+});
 
 test('fresh Shelly startup preserves its confirmed 6 A identification attempt through device off/on', async t => {
   const f = await startedFixture(t);

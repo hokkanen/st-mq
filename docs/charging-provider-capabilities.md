@@ -292,6 +292,13 @@ source, retry, consumption and restart checks still apply. See the
 A confirmed comparison retains its original clocks for delayed BMW reports
 only within the same connections, attempts and feed associations. This retained
 identity evidence does not make held current fresh or authorize another test.
+A late Shelly Start notification may carry a fractional native clock slightly
+before the application's dispatch clock in the same native setting second. Its
+original clock is preserved. Attribution requires the acknowledged same-session
+Start and a fresh matching RPC readback requested after both acknowledgement and
+notification receipt, while that accepted command is still pending confirmation.
+This does not absorb Stop, different-second events or events without an RPC
+source, or permit a second write after an uncertain result.
 After a unique Tesla match on the peer, an independent BMW baseline may hand
 the same attempt to its one pause before the original current-test deadline.
 An unresolved current comparison retains priority. The BMW pause preserves its
