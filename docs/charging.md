@@ -75,6 +75,12 @@ Both native expiring pauses and application-managed pauses use the same confirme
 pause wording. An application-managed pause needs current session ownership,
 confirmed disabled start permission and fresh physical noncharging evidence.
 Its next charging period still requires the application to resume the charger.
+An ordinary OCPP pause installed while already suspended can use fresh zero power
+measured during that suspension together with the current confirmed zero-current
+profile. Replanning does not require the stopped charger to report another stop
+transition. A command dispatched while charging and every identification pause
+still require power evidence after the command; an existing stop cannot establish
+a causal vehicle response.
 
 Permanent defaults come only from configuration. Both unidentified charging
 points start with 20% charge, an 80% minimum, 06:00 ready-by and 74 kWh capacity

@@ -469,6 +469,48 @@ test('installing a native pause over an already-stopped transaction grants no id
   assert.equal(control.pauseConfirmed, true, 'Ordinary native scheduling retains its existing physical confirmation');
 });
 
+test('ordinary native pause replacements confirm continuing zero draw without renewing the physical evidence clock', async () => {
+  const f = fixture();
+  f.snapshot({ connectorStatus: 'SuspendedEVSE', statusAt: START - MINUTE, powerKw: 0, powerAt: START - 1000 });
+  let control = await f.controller.update({ enabled: true, plan: plan(START + 30 * MINUTE) });
+  assert.equal(control.phase, 'paused'); assert.equal(control.pauseConfirmed, true);
+  assert.equal(control.owned.pauseRequestedAt, undefined);
+  for (const shift of [20, 40]) {
+    f.advance(5000);
+    control = await f.controller.update({ enabled: true, plan: plan(START + (30 * 60 - shift) * 1000) });
+    assert.equal(control.phase, 'paused'); assert.equal(control.pauseConfirmed, true);
+    assert.equal(control.snapshot.powerAt, START - 1000, 'Reading or replacing a profile cannot manufacture a new meter sample');
+    assert.equal(control.owned.requestedAt, f.now);
+    assert.equal(control.owned.pauseRequestedAt, undefined, 'Ongoing suspension supplies no causal identity witness');
+  }
+  assert.equal(writes(f).filter(row => row.action === 'SetChargingProfile').length, 3);
+  f.advance(MINUTE);
+  control = await f.controller.update({ enabled: true });
+  assert.equal(control.pauseConfirmed, false, 'The held zero becomes unknown when its source evidence is stale');
+});
+
+for (const evidence of ['before suspension', 'missing timestamp', 'positive power', 'stale zero', 'charging dispatch', 'identification'])
+test(`native pause cannot reuse unsuitable existing zero evidence: ${evidence}`, async () => {
+  const f = fixture({ identification: evidence === 'identification'
+    ? { id: 'existing-zero-test', connectedAt: START - MINUTE, phase: 'pausing', pauseUntil: START + 90_000 } : null });
+  f.snapshot({ connectorStatus: 'SuspendedEVSE', statusAt: START - MINUTE, powerKw: 0, powerAt: START - 1000 });
+  if (evidence === 'before suspension') f.snapshot({ connectorStatus: 'SuspendedEVSE', statusAt: START, powerKw: 0, powerAt: START - 1000 });
+  if (evidence === 'missing timestamp') f.snapshot({ connectorStatus: 'SuspendedEVSE', powerKw: 0, powerAt: null });
+  if (evidence === 'positive power') f.snapshot({ connectorStatus: 'SuspendedEVSE', powerKw: 1, powerAt: START - 1000 });
+  if (evidence === 'stale zero') f.snapshot({ connectorStatus: 'SuspendedEVSE', statusAt: START - 2 * MINUTE, powerKw: 0, powerAt: START - MINUTE - 1 });
+  if (evidence === 'charging dispatch') {
+    f.snapshot({ connectorStatus: 'Charging', powerKw: 0, powerAt: START - 1000 });
+    f.intercept((action, _payload, _options, result) => {
+      const response = result();
+      if (action === 'SetChargingProfile') f.snapshot({ connectorStatus: 'SuspendedEVSE', statusAt: START - MINUTE, powerKw: 0, powerAt: START - 1000 });
+      return response;
+    });
+  }
+  const control = await f.controller.update({ enabled: true, plan: plan(START + 30 * MINUTE) });
+  assert.equal(control.ownsInstruction, true); assert.equal(control.pauseConfirmed, false);
+  if (evidence === 'charging dispatch') assert.equal(control.owned.pauseRequestedAt, START);
+});
+
 test('the fresh native pre-write read, rather than the earlier planning read, decides the identity witness', async () => {
   const f = fixture(), read = f.adapter.read; let reads = 0;
   f.adapter.read = async options => {

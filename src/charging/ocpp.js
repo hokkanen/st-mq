@@ -424,12 +424,22 @@ export function createOcppChargingController({ adapter, initialState = null, sav
     ownsInstruction = ownsInstruction && snapshot.online && snapshot.transactionConfirmed
       && snapshot.transactionId === state.owned?.transactionId && clock() < state.owned.startAt;
     pauseConfirmed = ownsInstruction && snapshot.connectorStatus === 'SuspendedEVSE'
-      && fresh(snapshot.powerAt, clock()) && snapshot.powerAt >= state.owned.requestedAt && snapshot.powerKw === 0;
+      && pausePowerEvidence() && snapshot.powerKw === 0;
+  }
+  function pausePowerEvidence() {
+    // Replacing an ordinary zero profile while the charger is already stopped
+    // does not cause another physical transition. Its accepted composite and
+    // fresh zero measured during that suspension confirm the continuing pause.
+    // A write made while Charging, and every identity test, still need a power
+    // sample after the command; existing zero cannot prove a causal stop.
+    return fresh(snapshot.powerAt, clock()) && (snapshot.powerAt >= state.owned?.requestedAt
+      || state.owned?.purpose !== 'identification' && state.owned?.pauseRequestedAt === undefined
+        && snapshot.powerAt >= snapshot.statusAt);
   }
   function missingPauseEvidence() {
     const missing = [];
     if (snapshot.connectorStatus !== 'SuspendedEVSE') missing.push('charger status confirming that charging is withheld');
-    if (!fresh(snapshot.powerAt, clock()) || snapshot.powerAt < state.owned?.requestedAt)
+    if (!pausePowerEvidence())
       missing.push('a new power reading after the pause');
     else if (snapshot.powerKw !== 0) missing.push('a zero-power reading');
     return `Charging pause scheduled; physical stop not yet confirmed. Waiting for ${missing.join(' and ') || 'charger confirmation'}.`;

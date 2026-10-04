@@ -398,6 +398,7 @@ test('native exact-ID cleanup remains available while a stopped transaction awai
 
 async function nativeAppFixture(t, options) {
   const f = fixture(t, options), profiles = new Map(), cloud = new Map();
+  const preserveStoppedEvidence = options?.preserveStoppedEvidence === true;
   for (const id of [...CHARGING_OBSERVATION_IDS, 80, 141]) cloud.set(id, { id, value: 16, timestamp: new Date(f.now).toISOString() });
   const observe = changes => {
     for (const [id, value] of Object.entries(changes)) cloud.set(Number(id), { id: Number(id), value, timestamp: new Date(f.now).toISOString() });
@@ -416,7 +417,11 @@ async function nativeAppFixture(t, options) {
     assert.equal(options.beforeSend?.() ?? true, true);
     assert.equal(options.guard(), true);
     f.events.push({ type: 'native', action, payload: clone(payload) });
-    if (action === 'SetChargingProfile') { profiles.set(payload.csChargingProfiles.chargingProfileId, clone(payload.csChargingProfiles)); physical('SuspendedEVSE', 0); return { status: 'Accepted' }; }
+    if (action === 'SetChargingProfile') {
+      profiles.set(payload.csChargingProfiles.chargingProfileId, clone(payload.csChargingProfiles));
+      if (!preserveStoppedEvidence || listener.control.connectorStatus !== 'SuspendedEVSE') physical('SuspendedEVSE', 0);
+      return { status: 'Accepted' };
+    }
     if (action === 'ClearChargingProfile') return { status: profiles.delete(payload.id) ? 'Accepted' : 'Unknown' };
     assert.equal(action, 'GetCompositeSchedule');
     const end = Math.max(0, ...[...profiles.values()].map(profile => Date.parse(profile.validTo)));
@@ -619,6 +624,27 @@ test('production native pre-write reread fences a newer Easee app action without
   const instruction = ocppPauseInstruction({ profileId: 81, transactionId: 7, now: x.f.now, startAt: AT + 40 * 60_000 });
   await assert.rejects(x.adapter.install(instruction, snapshot), { code: 'control-revoked' });
   assert.equal(x.nativeWrites().length, 0);
+});
+
+test('production economic handover confirms an already stopped charger without inventing a new physical transition', async t => {
+  const x = await nativeAppFixture(t, { preserveStoppedEvidence: true }), { f, controller } = x;
+  x.observe({ 31: true, 48: 0, 96: 52, 109: 2 }); x.physical('SuspendedEVSE', 0); await x.refresh();
+  f.advance(2000);
+  const prior = await controller.update({ enabled: false, plan: x.plan });
+  let result = await controller.update({ enabled: true, takeover: prior.takeover.token });
+  assert.equal(result.takeover.state, 'confirmed', result.reason); assert.equal(result.appControl.stopped, false);
+  assert.equal(result.phase, 'paused'); assert.equal(result.pauseConfirmed, true);
+  assert.equal(result.snapshot.powerAt, AT); assert.equal(result.snapshot.statusAt, AT);
+  assert.equal(result.owned.pauseRequestedAt, undefined);
+  f.advance(5000);
+  const revised = { ...x.plan, startAt: x.plan.startAt - 30_000,
+    periods: [{ startAt: x.plan.startAt - 30_000, endAt: null }] };
+  result = await controller.update({ enabled: true, plan: revised });
+  assert.equal(result.phase, 'paused'); assert.equal(result.pauseConfirmed, true);
+  assert.equal(result.snapshot.powerAt, AT, 'A current composite confirms the restriction; it does not refresh held meter data');
+  assert.equal(result.owned.startAt, revised.startAt);
+  assert.equal(result.owned.pauseRequestedAt, undefined, 'An existing stop cannot identify a vehicle');
+  assert.equal(writes(f).filter(row => row.path.endsWith('/commands/resume_charging')).length, 1);
 });
 
 test('economic replanning preserves a selected identification pause through the production forced REST preflight', async t => {
