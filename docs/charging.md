@@ -603,8 +603,14 @@ charging, Charge now or Automatic OFF. Expiry and restart preserve this obligati
 A later native Enable or current selection retains its separate priority.
 A unique Tesla match on the peer can end the current comparison while leaving
 the remainder of its original window for an independently valid BMW baseline
-to begin its correlation pause. An unresolved current comparison still takes
-precedence over that BMW baseline. Any remaining reduced setting stays until
+to begin its correlation pause. A Tesla already identified on the peer's current
+connection can also permit that pause when a confirmed native Stop, fresh zero
+draw and the quiet-peer checks establish that it remains stopped. This path
+requires confirmed minimum-current readback and fresh, settled measured draw at
+that setting on Charger 2; it supplies neither a new Tesla match nor BMW identity.
+BMW still needs its own applicable positive baseline and matching stop evidence.
+Otherwise, an unresolved current comparison takes precedence over that baseline.
+Any remaining reduced setting stays until
 the owned pause has fresh physical zero; restoring the setting preserves the
 same BMW pause and its original deadline. This handoff creates neither a second
 current test nor a renewed probe.

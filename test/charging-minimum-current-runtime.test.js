@@ -13,7 +13,8 @@ const START = 1_800_000_000_000;
 async function fixture(t, { firstCurrentA = 16, firstAvailable = true, stepMetadata = true, currentWritable = true,
   teslaPluggedIn = true, initialCurrentA = 12, economicStartAt = START } = {}) {
   let now = START, runtime, adapter, meterAt = START, acceptCurrentWrite = true, measuredCurrentA = null, currentWriteHook = null,
-    phaseMeasuredAt = null, statusReadHook = null;
+    phaseMeasuredAt = null, statusReadHook = null, firstStopped = false, firstStatusAt = START,
+    firstSourceAt = null, firstNative = {};
   const data = new Map(), writes = [], client = new EventEmitter();
   const config = { input: 'mqtt', connections: {
     mqtt: { address: 'mqtt://minimum-current.invalid', user: 'synthetic' },
@@ -69,21 +70,24 @@ async function fixture(t, { firstCurrentA = 16, firstAvailable = true, stepMetad
       assert.equal(capture.receive(`teslamate/minimum-current/cars/1/${field}`, String(value), { retain: retained }, at), true);
   };
   const firstSnapshot = () => ({ transport: 'ocpp', online: true, readAt: now, pluggedIn: true,
-    charging: true, connectorStatus: 'Charging', statusAt: START, transactionId: 17,
-    transactionConfirmed: true, transactionStartedAt: START, powerKw: firstCurrentA * .69, powerAt: meterAt,
+    charging: !firstStopped, connectorStatus: firstStopped ? 'SuspendedEVSE' : 'Charging', statusAt: firstStatusAt, transactionId: 17,
+    transactionConfirmed: true, transactionStartedAt: START, powerKw: firstCurrentA * .69, powerAt: firstSourceAt ?? meterAt,
+    appControl: { controlKnown: true, stopped: firstStopped, readAt: now, faulted: false,
+      authorizationBlocked: false, schedule: { enabled: 'none' }, ...firstNative },
     limits: { chargerA: 16, cableA: 16, circuitA: [16, 16, 16] } });
   const attachFirst = target => {
     const first = target.chargers.charger1;
-    first.controller = { supportsIdentification: true, status: () => ({ phase: 'off', manual: null, pending: null,
+    first.controller = { supportsIdentification: true, status: () => ({ phase: firstStopped ? 'manual' : 'off',
+      manual: firstStopped ? { kind: 'stop' } : null, pending: null,
       owned: null, enabled: false, session: { connected: true, connectedAt: START, sessionId: 'synthetic-first-session',
         lastDisconnectedAt: START - 1000 }, snapshot: firstSnapshot() }),
       async update() { return this.status(); }, async close() {} };
     first.adapter = { capabilities: { scheduling: true }, normalize() {
       const signal = (value, measuredAt = meterAt, available = true) => ({ value, measuredAt, receivedAt: now,
         available, retained: false, source: 'synthetic-first-meter' });
-      return { providerConnected: true, connected: signal(true, START), charging: signal(true, START),
-        phaseCurrentA: signal([firstCurrentA, firstCurrentA, firstCurrentA], meterAt, firstAvailable),
-        powerKw: signal(firstCurrentA * .69, meterAt, firstAvailable), maximumCurrentA: signal(16),
+      return { providerConnected: true, connected: signal(true, START), charging: signal(!firstStopped, firstStatusAt),
+        phaseCurrentA: signal([firstCurrentA, firstCurrentA, firstCurrentA], firstSourceAt ?? meterAt, firstAvailable),
+        powerKw: signal(firstCurrentA * .69, firstSourceAt ?? meterAt, firstAvailable), maximumCurrentA: signal(16),
         phaseVoltageV: signal([230, 230, 230]) };
     } };
   };
@@ -121,6 +125,9 @@ async function fixture(t, { firstCurrentA = 16, firstAvailable = true, stepMetad
     onStatusRead(hook) { statusReadHook = hook; },
     advance(ms) { now += ms; meterAt = now; },
     setFirst(value, available = true) { firstCurrentA = value; firstAvailable = available; meterAt = now; },
+    stopFirst() { firstStopped = true; firstCurrentA = 0; firstStatusAt = meterAt = now; },
+    setFirstSourceTime(value) { firstSourceAt = value; },
+    setFirstNative(value) { firstNative = value; },
     observe() { return runtime.telemetry(now); },
     async update() { meterAt = now; await runtime.reconcile('charger2'); return runtime.chargers.charger2.controller.status(); },
     async restart() { runtime.persist(); await runtime.close(); await create(); },
@@ -149,6 +156,101 @@ function publishBmw(f, values, measuredAt = f.now) {
       { measuredAt, readingId: `synthetic-swapped-${key}-${measuredAt}` }])),
   }), { retain: false }, f.now);
 }
+
+async function stoppedTeslaPeerFixture(t, { heldMinimumSource = false } = {}) {
+  const f = await fixture(t, { initialCurrentA: 16 });
+  await f.update(); f.advance(6000); await f.sampleTesla(16);
+  f.advance(5000); await f.adapter.refresh(); f.observe(); await f.update();
+  assert.equal(f.item('charger1').vehicleMatch?.id, 'tesla', 'The peer identity comes from the real settled current matcher');
+  const earlierTest = f.item('charger2').controller.status().currentTest.id;
+  f.advance(1000); f.stopFirst();
+  f.publishTesla({ charging_state: 'Stopped', charger_actual_current: 0, charger_power: 0 });
+  f.observe(); f.advance(61_000); await f.update();
+  f.setMeasuredCurrent(0); f.fields.work_state = { value: 'charger_free', at: f.now };
+  await f.adapter.refresh(); await f.update();
+  f.advance(1000); f.fields.work_state = { value: 'charger_charging', at: f.now }; f.setMeasuredCurrent(null);
+  if (heldMinimumSource) f.setPhysicalSourceTime(f.now);
+  await f.adapter.refresh(); await f.update();
+  assert.notEqual(f.item('charger2').controller.status().currentTest.id, earlierTest);
+  assert.equal(f.fields.current_limit.value, 6, 'The new physical connection begins its own confirmed minimum-current test');
+  assert.equal(f.item('charger1').vehicleMatch?.id, 'tesla', 'The unchanged peer connection retains its positive identity');
+  return f;
+}
+
+for (const delayed of [false, true])
+test(`new BMW connection obtains its own pause beside an already identified stopped Tesla${delayed ? ' across Charge now and restart' : ''}`, async t => {
+  const f = await stoppedTeslaPeerFixture(t), before = f.writes.length;
+  const test = structuredClone(f.item('charger2').controller.status().currentTest);
+  const attempt = f.item('charger2').identification.id;
+  f.advance(10_000); await f.adapter.refresh();
+  publishBmw(f, { atHome: true, pluggedIn: true, charging: true });
+  f.advance(1000); await f.update();
+  const state = structuredClone(f.item('charger2').identification);
+  assert.equal(state.phase, 'pausing', 'A stopped proven Tesla peer cannot monopolize the BMW comparison window');
+  assert.ok(state.candidate, 'Independent BMW charging evidence is required to start the pause');
+  assert.equal(state.id, attempt); assert.ok(state.candidate.measuredAt >= test.connectedAt);
+  assert.equal(f.item('charger2').vehicleMatch, null, 'The peer identity and Stop command cannot identify BMW by elimination');
+  assert.equal(f.item('charger2').vehicleEvidence.teslaCurrentResolvedTestId, undefined,
+    'A retained peer assignment does not manufacture a fresh Tesla current match');
+  assert.equal(f.fields.start_charging.value, false);
+  assert.equal(f.item('charger1').controller.status().manual.kind, 'stop');
+  assert.equal(f.item('charger1').controller.status().snapshot.powerKw, 0);
+  f.advance(5000); await f.update();
+  const stopAt = f.now;
+  if (delayed) {
+    const card = f.runtime.status().chargers.find(row => row.id === 'charger2');
+    await f.runtime.chargeNow('charger2', { association: card.association,
+      sessionId: card.request.sessionId, revision: card.request.revision });
+    f.advance(test.expiresAt - f.now + 1000); await f.restart(); await f.update();
+    assert.equal(f.item('charger2').identification.phase, 'pausing');
+    assert.equal(f.fields.start_charging.value, false);
+  }
+  assert.equal(f.item('charger2').identification.pauseUntil, state.pauseUntil);
+  assert.equal(f.item('charger2').controller.status().currentTest.expiresAt, test.expiresAt);
+  publishBmw(f, { charging: false }, stopAt); await f.update(); await f.update();
+  assert.equal(f.item('charger2').vehicleMatch?.id, 'bmw', 'BMW must independently report the matching physical stop');
+  assert.equal(f.item('charger2').identification.phase, 'completed');
+  assert.equal(f.item('charger2').identification.id, attempt);
+  assert.equal(f.fields.current_limit.value, 16); assert.equal(f.fields.start_charging.value, true);
+  assert.equal(f.writes.slice(before).filter(row => row.role === 'current_limit' && row.value === 6).length, 0,
+    'The handoff never begins another current comparison');
+  assert.equal(f.writes.slice(before).filter(row => row.role === 'start_charging' && row.value === false).length, 1);
+});
+
+for (const boundary of ['old BMW source', 'peer conflict', 'changed peer scope', 'peer readings unavailable', 'Tesla feed unavailable',
+  'native Stop', 'readback only', 'unsettled current', 'old minimum source', 'old peer zero', 'unknown native permission', 'native peer schedule'])
+test(`stopped-peer BMW pause preserves ${boundary}`, async t => {
+  const f = await stoppedTeslaPeerFixture(t, { heldMinimumSource: boundary === 'old minimum source' }), before = f.writes.length;
+  const test = structuredClone(f.item('charger2').controller.status().currentTest);
+  f.advance(10_000); await f.adapter.refresh();
+  if (boundary === 'native Stop') {
+    f.fields.start_charging = { value: false, at: f.now };
+    f.fields.work_state = { value: 'charger_pause', at: f.now }; await f.update();
+  }
+  if (boundary === 'readback only') f.setMeasuredCurrent(0);
+  if (boundary === 'unsettled current') f.setMeasuredCurrent(16);
+  if (boundary === 'old peer zero') f.setFirstSourceTime(test.confirmedAt - 1);
+  if (boundary === 'unknown native permission') f.setFirstNative({ controlKnown: false });
+  if (boundary === 'native peer schedule') f.setFirstNative({ schedule: { enabled: 'daily' } });
+  await f.adapter.refresh();
+  publishBmw(f, { atHome: true, pluggedIn: true });
+  publishBmw(f, { charging: true }, boundary === 'old BMW source' ? test.connectedAt - 60_000 : f.now);
+  const peer = f.item('charger1');
+  if (boundary === 'peer conflict') peer.vehicleConflict = { scope: peer.request.scope, ids: ['tesla', 'bmw'], at: f.now,
+    vehicleAssociations: { tesla: f.runtime.teslaCapture.snapshot().association, bmw: f.runtime.vehicleFeeds.bmw.association } };
+  if (boundary === 'changed peer scope') peer.vehicleMatch.scope = 'synthetic-old-connection';
+  if (boundary === 'peer readings unavailable') f.setFirst(0, false);
+  if (boundary === 'Tesla feed unavailable') f.publishTesla({ healthy: false });
+  f.advance(1000);
+  await f.update();
+  assert.equal(f.item('charger2').identification.pauseUntil, null);
+  assert.equal(f.item('charger2').vehicleMatch, null);
+  assert.equal(f.writes.slice(before).some(row => row.role === 'start_charging' && row.value === false), false);
+  f.advance(test.expiresAt - f.now + 1000); await f.update();
+  assert.equal(f.item('charger2').identification.phase, 'inconclusive');
+  assert.equal(f.item('charger2').controller.status().currentTest.expiresAt, test.expiresAt);
+  if (boundary === 'native Stop') assert.equal(f.fields.start_charging.value, false);
+});
 
 for (const delayed of [false, true])
 test(`BMW on Shelly obtains its own pause after identifying Tesla on Easee${delayed ? ' across Charge now, restart and the current deadline' : ''}`, async t => {

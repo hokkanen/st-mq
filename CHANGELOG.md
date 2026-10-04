@@ -51,7 +51,9 @@ Versions follow Semantic Versioning. `-dev.N` denotes a development prerelease.
 - After identifying Tesla on Charger 1, the 6 A comparison can hand Charger 2
   to BMW's own confirmed pause within the original test window. Any remaining
   reduced current restores after fresh zero draw, and **Charge now** preserves
-  that pause before continuing normal charging.
+  that pause before continuing normal charging. This also works when Tesla was
+  already identified and remains under a confirmed native Stop: BMW's measured
+  6 A draw can lead to its own pause without waiting for Tesla to charge again.
 - Native Stop during a Charger 2 current comparison keeps the 6 A setting until
   fresh physical zero confirms the stop, including with Charge now or Automatic
   off and across expiry or restart.

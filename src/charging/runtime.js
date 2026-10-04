@@ -1,5 +1,5 @@
 import { chargingDefaults, mergeChargingSettings, chargingSettingsFromConfiguration, resolveChargingDeadline } from './settings.js';
-import { acceptVehicleReading, validateBmwChargingHistory, bmwHomeContext, bmwIdentityContextValid, connectionEvidenceStart, matchTeslaSession, matchTeslaMinimumCurrent, bmwSessionMatchDetails, matchBmwControlledPause, pendingBmwControlledPause, pendingBmwSession, bmwDisconnectEvent, bmwReconnectEvent } from './vehicle.js';
+import { acceptVehicleReading, validateBmwChargingHistory, bmwHomeContext, bmwIdentityContextValid, connectionEvidenceStart, matchTeslaSession, matchTeslaMinimumCurrent, measuredChargingCurrent, bmwSessionMatchDetails, matchBmwControlledPause, pendingBmwControlledPause, pendingBmwSession, bmwDisconnectEvent, bmwReconnectEvent } from './vehicle.js';
 import { chargingConfiguration } from './config.js';
 import { TIME_ZONE } from '../domain/prices.js';
 import { CHARGER_DEFINITIONS, buildCharger } from './model.js';
@@ -951,16 +951,44 @@ export class ChargingRuntime {
           && currentTest?.connectedAt === control.session.connectedAt;
         const currentComparisonResolved = sameCurrentTest
           && item.vehicleEvidence?.teslaCurrentResolvedTestId === currentTest.id;
-        // A BMW charging baseline is plausible on either charging point. Only
-        // a resolved independent current comparison permits this handoff; loss
-        // of Tesla feed/current readiness must not manufacture that conclusion.
-        const candidate = !minimumCurrent && (!sameCurrentTest || currentComparisonResolved)
-          && this.identificationPauseAvailable(item, result, now)
-          && this.identificationBmwCandidate(item, physical, now);
         const comparisonCurrentOwned = sameCurrentTest && currentLimit?.value
           === (currentTest.phase === 'restored' ? currentTest.restoreCurrentA : currentTest.appliedCurrentA)
           && (currentLimit.measuredAt === currentTest.permissionAt
             || currentLimit.measuredAt > currentTest.permissionAt && currentLimit.commandSource === 'sys');
+        const measuredMinimum = minimumCurrent && measuredChargingCurrent(physical, now);
+        const stoppedTeslaPeer = minimumCurrent && sameCurrentTest && currentTest.phase === 'active'
+          && Number.isSafeInteger(currentTest.confirmedAt) && now >= currentTest.confirmedAt + 5000
+          && currentTest.expiresAt > now && comparisonCurrentOwned
+          && currentLimit.measuredAt === currentTest.permissionAt
+          && measuredMinimum?.measuredAt >= currentTest.confirmedAt
+          && Math.abs(measuredMinimum.value - currentTest.appliedCurrentA) <= .5
+          && physical.powerKw?.measuredAt >= currentTest.confirmedAt
+          && Object.entries(this.chargers).some(([peerId, peer]) => {
+            if (peerId === id || peer.vehicleMatch?.id !== 'tesla' || peer.vehicleConflict
+              || peer.vehicleMatch.vehicleAssociation !== vehicleAssociations.tesla
+              || candidates[peerId]?.length !== 1 || candidates[peerId][0] !== 'tesla'
+              || Object.entries(candidates).some(([other, choices]) => other !== peerId && choices.includes('tesla'))) return false;
+            const peerControl = controls[peerId], peerPhysical = result[peerId], phases = peerPhysical?.phaseCurrentA;
+            const clocks = phases?.inputs?.map(input => input.measuredAt) ?? [phases?.measuredAt];
+            return peerControl?.session?.connected === true && peerControl.manual?.kind === 'stop'
+              && peer.vehicleMatch.scope === `${peer.association}:${peerControl.session.connectedAt}`
+              && peer.vehicleMatch.connectedAt === peerControl.session.connectedAt
+              && peerPhysical.connected?.available === true && peerPhysical.connected.value === true
+              && peerPhysical.charging?.value === false && peerPhysical.powerKw?.value === 0
+              && peerPhysical.powerKw.measuredAt >= currentTest.confirmedAt
+              && phases?.available === true && phases.retained !== true && phases.assumed !== true
+              && Array.isArray(phases.value) && phases.value.length === 3
+              && phases.value.every(value => Number.isFinite(value) && value >= 0 && value < .1)
+              && clocks.length > 0 && clocks.every(at => Number.isSafeInteger(at)
+                && at >= currentTest.confirmedAt && at <= now && now - at <= MINUTE);
+          });
+        // A plausible BMW baseline must not interrupt an unresolved Tesla
+        // response on a charging peer. A still-bound Tesla identity on a
+        // confirmed stopped peer can instead admit BMW's own independent pause
+        // after verified 6 A draw; this never creates a Tesla match or BMW identity.
+        const candidate = (!minimumCurrent && (!sameCurrentTest || currentComparisonResolved) || stoppedTeslaPeer)
+          && this.identificationPauseAvailable(item, result, now)
+          && this.identificationBmwCandidate(item, physical, now);
         // Identifying Tesla on the peer leaves BMW unassigned. Keep only the
         // original remaining comparison window for its independent baseline;
         // this cannot repeat a current write or renew any probe allowance.
@@ -971,7 +999,7 @@ export class ChargingRuntime {
           && owned.startAt === item.identification.pauseUntil
           && owned.requestedAt >= item.identification.candidate?.capturedAt
           && owned.requestedAt < currentTest.expiresAt);
-        const activeBmwPause = currentComparisonResolved && item.identification.phase === 'pausing'
+        const activeBmwPause = sameCurrentTest && item.identification.phase === 'pausing'
           && item.identification.candidate?.capturedAt >= currentTest.startedAt
           && item.identification.candidate.capturedAt < currentTest.expiresAt
           // A refresh may cross expiry before the native controller ever takes
