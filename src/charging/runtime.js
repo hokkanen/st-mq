@@ -353,7 +353,8 @@ export class ChargingRuntime {
     const tesla = this.teslaCapture?.snapshot(), control = item.controller?.status();
     return Boolean(tesla?.healthy === true && tesla.atHome === true && teslamateConnectionContext(tesla, { now })
       && control?.snapshot?.identificationCurrentReady === true && this.identificationAvailable(item, now)
-      && !(control.currentTest && item.vehicleEvidence?.teslaCurrentResolvedTestId === control.currentTest.id)
+      && !(control.currentTest && control.currentTest.id === item.identification?.id
+        && item.vehicleEvidence?.teslaCurrentResolvedTestId === control.currentTest.id)
       && !['observing', 'completed', 'inconclusive'].includes(item.identification?.phase)
       && !(control.currentTest && control.currentTest.id === item.identification?.id && (control.currentTest.expiresAt <= now
         || ['restoring', 'restored', 'superseded', 'uncertain'].includes(control.currentTest.phase))));

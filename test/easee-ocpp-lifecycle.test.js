@@ -33,6 +33,7 @@ function fixture(t, { streaming = false, authorizationMode = 'plug-and-charge' }
   let now = AT, permitted = true, current = null, version = 0, schedule = { enabled: 'none' };
   let transition = async () => {}, applyHook = async () => {}, beforeRequest = async () => {};
   let cloudObservations = null, cloudOffline = false, nativeRequest = null, streamRows = null, commandSourceAt = null;
+  let resumeCurrentDelayReads = 0, pendingResumeCurrentAt = null;
   let streamObservation = null;
   let readSetupState = () => states.get('setup');
   const stateFor = key => ({ get: () => clone(states.get(key) ?? null), set: value => states.set(key, clone(value)) });
@@ -57,9 +58,16 @@ function fixture(t, { streaming = false, authorizationMode = 'plug-and-charge' }
         schedule = { ...schedule, enabled: current.connectivityMode === 'DualProtocol' ? 'ocpp.direct' : 'none' };
         return new Response(null, { status: 204 });
       }
-      if (path === `/state/${CHARGER}/observations`) return Response.json({ observations:
+      if (path === `/state/${CHARGER}/observations`) {
+        if (pendingResumeCurrentAt !== null && resumeCurrentDelayReads-- <= 0) {
+          cloudObservations = cloudObservations.map(row => row.id === 48
+            ? { ...row, value: 16, timestamp: new Date(pendingResumeCurrentAt).toISOString() } : row);
+          pendingResumeCurrentAt = null;
+        }
+        return Response.json({ observations:
         (cloudOffline ? (() => { throw Error('synthetic cloud unavailable'); })() : cloudObservations
           ?? [[80, 344], [141, 1], [250, true]].map(([id, value]) => ({ id, value, timestamp: new Date(now).toISOString() }))) });
+      }
       if (path === `/api/chargers/${CHARGER}/schedules` && method === 'GET') {
         if (cloudOffline) throw Error('synthetic cloud unavailable');
         return Response.json(clone(schedule));
@@ -72,7 +80,8 @@ function fixture(t, { streaming = false, authorizationMode = 'plug-and-charge' }
       }
       if (method === 'POST' && path === `/api/chargers/${CHARGER}/commands/resume_charging`) {
         assert.equal(body, null);
-        cloudObservations = cloudObservations.map(row => [48, 96].includes(row.id)
+        if (resumeCurrentDelayReads > 0) pendingResumeCurrentAt = commandSourceAt ?? now;
+        cloudObservations = cloudObservations.map(row => (row.id === 96 || row.id === 48 && pendingResumeCurrentAt === null)
           ? { ...row, value: row.id === 48 ? 16 : 0, timestamp: new Date(commandSourceAt ?? now).toISOString() } : row);
         return new Response(null, { status: 200 });
       }
@@ -123,6 +132,7 @@ function fixture(t, { streaming = false, authorizationMode = 'plug-and-charge' }
     get current() { return current; }, get now() { return now; }, advance: ms => { now += ms; },
     get observations() { return clone(cloudObservations); }, set observations(value) { cloudObservations = clone(value); },
     set commandSourceAt(value) { commandSourceAt = value; },
+    set resumeCurrentDelayReads(value) { resumeCurrentDelayReads = value; },
     set streamRows(value) { streamRows = clone(value); }, set cloudOffline(value) { cloudOffline = value; },
     emitObservation(observation) { streamObservation?.(CHARGER, observation); },
     set nativeRequest(value) { nativeRequest = value; },
@@ -791,6 +801,20 @@ test('production OCPP handover confirms an advanced native resume clock behind i
   await restarted.update({ enabled: true, plan: immediate });
   assert.equal(writes(f).filter(row => row.path.endsWith('/commands/resume_charging')).length, 1,
     'The confirmed handover is retained without repeating the resume');
+});
+
+test('production OCPP handover waits for separately delivered native resume current after the reason clears', async t => {
+  const x = await nativeAppFixture(t), { f, controller } = x;
+  x.observe({ 31: true, 48: 0, 96: 53, 109: 2 }); x.physical('SuspendedEVSE', 0); await x.refresh();
+  f.advance(61_400); f.commandSourceAt = f.now - 1400; f.resumeCurrentDelayReads = 2;
+  x.physical('SuspendedEVSE', 0); await x.refresh();
+  const immediate = { id: 'asynchronous-native-resume', startAt: f.now, periods: [{ startAt: f.now, endAt: null }], feasible: true };
+  const prior = await controller.update({ enabled: false, plan: immediate });
+  const result = await controller.update({ enabled: true, takeover: prior.takeover.token });
+  assert.equal(result.takeover.state, 'confirmed'); assert.equal(result.phase, 'released');
+  assert.equal(result.appControl.stopped, false); assert.equal(result.snapshot.limits.dynamicChargerA, 16);
+  assert.equal(writes(f).filter(row => row.path.endsWith('/commands/resume_charging')).length, 1);
+  assert.equal(result.takeoverPending, null);
 });
 
 test('production takeover preserves restrictive positive current limits and fences a newer native instruction', async t => {

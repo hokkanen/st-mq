@@ -1,5 +1,6 @@
 import { createHash } from 'node:crypto';
 import moment from 'moment-timezone';
+import { setTimeout as delay } from 'node:timers/promises';
 
 // Public Easee /schedules OpenAPI checked 2026-09-15. Delayed startTime is
 // a LOCAL TIME, not a date-time. The controller retains the absolute occurrence.
@@ -284,7 +285,8 @@ export function easeeChargerTelemetry(snapshot = {}, { now = Date.now() } = {}) 
 }
 
 /** Inject existing authenticated/rate-limited transport; raw account data stays local. */
-export function createEaseeScheduleAdapter({ request, readObservations, chargerId, equalizerId, clock = Date.now, canControl = () => false }) {
+export function createEaseeScheduleAdapter({ request, readObservations, chargerId, equalizerId, clock = Date.now, canControl = () => false,
+  waitForReadback = (ms, signal) => delay(ms, undefined, { signal }) }) {
   const base = `https://api.easee.com/api/chargers/${encodeURIComponent(chargerId)}/schedules`;
   readObservations ??= (deviceId, ids, { signal } = {}) => request(
     `https://api.easee.com/state/${encodeURIComponent(deviceId)}/observations?ids=${ids.join(',')}`, { method: 'GET', signal });
@@ -396,10 +398,32 @@ export function createEaseeScheduleAdapter({ request, readObservations, chargerI
           throw failure('command-failed', 'Easee did not confirm automatic handover.');
         }
         let after;
-        try { after = await adapter.read({ signal, forceRest: true }); }
-        catch { throw failure('readback-failed', 'Automatic handover could not be read back.'); }
-        if (!usable(after) || !verify(after, before, requestedAt))
-          throw failure('readback-mismatch', 'The charger has not confirmed automatic handover.');
+        const readbackDeadline = clock() + 10_000, waits = [250, 500, 1000, 2000, 2000, 2000, 2000];
+        for (let attempt = 0; ; attempt++) {
+          try { after = await adapter.read({ signal, forceRest: true }); }
+          catch { throw failure('readback-failed', 'Automatic handover could not be read back.'); }
+          if (!allowed()) throw failure('control-revoked', 'Charging control authority changed.');
+          if (usable(after) && verify(after, before, requestedAt)) break;
+          // Easee acknowledges native commands before their independently
+          // timestamped state fields necessarily arrive. Poll only that readback;
+          // the accepted write is never dispatched again. A new native stop,
+          // schedule or connection cannot be waited away as eventual success.
+          const unchangedContext = usable(after) && after.fingerprint === before.fingerprint
+            && after.pluggedIn === before.pluggedIn;
+          const pendingEnable = stage === 'enable' && unchangedContext && samePause(after, before)
+            && (after.enabled === true || after.observations?.[31]?.at === before.observations?.[31]?.at);
+          const pendingResume = stage === 'resume' && unchangedContext && after.enabled === before.enabled
+            && after.observations?.[31]?.at === before.observations?.[31]?.at
+            && (!after.stopped || after.reason === before.reason && after.reasonAt === before.reasonAt)
+            && (after.limits?.dynamicChargerA > 0 || after.limits?.dynamicChargerA === before.limits?.dynamicChargerA
+              && after.observations?.[48]?.at === before.observations?.[48]?.at);
+          const remaining = readbackDeadline - clock();
+          if ((!pendingEnable && !pendingResume) || attempt >= waits.length || remaining <= 0)
+            throw failure('readback-mismatch', 'The charger has not confirmed automatic handover.');
+          try { await waitForReadback(Math.min(waits[attempt], remaining), signal); }
+          catch { throw failure('control-revoked', 'Charging control authority changed.'); }
+          if (!allowed()) throw failure('control-revoked', 'Charging control authority changed.');
+        }
         current = after;
         await afterWrite({ stage, snapshot: clone(current), requestedAt });
         if (!allowed()) throw failure('control-revoked', 'Charging control authority changed.');

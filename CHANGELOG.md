@@ -47,8 +47,11 @@ Versions follow Semantic Versioning. `-dev.N` denotes a development prerelease.
   A positive vehicle request below 6 A can use the charger's minimum pilot while
   the vehicle limits its own draw. Electrical limits and native Stop still apply.
 - **Use automatic** confirms Easee handover when a fresh native setting change
-  has a source clock behind the application's command clock, without accepting
-  unchanged readback or repeating an uncertain command.
+  has a source clock behind the application's command clock, and waits briefly
+  for independently reported command results. It rejects unchanged readback and
+  never repeats an uncertain command.
+- An explicit **Identify** request can run a new current test after a successful
+  earlier test on the same connection, including after restart.
 - Charger identification can use corroborated live Tesla charging evidence when
   TeslaMate's plug topic still holds an older unplugged value, while preserving
   that original report and rejecting newer disconnect evidence. BMW identification

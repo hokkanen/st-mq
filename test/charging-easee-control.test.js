@@ -11,7 +11,7 @@ const EMPTY = () => normalizeScheduleState({ enabled: 'none' });
 const obs = (id, value, now) => ({ id, value, timestamp: new Date(now).toISOString() });
 function harness() {
   const h = { now: NOW, schedules: EMPTY(), mode: 2, reason: null, enabled: true, online: true,
-    saved: null, allowed: true, writes: [], reads: 0, writeHook: null, readHook: null, dynamicA: 32, sourceTimes: {} };
+    saved: null, allowed: true, writes: [], reads: 0, writeHook: null, readHook: null, dynamicA: 32, sourceTimes: {}, readbackWaits: [] };
   h.request = async (url, options) => {
     if (options.method === 'GET') {
       h.reads++;
@@ -33,7 +33,8 @@ function harness() {
     else { const { enabled, ...delayed } = JSON.parse(options.body); h.schedules.enabled = 'delayed'; h.schedules.delayed = delayed; }
     return '';
   };
-  h.adapter = createEaseeScheduleAdapter({ request: h.request, chargerId: 'synthetic-charger', clock: () => h.now, canControl: () => h.allowed });
+  h.adapter = createEaseeScheduleAdapter({ request: h.request, chargerId: 'synthetic-charger', clock: () => h.now, canControl: () => h.allowed,
+    waitForReadback: async ms => { h.readbackWaits.push(ms); await h.waitHook?.(ms); } });
   h.restart = () => { h.controller?.close(); h.controller = createChargingController({ adapter: h.adapter, initialState: h.saved,
     getIdentification: snapshot => h.identificationHook ? h.identificationHook(snapshot) : h.identification ?? null,
     saveState: value => { h.saveHook?.(value); h.saved = structuredClone(value); }, clock: () => h.now, canControl: () => h.allowed }); };
@@ -1264,6 +1265,60 @@ test('automatic handover accepts advanced native source clocks behind local disp
   assert.equal(result.snapshot.observations[48].at, NOW);
   assert.equal(result.snapshot.reasonAt, NOW);
   assert.ok(result.snapshot.reasonAt < h.now, 'Source time remains distinct from local acknowledgement/readback time');
+});
+
+for (const delayedField of ['reason', 'current']) test(`native resume waits for delayed ${delayedField} readback without repeating its accepted command`, async () => {
+  const h = harness(); h.now = NOW + 1400; h.reason = 53; h.dynamicA = 0;
+  h.sourceTimes = { 31: NOW - 60_000, 48: NOW - 60_000, 96: NOW - 60_000 };
+  const prior = await h.update({ enabled: false }); let resumed = false;
+  h.writeHook = async url => { if (url.endsWith('/resume_charging')) resumed = true; };
+  h.readHook = async () => {
+    if (!resumed) return;
+    const pending = h.readbackWaits.length < 2;
+    h.reason = delayedField === 'reason' && pending ? 53 : null;
+    h.dynamicA = delayedField === 'current' && pending ? 0 : 32;
+    h.sourceTimes[96] = h.reason === 53 ? NOW - 60_000 : NOW;
+    h.sourceTimes[48] = h.dynamicA === 0 ? NOW - 60_000 : NOW;
+  };
+  const result = await h.update({ takeover: prior.takeover.token, plan: { id: 'now', startAt: NOW } });
+  assert.equal(result.takeover.state, 'confirmed'); assert.equal(result.phase, 'released');
+  assert.deepEqual(h.readbackWaits, [250, 500]);
+  assert.equal(h.writes.filter(row => row.url.endsWith('/resume_charging')).length, 1);
+  assert.equal(result.snapshot.reasonAt, NOW); assert.equal(result.snapshot.observations[48].at, NOW);
+});
+
+test('native resume readback polling is bounded and preserves uncertain dispatch without automatic retry', async () => {
+  const h = harness(); h.now = NOW + 1400; h.reason = 53; h.dynamicA = 0;
+  h.sourceTimes = { 31: NOW - 60_000, 48: NOW - 60_000, 96: NOW - 60_000 };
+  const prior = await h.update({ enabled: false }); let resumed = false;
+  h.writeHook = async url => { if (url.endsWith('/resume_charging')) resumed = true; };
+  h.readHook = async () => { if (resumed) { h.reason = 53; h.dynamicA = 0; } };
+  const result = await h.update({ takeover: prior.takeover.token, plan: { id: 'now', startAt: NOW } });
+  assert.equal(result.takeover.state, 'blocked'); assert.equal(result.errorCode, 'readback-mismatch');
+  assert.ok(h.readbackWaits.length > 0 && h.readbackWaits.length <= 7);
+  assert.ok(h.readbackWaits.reduce((a, b) => a + b, 0) <= 10_000);
+  const writeCount = h.writes.length; await h.update(); h.restart(); await h.update();
+  assert.equal(h.writes.length, writeCount);
+});
+
+for (const interruptedBy of ['stop', 'schedule', 'disconnect', 'authority'])
+test(`a newer ${interruptedBy} interrupts pending native readback without another resume`, async () => {
+  const h = harness(); h.now = NOW + 1400; h.reason = 53; h.dynamicA = 0;
+  h.sourceTimes = { 31: NOW - 60_000, 48: NOW - 60_000, 96: NOW - 60_000 };
+  const prior = await h.update({ enabled: false }); let resumed = false;
+  h.writeHook = async url => { if (url.endsWith('/resume_charging')) resumed = true; };
+  h.readHook = async () => { if (resumed && !h.readbackWaits.length) { h.reason = 53; h.dynamicA = 0; } };
+  h.waitHook = async () => {
+    if (interruptedBy === 'stop') { h.reason = 53; h.sourceTimes[96] = NOW; }
+    if (interruptedBy === 'schedule') h.schedules = normalizeScheduleState({ enabled: 'daily', daily: {
+      timezone: 'UTC', periods: [{ startTime: '19:00', stopTime: '20:00', maximumAmps: 16 }] } });
+    if (interruptedBy === 'disconnect') h.mode = 1;
+    if (interruptedBy === 'authority') h.allowed = false;
+  };
+  const result = await h.update({ takeover: prior.takeover.token, plan: { id: 'now', startAt: NOW } });
+  assert.notEqual(result.takeover.state, 'confirmed');
+  assert.equal(h.readbackWaits.length, 1);
+  assert.equal(h.writes.filter(row => row.url.endsWith('/resume_charging')).length, 1);
 });
 
 test('older and unchanged native clocks cannot confirm an earlier local handover dispatch', async t => {

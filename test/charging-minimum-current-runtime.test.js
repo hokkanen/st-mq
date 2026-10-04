@@ -164,6 +164,43 @@ test(`old false plug permits 6 A and durable identity until ${retainedDeparture 
   assert.equal(f.item('charger2').vehicleMatch, null, 'A later native vehicle disconnect ends the match even if plugged_in stays false');
 });
 
+for (const restart of [false, true]) test(`explicit Identify after successful current restoration runs a new bounded test${restart ? ' after restart' : ''}`, async t => {
+  const f = await fixture(t, { teslaPluggedIn: false });
+  f.advance(1000); await f.sampleTesla(12); await f.update();
+  f.advance(6000); await f.sampleTesla(6);
+  f.advance(5000); await f.adapter.refresh(); f.observe();
+  let control = await f.update();
+  const firstTest = structuredClone(control.currentTest);
+  assert.equal(firstTest.phase, 'restored');
+  assert.equal(f.item('charger2').vehicleMatch?.id, 'tesla');
+  assert.equal(f.item('charger2').vehicleEvidence.teslaCurrentResolvedTestId, firstTest.id);
+  if (restart) await f.restart();
+  f.advance(1000); await f.sampleTesla(12); await f.update();
+  assert.equal(f.fields.current_limit.value, 12, 'Ordinary updates do not renew the successful test');
+  const card = f.runtime.status().chargers.find(row => row.id === 'charger2');
+  await f.runtime.identifyVehicle('charger2', { association: card.association,
+    sessionId: card.request.sessionId, revision: card.request.revision });
+  control = f.item('charger2').controller.status();
+  assert.equal(control.currentTest.phase, 'active');
+  assert.notEqual(control.currentTest.id, firstTest.id, 'Explicit Identify owns a new attempt');
+  assert.equal(control.currentTest.id, f.item('charger2').identification.id);
+  assert.ok(control.currentTest.confirmedAt > firstTest.confirmedAt);
+  assert.equal(control.currentTest.expiresAt - control.currentTest.startedAt, 90_000);
+  assert.equal(f.fields.current_limit.value, 6);
+  assert.deepEqual(f.writes.map(row => [row.role, row.value]),
+    [['current_limit', 6], ['current_limit', 12], ['current_limit', 6]]);
+  assert.notEqual(f.item('charger2').identification.phase, 'completed', 'The earlier 6 A evidence cannot finish the new attempt');
+  f.advance(6000); await f.sampleTesla(6);
+  assert.notEqual(f.item('charger2').identification.phase, 'completed', 'A second settled physical sample is still required');
+  f.advance(5000); await f.adapter.refresh(); f.observe(); control = await f.update();
+  assert.equal(f.item('charger2').identification.phase, 'completed');
+  assert.equal(f.item('charger2').vehicleMatch?.id, 'tesla');
+  assert.equal(control.currentTest.phase, 'restored');
+  assert.equal(f.fields.current_limit.value, 12);
+  assert.deepEqual(f.writes.map(row => [row.role, row.value]),
+    [['current_limit', 6], ['current_limit', 12], ['current_limit', 6], ['current_limit', 12]]);
+});
+
 test('restored current test from a prior connection is absent from the next identification attempt', async t => {
   const f = await fixture(t);
   await f.update(); f.advance(91_000); await f.update();
