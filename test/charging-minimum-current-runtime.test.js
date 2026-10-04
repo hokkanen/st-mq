@@ -5,6 +5,7 @@ import { ChargingRuntime } from '../src/charging/runtime.js';
 import { createShellyEvseAdapter } from '../src/charging/shelly-evse.js';
 import { createChargingTeslaCapture } from '../src/charging/teslamate.js';
 import { withReportDatabase } from './helpers/report-database.js';
+import { planChargers } from '../src/charging/planner.js';
 
 const START = 1_800_000_000_000;
 
@@ -13,7 +14,7 @@ const START = 1_800_000_000_000;
 async function fixture(t, { firstCurrentA = 16, firstAvailable = true, stepMetadata = true, currentWritable = true,
   teslaPluggedIn = true, initialCurrentA = 12, economicStartAt = START } = {}) {
   let now = START, runtime, adapter, meterAt = START, acceptCurrentWrite = true, measuredCurrentA = null, currentWriteHook = null,
-    phaseMeasuredAt = null, statusReadHook = null, currentReadbackHook = null, dropCurrentReply = false, partialNotifications = false, partialNotificationHook = null, firstStopped = false, firstStatusAt = START,
+    phaseMeasuredAt = null, statusReadHook = null, currentReadbackHook = null, phaseReadbackHook = null, dropCurrentReply = false, partialNotifications = false, partialNotificationHook = null, firstStopped = false, firstStatusAt = START,
     firstSourceAt = null, firstNative = {};
   const data = new Map(), writes = [], client = new EventEmitter();
   const config = { input: 'mqtt', connections: {
@@ -75,6 +76,9 @@ async function fixture(t, { firstCurrentA = 16, firstAvailable = true, stepMetad
       // controller's durable completion run, just as on the live adapter.
       if (role === 'current_limit' && frame.method.endsWith('.GetStatus') && currentReadbackHook
         && currentReadbackHook() !== false) currentReadbackHook = null;
+      if (role === 'phase_info' && frame.method.endsWith('.GetStatus') && phaseReadbackHook) {
+        const hook = phaseReadbackHook; phaseReadbackHook = null; hook();
+      }
     });
   };
   const capture = createChargingTeslaCapture({ settings: config.connections.teslamate, clock: () => now,
@@ -139,6 +143,7 @@ async function fixture(t, { firstCurrentA = 16, firstAvailable = true, stepMetad
     onCurrentWrite(hook) { currentWriteHook = hook; },
     onStatusRead(hook) { statusReadHook = hook; },
     onCurrentReadback(hook) { currentReadbackHook = hook; },
+    onPhaseReadback(hook) { phaseReadbackHook = hook; },
     dropCurrentReply() { dropCurrentReply = true; },
     setPartialNotifications(hook) { partialNotifications = true; partialNotificationHook = hook; },
     notifyPhase(value) {
@@ -628,6 +633,56 @@ test('an unconfirmed cold-start current setting cannot release the economic paus
   assert.equal(f.fields.current_limit.value, 16);
   assert.equal(f.item('charger2').identification.probe, null, 'No probe budget is created from an unconfirmed request');
   assert.deepEqual(f.writes.slice(before).map(row => [row.role, row.value]), [['current_limit', 6]]);
+});
+
+test('a queued planning timestamp cannot interrupt a current comparison after newer live readback', async t => {
+  const f = await fixture(t, { initialCurrentA: 16 });
+  await f.update();
+  const item = f.item('charger2'), before = structuredClone(item.identification);
+  assert.equal(item.controller.status().currentTest.phase, 'active');
+  assert.equal(before.phase, 'charging'); assert.equal(before.probe, null);
+  f.advance(500); const requestedAt = f.now;
+  let release, calculations = 0;
+  const blocked = new Promise(resolve => { release = resolve; });
+  f.runtime.calculatePlan = async now => {
+    if (calculations++ === 0) await blocked;
+    else f.runtime.refreshPlanningState(now);
+  };
+  f.runtime.updatePlan = ChargingRuntime.prototype.updatePlan.bind(f.runtime);
+  const planning = f.runtime.updatePlan(requestedAt);
+  f.runtime.updatePlan(requestedAt);
+  f.onPhaseReadback(() => f.advance(1));
+  await f.adapter.refresh(); f.observe();
+  assert.equal(f.runtime.identificationAvailable(item, requestedAt), false);
+  // A planner request can wait behind an earlier asynchronous calculation.
+  // Its forecast time is older than the current adapter readback when it runs.
+  release(); await planning;
+  assert.equal(item.identification.phase, 'charging');
+  assert.equal(item.identification.completedAt, null);
+  assert.equal(item.identification.id, before.id);
+  assert.equal(item.controller.status().currentTest.phase, 'active');
+  assert.equal(f.fields.current_limit.value, 6);
+});
+
+test('completed planning observes live identification at the post-search clock', async t => {
+  const f = await fixture(t, { initialCurrentA: 16 }); await f.update();
+  const item = f.item('charger2'), before = structuredClone(item.identification);
+  assert.equal(item.controller.status().currentTest.phase, 'active');
+  await f.runtime.plannerService.close();
+  let options, finish;
+  f.runtime.plannerService = { request: input => { options = input; return new Promise(resolve => { finish = resolve; }); }, close() {} };
+  f.runtime.prices = [{ start: START, end: START + 24 * 3600_000, price: 10 }];
+  const requestedAt = f.now;
+  const planning = f.runtime.calculatePlan(requestedAt, { generation: ++f.runtime.planningGeneration });
+  assert.ok(options, 'The real calculation is waiting for its asynchronous search');
+  f.onPhaseReadback(() => f.advance(1)); await f.adapter.refresh(); f.observe();
+  assert.equal(f.runtime.identificationAvailable(item, requestedAt), false);
+  finish(planChargers(options)); await planning;
+  assert.ok(f.runtime.coordination, 'The unchanged numerical inputs allow this search to publish');
+  assert.equal(f.runtime.coordination.at, requestedAt, 'The frozen forecast retains its calculation time');
+  assert.equal(item.identification.phase, 'charging');
+  assert.equal(item.identification.id, before.id); assert.equal(item.identification.completedAt, null);
+  assert.equal(item.controller.status().currentTest.phase, 'active');
 });
 
 for (const nativeStop of [false, true]) test(`cold-start probe retains 6 A through delayed physical zero${nativeStop ? ' after native Stop' : ''} and restart`, async t => {

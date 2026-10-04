@@ -53,12 +53,63 @@ function fixture(t, overrides = {}) {
     f.controller?.close();
     f.controller = createShellyController({ adapter: f.adapter, initialState: f.saved, clock: () => f.now,
       canControl: () => f.permitted, getIdentification: () => f.request,
+      getPlan: f.getPlan,
       saveState: async value => { await f.saveHook?.(value); f.saved = structuredClone(value); } });
   };
   f.restart(); t.after(() => f.controller.close());
   f.update = input => f.controller.update({ enabled: false, allocation: {}, ...input });
   return f;
 }
+
+test('a newly selected economic wait stops a current comparison before restoring its higher current', async t => {
+  const f = fixture(t, { limiterEnabled: false });
+  f.change('current_limit', 16);
+  f.request = { id: 'synthetic-comparison', connectedAt: NOW, phase: 'charging', minimumCurrent: true };
+  await f.update({ enabled: true });
+  const deadline = f.saved.currentTest.expiresAt;
+  assert.equal(f.fields.current_limit.value, 6);
+  assert.equal(f.saved.execution, null, 'The identification comparison has no adopted economic program');
+  f.now += 1000; f.request = null; f.physicalPause = false;
+  f.change('phase_info', { total_power: 4.14, phase_a: { current: 6 }, phase_b: { current: 6 }, phase_c: { current: 6 } });
+  f.getPlan = () => ({ id: 'synthetic-new-wait', deadlineAt: NOW + 7200_000,
+    periods: [{ startAt: NOW + 3600_000, endAt: null }], feasible: true });
+  f.restart();
+  const before = f.writes.length;
+  let view = await f.update({ enabled: true });
+  assert.deepEqual(f.writes.slice(before).map(row => [row.role, row.value]), [['start_charging', false]],
+    'The newly selected wait must Stop without first increasing the live pilot');
+  assert.equal(f.fields.current_limit.value, 6);
+  assert.equal(view.pauseConfirmed, false, 'Accepted Stop is not yet physical zero');
+  assert.equal(view.currentTest.expiresAt, deadline);
+  f.now += 1000; f.restart(); view = await f.update({ enabled: true });
+  assert.equal(f.fields.current_limit.value, 6, 'Restart preserves the lower current while the car is stopping');
+  f.now += 1000; f.change('work_state', 'charger_pause');
+  f.change('phase_info', { total_power: 0, phase_a: { current: 0 }, phase_b: { current: 0 }, phase_c: { current: 0 } });
+  view = await f.update({ enabled: true });
+  assert.equal(view.currentTest.phase, 'restored');
+  assert.equal(view.currentTest.expiresAt, deadline);
+  assert.equal(f.fields.current_limit.value, 16);
+  assert.equal(f.fields.start_charging.value, false);
+  assert.deepEqual(f.writes.slice(before).map(row => [row.role, row.value]),
+    [['start_charging', false], ['current_limit', 16]]);
+});
+
+for (const choice of ['normal-window', 'charge-now', 'automatic-off'])
+test(`ending a current comparison preserves ${choice} without inventing an economic Stop`, async t => {
+  const f = fixture(t, { limiterEnabled: false });
+  f.change('current_limit', 16);
+  f.request = { id: 'synthetic-comparison', connectedAt: NOW, phase: 'charging', minimumCurrent: true };
+  await f.update({ enabled: true });
+  f.now += 1000; f.request = null;
+  const before = f.writes.length;
+  const view = await f.update({ enabled: choice !== 'automatic-off',
+    ...(choice === 'charge-now' ? { chargeNow: { connectedAt: NOW } } : {}),
+    plan: { id: 'synthetic-next-plan', deadlineAt: NOW + 7200_000,
+      periods: [{ startAt: choice === 'normal-window' ? NOW : NOW + 3600_000, endAt: null }] } });
+  assert.equal(view.currentTest.phase, 'restored');
+  assert.equal(f.fields.start_charging.value, true);
+  assert.deepEqual(f.writes.slice(before).map(row => [row.role, row.value]), [['current_limit', 16]]);
+});
 
 test('Shelly identification persists witnessed pause ownership before dispatch and requires physical zero readback', async t => {
   const f = fixture(t); f.physicalPause = false;

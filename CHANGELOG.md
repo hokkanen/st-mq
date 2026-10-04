@@ -42,6 +42,13 @@ Versions follow Semantic Versioning. `-dev.N` denotes a development prerelease.
 
 ### Fixed
 
+- Delayed charging calculations now check live identification with the current
+  observation time. A fresh charger read arriving during a calculation no longer
+  interrupts the 6 A comparison; its original deadline and forecast times remain
+  unchanged.
+- When a current comparison ends and the newly selected plan requires waiting,
+  Shelly stops and confirms zero draw before restoring the higher current limit.
+  Normal scheduled charging and **Charge now** retain their existing behavior.
 - Shelly partial status notifications retain their event time and unchanged
   attributes without replacing native value clocks. Brief permission changes
   between polls remain visible to control, and held electrical values do not

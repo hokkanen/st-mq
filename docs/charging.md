@@ -603,6 +603,9 @@ After native Stop, the reduced setting remains until confirmed stop permission
 and fresh physical zero measured after that permission, including during ordinary
 charging, Charge now or Automatic OFF. Expiry and restart preserve this obligation.
 A later native Enable or current selection retains its separate priority.
+When a comparison ends and the selected economic plan requires waiting, apply
+that Stop and confirm fresh physical zero before restoring the higher setting,
+including when the plan has not yet been saved as adopted execution.
 A unique Tesla match on the peer can end the current comparison while leaving
 the remainder of its original window for an independently valid BMW baseline
 to begin its correlation pause. A Tesla already identified on the peer's current

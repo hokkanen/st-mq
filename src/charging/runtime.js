@@ -1194,12 +1194,15 @@ export class ChargingRuntime {
     // Accepted observations/progress must survive a restart even while an old
     // numerical search is still running. They are independent of plan adoption.
     if (this.planningFlight) this.refreshPlanningState(now);
-    this.planningRequest = { now, sourceId, generation: ++this.planningGeneration };
+    this.planningRequest = { sourceId, generation: ++this.planningGeneration };
     if (!this.planningFlight) {
       this.planningFlight = (async () => {
         while (this.planningRequest && !this.closed) {
           const request = this.planningRequest; this.planningRequest = null;
-          await this.calculatePlan(request.now, request);
+          // A queued request may outlive new native readback. Start its live
+          // evidence snapshot at execution time; the request's older clock
+          // must not turn that readback into future data and end identification.
+          await this.calculatePlan(this.clock(), request);
           // A cached result can settle immediately. Repeated input changes must
           // still let native replies, requests and timers run between retries.
           if (this.planningRequest && !this.closed) await new Promise(resolve => setImmediate(resolve));
@@ -1342,7 +1345,7 @@ export class ChargingRuntime {
       const at = this.clock();
       if (selectedHistory.get().generation !== historySelection || evidence !== this.planningEvidence() || at < now
         || at >= chargingPlanValidUntil({ now: result.at, chargers: planningViews }, result)) {
-        this.planningRequest = { now: at, generation: ++this.planningGeneration };
+        this.planningRequest = { generation: ++this.planningGeneration };
         return false;
       }
       return true;
@@ -1535,9 +1538,12 @@ export class ChargingRuntime {
           noHistory: this.historyReady && householdReferenceSummary(this.household).noHistory,
           loading: this.historyFlights.size > 0, unavailable: Boolean(this.historyError) } } };
     this.allocationScope = allocationScope;
-    for (const view of this.views(now)) {
+    // Forecast inputs keep their original time. Observing the live session
+    // after the asynchronous search uses the current clock and source data.
+    const observedAt = this.clock();
+    for (const view of this.views(observedAt)) {
       const item = this.charger(view.id);
-      item.sessionCost = updateSessionCost(item.sessionCost, view, now, this.prices, this.readEnergy);
+      item.sessionCost = updateSessionCost(item.sessionCost, view, observedAt, this.prices, this.readEnergy);
     }
     this.fenceChangedCommands(this.clock(), sourceId);
     for (const item of Object.values(this.chargers)) item.newEpisode = false;

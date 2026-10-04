@@ -900,7 +900,7 @@ export function createShellyController({ adapter, initialState, saveState = () =
       && (request.phase !== 'pausing' || request.pauseUntil > now) ? copy(request) : null;
   }
   async function manageCurrentTest({ snapshot, intentRevision, request = null, context = null, early = false,
-    releaseProbe = false }) {
+    releaseProbe = false, economicWait = false }) {
     let test = state.currentTest;
     const current = snapshot.fields.current_limit;
     const terminal = () => !test || ['restored', 'superseded'].includes(test.phase);
@@ -970,7 +970,7 @@ export function createShellyController({ adapter, initialState, saveState = () =
       // The probe deadline retains this duty across restart. Native Stop also
       // requires physical completion during an ordinary current comparison,
       // even when Charge now or Automatic OFF has cleared economic execution.
-      const waiting = state.execution?.periods?.length && !state.execution.periods.some(period => period.startAt <= clock()
+      const waiting = economicWait || state.execution?.periods?.length && !state.execution.periods.some(period => period.startAt <= clock()
         && (period.endAt === null || period.endAt > clock()));
       const permission = snapshot.fields.start_charging, physical = snapshot.fields.phase_info, work = snapshot.fields.work_state;
       const stopped = permission?.value === false && fresh(permission) && physicalFresh(physical)
@@ -1309,7 +1309,14 @@ export function createShellyController({ adapter, initialState, saveState = () =
         const minimumRequest = identification?.minimumCurrent === true && identification.phase !== 'pausing'
           ? identification.id : null;
         let minimumBlocked = false;
+        // The selected wait already requires Stop in this reconcile, even
+        // before its execution is saved after native confirmation. Do not
+        // raise the temporary pilot ahead of that Stop and physical zero.
+        const economicWait = !identification && input.enabled && !chargeNow && !state.manual && !snapshot.nativeScheduleActive
+          && plan?.periods?.length > 0 && !plan.periods.some(period => period.startAt <= clock()
+            && (period.endAt === null || period.endAt > clock()));
         await manageCurrentTest({ snapshot, intentRevision, request: identification, context,
+          economicWait,
           releaseProbe: !input.enabled || chargeNow || ['enable', 'charge-now'].includes(state.manual?.kind) });
         snapshot = adapter.snapshot(); start = snapshot.fields.start_charging; current = snapshot.fields.current_limit;
         if (minimumRequest) {
