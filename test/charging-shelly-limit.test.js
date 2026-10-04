@@ -57,7 +57,7 @@ test('Shelly priority uses the commissioned fallback for unavailable or incohere
 });
 
 test('unscheduled balanced control recovers an owned pause and admits an independently confirmed waiting peer', () => {
-  const args = { ...input(), priority: 'balanced', liveBalanced: true, allocationA: 0, reservationA: 16 };
+  const args = { ...input(), priority: 'balanced', liveUnscheduled: true, allocationA: 0, reservationA: 16 };
   assert.equal(shellyCurrentLimit({ ...args, property: phases(24), easee: phases(16), shelly: phases(0) }).currentA, 8);
   const blockedPeer = { ...args, property: phases(24), easee: phases(0), shelly: phases(16) };
   assert.equal(shellyCurrentLimit({ ...blockedPeer, peerDemandA: 16 }).currentA, 8);
@@ -66,4 +66,19 @@ test('unscheduled balanced control recovers an owned pause and admits an indepen
   assert.equal(shellyCurrentLimit({ ...blockedPeer, peerDemandA: 16, vehicleCurrentA: 0 }).pause, true);
   assert.equal(shellyCurrentLimit({ ...blockedPeer, property: phases(29), peerDemandA: 16 }).currentA, 11,
     'Below two valid pilots, preserve the current physical turn instead of alternating permission');
+});
+
+test('unscheduled Charger 1 priority uses live peer demand instead of an economic forecast ceiling', () => {
+  const args = { ...input(), priority: 'charger1', liveUnscheduled: true, allocationA: 7, reservationA: 16,
+    property: phases(16), easee: phases(0), shelly: phases(8) };
+  assert.equal(shellyCurrentLimit(args).currentA, 16, 'A stopped peer does not reserve future charging capacity');
+  assert.equal(shellyCurrentLimit({ ...args, peerDemandA: 8 }).currentA, 8);
+  assert.equal(shellyCurrentLimit({ ...args, peerDemandA: 16 }).pause, true,
+    'A confirmed open priority peer can recover from Equalizer yielding its current');
+  assert.equal(shellyCurrentLimit({ ...args, property: phases(24), easee: phases(8) }).currentA, 8,
+    'Measured peer draw remains reserved even when its open instruction is unavailable');
+  assert.equal(shellyCurrentLimit({ ...args, nativeCurrentA: 6 }).currentA, 6);
+  assert.equal(shellyCurrentLimit({ ...args, vehicleCurrentA: 0 }).pause, true);
+  const fallback = shellyCurrentLimit({ ...args, config: { ...config, additiveCurrentVerified: false } });
+  assert.equal(fallback.currentA, 12); assert.equal(fallback.fallback, true);
 });

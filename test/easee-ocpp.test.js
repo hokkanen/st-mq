@@ -839,6 +839,27 @@ test('native requests reject old-connection replies, revocation, CALLERROR and b
   assert.deepEqual(await lostAuthority, { code: 'ocpp-disconnected' });
 });
 
+test('admitted status clock skew exposes only a bounded wait and retains original evidence clocks', async t => {
+  const f = await fixture(t), client = await f.connect();
+  assert.equal(f.local.controlClockDelayMs(), 0);
+  await client.call('StatusNotification', { ...preparing, timestamp: new Date(at + 138).toISOString() });
+  assert.equal(f.local.controlSnapshot(), null);
+  assert.equal(f.local.controlClockDelayMs(), 138);
+  f.now = at + 137;
+  assert.equal(f.local.controlClockDelayMs(), 1); assert.equal(f.local.controlSnapshot(), null);
+  f.now = at + 138;
+  assert.equal(f.local.controlClockDelayMs(), 0);
+  assert.equal(f.local.controlSnapshot().timestamp, at + 138);
+  assert.equal(f.local.controlSnapshot().receivedAt, at);
+  await client.call('StatusNotification', { ...preparing, timestamp: new Date(at + 1139).toISOString() });
+  assert.equal(f.local.controlClockDelayMs(), 0, 'A timestamp beyond the admitted skew cannot create a wait');
+  assert.equal(f.local.controlSnapshot().timestamp, at + 138);
+  await client.call('StatusNotification', { ...preparing, timestamp: new Date(at + 1138).toISOString() });
+  assert.equal(f.local.controlClockDelayMs(), 1000);
+  f.permitted = false;
+  assert.equal(f.local.controlClockDelayMs(), 0); assert.equal(f.local.controlSnapshot(), null);
+});
+
 test('native control snapshots require fresh connector evidence and reconfirm saved transactions on each connection', async t => {
   const f = await fixture(t), client = await f.connect();
   await client.call('Heartbeat', {}); assert.equal(f.local.controlSnapshot(), null);

@@ -1722,7 +1722,7 @@ export class ChargingRuntime {
     const now = this.clock(), active = this.coordination?.allocations?.find(row => row.start <= now && row.end > now);
     const control = view?.control, peerControl = peer?.control, peerSnapshot = peerControl?.snapshot;
     const unscheduled = !view?.settings.enabled || view?.request?.chargeNow === true || Boolean(control?.manual);
-    const liveBalanced = this.settings.priority === 'balanced' && unscheduled && control?.manual?.kind !== 'stop'
+    const liveUnscheduled = unscheduled && control?.manual?.kind !== 'stop'
       && (control?.snapshot?.fields?.start_charging?.value === true || control?.ownedPause === true);
     const peerScoped = peer?.request && peerControl?.session?.connected === true
       && peerControl.session.connectedAt === sessionConnectedAt(peer.request)
@@ -1733,7 +1733,11 @@ export class ChargingRuntime {
       || peerSnapshot?.faulted || peerSnapshot?.authorizationBlocked
       || peer?.values.vehicleCurrentA?.value === 0 || peer?.values.nativeCurrentA?.value === 0
       || peer?.values.vehicleNotBefore?.value > now;
+    const peerDrawing = Array.isArray(supply?.chargerCurrentA) && supply.chargerCurrentA.some(value => value > .5)
+      && Array.isArray(supply?.observationTimes?.charger) && supply.observationTimes.charger.length === 3
+      && supply.observationTimes.charger.every(at => Number.isSafeInteger(at) && at <= now && now - at <= 15_000);
     const peerOpen = !peerControl?.pending && !peerControl?.errorCode && (['enable', 'charge-now'].includes(peerControl?.manual?.kind)
+      || this.settings.priority === 'charger1' && peerDrawing
       || ['active', 'released', 'charging'].includes(peerControl?.phase)
         && (peerControl.released === true || peerControl.execution?.periods?.some(row => row.startAt <= now
           && (row.endAt === null || row.endAt > now))));
@@ -1744,7 +1748,7 @@ export class ChargingRuntime {
       easee: { healthy: first?.online === true, currents: supply?.chargerCurrentA, times: supply?.observationTimes?.charger },
       vehicleCurrentA: view?.values.vehicleCurrentA?.value, notBefore: view?.values.vehicleNotBefore?.value,
       priority: this.settings.priority,
-      liveBalanced, peerDemandA,
+      liveUnscheduled, peerDemandA,
       allocationA: this.settings.priority === 'charger2' ? null : active?.chargers?.charger2?.currentLimitA ?? null,
       reservationA: this.settings.priority === 'charger2' ? 0 : active?.chargers?.charger1?.currentA ?? 0 };
   }

@@ -46,6 +46,11 @@ Versions follow Semantic Versioning. `-dev.N` denotes a development prerelease.
 
 ### Fixed
 
+- Unscheduled Shelly charging with Charger 1 priority uses live peer demand;
+  an economic forecast no longer reduces its current when the peer is stopped.
+- Easee automatic takeover waits briefly for an admitted device timestamp to
+  become current, then rechecks native instructions without repeating a command.
+  A small clock skew no longer falsely appears to disconnect the charger.
 - Supported Shelly chargers can adjust current when optional UI step metadata is
   absent. Contradictory native capabilities still prevent current writes.
 - Shelly allocation uses the latest admitted phase readings without advancing

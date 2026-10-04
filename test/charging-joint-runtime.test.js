@@ -46,7 +46,7 @@ test('Shelly startup validates adopted execution before reading or writing devic
 // Production runtime, planner, controllers, transport adapters and vehicle feeds.
 // Only the physical devices/broker and acquisition clocks are simulated. Device
 // settings keep their source clocks; reads do not manufacture native changes.
-async function fixture(t, { limiter = true, budgetA = 16, notifyRuntime = false } = {}) {
+async function fixture(t, { limiter = true, budgetA = 16, notifyRuntime = false, commissioned = true } = {}) {
   let now = START, runtime, heldOcppWrite = null, revokedOcppWrites = 0, rejectShellyWrites = false;
   const store = new Store(':memory:'), client = new EventEmitter();
   const commands = [], profiles = new Map(), reads = { charger1: 0, charger2: 0 };
@@ -60,7 +60,7 @@ async function fixture(t, { limiter = true, budgetA = 16, notifyRuntime = false 
     bmw: { mqttTopic: 'synthetic/joint/bmw', defaults: { capacityKwh: 10 } },
     tesla: { defaults: { capacityKwh: 10 } },
   }, chargers: { charger2: { enabled: true, deviceId: 'synthetic-joint-evse', topicPrefix: 'synthetic/joint/evse',
-    limiterEnabled: limiter, additiveCurrentVerified: true, mainFuseA: triple(budgetA), marginA: triple(0), dwellMs: 0, rampA: 16 } } } };
+    limiterEnabled: limiter, additiveCurrentVerified: commissioned, mainFuseA: triple(budgetA), marginA: triple(0), dwellMs: 0, rampA: 16 } } } };
   const fields = { current_limit: { value: 16, at: now }, start_charging: { value: true, at: now },
     work_state: { value: 'charger_free', at: now } };
   const schedules = { jobs: [] };
@@ -439,6 +439,22 @@ test('balanced live allocation does not reserve an idle peer merely because it i
   assert.equal(f.fields.current_limit.value, 16);
   assert.equal(f.fields.start_charging.value, true);
 });
+
+for (const commissioned of [false, true])
+  test(`unscheduled Charger 1 priority ignores an economic cap with no peer demand; commissioned ${commissioned}`, async t => {
+    const f = await fixture(t, { budgetA: 25, commissioned });
+    await f.connect('charger1'); await f.connect('charger2');
+    f.cars.charger1.demandA = 0; f.cars.charger2.demandA = 16;
+    await f.runtime.chargeNow('charger2', f.scope('charger2'));
+    await f.priority('charger1'); await f.plan();
+    f.runtime.coordination.allocations = [{ start: f.now, end: f.now + MINUTE,
+      chargers: { charger2: { currentA: 7, currentLimitA: 7 } } }];
+    f.advance(5000); await f.runtime.reconcileShellyObservation();
+    assert.equal(f.runtime.allocationContext().peerDemandA, null);
+    assert.equal(f.fields.current_limit.value, commissioned ? 16 : 12);
+    assert.equal(f.fields.start_charging.value, true);
+    assert.equal(f.view('charger2').control.limiter.fallback, !commissioned);
+  });
 
 test('ordinary load adjustment responds before the minute tick without cloud reads or economic replanning', async t => {
   const f = await fixture(t, { budgetA: 25 });

@@ -44,7 +44,7 @@ function fixture(t, { streaming = false, authorizationMode = 'plug-and-charge', 
     fetchImpl: async (url, options) => {
       const path = new URL(url).pathname, method = options.method, body = options.body ? JSON.parse(options.body) : null;
       events.push({ type: 'http', path, method, body });
-      await beforeRequest();
+      await beforeRequest({ path, method });
       if (path === '/api/equalizers/fixture-equalizer/config') return Response.json({ maxAllocatedCurrent: 27 });
       if (path === '/state/fixture-equalizer/observations') return Response.json({ observations:
         [31, 32, 33, 34, 35, 36].map(id => ({ id, value: id < 34 ? 5 : 230, timestamp: new Date(AT).toISOString() })) });
@@ -118,7 +118,13 @@ function fixture(t, { streaming = false, authorizationMode = 'plug-and-charge', 
           async start() { events.push({ type: 'listener-start', enabled: options.config.enabled }); ready = options.config.enabled && options.canControl(); },
           status: () => ({ configured: options.config.enabled, ready: ready && !closed && options.canControl(), available: false, controlTransport: 'ocpp' }),
           snapshot: () => null,
-          controlSnapshot: () => ready && !closed && options.canControl() ? clone(control) : null,
+          controlSnapshot: () => ready && !closed && options.canControl() && control.timestamp <= now ? clone(control) : null,
+          controlClockDelayMs: () => {
+            const remaining = control.timestamp - now;
+            if (!ready || closed || !options.canControl() || !(remaining > 0 && remaining <= 1000)) return 0;
+            listener.onClockWait?.(remaining);
+            return remaining;
+          },
           refreshAuthority() { events.push({ type: 'listener-authority', active: options.canControl() }); },
           noteModeDisableRequested() { events.push({ type: 'native-mode-disable-intent' }); },
           async request(action, payload, requestOptions = {}) {
@@ -984,6 +990,54 @@ test('production OCPP handover confirms an advanced native resume clock behind i
   await restarted.update({ enabled: true, plan: immediate });
   assert.equal(writes(f).filter(row => row.path.endsWith('/commands/resume_charging')).length, 1,
     'The confirmed handover is retained without repeating the resume');
+});
+
+test('production OCPP handover waits for admitted status clock skew without replaying Resume', async t => {
+  const x = await nativeAppFixture(t), { f, controller, listener } = x;
+  x.observe({ 31: true, 48: 0, 96: 53, 109: 2 }); x.physical('SuspendedEVSE', 0); await x.refresh();
+  f.advance(1000); x.physical('SuspendedEVSE', 0); await x.refresh();
+  const immediate = { id: 'clock-skew-resume', startAt: f.now, periods: [{ startAt: f.now, endAt: null }], feasible: true };
+  const prior = await controller.update({ enabled: false, plan: immediate });
+  const waiting = deferred(), sourceAt = f.now + 138, receivedAt = f.now;
+  listener.onClockWait = ms => { assert.equal(ms, 138); waiting.resolve(); };
+  f.beforeRequest = ({ path, method }) => {
+    if (method === 'POST' && path.endsWith('/commands/resume_charging'))
+      listener.control = { ...listener.control, connectorStatus: 'Charging', timestamp: sourceAt, receivedAt };
+  };
+  const updating = controller.update({ enabled: true, takeover: prior.takeover.token });
+  await waiting.promise;
+  assert.equal(listener.controlSnapshot(), null, 'Future status remains unavailable during the read-only wait');
+  f.advance(138);
+  const result = await updating;
+  assert.equal(result.takeover.state, 'confirmed', result.reason); assert.equal(result.phase, 'released');
+  assert.equal(result.takeoverPending, null); assert.equal(result.manual, null);
+  assert.equal(result.snapshot.statusAt, sourceAt); assert.equal(listener.control.receivedAt, receivedAt);
+  assert.equal(writes(f).filter(row => row.path.endsWith('/commands/resume_charging')).length, 1);
+});
+
+test('status clock wait preserves newer native Stop and connection fences after one Resume', async t => {
+  for (const interruption of ['native-stop', 'new-connection']) {
+    const x = await nativeAppFixture(t), { f, controller, listener } = x;
+    x.observe({ 31: true, 48: 0, 96: 53, 109: 2 }); x.physical('SuspendedEVSE', 0); await x.refresh();
+    f.advance(1000); x.physical('SuspendedEVSE', 0); await x.refresh();
+    const immediate = { id: 'interrupted-clock-wait', startAt: f.now, periods: [{ startAt: f.now, endAt: null }], feasible: true };
+    const prior = await controller.update({ enabled: false, plan: immediate }), waiting = deferred();
+    listener.onClockWait = () => waiting.resolve();
+    f.beforeRequest = ({ path, method }) => {
+      if (method === 'POST' && path.endsWith('/commands/resume_charging'))
+        listener.control = { ...listener.control, connectorStatus: 'Charging', timestamp: f.now + 138 };
+    };
+    const updating = controller.update({ enabled: true, takeover: prior.takeover.token });
+    await waiting.promise; f.advance(138);
+    if (interruption === 'native-stop') {
+      x.observe({ 48: 0, 96: 53 }); x.physical('SuspendedEVSE', 0);
+    } else listener.control = { ...listener.control, connectionId: 'new-fixture-connection' };
+    const result = await updating;
+    assert.equal(result.takeover.state, 'blocked', interruption);
+    assert.ok(x.saved.takeoverPending, 'Unconfirmed handover remains durable');
+    assert.equal(writes(f).filter(row => row.path.endsWith('/commands/resume_charging')).length, 1);
+    assert.equal(x.nativeWrites().some(row => row.action === 'ClearChargingProfile'), false);
+  }
 });
 
 test('production OCPP handover waits for separately delivered native resume current after the reason clears', async t => {

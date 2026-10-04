@@ -705,6 +705,13 @@ export function createEaseeOcpp({ config: input, chargerId, clock = Date.now, ca
         callQueue.push(call); sendNextCall();
       });
     },
+    controlClockDelayMs() {
+      if (!refreshAuthority() || !transportFresh() || connectorStatusAt === null) return 0;
+      const remaining = connectorStatusAt - clock();
+      // Ingress admits a small device clock skew, but that status cannot yet
+      // authorize control. Callers may wait once, then read and fence normally.
+      return remaining > 0 && remaining <= MAX_FUTURE_MS ? remaining : 0;
+    },
     controlSnapshot() {
       if (!refreshAuthority() || !transportFresh() || connectorStatusAt === null
         || clock() < connectorStatusAt) return null;

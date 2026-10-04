@@ -1081,14 +1081,16 @@ this priority. Economic scheduling still chooses permitted charging periods;
 forecast delivery remains an estimate. Equalizer response and actual installation
 protection are not guaranteed by this model.
 
-For unscheduled charging in Balanced priority, including Charge now, coherent
-live headroom is shared with the peer's measured draw or its confirmed open
-charging instruction. Unused peer capacity remains available to Shelly. A
+For unscheduled charging, including Charge now, coherent live headroom follows
+the peer's measured draw or its confirmed open charging instruction. Balanced
+priority shares this headroom; Charger 1 priority reserves that peer demand
+first. Economic forecast ceilings do not cap unscheduled current. Unused peer
+capacity remains available to Shelly, including when Charger 1 is stopped. A
 controller-owned current pause can resume when that share reaches 6 A; an
 external Stop cannot. A connected idle car alone is not evidence of requested
 current. If total headroom cannot support two 6 A pilots, retain the existing
-charging turn instead of repeatedly stopping and starting both cars. Scheduled
-Automatic charging continues to use the joint planned allocation.
+charging turn in Balanced priority instead of repeatedly stopping and starting
+both cars. Scheduled Automatic charging continues to use the joint planned allocation.
 
 A common current is rounded down to the supported profile's 1 A step. The native
 range must report a 6 A minimum and a sufficient maximum. Shelly's optional

@@ -8,14 +8,15 @@ export function vehiclePilotLimit(vehicleCurrentA, minimumCurrentA) {
     ? vehicleCurrentA === 0 ? 0 : Math.max(minimumCurrentA, vehicleCurrentA) : null;
 }
 /** A phase-aligned additive model, admitted only after installation verification. */
-export function shellyCurrentLimit({ config, property, easee, shelly, now, priority, liveBalanced = false, peerDemandA = null,
+export function shellyCurrentLimit({ config, property, easee, shelly, now, priority, liveUnscheduled = false, peerDemandA = null,
   reservationA = 0, vehicleCurrentA = null, nativeCurrentA = null, allocationA = null } = {}) {
   // Charger 1's Equalizer yields to Shelly in this priority. A forecast's
   // conservative household scenario or deadline reservation is not a native
   // restriction on Shelly's independently measured live entitlement.
   if (priority === 'charger2') { allocationA = null; reservationA = 0; }
-  const shareLive = priority === 'balanced' && liveBalanced === true;
-  if (shareLive) { allocationA = null; reservationA = 0; }
+  const shareLive = priority === 'balanced' && liveUnscheduled === true;
+  const peerFirstLive = priority === 'charger1' && liveUnscheduled === true;
+  if (shareLive || peerFirstLive) { allocationA = null; reservationA = 0; }
   const vehiclePilotA = vehiclePilotLimit(vehicleCurrentA, config.minimumCurrentA);
   const knownCeilings = [config.maximumCurrentA, vehiclePilotA, nativeCurrentA, allocationA].filter(v => Number.isFinite(v) && v >= 0);
   const known = Math.min(...knownCeilings);
@@ -45,6 +46,11 @@ export function shellyCurrentLimit({ config, property, easee, shelly, now, prior
         });
         const shared = Math.min(ceiling, ...shares);
         if (shared < ceiling) { ceiling = shared; reason = 'priority-allocation'; }
+      }
+      if (peerFirstLive) {
+        const remaining = Math.min(...headroom.map((available, phase) => available
+          - Math.max(easee.currents[phase], Number.isFinite(peerDemandA) && peerDemandA > 0 ? peerDemandA : 0)));
+        if (remaining < ceiling) { ceiling = remaining; reason = 'priority-allocation'; }
       }
       if (Number.isFinite(reservationA) && reservationA > 0 && Math.min(...headroom) - reservationA < ceiling) {
         ceiling = Math.min(...headroom) - reservationA; reason = 'priority-allocation';

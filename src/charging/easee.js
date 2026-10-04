@@ -286,7 +286,7 @@ export function easeeChargerTelemetry(snapshot = {}, { now = Date.now() } = {}) 
 
 /** Inject existing authenticated/rate-limited transport; raw account data stays local. */
 export function createEaseeScheduleAdapter({ request, readObservations, chargerId, equalizerId, clock = Date.now, canControl = () => false,
-  waitForReadback = (ms, signal) => delay(ms, undefined, { signal }) }) {
+  waitForReadback = (ms, signal) => delay(ms, undefined, { signal }), settleReadback = null }) {
   const base = `https://api.easee.com/api/chargers/${encodeURIComponent(chargerId)}/schedules`;
   readObservations ??= (deviceId, ids, { signal } = {}) => request(
     `https://api.easee.com/state/${encodeURIComponent(deviceId)}/observations?ids=${ids.join(',')}`, { method: 'GET', signal });
@@ -298,11 +298,16 @@ export function createEaseeScheduleAdapter({ request, readObservations, chargerI
       let now = clock();
       let scheduling, observations, property;
       try {
-        [scheduling, observations, property] = await Promise.all([
+        const readSources = () => Promise.all([
           telemetryOnly ? null : request(base, { method: 'GET', signal }),
           readObservations(chargerId, CHARGING_OBSERVATION_IDS, { signal, forceRest }),
           equalizerId ? readObservations(equalizerId, [31, 32, 33, 34, 35, 36], { signal, forceRest }).catch(() => null) : null,
         ]);
+        [scheduling, observations, property] = await readSources();
+        // A native adapter may briefly quarantine an admitted future status.
+        // Wait only once, then reread: a newer instruction during that wait must
+        // still supersede this operation. This never repeats a device command.
+        if (await settleReadback?.({ signal })) [scheduling, observations, property] = await readSources();
       } catch { throw failure('read-failed', 'Easee state could not be read.'); }
       if (equalizerId && now - allocationReadAt >= 3600_000) {
         allocationReadAt = now;

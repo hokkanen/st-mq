@@ -9,6 +9,7 @@
 // https://developer.easee.com/docs/load-balancing
 // https://developer.easee.com/changelog/ocpp-15
 import { createHash } from 'node:crypto';
+import { setTimeout as delay } from 'node:timers/promises';
 import { CHARGING_OBSERVATION_IDS, chargingSnapshot, createEaseeScheduleAdapter, effectiveScheduleFingerprint, normalizeScheduleState } from '../charging/easee.js';
 import { createEaseeStream } from './easee-stream.js';
 import { createEaseeOcpp } from './easee-ocpp.js';
@@ -581,6 +582,12 @@ export function createDeviceProviders({ connections = {}, http, tokenStore, cloc
         ? { enabled: 'none' } : result;
     }, readObservations, chargerId: easee.charger_id, equalizerId: easee.equalizer_id, clock,
     canControl: () => !closed && !invalidOcppSetup && canControl() && controlBackend === 'native',
+    settleReadback: async ({ signal }) => {
+      const remaining = local.controlClockDelayMs?.() ?? 0;
+      if (!(remaining > 0 && remaining <= 1000)) return false;
+      await delay(remaining, undefined, { signal: openSignal(signal) });
+      return true;
+    },
   });
   let nativeCloudSnapshot = null, nativeCloudSnapshotEpoch = null, nativeCloudSchedule = null, nativeCloudFlight = null, nextNativeCloudRead = 0;
   let nativeDynamicChargerAt = null;
