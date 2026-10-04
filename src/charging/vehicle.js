@@ -422,7 +422,9 @@ function bmwSessionEpisodes(reading, options) {
 export function bmwSessionMatchDetails(reading, options = {}) {
   const session = bmwSessionEpisodes(reading, options);
   if (!session) return null;
-  const episode = session.episodes.find(value => matchingEpisodeStop(session.evidence, value));
+  const episode = session.episodes.find(value => matchingEpisodeStop(session.evidence, value)
+    && !(options.excludeEpisode?.chargingReadingId === value.start.readingId
+      && options.excludeEpisode?.stopReadingId === value.stop.readingId));
   return episode ? { chargingReadingId: episode.start.readingId, stopReadingId: episode.stop.readingId,
     plugReadingId: session.plug?.readingId ?? null } : null;
 }

@@ -42,6 +42,9 @@ Versions follow Semantic Versioning. `-dev.N` denotes a development prerelease.
 
 ### Fixed
 
+- Vehicle identification can combine a unique measured Tesla current match with
+  BMW's own matching start/stop evidence to resolve both chargers when their
+  transitions overlap. Missing or contradictory evidence remains unresolved.
 - Fresh Shelly connections can keep their identification attempt through one
   bounded device-originated Stop/Enable sequence after confirmed 6 A and Start.
   The owner-approved exception waits at 6 A without repeating Start or extending

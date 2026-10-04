@@ -347,6 +347,21 @@ permission to act. See [the configuration guide](docs/configuration.md).
   successful result. Preserve valid zero/false values. Reconnection, held values
   and cached republishes do not manufacture fresh observations or independent
   learning evidence. Corrections cannot invent data for actual acquisition gaps.
+- Charging may resolve both vehicle assignments jointly when fresh Tesla
+  actual-current evidence, corroborating power and confirmed measured 6 A draw
+  provide a unique comparison, and BMW's own valid start/stop episode matches
+  the other unchanged physical connection. That same BMW episode may fit the Tesla
+  connection's transitions; the unique Tesla comparison resolves this ambiguity.
+  BMW still requires its own positive evidence. A negative Tesla result or the
+  remaining charger alone cannot identify BMW, and a different contradictory BMW
+  episode keeps the assignment unresolved. Preserve source, session, retry and
+  consumption checks; polling, restart or a new connection cannot reuse the
+  shared episode to contradict the resolved assignment. A confirmed comparison
+  may retain its original clocks for a delayed BMW report within the same two
+  physical connections, identification attempts and feed associations; it is
+  historical identity evidence, not fresh current or control permission. This
+  narrow lasting amendment was explicitly approved by the owner on 2026-10-04. See
+  [vehicle assignment](docs/charging.md#vehicle-assignment).
 - Keep original frozen forecasts and outcomes separate from later corrected model
   assessments. Estimated or timing-only benefits are not measured causal savings;
   overlapping energy totals and components must not be double-counted.

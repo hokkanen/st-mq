@@ -4,6 +4,7 @@ import { EventEmitter } from 'node:events';
 import { ChargingRuntime } from '../src/charging/runtime.js';
 import { createShellyEvseAdapter } from '../src/charging/shelly-evse.js';
 import { createChargingTeslaCapture } from '../src/charging/teslamate.js';
+import { advanceIdentification } from '../src/charging/identification.js';
 import { withReportDatabase } from './helpers/report-database.js';
 import { planChargers } from '../src/charging/planner.js';
 
@@ -987,61 +988,397 @@ test('ordinary identification observation preserves economic execution and emits
   assert.deepEqual(f.writes, []);
 });
 
-for (const winner of ['charger1', 'charger2']) test(`a unique Tesla test on ${winner} retires one BMW episode shared by both chargers`, async t => {
-  const f = await fixture(t); f.observe();
+async function sharedBmwEpisodeFixture(t, options = {}) {
+  const f = await fixture(t, options); f.observe();
   f.runtime.setMqttStatus({ connected: true, subscribed: true }, 'bmw');
-  const publish = values => f.runtime.receiveSoc('synthetic/minimum-current/bmw', JSON.stringify({
+  const publish = (values, measuredAt = f.now) => f.runtime.receiveSoc('synthetic/minimum-current/bmw', JSON.stringify({
     provider: 'bmw-cardata', ...values, fields: Object.fromEntries(Object.keys(values).map(key => [key,
-      { measuredAt: key === 'pluggedIn' ? START - 120_000 : f.now, readingId: `synthetic-${key}-${f.now}` }])) }), { retain: false }, f.now);
-  // The BMW inlet can remain CONNECTED across charger sessions; this older
-  // context cannot supply a fresh plug edge that independently fences replay.
+      { measuredAt: key === 'pluggedIn' ? START - 120_000 : measuredAt, readingId: `synthetic-joint-${key}-${measuredAt}` }])) }), { retain: false }, f.now);
+  // A held inlet report is context only; each BMW charging edge must still
+  // correlate with independent physical transitions inside the connection.
   f.advance(1000); publish({ atHome: true, pluggedIn: true, charging: true });
   const chargingId = f.runtime.vehicleFeeds.bmw.reading.fields.charging.readingId;
   f.advance(20_000); publish({ charging: false });
+  const stopId = f.runtime.vehicleFeeds.bmw.reading.fields.charging.readingId;
   assert.equal(f.runtime.vehicleFeeds.bmw.consumedChargingId, null, 'No physical stop has been supplied yet');
-  // The same recorded simultaneous start/stop episode matched both chargers.
   for (const item of Object.values(f.runtime.chargers)) {
     item.vehicleEvidence.chargingTimes = [START + 1000];
     item.vehicleEvidence.stoppedTimes = [f.now];
   }
   await f.adapter.refresh(); f.observe();
   assert.ok(Object.values(f.runtime.chargers).every(item => item.vehicleConflict?.ids.includes('bmw')));
+  return { f, publish, chargingId, stopId };
+}
+
+async function settleTeslaCurrent(f, winner) {
   await f.update(); f.advance(6000); await f.sampleTesla(winner === 'charger1' ? 16 : 6);
   f.advance(5000); await f.adapter.refresh(); f.observe();
-  assert.equal(f.item(winner).vehicleMatch?.id, 'tesla');
-  const peer = winner === 'charger1' ? 'charger2' : 'charger1';
-  assert.equal(f.item(peer).vehicleMatch, null, 'Discarding an ambiguous episode cannot identify BMW by elimination');
-  assert.equal(f.runtime.vehicleFeeds.bmw.consumedChargingId, chargingId);
-  await f.update(); await f.restart(); f.advance(10_000); await f.update();
-  assert.equal(f.item(winner).vehicleMatch?.id, 'tesla', 'Restoration and restart must not revive the ambiguous BMW episode');
-  assert.equal(f.item(peer).vehicleMatch, null);
-  assert.equal(f.item(winner).vehicleConflict, null); assert.equal(f.item(peer).vehicleConflict, null);
-  // A later, independent BMW episode identifies the peer. Consuming that new
-  // episode must not make the earlier shared episode usable again.
-  f.runtime.setMqttStatus({ connected: true, subscribed: true }, 'bmw');
-  f.advance(90_000); await f.adapter.refresh();
-  f.item(peer).vehicleEvidence.chargingTimes.push(f.now);
-  publish({ charging: true });
-  const laterChargingId = f.runtime.vehicleFeeds.bmw.reading.fields.charging.readingId;
-  f.advance(20_000); await f.adapter.refresh();
-  f.item(peer).vehicleEvidence.stoppedTimes.push(f.now);
-  publish({ charging: false });
-  for (let sample = 0; sample < 3; sample++) {
-    f.advance(1000); await f.adapter.refresh(); f.observe();
-    assert.equal(f.item(winner).vehicleMatch?.id, 'tesla', 'A newer BMW match cannot revive the retired shared episode');
-    assert.equal(f.item(peer).vehicleMatch?.id, 'bmw', 'The peer requires its own new BMW start and stop');
-    assert.equal(f.item(winner).vehicleConflict, null); assert.equal(f.item(peer).vehicleConflict, null);
+}
+
+test('a completed explicit retry keeps its BMW source boundary while the peer retry is unfinished', async t => {
+  const { f, chargingId } = await sharedBmwEpisodeFixture(t);
+  // Reconstruct prior supported attempt states: Charger 1's old Tesla identity
+  // completed before the shared BMW episode caused a conflict, while an earlier
+  // peer retry was interrupted after that episode and cleared its saved conflict.
+  f.item('charger1').vehicleConflict.ids.push('tesla');
+  f.item('charger1').identification = advanceIdentification(f.item('charger1').identification,
+    { connectedAt: START, connected: true, now: f.now, identified: true });
+  f.advance(1000);
+  f.item('charger2').identification = advanceIdentification(f.item('charger2').identification,
+    { connectedAt: START, connected: true, now: f.now, manualRetry: true, available: true });
+  f.item('charger2').identification = advanceIdentification(f.item('charger2').identification,
+    { connectedAt: START, connected: true, now: f.now, interrupted: true });
+  f.item('charger2').vehicleConflict = null;
+  f.advance(1000);
+  for (const id of ['charger1', 'charger2']) {
+    const card = f.runtime.status().chargers.find(row => row.id === id);
+    assert.equal(card.identification.available, true);
+    await f.runtime.identifyVehicle(id, { association: card.association,
+      sessionId: card.request.sessionId, revision: card.request.revision });
   }
-  assert.equal(f.runtime.vehicleFeeds.bmw.consumedChargingId, laterChargingId);
-  await f.restart();
+  assert.equal(f.runtime.vehicleFeeds.bmw.consumedChargingId, null,
+    'Consumption must not mask whether the completed retry preserves its own source boundary');
+  f.advance(6000); await f.sampleTesla(16);
+  f.advance(5000); await f.adapter.refresh(); f.observe();
+  assert.equal(f.item('charger1').vehicleMatch?.id, 'tesla');
+  assert.equal(f.item('charger1').identification.phase, 'completed');
+  assert.equal(f.item('charger2').identification.phase, 'charging');
+  for (let poll = 0; poll < 3; poll++) {
+    f.advance(1000); await f.adapter.refresh(); f.observe();
+    assert.equal(f.item('charger1').vehicleMatch?.id, 'tesla',
+      'Completing the retry cannot make its older BMW episode look like an independent contradiction');
+    assert.equal(f.item('charger1').vehicleConflict, null);
+    assert.notEqual(f.item('charger2').vehicleMatch?.id, 'bmw');
+    assert.notEqual(f.runtime.vehicleFeeds.bmw.consumedChargingId, chargingId);
+  }
+  await f.update(); await f.restart();
   f.runtime.setMqttStatus({ connected: true, subscribed: true }, 'bmw');
-  f.advance(1000); await f.adapter.refresh(); publish({ charging: false }); f.observe();
+  f.advance(1000); await f.adapter.refresh(); f.observe();
+  assert.equal(f.item('charger1').vehicleMatch?.id, 'tesla');
+  assert.equal(f.item('charger1').vehicleConflict, null);
+});
+
+for (const winner of ['charger1', 'charger2']) test(`a unique Tesla test on ${winner} jointly assigns the BMW episode shared by both chargers`, async t => {
+  const { f, publish, chargingId, stopId } = await sharedBmwEpisodeFixture(t);
+  const peer = winner === 'charger1' ? 'charger2' : 'charger1';
+  const scopes = Object.fromEntries(Object.entries(f.runtime.chargers).map(([id, item]) => [id, item.request.scope]));
+  await settleTeslaCurrent(f, winner);
   assert.equal(f.item(winner).vehicleMatch?.id, 'tesla');
-  assert.equal(f.item(peer).vehicleMatch?.id, 'bmw');
+  assert.equal(f.item(peer).vehicleMatch?.id, 'bmw', 'Its own complete physical BMW episode supports the other connection');
+  assert.equal(f.item(peer).vehicleEvidence.bmwChargingReadingId, chargingId);
+  assert.ok(f.runtime.vehicleFeeds.bmw.reading.fields.charging.history.some(event => event.readingId === stopId && event.value === false));
+  assert.equal(f.runtime.vehicleFeeds.bmw.consumedChargingId, chargingId);
+  const consumedTesla = structuredClone(f.runtime.consumedTeslaCurrent);
+  const matches = Object.fromEntries(Object.entries(f.runtime.chargers).map(([id, item]) => [id, structuredClone(item.vehicleMatch)]));
+  const attempts = Object.fromEntries(Object.entries(f.runtime.chargers).map(([id, item]) => [id, item.identification.attempt]));
+  await f.update(); await f.restart();
+  f.runtime.setMqttStatus({ connected: true, subscribed: true }, 'bmw');
+  for (let sample = 0; sample < 3; sample++) {
+    f.advance(1000); await f.adapter.refresh(); f.observe(); await f.update();
+    assert.equal(f.item(winner).vehicleMatch?.id, 'tesla', 'Polling and restart cannot revive the shared conflict');
+    assert.equal(f.item(peer).vehicleMatch?.id, 'bmw');
+    assert.equal(f.item(winner).vehicleConflict, null); assert.equal(f.item(peer).vehicleConflict, null);
+    for (const id of ['charger1', 'charger2']) {
+      assert.equal(f.item(id).request.scope, scopes[id]);
+      assert.deepEqual(f.item(id).vehicleMatch, matches[id], 'Settled assignment does not become another match each poll');
+      assert.equal(f.item(id).identification.attempt, attempts[id], 'Joint resolution grants no automatic retry');
+    }
+  }
+  assert.equal(f.runtime.vehicleFeeds.bmw.consumedChargingId, chargingId);
+  assert.deepEqual(f.runtime.consumedTeslaCurrent, consumedTesla);
+  // Receiving a later complete BMW episode must not revive the earlier shared
+  // episode on the already proven Tesla connection.
+  f.advance(90_000); await f.adapter.refresh();
+  f.item(peer).vehicleEvidence.chargingTimes.push(f.now); publish({ charging: true });
+  f.advance(20_000); await f.adapter.refresh();
+  f.item(peer).vehicleEvidence.stoppedTimes.push(f.now); publish({ charging: false });
+  await f.restart(); f.runtime.setMqttStatus({ connected: true, subscribed: true }, 'bmw');
+  f.advance(1000); await f.adapter.refresh(); f.observe();
+  assert.equal(f.item(winner).vehicleMatch?.id, 'tesla'); assert.equal(f.item(peer).vehicleMatch?.id, 'bmw');
   assert.equal(f.item(winner).vehicleConflict, null); assert.equal(f.item(peer).vehicleConflict, null);
 });
 
-test('a unique Tesla current match cannot retire an independent contradictory BMW episode', async t => {
+for (const bmwEvidence of ['absent', 'start only', 'stop only'])
+test(`joint current identification cannot supply BMW identity when its source episode is ${bmwEvidence}`, async t => {
+  const f = await fixture(t); f.observe();
+  if (bmwEvidence !== 'absent') {
+    f.advance(1000); publishBmw(f, { atHome: true, pluggedIn: true, charging: bmwEvidence === 'start only' });
+    f.advance(20_000);
+    for (const item of Object.values(f.runtime.chargers)) {
+      item.vehicleEvidence.chargingTimes = [START + 1000]; item.vehicleEvidence.stoppedTimes = [f.now];
+    }
+  }
+  await settleTeslaCurrent(f, 'charger1');
+  assert.equal(f.item('charger1').vehicleMatch?.id, 'tesla');
+  assert.equal(f.item('charger2').vehicleMatch, null, 'Positive Tesla evidence is not a BMW source event');
+  assert.equal(f.runtime.vehicleFeeds.bmw.consumedChargingId, null);
+});
+
+for (const boundary of ['stale BMW feed', 'missing peer stop', 'BMW departure', 'peer retry after episode', 'new peer connection'])
+test(`joint current identification rejects ${boundary}`, async t => {
+  const { f, publish } = await sharedBmwEpisodeFixture(t);
+  if (boundary === 'stale BMW feed') {
+    f.advance(10 * 60_000 + 1); f.publishTesla({ healthy: true });
+  }
+  if (boundary === 'missing peer stop') f.item('charger2').vehicleEvidence.stoppedTimes = [];
+  if (boundary === 'BMW departure') publish({ atHome: false });
+  if (boundary === 'peer retry after episode') {
+    await f.update(); f.advance(91_000); await f.update();
+    assert.equal(f.item('charger2').identification.phase, 'inconclusive');
+    const card = f.runtime.status().chargers.find(row => row.id === 'charger2');
+    await f.runtime.identifyVehicle('charger2', { association: card.association,
+      sessionId: card.request.sessionId, revision: card.request.revision });
+    assert.equal(f.item('charger2').identification.attempt, 2);
+  }
+  if (boundary === 'new peer connection') {
+    const scope = f.item('charger2').request.scope;
+    f.advance(1000); f.fields.work_state = { value: 'charger_free', at: f.now };
+    await f.adapter.refresh(); f.observe();
+    f.advance(1000); f.fields.work_state = { value: 'charger_charging', at: f.now };
+    await f.adapter.refresh(); f.observe();
+    assert.notEqual(f.item('charger2').request.scope, scope);
+  }
+  await settleTeslaCurrent(f, 'charger1');
+  assert.notEqual(f.item('charger2').vehicleMatch?.id, 'bmw', 'A historical conflict label cannot replace a qualified BMW peer episode');
+});
+
+async function delayedBmwStopFixture(t, winner, { beforeStop } = {}) {
+  const f = await fixture(t); f.observe();
+  f.runtime.setMqttStatus({ connected: true, subscribed: true }, 'bmw');
+  const publish = (values, measuredAt = f.now) => f.runtime.receiveSoc('synthetic/minimum-current/bmw', JSON.stringify({
+    provider: 'bmw-cardata', ...values, fields: Object.fromEntries(Object.keys(values).map(key => [key,
+      { measuredAt: key === 'pluggedIn' ? START - 120_000 : measuredAt,
+        readingId: `synthetic-delayed-joint-${key}-${measuredAt}` }])) }), { retain: false }, f.now);
+  f.advance(1000); publish({ atHome: true, pluggedIn: true, charging: true });
+  const chargingId = f.runtime.vehicleFeeds.bmw.reading.fields.charging.readingId;
+  await settleTeslaCurrent(f, winner);
+  const peer = winner === 'charger1' ? 'charger2' : 'charger1';
+  assert.equal(f.item(winner).vehicleMatch?.id, 'tesla');
+  assert.equal(f.item(peer).vehicleMatch, null, 'BMW positive charging alone is insufficient');
+  const comparison = structuredClone(f.item(winner).vehicleEvidence.teslaCurrentMatch);
+  assert.ok(comparison, 'The settled independent comparison is retained for delayed BMW evidence');
+  await f.update();
+  const test = structuredClone(f.item('charger2').controller.status().currentTest);
+  assert.equal(test.phase, 'restored');
+  const writes = structuredClone(f.writes);
+  if (beforeStop) await beforeStop(f);
+  f.advance(1000); f.stopFirst();
+  f.fields.start_charging = { value: false, at: f.now }; f.fields.work_state = { value: 'charger_pause', at: f.now };
+  f.setMeasuredCurrent(0); const stoppedAt = f.now;
+  f.publishTesla({ charging_state: 'Stopped', charger_actual_current: 0, charger_power: 0 });
+  await f.adapter.refresh(); f.observe();
+  assert.equal(f.item(peer).vehicleMatch, null, 'Charger Stops cannot supply the missing BMW source edge');
+  return { f, publish, winner, peer, chargingId, stoppedAt, writes, comparison, currentTest: test };
+}
+
+for (const winner of ['charger1', 'charger2']) for (const restart of [false, true])
+test(`verified Tesla on ${winner} combines with a delayed shared BMW stop${restart ? ' across restart' : ''}`, async t => {
+  const { f, publish, peer, chargingId, stoppedAt, writes, comparison, currentTest } = await delayedBmwStopFixture(t, winner);
+  if (restart) { await f.restart(); f.runtime.setMqttStatus({ connected: true, subscribed: true }, 'bmw'); }
+  f.advance(30_000); publish({ charging: false }, stoppedAt + 1000);
+  await f.adapter.refresh(); f.observe();
+  assert.equal(f.item(winner).vehicleMatch?.id, 'tesla', 'Its independently verified current response survives later zero draw');
+  assert.equal(f.item(peer).vehicleMatch?.id, 'bmw', 'The delayed BMW stop completes its own same-connection episode');
+  assert.equal(f.item(winner).vehicleConflict, null); assert.equal(f.item(peer).vehicleConflict, null);
+  assert.equal(f.runtime.vehicleFeeds.bmw.consumedChargingId, chargingId);
+  assert.deepEqual(f.item(winner).vehicleEvidence.teslaCurrentMatch, comparison,
+    'Polling, physical Stop, restart and delayed source delivery preserve the original comparison clocks');
+  assert.deepEqual(f.writes, writes, 'Combining delayed source evidence sends no additional current test or Start');
+  assert.equal(f.item('charger2').controller.status().currentTest.id, currentTest.id);
+  assert.equal(f.item('charger2').controller.status().currentTest.expiresAt, currentTest.expiresAt);
+});
+
+test('a saved Tesla label without comparison proof cannot jointly resolve a delayed shared BMW episode', async t => {
+  const { f, publish, stoppedAt } = await delayedBmwStopFixture(t, 'charger1');
+  delete f.item('charger1').vehicleEvidence.teslaCurrentMatch;
+  await f.restart(); f.runtime.setMqttStatus({ connected: true, subscribed: true }, 'bmw');
+  f.advance(30_000); publish({ charging: false }, stoppedAt + 1000);
+  await f.adapter.refresh(); f.observe();
+  assert.notEqual(f.item('charger2').vehicleMatch?.id, 'bmw', 'A saved identity alone is not the independent current comparison');
+});
+
+test('runtime rejects malformed persisted joint comparison before source evidence or commands are accepted', async t => {
+  const { f } = await delayedBmwStopFixture(t, 'charger1'); f.runtime.persist();
+  const saved = structuredClone(f.data.get('charging:mqtt'));
+  assert.ok(saved.chargers.charger1.vehicleEvidence.teslaCurrentMatch);
+  const writes = structuredClone(f.writes);
+  for (const corrupt of [evidence => { evidence.teslaCurrentMatch.assumePeerVehicle = 'bmw'; },
+    evidence => { delete evidence.teslaCurrentMatch.connections.charger2; },
+    evidence => { evidence.teslaCurrentMatch.observedAt = evidence.teslaCurrentMatch.confirmedAt; },
+    evidence => { evidence.teslaCurrentMatchTestId = 'synthetic-other-test'; },
+    evidence => { evidence.teslaCurrentMatchTestId = 42; },
+    evidence => { delete evidence.teslaCurrentMatchTestId; }]) {
+    const invalid = structuredClone(saved); corrupt(invalid.chargers.charger1.vehicleEvidence);
+    const store = { ...f.store, getState: key => key === 'charging:mqtt' ? invalid : f.store.getState(key) };
+    assert.throws(() => new ChargingRuntime({ engine: {}, store, config: f.config, clock: () => f.now }),
+      /Unsupported saved (?:joint Tesla comparison|current identification evidence)/);
+  }
+  for (const keepSpentMarker of [false, true]) {
+    const valid = structuredClone(saved), evidence = valid.chargers.charger1.vehicleEvidence;
+    delete evidence.teslaCurrentMatch;
+    if (!keepSpentMarker) delete evidence.teslaCurrentMatchTestId;
+    const store = { ...f.store, getState: key => key === 'charging:mqtt' ? valid : f.store.getState(key) };
+    const restored = new ChargingRuntime({ engine: {}, store, config: f.config, clock: () => f.now });
+    assert.equal(restored.chargers.charger1.vehicleEvidence.teslaCurrentMatch, undefined);
+    assert.equal(restored.chargers.charger1.vehicleEvidence.teslaCurrentMatchTestId,
+      keepSpentMarker ? saved.chargers.charger1.vehicleEvidence.teslaCurrentMatchTestId : undefined);
+    await restored.close();
+  }
+  assert.deepEqual(f.writes, writes);
+});
+
+test('explicit peer Identify cannot rearm an old Tesla comparison while the original current test is still active', async t => {
+  const f = await fixture(t); await settleTeslaCurrent(f, 'charger1');
+  const comparison = structuredClone(f.item('charger1').vehicleEvidence.teslaCurrentMatch);
+  const currentTest = structuredClone(f.item('charger2').controller.status().currentTest);
+  assert.ok(comparison); assert.equal(currentTest.phase, 'active');
+  f.advance(1000);
+  const card = f.runtime.status().chargers.find(row => row.id === 'charger1');
+  assert.equal(card.identification.available, true);
+  await f.runtime.identifyVehicle('charger1', { association: card.association,
+    sessionId: card.request.sessionId, revision: card.request.revision });
+  assert.equal(f.item('charger1').identification.attempt, 2);
+  assert.ok(f.item('charger1').identification.startedAt > comparison.receivedAt);
+  assert.equal(f.item('charger1').vehicleEvidence.teslaCurrentMatch ?? null, null,
+    'The prior Tesla receipt cannot acquire the new retry identity or renewed proof clocks');
+  assert.notEqual(f.item('charger1').identification.phase, 'completed');
+  assert.equal(f.item('charger2').controller.status().currentTest.id, currentTest.id);
+  assert.equal(f.item('charger2').controller.status().currentTest.expiresAt, currentTest.expiresAt);
+  const writes = structuredClone(f.writes);
+  // The retry may observe genuinely newer Tesla evidence while the existing
+  // comparison remains active, but it cannot turn that old test into another
+  // durable joint proof or renew its physical allowance.
+  f.advance(1000); await f.sampleTesla(15.8);
+  f.advance(5000); await f.adapter.refresh(); f.observe();
+  assert.equal(f.item('charger1').vehicleMatch?.id, 'tesla');
+  assert.equal(f.item('charger1').identification.phase, 'completed');
+  assert.ok(f.runtime.consumedTeslaCurrent.receivedAt > comparison.receivedAt);
+  assert.equal(f.item('charger1').vehicleEvidence.teslaCurrentMatch ?? null, null);
+  assert.equal(f.item('charger2').controller.status().currentTest.id, currentTest.id);
+  assert.equal(f.item('charger2').controller.status().currentTest.expiresAt, currentTest.expiresAt);
+  assert.deepEqual(f.writes, writes);
+});
+
+for (const boundary of ['Tesla departure', 'BMW departure', 'Tesla feed replacement', 'new charger 2 connection', 'charger 1 retry', 'charger 2 retry'])
+test(`a delayed BMW stop cannot reuse a Tesla comparison after ${boundary}`, async t => {
+  const { f, publish, stoppedAt } = await delayedBmwStopFixture(t, 'charger1', {
+    beforeStop: !boundary.endsWith('retry') ? null : async f => {
+      // Finish the existing observation before invoking the actual explicit
+      // retry action; stopped native authority would rightly disable it.
+      f.advance(91_000); await f.adapter.refresh(); f.observe(); await f.update();
+      const chargerId = boundary.startsWith('charger 1') ? 'charger1' : 'charger2';
+      const card = f.runtime.status().chargers.find(row => row.id === chargerId);
+      await f.runtime.identifyVehicle(chargerId, { association: card.association,
+        sessionId: card.request.sessionId, revision: card.request.revision });
+      assert.equal(f.item(chargerId).identification.attempt, 2);
+    },
+  });
+  f.advance(1000);
+  if (boundary === 'Tesla departure') f.publishTesla({ plugged_in: false, charging_state: 'Disconnected' });
+  if (boundary === 'BMW departure') publish({ atHome: false });
+  if (boundary === 'Tesla feed replacement') {
+    const replacement = createChargingTeslaCapture({ settings: { enabled: true, carId: '2',
+      namespace: 'minimum-current', homeGeofence: 'Home' }, clock: () => f.now,
+      brokerIdentity: 'synthetic-minimum-broker' });
+    t.after(() => replacement.close()); replacement.setConnected(true);
+    for (const [field, value] of Object.entries({ healthy: true, geofence: 'Home', plugged_in: true,
+      charging_state: 'Stopped', charger_phases: 3, charger_power: 0, charger_actual_current: 0 }))
+      replacement.receive(`teslamate/minimum-current/cars/2/${field}`, String(value), {}, f.now);
+    f.runtime.teslaCapture = replacement;
+  }
+  if (boundary === 'new charger 2 connection') {
+    const scope = f.item('charger2').request.scope;
+    f.fields.work_state = { value: 'charger_free', at: f.now }; await f.adapter.refresh(); f.observe();
+    f.advance(1000); f.fields.work_state = { value: 'charger_pause', at: f.now };
+    await f.adapter.refresh(); f.observe();
+    assert.notEqual(f.item('charger2').request.scope, scope);
+  }
+  await f.adapter.refresh(); f.observe();
+  f.advance(30_000); publish({ charging: false }, stoppedAt + 1000);
+  await f.adapter.refresh(); f.observe();
+  assert.equal(f.item('charger1').vehicleEvidence?.teslaCurrentMatch ?? null, null,
+    'Historical comparison evidence is invalidated at a connection, source or retry boundary');
+  if (boundary !== 'charger 1 retry') assert.notEqual(f.item('charger2').vehicleMatch?.id, 'bmw',
+    'The shared BMW episode cannot be jointly resolved with the previous comparison');
+});
+
+for (const winner of ['charger1', 'charger2'])
+test(`an older shared BMW episode cannot hide a newer independent contradiction on ${winner}`, async t => {
+  const { f, publish } = await sharedBmwEpisodeFixture(t);
+  // Keep the earlier complete shared episode. A later source episode has its
+  // own physical start and stop on only the eventual Tesla winner.
+  f.advance(90_000); await f.adapter.refresh();
+  f.item(winner).vehicleEvidence.chargingTimes.push(f.now); publish({ charging: true });
+  f.advance(20_000); await f.adapter.refresh();
+  f.item(winner).vehicleEvidence.stoppedTimes.push(f.now); publish({ charging: false });
+  f.observe(); await settleTeslaCurrent(f, winner);
+  const peer = winner === 'charger1' ? 'charger2' : 'charger1';
+  assert.equal(f.item(winner).vehicleMatch, null, 'A first shared episode cannot erase a different contradictory BMW episode');
+  assert.deepEqual([...(f.item(winner).vehicleConflict?.ids ?? [])].sort(), ['bmw', 'tesla']);
+  assert.equal(f.item(peer).vehicleMatch, null, 'Conflicting independent evidence must not create a joint assignment');
+  await f.restart(); f.runtime.setMqttStatus({ connected: true, subscribed: true }, 'bmw');
+  f.advance(1000); await f.adapter.refresh(); f.observe();
+  assert.equal(f.item(winner).vehicleMatch, null);
+  assert.ok(f.item(winner).vehicleConflict?.ids.includes('bmw'));
+});
+
+test('resolving a retained shared episode cannot move durable BMW consumption back to an older source episode', async t => {
+  const { f, publish, chargingId } = await sharedBmwEpisodeFixture(t);
+  f.advance(90_000); publish({ charging: true });
+  const newerChargingId = f.runtime.vehicleFeeds.bmw.reading.fields.charging.readingId;
+  f.advance(20_000); publish({ charging: false });
+  assert.notEqual(newerChargingId, chargingId);
+  // Model an already committed source-consumption watermark. The retained
+  // conflict still references its own older physical episode after restart.
+  f.runtime.vehicleFeeds.bmw.consumedChargingId = newerChargingId;
+  await f.restart(); f.runtime.setMqttStatus({ connected: true, subscribed: true }, 'bmw');
+  await settleTeslaCurrent(f, 'charger1');
+  assert.equal(f.runtime.vehicleFeeds.bmw.consumedChargingId, newerChargingId,
+    'Retained identity evidence never authorizes replay of older consumed source events');
+  await f.restart(); f.runtime.setMqttStatus({ connected: true, subscribed: true }, 'bmw');
+  f.advance(1000); await f.adapter.refresh(); f.observe();
+  assert.equal(f.runtime.vehicleFeeds.bmw.consumedChargingId, newerChargingId);
+});
+
+for (const boundary of ['equal currents', 'missing peer measurements', 'held minimum measurement'])
+test(`a shared BMW episode cannot resolve joint identity with ${boundary}`, async t => {
+  const { f } = await sharedBmwEpisodeFixture(t,
+    boundary === 'equal currents' ? { firstCurrentA: 6 } : boundary === 'missing peer measurements' ? { firstAvailable: false } : {});
+  await f.update();
+  if (boundary === 'held minimum measurement') f.setPhysicalSourceTime(f.now);
+  f.advance(6000); await f.sampleTesla(boundary === 'equal currents' ? 6 : 16);
+  f.advance(5000); await f.adapter.refresh(); f.observe();
+  assert.equal(f.item('charger1').vehicleMatch, null);
+  assert.equal(f.item('charger2').vehicleMatch, null);
+  assert.equal(f.runtime.consumedTeslaCurrent, null);
+  assert.equal(f.runtime.vehicleFeeds.bmw.consumedChargingId, null);
+});
+
+test('equal measured 6 A expires inconclusive without another current test or automatic retry', async t => {
+  const { f } = await sharedBmwEpisodeFixture(t, { firstCurrentA: 6 });
+  await f.update(); f.advance(6000); await f.sampleTesla(6);
+  f.advance(5000); await f.adapter.refresh(); f.observe();
+  const currentTest = structuredClone(f.item('charger2').controller.status().currentTest);
+  const attempts = Object.fromEntries(Object.entries(f.runtime.chargers).map(([id, item]) => [id, item.identification.attempt]));
+  f.advance(91_000); await f.update();
+  assert.equal(f.item('charger2').identification.phase, 'inconclusive');
+  assert.equal(f.item('charger2').controller.status().currentTest.phase, 'restored');
+  const writes = structuredClone(f.writes);
+  await f.restart(); f.runtime.setMqttStatus({ connected: true, subscribed: true }, 'bmw');
+  for (let poll = 0; poll < 3; poll++) {
+    f.advance(10_000); await f.sampleTesla(6); await f.update();
+    for (const id of ['charger1', 'charger2']) {
+      assert.equal(f.item(id).vehicleMatch, null);
+      assert.equal(f.item(id).identification.attempt, attempts[id]);
+    }
+    assert.equal(f.item('charger2').controller.status().currentTest.id, currentTest.id);
+    assert.equal(f.item('charger2').controller.status().currentTest.expiresAt, currentTest.expiresAt);
+    assert.deepEqual(f.writes, writes, 'Unresolved equal-current evidence does not trigger further device commands');
+  }
+});
+
+for (const unknownPlug of [false, true])
+test(`a unique Tesla current match cannot retire an independent contradictory BMW episode${unknownPlug ? ' while its live plug context is unknown' : ''}`, async t => {
   const f = await fixture(t); await f.update();
   f.runtime.setMqttStatus({ connected: true, subscribed: true }, 'bmw');
   const publish = values => f.runtime.receiveSoc('synthetic/minimum-current/bmw', JSON.stringify({
@@ -1055,6 +1392,12 @@ test('a unique Tesla current match cannot retire an independent contradictory BM
   await f.adapter.refresh(); f.observe();
   assert.equal(f.item('charger1').vehicleMatch?.id, 'bmw');
   assert.equal(f.item('charger2').vehicleMatch, null, 'The BMW episode does not match both chargers');
+  if (unknownPlug) {
+    f.advance(1000); publish({ pluggedIn: null });
+    assert.equal(f.runtime.vehicleFeeds.bmw.reading.pluggedIn, null);
+    assert.equal(f.runtime.vehicleFeeds.bmw.mqtt.connected, true,
+      'A live unknown field must preserve the contradiction even though the feed itself is available');
+  }
   f.advance(6000); await f.sampleTesla(16);
   for (let sample = 0; sample < 3; sample++) {
     f.advance(5000); await f.adapter.refresh(); f.observe();

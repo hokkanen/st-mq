@@ -1,5 +1,5 @@
 import { chargingDefaults, mergeChargingSettings, chargingSettingsFromConfiguration, resolveChargingDeadline } from './settings.js';
-import { acceptVehicleReading, validateBmwChargingHistory, bmwHomeContext, bmwIdentityContextValid, connectionEvidenceStart, matchTeslaSession, matchTeslaMinimumCurrent, measuredChargingCurrent, bmwSessionMatchDetails, matchBmwControlledPause, pendingBmwControlledPause, pendingBmwSession, bmwDisconnectEvent, bmwReconnectEvent } from './vehicle.js';
+import { acceptVehicleReading, validateBmwChargingHistory, bmwConsumedChargingAt, bmwHomeContext, bmwIdentityContextValid, connectionEvidenceStart, matchTeslaSession, matchTeslaMinimumCurrent, measuredChargingCurrent, bmwSessionMatchDetails, matchBmwControlledPause, pendingBmwControlledPause, pendingBmwSession, bmwDisconnectEvent, bmwReconnectEvent } from './vehicle.js';
 import { chargingConfiguration } from './config.js';
 import { TIME_ZONE } from '../domain/prices.js';
 import { CHARGER_DEFINITIONS, buildCharger } from './model.js';
@@ -26,6 +26,7 @@ import { ChargingSessionDiagnostics } from './session-diagnostics.js';
 import { ChargingPhysicalTests } from './physical-tests.js';
 import { bmwVehicleSetup, teslaVehicleSetup } from './setup.js';
 import { readPlanningVoltage } from '../storage/voltage.js';
+import { validateJointTeslaComparison, jointTeslaComparisonScope } from './joint-identification.js';
 
 const MINUTE = 60_000;
 // The CarData Home Assistant bridge publishes unchanged facts every five
@@ -66,6 +67,7 @@ function validateSavedControls(value, priority = false) {
     throw new Error('Unsupported saved charging controls; start a fresh development database');
 }
 function validateCurrentIdentificationEvidence(evidence) {
+  validateJointTeslaComparison(evidence?.teslaCurrentMatch);
   const candidate = evidence?.teslaCurrentCandidate;
   const time = value => Number.isSafeInteger(value) && value >= 0;
   const id = value => typeof value === 'string' && value.length > 0 && value.length <= 128;
@@ -73,8 +75,17 @@ function validateCurrentIdentificationEvidence(evidence) {
     || Object.keys(candidate).sort().join(',') !== 'minimumPhysicalAt,observedAt,physicalAt,receivedAt,testId,vehicleAssociation'
     || !id(candidate.testId) || !id(candidate.vehicleAssociation) || !time(candidate.observedAt)
     || ['receivedAt', 'physicalAt', 'minimumPhysicalAt'].some(key => !time(candidate[key]) || candidate[key] > candidate.observedAt))
-    || evidence?.teslaCurrentResolvedTestId != null && !id(evidence.teslaCurrentResolvedTestId))
+    || ['teslaCurrentResolvedTestId', 'teslaCurrentMatchTestId'].some(key => evidence?.[key] != null && !id(evidence[key]))
+    || evidence?.teslaCurrentMatch != null && evidence.teslaCurrentMatch.testId !== evidence.teslaCurrentMatchTestId)
     throw new Error('Unsupported saved current identification evidence; start a fresh development database');
+}
+function consumeBmwEpisode(feed, readingId) {
+  const nextAt = bmwConsumedChargingAt(feed.reading, readingId);
+  const previousAt = bmwConsumedChargingAt(feed.reading, feed.consumedChargingId);
+  // Retained identity may still qualify an older episode. It cannot move the
+  // global consumption boundary backwards or clear an unresolvable boundary.
+  if (nextAt !== null && (feed.consumedChargingId == null || previousAt !== null && nextAt > previousAt))
+    feed.consumedChargingId = readingId;
 }
 const digest = value => createHash('sha256').update(JSON.stringify(value)).digest('hex');
 const priceSnapshot = prices => prices.map(row => [row.start, row.end,
@@ -263,7 +274,10 @@ export class ChargingRuntime {
   receiveVehicleBoundary(id, event) {
     for (const item of Object.values(this.chargers)) if (item.vehicleMatch?.id === id
       && event.at >= item.vehicleMatch.matchedAt && (teslamateDeparture(event) || event.field === 'geofence')) {
-      item.vehicleMatch = null; item.vehicleEvidence = null;
+      item.vehicleMatch = null;
+      const evidence = item.vehicleEvidence;
+      item.vehicleEvidence = evidence?.teslaCurrentMatchTestId ? { scope: evidence.scope,
+        chargingTimes: [], stoppedTimes: [], teslaCurrentMatchTestId: evidence.teslaCurrentMatchTestId } : null;
     }
     this.revision++; this.persist(); this.tick({ force: true });
   }
@@ -781,6 +795,7 @@ export class ChargingRuntime {
         deadlineAt: resolveChargingDeadline(connectedAt, this.settings.chargers[id].readyBy, TIME_ZONE), overrides: {} } : null;
       if (connected === true && scope) {
         const reidentifying = item.identification?.attempt > 1 && item.identification.phase !== 'completed';
+        const retrySince = item.identification?.attempt > 1 ? item.identification.startedAt : null;
         if (item.vehicleEvidence?.scope !== scope) item.vehicleEvidence = { scope, chargingTimes: [], stoppedTimes: [] };
         const evidence = item.vehicleEvidence;
         const retain = (key, values) => {
@@ -804,6 +819,7 @@ export class ChargingRuntime {
         const retainedBmw = item.vehicleMatch?.id === 'bmw' || item.vehicleConflict?.ids.includes('bmw');
         const bmwPause = !evidence.historyOverflow && !reidentifying && bmwAvailable && matchBmwControlledPause(bmw.reading, { connectedAt, lastDisconnectedAt: session.lastDisconnectedAt,
           chargingAt: evidence.chargingTimes, stoppedAt: evidence.stoppedTimes, now, consumedChargingId: retainedBmw ? null : bmw.consumedChargingId,
+          matchingSince: retrySince,
           pause: confirmedIdentityPause(control, now) ?? item.identification?.pause });
         if (bmwPause) { candidates[id].push('bmw'); evidence.bmwReason = 'matched-controlled-pause';
           evidence.bmwChargingReadingId = bmwPause.chargingReadingId; evidence.bmwPlugReadingId = null; }
@@ -815,17 +831,21 @@ export class ChargingRuntime {
             consumedChargingId: retainedBmw ? null : bmw.consumedChargingId });
         if (activeBmw) { candidates[id].push('bmw'); evidence.bmwReason = 'matched-identification-pause';
           evidence.bmwChargingReadingId = activeBmw.chargingReadingId; evidence.bmwPlugReadingId = null; }
-        const passiveBmw = !evidence.historyOverflow && bmwAvailable && bmwSessionMatchDetails(bmw.reading, { connectedAt, lastDisconnectedAt: session.lastDisconnectedAt,
+        const passiveOptions = { connectedAt, lastDisconnectedAt: session.lastDisconnectedAt,
           chargingAt: evidence.chargingTimes, stoppedAt: evidence.stoppedTimes, now,
-          matchingSince: reidentifying ? item.identification.startedAt : null,
+          matchingSince: retrySince,
           consumedPlugId: reidentifying || retainedBmw ? null : bmw.consumedPlugId,
-          consumedChargingId: retainedBmw ? null : bmw.consumedChargingId });
+          consumedChargingId: retainedBmw ? null : bmw.consumedChargingId };
+        const passiveBmw = !evidence.historyOverflow && bmwAvailable && bmwSessionMatchDetails(bmw.reading, passiveOptions);
+        // One shared episode cannot hide a second independent contradiction.
+        // Finding one alternative is enough; no unbounded match list is needed.
+        const otherPassiveBmw = passiveBmw && bmwSessionMatchDetails(bmw.reading, { ...passiveOptions, excludeEpisode: passiveBmw });
         if (passiveBmw) {
           candidates[id].push('bmw');
           if (!activeBmw) { evidence.bmwReason = 'matched-physical-session';
             evidence.bmwChargingReadingId = passiveBmw.chargingReadingId; evidence.bmwPlugReadingId = passiveBmw.plugReadingId; }
         }
-        bmwMatches[id] = [bmwPause, activeBmw, passiveBmw].filter(Boolean);
+        bmwMatches[id] = [bmwPause, activeBmw, passiveBmw, otherPassiveBmw].filter(Boolean);
         const peers = Object.entries(result).filter(([peerId]) => peerId !== id
           && (this.chargers[peerId].controller || this.chargers[peerId].adapter
             || this.configuration.chargers[peerId]?.enabled === true
@@ -842,7 +862,8 @@ export class ChargingRuntime {
         const currentScope = currentTest?.sessionId === minimumControl?.session?.sessionId
           && currentTest?.connectedAt === minimumControl?.session?.connectedAt
           && minimumControl?.session?.connected === true;
-        const current = currentScope && matchTeslaMinimumCurrent(tesla, { physical: result[id], peers,
+        const retryCurrentFresh = !reidentifying || tesla.fields?.charger_actual_current?.receivedAt > item.identification.startedAt;
+        const current = currentScope && retryCurrentFresh && matchTeslaMinimumCurrent(tesla, { physical: result[id], peers,
           minimumPhysical: result.charger2, currentTest, connectedAt, lastDisconnectedAt: session.lastDisconnectedAt, now,
           consumedCurrentAt: item.vehicleMatch?.id !== 'tesla' && this.consumedTeslaCurrent?.association === tesla.association
             ? this.consumedTeslaCurrent.receivedAt : null });
@@ -865,38 +886,70 @@ export class ChargingRuntime {
       if (connected == null && item.vehicleMatch) candidates[id].push(item.vehicleMatch.id);
       if (item.vehicleConflict) candidates[id] = [...new Set([...candidates[id], ...item.vehicleConflict.ids])];
     }
+    const comparisonConnections = () => Object.fromEntries(Object.entries(this.chargers).map(([id, item]) => [id, {
+      association: item.association,
+      connected: result[id].connected?.available === true ? result[id].connected.value : undefined,
+      sessionId: controls[id]?.session ? controls[id].session.sessionId ?? null : undefined,
+      connectedAt: controls[id]?.session?.connectedAt,
+      identificationId: item.identification?.id ?? null,
+    }]));
+    const validComparisons = [];
+    for (const [id, item] of Object.entries(this.chargers)) {
+      const proof = item.vehicleEvidence?.teslaCurrentMatch;
+      if (!proof) continue;
+      const departed = teslaDepartedSince(proof.observedAt)
+        || bmw.reading?.pluggedIn === false || bmw.reading?.atHome === false
+        || ['pluggedIn', 'atHome'].some(key => bmw.reading?.fields?.[key]?.negativeEvent?.measuredAt > proof.confirmedAt);
+      const scope = departed ? 'invalid' : jointTeslaComparisonScope(proof, {
+        connections: comparisonConnections(), teslaAssociation: tesla.association, bmwAssociation: bmw.association, now,
+      });
+      if (scope === 'invalid') item.vehicleEvidence.teslaCurrentMatch = null;
+      else if (scope === 'valid') validComparisons.push(id);
+    }
+    const sharedEpisode = winner => {
+      const episode = bmwMatches[winner]?.[0];
+      return episode && Object.keys(this.chargers).every(id => bmwMatches[id]?.length
+        && bmwMatches[id].every(match => match.chargingReadingId === episode.chargingReadingId
+          && match.stopReadingId === episode.stopReadingId)) ? episode : null;
+    };
     // A unique measured-current match can replace an older mistaken association.
     // Saved conflicts are historical context, not permanent new candidates.
     // Equal fresh evidence on both chargers still fails closed below.
     const currentWinners = Object.keys(this.chargers).filter(id => Boolean(currentMatches[id]));
-    if (currentWinners.length === 1) {
-      const winner = currentWinners[0];
-      const episode = bmwMatches[winner]?.[0];
-      const sharedBmw = Object.entries(bmwMatches).filter(([, matches]) => matches.length);
-      if (episode && sharedBmw.length > 1 && sharedBmw.every(([, matches]) => matches.every(match =>
-        match.chargingReadingId === episode.chargingReadingId && match.stopReadingId === episode.stopReadingId))) {
-        // One BMW episode matching both chargers is not independent evidence
-        // against a unique current test. Consume it for both connections so a
-        // later poll/restart cannot recreate the conflict or infer BMW by
-        // elimination. A different contradictory episode still fails closed.
-        bmw.consumedChargingId = episode.chargingReadingId;
-        for (const [id] of sharedBmw) {
-          candidates[id] = candidates[id].filter(vehicle => vehicle !== 'bmw');
-          freshCandidates[id] = freshCandidates[id].filter(vehicle => vehicle !== 'bmw');
-          const item = this.chargers[id];
-          if (item.vehicleMatch?.id === 'bmw') item.vehicleMatch = null;
-          if (item.vehicleConflict) item.vehicleConflict.ids = item.vehicleConflict.ids.filter(vehicle => vehicle !== 'bmw');
-        }
+    const historicalWinner = currentWinners.length === 0 && validComparisons.length === 1
+      && sharedEpisode(validComparisons[0]) ? validComparisons[0] : null;
+    const jointQualified = new Set();
+    if (currentWinners.length === 1 || historicalWinner) {
+      const winner = currentWinners[0] ?? historicalWinner;
+      const episode = sharedEpisode(winner);
+      if (episode) {
+        // Both chargers independently match the same complete BMW episode.
+        // The positive Tesla comparison resolves its location; the peer keeps
+        // its own BMW evidence. Consume the shared episode so it cannot later
+        // recreate BMW on the Tesla connection. Distinct episodes stay conflicts.
+        consumeBmwEpisode(bmw, episode.chargingReadingId);
+        candidates[winner] = candidates[winner].filter(vehicle => vehicle !== 'bmw');
+        freshCandidates[winner] = freshCandidates[winner].filter(vehicle => vehicle !== 'bmw');
+        const item = this.chargers[winner];
+        if (item.vehicleMatch?.id === 'bmw') item.vehicleMatch = null;
+        if (historicalWinner) jointQualified.add(winner);
       }
       for (const [id, item] of Object.entries(this.chargers)) {
         if (id === winner) {
-          candidates[id] = [...freshCandidates[id]];
+          // A temporarily unavailable BMW feed cannot erase an established
+          // contradiction during adapter startup. Reassess it once its current
+          // source context is available, rather than treating absence as proof.
+          const unresolvedBmw = (!bmwAvailable || !bmwIdentityContextValid(bmw.reading, now)
+            || item.vehicleEvidence?.historyOverflow) && candidates[id].includes('bmw');
+          candidates[id] = [...new Set([...freshCandidates[id], ...(historicalWinner ? ['tesla'] : []),
+            ...(unresolvedBmw ? ['bmw'] : [])])];
           item.vehicleConflict = null;
           continue;
         }
         if (freshCandidates[id]?.includes('tesla')) continue;
         const displacedTesla = item.vehicleMatch?.id === 'tesla' || item.vehicleConflict?.ids.includes('tesla');
-        candidates[id] = (candidates[id] ?? []).filter(value => value !== 'tesla');
+        candidates[id] = (candidates[id] ?? []).filter(value => value !== 'tesla'
+          && (value !== 'bmw' || freshCandidates[id]?.includes('bmw') || item.vehicleMatch?.id === 'bmw'));
         if (item.vehicleMatch?.id === 'tesla') item.vehicleMatch = null;
         // The old match may have ended observation before BMW evidence
         // arrived. Reopen that same attempt, retaining every used probe and
@@ -905,7 +958,7 @@ export class ChargingRuntime {
           ...item.identification, phase: 'observing', action: null, completedAt: null, reason: 'awaiting-evidence',
         };
         if (item.vehicleConflict) {
-          item.vehicleConflict.ids = item.vehicleConflict.ids.filter(value => value !== 'tesla');
+          item.vehicleConflict.ids = item.vehicleConflict.ids.filter(value => candidates[id].includes(value));
           if (!item.vehicleConflict.ids.length) item.vehicleConflict = null;
         }
       }
@@ -923,7 +976,7 @@ export class ChargingRuntime {
       else item.vehicleConflict = null;
       const vehicleId = !conflict && options.length === 1 ? options[0] : null;
       const reidentifying = item.identification?.attempt > 1 && item.identification.phase !== 'completed';
-      const freshIdentity = Boolean(vehicleId && freshCandidates[id]?.includes(vehicleId));
+      const freshIdentity = Boolean(vehicleId && (freshCandidates[id]?.includes(vehicleId) || jointQualified.has(id)));
       if (vehicleId === 'tesla' && currentMatches[id]) {
         this.chargers.charger2.vehicleEvidence.teslaCurrentResolvedTestId = currentMatches[id].testId;
         this.consumedTeslaCurrent = { association: tesla.association, receivedAt: currentMatches[id].receivedAt };
@@ -933,7 +986,7 @@ export class ChargingRuntime {
           vehicleAssociation: vehicleAssociations[vehicleId],
           connectedAt: item.controller.status().session.connectedAt, matchedAt: now, revision: ++this.revision };
         if (vehicleId === 'bmw') {
-          bmw.consumedChargingId = item.vehicleEvidence?.bmwChargingReadingId ?? bmw.reading.fields?.charging?.positiveEvent?.readingId ?? null;
+          consumeBmwEpisode(bmw, item.vehicleEvidence?.bmwChargingReadingId ?? bmw.reading.fields?.charging?.positiveEvent?.readingId);
           bmw.consumedPlugId = item.vehicleEvidence?.bmwPlugReadingId ?? bmw.reading.fields?.pluggedIn?.positiveEvent?.readingId ?? null;
         }
         if (vehicleId === 'tesla') this.consumedTeslaPower = { association: tesla.association,
@@ -1107,6 +1160,24 @@ export class ChargingRuntime {
           connectedAt: item.controller.status().session.connectedAt, reading, now, live: false });
       } else item.targetState = null;
       if (vehicleId) result[id].vehicleCapacityFallbackKwh = this.settings.vehicles[vehicleId].capacityKwh;
+    }
+    // Freeze the first settled comparison after identification IDs have been
+    // created. A delayed BMW stop may use it within these exact attempts, even
+    // after Stop/restoration; it never becomes new metering or another test.
+    if (currentWinners.length === 1 && tesla.association && bmw.association) {
+      const winner = currentWinners[0], item = this.chargers[winner], current = currentMatches[winner];
+      if (item.vehicleEvidence?.teslaCurrentMatchTestId !== current.testId) {
+        const connections = Object.fromEntries(Object.entries(comparisonConnections()).map(([id, { connected: _connected, ...scope }]) => [id, scope]));
+        const proof = { testId: current.testId, confirmedAt: controls.charger2.currentTest.confirmedAt,
+          observedAt: now, receivedAt: current.receivedAt, physicalAt: current.physicalAt,
+          minimumPhysicalAt: current.minimumPhysicalAt, teslaAssociation: tesla.association,
+          bmwAssociation: bmw.association, connections };
+        if (jointTeslaComparisonScope(proof, { connections: comparisonConnections(),
+          teslaAssociation: tesla.association, bmwAssociation: bmw.association, now }) === 'valid') {
+          item.vehicleEvidence.teslaCurrentMatch = proof;
+          item.vehicleEvidence.teslaCurrentMatchTestId = current.testId;
+        }
+      }
     }
     // Only Easee's charger/Equalizer voltage may supply a shared planning input.
     const voltage = result.charger1?.voltageV?.available && result.charger1.providerConnected !== false

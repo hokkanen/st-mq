@@ -639,12 +639,34 @@ must have fresh distinguishing current evidence, confirmed zero draw or a
 confirmed disconnect. Equal currents, missing peer measurements or inconsistent
 measured currents and power leave identification unresolved. A unique Tesla match
 can identify either charger; BMW still requires its own positive evidence.
-If the same BMW source start/stop episode matched both chargers, a unique Tesla
-current match retires that ambiguous episode for both. Polling and restart cannot
-reuse it to recreate the conflict or identify the other charger by elimination.
-Consuming a newer BMW source episode also fences earlier episodes, so a later
-independent BMW match cannot revive the retired evidence.
-Independent contradictory BMW evidence still leaves an unresolved conflict.
+If the same valid BMW source start/stop episode matches both current physical
+connections, a unique Tesla current match can resolve both assignments jointly:
+Tesla on the uniquely matching charger, and BMW on the other charger using its
+own qualified BMW episode. Every BMW match involved must refer to that same
+source start and stop; the peer's saved conflict or the absence of a Tesla match
+is insufficient. A different contradictory BMW episode still leaves an
+unresolved conflict. This joint conclusion retains the normal feed, source-time,
+physical-session and explicit-retry checks; it does not manufacture a new BMW
+event or grant another identification attempt. Completing a retry keeps its
+source-time boundary, so earlier BMW episodes cannot return on a later poll.
+BMW's stop report may arrive after charging has stopped or the minimum-current
+setting has been restored. One confirmed Tesla comparison may therefore remain
+as historical evidence for the same two physical connections, identification
+attempts and vehicle-feed associations, including across restart after scope
+validation. Its original receipt and physical measurement clocks remain intact.
+A delayed qualifying BMW episode may complete that joint assignment; the saved
+comparison cannot supply a new live-current match, renew a test or complete a
+later retry. A changed connection, equipment identity, feed association or
+explicit retry invalidates this retained comparison. Equal measured currents,
+including both cars limited to 6 A by native load balancing, remain inconclusive
+and do not authorize another current change or retry.
+The shared BMW episode is consumed for new matching while its positive evidence
+remains bound to the resolved BMW connection. Polling and restart cannot reuse it
+on the Tesla connection or grant it to a new connection. Consuming a newer BMW
+source episode continues to fence earlier episodes; resolving the pair cannot
+move that consumption boundary backward. This owner-approved rule combines two
+positive observations, and never identifies BMW from a negative Tesla result or
+by elimination alone.
 
 The current test saves the original setting, equipment/session scope and fixed
 90-second deadline before a write. Positive identification or expiry returns

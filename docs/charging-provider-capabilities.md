@@ -284,6 +284,14 @@ Held pre-test Tesla current, similar peer current or missing peer measurements
 leave identification pending. A unique response may identify Tesla on either
 charger; it never identifies BMW by elimination. Charger 1's positive current
 remains owned by its native controls and Equalizer.
+When BMW's own valid start/stop episode matches both unchanged connections, the
+unique Tesla comparison may jointly assign BMW to the other charger using that
+positive episode. Different contradictory BMW evidence remains unresolved;
+source, retry, consumption and restart checks still apply. See the
+[joint assignment rule](charging.md#vehicle-assignment).
+A confirmed comparison retains its original clocks for delayed BMW reports
+only within the same connections, attempts and feed associations. This retained
+identity evidence does not make held current fresh or authorize another test.
 After a unique Tesla match on the peer, an independent BMW baseline may hand
 the same attempt to its one pause before the original current-test deadline.
 An unresolved current comparison retains priority. The BMW pause preserves its
