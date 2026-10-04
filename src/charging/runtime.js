@@ -1426,9 +1426,22 @@ export class ChargingRuntime {
           reservation: this.settings.priority === 'charger2' ? 0 : current?.chargers?.charger1?.currentA ?? 0 } : {}) });
       const changed = item.commandBasis !== undefined && item.commandBasis !== basis;
       item.commandBasis = basis;
+      const control = item.controller?.status(), pause = control?.identification;
+      // This bounded pause is a separate, already selected instruction. An
+      // economic forecast can change while its native preflight awaits cloud
+      // readback; cancelling it on every new forecast prevents the pause from
+      // ever reaching the charger. Explicit edits still invalidate commands,
+      // and the adapter retains its native, authority and connection guards.
+      const identifyingPause = control?.snapshot?.transport === 'ocpp'
+        && pause?.phase === 'pausing' && pause.mode !== 'probe'
+        && item.identification?.phase === 'pausing' && item.identification.id === pause.id
+        && item.identification.pauseUntil === pause.pauseUntil && pause.pauseUntil > now
+        && control.session?.connectedAt === pause.connectedAt
+        && sessionConnectedAt(item.request) === pause.connectedAt && !control.manual;
       // All controllers awaiting this calculation will receive the new result.
       // Revoke only instructions that already left planning for native preflight.
-      if (!changed || id === sourceId || item.awaitingPlan || !item.controller || item.backendTransition || this.closed) continue;
+      if (!changed || id === sourceId || item.awaitingPlan || identifyingPause
+        || !item.controller || item.backendTransition || this.closed) continue;
       item.controller.invalidate?.(); item.lastReconcileAt = null;
       if (item.reconcileFlight) { item.reconcileAgain = true; continue; }
       if (item.reconcileQueued) continue;

@@ -12,7 +12,7 @@ const START = Date.parse('2026-09-25T09:00:00Z'), MINUTE = 60_000, FUTURE = STAR
 // all command counts include every request the real controllers dispatch.
 async function fixture(t, transport, vehicle = 'bmw', { retainedOnly = false, healthyTesla = true, charging = true,
   atHome = true, normalCharging = false, autoCharge = false, freshPlug = false } = {}) {
-  let now = START, runtime, failPersistence = false;
+  let now = START, runtime, failPersistence = false, nativeReadHook = async () => {};
   const states = new Map(), writes = [], profiles = new Map();
   const store = { getState: key => structuredClone(states.get(key)),
     setState: (key, value) => {
@@ -81,7 +81,7 @@ async function fixture(t, transport, vehicle = 'bmw', { retainedOnly = false, he
       && (!requireTransaction || snapshot.transactionId === physical.transactionId)
       && (!unchangedStatus || snapshot.statusAt === physical.at
         && snapshot.connectorStatus === (!physical.pluggedIn ? 'Available' : physical.charging ? 'Charging' : 'SuspendedEVSE')),
-    readSnapshot: async () => { syncNative(); return ({ transport: 'ocpp', scope, connectionId, online: true, readAt: now,
+    readSnapshot: async (options) => { await nativeReadHook(options); syncNative(); return ({ transport: 'ocpp', scope, connectionId, online: true, readAt: now,
       pluggedIn: physical.pluggedIn, connectorStatus: !physical.pluggedIn ? 'Available'
         : physical.charging ? 'Charging' : 'SuspendedEVSE', statusAt: physical.at,
       transactionId: physical.pluggedIn ? physical.transactionId : null,
@@ -144,6 +144,7 @@ async function fixture(t, transport, vehicle = 'bmw', { retainedOnly = false, he
   await create();
   return { get runtime() { return runtime; }, get now() { return now; }, writes, profiles, physical, tesla, publish, states,
     failPersistence: value => { failPersistence = value; },
+    nativeReadHook: value => { nativeReadHook = value; },
     setNow: value => { now = value; },
     update: input => runtime.chargers.charger1.controller.update({ enabled: true, ...input }),
     view: () => runtime.telemetry(now).charger1.vehicle,
@@ -165,6 +166,48 @@ async function fixture(t, transport, vehicle = 'bmw', { retainedOnly = false, he
     },
   };
 }
+
+for (const change of ['economic forecast', 'native stop', 'ended session', 'pause deadline', 'explicit edit'])
+test(`OCPP: a slow identification preflight handles a concurrent ${change}`, async t => {
+  const f = await fixture(t, 'ocpp', 'bmw', { normalCharging: true });
+  f.setNow(START + 1000);
+  const item = f.runtime.chargers.charger1;
+  let releaseRead, enteredRead;
+  const entered = new Promise(resolve => { enteredRead = resolve; });
+  const read = new Promise(resolve => { releaseRead = resolve; });
+  f.nativeReadHook(async options => {
+    if (options.forceAppRefresh) { enteredRead(); await read; }
+  });
+  const work = f.runtime.reconcile('charger1');
+  await entered;
+  const pauseUntil = item.identification.pauseUntil;
+  assert.equal(item.identification.phase, 'pausing');
+  assert.equal(f.writes.length, 0, 'The preflight has not dispatched a native profile');
+  f.runtime.fenceChangedCommands(f.now, 'charger1');
+  item.plan = { ...item.plan, periods: [{ startAt: START, endAt: START + 20 * MINUTE },
+    { startAt: START + 2 * 60 * MINUTE, endAt: null }] };
+  if (change === 'native stop') { f.physical.enabled = false; f.physical.enabledAt = f.now; }
+  if (change === 'ended session') {
+    f.physical.pluggedIn = false;
+    item.identification = { ...item.identification, phase: 'inconclusive', action: null,
+      completedAt: f.now, reason: 'interrupted' };
+  }
+  if (change === 'pause deadline') f.setNow(pauseUntil);
+  if (change === 'explicit edit') f.runtime.invalidateCommands();
+  f.runtime.fenceChangedCommands(f.now);
+  // This case observes the in-flight command, not the follow-up reconciliation.
+  item.reconcileAgain = false;
+  releaseRead(); await work;
+  const installed = f.writes.filter(row => row.action === 'SetChargingProfile');
+  if (change === 'economic forecast') {
+    assert.equal(installed.length, 1);
+    assert.equal(item.controller.status().owned?.purpose, 'identification');
+    assert.equal(item.controller.status().ownsInstruction, true);
+    assert.equal(item.controller.status().pauseConfirmed, true);
+    assert.equal(Date.parse(installed[0].payload.csChargingProfiles.validTo), pauseUntil,
+      'A forecast must neither renew nor shorten the bounded identification pause');
+  } else assert.equal(installed.length, 0, 'Changed physical or control scope must prevent the queued write');
+});
 
 for (const vehicle of ['bmw', 'tesla']) for (const retained of [false, true])
 test(`${vehicle}: a ${retained ? 'retained' : 'live'} unplug from before this physical connection permits observation but cannot identify it`, async t => {

@@ -10,6 +10,7 @@ import { createDeviceProviders } from '../src/acquisition/devices.js';
 import { createHttp } from '../src/acquisition/http.js';
 import { ocppInstallation } from '../src/acquisition/easee-ocpp-setup.js';
 import { CHARGING_OBSERVATION_IDS } from '../src/charging/easee.js';
+import { ChargingRuntime } from '../src/charging/runtime.js';
 import { loadConfig } from '../src/app/config.js';
 import { start } from '../src/main.js';
 
@@ -618,6 +619,42 @@ test('production native pre-write reread fences a newer Easee app action without
   const instruction = ocppPauseInstruction({ profileId: 81, transactionId: 7, now: x.f.now, startAt: AT + 40 * 60_000 });
   await assert.rejects(x.adapter.install(instruction, snapshot), { code: 'control-revoked' });
   assert.equal(x.nativeWrites().length, 0);
+});
+
+test('economic replanning preserves a selected identification pause through the production forced REST preflight', async t => {
+  const x = await nativeAppFixture(t), { f, adapter } = x;
+  let identification = null;
+  const controller = adapter.createController({ clock: () => f.now, canControl: () => true,
+    getIdentification: () => identification });
+  t.after(() => controller.close());
+  const immediate = { ...x.plan, startAt: AT, periods: [{ startAt: AT, endAt: null }] };
+  const initial = await controller.update({ enabled: true, plan: immediate });
+  const connectedAt = initial.session.connectedAt;
+  f.advance(1000); x.physical();
+  identification = { id: 'forced-rest-identification', connectedAt, phase: 'pausing', pauseUntil: f.now + 90_000 };
+  const item = { association: adapter.scope, controller, identification, controls: { enabled: true },
+    request: { scope: `${adapter.scope}:${connectedAt}`, sessionId: `${adapter.scope}:${connectedAt}` }, plan: immediate };
+  const context = { chargers: { charger1: item }, closed: false };
+  const fence = sourceId => ChargingRuntime.prototype.fenceChangedCommands.call(context, f.now, sourceId);
+  fence('charger1');
+  const entered = deferred(), release = deferred();
+  f.beforeRequest = async () => { entered.resolve(); await release.promise; };
+  const work = controller.update({ enabled: true, plan: immediate });
+  item.reconcileFlight = work;
+  await entered.promise;
+  assert.equal(controller.status().pending.action, 'install');
+  for (const minutes of [20, 21, 22]) {
+    item.plan = { ...immediate, periods: [{ startAt: AT, endAt: AT + minutes * 60_000 },
+      { startAt: AT + 2 * 3600_000, endAt: null }] };
+    fence();
+  }
+  f.beforeRequest = async () => {}; release.resolve();
+  const result = await work;
+  assert.equal(item.reconcileAgain, undefined, 'Economic updates must not abort the independent native instruction');
+  assert.equal(result.errorCode, null); assert.equal(result.ownsInstruction, true);
+  assert.equal(result.pauseConfirmed, true); assert.equal(result.owned.startAt, identification.pauseUntil);
+  assert.equal(x.nativeWrites().filter(row => row.action === 'SetChargingProfile').length, 1);
+  assert.equal(result.snapshot.connectorStatus, 'SuspendedEVSE'); assert.equal(result.snapshot.powerKw, 0);
 });
 
 test('production native cleanup remains local when supplemental Easee cloud evidence is unavailable', async t => {

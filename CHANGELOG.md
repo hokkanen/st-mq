@@ -52,6 +52,9 @@ Versions follow Semantic Versioning. `-dev.N` denotes a development prerelease.
   never repeats an uncertain command.
 - An explicit **Identify** request can run a new current test after a successful
   earlier test on the same connection, including after restart.
+- Economic replanning no longer repeatedly cancels a BMW identification pause
+  before it reaches the charger. The pause keeps its original deadline and
+  still yields to native Stop, disconnection and explicit control changes.
 - Charger identification can use corroborated live Tesla charging evidence when
   TeslaMate's plug topic still holds an older unplugged value, while preserving
   that original report and rejecting newer disconnect evidence. BMW identification
