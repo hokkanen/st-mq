@@ -84,10 +84,14 @@ also requires `auto_charge:false`. This is an explicit native-device setup choic
 the integration reads it and does not silently rewrite it. A connected charger
 may then remain in `charger_insert` until an authorized Start.
 Disabling Auto charge does not establish that every later device-generated
-permission change is an echo of an application command. Firmware-generated
-false-to-true permission changes remain an
-[open qualification issue](https://github.com/hokkanen/st-mq/issues/1);
-they must not be suppressed by a timing allowance or inferred handshake.
+permission change is an echo of an application command. The owner-approved
+[first-start exception](charging.md#shelly-first-start-permission-sequence) may
+preserve one identification attempt through a strictly bounded `sys` false-to-true
+pair after confirmed 6 A and Start. It waits without another Start and retains
+the original deadlines; matching native-action ambiguity is explicitly accepted.
+All other permission changes keep ordinary native priority. This exception does
+not establish a firmware cause or cure for the
+[reported permission changes](https://github.com/hokkanen/st-mq/issues/1).
 
 Basic start/stop requires fresh native state, start permission and current setting, working MQTT,
 a running service and no active errors or flags. It preserves native current

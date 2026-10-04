@@ -346,7 +346,7 @@ export class ChargingRuntime {
       && snapshot.readAt <= now && now - snapshot.readAt <= MINUTE
       && control.session?.connected === true && snapshot.pluggedIn === true
       && (snapshot.transport !== 'shelly-evse' || snapshot.identificationReady === true && !snapshot.nativeScheduleActive)
-      && !control.manual && !snapshot.manualStop && !snapshot.stopped && snapshot.enabled !== false
+      && !control.manual && (control.startupPending === true || !snapshot.manualStop && !snapshot.stopped) && snapshot.enabled !== false
       && !snapshot.faulted && !snapshot.authorizationBlocked
       && !['Faulted', 'Unavailable', 'Reserved'].includes(snapshot.connectorStatus)
       && !control.vehicleDisconnect?.awaitingConnection);
@@ -495,7 +495,7 @@ export class ChargingRuntime {
     const control = item.controller?.status();
     if (item.identification?.reason) return item.identification.reason;
     if (!item.controller?.supportsIdentification) return 'unsupported';
-    if (control.manual || control.snapshot?.manualStop || control.snapshot?.stopped) return 'manual-stop';
+    if (control.manual || !control.startupPending && (control.snapshot?.manualStop || control.snapshot?.stopped)) return 'manual-stop';
     if (!this.identificationAvailable(item, now)) return 'charger-unavailable';
     if (!this.identificationTurn(item)) return 'another-identification-active';
     if (item.vehicleEvidence?.historyOverflow) return 'evidence-capacity';
@@ -1063,7 +1063,7 @@ export class ChargingRuntime {
           probeDurationMs: Math.min(Math.floor((IDENTIFICATION_ENERGY_LIMIT_KWH / probeCeilingKw * 3600 - 10) * 1000),
             minimumReady ? currentTest.expiresAt - now - 10_000 : Infinity), physicalFresh, physicalStopped,
           connectedAt: control.session.connectedAt, now, connected: true, identified: reidentifying ? freshIdentity : Boolean(vehicleId),
-          available, manualStop: Boolean(control.manual || control.snapshot?.manualStop || control.snapshot?.stopped),
+          available, manualStop: Boolean(control.manual || !control.startupPending && (control.snapshot?.manualStop || control.snapshot?.stopped)),
           charging: physicalFresh && physical.powerKw.value > .5 && physical.charging?.available === true && physical.charging.value === true,
           energyKwh: item.sessionCost?.deliveredGridKwh ?? null,
           powerKw: physical.powerKw?.available === true ? physical.powerKw.value : null,
@@ -1600,6 +1600,7 @@ export class ChargingRuntime {
       ...Object.values(this.chargers).flatMap(item => {
         const control = item.controller?.status();
         return [item.priceRecheckAt, control?.manual?.resumeAt, control?.owned?.startAt,
+          control?.startup?.phase === 'armed' ? control.startup.expiresAt : null,
           ['proposed', 'applying', 'active', 'restoring'].includes(control?.currentTest?.phase) ? control.currentTest.expiresAt : null,
           item.identification?.probe?.endedAt === null ? item.identification.probe.deadlineAt : null, item.identification?.phase === 'pausing' ? item.identification.pauseUntil : null,
           ...(item.identification?.phase === 'pausing' || item.identification?.probe?.endedAt === null

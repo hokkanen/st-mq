@@ -168,7 +168,10 @@ them. Shelly's native command-source evidence distinguishes same-value `sys`
 refreshes from newer external instructions. A system refresh preserves existing
 ownership only when no intervening permission change was observed; a Stop followed
 by Enable cannot disappear because one poll sees the same final value.
-Observed external instructions retain priority. Detecting a repeated
+The sole exception is the owner-approved
+[first-start sequence](#shelly-first-start-permission-sequence), which preserves
+the observed edges and their provenance. Other observed external instructions
+retain priority. Detecting a repeated
 selection of the same value requires newer native instruction evidence. If a
 repeated Shelly Stop leaves the value `false`, source `rpc` and update timestamp
 unchanged, the status API cannot distinguish that command from the existing
@@ -195,6 +198,57 @@ vehicle's own protections still apply. Field meanings follow the
 A positive vehicle request below 6 A uses a valid 6 A pilot allowance while the
 vehicle limits its own draw; planning estimates that lower delivery and reserves
 the pilot allowance. Explicit zero and electrical limits still prevent starting.
+
+### Shelly first-start permission sequence
+
+The Top AC Portable profile has produced a `sys` false-to-true start-permission
+sequence shortly after an acknowledged and confirmed application Start, despite
+native Auto charge being disabled. The exposed fields do not reliably distinguish
+that sequence from an independently requested native action with the same values,
+source and timing. On 2026-10-04 the owner approved the following narrow exception
+to ordinary native-instruction priority so a fresh connection can finish its
+identification attempt. This does not attribute the sequence to a person or prove
+its firmware cause.
+
+Eligibility requires the supported Top AC Portable profile, freshly confirmed
+`auto_charge:false`, and the first application identification Start within
+60 seconds of a newly confirmed physical connection. The current test must already
+have confirmed its active 6 A setting. The Start must have both acknowledgement
+and fresh true native readback before the exception can apply. The scope retains
+the equipment, physical connection, transport generation, identification attempt
+and current test; ordinary polling, **Identify**, **Charge now** and **Use automatic**
+cannot create another eligible Start in that connection.
+
+At most one ordered `sys` false-to-true pair may preserve the attempt. Its fixed
+deadline is ten seconds after that Start's acknowledgement, capped by the original
+current-test and any probe deadline. Both edges and the final fresh true native
+readback must arrive within that deadline. The pair may span polls or arrive in
+one notification batch. Effective command source follows the native partial
+notification contract; an omitted unchanged source is not invented new provenance.
+
+While only the false edge is known, control waits with the confirmed 6 A setting.
+It sends no replacement Start, cannot restore a higher current or renew any
+identification deadline, and preserves raw permission and physical observations.
+An explicit startup-pending classification keeps this same attempt waiting;
+it does not create an application-owned pause or furnish BMW stop-correlation
+evidence. Final true native readback permits the existing attempt to continue
+under its original energy allowance and deadlines.
+
+Non-`sys` or unknown permission provenance, an intervening current instruction,
+a schedule change, a fault or authorization restriction, a late or second pair,
+disconnection or transport-generation change ends eligibility. A false-only
+sequence times out as native Stop; the application never retries Start to complete
+the pair. Restart removes live eligibility, and persisted consumption prevents
+rearming it in the same physical connection. All existing current-restoration
+obligations remain; fresh physical zero is still required before raising the
+limit when stopped. These guards do not bypass vehicle restrictions, native caps,
+electrical limits or observation readiness.
+
+The remaining ambiguity is explicit: an independent native action matching every
+eligible `sys` edge and timing condition can receive this same classification.
+No reliable actor signal is claimed. The exception does not change detection of
+a repeated native Stop while permission is already false; that separate unresolved
+limitation remains as described above.
 
 ### Schedules inside the vehicle
 

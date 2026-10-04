@@ -255,6 +255,15 @@ permission to act. See [the configuration guide](docs/configuration.md).
   superseded instructions after unplugging or restart, infer who caused an observed
   stop, change unrelated device schedules or bypass electrical protection, charger
   authorization, faults or vehicle restrictions.
+- The owner-approved Shelly first-start exception is limited to the
+  [documented startup permission sequence](docs/charging.md#shelly-first-start-permission-sequence).
+  After confirmed 6 A and the first confirmed identification Start of a new
+  physical connection, one bounded `sys` Stop/Enable pair may preserve that same
+  attempt. This is an explicit classification exception approved on 2026-10-04,
+  not proof of who caused those instructions. It grants no additional Start,
+  renewed deadline, native protection bypass or suppression of other instructions.
+  An indistinguishable native action matching the entire sequence is the accepted
+  residual ambiguity; wider suppression requires a new scope decision.
 - Explicit configuration import/application and clearly labeled native-device
   setup/commands are separate from controller-default edits. Keep their actual
   effect visible. Historical records, restoration obligations, commissioning and
@@ -368,6 +377,12 @@ Details: [recording and provenance](docs/recording.md),
   restart, failure, model repair and correction. Reconcile with fresh actual state
   and respect independent manual device changes. Model resets do not erase physical
   obligations; a command acknowledgement alone does not prove restoration.
+- The [Shelly first-start exception](docs/charging.md#shelly-first-start-permission-sequence)
+  retains the 6 A restriction while its bounded device permission sequence is
+  unresolved. Its live eligibility ends on restart or transport-generation change;
+  persisted consumption prevents rearming within the same physical connection.
+  Pending startup is not an owned identification pause or evidence of physical
+  charging. Existing restoration duties and original identification limits remain.
 - Preserve device-local freshness and command fencing. Garage permanent targets
   and one-shot device edits have no leases; source timeout and local frost rescue
   remain independent. Do not claim a software retry can restore equipment through a broken link. Economic preferences
