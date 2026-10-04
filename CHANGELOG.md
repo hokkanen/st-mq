@@ -42,6 +42,10 @@ Versions follow Semantic Versioning. `-dev.N` denotes a development prerelease.
 
 ### Fixed
 
+- A charger connected with native Auto charge disabled is now recognized while
+  waiting for permission, so automatic identification can start from that state.
+- Idle charger meter updates no longer repeatedly count unchanged property
+  capacity evidence, which could lower the forecast and bring charging forward.
 - After identifying Tesla on Charger 1, the 6 A comparison can hand Charger 2
   to BMW's own confirmed pause within the original test window. Any remaining
   reduced current restores after fresh zero draw, and **Charge now** preserves

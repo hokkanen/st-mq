@@ -217,6 +217,76 @@ test('supply evidence survives short sparse-event gaps without pretending pollin
   assert.equal(updateSupplyEstimate(held, changed, now).budgetCurrentA, null, 'A changed installation config invalidates old capacity evidence');
 });
 
+for (const transport of ['cloud', 'ocpp']) test(`${transport} idle charger meter reports cannot reweight held property capacity evidence after restart`, () => {
+  const provider = transport === 'ocpp' ? { transport, mode: undefined, connectorStatus: 'SuspendedEVSE' } : { mode: 2 };
+  let estimate = null;
+  for (const at of [now - 12 * 60_000, now - 11 * 60_000]) estimate = updateSupplyEstimate(estimate,
+    supplySnapshot({ allowance: [10, 10, 10], property: [15, 15, 15], at, ...provider }), now);
+  const snapshot = supplySnapshot({ allowance: [10, 10, 10], property: [7, 7, 7],
+    charger: [.01, .01, .01], ...provider });
+  estimate = updateSupplyEstimate(estimate, snapshot, now);
+  assert.equal(estimate.samples.length, 3);
+  assert.deepEqual(estimate.samples.at(-1).budgetCurrentA.map(value => Number(value.toFixed(2))), [16.99, 16.99, 16.99],
+    'The accepted sample retains the measured idle-current subtraction');
+  assert.deepEqual(estimate.budgetCurrentA, [25, 25, 25]);
+  const original = structuredClone(snapshot), sourceAt = estimate.measuredAt;
+  for (let report = 1; report <= 15; report++) {
+    // A current-version restart must not turn the same capacity observation
+    // into a new vote each time an otherwise idle charger reports its meter.
+    if (report === 8) estimate = JSON.parse(JSON.stringify(estimate));
+    const at = now + report * 1000;
+    const held = { ...snapshot, readAt: at, supply: { ...snapshot.supply,
+      chargerCurrentA: report % 2 ? [.009, .011, .01] : [0, 0, 0],
+      observationTimes: { ...snapshot.supply.observationTimes, charger: [at, at, at] } } };
+    estimate = updateSupplyEstimate(estimate, held, at);
+    assert.deepEqual(estimate.budgetCurrentA, [25, 25, 25], 'Repeated low held capacity cannot displace the other measurements');
+    assert.equal(estimate.samples.length, 3, 'Idle meter chatter is not independent supply evidence');
+    assert.equal(estimate.measuredAt, sourceAt);
+  }
+  assert.deepEqual(snapshot, original, 'Deduplication never rewrites the source readings');
+});
+
+test('new property or allowance source observations still contribute while the charger is idle', () => {
+  const snapshot = supplySnapshot({ at: now - 1000 });
+  let estimate = updateSupplyEstimate(null, snapshot, now);
+  const propertyReport = structuredClone(snapshot);
+  propertyReport.supply.observationTimes.property = [now, now, now];
+  estimate = updateSupplyEstimate(estimate, propertyReport, now);
+  assert.equal(estimate.samples.length, 2, 'A fresh property measurement remains independent even with unchanged values');
+  const allowanceReport = structuredClone(propertyReport);
+  allowanceReport.supply.availableCurrentA = [5, 7, 6];
+  allowanceReport.supply.observationTimes.allowance = [now, now, now];
+  estimate = updateSupplyEstimate(estimate, allowanceReport, now);
+  assert.equal(estimate.samples.length, 3);
+  assert.deepEqual(estimate.samples.at(-1).budgetCurrentA, [24, 24, 24]);
+  assert.equal(estimate.measuredAt, now, 'Only the genuine capacity contributors determine idle sample age');
+  assert.equal(updateSupplyEstimate(estimate, allowanceReport, now).samples.length, 3, 'Polling the same new report remains idempotent');
+});
+
+test('active or non-idle charger measurements retain their contribution to supply evidence', () => {
+  const snapshot = supplySnapshot({ allowance: [10, 10, 10], property: [21, 21, 21],
+    charger: [6, 6, 6], at: now - 1000 });
+  let estimate = updateSupplyEstimate(null, snapshot, now);
+  const charging = structuredClone(snapshot);
+  charging.supply.chargerCurrentA = [8, 8, 8];
+  charging.supply.observationTimes.charger = [now, now, now];
+  estimate = updateSupplyEstimate(estimate, charging, now);
+  assert.equal(estimate.samples.length, 2);
+  assert.deepEqual(estimate.samples.at(-1).budgetCurrentA, [23, 23, 23], 'A genuine change in draw still changes the inferred household share');
+  const freshSameDraw = structuredClone(charging);
+  freshSameDraw.supply.observationTimes.charger = [now + 1, now + 1, now + 1];
+  assert.equal(updateSupplyEstimate(estimate, freshSameDraw, now + 1).samples.length, 3);
+  for (const extra of [{ mode: 3, charger: [.01, .01, .01] }, { mode: 2, charger: [.1, 0, 0] },
+    ...['Charging', 'Faulted', 'Unavailable', undefined].map(connectorStatus => ({ transport: 'ocpp',
+      connectorStatus, mode: 2, charger: [.01, .01, .01] }))]) {
+    const before = supplySnapshot({ ...extra, at: now - 1000 });
+    const after = structuredClone(before);
+    after.supply.observationTimes.charger = [now, now, now];
+    assert.equal(updateSupplyEstimate(updateSupplyEstimate(null, before, now), after, now).samples.length, 2,
+      'Only confirmed idle readings qualify for deduplication of charger reports');
+  }
+});
+
 test('allocation is only a charging ceiling and clipped or absent readings cannot identify property capacity', () => {
   const clipped = updateSupplyEstimate(null, supplySnapshot({ allowance: [27, 27, 27], property: [3, 4, 5] }), now);
   assert.equal(clipped.quality, 'observed-lower-bound');

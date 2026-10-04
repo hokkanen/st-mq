@@ -9,8 +9,8 @@ const START = 1_800_000_000_000, MINUTE = 60_000, FUTURE = START + 60 * MINUTE;
 
 // Exercise the real MQTT RPC adapter, controller, vehicle ingestion and runtime.
 // Only the broker/device and economic price result are synthetic.
-async function fixture(t, { charging = true, retainedOnly = false, enabled = true } = {}) {
-  let now = START, runtime, failSave = false, vehicleAllows = charging, planOverride = null;
+async function fixture(t, { charging = true, retainedOnly = false, enabled = true, inserted = false } = {}) {
+  let now = START, runtime, failSave = false, vehicleAllows = charging || inserted, planOverride = null;
   const data = new Map(), writes = [], client = new EventEmitter();
   const config = { input: 'mqtt', connections: { mqtt: { address: 'mqtt://synthetic.invalid', user: 'synthetic-user' } },
     charging: { vehicles: { bmw: { mqttTopic: 'synthetic/identification/bmw' } }, chargers: { charger2: {
@@ -34,13 +34,17 @@ async function fixture(t, { charging = true, retainedOnly = false, enabled = tru
         { voltage: 230, current: running ? 10 : 0, power: running ? 2.3 : 0 }])) } };
   };
   physical(charging);
+  if (inserted) {
+    fields.start_charging = { value: false, at: START };
+    fields.work_state = { value: 'charger_insert', at: START };
+  }
   const schedules = { rev: 1, jobs: [] }, serviceStatus = { state: 'running' };
   client.subscribe = (topics, options, cb) => cb(null, topics.map(topic => ({ topic, qos: 0 })));
   client.publish = (topic, payload, options, cb) => {
     const frame = JSON.parse(payload), role = frame.params.role;
     let result;
     if (frame.method === 'Shelly.GetDeviceInfo') result = { id: 'synthetic-evse', model: 'synthetic-model', fw_id: 'synthetic-firmware' };
-    else if (frame.method === 'Service.GetConfig') result = { id: 0, auto_balance: { enable: false }, auto_charge: true };
+    else if (frame.method === 'Service.GetConfig') result = { id: 0, auto_balance: { enable: false }, auto_charge: !inserted };
     else if (frame.method === 'Service.GetStatus') result = serviceStatus;
     else if (frame.method === 'Schedule.List') result = schedules;
     else if (frame.method === 'Schedule.Update') {
@@ -48,7 +52,7 @@ async function fixture(t, { charging = true, retainedOnly = false, enabled = tru
       const job = schedules.jobs.find(job => job.id === frame.params.id);
       assert.ok(job); assert.equal(frame.params.enable, false); job.enable = false; result = { rev: ++schedules.rev };
     }
-    else if (frame.method.endsWith('.GetConfig')) result = { id: ids[role], owner: 'service:0', access: 'crw', options: ['charger_free', 'charger_charging', 'charger_pause', 'charger_wait', 'charger_end'], min: 6, max: 16, meta: { ui: { step: 1 } } };
+    else if (frame.method.endsWith('.GetConfig')) result = { id: ids[role], owner: 'service:0', access: 'crw', options: ['charger_free', 'charger_insert', 'charger_charging', 'charger_pause', 'charger_wait', 'charger_end'], min: 6, max: 16, meta: { ui: { step: 1 } } };
     else if (frame.method.endsWith('.Set')) {
       writes.push({ ...frame, at: now });
       now += 1000; fields[role] = { value: frame.params.value, at: now };
@@ -115,6 +119,31 @@ async function fixture(t, { charging = true, retainedOnly = false, enabled = tru
 
 const stops = f => f.writes.filter(row => row.params.role === 'start_charging' && row.params.value === false);
 const starts = f => f.writes.filter(row => row.params.role === 'start_charging' && row.params.value === true);
+
+test('Shelly inserted with native Auto charge disabled can run an authorized identification probe', async t => {
+  const f = await fixture(t, { charging: false, inserted: true });
+  const session = f.adapter.snapshot().session;
+  assert.equal(f.adapter.snapshot().pluggedIn, true);
+  assert.equal(f.adapter.snapshot().charging, false);
+  assert.equal(f.fields.start_charging.value, false);
+  assert.equal(session.connectedAt, START);
+  await f.update();
+  f.setNow(f.now + 1000); await f.update();
+  assert.equal(starts(f).length, 1, 'Automatic identification owns the explicit Start');
+  assert.equal(f.fields.start_charging.value, true);
+  assert.equal(f.adapter.snapshot().charging, true);
+  assert.equal(f.card().vehicle.id, null, 'A new connection cannot reuse old vehicle identity');
+  f.setNow(f.now + 1000); f.publish({ charging: true }, f.now);
+  f.setNow(f.now + 1000); await f.update();
+  assert.equal(f.item().identification.phase, 'pausing');
+  assert.equal(stops(f).length, 1);
+  await f.confirm();
+  assert.equal(f.card().vehicle.id, 'bmw');
+  assert.equal(f.item().identification.phase, 'completed');
+  assert.deepEqual(f.adapter.snapshot().session, session);
+  assert.equal(f.fields.start_charging.value, false);
+  assert.equal(f.writes.some(row => row.method === 'Service.SetConfig'), false);
+});
 
 test('Shelly identifies BMW through real RPC pause evidence and adopts the economic hold', async t => {
   const f = await fixture(t); f.setNow(START + 1000); await f.update();

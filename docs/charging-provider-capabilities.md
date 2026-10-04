@@ -66,10 +66,20 @@ Charger 2 defaults to `enabled:false`. Configure `enabled:true`, a concrete
 checks the device identity, service 0, unique typed role ownership, access and
 reported enum options. Supported connection-state meanings belong to the Top AC
 profile, not user configuration. The profile uses `charger_free` for unplugged,
-`charger_charging` for charging, and `charger_wait`, `charger_pause`,
-`charger_complete` and `charger_end` for connected but not charging. These are
-also the states recognized by the [upstream Top AC integration](https://github.com/evcc-io/evcc/blob/master/charger/shelly-topac.go).
+`charger_charging` for charging, and `charger_insert`, `charger_wait`,
+`charger_pause`, `charger_complete` and `charger_end` for connected but not charging.
+The [upstream Top AC integration](https://github.com/evcc-io/evcc/blob/master/charger/shelly-topac.go)
+recognizes these states except `charger_insert`. That additional state is qualified
+by the native enum's Insert label and a verified unplug/replug transition with
+Auto charge disabled, false start permission and zero measured power. It establishes
+a connection, not charging or permission to start.
 Unknown or fault states cannot authorize commands or establish an unplug.
+
+For external scheduling, disable native Auto charge in the charger setup; the
+[evcc setup documentation](https://docs.evcc.io/en/chargers/shelly-top-ac-portable-ev-charger/)
+also requires `auto_charge:false`. This is an explicit native-device setup choice:
+the integration reads it and does not silently rewrite it. A connected charger
+may then remain in `charger_insert` until an authorized Start.
 
 Basic start/stop requires fresh native state, start permission and current setting, working MQTT,
 a running service and no active errors or flags. It preserves native current

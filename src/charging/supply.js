@@ -26,12 +26,19 @@ export function updateSupplyEstimate(previous, snapshot, now = Date.now()) {
   const allocation = limits.allocationA ?? supply.allocationA;
   const timing = [...(times.allowance ?? []), ...(times.property ?? [])];
   const chargerTimes = times.charger ?? [183, 184, 185].map(id => snapshot?.observations?.[id]?.at);
-  const idle = [1, 2, 4].includes(snapshot?.mode) && phases(charger) && charger.every(current => current < 0.1);
+  const idleState = snapshot?.transport === 'ocpp'
+    ? ['Available', 'Preparing', 'SuspendedEV', 'SuspendedEVSE', 'Finishing'].includes(snapshot.connectorStatus)
+    : [1, 2, 4].includes(snapshot?.mode);
+  const idle = idleState && phases(charger) && charger.every(current => current < 0.1);
   const coherent = timing.length === 6 && timing.every(at => validTime(at, now, 20 * MINUTE))
     && (idle || chargerTimes.length === 3 && chargerTimes.every(at => validTime(at, now, 20 * MINUTE)));
   if (healthy && phases(allowance) && phases(property) && phases(charger) && coherent) {
     const allTimes = [...timing, ...(idle ? [] : chargerTimes)];
-    const key = JSON.stringify([allowance, property, charger, timing, chargerTimes]);
+    // Idle meter timestamps and negligible current jitter do not independently
+    // measure capacity. Match the identity to the same contributors used for
+    // coherence and age, while retaining the actual subtraction in this sample.
+    // During charging, every contributing current observation keeps its clock.
+    const key = JSON.stringify([allowance, property, idle ? null : charger, timing, idle ? null : chargerTimes]);
     if (!samples.some(row => row.key === key)) {
       const budgetCurrentA = allowance.map((current, index) => current + Math.max(0, property[index] - charger[index]));
       // A zero report may be clamped after an overload. It cannot identify the

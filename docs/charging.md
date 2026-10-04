@@ -934,6 +934,17 @@ freshness, control authority, changed session requests or a missed deadline.
 
 Easee's Equalizer, charger and vehicle determine the available charging current. Native OCPP economic pauses impose an expiring 0 A restriction; identification probes briefly release the owned pause at normal current before returning to that economic pause or normal charging. This never raises native limits or changes circuit protection or fuse settings. Current already drawn by an automatic-OFF, manually running or post-target peer remains a load until physical evidence says otherwise. Forecast household load, gross configured capacity and current net allowance are distinct. A clipped zero Equalizer allowance does not establish an exact gross budget. Missing shared rates or usable property capacity produce provisional decisions, not free electricity or invented assured readiness; unknown charging-current restrictions use the maximum-available-current planning assumption.
 
+Capacity estimates count contributing source observations, not polling frequency.
+When Easee reports an idle cloud mode or OCPP connector status and less than
+0.1 A on every phase, new charger
+meter timestamps or small idle-current fluctuations cannot count the same held
+allowance and property observations again. Their original source clocks determine
+sample identity and age; the accepted sample retains the measured subtraction.
+Fresh allowance or property observations still contribute, and charger currents
+and their clocks remain contributors during actual draw or an unconfirmed idle
+state. Restart preserves the bounded evidence history without making it fresh.
+These forecast estimates never replace live headroom or native electrical limits.
+
 The final period is an open release. Reaching the planning minimum or ready-by deadline does not issue a final stop. Extra actual energy remains metered and priced. Unknown future post-target consumption cannot have a guaranteed optimized bill. Later economic pauses require ST-MQ and the provider to be available; the UI distinguishes the proposed plan, dispatched request, readback and observed physical response.
 
 ## Charger 2 current allocation

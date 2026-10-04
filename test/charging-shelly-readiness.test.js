@@ -20,7 +20,7 @@ function fixture(t, configuration = {}) {
     current_limit: { id: 200, owner: 'service:0', access: 'crw', min: 6, max: 16, meta: { ui: { step: 1 } } },
     start_charging: { id: 201, owner: 'service:0', access: 'crw' },
     work_state: { id: 202, owner: 'service:0', access: 'cr',
-      options: ['charger_free', 'charger_wait', 'charger_pause', 'charger_end', 'charger_charging'] },
+      options: ['charger_free', 'charger_insert', 'charger_wait', 'charger_pause', 'charger_end', 'charger_charging'] },
     phase_info: { id: 203, owner: 'service:0', access: 'cr' },
   };
   const fields = { current_limit: 16, start_charging: true, work_state: 'charger_charging',
@@ -431,7 +431,39 @@ test('basic start/stop preserves native load balancing and native settings', asy
   await assert.rejects(f.command('current_limit', 10));
 });
 
-test('charger_end preserves the physical connection and unknown work states do not invent an unplug', async t => {
+test('native insert establishes a connected noncharging session with Auto charge disabled', async t => {
+  const f = fixture(t);
+  f.service.auto_charge = false;
+  f.fields.start_charging = false;
+  f.fields.work_state = 'charger_free';
+  f.fields.phase_info = { total_power: 0, total_act_energy: 4,
+    ...Object.fromEntries(['phase_a', 'phase_b', 'phase_c'].map(phase => [phase,
+      { voltage: 230, current: 0, power: 0 }])) };
+  await f.ready();
+  assert.equal(f.adapter.snapshot().session.sessionId, null);
+  f.notify('work_state', 'charger_insert');
+  const inserted = f.adapter.snapshot(), connectedAt = f.now();
+  assert.equal(inserted.pluggedIn, true);
+  assert.equal(inserted.charging, false);
+  assert.equal(inserted.controlReady, true);
+  assert.equal(inserted.session.connectedAt, connectedAt);
+  assert.equal(inserted.fields.work_state.measuredAt, connectedAt);
+  assert.equal(inserted.fields.start_charging.value, false);
+  assert.equal(f.adapter.normalize().powerKw.value, 0);
+  assert.equal(f.mutations().length, 0, 'A connection observation is not a Start command');
+  await f.command('start_charging', true);
+  await f.refresh();
+  assert.equal(f.adapter.snapshot().charging, false, 'An accepted Start is not proof of charging');
+  assert.equal(f.adapter.snapshot().fields.work_state.measuredAt, connectedAt);
+  f.notify('work_state', 'charger_wait');
+  assert.deepEqual(f.adapter.snapshot().session, inserted.session);
+  f.notify('work_state', 'charger_charging');
+  assert.deepEqual(f.adapter.snapshot().session, inserted.session);
+  assert.equal(f.adapter.snapshot().charging, true);
+  assert.equal(f.service.auto_charge, false);
+});
+
+test('charger_end preserves the physical connection and unknown or fault work states do not invent an unplug', async t => {
   const f = fixture(t);
   await f.ready();
   const connection = f.adapter.snapshot().session;
@@ -439,13 +471,15 @@ test('charger_end preserves the physical connection and unknown work states do n
   assert.equal(f.adapter.snapshot().pluggedIn, true);
   assert.equal(f.adapter.snapshot().charging, false);
   assert.deepEqual(f.adapter.snapshot().session, connection);
-  f.notify('work_state', 'unknown_future_state');
-  assert.equal(f.adapter.snapshot().pluggedIn, null);
-  assert.equal(f.adapter.snapshot().charging, null);
-  assert.equal(f.adapter.snapshot().identificationReady, false);
-  assert.equal(f.adapter.snapshot().controlReady, false);
-  assert.deepEqual(f.adapter.snapshot().session, connection);
-  await assert.rejects(f.command('start_charging', true));
+  for (const state of ['unknown_future_state', 'charger_error', 'charger_fault']) {
+    f.notify('work_state', state);
+    assert.equal(f.adapter.snapshot().pluggedIn, null);
+    assert.equal(f.adapter.snapshot().charging, null);
+    assert.equal(f.adapter.snapshot().identificationReady, false);
+    assert.equal(f.adapter.snapshot().controlReady, false);
+    assert.deepEqual(f.adapter.snapshot().session, connection);
+    await assert.rejects(f.command('start_charging', true));
+  }
   f.notify('work_state', 'charger_charging');
   assert.equal(f.adapter.snapshot().session.sessionId, connection.sessionId);
   f.notify('work_state', 'charger_free');
