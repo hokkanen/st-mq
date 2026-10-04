@@ -113,6 +113,7 @@ test('Tesla vehicle feed separates live reception and logger health from unchang
   const receive = (field, value, at) => capture.receive(`teslamate/cars/1/${field}`, value, {}, at);
   receive('battery_level', '80', now - 5 * MINUTE);
   receive('charge_current_request', '8', now - 5 * MINUTE);
+  receive('charge_current_request_max', '16', now - 5 * MINUTE);
   receive('healthy', 'true', now - 4 * MINUTE);
   receive('charger_power', '1', now);
 

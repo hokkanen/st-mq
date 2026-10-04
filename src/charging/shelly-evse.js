@@ -1,5 +1,5 @@
 import { createHash, randomUUID } from 'node:crypto';
-import { shellyCurrentLimit } from './shelly-limit.js';
+import { shellyCurrentLimit, vehiclePilotLimit } from './shelly-limit.js';
 import { createMqttAdmission } from '../acquisition/mqtt-admission.js';
 import { shellyProfile, supportedShellyStates } from './shelly-profile.js';
 import { chargingPlanInputsUnavailable } from './plan-inputs.js';
@@ -746,7 +746,7 @@ export function createShellyController({ adapter, initialState, saveState = () =
       }
       if (!adapter.config.limiterEnabled && target !== test.originalCurrentA) return;
       test.restoreCurrentA = target; test.phase = 'restoring';
-    } else if (context && finite(context.vehicleCurrentA) && context.vehicleCurrentA < target) return;
+    } else if (context && vehiclePilotLimit(context.vehicleCurrentA, adapter.config.minimumCurrentA) === 0) return;
     if (target === current.value) {
       test.phase = restoring ? 'restored' : 'active'; test.confirmedAt ??= clock();
       test.permissionAt = current.measuredAt; await persist(); return;
@@ -1067,7 +1067,7 @@ export function createShellyController({ adapter, initialState, saveState = () =
         const allocationA = identification || restoringUnscheduled && typeof getAllocation !== 'function' ? null : context.allocationA;
         // Basic scheduling owns only start permission. Positive current limits
         // remain native until the separate installation limiter is enabled.
-        const nativeCap = Math.min(current.value, ...[context.vehicleCurrentA, allocationA]
+        const nativeCap = Math.min(current.value, ...[vehiclePilotLimit(context.vehicleCurrentA, adapter.config.minimumCurrentA), allocationA]
           .filter(value => finite(value) && value >= 0));
         const limitation = adapter.config.limiterEnabled ? shellyCurrentLimit({ config: adapter.config,
           ...context, allocationA, nativeCurrentA: state.manualCurrentA, shelly: adapter.liveCurrents(), now: clock() })

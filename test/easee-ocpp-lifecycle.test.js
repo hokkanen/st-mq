@@ -32,7 +32,7 @@ function fixture(t, { streaming = false, authorizationMode = 'plug-and-charge' }
   const events = [], providers = [], states = new Map(), listeners = [];
   let now = AT, permitted = true, current = null, version = 0, schedule = { enabled: 'none' };
   let transition = async () => {}, applyHook = async () => {}, beforeRequest = async () => {};
-  let cloudObservations = null, cloudOffline = false, nativeRequest = null, streamRows = null;
+  let cloudObservations = null, cloudOffline = false, nativeRequest = null, streamRows = null, commandSourceAt = null;
   let streamObservation = null;
   let readSetupState = () => states.get('setup');
   const stateFor = key => ({ get: () => clone(states.get(key) ?? null), set: value => states.set(key, clone(value)) });
@@ -67,13 +67,13 @@ function fixture(t, { streaming = false, authorizationMode = 'plug-and-charge' }
       if (method === 'POST' && path === `/api/chargers/${CHARGER}/settings`) {
         assert.deepEqual(body, { enabled: true });
         cloudObservations = cloudObservations.map(row => row.id === 31
-          ? { ...row, value: true, timestamp: new Date(now).toISOString() } : row);
+          ? { ...row, value: true, timestamp: new Date(commandSourceAt ?? now).toISOString() } : row);
         return new Response(null, { status: 200 });
       }
       if (method === 'POST' && path === `/api/chargers/${CHARGER}/commands/resume_charging`) {
         assert.equal(body, null);
         cloudObservations = cloudObservations.map(row => [48, 96].includes(row.id)
-          ? { ...row, value: row.id === 48 ? 16 : 0, timestamp: new Date(now).toISOString() } : row);
+          ? { ...row, value: row.id === 48 ? 16 : 0, timestamp: new Date(commandSourceAt ?? now).toISOString() } : row);
         return new Response(null, { status: 200 });
       }
       if (method === 'POST' && /^\/api\/chargers\/[^/]+\/schedules\/(?:daily|weekly|delayed)\/disable$/.test(path)) {
@@ -122,6 +122,7 @@ function fixture(t, { streaming = false, authorizationMode = 'plug-and-charge' }
   return { config, events, states, listeners, make, http, newHttp,
     get current() { return current; }, get now() { return now; }, advance: ms => { now += ms; },
     get observations() { return clone(cloudObservations); }, set observations(value) { cloudObservations = clone(value); },
+    set commandSourceAt(value) { commandSourceAt = value; },
     set streamRows(value) { streamRows = clone(value); }, set cloudOffline(value) { cloudOffline = value; },
     emitObservation(observation) { streamObservation?.(CHARGER, observation); },
     set nativeRequest(value) { nativeRequest = value; },
@@ -771,6 +772,25 @@ test('production Use automatic disables an active native daily schedule permanen
   const reconnected = await restarted.update({ enabled: true, plan: immediate });
   assert.equal(reconnected.appControl.schedule.enabled, 'none'); assert.equal(reconnected.manual, null);
   assert.equal(writes(f).filter(row => row.path.endsWith('/schedules/daily/disable')).length, 1);
+});
+
+test('production OCPP handover confirms an advanced native resume clock behind its local dispatch', async t => {
+  const x = await nativeAppFixture(t), { f, controller } = x;
+  x.observe({ 31: true, 48: 0, 96: 53, 109: 2 }); x.physical('SuspendedEVSE', 0); await x.refresh();
+  f.advance(61_400); f.commandSourceAt = f.now - 1400;
+  x.physical('SuspendedEVSE', 0); await x.refresh();
+  const immediate = { id: 'source-clock-resume', startAt: f.now, periods: [{ startAt: f.now, endAt: null }], feasible: true };
+  const prior = await controller.update({ enabled: false, plan: immediate });
+  const result = await controller.update({ enabled: true, takeover: prior.takeover.token });
+  assert.equal(result.takeover.state, 'confirmed'); assert.equal(result.phase, 'released');
+  assert.equal(result.appControl.stopped, false); assert.equal(result.manual, null);
+  assert.equal(result.appControl.stopAt, f.now - 1400, 'OCPP preserves the native source clock behind local dispatch');
+  assert.equal(result.takeoverPending, null);
+  assert.equal(writes(f).filter(row => row.path.endsWith('/commands/resume_charging')).length, 1);
+  const restarted = x.createController(x.saved); t.after(() => restarted.close());
+  await restarted.update({ enabled: true, plan: immediate });
+  assert.equal(writes(f).filter(row => row.path.endsWith('/commands/resume_charging')).length, 1,
+    'The confirmed handover is retained without repeating the resume');
 });
 
 test('production takeover preserves restrictive positive current limits and fences a newer native instruction', async t => {

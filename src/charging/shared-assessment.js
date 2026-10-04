@@ -49,9 +49,17 @@ function model(context, chargers, peers, now) {
     costLowerBoundCents: null, costGapBoundCents: null, scheduleKey: null, allocationKey: null, chargers: [] };
   for (const row of ordered) {
     const currents = IDS.map(id => row.chargers?.[id]?.currentA ?? 0);
+    const reserved = IDS.map((id, index) => {
+      const allocation = row.chargers?.[id], vehicleLimit = value(chargers.find(charger => charger.id === id), 'vehicleCurrentA');
+      // Externally balanced scenario means may be below 6 A. Only a known
+      // lower vehicle demand expands that expected draw to its pilot reserve;
+      // a commanded pilot is independently bounded in every scenario.
+      const pilot = vehicleLimit > 0 && vehicleLimit < 6 ? currents[index] * 6 / vehicleLimit : currents[index];
+      return Math.max(pilot, finite(allocation?.currentLimitA) ? allocation.currentLimitA : 0);
+    });
     if (currents.some(current => !finite(current) || current < 0)) valid = false;
     if (!Array.isArray(row.phaseHeadroomA) || row.phaseHeadroomA.length !== 3
-      || row.phaseHeadroomA.some(available => !finite(available) || currents.reduce((sum, current) => sum + current, 0) > available + 1e-6)) valid = false;
+      || row.phaseHeadroomA.some(available => !finite(available) || reserved.reduce((sum, current) => sum + current, 0) > available + 1e-6)) valid = false;
     for (const id of IDS) {
       const allocation = row.chargers?.[id]; if (!allocation) continue;
       const charger = chargers.find(item => item.id === id);
@@ -62,15 +70,18 @@ function model(context, chargers, peers, now) {
         .filter(current => finite(current) && current >= 0 && current <= 200);
       const ceiling = ceilings.length ? Math.min(...ceilings) : null;
       const native = value(charger, 'vehicleNotBefore');
-      const limits = ['nativeCurrentA', 'vehicleCurrentA'].map(key => value(charger, key)).filter(finite);
+      const limits = [value(charger, 'nativeCurrentA')].filter(finite), vehicleLimit = value(charger, 'vehicleCurrentA');
       const selected = value(charger, 'currentA');
       if (!charger?.capabilities?.externalLoadBalancing && !charger?.capabilities?.currentControl && finite(selected)) limits.push(selected);
       if (!finite(allocation.powerKw) || allocation.powerKw < 0 || ceiling === null || allocation.currentA > ceiling + 1e-6
         || limits.some(limit => allocation.currentA > limit + 1e-6)
+        || finite(vehicleLimit) && allocation.currentA > vehicleLimit + 1e-6
         || time(native) && row.start < native && allocation.powerKw > 0 && peers.find(peer => peer.id === id)?.drawing !== true) valid = false;
       if (id === 'charger2' && finite(allocation.currentLimitA)
         && (allocation.currentLimitA < 0 || allocation.currentLimitA > 0 && allocation.currentLimitA < 6 - 1e-6
           || allocation.currentLimitA > ceiling + 1e-6 || limits.some(limit => allocation.currentLimitA > limit + 1e-6))) valid = false;
+      if (id === 'charger2' && finite(allocation.currentLimitA) && finite(vehicleLimit)
+        && allocation.currentLimitA > (vehicleLimit > 0 ? Math.max(6, vehicleLimit) : 0) + 1e-6) valid = false;
     }
   }
   const summaries = active.map(peer => {

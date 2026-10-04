@@ -169,6 +169,20 @@ and [Shelly command contract](charging-provider-capabilities.md#mqtt-and-command
 
 A manual SoC is a one-time anchor. A newer applicable vehicle reading supersedes it using the provider's source clock, or explicitly labeled receipt time when no measurement clock exists. A pinned capacity outranks the provider capacity. An explicit requested minimum remains distinct from the vehicle's actual ceiling; requesting 95% while the vehicle reports an 80% ceiling is constrained rather than silently rewritten. Vehicle current limits and native not-before times constrain either charging point.
 
+TeslaMate's `charge_current_request_max` describes currently available supply,
+which can follow an EVSE pilot reduction or stop. A request equal to that maximum
+does not establish a separate vehicle current limit. Only a valid request below
+a known available maximum supplies that restriction, including a reported zero.
+Equal, inconsistent or incomplete values leave the independent vehicle limit
+unknown, while both raw observations retain their values and receipt clocks.
+This prevents a 6 A identification setting or a stopped 5 A report from becoming
+a permanent limit on later charging. Native charger/electrical ceilings and the
+vehicle's own protections still apply. Field meanings follow the
+[Tesla telemetry reference](https://developer.tesla.com/docs/fleet-api/fleet-telemetry/available-data).
+A positive vehicle request below 6 A uses a valid 6 A pilot allowance while the
+vehicle limits its own draw; planning estimates that lower delivery and reserves
+the pilot allowance. Explicit zero and electrical limits still prevent starting.
+
 ### Schedules inside the vehicle
 
 [TeslaMate MQTT](https://docs.teslamate.org/docs/integrations/mqtt/) exposes

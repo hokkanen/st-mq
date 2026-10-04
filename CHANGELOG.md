@@ -42,6 +42,13 @@ Versions follow Semantic Versioning. `-dev.N` denotes a development prerelease.
 
 ### Fixed
 
+- Charging can resume after Tesla reports the current available from a stopped
+  charger; that supply-dependent value no longer becomes a vehicle restriction.
+  A positive vehicle request below 6 A can use the charger's minimum pilot while
+  the vehicle limits its own draw. Electrical limits and native Stop still apply.
+- **Use automatic** confirms Easee handover when a fresh native setting change
+  has a source clock behind the application's command clock, without accepting
+  unchanged readback or repeating an uncertain command.
 - Charger identification can use corroborated live Tesla charging evidence when
   TeslaMate's plug topic still holds an older unplugged value, while preserving
   that original report and rejecting newer disconnect evidence. BMW identification

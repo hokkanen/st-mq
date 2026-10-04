@@ -11,15 +11,15 @@ const EMPTY = () => normalizeScheduleState({ enabled: 'none' });
 const obs = (id, value, now) => ({ id, value, timestamp: new Date(now).toISOString() });
 function harness() {
   const h = { now: NOW, schedules: EMPTY(), mode: 2, reason: null, enabled: true, online: true,
-    saved: null, allowed: true, writes: [], reads: 0, writeHook: null, readHook: null, dynamicA: 32 };
+    saved: null, allowed: true, writes: [], reads: 0, writeHook: null, readHook: null, dynamicA: 32, sourceTimes: {} };
   h.request = async (url, options) => {
     if (options.method === 'GET') {
       h.reads++;
       if (h.readHook) await h.readHook(url);
       if (url.endsWith('/schedules')) return structuredClone(h.schedules);
-      return [obs(250, h.online, h.now), obs(31, h.enabled, h.now), obs(109, h.mode, h.now),
-        obs(96, h.reason ?? (h.schedules.enabled === 'none' ? 0 : 54), h.now), obs(47, 16, h.now),
-        obs(48, h.dynamicA, h.now), obs(104, 32, h.now), obs(120, h.mode === 3 ? 8 : 0, h.now),
+      return [obs(250, h.online, h.now), obs(31, h.enabled, h.sourceTimes[31] ?? h.now), obs(109, h.mode, h.now),
+        obs(96, h.reason ?? (h.schedules.enabled === 'none' ? 0 : 54), h.sourceTimes[96] ?? h.now), obs(47, 16, h.now),
+        obs(48, h.dynamicA, h.sourceTimes[48] ?? h.now), obs(104, 32, h.now), obs(120, h.mode === 3 ? 8 : 0, h.now),
         ...[22, 23, 24].map(id => obs(id, 20, h.now)), ...[230, 231, 232].map(id => obs(id, 12, h.now))];
     }
     if (options.controlGuard && !options.controlGuard()) throw new Error('revoked');
@@ -1247,6 +1247,44 @@ test('failed explicit resume readback stays unconfirmed and ordinary polling doe
   assert.equal(result.takeover.state, 'blocked'); assert.equal(result.errorCode, 'readback-mismatch');
   assert.equal(result.owned.startAt, NOW + 3 * 3600_000);
   const writes = h.writes.length; await h.update(); h.restart(); await h.update(); assert.equal(h.writes.length, writes);
+});
+
+test('automatic handover accepts advanced native source clocks behind local dispatch without rewriting their timestamps', async () => {
+  const h = harness(); h.now = NOW + 1400; h.enabled = false; h.reason = 53; h.dynamicA = 0;
+  h.sourceTimes = { 31: NOW - 60_000, 48: NOW - 60_000, 96: NOW - 60_000 };
+  const prior = await h.update({ enabled: false });
+  h.writeHook = async url => {
+    if (url.endsWith('/settings')) h.sourceTimes[31] = NOW;
+    if (url.endsWith('/resume_charging')) { h.sourceTimes[48] = NOW; h.sourceTimes[96] = NOW; }
+  };
+  const result = await h.update({ takeover: prior.takeover.token, plan: { id: 'now', startAt: NOW } });
+  assert.equal(result.takeover.state, 'confirmed'); assert.equal(result.phase, 'released');
+  assert.deepEqual(h.writes.map(row => row.url.split('/').at(-1)), ['settings', 'resume_charging']);
+  assert.equal(result.snapshot.observations[31].at, NOW);
+  assert.equal(result.snapshot.observations[48].at, NOW);
+  assert.equal(result.snapshot.reasonAt, NOW);
+  assert.ok(result.snapshot.reasonAt < h.now, 'Source time remains distinct from local acknowledgement/readback time');
+});
+
+test('older and unchanged native clocks cannot confirm an earlier local handover dispatch', async t => {
+  for (const stage of ['enable', 'resume-reason', 'resume-current']) for (const sourceAt of [NOW - 60_000, NOW - 61_000])
+    await t.test(`${stage}: ${sourceAt === NOW - 60_000 ? 'unchanged' : 'older'} source`, async () => {
+      const h = harness(); h.now = NOW + 1400; h.enabled = stage !== 'enable'; h.reason = 53; h.dynamicA = 0;
+      h.sourceTimes = { 31: NOW - 60_000, 48: NOW - 60_000, 96: NOW - 60_000 };
+      const prior = await h.update({ enabled: false });
+      h.writeHook = async url => {
+        if (url.endsWith('/settings')) h.sourceTimes[31] = stage === 'enable' ? sourceAt : NOW;
+        if (url.endsWith('/resume_charging')) {
+          h.sourceTimes[48] = stage === 'resume-current' ? sourceAt : NOW;
+          h.sourceTimes[96] = stage === 'resume-reason' ? sourceAt : NOW;
+        }
+      };
+      const result = await h.update({ takeover: prior.takeover.token, plan: { id: 'now', startAt: NOW } });
+      assert.equal(result.takeover.state, 'blocked'); assert.equal(result.errorCode, 'readback-mismatch');
+      const writes = h.writes.length;
+      await h.update(); h.restart(); await h.update();
+      assert.equal(h.writes.length, writes, 'Uncertain handover never repeats a command automatically');
+    });
 });
 
 test('Use automatic refuses to release a stop without a usable economic plan', async () => {

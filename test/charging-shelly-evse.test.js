@@ -30,6 +30,23 @@ test('skew, nonadditive residual and telemetry loss use accepted fallback with t
   assert.equal(shellyCurrentLimit({...args,property:null,vehicleCurrentA:7}).currentA,7);
   assert.equal(shellyCurrentLimit({...args,property:null,allocationA:0}).currentA,0);
 });
+test('positive vehicle demand below the pilot minimum preserves electrical and zero-current stops', () => {
+  const args = { config: config(), now: NOW, property: reading([34, 30, 32]),
+    easee: reading([12, 12, 12]), shelly: reading([12, 12, 12]) };
+  for (const vehicleCurrentA of [1, 5, 5.5]) {
+    assert.equal(shellyCurrentLimit({ ...args, vehicleCurrentA }).currentA, 6,
+      'The smallest valid pilot can supply a car that independently draws less');
+    assert.equal(shellyCurrentLimit({ ...args, vehicleCurrentA, property: null }).currentA, 6);
+    for (const tighter of [{ nativeCurrentA: 5 }, { allocationA: 5 }, { property: reading([44, 30, 32]) }]) {
+      const limited = shellyCurrentLimit({ ...args, vehicleCurrentA, ...tighter });
+      assert.equal(limited.currentA, 0); assert.equal(limited.pause, true,
+        'A native, allocated or physical electrical ceiling below the pilot minimum still stops charging');
+    }
+  }
+  assert.equal(shellyCurrentLimit({ ...args, vehicleCurrentA: 0 }).currentA, 0,
+    'A known zero vehicle restriction is not rounded up');
+  assert.equal(shellyCurrentLimit({ ...args, vehicleCurrentA: 8 }).currentA, 8);
+});
 function fixture(t, extra={}) {
   let now=NOW, authority=true, failSave=false;
   const service={id:0,auto_balance:{enable:false},auto_charge:true,global_charge_limit:0,global_time_limit:0},serviceStatus={state:'running'},schedules={rev:1,jobs:[]};
@@ -560,6 +577,32 @@ test('Charge Now releases a Shelly economic pause for this session and automatic
   assert.equal(f.writes.filter(row => row.method === 'Boolean.Set' && row.params.value === true).length, 1);
   await controller.update({ enabled: true, plan: future, chargeNow: null, replan: true, allocation: {} });
   assert.equal(f.fields.start_charging, false); assert.equal(controller.status().reason, 'economic-wait');
+});
+
+test('Shelly resumes positive subminimum vehicle demand without an invalid pilot command or weakened stop', async t => {
+  for (const limiterEnabled of [false, true]) await t.test(`limiter ${limiterEnabled ? 'on' : 'off'}`, async t => {
+    const f = fixture(t, { limiterEnabled }); await f.ready(); advanceCommandClock(f);
+    const controller = createShellyController({ adapter: f.adapter, clock: f.now, canControl: () => true });
+    t.after(() => controller.close());
+    const future = { periods: [{ startAt: NOW + 3600_000, endAt: null }] };
+    await controller.update({ enabled: true, plan: future, allocation: { vehicleCurrentA: 5 } });
+    assert.equal(f.fields.start_charging, false, 'The economic delay remains effective');
+    const connectedAt = f.adapter.snapshot().session.connectedAt;
+    f.setNow(f.now() + f.adapter.config.dwellMs + 1000);
+    const request = { enabled: true, plan: future, chargeNow: { connectedAt }, allocation: { vehicleCurrentA: 5 } };
+    await controller.update(request);
+    assert.equal(f.fields.start_charging, true, 'Positive vehicle demand can resume through a valid pilot');
+    assert.equal(f.fields.current_limit, limiterEnabled ? 6 : 16,
+      'Optional limiting uses the valid minimum; basic scheduling preserves the native current setting');
+    assert.equal(f.writes.some(row => row.method === 'Number.Set' && row.params.value < 6), false);
+    await controller.update({ ...request, allocation: { vehicleCurrentA: 0 } });
+    assert.equal(f.fields.start_charging, false, 'Charge now cannot override a known zero vehicle restriction');
+    f.setNow(f.now() + f.adapter.config.dwellMs + 1000);
+    await controller.update(request);
+    assert.equal(f.fields.start_charging, true);
+    await controller.update({ ...request, allocation: { vehicleCurrentA: 5, allocationA: 5 } });
+    assert.equal(f.fields.start_charging, false, 'A shared electrical allocation below 6 A still stops');
+  });
 });
 
 test('Shelly Charge Now preserves a native stop, native schedule and vehicle start boundary', async t => {

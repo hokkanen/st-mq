@@ -42,6 +42,52 @@ test('native start, current and vehicle ceiling constrain physical charger plans
   assert.match(constrained.plans.charger2.warnings.join(' '), /vehicle limit/);
 });
 
+test('a 5 A vehicle request forecasts 5 A delivery while reserving a valid 6 A pilot', () => {
+  for (const id of ['charger1', 'charger2']) {
+    const charger = job(id, 3.45); charger.values.vehicleCurrentA = v(5);
+    const result = run([charger]);
+    assert.equal(result.plans[id].feasible, true);
+    assert.ok(Math.abs(result.plans[id].deliveredGridKwh - 3.45) < 1e-8);
+    assert.ok(result.allocations.every(row => row.chargers[id].currentA === 5));
+    assert.ok(result.allocations.every(row => row.phaseCurrentA.every(current => current === 6)),
+      'The minimum valid pilot is reserved independently of the lower vehicle draw');
+    if (id === 'charger2') assert.ok(result.allocations.every(row => row.chargers[id].currentLimitA === 6));
+    else assert.ok(result.allocations.every(row => row.chargers[id].currentLimitA === null),
+      'An externally balanced charger receives no positive-current command');
+    charger.requiredGridKwh = 3.46;
+    const shortfall = run([charger]);
+    assert.equal(shortfall.plans[id].feasible, false, 'A 6 A pilot cannot be counted as 6 A delivered');
+    assert.ok(shortfall.plans[id].deliveredGridKwh <= 3.45 + 1e-8);
+  }
+});
+
+test('a positive vehicle request below 6 A cannot bypass native ceilings or reserve more shared capacity than exists', () => {
+  for (const restriction of ['vehicle-stop', 'native-limit', 'electrical-limit']) {
+    const charger = job('charger2', 1); charger.values.vehicleCurrentA = v(restriction === 'vehicle-stop' ? 0 : 5);
+    if (restriction === 'native-limit') charger.values.nativeCurrentA = v(5);
+    const result = run([charger], restriction === 'electrical-limit' ? { supply: { configuredBudgetCurrentA: [5,5,5] } } : {});
+    assert.equal(result.plans.charger2.feasible, false);
+    assert.equal(result.plans.charger2.deliveredGridKwh, 0);
+    assert.ok(result.allocations.every(row => row.chargers.charger2.currentLimitA === 0));
+  }
+  const low = job('charger2', 1.725); low.values.vehicleCurrentA = v(5);
+  const peer = job('charger1', 2.07); peer.values.vehicleCurrentA = v(6);
+  const result = run([peer, low], { supply: { configuredBudgetCurrentA: [11,11,11] } });
+  assert.equal(result.feasible, true);
+  assert.ok(result.allocations.every(row => !(row.chargers.charger1?.currentA > 0 && row.chargers.charger2?.currentA > 0)),
+    'Eleven available amps cannot admit two 6 A pilots even when forecast demand totals eleven');
+  assert.ok(result.allocations.every(row => row.phaseCurrentA.every(current => current <= 11)));
+});
+
+test('an observed 5 A vehicle forecast keeps expected energy separate from its 6 A reservation', () => {
+  const charger = job('charger2', 3.45); charger.values.vehicleCurrentA = v(5); charger.values.charging = v(true);
+  charger.values.actualCurrentA = v(5);
+  const forecast = forecastCharger({ now, deadlineAt: now + HOUR, charger });
+  assert.equal(forecast.currentA, 5); assert.equal(forecast.powerKw, 3.45);
+  assert.deepEqual(forecast.phaseCurrentA, [6,6,6]);
+  assert.equal(forecast.finishAt, now + HOUR);
+});
+
 test('a vehicle timer beyond ready-by releases that charger without disabling its peer plan', () => {
   const blocked = job('charger1', 2.07), peer = job('charger2', 2.07);
   blocked.values.vehicleNotBefore = v(now + 2 * HOUR);

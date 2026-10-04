@@ -369,6 +369,14 @@ export function createEaseeScheduleAdapter({ request, readObservations, chargerI
         || after.reason === before.reason && after.reasonAt === before.reasonAt
           && after.limits?.dynamicChargerA === before.limits?.dynamicChargerA
           && after.observations?.[48]?.at === before.observations?.[48]?.at;
+      // Verification reads below are forced REST reads after acknowledgement.
+      // Native source clocks can be whole seconds and behind this process's
+      // clock. A changed setting with an advanced native clock is valid readback
+      // even when that source time precedes our millisecond dispatch time. Keep
+      // both clocks intact; an unchanged/older pre-dispatch event is insufficient.
+      const confirmedSourceChange = (afterAt, beforeAt, requestedAt) => Number.isSafeInteger(afterAt) && afterAt >= 0
+        && afterAt <= clock() && Number.isSafeInteger(beforeAt) && beforeAt >= 0 && afterAt >= beforeAt
+        && (afterAt >= requestedAt || afterAt > beforeAt);
       if (resumeRequired(current) && !canResume(current))
         throw failure('resume-current-limit', 'The charger pause cannot be cleared while preserving its current limit.');
       const write = async (stage, url, body, verify) => {
@@ -423,16 +431,17 @@ export function createEaseeScheduleAdapter({ request, readObservations, chargerI
       const chargerBase = base.slice(0, -'/schedules'.length);
       if (current.enabled === false) {
         await write('enable', `${chargerBase}/settings`, { enabled: true }, (after, before, requestedAt) =>
-          after.enabled === true && after.observations?.[31]?.at >= requestedAt
+          after.enabled === true && confirmedSourceChange(after.observations?.[31]?.at, before.observations?.[31]?.at, requestedAt)
           && after.fingerprint === before.fingerprint && after.pluggedIn === before.pluggedIn
           && (!resumeRequired(after) || samePause(after, before)));
       }
       if (resumeRequired(current)) {
         if (!canResume(current)) throw failure('resume-current-limit', 'The charger current limit prevents automatic handover.');
         await write('resume', `${chargerBase}/commands/resume_charging`, null, (after, before, requestedAt) =>
-          after.enabled === true && !after.stopped && after.reasonAt >= requestedAt
+          after.enabled === true && !after.stopped && confirmedSourceChange(after.reasonAt, before.reasonAt, requestedAt)
           && after.limits?.dynamicChargerA > 0 && (before.limits.dynamicChargerA > 0
-            && after.limits.dynamicChargerA === before.limits.dynamicChargerA || after.observations?.[48]?.at >= requestedAt)
+            && after.limits.dynamicChargerA === before.limits.dynamicChargerA
+            || confirmedSourceChange(after.observations?.[48]?.at, before.observations?.[48]?.at, requestedAt))
           && after.fingerprint === before.fingerprint && after.pluggedIn === before.pluggedIn);
       }
       if (current.stopped) throw failure('readback-mismatch', 'The charger still reports stopped.');

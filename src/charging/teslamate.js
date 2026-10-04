@@ -169,10 +169,21 @@ export function teslamateVehicleTelemetry(snapshot = {}, { now = Date.now(), cha
       reason: !available ? 'vehicle-logger-unhealthy' : !fresh ? 'vehicle-evidence-stale' : null,
       measuredAt: null, receivedAt: metadata.receivedAt ?? null, timeBasis: 'receipt-only' };
   };
-  const ceiling = [[snapshot.requestedCurrentA, 'charge_current_request'], [snapshot.maxCurrentA, 'charge_current_request_max']]
-    .filter(([value]) => Number.isFinite(value)).sort(([a], [b]) => a - b)[0];
+  const requested = signal(snapshot.requestedCurrentA, 'charge_current_request');
+  const supplied = signal(snapshot.maxCurrentA, 'charge_current_request_max');
+  // Tesla's maximum is the currently available supply, including our own
+  // temporary pilot reduction or stop. A matching request is not an independent
+  // vehicle restriction: feeding it back as an EVSE ceiling can keep a pause
+  // stuck at the stopped 5 A report or pin delivery to an identification test.
+  // Only a lower request distinguishes vehicle demand from available supply.
+  const distinctVehicleLimit = requested.available && supplied.available
+    && Number.isFinite(requested.value) && requested.value >= 0
+    && Number.isFinite(supplied.value) && requested.value < supplied.value;
+  const vehicleCurrentA = { ...requested, value: distinctVehicleLimit ? requested.value : null,
+    available: distinctVehicleLimit,
+    reason: distinctVehicleLimit ? null : requested.reason ?? supplied.reason ?? 'vehicle-current-limit-unknown' };
   return { soc: signal(snapshot.batteryLevel, 'battery_level'), minimumSoc: signal(snapshot.chargeLimitSoc, 'charge_limit_soc'),
     vehicleCeilingSoc: signal(snapshot.chargeLimitSoc, 'charge_limit_soc'),
-    vehicleCurrentA: signal(ceiling?.[0] ?? null, ceiling?.[1] ?? 'charge_current_request'),
+    vehicleCurrentA,
     vehicleNotBefore: signal(charging !== true && snapshot.scheduledStartAt > now ? snapshot.scheduledStartAt : null, 'scheduled_charging_start_time') };
 }

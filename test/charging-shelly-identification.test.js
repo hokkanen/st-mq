@@ -320,6 +320,23 @@ test('Shelly minimum-current identification has a fixed saved deadline independe
   assert.equal(view.currentTest.phase, 'restored'); assert.equal(f.writes.length, 2, 'The same id cannot renew the test');
 });
 
+test('Shelly minimum-current test permits positive vehicle demand below the pilot minimum but preserves zero', async t => {
+  for (const vehicleCurrentA of [0, 1, 5]) await t.test(`${vehicleCurrentA} A vehicle setting`, async t => {
+    const f = fixture(t, { limiterEnabled: false });
+    f.request = { id: 'low-vehicle-demand', connectedAt: NOW, phase: 'charging', minimumCurrent: true };
+    const view = await f.update({ allocation: { vehicleCurrentA } });
+    const currentWrites = f.writes.filter(row => row.role === 'current_limit');
+    if (vehicleCurrentA === 0) {
+      assert.equal(currentWrites.length, 0, 'A known zero vehicle restriction cannot authorize the test');
+      assert.equal(f.fields.start_charging.value, false);
+    } else {
+      assert.equal(view.currentTest.phase, 'active');
+      assert.deepEqual(currentWrites.map(row => row.value), [6], 'The offered pilot remains a supported native value');
+      assert.equal(view.currentTest.expiresAt, NOW + 90_000, 'Lower accepted draw does not expand the test budget');
+    }
+  });
+});
+
 test('Shelly a verified minimum already in place needs no numeric write and ends before the BMW pause', async t => {
   const f = fixture(t, { limiterEnabled: false }); f.change('current_limit', 6);
   f.request = { id: 'already-minimum', connectedAt: NOW, phase: 'charging', minimumCurrent: true };

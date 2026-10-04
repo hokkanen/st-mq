@@ -84,6 +84,14 @@ Optional `limiterEnabled:true` enables economic current limiting. It additionall
 reported writable numeric capabilities supporting the integration's 6 A minimum
 and 1 A step, sufficient native maximum, and disabled native `auto_balance`.
 Missing step metadata blocks this optional capability, not basic start/stop.
+The advertised pilot current and the vehicle's selected draw are separate.
+A positive vehicle setting below the 6 A pilot minimum can use a valid 6 A
+offer while the vehicle retains its own lower limit. Basic scheduling leaves
+the existing native current setting unchanged; the optional limiter may offer
+6 A. A known zero vehicle restriction still blocks charging. Native charger,
+electrical and shared-allocation ceilings below 6 A still require a pause and
+are never rounded up. Expected delivered energy retains the lower vehicle
+current; offering 6 A is not evidence that the vehicle draws 6 A.
 The scoped minimum-current identification test has separate readiness,
 independently of `limiterEnabled`: it writes exactly the reported 6 A minimum
 and restores the previously observed native setting. It requires writable role

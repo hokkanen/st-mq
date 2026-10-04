@@ -321,7 +321,26 @@ test('averaged scenario current below six amps remains valid while executable su
   assert.equal(sharedChargingAssessment(f.view.chargers, f.view.coordination, f.now()).adopted.state, 'inconsistent');
   allocated.charger2.currentLimitA = 6;
   f.view.chargers[1].values.vehicleCurrentA = f.reading(5);
+  assert.equal(sharedChargingAssessment(f.view.chargers, f.view.coordination, f.now()).adopted.state, 'feasible',
+    'A vehicle drawing below five amps can receive the supported six-amp pilot');
+  f.view.chargers[1].values.nativeCurrentA = f.reading(5);
   assert.equal(sharedChargingAssessment(f.view.chargers, f.view.coordination, f.now()).adopted.state, 'inconsistent');
+});
+
+test('five-amp vehicle delivery reserves a six-amp pilot in independent shared assessment', t => {
+  const f = fixture(t); f.plug(); f.coordinate();
+  const row = f.view.coordination.adopted.allocations[0];
+  f.view.chargers[1].values.vehicleCurrentA = f.reading(5);
+  Object.assign(row.chargers.charger2, { currentA: 5, powerKw: 3.45, currentLimitA: 6 });
+  row.phaseHeadroomA = [12,12,12];
+  assert.equal(sharedChargingAssessment(f.view.chargers, f.view.coordination, f.now()).adopted.state, 'feasible');
+  row.phaseHeadroomA = [11,11,11];
+  assert.equal(sharedChargingAssessment(f.view.chargers, f.view.coordination, f.now()).adopted.state, 'inconsistent',
+    'Five plus six amps of delivery still needs room for both six-amp pilots');
+  row.phaseHeadroomA = [12,12,12];
+  f.view.chargers[1].values.vehicleCurrentA = f.reading(0);
+  assert.equal(sharedChargingAssessment(f.view.chargers, f.view.coordination, f.now()).adopted.state, 'inconsistent',
+    'A native vehicle zero remains a stop restriction');
 });
 
 test('fresh metered charging supersedes a held vehicle start only while independently observed', t => {
