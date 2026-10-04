@@ -133,6 +133,15 @@ whole-second precision, a matching correlated read requested after the command
 acknowledgement can confirm an update in that same second. It preserves the
 original timestamp; an older second or an unsolicited observation cannot supply
 that confirmation. Same-clock unsolicited notifications do not renew freshness.
+Post-write verification first settles any poll already in flight, then starts a
+new correlated refresh. A pre-acknowledgement query cannot become confirmation
+merely because its reply arrived later; this additional read never repeats the write.
+A later correlated work-state query may resolve two different known connected
+states reported with the same whole-second timestamp. It preserves that source
+timestamp. Conflicting notifications revoke earlier queries; connection-boundary
+ties, unknown states, older clocks and fractional-clock contradictions remain
+blocked. This exception does not apply to start permission, current settings or
+physical measurements.
 Replies are fenced by MQTT generation,
 the setting revision at request publication and intervening command dispatch;
 an older contradictory reply cannot overwrite a newer native setting or grant

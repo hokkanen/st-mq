@@ -42,6 +42,13 @@ Versions follow Semantic Versioning. `-dev.N` denotes a development prerelease.
 
 ### Fixed
 
+- Charger command confirmation waits for a new read after acknowledgement when
+  an older poll is still running. This prevents a successful 6 A setting or
+  start/stop command from being rejected because its read began too early;
+  accepted writes are never repeated.
+- A fresh charger query can reconcile different connected work states reported
+  in the same native second, preventing a rapid start/stop from blocking control.
+  Original timestamps remain unchanged; ambiguous connection boundaries stay blocked.
 - Charger 2 confirms its 6 A identification setting before starting from an
   economic pause, including while Tesla still reports an old unplugged value.
   Its original probe deadline uses the confirmed ceiling; restoration waits for

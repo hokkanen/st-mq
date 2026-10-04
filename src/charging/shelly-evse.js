@@ -155,10 +155,24 @@ export function createShellyEvseAdapter({ config, broker, client, store, engine,
       return false;
     }
     if (previous?.measuredAt === measuredAt) {
-      if (!sameValue) throw fail('conflicting-evse-reading');
+      if (!sameValue) {
+        // Work-state transitions can share the device's whole-second clock.
+        // A later direct query establishes the current state without inventing
+        // a later source time. Notifications alone cannot order that collision,
+        // and must revoke a query already in flight before it was observed.
+        const connectedStates = [...config.connectedStates, ...config.chargingStates];
+        const currentWorkState = role === 'work_state' && readback && !retained
+          && measuredAt % 1000 === 0 && readback.requestedAt >= previous.receivedAt
+          && connectedStates.includes(previous.value) && connectedStates.includes(result.value);
+        if (!currentWorkState) {
+          if (role === 'work_state' && !readback)
+            fieldRevisions.set(role, (fieldRevisions.get(role) ?? 0) + 1);
+          throw fail('conflicting-evse-reading');
+        }
+      }
       // A first live reading can replace retained evidence without inventing
       // a different source timestamp or losing the plug boundary.
-      if (!previous.retained || retained) return false;
+      if (sameValue && (!previous.retained || retained)) return false;
     }
     let value = result.value;
     if (role === 'phase_info') {
@@ -286,7 +300,11 @@ export function createShellyEvseAdapter({ config, broker, client, store, engine,
     return accepted;
   }
 
-  async function refresh() {
+  async function refresh({ force = false } = {}) {
+    // A poll already in flight may have requested a setting before a write was
+    // acknowledged. Settle it, then begin a new correlated read for post-write
+    // confirmation; receipt after the reply cannot change that request's order.
+    if (force && polling) await polling;
     if (polling || !connected || !admitted || closed) return polling;
     const epoch = generation, readinessAtStart = readinessRevision;
     polling = (async () => {
@@ -788,7 +806,7 @@ export function createShellyController({ adapter, initialState, saveState = () =
       await adapter.rpc('Number.Set', { owner: `service:${adapter.config.serviceId}`, role: 'current_limit', value: target },
         { mutation: true, identificationCurrent: copy(test), guard });
       test.pending.acceptedAt = clock(); await persist();
-      await adapter.refresh();
+      await adapter.refresh({ force: true });
       const actual = adapter.snapshot().fields.current_limit;
       if (!fresh(actual) || actual.value !== target
         || !commandReadback(actual, { ...test.pending, stage: 'accepted' })
@@ -925,7 +943,7 @@ export function createShellyController({ adapter, initialState, saveState = () =
                     try { await persist(); } catch (cause) { state.pending = prior; throw cause; }
                   } });
                 state.pending.stage = 'accepted'; state.pending.acceptedAt = clock(); await persist();
-                await adapter.refresh();
+                await adapter.refresh({ force: true });
                 snapshot = adapter.snapshot();
                 const readback = snapshot.fields.start_charging;
                 if (!takeoverContextCurrent() || !snapshot.controlReady || !fresh(readback) || readback.value !== false
@@ -943,7 +961,7 @@ export function createShellyController({ adapter, initialState, saveState = () =
               state.scheduleTakeoverPending = true; state.nativeSchedule = scheduleToken(snapshot);
               await persist();
               await adapter.disableNativeSchedules({ guard: takeoverGuard, beforePublish: persist });
-              await adapter.refresh();
+              await adapter.refresh({ force: true });
               snapshot = adapter.snapshot();
             }
             if (!takeoverGuard() || !snapshot.controlReady || snapshot.nativeScheduleActive) throw fail('evse-takeover-changed');
@@ -1188,7 +1206,7 @@ export function createShellyController({ adapter, initialState, saveState = () =
           // still requires native readback and must not replay the command.
           state.pending.stage = 'accepted'; state.pending.acceptedAt = clock(); await persist();
           if (!guard()) return false;
-          await adapter.refresh();
+          await adapter.refresh({ force: true });
           const readback = adapter.snapshot().fields[role];
           if (!fresh(readback) || readback.value !== value || !commandReadback(readback, state.pending)) throw fail('evse-command-unconfirmed');
           if (role === 'start_charging' && value === false && readback.measuredAt > state.pending.acceptedAt && !systemEcho(readback, value)) {

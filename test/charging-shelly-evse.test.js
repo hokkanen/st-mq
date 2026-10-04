@@ -477,7 +477,8 @@ test('an uncertain saved dispatch reconciles without replaying a different physi
  assert.equal(f.writes.some(row=>row.method.endsWith('.Set')),false);
 });
 test('unmapped work states and mismatched RPC role types cannot authorize charging',async t=>{
- const f=fixture(t,{limiterEnabled:true});await f.ready();f.setNow(NOW+1000);f.notify('work_state','unknown-fault');
+ const f=fixture(t,{limiterEnabled:true});await f.ready();f.setNow(NOW+1000);
+ f.fields.work_state='unknown-fault';f.notify('work_state','unknown-fault');
  assert.equal(f.adapter.normalize().connected.available,false);
  await assert.rejects(f.adapter.rpc('Number.Set',{owner:'service:0',role:'start_charging',value:true},{mutation:true}));
  const controller=createShellyController({adapter:f.adapter,clock:()=>NOW+1000,canControl:()=>true});t.after(()=>controller.close());
@@ -539,6 +540,95 @@ test('a retained physical state can be confirmed live at the same original sourc
  assert.equal(f.adapter.normalize().connected.available,false);
  f.fields.work_state='charger_pause';await f.adapter.refresh();
  assert.equal(f.adapter.normalize().connected.value,true);assert.equal(f.adapter.normalize().connected.measuredAt,NOW+1000);
+});
+test('a direct work-state query resolves whole-second transitions without changing their source time', async t => {
+  const f = fixture(t); await f.ready();
+  f.setNow(NOW + 1000); f.notify('work_state', 'charger_pause');
+  const session = f.adapter.snapshot().session;
+  f.notify('work_state', 'charger_end');
+  assert.equal(f.adapter.snapshot().error, 'conflicting-evse-reading');
+  assert.equal(f.adapter.snapshot().fields.work_state.value, 'charger_pause');
+  const publish = f.client.publish;
+  const value = 'charger_end';
+  f.client.publish = (topic, payload, options, callback) => {
+    const frame = JSON.parse(payload);
+    if (frame.method !== 'Enum.GetStatus') return publish(topic, payload, options, callback);
+    callback?.();
+    queueMicrotask(() => f.client.emit('message', `${frame.src}/rpc`, Buffer.from(JSON.stringify({
+      id: frame.id, src: 'synthetic-evse', dst: frame.src,
+      result: { value, last_update_ts: (NOW + 1000) / 1000, source: 'sys' },
+    })), {}));
+  };
+  f.setNow(NOW + 2000); await f.adapter.refresh();
+  const actual = f.adapter.snapshot();
+  assert.equal(actual.error, null); assert.equal(actual.controlReady, true);
+  assert.equal(actual.fields.work_state.value, 'charger_end');
+  assert.equal(actual.fields.work_state.measuredAt, NOW + 1000);
+  assert.equal(actual.fields.work_state.receivedAt, NOW + 2000);
+  assert.deepEqual(actual.session, session, 'Connected state changes retain the physical session');
+  assert.equal(actual.charging, false);
+  assert.equal(f.writes.some(row => row.method.endsWith('.Set')), false);
+});
+test('work-state collision recovery rejects old, fractional and in-flight evidence', async t => {
+  for (const mode of ['older-clock', 'fractional-clock', 'in-flight', 'invalid-value', 'disconnect', 'unknown-state']) await t.test(mode, async t => {
+    const f = fixture(t); await f.ready();
+    const originalAt = NOW + (mode === 'fractional-clock' ? 1100 : 1000);
+    f.setNow(originalAt); f.notify('work_state', 'charger_pause');
+    const publish = f.client.publish;
+    let reply, published;
+    const requested = new Promise(resolve => { published = resolve; });
+    f.client.publish = (topic, payload, options, callback) => {
+      const frame = JSON.parse(payload);
+      if (frame.method !== 'Enum.GetStatus') return publish(topic, payload, options, callback);
+      callback?.();
+      const send = () => f.client.emit('message', `${frame.src}/rpc`, Buffer.from(JSON.stringify({
+        id: frame.id, src: 'synthetic-evse', dst: frame.src,
+        result: { value: mode === 'invalid-value' ? false : mode === 'disconnect' ? 'charger_free'
+          : mode === 'unknown-state' ? 'unknown-fault' : 'charger_end',
+          last_update_ts: (mode === 'older-clock' ? NOW : originalAt) / 1000 },
+      })), {});
+      if (mode === 'in-flight') { reply = send; published(); } else queueMicrotask(send);
+    };
+    f.setNow(NOW + 2000); const refreshing = f.adapter.refresh();
+    if (mode === 'in-flight') {
+      await requested;
+      assert.equal(typeof reply, 'function');
+      f.client.emit('message', 'test/evse/events/rpc', Buffer.from(JSON.stringify({
+        src: 'synthetic-evse', method: 'NotifyStatus',
+        params: { 'enum:202': { value: 'charger_end', last_update_ts: originalAt / 1000 } },
+      })), {});
+      reply();
+    }
+    await refreshing;
+    assert.equal(f.adapter.snapshot().controlReady, false);
+    assert.equal(f.adapter.snapshot().fields.work_state.value, 'charger_pause');
+    assert.equal(f.adapter.snapshot().fields.work_state.measuredAt, originalAt);
+    assert.equal(f.writes.some(row => row.method.endsWith('.Set')), false);
+  });
+});
+test('work-state tie recovery does not authorize tied permission, current or power changes', async t => {
+  for (const role of ['start_charging', 'current_limit', 'phase_info']) await t.test(role, async t => {
+    const f = fixture(t); await f.ready();
+    const before = f.adapter.snapshot().fields[role];
+    const value = role === 'start_charging' ? false : role === 'current_limit' ? 6 : {
+      ...f.fields.phase_info, total_power: 0, ...Object.fromEntries(['phase_a', 'phase_b', 'phase_c']
+        .map(phase => [phase, { voltage: 230, current: 0, power: 0 }])),
+    };
+    const publish = f.client.publish;
+    f.client.publish = (topic, payload, options, callback) => {
+      const frame = JSON.parse(payload);
+      if (!frame.method.endsWith('.GetStatus') || frame.params.role !== role)
+        return publish(topic, payload, options, callback);
+      callback?.(); queueMicrotask(() => f.client.emit('message', `${frame.src}/rpc`, Buffer.from(JSON.stringify({
+        id: frame.id, src: 'synthetic-evse', dst: frame.src,
+        result: { value, last_update_ts: NOW / 1000 },
+      })), {}));
+    };
+    f.setNow(NOW + 2000); await f.adapter.refresh();
+    assert.equal(f.adapter.snapshot().controlReady, false);
+    assert.equal(f.adapter.snapshot().error, 'conflicting-evse-reading');
+    assert.deepEqual(f.adapter.snapshot().fields[role], before);
+  });
 });
 test('a newer allocation revokes an older queued current intent before publication',async t=>{
  const f=fixture(t,{limiterEnabled:true});await f.ready();let release,proposed;
@@ -1017,6 +1107,59 @@ test('Shelly preserves an accepted stop when replanning revokes the in-flight in
   assert.equal(result.ownedPause, true);
   assert.equal(result.reason, 'economic-wait');
   assert.equal(f.writes.filter(row => row.method === 'Boolean.Set').length, 1, 'Do not replay the stop');
+});
+
+test('Shelly post-write verification drains an older poll before requesting fresh correlated readback', async t => {
+  for (const mode of ['current', 'stop', 'start']) await t.test(mode, async t => {
+    const f = fixture(t, { limiterEnabled: false }); await f.ready();
+    const request = mode === 'current' ? { id: 'concurrent-minimum-readback', connectedAt: NOW,
+      phase: 'charging', minimumCurrent: true } : null;
+    const controller = createShellyController({ adapter: f.adapter, clock: f.now,
+      canControl: () => true, getIdentification: () => request });
+    t.after(() => controller.close());
+    const waiting = { periods: [{ startAt: NOW + 3600_000, endAt: null }] };
+    if (mode === 'start') { f.setNow(NOW + 1000); await controller.update({ enabled: true, plan: waiting }); }
+    const writeAt = NOW + (mode === 'start' ? 62_737 : 2737), sourceAt = Math.floor(writeAt / 1000) * 1000;
+    f.setNow(writeAt);
+    const role = mode === 'current' ? 'current_limit' : 'start_charging';
+    const method = mode === 'current' ? 'Number.Set' : 'Boolean.Set';
+    const before = f.writes.filter(row => row.method === method).length;
+    const rpc = f.adapter.rpc, publish = f.client.publish;
+    const reads = [];
+    let acceptedAt, releaseRead, enteredRead, paused = false;
+    const entered = new Promise(resolve => { enteredRead = resolve; });
+    f.client.publish = (topic, payload, options, callback) => {
+      const frame = JSON.parse(payload);
+      if (frame.params.role === role && frame.method.endsWith('.GetStatus')) {
+        reads.push(f.now());
+        if (paused && !releaseRead) {
+          releaseRead = () => publish(topic, payload, options, callback);
+          enteredRead(); return;
+        }
+      }
+      publish(topic, payload, options, callback);
+    };
+    f.adapter.rpc = async (...args) => {
+      const result = await rpc(...args);
+      if (args[0] === method) {
+        f.setSourceTime(role, sourceAt);
+        paused = true;
+        void f.adapter.refresh();
+        await entered;
+        f.setNow(f.now() + 33); acceptedAt = f.now();
+        setImmediate(() => { paused = false; f.setNow(f.now() + 400); releaseRead(); });
+      }
+      return result;
+    };
+    const result = await controller.update({ enabled: mode !== 'current',
+      plan: mode === 'start' ? { periods: [{ startAt: f.now(), endAt: null }] } : waiting });
+    assert.equal(f.writes.filter(row => row.method === method).length - before, 1, 'Never repeat the accepted write');
+    assert.ok(reads.some(at => at < acceptedAt) && reads.some(at => at >= acceptedAt),
+      'The earlier in-flight read is followed by a new post-acknowledgement query');
+    assert.equal(f.adapter.snapshot().fields[role].measuredAt, sourceAt, 'Keep the native whole-second clock');
+    if (mode === 'current') assert.equal(result.currentTest.phase, 'active');
+    else { assert.equal(result.pending, null); assert.equal(result.manual, null); }
+  });
 });
 
 test('Shelly confirms whole-second setting clocks only with post-acknowledgement correlated readback', async t => {
