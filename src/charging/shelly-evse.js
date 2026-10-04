@@ -1,5 +1,5 @@
 import { createHash, randomUUID } from 'node:crypto';
-import { shellyCurrentLimit, vehiclePilotLimit } from './shelly-limit.js';
+import { createShellyCurrentLimiter, vehiclePilotLimit } from './shelly-limit.js';
 import { createMqttAdmission } from '../acquisition/mqtt-admission.js';
 import { shellyProfile, supportedShellyStates } from './shelly-profile.js';
 import { chargingPlanInputsUnavailable } from './plan-inputs.js';
@@ -749,7 +749,7 @@ function validShellyExecution(value) {
 /** The single serialized writer owns current limits and scoped internal pauses.
  * Identification restoration is an application obligation, never a native timer. */
 export function createShellyController({ adapter, initialState, saveState = () => {}, clock = Date.now,
-  canControl = () => false, getIdentification, getPlan, getAllocation } = {}) {
+  canControl = () => false, getIdentification, getPlan, getAllocation, onStatusChange = () => {} } = {}) {
   if (initialState && (initialState.version !== 1 || initialState.association !== adapter.association
     || Object.hasOwn(initialState, 'startup')
     || !validShellyExecution(initialState.execution) || !validCurrentTest(initialState.currentTest) || !validShellyDeviceHold(initialState.deviceHold)
@@ -774,7 +774,16 @@ export function createShellyController({ adapter, initialState, saveState = () =
   let state = initialState ? copy(initialState) : { version: 1, association: adapter.association, phase: 'off', manual: null, ownedPause: false, pending: null };
   let closed = false, revision = 0, planningRevision = null, identification = null, enabled = false, queue = Promise.resolve(),
     takeoverResult = null, takeoverAttemptToken = null, takeoverAttemptRevision = null;
-  const persist = () => saveState(copy(state));
+  const currentLimiter = createShellyCurrentLimiter();
+  const notifyStatus = () => {
+    // Recording is an observer, never part of device command authority.
+    try { onStatusChange()?.catch?.(() => {}); } catch {}
+  };
+  const persist = async () => { await saveState(copy(state)); notifyStatus(); };
+  const limitCurrent = (context, snapshot = adapter.snapshot()) => currentLimiter.evaluate({
+    config: adapter.config, ...context, nativeCurrentA: state.manualCurrentA, shelly: adapter.liveCurrents(), now: clock()
+  }, { authorized: !closed && canControl(), association: snapshot.association, generation: snapshot.generation,
+    connected: snapshot.session?.connected, sessionId: snapshot.session?.sessionId, connectedAt: snapshot.session?.connectedAt });
   const scheduleToken = snapshot => snapshot.nativeScheduleFingerprint ?? (snapshot.nativeScheduleActive ? 'active' : null);
   const systemEcho = (field, value) => field?.commandSource === 'sys' && field.value === value;
   const manualEvent = field => ({ kind: field.value ? 'enable' : 'stop', detectedAt: field.measuredAt,
@@ -1032,8 +1041,7 @@ export function createShellyController({ adapter, initialState, saveState = () =
       if (adapter.config.limiterEnabled) {
         const liveContext = context ?? (typeof getAllocation === 'function' ? await getAllocation(copy(snapshot)) : null);
         if (!liveContext) return;
-        const ceiling = shellyCurrentLimit({ config: adapter.config, ...liveContext,
-          nativeCurrentA: state.manualCurrentA, shelly: adapter.liveCurrents(), now: clock() }).currentA;
+        const ceiling = limitCurrent(liveContext, snapshot).currentA;
         // A sub-minimum ceiling belongs to the start/stop safety path. Keep
         // restoration visible until a valid positive setting is permitted.
         if (ceiling < adapter.config.minimumCurrentA) return;
@@ -1078,8 +1086,8 @@ export function createShellyController({ adapter, initialState, saveState = () =
       await persist();
     }
   }
-  return { status, supportsIdentification: true, invalidate() { revision++; },
-    close() { closed = true; revision++; return queue.catch(() => {}); },
+  return { status, supportsIdentification: true, invalidate() { revision++; if (!canControl()) currentLimiter.reset(); },
+    close() { closed = true; revision++; currentLimiter.reset(); return queue.catch(() => {}); },
     update(input = {}) {
       if (Object.hasOwn(input, 'resume')) throw fail('unsupported-shelly-control-input');
       const intentRevision = ++revision;
@@ -1093,11 +1101,13 @@ export function createShellyController({ adapter, initialState, saveState = () =
       }
       queue = queue.catch(() => {}).then(async () => {
         if (closed || intentRevision !== revision) return;
+        if (!canControl()) currentLimiter.reset();
         if (!takeoverRequested && takeoverResult?.state !== 'pending') takeoverResult = null;
         enabled = input.enabled === true;
         if (input.replan === true) { await persist(); planningRevision = input.controlsRevision ?? null; }
         await adapter.refresh();
         let snapshot = adapter.snapshot();
+        if (!snapshot.online || !snapshot.controlReady || !snapshot.session?.connected) currentLimiter.reset();
         await manageCurrentTest({ snapshot, intentRevision, early: true });
         snapshot = adapter.snapshot();
         const controlScope = snapshot;
@@ -1428,8 +1438,7 @@ export function createShellyController({ adapter, initialState, saveState = () =
         // remain native until the separate installation limiter is enabled.
         const nativeCap = Math.min(current.value, ...[vehiclePilotLimit(context.vehicleCurrentA, adapter.config.minimumCurrentA), allocationA]
           .filter(value => finite(value) && value >= 0));
-        const limitation = adapter.config.limiterEnabled ? shellyCurrentLimit({ config: adapter.config,
-          ...context, allocationA, nativeCurrentA: state.manualCurrentA, shelly: adapter.liveCurrents(), now: clock() })
+        const limitation = adapter.config.limiterEnabled ? limitCurrent({ ...context, allocationA }, snapshot)
           : { currentA: nativeCap, pause: nativeCap < adapter.config.minimumCurrentA,
             reason: 'native-current-limit', fallback: false, modelAvailable: false, guaranteedProtection: false };
         state.limiter = limitation;
@@ -1453,6 +1462,14 @@ export function createShellyController({ adapter, initialState, saveState = () =
         // unconfirmed restoration into permission to release the saved Stop.
         const currentUnconfirmed = state.currentTest?.phase === 'uncertain';
         const shouldStart = !devicePermission(snapshot).held && !pause && allowStart && !snapshot.nativeScheduleActive && !minimumBlocked && !currentUnconfirmed;
+        const publishLimiterStatus = () => {
+          const permission = adapter.snapshot().fields.start_charging;
+          state.limiter.pausedByLimiter = limitation.loadCurrentA === 0 && state.ownedPause && permission.value === false
+            && state.manual?.kind !== 'stop' && !identificationPause && !(economic && !inWindow)
+            && !nativeBlocked && !snapshot.nativeScheduleActive;
+          notifyStatus();
+        };
+        publishLimiterStatus();
         let expectedStart = copy(start), expectedCurrent = copy(current), expectedNotificationRevision = snapshot.notificationRevision;
         const liveIntent = () => !closed && intentRevision === revision && canControl() && adapter.snapshot().session?.sessionId === sessionId
           && adapter.snapshot().association === state.association;
@@ -1592,9 +1609,7 @@ export function createShellyController({ adapter, initialState, saveState = () =
             }
           }
           const permission = adapter.snapshot().fields.start_charging;
-          state.limiter.pausedByLimiter = limitation.loadCurrentA === 0 && state.ownedPause && permission.value === false
-            && state.manual?.kind !== 'stop' && !identificationPause && !(economic && !inWindow)
-            && !nativeBlocked && !snapshot.nativeScheduleActive;
+          publishLimiterStatus();
           const open = !pause && !nativeBlocked && !state.pending && !currentUnconfirmed && fresh(permission) && permission.value === true;
           const intermediate = state.execution && clock() < state.execution.finalStartAt;
           state.released = open && !identification && !state.manual && !state.provisional && !intermediate && Boolean(input.enabled || chargeNow);

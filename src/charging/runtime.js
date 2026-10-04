@@ -245,6 +245,20 @@ export class ChargingRuntime {
     return this.coordination && this.coordination.priority !== this.settings.priority
       ? { ...this.coordination, priority: this.settings.priority } : this.coordination;
   }
+  recordLimiterHistory(now = this.clock()) {
+    try {
+      if (!this.closed && this.canControl() && ['providers', 'mqtt'].includes(this.config.input)
+        && this.configuration.chargers.charger2.enabled) {
+        const item = this.chargers.charger2;
+        this.limiterHistory.observe({ association: item.association,
+          status: this.limiterStatus(this.controlStatus('charger2'), now) }, now);
+      } else this.limiterHistory.suspend();
+      this.limiterHistoryError = null;
+    } catch {
+      this.limiterHistory.suspend();
+      this.limiterHistoryError = 'Load balancing history could not be saved.';
+    }
+  }
   persist() {
     // Assessors only observe the production view. A diagnostic storage failure
     // must not block charging or an outstanding physical restoration duty.
@@ -254,13 +268,7 @@ export class ChargingRuntime {
     try { this.physicalTests.update(this.status(now), now); this.physicalTestsError = null; }
     catch { this.physicalTestsError = 'The charging assessment could not be saved.'; }
     const view = this.status();
-    try {
-      if (this.canControl() && ['providers', 'mqtt'].includes(this.config.input) && this.configuration.chargers.charger2.enabled) {
-        const charger = view.chargers.find(item => item.id === 'charger2');
-        this.limiterHistory.observe({ association: charger.association, status: charger.limiter }, now);
-      } else this.limiterHistory.suspend();
-      this.limiterHistoryError = null;
-    } catch { this.limiterHistoryError = 'Load balancing history could not be saved.'; }
+    this.recordLimiterHistory(now);
     const chargers = Object.fromEntries(Object.entries(this.chargers).map(([id, item]) => [id,
       { association: item.association, controls: item.controls, replan: item.replan, request: item.request, plan: item.plan, progress: item.progress, supplyEstimate: item.supplyEstimate,
         sessionCost: item.sessionCost, vehicleMatch: item.vehicleMatch, vehicleEvidence: item.vehicleEvidence, vehicleConflict: item.vehicleConflict, identification: item.identification, targetState: item.targetState, vehicleDisconnect: item.vehicleDisconnect,
@@ -304,6 +312,12 @@ export class ChargingRuntime {
       const createController = adapter?.createController ?? createChargingController;
       item.controller = createController({ adapter, initialState: this.savedOwnership(id),
         saveState: state => { this.store.setState(this.ownershipKey(id), state); item.ownershipAdmitted = true; }, clock: this.clock,
+        // Record publication before a command/readback await. A later ordinary
+        // poll must not extend the preceding mode through this changed decision.
+        onStatusChange: () => {
+          if (id === 'charger2' && generation === item.adapterGeneration && item.adapter === adapter)
+            this.recordLimiterHistory();
+        },
         canControl: () => {
           const control = item.controller?.status(), boundary = item.vehicleDisconnect;
           return !this.closed && !this.streamPersistencePending && this.canControl()
@@ -1214,6 +1228,29 @@ export class ChargingRuntime {
         : item.definition.capabilities?.scheduling ? 'Charger connection is not configured.' : 'This integration observes charging; scheduling is unavailable.',
       released: false };
   }
+  // Pure presentation of an already published controller/native snapshot.
+  // History observes intermediate command states, so it must never enter
+  // views()/telemetry(), which can advance identification and session requests.
+  limiterStatus(control, now) {
+    const installation = this.configuration.chargers.charger2, snapshot = control.snapshot;
+    const setting = snapshot?.fields?.current_limit, permission = snapshot?.fields?.start_charging;
+    const fresh = field => field?.invalidatedAt === undefined && field?.retained !== true
+      && Number.isFinite(field?.receivedAt) && field.receivedAt <= now && now - field.receivedAt <= installation.maxAgeMs;
+    const recent = Number.isFinite(control.limiter?.evaluatedAt) && control.limiter.evaluatedAt <= now
+      && now - control.limiter.evaluatedAt <= 30_000;
+    const limit = recent ? control.limiter : null;
+    const applied = fresh(setting) ? setting.value : null;
+    const currentTestOutstanding = ['proposed', 'applying', 'active', 'restoring', 'uncertain'].includes(control.currentTest?.phase);
+    const confirmed = !control.pending && !currentTestOutstanding && limit
+      && (limit.currentA === 0 ? fresh(permission) && permission.value === false && control.ownedPause
+        : applied === limit.currentA);
+    return shellyLimiterStatus({ enabled: installation.enabled && installation.limiterEnabled,
+      connected: snapshot?.pluggedIn, online: snapshot?.online === true && this.canControl(),
+      maximumCurrentA: installation.maximumCurrentA, limit, appliedCurrentA: applied,
+      applicationStatus: confirmed ? 'confirmed' : currentTestOutstanding ? 'blocked' : control.pending ? 'pending'
+        : snapshot?.controlReady === false || control.errorCode ? 'blocked' : recent && applied !== null ? 'pending' : 'unknown',
+      pausedByLimiter: limit?.pausedByLimiter === true && fresh(permission) && permission.value === false && control.ownedPause });
+  }
   views(now = this.clock()) {
     const telemetry = this.telemetry(now);
     return Object.entries(this.chargers).map(([id, item]) => {
@@ -1253,26 +1290,7 @@ export class ChargingRuntime {
       const currentTest = currentTestOutstanding || control.currentTest?.id === item.identification?.id
         && control.currentTest?.sessionId === control.session?.sessionId
         && control.currentTest?.connectedAt === control.session?.connectedAt ? control.currentTest ?? null : null;
-      let limiter;
-      if (item.definition.provider === 'shelly-evse') {
-        const installation = this.configuration.chargers.charger2, snapshot = control.snapshot;
-        const setting = snapshot?.fields?.current_limit, permission = snapshot?.fields?.start_charging;
-        const fresh = field => field?.invalidatedAt === undefined && field?.retained !== true
-          && Number.isFinite(field?.receivedAt) && field.receivedAt <= now && now - field.receivedAt <= installation.maxAgeMs;
-        const recent = Number.isFinite(control.limiter?.evaluatedAt) && control.limiter.evaluatedAt <= now
-          && now - control.limiter.evaluatedAt <= 30_000;
-        const limit = recent ? control.limiter : null;
-        const applied = fresh(setting) ? setting.value : null;
-        const confirmed = !control.pending && !currentTestOutstanding && limit
-          && (limit.currentA === 0 ? fresh(permission) && permission.value === false && control.ownedPause
-            : applied === limit.currentA);
-        limiter = shellyLimiterStatus({ enabled: installation.enabled && installation.limiterEnabled,
-          connected: charger.values.connected.value, online: snapshot?.online === true && this.canControl(),
-          maximumCurrentA: installation.maximumCurrentA, limit, appliedCurrentA: applied,
-          applicationStatus: confirmed ? 'confirmed' : currentTestOutstanding ? 'blocked' : control.pending ? 'pending'
-            : snapshot?.controlReady === false || control.errorCode ? 'blocked' : recent && applied !== null ? 'pending' : 'unknown',
-          pausedByLimiter: limit?.pausedByLimiter === true && fresh(permission) && permission.value === false && control.ownedPause });
-      }
+      const limiter = item.definition.provider === 'shelly-evse' ? this.limiterStatus(control, now) : null;
       return { ...charger, defaults, association: item.association, controls: { ...item.controls },
         ...(limiter ? { limiter } : {}),
         identification: { ...item.identification,

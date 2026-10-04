@@ -478,6 +478,82 @@ test('telemetry fallback limits current without starting a manual stop',async t=
   assert.equal(controller.status().manual.kind,'stop');assert.equal(controller.status().limiter.currentA,12);
 });
 
+test('controller comparison survives priority and Charge now invalidation but loses reference on authority loss', async t => {
+  const f = fixture(t, { limiterEnabled: true }); await f.ready(); advanceCommandClock(f);
+  let authority = true, own = 12, priority = 'charger2';
+  const physical = value => {
+    own = value; f.fields.phase_info.total_power = value * .69;
+    for (const phase of ['phase_a', 'phase_b', 'phase_c']) {
+      f.fields.phase_info[phase].current = value; f.fields.phase_info[phase].power = value * .23;
+    }
+    f.setNow(f.now() + 1000);
+  };
+  const controller = createShellyController({ adapter: f.adapter, clock: f.now, canControl: () => authority,
+    getAllocation: () => ({ priority, liveUnscheduled: true, peerDemandA: 16,
+      property: reading([4 + own, 4 + own, 4 + own]), easee: reading([0, 0, 0]), allowance: reading([9, 9, 9]) }) });
+  t.after(() => controller.close());
+  await controller.update({ enabled: false });
+  physical(16);
+  assert.equal((await controller.update({ enabled: false })).limiter.fallback, false);
+  priority = 'balanced'; controller.invalidate();
+  let result = await controller.update({ enabled: false });
+  assert.equal(result.limiter.currentA, 10); assert.equal(result.limiter.fallback, false);
+  priority = 'charger2'; controller.invalidate();
+  result = await controller.update({ enabled: false, chargeNow: { connectedAt: f.adapter.snapshot().session.connectedAt } });
+  assert.equal(result.limiter.currentA, 16); assert.equal(result.limiter.fallback, false);
+  authority = false; f.setAuthority(false); controller.invalidate();
+  authority = true; f.setAuthority(true);
+  result = await controller.update({ enabled: false });
+  assert.equal(result.limiter.fallback, true, 'Authority recovery must establish a new raw agreement');
+  assert.equal(result.limiter.fallbackReason, 'allowance-disagreement');
+});
+
+test('a persisted comparison diagnostic cannot restore a controller reference after restart', async t => {
+  const f = fixture(t, { limiterEnabled: true }); await f.ready(); advanceCommandClock(f);
+  let saved = null, own = 12;
+  const attach = () => createShellyController({ adapter: f.adapter, initialState: saved, clock: f.now,
+    canControl: () => true, saveState: value => { saved = structuredClone(value); },
+    getAllocation: () => ({ priority: 'charger2', property: reading([4 + own, 4 + own, 4 + own]),
+      easee: reading([0, 0, 0]), allowance: reading([9, 9, 9]) }) });
+  let controller = attach(); t.after(() => controller.close());
+  await controller.update({ enabled: false });
+  own = 16; f.setNow(f.now() + 1000); f.fields.phase_info.total_power = 11.04;
+  for (const phase of ['phase_a', 'phase_b', 'phase_c']) {
+    f.fields.phase_info[phase].current = own; f.fields.phase_info[phase].power = 3.68;
+  }
+  assert.equal((await controller.update({ enabled: false })).limiter.fallback, false);
+  assert.deepEqual(saved.limiter.allowanceComparison.basis, Array(3).fill('held-shelly-reference'));
+  await controller.close(); controller = attach();
+  const result = await controller.update({ enabled: false });
+  assert.equal(result.limiter.fallback, true); assert.equal(result.limiter.currentA, 12);
+  assert.deepEqual(result.limiter.allowanceComparison.basis, Array(3).fill('raw'));
+});
+
+test('identification current restoration shares the normal limiter reference instead of false fallback at 6A', async t => {
+  const f = fixture(t, { limiterEnabled: true }); await f.ready(); advanceCommandClock(f);
+  let request = null, own = 12;
+  const controller = createShellyController({ adapter: f.adapter, clock: f.now, canControl: () => true,
+    getIdentification: () => request,
+    getAllocation: () => ({ priority: 'charger2', property: reading([4 + own, 4 + own, 4 + own]),
+      easee: reading([0, 0, 0]), allowance: reading([9, 9, 9]) }) });
+  t.after(() => controller.close());
+  await controller.update({ enabled: false });
+  request = { id: 'synthetic-current-comparison', connectedAt: f.adapter.snapshot().session.connectedAt,
+    phase: 'charging', minimumCurrent: true };
+  let result = await controller.update({ enabled: false });
+  assert.equal(result.currentTest.phase, 'active'); assert.equal(f.fields.current_limit, 6);
+  own = 6; f.setNow(f.now() + 1000); f.fields.phase_info.total_power = 4.14;
+  for (const phase of ['phase_a', 'phase_b', 'phase_c']) {
+    f.fields.phase_info[phase].current = own; f.fields.phase_info[phase].power = 1.38;
+  }
+  request = null;
+  result = await controller.update({ enabled: false });
+  assert.equal(result.currentTest.phase, 'restored'); assert.equal(result.currentTest.restoreCurrentA, 16);
+  assert.equal(f.fields.current_limit, 16, 'Held allowance9A belongs to the same property state before our temporary6A test');
+  assert.equal(result.limiter.fallback, false);
+  assert.deepEqual(f.writes.filter(row => row.method === 'Number.Set').map(row => row.params.value), [6, 16]);
+});
+
 test('first-seen timestamped DUP boundaries are admitted and repeats cannot create another epoch',async t=>{
  const f=fixture(t);await f.ready();f.setNow(NOW+1000);f.notify('work_state','charger_free',{dup:true,messageId:19});
  assert.equal(f.adapter.snapshot().session.connected,false);

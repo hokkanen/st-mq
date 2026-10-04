@@ -56,6 +56,12 @@ Versions follow Semantic Versioning. `-dev.N` denotes a development prerelease.
 
 ### Fixed
 
+- Shelly's measured current changes no longer cause repeated fallback against
+  an unchanged Equalizer allowance. A fixed comparison reference preserves
+  genuine household-load disagreements and is discarded on lost evidence,
+  connection/session changes or restart.
+- Load-balancing history records changed decisions when they become visible,
+  including while a charger command is awaiting confirmation.
 - Unscheduled Shelly charging with Charger 1 priority uses live peer demand;
   an economic forecast no longer reduces its current when the peer is stopped.
 - Easee reads, command acknowledgements and automatic takeover wait briefly for

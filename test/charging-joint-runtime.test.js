@@ -47,7 +47,7 @@ test('Shelly startup validates adopted execution before reading or writing devic
 // Only the physical devices/broker and acquisition clocks are simulated. Device
 // settings keep their source clocks; reads do not manufacture native changes.
 async function fixture(t, { limiter = true, budgetA = 16, notifyRuntime = false, feedsSynchronized = true } = {}) {
-  let now = START, runtime, heldOcppWrite = null, revokedOcppWrites = 0, rejectShellyWrites = false;
+  let now = START, runtime, heldOcppWrite = null, heldShellyCurrentWrite = null, revokedOcppWrites = 0, rejectShellyWrites = false;
   const store = new Store(':memory:'), client = new EventEmitter();
   const commands = [], profiles = new Map(), reads = { charger1: 0, charger2: 0 };
   const household = { currentA: 0, sourceAt: null, feedsSynchronized };
@@ -82,6 +82,11 @@ async function fixture(t, { limiter = true, budgetA = 16, notifyRuntime = false,
   client.subscribe = (topics, _options, cb) => cb(null, topics.map(topic => ({ topic, qos: 0 })));
   client.publish = (_topic, payload, _options, cb) => {
     const frame = JSON.parse(payload), role = frame.params.role;
+    if (frame.method === 'Number.Set' && role === 'current_limit' && heldShellyCurrentWrite) {
+      const held = heldShellyCurrentWrite; heldShellyCurrentWrite = null; held.entered();
+      held.wait.then(() => client.publish(_topic, payload, _options, cb));
+      return;
+    }
     let result, error;
     if (frame.method === 'Shelly.GetDeviceInfo') result = { id: 'synthetic-joint-evse', model: 'synthetic-model', fw_id: 'synthetic-firmware' };
     else if (frame.method === 'Service.GetConfig') result = { id: 0, auto_balance: { enable: false }, auto_charge: true };
@@ -169,10 +174,17 @@ async function fixture(t, { limiter = true, budgetA = 16, notifyRuntime = false,
     for (const item of Object.values(runtime.chargers)) await item.reconcileFlight;
   };
   t.after(async () => { await runtime.close(); shelly.close(); capture.close(); store.close(); });
-  return { get runtime() { return runtime; }, get now() { return now; }, cars, household, commands, fields, schedules, reads, view, automatic, scope, settle,
+  return { get runtime() { return runtime; }, get now() { return now; }, store, cars, household, commands, fields, schedules, reads, view, automatic, scope, settle,
     closeAdapter() { shelly.close(); },
     get revokedOcppWrites() { return revokedOcppWrites; },
     rejectShellyWrites(value) { rejectShellyWrites = value; },
+    holdNextShellyCurrentWrite() {
+      let entered, release;
+      const started = new Promise(resolve => { entered = resolve; });
+      const wait = new Promise(resolve => { release = resolve; });
+      heldShellyCurrentWrite = { entered, wait };
+      return { started, release };
+    },
     holdNextOcppWrite() {
       let entered, release;
       const started = new Promise(resolve => { entered = resolve; });
@@ -507,6 +519,70 @@ test('ordinary current adjustment preserves held source age and falls back when 
   assert.equal(f.view('charger2').limiter.mode, 'fallback');
   assert.equal(f.view('charger2').limiter.reason, 'feed-unsynchronized');
   assert.equal(f.runtime.allocationContext().property.times[0], f.household.sourceAt);
+});
+
+test('limiter history reads the published snapshot without entering identification, planning or view updates', async t => {
+  const f = await fixture(t, { budgetA: 25 });
+  await f.connect('charger2'); await f.priority('charger2'); await f.plan();
+  const expected = f.view('charger2').limiter, item = f.runtime.chargers.charger2;
+  const state = () => structuredClone({ identification: item.identification, request: item.request,
+    plan: item.plan, revision: f.runtime.revision });
+  const before = state(), commands = f.commands.length;
+  const observers = ['views', 'telemetry', 'status', 'updatePlan', 'identificationControl'].map(name =>
+    t.mock.method(f.runtime, name, () => { throw new Error(`History must not enter ${name}`); }));
+  try {
+    f.runtime.recordLimiterHistory();
+    assert.equal(f.runtime.limiterHistoryError, null);
+    assert(observers.every(observer => observer.mock.callCount() === 0));
+    assert.deepEqual(state(), before, 'Recording cannot advance a session, identification attempt or plan');
+    assert.equal(f.commands.length, commands);
+    const row = f.store.db.prepare("SELECT raw FROM observations WHERE signal='shelly_limiter_mode' ORDER BY id DESC LIMIT 1").get();
+    assert.deepEqual(JSON.parse(row.raw).limiter, expected, 'The card and recorder share one snapshot projection');
+  } finally { for (const observer of observers) observer.mock.restore(); }
+});
+
+test('limiter history records publication before a five-second current-command await without writing from status reads', async t => {
+  const f = await fixture(t, { budgetA: 25 });
+  await f.connect('charger2'); await f.priority('charger2'); await f.plan();
+  assert.equal(f.view('charger2').limiter.mode, 'unrestricted');
+  const history = () => f.store.db.prepare(`SELECT c.start_at,c.end_at,o.id,o.raw FROM recorder_coverage c
+    JOIN observations o ON o.id=c.observation_id WHERE c.signal='shelly_limiter_mode' ORDER BY c.id`)
+    .all().map(row => ({ ...row, status: JSON.parse(row.raw).limiter }));
+  const held = f.holdNextShellyCurrentWrite();
+  f.household.currentA = 17; f.advance(5000);
+  const changedAt = f.now, flight = f.runtime.reconcileShellyObservation();
+  await held.started;
+  try {
+    const live = f.view('charger2').limiter, rows = history(), last = rows.at(-1);
+    assert.equal(live.mode, 'limited'); assert.equal(live.allowanceA, 8); assert.equal(live.applicationStatus, 'pending');
+    assert.deepEqual(last.status, live, 'Published limiter decision must already be recorded while the command is waiting');
+    assert.equal(last.start_at, changedAt, 'Use the actual publication clock, not a later poll or a backdated estimate');
+    assert(rows.filter(row => row.status.mode === 'unrestricted').every(row => row.end_at <= changedAt));
+    for (let i = 0; i < 10; i++) {
+      f.advance(500);
+      assert.deepEqual(f.runtime.status().chargers.find(charger => charger.id === 'charger2').limiter, live);
+      assert.deepEqual(history(), rows, 'Half-second status observers cannot write or renew historical coverage');
+    }
+  } finally { held.release(); await flight; }
+  const final = history().at(-1);
+  assert.equal(final.status.mode, 'limited'); assert.equal(final.status.allowanceA, 8);
+  assert.equal(final.status.applicationStatus, 'confirmed'); assert.equal(final.status.appliedCurrentA, 8);
+  assert.equal(f.runtime.status().limiterHistoryError, null);
+});
+
+test('unchanged owned balancing pauses do not produce transient limiter-mode rows on each poll', async t => {
+  const f = await fixture(t);
+  await f.connect('charger1'); await f.connect('charger2');
+  f.cars.charger1.demandA = 16; f.cars.charger2.demandA = 16;
+  await f.priority('charger1'); await f.plan();
+  assert.equal(f.view('charger2').limiter.mode, 'paused-by-balancing');
+  const rows = () => f.store.db.prepare("SELECT id,raw FROM observations WHERE signal='shelly_limiter_mode' ORDER BY id").all();
+  const initial = rows();
+  for (let i = 0; i < 3; i++) {
+    f.advance(5000); await f.runtime.reconcileShellyObservation();
+    assert.equal(f.view('charger2').limiter.mode, 'paused-by-balancing');
+    assert.deepEqual(rows(), initial, 'Publishing an unchanged decision must preserve its complete mode before notifying history');
+  }
 });
 
 test('the existing Shelly poll drives one serialized local reconciliation and stops after close', async t => {

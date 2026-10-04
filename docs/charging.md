@@ -1113,6 +1113,26 @@ delayed Equalizer allowance does not establish an exact gross capacity budget.
 It is usable only while the comparison stays within the configured tolerance;
 a larger disagreement selects fallback until the feeds agree again.
 
+Equalizer can hold that allowance through a change in Shelly's own draw. Once
+the raw comparison agrees at positive, unclipped headroom and Shelly's measured
+phase currents differ by no more than 0.5 A, the controller may
+retain a bounded comparison reference for that exact allowance observation and
+live connection/session scope. Subsequent comparisons account for the change
+in Shelly's **measured** common current since that reference:
+`max(0, fuse − property + Easee + Shelly_now − Shelly_reference)`.
+This prevents a successful current increase from manufacturing a disagreement
+with the unchanged allowance. It does not compensate for household changes or
+use the requested pilot as measured current. The final headroom `H` still uses
+the current property and charger measurements.
+
+The reference stays fixed while its allowance observation remains unchanged;
+later approximate matches cannot slide it to absorb gradual household changes.
+Changed observations require a new raw comparison. Zero/clipped observations
+retain the raw comparison because they do not establish an exact offset.
+Loss of usable feed evidence, a changed connection or physical session, and a
+controller restart discard this process-local reference. Original observations
+and timestamps remain unchanged; the comparison reports its derived basis.
+
 Shelly priority excludes Easee's present draw from this fuse test. If household
 demand excluding both chargers leaves 16 A on every phase, Shelly may take 16 A
 within its own limits, and Equalizer must reduce Charger 1. A temporary property

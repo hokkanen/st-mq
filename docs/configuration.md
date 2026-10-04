@@ -341,7 +341,12 @@ per-phase allowed-current feed and headroom independently calculated from
 property and Easee currents before the configured safety margin. Healthy feeds
 synchronized in their current connection epochs can retain older last-change
 values when the comparison passes; original timestamps remain unchanged. No
-additional feed-age configuration is needed. `maxAgeMs`, initially 15000 ms,
+additional feed-age configuration is needed. A fixed, process-local reference
+can account for Shelly's measured current change while the same admitted
+positive allowance observation remains held. Household changes still affect
+the comparison; reconnect, session changes and restart discard the reference.
+See the [current allocation contract](charging.md#charger-2-current-allocation).
+`maxAgeMs`, initially 15000 ms,
 continues to bound Shelly measurements, command readiness and native readback.
 `dwellMs` and `rampA` default to 30000 ms and 2 A for increases and resumption;
 reductions do not wait for that increase dwell.

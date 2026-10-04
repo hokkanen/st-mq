@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { shellyCurrentLimit } from '../src/charging/shelly-limit.js';
+import { createShellyCurrentLimiter, shellyCurrentLimit } from '../src/charging/shelly-limit.js';
 import { ChargingRuntime } from '../src/charging/runtime.js';
 
 const NOW = Date.parse('2026-10-05T12:00:00Z');
@@ -16,6 +16,156 @@ const native = currents => ({ healthy: true, currents, times: triple(NOW), evide
 const fixture = () => ({ config, now: NOW, priority: 'charger2', liveUnscheduled: true,
   property: held(triple(8)), easee: native(triple(0)), allowance: held(triple(17)),
   shelly: { healthy: true, currents: triple(0), times: triple(NOW) } });
+const scope = () => ({ authorized: true, association: 'synthetic-shelly', generation: 1,
+  connected: true, sessionId: 'synthetic-session', connectedAt: NOW - 60_000 });
+const loaded = ({ household = 4, peer = 0, own = 12, allowance = 9 } = {}) => {
+  const input = fixture(); input.property.currents = triple(household + peer + own);
+  input.easee.currents = triple(peer); input.shelly.currents = triple(own); input.allowance.currents = triple(allowance);
+  return input;
+};
+
+test('a frozen measured reference admits 12 to 14 to 16A with unchanged allowance clocks', () => {
+  const limiter = createShellyCurrentLimiter(), connection = scope();
+  for (const own of [12, 14, 16]) {
+    const input = loaded({ own }), before = structuredClone(input), result = limiter.evaluate(input, connection);
+    assert.equal(result.currentA, 16); assert.equal(result.fallback, false);
+    assert.deepEqual(result.allowanceComparison.expectedCurrentA, triple(9));
+    assert.deepEqual(result.allowanceComparison.basis, triple(own === 12 ? 'raw' : 'held-shelly-reference'));
+    assert.deepEqual(input, before, 'Held source clocks and measured currents remain original');
+  }
+  assert.equal(shellyCurrentLimit(loaded({ own: 16 })).fallback, true, 'The pure one-shot calculation has no historical reference');
+});
+
+test('household changes cannot slide an existing reference through repeated raw matches or fallback reductions', () => {
+  const limiter = createShellyCurrentLimiter(), connection = scope();
+  limiter.evaluate(loaded({ own: 14, allowance: 7.4 }), connection);
+  for (const household of [5, 6, 7, 8]) {
+    const result = limiter.evaluate(loaded({ household, own: 18 - household, allowance: 7.4 }), connection);
+    assert.equal(result.fallback, household >= 6, 'Unrelated household load remains visible even when property total stays constant');
+    assert.deepEqual(result.allowanceComparison.basis, triple('held-shelly-reference'));
+    assert.deepEqual(result.allowanceComparison.expectedCurrentA, triple(11 - household));
+  }
+  const restored = limiter.evaluate(loaded({ household: 4, own: 10, allowance: 7.4 }), connection);
+  assert.equal(restored.fallback, false, 'Recovery requires the household contradiction to resolve');
+  assert.deepEqual(restored.allowanceComparison.expectedCurrentA, triple(7));
+});
+
+test('concurrent Easee draw cancels in the comparison and never reduces Shelly priority entitlement', () => {
+  const limiter = createShellyCurrentLimiter(), connection = scope();
+  limiter.evaluate(loaded(), connection);
+  const result = limiter.evaluate(loaded({ own: 16, peer: 16 }), connection);
+  assert.equal(result.currentA, 16); assert.equal(result.fallback, false);
+  assert.deepEqual(result.baseCurrentA, triple(4));
+  assert.deepEqual(result.allowanceComparison.expectedCurrentA, triple(9));
+});
+
+test('compensation is applied before zero clipping and does not hide a household increase', () => {
+  const limiter = createShellyCurrentLimiter(), connection = scope();
+  limiter.evaluate(loaded({ household: 8, own: 12, allowance: 5 }), connection);
+  const result = limiter.evaluate(loaded({ household: 11, own: 16, allowance: 5 }), connection);
+  assert.equal(result.fallback, true); assert.equal(result.currentA, 12);
+  assert.deepEqual(result.allowanceComparison.expectedCurrentA, triple(2), 'The raw -2A deficit must survive before adding the 4A own-current change');
+});
+
+test('zero allowance and clipped expected budgets remain raw comparisons and never seed offsets', () => {
+  for (const initial of [loaded({ household: 8, peer: 16, own: 16, allowance: 0 }),
+    loaded({ household: 10, own: 16, allowance: 1 })]) {
+    const limiter = createShellyCurrentLimiter(), connection = scope();
+    assert.equal(limiter.evaluate(initial, connection).fallback, false);
+    const next = structuredClone(initial); next.shelly.currents = triple(10);
+    next.property.currents = initial.property.currents.map(value => value - 6);
+    const result = limiter.evaluate(next, connection);
+    assert.equal(result.fallback, true);
+    assert.deepEqual(result.allowanceComparison.basis, triple('raw'));
+  }
+});
+
+test('an unbalanced transient cannot seed a common Shelly reference from its minimum phase', () => {
+  const limiter = createShellyCurrentLimiter(), connection = scope();
+  const initial = loaded(); initial.shelly.currents = [9.7, 0, 9.8];
+  assert.equal(limiter.evaluate(initial, connection).fallback, false, 'The raw comparison remains valid');
+  const next = limiter.evaluate(loaded({ own: 16 }), connection);
+  assert.equal(next.fallback, true);
+  assert.deepEqual(next.allowanceComparison.basis, triple('raw'));
+  const established = createShellyCurrentLimiter(); established.evaluate(loaded(), connection);
+  const transient = established.evaluate(initial, connection);
+  assert.equal(transient.fallback, true); assert.equal(transient.currentA, 8);
+  assert.deepEqual(transient.allowanceComparison.basis, triple('held-shelly-reference'));
+  const recovered = established.evaluate(loaded({ own: 16 }), connection);
+  assert.equal(recovered.fallback, false); assert.equal(recovered.currentA, 16);
+  assert.deepEqual(recovered.allowanceComparison.expectedCurrentA, triple(9), 'The transient must not replace the frozen reference');
+});
+
+test('each allowance source observation owns a separate frozen phase reference', () => {
+  const limiter = createShellyCurrentLimiter(), connection = scope();
+  limiter.evaluate(loaded(), connection);
+  const update = loaded({ own: 16 }); update.allowance.currents[0] = 5; update.allowance.times[0]++;
+  const first = limiter.evaluate(update, connection);
+  assert.equal(first.fallback, false);
+  assert.deepEqual(first.allowanceComparison.basis, ['raw', 'held-shelly-reference', 'held-shelly-reference']);
+  assert.deepEqual(first.allowanceComparison.expectedCurrentA, [5, 9, 9]);
+  const next = structuredClone(update); next.shelly.currents = triple(14); next.property.currents = triple(18);
+  const second = limiter.evaluate(next, connection);
+  assert.equal(second.fallback, false);
+  assert.deepEqual(second.allowanceComparison.basis, triple('held-shelly-reference'));
+  assert.deepEqual(second.allowanceComparison.expectedCurrentA, [5, 9, 9]);
+  for (const change of [feed => { feed.times[1]++; }, feed => { feed.currents[1] = 8; }]) {
+    const changed = structuredClone(update); change(changed.allowance);
+    const result = limiter.evaluate(changed, connection);
+    assert.equal(result.fallback, true, 'A changed phase needs its own raw agreement');
+    assert.equal(result.allowanceComparison.basis[1], 'raw');
+  }
+});
+
+test('a new observation can seed after initial disagreement but never reseeds an existing reference', () => {
+  const limiter = createShellyCurrentLimiter(), connection = scope();
+  assert.equal(limiter.evaluate(loaded({ own: 16 }), connection).fallback, true);
+  assert.equal(limiter.evaluate(loaded(), connection).fallback, false);
+  const result = limiter.evaluate(loaded({ own: 16 }), connection);
+  assert.equal(result.fallback, false);
+  assert.deepEqual(result.allowanceComparison.expectedCurrentA, triple(9));
+});
+
+test('feed epochs, source identity, physical session and controller lifetime fence reference reuse', () => {
+  for (const change of [
+    (_input, connection) => { connection.authorized = false; },
+    (_input, connection) => { connection.connected = false; },
+    (_input, connection) => { connection.sessionId = 'another-session'; },
+    (_input, connection) => { connection.sessionId = null; },
+    (_input, connection) => { connection.connectedAt++; },
+    (_input, connection) => { connection.generation++; },
+    (_input, connection) => { connection.association = 'another-equipment'; },
+    ...['property', 'easee', 'allowance'].flatMap(role => [
+      input => { input[role].evidence.epoch = 'new-epoch'; },
+      input => { input[role].evidence.source = 'another-source'; },
+      input => { input[role].evidence.connected = false; },
+      input => { input[role].evidence.online = false; },
+      input => { input[role].evidence.synchronized = false; }
+    ]),
+    input => { input.shelly.healthy = false; },
+    input => { input.shelly.times = triple(NOW - config.maxAgeMs - 1); },
+    input => { input.easee.evidence.activityAt = NOW - 120_001; }
+  ]) {
+    const limiter = createShellyCurrentLimiter(), connection = scope(); limiter.evaluate(loaded(), connection);
+    const changed = loaded({ own: 16 }); change(changed, connection);
+    assert.equal(limiter.evaluate(changed, connection).fallback, true);
+    assert.equal(limiter.evaluate(loaded({ own: 16 }), scope()).fallback, true, 'Recovery cannot recover a retired in-memory reference');
+  }
+  const limiter = createShellyCurrentLimiter(); limiter.evaluate(loaded(), scope()); limiter.reset();
+  assert.equal(limiter.evaluate(loaded({ own: 16 }), scope()).fallback, true);
+  assert.equal(createShellyCurrentLimiter().evaluate(loaded({ own: 16 }), scope()).fallback, true);
+});
+
+test('a reference never overrides vehicle, native, current property or priority restrictions', () => {
+  const limiter = createShellyCurrentLimiter(), connection = scope(); limiter.evaluate(loaded(), connection);
+  for (const [restriction, expected] of [[{ vehicleCurrentA: 0 }, 0], [{ nativeCurrentA: 7 }, 7],
+    [{ priority: 'charger1', peerDemandA: 16 }, 0], [{ priority: 'balanced', peerDemandA: 16 }, 10]]) {
+    const result = limiter.evaluate({ ...loaded({ own: 16 }), ...restriction }, connection);
+    assert.equal(result.currentA, expected); assert.equal(result.fallback, false);
+  }
+  const result = limiter.evaluate(loaded({ household: 20, own: 16 }), connection);
+  assert.equal(result.fallback, true); assert.equal(result.currentA, 0, 'A known 4A property ceiling still stops despite fallback12');
+});
 
 test('synchronized online held values allow the full pilot without converting them into new measurements', () => {
   const input = fixture(), before = structuredClone(input);
