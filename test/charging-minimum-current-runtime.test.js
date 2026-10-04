@@ -13,7 +13,7 @@ const START = 1_800_000_000_000;
 async function fixture(t, { firstCurrentA = 16, firstAvailable = true, stepMetadata = true, currentWritable = true,
   teslaPluggedIn = true, initialCurrentA = 12, economicStartAt = START } = {}) {
   let now = START, runtime, adapter, meterAt = START, acceptCurrentWrite = true, measuredCurrentA = null, currentWriteHook = null,
-    phaseMeasuredAt = null, statusReadHook = null, currentReadbackHook = null, dropCurrentReply = false, firstStopped = false, firstStatusAt = START,
+    phaseMeasuredAt = null, statusReadHook = null, currentReadbackHook = null, dropCurrentReply = false, partialNotifications = false, partialNotificationHook = null, firstStopped = false, firstStatusAt = START,
     firstSourceAt = null, firstNative = {};
   const data = new Map(), writes = [], client = new EventEmitter();
   const config = { input: 'mqtt', connections: {
@@ -52,6 +52,14 @@ async function fixture(t, { firstCurrentA = 16, firstAvailable = true, stepMetad
       now++; if (role !== 'current_limit' || acceptCurrentWrite) fields[role] = { value: frame.params.value, at: now };
       if (role === 'current_limit' && dropCurrentReply) { dropCurrentReply = false; respond = false; }
       if (role === 'current_limit' && currentWriteHook) { const hook = currentWriteHook; currentWriteHook = null; hook(); }
+      if (partialNotifications) {
+        fields[role].at = Math.floor(now / 1000) * 1000;
+        client.emit('message', 'synthetic/minimum-current/evse/events/rpc', Buffer.from(JSON.stringify({
+          src: 'synthetic-minimum-second', method: 'NotifyStatus', params: { ts: now / 1000,
+            [`${components[role][0].toLowerCase()}:${components[role][1]}`]: { value: frame.params.value } },
+        })), {});
+        partialNotificationHook?.(role, frame.params.value);
+      }
       if (role === 'start_charging') fields.work_state = { value: frame.params.value ? 'charger_charging' : 'charger_pause', at: now };
       result = null;
     } else {
@@ -132,6 +140,12 @@ async function fixture(t, { firstCurrentA = 16, firstAvailable = true, stepMetad
     onStatusRead(hook) { statusReadHook = hook; },
     onCurrentReadback(hook) { currentReadbackHook = hook; },
     dropCurrentReply() { dropCurrentReply = true; },
+    setPartialNotifications(hook) { partialNotifications = true; partialNotificationHook = hook; },
+    notifyPhase(value) {
+      client.emit('message', 'synthetic/minimum-current/evse/events/rpc', Buffer.from(JSON.stringify({
+        src: 'synthetic-minimum-second', method: 'NotifyStatus', params: { ts: now / 1000, 'object:203': { value } },
+      })), {});
+    },
     notifyCurrent(value, { at = now, source = 'rpc' } = {}) {
       fields.current_limit = { value, at };
       client.emit('message', 'synthetic/minimum-current/evse/events/rpc', Buffer.from(JSON.stringify({
@@ -1120,4 +1134,71 @@ test('minimum-current runtime identifies and restores with absent optional UI st
   assert.equal(f.fields.current_limit.value, 12);
   assert.equal(f.adapter.snapshot().currentControlReady, false);
   assert.deepEqual(f.writes.map(row => [row.role, row.value]), [['current_limit', 6], ['current_limit', 12]]);
+});
+
+
+test('value-only before-ACK notifications preserve cold 6 A preparation and confirmed start', async t => {
+  const f = await pausedColdFixture(t), observed = [];
+  f.setPartialNotifications((role, value) => {
+    f.observe(); observed.push({ role, value, phase: f.item('charger2').identification.phase,
+      controlReady: f.adapter.snapshot().controlReady, probe: structuredClone(f.item('charger2').identification.probe) });
+  });
+  await f.update(); await f.update();
+  assert.ok(observed.some(row => row.role === 'current_limit' && row.value === 6));
+  assert.equal(observed.find(row => row.role === 'current_limit' && row.value === 6).probe, null,
+    'Cached 16 A cannot create the economic probe while its own 6 A write is awaiting readback');
+  assert.ok(observed.some(row => row.role === 'start_charging' && row.value === true));
+  assert.ok(observed.every(row => row.phase !== 'inconclusive'), 'A normal pending response cannot interrupt identification');
+  assert.ok(observed.every(row => !row.controlReady), 'Partial notification cannot grant native write readiness');
+  const control = f.item('charger2').controller.status();
+  assert.equal(control.currentTest.phase, 'active');
+  assert.ok(f.item('charger2').identification.probe.startedAt >= control.currentTest.confirmedAt);
+  assert.ok(f.item('charger2').identification.probe.deadlineAt - f.item('charger2').identification.probe.startedAt > 60_000);
+  assert.equal(control.snapshot.fields.current_limit.value, 6);
+  assert.equal(control.manual, null);
+  f.advance(6000); f.publishTesla({ charging_state: 'Charging' }); await f.sampleTesla(6);
+  f.advance(5000); await f.adapter.refresh(); f.observe();
+  assert.equal(f.item('charger2').vehicleMatch?.id, 'tesla');
+});
+
+test('value-only before-ACK Stop, restoration and Start notifications preserve BMW evidence and Charge now', async t => {
+  const f = await stoppedTeslaPeerFixture(t), observed = [];
+  f.setPartialNotifications((role, value) => {
+    f.observe(); observed.push({ role, value, phase: f.item('charger2').identification.phase });
+  });
+  f.setMeasuredCurrent(6); f.advance(10_000); await f.adapter.refresh();
+  publishBmw(f, { atHome: true, pluggedIn: true, charging: true });
+  f.advance(1000); await f.update(); await f.update();
+  assert.equal(f.item('charger2').identification.phase, 'pausing');
+  const card = f.runtime.status().chargers.find(row => row.id === 'charger2');
+  await f.runtime.chargeNow('charger2', { association: card.association,
+    sessionId: card.request.sessionId, revision: card.request.revision });
+  f.advance(5000); f.setMeasuredCurrent(0); await f.update(); await f.update();
+  assert.equal(f.item('charger2').identification.phase, 'pausing');
+  assert.equal(f.fields.current_limit.value, 16); assert.equal(f.fields.start_charging.value, false);
+  f.advance(1000); publishBmw(f, { charging: false }); await f.update(); await f.update();
+  assert.equal(f.item('charger2').vehicleMatch?.id, 'bmw');
+  assert.equal(f.item('charger2').identification.phase, 'completed');
+  assert.equal(f.fields.start_charging.value, true);
+  assert.equal(f.item('charger2').controller.status().manual, null);
+  for (const [role, value] of [['start_charging', false], ['current_limit', 16], ['start_charging', true]])
+    assert.ok(observed.some(row => row.role === role && row.value === value));
+  assert.ok(observed.every(row => row.phase !== 'inconclusive'));
+});
+
+
+test('a complete phase delta keeps the original bounded probe while native measurement readback is pending', async t => {
+  const f = await pausedColdFixture(t); await f.update();
+  const probe = structuredClone(f.item('charger2').identification.probe);
+  const before = structuredClone(f.adapter.snapshot().fields.phase_info);
+  f.advance(1000); f.notifyPhase({ total_power: 4.14, total_act_energy: 0,
+    phase_a: { voltage: 230, current: 6, power: 1.38 }, phase_b: { voltage: 230, current: 6, power: 1.38 },
+    phase_c: { voltage: 230, current: 6, power: 1.38 } });
+  f.observe();
+  assert.deepEqual(f.item('charger2').identification.probe, probe);
+  assert.equal(f.item('charger2').identification.phase, 'charging');
+  assert.equal(f.adapter.snapshot().fields.phase_info.measuredAt, before.measuredAt, 'The notification did not freshen held phase evidence');
+  await f.adapter.refresh({ force: true }); f.observe();
+  assert.deepEqual(f.item('charger2').identification.probe, probe);
+  assert.equal(f.item('charger2').identification.phase, 'charging');
 });

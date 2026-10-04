@@ -166,7 +166,9 @@ edit must still be detected through source clocks, schedule revisions and
 readback. Observed stop/enable changes do not prove which app or person caused
 them. Shelly's native command-source evidence distinguishes same-value `sys`
 refreshes from newer external instructions. A system refresh preserves existing
-ownership; observed external instructions retain priority. Detecting a repeated
+ownership only when no intervening permission change was observed; a Stop followed
+by Enable cannot disappear because one poll sees the same final value.
+Observed external instructions retain priority. Detecting a repeated
 selection of the same value requires newer native instruction evidence. If a
 repeated Shelly Stop leaves the value `false`, source `rpc` and update timestamp
 unchanged, the status API cannot distinguish that command from the existing

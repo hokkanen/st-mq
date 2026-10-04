@@ -27,6 +27,7 @@ const CONTROL_ERRORS = new Set(['read-failed', 'command-failed', 'readback-faile
   'provider-offline', 'evse-control-unavailable', 'evse-command-revoked', 'evse-command-unconfirmed',
   'evse-publish-unconfirmed', 'evse-rpc-rejected', 'evse-profile-unsupported', 'evse-current-control-unavailable', 'evse-work-state-unavailable', 'evse-read-unavailable',
   'evse-native-restriction', 'evse-native-schedule-unavailable', 'evse-event-overflow', 'evse-component-mapping-unverified',
+  'evse-notification-readback-required', 'evse-permission-event-overflow',
   'identification-resume-required', 'command-unconfirmed']);
 const CONTROL_REASONS = new Set([...CONTROL_ERRORS, 'manual-stop', 'manual-release', 'manual-enable', 'manual-charge-now', 'manual-schedule', 'native-schedule',
   'takeover-pause-prepare', 'takeover-pause-install', 'takeover-pause-confirm', 'takeover-native-check',

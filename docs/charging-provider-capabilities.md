@@ -83,6 +83,11 @@ For external scheduling, disable native Auto charge in the charger setup; the
 also requires `auto_charge:false`. This is an explicit native-device setup choice:
 the integration reads it and does not silently rewrite it. A connected charger
 may then remain in `charger_insert` until an authorized Start.
+Disabling Auto charge does not establish that every later device-generated
+permission change is an echo of an application command. Firmware-generated
+false-to-true permission changes remain an
+[open qualification issue](https://github.com/hokkanen/st-mq/issues/1);
+they must not be suppressed by a timing allowance or inferred handshake.
 
 Basic start/stop requires fresh native state, start permission and current setting, working MQTT,
 a running service and no active errors or flags. It preserves native current
@@ -134,7 +139,7 @@ controller ownership and restoration obligations remain a separate contract.
 
 Every refresh reads service configuration/status, numeric current capabilities
 and [schedules](https://shelly-api-docs.shelly.cloud/gen2/ComponentsAndServices/Schedule/).
-The source contract requires positive native `last_update_ts` values in seconds.
+RPC value readback requires positive native `last_update_ts` values in seconds.
 Zero/unknown timestamps are unavailable. A correlated read renews setting receipt
 evidence without changing its original source clock. An unchanged current-limit,
 start-permission or work-state reply can have an older update timestamp than its
@@ -167,6 +172,23 @@ valid subsequent increment, while recorded gaps remain intact. MQTT electrical
 acquisition and lifetime-meter recording remain useful independently of control
 availability.
 
+[`NotifyStatus`](https://shelly-api-docs.shelly.cloud/gen2/General/Notifications/)
+is a partial overlay, with its own event clock in `params.ts`. Omitted attributes
+retain their meaning only within a known live baseline; explicit null removes
+that evidence. A notification event clock is not a replacement value-update
+clock. Changed deltas fence older reads and obtain fresh native readback without
+making unchanged values or electrical measurements fresh. Expected notifications
+from an in-flight application command still require that command's acknowledgement
+and correlated readback before they can confirm it.
+Preserve observed permission transitions until the controller consumes them,
+including a false-to-true sequence between polls whose final value matches the
+earlier value. Unavailable, malformed or overflowing event evidence cannot grant
+control, and reconnecting does not lend a new live stream an old overlay baseline.
+Qualified work-state notifications preserve a disconnect followed by a new
+connection between polls. Such a boundary retains its notification-event
+provenance; it does not rewrite the native value clock or remove the need for
+fresh readback before a command.
+
 After device discovery, connection-state and electrical reads run independently
 of control-setting and schedule reads. A failed or timed-out control read closes
 command admission but does not prevent a successful physical-state read from
@@ -192,7 +214,8 @@ Superseded schedules remain disabled until externally changed again. A saved
 native permission reference prevents an old Stop from regaining priority after
 restart or unplugging; genuinely newer source evidence takes priority again.
 Native setting reports retain their command-source evidence. A same-value
-`sys` update is a device refresh and does not revoke saved command ownership.
+`sys` update without an intervening observed permission change is a device refresh
+and does not revoke saved command ownership.
 A newer external update retains manual priority, including a repeated selection
 of the same value when newer native instruction evidence is available. The
 [Boolean status API](https://shelly-api-docs.shelly.cloud/gen2/DynamicComponents/Virtual/Boolean/)

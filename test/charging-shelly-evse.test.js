@@ -53,7 +53,7 @@ function fixture(t, extra={}) {
   const client=new EventEmitter(), values=new Map(), writes=[], energy=[], gaps=[], voltages=[], events=[];
   const roleTypes={current_limit:'number',start_charging:'boolean',work_state:'enum',phase_info:'object'};
   const roles=Object.keys(roleTypes), ids=Object.fromEntries(roles.map((role,i)=>[role,i+200]));
-  const settingClock = new Map();
+  const settingClock = new Map(), sources = new Map();
   const fields={current_limit:16,start_charging:true,work_state:'charger_charging',phase_info:{total_power:8.28,total_act_energy:0,phase_a:{voltage:230,current:12,power:2.76},phase_b:{voltage:230,current:12,power:2.76},phase_c:{voltage:230,current:12,power:2.76}}};
   client.subscribe=(topics,_opts,cb)=>{client.topics=topics;cb(null,topics.map(topic=>({topic,qos:0})));};
   client.publish=(topic,payload,options,cb)=>{
@@ -72,18 +72,31 @@ function fixture(t, extra={}) {
       const role=frame.params.role, value=fields[role];
       if (['start_charging','current_limit'].includes(role)) {
         if (settingClock.get(role)?.value !== value) settingClock.set(role,{value,at:now});
-        result={value,last_update_ts:settingClock.get(role).at/1000};
-      } else result={value:structuredClone(value),last_update_ts:now/1000};
+        result={value,last_update_ts:settingClock.get(role).at/1000,...(sources.has(role)?{source:sources.get(role)}:{})};
+      } else result={value:structuredClone(value),last_update_ts:(settingClock.get(role)?.at??now)/1000};
     }
     cb?.();queueMicrotask(()=>client.emit('message',`${frame.src}/rpc`,Buffer.from(JSON.stringify({id:frame.id,src:'synthetic-evse',dst:frame.src,result})),{}));
   };
   const store={getState:key=>structuredClone(values.get(key)),setState:(key,value)=>{if(failSave)throw Error('disk');values.set(key,structuredClone(value));},transaction:fn=>fn(),
     event:(type,payload,at)=>events.push({type,payload,at})};
   const engine={recorder:{recordEnergy:value=>energy.push(value),energyGap:value=>gaps.push(value)},voltage:{ingest:value=>voltages.push(value)}};
-  const adapter=createShellyEvseAdapter({config:config(extra),broker:{address:'mqtt://synthetic'},client,store,engine,clock:()=>now,canControl:()=>authority});
+  const createAdapter=()=>createShellyEvseAdapter({config:config(extra),broker:{address:'mqtt://synthetic'},client,store,engine,clock:()=>now,canControl:()=>authority});
+  let adapter=createAdapter();
   t.after(()=>adapter.close());
-  return {adapter,client,fields,writes,energy,gaps,voltages,events,values,service,serviceStatus,schedules,now:()=>now,setNow:value=>now=value,setAuthority:value=>authority=value,setFail:value=>failSave=value,
+  return {get adapter(){return adapter;},client,fields,writes,energy,gaps,voltages,events,values,service,serviceStatus,schedules,sources,now:()=>now,setNow:value=>now=value,setAuthority:value=>authority=value,setFail:value=>failSave=value,
+    restartAdapter() { adapter.close(); adapter=createAdapter(); },
     setSourceTime(role, at) { settingClock.set(role, { value: fields[role], at }); },
+    delta(role, delta, { eventAt = now, retained = false, apply = true, method = 'NotifyStatus' } = {}) {
+      if (apply) {
+        if (Object.hasOwn(delta, 'value')) {
+          fields[role] = structuredClone(delta.value);
+          settingClock.set(role, { value: delta.value, at: Math.floor(eventAt / 1000) * 1000 });
+        }
+        if (Object.hasOwn(delta, 'source')) sources.set(role, delta.source);
+      }
+      client.emit('message', 'test/evse/events/rpc', Buffer.from(JSON.stringify({ src: 'synthetic-evse', method,
+        params: { ts: eventAt / 1000, [`${roleTypes[role]}:${ids[role]}`]: delta } })), { retain: retained });
+    },
     async ready(){client.emit('connect');client.emit('message','test/evse/online',Buffer.from('true'),{retain:true});await adapter.refresh();},
     notify(role,value,packet={}){if (['start_charging','current_limit'].includes(role) && !packet.retain) settingClock.set(role,{value,at:now});client.emit('message','test/evse/events/rpc',Buffer.from(JSON.stringify({src:'synthetic-evse',method:'NotifyStatus',params:{[`${roleTypes[role]}:${ids[role]}`]:{value,last_update_ts:now/1000}}})),packet);}};
 }
@@ -1377,4 +1390,308 @@ test('a new automatic Shelly session replaces charging schedules and a later pau
   const replugged = await controller.update({ enabled: true, plan: future });
   assert.equal(replugged.manual, null); assert.equal(f.schedules.jobs[0].enable, false);
   assert.equal(f.fields.start_charging, true);
+});
+
+
+test('partial permission notifications preserve event and native clocks plus omitted source', async t => {
+  const f = fixture(t, { limiterEnabled: false });
+  f.sources.set('start_charging', 'rpc'); await f.ready();
+  const original = structuredClone(f.adapter.snapshot().fields.start_charging);
+  f.setNow(NOW + 125); f.delta('start_charging', { value: false, source: 'sys' });
+  f.setNow(NOW + 250); f.delta('start_charging', { value: true });
+  const observed = f.adapter.snapshot();
+  assert.equal(observed.fields.start_charging.measuredAt, original.measuredAt, 'A notification cannot invent last_update_ts');
+  assert.equal(observed.controlReady, false, 'Await correlated native readback before another command');
+  assert.deepEqual(observed.permissionEvents.map(event => [event.value, event.commandSource, event.eventAt, event.valueUpdatedAt]),
+    [[false, 'sys', NOW + 125, null], [true, 'sys', NOW + 250, null]]);
+  await f.adapter.refresh({ force: true });
+  assert.equal(f.adapter.snapshot().fields.start_charging.measuredAt, NOW, 'Keep the device whole-second clock');
+  assert.equal(f.adapter.snapshot().fields.start_charging.commandSource, 'sys');
+  assert.equal(f.adapter.snapshot().controlReady, true);
+});
+
+test('source-only and full-status deltas never refresh held values or phase measurements', async t => {
+  const f = fixture(t); f.sources.set('start_charging', 'rpc'); await f.ready();
+  const before = f.adapter.snapshot().fields;
+  f.setNow(NOW + 1000); f.delta('start_charging', { source: 'sys' });
+  f.delta('phase_info', { source: 'sys' });
+  f.setNow(NOW + 1100); f.delta('phase_info', { value: { total_power: 0 } }, { apply: false });
+  assert.equal(f.adapter.snapshot().fields.start_charging.measuredAt, before.start_charging.measuredAt);
+  assert.equal(f.adapter.snapshot().fields.phase_info.measuredAt, before.phase_info.measuredAt);
+  assert.equal(f.adapter.readings().ev2_active_power.available, false, 'An incomplete object does not retain usable phase evidence');
+  assert.equal(f.adapter.snapshot().permissionEvents.length, 1);
+  f.setNow(NOW + 2000); f.delta('start_charging', { value: true, source: 'sys' }, { method: 'NotifyFullStatus' });
+  assert.equal(f.adapter.snapshot().permissionEvents.length, 1, 'A held full status is not another instruction');
+  f.setNow(NOW + 3000); f.delta('start_charging', { source: null });
+  assert.equal(f.adapter.snapshot().permissionEvents.at(-1).commandSource, null, 'Explicit null removes origin');
+});
+
+test('a native false-to-true notification pair between reconciles keeps native authority across restart', async t => {
+  const f = fixture(t, { limiterEnabled: false }); f.sources.set('start_charging', 'rpc'); await f.ready();
+  let saved;
+  const attach = () => createShellyController({ adapter: f.adapter, initialState: saved, clock: f.now,
+    saveState: value => { saved = structuredClone(value); }, canControl: () => true });
+  let controller = attach(); t.after(() => controller.close());
+  const plan = { id: 'notification-plan', startAt: NOW, deadlineAt: NOW + 3600_000,
+    periods: [{ startAt: NOW, endAt: null }], feasible: true };
+  await controller.update({ enabled: true, plan });
+  f.setNow(NOW + 125); f.delta('start_charging', { value: false, source: 'sys' });
+  f.setNow(NOW + 250); f.delta('start_charging', { value: true });
+  await controller.close(); controller = attach();
+  const result = await controller.update({ enabled: true, plan });
+  assert.equal(result.manual?.kind, 'enable');
+  assert.equal(result.manual.origin, 'device');
+  assert.equal(result.manual.detectedAt, NOW + 250);
+  assert.equal(result.ownedPause, false);
+  assert.equal(f.adapter.snapshot().permissionEvents.length, 0, 'Remove events only after the controller saves its cursor');
+  assert.equal(f.writes.filter(row => row.method === 'Boolean.Set').length, 0);
+});
+
+for (const boundary of ['retained', 'old', 'future'])
+test(`a ${boundary} permission delta cannot establish an instruction`, async t => {
+  const f = fixture(t); await f.ready();
+  f.setNow(NOW + 1000);
+  f.delta('start_charging', { value: false, source: 'sys' }, { apply: false,
+    retained: boundary === 'retained', eventAt: boundary === 'old' ? NOW - 1000 : boundary === 'future' ? NOW + 2000 : f.now() });
+  assert.equal(f.adapter.snapshot().permissionEvents?.length ?? 0, 0);
+  assert.equal(f.adapter.snapshot().fields.start_charging.value, true);
+});
+
+
+test('partial physical disconnect and reconnect preserve both boundaries between polls', async t => {
+  const f = fixture(t); await f.ready();
+  const old = f.adapter.snapshot().session;
+  f.setNow(NOW + 125); f.delta('work_state', { value: 'charger_free' });
+  assert.equal(f.adapter.snapshot().session.connected, false);
+  assert.equal(f.adapter.snapshot().session.lastDisconnectedAt, NOW + 125);
+  f.setNow(NOW + 250); f.delta('work_state', { value: 'charger_charging' });
+  const current = f.adapter.snapshot();
+  assert.notEqual(current.session.sessionId, old.sessionId);
+  assert.equal(current.session.connectedAt, NOW + 250);
+  assert.equal(current.session.lastDisconnectedAt, NOW + 125);
+  assert.equal(current.session.boundaryClock, 'notification-event');
+  assert.equal(current.fields.work_state.measuredAt, NOW, 'The native field clock was not replaced by notification time');
+  assert.equal(current.controlReady, false);
+  await f.adapter.refresh({ force: true });
+  assert.equal(f.adapter.snapshot().session.sessionId, current.session.sessionId);
+  f.client.emit('offline'); f.client.emit('connect');
+  f.client.emit('message', 'test/evse/online', Buffer.from('true'), {}); await f.adapter.refresh();
+  f.delta('work_state', { value: 'charger_free' }, { eventAt: NOW + 125, apply: false });
+  assert.equal(f.adapter.snapshot().session.sessionId, current.session.sessionId, 'An old event cannot create a new disconnect after reconnect');
+});
+
+test('permission queue overflow fences control without discarding unconsumed events', async t => {
+  const f = fixture(t); await f.ready();
+  for (let i = 1; i <= 65; i++) {
+    f.setNow(NOW + i); f.delta('start_charging', { value: i % 2 === 0, source: 'sys' });
+  }
+  assert.equal(f.adapter.snapshot().permissionEvents.length, 64);
+  assert.equal(f.adapter.snapshot().permissionOverflow, true);
+  await f.adapter.refresh({ force: true });
+  assert.equal(f.adapter.snapshot().controlReady, false);
+  assert.equal(f.adapter.snapshot().error, 'evse-permission-event-overflow');
+  await assert.rejects(f.adapter.rpc('Boolean.Set', { owner: 'service:0', role: 'start_charging', value: true }, { mutation: true }), /evse-control-unavailable/);
+});
+
+test('failed controller cursor persistence cannot consume native permission events or issue a command', async t => {
+  const f = fixture(t, { limiterEnabled: false }); await f.ready();
+  let failing = false, saved;
+  const controller = createShellyController({ adapter: f.adapter, clock: f.now, canControl: () => true,
+    saveState: value => { if (failing) throw Error('synthetic-cursor-failure'); saved = structuredClone(value); } });
+  t.after(() => controller.close());
+  await controller.update({ enabled: false });
+  f.setNow(NOW + 1000); f.delta('start_charging', { value: false, source: 'rpc' });
+  failing = true;
+  await assert.rejects(controller.update({ enabled: false }), /synthetic-cursor-failure/);
+  assert.equal(f.adapter.snapshot().permissionEvents.length, 1);
+  assert.equal(saved.permissionEventCursor, undefined);
+  assert.equal(f.writes.filter(row => row.method === 'Boolean.Set').length, 0);
+});
+
+
+for (const source of ['sys', 'rpc'])
+test(`a partial same-value ${source} origin preserves the correct native instruction semantics`, async t => {
+  const f = fixture(t, { limiterEnabled: false }); f.fields.start_charging = false;
+  f.sources.set('start_charging', source === 'sys' ? 'rpc' : 'sys'); await f.ready();
+  const state = { version: 1, association: f.adapter.association, sessionId: f.adapter.snapshot().session.sessionId,
+    phase: 'waiting', manual: null, ownedPause: true, pending: null, lastStart: false, lastStartAt: NOW };
+  const controller = createShellyController({ adapter: f.adapter, initialState: state, clock: f.now, canControl: () => true });
+  t.after(() => controller.close());
+  f.setNow(NOW + 125); f.delta('start_charging', { source });
+  const result = await controller.update({ enabled: false });
+  assert.equal(result.manual?.kind ?? null, source === 'sys' ? null : 'stop');
+  if (source === 'rpc') {
+    assert.equal(result.manual.detectedAt, NOW + 125);
+    assert.equal(result.manual.origin, 'external-command');
+    assert.equal(f.writes.filter(row => row.method === 'Boolean.Set').length, 0);
+  }
+});
+
+test('an unknown live baseline cannot turn a full-status replay into a new instruction or connection', async t => {
+  const f = fixture(t); f.sources.set('start_charging', 'rpc'); await f.ready();
+  const before = f.adapter.snapshot();
+  f.client.emit('offline'); f.client.emit('connect');
+  f.setNow(NOW + 1000);
+  f.delta('start_charging', { value: true, source: 'rpc' }, { method: 'NotifyFullStatus', apply: false });
+  f.delta('work_state', { value: 'charger_charging' }, { method: 'NotifyFullStatus', apply: false });
+  f.setNow(NOW + 1001); f.delta('start_charging', { source: 'rpc' }, { apply: false });
+  f.client.emit('message', 'test/evse/online', Buffer.from('true'), {}); await f.adapter.refresh({ force: true });
+  assert.equal(f.adapter.snapshot().permissionEvents.length, 0);
+  assert.equal(f.adapter.snapshot().session.sessionId, before.session.sessionId);
+});
+
+test('a delayed pre-notification read cannot overwrite a changed permission with the same native second', async t => {
+  const f = fixture(t); await f.ready();
+  const publish = f.client.publish; let held;
+  f.client.publish = (topic, payload, options, done) => {
+    const frame = JSON.parse(payload);
+    if (!held && frame.method === 'Boolean.GetStatus') { held = frame; done?.(); return; }
+    publish(topic, payload, options, done);
+  };
+  f.setNow(NOW + 100);
+  const reading = f.adapter.rpc('Boolean.GetStatus', { owner: 'service:0', role: 'start_charging' }, { statusReadback: true });
+  await new Promise(resolve => setImmediate(resolve));
+  f.setNow(NOW + 250); f.delta('start_charging', { value: false, source: 'rpc' });
+  f.client.emit('message', `${held.src}/rpc`, Buffer.from(JSON.stringify({ id: held.id, src: 'synthetic-evse', dst: held.src,
+    result: { value: true, source: 'rpc', last_update_ts: NOW / 1000 } })), {});
+  await reading;
+  assert.equal(f.adapter.snapshot().controlReady, false, 'A query requested before the event cannot settle it');
+  f.client.publish = publish; await f.adapter.refresh({ force: true });
+  assert.equal(f.adapter.snapshot().fields.start_charging.value, false);
+  assert.equal(f.adapter.snapshot().fields.start_charging.measuredAt, NOW);
+  assert.equal(f.adapter.snapshot().controlReady, true);
+});
+
+test('a witnessed false-to-true pair revokes a prepared automatic takeover even when native scalars are unchanged', async t => {
+  const f = fixture(t, { limiterEnabled: false }); f.sources.set('start_charging', 'sys'); await f.ready();
+  const controller = createShellyController({ adapter: f.adapter, clock: f.now, canControl: () => true }); t.after(() => controller.close());
+  await controller.update({ enabled: false });
+  const token = controller.status().takeover.token;
+  f.setNow(NOW + 125); f.delta('start_charging', { value: false });
+  f.setNow(NOW + 250); f.delta('start_charging', { value: true });
+  await f.adapter.refresh({ force: true });
+  assert.notEqual(controller.status().takeover.token, token);
+  const result = await controller.update({ enabled: true, takeover: token });
+  assert.equal(result.takeover.state, 'blocked');
+  assert.equal(f.writes.filter(row => row.method === 'Boolean.Set').length, 0);
+});
+
+
+test('an explicit null source survives a matching readback which omits origin', async t => {
+  const f = fixture(t); f.sources.set('start_charging', 'rpc'); await f.ready();
+  f.setNow(NOW + 1000); f.delta('start_charging', { source: null }); f.sources.delete('start_charging');
+  await f.adapter.refresh({ force: true });
+  assert.equal(f.adapter.snapshot().fields.start_charging.commandSource, null);
+  assert.equal(f.adapter.snapshot().fields.start_charging.measuredAt, NOW);
+  await f.adapter.refresh({ force: true });
+  assert.equal(f.adapter.snapshot().fields.start_charging.commandSource, null);
+});
+
+for (const value of [null, { total_power: 0 }])
+test(`a ${value === null ? 'removed' : 'partial'} phase value becomes unavailable until a complete new native sample`, async t => {
+  const f = fixture(t); await f.ready();
+  const old = structuredClone(f.adapter.snapshot().fields.phase_info);
+  f.setNow(NOW + 1000); f.delta('phase_info', { value }, { apply: false });
+  assert.equal(f.adapter.readings().ev2_active_power.available, false);
+  assert.equal(f.adapter.normalize().phaseCurrentA.available, false);
+  assert.equal(f.adapter.liveCurrents().healthy, false);
+  assert.equal(f.adapter.snapshot().fields.phase_info.measuredAt, old.measuredAt);
+  await f.adapter.refresh({ force: true });
+  assert.equal(f.adapter.readings().ev2_active_power.available, true);
+  assert.equal(f.adapter.snapshot().fields.phase_info.measuredAt, NOW + 1000);
+});
+
+for (const role of ['work_state', 'current_limit'])
+test(`an unresolved same-second ${role} delta survives adapter restart before readback`, async t => {
+  const f = fixture(t); f.fields[role] = role === 'work_state' ? 'charger_free' : 6; await f.ready();
+  f.setNow(NOW + 250); f.delta(role, { value: role === 'work_state' ? 'charger_charging' : 16 });
+  const before = f.adapter.snapshot();
+  assert.equal(before.fields[role].measuredAt, NOW);
+  f.restartAdapter(); await f.ready();
+  const result = f.adapter.snapshot();
+  assert.equal(result.fields[role].value, role === 'work_state' ? 'charger_charging' : 16);
+  assert.equal(result.controlReady, true);
+  assert.equal(result.notificationRevision, before.notificationRevision, 'Restart retains the instruction fence');
+  if (role === 'work_state') assert.equal(result.session.sessionId, before.session.sessionId);
+});
+
+
+test('source-only unknown value and removed scalar recover from fresh readback without a new value clock', async t => {
+  const f = fixture(t); await f.ready();
+  f.client.emit('offline'); f.client.emit('connect'); f.setNow(NOW + 1000);
+  f.delta('start_charging', { source: 'sys' });
+  f.client.emit('message', 'test/evse/online', Buffer.from('true'), {});
+  await f.adapter.refresh({ force: true });
+  assert.equal(f.adapter.snapshot().controlReady, true);
+  assert.equal(f.adapter.snapshot().fields.start_charging.measuredAt, NOW);
+  assert.equal(f.adapter.snapshot().permissionEvents.length, 1);
+  assert.equal(f.adapter.snapshot().permissionEvents[0].value, null, 'An unknown baseline supplies no borrowed permission value');
+  f.setNow(NOW + 2000); f.delta('start_charging', { value: null }, { apply: false });
+  assert.equal(f.adapter.snapshot().controlReady, false);
+  await f.adapter.refresh({ force: true });
+  assert.equal(f.adapter.snapshot().controlReady, true);
+  assert.equal(f.adapter.snapshot().fields.start_charging.measuredAt, NOW);
+  assert.equal(f.adapter.snapshot().fields.start_charging.value, true);
+});
+
+test('invalidated physical zero cannot confirm an owned pause or restore the higher pilot from a held native cache', async t => {
+  const f = fixture(t, { limiterEnabled: false });
+  f.fields.current_limit = 6; f.fields.start_charging = false; f.fields.work_state = 'charger_pause';
+  f.fields.phase_info.total_power = 0;
+  for (const phase of ['phase_a', 'phase_b', 'phase_c']) { f.fields.phase_info[phase].current = 0; f.fields.phase_info[phase].power = 0; }
+  await f.ready();
+  const scope = f.adapter.snapshot().session;
+  const initial = { version: 1, association: f.adapter.association, sessionId: scope.sessionId,
+    phase: 'waiting', reason: 'economic-wait', manual: null, ownedPause: true, pending: null, lastStart: false, lastStartAt: NOW,
+    execution: { planId: 'synthetic-pause', deadlineAt: NOW + 7200_000, finalStartAt: NOW + 3600_000,
+      periods: [{ startAt: NOW + 3600_000, endAt: null }] } };
+  const observer = createShellyController({ adapter: f.adapter, initialState: initial, clock: f.now }); t.after(() => observer.close());
+  assert.equal(observer.status().pauseConfirmed, true);
+  f.setNow(NOW + 1000); f.delta('phase_info', { value: null }, { apply: false });
+  assert.equal(observer.status().pauseConfirmed, false, 'A removed meter is unknown, including through direct snapshot consumers');
+  f.setSourceTime('phase_info', NOW);
+  const controller = createShellyController({ adapter: f.adapter, clock: f.now, canControl: () => true,
+    initialState: { ...initial, manual: { kind: 'stop', detectedAt: NOW }, currentTest: {
+      id: 'synthetic-notification-test', connectedAt: scope.connectedAt, sessionId: scope.sessionId, phase: 'active',
+      startedAt: NOW, expiresAt: NOW + 90_000, confirmedAt: NOW, originalCurrentA: 16, appliedCurrentA: 6,
+      permissionAt: NOW, restoreCurrentA: null, pending: null } } }); t.after(() => controller.close());
+  await controller.update({ enabled: false });
+  assert.equal(f.fields.current_limit, 6);
+  assert.equal(f.writes.filter(row => row.method === 'Number.Set').length, 0);
+  assert.equal(f.adapter.readings().ev2_active_power.available, false, 'Reading the held sample does not restore missing physical evidence');
+  f.setNow(NOW + 2000); f.setSourceTime('phase_info', NOW + 2000); await controller.update({ enabled: false });
+  assert.equal(f.fields.current_limit, 16, 'A new complete physical zero satisfies restoration');
+});
+
+
+test('coarse native value clocks cannot collapse a witnessed disconnect and reconnect', async t => {
+  const f = fixture(t); await f.ready();
+  const original = f.adapter.snapshot().session.sessionId;
+  f.setNow(NOW + 125); f.delta('work_state', { value: 'charger_free', last_update_ts: NOW / 1000 });
+  f.setNow(NOW + 250); f.delta('work_state', { value: 'charger_charging', last_update_ts: NOW / 1000 });
+  await f.adapter.refresh({ force: true });
+  const result = f.adapter.snapshot();
+  assert.equal(result.controlReady, true);
+  assert.equal(result.session.connected, true);
+  assert.notEqual(result.session.sessionId, original);
+  assert.equal(result.session.connectedAt, NOW + 250);
+  assert.equal(result.session.lastDisconnectedAt, NOW + 125);
+  assert.equal(result.session.valueUpdatedAt, NOW);
+  assert.equal(result.fields.work_state.measuredAt, NOW);
+});
+
+test('a source instruction without a known value remains unresolved after current readback instead of acquiring ownership', async t => {
+  const f = fixture(t, { limiterEnabled: false }); await f.ready();
+  const sessionId = f.adapter.snapshot().session.sessionId;
+  const controller = createShellyController({ adapter: f.adapter, clock: f.now, canControl: () => true,
+    initialState: { version: 1, association: f.adapter.association, sessionId, phase: 'off', manual: null,
+      pending: null, ownedPause: false, lastStart: true, lastStartAt: NOW } }); t.after(() => controller.close());
+  f.client.emit('offline'); f.client.emit('connect'); f.setNow(NOW + 1000);
+  f.delta('start_charging', { source: 'rpc' });
+  f.client.emit('message', 'test/evse/online', Buffer.from('true'), {}); await f.adapter.refresh({ force: true });
+  const result = await controller.update({ enabled: false });
+  assert.equal(result.manual.kind, 'instruction-unconfirmed');
+  assert.equal(result.reason, 'evse-command-unconfirmed');
+  assert.equal(result.ownsInstruction, false);
+  assert.equal(f.writes.filter(row => row.method === 'Boolean.Set').length, 0);
 });

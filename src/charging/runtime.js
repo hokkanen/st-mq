@@ -953,12 +953,12 @@ export class ChargingRuntime {
           && item.vehicleEvidence?.teslaCurrentResolvedTestId === currentTest.id;
         const restorationPending = sameCurrentTest && ['restoring', 'uncertain'].includes(currentTest.phase)
           && currentTest.restoreCurrentA !== null && currentTest.pending?.value === currentTest.restoreCurrentA;
-        const currentFresh = currentLimit?.measuredAt > 0 && currentLimit.measuredAt <= now
+        const currentFresh = currentLimit?.invalidatedAt === undefined && currentLimit?.measuredAt > 0 && currentLimit.measuredAt <= now
           && currentLimit.receivedAt <= now && now - currentLimit.receivedAt <= item.adapter.config.maxAgeMs
           && currentLimit.retained !== true;
         const restorationReadback = restorationPending && currentFresh
           && shellyCurrentCommandReadback(currentLimit, currentTest.pending);
-        const comparisonCurrentOwned = restorationReadback || sameCurrentTest && currentLimit?.value
+        const comparisonCurrentOwned = restorationReadback || sameCurrentTest && currentLimit?.invalidatedAt === undefined && currentLimit?.value
           === (currentTest.phase === 'restored' ? currentTest.restoreCurrentA : currentTest.appliedCurrentA)
           && (currentLimit.measuredAt === currentTest.permissionAt
             || currentLimit.measuredAt > currentTest.permissionAt && currentLimit.commandSource === 'sys');
@@ -1027,7 +1027,7 @@ export class ChargingRuntime {
           && currentTest.phase === 'active' && currentTest.connectedAt === control.session.connectedAt
           && currentTest.sessionId === control.session.sessionId && Number.isSafeInteger(currentTest.confirmedAt)
           && currentTest.confirmedAt <= now && currentTest.expiresAt > now + 10_000
-          && currentLimit?.value === currentTest.appliedCurrentA
+          && currentLimit?.invalidatedAt === undefined && currentLimit?.value === currentTest.appliedCurrentA
           && currentLimit.measuredAt === currentTest.permissionAt && currentLimit.measuredAt <= now;
         const probeAllowed = item.controller.supportsIdentification && (!minimumCurrent || minimumReady);
         const voltage = control.snapshot?.supply?.voltageV;
