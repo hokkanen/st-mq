@@ -5,7 +5,7 @@ import { readFileSync, readdirSync, realpathSync, statSync, mkdtempSync, rmSync 
 import { homedir, tmpdir } from 'node:os';
 import { dirname, isAbsolute, join, relative, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { connectHA, connectTerminal, shellQuote } from './lib/ha-deploy-transport.js';
+import { connectHA, connectTerminal, shellQuote, DeploymentTransportError } from './lib/ha-deploy-transport.js';
 
 const root = fileURLToPath(new URL('../', import.meta.url));
 const hash = value => createHash('sha256').update(value).digest('hex');
@@ -80,7 +80,7 @@ async function main(args) {
     terminalConnection = await connectTerminal({ url: config.url, session, ingress: terminal.ingress_entry });
     const execute = async (script, timeoutMs = 30000) => {
       const result = await terminalConnection.run(script, { timeoutMs });
-      if (result.exitCode !== 0) throw new DeploymentError('Remote command failed; inspect the terminal or Supervisor locally');
+      if (result.exitCode !== 0) throw new DeploymentError(`Remote command exited with status ${result.exitCode}; inspect the terminal or Supervisor locally`);
       return result.output.trim();
     };
     phase = 'preflight';
@@ -111,8 +111,12 @@ PY`));
     const packageHashes = Object.fromEntries(['config.json', 'package.json', 'package-lock.json'].map(p => [p, hash(execFileSync('git', ['show', target + ':' + p], { cwd: root }))]));
     // The remote lock refuses concurrent deployments, including interrupted ones.
     // It is intentionally retained on failure for an operator to inspect.
-    phase = 'remote lock and fingerprints';
-    await execute(`umask 077\nmkdir /tmp/home-energy-deploy-${app.slug}.lock && mkdir ${remote}`);
+    phase = 'remote lock';
+    const lock = await terminalConnection.run(`umask 077\nif mkdir /tmp/home-energy-deploy-${app.slug}.lock; then exit 0; fi\nif test -e /tmp/home-energy-deploy-${app.slug}.lock; then exit 73; fi\nexit 74`);
+    if (lock.exitCode === 73) throw new DeploymentError('A deployment lock already exists. Confirm the previous deployment and any Supervisor rebuild have finished, then remove only the empty deployment lock before retrying');
+    if (lock.exitCode !== 0) throw new DeploymentError('Could not create the remote deployment lock');
+    phase = 'remote workspace';
+    await execute(`umask 077\nmkdir ${remote}`);
     const upload = async (bytes, path, progress = false) => {
       const encoded = bytes.toString('base64');
       await execute(`umask 077\n: > ${shellQuote(path + '.b64')}`);
@@ -129,6 +133,7 @@ PY`));
       return execute(`docker exec hassio_supervisor python3 ${remote}-step.py`);
     };
     const fingerprintCode = `from pathlib import Path\nimport hashlib,json\ndef digest(p):\n h=hashlib.sha256()\n with p.open('rb') as f:\n  for chunk in iter(lambda:f.read(1048576),b''):h.update(chunk)\n return h.hexdigest()\nroots=${JSON.stringify(info.runtime)}\nrecords={}\nfor root in roots:\n for p in Path(root).rglob('*'):\n  if p.is_symlink(): records[str(p)]=['link',str(p.readlink())]\n  elif p.is_file(): records[str(p)]=['file',digest(p)]\n`;
+    phase = 'stored-file fingerprints';
     await python(fingerprintCode + `\nimport os\nfd=os.open('${remote}-before.json',os.O_WRONLY|os.O_CREAT|os.O_EXCL,0o600)\nwith os.fdopen(fd,'w') as f:json.dump(records,f)\n`);
     if (info.head !== target) {
       phase = 'bundle transfer';
@@ -167,7 +172,7 @@ PY`));
     await execute(`docker exec hassio_supervisor rm -f ${remote}-step.py ${remote}-before.json ${remote}.bundle && rm -rf ${remote} && rmdir /tmp/home-energy-deploy-${app.slug}.lock`);
     console.log(`Verified ${target.slice(0, 12)}: ${checked.sourceFiles} source files, ${checked.frontendFiles} frontend files, ${checked.architecture}. Stored files and configuration unchanged. App remains stopped.`);
   } catch (error) {
-    const detail = error instanceof DeploymentError ? error.message + ' ' : '';
+    const detail = error instanceof DeploymentError || error instanceof DeploymentTransportError ? error.message + ' ' : '';
     throw new DeploymentError(`${detail}Deployment stopped during ${phase}. No automatic rollback or restart was attempted. Inspect HA before retrying; any submitted rebuild may still be running. Any created remote deployment files and lock are retained.`);
   } finally { terminalConnection?.close(); ha?.close(); rmSync(local, { recursive: true, force: true }); }
 }

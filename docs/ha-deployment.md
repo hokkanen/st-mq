@@ -68,7 +68,9 @@ refuses ambiguous selection. No other connection fields are accepted.
 4. Wait for transfer, Supervisor rebuild and verification to finish. Transfer
    reuses one authenticated terminal connection, without reconnecting or fixed
    delays between chunks. Small chunks stay within terminal input limits; each
-   append checks its offset and the completed file is verified by checksum. Supervisor's
+   append checks its offset and the completed file is verified by checksum.
+   Terminal completion markers also tolerate tmux cursor redraws that omit line
+   breaks; echoed command text cannot acknowledge a completed command. Supervisor's
    image rebuild can still take several minutes. Both local and HA source trees
    must be clean, and HA's source commit must be an ancestor of local HEAD.
 5. Start the app yourself in HA when ready. Deployment verification does not
@@ -104,8 +106,10 @@ process and Supervisor rebuild have finished, remove that empty lock directory
 with `rmdir` before retrying. Do not remove a lock while a deployment is running.
 Deployment-owned temporary files under `/tmp/home-energy-deploy-*` are retained
 on failure for inspection; successful runs remove their own files and lock.
-Neither retry nor lock removal erases app data. Failures deliberately suppress raw
-terminal/network output because it may contain private configuration.
+Neither retry nor lock removal erases app data. Errors distinguish an existing
+lock from command failure or a transport timeout, and identify the failed phase.
+Failures deliberately suppress raw terminal/network output because it may contain
+private configuration.
 
 Offline transport and boundary tests run with:
 

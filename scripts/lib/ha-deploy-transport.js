@@ -1,6 +1,9 @@
 import WebSocket from 'ws';
 import { randomBytes } from 'node:crypto';
 
+// Only fixed, local messages belong in this error type; callers may display it.
+export class DeploymentTransportError extends Error {}
+
 export function shellQuote(value) {
   return "'" + String(value).replaceAll("'", "'\\''") + "'";
 }
@@ -15,8 +18,8 @@ export async function connectHA({ url, token }, { timeoutMs = 15000 } = {}) {
   const ready = new Promise((resolve, reject) => { resolveAuth = resolve; rejectAuth = reject; });
   const fail = message => {
     clearTimeout(timer);
-    rejectAuth(new Error(message));
-    for (const job of pending.values()) { clearTimeout(job.timer); job.reject(new Error(message)); }
+    rejectAuth(new DeploymentTransportError(message));
+    for (const job of pending.values()) { clearTimeout(job.timer); job.reject(new DeploymentTransportError(message)); }
     pending.clear();
   };
   const timer = setTimeout(() => { fail('HA authentication timed out'); socket.terminate(); }, timeoutMs);
@@ -32,17 +35,17 @@ export async function connectHA({ url, token }, { timeoutMs = 15000 } = {}) {
     if (!job) return;
     pending.delete(message.id); clearTimeout(job.timer);
     if (message.success) job.resolve(message.result);
-    else job.reject(new Error('HA rejected the request; inspect Supervisor locally for details'));
+    else job.reject(new DeploymentTransportError('HA rejected the request; inspect Supervisor locally for details'));
   });
   try { await ready; } catch (error) { socket.terminate(); throw error; }
   return {
     close: () => socket.close(),
     call: (command, requestTimeoutMs = 30000) => new Promise((resolve, reject) => {
-      if (!authenticated || socket.readyState !== WebSocket.OPEN) { reject(new Error('HA WebSocket is unavailable')); return; }
+      if (!authenticated || socket.readyState !== WebSocket.OPEN) { reject(new DeploymentTransportError('HA WebSocket is unavailable')); return; }
       const id = next++;
       const timer = setTimeout(() => {
         pending.delete(id);
-        reject(new Error('HA request timed out; the operation may still be running. Inspect Supervisor before retrying'));
+        reject(new DeploymentTransportError('HA request timed out; the operation may still be running. Inspect Supervisor before retrying'));
       }, requestTimeoutMs + 5000);
       pending.set(id, { resolve, reject, timer });
       socket.send(JSON.stringify({ id, ...command }));
@@ -53,7 +56,7 @@ export async function connectHA({ url, token }, { timeoutMs = 15000 } = {}) {
 // Advanced SSH & Web Terminal's ttyd protocol. Output is returned only to the
 // caller: terminal banners, failed commands and tokens must never be logged.
 export async function connectTerminal({ url, session, ingress }, { timeoutMs = 30000 } = {}) {
-  if (!/^\/api\/hassio_ingress\/[A-Za-z0-9_-]+\/?$/.test(ingress)) throw new Error('Unexpected terminal ingress path');
+  if (!/^\/api\/hassio_ingress\/[A-Za-z0-9_-]+\/?$/.test(ingress)) throw new DeploymentTransportError('Unexpected terminal ingress path');
   const entry = ingress.replace(/\/$/, '');
   const cookie = `ingress_session=${session}`;
   let response;
@@ -61,11 +64,11 @@ export async function connectTerminal({ url, session, ingress }, { timeoutMs = 3
     response = await fetch(new URL(entry + '/token', url), {
       headers: { Cookie: cookie }, redirect: 'error', signal: AbortSignal.timeout(timeoutMs),
     });
-  } catch { throw new Error('Terminal authentication request failed'); }
-  if (!response.ok) throw new Error('Terminal authentication rejected');
+  } catch { throw new DeploymentTransportError('Terminal authentication request failed'); }
+  if (!response.ok) throw new DeploymentTransportError('Terminal authentication rejected');
   let token;
-  try { token = (await response.json()).token; } catch { throw new Error('Invalid terminal authentication response'); }
-  if (typeof token !== 'string') throw new Error('Missing terminal authentication token');
+  try { token = (await response.json()).token; } catch { throw new DeploymentTransportError('Invalid terminal authentication response'); }
+  if (typeof token !== 'string') throw new DeploymentTransportError('Missing terminal authentication token');
   const address = new URL(entry + '/ws', url);
   address.protocol = address.protocol === 'https:' ? 'wss:' : 'ws:';
   const socket = new WebSocket(address, ['tty'], { headers: { Cookie: cookie, Origin: new URL(url).origin } });
@@ -74,7 +77,7 @@ export async function connectTerminal({ url, session, ingress }, { timeoutMs = 3
   const ready = new Promise((resolve, reject) => { resolveReady = resolve; rejectReady = reject; });
   const fail = message => {
     if (failure) return;
-    failure = new Error(message);
+    failure = new DeploymentTransportError(message);
     clearTimeout(startupTimer); clearTimeout(startupDelay); clearInterval(heartbeat);
     rejectReady(failure);
     if (active) { clearTimeout(active.timer); active.reject(failure); active = null; }
@@ -101,31 +104,34 @@ export async function connectTerminal({ url, session, ingress }, { timeoutMs = 3
     job.output += buffer.subarray(1).toString('utf8');
     if (job.output.length > 2 * 1024 * 1024) { fail('Terminal output exceeded its limit'); return; }
     const clean = job.output.replace(/\x1b\[[0-?]*[ -/]*[@-~]/g, '').replace(/\r/g, '');
-    const begin = '\n' + job.marker + '_BEGIN\n';
+    const begin = job.marker + '_BEGIN!';
     const start = clean.indexOf(begin);
     if (start < 0) return;
     // ttyd/tmux may repaint completion directly after unterminated output.
     const end = clean.indexOf(job.marker + '_END:', start + begin.length);
     if (end < 0) return;
-    const code = clean.slice(end).match(/_END:(\d+)\n/);
+    const code = clean.slice(end).match(/^DEPLOY_[a-f0-9]+_END:(\d+):DONE!/);
     if (!code) return;
     clearTimeout(job.timer); active = null;
-    job.resolve({ exitCode: Number(code[1]), output: clean.slice(start + begin.length, end).replace(/\n$/, '') });
+    job.resolve({ exitCode: Number(code[1]), output: clean.slice(start + begin.length, end).replace(/^\n/, '').replace(/\n$/, '') });
   });
   await ready;
   return {
     close: () => fail('Terminal connection closed'),
     run: (script, { timeoutMs: commandTimeoutMs = 30000 } = {}) => new Promise((resolve, reject) => {
       if (failure) { reject(failure); return; }
-      if (socket.readyState !== WebSocket.OPEN) { reject(new Error('Terminal WebSocket is unavailable')); return; }
-      if (active) { reject(new Error('A terminal command is already running')); return; }
+      if (socket.readyState !== WebSocket.OPEN) { reject(new DeploymentTransportError('Terminal WebSocket is unavailable')); return; }
+      if (active) { reject(new DeploymentTransportError('A terminal command is already running')); return; }
       const marker = 'DEPLOY_' + randomBytes(12).toString('hex');
       const encoded = Buffer.from(script).toString('base64');
       const timer = setTimeout(() => fail('Terminal timed out; the remote command may still be running'), commandTimeoutMs);
       active = { marker, output: '', timer, resolve, reject };
       // Restore echo before acknowledging completion, so the next command can
       // start immediately without racing the previous command's terminal setup.
-      const command = `(stty -echo; printf '\\n${marker}_BEGIN\\n'; printf '%s' '${encoded}' | base64 -d | sh; deploy_status=$?; stty echo; printf '\\n${marker}_END:%s\\n' "$deploy_status")\r`;
+      // tmux can replace newlines with cursor movement. Delimit both markers
+      // explicitly, and assemble their value at execution time so an echoed
+      // command (or its repaint) can never be mistaken for a result.
+      const command = `(stty -echo; deploy_marker="${marker.slice(7)}"; deploy_marker="DEPLOY_$deploy_marker"; printf '\\n%s_BEGIN!\\n' "$deploy_marker"; printf '%s' '${encoded}' | base64 -d | sh; deploy_status=$?; stty echo; printf '\\n%s_END:%s:DONE!\\n' "$deploy_marker" "$deploy_status")\r`;
       socket.send(Buffer.concat([Buffer.from('0'), Buffer.from(command)]), error => {
         if (error) fail('Terminal send failed; the remote command may still be running');
       });

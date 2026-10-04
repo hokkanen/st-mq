@@ -57,8 +57,8 @@ async function terminalFixture(t, onCommand, { banner = true } = {}) {
 }
 
 function terminalResult(socket, command, output = '', exitCode = 0) {
-  const marker = command.match(/DEPLOY_[a-f0-9]+/)[0];
-  socket.send(Buffer.from(`0\r\n${marker}_BEGIN\r\n${output}\r\n${marker}_END:${exitCode}\r\n`));
+  const marker = 'DEPLOY_' + command.match(/deploy_marker="([a-f0-9]+)"/)[1];
+  socket.send(Buffer.from(`0\r\n${marker}_BEGIN!\r\n${output}\r\n${marker}_END:${exitCode}:DONE!\r\n`));
 }
 
 test('deployment connection rejects unknown fields, embedded credentials and unsafe slugs', () => {
@@ -131,13 +131,13 @@ for (const trailingNewline of [true, false]) test(`terminal handles fragmented f
   const markers = new Set();
   let priorResult;
   const server = await terminalFixture(t, (socket, command) => {
-    const marker = command.match(/DEPLOY_[a-f0-9]+/)[0];
+    const marker = 'DEPLOY_' + command.match(/deploy_marker="([a-f0-9]+)"/)[1];
     const encoded = command.match(/printf '%s' '([A-Za-z0-9+/=]+)'/)[1];
     markers.add(marker);
     sentScripts.push(Buffer.from(encoded, 'base64').toString());
     socket.send(Buffer.from('1ignored ttyd control frame'));
     if (priorResult) socket.send(Buffer.from('0' + priorResult));
-    const result = `\r\n${marker}_BEGIN\r\n\x1b[32msafe result ${sentScripts.length}\x1b[0m${trailingNewline ? '\r\n' : ''}${marker}_END:7\r\n`;
+    const result = `\r\n${marker}_BEGIN!\r\n\x1b[32msafe result ${sentScripts.length}\x1b[0m${trailingNewline ? '\r\n' : ''}${marker}_END:7:DONE!\r\n`;
     for (let offset = 0; offset < result.length; offset += 5) socket.send(Buffer.from('0' + result.slice(offset, offset + 5)));
     socket.send(Buffer.from('0private prompt after completion\r\n'));
     priorResult = result;
@@ -153,6 +153,20 @@ for (const trailingNewline of [true, false]) test(`terminal handles fragmented f
 
 test('terminal rejects external ingress addresses before making requests', async () => {
   await assert.rejects(connectTerminal({ url: 'http://home-assistant.invalid', session: 'synthetic', ingress: '//external.invalid/path' }), /Unexpected terminal ingress/);
+});
+
+test('terminal accepts tmux cursor redraws without newline delimiters and ignores command echo', async t => {
+  const server = await terminalFixture(t, (socket, command) => {
+    const marker = 'DEPLOY_' + command.match(/deploy_marker="([a-f0-9]+)"/)[1];
+    assert.ok(!command.includes(marker), 'echo must not contain a complete result marker');
+    socket.send(Buffer.from('0' + command));
+    // tmux redraws the terminal screen using cursor positioning instead of LF.
+    const result = `\x1b[38;1H${marker}_BEGIN!\x1b[39;1Hsynthetic result${marker}_END:12:DONE!\x1b[39;6H`;
+    for (let offset = 0; offset < result.length; offset += 3) socket.send(Buffer.from('0' + result.slice(offset, offset + 3)));
+  });
+  const terminal = await connectTerminal(server.context); t.after(terminal.close);
+  for (let i = 0; i < 3; i++) assert.deepEqual(await terminal.run('exit 12'), { exitCode: 12, output: 'synthetic result' });
+  assert.equal(server.requests.socket, 1);
 });
 
 test('terminal reconstructs a synthetic chunked upload over one authenticated connection', async t => {

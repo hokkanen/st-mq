@@ -42,6 +42,10 @@ Versions follow Semantic Versioning. `-dev.N` denotes a development prerelease.
 
 ### Fixed
 
+- Home Assistant development deployments recognize command completion when the
+  terminal redraws output without line breaks, preventing false transfer timeouts.
+  Failures now identify existing deployment locks and transport errors while
+  keeping private terminal output hidden.
 - Tesla identification now tolerates inaccurate vehicle phase-count metadata
   when measured current and power uniquely match, and can retire an old BMW
   episode that ambiguously matched both chargers. Identification no longer
