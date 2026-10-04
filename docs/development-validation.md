@@ -108,6 +108,33 @@ protection overrides. See its [development guide](https://github.com/hokkanen/sh
 Both suites are offline; actual device memory, firmware scheduling, radio
 reception and useful heating require separate installation checks.
 
+## Shelly load balancing
+
+Focused offline checks cover held Easee stream state, synchronization and
+connection epochs, allowance consistency, priority allocation, native limits and
+change-only limiter history:
+
+```sh
+node --test test/easee-stream.test.js test/easee-ocpp-lifecycle.test.js test/charging-shelly-limit.test.js test/charging-shelly-evse.test.js test/charging-limiter-history.test.js
+node --test test/charging-ui.test.js test/chart-overlays.test.js test/chart-views.test.js
+```
+
+Use synthetic source observations to exercise matching older last-change values,
+missing/reconnecting feeds, allowance disagreement on either side of tolerance,
+unequal Shelly phase measurements, 0 and 6–16 A entitlement, a configurable
+fallback below known limits, all priorities and future forecasts without a
+permanent fallback cap. Native command freshness and identification ownership
+remain separate checks. History checks cover exact changes, compact unchanged
+coverage, restart/outage gaps, equipment replacement, malformed/overlapping
+history, bounded query detail and independence from charging-report expiry.
+
+Physical qualification additionally needs current installation evidence and
+explicitly authorized charger operations. Record requested limits, confirmed
+native settings, fresh measured response and applicable peer/vehicle evidence
+separately. Software or browser tests cannot establish physical property-load
+sharing, Equalizer response time, fuse protection or autonomous controller-loss
+behavior.
+
 ## Browser suites
 
 Build first with `npm run build`. Browser sweeps are extended/manual checks,
@@ -125,6 +152,7 @@ node test/browser/equipment-smoke.js
 node test/browser/equipment-smoke.js --dashboard-heights-only
 node test/browser/equipment-smoke.js --caravan-only
 node test/browser/charging-tests-smoke.js
+node test/browser/shelly-limiter-smoke.js
 node test/browser/home-controls-smoke.js
 node test/browser/history-recovery-smoke.js
 node test/browser/heating-explorer-smoke.js
@@ -213,6 +241,16 @@ horizontal overflow and a reachable close button at 320/390/1440px in both theme
 temporary screenshot directory is printed on completion. It never connects to a
 vehicle or charger; overnight hardware behavior still requires an actual guided
 run by the installation user.
+
+The Shelly-limiter browser suite seeds actual decision observations and compact
+coverage in a fresh synthetic database, then reads them through the chart API.
+It checks six modes, load allowance versus effective/native settings, keyboard
+and touch inspection, persistent touch readout, badge details and focus return,
+unknown hatching and separate colors at 320/390/1440 px in both themes. It also
+checks the timeline in Phase loading and individual Charger 2 power. Synthetic
+screenshots are saved in the temporary directory printed on completion. The
+suite makes no household or charger connections; it is UI and storage-path
+validation, not a physical charger test.
 
 The physical-test API and runtime-independence tests exercise real BMW and Tesla
 acquisition with synthetic hardware. They compare all production settings, session

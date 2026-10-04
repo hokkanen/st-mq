@@ -229,9 +229,15 @@ permission to act. See [the configuration guide](docs/configuration.md).
   1's draw; Equalizer must reduce Charger 1 as needed. A forecast allocation or
   temporary combined excess caused by Charger 1 must not reduce Shelly's live
   entitlement. Native, vehicle and electrical limits still apply. Current
-  adjustment requires supported capabilities and commissioned, fresh load
-  evidence; unavailable evidence uses the configured fallback, never invented
-  headroom. An explicit configuration opt-out remains supported.
+  adjustment requires supported capabilities, explicitly configured electrical
+  limits and valid current source evidence. Held property, Easee current and
+  Equalizer allowance values may remain usable on healthy, synchronized current
+  connections when their independent consistency checks pass; their original
+  last-change clocks are preserved, not renewed by polling. Shelly current,
+  command and native readback freshness remain separately enforced. Unavailable
+  or inconsistent evidence uses the configured fallback, still respecting known
+  tighter limits and never inventing headroom. An explicit configuration opt-out
+  remains supported.
 - When future charging current is unknown, economic scheduling assumes the
   maximum the charger can deliver within its configured/verified ceiling and
   forecast property headroom on every phase after household and peer load. Use

@@ -328,11 +328,31 @@ physical integration and does not grant scheduling or commissioning permission.
 `charging.chargers.charger2.limiterEnabled` defaults to `true`: current follows
 property load and shared charger priority during ordinary charging and Charge
 now, independently of Automatic scheduling. An explicit `false` opts into basic
-native-current start/stop. The installation's phase mapping, fuse ratings and
-additive-current commissioning still require verification; changing the default
-does not manufacture that evidence. Unknown or stale load data uses the configured
-fallback ceiling. With Charger 2 priority, Shelly excludes Charger 1's draw from
-its available headroom, and Charger 1's Equalizer must yield.
+native-current start/stop. Configure `maximumCurrentA` (normally 16), per-phase
+`mainFuseA` and `marginA`; these are installation limits, not inferred settings.
+Usable load feeds permit 0 or 6–16 A. `fallbackCurrentA`, initially 12 A, applies
+when those feeds are unusable and remains subject to known tighter limits. It is
+neither a minimum current nor a permanent ceiling on forecast delivery. With
+Charger 2 priority, Shelly excludes Charger 1's draw from its available headroom,
+and Charger 1's Equalizer must yield.
+
+`agreementToleranceA`, initially 2 A, bounds the difference between Equalizer's
+per-phase allowed-current feed and headroom independently calculated from
+property and Easee currents before the configured safety margin. Healthy feeds
+synchronized in their current connection epochs can retain older last-change
+values when the comparison passes; original timestamps remain unchanged. No
+additional feed-age configuration is needed. `maxAgeMs`, initially 15000 ms,
+continues to bound Shelly measurements, command readiness and native readback.
+`dwellMs` and `rampA` default to 30000 ms and 2 A for increases and resumption;
+reductions do not wait for that increase dwell.
+
+The limiter uses the minimum measured Shelly phase current equally on all
+property phases and needs no Shelly-to-Easee phase map. `phaseMap` remains the
+installation's recorded phase-energy association and must still be configured
+correctly for that purpose. Retired `additiveCurrentVerified` and `maxSkewMs`
+fields are rejected rather than translated. See
+[Charger 2 current allocation](charging.md#charger-2-current-allocation) for the
+feed checks and priority rules.
 
 For example, merge only these intentional choices into your configuration:
 

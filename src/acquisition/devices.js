@@ -652,7 +652,9 @@ export function createDeviceProviders({ connections = {}, http, tokenStore, cloc
     stopAt: value.stopped ? value.stopAt : null } : null), nativeDynamicChargerAt]);
   function readCurrentSupply() {
     const now = clock(), current = !closed && controlBackend === 'native' ? local.controlSnapshot?.() : null;
-    const unknown = () => ({ currents: null, times: [null, null, null], source: null });
+    const unavailableEvidence = source => ({ source, connected: false, online: null, synchronized: false,
+      epoch: null, receivedAt: null, activityAt: null, sourceAt: null });
+    const unknown = () => ({ currents: null, times: [null, null, null], source: null, evidence: unavailableEvidence(null) });
     const phases = (rows, ids, source) => {
       const values = ids.map(id => {
         const candidates = (rows ?? []).filter(row => row.id === id).map(row => ({
@@ -672,25 +674,47 @@ export function createDeviceProviders({ connections = {}, http, tokenStore, cloc
     const cached = (kind, field) => cloud ? {
       currents: Array.isArray(cloud[field]) ? [...cloud[field]] : null,
       times: [...(cloud.observationTimes?.[kind] ?? [null, null, null])], source: 'easee-cloud',
+      evidence: unavailableEvidence('easee-cloud'),
     } : unknown();
     const streamed = (device, ids) => {
       if (!current || !supplied(device)) return null;
       const rows = stream?.snapshot(device, [...ids, 250], { requiredIds: [] });
-      if (!rows) return stream?.status()?.connected === true ? [] : null;
+      const suppliedEvidence = stream?.evidence?.(device, ids);
+      const { observations, ...evidence } = suppliedEvidence ?? unavailableEvidence('easee-stream');
+      const empty = { ...phases([], ids, 'easee-stream'), evidence };
+      if (!rows) return stream?.status()?.connected === true ? empty : null;
       const online = rows.find(row => row.id === 250), at = sourceTime(online?.timestamp);
-      return at !== null && at <= now && [true, 1, 'true', '1'].includes(online?.value) ? rows : [];
+      if (at === null || at > now || ![true, 1, 'true', '1'].includes(online?.value)) return empty;
+      // The live-only evidence view cannot borrow a newer REST cache entry or
+      // measurements from before this device's most recent online boundary.
+      return { ...phases(suppliedEvidence ? observations ?? [] : rows, ids, 'easee-stream'), evidence };
     };
-    const propertyRows = streamed(easee.equalizer_id, [31, 32, 33]);
-    const chargerRows = streamed(easee.charger_id, [183, 184, 185]);
+    const propertyStream = streamed(easee.equalizer_id, [31, 32, 33]);
+    const chargerStream = streamed(easee.charger_id, [183, 184, 185]);
+    const allowance = streamed(easee.charger_id, [230, 231, 232]) ?? cached('allowance', 'availableCurrentA');
+    const circuit = streamed(easee.charger_id, [22, 23, 24]) ?? { ...unknown(), source: 'easee-cloud',
+      evidence: unavailableEvidence('easee-cloud'),
+      currents: cloud && Array.isArray(nativeCloudSnapshot?.limits?.circuitA) ? [...nativeCloudSnapshot.limits.circuitA] : null,
+      times: cloud ? [22, 23, 24].map(id => nativeCloudSnapshot.observations?.[id]?.at ?? null) : [null, null, null] };
     const nativeRows = current?.readings?.filter(row => [183, 184, 185].includes(row.id)) ?? [];
-    const property = propertyRows !== null ? phases(propertyRows, [31, 32, 33], 'easee-stream') : cached('property', 'propertyCurrentA');
+    const property = propertyStream ?? cached('property', 'propertyCurrentA');
     const charger = nativeRows.length ? phases(nativeRows, [183, 184, 185], 'easee-ocpp')
-      : chargerRows !== null ? phases(chargerRows, [183, 184, 185], 'easee-stream') : cached('charger', 'chargerCurrentA');
+      : chargerStream ?? cached('charger', 'chargerCurrentA');
+    if (nativeRows.length) {
+      const receipts = nativeRows.map(row => row.receivedAt).filter(at => Number.isSafeInteger(at) && at <= now);
+      charger.evidence = { source: 'easee-ocpp', connected: true, online: true, synchronized: charger.currents !== null,
+        epoch: current.connectionId, receivedAt: receipts.length ? Math.max(...receipts) : null,
+        activityAt: receipts.length ? Math.max(...receipts) : null,
+        sourceAt: charger.currents !== null ? Math.max(...charger.times) : null };
+    }
     // Reading this view performs no provider request and never renews a source
-    // clock. The limiter separately applies its age/skew and additive gates.
+    // clock. Stream connection health and live activity are separate evidence.
     return { online: Boolean(current), supply: { propertyCurrentA: property.currents, chargerCurrentA: charger.currents,
-      observationTimes: { property: property.times, charger: charger.times },
-      currentSources: { property: property.source, charger: charger.source } } };
+      availableCurrentA: allowance.currents, circuitCurrentA: circuit.currents,
+      allocationA: cloud ? cloud.allocationA ?? nativeCloudSnapshot.limits?.allocationA ?? null : null,
+      observationTimes: { property: property.times, charger: charger.times, allowance: allowance.times, circuit: circuit.times },
+      currentSources: { property: property.source, charger: charger.source },
+      feedEvidence: { property: property.evidence, charger: charger.evidence, allowance: allowance.evidence, circuit: circuit.evidence } } };
   }
   const nativeScheduleControl = ocppInstallation ? createOcppScheduleAdapter({ scope: ocppInstallation.scope, clock,
     readCurrentSupply,

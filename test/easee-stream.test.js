@@ -122,6 +122,130 @@ test('one connection isolates product observations and returns independent snaps
   assert.equal(connection.options.keepAliveMs, 15_000);
 });
 
+test('held source values retain their clocks while independent product activity proves stream liveness', async t => {
+  const f = fixture(t), connection = await f.start(), old = START - 3_600_000;
+  connection.update('invented-equalizer', 31, 4.5, old, { unit: 'A' });
+  connection.update('invented-equalizer', 250, true, old);
+  let evidence = f.stream.evidence('invented-equalizer', [31]);
+  assert.equal(evidence.synchronized, true);
+  assert.equal(evidence.activityAt, null, 'A subscription baseline is not new source activity');
+  assert.equal(evidence.receivedAt, START);
+  assert.equal(Date.parse(evidence.observations[0].timestamp), old);
+  await f.timers.advance(60_000);
+  connection.update('invented-equalizer', 40, 2.5, f.timers.now);
+  evidence = f.stream.evidence('invented-equalizer', [31]);
+  assert.equal(evidence.activityAt, START + 60_000);
+  assert.equal(evidence.sourceAt, START + 60_000);
+  assert.equal(evidence.receivedAt, START);
+  assert.equal(Date.parse(evidence.observations[0].timestamp), old);
+  await f.timers.advance(60_000);
+  connection.update('invented-equalizer', 40, 2.5, START + 60_000);
+  connection.update('invented-equalizer', 31, 4.5, old);
+  f.stream.reconcile('invented-equalizer', [{ id: 31, value: 4.5, timestamp: new Date(f.timers.now).toISOString() }]);
+  const unchanged = f.stream.evidence('invented-equalizer', [31]);
+  assert.deepEqual(unchanged, evidence, 'Replays, REST reconciliation and reads cannot renew stream evidence');
+  unchanged.observations[0].value = 999;
+  assert.equal(f.stream.evidence('invented-equalizer', [31]).observations[0].value, 4.5);
+  assert.equal(f.stream.evidence('invented-charger', [31]).activityAt, null, 'Another product cannot prove this device is alive');
+});
+
+test('newer contradictory REST evidence fences held stream currents until the live stream catches up', async t => {
+  const f = fixture(t), connection = await f.start();
+  connection.update('invented-equalizer', 31, 4, START);
+  connection.update('invented-equalizer', 250, true, START);
+  await f.timers.advance(1000);
+  f.stream.reconcile('invented-equalizer', [{ id: 31, value: 20, timestamp: new Date(f.timers.now).toISOString() }]);
+  let evidence = f.stream.evidence('invented-equalizer', [31]);
+  assert.equal(evidence.synchronized, false, 'Known newer household load cannot be hidden behind an older held stream value');
+  assert.equal(evidence.activityAt, null, 'REST cannot establish live stream activity');
+  connection.update('invented-equalizer', 31, 20, f.timers.now);
+  evidence = f.stream.evidence('invented-equalizer', [31]);
+  assert.equal(evidence.synchronized, true);
+  assert.equal(evidence.observations[0].value, 20);
+  assert.equal(evidence.activityAt, f.timers.now);
+  await f.timers.advance(1000);
+  f.stream.reconcile('invented-equalizer', [{ id: 250, value: false, timestamp: new Date(f.timers.now).toISOString() }]);
+  assert.equal(f.stream.evidence('invented-equalizer', [31]).synchronized, false, 'A known newer offline state cannot grant eligibility');
+});
+
+test('device offline and recovery require a new acknowledged baseline without borrowing old product fields', async t => {
+  const f = fixture(t), connection = await f.start();
+  for (const product of ['invented-charger', 'invented-equalizer']) {
+    connection.update(product, 31, product === 'invented-charger' ? true : 4, START - 60_000);
+    connection.update(product, 250, true, START - 60_000);
+  }
+  const first = f.stream.evidence('invented-equalizer', [31]);
+  await f.timers.advance(1000);
+  connection.update('invented-equalizer', 250, false, f.timers.now);
+  assert.equal(f.stream.evidence('invented-equalizer', [31]).synchronized, false);
+  assert.equal(f.stream.evidence('invented-charger', [31]).synchronized, true);
+  const subscription = deferred(); connection.invokeResult = subscription.promise;
+  await f.timers.advance(1000);
+  connection.update('invented-equalizer', 250, true, f.timers.now);
+  await flush();
+  assert.deepEqual(connection.subscriptions.at(-1), ['SubscribeWithCurrentState', 'invented-equalizer', true]);
+  assert.equal(f.stream.evidence('invented-equalizer', [31]).synchronized, false);
+  connection.update('invented-equalizer', 31, 4, START - 60_000);
+  assert.equal(f.stream.evidence('invented-equalizer', [31]).synchronized, false, 'Baseline rows alone cannot bypass subscription acknowledgement');
+  subscription.resolve(); await flush();
+  const recovered = f.stream.evidence('invented-equalizer', [31]);
+  assert.equal(recovered.synchronized, true);
+  assert.notEqual(recovered.epoch, first.epoch);
+  assert.equal(Date.parse(recovered.observations[0].timestamp), START - 60_000, 'Unchanged source time remains historical');
+  connection.lose();
+  assert.equal(f.stream.evidence('invented-equalizer', [31]).connected, false);
+  assert.equal(f.stream.evidence('invented-equalizer', [31]).observations, null);
+  await f.timers.advance(100);
+  const replacement = f.connections.at(-1);
+  replacement.update('invented-equalizer', 250, true, f.timers.now);
+  assert.equal(f.stream.evidence('invented-equalizer', [31]).synchronized, false);
+  replacement.update('invented-equalizer', 31, 4, START - 60_000);
+  const reconnected = f.stream.evidence('invented-equalizer', [31]);
+  assert.equal(reconnected.synchronized, true);
+  assert.notEqual(reconnected.epoch, recovered.epoch);
+  assert.equal(reconnected.activityAt, null, 'Reconnect snapshots do not manufacture live activity');
+});
+
+test('conflicting stream fields and incomplete baseline cannot grant synchronized current evidence', async t => {
+  const f = fixture(t), connection = await f.start();
+  connection.update('invented-equalizer', 250, true, START);
+  assert.equal(f.stream.evidence('invented-equalizer', [31]).synchronized, false);
+  connection.update('invented-equalizer', 31, 4, START);
+  assert.equal(f.stream.evidence('invented-equalizer', [31]).synchronized, true);
+  connection.update('invented-equalizer', 31, 5, START);
+  assert.equal(f.stream.evidence('invented-equalizer', [31]).observations, null);
+  await f.timers.advance(1000);
+  connection.update('invented-equalizer', 31, 5, f.timers.now);
+  assert.equal(f.stream.evidence('invented-equalizer', [31]).synchronized, true);
+  assert.equal(f.stream.evidence('invented-equalizer', [999]).synchronized, false);
+  f.stream.reconcile('invented-equalizer', [{ id: 250, value: false, timestamp: new Date(START).toISOString() }]);
+  assert.equal(f.stream.evidence('invented-equalizer', [31]).synchronized, false, 'A conflicting online observation cannot grant liveness');
+  await f.stream.close();
+  assert.equal(f.stream.evidence('invented-equalizer', [31]).synchronized, false);
+});
+
+test('repeated device recovery fences an earlier pending baseline acknowledgement', async t => {
+  const f = fixture(t), connection = await f.start();
+  connection.update('invented-equalizer', 250, true, START);
+  connection.update('invented-equalizer', 31, 4, START);
+  await f.timers.advance(100);
+  connection.update('invented-equalizer', 250, false, f.timers.now);
+  const first = deferred(); connection.invokeResult = first.promise;
+  await f.timers.advance(100);
+  connection.update('invented-equalizer', 250, true, f.timers.now); await flush();
+  await f.timers.advance(100);
+  connection.update('invented-equalizer', 250, false, f.timers.now);
+  const second = deferred(); connection.invokeResult = second.promise;
+  await f.timers.advance(100);
+  connection.update('invented-equalizer', 250, true, f.timers.now); await flush();
+  connection.update('invented-equalizer', 31, 4, START);
+  first.resolve(); await flush();
+  assert.equal(f.stream.evidence('invented-equalizer', [31]).synchronized, false);
+  second.resolve(); await flush();
+  assert.equal(f.stream.evidence('invented-equalizer', [31]).synchronized, true);
+  assert.equal(connection.subscriptions.filter(row => row[1] === 'invented-equalizer').length, 3);
+});
+
 const transitionProducts = [{ id: 'invented-charger', ids: [31, 96, 100, 109, 250] }];
 
 test('live stream callback preserves each one-second and sixteen-second mode and pilot transition', async t => {

@@ -130,9 +130,26 @@ mapping, a verified numeric range and disabled native `auto_balance`. Missing
 `meta.ui.step` does not prevent those exact-value operations; contradictory
 reported step metadata still blocks them. It never changes the economic limiter
 preference or permits unrestricted current commands.
-Configure the installation's phase order, fuse ratings, margins and
-`additiveCurrentVerified` for the load model; these cannot be discovered from
-charger RPC. With the limiter disabled, a known native current setting limits
+Configure the installation's fuse ratings, margins and maximum current; charger
+RPC cannot establish those electrical limits. The limiter subtracts the minimum
+freshly measured Shelly phase current equally from the property phases, so it
+needs no Shelly-to-Easee phase correspondence. `phaseMap` still defines recorded
+phase association and is not inferred by current control.
+
+Property, Easee-current and Equalizer-allowance streams must be healthy, online
+and synchronized in their current connection epochs. Older last-change values
+can remain usable without altering source timestamps. The allowed-current
+fields 230–232 must agree within configured `agreementToleranceA` (2 A by
+default) with `max(0, fuse − property + Easee)` on every phase. Pilot field 114
+and a circuit current ceiling cannot supply that check. Clipped or delayed
+allowances must still satisfy the tolerance. Missing or inconsistent feeds
+select configurable `fallbackCurrentA` (12 A by default), respecting known lower
+limits; valid insufficient headroom can instead require a pause. Shelly's
+current measurements, commands and native readback retain their strict
+`maxAgeMs` freshness checks. `additiveCurrentVerified` and `maxSkewMs` are retired
+and rejected, without aliases.
+
+With the limiter disabled, a known native current setting limits
 the delivery estimate and ordinary economic control sends no current-setting RPC
 or 12 A fallback. The identification reduction and its saved restoration are
 the bounded exception. An unknown current setting uses the charger's configured maximum
@@ -341,8 +358,13 @@ It never renews an uncertain command or repeats an expired attempt automatically
 
 Automated tests use invented device identities and synthetic traffic. They cover
 capability discovery, app priority and command fencing, not installation wiring
-or autonomous outage behavior. Verify phase order, fuse values/margins and
-additive-current behavior before enabling the installation load model.
+or autonomous outage behavior. Confirm configured fuse values and margins
+against the installation, and qualify measured current changes and peer-priority
+responses on the actual chargers. Verify the recorded phase association
+separately: the limiter's common minimum-phase subtraction does not commission
+the energy-recording map. Online, synchronized and agreeing feed state supports
+the live calculation; it is not physical proof of Equalizer response or fuse
+protection.
 
 The bounded 2 October 2026 live setup confirmed the expected roles, working MQTT,
 source-clocked three-phase measurements and physical Boolean stop/resume. Firmware

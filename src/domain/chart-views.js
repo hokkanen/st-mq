@@ -18,11 +18,11 @@ function view(key, label, group, description, unit, leftSignals, rightSignals, t
     defaults: Object.freeze(Object.fromEntries(keys.map(key => [key, show.includes(key)]))), ...extra }));
 }
 view('power', 'Electrical power', 'Electricity', 'Compare property demand with charging and estimated heating loads.', 'kW',
-  ['property_power', 'charger_power', 'charger2_power', 'heat_pump_power', 'auxiliary_power'], property, homeRows,
-  ['property_power', 'charger_power', 'charger2_power', 'model_indoor_temperature', 'outdoor_temperature', 'outdoor_forecast', ...homeRows], { stackPower: true });
+  ['property_power', 'charger_power', 'charger2_power', 'heat_pump_power', 'auxiliary_power'], property, ['shellyLimiter', ...homeRows],
+  ['property_power', 'charger_power', 'charger2_power', 'model_indoor_temperature', 'outdoor_temperature', 'outdoor_forecast', 'shellyLimiter', ...homeRows], { stackPower: true });
 view('phases', 'Phase loading', 'Electricity', 'Compare property phase currents with charger fills stacked separately for each phase. Reconstructed currents are interval averages.', 'A',
-  ['property', 'ev1', 'ev2'].flatMap(prefix => [1, 2, 3].map(phase => `${prefix}_current_l${phase}`)), property, [],
-  ['property_current_l1', 'property_current_l2', 'property_current_l3'], { stackPhases: true });
+  ['property', 'ev1', 'ev2'].flatMap(prefix => [1, 2, 3].map(phase => `${prefix}_current_l${phase}`)), property, ['shellyLimiter'],
+  ['property_current_l1', 'property_current_l2', 'property_current_l3', 'shellyLimiter'], { stackPhases: true });
 view('voltage_estimates', 'Phase voltage estimates', 'Electricity', 'Saved smoothed voltage estimates for each supply phase, not live measurements. Inspect a point for the contributing sources and the feed used for its latest update.', 'V',
   ['voltage_estimate_l1', 'voltage_estimate_l2', 'voltage_estimate_l3'], [], [],
   ['voltage_estimate_l1', 'voltage_estimate_l2', 'voltage_estimate_l3']);

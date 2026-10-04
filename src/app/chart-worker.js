@@ -6,6 +6,8 @@ import { getHeatingBenefit } from './chart-heating-benefit.js';
 import { pendingEnergyObservations } from '../storage/pending-energy.js';
 import { H66_MAX_AGE_MS } from '../domain/reading-freshness.js';
 import { temperatureReportMaxAge } from '../domain/temperature-reports.js';
+import { CHART_VIEW_BY_KEY } from '../domain/chart-views.js';
+import { SHELLY_LIMITER_SIGNAL } from '../charging/limiter-history.js';
 
 // The chart worker owns a separate read-only SQLite connection. A large history
 // view cannot block control decisions or the application's HTTP event loop.
@@ -32,6 +34,19 @@ function sourceCoverageFingerprint(args,range) {
     const confirmed=row.end_at<=args.now?row.source_time:row.observed_at;
     const end=Math.min(range.to,confirmed+age);
     if(end>Math.max(range.from,row.start_at)) spans.push([row.id,end,row.end_at<=args.now]);
+  }
+  const selected = args.view !== undefined ? CHART_VIEW_BY_KEY[args.view]?.tracks.includes('shellyLimiter')
+    : ['power', 'charger2_power'].includes(args.left ?? 'power');
+  if (selected) {
+    // Limiter decisions have no recorder checkpoint or fresh-measurement tail.
+    // Only their already-observed coverage endpoint changes on identical ticks.
+    // A clipped finished selection stays cached when later ticks extend beyond it.
+    const row = db.prepare(`SELECT c.id,c.start_at,c.end_at FROM active_recorder_coverage c
+      JOIN active_observations o ON o.id=c.observation_id WHERE c.signal=? AND c.source='charging-limiter'
+        AND c.start_at<? AND c.end_at>? AND o.received_at<=?
+        AND json_extract(o.raw,'$.input') ${args.input === 'simulated' ? '=' : '<>'} 'simulated'
+      ORDER BY c.end_at DESC,c.id DESC LIMIT 1`).get(SHELLY_LIMITER_SIGNAL, range.to, range.from, args.now);
+    if (row) spans.push(['shelly-limiter', row.id, Math.min(row.end_at, range.to, args.now)]);
   }
   return JSON.stringify(spans);
 }

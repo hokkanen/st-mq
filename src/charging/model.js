@@ -120,7 +120,6 @@ export function buildCharger({ definition, settings, telemetry = {}, automaticSo
       ...(finite(configuration?.maximumCurrentA) && configuration.maximumCurrentA >= 0
         ? { maximumCurrentA: configuration.maximumCurrentA } : {}),
       ...(typeof configuration?.limiterEnabled === 'boolean' ? { limiterEnabled: configuration.limiterEnabled } : {}),
-      ...(typeof configuration?.additiveCurrentVerified === 'boolean' ? { additiveCurrentVerified: configuration.additiveCurrentVerified } : {}),
       ...(finite(configuration?.fallbackCurrentA) && configuration.fallbackCurrentA >= 0
         ? { fallbackCurrentA: configuration.fallbackCurrentA } : {}) }, values, automatic, requiredGridKwh,
     deadlineAt: finite(deadlineAt) ? deadlineAt : resolveChargingDeadline(now, settings.readyBy, timezone),

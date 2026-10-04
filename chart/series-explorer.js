@@ -120,6 +120,6 @@ export function explorerSelection(key) {
     requestKey: row.requestKey, description: `${row.basis}. ${row.description === row.basis ? '' : row.description}`.trim(),
     leftSignals: price ? prices : categorical || temperature ? [] : [row.signal],
     rightSignals: price ? [] : [...(temperature ? [row.signal] : []), ...prices],
-    tracks: categorical ? [row.signal] : [], defaults: {},
+    tracks: categorical ? [row.signal] : row.signal === 'charger2_power' ? ['shellyLimiter'] : [], defaults: {},
     unit: row.compatibilityKey === 'saved-temperature-difference' ? 'Δ°C' : row.unit, stackPower: false };
 }

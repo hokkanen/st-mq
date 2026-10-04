@@ -12,7 +12,7 @@ export const DEFAULT_CHARGING_CONFIGURATION = Object.freeze({
     enabled: false, profile: 'top-ac-portable', deviceId: '', topicPrefix: '',
     associationVersion: 1, serviceId: 0, maximumCurrentA: 16,
     limiterEnabled: true, fallbackCurrentA: 12, mainFuseA: [25, 25, 25], marginA: [1, 1, 1],
-    phaseMap: [0, 1, 2], additiveCurrentVerified: false, maxAgeMs: 15000, maxSkewMs: 5000,
+    phaseMap: [0, 1, 2], maxAgeMs: 15000, agreementToleranceA: 2,
     dwellMs: 30000, rampA: 2,
   } },
   vehicles: {
@@ -32,14 +32,14 @@ export function chargingConfiguration(input = {}) {
   const defaults = DEFAULT_CHARGING_CONFIGURATION.chargers.charger2, supplied = input.chargers?.charger2 ?? {};
   strict(supplied, Object.keys(defaults), 'Shelly EVSE configuration');
   const c2 = { ...structuredClone(defaults), ...supplied };
-  for (const key of ['enabled', 'limiterEnabled', 'additiveCurrentVerified']) if (typeof c2[key] !== 'boolean') throw new Error(`Invalid EVSE ${key}`);
+  for (const key of ['enabled', 'limiterEnabled']) if (typeof c2[key] !== 'boolean') throw new Error(`Invalid EVSE ${key}`);
   if (c2.profile !== 'top-ac-portable' || !topic(c2.topicPrefix) || !topic(c2.deviceId)) throw new Error('Unsupported EVSE profile or topic');
-  for (const key of ['associationVersion', 'serviceId', 'maximumCurrentA', 'fallbackCurrentA', 'maxAgeMs', 'maxSkewMs', 'dwellMs', 'rampA'])
-    if (!Number.isFinite(c2[key]) || c2[key] < (key === 'serviceId' || key === 'dwellMs' ? 0 : 1)) throw new Error(`Invalid EVSE ${key}`);
+  for (const key of ['associationVersion', 'serviceId', 'maximumCurrentA', 'fallbackCurrentA', 'maxAgeMs', 'agreementToleranceA', 'dwellMs', 'rampA'])
+    if (!Number.isFinite(c2[key]) || c2[key] < (['serviceId', 'dwellMs', 'agreementToleranceA', 'fallbackCurrentA'].includes(key) ? 0 : 1)) throw new Error(`Invalid EVSE ${key}`);
   if (!Number.isSafeInteger(c2.associationVersion) || !Number.isSafeInteger(c2.serviceId) || c2.serviceId !== 0
     || c2.maximumCurrentA < 6 || c2.maximumCurrentA > 16
     || c2.fallbackCurrentA > c2.maximumCurrentA || c2.rampA > c2.maximumCurrentA || c2.rampA < 1
-    || c2.maxAgeMs > 60000 || c2.maxSkewMs > c2.maxAgeMs || c2.dwellMs > 300000) throw new Error('Invalid EVSE current or timing limits');
+    || c2.maxAgeMs > 60000 || c2.agreementToleranceA > 5 || c2.dwellMs > 300000) throw new Error('Invalid EVSE current or timing limits');
   for (const key of ['mainFuseA', 'marginA']) if (!Array.isArray(c2[key]) || c2[key].length !== 3 || c2[key].some(v => !Number.isFinite(v) || v < 0 || v > 200)) throw new Error(`Invalid EVSE ${key}`);
   if (c2.mainFuseA.some((v, p) => v <= c2.marginA[p])) throw new Error('EVSE margin must be below each main fuse');
   if (!Array.isArray(c2.phaseMap) || [...c2.phaseMap].sort().join(',') !== '0,1,2') throw new Error('EVSE phase map must be a permutation');

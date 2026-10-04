@@ -1592,6 +1592,9 @@ export function createShellyController({ adapter, initialState, saveState = () =
             }
           }
           const permission = adapter.snapshot().fields.start_charging;
+          state.limiter.pausedByLimiter = limitation.loadCurrentA === 0 && state.ownedPause && permission.value === false
+            && state.manual?.kind !== 'stop' && !identificationPause && !(economic && !inWindow)
+            && !nativeBlocked && !snapshot.nativeScheduleActive;
           const open = !pause && !nativeBlocked && !state.pending && !currentUnconfirmed && fresh(permission) && permission.value === true;
           const intermediate = state.execution && clock() < state.execution.finalStartAt;
           state.released = open && !identification && !state.manual && !state.provisional && !intermediate && Boolean(input.enabled || chargeNow);

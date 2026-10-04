@@ -485,7 +485,7 @@ test('sparse EVSE configuration uses current adjustment by default and preserves
   writeFileSync(path, JSON.stringify({ charging: { chargers: { charger2 } } }));
   const config = loadConfig({ STMQ_CONFIG: path }, directory);
   assert.equal(config.charging.chargers.charger2.limiterEnabled, true);
-  assert.equal(config.charging.chargers.charger2.additiveCurrentVerified, false);
+  assert.equal(config.charging.chargers.charger2.fallbackCurrentA, 12);
   const contents = JSON.stringify({ charging: { chargers: { charger2: { ...charger2, limiterEnabled: false } } } });
   writeFileSync(path, contents);
   const optedOut = (await configurationSource(config).prepare()).config;
@@ -494,7 +494,7 @@ test('sparse EVSE configuration uses current adjustment by default and preserves
   writeFileSync(path, JSON.stringify({ charging: { chargers: { charger2 } } }));
   const defaultsRestored = (await configurationSource(optedOut).prepare()).config;
   assert.equal(defaultsRestored.charging.chargers.charger2.limiterEnabled, true);
-  assert.equal(defaultsRestored.charging.chargers.charger2.additiveCurrentVerified, false);
+  assert.equal(defaultsRestored.charging.chargers.charger2.fallbackCurrentA, 12);
 });
 
 

@@ -169,7 +169,7 @@ test('home activity rows share the requested order and keep equipment feedback d
   const homeTracks = ['controller_phase', 'operatingMode', 'compressorHome', 'dhwr_active', 'fireplace'];
   for (const key of ['power', 'home_temperatures', 'home_power', 'heating_water']) {
     const view = CHART_VIEW_BY_KEY[key];
-    assert.deepEqual(view.tracks, homeTracks, key);
+    assert.deepEqual(view.tracks, key === 'power' ? ['shellyLimiter', ...homeTracks] : homeTracks, key);
     assert(view.tracks.every(track => view.defaults[track] === true), key);
     assert(!Object.hasOwn(view.defaults, 'heatOff'), key);
     assert(!Object.hasOwn(view.defaults, 'dhwr'), key);

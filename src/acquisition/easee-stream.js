@@ -185,6 +185,48 @@ export function createEaseeStream({ products = [], getAccessToken, clock = Date.
       || previousLive.row.unit != null && unit != null && previousLive.row.unit !== unit)) previousLive.conflict = true;
     const live = liveDevice.get(id), shared = device.get(id);
     if (live?.at === at && shared?.at === at && shared.conflict) live.conflict = true;
+    if (fromStream) {
+      const evidence = context.evidence.get(mid) ?? { epoch: 0, online: null, synchronizing: false,
+        seen: new Map(), activityAt: null, sourceAt: null };
+      context.evidence.set(mid, evidence);
+      if (id === 250 && live?.at === at) {
+        const online = !live.conflict && [true, 1, 'true', '1'].includes(live.row.value);
+        if (!online && evidence.online !== false) {
+          evidence.epoch++;
+          evidence.synchronizing = false;
+          evidence.seen.clear();
+          evidence.activityAt = null;
+          evidence.sourceAt = null;
+        }
+        const recovered = online && evidence.online === false;
+        evidence.online = online;
+        if (recovered && context.usable && !evidence.synchronizing) {
+          // Device recovery is distinct from the account transport. Ask for a
+          // new provider baseline so unchanged limits are not borrowed across
+          // that device's offline interval. This does not renew their clocks.
+          evidence.synchronizing = true;
+          evidence.seen.clear();
+          evidence.activityAt = null;
+          evidence.sourceAt = null;
+          const epoch = evidence.epoch;
+          Promise.resolve().then(() => {
+            if (closed || current !== context || !context.active) throw failure('easee-stream-aborted');
+            return bounded(context.connection.invoke('SubscribeWithCurrentState', mid, true), timeoutMs, context.controller.signal);
+          }).then(() => {
+            if (current === context && context.active && evidence.epoch === epoch) evidence.synchronizing = false;
+          }, () => { /* Keep recovery unsynchronized until the next connection. */ });
+        }
+      }
+      // Receipt evidence is independent of the cache's source clock. Duplicate
+      // delivery, REST reconciliation and reading this view never refresh it.
+      const prior = evidence.seen.get(id);
+      if (live?.at === at && !live.conflict && (!prior || at > prior.at)) evidence.seen.set(id, { at, receivedAt });
+      if (context.usable && at > context.readyAt && (!previousLive || at > previousLive.at)
+        && live?.at === at && !live.conflict) {
+        evidence.activityAt = receivedAt;
+        evidence.sourceAt = at;
+      }
+    }
     // Subscription snapshots may arrive after acknowledgement. The first
     // field value is only a baseline, and pre-readiness source clocks cannot
     // become live transitions when delivered late or replayed on reconnect.
@@ -212,7 +254,8 @@ export function createEaseeStream({ products = [], getAccessToken, clock = Date.
       lifetime.signal.addEventListener('abort', abort, { once: true });
       let resolveLoss, minimumDelay = 0, tokenFailureStatus = null;
       const loss = new Promise(resolve => { resolveLoss = resolve; });
-      const context = { active: true, usable: false, readyAt: null, controller, connection: null, lastToken: null, seen: new Map(), live: new Map() };
+      const context = { active: true, usable: false, readyAt: null, controller, connection: null, lastToken: null,
+        seen: new Map(), live: new Map(), evidence: new Map() };
       current = context;
       const lost = error => {
         invalidate(context);
@@ -312,6 +355,28 @@ export function createEaseeStream({ products = [], getAccessToken, clock = Date.
       if (!allowed || ids.some(id => !allowed.has(id)) || requiredIds.some(id => !ids.includes(id) || !values?.has(id))) return null;
       if (ids.some(id => values?.get(id)?.conflict)) return null;
       return ids.flatMap(id => values?.has(id) ? [{ ...values.get(id).row }] : []);
+    },
+    evidence(device, ids) {
+      const connected = !closed && state === 'connected' && current?.active === true;
+      const allowed = configured.get(device), evidence = current?.evidence.get(device), values = current?.live.get(device);
+      const onlineRow = values?.get(250);
+      const online = connected && onlineRow ? !onlineRow.conflict && [true, 1, 'true', '1'].includes(onlineRow.row.value) : null;
+      const validIds = allowed && Array.isArray(ids) && ids.every(id => allowed.has(id));
+      const consistent = id => {
+        const live = values?.get(id), shared = cache.get(device)?.get(id);
+        return live && !shared?.conflict && (!shared || shared.at <= live.at
+          || sameValue(shared.row.value, live.row.value)
+            && (shared.row.unit == null || live.row.unit == null || shared.row.unit === live.row.unit));
+      };
+      const synchronized = Boolean(connected && validIds && online === true && evidence?.online === true && !evidence.synchronizing
+        && ids.every(id => evidence.seen.has(id) && values?.has(id) && !values.get(id).conflict
+          && values.get(id).at === evidence.seen.get(id).at && consistent(id)) && consistent(250));
+      const receipts = synchronized ? ids.map(id => evidence.seen.get(id).receivedAt) : [];
+      return { source: 'easee-stream', connected, online,
+        synchronized, epoch: connected ? `${attempts}:${evidence?.epoch ?? 0}` : null,
+        receivedAt: receipts.length ? Math.max(...receipts) : null,
+        activityAt: connected ? evidence?.activityAt ?? null : null, sourceAt: connected ? evidence?.sourceAt ?? null : null,
+        observations: synchronized ? ids.map(id => ({ ...values.get(id).row })) : null };
     },
     reconcile(device, payload) {
       if (closed || state !== 'connected' || !current?.active) return;

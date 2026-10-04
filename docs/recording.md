@@ -387,6 +387,46 @@ The native Shelly role/profile and the hardware checks still required are in
 configuration/state has no translation path; only the two supported v0.7.5 CSV
 import formats retain backwards compatibility.
 
+### Shelly load-balancing decisions
+
+`shelly_limiter_mode` records the controller's own load-balancing decisions,
+independently of charger energy and charging-session reports. A semantic change
+stores one exact state observation with equipment association, observation time,
+mode, integer load allowance, effective allowance, reason, native current-setting
+readback and application status. There are no copied property/charger snapshots,
+raw current time series or periodic duplicate state observations.
+
+Unchanged successful controller observations extend the existing compact
+coverage row in place. They still require a database update, but do not append a
+new observation. A process-local continuity cursor prevents restart, ownership
+changes or more than 30 seconds without observation from joining unobserved time
+to a previous state. Unknown results do not extend the preceding known interval.
+The cursor is not a persisted control instruction and cannot grant authority.
+
+The chart reads covered decisions from the existing observation and coverage
+tables; this adds no database schema change or new schema-conversion path. Missing
+coverage, conflicting overlaps and invalid records are shown as unknown. Query
+work is bounded by the requested chart resolution and at most 4000 recorded
+decisions. If a long selection exceeds that budget, the chart retains recent
+exact detail and marks omitted earlier detail unknown; zooming requests that
+period independently. It does not average modes or silently discard stored
+changes to fit a chart.
+
+The timeline and live badge distinguish **Unrestricted**, **Limited**, **Paused
+by balancing**, **Fallback**, **Inactive** and **Unknown**. Allowance means a
+controller ceiling, and a confirmed native setting or pause instruction is not
+physical charging or zero-power evidence. Native and vehicle restrictions can
+reduce the effective allowance without changing an unrestricted load allowance.
+Manual and scheduled stops never become balancing pauses merely because power
+is zero. See [current allocation](charging.md#charger-2-current-allocation).
+
+This history does not expire with unsaved charging-session reports, whose default
+retention is 30 days. It is part of ordinary recorded history and current-format
+backup/recovery. Stable operation therefore retains one decision and its compact
+coverage rather than a row per five-second poll. Its growth follows actual
+changes in state, allowance, reason or native-setting confirmation, not elapsed
+poll count.
+
 ### Diagnostic meter and session checks
 
 Equalizer accumulated import energy (`45`) is the only cumulative counter stored
@@ -834,7 +874,10 @@ beside the title; phones keep the colours inside the fold. Hovering or dragging
 a strip moves the shared time cursor, including by touch. Its separate segments
 appear only in the plot and visible strips, leaving titles and gaps clear.
 Scrolling the activity rows or opening their explanations preserves their exact
-alignment with the plot at both time-axis endpoints.
+alignment with the plot at both time-axis endpoints. The **Shelly load balancing**
+row accompanies Electrical power, Phase loading and individual Charger 2 power.
+Its exact change history uses a hatched Unknown state for missing coverage and
+supports Left/Right, Home and End inspection when the strip has keyboard focus.
 Landscape shows the entire selected time window at baseline zoom. Portrait uses
 the full available chart height and shows a narrower time slice; drag sideways
 or use the navigator to move through the selection even at baseline zoom.
@@ -1367,6 +1410,7 @@ The retained data has distinct responsibilities:
 | Dated power assumptions and controller auxiliary estimates | Historical equipment interpretation and the estimate actually available to control; not separately measured heat-pump electricity. |
 | Learning outcome assessments and cycle events | Original assessment known at that time, kept distinct from corrected replay. |
 | Meter/session checks | Independent reference evidence for accuracy; not duplicate energy contributions. |
+| Shelly limiter decisions and compact coverage | Exact controller allowance, fallback and application-status changes; separate from actual draw and charging-report retention. |
 | Native garage pump interpreted indoor temperature/frequency | Adaptive observed diagnostics with explicit validity bounds; separate from room/protection sensor measurements. |
 | Native garage compressor activity and defrost | Exact observed state changes; no inferred fault or defrost interpretation from arbitrary diagnostic bytes. |
 | External feed diagnostics | Abnormal onset, changed reason and recovery events; no numeric feed series or healthy renewal log. |

@@ -35,24 +35,21 @@ test('worker preserves the complete planner result and selects available cheap d
   assert.deepEqual(options, before, 'Worker planning cannot mutate live request inputs');
 });
 
-test('worker transports and invalidates configured fallback restrictions when commissioning or opt-out changes', async t => {
+test('worker preserves optimistic future capacity across transient fallback and explicit opt-out changes', async t => {
   const service = serviceFor(t), options = smallRequest('charger2'), charger = options.chargers[0];
   charger.capabilities = { scheduling: true, currentControl: true, externalLoadBalancing: false };
-  charger.configuration = { maximumCurrentA: 16, limiterEnabled: true, additiveCurrentVerified: false, fallbackCurrentA: 12 };
+  charger.configuration = { maximumCurrentA: 16, limiterEnabled: true, fallbackCurrentA: 12 };
   charger.requiredGridKwh = 14;
-  const limited = await service.request(options);
-  assert.equal(limited.plans.charger2.feasible, false);
-  assert.ok(Math.abs(limited.plans.charger2.deliveredGridKwh - 12.42) < 1e-6);
-  charger.configuration.additiveCurrentVerified = true;
-  assert.equal((await service.request(options)).plans.charger2.feasible, true);
-  charger.configuration.additiveCurrentVerified = false;
+  const initial = await service.request(options);
+  assert.equal(initial.plans.charger2.feasible, true);
+  assert.ok(Math.abs(initial.plans.charger2.deliveredGridKwh - 14) < 1e-6);
   charger.configuration.limiterEnabled = false; charger.capabilities.currentControl = false;
   assert.equal((await service.request(options)).plans.charger2.feasible, true);
   charger.configuration.limiterEnabled = true; charger.capabilities.currentControl = true;
   charger.configuration.fallbackCurrentA = 8;
   const lower = await service.request(options);
-  assert.equal(lower.plans.charger2.feasible, false);
-  assert.ok(Math.abs(lower.plans.charger2.deliveredGridKwh - 8.28) < 1e-6);
+  assert.equal(lower.plans.charger2.feasible, true);
+  assert.ok(Math.abs(lower.plans.charger2.deliveredGridKwh - 14) < 1e-6);
 });
 
 test('busy worker retains its running request and only the newest waiting request', async t => {

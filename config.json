@@ -145,9 +145,8 @@
             1,
             2
           ],
-          "additiveCurrentVerified": false,
           "maxAgeMs": 15000,
-          "maxSkewMs": 5000,
+          "agreementToleranceA": 2,
           "dwellMs": 30000,
           "rampA": 2
         }
@@ -595,9 +594,8 @@
           "phaseMap": [
             "int"
           ],
-          "additiveCurrentVerified": "bool",
           "maxAgeMs": "int(0,300000)",
-          "maxSkewMs": "int(0,300000)",
+          "agreementToleranceA": "float(0,5)",
           "dwellMs": "int(0,300000)",
           "rampA": "int(0,300000)"
         }

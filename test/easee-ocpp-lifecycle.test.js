@@ -37,7 +37,7 @@ function fixture(t, { streaming = false, authorizationMode = 'plug-and-charge', 
   let cloudObservations = null, cloudOffline = false, nativeRequest = null, streamRows = null, commandSourceAt = null;
   let resumeCurrentDelayReads = 0, pendingResumeCurrentAt = null;
   let streamObservation = null;
-  let streamConnected = true, streamDisconnect = null;
+  let streamConnected = true, streamDisconnect = null, streamEvidence = null;
   let readSetupState = () => states.get('setup');
   const stateFor = key => ({ get: () => clone(states.get(key) ?? null), set: value => states.set(key, clone(value)) });
   const newHttp = () => createHttp({ allowOcppSetup: true, allowChargerScheduling: true, allowChargerTakeover: true, canControl: () => permitted,
@@ -107,6 +107,8 @@ function fixture(t, { streaming = false, authorizationMode = 'plug-and-charge', 
         streamDisconnect = options.onDisconnect;
         return { start() {}, close() {}, snapshot: (device, ids) => !streamConnected ? null
           : streamRows instanceof Map ? clone(streamRows.get(device)?.filter(row => ids.includes(row.id)) ?? null) : clone(streamRows),
+        evidence: (device, ids) => streamEvidence ? clone({ ...streamEvidence.get(device), observations:
+          streamEvidence.get(device)?.synchronized === true ? streamEvidence.get(device)?.observations?.filter(row => ids.includes(row.id)) : null }) : undefined,
         reconcile() {}, status: () => ({ connected: streamConnected }) };
       } : null, ocppInstallation: installation, ocppState: stateFor('transactions'), ocppSetupState: stateFor('setup'),
       ocppFactory: options => {
@@ -149,6 +151,7 @@ function fixture(t, { streaming = false, authorizationMode = 'plug-and-charge', 
     set commandSourceAt(value) { commandSourceAt = value; },
     set resumeCurrentDelayReads(value) { resumeCurrentDelayReads = value; },
     set streamRows(value) { streamRows = clone(value); }, set cloudOffline(value) { cloudOffline = value; },
+    set streamEvidence(value) { streamEvidence = clone(value); },
     set streamConnected(value) { if (streamConnected && !value) streamDisconnect?.(); streamConnected = value; },
     emitObservation(observation) { streamObservation?.(CHARGER, observation); },
     set nativeRequest(value) { nativeRequest = value; },
@@ -398,6 +401,56 @@ test('native current supply reads admitted stream and OCPP samples without polli
   assert.equal(reading.online, false);
   assert.equal(reading.supply.propertyCurrentA, null);
   assert.equal(reading.supply.chargerCurrentA, null);
+});
+
+test('current supply keeps held allowance, circuit limits and stream health separate from native meter receipts', async t => {
+  const f = fixture(t, { equalizer: true, streaming: true });
+  const provider = f.make(); await provider.reconcileOcpp();
+  provider.startStreaming(); await new Promise(resolve => setImmediate(resolve));
+  f.advance(1000);
+  const old = AT - 3_600_000, online = { id: 250, value: true, timestamp: new Date(old).toISOString() };
+  const rows = (ids, values, at = old) => ids.map((id, index) => ({ id, value: values[index], unit: 'A',
+    timestamp: new Date(at).toISOString() }));
+  const propertyRows = rows([31, 32, 33], [4, 5, 6]);
+  const chargerRows = [...rows([230, 231, 232], [0, 21, 19]), ...rows([22, 23, 24], [16, 16, 16]),
+    ...rows([183, 184, 185], [0, 0, 0])];
+  const streamEvidence = new Map([
+    ['fixture-equalizer', { source: 'easee-stream', connected: true, online: true, synchronized: true,
+      epoch: '1:0', receivedAt: AT, activityAt: null, sourceAt: null, observations: propertyRows }],
+    [CHARGER, { source: 'easee-stream', connected: true, online: true, synchronized: true,
+      epoch: '1:0', receivedAt: AT, activityAt: null, sourceAt: null, observations: chargerRows }],
+  ]);
+  f.streamRows = new Map([
+    ['fixture-equalizer', [...rows([31, 32, 33], [4, 5, 6], f.now), online]],
+    [CHARGER, [...chargerRows, online]],
+  ]);
+  f.streamEvidence = streamEvidence;
+  f.listeners.at(-1).control = { connectionId: 'current-supply-socket', connectorStatus: 'Charging', timestamp: f.now,
+    receivedAt: f.now, transaction: null,
+    readings: rows([183, 184, 185], [2, 3, 4], f.now).map(row => ({ ...row, receivedAt: f.now })),
+  };
+  const adapter = provider.chargerScheduleControl(), httpCount = f.events.filter(row => row.type === 'http').length;
+  const supply = adapter.readCurrentSupply().supply;
+  assert.deepEqual(supply.propertyCurrentA, [4, 5, 6], 'A newer shared REST cache cannot masquerade as live stream evidence');
+  assert.deepEqual(supply.observationTimes.property, [old, old, old], 'A newer unchanged REST observation cannot renew stream source clocks');
+  assert.deepEqual(supply.availableCurrentA, [0, 21, 19], 'Zero is preserved and Equalizer allowance is not clipped to charger circuit limits');
+  assert.deepEqual(supply.circuitCurrentA, [16, 16, 16]);
+  assert.deepEqual(supply.chargerCurrentA, [2, 3, 4]);
+  assert.deepEqual(supply.observationTimes.allowance, [old, old, old]);
+  assert.equal(supply.feedEvidence.allowance.synchronized, true);
+  assert.equal(supply.feedEvidence.allowance.activityAt, null, 'Synchronized held state is not a fresh measurement');
+  assert.equal(supply.feedEvidence.charger.source, 'easee-ocpp');
+  assert.equal(supply.feedEvidence.charger.activityAt, f.now);
+  assert.equal(supply.feedEvidence.charger.epoch, 'current-supply-socket');
+  f.advance(60_000);
+  assert.deepEqual(adapter.readCurrentSupply().supply, supply, 'Reading evidence neither polls nor renews source or receipt clocks');
+  assert.equal(f.events.filter(row => row.type === 'http').length, httpCount);
+  streamEvidence.set('fixture-equalizer', { ...streamEvidence.get('fixture-equalizer'), synchronized: false, epoch: '1:1' });
+  f.streamEvidence = streamEvidence;
+  const invalid = adapter.readCurrentSupply().supply;
+  assert.equal(invalid.propertyCurrentA, null, 'Old property rows cannot cross a device recovery boundary');
+  assert.equal(invalid.feedEvidence.property.synchronized, false);
+  assert.deepEqual(invalid.availableCurrentA, [0, 21, 19], 'One device recovery does not erase the other independent feed');
 });
 
 test('unconfirmed native cleanup retains its listener and commissioning obligation without applying OcppOff', async t => {

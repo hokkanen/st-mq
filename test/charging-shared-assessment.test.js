@@ -244,11 +244,14 @@ test('joint model validation keeps known tighter limits and cannot invent an unc
   }
   assert.equal(sharedChargingAssessment(f.view.chargers, f.view.coordination, f.now()).proposed.state, 'feasible');
   const baseline = structuredClone(charger);
+  Object.assign(charger.configuration, { limiterEnabled: true, fallbackCurrentA: 6 });
+  charger.capabilities.currentControl = true;
+  assert.equal(sharedChargingAssessment(f.view.chargers, f.view.coordination, f.now()).proposed.state, 'feasible',
+    'A temporary telemetry fallback is not a permanent forecast restriction');
+  Object.assign(charger, structuredClone(baseline));
   for (const [name, restrict] of [
     ['reported ceiling', current => { current.values.maximumCurrentA = f.reading(6); }],
     ['configured ceiling', current => { current.values.maximumCurrentA = f.reading(16); current.configuration.maximumCurrentA = 6; }],
-    ['uncommissioned fallback', current => { Object.assign(current.configuration,
-      { limiterEnabled: true, additiveCurrentVerified: false, fallbackCurrentA: 6 }); }],
     ['native user limit', current => { current.values.nativeCurrentA = f.reading(6); }],
     ['vehicle limit', current => { current.values.vehicleCurrentA = f.reading(6); }],
     ['known basic current', current => { current.values.currentA = f.reading(6); }],

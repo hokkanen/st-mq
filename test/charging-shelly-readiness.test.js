@@ -377,7 +377,7 @@ test('a reply from a disconnected MQTT generation cannot confirm the new connect
 });
 
 test('a setting query started before command dispatch cannot refresh the pre-command value', async t => {
-  const f = fixture(t, { limiterEnabled: true, additiveCurrentVerified: true });
+  const f = fixture(t, { limiterEnabled: true });
   await f.ready();
   const publish = f.client.publish;
   let release, announced;
@@ -614,7 +614,7 @@ test('numeric mutations require enabled load management and live supported capab
   await assert.rejects(basic.command('current_limit', 10));
   assert.equal(basic.mutations().length, 0);
 
-  const managed = fixture(t, { limiterEnabled: true, additiveCurrentVerified: true });
+  const managed = fixture(t, { limiterEnabled: true });
   await managed.ready();
   await managed.command('current_limit', 10);
   assert.deepEqual(managed.mutations().map(call => call.params.value), [10]);
@@ -637,7 +637,7 @@ test('unsupported numeric capabilities disable current control without blocking 
     ['read-only current', component => { component.access = 'cr'; }],
   ];
   for (const [name, modify] of cases) await t.test(name, async t => {
-    const f = fixture(t, { limiterEnabled: true, additiveCurrentVerified: true });
+    const f = fixture(t, { limiterEnabled: true });
     modify(f.components.current_limit);
     await f.ready();
     assert.equal(f.adapter.snapshot().controlReady, true);
@@ -651,7 +651,7 @@ test('unsupported numeric capabilities disable current control without blocking 
 
 test('supported current writes remain available when optional UI step metadata is absent or withdrawn', async t => {
   for (const metadata of ['missing-step', 'missing-ui', 'missing-meta']) await t.test(metadata, async t => {
-    const f = fixture(t, { limiterEnabled: true, additiveCurrentVerified: true });
+    const f = fixture(t, { limiterEnabled: true });
     await f.ready();
     assert.equal(f.adapter.snapshot().currentControlReady, true);
     if (metadata === 'missing-step') delete f.components.current_limit.meta.ui.step;
@@ -688,7 +688,7 @@ test('native current capability changes are rechecked on every refresh', async t
     ['service replacement', component => { component.owner = 'service:1'; }],
   ];
   for (const [name, modify] of cases) await t.test(name, async t => {
-    const f = fixture(t, { limiterEnabled: true, additiveCurrentVerified: true });
+    const f = fixture(t, { limiterEnabled: true });
     await f.ready();
     assert.equal(f.adapter.snapshot().currentControlReady, true);
     modify(f.components.current_limit);
@@ -700,7 +700,7 @@ test('native current capability changes are rechecked on every refresh', async t
 });
 
 test('source-time-invalid current readback cannot authorize numeric control after publication awaits', async t => {
-  const f = fixture(t, { limiterEnabled: true, additiveCurrentVerified: true });
+  const f = fixture(t, { limiterEnabled: true });
   await f.ready();
   await assert.rejects(f.command('current_limit', 10, { beforePublish: async () => {
     f.advance(16000);
@@ -722,7 +722,7 @@ test('native restriction arriving while a mutation awaits publication revokes th
 });
 
 test('a same-value native current selection supersedes the controller current setting', async t => {
-  const f = fixture(t, { limiterEnabled: true, additiveCurrentVerified: true, dwellMs: 0 });
+  const f = fixture(t, { limiterEnabled: true, dwellMs: 0 });
   for (const role of Object.keys(TYPES)) f.measuredAt[role] = NOW;
   await f.ready();
   let now = NOW + 1000;
@@ -741,7 +741,7 @@ test('a same-value native current selection supersedes the controller current se
 });
 
 test('a native current choice arriving between acceptance and readback retains its ceiling', async t => {
-  const f = fixture(t, { limiterEnabled: true, additiveCurrentVerified: true, dwellMs: 0 });
+  const f = fixture(t, { limiterEnabled: true, dwellMs: 0 });
   for (const role of Object.keys(TYPES)) f.measuredAt[role] = NOW;
   await f.ready();
   let now = NOW + 1000, selected = false;

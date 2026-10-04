@@ -1077,7 +1077,41 @@ when it is unknown; scheduling sends Boolean start/stop only. The allocation
 below applies with `limiterEnabled:true`;
 missing current-control capabilities block that mode rather than bypass it.
 
-Commissioning must verify three-phase association, phase order, installation fuse ratings and whether the property and charging-current magnitudes support the additive model. For each phase, the modeled non-EV base is `B = property − Easee − Shelly`. The absolute Shelly ceiling is the tightest `fuse − margin − B`, then any planned Easee reservation and hardware, vehicle and native user limits. The calculation includes Shelly's existing draw; it does not mistake incremental spare margin for an absolute setpoint.
+Configure the installation's per-phase fuse ratings, safety margins and charger
+ceiling. Property and Easee currents use the same Easee phase basis. Shelly does
+not need a phase correspondence for this limiter: its contribution is the
+minimum of its three freshly measured phase currents, subtracted equally from
+each property phase. This remains conservative when the phase currents differ.
+The configured `phaseMap` still owns recorded phase-energy association; this
+calculation does not change or verify that recording map.
+
+For each property phase, household demand is
+`B = property − Easee − min(Shelly phase currents)` and headroom is
+`H = fuse − margin − max(0, B)`. A residual below −0.25 A makes the additive
+interpretation unusable rather than granting extra current. Shelly's absolute
+load ceiling is the tightest `H`, within its configured maximum, then the
+applicable shared priority. Native and vehicle limits also constrain the final
+allowance. Including Shelly's present draw avoids confusing incremental spare
+room with an absolute current setting.
+
+The property, Easee-current and Equalizer-allowance feeds must be online and
+synchronized in their current connection epochs, with complete valid phase
+values and original source times. A field's older last-change timestamp alone
+does not invalidate held state on such a connection. Reconnects, disconnected
+providers, incomplete synchronization and contradictory values do not pass by
+rereading a cache. Source clocks remain unchanged and held state is not counted
+as another observation or learning sample.
+
+Equalizer's per-phase allowed-current fields 230–232 provide an independent
+consistency check. Each must satisfy
+`abs(allowance − max(0, fuse − property + Easee)) <= agreementToleranceA`,
+which defaults to 2 A. The pilot-current field 114 and the charger's circuit
+current ceiling are different quantities and cannot replace these fields.
+Allowance is not the final Shelly setpoint: its comparison excludes the separate
+configured safety margin, which is deducted once in `H`. A clipped zero or a
+delayed Equalizer allowance does not establish an exact gross capacity budget.
+It is usable only while the comparison stays within the configured tolerance;
+a larger disagreement selects fallback until the feeds agree again.
 
 Shelly priority excludes Easee's present draw from this fuse test. If household
 demand excluding both chargers leaves 16 A on every phase, Shelly may take 16 A
@@ -1118,14 +1152,57 @@ the session, authority and bounded plan remain applicable. Original source clock
 and the separate identification deadlines remain authoritative. Command and
 readback delays can extend response time; this is not independent fuse protection.
 
-Coherent current inputs default to a 15-second age and 5-second skew bound, with 1 A per-phase margin. Unknown, stale, misaligned or non-additive inputs select the owner's configured fallback ceiling, initially **12 A**. Known tighter limits still apply. Fallback does not start a stopped vehicle or bypass its native timer. It is not guaranteed fuse protection.
+With usable feeds, the load allowance ranges from **0 or 6–16 A** at the normal
+16 A configured maximum. Zero requests a pause; 1–5 A are never sent as pilot
+settings. **12 A is a configurable fallback cap, not a floor**. Unavailable,
+unsynchronized or inconsistent load feeds select `fallbackCurrentA`, initially
+12 A. Independently usable property evidence that establishes a lower ceiling,
+applicable priority allocations and known native or vehicle restrictions remain
+binding even during fallback. Valid evidence of insufficient room therefore
+cannot cause a jump to 12 A. Fallback does not start a stopped vehicle or bypass
+its native timer, and is not independent fuse protection.
 
-An explicitly uncommissioned additive model keeps that configured fallback as a
-known ceiling in the delivery forecast too. A commissioned installation with
-temporarily missing telemetry retains the documented optimistic future-headroom
-assumption; the live controller still falls back until usable evidence returns.
+Shelly's measured currents, command preflight and native readback retain the
+strict `maxAgeMs` bound, initially 15 seconds. This is separate from admitting
+held Easee stream state. The default per-phase margin is 1 A; increases ramp by
+2 A after a 30-second dwell. There is no second feed-age setting. The retired
+`additiveCurrentVerified` and `maxSkewMs` configuration fields are rejected;
+there are no aliases or configuration translations.
+
+A temporary live fallback does not impose a permanent 12 A delivery ceiling in
+the economic forecast. Unknown future supply uses the documented
+[maximum-available-current assumption](#maximum-available-current-assumption)
+within forecast property headroom and applicable native, vehicle and electrical
+limits. The live controller independently retains fallback until its evidence
+is usable; an optimistic forecast never grants current-control permission.
 
 If the process, broker or charger is unavailable, ST-MQ cannot apply a new fallback. **Autonomous controller-loss behavior is unverified.** There is no invented watchdog, command TTL or broker-will guarantee. Actual last-setpoint, reboot and outage behavior must be established with the arrived hardware before unattended deployment. The status reports this separately from a successfully requested telemetry-loss fallback.
+
+### Load-balancing status and history
+
+Shelly's card shows a **Load balancing** badge. The Electrical power, Phase
+loading and individual Charger 2 power charts show the same meanings in a thin,
+time-aligned row below the plot: green **Unrestricted**, blue **Limited**, purple
+**Paused by balancing**, amber **Fallback**, grey **Inactive** and hatched
+**Unknown**. The row title opens its explanation and complete colour key.
+
+The load allowance is a controller ceiling, not measured charging current.
+Unrestricted means load balancing allows the configured maximum; a tighter
+native or vehicle limit can still reduce the effective allowance. The detail
+shows that effective allowance and confirmed native setting separately. A pause
+instruction confirmation is not physical zero-power evidence. A scheduled or
+manual stop never becomes a pause attributed to load balancing merely because
+the car draws no power. Fallback remains visibly fallback even when another
+restriction lowers its effective cap below 12 A.
+
+Hover or drag along the strip, including by touch, to inspect the recorded mode,
+integer allowance, reason and application status. Keyboard focus on the strip
+supports Left/Right, Home and End. Missing recording coverage stays unknown;
+current settings do not rewrite an earlier interval. Dense long selections keep
+bounded recent detail and mark omitted older detail unknown, with a prompt to
+zoom in. The [change-only recorder](recording.md#shelly-load-balancing-decisions)
+retains this history independently of the 30-day default expiry for unsaved
+charging-session reports.
 
 ## Charge progress and cost
 

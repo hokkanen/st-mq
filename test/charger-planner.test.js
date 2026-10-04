@@ -21,22 +21,21 @@ const make = (id = 'first', extra = {}) => {
 };
 const run = (chargers, extra = {}) => planChargers({ now, supply, chargers, prices: prices([30, 20, 5, 5, 20, 30]), ...extra });
 
-test('an enabled uncommissioned current limiter cannot promise service above its configured fallback ceiling', () => {
+test('temporary current fallback does not become a permanent future delivery ceiling', () => {
   const charger = { ...make('charger2', { capabilities: { currentControl: true, externalLoadBalancing: false },
-    configuration: { maximumCurrentA: 16, limiterEnabled: true, additiveCurrentVerified: false, fallbackCurrentA: 12 },
+    configuration: { maximumCurrentA: 16, limiterEnabled: true, fallbackCurrentA: 12 },
     deadlineAt: now + HOUR }), requiredGridKwh: 10, referenceGridKwh: 10 };
   const result = run([charger], { prices: prices([1]) });
-  assert.equal(result.plans.charger2.feasible, false, 'A permanent 12 A configured ceiling cannot deliver 10 kWh in one hour');
-  assert.ok(Math.abs(result.plans.charger2.deliveredGridKwh - 8.28) < 1e-6);
-  assert.ok(result.allocations.every(row => row.chargers.charger2.currentA <= 12));
-  assert.ok(result.currentLimits.every(row => row.currentA <= 12));
+  assert.equal(result.plans.charger2.feasible, true, 'Unknown future feed availability retains the maximum-current planning assumption');
+  assert.ok(Math.abs(result.plans.charger2.deliveredGridKwh - 10) < 1e-6);
+  assert.ok(result.allocations.some(row => row.chargers.charger2.currentA > 12));
   assert.equal(charger.values.maximumCurrentA.value, 16, 'The forecast restriction does not rewrite observed native limits');
 });
 
-test('commissioned future planning remains optimistic after a temporary low current while explicit opt-out uses native current', () => {
+test('future planning remains optimistic after a temporary low current while explicit opt-out uses native current', () => {
   for (const configuration of [
-    { maximumCurrentA: 16, limiterEnabled: true, additiveCurrentVerified: true, fallbackCurrentA: 12 },
-    { maximumCurrentA: 16, limiterEnabled: false, additiveCurrentVerified: false, fallbackCurrentA: 12 },
+    { maximumCurrentA: 16, limiterEnabled: true, fallbackCurrentA: 12 },
+    { maximumCurrentA: 16, limiterEnabled: false, fallbackCurrentA: 12 },
   ]) {
     const charger = { ...make('charger2', { capabilities: { currentControl: configuration.limiterEnabled, externalLoadBalancing: false },
       configuration, telemetry: { currentA: configuration.limiterEnabled ? 12 : 16 }, deadlineAt: now + HOUR }),
@@ -47,12 +46,12 @@ test('commissioned future planning remains optimistic after a temporary low curr
   }
 });
 
-test('the uncommissioned fallback forecast preserves tighter native, vehicle and per-phase restrictions', () => {
+test('the optimistic current forecast preserves tighter native, vehicle and per-phase restrictions', () => {
   for (const restriction of [{ control: { manualCurrentA: 8 }, maximumKwh: 5.52 },
     { telemetry: { vehicleCurrentA: { value: 6, available: true } }, maximumKwh: 4.14 },
     { supply: { ...supply, configuredBudgetCurrentA: [10, 25, 25] }, maximumKwh: 6.9 }]) {
     const charger = { ...make('charger2', { capabilities: { currentControl: true, externalLoadBalancing: false },
-      configuration: { maximumCurrentA: 16, limiterEnabled: true, additiveCurrentVerified: false, fallbackCurrentA: 12 },
+      configuration: { maximumCurrentA: 16, limiterEnabled: true, fallbackCurrentA: 12 },
       telemetry: restriction.telemetry, control: restriction.control, deadlineAt: now + HOUR }), requiredGridKwh: 10, referenceGridKwh: 10 };
     const result = run([charger], { prices: prices([1]), ...(restriction.supply ? { supply: restriction.supply } : {}) });
     assert.equal(result.plans.charger2.feasible, false);

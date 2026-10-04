@@ -814,6 +814,10 @@ test('a planning error stays visible and clears on recovery', () => {
   assert.match($('charging-status').querySelector('button').getAttribute('aria-label'), /last charger instructions remain in effect/);
   panel.update(status()); assert($('charging-status').hidden); assert.equal($('charging-status').textContent, '');
   assert(popup.hidden, 'Recovery dismisses the resolved planning error');
+  const recordingFailure = status(); recordingFailure.charging.limiterHistoryError = 'Load balancing history could not be saved.';
+  panel.update(recordingFailure);
+  assert.equal($('charging-status').hidden, false);
+  assert.match(openDetail($('charging-status')).textContent, /Load balancing history could not be saved/);
   panel.close();
 });
 
@@ -2140,5 +2144,29 @@ test('a lower-revision replica snapshot revokes previously writable charger sett
   recorded.sync = { generation: 'synthetic-next-snapshot' }; panel.update(recorded);
   for (const id of ['charger1-charge-now', 'charger1-setting-manualSoc', 'charger1-setting-capacityKwh'])
     assert.equal(document.getElementById(id).disabled, true, id);
+  panel.close();
+});
+
+test('Shelly limiter badge presents the controller mode without inferring pauses from stopped power', () => {
+  const document = documentFixture(), $ = id => document.getElementById(id);
+  const panel = createChargingPanel({ document, request: async () => status() });
+  const item = connected('charger2');
+  const limiter = { mode: 'fallback', allowanceA: 12, loadAllowanceA: 12, reason: 'feed-unavailable', appliedCurrentA: 12, applicationStatus: 'confirmed' };
+  panel.update(status(connected(), { ...item, limiter, values: { ...item.values, powerKw: reading(0), charging: reading(false) }, control: { phase: 'yielded', manual: { kind: 'stop' } } }));
+  assert($('charger1-limiter').hidden);
+  assert.equal($('charger2-limiter').textContent, 'Load balancing: Fallback · 12 A');
+  const popup = openDetail($('charger2-limiter'));
+  assert.match(popup.textContent, /Charger setting: 12 A confirmed/);
+  assert.match(popup.textContent, /not measured charging current/);
+  assert.equal(Boolean($('charger2-device').open), false, 'Badge inspection leaves the charger card folded');
+  panel.update(status({ ...item, limiter: { ...limiter, mode: 'unrestricted', loadAllowanceA: 16, allowanceA: 8, appliedCurrentA: 8, reason: 'native-current-limit' } }));
+  assert.equal($('charger2-limiter').textContent, 'Load balancing: Unrestricted · 16 A');
+  assert.match(popup.textContent, /Effective allowance: 8 A/);
+  panel.update(status({ ...item, limiter: { ...limiter, mode: 'paused-by-balancing', loadAllowanceA: 0, allowanceA: 0, applicationStatus: 'pending' } }));
+  assert.match(popup.textContent, /Awaiting charger confirmation/);
+  assert.doesNotMatch(popup.textContent, /Pause instruction confirmed/);
+  panel.update(status({ ...item, limiter: { mode: 'unknown', applicationStatus: 'unknown' } }));
+  assert.equal($('charger2-limiter').textContent, 'Load balancing: Unknown');
+  assert.match(popup.textContent, /Charger setting unconfirmed/);
   panel.close();
 });

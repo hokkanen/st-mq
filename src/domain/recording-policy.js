@@ -63,6 +63,7 @@ export const recordingStreamKey = observation => JSON.stringify([observation.sou
   observation.signal, observation.unit, recordingPolicy(observation).id]);
 
 const names = {
+  shelly_limiter_mode: 'Charger 2 load-balancing mode',
   controller_phase: 'Requested controller phase', dhwr_request: 'Hot-water circulation request',
   dhwr_active: 'Hot-water circulation feedback', garage_energy: 'Garage heat-pump energy',
   heat_savings_active: 'Tariff-control relay feedback',
@@ -80,6 +81,7 @@ export function recordedSignalInfo(signal, unit) {
   const info = SIGNAL_INFO[signal];
   return { label: info?.label ?? names[signal] ?? String(signal).replaceAll('_', ' '),
     unit: unit ?? info?.unit ?? '', group: info?.group ?? (signal?.startsWith('floor_') ? 'Floor override contacts' : 'Equipment'),
-    basis: signal?.startsWith('floor_') ? 'Reported electrical override contact: 1 on, 0 off, unknown without confirmed readback. This does not prove valve position or water flow.'
+    basis: signal === 'shelly_limiter_mode' ? 'Exact controller mode, current allowance, reason and separate native-setting application status. Unchanged observations extend compact coverage; restart and unobserved periods stay unknown. Retained independently of charging reports; this does not prove physical charging.'
+      : signal?.startsWith('floor_') ? 'Reported electrical override contact: 1 on, 0 off, unknown without confirmed readback. This does not prove valve position or water flow.'
       : info?.detail ?? null };
 }

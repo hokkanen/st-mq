@@ -8,7 +8,7 @@ test('physical EVSE defaults keep acquisition disabled and discover control read
   const config = chargingConfiguration();
   assert.equal(config.chargers.charger2.enabled, false);
   assert.equal(config.chargers.charger2.limiterEnabled, true);
-  assert.equal(config.chargers.charger2.additiveCurrentVerified, false);
+  assert.equal(config.chargers.charger2.agreementToleranceA, 2);
   assert.equal(Object.hasOwn(config.chargers.charger2, 'verified'), false);
   assert.equal(Object.hasOwn(config.chargers.charger2, 'sessionEnergyVerified'), false);
   assert.equal(config.chargers.charger2.fallbackCurrentA, 12);
@@ -25,7 +25,7 @@ test('public charging defaults enable current adjustment without granting commis
     enabled: true, deviceId: 'synthetic-default-evse', topicPrefix: 'synthetic/default-evse',
   } } });
   assert.equal(enabled.chargers.charger2.limiterEnabled, true);
-  assert.equal(enabled.chargers.charger2.additiveCurrentVerified, false);
+  assert.equal(enabled.chargers.charger2.agreementToleranceA, 2);
   assert.equal(chargingSettingsFromConfiguration(enabled).chargers.charger2.enabled, false);
 });
 test('current adjustment retains explicit configuration opt-out and rejects non-boolean permission', () => {
@@ -35,8 +35,17 @@ test('current adjustment retains explicit configuration opt-out and rejects non-
   for (const limiterEnabled of [null, 0, 1, 'false', 'true'])
     assert.throws(() => chargingConfiguration({ chargers: { charger2: { limiterEnabled } } }), /limiterEnabled/);
 });
+test('fallback and agreement tolerance are configuration values with bounded electrical meaning', () => {
+  for (const fallbackCurrentA of [0, 6, 8, 12, 16])
+    assert.equal(chargingConfiguration({ chargers: { charger2: { fallbackCurrentA } } }).chargers.charger2.fallbackCurrentA, fallbackCurrentA);
+  for (const agreementToleranceA of [0, .5, 2, 5])
+    assert.equal(chargingConfiguration({ chargers: { charger2: { agreementToleranceA } } }).chargers.charger2.agreementToleranceA, agreementToleranceA);
+  for (const field of [{ fallbackCurrentA: 17 }, { fallbackCurrentA: -1 }, { agreementToleranceA: -1 },
+    { agreementToleranceA: 5.1 }, { agreementToleranceA: '2' }])
+    assert.throws(() => chargingConfiguration({ chargers: { charger2: field } }));
+});
 test('retired Shelly commissioning assertions are rejected even when disabled', () => {
-  for (const key of ['sessionEnergyVerified', 'verified', 'model', 'firmware', 'connectedStates', 'disconnectedStates', 'chargingStates', 'minimumCurrentA', 'currentStepA'])
+  for (const key of ['additiveCurrentVerified', 'maxSkewMs', 'sessionEnergyVerified', 'verified', 'model', 'firmware', 'connectedStates', 'disconnectedStates', 'chargingStates', 'minimumCurrentA', 'currentStepA'])
     for (const value of [false, true, 'true', null])
     assert.throws(() => chargingConfiguration({ chargers: { charger2: { [key]: value } } }),
       /current physical-EVSE configuration/);

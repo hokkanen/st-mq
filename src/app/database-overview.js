@@ -27,6 +27,7 @@ const episodeFields = fields(
   ['Predictions and calibration context', 'Predicted total/recovery/auxiliary kWh and frozen recovery and auxiliary-risk assumptions.'],
   ['Replay provenance', 'Committed-history basis, forecast reference, saved learning configuration, algorithm/configuration versions and initial seed when required.']);
 const nonAdaptive = [
+  ['shelly_limiter_mode', 'Charger 2 load-balancing mode', 'Exact controller mode, current allowance, reason and separate native-setting application status; not measured charging. Restart and unobserved periods stay unknown. Retained independently of charging reports.', 'Every changed mode, integer allowance, reason or application status; unchanged observations extend the existing coverage row.'],
   ['controller_phase', 'Requested controller phase', 'Normal, preheat, reduction or recovery requested by the controller.', 'When the requested phase changes or its recorded coverage is renewed.'],
   ['dhwr_request', 'Hot-water recirculation request', 'Requested circulation pulse and its expected duration; not proof of measured pump operation.', 'When a circulation pulse is requested or its end is recorded.'],
   ['learning_profit', 'Space-heating benefit after recovery', 'Estimated mean space-heating benefit for comparable completed cycles, with sample count and uncertainty; excludes hot-water service changes and unfinished attempts.', 'When the set of learning metrics changes.'],

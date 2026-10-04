@@ -8,6 +8,10 @@ Versions follow Semantic Versioning. `-dev.N` denotes a development prerelease.
 
 ### Added
 
+- Shelly load balancing has a current-status badge and a compact history strip
+  below electrical charts. Inspect allowance, fallback reasons and charger
+  confirmation by pointer, touch or keyboard. Only changes add state records;
+  missing coverage remains unknown, independently of session-report expiry.
 - `npm run deploy:ha` deploys the committed checkout to a stopped Home Assistant
   app through SSH, verifies the rebuilt image and preserves stored files.
   Credentials stay outside the checkout; the app remains stopped.
@@ -30,10 +34,16 @@ Versions follow Semantic Versioning. `-dev.N` denotes a development prerelease.
 
 ### Changed
 
-- Shelly current adjustment now defaults on independently of Automatic scheduling,
-  including Charge now. Charger 2 priority uses household headroom without
-  reserving Charger 1's draw; Equalizer must reduce Charger 1. Explicit basic-mode
-  configuration, native limits and commissioning requirements remain supported.
+- Shelly current adjustment defaults on independently of Automatic scheduling,
+  including Charge now. Healthy synchronized Easee feeds can retain unchanged
+  older values when property and allowed-current evidence agree. Shelly uses
+  0 or 6–16 A with priority sharing; unusable feeds select the configurable 12 A
+  fallback cap, still respecting known lower limits. Charger 2 priority excludes
+  Charger 1's draw; Equalizer must yield. The limiter needs no Shelly phase map,
+  while recorded phase association remains configured.
+- `agreementToleranceA` defaults to 2 A for the live allowance comparison.
+  Retired `additiveCurrentVerified` and `maxSkewMs` configuration fields are
+  rejected; Shelly command and measurement freshness limits remain enforced.
 - History recovery now has a compact entry inside its own Recording details fold
   and an aligned action in Paired computers. The shared window separates new
   recovery from previous recoveries, keeps reviews tied to their source, and
@@ -54,10 +64,10 @@ Versions follow Semantic Versioning. `-dev.N` denotes a development prerelease.
   skew no longer becomes a cached disconnection or an incorrectly revoked pause.
 - Supported Shelly chargers can adjust current when optional UI step metadata is
   absent. Contradictory native capabilities still prevent current writes.
-- Shelly allocation uses the latest admitted phase readings without advancing
-  their timestamps or waiting for a cached cloud snapshot. Ordinary charger polls
-  reuse applicable plans and avoid unnecessary peer polling. Uncommissioned load
-  models retain their configured fallback ceiling in delivery forecasts.
+- Shelly allocation uses admitted phase readings without advancing their source
+  clocks or waiting for a cached cloud snapshot. Ordinary polls reuse applicable
+  plans and avoid unnecessary peer polling. Temporary fallback no longer imposes
+  a permanent 12 A ceiling on optimistic future delivery estimates.
 - Shelly Start confirmation accepts a matching late notification within the same
   native timestamp second only after an acknowledged command and a fresh query
   after that notification. This prevents an owned Start appearing as native Enable.

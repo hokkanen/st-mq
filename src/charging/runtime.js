@@ -23,6 +23,7 @@ import { confirmedIdentityPause } from './identity-evidence.js';
 import { advanceIdentification, prepareActiveBmwCandidate, matchActiveBmwPause, validateIdentificationState, IDENTIFICATION_ENERGY_LIMIT_KWH, IDENTIFICATION_PAUSE_WAIT_MS } from './identification.js';
 import { shellyAssociation, shellyCurrentCommandReadback } from './shelly-evse.js';
 import { ChargingSessionDiagnostics } from './session-diagnostics.js';
+import { ChargingLimiterHistory, shellyLimiterStatus } from './limiter-history.js';
 import { ChargingPhysicalTests } from './physical-tests.js';
 import { bmwVehicleSetup, teslaVehicleSetup } from './setup.js';
 import { readPlanningVoltage } from '../storage/voltage.js';
@@ -152,6 +153,7 @@ export class ChargingRuntime {
     this.configuration = chargingConfiguration(config.charging);
     this.sessionDiagnostics = new ChargingSessionDiagnostics({ store, key: `${this.key}:session-diagnostics`, clock,
       retentionDays: this.configuration.report_retention_days });
+    this.limiterHistory = new ChargingLimiterHistory({ store, input: config.input });
     this.physicalTests = new ChargingPhysicalTests({ store, key: `${this.key}:physical-tests`, clock });
     const saved = store.getState(this.key) ?? {};
     if (Object.keys(saved).length && (saved.version !== 6 || Object.keys(saved).some(key => !['version', 'revision', 'controls', 'chargers', 'vehicleFeeds', 'consumedTeslaPower', 'consumedTeslaCurrent', 'view'].includes(key)))) throw new Error('Unsupported charging state; start a fresh development database');
@@ -252,6 +254,13 @@ export class ChargingRuntime {
     try { this.physicalTests.update(this.status(now), now); this.physicalTestsError = null; }
     catch { this.physicalTestsError = 'The charging assessment could not be saved.'; }
     const view = this.status();
+    try {
+      if (this.canControl() && ['providers', 'mqtt'].includes(this.config.input) && this.configuration.chargers.charger2.enabled) {
+        const charger = view.chargers.find(item => item.id === 'charger2');
+        this.limiterHistory.observe({ association: charger.association, status: charger.limiter }, now);
+      } else this.limiterHistory.suspend();
+      this.limiterHistoryError = null;
+    } catch { this.limiterHistoryError = 'Load balancing history could not be saved.'; }
     const chargers = Object.fromEntries(Object.entries(this.chargers).map(([id, item]) => [id,
       { association: item.association, controls: item.controls, replan: item.replan, request: item.request, plan: item.plan, progress: item.progress, supplyEstimate: item.supplyEstimate,
         sessionCost: item.sessionCost, vehicleMatch: item.vehicleMatch, vehicleEvidence: item.vehicleEvidence, vehicleConflict: item.vehicleConflict, identification: item.identification, targetState: item.targetState, vehicleDisconnect: item.vehicleDisconnect,
@@ -1244,7 +1253,28 @@ export class ChargingRuntime {
       const currentTest = currentTestOutstanding || control.currentTest?.id === item.identification?.id
         && control.currentTest?.sessionId === control.session?.sessionId
         && control.currentTest?.connectedAt === control.session?.connectedAt ? control.currentTest ?? null : null;
+      let limiter;
+      if (item.definition.provider === 'shelly-evse') {
+        const installation = this.configuration.chargers.charger2, snapshot = control.snapshot;
+        const setting = snapshot?.fields?.current_limit, permission = snapshot?.fields?.start_charging;
+        const fresh = field => field?.invalidatedAt === undefined && field?.retained !== true
+          && Number.isFinite(field?.receivedAt) && field.receivedAt <= now && now - field.receivedAt <= installation.maxAgeMs;
+        const recent = Number.isFinite(control.limiter?.evaluatedAt) && control.limiter.evaluatedAt <= now
+          && now - control.limiter.evaluatedAt <= 30_000;
+        const limit = recent ? control.limiter : null;
+        const applied = fresh(setting) ? setting.value : null;
+        const confirmed = !control.pending && !currentTestOutstanding && limit
+          && (limit.currentA === 0 ? fresh(permission) && permission.value === false && control.ownedPause
+            : applied === limit.currentA);
+        limiter = shellyLimiterStatus({ enabled: installation.enabled && installation.limiterEnabled,
+          connected: charger.values.connected.value, online: snapshot?.online === true && this.canControl(),
+          maximumCurrentA: installation.maximumCurrentA, limit, appliedCurrentA: applied,
+          applicationStatus: confirmed ? 'confirmed' : currentTestOutstanding ? 'blocked' : control.pending ? 'pending'
+            : snapshot?.controlReady === false || control.errorCode ? 'blocked' : recent && applied !== null ? 'pending' : 'unknown',
+          pausedByLimiter: limit?.pausedByLimiter === true && fresh(permission) && permission.value === false && control.ownedPause });
+      }
       return { ...charger, defaults, association: item.association, controls: { ...item.controls },
+        ...(limiter ? { limiter } : {}),
         identification: { ...item.identification,
           currentTest,
           pauseRecovery: item.definition.provider === 'shelly-evse' ? 'controller' : 'charger',
@@ -1341,7 +1371,7 @@ export class ChargingRuntime {
     const external = views.find(view => view.capabilities.externalLoadBalancing);
     const reportedSupply = external?.telemetry.providerConnected === false ? null : external?.telemetry.supply;
     const installation = this.configuration.chargers.charger2;
-    const configuredBudgetCurrentA = installation.enabled && installation.limiterEnabled && installation.additiveCurrentVerified
+    const configuredBudgetCurrentA = installation.enabled && installation.limiterEnabled
       ? installation.mainFuseA.map((amps, phase) => Math.max(0, amps - installation.marginA[phase])) : null;
     const voltageEstimate = readPlanningVoltage(this.store, { input: this.config.input, now });
     const livePhases = livePlanningVoltages(views, reportedSupply, now);
@@ -1744,8 +1774,12 @@ export class ChargingRuntime {
     const peerCeilings = [peer?.values.maximumCurrentA?.value, peer?.values.nativeCurrentA?.value,
       peer?.values.vehicleCurrentA?.value].filter(value => Number.isFinite(value) && value >= 0);
     const peerDemandA = peerScoped && !peerRestricted && peerOpen && peerCeilings.length ? Math.min(...peerCeilings) : null;
-    return { property: { healthy: first?.online === true, currents: supply?.propertyCurrentA, times: supply?.observationTimes?.property },
-      easee: { healthy: first?.online === true, currents: supply?.chargerCurrentA, times: supply?.observationTimes?.charger },
+    return { property: { healthy: first?.online === true, currents: supply?.propertyCurrentA, times: supply?.observationTimes?.property,
+      evidence: supply?.feedEvidence?.property },
+      easee: { healthy: first?.online === true, currents: supply?.chargerCurrentA, times: supply?.observationTimes?.charger,
+        evidence: supply?.feedEvidence?.charger },
+      allowance: { healthy: first?.online === true, currents: supply?.availableCurrentA, times: supply?.observationTimes?.allowance,
+        evidence: supply?.feedEvidence?.allowance },
       vehicleCurrentA: view?.values.vehicleCurrentA?.value, notBefore: view?.values.vehicleNotBefore?.value,
       priority: this.settings.priority,
       liveUnscheduled, peerDemandA,
@@ -2079,6 +2113,7 @@ export class ChargingRuntime {
         setup: teslaVehicleSetup(tesla, { now }), usedByChargerId: usedBy('tesla') });
     }
     return { revision: this.revision, timezone: TIME_ZONE, controls: { priority: this.controls.priority, revision: this.controls.revision }, settings: this.settings, chargers, vehicleFeeds, coordination: this.coordinationView(), error: this.error ?? null,
+      limiterHistoryError: this.limiterHistoryError ?? null,
       diagnostics: { ...this.sessionDiagnostics.status(now), canManage: !this.closed && this.canControl() && this.config.input !== 'offline',
         ...(this.diagnosticsError ? { available: false, error: this.diagnosticsError } : {}) },
       physicalTests: { ...this.physicalTests.status(), canManage: !this.closed && this.canControl() && ['mqtt', 'providers'].includes(this.config.input),

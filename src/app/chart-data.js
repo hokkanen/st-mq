@@ -32,6 +32,7 @@ import { RecordedEvidenceLine } from './chart-recorded-evidence.js';
 import { createVoltageReader, VOLTAGE_SIGNALS } from '../storage/voltage.js';
 import { currentPowerKw, voltageMetadata, voltageSegments } from './chart-voltage.js';
 import { recordedTransport } from '../domain/recording-source.js';
+import { readShellyLimiterHistory } from '../charging/limiter-history.js';
 
 export const CHART_TIME_ZONE = 'Europe/Helsinki';
 const HOUR = 3_600_000, DAY = 24 * HOUR;
@@ -979,7 +980,10 @@ export function getChartData({ store, input = 'offline', contract = null, market
   const heatingSavings = detail ? null : buildHeatingSavings({ range, now,
     homeModel: heatingBenefit, homeTiming: timingBenefit.heatPump,
     garageTiming: getGarageTimingBenefit({ store, input, range, now, prices: priced }) });
+  const limiterHistory = selectedView?.tracks.includes('shellyLimiter') || !selectedView && ['power', 'charger2_power'].includes(left)
+    ? readShellyLimiterHistory({ store, range, now, input, maxSpans: Math.min(4000, points * 2) }) : undefined;
   return { range, now, input, ...(view === undefined ? { left } : { view }), series, shading, operatingModes,
+    ...(limiterHistory ? { limiterHistory } : {}),
     ...(detail ? { selection } : { timingBenefit, heatingBenefit, heatingSavings, firewoodBenefit: firewood.summary }),
     meta: { ...(detail ? { detail: true } : {}), ...(relatedSampling ? { relatedSampling } : {}), warnings, priceAssumptions, rawRows, invalidRows, lastReadings, learning: learningMetadata, modelInputs, modelCoefficients, fireplaceInputs, firewoodOutcomes, recordedEnergy, chargingSessions, heatPumpEnergy, historyBasis: 'original-recorded-history',
     returnedPoints: Object.values(series).reduce((sum, rows) => sum + rows.length, 0),

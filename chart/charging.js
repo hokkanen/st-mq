@@ -1,10 +1,11 @@
 import { actionReceiptRecent } from './action-receipts.js';
 import { isReadOnlyReplica, replicaSnapshotKey } from './replica-status.js';
 import { setStatusDetail } from './status-details.js';
+import { shellyLimiterDisplay } from './shelly-limiter.js';
 import { chargerSummary, chargingCost, chargingNotice } from './charging-summary.js';
 import { createChargingPriority } from './charging-priority.js';
 import { createChargingTime } from './charging-time.js';
-import { chargingControlLabel, chargingControlReason, chargingCommandConfirmation, chargingIdentificationInProgress, chargingTransactionWaiting, chargingPauseConfirmedForPeriod } from './charging-status.js';
+import { chargingControlLabel, chargingControlReason, chargingIdentificationInProgress, chargingTransactionWaiting, chargingPauseConfirmedForPeriod } from './charging-status.js';
 import { CHARGING_LOSS_FRACTION, CHARGING_EFFICIENCY } from '../src/domain/charging-energy.js';
 
 const finite = Number.isFinite;
@@ -654,7 +655,8 @@ export function createChargingPanel({ document, request, beforeRequest = () => {
     const timing = make('div', '', 'charging-timing'), event = make('div', '', 'charging-event', `${id}-event`);
     const eventLabel = make('span', '', 'charging-event-label', `${id}-event-label`);
     const eventValue = make('strong', '', 'charging-event-value', `${id}-event-value`);
-    event.append(eventLabel, eventValue);
+    const limiterBadge = make('span', '', 'charging-limiter', `${id}-limiter`); limiterBadge.hidden = true;
+    event.append(eventLabel, eventValue, limiterBadge);
     const deadlineGroup = make('div', '', 'charging-ready-by');
     const deadline = make('strong', '', 'charging-deadline', `${id}-deadline`);
     const deadlineLabel = make('span', 'Ready by');
@@ -725,7 +727,7 @@ export function createChargingPanel({ document, request, beforeRequest = () => {
     explanationFold.append(make('summary', 'How charging works'));
     const explanations = make('dl', '', 'equipment-readings', `${id}-explanations`); explanationFold.append(explanations); body.append(explanationFold);
     section.append(summary, body); $('charging-devices')?.append(section);
-    const device = { id, chargeNow, chargeNowState, controlMessage, identify, identificationSection, identificationState, identificationStatus, identificationMessage, section, title, vehicle, state, event, eventLabel, eventValue, overview, sources, metrics, chargeLabel, targetLabel, targetSource, completionLabel, completion, readiness, priority, readingTime, deadline, deadlineLabel, deadlineGroup, facts, deliveredLabel, deliveredValue, remaining, energyLabel, energyValue, costLabel, cost, costMetric, scheduleInfo, scheduleHeading, periodCount, periods, problem, explanations, readings, notes, settings, enabledValue, useAutomatic, takeoverHelp, takeoverMessage, controlDetail, charger, notice, footerHint, sessionStatus };
+    const device = { id, limiterBadge, chargeNow, chargeNowState, controlMessage, identify, identificationSection, identificationState, identificationStatus, identificationMessage, section, title, vehicle, state, event, eventLabel, eventValue, overview, sources, metrics, chargeLabel, targetLabel, targetSource, completionLabel, completion, readiness, priority, readingTime, deadline, deadlineLabel, deadlineGroup, facts, deliveredLabel, deliveredValue, remaining, energyLabel, energyValue, costLabel, cost, costMetric, scheduleInfo, scheduleHeading, periodCount, periods, problem, explanations, readings, notes, settings, enabledValue, useAutomatic, takeoverHelp, takeoverMessage, controlDetail, charger, notice, footerHint, sessionStatus };
     bind(identify, 'click', () => {
       if (identify.disabled) return;
       const current = device.charger;
@@ -881,8 +883,9 @@ export function createChargingPanel({ document, request, beforeRequest = () => {
       && replicaSnapshotKey(next) === replicaSnapshotKey(status)) return;
     status = next;
     const charging = next?.charging;
-    const globalError = ({ 'charging-planning-unavailable': 'The charging plan could not be updated. The last charger instructions remain in effect.',
-      'charging-reconciliation-unavailable': 'The current charging instructions could not be confirmed.' })[charging?.error] ?? chargingControlReason(charging?.error);
+    const globalError = (({ 'charging-planning-unavailable': 'The charging plan could not be updated. The last charger instructions remain in effect.',
+      'charging-reconciliation-unavailable': 'The current charging instructions could not be confirmed.' })[charging?.error] ?? chargingControlReason(charging?.error))
+      || charging?.limiterHistoryError || '';
     const globalStatus = $('charging-status');
     const globalTrigger = setStatusDetail(globalStatus, { label: globalError ? 'Charging needs attention' : '',
       title: 'Charging status', detail: globalError, key: 'charging-status' });
@@ -913,6 +916,11 @@ export function createChargingPanel({ document, request, beforeRequest = () => {
       device.section.dataset.connected = String(charger.values?.connected?.value === true);
       metricDetail(device.state, { label: presentation.roleLabel, title: 'Charging control', detail: presentation.roleDetail, key: `${charger.id}:role` });
       device.state.dataset.state = presentation.roleState;
+      const limiter = shellyLimiterDisplay(charger.limiter);
+      device.limiterBadge.hidden = !charger.limiter;
+      device.limiterBadge.dataset.mode = limiter.mode;
+      metricDetail(device.limiterBadge, { label: `Load balancing: ${limiter.label}`, title: 'Shelly load balancing',
+        detail: limiter.detail, key: `${charger.id}:limiter` });
       const timedEvent = presentation.activity.match(/^(Starts|Scheduled start|Proposed start|Last confirmed start|Resumes|Last confirmed resume) (.+)$/);
       device.eventLabel.textContent = timedEvent ? timedEvent[1] === 'Scheduled start' ? 'Starts' : timedEvent[1] : '';
       device.eventLabel.hidden = !timedEvent;
@@ -982,11 +990,8 @@ export function createChargingPanel({ document, request, beforeRequest = () => {
         if (label === 'Charging limit') return [label, text, 'The reported maximum current per phase. Actual current can be lower when supply is shared or the vehicle limits its draw.'];
         return [label, text, detail];
       });
-      if (charger.control?.limiter) rows.push(['Current policy', charger.capabilities?.currentControl
-        ? [chargingControlLabel(charger.control.reason, charger.control.manual?.kind),
-          finite(charger.control.limiter.currentA) ? `${number(charger.control.limiter.currentA, 'A')} ceiling` : ''].filter(Boolean).join(' · ')
-        : 'Native charger current settings', chargingControlReason(charger.control.reason)],
-      ['Command confirmation', chargingCommandConfirmation(charger.control.executionStage)]);
+      if (charger.limiter) rows.push(['Load balancing', limiter.label, limiter.detail],
+        ['Charger setting', limiter.application, 'Native current setting and limiter instruction confirmation, separate from measured charging current.']);
       if (charger.telemetry?.commissioning) rows.push(['EVSE readiness', !charger.telemetry.commissioning.controlReady ? 'Control unavailable'
         : charger.capabilities?.currentControl && charger.telemetry.commissioning.currentControlReady !== true
           ? 'Current limiter unavailable' : 'Start/stop available'], ['Controller loss', 'Autonomous fallback unverified']);

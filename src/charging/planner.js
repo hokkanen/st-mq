@@ -34,12 +34,8 @@ function electrical(charger, supply = {}) {
   const phases = { mask: [1, 1, 1], count: 3, known: true };
   const reportedCeiling = value(charger, 'maximumCurrentA');
   const configuredCeiling = charger.configuration?.maximumCurrentA;
-  // Without verified additive installation inputs the configured fallback is
-  // a lasting ceiling. A commissioned installation's temporary telemetry gap
-  // does not instead impose its present fallback on every future interval.
-  const fallbackCeiling = charger.configuration?.limiterEnabled === true
-    && charger.configuration.additiveCurrentVerified === false ? charger.configuration.fallbackCurrentA : null;
-  const ceilings = [reportedCeiling, configuredCeiling, fallbackCeiling].filter(current => finite(current) && current >= 0);
+  // A live telemetry fallback is not a permanent future-current restriction.
+  const ceilings = [reportedCeiling, configuredCeiling].filter(current => finite(current) && current >= 0);
   const ceiling = ceilings.length ? Math.min(...ceilings) : null;
   const selected = value(charger, 'currentA');
   // Equalizer's momentary allowance is not tomorrow's available current. Its

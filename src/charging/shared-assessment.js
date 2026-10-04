@@ -66,9 +66,7 @@ function model(context, chargers, peers, now) {
       // The joint forecast can use a configured ceiling while a native reading
       // is unavailable. Validate that model against the tightest known ceiling;
       // this does not renew telemetry or establish executable current control.
-      const ceilings = [value(charger, 'maximumCurrentA'), charger?.configuration?.maximumCurrentA,
-        charger?.configuration?.limiterEnabled === true && charger.configuration.additiveCurrentVerified === false
-          ? charger.configuration.fallbackCurrentA : null]
+      const ceilings = [value(charger, 'maximumCurrentA'), charger?.configuration?.maximumCurrentA]
         .filter(current => finite(current) && current >= 0 && current <= 200);
       const ceiling = ceilings.length ? Math.min(...ceilings) : null;
       const native = value(charger, 'vehicleNotBefore');

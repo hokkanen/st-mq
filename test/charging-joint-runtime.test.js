@@ -46,11 +46,11 @@ test('Shelly startup validates adopted execution before reading or writing devic
 // Production runtime, planner, controllers, transport adapters and vehicle feeds.
 // Only the physical devices/broker and acquisition clocks are simulated. Device
 // settings keep their source clocks; reads do not manufacture native changes.
-async function fixture(t, { limiter = true, budgetA = 16, notifyRuntime = false, commissioned = true } = {}) {
+async function fixture(t, { limiter = true, budgetA = 16, notifyRuntime = false, feedsSynchronized = true } = {}) {
   let now = START, runtime, heldOcppWrite = null, revokedOcppWrites = 0, rejectShellyWrites = false;
   const store = new Store(':memory:'), client = new EventEmitter();
   const commands = [], profiles = new Map(), reads = { charger1: 0, charger2: 0 };
-  const household = { currentA: 0, sourceAt: null };
+  const household = { currentA: 0, sourceAt: null, feedsSynchronized };
   const cars = { charger1: { connected: false, allows: true, demandA: 8, connectedAt: null },
     charger2: { connected: false, allows: true, demandA: 8, connectedAt: null } };
   const config = { input: 'mqtt', connections: {
@@ -60,7 +60,7 @@ async function fixture(t, { limiter = true, budgetA = 16, notifyRuntime = false,
     bmw: { mqttTopic: 'synthetic/joint/bmw', defaults: { capacityKwh: 10 } },
     tesla: { defaults: { capacityKwh: 10 } },
   }, chargers: { charger2: { enabled: true, deviceId: 'synthetic-joint-evse', topicPrefix: 'synthetic/joint/evse',
-    limiterEnabled: limiter, additiveCurrentVerified: commissioned, mainFuseA: triple(budgetA), marginA: triple(0), dwellMs: 0, rampA: 16 } } } };
+    limiterEnabled: limiter, mainFuseA: triple(budgetA), marginA: triple(0), dwellMs: 0, rampA: 16 } } } };
   const fields = { current_limit: { value: 16, at: now }, start_charging: { value: true, at: now },
     work_state: { value: 'charger_free', at: now } };
   const schedules = { jobs: [] };
@@ -111,6 +111,8 @@ async function fixture(t, { limiter = true, budgetA = 16, notifyRuntime = false,
     const scope = runtime.chargers.charger1.association;
     const supply = () => ({ availableCurrentA: triple(Math.max(0, budgetA - household.currentA - amps2())),
       propertyCurrentA: triple(household.currentA + amps1() + amps2()), chargerCurrentA: triple(amps1()),
+      feedEvidence: Object.fromEntries(['property','charger','allowance'].map(key => [key,
+        {connected:true,online:true,synchronized:household.feedsSynchronized,epoch:'fixture-epoch'}])),
       voltageV: triple(230), observationTimes: { allowance: triple(now), property: triple(household.sourceAt ?? now), charger: triple(now), voltage: triple(now) } });
     const snapshot = () => {
       reads.charger1++;
@@ -440,9 +442,9 @@ test('balanced live allocation does not reserve an idle peer merely because it i
   assert.equal(f.fields.start_charging.value, true);
 });
 
-for (const commissioned of [false, true])
-  test(`unscheduled Charger 1 priority ignores an economic cap with no peer demand; commissioned ${commissioned}`, async t => {
-    const f = await fixture(t, { budgetA: 25, commissioned });
+for (const feedsSynchronized of [false, true])
+  test(`unscheduled Charger 1 priority ignores an economic cap with no peer demand; synchronized feeds ${feedsSynchronized}`, async t => {
+    const f = await fixture(t, { budgetA: 25, feedsSynchronized });
     await f.connect('charger1'); await f.connect('charger2');
     f.cars.charger1.demandA = 0; f.cars.charger2.demandA = 16;
     await f.runtime.chargeNow('charger2', f.scope('charger2'));
@@ -451,9 +453,9 @@ for (const commissioned of [false, true])
       chargers: { charger2: { currentA: 7, currentLimitA: 7 } } }];
     f.advance(5000); await f.runtime.reconcileShellyObservation();
     assert.equal(f.runtime.allocationContext().peerDemandA, null);
-    assert.equal(f.fields.current_limit.value, commissioned ? 16 : 12);
+    assert.equal(f.fields.current_limit.value, feedsSynchronized ? 16 : 12);
     assert.equal(f.fields.start_charging.value, true);
-    assert.equal(f.view('charger2').control.limiter.fallback, !commissioned);
+    assert.equal(f.view('charger2').control.limiter.fallback, !feedsSynchronized);
   });
 
 test('ordinary load adjustment responds before the minute tick without cloud reads or economic replanning', async t => {
@@ -465,15 +467,21 @@ test('ordinary load adjustment responds before the minute tick without cloud rea
   f.household.currentA = 17; f.advance(5000);
   await f.runtime.reconcileShellyObservation();
   assert.equal(f.fields.current_limit.value, 8);
+  assert.equal(f.view('charger2').limiter.mode, 'limited');
+  assert.equal(f.view('charger2').limiter.allowanceA, 8);
   assert.equal(f.reads.charger1, beforeReads);
   assert.equal(planning.mock.callCount(), 0, 'A live current correction reuses the still-valid same-session plan');
   f.household.currentA = 20; f.advance(5000);
   await f.runtime.reconcileShellyObservation();
   assert.equal(f.fields.start_charging.value, false, 'Sub-minimum headroom pauses instead of writing an invalid current');
+  assert.equal(f.view('charger2').limiter.mode, 'paused-by-balancing');
+  assert.equal(f.view('charger2').limiter.allowanceA, 0);
   f.household.currentA = 0; f.advance(5000);
   await f.runtime.reconcileShellyObservation();
   assert.equal(f.fields.current_limit.value, 16);
   assert.equal(f.fields.start_charging.value, true, 'Recovered headroom resumes only the controller-owned fuse pause');
+  assert.equal(f.view('charger2').limiter.mode, 'unrestricted');
+  assert.equal(f.view('charger2').limiter.applicationStatus, 'confirmed');
   assert.ok(f.commands.filter(row => row.role === 'current_limit').every(row => row.value >= 6));
   f.advance(5000); f.fields.start_charging = { value: false, at: f.now, source: 'rpc' };
   const count = f.commands.length;
@@ -484,13 +492,20 @@ test('ordinary load adjustment responds before the minute tick without cloud rea
   assert.ok(planning.mock.callCount() > 0, 'A newer native instruction invalidates the cached plan basis');
 });
 
-test('ordinary current adjustment retains source age and never promotes stale property data into headroom', async t => {
+test('ordinary current adjustment preserves held source age and falls back when the feed loses synchronization', async t => {
   const f = await fixture(t, { budgetA: 25 });
   await f.connect('charger2'); await f.priority('charger2'); await f.plan();
   f.household.sourceAt = f.now - MINUTE;
   f.advance(5000); await f.runtime.reconcileShellyObservation();
+  assert.equal(f.fields.current_limit.value, 16, 'Old unchanged values remain usable on synchronized matching feeds');
+  assert.equal(f.view('charger2').control.limiter.fallback, false);
+  assert.equal(f.runtime.allocationContext().property.times[0], f.household.sourceAt);
+  f.household.feedsSynchronized = false;
+  f.advance(5000); await f.runtime.reconcileShellyObservation();
   assert.equal(f.fields.current_limit.value, 12);
   assert.equal(f.view('charger2').control.limiter.fallback, true);
+  assert.equal(f.view('charger2').limiter.mode, 'fallback');
+  assert.equal(f.view('charger2').limiter.reason, 'feed-unsynchronized');
   assert.equal(f.runtime.allocationContext().property.times[0], f.household.sourceAt);
 });
 

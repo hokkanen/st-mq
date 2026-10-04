@@ -1,4 +1,5 @@
 import { SIGNAL_INFO } from '../src/domain/history-series.js';
+import { shellyLimiterDisplay, shellyLimiterTrack } from './shelly-limiter.js';
 
 const garageCompressorColor = SIGNAL_INFO.garage_compressor_active.color;
 const dateTime = new Intl.DateTimeFormat('en-GB', { timeZone: 'Europe/Helsinki',
@@ -52,6 +53,7 @@ export const activityTracks = Object.freeze([
     missingLabel: 'No model burn window at this time; stored heat may still be released',
     legend: [{ label: 'Model burn window', color: 'fireplace' },
       { label: 'No interval', color: 'muted', pattern: 'blank', description: 'No model burn window at this time; this does not rule out stored heat.' }] },
+  shellyLimiterTrack,
 ]);
 
 /** Scalar display envelopes are not occupancy summaries. Retain missing breaks
@@ -59,6 +61,9 @@ export const activityTracks = Object.freeze([
  * instead of claiming that decimation preserved every categorical transition. */
 export function activityIntervals(descriptor, payload) {
   if (!payload) return [];
+  if (descriptor.key === 'shellyLimiter') return (payload.limiterHistory?.spans ?? [])
+    .filter(interval => Number.isFinite(interval.start) && Number.isFinite(interval.end) && interval.end > interval.start)
+    .map(interval => ({ ...interval, value: shellyLimiterDisplay(interval).mode }));
   if (descriptor.key === 'operatingMode') return payload.operatingModes ?? [];
   if (!descriptor.signal) return payload.shading?.[descriptor.key] ?? [];
   const points = payload.series?.[descriptor.signal] ?? [], intervals = [], seen = new Set();
@@ -93,6 +98,10 @@ export function activityIntervals(descriptor, payload) {
 }
 
 export function activityIntervalLabel(descriptor, interval) {
+  if (descriptor.key === 'shellyLimiter') {
+    const display = shellyLimiterDisplay(interval);
+    return `${display.label}${display.allowance ? ' allowance' : ''}${display.reason ? ` · ${display.reason}` : ''}\n${display.effectiveAllowance ? `${display.effectiveAllowance}\n` : ''}${display.application}\n${dateTime.format(interval.start)} – ${dateTime.format(interval.end)}`;
+  }
   const state = Number.isFinite(interval.value)
     ? descriptor.values?.[interval.value] ? `${descriptor.values[interval.value]} (${interval.value})` : `Value ${interval.value}` : descriptor.label;
   if (interval.pointOnly) return `${state} · ${dateTime.format(interval.start)} · recorded sample; duration unknown`;
@@ -240,7 +249,8 @@ export function createChartOverlays({ canvas, getChart, getPayload, getView, get
     const container = document.getElementById('chart-activity'), payload = getPayload();
     if (!container || !payload) return;
     const palette = getPalette(), view = getView() ?? payload.range;
-    const focusedKey = document.activeElement && rows.find(row => row.keySummary === document.activeElement)?.descriptor.key;
+    const focusedRow = document.activeElement && rows.find(row => row.keySummary === document.activeElement || row.track === document.activeElement);
+    const focusedKey = focusedRow?.descriptor.key, focusedTrack = focusedRow?.track === document.activeElement;
     rows = [];
     const roots = [];
     for (const descriptor of getTracks()) {
@@ -256,6 +266,8 @@ export function createChartOverlays({ canvas, getChart, getPayload, getView, get
       const detail = document.createElement('p'); detail.textContent = descriptor.detail;
       if (descriptor.key === 'fireplace' && Number.isFinite(payload.meta?.fireplaceInputs?.burnHours))
         detail.textContent += ` The burn window lasts ${payload.meta.fireplaceInputs.burnHours} h after each addition.`;
+      if (descriptor.key === 'shellyLimiter' && payload.limiterHistory?.truncated)
+        detail.textContent += ' This range contains more changes than can be shown at once. Earlier detail is marked unknown; zoom in to inspect it.';
       description.append(detail);
       function legendItems(compact) {
         const items = document.createElement('span'); items.className = `activity-key-items${compact ? ' activity-key-inline' : ''}`;
@@ -287,6 +299,29 @@ export function createChartOverlays({ canvas, getChart, getPayload, getView, get
       const intervals = activityIntervals(descriptor, payload).filter(interval => interval.pointOnly
         ? interval.start >= view.from && interval.start <= view.to : interval.end > view.from && interval.start < view.to);
       const values = Object.keys(descriptor.values ?? {});
+      let spoken;
+      if (descriptor.keyboard) {
+        track.tabIndex = 0; track.setAttribute('role', 'group');
+        track.setAttribute('aria-label', `${descriptor.label} timeline. Use Left and Right to inspect changes, Home and End for the first and last interval.`);
+        spoken = document.createElement('span'); spoken.className = 'activity-screen-reader';
+        spoken.setAttribute('aria-live', 'polite'); spoken.setAttribute('aria-atomic', 'true');
+        let selected = null;
+        track.addEventListener('keydown', event => {
+          if (!['ArrowLeft', 'ArrowRight', 'Home', 'End', 'Enter', ' '].includes(event.key)) return;
+          event.preventDefault(); event.stopPropagation();
+          if (!intervals.length) { spoken.textContent = descriptor.missingLabel; return; }
+          selected = event.key === 'Home' ? 0 : event.key === 'End' ? intervals.length - 1
+            : Math.max(0, Math.min(intervals.length - 1, selected === null ? 0 : selected + (event.key === 'ArrowLeft' ? -1 : event.key === 'ArrowRight' ? 1 : 0)));
+          const interval = intervals[selected], chart = getChart(), rect = visibleRowRect({ root, track });
+          if (!chart || !rect) return;
+          const canvasRect = canvas.getBoundingClientRect();
+          const time = (Math.max(interval.start, view.from) + Math.min(interval.end, view.to)) / 2;
+          const clientX = canvasRect.left + chart.scales.x.getPixelForValue(time) * canvasRect.width / chart.width;
+          inspect({ clientX, clientY: (rect.top + rect.bottom) / 2 });
+          spoken.textContent = activityIntervalLabel(descriptor, interval);
+        });
+        track.addEventListener('blur', () => clear());
+      }
       for (const interval of root.hidden ? [] : intervals) {
         const from = Math.max(interval.start, view.from), to = Math.min(interval.end, view.to);
         if (!Number.isFinite(from) || !Number.isFinite(to) || !interval.pointOnly && from >= to) continue;
@@ -297,7 +332,7 @@ export function createChartOverlays({ canvas, getChart, getPayload, getView, get
         item.style.opacity = String((interval.aggregated ? Math.min(1, Math.max(0, interval.fraction ?? 0)) : 1)
           * (descriptor.opacities?.[interval.value] ?? .75));
         if (descriptor.patterns?.[interval.value]) item.dataset.pattern = descriptor.patterns[interval.value];
-        if (Number.isFinite(interval.value)) item.dataset.value = String(interval.value);
+        if (Number.isFinite(interval.value) || descriptor.key === 'shellyLimiter') item.dataset.value = String(interval.value);
         const lane = values.indexOf(String(interval.value));
         if (interval.aggregated && lane >= 0) { item.style.top = `${lane * 100 / values.length}%`; item.style.height = `${100 / values.length}%`; }
         item.style.backgroundColor = descriptor.colors?.[interval.value] ? palette[descriptor.colors[interval.value]]
@@ -314,9 +349,10 @@ export function createChartOverlays({ canvas, getChart, getPayload, getView, get
       if (descriptor.legend) keySummary.append(legendItems(true));
       const viewport = document.createElement('div'); viewport.className = 'mode-viewport'; viewport.append(track);
       root.append(caption, viewport); roots.push(root); rows.push({ root, track, descriptor, intervals, keySummary });
+      if (spoken) root.append(spoken);
     }
     container.replaceChildren(...roots); container.hidden = rows.every(row => row.root.hidden);
-    if (focusedKey) rows.find(row => row.descriptor.key === focusedKey)?.keySummary?.focus({ preventScroll: true });
+    if (focusedKey) rows.find(row => row.descriptor.key === focusedKey)?.[focusedTrack ? 'track' : 'keySummary']?.focus({ preventScroll: true });
     align();
   }
   function paintNow(chart) {
