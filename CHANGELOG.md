@@ -9,7 +9,7 @@ Versions follow Semantic Versioning. `-dev.N` denotes a development prerelease.
 ### Added
 
 - `npm run deploy:ha` deploys the committed checkout to a stopped Home Assistant
-  app through WebSocket, verifies the rebuilt image and preserves stored files.
+  app through SSH, verifies the rebuilt image and preserves stored files.
   Credentials stay outside the checkout; the app remains stopped.
 
 - **Recover history** opens one shared window from Recording details and Paired
@@ -42,19 +42,17 @@ Versions follow Semantic Versioning. `-dev.N` denotes a development prerelease.
 
 ### Fixed
 
-- Home Assistant development deployments recognize command completion when the
-  terminal redraws output without line breaks, preventing false transfer timeouts.
-  Failures now identify existing deployment locks and transport errors while
-  keeping private terminal output hidden.
+- Home Assistant development deployments now use SSH for binary file transfer
+  and Supervisor requests, removing terminal chunk delays and redraw failures.
+  Existing SSH keys and trusted host entries are reused; deployment connection
+  files now require `ssh_host` instead of the web-terminal URL/token fields.
+  The app remains stopped, with checksums, storage checks and failure locks kept.
 - Tesla identification now tolerates inaccurate vehicle phase-count metadata
   when measured current and power uniquely match, and can retire an old BMW
   episode that ambiguously matched both chargers. Identification no longer
   overrides ordinary economic charging while just observing, and exhausted
   attempts cannot restart pause loops. BMW tests wait for a quiet peer window;
   Balanced and both priority modes retain their existing schedule commitments.
-- Home Assistant development deployments reuse one terminal connection for file
-  transfers, removing repeated connection setup and the delay before every chunk.
-  Transfer checksums, offset checks and stopped-app safeguards remain in place.
 - Simultaneous charging no longer identifies Tesla from similar power and start
   times alone. When Charger 2 supports verified current writes, identification
   temporarily uses its minimum current and requires a unique measured response;

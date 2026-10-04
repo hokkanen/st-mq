@@ -127,7 +127,7 @@ tag alone does not change that branch or update an installed app. See
 [deployment validation](docs/development-validation.md) for container and
 Supervisor checks and their installation limits. For a stopped development app,
 [`npm run deploy:ha`](docs/ha-deployment.md) transfers the current commit over
-WebSocket and rebuilds it without publishing or starting the app.
+SSH and rebuilds it without publishing or starting the app.
 
 ## Development and support
 
