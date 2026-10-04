@@ -42,6 +42,9 @@ Versions follow Semantic Versioning. `-dev.N` denotes a development prerelease.
 
 ### Fixed
 
+- Native Stop during a Charger 2 current comparison keeps the 6 A setting until
+  fresh physical zero confirms the stop, including with Charge now or Automatic
+  off and across expiry or restart.
 - Charger command confirmation waits for a new read after acknowledgement when
   an older poll is still running. This prevents a successful 6 A setting or
   start/stop command from being rejected because its read began too early;

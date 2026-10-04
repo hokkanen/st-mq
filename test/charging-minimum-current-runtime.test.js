@@ -12,7 +12,8 @@ const START = 1_800_000_000_000;
 // supplies independent synthetic phase measurements and cannot issue commands.
 async function fixture(t, { firstCurrentA = 16, firstAvailable = true, stepMetadata = true, currentWritable = true,
   teslaPluggedIn = true, initialCurrentA = 12, economicStartAt = START } = {}) {
-  let now = START, runtime, adapter, meterAt = START, acceptCurrentWrite = true, measuredCurrentA = null, currentWriteHook = null;
+  let now = START, runtime, adapter, meterAt = START, acceptCurrentWrite = true, measuredCurrentA = null, currentWriteHook = null,
+    phaseMeasuredAt = null;
   const data = new Map(), writes = [], client = new EventEmitter();
   const config = { input: 'mqtt', connections: {
     mqtt: { address: 'mqtt://minimum-current.invalid', user: 'synthetic' },
@@ -52,7 +53,7 @@ async function fixture(t, { firstCurrentA = 16, firstAvailable = true, stepMetad
       if (role === 'start_charging') fields.work_state = { value: frame.params.value ? 'charger_charging' : 'charger_pause', at: now };
       result = null;
     } else result = { value: role === 'phase_info' ? phaseInfo() : fields[role].value,
-      last_update_ts: (role === 'phase_info' ? now : fields[role].at) / 1000,
+      last_update_ts: (role === 'phase_info' ? phaseMeasuredAt ?? now : fields[role].at) / 1000,
       ...(['start_charging', 'current_limit'].includes(role) ? { source: 'rpc' } : {}) };
     done?.(); queueMicrotask(() => client.emit('message', `${frame.src}/rpc`, Buffer.from(JSON.stringify({
       id: frame.id, src: 'synthetic-minimum-second', dst: frame.src, result })), {}));
@@ -112,6 +113,7 @@ async function fixture(t, { firstCurrentA = 16, firstAvailable = true, stepMetad
     item: id => runtime.chargers[id],
     setCurrentWriteAccepted(value) { acceptCurrentWrite = value; },
     setMeasuredCurrent(value) { measuredCurrentA = value; },
+    setPhysicalSourceTime(value) { phaseMeasuredAt = value; },
     onCurrentWrite(hook) { currentWriteHook = hook; },
     advance(ms) { now += ms; meterAt = now; },
     setFirst(value, available = true) { firstCurrentA = value; firstAvailable = available; meterAt = now; },
@@ -192,6 +194,80 @@ for (const nativeStop of [false, true]) test(`cold-start probe retains 6 A throu
   assert.equal(f.fields.current_limit.value, 16);
   assert.equal(f.item('charger2').controller.status().currentTest.phase, 'restored');
   assert.equal(f.fields.start_charging.value, false);
+});
+
+for (const choice of ['Automatic', 'Charge now', 'Automatic OFF', 'expired test'])
+test(`native Stop retains a normal 6 A test until physical zero with ${choice}`, async t => {
+  const f = await fixture(t, { initialCurrentA: 16 });
+  f.item('charger2').controls.enabled = true; f.runtime.refreshSettings();
+  f.advance(1000); await f.sampleTesla(16);
+  await f.update(); await f.update();
+  const test = structuredClone(f.item('charger2').controller.status().currentTest);
+  assert.equal(test.phase, 'active');
+  assert.equal(test.probeDeadlineAt, undefined, 'Normal charging has no economic probe deadline');
+  assert.equal(f.item('charger2').identification.probe, null);
+  f.setMeasuredCurrent(6); f.advance(5000);
+  if (choice === 'Charge now') {
+    const card = f.runtime.status().chargers.find(row => row.id === 'charger2');
+    await f.runtime.chargeNow('charger2', { association: card.association,
+      sessionId: card.request.sessionId, revision: card.request.revision });
+  } else if (choice === 'Automatic OFF') {
+    const item = f.item('charger2');
+    await f.runtime.setControl('charger2', { association: item.association, enabled: false, revision: item.controls.revision });
+  } else if (choice === 'expired test') f.advance(test.expiresAt - f.now + 1);
+  f.fields.start_charging = { value: false, at: f.now };
+  f.fields.work_state = { value: 'charger_pause', at: f.now };
+  const beforeStop = f.writes.length;
+  await f.update();
+  assert.equal(f.fields.current_limit.value, 6, 'Native stop readback cannot raise the pilot while 6 A still flows');
+  assert.equal(f.fields.start_charging.value, false);
+  assert.equal(f.item('charger2').controller.status().manual.kind, 'stop');
+  assert.equal(f.item('charger2').controller.status().execution, null);
+  f.advance(Math.max(1000, test.expiresAt - f.now + 1000)); await f.restart(); await f.update();
+  assert.equal(f.fields.current_limit.value, 6, 'Restart, test expiry and caller release choices preserve the stop obligation');
+  assert.equal(f.writes.length, beforeStop);
+  f.setMeasuredCurrent(0); f.advance(1000); await f.update();
+  assert.equal(f.fields.current_limit.value, 16);
+  assert.equal(f.fields.start_charging.value, false);
+  assert.equal(f.item('charger2').controller.status().currentTest.phase, 'restored');
+  assert.deepEqual(f.writes.slice(beforeStop).map(row => [row.role, row.value]), [['current_limit', 16]]);
+});
+
+test('native Stop restoration requires zero measured after its permission event', async t => {
+  const f = await fixture(t, { initialCurrentA: 16 });
+  f.advance(1000); await f.sampleTesla(16);
+  await f.update(); await f.update(); f.advance(1000);
+  f.setMeasuredCurrent(0); f.setPhysicalSourceTime(f.now);
+  await f.adapter.refresh();
+  f.advance(4000); f.fields.start_charging = { value: false, at: f.now };
+  f.fields.work_state = { value: 'charger_pause', at: f.now };
+  await f.update();
+  assert.equal(f.fields.current_limit.value, 6, 'A renewed receipt of pre-stop zero cannot prove physical completion');
+  f.advance(1000); f.setPhysicalSourceTime(f.now); await f.update();
+  assert.equal(f.fields.current_limit.value, 16);
+  assert.equal(f.fields.start_charging.value, false);
+});
+
+for (const action of ['Enable', 'current setting']) test(`a later native ${action} supersedes the current-test stop hold`, async t => {
+  const f = await fixture(t, { initialCurrentA: 16 });
+  f.advance(1000); await f.sampleTesla(16); await f.update(); await f.update();
+  f.setMeasuredCurrent(6); f.advance(5000);
+  f.fields.start_charging = { value: false, at: f.now };
+  f.fields.work_state = { value: 'charger_pause', at: f.now };
+  await f.update(); assert.equal(f.fields.current_limit.value, 6);
+  const before = f.writes.length;
+  f.advance(1000);
+  if (action === 'Enable') {
+    f.fields.start_charging = { value: true, at: f.now };
+    f.fields.work_state = { value: 'charger_charging', at: f.now };
+  } else f.fields.current_limit = { value: 8, at: f.now };
+  await f.update();
+  const control = f.item('charger2').controller.status();
+  assert.equal(control.currentTest.phase, action === 'Enable' ? 'restored' : 'superseded');
+  assert.equal(f.fields.current_limit.value, action === 'Enable' ? 16 : 8);
+  assert.equal(f.fields.start_charging.value, action === 'Enable');
+  assert.deepEqual(f.writes.slice(before).map(row => [row.role, row.value]),
+    action === 'Enable' ? [['current_limit', 16]] : []);
 });
 
 test('Charge now lets cold-start identification finish at 6 A before continuing ordinary charging', async t => {

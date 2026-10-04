@@ -760,8 +760,9 @@ export function createShellyController({ adapter, initialState, saveState = () =
       // A probe budget based on the confirmed low ceiling must retain it until
       // the accepted economic wait has fresh zero-draw evidence. Raising the
       // pilot while the car is still stopping could exceed the energy allowance.
-      // The probe deadline retains this duty across restart and native Stop,
-      // even when that stop clears the economic execution.
+      // The probe deadline retains this duty across restart. Native Stop also
+      // requires physical completion during an ordinary current comparison,
+      // even when Charge now or Automatic OFF has cleared economic execution.
       const waiting = state.execution?.periods?.length && !state.execution.periods.some(period => period.startAt <= clock()
         && (period.endAt === null || period.endAt > clock()));
       const permission = snapshot.fields.start_charging, physical = snapshot.fields.phase_info, work = snapshot.fields.work_state;
@@ -769,7 +770,9 @@ export function createShellyController({ adapter, initialState, saveState = () =
         && physical.measuredAt >= permission.measuredAt && fresh(work)
         && adapter.config.connectedStates.includes(work.value) && !adapter.config.chargingStates.includes(work.value)
         && physical.value.total_power === 0 && PHASE_KEYS.every(key => physical.value[key]?.current < .5);
-      if (!releaseProbe && sameSession() && (waiting || test.probeDeadlineAt !== undefined) && !stopped) return;
+      const stopping = state.manual?.kind === 'stop' || permission?.value === false && fresh(permission);
+      if (sameSession() && !stopped
+        && (stopping || !releaseProbe && (waiting || test.probeDeadlineAt !== undefined))) return;
       target = Math.min(test.originalCurrentA, adapter.config.maximumCurrentA);
       if (adapter.config.limiterEnabled) {
         const liveContext = context ?? (typeof getAllocation === 'function' ? await getAllocation(copy(snapshot)) : null);

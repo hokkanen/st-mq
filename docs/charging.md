@@ -592,6 +592,10 @@ limiter restrictions. Restart never renews the test. A newer external current
 instruction supersedes restoration; uncertain dispatch/readback remains visible
 instead of triggering a blind retry. Shelly has no native expiry for this setting:
 an application or MQTT outage can prolong the reduction until safe recovery.
+After native Stop, the reduced setting remains until confirmed stop permission
+and fresh physical zero measured after that permission, including during ordinary
+charging, Charge now or Automatic OFF. Expiry and restart preserve this obligation.
+A later native Enable or current selection retains its separate priority.
 
 Easee cloud scheduling, local OCPP and the supported Shelly EVSE use the same
 vehicle matcher, pending status, consumed-evidence checks and session boundaries.
