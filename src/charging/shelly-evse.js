@@ -1542,6 +1542,7 @@ export function createShellyController({ adapter, initialState, saveState = () =
           if (takeoverRequested) {
             let after = adapter.snapshot();
             const confirmedSchedule = scheduleToken(after), confirmedScheduleRevision = after.nativeScheduleRevision;
+            const confirmedInstructionRevision = after.notificationRevision;
             // A setting can be confirmed while an independent work-state delta
             // still needs native readback. Finish one bounded read-only refresh
             // before deciding the whole takeover; this grants no new command.
@@ -1560,6 +1561,7 @@ export function createShellyController({ adapter, initialState, saveState = () =
               && after.session?.sessionId === controlScope.session?.sessionId
               && after.session?.connectedAt === controlScope.session?.connectedAt
               && takeoverStatus(after).available && !state.pending && !state.manual && !after.nativeScheduleActive
+              && after.notificationRevision === confirmedInstructionRevision
               && scheduleToken(after) === confirmedSchedule && after.nativeScheduleRevision === confirmedScheduleRevision
               && !after.permissionEvents?.some(event => event.sequence > (state.permissionEventCursor ?? 0))
               && sameSetting(after.fields.start_charging, { value: state.lastStart, measuredAt: state.lastStartAt })

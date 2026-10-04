@@ -1682,7 +1682,7 @@ test(`confirmed permission remains distinct from pending ${transition} readback`
   }
 });
 
-for (const outcome of ['connected work', 'external Stop', 'external current', 'native schedule', 'fault'])
+for (const outcome of ['connected work', 'external Stop', 'external current', 'source-only current', 'native schedule', 'fault'])
 test(`automatic takeover waits for final work readback: ${outcome}`, async t => {
   const f = fixture(t, { limiterEnabled: false }); f.fields.start_charging = false;
   f.sources.set('start_charging', 'rpc'); await f.ready();
@@ -1710,6 +1710,7 @@ test(`automatic takeover waits for final work readback: ${outcome}`, async t => 
     plan: { id: 'held-final-work-read', deadlineAt: NOW + 7200_000,
       periods: [{ startAt: NOW, endAt: null }] } }).then(value => { resolved = true; return value; });
   await new Promise(resolve => setImmediate(resolve));
+  const currentBefore = f.adapter.snapshot().fields.current_limit;
   try {
     assert.equal(saved.pending, null, 'The acknowledged permission already has its own correlated readback');
     assert.equal(f.adapter.snapshot().controlReady, false, 'The held work read still blocks all new writes');
@@ -1718,6 +1719,7 @@ test(`automatic takeover waits for final work readback: ${outcome}`, async t => 
     f.setNow(f.now() + 1);
     if (outcome === 'external Stop') f.delta('start_charging', { value: false, source: 'rpc' });
     if (outcome === 'external current') f.delta('current_limit', { value: 10, source: 'rpc' });
+    if (outcome === 'source-only current') f.delta('current_limit', { source: 'rpc' });
     if (outcome === 'native schedule') { f.schedules.jobs.push({ id: 1, enable: true, timespec: '0 0 * * * *', calls: [] }); f.schedules.rev++; }
     if (outcome === 'fault') f.delta('work_state', { value: 'synthetic_fault' });
   } finally { release?.(); }
@@ -1731,6 +1733,13 @@ test(`automatic takeover waits for final work readback: ${outcome}`, async t => 
     assert.equal(result.takeover.state, 'blocked');
     if (outcome === 'external Stop') assert.equal(result.manual?.kind, 'stop');
     if (outcome === 'external current') assert.equal(f.fields.current_limit, 10);
+    if (outcome === 'source-only current') {
+      const currentAfter = f.adapter.snapshot().fields.current_limit;
+      assert.equal(currentAfter.value, currentBefore.value);
+      assert.equal(currentAfter.measuredAt, currentBefore.measuredAt,
+        'A newer native instruction still revokes takeover when the current value and native clock are unchanged');
+      assert.equal(currentAfter.commandSource, 'rpc');
+    }
   }
 });
 
