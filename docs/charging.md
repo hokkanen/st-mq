@@ -614,6 +614,13 @@ Any remaining reduced setting stays until
 the owned pause has fresh physical zero; restoring the setting preserves the
 same BMW pause and its original deadline. This handoff creates neither a second
 current test nor a renewed probe.
+Native readback can arrive while the controller is still confirming its own
+current restoration. Keep the already-owned BMW pause through that in-flight
+operation without treating the pending setting as confirmed restoration or
+permission to start. New external instructions and uncertain outcomes retain
+their existing priority. An unconfirmed current command blocks application Start
+even after the identification deadline or restart, and remains visibly unconfirmed;
+Charge now does not resolve its outcome or repeat the command.
 
 Easee cloud scheduling, local OCPP and the supported Shelly EVSE use the same
 vehicle matcher, pending status, consumed-evidence checks and session boundaries.

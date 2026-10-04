@@ -54,6 +54,10 @@ Versions follow Semantic Versioning. `-dev.N` denotes a development prerelease.
   that pause before continuing normal charging. This also works when Tesla was
   already identified and remains under a confirmed native Stop: BMW's measured
   6 A draw can lead to its own pause without waiting for Tesla to charge again.
+- BMW's identification pause remains in place while its original current setting
+  is being restored. A native current update arriving before command confirmation
+  no longer ends the pause before BMW can report its matching stop. Missing
+  confirmation keeps charging stopped, including with Charge now and after restart.
 - Native Stop during a Charger 2 current comparison keeps the 6 A setting until
   fresh physical zero confirms the stop, including with Charge now or Automatic
   off and across expiry or restart.

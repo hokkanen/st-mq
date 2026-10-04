@@ -554,6 +554,24 @@ const identificationKeys = ['purpose', 'identificationId', 'identificationConnec
   'requestedAt', 'confirmedAt', 'permissionAt', 'startAt', 'witnessedCharging'];
 const time = value => Number.isSafeInteger(value) && value >= 0;
 const token = value => typeof value === 'string' && value.length > 0 && value.length <= 256;
+const commandReadback = (field, pending) => field.measuredAt >= pending.dispatchedAt
+  // Integer native timestamps locate an update within a whole second. A
+  // correlated read after acknowledgement can confirm that setting without
+  // rounding the source clock forward or accepting an older second/cache.
+  || pending.stage === 'accepted' && time(pending.acceptedAt)
+    && field.measuredAt === Math.floor(pending.dispatchedAt / 1000) * 1000
+    && field.readback?.measuredAt === field.measuredAt
+    && field.readback.requestedAt >= pending.acceptedAt
+    && field.readback.receivedAt >= field.readback.requestedAt;
+
+// Attribution is shared with the runtime because individual adapter fields can
+// update before the controller finishes and persists its refresh result.
+export function shellyCurrentCommandReadback(field, pending) {
+  return Boolean(field && pending && time(pending.acceptedAt) && field.value === pending.value
+    && commandReadback(field, { ...pending, stage: 'accepted' })
+    && (field.measuredAt <= pending.acceptedAt || field.commandSource === 'sys'));
+}
+
 function validIdentificationPause(value) {
   return value && typeof value === 'object' && !Array.isArray(value)
     && Object.keys(value).length === identificationKeys.length && Object.keys(value).every(key => identificationKeys.includes(key))
@@ -618,15 +636,6 @@ export function createShellyController({ adapter, initialState, saveState = () =
   const fresh = field => field?.measuredAt > 0 && field.measuredAt <= clock() && field.receivedAt <= clock()
     && clock() - field.receivedAt <= adapter.config.maxAgeMs && !field.retained;
   const physicalFresh = field => fresh(field) && clock() - field.measuredAt <= adapter.config.maxAgeMs;
-  const commandReadback = (field, pending) => field.measuredAt >= pending.dispatchedAt
-    // Integer native timestamps locate an update within a whole second. A
-    // correlated read after acknowledgement can confirm that setting without
-    // rounding the source clock forward or accepting an older second/cache.
-    || pending.stage === 'accepted' && time(pending.acceptedAt)
-      && field.measuredAt === Math.floor(pending.dispatchedAt / 1000) * 1000
-      && field.readback?.measuredAt === field.measuredAt
-      && field.readback.requestedAt >= pending.acceptedAt
-      && field.readback.receivedAt >= field.readback.requestedAt;
   const takeoverToken = snapshot => hash([snapshot.association, snapshot.generation, snapshot.session?.sessionId,
     snapshot.session?.connectedAt, snapshot.fields.start_charging?.value, snapshot.fields.start_charging?.measuredAt,
     snapshot.fields.current_limit?.value, snapshot.fields.current_limit?.measuredAt,
@@ -733,14 +742,13 @@ export function createShellyController({ adapter, initialState, saveState = () =
     };
     if (test.pending) {
       const pending = test.pending;
-      const confirmed = time(pending.acceptedAt) && current.value === pending.value
-        && commandReadback(current, { ...pending, stage: 'accepted' })
-        && (current.measuredAt <= pending.acceptedAt || systemEcho(current, pending.value));
+      const confirmed = shellyCurrentCommandReadback(current, pending);
       if (confirmed) {
         test.permissionAt = current.measuredAt; test.pending = null;
         test.phase = test.restoreCurrentA === null ? 'active' : 'restored';
         test.confirmedAt ??= clock(); updateLastCurrent(current); await persist();
-      } else if (current.measuredAt > pending.dispatchedAt && current.value !== pending.value) {
+      } else if (current.measuredAt > pending.dispatchedAt && (current.value !== pending.value
+        || time(pending.acceptedAt) && current.measuredAt > pending.acceptedAt && !systemEcho(current, pending.value))) {
         test.phase = 'superseded'; test.pending = null; await persist();
       } else {
         // An absent acknowledgement cannot be replaced by matching amperage.
@@ -831,9 +839,7 @@ export function createShellyController({ adapter, initialState, saveState = () =
       test.pending.acceptedAt = clock(); await persist();
       await adapter.refresh({ force: true });
       const actual = adapter.snapshot().fields.current_limit;
-      if (!fresh(actual) || actual.value !== target
-        || !commandReadback(actual, { ...test.pending, stage: 'accepted' })
-        || actual.measuredAt > test.pending.acceptedAt && !systemEcho(actual, target)) throw fail('evse-command-unconfirmed');
+      if (!fresh(actual) || !shellyCurrentCommandReadback(actual, test.pending)) throw fail('evse-command-unconfirmed');
       test.pending = null; test.phase = restoring ? 'restored' : 'active';
       test.confirmedAt ??= clock(); test.permissionAt = actual.measuredAt; updateLastCurrent(actual);
       await persist();
@@ -1177,7 +1183,11 @@ export function createShellyController({ adapter, initialState, saveState = () =
         const allowStart = (economic && inWindow || identification && !identificationPause
           || state.ownedPause && !pause && (!state.automaticPermission || !input.enabled || nativeRelease))
           && !nativeBlocked && state.manual?.kind !== 'stop';
-        const shouldStart = !pause && allowStart && !snapshot.nativeScheduleActive && !minimumBlocked;
+        // An unknown current-command result remains a physical duty even when
+        // the runtime's identification window ends. Charge now cannot turn an
+        // unconfirmed restoration into permission to release the saved Stop.
+        const currentUnconfirmed = state.currentTest?.phase === 'uncertain';
+        const shouldStart = !pause && allowStart && !snapshot.nativeScheduleActive && !minimumBlocked && !currentUnconfirmed;
         let expectedStart = copy(start), expectedCurrent = copy(current);
         const guard = () => !closed && intentRevision === revision && canControl() && adapter.snapshot().session?.sessionId === sessionId
           && adapter.snapshot().association === state.association;
@@ -1302,15 +1312,16 @@ export function createShellyController({ adapter, initialState, saveState = () =
             }
           }
           const permission = adapter.snapshot().fields.start_charging;
-          const open = !pause && !nativeBlocked && !state.pending && fresh(permission) && permission.value === true;
+          const open = !pause && !nativeBlocked && !state.pending && !currentUnconfirmed && fresh(permission) && permission.value === true;
           const intermediate = state.execution && clock() < state.execution.finalStartAt;
           state.released = open && !identification && !state.manual && !state.provisional && !intermediate && Boolean(input.enabled || chargeNow);
-          state.phase = state.manual ? 'manual' : identification ? 'identifying' : pause ? 'waiting'
+          state.phase = state.manual ? 'manual' : currentUnconfirmed ? 'uncertain' : identification ? 'identifying' : pause ? 'waiting'
             : input.enabled || chargeNow ? !open ? 'waiting' : state.provisional ? 'provisional' : intermediate ? 'active' : 'released' : 'off';
           state.reason = state.manual?.kind === 'stop' ? 'manual-stop'
             : state.manual?.kind === 'takeover-unconfirmed' ? 'evse-native-schedule-unconfirmed' : snapshot.nativeScheduleActive ? 'native-schedule'
             : state.manual ? `manual-${state.manual.kind}`
-            : nativeBlocked ? 'vehicle-not-before' : identificationPause ? 'identification-pause'
+            : nativeBlocked ? 'vehicle-not-before' : limitation.pause ? limitation.reason
+              : currentUnconfirmed ? 'evse-command-unconfirmed' : identificationPause ? 'identification-pause'
               : identification ? identification.phase === 'waiting' ? 'identification-waiting' : 'identification-charging'
                 : pause && economic && !inWindow ? 'economic-wait' : chargeNow && !pause ? 'charge-now' : limitation.reason;
           if (takeoverRequested) {

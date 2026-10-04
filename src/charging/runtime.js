@@ -21,7 +21,7 @@ import { updateTargetState, targetSelection, validateTargetState, validateTarget
 import { acceptEaseeTransition } from './stream-evidence.js';
 import { confirmedIdentityPause } from './identity-evidence.js';
 import { advanceIdentification, prepareActiveBmwCandidate, matchActiveBmwPause, validateIdentificationState, IDENTIFICATION_ENERGY_LIMIT_KWH, IDENTIFICATION_PAUSE_WAIT_MS } from './identification.js';
-import { shellyAssociation } from './shelly-evse.js';
+import { shellyAssociation, shellyCurrentCommandReadback } from './shelly-evse.js';
 import { ChargingSessionDiagnostics } from './session-diagnostics.js';
 import { ChargingPhysicalTests } from './physical-tests.js';
 import { bmwVehicleSetup, teslaVehicleSetup } from './setup.js';
@@ -951,7 +951,14 @@ export class ChargingRuntime {
           && currentTest?.connectedAt === control.session.connectedAt;
         const currentComparisonResolved = sameCurrentTest
           && item.vehicleEvidence?.teslaCurrentResolvedTestId === currentTest.id;
-        const comparisonCurrentOwned = sameCurrentTest && currentLimit?.value
+        const restorationPending = sameCurrentTest && ['restoring', 'uncertain'].includes(currentTest.phase)
+          && currentTest.restoreCurrentA !== null && currentTest.pending?.value === currentTest.restoreCurrentA;
+        const currentFresh = currentLimit?.measuredAt > 0 && currentLimit.measuredAt <= now
+          && currentLimit.receivedAt <= now && now - currentLimit.receivedAt <= item.adapter.config.maxAgeMs
+          && currentLimit.retained !== true;
+        const restorationReadback = restorationPending && currentFresh
+          && shellyCurrentCommandReadback(currentLimit, currentTest.pending);
+        const comparisonCurrentOwned = restorationReadback || sameCurrentTest && currentLimit?.value
           === (currentTest.phase === 'restored' ? currentTest.restoreCurrentA : currentTest.appliedCurrentA)
           && (currentLimit.measuredAt === currentTest.permissionAt
             || currentLimit.measuredAt > currentTest.permissionAt && currentLimit.commandSource === 'sys');
@@ -1007,6 +1014,15 @@ export class ChargingRuntime {
           // outlive the comparison window; a handoff without saved controller
           // ownership expires.
           && (now < currentTest.expiresAt || bmwPauseOwned);
+        // A notification can arrive before its acknowledgement, or a correlated
+        // readback before the controller saves completion. Preserve only this
+        // already-owned Stop while its matching restore is unresolved. This is
+        // not confirmation, an identity signal, or permission to start charging.
+        const pendingBmwRestoration = activeBmwPause && bmwPauseOwned && restorationPending && currentFresh
+          && (comparisonCurrentOwned || currentTest.pending.acceptedAt === null
+            && currentLimit.value === currentTest.pending.value
+            && currentLimit.measuredAt >= Math.floor(currentTest.pending.dispatchedAt / 1000) * 1000
+            && currentLimit.receivedAt >= currentTest.pending.dispatchedAt);
         const minimumReady = minimumCurrent && currentTest && currentTest.id === item.identification?.id
           && currentTest.phase === 'active' && currentTest.connectedAt === control.session.connectedAt
           && currentTest.sessionId === control.session.sessionId && Number.isSafeInteger(currentTest.confirmedAt)
@@ -1039,8 +1055,8 @@ export class ChargingRuntime {
         item.identification = advanceIdentification(item.identification, {
           ...choice, probeAllowed, chargeNow: item.request?.chargeNow === true,
           interrupted: sameCurrentTest && (!available
-            || ['superseded', 'uncertain'].includes(currentTest.phase)
-            || (activeBmwPause || currentComparisonResolved) && !comparisonCurrentOwned
+            || currentTest.phase === 'superseded' || currentTest.phase === 'uncertain' && !pendingBmwRestoration
+            || (activeBmwPause || currentComparisonResolved) && !comparisonCurrentOwned && !pendingBmwRestoration
             || !activeBmwPause && (currentTest.expiresAt <= now
               || !awaitingBmwPause && (currentComparisonResolved
                 || ['restoring', 'restored'].includes(currentTest.phase)))),
