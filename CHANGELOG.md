@@ -56,6 +56,9 @@ Versions follow Semantic Versioning. `-dev.N` denotes a development prerelease.
 - Charging planning can find split charging opportunities around household load
   peaks when continuous periods would incorrectly report a missed deadline.
   Fixed native current, per-phase headroom and minimum run/gap limits still apply.
+- Briefly missing native charger metadata during restart no longer discards saved
+  capacity observations. Planning waits for confirmed metadata and still rejects
+  evidence from a changed installation or expired observations.
 - Delayed charging calculations now check live identification with the current
   observation time. A fresh charger read arriving during a calculation no longer
   interrupts the 6 A comparison; its original deadline and forecast times remain

@@ -7,6 +7,10 @@ const median = values => {
   const rows = [...values].sort((a, b) => a - b), middle = Math.floor(rows.length / 2);
   return rows.length % 2 ? rows[middle] : (rows[middle - 1] + rows[middle]) / 2;
 };
+const current = value => finite(value) && value >= 0 && value <= 1000 ? value : null;
+const configurationFields = configuration => Array.isArray(configuration) && configuration.length === 3
+  ? [current(configuration[0]), ...[0, 1, 2].map(index => Array.isArray(configuration[1]) && configuration[1].length === 3
+    ? current(configuration[1][index]) : null), typeof configuration[2] === 'boolean' ? configuration[2] : null] : null;
 
 /** A forecast budget is not a fuse setting. Reconstruct the capacity represented
  * by Equalizer's allowance before the present household load was subtracted.
@@ -15,9 +19,17 @@ const median = values => {
  * Keep recent independent evidence through sparse event reports and restarts. */
 export function updateSupplyEstimate(previous, snapshot, now = Date.now()) {
   const supply = snapshot?.supply ?? {}, limits = snapshot?.limits ?? {};
-  const configurationKey = JSON.stringify([limits.allocationA ?? supply.allocationA ?? null,
-    limits.circuitA ?? null, snapshot?.externalLoadBalancing !== false]);
-  const validPrevious = previous?.configurationKey === configurationKey && Array.isArray(previous?.samples);
+  const configuration = [limits.allocationA ?? supply.allocationA ?? null,
+    limits.circuitA ?? null, snapshot?.externalLoadBalancing ?? null];
+  const fields = configurationFields(configuration), confirmed = fields.every(value => value !== null);
+  let priorFields = null;
+  try { priorFields = configurationFields(JSON.parse(previous?.configurationKey)); } catch { /* No valid saved configuration. */ }
+  const validPrevious = priorFields?.every(value => value !== null) && Array.isArray(previous?.samples)
+    && fields.every((value, index) => value === null || value === priorFields[index]);
+  // Startup may temporarily lack native limits. Retain their historical
+  // evidence without granting a usable forecast or admitting new samples.
+  // Any known mismatch still invalidates it, even amid other unknown fields.
+  const configurationKey = validPrevious && !confirmed ? previous.configurationKey : JSON.stringify(configuration);
   const samples = validPrevious ? previous.samples.filter(row => validTime(row.at, now, 24 * HOUR)
     && phases(row.budgetCurrentA) && Array.isArray(row.exact) && row.exact.length === 3).slice(-12) : [];
   const healthy = snapshot?.online === true && validTime(snapshot?.readAt, now, 5 * MINUTE);
@@ -32,7 +44,7 @@ export function updateSupplyEstimate(previous, snapshot, now = Date.now()) {
   const idle = idleState && phases(charger) && charger.every(current => current < 0.1);
   const coherent = timing.length === 6 && timing.every(at => validTime(at, now, 20 * MINUTE))
     && (idle || chargerTimes.length === 3 && chargerTimes.every(at => validTime(at, now, 20 * MINUTE)));
-  if (healthy && phases(allowance) && phases(property) && phases(charger) && coherent) {
+  if (confirmed && healthy && phases(allowance) && phases(property) && phases(charger) && coherent) {
     const allTimes = [...timing, ...(idle ? [] : chargerTimes)];
     // Idle meter timestamps and negligible current jitter do not independently
     // measure capacity. Match the identity to the same contributors used for
@@ -63,5 +75,5 @@ export function updateSupplyEstimate(previous, snapshot, now = Date.now()) {
   return { version: 1, configurationKey, samples: kept, budgetCurrentA,
     quality: exact.every(rows => rows.length) ? 'observed-budget' : 'observed-lower-bound',
     measuredAt: Math.max(...kept.map(row => row.at)), observedAt: healthy ? snapshot.readAt : null,
-    available: healthy && phases(allowance), source: 'equalizer-and-property' };
+    available: confirmed && healthy && phases(allowance), source: 'equalizer-and-property' };
 }

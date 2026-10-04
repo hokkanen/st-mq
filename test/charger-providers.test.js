@@ -217,6 +217,75 @@ test('supply evidence survives short sparse-event gaps without pretending pollin
   assert.equal(updateSupplyEstimate(held, changed, now).budgetCurrentA, null, 'A changed installation config invalidates old capacity evidence');
 });
 
+for (const metadata of ['absent snapshot', 'allocation', 'circuit phase', 'balancing'])
+  test(`supply evidence survives unconfirmed ${metadata} metadata without becoming available`, () => {
+    const snapshot = supplySnapshot();
+    const established = updateSupplyEstimate(null, snapshot, now);
+    const original = structuredClone(established);
+    const incomplete = structuredClone(snapshot);
+    if (metadata === 'allocation') {
+      incomplete.limits.allocationA = null; incomplete.supply.allocationA = null;
+    } else if (metadata === 'circuit phase') incomplete.limits.circuitA[1] = null;
+    else if (metadata === 'balancing') delete incomplete.externalLoadBalancing;
+    let held = updateSupplyEstimate(established, metadata === 'absent snapshot' ? null : incomplete, now + 1000);
+    assert.equal(held.available, false, 'A healthy connection alone cannot confirm missing native metadata');
+    assert.deepEqual(held.samples, original.samples, 'Unknown metadata must not discard accepted observations');
+    assert.equal(held.configurationKey, original.configurationKey);
+    assert.equal(held.measuredAt, original.measuredAt);
+    held = JSON.parse(JSON.stringify(held));
+    const recovered = updateSupplyEstimate(held, { ...snapshot, readAt: now + 2000 }, now + 2000);
+    assert.equal(recovered.available, true);
+    assert.deepEqual(recovered.samples, original.samples, 'Recovery and polling cannot duplicate a held source observation');
+    assert.deepEqual(recovered.budgetCurrentA, original.budgetCurrentA);
+    assert.equal(recovered.measuredAt, original.measuredAt);
+    assert.deepEqual(established, original, 'The previous state remains immutable');
+  });
+
+test('unknown startup metadata preserves bounded supply history through restart and genuine new evidence', () => {
+  let estimate = null;
+  for (let index = 0; index < 13; index++) estimate = updateSupplyEstimate(estimate,
+    supplySnapshot({ at: now - 60_000 + index * 1000 }), now);
+  const original = structuredClone(estimate);
+  assert.equal(original.samples.length, 12);
+  estimate = updateSupplyEstimate(estimate, { online: false, readAt: now + 1000, externalLoadBalancing: true }, now + 1000);
+  estimate = JSON.parse(JSON.stringify(estimate));
+  assert.equal(estimate.available, false);
+  assert.deepEqual(estimate.samples, original.samples);
+  estimate = updateSupplyEstimate(estimate, supplySnapshot({ allowance: [5, 7, 6], at: now + 2000,
+    readAt: now + 2000 }), now + 2000);
+  assert.equal(estimate.available, true);
+  assert.equal(estimate.samples.length, 12);
+  assert.deepEqual(estimate.samples.slice(0, -1), original.samples.slice(1));
+  assert.equal(estimate.samples.at(-1).at, now + 2000);
+  assert.deepEqual(estimate.budgetCurrentA, original.budgetCurrentA, 'One new sample must not replace the established median');
+  const expired = updateSupplyEstimate(estimate, null, now + 25 * hour);
+  assert.equal(expired.available, false);
+  assert.equal(expired.samples.length, 0, 'Missing metadata cannot extend evidence retention');
+  assert.equal(expired.measuredAt, null);
+});
+
+for (const changed of ['allocation', 'circuit phase', 'balancing'])
+  test(`a confirmed ${changed} change discards supply history even with other metadata unknown`, () => {
+    const snapshot = supplySnapshot();
+    const established = updateSupplyEstimate(null, snapshot, now);
+    const conflicting = structuredClone(snapshot);
+    conflicting.supply.reportedPropertyCurrentA = null;
+    if (changed === 'allocation') {
+      conflicting.limits.allocationA = 20; conflicting.limits.circuitA = null;
+    } else if (changed === 'circuit phase') {
+      conflicting.limits.circuitA = [12, null, 16];
+    } else {
+      conflicting.externalLoadBalancing = false; conflicting.limits.circuitA = null;
+    }
+    const discarded = updateSupplyEstimate(established, conflicting, now + 1000);
+    assert.equal(discarded.samples.length, 0);
+    assert.equal(discarded.available, false);
+    const restored = updateSupplyEstimate(discarded, { ...snapshot, readAt: now + 2000,
+      supply: { ...snapshot.supply, reportedPropertyCurrentA: null } }, now + 2000);
+    assert.equal(restored.samples.length, 0, 'Returning to old settings cannot resurrect invalidated history');
+    assert.equal(restored.available, false);
+  });
+
 for (const transport of ['cloud', 'ocpp']) test(`${transport} idle charger meter reports cannot reweight held property capacity evidence after restart`, () => {
   const provider = transport === 'ocpp' ? { transport, mode: undefined, connectorStatus: 'SuspendedEVSE' } : { mode: 2 };
   let estimate = null;

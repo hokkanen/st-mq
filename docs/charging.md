@@ -1045,6 +1045,10 @@ sample identity and age; the accepted sample retains the measured subtraction.
 Fresh allowance or property observations still contribute, and charger currents
 and their clocks remain contributors during actual draw or an unconfirmed idle
 state. Restart preserves the bounded evidence history without making it fresh.
+Temporarily missing native allocation or circuit metadata cannot erase that
+history as if the installation had changed. The estimate remains unavailable
+until the current metadata is confirmed; a confirmed configuration change still
+invalidates the old evidence. Expiry retains the original source clocks.
 These forecast estimates never replace live headroom or native electrical limits.
 
 The final period is an open release. Reaching the planning minimum or ready-by deadline does not issue a final stop. Extra actual energy remains metered and priced. Unknown future post-target consumption cannot have a guaranteed optimized bill. Later economic pauses require ST-MQ and the provider to be available; the UI distinguishes the proposed plan, dispatched request, readback and observed physical response.
