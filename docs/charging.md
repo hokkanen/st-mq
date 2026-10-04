@@ -601,6 +601,13 @@ After native Stop, the reduced setting remains until confirmed stop permission
 and fresh physical zero measured after that permission, including during ordinary
 charging, Charge now or Automatic OFF. Expiry and restart preserve this obligation.
 A later native Enable or current selection retains its separate priority.
+A unique Tesla match on the peer can end the current comparison while leaving
+the remainder of its original window for an independently valid BMW baseline
+to begin its correlation pause. An unresolved current comparison still takes
+precedence over that BMW baseline. Any remaining reduced setting stays until
+the owned pause has fresh physical zero; restoring the setting preserves the
+same BMW pause and its original deadline. This handoff creates neither a second
+current test nor a renewed probe.
 
 Easee cloud scheduling, local OCPP and the supported Shelly EVSE use the same
 vehicle matcher, pending status, consumed-evidence checks and session boundaries.
@@ -736,8 +743,13 @@ has been restored; confirmed adoption supersedes the old return. Explicit
 session or control edits also supersede it, with that time saved in the probe
 record. Native instructions retain priority, and the return belongs only to the
 same physical connection and ends at its original release time.
-Exhaustion, completion of the minimum-current comparison, interruption or the
-pause deadline ends active testing for that attempt. An unresolved attempt shows
+Exhaustion, interruption or the pause deadline ends active testing for that
+attempt. Completion of the minimum-current comparison also ends testing unless
+a unique Tesla match on the peer permits an independent BMW baseline to begin
+its one pause within that comparison's original window, or that pause has
+already begun. An already started BMW pause
+keeps only its own original deadline; expiry cannot start a new pause.
+An unresolved attempt shows
 **Identification inconclusive** while normal control uses session/default battery inputs.
 Source-timestamped BMW start/stop evidence can confirm the same connection until unplugging, including
 after a long charging run or delayed and reordered delivery. Matching still

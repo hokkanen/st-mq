@@ -944,10 +944,41 @@ export class ChargingRuntime {
         const available = !item.vehicleEvidence?.historyOverflow && this.identificationAvailable(item, now) && this.identificationFeedReady(item, now)
           && this.identificationTurn(item);
         const minimumCurrent = this.minimumCurrentIdentification(item, now);
-        const candidate = !minimumCurrent && this.identificationPauseAvailable(item, result, now)
-          && this.identificationBmwCandidate(item, physical, now);
         const choice = this.identificationChargingChoice(item, now);
         const currentTest = control.currentTest, currentLimit = control.snapshot?.fields?.current_limit;
+        const sameCurrentTest = currentTest?.id === item.identification?.id
+          && currentTest?.sessionId === control.session.sessionId
+          && currentTest?.connectedAt === control.session.connectedAt;
+        const currentComparisonResolved = sameCurrentTest
+          && item.vehicleEvidence?.teslaCurrentResolvedTestId === currentTest.id;
+        // A BMW charging baseline is plausible on either charging point. Only
+        // a resolved independent current comparison permits this handoff; loss
+        // of Tesla feed/current readiness must not manufacture that conclusion.
+        const candidate = !minimumCurrent && (!sameCurrentTest || currentComparisonResolved)
+          && this.identificationPauseAvailable(item, result, now)
+          && this.identificationBmwCandidate(item, physical, now);
+        const comparisonCurrentOwned = sameCurrentTest && currentLimit?.value
+          === (currentTest.phase === 'restored' ? currentTest.restoreCurrentA : currentTest.appliedCurrentA)
+          && (currentLimit.measuredAt === currentTest.permissionAt
+            || currentLimit.measuredAt > currentTest.permissionAt && currentLimit.commandSource === 'sys');
+        // Identifying Tesla on the peer leaves BMW unassigned. Keep only the
+        // original remaining comparison window for its independent baseline;
+        // this cannot repeat a current write or renew any probe allowance.
+        const awaitingBmwPause = currentComparisonResolved && comparisonCurrentOwned && currentTest.expiresAt > now;
+        const bmwPauseOwned = sameCurrentTest && [control.owned, control.pending?.owned].some(owned =>
+          owned?.purpose === 'identification' && owned.identificationId === currentTest.id
+          && owned.identificationConnectedAt === currentTest.connectedAt && owned.sessionId === currentTest.sessionId
+          && owned.startAt === item.identification.pauseUntil
+          && owned.requestedAt >= item.identification.candidate?.capturedAt
+          && owned.requestedAt < currentTest.expiresAt);
+        const activeBmwPause = currentComparisonResolved && item.identification.phase === 'pausing'
+          && item.identification.candidate?.capturedAt >= currentTest.startedAt
+          && item.identification.candidate.capturedAt < currentTest.expiresAt
+          // A refresh may cross expiry before the native controller ever takes
+          // ownership of this pause. Only its already-saved physical duty may
+          // outlive the comparison window; a handoff without saved controller
+          // ownership expires.
+          && (now < currentTest.expiresAt || bmwPauseOwned);
         const minimumReady = minimumCurrent && currentTest && currentTest.id === item.identification?.id
           && currentTest.phase === 'active' && currentTest.connectedAt === control.session.connectedAt
           && currentTest.sessionId === control.session.sessionId && Number.isSafeInteger(currentTest.confirmedAt)
@@ -979,11 +1010,12 @@ export class ChargingRuntime {
               && control.snapshot.fields.start_charging.measuredAt >= probeStartedAt);
         item.identification = advanceIdentification(item.identification, {
           ...choice, probeAllowed, chargeNow: item.request?.chargeNow === true,
-          interrupted: control.currentTest?.id === item.identification?.id && Boolean(control.currentTest)
-            && (control.currentTest.expiresAt <= now
-              || item.vehicleEvidence?.teslaCurrentResolvedTestId === control.currentTest.id
-              || ['restoring', 'restored', 'superseded', 'uncertain'].includes(control.currentTest.phase)
-              || !available),
+          interrupted: sameCurrentTest && (!available
+            || ['superseded', 'uncertain'].includes(currentTest.phase)
+            || (activeBmwPause || currentComparisonResolved) && !comparisonCurrentOwned
+            || !activeBmwPause && (currentTest.expiresAt <= now
+              || !awaitingBmwPause && (currentComparisonResolved
+                || ['restoring', 'restored'].includes(currentTest.phase)))),
           probeDurationMs: Math.min(Math.floor((IDENTIFICATION_ENERGY_LIMIT_KWH / probeCeilingKw * 3600 - 10) * 1000),
             minimumReady ? currentTest.expiresAt - now - 10_000 : Infinity), physicalFresh, physicalStopped,
           connectedAt: control.session.connectedAt, now, connected: true, identified: reidentifying ? freshIdentity : Boolean(vehicleId),

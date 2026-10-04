@@ -349,6 +349,112 @@ test('Shelly a verified minimum already in place needs no numeric write and ends
   assert.deepEqual(f.writes.map(row => [row.role, row.value]), [['start_charging', false]]);
 });
 
+test('Shelly BMW pause holds the reduced current through stop latency and restart before restoring and resuming', async t => {
+  for (const choice of ['automatic', 'charge-now', 'automatic-off']) await t.test(choice, async t => {
+    const f = fixture(t, { limiterEnabled: false });
+    const input = { enabled: choice !== 'automatic-off',
+      ...(choice === 'charge-now' ? { chargeNow: { connectedAt: NOW } } : {}) };
+    f.request = { id: 'minimum-to-bmw-pause', connectedAt: NOW, phase: 'charging', minimumCurrent: true };
+    await f.update(input);
+    const expiresAt = f.saved.currentTest.expiresAt;
+    f.now += 20_000;
+    const pauseUntil = f.now + 90_000;
+    f.request = { ...f.request, phase: 'pausing', pauseUntil };
+    f.physicalPause = false;
+    let view = await f.update(input);
+    assert.deepEqual(f.writes.map(row => [row.role, row.value]), [['current_limit', 6], ['start_charging', false]],
+      'The correlation stop must precede restoration of the higher current');
+    assert.equal(view.currentTest.phase, 'active');
+    assert.equal(f.fields.current_limit.value, 6);
+    assert.equal(view.pauseConfirmed, false);
+    f.now = expiresAt + 1; f.restart(); view = await f.update(input);
+    assert.equal(f.fields.current_limit.value, 6, 'Expiry cannot raise the pilot while the stopped car still draws power');
+    assert.equal(view.currentTest.expiresAt, expiresAt);
+    assert.equal(view.owned.startAt, pauseUntil);
+    assert.equal(f.writes.length, 2);
+    f.now += 1000; f.change('work_state', 'charger_pause');
+    f.change('phase_info', { total_power: 0, phase_a: { current: 0 }, phase_b: { current: 0 }, phase_c: { current: 0 } });
+    view = await f.update(input);
+    assert.equal(view.currentTest.phase, 'restored');
+    assert.equal(f.fields.current_limit.value, 12);
+    assert.equal(f.fields.start_charging.value, false, 'Current restoration must preserve the owned BMW pause');
+    assert.equal(view.pauseConfirmed, true);
+    assert.equal(view.owned.startAt, pauseUntil);
+    f.request = null; f.physicalPause = true; view = await f.update(input);
+    assert.equal(view.owned, null);
+    assert.deepEqual(f.writes.map(row => [row.role, row.value]),
+      [['current_limit', 6], ['start_charging', false], ['current_limit', 12], ['start_charging', true]]);
+  });
+});
+
+test('Shelly an unsent BMW pause preserves reduced current across a restart at current-test expiry', async t => {
+  const f = fixture(t, { limiterEnabled: false });
+  f.request = { id: 'pending-bmw-pause', connectedAt: NOW, phase: 'charging', minimumCurrent: true };
+  await f.update(); const expiresAt = f.saved.currentTest.expiresAt;
+  f.now += 20_000; f.request = { ...f.request, phase: 'pausing', pauseUntil: f.now + 90_000 };
+  f.saveHook = state => { if (state.pending?.owned?.witnessedCharging) throw Error('synthetic pause persistence failure'); };
+  await f.update();
+  assert.equal(f.saved.pending.stage, 'proposed');
+  assert.deepEqual(f.writes.map(row => [row.role, row.value]), [['current_limit', 6]]);
+  f.saveHook = null; f.physicalPause = false; f.now = expiresAt + 1; f.restart();
+  const view = await f.update();
+  assert.equal(view.currentTest.expiresAt, expiresAt);
+  assert.equal(f.fields.current_limit.value, 6);
+  assert.deepEqual(f.writes.map(row => [row.role, row.value]), [['current_limit', 6], ['start_charging', false]]);
+});
+
+test('Shelly native Stop during the reduced-current BMW pause retains priority through both deadlines', async t => {
+  const f = fixture(t, { limiterEnabled: false });
+  const input = { enabled: true, chargeNow: { connectedAt: NOW } };
+  f.request = { id: 'native-stop-during-bmw-pause', connectedAt: NOW, phase: 'charging', minimumCurrent: true };
+  await f.update(input);
+  const expiresAt = f.saved.currentTest.expiresAt;
+  f.now += 20_000; const pauseUntil = f.now + 90_000;
+  f.request = { ...f.request, phase: 'pausing', pauseUntil }; f.physicalPause = false;
+  await f.update(input);
+  f.now += 1000; f.change('start_charging', false); f.fields.start_charging.commandSource = 'rpc'; f.request = null;
+  let view = await f.update(input);
+  assert.equal(view.manual.kind, 'stop'); assert.equal(f.fields.current_limit.value, 6);
+  f.now = expiresAt + 1; f.restart(); view = await f.update(input);
+  assert.equal(view.manual.kind, 'stop'); assert.equal(f.fields.current_limit.value, 6);
+  f.now += 1000; f.change('work_state', 'charger_pause');
+  f.change('phase_info', { total_power: 0, phase_a: { current: 0 }, phase_b: { current: 0 }, phase_c: { current: 0 } });
+  view = await f.update(input);
+  assert.equal(view.currentTest.phase, 'restored'); assert.equal(f.fields.current_limit.value, 12);
+  f.now = pauseUntil + 1; view = await f.update(input);
+  assert.equal(view.manual.kind, 'stop'); assert.equal(f.fields.start_charging.value, false);
+  assert.deepEqual(f.writes.map(row => [row.role, row.value]),
+    [['current_limit', 6], ['start_charging', false], ['current_limit', 12]]);
+});
+
+test('Shelly BMW pause current guard preserves native Enable, current selection and uncertain Stop fences', async t => {
+  for (const change of ['enable', 'current', 'lost-stop-reply']) await t.test(change, async t => {
+    const f = fixture(t, { limiterEnabled: false });
+    f.request = { id: 'bmw-pause-fences', connectedAt: NOW, phase: 'charging', minimumCurrent: true };
+    await f.update(); f.now += 20_000;
+    f.request = { ...f.request, phase: 'pausing', pauseUntil: f.now + 90_000 }; f.physicalPause = false;
+    if (change === 'lost-stop-reply') f.afterPublish = () => {
+      throw Object.assign(Error('synthetic lost Stop reply'), { code: 'evse-command-unconfirmed' });
+    };
+    await f.update(); f.afterPublish = null; f.now += 1000; f.request = null;
+    if (change === 'enable') { f.change('start_charging', true); f.fields.start_charging.commandSource = 'rpc'; }
+    if (change === 'current') { f.change('current_limit', 8); f.fields.current_limit.commandSource = 'rpc'; }
+    let view = await f.update();
+    if (change === 'enable') {
+      assert.equal(view.manual.kind, 'enable'); assert.equal(view.currentTest.phase, 'restored');
+      assert.equal(f.fields.current_limit.value, 12); assert.equal(f.fields.start_charging.value, true);
+    } else if (change === 'current') {
+      assert.equal(view.currentTest.phase, 'superseded'); assert.equal(f.fields.current_limit.value, 8);
+      assert.deepEqual(f.writes.filter(row => row.role === 'current_limit').map(row => row.value), [6]);
+    } else {
+      f.now = NOW + 95_000; f.restart(); view = await f.update();
+      assert.equal(view.phase, 'uncertain'); assert.equal(f.fields.current_limit.value, 6);
+      assert.deepEqual(f.writes.map(row => [row.role, row.value]), [['current_limit', 6], ['start_charging', false]],
+        'An uncertain Stop must not be replayed or raise the pilot');
+    }
+  });
+});
+
 test('Shelly identification current restoration survives cancellation, unplug and a new session without granting start', async t => {
   for (const ending of ['cancel', 'unplug', 'new-session']) await t.test(ending, async t => {
     const f = fixture(t, { limiterEnabled: false });

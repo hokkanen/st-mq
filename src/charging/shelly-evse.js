@@ -770,9 +770,20 @@ export function createShellyController({ adapter, initialState, saveState = () =
         && physical.measuredAt >= permission.measuredAt && fresh(work)
         && adapter.config.connectedStates.includes(work.value) && !adapter.config.chargingStates.includes(work.value)
         && physical.value.total_power === 0 && PHASE_KEYS.every(key => physical.value[key]?.current < .5);
+      // A BMW correlation pause can follow the current comparison in this
+      // same attempt. Keep its lower pilot before Stop is dispatched as well
+      // as while the car is stopping. Saved pause intent covers the early
+      // recovery pass, which runs before the runtime supplies its request.
+      const matchingPause = owned => owned?.purpose === 'identification'
+        && owned.identificationId === test.id && owned.identificationConnectedAt === test.connectedAt
+        && owned.sessionId === test.sessionId && owned.startAt > clock();
+      const identificationStopping = test.originalCurrentA > test.appliedCurrentA && !state.manual
+        && (request?.id === test.id && request.connectedAt === test.connectedAt
+          && request.phase === 'pausing' && request.pauseUntil > clock()
+          || matchingPause(state.owned) || matchingPause(state.pending?.owned));
       const stopping = state.manual?.kind === 'stop' || permission?.value === false && fresh(permission);
       if (sameSession() && !stopped
-        && (stopping || !releaseProbe && (waiting || test.probeDeadlineAt !== undefined))) return;
+        && (stopping || identificationStopping || !releaseProbe && (waiting || test.probeDeadlineAt !== undefined))) return;
       target = Math.min(test.originalCurrentA, adapter.config.maximumCurrentA);
       if (adapter.config.limiterEnabled) {
         const liveContext = context ?? (typeof getAllocation === 'function' ? await getAllocation(copy(snapshot)) : null);

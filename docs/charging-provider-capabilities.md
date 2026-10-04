@@ -242,6 +242,12 @@ Held pre-test Tesla current, similar peer current or missing peer measurements
 leave identification pending. A unique response may identify Tesla on either
 charger; it never identifies BMW by elimination. Charger 1's positive current
 remains owned by its native controls and Equalizer.
+After a unique Tesla match on the peer, an independent BMW baseline may hand
+the same attempt to its one pause before the original current-test deadline.
+An unresolved current comparison retains priority. The BMW pause preserves its
+own deadline through current restoration. Any remaining lower current stays
+until fresh physical zero confirms the owned stop; expiry creates no new test
+or pause.
 
 Completion or expiry restores the original current subject to current limits;
 with the economic limiter enabled, its current safe ceiling also applies.

@@ -13,7 +13,7 @@ const START = 1_800_000_000_000;
 async function fixture(t, { firstCurrentA = 16, firstAvailable = true, stepMetadata = true, currentWritable = true,
   teslaPluggedIn = true, initialCurrentA = 12, economicStartAt = START } = {}) {
   let now = START, runtime, adapter, meterAt = START, acceptCurrentWrite = true, measuredCurrentA = null, currentWriteHook = null,
-    phaseMeasuredAt = null;
+    phaseMeasuredAt = null, statusReadHook = null;
   const data = new Map(), writes = [], client = new EventEmitter();
   const config = { input: 'mqtt', connections: {
     mqtt: { address: 'mqtt://minimum-current.invalid', user: 'synthetic' },
@@ -52,9 +52,12 @@ async function fixture(t, { firstCurrentA = 16, firstAvailable = true, stepMetad
       if (role === 'current_limit' && currentWriteHook) { const hook = currentWriteHook; currentWriteHook = null; hook(); }
       if (role === 'start_charging') fields.work_state = { value: frame.params.value ? 'charger_charging' : 'charger_pause', at: now };
       result = null;
-    } else result = { value: role === 'phase_info' ? phaseInfo() : fields[role].value,
-      last_update_ts: (role === 'phase_info' ? phaseMeasuredAt ?? now : fields[role].at) / 1000,
-      ...(['start_charging', 'current_limit'].includes(role) ? { source: 'rpc' } : {}) };
+    } else {
+      if (statusReadHook) { const hook = statusReadHook; statusReadHook = null; hook(); }
+      result = { value: role === 'phase_info' ? phaseInfo() : fields[role].value,
+        last_update_ts: (role === 'phase_info' ? phaseMeasuredAt ?? now : fields[role].at) / 1000,
+        ...(['start_charging', 'current_limit'].includes(role) ? { source: 'rpc' } : {}) };
+    }
     done?.(); queueMicrotask(() => client.emit('message', `${frame.src}/rpc`, Buffer.from(JSON.stringify({
       id: frame.id, src: 'synthetic-minimum-second', dst: frame.src, result })), {}));
   };
@@ -115,6 +118,7 @@ async function fixture(t, { firstCurrentA = 16, firstAvailable = true, stepMetad
     setMeasuredCurrent(value) { measuredCurrentA = value; },
     setPhysicalSourceTime(value) { phaseMeasuredAt = value; },
     onCurrentWrite(hook) { currentWriteHook = hook; },
+    onStatusRead(hook) { statusReadHook = hook; },
     advance(ms) { now += ms; meterAt = now; },
     setFirst(value, available = true) { firstCurrentA = value; firstAvailable = available; meterAt = now; },
     observe() { return runtime.telemetry(now); },
@@ -136,6 +140,229 @@ async function pausedColdFixture(t) {
   await f.adapter.refresh();
   return f;
 }
+
+function publishBmw(f, values, measuredAt = f.now) {
+  f.runtime.setMqttStatus({ connected: true, subscribed: true }, 'bmw');
+  f.runtime.receiveSoc('synthetic/minimum-current/bmw', JSON.stringify({
+    provider: 'bmw-cardata', ...values,
+    fields: Object.fromEntries(Object.keys(values).map(key => [key,
+      { measuredAt, readingId: `synthetic-swapped-${key}-${measuredAt}` }])),
+  }), { retain: false }, f.now);
+}
+
+for (const delayed of [false, true])
+test(`BMW on Shelly obtains its own pause after identifying Tesla on Easee${delayed ? ' across Charge now, restart and the current deadline' : ''}`, async t => {
+  const f = await fixture(t, { initialCurrentA: 16 });
+  let control = await f.update();
+  const test = structuredClone(control.currentTest), attempt = f.item('charger2').identification.id;
+  f.advance(6000); await f.sampleTesla(16);
+  f.advance(5000); await f.adapter.refresh(); f.observe(); await f.update();
+  assert.equal(f.item('charger1').vehicleMatch?.id, 'tesla');
+  assert.equal(f.item('charger2').vehicleMatch, null, 'Tesla on the peer does not identify BMW by elimination');
+  f.advance(START + 61_000 - f.now); await f.adapter.refresh();
+  publishBmw(f, { atHome: true, pluggedIn: true, charging: true });
+  f.advance(1000);
+  control = await f.update();
+  const state = f.item('charger2').identification;
+  assert.equal(state.id, attempt, 'The comparison and BMW pause use the same attempt');
+  assert.equal(state.phase, 'pausing', 'An independent BMW charging baseline starts its own bounded pause');
+  assert.equal(state.candidate.kind, 'ongoing');
+  assert.ok(state.candidate.capturedAt < test.expiresAt, 'The handoff begins within the original comparison window');
+  assert.equal(control.currentTest.expiresAt, test.expiresAt);
+  assert.equal(f.fields.start_charging.value, false, 'The real Shelly controller issues the BMW pause');
+  assert.equal(f.item('charger2').vehicleMatch, null, 'A pause command alone is not BMW evidence');
+  const pauseUntil = state.pauseUntil;
+  f.advance(5000); await f.update();
+  assert.equal(f.item('charger2').identification.phase, 'pausing', 'Current restoration cannot cancel the owned BMW pause');
+  assert.equal(f.item('charger2').identification.pauseUntil, pauseUntil);
+  const bmwStopAt = f.now;
+  if (delayed) {
+    const card = f.runtime.status().chargers.find(row => row.id === 'charger2');
+    await f.runtime.chargeNow('charger2', { association: card.association,
+      sessionId: card.request.sessionId, revision: card.request.revision });
+    assert.equal(f.item('charger2').identification.phase, 'pausing');
+    assert.equal(f.fields.start_charging.value, false, 'Charge now lets the BMW pause gather its independent stop');
+    f.advance(test.expiresAt - f.now + 1000); await f.restart(); await f.update();
+    assert.equal(f.item('charger2').identification.id, attempt);
+    assert.equal(f.item('charger2').identification.phase, 'pausing', 'An already-owned BMW pause survives current-test expiry');
+    assert.equal(f.item('charger2').identification.pauseUntil, pauseUntil);
+    assert.equal(f.fields.start_charging.value, false);
+  }
+  publishBmw(f, { charging: false }, bmwStopAt);
+  await f.update();
+  assert.equal(f.item('charger2').vehicleMatch?.id, 'bmw', 'Independent BMW stop evidence identifies the physically paused charger');
+  assert.equal(f.item('charger2').identification.phase, 'completed');
+  assert.equal(f.item('charger2').identification.id, attempt);
+  assert.equal(f.item('charger2').identification.pauseUntil, pauseUntil);
+  assert.equal(f.item('charger2').controller.status().currentTest.expiresAt, test.expiresAt);
+  await f.update();
+  assert.equal(f.fields.current_limit.value, 16);
+  assert.equal(f.fields.start_charging.value, true, 'Ordinary charging resumes after positive BMW identification');
+  assert.equal(f.writes.filter(row => row.role === 'current_limit' && row.value === 6).length, 1);
+  assert.equal(f.writes.filter(row => row.role === 'start_charging' && row.value === false).length, 1);
+});
+
+test('a plausible BMW baseline on the peer cannot cut short a delayed Tesla response on Shelly', async t => {
+  const f = await fixture(t, { initialCurrentA: 16 }); await f.update();
+  f.advance(100_000); await f.update();
+  publishBmw(f, { atHome: true, pluggedIn: true, charging: true });
+  await f.sampleTesla(16);
+  const card = f.runtime.status().chargers.find(row => row.id === 'charger2');
+  await f.runtime.identifyVehicle('charger2', { association: card.association,
+    sessionId: card.request.sessionId, revision: card.request.revision });
+  await f.update();
+  assert.equal(f.fields.current_limit.value, 6);
+  assert.equal(f.fields.start_charging.value, true, 'An unassigned BMW baseline must not stop the Tesla comparison');
+  assert.equal(f.item('charger2').identification.pauseUntil, null);
+  f.advance(20_000); await f.sampleTesla(6);
+  f.advance(5000); await f.adapter.refresh(); f.observe(); await f.update();
+  assert.equal(f.item('charger2').vehicleMatch?.id, 'tesla');
+  assert.equal(f.item('charger1').vehicleMatch, null, 'A negative BMW result cannot assign the peer by elimination');
+  assert.equal(f.fields.start_charging.value, true);
+  assert.equal(f.writes.some(row => row.role === 'start_charging' && row.value === false), false);
+});
+
+test('loss of Tesla readiness cannot turn an unresolved comparison into a BMW pause', async t => {
+  const f = await fixture(t, { initialCurrentA: 16 }); await f.update();
+  f.advance(61_000); await f.adapter.refresh();
+  publishBmw(f, { atHome: true, pluggedIn: true, charging: true });
+  f.publishTesla({ healthy: false }); f.advance(1000); await f.update();
+  assert.equal(f.item('charger2').identification.pauseUntil, null);
+  assert.equal(f.item('charger2').vehicleMatch, null);
+  assert.equal(f.writes.some(row => row.role === 'start_charging' && row.value === false), false);
+});
+
+test('a BMW handoff that crosses the current deadline before native pause ownership cannot dispatch a late Stop', async t => {
+  const f = await fixture(t, { initialCurrentA: 16 });
+  const initial = await f.update(), expiresAt = initial.currentTest.expiresAt;
+  f.advance(81_000); await f.adapter.refresh();
+  publishBmw(f, { atHome: true, pluggedIn: true, charging: true });
+  await f.sampleTesla(16);
+  f.advance(6000); await f.adapter.refresh(); f.observe();
+  assert.equal(f.item('charger1').vehicleMatch?.id, 'tesla');
+  assert.equal(f.item('charger2').identification.phase, 'pausing');
+  assert.equal(f.item('charger2').controller.status().owned, null);
+  assert.equal(f.item('charger2').controller.status().pending, null);
+  assert.equal(f.fields.current_limit.value, 6);
+  f.onStatusRead(() => f.advance(expiresAt - f.now + 1000));
+  await f.update();
+  assert.equal(f.item('charger2').identification.phase, 'inconclusive');
+  assert.equal(f.fields.current_limit.value, 16);
+  assert.equal(f.fields.start_charging.value, true, 'An expired undispatched handoff grants no new Stop');
+  assert.equal(f.writes.some(row => row.role === 'start_charging' && row.value === false), false);
+});
+
+for (const ending of ['native Stop', 'pause timeout'])
+test(`BMW pause after a resolved peer comparison respects ${ending}`, async t => {
+  const f = await fixture(t, { initialCurrentA: 16 }); await f.update();
+  f.advance(6000); await f.sampleTesla(16);
+  f.advance(5000); await f.adapter.refresh(); f.observe(); await f.update();
+  f.advance(START + 61_000 - f.now); await f.adapter.refresh();
+  publishBmw(f, { atHome: true, pluggedIn: true, charging: true });
+  f.advance(1000); await f.update();
+  const state = structuredClone(f.item('charger2').identification);
+  assert.equal(state.phase, 'pausing');
+  f.advance(1000); await f.update();
+  if (ending === 'native Stop') {
+    f.advance(1000); f.fields.start_charging = { value: false, at: f.now };
+    f.fields.work_state = { value: 'charger_pause', at: f.now }; await f.update();
+  }
+  f.advance(state.pauseUntil - f.now + 1000); await f.restart(); await f.update();
+  assert.equal(f.item('charger2').identification.phase, 'inconclusive');
+  assert.equal(f.item('charger2').identification.id, state.id);
+  assert.equal(f.item('charger2').identification.pauseUntil, state.pauseUntil);
+  assert.equal(f.item('charger2').vehicleMatch, null, 'No independent BMW stop means no BMW identity');
+  assert.equal(f.fields.start_charging.value, ending !== 'native Stop');
+  if (ending === 'native Stop') assert.equal(f.item('charger2').controller.status().manual.kind, 'stop');
+  else assert.equal(f.item('charger2').identification.reason, 'pause-timeout');
+  assert.equal(f.writes.filter(row => row.role === 'current_limit' && row.value === 6).length, 1);
+  assert.equal(f.writes.filter(row => row.role === 'start_charging' && row.value === false).length, 1);
+});
+
+for (const peerIdentified of [false, true]) test(`BMW cannot begin a pause after the original current window${peerIdentified ? ' even after the peer Tesla match' : ''}`, async t => {
+  const f = await fixture(t, { initialCurrentA: 16 });
+  const initial = await f.update(), expiry = initial.currentTest.expiresAt;
+  if (peerIdentified) {
+    f.advance(6000); await f.sampleTesla(16);
+    f.advance(5000); await f.adapter.refresh(); f.observe(); await f.update();
+  }
+  f.advance(expiry - f.now + 1000); await f.update();
+  publishBmw(f, { atHome: true, pluggedIn: true, charging: true });
+  f.advance(1000); await f.update(); await f.restart(); await f.update();
+  assert.equal(f.item('charger2').identification.phase, 'inconclusive');
+  assert.equal(f.item('charger2').identification.pauseUntil, null);
+  assert.equal(f.item('charger2').vehicleMatch, null);
+  assert.equal(f.item('charger2').controller.status().currentTest.expiresAt, expiry);
+  assert.equal(f.writes.filter(row => row.role === 'current_limit' && row.value === 6).length, 1);
+  assert.equal(f.writes.some(row => row.role === 'start_charging' && row.value === false), false);
+});
+
+for (const context of ['away', 'old charging source', 'unsettled peer'])
+test(`BMW ${context} cannot take over an active current comparison`, async t => {
+  const f = await fixture(t, { initialCurrentA: 16 });
+  const initial = await f.update(), expiry = initial.currentTest.expiresAt;
+  f.advance((context === 'unsettled peer' ? 20_000 : 61_000)); await f.adapter.refresh();
+  publishBmw(f, { atHome: context !== 'away', pluggedIn: true });
+  publishBmw(f, { charging: true }, context === 'old charging source' ? START - 6 * 60_000 : f.now);
+  f.advance(1000); await f.update();
+  assert.equal(f.item('charger2').identification.pauseUntil, null);
+  assert.equal(f.item('charger2').vehicleMatch, null);
+  f.advance(expiry - f.now + 1000); await f.update();
+  assert.equal(f.item('charger2').identification.phase, 'inconclusive');
+  assert.equal(f.writes.some(row => row.role === 'start_charging' && row.value === false), false);
+});
+
+for (const instruction of ['native current', 'native Enable', 'native Stop'])
+test(`${instruction} supersedes the remaining BMW handoff window after the peer Tesla match`, async t => {
+  const f = await fixture(t, { initialCurrentA: 16 }); await f.update();
+  f.advance(6000); await f.sampleTesla(16);
+  f.advance(5000); await f.adapter.refresh(); f.observe(); await f.update();
+  assert.equal(f.item('charger1').vehicleMatch?.id, 'tesla');
+  assert.equal(f.item('charger2').controller.status().currentTest.phase, 'restored');
+  f.advance(1000);
+  if (instruction === 'native current') f.fields.current_limit = { value: 8, at: f.now };
+  else {
+    f.fields.start_charging = { value: instruction === 'native Enable', at: f.now };
+    f.fields.work_state = { value: instruction === 'native Enable' ? 'charger_charging' : 'charger_pause', at: f.now };
+  }
+  await f.update();
+  f.advance(START + 61_000 - f.now); await f.adapter.refresh();
+  publishBmw(f, { atHome: true, pluggedIn: true, charging: true });
+  f.advance(1000); await f.update();
+  assert.equal(f.item('charger2').identification.phase, 'inconclusive');
+  assert.equal(f.item('charger2').identification.pauseUntil, null);
+  assert.equal(f.writes.some(row => row.role === 'start_charging' && row.value === false), false);
+  if (instruction === 'native current') assert.equal(f.fields.current_limit.value, 8);
+  else assert.equal(f.item('charger2').controller.status().manual.kind, instruction === 'native Enable' ? 'enable' : 'stop');
+});
+
+test('BMW handoff holds 6 A until physical zero and preserves the original economic probe and return', async t => {
+  const f = await pausedColdFixture(t); await f.update();
+  const test = structuredClone(f.item('charger2').controller.status().currentTest);
+  const probe = structuredClone(f.item('charger2').identification.probe);
+  f.advance(START + 61_000 - f.now); f.setMeasuredCurrent(6); await f.adapter.refresh();
+  publishBmw(f, { atHome: true, pluggedIn: true, charging: true });
+  f.publishTesla({ charging_state: 'Charging' }); await f.sampleTesla(16);
+  f.advance(6000); await f.adapter.refresh(); f.observe();
+  assert.equal(f.item('charger1').vehicleMatch?.id, 'tesla');
+  const before = f.writes.length; await f.update();
+  assert.equal(f.item('charger2').identification.phase, 'pausing');
+  assert.equal(f.fields.start_charging.value, false);
+  assert.equal(f.fields.current_limit.value, 6, 'The stop acknowledgement cannot restore 16 A while the BMW still draws');
+  assert.deepEqual(f.writes.slice(before).map(row => [row.role, row.value]), [['start_charging', false]]);
+  f.advance(5000); f.setMeasuredCurrent(0); await f.update(); await f.update();
+  assert.equal(f.fields.current_limit.value, 16);
+  assert.equal(f.item('charger2').identification.phase, 'pausing');
+  publishBmw(f, { charging: false }); await f.update();
+  assert.equal(f.item('charger2').vehicleMatch?.id, 'bmw');
+  const after = f.item('charger2').identification.probe;
+  assert.equal(after.startedAt, probe.startedAt); assert.equal(after.deadlineAt, probe.deadlineAt);
+  assert.equal(after.returnStartAt, probe.returnStartAt); assert.ok(after.endedAt <= f.now);
+  f.advance(test.expiresAt - f.now + 1000); await f.restart(); await f.update();
+  assert.equal(f.fields.start_charging.value, false, 'The completed BMW test returns to the accepted economic pause');
+  assert.equal(f.item('charger2').controller.status().currentTest.expiresAt, test.expiresAt);
+  assert.equal(f.writes.filter(row => row.role === 'current_limit' && row.value === 6).length, 1);
+});
 
 test('paused cold-start identification confirms 6 A before starting and allows a delayed independent Tesla response', async t => {
   const f = await pausedColdFixture(t), before = f.writes.length;
