@@ -1301,6 +1301,8 @@ test('pending current identification names missing readiness, observations and a
     ['current-control-unavailable', /current-control readiness.*optional household current limiter has separate settings/],
     ['current-evidence-pending', /fresh measured charger current.*current setting alone does not identify/],
     ['current-ambiguous', /Both chargers could match.*independent evidence/],
+    ['peer-transition-pending', /other charger is changing state.*current charging choice still applies/],
+    ['vehicle-charging-evidence-pending', /Charging is following the current charging choice.*usable vehicle charging evidence/],
   ]) {
     item.identification.reason = reason;
     assert.match(view(item).identification.detail, expected);

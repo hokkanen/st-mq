@@ -12,7 +12,8 @@ const ID_REASONS = new Set(['identified', 'manual-stop', 'interrupted', 'unsuppo
   'another-identification-active', 'awaiting-evidence', 'probe-energy-limit', 'probe-time-limit', 'telemetry-lost',
   'awaiting-stop-confirmation', 'observing-charge', 'waiting-for-charging',
   'bmw-home-unknown', 'bmw-away', 'bmw-not-plugged', 'vehicle-feed-stale', 'economic-plan-pending',
-  'evidence-capacity', 'pause-timeout', 'current-control-unavailable', 'current-evidence-pending', 'current-ambiguous']);
+  'evidence-capacity', 'pause-timeout', 'current-control-unavailable', 'current-evidence-pending', 'current-ambiguous',
+  'peer-transition-pending', 'vehicle-charging-evidence-pending']);
 // Provider messages can contain URLs, identifiers or upstream payload text.
 // Persist only exact supported diagnostic codes, never an arbitrary reason.
 const CONTROL_ERRORS = new Set(['read-failed', 'command-failed', 'readback-failed', 'readback-mismatch',

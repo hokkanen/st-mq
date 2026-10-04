@@ -522,6 +522,17 @@ TeslaMate's receipt clock cannot place a report delivered late at an earlier
 physical event. The saved correlation must already agree at the original
 receipt time. Held home and target fields remain context; identification does
 not require a new GPS observation simply because the car has stayed home.
+TeslaMate can suppress an unknown plug value while continuing to publish charging
+state and actual draw, leaving an older retained `plugged_in=false` in place.
+The raw plug report and its provenance remain unchanged. Independently received
+live charging state, positive actual current and positive power after that report
+can establish explicitly labelled **connection inferred from live charging**
+context while the logger is healthy and the vehicle is home. This context alone
+does not identify a charger: the same physical and session-specific matching
+checks still apply. Held values preserve their original clocks; retained-only
+draw, later unplug/disconnected/driving evidence, or an unhealthy feed cannot
+supply this inference. A normal charging pause is not a disconnect and does not
+erase an already confirmed identity for that physical connection.
 BMW source timestamps, home scope and consumed plug/start events serve the same
 connection separation. Neither feed's remote voltage or power fills missing
 household electrical measurements.
@@ -630,6 +641,14 @@ recent charging transition, pending control or an upcoming economic transition
 within the pause and correlation window. This avoids creating two matching stop
 episodes without holding the peer away from its economic schedule. Unexpected
 physical or manual changes still take priority and ambiguous evidence stays unresolved.
+A provisional plan alone does not block that pause when the peer has accepted
+its ordinary charging choice and fresh physical readings confirm a settled
+state with no upcoming transition. A connected peer under a confirmed native
+Stop may remain stopped: fresh zero draw, native stop readback and absence of
+an active native schedule provide the quiet evidence. The pause never acquires
+control of that peer. Missing vehicle evidence, unavailable current control and
+an unsettled peer are displayed separately; ordinary charging can continue while
+an identification action is blocked.
 Shelly requires available start/stop control,
 fresh physical readings and available MQTT, and retains native restrictions
 and its optional electrical limiter when enabled throughout the test.

@@ -1,4 +1,5 @@
 import { bmwHomeContext } from './vehicle.js';
+import { teslamateConnectionContext } from './teslamate.js';
 
 const finite = Number.isFinite;
 const timestamp = value => Number.isSafeInteger(value) && value >= 0 ? value : null;
@@ -41,6 +42,7 @@ export function teslaVehicleSetup(snapshot = {}, { now = Date.now() } = {}) {
     .sort((a, b) => (snapshot.fields[b].sequence ?? 0) - (snapshot.fields[a].sequence ?? 0))[0];
   const states = ['charging', 'online', 'offline', 'asleep', 'suspended', 'driving', 'updating'];
   return { available, healthy: snapshot.healthy === true,
+    connectionContext: teslamateConnectionContext(snapshot, { now }),
     state: states.includes(snapshot.fields?.state?.value) ? snapshot.fields.state.value : null,
     fields: {
       soc: read('battery_level', snapshot.batteryLevel, percentage),

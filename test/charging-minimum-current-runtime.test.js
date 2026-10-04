@@ -10,7 +10,8 @@ const START = 1_800_000_000_000;
 
 // Real runtime, Tesla MQTT capture, Shelly RPC adapter and controller. Charger 1
 // supplies independent synthetic phase measurements and cannot issue commands.
-async function fixture(t, { firstCurrentA = 16, firstAvailable = true, stepMetadata = true, currentWritable = true } = {}) {
+async function fixture(t, { firstCurrentA = 16, firstAvailable = true, stepMetadata = true, currentWritable = true,
+  teslaPluggedIn = true } = {}) {
   let now = START, runtime, adapter, meterAt = START;
   const data = new Map(), writes = [], client = new EventEmitter();
   const config = { input: 'mqtt', connections: {
@@ -58,9 +59,9 @@ async function fixture(t, { firstCurrentA = 16, firstAvailable = true, stepMetad
   const capture = createChargingTeslaCapture({ settings: config.connections.teslamate, clock: () => now,
     brokerIdentity: 'synthetic-minimum-broker' });
   capture.setConnected(true); t.after(() => capture.close());
-  const publishTesla = values => {
+  const publishTesla = (values, { retained = false, at = now } = {}) => {
     for (const [field, value] of Object.entries(values))
-      assert.equal(capture.receive(`teslamate/minimum-current/cars/1/${field}`, String(value), {}, now), true);
+      assert.equal(capture.receive(`teslamate/minimum-current/cars/1/${field}`, String(value), { retain: retained }, at), true);
   };
   const firstSnapshot = () => ({ transport: 'ocpp', online: true, readAt: now, pluggedIn: true,
     charging: true, connectorStatus: 'Charging', statusAt: START, transactionId: 17,
@@ -103,7 +104,8 @@ async function fixture(t, { firstCurrentA = 16, firstAvailable = true, stepMetad
     runtime.teslaCapture = capture;
   };
   await create();
-  publishTesla({ healthy: true, geofence: 'Home', plugged_in: true, charging_state: 'Charging',
+  publishTesla({ plugged_in: teslaPluggedIn }, { retained: !teslaPluggedIn, at: teslaPluggedIn ? now : START - 1000 });
+  publishTesla({ healthy: true, geofence: 'Home', charging_state: 'Charging',
     charger_phases: 3, charger_power: 0, charger_actual_current: 0 });
   return { get runtime() { return runtime; }, get now() { return now; }, adapter, fields, writes, publishTesla, data, store, config,
     item: id => runtime.chargers[id],
@@ -134,6 +136,48 @@ for (const charger of ['charger1', 'charger2']) test(`minimum-current runtime id
   assert.equal(control.currentTest.phase, 'restored'); assert.equal(f.fields.current_limit.value, 12);
   assert.ok(f.now < control.currentTest.expiresAt, 'Success ends the current test before its fixed deadline');
   assert.deepEqual(f.writes.map(row => [row.role, row.value]), [['current_limit', 6], ['current_limit', 12]]);
+});
+
+for (const retainedDeparture of [false, true]) for (const departure of [{ charging_state: 'Disconnected' }, { state: 'driving' }])
+test(`old false plug permits 6 A and durable identity until ${retainedDeparture ? 'retained' : 'live'} ${Object.values(departure)[0]}`, async t => {
+  const f = await fixture(t, { teslaPluggedIn: false });
+  f.advance(1000); await f.sampleTesla(12);
+  let control = await f.update();
+  assert.equal(f.runtime.teslaCapture.snapshot().pluggedIn, false, 'The contradictory raw report stays visible');
+  assert.equal(control.currentTest.phase, 'active'); assert.equal(f.fields.current_limit.value, 6);
+  f.advance(6000); await f.sampleTesla(6);
+  f.advance(5000); await f.adapter.refresh(); f.observe();
+  assert.equal(f.item('charger2').vehicleMatch?.id, 'tesla');
+  control = await f.update();
+  assert.equal(control.currentTest.phase, 'restored'); assert.equal(f.fields.current_limit.value, 12);
+  f.advance(1000); f.publishTesla({ charger_actual_current: 0, charger_power: 0, charging_state: 'Stopped' });
+  f.fields.start_charging = { value: false, at: f.now }; f.fields.work_state = { value: 'charger_pause', at: f.now };
+  await f.adapter.refresh(); f.observe();
+  assert.equal(f.item('charger2').vehicleMatch?.id, 'tesla', 'An intentional zero-current pause preserves independently proven identity');
+  await f.restart(); f.observe();
+  assert.equal(f.item('charger2').vehicleMatch?.id, 'tesla', 'Restart cannot reinterpret the original false report as a new unplug');
+  if (retainedDeparture) {
+    f.runtime.teslaCapture.setConnected(false); f.runtime.teslaCapture.setConnected(true);
+    f.publishTesla({ healthy: true });
+  }
+  f.advance(1000); f.publishTesla(departure, { retained: retainedDeparture }); f.observe();
+  assert.equal(f.item('charger2').vehicleMatch, null, 'A later native vehicle disconnect ends the match even if plugged_in stays false');
+});
+
+test('restored current test from a prior connection is absent from the next identification attempt', async t => {
+  const f = await fixture(t);
+  await f.update(); f.advance(91_000); await f.update();
+  const prior = structuredClone(f.item('charger2').controller.status().currentTest);
+  assert.equal(prior.phase, 'restored');
+  f.advance(1000); f.fields.work_state = { value: 'charger_free', at: f.now };
+  await f.adapter.refresh(); await f.update();
+  f.advance(1000); f.fields.work_state = { value: 'charger_charging', at: f.now };
+  f.publishTesla({ healthy: false });
+  await f.adapter.refresh(); await f.update();
+  const item = f.runtime.status().chargers.find(row => row.id === 'charger2');
+  assert.notEqual(item.identification.connectedAt, prior.connectedAt);
+  assert.equal(item.identification.currentTest, null, 'Yesterday\'s restored 6 A result is not evidence of a new test');
+  assert.equal(f.item('charger2').controller.status().currentTest.id, prior.id, 'Historical restoration is retained at its owner');
 });
 
 test('minimum-current timeout restores once and cannot restart through polling, Use automatic or restart', async t => {
@@ -170,6 +214,9 @@ test('ordinary identification observation preserves economic execution and emits
     assert.equal(f.runtime.identificationControl(item, control.snapshot), null);
     assert.equal(control.identification, null);
     assert.equal(control.execution.planId, 'synthetic-normal-plan');
+    const view = f.runtime.status().chargers.find(row => row.id === 'charger2');
+    assert.equal(view.identification.reason, 'current-control-unavailable',
+      'The status explains the blocked current test instead of claiming active charge observation');
   }
   assert.deepEqual(f.writes, []);
 });

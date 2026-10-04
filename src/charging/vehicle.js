@@ -1,4 +1,5 @@
 import { acceptSocReading, socMeasurementTime } from './soc.js';
+import { teslamateConnectionContext, teslamateDeparture } from './teslamate.js';
 
 const facts = ['pluggedIn', 'charging', 'atHome'];
 const MINUTE = 60_000;
@@ -51,12 +52,12 @@ export function connectionEvidenceStart(connectedAt, lastDisconnectedAt) {
 export function matchTeslaSession(tesla, { physical, connectedAt, lastDisconnectedAt, chargingAt = [], consumedPowerAt, now = Date.now() } = {}) {
   const physicalPower = physical?.powerKw, power = tesla?.fields?.charger_power, plug = tesla?.fields?.plugged_in;
   const departure = (tesla?.boundaries ?? []).filter(edge => edge.association === tesla.association
-    && (edge.field === 'plugged_in' && edge.value === false
+    && (teslamateDeparture(edge)
       || edge.field === 'geofence' && edge.value !== tesla.fields?.geofence?.value)
     && time(edge.at) && edge.at <= now).reduce((at, edge) => Math.max(at, edge.at), lastDisconnectedAt ?? -1);
   const evidenceStart = connectionEvidenceStart(connectedAt, departure);
   const physicalAt = physicalPower?.measuredAt;
-  if (!time(connectedAt) || connectedAt > now || tesla?.healthy !== true || tesla.pluggedIn !== true
+  if (!time(connectedAt) || connectedAt > now || tesla?.healthy !== true || !teslamateConnectionContext(tesla, { now })
     || tesla.atHome !== true || tesla.charging !== true || physical?.charging?.value !== true
     || physicalPower?.available !== true || !(physicalPower.value > .5)
     || !time(physicalAt) || physicalAt < evidenceStart || physicalAt > now || now - physicalAt > MINUTE
@@ -68,7 +69,7 @@ export function matchTeslaSession(tesla, { physical, connectedAt, lastDisconnect
   const freshPower = now - power.receivedAt <= 30_000;
   const sameRamp = time(physicalAt) && physicalAt <= now && freshPower && Math.abs(physicalAt - power.receivedAt) <= 10_000
     && starts.some(at => Math.abs(at - power.receivedAt) <= 15_000);
-  const samePlug = plug?.retained === false && time(plug.receivedAt) && plug.receivedAt >= evidenceStart
+  const samePlug = tesla.pluggedIn === true && plug?.retained === false && time(plug.receivedAt) && plug.receivedAt >= evidenceStart
     && plug.receivedAt <= now && Math.abs(plug.receivedAt - connectedAt) <= 30_000;
   if (freshPower && (sameRamp || samePlug)) return true;
   const liveStart = ['charging_state', 'state'].map(key => tesla.fields?.[key])
@@ -103,14 +104,14 @@ export function matchTeslaMinimumCurrent(tesla, { physical, peers = [], minimumP
   connectedAt, lastDisconnectedAt, consumedCurrentAt, now = Date.now() } = {}) {
   const field = tesla?.fields?.charger_actual_current, power = tesla?.fields?.charger_power;
   const departure = (tesla?.boundaries ?? []).filter(edge => edge.association === tesla.association
-    && (edge.field === 'plugged_in' && edge.value === false
+    && (teslamateDeparture(edge)
       || edge.field === 'geofence' && edge.value !== tesla.fields?.geofence?.value)
     && time(edge.at) && edge.at <= now).reduce((at, edge) => Math.max(at, edge.at), lastDisconnectedAt ?? -1);
   const since = connectionEvidenceStart(connectedAt, departure);
   const freshPower = view => view?.powerKw?.available === true && view.powerKw.retained !== true
     && view.powerKw.value > .5 && time(view.powerKw.measuredAt) && view.powerKw.measuredAt <= now
     && now - view.powerKw.measuredAt <= MINUTE && view.charging?.available === true && view.charging.value === true;
-  if (!time(connectedAt) || connectedAt > now || tesla?.healthy !== true || tesla.pluggedIn !== true
+  if (!time(connectedAt) || connectedAt > now || tesla?.healthy !== true || !teslamateConnectionContext(tesla, { now })
     || tesla.atHome !== true || tesla.charging !== true || currentTest?.phase !== 'active'
     || !time(currentTest.confirmedAt) || currentTest.confirmedAt < currentTest.startedAt
     || !time(currentTest.expiresAt) || now >= currentTest.expiresAt || now < currentTest.confirmedAt + 5000

@@ -58,6 +58,64 @@ test('recent peer starts and mismatched execution remain unsettled', () => {
   assert.equal(f.available(), false, 'A running peer still being stopped by its economic schedule is not quiet');
 });
 
+test('confirmed stable provisional charging permits a BMW pause without changing the peer plan', () => {
+  for (const plan of [{ feasible: false }, { provisional: true }]) {
+    const f = fixture();
+    Object.assign(f.peer.plan, plan);
+    f.control.phase = 'provisional'; f.control.provisional = true;
+    f.control.execution = null;
+    f.peer.plan.periods = [{ startAt: NOW - 300_000, endAt: null }];
+    const before = structuredClone(f.peer.plan);
+    assert.equal(f.available(), true, 'Missing economics alone do not create a physical peer transition');
+    assert.deepEqual(f.peer.plan, before, 'Identification has no authority to change peer economics');
+    f.peer.plan.periods[0].endAt = NOW + 90_000;
+    assert.equal(f.available(), false, 'Even provisional charging must respect an approaching transition');
+    f.peer.plan.periods[0].endAt = null;
+    f.peer.vehicleEvidence.chargingTimes = [NOW - 30_000];
+    assert.equal(f.available(), false, 'The provisional release must first settle physically');
+  }
+});
+
+test('a settled native manual stop permits the other charger to identify without resuming the peer', () => {
+  for (const transport of ['ocpp', 'shelly-evse', 'easee-cloud']) {
+    const f = fixture();
+    f.control.manual = { kind: 'stop' };
+    f.control.snapshot = { online: true, transport, readAt: NOW,
+      ...(transport === 'ocpp' ? { appControl: { stopped: true, controlKnown: true, readAt: NOW, schedule: { enabled: 'none' } } }
+        : transport === 'shelly-evse' ? { nativeScheduleActive: false, controlReady: true,
+          fields: { start_charging: { value: false, measuredAt: NOW - 300_000 } } }
+          : { manualStop: true, schedule: { enabled: 'none' } }) };
+    f.physical.charging = signal(false); f.physical.powerKw = signal(0);
+    f.peer.vehicleEvidence.stoppedTimes = [NOW - 61_000];
+    f.control.execution = null; f.peer.plan = null;
+    const before = structuredClone(f.control);
+    assert.equal(f.available(), true, 'Fresh native stop readback and a settled physical zero give independent evidence');
+    assert.deepEqual(f.control, before, 'The manual stop remains owned by its native instruction');
+    const scheduleOwner = transport === 'ocpp' ? f.control.snapshot.appControl : f.control.snapshot;
+    if (transport === 'shelly-evse') scheduleOwner.nativeScheduleActive = true;
+    else scheduleOwner.schedule = { enabled: 'delayed' };
+    assert.equal(f.available(), false, 'An unknown future native resume cannot be treated as quiet');
+    if (transport === 'shelly-evse') delete scheduleOwner.nativeScheduleActive;
+    else scheduleOwner.schedule = null;
+    assert.equal(f.available(), false, 'Missing native schedule evidence does not establish a quiet horizon');
+    if (transport === 'shelly-evse') {
+      scheduleOwner.nativeScheduleActive = false; scheduleOwner.controlReady = false;
+      assert.equal(f.available(), false, 'An unavailable Shelly controller cannot establish absence of native transitions');
+      scheduleOwner.controlReady = true;
+    } else scheduleOwner.schedule = { enabled: 'none' };
+    f.peer.vehicleEvidence.stoppedTimes = [NOW - 30_000];
+    assert.equal(f.available(), false, 'A recent manual stop can still overlap BMW evidence');
+    f.peer.vehicleEvidence.stoppedTimes = [NOW - 61_000];
+    f.control.snapshot.readAt = NOW - 61_000;
+    assert.equal(f.available(), false, 'Old stop status cannot establish current native permission');
+    if (transport === 'ocpp') {
+      f.control.snapshot.readAt = NOW;
+      f.control.snapshot.appControl.readAt = NOW - 61_000;
+      assert.equal(f.available(), false, 'Fresh local status cannot refresh an old native cloud stop');
+    }
+  }
+});
+
 test('unknown, offline, manual, pending or competing peer control cannot establish an isolated pause', async t => {
   const changes = {
     'unknown connection': f => { f.physical.connected.available = false; },

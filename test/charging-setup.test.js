@@ -121,6 +121,22 @@ test('setup text retains source clocks, privacy and readiness boundaries', () =>
   assert.doesNotMatch(markup, /ST-MQ|stmq\/|private-/);
 });
 
+test('Tesla setup distinguishes inferred charging connection from the original unplugged report', () => {
+  const snapshot = tesla();
+  Object.assign(snapshot, { charging: true, actualCurrentA: 6, actualPowerKw: 4 });
+  for (const [key, value] of [['charging_state', 'Charging'], ['charger_actual_current', 6], ['charger_power', 4]])
+    snapshot.fields[key] = { value, sequence: 20, receivedAt: NOW - 1000, retained: false };
+  for (const field of Object.values(snapshot.fields)) Object.assign(field, { measuredAt: null, timeBasis: 'receipt-only' });
+  const setup = teslaVehicleSetup(snapshot, { now: NOW });
+  assert.equal(setup.fields.pluggedIn.value, false);
+  assert.equal(setup.fields.pluggedIn.retained, true);
+  assert.equal(setup.connectionContext.source, 'live-charging');
+  const view = chargingSetupView({ charging: { vehicleFeeds: [{ id: 'tesla', setup }] } });
+  assert.match(view.vehicles.tesla.fields.pluggedIn, /^Unplugged.*Retained/);
+  assert.match(view.vehicles.tesla.connectionContext, /inferred from live vehicle charging.*reported plug field.*not confirmed.*physical charger evidence/);
+  assert.doesNotMatch(JSON.stringify(setup), /private-|geofence|association/);
+});
+
 test('setup initialization binds only guide entry and status polling never replaces open content', () => {
   const elements = new Map();
   const document = { getElementById(id) {

@@ -125,6 +125,7 @@ test('retained, future, stale and consumed Tesla current cannot identify a conne
 test('Tesla unplug and departure boundaries fence minimum-current evidence from an earlier vehicle connection', () => {
   for (const boundary of [{ field: 'plugged_in', value: false }, { field: 'geofence', value: 'Away' }]) {
     const { tesla, options } = fixture();
+    tesla.fields.plugged_in = { value: true, receivedAt: NOW - 1000, retained: false };
     tesla.fields.geofence = { value: 'Home', receivedAt: NOW, retained: false };
     tesla.boundaries = [{ ...boundary, association: tesla.association, at: NOW - 1500 }];
     assert.equal(matchTeslaMinimumCurrent(tesla, options), null,
@@ -177,4 +178,26 @@ test('Tesla current duplicates and unknown gaps preserve original evidence and r
     assert.equal(changed.receivedAt, now); assert.equal(changed.retained, false);
     capture.close();
   }
+});
+
+test('minimum-current matching admits independently corroborated charging while the raw plug remains false', () => {
+  let now = START - 1000;
+  const capture = createChargingTeslaCapture({ clock: () => now }); capture.setConnected(true);
+  const send = (field, value, packet = {}) => capture.receive(`${capture.topic.slice(0, -1)}${field}`, String(value), packet);
+  for (const [field, value] of Object.entries({ plugged_in: false, geofence: 'Home',
+    charging_state: 'Disconnected', charger_actual_current: 0, charger_power: 0 })) send(field, value, { retain: true });
+  now = START;
+  for (const [field, value] of Object.entries({ healthy: true, charging_state: 'Charging',
+    charger_actual_current: 16, charger_power: 11 })) send(field, value);
+  now = NOW - 2000; send('charger_actual_current', 6); send('charger_power', 4);
+  const { options } = fixture(), snapshot = capture.snapshot();
+  assert.equal(snapshot.pluggedIn, false);
+  assert.equal(snapshot.connectionContext.source, 'live-charging');
+  assert.ok(matchTeslaMinimumCurrent(snapshot, options));
+  assert.equal(matchTeslaMinimumCurrent(snapshot, { ...options,
+    minimumPhysical: physical(16, 11) }), null, 'Actual 16 A draw cannot pass a confirmed 6 A test');
+  now = NOW - 1000; send('charging_state', 'Disconnected');
+  assert.equal(matchTeslaMinimumCurrent(capture.snapshot(), options), null,
+    'A real vehicle disconnect immediately fences the inferred connection');
+  capture.close();
 });

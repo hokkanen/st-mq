@@ -42,6 +42,12 @@ Versions follow Semantic Versioning. `-dev.N` denotes a development prerelease.
 
 ### Fixed
 
+- Charger identification can use corroborated live Tesla charging evidence when
+  TeslaMate's plug topic still holds an older unplugged value, while preserving
+  that original report and rejecting newer disconnect evidence. BMW identification
+  can pause beside a settled provisional or natively stopped peer. The dashboard
+  explains blocked identification actions and no longer shows a completed current
+  test from another physical connection as the current test.
 - Home Assistant development deployments now use SSH for binary file transfer
   and Supervisor requests, removing terminal chunk delays and redraw failures.
   Existing SSH keys and trusted host entries are reused; deployment connection

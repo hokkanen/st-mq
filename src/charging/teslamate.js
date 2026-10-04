@@ -6,6 +6,58 @@ const NUMERIC = { battery_level: 100, charge_limit_soc: 100, charge_current_requ
 const FIELDS = new Set([...Object.keys(NUMERIC), 'healthy', 'scheduled_charging_start_time', 'plugged_in', 'geofence', 'charging_state', 'state']);
 const IDENTITY_FIELDS = new Set(['plugged_in', 'geofence', 'charging_state', 'state', 'charger_power', 'charger_actual_current']);
 const CHANGE_ONLY_FIELDS = new Set([...IDENTITY_FIELDS, 'battery_level', 'charge_limit_soc']);
+const validTime = value => Number.isSafeInteger(value) && value >= 0;
+
+/** Native negative connection evidence remains distinct from the plug topic. */
+export function teslamateDeparture(event) {
+  return event?.field === 'plugged_in' && event.value === false
+    || event?.field === 'charging_state' && event.value === 'Disconnected'
+    || event?.field === 'state' && event.value === 'driving';
+}
+
+/** TeslaMate can withhold an unknown plug value while continuing to publish
+ * charging state and measured draw. Corroborate that connection explicitly;
+ * never overwrite the raw plug field or create a synthetic plug/start edge. */
+export function teslamateConnectionContext(snapshot = {}, { now = Date.now() } = {}) {
+  if (!validTime(now) || snapshot.connected === false || snapshot.healthy !== true || snapshot.atHome !== true) return null;
+  const fields = snapshot.fields ?? {}, plug = fields.plugged_in;
+  const states = ['charging_state', 'state'].map(key => ({ field: key, ...fields[key] }));
+  const departures = [...states.filter(teslamateDeparture), ...(snapshot.boundaries ?? [])
+    .filter(edge => edge.association === snapshot.association && teslamateDeparture(edge))];
+  const departedSincePlug = departures.some(edge => {
+    const at = edge.at ?? edge.receivedAt;
+    return !validTime(at) || at > now || !validTime(plug?.receivedAt) || at >= plug.receivedAt;
+  });
+  if (snapshot.pluggedIn === true && !departedSincePlug) return { source: 'reported-plug', receivedAt: plug?.receivedAt ?? null,
+    retained: plug?.retained ?? null, timeBasis: 'receipt-only' };
+  if (snapshot.connected !== true || snapshot.charging !== true) return null;
+  const usable = field => validTime(field?.receivedAt) && field.receivedAt <= now
+    && field.measuredAt === null && field.timeBasis === 'receipt-only' && typeof field.retained === 'boolean';
+  if (plug && !usable(plug)) return null;
+  let after = plug?.receivedAt ?? -1;
+  for (const edge of snapshot.boundaries ?? []) {
+    if (edge.association !== snapshot.association || !(teslamateDeparture(edge)
+      || edge.field === 'geofence' && edge.value !== fields.geofence?.value)) continue;
+    if (!validTime(edge.at) || edge.at > now) return null;
+    after = Math.max(after, edge.at);
+  }
+  // A later negative state cannot be hidden by a delayed positive publication
+  // on the other state topic. A genuine new charging edge must follow it.
+  for (const state of states.filter(teslamateDeparture)) {
+    if (!usable(state)) return null;
+    after = Math.max(after, state.receivedAt);
+  }
+  const starts = states.filter(state => usable(state) && state.retained === false
+    && ['Charging', 'charging'].includes(state.value) && state.receivedAt > after);
+  const draw = ['charger_actual_current', 'charger_power'].map(key => fields[key]);
+  if (!starts.length || draw.some(field => !usable(field) || field.retained !== false
+    || !Number.isFinite(field.value) || field.value <= .5 || field.receivedAt <= after)) return null;
+  const startAt = Math.max(...starts.map(field => field.receivedAt));
+  return { source: 'live-charging', receivedAt: Math.max(startAt, ...draw.map(field => field.receivedAt)),
+    retained: false, timeBasis: 'receipt-only', chargingAt: startAt,
+    currentAt: fields.charger_actual_current.receivedAt, powerAt: fields.charger_power.receivedAt,
+    reportedPluggedIn: snapshot.pluggedIn ?? null, reportedPlugAt: plug?.receivedAt ?? null };
+}
 export function decodeChargingTeslaField(field, payload) {
   if (!FIELDS.has(field)) return undefined;
   const text = String(payload ?? '').trim();
@@ -45,13 +97,15 @@ export function createChargingTeslaCapture({ settings = {}, clock = Date.now, in
     const health = fields.healthy;
     const healthy = connected && liveFields.has('healthy') && health?.value === true && !health.retained
       && now >= health.receivedAt && now - health.receivedAt <= settings.maxAgeMs;
-    return { connected, healthy, maxAgeMs: settings.maxAgeMs, association: signature, reception: reception(),
+    const result = { connected, healthy, maxAgeMs: settings.maxAgeMs, association: signature, reception: reception(),
       atHome: connected && typeof value('geofence') === 'string' ? value('geofence') === settings.homeGeofence : undefined,
       pluggedIn: value('plugged_in'), charging: newest ? ['Charging', 'charging'].includes(newest.value) : undefined,
       batteryLevel: value('battery_level'), chargeLimitSoc: value('charge_limit_soc'), requestedCurrentA: value('charge_current_request'),
       maxCurrentA: value('charge_current_request_max'), actualCurrentA: value('charger_actual_current'),
       scheduledStartAt: value('scheduled_charging_start_time'), phases: value('charger_phases'), voltageV: value('charger_voltage'),
       actualPowerKw: value('charger_power'), fields: structuredClone(fields), boundaries: structuredClone(boundaries) };
+    result.connectionContext = teslamateConnectionContext(result, { now });
+    return result;
   };
   return { topic: `${root}#`, snapshot, reception,
     setConnected(value, reason) { if (!value) liveFields.clear(); connected = value;
@@ -82,8 +136,8 @@ export function createChargingTeslaCapture({ settings = {}, clock = Date.now, in
             timeBasis: 'receipt-only', sequence: ++sequence,
             ...(identity && value === null && lastKnown ? { lastKnown: structuredClone(lastKnown) } : {}) };
         }
-        if (!packet.retain && (field === 'plugged_in' && value !== null && value !== lastKnown?.value
-          || field === 'geofence' && value !== lastKnown?.value)) {
+        if (!packet.retain && value !== lastKnown?.value && (field === 'plugged_in' && value !== null
+          || field === 'geofence' || teslamateDeparture({ field, value }))) {
           boundary = { field, value, at: now, sequence, association: signature };
           boundaries = [...boundaries, boundary].slice(-64);
         }

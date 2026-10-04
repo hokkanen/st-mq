@@ -44,10 +44,11 @@ export function chargingSetupMarkup() {
       <summary><span>Tesla · TeslaMate</span><small id="charging-setup-tesla-state" class="equipment-device-status">Waiting for feed</small></summary>
       <p id="charging-setup-tesla-health">Waiting for vehicle feed status.</p>
       <p id="charging-setup-tesla-association">No vehicle association confirmed.</p>
+      <p id="charging-setup-tesla-connection-context" hidden></p>
       <p>Connect TeslaMate to the MQTT broker and match its car ID, optional namespace and home geofence in private configuration. The logger’s live health is separate from the vehicle’s sleep state. A healthy sleeping vehicle need not be woken just to open this guide.</p>
       <details class="equipment-fold"><summary>TeslaMate fields to check</summary>
         <p><code>healthy</code> establishes logger health. <code>battery_level</code> and <code>charge_limit_soc</code> provide battery inputs. Identification uses <code>geofence</code>, <code>plugged_in</code>, <code>charging_state</code> / <code>state</code> and <code>charger_power</code>, together with fresh physical charger evidence.</p>
-        <p><code>charge_current_request</code> and <code>charge_current_request_max</code> are distinct limits, not measured current. <code>scheduled_charging_start_time</code> provides a next start. Configured usable battery capacity remains an assumption.</p>
+        <p><code>charger_actual_current</code> and <code>charger_power</code> can corroborate a live charging connection when the plug field has not updated. The original plug reading remains visible. <code>charge_current_request</code> and <code>charge_current_request_max</code> are limits, not measured current. <code>scheduled_charging_start_time</code> provides a next start. Configured usable battery capacity remains an assumption.</p>
         <p>Field times are MQTT receipt times; unchanged or retained values do not become new identification events. <a href="https://docs.teslamate.org/docs/integrations/mqtt/" target="_blank" rel="noopener noreferrer">TeslaMate MQTT reference ↗</a></p>
       </details>
       ${readings('tesla')}
@@ -116,6 +117,8 @@ export function chargingSetupView(status = {}) {
       const homeNote = lastHome?.source === 'last-known' && time(lastHome.measuredAt)
         ? ` Current location is unknown. Last confirmed home context (${time(lastHome.measuredAt)}) remains usable without a time limit, including across reconnects, until a valid away report replaces it. Matching charging evidence is still required for each connection.` : '';
       return [vehicle, { ...feedState(feed, vehicle),
+        connectionContext: vehicle === 'tesla' && feed?.setup?.connectionContext?.source === 'live-charging'
+          ? 'Connection inferred from live vehicle charging, measured current and power. The reported plug field below has not confirmed it; identification still requires matching physical charger evidence.' : '',
         association: association ? `${labels[vehicle]} is identified at ${association.id === 'charger1' ? 'Charger 1' : 'Charger 2'} for this connection.${homeNote}`
           : `No current physical charger association is confirmed.${homeNote}`,
         fields: Object.fromEntries(fieldRows(vehicle).map(([key]) => [key, readingText(feed?.setup?.fields?.[key], key)])) }];
@@ -141,6 +144,8 @@ export function initializeChargingSetup(document, { onStartTest } = {}) {
       if (state) { state.textContent = value.label; state.dataset.state = value.state; }
       set(`charging-setup-${vehicle}-health`, value.detail);
       set(`charging-setup-${vehicle}-association`, value.association);
+      const context = document.getElementById(`charging-setup-${vehicle}-connection-context`);
+      if (context) { context.textContent = value.connectionContext; context.hidden = !value.connectionContext; }
       for (const [key, reading] of Object.entries(value.fields)) set(`charging-setup-${vehicle}-${key}`, reading);
     }
     return view;

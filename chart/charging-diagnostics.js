@@ -79,6 +79,8 @@ const IDENTIFICATION_CAUSES = {
   'bmw-not-plugged': 'BMW plug evidence unavailable', 'economic-plan-pending': 'Waiting for the current charging plan',
   'evidence-capacity': 'Identification history reached its capacity; further automatic tests are stopped',
   'current-control-unavailable': 'Temporary identification current control is unavailable',
+  'peer-transition-pending': 'Waiting for the other charger to settle before a brief identification pause',
+  'vehicle-charging-evidence-pending': 'Charging continues while matching vehicle readings are unavailable',
   'current-evidence-pending': 'Waiting for fresh measured current and Tesla readings',
   'current-ambiguous': 'Charger currents do not yet distinguish the Tesla connection',
   'awaiting-evidence': 'Waiting for matching vehicle evidence',

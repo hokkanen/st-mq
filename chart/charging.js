@@ -101,6 +101,8 @@ function identificationPresentation(charger, { now = Date.now(), timezone = 'Eur
     'bmw-not-plugged': ['Waiting for BMW plug evidence', 'BMW has not reported a usable plugged-in state for this connection.'],
     'charger-unavailable': ['Waiting for charger', 'Waiting for a fresh charger connection before continuing identification.'],
     'another-identification-active': ['Waiting for other charger', 'Waiting for the other charger’s identification test to finish.'],
+    'peer-transition-pending': ['Waiting for a quiet charging interval', 'The other charger is changing state or has an upcoming instruction. Identification will wait before requesting a brief pause; the current charging choice still applies.'],
+    'vehicle-charging-evidence-pending': ['Waiting for matching vehicle readings', 'Charging is following the current charging choice. A current comparison or brief pause cannot start until usable vehicle charging evidence arrives.'],
     'economic-plan-pending': ['Waiting for charging plan', 'Waiting for the current charging plan before deciding whether a brief charging test is needed.'],
     'evidence-capacity': ['Identification history full', 'This connection has reached the limit for stored identification events. Additional automatic tests are stopped; normal charging follows the current choice.'],
     'current-control-unavailable': ['Waiting for current control', 'The temporary identification current limit is unavailable. Fresh current-control readiness is required; the optional household current limiter has separate settings. Live vehicle matching continues.'],
@@ -109,7 +111,8 @@ function identificationPresentation(charger, { now = Date.now(), timezone = 'Eur
   }[identification.reason] ?? ['Waiting for charging', 'Waiting for the vehicle to start charging. Its own timer or charging limit stays in effect.'];
   const blocked = ['manual-stop', 'unsupported', 'telemetry-unavailable', 'vehicle-feed-stale', 'bmw-home-unknown',
     'bmw-away', 'bmw-not-plugged', 'charger-unavailable', 'another-identification-active',
-    'economic-plan-pending', 'evidence-capacity', 'current-control-unavailable', 'current-evidence-pending', 'current-ambiguous'].includes(identification.reason);
+    'economic-plan-pending', 'evidence-capacity', 'current-control-unavailable', 'current-evidence-pending', 'current-ambiguous',
+    'peer-transition-pending', 'vehicle-charging-evidence-pending'].includes(identification.reason);
   if (identification.phase === 'observing') return {
     label: 'Identification pending', state: 'Pending', activity: 'Waiting for matching reports',
     detail: `${({
