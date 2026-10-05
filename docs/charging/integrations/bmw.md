@@ -11,7 +11,7 @@ windows. BMW's [CarData catalogue](https://www.bmwgroup.com/content/dam/grpw/web
 documents profile/window data, but availability depends on the vehicle and the
 applicable catalogue. A selected-window flag alone gives no executable start/end
 interval. ST-MQ must not infer unrestricted BMW charging from this feed or treat
-predicted completion as a schedule. See [vehicle schedule limits](charging.md#schedules-inside-the-vehicle).
+predicted completion as a schedule. See [vehicle schedule limits](../planning.md#schedules-inside-the-vehicle).
 
 Under **Data & settings → MQTT**, **BMW** has the subtitle **Vehicle · BMW CarData**.
 The configured identity remains visible before the first message. Broker and
@@ -64,7 +64,7 @@ specific native timer requested by the delayed-start guide.
 
 ## Battery and identity facts
 
-The builder is [`scripts/lib/bmw-cardata-automation.js`](../scripts/lib/bmw-cardata-automation.js).
+The builder is [`scripts/lib/bmw-cardata-automation.js`](../../../scripts/lib/bmw-cardata-automation.js).
 Supply entities belonging to the same vehicle:
 
 | Builder argument | CarData descriptor or Home Assistant entity |
@@ -139,140 +139,17 @@ positive vehicle context and matching charging events remain required.
 
 ## Association with a charging point
 
-Each charging point stays generic and uses editable manual battery values until
-BMW or Tesla is positively associated with its current plug-in session. Receiving BMW battery
-data does not establish that association. The Tesla diagnostic's negative result
-means only that Tesla charges elsewhere.
+Battery readings do not identify a charger. BMW needs positive home/plug context
+and source-timestamped charging evidence matched to the physical connection.
+The [identification contract](../identification.md#bmw-physical-correlation) owns
+the exact start/stop correlation, causal pause proof, episode consumption and
+joint Tesla/BMW rules. A negative Tesla result never identifies BMW.
 
-The usual BMW match combines timestamped home context with a live plug event and a
-charging start followed by a stop near the current physical charger connection.
-Both transitions must correspond to charging and stopping observed at that
-charger. Source events and live MQTT delivery may precede the first connected
-charger observation by up to 90 seconds, but must follow the last source-reported disconnect. Repeated polls
-of that disconnected state preserve its source time; a missing source clock uses
-the receipt time conservatively. This permits ordinary polling delay without
-reusing evidence from an earlier connection. A BMW starting
-to charge elsewhere at home is insufficient on its own. Without the
-matching stop, that charging point continues to use manual battery values. Matching live
-start evidence with valid home and plug context can show **BMW identification pending**
-while awaiting stop confirmation, even if the plug report is unchanged.
-Identification has its own durable connection scope: it remains pending while a
-vehicle timer or limit prevents charging, then obtains a usable live charging
-baseline and requests a short pause as soon as possible. The label does not
-silently expire after ten minutes. Exhausting an extra charging test leaves
-**Identification pending** while awaiting timestamped evidence; conflicting evidence cannot identify
-the vehicle. Easee cloud, local OCPP and supported Shelly EVSE control use the
-same lifecycle, including with automatic economic charging OFF or Charge now selected. Manual Stop and native
-restrictions retain priority.
-
-The connection lifecycle and extra-energy allowance are shared with Tesla;
-only the evidence needed for a positive match differs. TeslaMate can corroborate
-current local draw with its healthy charging and power reports. BMW supplies
-source-timestamped start/stop events, so matching can finish after those events
-arrive later. A conclusive Tesla match needs no BMW-style pause, and waiting for
-either vehicle never imposes a short timeout on otherwise authorized charging.
-TeslaMate's receipt-only timestamps cannot re-date a late report into an earlier
-physical event; its original receipt and physical start must already correlate.
-BMW events retain their independent source timestamps even when delivery is late.
-Held home and target values supply context without requiring fresh GPS simply
-because the vehicle remains parked at home.
-
-Ordinary authorized charging has no short identification timeout or energy
-budget. During an economic delay, the extra charging test uses the charger's
-normal current settings and stops when a usable BMW baseline arrives or the 0.15 kWh
-probe allowance is consumed. A safety duration and loss of metering also stop
-probing. The persisted duration uses the reported hardware current ceiling and
-at least 253 V on three phases, with a ten-second stopping reserve; it is usually
-much shorter than the independent five-minute maximum. These controller-managed
-guards require working communication; an
-outage can extend extra charging. These limits end extra charging, not the evidence lifetime. A match can
-finish the test without a pause. A brief correlation pause during ordinary
-charging has a deadline 90 seconds later, rounded up to the next second,
-and a physically confirmed stop returns to the current charging choice earlier,
-without waiting for BMW delivery. Easee cloud and OCPP have
-native expiry. After an extra probe, the OCPP zero-current restriction instead
-continues through the scheduled economic delay. Shelly's application-managed start-permission pause can last
-longer if the application or MQTT is unavailable; its saved restoration
-obligation is resolved after fresh readback of the same connection. Manual Stop,
-native schedules and electrical limits retain priority during that recovery.
-Normal charging control then takes over. Telemetry and actuator response can
-delay physical changes beyond a controller decision. An already connected charger at startup
-with no saved connection can use fresh ongoing vehicle charging as its baseline;
-this does not manufacture a missing charging-start event. Its subsequent stop
-must match the current witnessed physical pause within 30 seconds. Retained
-charging reports cannot provide that baseline or stop proof.
-
-BMW can also keep reporting `CONNECTED` without a new vehicle plug transition.
-The latest valid home and plugged-in context with a healthy vehicle feed permits
-a match from two independently reported charging transitions. BMW start and stop
-must match the corresponding physical charger episode within 30 seconds, and
-both BMW and charger starts must be at or after the actual known connection
-boundary. This path has no preconnection tolerance and needs no new plug report
-or artificial pause. A natural stop or a probe's programmed zero-current deadline
-can supply the physical stop; missing original charging edges cannot be invented.
-
-When startup instead uses a live ongoing BMW baseline without an observed start,
-the controlled-pause path still requires its guarded causal witness. The BMW
-baseline and physical charging witness must precede the pause boundary; both
-stops must follow it. The boundary is a durable request
-witness saved after a guarded charging observation immediately before requesting
-the pause. Missing request evidence cannot be replaced by a later
-acknowledgement. The owned restriction must be confirmed for the same current
-connection and have been valid when the physical stop was confirmed. Saved proof
-remains applicable after its expiry while that same connection continues.
-
-The charger boundary supplies one common pause proof to the BMW matcher. Cloud
-control verifies its exact delayed schedule and scheduling-stop reason (54), with
-the reason and physical stop clocks agreeing. OCPP verifies its current transaction,
-owned zero-current profile, `SuspendedEVSE` status and fresh zero power. Shelly
-verifies the saved identification stop against live start-permission readback,
-its commissioned noncharging work state and fresh zero physical power for the
-same connection. The guarded charging witness is distinct from the general
-install-intent time. A status change
-observed while queued prevents dispatch from reusing the earlier charging witness.
-Identity timing, pending
-status, event consumption and conflict handling are shared between these backends.
-Manual priority or conflicting Tesla evidence prevents this match. The active
-identification pause uses this same charger proof; its additional ongoing-charge
-baseline is separately bound to the saved attempt and vehicle feed. Charging
-evidence cannot be reused for another connection. Matching delayed or reordered
-BMW reports remain usable until unplugging, even after the temporary pause has
-expired or normal charging has resumed. Historical events retain source and
-receipt times separately; accepting an older event never rewinds current state.
-
-No BMW charging-power field or plug-event identifier is required. Cached/retained
-true values, or unchanged true values republished with newer timestamps, cannot
-create new plug events. Conflicting vehicle evidence keeps manual inputs active.
-
-A fresh live unplug event from an already identified BMW also ends that charger
-connection when the unplug/replug gap falls between Easee polls. This boundary is
-saved separately from the raw Easee readings and survives restart. It resets the
-old planning episode and clears only the exact old schedule still owned by ST-MQ;
-manual restrictions retain priority. A fresh Easee connection event or subsequent
-live BMW plug event allows a new identification attempt, and the new connection still
-needs matching charging-start and stop evidence before vehicle readings apply.
-
-A confirmed match is scoped to the charger connection, survives scheduled pauses
-and restart, and clears on unplug. Startup preserves the saved match, session edits
-and target choice while the charger adapter initializes. Until its session and
-readback are available, the vehicle remains unidentified in the live view and
-session edits are unavailable. The same connection restores the match without
-reusing a plug event; a different connection or confirmed departure clears it.
-Used plug and charging evidence, including an active test's ongoing-charge
-baseline, is consumed on a successful match, so changing evidence paths cannot
-identify the next car using an earlier episode. Available
-automatic battery fields take precedence individually without
-overwriting saved generic defaults. Missing fields remain editable. Tesla on
-Easee appears in Charger 1, while Charger 2 indicates that association instead of
-displaying a duplicate session.
-
-There is one automatic active attempt per connection. Waiting for charging does
-not consume that attempt's charge/time budget, and restarting preserves its
-original state and deadlines. **Identify**, at the end of **Charging controls**
-below **Session settings**, permits an explicit retry or a new check of an
-already identified connection when no attempt is ongoing. An inconclusive test
-does not automatically repeat. See [charging](charging.md#vehicle-assignment)
-for native restrictions, backend availability and startup/recovery behavior.
+An attempt waiting for usable evidence is pending. An exhausted unresolved active
+attempt is **Identification inconclusive**; passive matching can still finish for
+that same connection when delayed valid evidence arrives. Automatic retries,
+new budgets after restart and invented source events are not permitted.
+See [attempt completion and explicit retry](../identification.md#attempt-completion-and-explicit-retry).
 
 ## Conflicting charge targets
 
@@ -312,7 +189,7 @@ Build the automation with privately discovered entity IDs and the verified home
 reference. Validate the generated template through Home Assistant's template API,
 save the automation, read it back, and verify live and retained MQTT publication.
 Install the generated object as one Core automation using **Edit in YAML**;
-see [installing the automations](homeassistant-mqtt.md#installing-the-automations).
+see [installing the automations](../../homeassistant-mqtt.md#installing-the-automations).
 The MQTT integration must use the same broker as ST-MQ and its standard
 `homeassistant/status` birth/will topic. The ST-MQ app does not install this
 publisher automatically.

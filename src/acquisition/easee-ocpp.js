@@ -2,6 +2,7 @@ import { createServer } from 'node:http';
 import { timingSafeEqual, randomInt, randomUUID, createHash } from 'node:crypto';
 import { BlockList, isIP } from 'node:net';
 import { WebSocketServer } from 'ws';
+import { chargingDeviceInfo } from '../charging/device-info.js';
 
 const MAX_AGE_MS = 60_000;
 const MAX_FUTURE_MS = 1000;
@@ -105,6 +106,7 @@ export function createEaseeOcpp({ config: input, chargerId, clock = Date.now, ca
   let ownsConnection = false, telemetryConfigured = false;
   let connectorStatus = null, connectorStatusAt = null, connectorReceivedAt = null, connectorStatusExplicit = false;
   let preparingAttempted = false, remoteStartStatus = 'idle';
+  let device = null;
   let observedTransaction = null, connectionId = null, authenticatedConnectionId = null, transactionEvidence = null;
   let recoveryCandidate = null, recoveryConflict = false, evidenceBoundaryAt = null;
   const instanceId = randomUUID(); let connectionSequence = 0;
@@ -506,6 +508,8 @@ export function createEaseeOcpp({ config: input, chargerId, clock = Date.now, ca
       }
       values.clear(); futureReadings.length = 0; rejectRequests('ocpp-reconfigured'); booted = true; onDisconnect();
       connectionId = `${instanceId}:${++connectionSequence}`;
+      device = chargingDeviceInfo({ model: payload.chargePointModel, firmware: payload.firmwareVersion,
+        source: 'ocpp-boot', receivedAt: lastMessageAt });
       connectorStatus = null; connectorStatusAt = null; connectorReceivedAt = null; connectorStatusExplicit = false; observedTransaction = null;
       recoveryCandidate = null; recoveryConflict = false; evidenceBoundaryAt = clock();
       preparingAttempted = false; remoteStartStatus = 'idle'; statusTransition++;
@@ -727,6 +731,9 @@ export function createEaseeOcpp({ config: input, chargerId, clock = Date.now, ca
         }, CALL_TIMEOUT_MS); call.timeout.unref();
         callQueue.push(call); sendNextCall();
       });
+    },
+    deviceInfo() {
+      return device ? { ...device, available: booted && transportFresh() } : null;
     },
     controlClockDelayMs() {
       if (!refreshAuthority() || !transportFresh() || connectorStatusAt === null) return 0;

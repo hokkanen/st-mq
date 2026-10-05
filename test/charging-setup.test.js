@@ -112,7 +112,7 @@ test('setup text retains source clocks, privacy and readiness boundaries', () =>
   const view = chargingSetupView(status);
   assert.match(view.vehicles.bmw.fields.soc, /^0% · Measured/);
   assert.match(view.vehicles.bmw.fields.pluggedIn, /^Unplugged · Measured/);
-  assert.equal(view.chargers.charger2, 'Charger profile unavailable · Review the charger card');
+  assert.equal(view.chargers.charger2.readiness, 'Charger profile unsupported');
   const markup = chargingSetupMarkup();
   for (const [, descriptor] of BMW_SETUP_DESCRIPTORS) assert.ok(markup.includes(descriptor));
   assert.match(markup, /does not send vehicle charging windows/);
@@ -152,4 +152,55 @@ test('setup initialization binds only guide entry and status polling never repla
   elements.get('charging-setup-tesla-test').events.click();
   assert.deepEqual(calls, ['bmw', 'tesla']);
   assert.equal(elements.get('charging-setup-bmw-state').textContent, 'Not configured');
+});
+
+
+test('setup separates reported firmware from requirements and preserves the device receipt through polling and loss', () => {
+  const charger = { id: 'charger1', provider: 'easee', capabilities: { scheduling: true },
+    control: { snapshot: { transport: 'ocpp' } }, device: { model: 'Fixture charger', firmware: '999-fixture',
+      source: 'ocpp-boot', receivedAt: NOW - 3_600_000, available: true } };
+  const state = { now: NOW, charging: { chargers: [charger] } };
+  const first = chargingSetupView(state).chargers.charger1;
+  assert.equal(first.firmware, 'Reported firmware 999-fixture');
+  assert.match(first.firmwareSource, /^OCPP boot report · Received /);
+  assert.equal(first.connection, 'Local OCPP · native Equalizer');
+  state.now += 3_600_000;
+  assert.equal(chargingSetupView(state).chargers.charger1.firmwareSource, first.firmwareSource, 'Polling retains the original report clock');
+  charger.device.available = false;
+  const lost = chargingSetupView(state).chargers.charger1;
+  assert.equal(lost.firmware, 'Last reported firmware 999-fixture');
+  assert.ok(lost.firmwareSource.startsWith(first.firmwareSource));
+  assert.match(lost.firmwareSource, /Current device report unavailable$/);
+  charger.device.available = true;
+  state.readOnly = true;
+  const recorded = chargingSetupView(state).chargers.charger1;
+  assert.equal(recorded.firmware, lost.firmware);
+  assert.equal(recorded.firmwareSource, lost.firmwareSource);
+  assert.equal(recorded.readiness, 'Recorded status · current readiness unknown');
+  charger.device = null;
+  assert.equal(chargingSetupView(state).chargers.charger1.firmware, 'Reported firmware unavailable');
+  const markup = chargingSetupMarkup();
+  assert.match(markup, /Local OCPP requires firmware 344 or later/);
+  assert.doesNotMatch(markup, /Tested firmware|Reported firmware 344/);
+  assert.match(markup, /shelly\.md#hardware-verification-still-required[^>]+>Limited checks on firmware 1\.7\.1/);
+  assert.doesNotMatch(markup, /Reported firmware 1\.7\.1/);
+  for (const path of ['charging.md', 'charging/user-guide.md', 'charging/integrations/easee.md', 'charging/integrations/shelly.md', 'charging/integrations/bmw.md', 'charging/integrations/teslamate.md', 'charging/guided-assessments.md', 'charging/testing.md'])
+    assert.ok(markup.includes(`/docs/${path}`), `Guide linked: ${path}`);
+});
+
+test('setup keeps commissioning and identification capabilities separate from current limiter permission', () => {
+  const charger = { id: 'charger2', provider: 'shelly-evse', capabilities: { scheduling: true, currentControl: false },
+    configuration: { limiterEnabled: false }, telemetry: { identificationCurrentReady: true,
+      commissioning: { profileSupported: true, controlReady: true, currentControlReady: true } },
+    device: { firmware: '2.0.0-fixture', source: 'shelly-device-info', receivedAt: NOW, available: true } };
+  const view = chargingSetupView({ charging: { chargers: [charger] } }).chargers.charger2;
+  assert.equal(view.readiness, 'Start/stop available');
+  assert.equal(view.current, 'Disabled in configuration');
+  assert.equal(view.identification, 'Temporary minimum available');
+  assert.equal(view.fallback, 'Autonomous fallback unverified');
+  assert.equal(view.firmware, 'Reported firmware 2.0.0-fixture');
+  assert.match(view.firmwareSource, /^Shelly device discovery · Received/);
+  assert.equal(chargingSetupView({}).chargers.charger2.connection, 'Shelly XT1 · MQTT RPC');
+  charger.telemetry.commissioning.profileSupported = false;
+  assert.equal(chargingSetupView({ charging: { chargers: [charger] } }).chargers.charger2.identification, 'Readiness unavailable');
 });

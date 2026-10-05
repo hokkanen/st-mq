@@ -243,7 +243,7 @@ try {
       ['caravan-recording', '.caravan-recording-details'],
       ['pairing', '#pairing-panel'],
       ['charging', '#charger1-device'],
-      ['charger-setup', '[data-provider="electricity"] .provider-local-connection'],
+      ['charger-setup', '#charging-setup-ocpp .provider-local-connection'],
     ];
     for (const width of [320, 768]) for (const theme of ['dark', 'light']) {
       await send('Emulation.setDeviceMetricsOverride', { width, height: 900, deviceScaleFactor: 1, mobile: false });
@@ -268,8 +268,12 @@ try {
       assert(states.length > 0);
       assert.equal(states.every(Boolean), role === 'family', `${role}: ${selector}`);
     }
-    for (const selector of ['#pairing-check-recovery', '#pairing-handover', '#pairing-reset', '.provider-local-adopt'])
-      assert.equal(await evaluate(`document.querySelector(${JSON.stringify(selector)}).disabled`), role === 'family', `${role}: ${selector}`);
+    for (const selector of ['#pairing-history-recovery', '#pairing-handover', '#pairing-reset', '.provider-local-adopt']) {
+      const control = await evaluate(`(() => {const node = document.querySelector(${JSON.stringify(selector)});
+        return {exists: Boolean(node), disabled: node?.disabled};})()`);
+      assert.equal(control.exists, true, `${role}: ${selector} is mounted`);
+      assert.equal(control.disabled, role === 'family', `${role}: ${selector}`);
+    }
     if (role === 'family') {
       await evaluate("document.getElementById('pairing-reset').dispatchEvent(new MouseEvent('click', { bubbles: true })); true");
       assert.equal(await evaluate("document.getElementById('pairing-reset-dialog').open"), false, 'Family synthetic clicks cannot open reset');

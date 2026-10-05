@@ -260,7 +260,7 @@ permission to act. See [the configuration guide](docs/configuration.md).
   distinct from an unknown charging-current restriction. This is an optimistic
   planning assumption, never evidence of current draw, command readiness,
   accepted scheduling or guaranteed completion. See
-  [the charging planning contract](docs/charging.md#maximum-available-current-assumption).
+  [the charging planning contract](docs/charging/planning.md#maximum-available-current-assumption).
 - Both charger cards use one shared component with capability-driven differences.
   With Automatic enabled, each new confirmed physical connection takes automatic
   control, superseding earlier charging instructions and native charger schedules,
@@ -279,7 +279,7 @@ permission to act. See [the configuration guide](docs/configuration.md).
   superseded instructions after unplugging or restart, infer who caused an observed
   stop, change unrelated device schedules or bypass electrical protection, charger
   authorization, faults or vehicle restrictions.
-- The owner-approved [Shelly system permission exception](docs/charging.md#shelly-system-permission-changes)
+- The owner-approved [Shelly system permission exception](docs/charging/execution-and-recovery.md#shelly-system-permission-changes)
   classifies fresh, supported `sys` permission changes as device transitions at
   any time, including repeated cycles, independently of plug time, charging
   current or identification. This explicit amendment was approved on 2026-10-04;
@@ -387,7 +387,7 @@ permission to act. See [the configuration guide](docs/configuration.md).
   physical connections, identification attempts and feed associations; it is
   historical identity evidence, not fresh current or control permission. This
   narrow lasting amendment was explicitly approved by the owner on 2026-10-04. See
-  [vehicle assignment](docs/charging.md#vehicle-assignment).
+  [vehicle assignment](docs/charging/identification.md#vehicle-assignment).
 - Keep original frozen forecasts and outcomes separate from later corrected model
   assessments. Estimated or timing-only benefits are not measured causal savings;
   overlapping energy totals and components must not be double-counted.
@@ -418,7 +418,7 @@ Details: [recording and provenance](docs/recording.md),
   restart, failure, model repair and correction. Reconcile with fresh actual state
   and respect independent manual device changes. Model resets do not erase physical
   obligations; a command acknowledgement alone does not prove restoration.
-- The [Shelly system permission exception](docs/charging.md#shelly-system-permission-changes)
+- The [Shelly system permission exception](docs/charging/execution-and-recovery.md#shelly-system-permission-changes)
   preserves a device permission hold as a restriction across restart. Fresh native
   evidence must resolve it; restored state grants no new Start or observation.
   A device hold is not an owned identification pause or evidence of physical

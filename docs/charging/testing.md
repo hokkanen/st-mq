@@ -1,10 +1,10 @@
-# Optional charger development tests
+# Charging verification and physical development
 
 Use these tools when developing a charger feature whose result depends on real
 device behavior. They preserve a repeatable way to observe selected physical
 cases; they are not an unattended acceptance system or a requirement for every
-commit. Start with the [charging contract](charging.md) and
-[repository foundations](../AGENTS.md), particularly evidence, control authority
+commit. Start with the [charging overview](../charging.md) and
+[repository foundations](../../AGENTS.md), particularly evidence, control authority
 and private data ownership.
 
 ## Choose the smallest useful scope
@@ -12,8 +12,8 @@ and private data ownership.
 | Check | What it establishes | When to run it |
 | --- | --- | --- |
 | `npm run check` and focused charging tests | Software behavior using synthetic devices, feeds and clocks, including the observer/auditor's own regressions. | Normal development and before committing relevant changes. |
-| [Provider checks](live-testing.md), `npm run test:live` | Bounded read-only access to configured providers. | Diagnosing an account or acquisition problem. They do not operate chargers. |
-| Dashboard [Guided tests](charging.md#setup-guided-physical-tests-and-session-reports) | Assessment of independently observed charging against explicitly recorded assumptions. | Checking a charging session. Guide inputs never control production behavior. |
+| [Provider checks](../live-testing.md), `npm run test:live` | Bounded read-only access to configured providers. | Diagnosing an account or acquisition problem. They do not operate chargers. |
+| Dashboard [Guided tests](guided-assessments.md) | Assessment of independently observed charging against explicitly recorded assumptions. | Checking a charging session. Guide inputs never control production behavior. |
 | This runbook and `scripts/charging-physical/` | Recorded evidence around deliberately selected, manually operated hardware cases. | Substantial charger features or a specific issue that needs physical reproduction. |
 
 Pick cases affected by the change, record the expected result before operating
@@ -42,7 +42,7 @@ no paid model calls; repeated cloud queries are not needed for status recording.
    In a pair, record the runtime master and actual MQTT/OCPP connections. An IP
    address answering alone does not establish transfer of those connections.
    A host promotion or broker change is a separate explicitly authorized
-   operation under the [pairing contract](pairing.md), never observer setup.
+   operation under the [pairing contract](../pairing.md), never observer setup.
 3. Agree the permitted actions and final charging state. Record Automatic,
    Charge now, shared priority, native instructions and any temporary changes
    before the case. Use supported dashboard/native controls for the selected
@@ -66,12 +66,21 @@ or pull requests. Do not paste raw status or MQTT payloads into terminal output.
 
 ## Observe and assess
 
-The tools live in [`scripts/charging-physical/`](../scripts/charging-physical/).
-Use their `--help` output for supported options:
+The tools live in [`scripts/charging-physical/`](../../scripts/charging-physical/).
+
+| Tool | Role |
+| --- | --- |
+| [`observe.js`](../../scripts/charging-physical/observe.js) | Bounded read-only application status, native MQTT and vehicle recording |
+| [`audit.js`](../../scripts/charging-physical/audit.js) | Offline assessment of supported limiter cases using explicit expectations |
+| [`independent.js`](../../scripts/charging-physical/independent.js) | Optional independent native Easee budget/stream evidence for disputed feed or allocation cases |
+
+The tool regression tests use synthetic recordings and do not contact hardware.
+Use each tool's `--help` output for supported options:
 
 ```sh
 node scripts/charging-physical/observe.js --help
 node scripts/charging-physical/audit.js --help
+node scripts/charging-physical/independent.js --help
 ```
 
 Prepare an external private connection file, for example this read-only status
@@ -223,7 +232,7 @@ native Shelly measurements/readback still have their own freshness requirements.
 The allowance comparison's native Equalizer budget is distinct from configured
 electrical limits. Do not assume Shelly phase names correspond to Easee phase
 names; the limiter uses the conservative common Shelly current described in
-the [allocation contract](charging.md#charger-2-current-allocation).
+the [allocation contract](current-allocation.md#charger-2-current-allocation).
 
 ## Select physical cases
 
@@ -249,7 +258,7 @@ to the feature and available conditions.
 | Optional limiter history/UI check | Compare bounded recorded transitions with chart/API modes, allowance and separate native readback. Stable observations extend coverage without periodic state rows; gaps stay Unknown. History agreement establishes recording semantics, not additional physical current proof. |
 
 Start/stop patterns are not sufficient for joint identification when the vehicle
-evidence remains ambiguous. See [vehicle assignment](charging.md#vehicle-assignment)
+evidence remains ambiguous. See [vehicle assignment](identification.md#vehicle-assignment)
 for the exact positive-evidence rule. A rare SYS cycle, a willing car at 16 A,
 and a particular property-load combination are separate opportunities, not
 mandatory conditions for finishing unrelated development work.

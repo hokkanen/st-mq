@@ -23,7 +23,7 @@ publisher is required or enabled. Positive power means on and zero means off.
 Every command needs a subsequent power report to verify its result; timed
 circulation and its durable OFF obligation remain independent. See [DHWR setup](dhwr-mqtt.md).
 
-[BMW CarData](bmw-cardata.md) publishes retained QoS 1 JSON on the established
+[BMW CarData](charging/integrations/bmw.md) publishes retained QoS 1 JSON on the established
 vehicle feed `stmq/vehicles/bmw`: charge percentage, vehicle target,
 usable capacity and the original measurement timestamps. Configure the matching
 `charging.vehicles.bmw.mqttTopic`; the feed belongs to the vehicle, not a charger.

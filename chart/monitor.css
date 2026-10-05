@@ -1490,7 +1490,6 @@ button.garage-door-action:disabled { opacity: 1; cursor: default; }
 #provider-overview > .muted { margin: 0; font-size: 11px; line-height: 1.6; }
 #provider-overview .provider-body { margin-top: 12px; padding: 12px 14px; background: var(--surface-soft); border-radius: 6px; }
 #provider-overview .provider-health { margin: 0 0 9px; font-size: 11px; }
-#provider-overview .provider-local-connection { margin: 4px 0 12px; padding: 0; }
 #provider-overview .provider-introduction { margin: 0 0 12px; font-size: 11px; line-height: 1.65; }
 #provider-overview .provider-source-section { margin-top: 16px; padding-top: 14px; border-top: 1px solid var(--border); }
 #provider-overview .provider-source-title { margin: 0 0 6px; font-size: 12px; font-weight: 550; }
@@ -1500,13 +1499,6 @@ button.garage-door-action:disabled { opacity: 1; cursor: default; }
 #provider-overview .provider-detail-fold > summary::after { content: '›'; color: var(--muted); font-size: 17px; }
 #provider-overview .provider-detail-fold[open] > summary { margin-bottom: 8px; }
 #provider-overview .provider-detail-fold[open] > summary::after { color: var(--accent); transform: rotate(90deg); }
-#provider-overview .provider-local-connection dl { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); align-items: baseline; gap: 8px 12px; margin: 0; font-size: 11px; }
-#provider-overview .provider-local-connection dt { color: var(--muted); }
-#provider-overview .provider-local-connection dd { margin: 0; color: var(--provider-tone, var(--text)); overflow-wrap: anywhere; }
-#provider-overview .provider-local-connection p { margin: 9px 0 0; color: var(--muted); font-size: 11px; line-height: 1.6; }
-#provider-overview .provider-local-adopt { margin-top: 12px; }
-#provider-overview .provider-local-message:empty { display: none; }
-#provider-overview .provider-local-message.form-error { color: var(--stale); }
 #provider-overview [data-state="available"] { --provider-tone: var(--chart-indoor); }
 #provider-overview [data-state="attention"], #provider-overview [data-state="backup"] { --provider-tone: var(--stale); }
 #provider-overview [data-state="pending"] { --provider-tone: var(--muted); }

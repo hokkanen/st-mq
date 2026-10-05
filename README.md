@@ -74,7 +74,7 @@ the configuration is valid and the application is restarted. See
 | Configuration, access and electricity rates | [Configuration](docs/configuration.md) |
 | Home heating and manual controls | [Learning and control](docs/learning-and-control.md), [automation and restoration](docs/automation-and-manual-control.md), [planning explorer](docs/heating-plan-explorer.md) |
 | Garage and local protection | [Garage heating](docs/garage.md), [adapter contract](docs/garage-adapter.md), [CN105 integration](docs/shelly-pill-handoff.md) |
-| Charging | [Controls, identification and reports](docs/charging.md), [Easee](docs/charging-easee.md), [provider capabilities](docs/charging-provider-capabilities.md), [BMW](docs/bmw-cardata.md) |
+| Charging | [Overview and user guide](docs/charging.md), [policies](docs/charging/policies.md), [architecture](docs/charging/architecture.md), [integration guides](docs/charging.md#supported-equipment-and-capability-differences), [physical development tools](docs/charging/testing.md) |
 | Charts, storage and exports | [Recording and chart exploration](docs/recording.md), [CSV import](docs/csv-import.md), [learning reconstruction](docs/reconstruction-and-versioning.md) |
 | Devices and sensors | [MQTT equipment](docs/mqtt-equipment.md), [temperature sensors](docs/temperature-sensors.md), [H66](docs/h66-mqtt.md), [SmartThings](docs/smartthings-temperature-rule.md) |
 | Home Assistant bridges | [MQTT setup](docs/homeassistant-mqtt.md), [Caravan dehumidifier](docs/caravan-dehumidifier.md) |
@@ -96,7 +96,7 @@ Garage pipe estimates require installation-specific validation.
 Ordinary stop, restart and pair handover preserve Easee OCPP configuration and
 outstanding restrictions. New charging can wait for the controller's
 authorization during an outage; pause expiry alone does not restore cloud
-control. See [Easee control and qualification](docs/charging-easee.md).
+control. See [Easee control and qualification](docs/charging/integrations/easee.md).
 
 Before 1.0.0 there is one current database/configuration contract. Incompatible
 development databases are rejected before mutation and require a deliberate

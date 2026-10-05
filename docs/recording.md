@@ -383,7 +383,7 @@ physical charger plus its vehicle feed counts once.
 **Electricity consumption · Easee, Shelly EVSE** separates C1/property acquisition
 from physical C2 acquisition. Vehicle logger health is a separate diagnostic.
 The native Shelly role/profile and the hardware checks still required are in
-[provider capabilities](charging-provider-capabilities.md). Old Tesla-as-C2
+[Shelly EVSE capabilities](charging/integrations/shelly.md). Old Tesla-as-C2
 configuration/state has no translation path; only the two supported v0.7.5 CSV
 import formats retain backwards compatibility.
 
@@ -426,7 +426,7 @@ existing **Unknown** mode with reason `measurement-settling`, the held allowance
 setting readback. It does not present the held ceiling as newly verified headroom
 or extend the preceding verified span. Repeated unchanged waiting observations
 only extend that unknown span; they add no periodic rows or new schema fields.
-See [current allocation](charging.md#charger-2-current-allocation).
+See [current allocation](charging/current-allocation.md#charger-2-current-allocation).
 
 This history does not expire with unsaved charging-session reports, whose default
 retention is 30 days. It is part of ordinary recorded history and current-format
@@ -686,7 +686,7 @@ unobserved chart options or mix exact contacts into the adaptive table.
   of days (30 by default); active and explicitly saved reports are protected.
   Explicit deletion of a completed report affects only its owned diagnostic
   records, not independent energy or learning history. History pages and display
-  grouping bound work without discarding stored events. See [charging reports](charging.md).
+  grouping bound work without discarding stored events. See [charging reports](charging/evidence-and-reporting.md#session-reports).
 - Calculated outputs, requests, market/weather snapshots, manual inputs, learning
   journals, session checks, imported rows and provenance, source corrections,
   recovery records, bounded statistics and overwritten operational state each

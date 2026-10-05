@@ -148,7 +148,7 @@ sharing, Equalizer response time, fuse protection or autonomous controller-loss
 behavior.
 
 For substantial charger features, select relevant cases from the
-[optional physical development runbook](charging-physical-testing.md). It provides
+[optional physical development runbook](charging/testing.md). It provides
 bounded read-only observation and offline evidence assessment around explicitly
 operated hardware. These cases are not a per-commit requirement and do not run
 inside `npm run check`, CI or `npm run test:live`. The tool regression tests use
@@ -172,7 +172,9 @@ node test/browser/configuration-recovery-smoke.js
 node test/browser/equipment-smoke.js
 node test/browser/equipment-smoke.js --dashboard-heights-only
 node test/browser/equipment-smoke.js --caravan-only
+node test/browser/charging-controls-smoke.js
 node test/browser/charging-tests-smoke.js
+node test/browser/ocpp-setup-smoke.js
 node test/browser/shelly-limiter-smoke.js
 node test/browser/home-controls-smoke.js
 node test/browser/history-recovery-smoke.js
@@ -247,6 +249,12 @@ setting locks during testing/restoration. Synthetic
 screenshots include live automatic/paused recording, manual/active recording and
 expanded threshold editing, framed around the dehumidifier. Commands terminate
 in browser fixtures.
+
+The charging-controls suite covers session controls and the route from each
+charger card into its corresponding setup fold. The OCPP setup suite checks
+review/confirmation, changed revisions, secret redaction and read-only restrictions
+in the Charging setup area using synthetic endpoints and both themes. These
+checks establish UI behavior, not native commissioning or physical authorization.
 
 The charging-tests suite checks the Charging setup fold and BMW descriptor guide,
 both vehicles and guided programs, explicit charger choice, vehicle readings and

@@ -119,7 +119,11 @@ test('authenticated OCPP boots, enforces tag authorization and expires readings 
     const received = raw => { const message = JSON.parse(raw); if (message[1] === id) { ws.off('message', received); resolve(message); } };
     ws.on('message', received); ws.send(JSON.stringify([2, id, action, payload]));
   });
-  assert.equal((await call('1', 'BootNotification', { chargePointVendor: 'Easee', chargePointModel: 'fixture', firmwareVersion: '344' }))[2].status, 'Accepted');
+  assert.equal(local.deviceInfo(), null);
+  assert.equal((await call('1', 'BootNotification', { chargePointVendor: 'Easee', chargePointModel: 'fixture', firmwareVersion: '344',
+    chargePointSerialNumber: 'fixture-serial' }))[2].status, 'Accepted');
+  const device = { model: 'fixture', firmware: '344', source: 'ocpp-boot', receivedAt: at, available: true };
+  assert.deepEqual(local.deviceInfo(), device);
   assert.equal((await call('2', 'Authorize', { idTag: 'unknown-tag' }))[2].idTagInfo.status, 'Invalid');
   assert.equal((await call('3', 'Authorize', { idTag: 'fixture-tag' }))[2].idTagInfo.status, 'Accepted');
   await call('4', 'MeterValues', meter());
@@ -127,10 +131,12 @@ test('authenticated OCPP boots, enforces tag authorization and expires readings 
   now += 61_000;
   await call('5', 'Heartbeat', {});
   assert.equal(local.snapshot(), null);
+  assert.deepEqual(local.deviceInfo(), device, 'Heartbeat does not rewrite the boot report receipt time');
   await call('6', 'MeterValues', meter(samples, now));
   assert(local.snapshot());
   permitted = false;
   assert.equal(local.snapshot(), null);
+  assert.deepEqual(local.deviceInfo(), { ...device, available: false });
   ws.terminate();
 });
 

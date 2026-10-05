@@ -302,7 +302,7 @@ connection or selecting live input does not enable all controls.
 - [Home heating and restoration](docs/automation-and-manual-control.md)
 - [Heating plan explorer](docs/heating-plan-explorer.md)
 - [Garage targets, equipment and protection](docs/garage.md)
-- [Charging setup, controls and reports](docs/charging.md)
+- [Charging overview, controls, policies and integration guides](docs/charging.md)
 - [Charts, recording and unknown data](docs/recording.md)
 - [MQTT equipment setup](docs/mqtt-equipment.md)
 
@@ -471,7 +471,7 @@ Mosquitto broker app; supply a login allowed by that broker. ST-MQ does not copy
 credentials from Home Assistant's MQTT integration. A separate broker needs its
 own reachable address. `simulated` and `offline` modes need no broker.
 
-The optional [door publishers](docs/homeassistant-mqtt.md), [BMW CarData feed](docs/bmw-cardata.md)
+The optional [door publishers](docs/homeassistant-mqtt.md), [BMW CarData feed](docs/charging/integrations/bmw.md)
 and [Caravan dehumidifier bridge](docs/caravan-dehumidifier.md) require Home
 Assistant Core's MQTT integration connected to the same broker. Source entities
 and generated household automations remain private. These bridges are separate

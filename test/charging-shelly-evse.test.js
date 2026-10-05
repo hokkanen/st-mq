@@ -52,6 +52,7 @@ test('positive vehicle demand below the pilot minimum preserves electrical and z
 });
 function fixture(t, extra={}) {
   let now=NOW, authority=true, failSave=false;
+  const deviceInfo = { id: 'synthetic-evse', model: 'synthetic-model', fw_id: 'synthetic-firmware' };
   const service={id:0,auto_balance:{enable:false},auto_charge:true,global_charge_limit:0,global_time_limit:0},serviceStatus={state:'running'},schedules={rev:1,jobs:[]};
   const client=new EventEmitter(), values=new Map(), writes=[], energy=[], gaps=[], voltages=[], events=[];
   const roleTypes={current_limit:'number',start_charging:'boolean',work_state:'enum',phase_info:'object'};
@@ -62,7 +63,7 @@ function fixture(t, extra={}) {
   client.subscribe=(topics,_opts,cb)=>{client.topics=topics;cb(null,topics.map(topic=>({topic,qos:0})));};
   client.publish=(topic,payload,options,cb)=>{
     const frame=JSON.parse(payload);writes.push({...frame,topic,options});let result;
-    if(frame.method==='Shelly.GetDeviceInfo')result={id:'synthetic-evse',model:'synthetic-model',fw_id:'synthetic-firmware'};
+    if(frame.method==='Shelly.GetDeviceInfo')result=structuredClone(deviceInfo);
     else if(frame.method==='Service.GetConfig')result=structuredClone(service);
     else if(frame.method==='Schedule.List')result=structuredClone(schedules);
     else if(frame.method==='Schedule.Update') {
@@ -87,7 +88,7 @@ function fixture(t, extra={}) {
   const createAdapter=()=>createShellyEvseAdapter({config:config(extra),broker:{address:'mqtt://synthetic'},client,store,engine,clock:()=>now,canControl:()=>authority});
   let adapter=createAdapter();
   t.after(()=>adapter.close());
-  return {get adapter(){return adapter;},client,fields,writes,energy,gaps,voltages,events,values,service,serviceStatus,schedules,sources,currentComponent,now:()=>now,setNow:value=>now=value,setAuthority:value=>authority=value,setFail:value=>failSave=value,
+  return {get adapter(){return adapter;},client,fields,writes,energy,gaps,voltages,events,values,service,serviceStatus,schedules,sources,currentComponent,deviceInfo,now:()=>now,setNow:value=>now=value,setAuthority:value=>authority=value,setFail:value=>failSave=value,
     restartAdapter() { adapter.close(); adapter=createAdapter(); },
     setSourceTime(role, at) { settingClock.set(role, { value: fields[role], at }); },
     delta(role, delta, { eventAt = now, retained = false, apply = true, method = 'NotifyStatus' } = {}) {
@@ -104,6 +105,28 @@ function fixture(t, extra={}) {
     async ready(){client.emit('connect');client.emit('message','test/evse/online',Buffer.from('true'),{retain:true});await adapter.refresh();},
     notify(role,value,packet={}){if (['start_charging','current_limit'].includes(role) && !packet.retain) settingClock.set(role,{value,at:now});client.emit('message','test/evse/events/rpc',Buffer.from(JSON.stringify({src:'synthetic-evse',method:'NotifyStatus',params:{[`${roleTypes[role]}:${ids[role]}`]:{value,last_update_ts:now/1000}}})),packet);}};
 }
+test('charger product metadata is scoped, read-only and keeps its discovery receipt', async t => {
+  const f = fixture(t);
+  Object.assign(f.deviceInfo, { ver: '2.0.1', mac: '00:00:00:00:00:00', key: 'synthetic-cloud-key' });
+  assert.equal(f.adapter.deviceInfo(), null);
+  await f.ready();
+  const expected = { model: 'synthetic-model', firmware: '2.0.1', source: 'shelly-device-info', receivedAt: NOW, available: true };
+  assert.deepEqual(f.adapter.deviceInfo(), expected);
+  const reads = f.writes.filter(row => row.method === 'Shelly.GetDeviceInfo').length;
+  f.setNow(NOW + 5000); await f.adapter.refresh();
+  assert.deepEqual(f.adapter.deviceInfo(), expected);
+  assert.equal(f.writes.filter(row => row.method === 'Shelly.GetDeviceInfo').length, reads);
+  assert.equal(f.writes.filter(row => row.method.endsWith('.Set')).length, 0);
+  f.client.emit('close');
+  assert.deepEqual(f.adapter.deviceInfo(), { ...expected, available: false });
+  Object.assign(f.deviceInfo, { model: '<script>invalid</script>', ver: 'x'.repeat(129) });
+  await f.ready();
+  assert.equal(f.adapter.deviceInfo(), null, 'Malformed metadata is unavailable without disabling supported control');
+  assert.equal(f.adapter.snapshot().controlReady, true);
+  f.restartAdapter();
+  assert.equal(f.adapter.deviceInfo(), null, 'Persisted sessions do not supply discovery metadata');
+});
+
 test('missing startup planning evidence preserves an adopted Shelly program through its original transitions', async t => {
   const f = fixture(t, { limiterEnabled: false }); await f.ready();
   advanceCommandClock(f);

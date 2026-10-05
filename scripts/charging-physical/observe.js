@@ -12,7 +12,7 @@ Usage: node scripts/charging-physical/observe.js --config /private/config.json
   --out-dir /private/run --label run --duration-seconds 300 [--interval-ms 1000]
 Duration: 1–1800 seconds. Interval: 500–10000 ms. Output: 128 MiB/stream, 256 MiB total.
 Configuration and existing output directory must be private and outside Git.
-See docs/charging-physical-testing.md. This is never invoked by npm test.`;
+See docs/charging/testing.md. This is never invoked by npm test.`;
 
 const exactTopic = value => typeof value === 'string' && value.length > 0
   && value.length <= 512 && !/[+#\0]/.test(value);

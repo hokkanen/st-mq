@@ -1,9 +1,26 @@
-# Charger 1 native Easee control
+# Easee charger integration
+
+[Charging overview](../../charging.md) · [Execution contract](../execution-and-recovery.md)
 
 The cloud scheduling path below applies when native OCPP is inactive. Activating
 native OCPP transfers charging authorization and scheduling to the local server;
 it cannot be treated as a telemetry-only change. See the local connection section
 below for setup and activation requirements.
+
+| Task | Section |
+| --- | --- |
+| Understand the cloud scheduler | [Cloud execution](#cloud-execution), [API contract](#api-contract-checked-on-2026-09-15) |
+| Understand native instruction precedence | [Ownership and manual controls](#ownership-and-manual-controls) |
+| Set up local authorization and telemetry | [Native OCPP](#direct-local-ocpp-telemetry-firmware-344-or-later), [endpoint and pairing](#endpoint-and-pairing) |
+| Assess what was physically verified | [Qualification scope](#qualification-scope) |
+
+Reported model and firmware in the dashboard come from OCPP BootNotification
+when available. They retain their receipt time and become unavailable after a
+connection loss until a new admissible boot report. Cloud mode does not invent
+those local observations. Firmware 344 is the documented native OCPP minimum;
+actual qualification remains scoped to the evidence below.
+
+## Cloud execution
 
 The controller installs native one-off starts. For a split plan, it installs the
 next delayed start at each intermediate period's end, pausing until that start.
@@ -244,7 +261,7 @@ The planner replaces present demand with comparable household-history patterns
 and known scheduled charging, applies per-phase limits and the 6 A minimum, then
 averages the resulting charging power. The household reference includes original
 0.7.5 current/temperature imports and keeps older cold-weather conditions useful;
-see [household history](charging.md#planning-and-equalizer). With no usable supply-budget
+see [household history](../planning.md#planning-and-equalizer). With no usable supply-budget
 evidence it uses live net allowance without subtracting demand twice. Missing
 voltage never becomes an invented nominal value. Both household chargers use the
 published smoothed per-phase voltage estimates for planned power and duration.
@@ -253,7 +270,7 @@ Charger 1 OCPP, Charger 1 Easee Cloud, then Equalizer Easee Cloud. Charger 2
 voltage is excluded because its phase order is not verified against those sources.
 Valid live Easee voltage is provisional startup evidence until the estimates are
 established. Present-time measurements and native current limits retain their
-separate authority. See [smoothed phase voltage](recording.md#smoothed-phase-voltage).
+separate authority. See [smoothed phase voltage](../../recording.md#smoothed-phase-voltage).
 
 `test/charging-easee-control.test.js` covers the documented wire format,
 normalization, delayed release, replanning, restarts, in-flight OFF races,
@@ -424,7 +441,7 @@ ten-second stopping reserve, normally ending much earlier than the five-minute
 maximum. The resulting zero-current restriction can last until the scheduled
 economic release; the ordinary 90-second correlation-pause expiry does not end
 that economic hold. See the
-[identification lifecycle](charging.md#vehicle-assignment) and the
+[identification lifecycle](../identification.md#vehicle-assignment) and the
 [qualification scope](#qualification-scope) for the physical validation scope.
 
 ### Qualification scope
@@ -505,13 +522,13 @@ after handover. A paired `server_url` must be empty or exactly that shared
 Both computers need a working listener and matching charger configuration.
 Pairing copies the compact setup ownership and transaction state with the
 database. Passwords remain outside history; each computer’s cloud credentials
-and network configuration remain local. See [paired operation](pairing.md) for
+and network configuration remain local. See [paired operation](../../pairing.md) for
 readiness checks and handover limits.
 An outstanding OCPP restoration obligation still requires compatible peer
 settings and listener readiness even when local OCPP is configured as disabled.
 
-Open **Data and settings → Electricity consumption** to see **Charger 1 local
-connection**. **Charger setup** reports missing prerequisites, cloud setup
+Open **Data & settings → Connections & configuration → Charging** and expand
+**Charger 1 · Connection & capabilities** to inspect **Local OCPP connection**. **Charger setup** reports missing prerequisites, cloud setup
 progress or retry, native control readiness and an existing cloud schedule
 waiting to hand over; **Local readings** separately reports the socket and fresh
 measurement readiness. Working cloud readings retain their own availability.
@@ -651,3 +668,21 @@ configuration replies. Check these during commissioning, especially
 `MeterValuesSampledData`, `MeterValuesAlignedData`, `MeterValueSampleInterval` and
 `ClockAlignedDataInterval`. A configuration request alone does not prove that the
 charger supplied the needed measurements.
+
+## Physical connection and source-clock admission
+
+A live local OCPP connection status newer than the last disconnect restores
+Charger 1's physical session and readings even while its transaction is
+unconfirmed. Native scheduling still waits for transaction evidence newer than
+that disconnect. An existing transaction can be recovered from two distinct,
+fresh, advancing transaction-bearing meter reports on the authenticated local
+connection, with an active connector status. Its original start time and
+authorization remain unknown. Transaction confirmation does not restart the
+physical session or reset its settings, deadline, progress or cost.
+
+An admitted OCPP status up to one second ahead of the local clock remains
+unavailable until its original source time. Reads and command acknowledgements
+may wait once for that time before checking the original connection, transaction
+and instruction guards again. The wait cannot renew a request deadline, resend
+a command or borrow evidence from a replacement connection. A further future
+status, timeout, abort or genuine instruction change still fails closed.

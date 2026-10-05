@@ -13,7 +13,7 @@ const pending = new Map(), errors = [];
 const pause = ms => new Promise(resolve => setTimeout(resolve, ms));
 let browser, socket, sequence = 0;
 const html = `<!doctype html><html lang="en" data-theme="dark"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-<link rel="stylesheet" href="/chart/monitor.css"><title>Charging controls fixture</title></head>
+<link rel="stylesheet" href="/chart/monitor.css"><link rel="stylesheet" href="/chart/charging-setup.css"><title>Charging controls fixture</title></head>
 <body data-authenticated="true"><main style="max-width:1100px;margin:auto;padding:16px"><section class="garage-chargers zone-content">
 <p id="charging-status"></p><div id="charging-devices" class="charging-device-list"></div></section></main>
 <script type="module">
@@ -50,6 +50,13 @@ fixture.setCase = name => {
     controls: { priority: 'balanced', revision: 1 }, chargers: [charger('charger1', 'easee'), charger('charger2', 'shelly-evse')] } };
   for (const item of fixture.status.charging.chargers) {
     if (name === 'ordinary') item.control = { phase: 'waiting', owned: { startAt: now + 3600000 }, takeover: { available: true, token: 'native:' + item.id } };
+    if (name === 'backend-readings') {
+      item.control = {phase:'waiting',owned:{startAt:now + 3600000}};
+      item.values = {...item.values,charging:reading(true),actualCurrentA:reading(6),
+        availableCurrentA:reading(12),currentA:reading(10),maximumCurrentA:reading(16)};
+      item.telemetry = {identificationCurrentReady:true,commissioning:{controlReady:true,currentControlReady:true}};
+      item.plan.periods = [{startAt:now + 3600000,endAt:null}];
+    }
     if (['missing-vehicle-feed', 'approval-pending'].includes(name)) {
       item.control = { phase: 'waiting', owned: { startAt: now + 3600000 } };
       item.vehicle = { state: 'identifying', id: null };
@@ -158,7 +165,7 @@ try {
   for (const width of [320, 390, 1440]) for (const theme of ['dark', 'light']) {
     await send('Emulation.setDeviceMetricsOverride', { width, height: 1000, deviceScaleFactor: 1, mobile: false });
     await evaluate(`document.documentElement.dataset.theme = '${theme}'`);
-    for (const state of ['ordinary', 'missing-vehicle-feed', 'approval-pending', 'confirmed-pause', 'long', 'manual-stop', 'manual-start', 'manual-window', 'pending', 'blocked', 'handover-timeout', 'handover-cancelled', 'handover-protocol', 'unavailable', 'estimate', 'readonly', 'disconnected', 'unknown-connection', 'missing-token', 'monitoring', 'uncertain', 'startup-stop', 'unavailable-startup-stop']) {
+    for (const state of ['ordinary', 'backend-readings', 'missing-vehicle-feed', 'approval-pending', 'confirmed-pause', 'long', 'manual-stop', 'manual-start', 'manual-window', 'pending', 'blocked', 'handover-timeout', 'handover-cancelled', 'handover-protocol', 'unavailable', 'estimate', 'readonly', 'disconnected', 'unknown-connection', 'missing-token', 'monitoring', 'uncertain', 'startup-stop', 'unavailable-startup-stop']) {
       await evaluate(`chargingFixture.setCase('${state}'); document.querySelectorAll('.charging-device').forEach(card => card.open = true)`);
       const layout = await evaluate(`(() => {
         const cards = [...document.querySelectorAll('.charging-device')];
@@ -189,6 +196,26 @@ try {
       }
       assert.deepEqual(layout.cards[0].action, layout.cards[1].action, 'Both providers render the same action and capability state');
       assert.equal(layout.cards[0].action.label, 'Use automatic');
+      if (state === 'backend-readings') {
+        for (const id of ['charger1', 'charger2']) {
+          const readings = await evaluate(`document.getElementById('${id}-readings').textContent`);
+          assert.match(readings, /Drawing now6 A per phase/);
+          assert.match(readings, /Charging limit16 A per phase/);
+          assert.doesNotMatch(readings, /EVSE readiness|Controller loss|Identification current|firmware|commissioning/i,
+            'Session readings contain operational evidence; installation facts belong in Data & settings');
+          assert.equal(await evaluate(`document.getElementById('${id}-setup-link').getAttribute('href')`), `#charging-setup-${id}-details`);
+        }
+        assert.match(await evaluate("document.getElementById('charger1-readings').textContent"), /Reported allowance12 A per phase/,
+          'Easee keeps its native Equalizer allowance');
+        assert.match(await evaluate("document.getElementById('charger2-readings').textContent"), /Selected charging current10 A per phase/,
+          'Shelly keeps its selected current distinct from measured draw');
+      }
+      if (state === 'readonly') for (const id of ['charger1', 'charger2']) {
+        assert.equal(await evaluate(`document.getElementById('${id}-enabled').disabled && document.getElementById('${id}-charge-now').disabled`), true,
+          'Read-only cards preserve control restrictions');
+        assert.equal(await evaluate(`document.getElementById('${id}-setup-link').checkVisibility()`), true,
+          'Read-only users can still inspect setup information');
+      }
       if (['missing-vehicle-feed', 'approval-pending'].includes(state)) {
         for (const id of ['charger1', 'charger2']) {
           assert.match(await evaluate(`document.getElementById('${id}-vehicle').textContent`), /Identification pending/);
@@ -251,7 +278,7 @@ try {
           assert.equal(await evaluate(`document.getElementById('${id}-energy').textContent`), '—');
         }
       }
-      if (['ordinary', 'long', 'manual-stop', 'estimate', 'uncertain', 'startup-stop', 'unavailable-startup-stop', 'handover-timeout', 'unknown-connection'].includes(state)) {
+      if (['ordinary', 'backend-readings', 'long', 'manual-stop', 'estimate', 'uncertain', 'startup-stop', 'unavailable-startup-stop', 'handover-timeout', 'unknown-connection'].includes(state)) {
         const metrics = await send('Page.getLayoutMetrics');
         const shot = await send('Page.captureScreenshot', { format: 'png', captureBeyondViewport: true,
           clip: { x: 0, y: 0, width, height: Math.min(metrics.cssContentSize.height, 12000), scale: 1 } });
@@ -289,7 +316,7 @@ try {
     assert.match(await evaluate(`document.getElementById('${id}-takeover-message').textContent`), /charger changed.*latest state/);
   }
   assert.deepEqual(errors, []);
-  console.log(`Charging controls browser checks passed: conditional shared controls, explicit takeover fencing, pending/errors and retained receipts, expanded session settings, consistent compact statuses, readable long states and popups at 320/390/1440px in both themes. Screenshots: ${artifacts}`);
+  console.log(`Charging controls browser checks passed: conditional shared controls, explicit takeover fencing, pending/errors and retained receipts, expanded session settings, shared readings with capability differences, setup links without installation rows, read-only inspection, consistent compact statuses, readable long states and popups at 320/390/1440px in both themes. Screenshots: ${artifacts}`);
 } finally {
   socket?.close(); for (const task of pending.values()) clearTimeout(task.timer);
   if (browser && browser.exitCode === null) { browser.kill(); await new Promise(resolve => browser.once('exit', resolve)); }

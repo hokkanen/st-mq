@@ -4,6 +4,7 @@ import { createMqttAdmission } from '../acquisition/mqtt-admission.js';
 import { shellyProfile, supportedShellyStates } from './shelly-profile.js';
 import { chargingPlanInputsUnavailable } from './plan-inputs.js';
 import { validShellyDeviceHold, shellyDevicePermission } from './shelly-system-permission.js';
+import { chargingDeviceInfo } from './device-info.js';
 const finite = Number.isFinite;
 const copy = value => structuredClone(value);
 const TYPES = { current_limit: 'Number', start_charging: 'Boolean', work_state: 'Enum', phase_info: 'Object' };
@@ -62,6 +63,7 @@ export function createShellyEvseAdapter({ config, broker, client, store, engine,
     readinessRevision = 0;
   let error = null, meterError = null, info = null, service = null, serviceStatus = null, nativeSchedules = null, serviceAt = null, currentConfig = null, polling = null, buffer = [], componentRoles = new Map(), pendingEvents = [];
   let profileSupported = false, currentWritable = false, currentControlReady = false;
+  let device = null, deviceGeneration = null;
   const source = `stmq-evse-${randomUUID()}`, pending = new Map();
   const fieldRevisions = new Map(), fieldGenerations = new Map();
   const notificationBaselines = new Map(), notificationPending = new Map(Object.entries(state.notificationPending ?? {}));
@@ -459,9 +461,15 @@ export function createShellyEvseAdapter({ config, broker, client, store, engine,
     const epoch = generation, readinessAtStart = readinessRevision;
     polling = (async () => {
       if (!discovered) {
-        [info, service, currentConfig] = await Promise.all([rpc('Shelly.GetDeviceInfo'), rpc('Service.GetConfig', { id: config.serviceId }),
+        let deviceRead;
+        [deviceRead, service, currentConfig] = await Promise.all([
+          rpc('Shelly.GetDeviceInfo').then(value => ({ value, receivedAt: clock() })), rpc('Service.GetConfig', { id: config.serviceId }),
           rpc('Number.GetConfig', { owner: `service:${config.serviceId}`, role: 'current_limit' })]);
         if (epoch !== generation) return;
+        info = deviceRead.value;
+        device = info?.id === config.deviceId ? chargingDeviceInfo({ model: info.model,
+          firmware: info.ver ?? info.fw_id, source: 'shelly-device-info', receivedAt: deviceRead.receivedAt }) : null;
+        deviceGeneration = epoch;
         componentRoles = new Map();
         for (const [role, type] of Object.entries(TYPES)) {
           const component = role === 'current_limit' ? currentConfig : await rpc(`${type}.GetConfig`, { owner: `service:${config.serviceId}`, role });
@@ -622,6 +630,10 @@ export function createShellyEvseAdapter({ config, broker, client, store, engine,
     ]);
   };
   const adapter = { association, config, snapshot, readings, refresh, rpc,
+    deviceInfo() {
+      return device ? { ...device, available: !closed && connected && admitted && online && discovered
+        && deviceGeneration === generation && time(readAt) && clock() >= readAt && clock() - readAt <= config.maxAgeMs } : null;
+    },
     accept(...args) { const accepted = accept(...args); publishStatus(); return accepted; },
     observeStatus(observer) {
       if (typeof observer !== 'function') throw new TypeError('A status observer is required');

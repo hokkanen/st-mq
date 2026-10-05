@@ -1263,7 +1263,8 @@ test('minimum-current identification distinguishes a requested setting from meas
   panel.update(status(item));
   assert.equal($('charger2-identification-state').textContent, 'Checking');
   assert.match($('charger2-identification-status').textContent, /confirmed a temporary 6 A current limit.*fresh measured draw.*distinguish the two chargers.*readings overlap.*restored afterward/);
-  assert.match($('charger2-readings').textContent, /Identification currentTemporary minimum available/);
+  assert.doesNotMatch($('charger2-readings').textContent, /Identification current|EVSE readiness|Controller loss/, 'Installation capabilities belong in Charging setup');
+  assert.equal($('charger2-setup-link').href, '#charging-setup-charger2-details');
   assert.equal(view(item).event, 'Comparing measured current');
   assert.doesNotMatch($('charger2-vehicle').textContent, /Tesla identified/);
   panel.close();

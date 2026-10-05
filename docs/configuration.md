@@ -34,7 +34,7 @@ phase/fuse settings and compatible live numeric capabilities. The manual
 `verified`, model/firmware pins, connection-state lists and current minimum/step
 fields are retired and rejected. Charger 2 records native lifetime-meter
 increments directly; there is no session-energy comparison setting. See
-[charging provider capabilities](charging-provider-capabilities.md).
+[Shelly EVSE capabilities](charging/integrations/shelly.md).
 
 Public defaults leave credentials, precise location, account identifiers and
 private installation endpoints empty. The MQTT broker name `core-mosquitto` is Home
@@ -306,8 +306,9 @@ Detection runs on startup and **Apply reviewed configuration**; it does not rewr
 configuration file. Supply `server_url` explicitly if detection is ambiguous or
 the charger needs a different reachable address or proxy. Paired operation uses
 the shared virtual IP; an explicit URL must exactly match that shared endpoint.
-The live **Charger 1 local connection** status shows the effective base URL and
-its source. See [Easee endpoint setup](charging-easee.md#endpoint-and-pairing) for
+The live **Local OCPP connection** under **Data & settings → Connections &
+configuration → Charging → Charger 1 · Connection & capabilities** shows the
+effective base URL and its source. See [Easee endpoint setup](charging/integrations/easee.md#endpoint-and-pairing) for
 detection limits, stable addressing and proxy requirements.
 
 `charging.defaults` supplies both charging points whenever the vehicle is
@@ -336,52 +337,22 @@ neither a minimum current nor a permanent ceiling on forecast delivery. With
 Charger 2 priority, Shelly excludes Charger 1's draw from its available headroom,
 and Charger 1's Equalizer must yield.
 
-`agreementToleranceA`, initially 2 A, bounds the difference between Equalizer's
-per-phase allowed-current feed and headroom independently calculated from
-property and Easee currents using its verified native current budget, before
-the configured safety margin. That budget is native device evidence, not another
-configuration default. It never replaces `mainFuseA` or raises Shelly's configured
-electrical ceiling. The comparison does not clip Equalizer allowance to the
-charger circuit limit or translate headroom below 6 A to zero. Missing, stale or
-unverified budget evidence uses `fallbackCurrentA`, with known tighter limits
-still applied. Budget evidence comes from actual native configuration readback,
-uses the existing 24-hour allocation-cache lifetime and is bound to the current
-equipment and acquisition epoch. Telemetry polling does not renew its clocks.
-A zero allowance can instead support the bounded `below-minimum-idle`
-consistency inference when raw native headroom is nonnegative and below the
-verified 6 A minimum, and all three native OCPP Easee currents are at most 0.1 A
-with each phase source clock and the native feed's latest receipt/activity no
-older than 120 seconds. This is not an encoding rule, does not alter observations
-and does not seed a held reference.
-Other phase contradictions and stale, positive or non-native peer current still
-prevent that inference. These checks introduce no additional configuration.
-Healthy feeds synchronized in their current connection epochs can retain older
-last-change values when the comparison passes; original timestamps remain unchanged. No
-additional feed-age configuration is needed. A fixed, process-local reference
-can account for Shelly's measured current change while the same admitted
-positive allowance observation and verified native budget remain held. Household
-changes still affect the comparison; changed budget, reconnect, session changes
-and restart discard the reference.
-After an own current-setting command is confirmed, a measurement disagreement
-may hold at most the confirmed setting and last validated ceiling for an
-absolute 60 seconds, with no further
-increase. This fixed settling bound adds no configuration field. Hard feed
-outages bypass it; unresolved disagreement at expiry uses `fallbackCurrentA`.
-The held ceiling still respects known tighter restrictions and appears as
-unknown headroom in the badge and history.
-See the [current allocation contract](charging.md#charger-2-current-allocation).
-`maxAgeMs`, initially 15000 ms,
-continues to bound Shelly measurements, command readiness and native readback.
-`dwellMs` and `rampA` default to 30000 ms and 2 A for increases and resumption;
-reductions do not wait for that increase dwell.
+| Charger 2 setting | Ownership and current default |
+| --- | --- |
+| `agreementToleranceA` | 2 A tolerance for the independent native Equalizer budget comparison |
+| `maxAgeMs` | 15000 ms bound for Shelly measurements, command readiness and native readback |
+| `dwellMs`, `rampA` | 30000 ms and 2 A for current increases and resumption; reductions do not wait for increase dwell |
+| `phaseMap` | Recorded phase-energy association; the limiter's conservative common-current calculation needs no Shelly-to-Easee phase map |
 
-The limiter uses the minimum measured Shelly phase current equally on all
-property phases and needs no Shelly-to-Easee phase map. `phaseMap` remains the
-installation's recorded phase-energy association and must still be configured
-correctly for that purpose. Retired `additiveCurrentVerified` and `maxSkewMs`
-fields are rejected rather than translated. See
-[Charger 2 current allocation](charging.md#charger-2-current-allocation) for the
-feed checks and priority rules.
+The [current-allocation contract](charging/current-allocation.md) owns the exact
+headroom calculation, held-feed admission, independently verified native budget,
+`below-minimum-idle` inference, fixed comparison reference, bounded settling and
+fallback rules. Native budget readback is evidence, not another configuration
+default, and cannot raise the configured electrical limits. These mechanisms add
+no separate feed-age or settling configuration. Retired `additiveCurrentVerified`
+and `maxSkewMs` fields are rejected rather than translated. Integration identity,
+capability discovery and native setup are described in the
+[Shelly guide](charging/integrations/shelly.md#installation-and-capability-readiness).
 
 For example, merge only these intentional choices into your configuration:
 
@@ -544,7 +515,7 @@ larger sections without adding another configuration format.
 | Sections, in file order | Settings they own |
 | --- | --- |
 | `controller`, `garage`, `charging`, `electricity` | Topology, Home operation/heating and web access passwords, Garage presets, local-protection sender and pump adapter, charger/vehicle sources, permanent charging defaults and report retention, electricity tariffs. |
-| `geoloc`, `mqtt`, `entsoe`, `easee`, `teslamate` | Location, broker access and provider connections. `easee.local_ocpp` contains the authenticated local charger listener and explicit authorization tags; see [Easee setup](charging-easee.md#direct-local-ocpp-telemetry-firmware-344-or-later). |
+| `geoloc`, `mqtt`, `entsoe`, `easee`, `teslamate` | Location, broker access and provider connections. `easee.local_ocpp` contains the authenticated local charger listener and explicit authorization tags; see [Easee setup](charging/integrations/easee.md#direct-local-ocpp-telemetry-firmware-344-or-later). |
 | `equipment` | The current MQTT/Shelly equipment inventory and device mappings. |
 | `acquisition`, `recording` | Provider polling/freshness and recording/storage settings. |
 | `pair`, `mirror` | Pair peer connection, snapshots, manual handover and recovery; mirror role, SSH connection and snapshots. `controller.topology` selects which is used. |

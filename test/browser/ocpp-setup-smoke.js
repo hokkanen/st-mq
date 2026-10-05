@@ -1,5 +1,7 @@
 import assert from 'node:assert/strict';
-import { mkdtempSync, rmSync, writeFileSync, mkdirSync } from 'node:fs';
+import { spawn } from 'node:child_process';
+import { mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
+import { rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { start } from '../../src/main.js';
@@ -8,8 +10,10 @@ import { loadConfig } from '../../src/app/config.js';
 // A synthetic local application and browser-only setup replies. No cloud account,
 // charger, production configuration or household network is contacted.
 const directory = mkdtempSync(join(tmpdir(), 'stmq-ocpp-ui-'));
+const artifacts = mkdtempSync(join(tmpdir(), 'stmq-ocpp-screenshots-'));
 const pending = new Map(), errors = [];
-let app, ws, id = 0, ownsBrowser = false;
+const pause = ms => new Promise(resolve => setTimeout(resolve, ms));
+let app, browser, ws, id = 0;
 const command = (method, params) => new Promise((resolve, reject) => {
   const requestId = ++id;
   const timer = setTimeout(() => { pending.delete(requestId); reject(new Error(`Timeout: ${method}`)); }, 20_000);
@@ -17,24 +21,36 @@ const command = (method, params) => new Promise((resolve, reject) => {
   ws.send(JSON.stringify({ id: requestId, method, params }));
 });
 try {
-  writeFileSync(join(directory, 'fixture.json'), '{}');
+  writeFileSync(join(directory, 'fixture.json'), '{}', {mode:0o600});
   const config = loadConfig({ STMQ_CONFIG: join(directory, 'fixture.json'), STMQ_DATA_DIR: directory,
     STMQ_PORT: '0', STMQ_INPUT: 'simulated' }, directory);
   app = await start({ config, clock: () => Date.parse('2026-09-07T12:00:00Z') });
-  ws = new WebSocket(process.argv[2] ?? 'ws://127.0.0.1:39125/session');
+  const profile = join(directory, 'chrome');
+  browser = spawn(process.env.STMQ_CHROME_BIN ?? '/opt/google/chrome/chrome', [
+    '--headless', '--no-sandbox', '--disable-gpu', '--no-first-run', '--disable-background-networking',
+    '--remote-debugging-address=127.0.0.1', '--remote-debugging-port=0', `--user-data-dir=${profile}`, 'about:blank',
+  ], {stdio:'ignore'});
+  let launchError, port;
+  browser.on('error', error => { launchError = error; });
+  for (let attempt = 0; attempt < 200 && !port; attempt++) {
+    if (launchError) throw launchError;
+    try { port = Number(readFileSync(join(profile, 'DevToolsActivePort'), 'utf8').split('\n')[0]); } catch {}
+    if (!port) await pause(30);
+  }
+  assert(port, 'Disposable Chromium listener starts');
+  const target = await fetch(`http://127.0.0.1:${port}/json/new?about:blank`, {method:'PUT'}).then(response => response.json());
+  ws = new WebSocket(target.webSocketDebuggerUrl);
   await new Promise((resolve, reject) => { ws.onopen = resolve; ws.onerror = reject; });
   ws.onmessage = event => {
     const message = JSON.parse(event.data), request = pending.get(message.id);
     if (request) {
       clearTimeout(request.timer); pending.delete(message.id);
-      message.type === 'error' ? request.reject(new Error(JSON.stringify(message))) : request.resolve(message.result);
-    } else if (message.method === 'log.entryAdded' && message.params.level === 'error') errors.push(message.params.text);
+      message.error ? request.reject(new Error(JSON.stringify(message.error))) : request.resolve(message.result);
+    } else if (message.method === 'Runtime.exceptionThrown') errors.push(message.params.exceptionDetails);
   };
-  await command('session.new', { capabilities: {} }); ownsBrowser = true;
-  await command('session.subscribe', { events: ['log.entryAdded'] });
-  const { context } = await command('browsingContext.create', { type: 'tab' });
-  await command('browsingContext.setViewport', { context, viewport: { width: 1100, height: 800 }, devicePixelRatio: 1 });
-  await command('script.addPreloadScript', { functionDeclaration: `() => {
+  await command('Page.enable'); await command('Runtime.enable');
+  await command('Emulation.setDeviceMetricsOverride', {width:1100, height:800, deviceScaleFactor:1, mobile:false});
+  await command('Page.addScriptToEvaluateOnNewDocument', {source:`(() => {
     window.setupFixture = { state: 'needs-endpoint', reason: 'endpoint-required', endpointSource: null,
       canAdopt: false, revision: null, busy: false };
     window.setupRequests = []; window.localAvailable = false; window.fixtureReadOnly = false;
@@ -56,10 +72,10 @@ try {
       status.readOnly = window.fixtureReadOnly;
       return new Response(JSON.stringify(status), { status: 200 });
     };
-  }` });
+  })()` });
   const evaluate = async expression => {
-    const result = await command('script.evaluate', { expression, target: { context }, awaitPromise: true });
-    if (result.type === 'exception') throw new Error(JSON.stringify(result.exceptionDetails));
+    const result = await command('Runtime.evaluate', {expression, awaitPromise:true, returnByValue:true});
+    if (result.exceptionDetails) throw new Error(JSON.stringify(result.exceptionDetails));
     return result.result.value;
   };
   const until = async expression => {
@@ -70,18 +86,21 @@ try {
     throw new Error(`UI did not settle: ${expression}`);
   };
   const refresh = () => evaluate("window.dispatchEvent(new Event('online')); true");
-  const local = '[data-provider=electricity] .provider-local-connection';
+  const local = '#charging-setup-ocpp .provider-local-connection';
   const button = `${local} .provider-local-adopt`;
   const setupLabel = `${local} [data-local-connection=setup]`;
   const endpointText = `${local} .provider-local-endpoint`;
-  await command('browsingContext.navigate', { context, url: `http://127.0.0.1:${app.server.address().port}`, wait: 'complete' });
+  await command('Page.navigate', {url:`http://127.0.0.1:${app.server.address().port}`});
   await until(`document.querySelector('${setupLabel}')?.textContent === 'Address needed'`);
   assert.equal(await evaluate("document.querySelector('[data-provider=electricity] .provider-category-state').textContent"), 'Available');
   assert.equal(await evaluate(`document.querySelector('${button}').hidden`), true);
-  await evaluate("document.querySelector('[data-provider=electricity] details').open = true; true");
+  await evaluate(`for (let node = document.querySelector('${local}'); node; node = node.parentElement)
+    if (node.tagName === 'DETAILS') node.open = true; true`);
+  assert.equal(await evaluate("document.querySelectorAll('.provider-local-connection').length"), 1,
+    'The native setup action has one owner in Charging under Data & settings');
   await evaluate(`document.querySelector('${local}').open = true; true`);
   assert.match(await evaluate(`document.querySelector('${local}').textContent`), /No unambiguous local address could be detected.*easee\.local_ocpp\.server_url.*apply configuration/);
-  assert.match(await evaluate(`document.querySelector('${local} .provider-local-outage').textContent`), /If the controller stops.*crash or power loss.*waiting for authorization.*Restart the controller/);
+  assert.match(await evaluate(`document.querySelector('${local} .provider-local-outage').textContent`), /If the controller stops.*shutdown, restart and paired handover keep local OCPP enabled.*wait for authorization.*Restart the controller/);
   for (const [endpointSource, endpoint, label] of [
     ['detected', 'ws://192.0.2.10:9001/ocpp', 'Detected standalone address'],
     ['configured', 'wss://charger.example.invalid/ocpp', 'Configured standalone address'],
@@ -123,13 +142,14 @@ try {
   await until("Boolean(document.querySelector('.confirmation-dialog[open]'))");
   assert.equal(await evaluate('document.activeElement.textContent'), 'Cancel');
   assert.match(await evaluate("document.querySelector('.confirmation-dialog').textContent"), /Native OCPP takes over charging authorization and schedules/);
-  assert.match(await evaluate("document.querySelector('.confirmation-dialog').textContent"), /crash or power loss.*wait for approval/);
+  assert.match(await evaluate("document.querySelector('.confirmation-dialog').textContent"), /Stopping or restarting this application keeps OCPP enabled.*wait for authorization.*disabling Direct OCPP/);
   await evaluate("document.querySelector('.confirmation-dialog .secondary-button').click(); true");
+  await until("!document.querySelector('.confirmation-dialog')");
   assert.equal(await evaluate('window.setupRequests.length'), 0);
   // A refreshed remote revision while the confirmation is open invalidates it.
   await evaluate(`document.querySelector('${button}').click(); window.setupFixture.revision = 'b'.repeat(64); true`);
   await refresh();
-  await until("document.querySelector('.confirmation-dialog[open]') && document.querySelector('[data-provider=electricity] .provider-local-adopt')");
+  await until("Boolean(document.querySelector('.confirmation-dialog[open]') && document.querySelector('#charging-setup-ocpp .provider-local-adopt'))");
   await new Promise(resolve => setTimeout(resolve, 150));
   await evaluate("document.querySelector('.confirmation-dialog button:last-child').click(); true");
   await until(`document.querySelector('${local} .provider-local-message').textContent.includes('changed')`);
@@ -147,30 +167,35 @@ try {
   await refresh(); await until(`document.querySelector('${setupLabel}').textContent === 'Setup complete'`);
   assert.equal(await evaluate(`document.querySelector('${local} [data-local-connection=readings]').textContent`), 'Available');
   assert.equal(await evaluate(`document.querySelector('${local} .provider-local-message').textContent`), '', 'Confirmed setup replaces the earlier waiting notice');
-  mkdirSync('var', { recursive: true });
-  for (const width of [1100, 320]) {
-    await command('browsingContext.setViewport', { context, viewport: { width, height: 800 }, devicePixelRatio: 1 });
-    await new Promise(resolve => setTimeout(resolve, 200));
+  for (const width of [1100, 320]) for (const theme of ['dark', 'light']) {
+    await command('Emulation.setDeviceMetricsOverride', {width, height:800, deviceScaleFactor:1, mobile:false});
+    await evaluate(`document.documentElement.dataset.theme = '${theme}'`);
+    await pause(200);
     await evaluate(`document.querySelector('${local}').scrollIntoView({block:'start', behavior:'instant'}); true`);
     await new Promise(resolve => setTimeout(resolve, 100));
     assert.equal(await evaluate('document.documentElement.scrollWidth <= innerWidth'), true);
-    const element = await command('script.evaluate', { expression: `document.querySelector('${local}')`,
-      target: { context }, awaitPromise: true });
-    const shot = await command('browsingContext.captureScreenshot', { context, origin: 'document',
-      clip: { type: 'element', element: { sharedId: element.result.sharedId } } });
-    writeFileSync(`var/ocpp-setup-${width}.png`, Buffer.from(shot.data, 'base64'));
+    const overflow = await evaluate(`(() => {const root = document.querySelector('${local}'), box = root.getBoundingClientRect();
+      return Array.from(root.querySelectorAll('*')).filter(node => {
+        if (!node.checkVisibility()) return false;
+        const bounds = node.getBoundingClientRect();
+        return bounds.left < box.left - 1 || bounds.right > box.right + 1 || node.scrollWidth > node.clientWidth + 1;
+      }).map(node => node.className || node.tagName);})()`);
+    assert.deepEqual(overflow, [], 'Every native setup field and explanation fits its disclosure');
+    // Include the surrounding dashboard without Chrome's offset tall-element clips.
+    const shot = await command('Page.captureScreenshot', {format:'png', captureBeyondViewport:false});
+    writeFileSync(join(artifacts, `ocpp-setup-${width}-${theme}.png`), Buffer.from(shot.data, 'base64'));
   }
   await evaluate("window.setupFixture = { state: 'blocked', reason: 'foreign-configuration', canAdopt: true, revision: 'a'.repeat(64) }; window.fixtureReadOnly = true; true");
   await refresh(); await until(`document.querySelector('${setupLabel}').textContent === 'Setup needs attention'`);
   assert.equal(await evaluate(`document.querySelector('${button}').hidden`), true, 'Read-only history cannot adopt a charger connection');
   assert.deepEqual(errors, []);
-  console.log(JSON.stringify({ result: 'ocpp-setup-browser-smoke-passed', checks: [
+  console.log(JSON.stringify({ result: 'ocpp-setup-browser-smoke-passed', artifacts, checks: [
     'setup-and-reading-status-independent', 'endpoint-ambiguity-guidance', 'detected-configured-and-pair-addresses', 'invalid-and-sensitive-endpoints-hidden',
     'pending-native-and-cloud-handover', 'confirmation-cancel', 'revision-change-during-confirmation',
-    'adoption-busy-and-actual-revision', 'confirmed-local-readings', 'desktop-and-320px', 'read-only-action-hidden' ] }));
-  await command('browser.close', {}); ownsBrowser = false;
+    'adoption-busy-and-actual-revision', 'confirmed-local-readings', 'single-native-setup-owner', 'desktop-and-320px-both-themes', 'read-only-action-hidden' ] }));
 } finally {
-  if (ownsBrowser) { try { await command('browser.close', {}); } catch {} }
   ws?.close(); for (const entry of pending.values()) clearTimeout(entry.timer);
-  await app?.close(); rmSync(directory, { recursive: true, force: true });
+  await app?.close();
+  if (browser && browser.exitCode === null) { browser.kill(); await new Promise(resolve => browser.once('exit', resolve)); }
+  await rm(directory, {recursive:true, force:true, maxRetries:10, retryDelay:100});
 }

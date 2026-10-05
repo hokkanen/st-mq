@@ -721,6 +721,7 @@ export function createDeviceProviders({ connections = {}, http, tokenStore, cloc
   }
   const nativeScheduleControl = ocppInstallation ? createOcppScheduleAdapter({ scope: ocppInstallation.scope, clock,
     readCurrentSupply,
+    readDeviceInfo: () => local.deviceInfo?.() ?? null,
     canControl: () => !closed && canControl() && controlBackend === 'native',
     setStartPermission: (snapshot, options = {}) => {
       const current = snapshot ? nativeAppControl() : null;

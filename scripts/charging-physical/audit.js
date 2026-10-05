@@ -6,7 +6,7 @@ import { openPrivateOutput, parseArgs, privatePath, readPrivateJson } from './io
 
 // Offline evidence assessment only: no providers, application writes or device
 // commands. The stream projection deliberately keeps independent source clocks,
-// native readback and measured effects separate. See docs/charging-physical-testing.md.
+// native readback and measured effects separate. See docs/charging/testing.md.
 const MAX_STREAM_BYTES = 128 * 1024 * 1024;
 const MAX_STREAM_RECORDS = 50000;
 const KINDS = ['shelly-priority', 'balanced', 'easee-priority', 'owned-pause-resume', 'fallback', 'native-stop'];
@@ -484,7 +484,7 @@ Usage: node scripts/charging-physical/audit.js --cases /private/run/cases.json -
 Inputs: version 1 manifest plus its sibling observer-prefix status/native/vehicle JSONL files.
 Output: a new private report outside the checkout. No provider or charger requests.
 Exit codes: 0 all required cases passed; 2 incomplete or failed; 1 invalid input.
-See docs/charging-physical-testing.md for setups, evidence and supported cases.`);
+See docs/charging/testing.md for setups, evidence and supported cases.`);
     }else{
     const args=parseArgs(process.argv.slice(2),['cases','out']);
     if(!args.cases||!args.out)throw Error('Explicit --cases and --out are required');

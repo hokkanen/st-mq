@@ -118,13 +118,15 @@ async function handoverOperation(step, operation) {
 }
 
 export function createOcppScheduleAdapter({ request, readSnapshot, isCurrent = () => false,
-  scope, clock = Date.now, canControl = () => false, takeoverNative, setStartPermission = () => {}, readCurrentSupply } = {}) {
+  scope, clock = Date.now, canControl = () => false, takeoverNative, setStartPermission = () => {}, readCurrentSupply,
+  readDeviceInfo = () => null } = {}) {
   if (!scopeValid(scope) || typeof request !== 'function' || typeof readSnapshot !== 'function') throw fail('invalid-ocpp-adapter');
   const adapter = {
     scope, ownershipNamespace: 'ocpp', supportsTakeover: typeof takeoverNative === 'function',
     capabilities: { scheduling: true, currentControl: false, externalLoadBalancing: true },
     ...(typeof readCurrentSupply === 'function' ? { readCurrentSupply } : {}),
     setStartPermission,
+    deviceInfo: () => readDeviceInfo(),
     async read({ signal, forceAppRefresh = false } = {}) { return snapshotFor(await readSnapshot({ signal, forceAppRefresh }), scope, clock()); },
     async composite(snapshot, until, { signal, guard = () => true } = {}) {
       const now = clock(), duration = Math.max(60, Math.ceil((until - now) / 1000));

@@ -2,7 +2,7 @@
 // the isolated application and disposable browser never load household config.
 import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
-import { mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
 import { rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -124,7 +124,10 @@ try {
   await send('Page.addScriptToEvaluateOnNewDocument', { source: `
     globalThis.chargingFixture = { reads: 0, mutations: [], reportMutations: [], reportReads: [], deletedReports: [], declarationChecks: [], runs: [], readOnly: false, family: false, connected: false, archived: false,
       noChargers: false, vehicleReadings: {}, diagnosticsAvailable: true, recent: [], second: { current: null, recent: [] },
-      currentTest: null, currentTestConnected: true };
+      currentTest: null, currentTestConnected: true, devices: {
+        charger1: {model:'Synthetic Easee',firmware:'9.9.1',source:'ocpp-boot',receivedAt:${now - 60000},available:true},
+        charger2: {model:'Synthetic Shelly EVSE',firmware:'9.9.2',source:'shelly-device-info',receivedAt:${now - 120000},available:true}
+      } };
     const N = ${now};
     const field = (value, receipt = false) => ({ value, available: true, measuredAt: receipt ? null : N - 60000,
       receivedAt: N - 30000, retained: false, timeBasis: receipt ? 'receipt-only' : 'measurement' });
@@ -272,9 +275,11 @@ try {
       status.charging.physicalTests = { available: true, canManage: !chargingFixture.readOnly, runs: chargingFixture.runs };
       for (const charger of status.charging.chargers) {
         charger.association = charger.id + '-fixture-association';
+        charger.device = chargingFixture.devices[charger.id] ?? null;
         charger.settings.enabled = true;
         charger.values.connected = field(chargingFixture.connected && charger.id === 'charger1');
-        charger.values.charging = field(false); charger.control = { phase: 'off' };
+        charger.values.charging = field(false); charger.control = { phase: 'off',
+          ...(charger.id === 'charger1' ? {snapshot:{transport:'ocpp'}} : {}) };
         if (chargingFixture.readyBySession && charger.id === 'charger1') {
           charger.request = {sessionId:'ready-by-browser-session',revision:1,chargeNow:false};
           charger.capabilities.scheduling = true;
@@ -341,7 +346,74 @@ try {
   await evaluate("document.getElementById('connections-details').open = true; document.querySelector('#charging-setup-details > summary').focus()");
   await keyPress('Enter');
   assert.equal(await evaluate("document.getElementById('charging-setup-details').open"), true);
-  await evaluate("document.getElementById('charging-setup-bmw-details').open = true; document.getElementById('charging-setup-bmw-test').focus()");
+
+  // Setup owns device facts and installation guidance. These observations have
+  // independent source clocks and never become qualification claims or commands.
+  assert.equal(await evaluate("document.querySelectorAll('.charging-setup-hardware.equipment-setup-hardware > div').length"), 2,
+    'Charging reuses the Garage hardware card pattern for both physical chargers');
+  for (const [id, version] of [['charger1', '9.9.1'], ['charger2', '9.9.2']]) {
+    assert.match(await evaluate(`document.getElementById('charging-setup-${id}-firmware').textContent`), new RegExp(version.replaceAll('.', '\\.')));
+    assert.doesNotMatch(await evaluate(`document.getElementById('charging-setup-${id}-firmware').textContent`), /tested|qualified|verified/i,
+      'Reported device firmware is not presented as tested firmware');
+    assert.match(await evaluate(`document.getElementById('charging-setup-${id}-firmware-source').textContent`), /received|reported/i,
+      'Reported firmware shows its evidence source or receipt clock');
+  }
+  assert.match(await evaluate("document.querySelector('.charging-setup-hardware a[href$=\"#hardware-verification-still-required\"]').textContent"), /Limited checks on firmware 1\.7\.1/,
+    'The separate recorded firmware baseline links to its bounded qualification scope');
+  const originalFirmwareSource = await evaluate("document.getElementById('charging-setup-charger2-firmware-source').textContent");
+  await poll();
+  assert.equal(await evaluate("document.getElementById('charging-setup-charger2-firmware-source').textContent"), originalFirmwareSource,
+    'Polling preserves the original firmware evidence clock');
+  await evaluate('chargingFixture.devices.charger2.available = false'); await poll();
+  assert.match(await evaluate("document.getElementById('charging-setup-charger2-firmware').textContent + ' ' + document.getElementById('charging-setup-charger2-firmware-source').textContent"), /last|unavailable|unconfirmed/i,
+    'Unavailable device evidence cannot imply a current firmware reading');
+  await evaluate('chargingFixture.devices.charger2 = null'); await poll();
+  assert.match(await evaluate("document.getElementById('charging-setup-charger2-firmware').textContent"), /unknown|unavailable|not reported/i,
+    'A missing firmware report stays unknown');
+  await evaluate(`chargingFixture.devices.charger2 = {model:'Synthetic Shelly EVSE',firmware:'9.9.2',source:'shelly-device-info',receivedAt:${now - 120000},available:true}`);
+  await poll();
+  const docPaths = await evaluate(`Array.from(document.querySelectorAll('#charging-setup-content a[href]'), node => node.href)
+    .filter(href => href.startsWith('https://github.com/hokkanen/st-mq/blob/main/docs/'))`);
+  assert(docPaths.length >= 4, 'Charging setup provides links to its user, integration and verification documentation');
+  for (const href of docPaths) {
+    const path = new URL(href).pathname.replace('/hokkanen/st-mq/blob/main/', '');
+    assert(existsSync(join(import.meta.dirname, '../..', path)), `Setup documentation exists: ${path}`);
+  }
+  for (const id of ['charger1', 'charger2']) {
+    await evaluate(`for (let node = document.getElementById('${id}-setup-link'); node; node = node.parentElement)
+      if (node.tagName === 'DETAILS') node.open = true;
+      document.getElementById('connections-details').open = false;
+      document.getElementById('charging-setup-details').open = false;
+      document.getElementById('charging-setup-${id}-details').open = false;
+      document.getElementById('${id}-setup-link').focus()`);
+    await keyPress('Enter');
+    assert.equal(await evaluate(`document.getElementById('connections-details').open
+      && document.getElementById('charging-setup-details').open
+      && document.getElementById('charging-setup-${id}-details').open
+      && document.activeElement === document.querySelector('#charging-setup-${id}-details > summary')`), true,
+      'Session setup link opens the matching device and moves keyboard focus to its heading');
+    await poll();
+    assert.equal(await evaluate(`document.getElementById('charging-setup-${id}-details').open
+      && document.activeElement === document.querySelector('#charging-setup-${id}-details > summary')`), true,
+      'Status polling retains the setup disclosure and focus');
+  }
+  for (const [width, height] of [[320, 568], [390, 667], [1440, 900]]) for (const theme of ['light', 'dark']) {
+    await send('Emulation.setDeviceMetricsOverride', {width, height, deviceScaleFactor:1, mobile:false});
+    await evaluate(`document.documentElement.dataset.theme = '${theme}';
+      for (const fold of document.querySelectorAll('#charging-setup-content details')) fold.open = true`);
+    await fits('#charging-setup-content');
+    const clipped = await evaluate(`Array.from(document.querySelectorAll('#charging-setup-content *')).filter(node => {
+      if (!node.checkVisibility()) return false;
+      const style = getComputedStyle(node);
+      return node.scrollWidth > node.clientWidth + 1 && ['hidden', 'clip'].includes(style.overflowX);
+    }).map(node => node.id || node.className)`);
+    assert.deepEqual(clipped, [], 'Expanded setup keeps device, protocol and firmware evidence readable');
+    await screenshot(`charging-setup-expanded-${width}-${height}-${theme}`, '#charging-setup-details');
+  }
+  assert.equal(await evaluate('chargingFixture.mutations.length'), 0,
+    'Device inspection, documentation and setup navigation do not send charger commands');
+  await send('Emulation.setDeviceMetricsOverride', {width:1440, height:1000, deviceScaleFactor:1, mobile:false});
+  await evaluate("document.getElementById('charging-setup-assessment-details').open = true; document.getElementById('charging-setup-bmw-test').focus()");
   await keyPress('Enter');
   await until("document.getElementById('charging-test-dialog').open");
   await keyPress('Escape');
@@ -584,6 +656,11 @@ try {
   const beforeReadyByEdit = await evaluate('chargingFixture.mutations.length');
   await typeField('#charger1-setting-readyBy', '07:43'); await poll();
   assert.equal(await evaluate("document.getElementById('charger1-setting-readyBy').value"), '07:43');
+  await pointerClick('#charger1-setup-link'); await poll();
+  assert.equal(await evaluate("document.getElementById('charger1-setting-readyBy').value"), '07:43',
+    'Opening device setup and refreshing status preserves an unsaved session draft');
+  assert.equal(await evaluate("document.getElementById('charger1-device').open"), true,
+    'Setup navigation leaves the originating session card expanded');
   await pointerClick('#charger1-setting-readyBy-choose');
   await until("document.getElementById('charging-time-dialog')?.open");
   assert.equal(await evaluate("document.getElementById('charging-time-minute').value"), '43');
@@ -833,7 +910,9 @@ try {
   assert.match(await evaluate("document.querySelector('.charging-report-result').textContent"), /Unplugged · completion unconfirmed/);
   assert.match(await evaluate("document.querySelector('.charging-report-current-findings').textContent"), /0 unresolved findings/);
   assert.equal(await evaluate("document.getElementById('charging-report-session').options.length"), 1, 'Completed reports remain inspectable after unplugging');
+  await evaluate("globalThis.reportDismissed = new Promise(resolve => document.getElementById('charging-report-dialog').addEventListener('close', () => resolve(true), {once:true})); true");
   await keyPress('Escape');
+  await evaluate('reportDismissed');
 
   // Report inspection is scoped to the selected physical charger, including
   // empty and expired histories. All cases below remain read-only browser work.
@@ -1206,6 +1285,8 @@ try {
   assert.equal(await evaluate('chargingFixture.mutations.length'), inspectionMutations, 'All report history inspection remains read-only');
   assert.deepEqual(errors, []);
   console.log(JSON.stringify({ result: 'charging-browser-smoke-passed', artifacts, checks: [
+    'shared-device-card-style', 'reported-firmware-source-clock-and-unknown', 'local-documentation-destinations',
+    'keyboard-session-to-device-setup-navigation', 'setup-disclosure-and-focus-survive-poll', 'short-viewport-expanded-setup',
     'keyboard-disclosures-and-Escape-focus', 'vehicle-stats-without-charger', 'missing-stats-and-capacity-defaults',
     'precise-preparation-errors-and-full-decimal-capacity', 'manual-values-independent-of-vehicle-readings',
     'explicit-different-target-verification-persists-through-reload-and-100-85-flaps', 'raw-target-and-source-clock-remain-visible',

@@ -1,3 +1,4 @@
+import { openChargingSetup } from './charging-setup.js';
 import { actionReceiptRecent } from './action-receipts.js';
 import { isReadOnlyReplica, replicaSnapshotKey } from './replica-status.js';
 import { setStatusDetail } from './status-details.js';
@@ -726,6 +727,14 @@ export function createChargingPanel({ document, request, beforeRequest = () => {
     const explanationFold = make('details', '', 'equipment-fold charging-explanations', `${id}-explanation-details`);
     explanationFold.append(make('summary', 'How charging works'));
     const explanations = make('dl', '', 'equipment-readings', `${id}-explanations`); explanationFold.append(explanations); body.append(explanationFold);
+    const setupReference = make('p', '', 'charging-setup-reference');
+    const setupLink = make('a', 'Charging setup & documentation →', '', `${id}-setup-link`);
+    const setupId = `charging-setup-${id}-details`; setupLink.href = `#${setupId}`;
+    bind(setupLink, 'click', event => {
+      if (event.button !== 0 || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return;
+      event.preventDefault(); openChargingSetup(document, setupId);
+    });
+    setupReference.append(setupLink); body.append(setupReference);
     section.append(summary, body); $('charging-devices')?.append(section);
     const device = { id, limiterBadge, chargeNow, chargeNowState, controlMessage, identify, identificationSection, identificationState, identificationStatus, identificationMessage, section, title, vehicle, state, event, eventLabel, eventValue, overview, sources, metrics, chargeLabel, targetLabel, targetSource, completionLabel, completion, readiness, priority, readingTime, deadline, deadlineLabel, deadlineGroup, facts, deliveredLabel, deliveredValue, remaining, energyLabel, energyValue, costLabel, cost, costMetric, scheduleInfo, scheduleHeading, periodCount, periods, problem, explanations, readings, notes, settings, enabledValue, useAutomatic, takeoverHelp, takeoverMessage, controlDetail, charger, notice, footerHint, sessionStatus };
     bind(identify, 'click', () => {
@@ -992,11 +1001,6 @@ export function createChargingPanel({ document, request, beforeRequest = () => {
       });
       if (charger.limiter) rows.push(['Load balancing', limiter.label, limiter.detail],
         ['Charger setting', limiter.application, 'Native current setting and limiter instruction confirmation, separate from measured charging current.']);
-      if (charger.telemetry?.commissioning) rows.push(['EVSE readiness', !charger.telemetry.commissioning.controlReady ? 'Control unavailable'
-        : charger.capabilities?.currentControl && charger.telemetry.commissioning.currentControlReady !== true
-          ? 'Current limiter unavailable' : 'Start/stop available'], ['Controller loss', 'Autonomous fallback unverified']);
-      if (typeof charger.telemetry?.identificationCurrentReady === 'boolean') rows.push(['Identification current', charger.telemetry.identificationCurrentReady
-        ? 'Temporary minimum available' : 'Temporary minimum unavailable', 'This readiness is separate from the household current limiter. Charger settings and measured draw must both be confirmed during the identification check.']);
       if (charger.values?.vehicleNotBefore?.available) rows.push(['Vehicle may accept from', chargingTime(charger.values.vehicleNotBefore.value, charging.timezone, next.now)]);
       if (charger.values?.vehicleCurrentA?.available) rows.push(['Vehicle current ceiling', number(charger.values.vehicleCurrentA.value, 'A')]);
       if (charger.sessionCost) rows.push(['Connection delivered', number(charger.sessionCost.deliveredGridKwh, 'kWh')]);

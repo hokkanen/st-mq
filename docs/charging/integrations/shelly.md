@@ -1,32 +1,11 @@
-# Charging provider capabilities
+# Shelly EVSE integration
 
-| Capability | Charger 1: Easee | Charger 2: Shelly EVSE | TeslaMate / BMW |
-| --- | --- | --- | --- |
-| Physical home energy | Easee phase intervals | Shelly native meter deltas | Never |
-| Live phase currents and voltages | L1–L3; local OCPP phase-neutral voltage, cloud terminal voltages require verified mapping | L1–L3 from native `phase_info`, in configured phase order | Never used as charger meter readings |
-| Live active power | Reported total; phase energy is estimated | Native phase power and total power | Never used as charger meter readings |
-| Recorded energy check | Stored phase-energy sum versus final native session meter | Not applicable: records native meter increments without power integration | Never a physical meter reference |
-| Connection lifecycle | Timestamped Easee state | Supported physical work-state mapping | Corroborating vehicle edges |
-| Economic control | Exclusive cloud delayed starts or native OCPP expiring 0 A transaction pauses | EVSE start/stop over MQTT RPC | No vehicle writes |
-| Active vehicle identification | One bounded attempt per physical connection; native expiring pause | Same attempt lifecycle; verified minimum-current test and application-managed start-permission pause | Independent live actual current/phase evidence or correlated BMW start/stop |
-| Identification pause recovery | Ordinary correlation pause expires after 90–91 seconds; an extra probe's final economic pause lasts until scheduled release | Persisted restoration obligation; an application/MQTT outage can extend the stop until safe recovery | No charger control |
-| Current changes by ST-MQ | Native OCPP imposes expiring 0 A pauses; released charging uses native current limits | Property-load and priority adjustment by default; scoped 6 A identification test | Read native limits and actual current only |
-| SoC/capacity/target | Assigned vehicle or explicit fallback | Assigned vehicle or explicit fallback | Applicable vehicle evidence |
-| Supply voltage | Physical installation evidence | Physical installation evidence | Never used for home supply |
+[Charging overview](../../charging.md) · [Architecture](../architecture.md)
 
-Charger 1's native OCPP mode takes over authorization and scheduling from the
-cloud. `authorization_mode: "plug-and-charge"` uses a private derived virtual tag
-for RFID-free startup; the default `rfid` mode requires configured tags.
-Native pause expiry releases the restriction and leaves positive charging
-current to the charger, vehicle and Equalizer. Cloud readings can back up local
-telemetry; control does not switch back merely because telemetry does. The
-[Easee qualification scope](charging-easee.md#qualification-scope) separates bounded live observations from
-synthetic protocol validation and untested installation conditions.
-Normal service stop, restart and paired handover keep OCPP enabled. While the
-controller is offline, new charging or Easee app Start can remain blocked waiting
-for approval. Restart ST-MQ to restore local control, or explicitly disable
-Direct OCPP through Easee configuration to return to cloud control. An expired
-pause does not restore cloud authorization.
+This page owns the supported EVSE profile, installation prerequisites, protocol
+capabilities and native command evidence. See [live current allocation](../current-allocation.md)
+for the electrical calculation and [execution and recovery](../execution-and-recovery.md)
+for shared authority rules.
 
 The Charger 2 profile targets the [Top AC Portable EV Charger](https://shelly-api-docs.shelly.cloud/gen2/Devices/ShellyX/XT1/TopACPortableEVCharger/) on Shelly XT1. The integration uses the documented EVSE roles for state, current, start permission and electrical data. This is not a generic Shelly relay adapter. [XT1](https://shelly-api-docs.shelly.cloud/gen2/Devices/ShellyX/XT1/) documents role addressing, service state and access permissions; [Number](https://shelly-api-docs.shelly.cloud/gen2/DynamicComponents/Virtual/Number/) documents numeric limits and `meta.ui.step`.
 
@@ -59,7 +38,16 @@ shares leave a gap and retain the measured increment as diagnostic evidence.
 Easee keeps its existing measured L1–L3 current/voltage readings, reported total
 active power and explicitly estimated phase-energy intervals.
 
-## Connection and automatic readiness
+## Reported device information
+
+The dashboard hardware card uses the model and firmware returned by the existing
+`Shelly.GetDeviceInfo` discovery, with its original receipt time. It excludes
+private device identifiers. After reconnect, discovery must establish current
+metadata again. This display evidence neither enables a capability nor overrides
+the readiness checks below. Historical physical observations belong in
+[qualification](#hardware-verification-still-required).
+
+## Installation and capability readiness
 
 Charger 2 defaults to `enabled:false`. Configure `enabled:true`, a concrete
 `deviceId` and `topicPrefix` under `charging.chargers.charger2`. The integration
@@ -85,7 +73,7 @@ the integration reads it and does not silently rewrite it. A connected charger
 may then remain in `charger_insert` until an authorized Start.
 Disabling Auto charge does not establish that every later device-generated
 permission change is an echo of an application command. The owner-approved
-[system permission exception](charging.md#shelly-system-permission-changes)
+[system permission exception](../execution-and-recovery.md#shelly-system-permission-changes)
 classifies fresh supported `sys` permission changes as device transitions at any
 time or current, including repeated cycles. False or unknown device permission
 blocks replacement Start; fresh Enable clears only that device hold. Existing
@@ -136,47 +124,17 @@ freshly measured Shelly phase current equally from the property phases, so it
 needs no Shelly-to-Easee phase correspondence. `phaseMap` still defines recorded
 phase association and is not inferred by current control.
 
-Property, Easee-current and Equalizer-allowance streams must be healthy, online
-and synchronized in their current connection epochs. Older last-change values
-can remain usable without altering source timestamps. The allowed-current
-fields 230–232 must agree within configured `agreementToleranceA` (2 A by
-default) with `max(0, nativeBudget − property + Easee)` on every phase. The
-native Equalizer budget requires independent verified readback for the current
-equipment and connection; it never replaces Shelly's configured fuse limit and
-margin. Its proof retains the successful native configuration response receipt,
-existing 24-hour cache validity and current acquisition epoch; telemetry reads
-do not refresh it. Pilot field 114 and a circuit current ceiling cannot supply
-that check.
-The comparison does not clip allowance to the circuit ceiling or invent a
-sub-6 A encoding rule. Missing, stale or unverified native budget evidence uses
-fallback. A frozen comparison reference may account for measured Shelly current
-changes under the
-[current-allocation rules](charging.md#charger-2-current-allocation). Clipped or
-delayed allowances must still satisfy the tolerance, except the explicitly
-bounded `below-minimum-idle` inference: observed zero, nonnegative raw native
-headroom below the verified 6 A minimum, and all three native OCPP Easee phase
-currents at most 0.1 A with each original phase source clock and the native
-feed's latest receipt/activity no older than 120 seconds in the same healthy
-epochs. Preserve the reported zero and calculated headroom; this inference does
-not define field encoding or seed a positive comparison
-reference. Other phase contradictions still fail. Changed native budget
-invalidates the comparison reference. Missing or inconsistent feeds
-select configurable `fallbackCurrentA` (12 A by default), respecting known lower
-limits; valid insufficient headroom can instead require a pause. After confirming
-an own current-setting command, asynchronous measurements may hold at most the confirmed
-setting and last validated ceiling for an absolute 60 seconds. Headroom is
-reported unknown during this bounded wait, which permits no further increase
-and never delays fallback for a hard feed outage. Shelly's
-current measurements, commands and native readback retain their strict
-`maxAgeMs` freshness checks. `additiveCurrentVerified` and `maxSkewMs` are retired
-and rejected, without aliases.
+The [current-allocation contract](../current-allocation.md) defines healthy held
+load evidence, the native Equalizer budget comparison, the below-minimum idle
+inference, measurement settling and the configured fallback. These calculations
+never replace the electrical limits configured for this installation.
 
 With the limiter disabled, a known native current setting limits
 the delivery estimate and ordinary economic control sends no current-setting RPC
 or 12 A fallback. The identification reduction and its saved restoration are
 the bounded exception. An unknown current setting uses the charger's configured maximum
 within forecast per-phase property headroom, following the
-[maximum-available-current assumption](charging.md#maximum-available-current-assumption).
+[maximum-available-current assumption](../planning.md#maximum-available-current-assumption).
 That estimate grants no command readiness or control authority.
 With an enabled but unavailable limiter, control waits for its requirements.
 
@@ -270,7 +228,7 @@ restart or unplugging; genuinely newer source evidence takes priority again.
 Native setting reports retain their command-source evidence. A same-value
 `sys` update without an intervening observed permission change is a device refresh
 and does not revoke saved command ownership.
-Fresh `sys` edges follow the [system permission exception](charging.md#shelly-system-permission-changes),
+Fresh `sys` edges follow the [system permission exception](../execution-and-recovery.md#shelly-system-permission-changes),
 which preserves physical stops and unrelated native instructions. It does not
 extend the exception to native current changes or uncertain application commands.
 A newer external update retains manual priority, including a repeated selection
@@ -307,42 +265,15 @@ authority and scope are rechecked after awaits immediately before publication.
 
 Status distinguishes proposed, dispatched, accepted, read-back and physical-effect stages. A successful RPC response alone proves no current reduction. A possible dispatch followed by timeout/restart remains uncertain until a compatible fresh native reading reconciles it. Manual changes survive priority changes and current-format restart within their connection scope.
 
-Vehicle identification uses the same one-attempt lifecycle as Easee, including
-when Automatic charging is OFF or Charge now is selected. Waiting for the
-vehicle to allow charging consumes no delivered-energy budget. Ordinary
-authorized charging has no short identification timeout. Extra charging during
-an economic delay uses native limits and a 0.15 kWh allowance,
-with a separate safety duration and metering-loss cutoff. These application guards
-depend on working communication and can be delayed by an outage. Suitable BMW evidence
-permits an earlier pause. The stop and its restoration obligation are saved before
-dispatch and remain scoped to the equipment, physical connection and attempt.
-Identification requires fresh physical noncharging evidence and the independent
-vehicle response, in addition to native start-permission readback. With a BMW
-baseline, physical confirmation retains the bounded pause until independent
-identity confirmation or its original deadline, so BMW can observe the stop.
-It ends probe-energy accounting immediately. A stop without a BMW baseline
-returns to the current charging choice immediately; matching timestamped reports
-remain usable until unplugging. Delayed receipt does not relax the source-time
-correlation or turn silence into identification.
+## Identification command support
 
-When Tesla context and verified current capability permit, Charger 2 first uses
-the supported 6 A minimum for a bounded comparison. The saved test owns only
-that connection, original setting and fixed 90-second deadline. A setting
-acknowledgement cannot identify a car: fresh measured phase currents must settle
-at the minimum, fresh Tesla actual current from after the readback must agree
-uniquely, and energized-phase count and power must corroborate the comparison.
-Held pre-test Tesla current, similar peer current or missing peer measurements
-leave identification pending. A unique response may identify Tesla on either
-charger; it never identifies BMW by elimination. Charger 1's positive current
-remains owned by its native controls and Equalizer.
-When BMW's own valid start/stop episode matches both unchanged connections, the
-unique Tesla comparison may jointly assign BMW to the other charger using that
-positive episode. Different contradictory BMW evidence remains unresolved;
-source, retry, consumption and restart checks still apply. See the
-[joint assignment rule](charging.md#vehicle-assignment).
-A confirmed comparison retains its original clocks for delayed BMW reports
-only within the same connections, attempts and feed associations. This retained
-identity evidence does not make held current fresh or authorize another test.
+The [shared identification contract](../identification.md) owns attempt budgets,
+positive matching, the scoped 6 A comparison, BMW pause handoff and restoration.
+Shelly provides native start-permission/current readback and fresh physical
+measurements to that contract. It has no native expiry for the temporary current
+setting or identification pause: an application/MQTT outage can prolong either,
+and recovery must reconcile the original scoped obligation.
+
 A late Shelly Start notification may carry a fractional native clock slightly
 before the application's dispatch clock in the same native setting second. Its
 original clock is preserved. Attribution requires the acknowledged same-session
@@ -350,31 +281,6 @@ Start and a fresh matching RPC readback requested after both acknowledgement and
 notification receipt, while that accepted command is still pending confirmation.
 This does not absorb Stop, different-second events or events without an RPC
 source, or permit a second write after an uncertain result.
-After a unique Tesla match on the peer, an independent BMW baseline may hand
-the same attempt to its one pause before the original current-test deadline.
-An unresolved current comparison retains priority. The BMW pause preserves its
-own deadline through current restoration. Any remaining lower current stays
-until fresh physical zero confirms the owned stop; expiry creates no new test
-or pause.
-
-Completion or expiry restores the original current subject to current limits;
-with the economic limiter enabled, its current safe ceiling also applies.
-A newer external current instruction supersedes the saved restoration. The
-scope, deadline, original setting and uncertain dispatch/readback survive
-restart; the test does not repeat automatically. There is no native current-test
-expiry, so an outage can prolong the reduction. Recovery needs fresh native
-evidence and command authority; an uncertain write is not blindly repeated.
-
-The Shelly identification pause has a 90–91 second application deadline and no
-charger-side expiry. If the application or broker connection is unavailable,
-the stop can last longer. Recovery reconciles the saved command against fresh
-readings before returning to normal control for that same connection. An
-unconfirmed stop that cannot be attributed to the saved command requires
-explicit resume. Manual
-Stop, active native schedules and electrical limits retain priority; a saved
-test cannot authorize starting a replacement connection. **Identify** permits
-an explicit retry or recheck when control is available and no test is ongoing.
-It never renews an uncertain command or repeats an expired attempt automatically.
 
 ## Hardware verification still required
 

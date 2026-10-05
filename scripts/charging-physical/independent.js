@@ -11,7 +11,7 @@ Usage: node scripts/charging-physical/independent.js --config /private/config.js
   --status /private/run-status.jsonl --out /private/independent.jsonl --duration-seconds 300
 Uses the existing private access token without refresh. No charger commands.
 Writes a sibling independent-budget-read.json proof; files must not already exist.
-See docs/charging-physical-testing.md. Not part of npm test.`;
+See docs/charging/testing.md. Not part of npm test.`;
 
 export function validateEaseeConfig(value) {
   objectKeys(value, ['accessToken', 'chargerId', 'equalizerId', 'mainFuseA', 'marginA', 'toleranceA'],

@@ -1295,6 +1295,7 @@ export class ChargingRuntime {
         && control.currentTest?.connectedAt === control.session?.connectedAt ? control.currentTest ?? null : null;
       const limiter = item.definition.provider === 'shelly-evse' ? this.limiterStatus(control, now) : null;
       return { ...charger, defaults, association: item.association, controls: { ...item.controls },
+        device: item.adapter?.deviceInfo?.() ?? null,
         ...(limiter ? { limiter } : {}),
         identification: { ...item.identification,
           currentTest,

@@ -358,7 +358,7 @@ rule as an open door. Independent fresh pipe and room evidence continues
 protection; lost protection inputs require restoration. An existing external
 temperature sample or manual timed OFF lease keeps its original local expiry
 while the replacement host reacquires fresh state. Promotion cannot renew either
-permission from copied observations. See [charging outages](charging.md#missing-vehicle-feeds-and-takeover)
+permission from copied observations. See [charging outages](charging/execution-and-recovery.md#missing-feeds-and-controller-outages)
 and [garage protection](garage.md#independent-freeze-protection).
 
 Home heating restoration still requires a reachable H66 gateway and broker.
@@ -401,7 +401,7 @@ database. If an explicit OCPP password is configured, provide the same value
 in both private configurations. Do not use an independently generated
 standalone credential on each paired computer. The ordinary requirements for
 each computer's own Easee cloud credentials still apply. See
-[Easee setup](charging-easee.md) for commissioning and endpoint requirements.
+[Easee setup](charging/integrations/easee.md) for commissioning and endpoint requirements.
 
 Before stopping the current master, handover checks that the slave can accept
 the same endpoint, charger identity, credentials, authorization mode and tags. It

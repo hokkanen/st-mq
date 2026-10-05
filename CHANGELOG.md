@@ -37,6 +37,11 @@ Versions follow Semantic Versioning. `-dev.N` denotes a development prerelease.
 
 ### Changed
 
+- Charging setup now groups charger device information, reported firmware,
+  connection setup, vehicle feeds and documentation in Data & settings.
+  Charger cards keep session schedules, readings and controls, with direct
+  navigation to setup. Charging documentation separates user guidance, policy,
+  implementation responsibilities, integrations and optional physical testing.
 - Shelly current adjustment defaults on independently of Automatic scheduling,
   including Charge now. Healthy synchronized Easee feeds can retain unchanged
   older values when property and allowed-current evidence agree. Shelly uses

@@ -8,7 +8,7 @@ npm run test:live
 ```
 
 For observation of deliberately operated chargers, use the separate
-[optional physical development runbook](charging-physical-testing.md). Its
+[optional physical development runbook](charging/testing.md). Its
 observer and offline auditor help qualify selected new charger features; they
 are not part of this provider suite or a requirement for every commit. Neither
 the provider suite nor the physical observer starts/stops a charger.
