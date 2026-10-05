@@ -418,14 +418,16 @@ controller ceiling, and a confirmed native setting or pause instruction is not
 physical charging or zero-power evidence. Native and vehicle restrictions can
 reduce the effective allowance without changing an unrestricted load allowance.
 Manual and scheduled stops never become balancing pauses merely because power
-is zero. An unavailable native Equalizer budget records **Fallback** with its
-specific reason; it is not verified load headroom. The native budget supplies
-comparison context only and never reinterprets recorded configured electrical
-limits or earlier decisions. A bounded measurement-settling hold records the
-existing **Unknown** mode with reason `measurement-settling`, the held allowance and separate native
-setting readback. It does not present the held ceiling as newly verified headroom
-or extend the preceding verified span. Repeated unchanged waiting observations
-only extend that unknown span; they add no periodic rows or new schema fields.
+is zero. Unavailable or invalid property/charger source evidence records
+**Fallback** with its specific reason; fallback is not verified load headroom.
+Equalizer's reported allowance and native budget do not gate live current
+allocation. Held unchanged readings admitted through healthy current reporting
+preserve their original source clocks. Missing decision coverage stays
+**Unknown** rather than claiming a confirmed allocation or physical result.
+Pending observation pairing records **Unknown** with reason
+`measurement-pair-pending`, its bounded held allowance and separate native
+setting. It does not extend the earlier verified interval or claim a newly
+validated household subtraction.
 See [current allocation](charging/current-allocation.md#charger-2-current-allocation).
 
 This history does not expire with unsaved charging-session reports, whose default

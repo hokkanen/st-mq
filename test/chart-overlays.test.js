@@ -392,14 +392,13 @@ test('Shelly limiter history keeps exact allowance changes, fallback and unknown
     { start: 200, end: 300, mode: 'paused-by-balancing', allowanceA: 0, reason: 'fuse-limit', appliedCurrentA: 6, applicationStatus: 'confirmed' },
     { start: 300, end: 400, mode: 'fallback', allowanceA: 12, reason: 'feed-unavailable', appliedCurrentA: null, applicationStatus: 'unknown' },
     { start: 400, end: 500, mode: 'unknown', allowanceA: null, reason: 'controller-unavailable', appliedCurrentA: null, applicationStatus: 'unknown' },
-    { start: 500, end: 600, mode: 'unknown', allowanceA: 14, loadAllowanceA: 14, reason: 'measurement-settling', appliedCurrentA: 14, applicationStatus: 'confirmed' },
+    { start: 500, end: 600, mode: 'unknown', allowanceA: null, loadAllowanceA: null, reason: 'charger-unavailable', appliedCurrentA: null, applicationStatus: 'unknown' },
   ];
   f.payload.limiterHistory = { spans }; f.setTracks([descriptor]);
   assert.deepEqual(activityIntervals(descriptor, f.payload).map(({ value, ...interval }) => interval), spans);
   assert.match(activityIntervalLabel(descriptor, spans[1]), /Limited · 8 A allowance · Charger priority\nAwaiting charger confirmation · last confirmed setting 12 A/);
   assert.match(activityIntervalLabel(descriptor, spans[2]), /Paused by balancing · 0 A.*\nPause instruction confirmed/);
-  assert.match(activityIntervalLabel(descriptor, spans[5]), /Unknown · Waiting for matching load readings\nHeld allowance: 14 A\nCharger setting: 14 A confirmed/);
-  assert.equal(activityIntervalLabel(descriptor, spans[5]).match(/Waiting for matching load readings/g).length, 1);
+  assert.match(activityIntervalLabel(descriptor, spans[5]), /Unknown · Charger unavailable\nCharger setting unconfirmed/);
   const track = f.container.children[0].children[1].children[0];
   assert.equal(track.children.at(-1).dataset.pattern, 'unknown');
   assert.equal(track.children[0].dataset.value, 'unrestricted');
@@ -412,6 +411,6 @@ test('Shelly limiter history keeps exact allowance changes, fallback and unknown
   assert.match(f.readout.textContent, /Limited · 8 A/);
   f.pointer('keydown', { key: 'End' }, f.document.activeElement);
   assert.match(f.readout.textContent, /Unknown/);
-  assert.match(f.readout.textContent, /Waiting for matching load readings/);
+  assert.match(f.readout.textContent, /Charger unavailable/);
   assert.match(f.container.children[0].children[2].textContent, /Unknown/, 'The selected interval is available to screen readers with the title fold closed');
 });

@@ -353,25 +353,22 @@ test('native current supply reads admitted stream and OCPP samples without polli
     [CHARGER, [...rows([183, 184, 185], [9, 9, 9]), { id: 250, value: true, timestamp: new Date(AT).toISOString() }]],
   ]); };
   stream();
-  let httpCount = f.events.filter(row => row.type === 'http').length;
+  const httpCount = f.events.filter(row => row.type === 'http').length;
   let reading = adapter.readCurrentSupply();
   assert.equal(reading.online, true);
   assert.deepEqual(reading.supply.propertyCurrentA, [20, 21, 22]);
   assert.deepEqual(reading.supply.chargerCurrentA, [3, 4, 5], 'Admitted local meter samples precede cloud charger samples');
   assert.deepEqual(reading.supply.currentSources, { property: 'easee-stream', charger: 'easee-ocpp' });
-  const budget = structuredClone(reading.supply.nativeBudget);
-  assert.equal(budget.currentA, 27); assert.equal(budget.source, 'easee-equalizer-config');
-  assert.ok(budget.confirmedAt <= f.now); assert.equal(budget.validUntil - budget.confirmedAt, 24 * 3600_000);
+  assert.equal(Object.hasOwn(reading.supply, 'nativeBudget'), false);
+  assert.equal(Object.hasOwn(reading.supply, 'availableCurrentA'), false);
   f.advance(1000); property = rows([31, 32, 33], [25, 26, 27]); stream();
   reading = adapter.readCurrentSupply();
   assert.deepEqual(reading.supply.propertyCurrentA, [25, 26, 27], 'A new stream sample is visible without controller/cloud polling');
   const sourceTimes = structuredClone(reading.supply.observationTimes);
   f.advance(20_000);
   assert.deepEqual(adapter.readCurrentSupply().supply.observationTimes, sourceTimes,
-    'Repeated getters leave old samples old so the limiter can choose fallback');
+    'Repeated getters preserve the original source clocks');
   assert.equal(f.events.filter(row => row.type === 'http').length, httpCount);
-  assert.deepEqual(adapter.readCurrentSupply().supply.nativeBudget, budget,
-    'The live evidence getter preserves the actual native configuration receipt');
   for (const invalid of [
     rows([31, 32, 33], [null, 20, 20]), rows([31, 32], [20, 20]),
     rows([31, 32, 33], [20, 20, 20], f.now + 1000),
@@ -391,22 +388,13 @@ test('native current supply reads admitted stream and OCPP samples without polli
   assert.deepEqual(adapter.readCurrentSupply().supply.chargerCurrentA, [9, 9, 9],
     'An independent admitted stream can supply phases when no local phases exist');
   f.streamConnected = false;
-  assert.equal(adapter.readCurrentSupply().supply.nativeBudget, null,
-    'A new acquisition epoch cannot borrow the old native configuration proof');
   assert.equal(adapter.readCurrentSupply().supply.propertyCurrentA, null,
     'Disconnect fences cached supply from before the acquisition boundary');
   assert.equal(f.events.filter(row => row.type === 'http').length, httpCount);
   await adapter.read({ forceAppRefresh: true });
-  httpCount = f.events.filter(row => row.type === 'http').length;
   reading = adapter.readCurrentSupply();
-  assert.equal(reading.supply.nativeBudget.currentA, 27);
-  assert.equal(reading.supply.nativeBudget.equipment, budget.equipment);
-  assert.ok(reading.supply.nativeBudget.confirmedAt > budget.confirmedAt,
-    'A successful configuration GET establishes new proof after acquisition recovery');
-  assert.deepEqual(reading.supply.propertyCurrentA, [5, 5, 5]);
-  assert.deepEqual(reading.supply.observationTimes.property, [AT, AT, AT]);
-  assert.equal(reading.supply.currentSources.property, 'easee-cloud');
-  assert.equal(f.events.filter(row => row.type === 'http').length, httpCount);
+  assert.equal(reading.supply.propertyCurrentA, null,
+    'A successful REST read cannot substitute for a disconnected synchronized property stream');
   await provider.close();
   reading = adapter.readCurrentSupply();
   assert.equal(reading.online, false);
@@ -414,7 +402,7 @@ test('native current supply reads admitted stream and OCPP samples without polli
   assert.equal(reading.supply.chargerCurrentA, null);
 });
 
-test('current supply keeps held allowance, circuit limits and stream health separate from native meter receipts', async t => {
+test('current supply keeps held property state and stream health separate from native meter receipts', async t => {
   const f = fixture(t, { equalizer: true, streaming: true });
   const provider = f.make(); await provider.reconcileOcpp();
   provider.startStreaming(); await new Promise(resolve => setImmediate(resolve));
@@ -423,8 +411,7 @@ test('current supply keeps held allowance, circuit limits and stream health sepa
   const rows = (ids, values, at = old) => ids.map((id, index) => ({ id, value: values[index], unit: 'A',
     timestamp: new Date(at).toISOString() }));
   const propertyRows = rows([31, 32, 33], [4, 5, 6]);
-  const chargerRows = [...rows([230, 231, 232], [0, 21, 19]), ...rows([22, 23, 24], [16, 16, 16]),
-    ...rows([183, 184, 185], [0, 0, 0])];
+  const chargerRows = rows([183, 184, 185], [0, 0, 0]);
   const streamEvidence = new Map([
     ['fixture-equalizer', { source: 'easee-stream', connected: true, online: true, synchronized: true,
       epoch: '1:0', receivedAt: AT, activityAt: null, sourceAt: null, observations: propertyRows }],
@@ -444,12 +431,9 @@ test('current supply keeps held allowance, circuit limits and stream health sepa
   const supply = adapter.readCurrentSupply().supply;
   assert.deepEqual(supply.propertyCurrentA, [4, 5, 6], 'A newer shared REST cache cannot masquerade as live stream evidence');
   assert.deepEqual(supply.observationTimes.property, [old, old, old], 'A newer unchanged REST observation cannot renew stream source clocks');
-  assert.deepEqual(supply.availableCurrentA, [0, 21, 19], 'Zero is preserved and Equalizer allowance is not clipped to charger circuit limits');
-  assert.deepEqual(supply.circuitCurrentA, [16, 16, 16]);
   assert.deepEqual(supply.chargerCurrentA, [2, 3, 4]);
-  assert.deepEqual(supply.observationTimes.allowance, [old, old, old]);
-  assert.equal(supply.feedEvidence.allowance.synchronized, true);
-  assert.equal(supply.feedEvidence.allowance.activityAt, null, 'Synchronized held state is not a fresh measurement');
+  assert.equal(supply.feedEvidence.property.synchronized, true);
+  assert.equal(supply.feedEvidence.property.activityAt, null, 'Synchronized held state is not a fresh measurement');
   assert.equal(supply.feedEvidence.charger.source, 'easee-ocpp');
   assert.equal(supply.feedEvidence.charger.activityAt, f.now);
   assert.equal(supply.feedEvidence.charger.epoch, 'current-supply-socket');
@@ -461,7 +445,44 @@ test('current supply keeps held allowance, circuit limits and stream health sepa
   const invalid = adapter.readCurrentSupply().supply;
   assert.equal(invalid.propertyCurrentA, null, 'Old property rows cannot cross a device recovery boundary');
   assert.equal(invalid.feedEvidence.property.synchronized, false);
-  assert.deepEqual(invalid.availableCurrentA, [0, 21, 19], 'One device recovery does not erase the other independent feed');
+  assert.deepEqual(invalid.chargerCurrentA, [2, 3, 4], 'One device recovery does not erase the other independent feed');
+});
+
+test('cloud and native control use the same held property feed without Equalizer allowance or configuration reads', async t => {
+  for (const native of [false, true]) {
+    const f = fixture(t, { equalizer: true, streaming: true });
+    const provider = f.make(native); await provider.reconcileOcpp();
+    provider.startStreaming(); await new Promise(resolve => setImmediate(resolve));
+    f.advance(3600_000);
+    const rows = (ids, values) => ids.map((id, index) => ({ id, value: values[index], unit: 'A',
+      timestamp: new Date(AT).toISOString() }));
+    const property = rows([31, 32, 33], [14, 15, 16]), charger = rows([183, 184, 185], [8, 8, 8]);
+    const online = { id: 250, value: true, timestamp: new Date(AT).toISOString() };
+    f.streamRows = new Map([['fixture-equalizer', [...property, online]], [CHARGER, [...charger, online]]]);
+    const evidence = observations => ({ source: 'easee-stream', connected: true, online: true, synchronized: true,
+      epoch: '1:0', receivedAt: AT, activityAt: null, sourceAt: null, observations });
+    f.streamEvidence = new Map([['fixture-equalizer', evidence(property)], [CHARGER, evidence(charger)]]);
+    // Simulate an unavailable native control connection. Its availability must
+    // not gate independent Equalizer state or admitted cloud peer measurements.
+    f.listeners.at(-1).control = { ...f.listeners.at(-1).control, timestamp: f.now + 1000 };
+    const adapter = provider.chargerScheduleControl(), httpCount = f.events.filter(row => row.type === 'http').length;
+    const reading = adapter.readCurrentSupply();
+    assert.equal(reading.online, true);
+    assert.deepEqual(reading.supply.propertyCurrentA, [14, 15, 16]);
+    assert.deepEqual(reading.supply.chargerCurrentA, [8, 8, 8]);
+    assert.deepEqual(reading.supply.observationTimes, { property: [AT, AT, AT], charger: [AT, AT, AT] });
+    assert.deepEqual(reading.supply.currentSources, { property: 'easee-stream', charger: 'easee-stream' });
+    assert.equal(reading.supply.feedEvidence.property.synchronized, true);
+    assert.equal(reading.supply.feedEvidence.charger.synchronized, true);
+    assert.equal(Object.hasOwn(reading.supply, 'availableCurrentA'), false);
+    assert.equal(Object.hasOwn(reading.supply, 'nativeBudget'), false);
+    assert.equal(f.events.filter(row => row.type === 'http').length, httpCount);
+    f.streamConnected = false;
+    const disconnected = adapter.readCurrentSupply();
+    assert.equal(disconnected.online, false);
+    assert.equal(disconnected.supply.propertyCurrentA, null);
+    assert.equal(disconnected.supply.chargerCurrentA, null);
+  }
 });
 
 test('unconfirmed native cleanup retains its listener and commissioning obligation without applying OcppOff', async t => {

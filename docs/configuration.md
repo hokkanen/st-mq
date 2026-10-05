@@ -397,7 +397,11 @@ physical integration and does not grant scheduling or commissioning permission.
 property load and shared charger priority during ordinary charging and Charge
 now, independently of Automatic scheduling. An explicit `false` opts into basic
 native-current start/stop. Configure `maximumCurrentA` (normally 16), per-phase
-`mainFuseA` and `marginA`; these are installation limits, not inferred settings.
+`mainFuseA` and `marginA`; these are installation settings, not inferred values.
+The effective phase budget is `mainFuseA - marginA`. Positive margins leave
+headroom; negative margins intentionally increase the budget for user
+calibration. `marginA` accepts -200 to 200 A per phase, including decimals, and
+each effective phase budget must remain positive. The default remains 1 A.
 Usable load feeds permit 0 or 6–16 A. `fallbackCurrentA`, initially 12 A, applies
 when those feeds are unusable and remains subject to known tighter limits. It is
 neither a minimum current nor a permanent ceiling on forecast delivery. With
@@ -406,18 +410,18 @@ and Charger 1's Equalizer must yield.
 
 | Charger 2 setting | Ownership and current default |
 | --- | --- |
-| `agreementToleranceA` | 2 A tolerance for the independent native Equalizer budget comparison |
-| `maxAgeMs` | 15000 ms bound for Shelly measurements, command readiness and native readback |
+| `mainFuseA`, `marginA` | Declared fuse ratings and signed calibration margins; effective phase budget is their difference |
+| `maxAgeMs` | 15000 ms bound for Shelly command readiness and current native readback; unchanged measurement clocks alone do not expire held values |
 | `dwellMs`, `rampA` | 30000 ms and 2 A for current increases and resumption; reductions do not wait for increase dwell |
 | `phaseMap` | Recorded phase-energy association; the limiter's conservative common-current calculation needs no Shelly-to-Easee phase map |
 
 The [current-allocation contract](charging/current-allocation.md) owns the exact
-headroom calculation, held-feed admission, independently verified native budget,
-`below-minimum-idle` inference, fixed comparison reference, bounded settling and
-fallback rules. Native budget readback is evidence, not another configuration
-default, and cannot raise the configured electrical limits. These mechanisms add
-no separate feed-age or settling configuration. Retired `additiveCurrentVerified`
-and `maxSkewMs` fields are rejected rather than translated. Integration identity,
+headroom calculation, held-feed admission, observation pairing, allocation-led priority and fallback
+rules. Equalizer supplies property consumption; its reported allowance and native
+budget are not prerequisites for Shelly load balancing. Shelly's allocation does
+not chase Charger 1's draw or take over while Equalizer could remove an excess.
+Retired `agreementToleranceA`, `additiveCurrentVerified` and `maxSkewMs` fields
+are rejected rather than translated. Integration identity,
 capability discovery and native setup are described in the
 [Shelly guide](charging/integrations/shelly.md#installation-and-capability-readiness).
 

@@ -571,8 +571,9 @@ export function createDeviceProviders({ connections = {}, http, tokenStore, cloc
     const requiredIds = ids.filter(id => !optional.has(id));
     return (await observationResult(device, ids, { requiredIds, ...options })).payload;
   }
-  const scheduleControl = createEaseeScheduleAdapter({ request: easeeAuthenticated, readObservations,
-    chargerId: easee.charger_id, equalizerId: easee.equalizer_id, clock, canControl: () => !invalidOcppSetup && canControl() });
+  const scheduleControl = Object.assign(createEaseeScheduleAdapter({ request: easeeAuthenticated, readObservations,
+    chargerId: easee.charger_id, equalizerId: easee.equalizer_id, clock, canControl: () => !invalidOcppSetup && canControl() }),
+  { readCurrentSupply });
   async function settleNativeClock({ signal } = {}) {
     const remaining = local.controlClockDelayMs?.() ?? 0;
     if (!(remaining > 0 && remaining <= 1000)) return false;
@@ -590,7 +591,7 @@ export function createDeviceProviders({ connections = {}, http, tokenStore, cloc
     canControl: () => !closed && !invalidOcppSetup && canControl() && controlBackend === 'native',
     settleReadback: settleNativeClock,
   });
-  let nativeCloudSnapshot = null, nativeCloudSnapshotEpoch = null, nativeCloudSchedule = null, nativeCloudFlight = null, nextNativeCloudRead = 0;
+  let nativeCloudSnapshot = null, nativeCloudSchedule = null, nativeCloudFlight = null, nextNativeCloudRead = 0;
   let nativeDynamicChargerAt = null;
   function refreshNativeCloudTelemetry({ force = false } = {}) {
     if (closed) return null;
@@ -602,7 +603,7 @@ export function createDeviceProviders({ connections = {}, http, tokenStore, cloc
     // priority or prevent exact-ID native cleanup. No cloud schedules are written.
     nativeCloudFlight = Promise.allSettled([
       scheduleControl.readTelemetry({ signal: lifetime.signal, forceRest: force, configurationEpoch: epoch }).then(snapshot => {
-        nativeCloudSnapshot = snapshot; nativeCloudSnapshotEpoch = epoch;
+        nativeCloudSnapshot = snapshot;
       }),
       easeeAuthenticated(`${API}/api/chargers/${encodeURIComponent(easee.charger_id)}/schedules`,
         { method: 'GET', signal: lifetime.signal }).then(value => {
@@ -669,17 +670,8 @@ export function createDeviceProviders({ connections = {}, http, tokenStore, cloc
       return { currents: values.every(row => row.value !== null) ? values.map(row => row.value) : null,
         times: values.map(row => row.at), source };
     };
-    const cloud = current && nativeCloudSnapshotEpoch === electricityEpoch && nativeCloudSnapshot?.online === true
-      && now >= nativeCloudSnapshot.readAt && now - nativeCloudSnapshot.readAt <= 300_000 ? nativeCloudSnapshot.supply : null;
-    const nativeBudget = current && nativeCloudSnapshotEpoch === electricityEpoch
-      ? nativeCloudSnapshot?.supply?.nativeBudget ?? null : null;
-    const cached = (kind, field) => cloud ? {
-      currents: Array.isArray(cloud[field]) ? [...cloud[field]] : null,
-      times: [...(cloud.observationTimes?.[kind] ?? [null, null, null])], source: 'easee-cloud',
-      evidence: unavailableEvidence('easee-cloud'),
-    } : unknown();
     const streamed = (device, ids) => {
-      if (!current || !supplied(device)) return null;
+      if (closed || !supplied(device)) return null;
       const rows = stream?.snapshot(device, [...ids, 250], { requiredIds: [] });
       const suppliedEvidence = stream?.evidence?.(device, ids);
       const { observations, ...evidence } = suppliedEvidence ?? unavailableEvidence('easee-stream');
@@ -693,15 +685,10 @@ export function createDeviceProviders({ connections = {}, http, tokenStore, cloc
     };
     const propertyStream = streamed(easee.equalizer_id, [31, 32, 33]);
     const chargerStream = streamed(easee.charger_id, [183, 184, 185]);
-    const allowance = streamed(easee.charger_id, [230, 231, 232]) ?? cached('allowance', 'availableCurrentA');
-    const circuit = streamed(easee.charger_id, [22, 23, 24]) ?? { ...unknown(), source: 'easee-cloud',
-      evidence: unavailableEvidence('easee-cloud'),
-      currents: cloud && Array.isArray(nativeCloudSnapshot?.limits?.circuitA) ? [...nativeCloudSnapshot.limits.circuitA] : null,
-      times: cloud ? [22, 23, 24].map(id => nativeCloudSnapshot.observations?.[id]?.at ?? null) : [null, null, null] };
     const nativeRows = current?.readings?.filter(row => [183, 184, 185].includes(row.id)) ?? [];
-    const property = propertyStream ?? cached('property', 'propertyCurrentA');
+    const property = propertyStream ?? unknown();
     const charger = nativeRows.length ? phases(nativeRows, [183, 184, 185], 'easee-ocpp')
-      : chargerStream ?? cached('charger', 'chargerCurrentA');
+      : chargerStream ?? unknown();
     if (nativeRows.length) {
       const receipts = nativeRows.map(row => row.receivedAt).filter(at => Number.isSafeInteger(at) && at <= now);
       charger.evidence = { source: 'easee-ocpp', connected: true, online: true, synchronized: charger.currents !== null,
@@ -709,15 +696,16 @@ export function createDeviceProviders({ connections = {}, http, tokenStore, cloc
         activityAt: receipts.length ? Math.max(...receipts) : null,
         sourceAt: charger.currents !== null ? Math.max(...charger.times) : null };
     }
-    // Reading this view performs no provider request and never renews a source
-    // clock. Stream connection health and live activity are separate evidence.
-    return { online: Boolean(current), supply: { propertyCurrentA: property.currents, chargerCurrentA: charger.currents,
-      availableCurrentA: allowance.currents, circuitCurrentA: circuit.currents,
-      allocationA: cloud ? cloud.allocationA ?? nativeCloudSnapshot.limits?.allocationA ?? null : null,
-      nativeBudget: nativeBudget ? { ...nativeBudget } : null,
-      observationTimes: { property: property.times, charger: charger.times, allowance: allowance.times, circuit: circuit.times },
+    // This same view serves both control backends. Property measurements are
+    // independent of OCPP control readiness, native Equalizer configuration and
+    // its offered current. An admitted cloud stream supplies peer currents when
+    // local periodic meter samples are unavailable. REST cache reads cannot
+    // establish synchronized live state or renew any original source clock.
+    return { online: !closed && (Boolean(current) || property.evidence.online === true && charger.evidence.online === true),
+      supply: { propertyCurrentA: property.currents, chargerCurrentA: charger.currents,
+      observationTimes: { property: property.times, charger: charger.times },
       currentSources: { property: property.source, charger: charger.source },
-      feedEvidence: { property: property.evidence, charger: charger.evidence, allowance: allowance.evidence, circuit: circuit.evidence } } };
+      feedEvidence: { property: property.evidence, charger: charger.evidence } } };
   }
   const nativeScheduleControl = ocppInstallation ? createOcppScheduleAdapter({ scope: ocppInstallation.scope, clock,
     readCurrentSupply,

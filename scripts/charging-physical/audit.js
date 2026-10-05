@@ -140,13 +140,6 @@ function feedEvidence(c,file,directory){if(!file||!file.endsWith('.jsonl'))retur
 const supplyFeed=e=>['easee-stream','easee-ocpp'].includes(e?.source);
 const badFeed=e=>supplyFeed(e)&&(e.connected===false||e.online===false||e.synchronized===false);
 const goodFeed=e=>supplyFeed(e)&&e.connected===true&&e.online===true&&e.synchronized===true;
-function validNativeBudget(budget,at){return budget?.source==='easee-equalizer-config'
-  &&typeof budget.equipment==='string'&&budget.equipment.length>0
-  &&finite(budget.currentA)&&budget.currentA>=0&&budget.currentA<=1000
-  &&time(budget.confirmedAt)&&budget.confirmedAt<=at&&time(budget.validUntil)
-  &&budget.validUntil>at&&budget.validUntil>budget.confirmedAt
-  &&budget.validUntil-budget.confirmedAt<=24*3600_000;}
-function sameBudget(a,b){return ['currentA','source','equipment','confirmedAt','validUntil'].every(k=>a?.[k]===b?.[k]);}
 function independentFeedRows(file,directory){
   if(!safeName(file))return null;const full=privatePath(path.join(directory,file)),stat=fs.lstatSync(full);
   if(!stat.isFile()||stat.isSymbolicLink()||(stat.mode&0o077)!==0||stat.size>64*1024*1024)throw Error('Independent feed evidence exceeds bound');
@@ -154,115 +147,6 @@ function independentFeedRows(file,directory){
   const result=new Map();for(const line of lines){if(!line.trim())continue;const row=JSON.parse(line);
     if(!row||typeof row!=='object'||Array.isArray(row)||!time(row.at))throw Error('Unsupported independent evidence record');
     result.set(row.at,row);}return result;
-}
-function streamPhases(rows,start){
-  if(!Array.isArray(rows))return null;const selected=[0,1,2].map(i=>rows.filter(r=>r.id===start+i));
-  if(selected.some(r=>r.length!==1))return null;
-  const values=selected.map(([r])=>r.value),times=selected.map(([r])=>typeof r.timestamp==='number'?r.timestamp
-    :typeof r.timestamp==='string'&&/T.*(?:Z|[+-]\d\d:\d\d)$/i.test(r.timestamp)?Date.parse(r.timestamp):null);
-  return vector(values)&&times.every(time)?{values,times}:null;
-}
-function belowMinimumIdle(s,phase,at){
-  const e=s?.feedEvidence?.charger,p=s?.reportedPropertyCurrentA??s?.propertyCurrentA;
-  if(!validNativeBudget(s?.nativeBudget,at)||![p,s?.chargerCurrentA,s?.availableCurrentA].every(vector)
-    ||s.availableCurrentA[phase]!==0||e?.source!=='easee-ocpp'||!goodFeed(e)||e.epoch==null
-    ||!['activityAt','receivedAt'].every(k=>time(e[k])&&e[k]<=at&&at-e[k]<=120000)
-    ||!s.chargerCurrentA.every(a=>a<=.1)||!Array.isArray(s.observationTimes?.charger)
-    ||s.observationTimes.charger.length!==3||!s.observationTimes.charger.every(t=>time(t)&&t<=at&&at-t<=120000)
-    ||!['property','allowance'].every(k=>goodFeed(s.feedEvidence?.[k])&&s.feedEvidence[k].epoch!=null
-      &&Array.isArray(s.observationTimes?.[k])&&s.observationTimes[k].length===3
-      &&s.observationTimes[k].every(t=>time(t)&&t<=at)))return false;
-  const raw=s.nativeBudget.currentA-p[phase]+s.chargerCurrentA[phase];
-  return raw>=0&&raw<6;
-}
-function independentlySupportedIdle(row,phase,feeds,start,end){
-  const base=row.supply1;
-  return feeds.some(feed=>inside(feed.statusAt,start,end)&&Math.abs(feed.at-row.at)<=5000
-    &&feed.statusAt<=feed.at&&feed.at-feed.statusAt<=5000
-    &&validNativeBudget(feed.nativeBudget,row.at)&&feed.nativeBudget.currentA===base?.nativeBudget?.currentA
-    &&feed.nativeBudget.equipment===base?.nativeBudget?.equipment
-    &&['property','charger'].every(k=>feed.evidence?.[k]?.source==='easee-stream'&&goodFeed(feed.evidence[k]))
-    &&vector(feed.nativeEaseeCurrentA)&&feed.nativeEaseeCurrentA.every((value,i)=>value===base?.chargerCurrentA?.[i])
-    &&feed.nativeEaseeEvidence?.epoch===base?.feedEvidence?.charger?.epoch&&(()=>{
-      const property=streamPhases(feed.property,31),allowance=streamPhases(feed.charger,230);
-      if(!property||!allowance)return false;
-      const supply={nativeBudget:feed.nativeBudget,reportedPropertyCurrentA:property.values,
-        chargerCurrentA:feed.nativeEaseeCurrentA,availableCurrentA:allowance.values,
-        observationTimes:{property:property.times,allowance:allowance.times,charger:feed.nativeEaseeTimes},
-        feedEvidence:{property:feed.evidence.property,allowance:feed.evidence.charger,charger:feed.nativeEaseeEvidence}};
-      const expected=feed.nativeBudget.currentA-property.values[phase]+feed.nativeEaseeCurrentA[phase];
-      return belowMinimumIdle(supply,phase,row.at)
-        &&finite(row.decision.allowanceComparison?.expectedCurrentA?.[phase])
-        &&Math.abs(expected-row.decision.allowanceComparison.expectedCurrentA[phase])<=.000001;
-    })());
-}
-function snapshotSupportedIdle(row,phase){
-  const s=row.supply1,p=s?.reportedPropertyCurrentA??s?.propertyCurrentA;
-  return belowMinimumIdle(s,phase,row.at)&&finite(row.decision.allowanceComparison?.expectedCurrentA?.[phase])
-    &&Math.abs(s.nativeBudget.currentA-p[phase]+s.chargerCurrentA[phase]
-      -row.decision.allowanceComparison.expectedCurrentA[phase])<=.000001;
-}
-function rawDisagreementEvidence(c,file,window,actual2,directory){
-  if(!file||!file.endsWith('.json'))return 0;if(!safeName(file))throw Error('Unsafe comparison evidence filename');
-  const input=readPrivateJson(path.join(directory,file));
-  if(input.kind!=='raw-allowance-disagreement')return 0;
-  if(!safeName(input.configurationSource)||!safeName(input.nativeBudgetSource)||!Number.isInteger(input.phase)||input.phase<1||input.phase>3
-    ||!finite(input.allowanceA)||input.allowanceA<0||input.allowanceA>1000
-    ||input.allowanceA!==0&&!safeName(input.independentFeedSource)
-    ||!Array.isArray(input.supportingPhysicalSamples)||input.supportingPhysicalSamples.length>1000)return 0;
-  const electrical=readPrivateJson(path.join(directory,input.configurationSource)),phase=input.phase-1;
-  const independent=readPrivateJson(path.join(directory,input.nativeBudgetSource));
-  if(independent.readOnly!==true||independent.httpStatus!==200||!time(independent.requestedAt)||!time(independent.receivedAt)
-    ||independent.requestedAt>independent.receivedAt||!validNativeBudget(independent.nativeBudget,independent.receivedAt)
-    ||independent.nativeBudget.confirmedAt<independent.requestedAt||independent.nativeBudget.confirmedAt>independent.receivedAt)return 0;
-  if(electrical.readOnly!==true||!time(electrical.at)||!vector(electrical.mainFuseA)
-    ||input.mainFuseA!==electrical.mainFuseA[phase]||input.toleranceA!==electrical.agreementToleranceA
-    ||!finite(input.toleranceA)||input.toleranceA<0||input.toleranceA>16)return 0;
-  const feeds=input.independentFeedSource?independentFeedRows(input.independentFeedSource,directory):null;
-  const byTime=new Map(window.map(r=>[r.at,r])),actualTimes=new Set(actual2.map(r=>r.measuredAt)),matched=[];
-  for(const sample of input.supportingPhysicalSamples){
-    const row=byTime.get(sample.statusAt??sample.at),s=row?.supply1,p=row?.meter2;
-    if(!row||!row.peerOnline||row.limiter?.mode!=='fallback'||row.decision?.fallbackReason!=='allowance-disagreement'
-      ||!validNativeBudget(s?.nativeBudget,row.at)||!sameBudget(input.nativeBudget,s.nativeBudget)
-      ||!validNativeBudget(independent.nativeBudget,row.at)||independent.nativeBudget.currentA!==s.nativeBudget.currentA
-      ||independent.nativeBudget.equipment!==s.nativeBudget.equipment
-      ||sample.phase!==input.phase||sample.mainFuseA!==input.mainFuseA||sample.toleranceA!==input.toleranceA
-      ||!p||!actualTimes.has(p.measuredAt)||sample.shellyMeasuredAt!==p.measuredAt||!vector(sample.shellyCurrentA)
-      ||!sample.shellyCurrentA.every((v,i)=>Math.abs(v-p.currents[i])<.000001))continue;
-    let property=s?.reportedPropertyCurrentA??s?.propertyCurrentA,allowance=s?.availableCurrentA,sourceTimes=s?.observationTimes;
-    const charger=s?.chargerCurrentA,feed=feeds?.get(sample.at);
-    if(feeds){
-      const p=streamPhases(feed?.property,31),a=streamPhases(feed?.charger,230);
-      if(!feed||feed.statusAt!==row.at||feed.at<row.at||feed.at-row.at>5000||!p||!a
-        ||!['charger','property'].every(k=>feed.evidence?.[k]?.source==='easee-stream'&&goodFeed(feed.evidence[k])&&feed.evidence[k].epoch!=null)
-        ||!sameBudget(feed.nativeBudget,independent.nativeBudget)||!sameBudget(feed.runtimeNativeBudget,s.nativeBudget)
-        ||!vector(feed.nativeEaseeCurrentA)||!feed.nativeEaseeCurrentA.every((v,i)=>v===charger?.[i])
-        ||!Array.isArray(feed.nativeEaseeTimes)||!feed.nativeEaseeTimes.every((v,i)=>v===s.observationTimes?.charger?.[i])
-        ||feed.shellyMeasuredAt!==sample.shellyMeasuredAt||!vector(feed.shellyCurrentA)
-        ||!feed.shellyCurrentA.every((v,i)=>v===sample.shellyCurrentA[i])
-        ||row.decision.allowanceComparison?.basis?.[phase]!=='raw'
-        ||feed.comparison?.basis?.[phase]!=='raw'
-        ||a.values[phase]!==s.availableCurrentA?.[phase]||a.times[phase]!==s.observationTimes?.allowance?.[phase])continue;
-      property=p.values;allowance=a.values;sourceTimes={property:p.times,allowance:a.times,charger:s.observationTimes.charger};
-      const expected=Math.max(0,s.nativeBudget.currentA-property[phase]+charger[phase]);
-      if(!finite(row.decision.allowanceComparison?.expectedCurrentA?.[phase])
-        ||Math.abs(expected-row.decision.allowanceComparison.expectedCurrentA[phase])>.000001)continue;
-    }
-    if(![property,charger,allowance].every(vector)||allowance[phase]!==input.allowanceA
-      ||sample.propertyCurrentA!==property[phase]||sample.easeeCurrentA!==charger[phase]||sample.allowanceA!==allowance[phase]
-      ||!['property','charger','allowance'].every(role=>Array.isArray(sourceTimes?.[role])
-        &&time(sourceTimes[role][phase])&&sourceTimes[role][phase]<=row.at
-        &&sample.sourceTimes?.[role]===sourceTimes[role][phase]))continue;
-    // Compare the independently read native budget, never the separate hard
-    // Shelly fuse. Zero cannot own a positive anchor, but can be operationally
-    // consistent with an independently measured idle peer below its minimum.
-    // Keep its actual numeric value and all source clocks unchanged.
-    const expected=Math.max(0,s.nativeBudget.currentA-property[phase]+charger[phase]);
-    if(Math.abs(allowance[phase]-expected)>input.toleranceA
-      &&!belowMinimumIdle({...s,reportedPropertyCurrentA:property,availableCurrentA:allowance,observationTimes:sourceTimes},phase,row.at))matched.push(p);
-  }
-  const distinct=unique(matched);
-  return distinct.length>=(c.minDistinctSamples??3)&&distinct.at(-1).measuredAt-distinct[0].measuredAt>=(c.minHoldMs??10000)?distinct.length:0;
 }
 function powerFits(p){if(!vector(p.volts)||p.volts.some(v=>v<150||v>300))return false;
  const estimate=p.currents.reduce((total,a,i)=>total+a*p.volts[i]/1000,0);return p.powerKw>=estimate*.75&&p.powerKw<=estimate*1.2;}
@@ -302,12 +186,8 @@ function auditCase(c,data,directory){
     add('fallback-classification-correct',limitRows.length>=minSamples&&limitRows.every(r=>r.decision.fallback===(c.kind==='fallback')
       &&(c.kind!=='fallback'||r.limiter.mode==='fallback')));
     if(c.kind!=='fallback')add('verified-load-model-observed',limitRows.length>=minSamples&&limitRows.every(r=>
-      r.decision.modelAvailable===true&&r.decision.settling!==true
+      r.decision.modelAvailable===true
       &&(r.decision.currentA===0?r.limiter.mode==='paused-by-balancing':['unrestricted','limited'].includes(r.limiter.mode))));
-    if(c.kind!=='fallback')add('native-budget-and-idle-basis-supported',limitRows.length>=minSamples&&limitRows.every(r=>
-      validNativeBudget(r.supply1?.nativeBudget,r.at)&&[0,1,2].every(i=>
-        r.decision.allowanceComparison?.basis?.[i]!=='below-minimum-idle'||snapshotSupportedIdle(r,i)
-          ||independentlySupportedIdle(r,i,data.independentFeeds,start,end))));
     add('measured-current-and-power-fit-case',actual2.length>=minSamples&&actual2.every(p=>
       target===0?p.powerKw<=.05&&p.currents.every(a=>a<=.3)
         :p.currents.every(a=>a>=low&&a<=high)&&p.powerKw>=1&&p.powerKw<=12&&powerFits(p)));
@@ -330,9 +210,7 @@ function auditCase(c,data,directory){
         &&r.limiter.appliedCurrentA===r.decision.currentA));
     }
     if(c.kind==='fallback'){
-      const rawSamples=rawDisagreementEvidence(c,c.fallbackCauseEvidence,window,actual2,directory);
-      add('independent-bad-feed-evidence',rawSamples>0||feedEvidence(c,c.fallbackCauseEvidence,directory).some(r=>r.at>=start&&badFeed(r.e)),
-        rawSamples>0?{kind:'raw-allowance-disagreement',distinctPhysicalClocks:rawSamples}:undefined);
+      add('independent-bad-feed-evidence',feedEvidence(c,c.fallbackCauseEvidence,directory).some(r=>r.at>=start&&badFeed(r.e)));
     }
   }
   if(['shelly-priority','balanced','easee-priority'].includes(c.kind)){
@@ -384,7 +262,7 @@ function auditCase(c,data,directory){
     const feeds=feedEvidence(c,c.feedRecoveryEvidence,directory);
     add('feed-recovery-exercised',feeds.some(a=>badFeed(a.e)&&feeds.some(b=>b.role===a.role&&b.e?.source===a.e.source&&b.at>a.at&&goodFeed(b.e)))
       ||all.some((a,i)=>a.decision?.fallback===true&&all.slice(i+1).some(b=>b.decision?.fallback===false
-        &&b.decision.modelAvailable===true&&b.decision.settling!==true
+        &&b.decision.modelAvailable===true
         &&['unrestricted','limited','paused-by-balancing'].includes(b.limiter?.mode))));
   }
   const vehicleEnd=end+(c.vehicleDelayMs??120000),tesla=data.vehicle.filter(r=>r.feed==='tesla'&&inside(r.at,c.startAt,vehicleEnd));
@@ -412,7 +290,7 @@ function auditCase(c,data,directory){
     :replacementStart||continuedCharging||aboveCeiling?'failed':'inconclusive';
   return result;
 }
-const CONFIG_KEYS = ['version', 'observer', 'cases', 'requiredKinds', 'independentFeedSource'];
+const CONFIG_KEYS = ['version', 'observer', 'cases', 'requiredKinds'];
 const CASE_KEYS = ['id', 'kind', 'startAt', 'endAt', 'settleMs', 'minDistinctSamples',
   'minHoldMs', 'maxStatusGapMs', 'expectedCurrentA', 'minActualA', 'maxActualA',
   'peerReductionA', 'vehicleDelayMs', 'requireVehicleCharging',
@@ -431,7 +309,7 @@ function validateConfig(config) {
     for(const k of ['fallbackCauseEvidence','feedRecoveryEvidence'])
       if(c[k]!==undefined&&!safeName(c[k]))throw Error('Unsafe evidence filename');
     if(c.feedRecoveryEvidence!==undefined&&!c.feedRecoveryEvidence.endsWith('.jsonl'))throw Error('Feed evidence must be current JSONL');
-    if(c.fallbackCauseEvidence!==undefined&&!/\.jsonl?$/.test(c.fallbackCauseEvidence))throw Error('Unsupported comparison evidence file');
+    if(c.fallbackCauseEvidence!==undefined&&!c.fallbackCauseEvidence.endsWith('.jsonl'))throw Error('Feed evidence must be current JSONL');
     for(const k of ['startAt','endAt'])
       if(c[k]!==undefined&&c[k]!==null&&!time(c[k]))throw Error('Invalid case clock');
     if(time(c.startAt)&&time(c.endAt)&&(c.endAt<=c.startAt||c.endAt-c.startAt>2*3600_000))throw Error('Invalid case duration');
@@ -446,7 +324,6 @@ function validateConfig(config) {
     if(c.minActualA!==undefined&&c.maxActualA!==undefined&&c.minActualA>c.maxActualA)throw Error('Invalid measured range');
     if(c.requireVehicleCharging!==undefined&&typeof c.requireVehicleCharging!=='boolean')throw Error('Invalid vehicle requirement');
   }
-  if(config.independentFeedSource!==undefined&&(!safeName(config.independentFeedSource)||!config.independentFeedSource.endsWith('.jsonl')))throw Error('Unsafe independent evidence filename');
   const required=config.requiredKinds??KINDS;
   if(!Array.isArray(required)||required.length===0||required.some(k=>!KINDS.includes(k))
     ||new Set(required).size!==required.length)throw Error('Invalid required cases');
@@ -457,8 +334,7 @@ export async function audit(config, { directory } = {}){
   const required=validateConfig(config);
   if(typeof directory!=='string'||!path.isAbsolute(directory)||!fs.statSync(directory).isDirectory())
     throw Error('An explicit absolute evidence directory is required');
-  const data={status:[],native:{meters:[],readbacks:[],commands:[],acks:[],rejections:0},vehicle:[],
-    independentFeeds:config.independentFeedSource?[...independentFeedRows(config.independentFeedSource,directory).values()]:[]};
+  const data={status:[],native:{meters:[],readbacks:[],commands:[],acks:[],rejections:0},vehicle:[]};
   const count={};count.status=await rows(path.join(directory,config.observer+'-status.jsonl'),r=>data.status.push(projection(r)));
   for(let i=1;i<data.status.length;i++)if(data.status[i].at<data.status[i-1].at)throw Error('Status receipt clocks are not ordered');
   const requests=new Map();count.native=await rows(path.join(directory,config.observer+'-native.jsonl'),r=>normalizeNative(r,requests,data.native));

@@ -22,15 +22,15 @@ for (const limiter of [true, false]) for (const priority of ['balanced', 'charge
       || command.chargerId === 'charger1'), [], 'Routine draw readback must not alternate charging permissions');
   });
 
-test('economic current sharing still responds to actual peer stopping and returning', async t => {
+test('economic current sharing retains the preferred peer entitlement through temporary zero draw', async t => {
   const f = await fixture(t);
   await f.connect('charger1'); await f.connect('charger2');
   for (const id of ['charger1', 'charger2']) await f.edit(id, { capacityKwh: 25, readyBy: '03:00' });
   await f.automatic('charger1', true); await f.automatic('charger2', true); await f.priority('charger1'); await f.plan();
   const before = f.commands.length;
   f.cars.charger1.demandA = 0; f.advance(30_000); await f.settle();
-  assert.equal(f.fields.start_charging.value, true, 'A physically idle peer need not waste the remaining live capacity');
+  assert.equal(f.fields.start_charging.value, false, 'Zero draw does not surrender the preferred peer entitlement');
   f.cars.charger1.demandA = 16; f.advance(30_000); await f.settle();
-  assert.equal(f.fields.start_charging.value, false, 'A returning preferred load must immediately regain its capacity');
-  assert.deepEqual(f.commands.slice(before).filter(command => command.role === 'start_charging').map(command => command.value), [true, false]);
+  assert.equal(f.fields.start_charging.value, false, 'Returning current does not trigger another permission change');
+  assert.deepEqual(f.commands.slice(before).filter(command => command.role === 'start_charging').map(command => command.value), []);
 });

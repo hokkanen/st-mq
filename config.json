@@ -146,7 +146,6 @@
             2
           ],
           "maxAgeMs": 15000,
-          "agreementToleranceA": 2,
           "dwellMs": 30000,
           "rampA": 2
         }
@@ -587,16 +586,15 @@
           "limiterEnabled": "bool",
           "fallbackCurrentA": "int(0,300000)",
           "mainFuseA": [
-            "int"
+            "float(0,200)"
           ],
           "marginA": [
-            "int"
+            "float(-200,200)"
           ],
           "phaseMap": [
             "int"
           ],
           "maxAgeMs": "int(0,300000)",
-          "agreementToleranceA": "float(0,5)",
           "dwellMs": "int(0,300000)",
           "rampA": "int(0,300000)"
         }

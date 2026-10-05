@@ -20,14 +20,15 @@ export function shellyLimiterStatus({ enabled, connected, online, maximumCurrent
   if (connected !== true || enabled !== true || !limit || current(limit.currentA) === null)
     return unknown('limiter-unavailable');
   const allowanceA = current(limit.currentA), loadAllowanceA = current(limit.loadCurrentA);
-  const settling = limit.settling === true && limit.fallback !== true;
+  const pending = limit.measurementPending === true && limit.fallback !== true;
   const mode = limit.fallback === true ? 'fallback'
-    : settling ? 'unknown' : pausedByLimiter && loadAllowanceA === 0 ? 'paused-by-balancing'
+    : pending ? 'unknown' : pausedByLimiter && loadAllowanceA === 0 ? 'paused-by-balancing'
       : loadAllowanceA === null || current(maximumCurrentA) === null ? 'unknown'
         : loadAllowanceA >= maximumCurrentA ? 'unrestricted' : 'limited';
   return { mode, allowanceA, loadAllowanceA,
-    reason: settling ? 'measurement-settling'
-      : reasonCode(limit.fallback ? limit.fallbackReason ?? limit.reason : limit.loadReason ?? limit.reason) ?? 'limiter-unavailable',
+    reason: pending ? 'measurement-pair-pending'
+      : reasonCode(loadAllowanceA !== null && allowanceA < loadAllowanceA ? limit.reason ?? limit.loadReason
+      : limit.fallback ? limit.fallbackReason ?? limit.reason : limit.loadReason ?? limit.reason) ?? 'limiter-unavailable',
     appliedCurrentA: current(appliedCurrentA), applicationStatus: APPLICATION.has(applicationStatus) ? applicationStatus : 'unknown' };
 }
 

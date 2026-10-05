@@ -116,9 +116,15 @@ export function createShellyEvseAdapter({ config, broker, client, store, engine,
   }
   const chargingSchedules = () => Array.isArray(nativeSchedules?.jobs)
     ? nativeSchedules.jobs.filter(job => job.enable && scheduleKind(job) !== 'unrelated') : [];
-  const live = (field, now = clock()) => {
-    const value = state.fields[field];
-    return value && !value.retained && value.invalidatedAt === undefined && value.measuredAt > 0 && value.measuredAt <= now && now - value.measuredAt <= config.maxAgeMs;
+  // A correlated status reply confirms held state, without changing the
+  // device's last-change clock or producing another physical measurement.
+  const heldPhaseConfirmed = field => field?.readback?.requestedAt >= field?.invalidatedAt
+    && field.readback.measuredAt === field.measuredAt && field.readback.receivedAt === field.receivedAt;
+  const live = (role, now = clock()) => {
+    const field = state.fields[role];
+    return connected && admitted && online && fieldGenerations.get(role) === generation
+      && field && !field.retained && (field.invalidatedAt === undefined || role === 'phase_info' && heldPhaseConfirmed(field)) && field.measuredAt > 0
+      && field.measuredAt <= now && field.receivedAt <= now && now - field.receivedAt <= config.maxAgeMs;
   };
   function rejectPending(reason) { for (const item of pending.values()) { clearTimeout(item.timer); item.reject(fail(reason)); } pending.clear(); }
   async function rpc(method, params = {}, { mutation = false, guard = () => true, beforePublish = () => {}, statusReadback = false, identificationCurrent = null } = {}) {
@@ -190,13 +196,14 @@ export function createShellyEvseAdapter({ config, broker, client, store, engine,
     if (readback && (readback.generation !== generation || readback.revision !== (fieldRevisions.get(role) ?? 0))) return false;
     const setting = ['start_charging', 'current_limit', 'work_state'].includes(role);
     if (measuredAt === null || measuredAt > receivedAt) {
-      if (readback && setting) throw fail('evse-read-unavailable');
+      if (readback) throw fail('evse-read-unavailable');
       return false;
     }
     const sameValue = previous && JSON.stringify(previous.value) === JSON.stringify(result.value);
-    if (previous?.measuredAt >= measuredAt && sameValue && readback && setting
-      && (!previous.retained || role === 'current_limit')) {
-      // A correlated query confirms the current setting even when its update
+    if (previous?.measuredAt >= measuredAt && sameValue && readback
+      && (setting || role === 'phase_info' && previous.measuredAt === measuredAt)
+      && (!previous.retained || ['current_limit', 'phase_info'].includes(role))) {
+      // A correlated query confirms the held state even when its update
       // clock predates the latest matching notification. Preserve both source
       // clocks; this is receipt freshness, never a new instruction or plug edge.
       const before = copy(state);
@@ -221,7 +228,7 @@ export function createShellyEvseAdapter({ config, broker, client, store, engine,
       return false;
     }
     if (previous?.measuredAt > measuredAt) {
-      if (readback && setting && !sameValue) throw fail('conflicting-evse-reading');
+      if (readback && !sameValue) throw fail('conflicting-evse-reading');
       return false;
     }
     if (previous?.measuredAt === measuredAt) {
@@ -260,7 +267,7 @@ export function createShellyEvseAdapter({ config, broker, client, store, engine,
       const record = () => {
         state.fields[role] = { value: copy(value), measuredAt, receivedAt, retained, source: 'shelly-evse',
           commandSource: typeof result.source === 'string' ? result.source : null };
-        if (readback && setting) state.fields[role].readback = { requestedAt: readback.requestedAt, measuredAt, receivedAt };
+        if (readback) state.fields[role].readback = { requestedAt: readback.requestedAt, measuredAt, receivedAt };
         if (role === 'work_state' && !retained) reconcileConnection(value, measuredAt, receivedAt);
         if (role === 'phase_info' && !retained) {
           const before = state.counter, total = value.total_act_energy;
@@ -607,10 +614,11 @@ export function createShellyEvseAdapter({ config, broker, client, store, engine,
       const field = state.fields.phase_info, quality = [];
       if (!field || !finite(value)) quality.push('missing');
       if (field?.retained) quality.push('retained');
-      if (field?.invalidatedAt !== undefined) quality.push('invalidated');
+      if (field?.invalidatedAt !== undefined && !heldPhaseConfirmed(field)) quality.push('invalidated');
       if (field && (!finite(field.measuredAt) || field.measuredAt <= 0)) quality.push('source_time_unknown');
       else if (field?.measuredAt > now) quality.push('future_source_time');
-      else if (field && now - field.measuredAt > config.maxAgeMs) quality.push('stale');
+      else if (field && (field.receivedAt > now || now - field.receivedAt > config.maxAgeMs)) quality.push('stale');
+      if (connected && admitted && field && fieldGenerations.get('phase_info') !== generation) quality.push('unconfirmed-connection');
       if (!connected || !admitted) quality.push('mqtt-disconnected');
       else if (!online) quality.push('device-offline');
       return { value: finite(value) ? value : null, unit, source: 'shelly-evse',
@@ -689,7 +697,7 @@ export function createShellyEvseAdapter({ config, broker, client, store, engine,
     },
     liveCurrents() { const field = state.fields.phase_info;
       return { healthy: online && Boolean(live('phase_info')), currents: field ? config.phaseMap.map(i => field.value[['phase_a', 'phase_b', 'phase_c'][i]].current) : null,
-        times: [field?.measuredAt, field?.measuredAt, field?.measuredAt] }; },
+        times: [field?.measuredAt, field?.measuredAt, field?.measuredAt], confirmedAt: field?.receivedAt ?? null }; },
     createController: options => createShellyController({ ...options, adapter }),
     close() { closed = true; clearInterval(timer); disconnect(); client.removeListener('connect', connect); client.removeListener('message', receive); client.removeListener('offline', disconnect); client.removeListener('close', disconnect); },
   };
@@ -808,21 +816,19 @@ export function createShellyController({ adapter, initialState, saveState = () =
   state.limiter = null;
   let closed = false, revision = 0, planningRevision = null, identification = null, enabled = false, queue = Promise.resolve(),
     takeoverResult = null, takeoverAttemptToken = null, takeoverAttemptRevision = null;
-  const currentLimiter = createShellyCurrentLimiter();
   const notifyStatus = () => {
     // Recording is an observer, never part of device command authority.
     try { onStatusChange()?.catch?.(() => {}); } catch {}
   };
   const persist = async () => { await saveState(copy(state)); notifyStatus(); };
-  const limiterScope = snapshot => ({ authorized: !closed && canControl(), association: snapshot.association, generation: snapshot.generation,
-    connected: snapshot.session?.connected, sessionId: snapshot.session?.sessionId, connectedAt: snapshot.session?.connectedAt });
-  const limitCurrent = (context, snapshot = adapter.snapshot()) => {
-    const setting = snapshot.fields.current_limit, readback = setting?.readback;
-    return currentLimiter.evaluate({ config: adapter.config, ...context, nativeCurrentA: state.manualCurrentA,
-      shelly: adapter.liveCurrents(), now: clock(), currentSetting: { currentA: setting?.value, measuredAt: setting?.measuredAt,
-        receivedAt: readback?.receivedAt, confirmed: fresh(setting) && time(readback?.measuredAt) && readback.measuredAt > 0
-          && readback.measuredAt <= setting.measuredAt && time(readback.requestedAt) && readback.requestedAt <= readback.receivedAt
-          && readback.receivedAt === setting.receivedAt } }, limiterScope(snapshot));
+  const currentLimiter = createShellyCurrentLimiter();
+  const limitCurrent = context => {
+    const snapshot = adapter.snapshot(), setting = snapshot.fields.current_limit;
+    return currentLimiter.evaluate({ config: adapter.config, ...context,
+      nativeCurrentA: state.manualCurrentA, shelly: adapter.liveCurrents(), now: clock(),
+      currentSetting: { currentA: setting?.value, confirmed: fresh(setting) } },
+    { authorized: !closed && canControl(), association: snapshot.association, generation: snapshot.generation,
+      connected: snapshot.session?.connected, sessionId: snapshot.session?.sessionId, connectedAt: snapshot.session?.connectedAt });
   };
   const scheduleToken = snapshot => snapshot.nativeScheduleFingerprint ?? (snapshot.nativeScheduleActive ? 'active' : null);
   const systemEcho = (field, value) => field?.commandSource === 'sys' && field.value === value;
@@ -1081,7 +1087,7 @@ export function createShellyController({ adapter, initialState, saveState = () =
       if (adapter.config.limiterEnabled) {
         const liveContext = context ?? (typeof getAllocation === 'function' ? await getAllocation(copy(snapshot)) : null);
         if (!liveContext) return;
-        const ceiling = limitCurrent(liveContext, snapshot).currentA;
+        const ceiling = limitCurrent(liveContext).currentA;
         // A sub-minimum ceiling belongs to the start/stop safety path. Keep
         // restoration visible until a valid positive setting is permitted.
         if (ceiling < adapter.config.minimumCurrentA) return;
@@ -1115,8 +1121,6 @@ export function createShellyController({ adapter, initialState, saveState = () =
       await refreshCommandReadback('current_limit', snapshot);
       const actual = adapter.snapshot().fields.current_limit;
       if (!fresh(actual) || !shellyCurrentCommandReadback(actual, test.pending)) throw fail('evse-command-unconfirmed');
-      currentLimiter.confirmCurrentCommand({ dispatchedAt: test.pending.dispatchedAt, confirmedAt: clock(),
-        previousCurrentA: current.value, currentA: target }, limiterScope(adapter.snapshot()));
       test.pending = null; test.phase = restoring ? 'restored' : 'active';
       test.confirmedAt ??= clock(); test.permissionAt = actual.measuredAt; updateLastCurrent(actual);
       await persist();
@@ -1481,7 +1485,7 @@ export function createShellyController({ adapter, initialState, saveState = () =
         // remain native until the separate installation limiter is enabled.
         const nativeCap = Math.min(current.value, ...[vehiclePilotLimit(context.vehicleCurrentA, adapter.config.minimumCurrentA), allocationA]
           .filter(value => finite(value) && value >= 0));
-        const limitation = adapter.config.limiterEnabled ? limitCurrent({ ...context, allocationA }, snapshot)
+        const limitation = adapter.config.limiterEnabled ? limitCurrent({ ...context, allocationA })
           : { currentA: nativeCap, pause: nativeCap < adapter.config.minimumCurrentA,
             reason: 'native-current-limit', fallback: false, modelAvailable: false, guaranteedProtection: false };
         state.limiter = { ...limitation, scope: { generation: snapshot.generation,
@@ -1595,8 +1599,6 @@ export function createShellyController({ adapter, initialState, saveState = () =
             if (state.pending.owned) state.owned = { ...state.pending.owned, confirmedAt: clock(), permissionAt: readback.measuredAt };
             else if (value === true) state.owned = null;
           } else {
-            currentLimiter.confirmCurrentCommand({ dispatchedAt: state.pending.dispatchedAt, confirmedAt: clock(),
-              previousCurrentA: expectedCurrent.value, currentA: value }, limiterScope(after));
             if (readback.measuredAt > state.pending.acceptedAt && !systemEcho(readback, value))
               state.manualCurrentA = readback.value < adapter.config.maximumCurrentA ? readback.value : null;
             state.lastCurrent = value; state.lastCurrentAtSource = readback.measuredAt; expectedCurrent = copy(readback);

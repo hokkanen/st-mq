@@ -53,9 +53,11 @@ forecast supplies no authority to send commands or proof of physical response.
 A real modeled deadline shortfall, a known restrictive timer, or absence of
 usable shared prices/property-capacity evidence still needs its specific
 feasibility or fallback result. Do not collapse those reasons into an unknown
-charger-current restriction. Actual draw and confirmed execution continue to
-govern immediate electrical allocation; a forecast never establishes that an
-unavailable charger has paused or accepted a lower current.
+charger-current restriction. Confirmed execution and applicable requests govern
+participation in immediate allocation. Measured draw establishes household
+demand after subtracting the chargers, not the peer's entitlement. A forecast
+never establishes that an unavailable charger has paused or accepted a lower
+current; Equalizer's delayed response does not redistribute Shelly's entitlement.
 
 Regression coverage must include a feasible delayed Charger 1 plan followed by
 Charger 2 connecting with unknown current and unavailable control. With usable
@@ -143,8 +145,14 @@ increment as new intent. Running periods and starts within the next two minutes
 are not retained by this rule. The retained schedule is the actual plan, so session
 diagnostics do not log discarded candidate movements as schedule changes.
 
-Live property and charger currents still govern actual draw, immediate phase
-headroom and the commissioned limiter. Live voltage remains appropriate for
+Live property and charger currents establish actual draw and household phase
+demand. Shelly applies the same priority, energy and deadline allocation policy
+to admitted present household headroom; absolute forecast shares do not become
+extra reservations against that headroom. It reduces for property
+protection only when household demand plus Shelly alone exceeds the effective
+configured phase limit. A change in Charger 1's draw, Equalizer allowance or
+response delay cannot by itself redistribute that entitlement. Live voltage
+remains appropriate for
 current electrical readings and integration paths that genuinely require it.
 Neither smoothing nor schedule stability can relax native limits, telemetry
 freshness, control authority, changed session requests or a missed deadline.

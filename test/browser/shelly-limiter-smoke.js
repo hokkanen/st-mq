@@ -34,10 +34,11 @@ try {
     { mode: 'inactive', allowanceA: null, loadAllowanceA: null, reason: 'disconnected', appliedCurrentA: null, applicationStatus: 'inactive' },
     { mode: 'unknown', allowanceA: null, loadAllowanceA: null, reason: 'charger-unavailable', appliedCurrentA: null, applicationStatus: 'unknown' },
   ];
-  const settling = { mode: 'unknown', allowanceA: 14, loadAllowanceA: 14, reason: 'measurement-settling', appliedCurrentA: 14, applicationStatus: 'confirmed' };
+  const pendingMeasurements = { mode: 'unknown', allowanceA: 9, loadAllowanceA: 12, reason: 'measurement-pair-pending', appliedCurrentA: 9, applicationStatus: 'confirmed' };
+  const restricted = { mode: 'fallback', allowanceA: 9, loadAllowanceA: 12, reason: 'native-current-limit', appliedCurrentA: 9, applicationStatus: 'confirmed' };
   for (let at = now - 6 * 3600_000; at <= now; at += 20_000)
     recorder.observe({ association: 'a'.repeat(64), status: at >= now - 60_000 && at < now - 20_000
-      ? settling : states[Math.min(5, Math.floor((at - now + 6 * 3600_000) / 3600_000))] }, at);
+      ? restricted : states[Math.min(5, Math.floor((at - now + 6 * 3600_000) / 3600_000))] }, at);
   const profile = join(directory, 'chrome');
   browser = spawn(process.env.STMQ_CHROME_BIN ?? '/opt/google/chrome/chrome', [
     '--headless', '--no-sandbox', '--disable-gpu', '--no-first-run', '--disable-background-networking',
@@ -90,7 +91,7 @@ try {
   await send('Runtime.enable'); await send('Page.enable');
   await send('Page.addScriptToEvaluateOnNewDocument', { source: `(() => {
     const original = window.fetch.bind(window);
-    window.limiterFixture = { state: ${JSON.stringify(settling)}, responses: 0 };
+    window.limiterFixture = { state: ${JSON.stringify(pendingMeasurements)}, responses: 0 };
     window.fetch = async (...args) => {
       const response = await original(...args);
       if (!String(args[0]).endsWith('/api/status')) return response;
@@ -111,16 +112,16 @@ try {
   assert.deepEqual(await evaluate(`Array.from(new Set([...document.querySelectorAll('${track} .mode-segment')].map(node=>node.dataset.value)))`),
     ['unknown', 'unrestricted', 'limited', 'paused-by-balancing', 'fallback', 'inactive']);
   assert.equal(await evaluate("document.getElementById('charger1-limiter').hidden"), true);
-  assert.match(await evaluate("document.getElementById('charger2-limiter').textContent"), /Unknown · Waiting for matching load readings/);
+  assert.match(await evaluate("document.getElementById('charger2-limiter').textContent"), /Awaiting measurements/);
   for (const theme of ['dark', 'light']) for (const width of [1440, 390, 320]) {
     await send('Emulation.setDeviceMetricsOverride', { width, height: 900, deviceScaleFactor: 1, mobile: false });
     await evaluate(`window.homeEnergyTheme.setTheme('${theme}'); document.getElementById('garage-control').open = true; true`); await settle();
     await evaluate("document.querySelector('#charger2-limiter button').scrollIntoView({block:'center'}); document.querySelector('#charger2-limiter button').focus(); true");
     await keyPress('Enter');
     await until("document.getElementById('status-detail-popover')?.hidden === false");
-    assert.match(await evaluate("document.getElementById('status-detail-popover').textContent"), /Held allowance: 14 A/);
-    assert.match(await evaluate("document.getElementById('status-detail-popover').textContent"), /Charger setting: 14 A confirmed/);
-    assert.match(await evaluate("document.getElementById('status-detail-popover').textContent"), /Current headroom is not yet confirmed/);
+    assert.match(await evaluate("document.getElementById('status-detail-popover').textContent"), /Held ceiling: 9 A/);
+    assert.match(await evaluate("document.getElementById('status-detail-popover').textContent"), /Charger setting: 9 A confirmed/);
+    assert.match(await evaluate("document.getElementById('status-detail-popover').textContent"), /previous confirmed ceiling is retained and cannot increase/);
     assert.equal(await evaluate('document.documentElement.scrollWidth <= innerWidth'), true, `${theme} ${width}px: card and details fit`);
     assert.equal(await evaluate("(() => {const r=document.getElementById('status-detail-popover').getBoundingClientRect();return r.left>=0&&r.right<=innerWidth&&r.top>=0&&r.bottom<=innerHeight;})()"), true);
     await keyPress('Escape');
@@ -132,8 +133,8 @@ try {
     assert.match(await evaluate("document.querySelector('.chart-crosshair-readout').textContent"), /Unrestricted · 16 A/);
     await keyPress('ArrowRight');
     assert.match(await evaluate("document.querySelector('.chart-crosshair-readout').textContent"), /Limited · 8 A.*\nAwaiting charger confirmation/);
-    await keyPress('End'); await keyPress('ArrowLeft');
-    assert.match(await evaluate("document.querySelector('.chart-crosshair-readout').textContent"), /Unknown · Waiting for matching load readings\nHeld allowance: 14 A\nCharger setting: 14 A confirmed/);
+    await keyPress('End'); await keyPress('ArrowLeft'); await keyPress('ArrowLeft');
+    assert.match(await evaluate("document.querySelector('.chart-crosshair-readout').textContent"), /Fallback · 12 A allowance · Native charger limit\nEffective allowance: 9 A\nCharger setting: 9 A confirmed/);
     assert.equal(await evaluate(`document.querySelector('${row} .activity-caption').open`), false, 'Keyboard inspection works with the title folded');
     const colors = await evaluate(`(() => [...document.querySelectorAll('${track} .mode-segment')].reduce((out,node)=>({...out,[node.dataset.value]:getComputedStyle(node).backgroundColor}),{}))()`);
     assert.equal(new Set(Object.entries(colors).filter(([mode])=>!['inactive','unknown'].includes(mode)).map(([,color])=>color)).size, 4);
@@ -163,7 +164,7 @@ try {
     assert.equal(await evaluate(`document.querySelector('${track} [data-value=fallback]') !== null`), true);
   }
   assert.deepEqual(errors, []);
-  console.log(`Shelly limiter browser checks passed: six modes, recorded settling spans, keyboard and touch inspection, held-setting badge details, 320/390/1440px in both themes. Synthetic screenshots: ${artifacts}`);
+  console.log(`Shelly limiter browser checks passed: six modes, recorded restricted fallback spans, keyboard and touch inspection, separate load and effective allowance details, 320/390/1440px in both themes. Synthetic screenshots: ${artifacts}`);
 } finally {
   socket?.close(); for (const task of pending.values()) clearTimeout(task.timer);
   await app?.close();

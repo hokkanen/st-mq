@@ -92,17 +92,18 @@ export function forecastCharger({ now, deadlineAt, charger, supply = {} } = {}) 
     || value(charger, 'connected') === true && ['released', 'charging'].includes(charger.control?.phase)
       && !charger.control?.errorCode && !manualActive(charger, now) && !(chargerStart > now));
   const charging = value(charger, 'charging') === true || immediateRelease && !(vehicleStart > now);
+  const permitted = charger.telemetry?.currentSharingActive === true && !(vehicleStart > now) && !(chargerStart > now);
   const starts = [chargerStart, vehicleStart].filter(finite);
   const schedule = starts.length ? Math.max(...starts) : null;
   const nativeEnd = value(charger, 'scheduledEndAt');
   const scheduled = finite(schedule) && (schedule >= now || finite(nativeEnd) && nativeEnd > now || charging);
   // An unknown connection/start is not evidence of a future competing load.
   // Current consumption already appears in the property/Equalizer observations.
-  if (!scheduled && !charging) return { ...base, reason: 'no-upcoming-schedule' };
+  if (!scheduled && !charging && !permitted) return { ...base, reason: 'no-upcoming-schedule' };
   if (!electric.available) return { ...base, state: 'unavailable', known: false, reason: 'electrical-telemetry-unavailable',
     powerKw: null, currentA: null, phaseCurrentA: null, scheduled, charging,
     warnings: [...warnings, `${charger.label}: ${scheduled ? 'its scheduled load' : 'charging power'} cannot be estimated until current and voltage are available.`] };
-  const startAt = charging ? now : Math.max(now, schedule, value(charger, 'vehicleNotBefore') ?? now);
+  const startAt = charging || permitted ? now : Math.max(now, schedule, value(charger, 'vehicleNotBefore') ?? now);
   const stopKnown = finite(nativeEnd) && nativeEnd > startAt && charger.telemetry?.scheduledEndKind === 'scheduled-stop';
   const finishAt = electric.powerKw > 0 ? startAt + charger.requiredGridKwh / electric.powerKw * HOUR : null;
   let endAt = horizon; // A planning target does not stop continuing measured peer demand.
@@ -118,7 +119,7 @@ export function forecastCharger({ now, deadlineAt, charger, supply = {} } = {}) 
   const reservedCurrentA = Math.max(electric.currentA, deliveredCurrentA);
   return { ...base, state: uncertain ? 'uncertain' : 'forecast', known: !uncertain,
     reason: uncertain ? 'vehicle-stop-unknown' : 'automatic-current-forecast', startAt, endAt, finishAt,
-    scheduled, charging, actualCurrentA,
+    scheduled, charging, permitted, actualCurrentA,
     currentA: deliveredCurrentA, phaseCurrentA: electric.phases.mask.map(item => item * reservedCurrentA), powerKw: 3 * electric.voltageV * deliveredCurrentA / 1000 };
 }
 
@@ -169,6 +170,27 @@ function draw(headroom, mask, current) {
 function deliveredCurrents(active, allocated) {
   for (const item of active) allocated[item.charger.id] = Math.min(allocated[item.charger.id] ?? 0, item.electric.deliveryCurrentA);
   return allocated;
+}
+
+/** Apply the planner's energy/deadline policy to admitted live household
+ * headroom. Measured peer draw and Equalizer allowance never set its weights;
+ * the selected current grants no start/stop permission. */
+export function currentChargingAllocation({ now, chargers, budgetCurrentA, priority, allocationHold = null }) {
+  if (!three(budgetCurrentA)) return {};
+  const active = chargers.flatMap(charger => {
+    if (value(charger, 'connected') !== true || nativeStopped(charger)
+      || charger.requiredGridKwh <= EPS && targetKnown(charger)
+      || charger.telemetry?.currentSharingActive !== true || value(charger, 'vehicleNotBefore') > now) return [];
+    const electric = electrical(charger);
+    if (!electric.available) return [];
+    return [{ charger, electric, priority, remaining: charger.requiredGridKwh,
+      targetAt: charger.deadlineAt, allocationHold }];
+  });
+  if (!active.length) return {};
+  const result = allocateOne(active, { phaseHeadroomA: budgetCurrentA }, now);
+  return Object.fromEntries(active.map(({ charger }) => [charger.id, {
+    currentA: result.currents[charger.id], currentLimitA: result.suggestions[charger.id] ?? null,
+  }]));
 }
 
 /** Allocate selected-current chargers first, then divide flexible capacity by
@@ -763,13 +785,13 @@ export function planChargers({ now, chargers = [], prices = [], household = [], 
     const electric = electrical(charger, supply);
     const explicit = hasPeriods(fixedPeriods[charger.id]) && !manualActive(charger, now);
     const observed = !economic && (charger.capabilities.externalLoadBalancing || charger.capabilities.currentControl || electric.currentAssumed)
-      && electric.available && (forecast.charging || forecast.scheduled) && finite(forecast.startAt);
+      && electric.available && (forecast.charging || forecast.scheduled || forecast.permitted) && finite(forecast.startAt);
     if (value(charger, 'connected') !== true || nativeStopped(charger) || !(economic || explicit || observed)) return [];
     const locked = explicit ? fixedPeriods[charger.id] : observed
       ? [{ startAt: forecast.startAt, endAt: charger.telemetry?.scheduledEndKind === 'scheduled-stop' ? forecast.endAt : null }]
       : released(charger) || charger.deadlineAt <= now ? [{ startAt: now, endAt: null }] : null;
     return [{ charger, priority, electric, targetAt: plans[charger.id].targetAt, fixedPeriods: locked, allocationHold,
-      preservePermission: !canSchedule, continuingLoad: charger.requiredGridKwh <= EPS && forecast.charging === true }];
+      preservePermission: !canSchedule, continuingLoad: charger.requiredGridKwh <= EPS && (forecast.charging === true || forecast.permitted === true) }];
   })
     .sort((a, b) => a.targetAt - b.targetAt || b.charger.requiredGridKwh - a.charger.requiredGridKwh || a.charger.id.localeCompare(b.charger.id));
   const result = { at: now, plans, forecasts, allocations: [], currentLimits: [],

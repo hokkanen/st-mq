@@ -118,16 +118,19 @@ mapping, a verified numeric range and disabled native `auto_balance`. Missing
 `meta.ui.step` does not prevent those exact-value operations; contradictory
 reported step metadata still blocks them. It never changes the economic limiter
 preference or permits unrestricted current commands.
-Configure the installation's fuse ratings, margins and maximum current; charger
+Configure the installation's fuse ratings, signed calibration margins and maximum current; charger
 RPC cannot establish those electrical limits. The limiter subtracts the minimum
-freshly measured Shelly phase current equally from the property phases, so it
+admitted measured Shelly phase current equally from the property phases, so it
 needs no Shelly-to-Easee phase correspondence. `phaseMap` still defines recorded
 phase association and is not inferred by current control.
 
 The [current-allocation contract](../current-allocation.md) defines healthy held
-load evidence, the native Equalizer budget comparison, the below-minimum idle
-inference, measurement settling and the configured fallback. These calculations
-never replace the electrical limits configured for this installation.
+load evidence, observation pairing, priority entitlement and the configured fallback. Current
+status readback can confirm an unchanged phase-current value without renewing
+its original `last_update_ts`; an old change timestamp alone does not force
+fallback. Command and identification evidence retain their separate clocks.
+Equalizer's reported allowance and native budget are not prerequisites for the
+limiter, which uses the effective electrical limits configured for this installation.
 
 With the limiter disabled, a known native current setting limits
 the delivery estimate and ordinary economic control sends no current-setting RPC

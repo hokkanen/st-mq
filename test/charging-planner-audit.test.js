@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { planChargers, forecastCharger, forecastFixedPlans } from '../src/charging/planner.js';
+import { planChargers, forecastCharger, forecastFixedPlans, currentChargingAllocation } from '../src/charging/planner.js';
 
 const now = Date.parse('2026-09-24T00:00:00Z'), HOUR = 3_600_000, QUARTER = HOUR / 4;
 const v = value => ({ value, available: value !== null, assumed: false });
@@ -463,4 +463,64 @@ test('fixed joint forecasts retain honest cost bounds for zero and negative rate
   assert.equal(mixed.plans.charger1.costCents, 10.35);
   assert.equal(mixed.plans.charger2.costCents, null);
   assert.equal(mixed.solver.cashCostCandidateCents, null);
+});
+
+test('native open permission keeps joint entitlement independent of peer draw and Equalizer allowance', () => {
+  for (const priority of ['balanced', 'charger1', 'charger2']) {
+    const chargers = [job('charger1', 4.14), job('charger2', 8.28)];
+    for (const charger of chargers) {
+      charger.settings.enabled = false;
+      charger.telemetry.currentSharingActive = true;
+    }
+    const supply = { configuredBudgetCurrentA: [24, 24, 24] };
+    const before = run(chargers, { priority, supply });
+    assert.ok(before.allocations.some(row => row.chargers.charger1?.currentA > 0), 'A permitted zero-current peer keeps its request');
+    for (const actual of [16, 8, 0, 12, 0]) {
+      chargers[0].values.actualCurrentA = v(actual);
+      chargers[0].values.powerKw = v(actual * .69);
+      chargers[0].values.charging = v(actual > 0);
+      chargers[0].values.currentA = v(actual);
+      const after = run(chargers, { priority, supply: { ...supply,
+        propertyCurrentA: [actual + 8, actual + 8, actual + 8], chargerCurrentA: [actual, actual, actual],
+        availableCurrentA: [actual, actual, actual] } });
+      assert.deepEqual(after.allocations, before.allocations);
+      assert.deepEqual(after.currentLimits, before.currentLimits);
+    }
+  }
+});
+
+test('live current allocation uses energy and deadlines without measured peer demand', () => {
+  const chargers = [job('charger1', 4.14), job('charger2', 8.28)];
+  for (const charger of chargers) charger.telemetry.currentSharingActive = true;
+  const input = { now, chargers, priority: 'balanced', budgetCurrentA: [24, 24, 24] };
+  const allocation = currentChargingAllocation(input);
+  assert.equal(allocation.charger1.currentA, 8);
+  assert.equal(allocation.charger2.currentLimitA, 16, 'Balanced follows the unequal energy requirements');
+  chargers[0].values.charging = v(true);
+  chargers[0].values.actualCurrentA = v(16);
+  chargers[0].values.currentA = v(0);
+  assert.deepEqual(currentChargingAllocation(input), allocation);
+  chargers[0].values.actualCurrentA = v(0);
+  chargers[0].values.charging = v(false);
+  assert.deepEqual(currentChargingAllocation(input), allocation);
+  chargers[0].control.manual = { kind: 'stop' };
+  assert.equal(currentChargingAllocation(input).charger1, undefined, 'An explicit native Stop changes participation');
+  chargers[0].control.manual = null;
+  chargers[0].deadlineAt = now + HOUR / 4;
+  assert.ok(currentChargingAllocation(input).charger1.currentA > allocation.charger1.currentA,
+    'A changed ready-by request can revise entitlement');
+});
+
+
+test('completed native vehicle targets release current entitlement without using observed draw', () => {
+  const chargers = [job('charger1', 0), job('charger2', 4.14)];
+  for (const charger of chargers) charger.telemetry.currentSharingActive = true;
+  const input = { now, chargers, priority: 'charger1', budgetCurrentA: [16, 16, 16] };
+  for (const draw of [0, 8]) {
+    chargers[0].values.actualCurrentA = v(draw);
+    chargers[0].values.charging = v(draw > 0);
+    const selected = currentChargingAllocation(input);
+    assert.equal(selected.charger1, undefined);
+    assert.equal(selected.charger2.currentLimitA, 16);
+  }
 });

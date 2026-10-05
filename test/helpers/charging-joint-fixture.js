@@ -38,7 +38,8 @@ export async function fixture(t, { limiter = true, budgetA = 16, notifyRuntime =
   const amps2 = () => cars.charger2.connected && cars.charger2.allows && fields.start_charging.value
     ? Math.min(cars.charger2.demandA, fields.current_limit.value) : 0;
   const amps1 = () => cars.charger1.connected && cars.charger1.allows && !paused()
-    ? Math.max(0, Math.min(cars.charger1.demandA, budgetA - household.currentA - amps2())) : 0;
+    ? Math.max(0, Math.min(cars.charger1.demandA, cars.charger1.equalizerResponds === false
+      ? cars.charger1.demandA : budgetA - household.currentA - amps2())) : 0;
   const physical2 = () => {
     const state = !cars.charger2.connected ? 'charger_free' : amps2() > 0 ? 'charger_charging'
       : !fields.start_charging.value ? 'charger_pause' : 'charger_wait';
@@ -91,8 +92,6 @@ export async function fixture(t, { limiter = true, budgetA = 16, notifyRuntime =
     const scope = runtime.chargers.charger1.association;
     const supply = () => ({ availableCurrentA: triple(Math.max(0, budgetA - household.currentA - amps2())),
       propertyCurrentA: triple(household.currentA + amps1() + amps2()), chargerCurrentA: triple(amps1()),
-      nativeBudget: { currentA: budgetA, source: 'easee-equalizer-config', equipment: 'synthetic-joint-equalizer',
-        confirmedAt: START, validUntil: START + 24 * HOUR },
       feedEvidence: Object.fromEntries(['property','charger','allowance'].map(key => [key,
         {connected:true,online:true,synchronized:household.feedsSynchronized,epoch:'fixture-epoch'}])),
       voltageV: triple(230), observationTimes: { allowance: triple(now), property: triple(household.sourceAt ?? now), charger: triple(now), voltage: triple(now) } });

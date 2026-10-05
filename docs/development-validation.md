@@ -112,7 +112,7 @@ reception and useful heating require separate installation checks.
 ## Shelly load balancing
 
 Focused offline checks cover held Easee stream state, synchronization and
-connection epochs, allowance consistency, priority allocation, native limits and
+connection epochs, allocation independence, native limits and
 change-only limiter history:
 
 ```sh
@@ -120,24 +120,24 @@ node --test test/easee-stream.test.js test/easee-ocpp-lifecycle.test.js test/cha
 node --test test/charging-ui.test.js test/chart-overlays.test.js test/chart-views.test.js
 ```
 
-Use synthetic source observations to exercise matching older last-change values,
-missing/reconnecting feeds, allowance disagreement on either side of tolerance,
-unequal Shelly phase measurements, 0 and 6–16 A entitlement, a configurable
-fallback below known limits, all priorities and future forecasts without a
-permanent fallback cap. Native-budget cases use a different observed Equalizer
-budget from the configured hard fuse limit, retain that hard limit, admit
-allowance above the charger circuit ceiling, preserve numeric zero and reject
-missing, stale or unverified budget evidence. Budget changes invalidate held
-comparison references. The separate `below-minimum-idle` inference requires
-zero allowance, raw native headroom from zero to below the verified minimum,
-and all three fresh native OCPP phase currents at most 0.1 A. Reject headroom
-at or above the minimum, negative headroom, stale or positive peer currents,
-non-native evidence and contradictory other phases. Preserve the calculated
-headroom and prohibit reference seeding. Measurement-settling cases cover the
-absolute deadline, no further increases, hard-outage bypass and tighter known restrictions. Its
-unknown history retains held allowances and separate native setting readback
-without extending earlier verified coverage. Native command freshness and identification ownership
-remain separate checks. History checks cover exact changes, compact unchanged
+Use synthetic source observations to exercise unchanged last-change values
+confirmed by healthy current reporting, missing/reconnecting feeds, unequal
+Shelly phase measurements, 0 and 6–16 A entitlement, signed calibration margins,
+a configurable fallback below known limits, all priorities and future forecasts
+without a permanent fallback cap. Missing or contradictory Equalizer allowance
+and native budget must not gate Shelly's live calculation. Hold household demand
+and planned allocation fixed while varying Charger 1's current and delaying its
+Equalizer response: Shelly's entitlement must stay fixed even during excess
+property load that reducing Charger 1 could remove. Include separately arriving
+property/charger readings in both orders: incomplete healthy observations must
+hold at most the prior validated ceiling and confirmed setting, expose unknown
+headroom and never time out into an Equalizer takeover. Cover unchanged healthy
+cloud peer values during household changes, frozen observed-transition clocks,
+simultaneous charger changes, ambiguous transitions, source-epoch resets, Charge
+now, energy/deadline-weighted
+Balanced sharing against actual headroom, differing forecast headroom, restart
+and actual outages. Native command freshness and identification ownership remain
+separate checks. History checks cover exact changes, compact unchanged
 coverage, restart/outage gaps, equipment replacement, malformed/overlapping
 history, bounded query detail and independence from charging-report expiry.
 
@@ -278,7 +278,7 @@ run by the installation user.
 
 The Shelly-limiter browser suite seeds actual decision observations and compact
 coverage in a fresh synthetic database, then reads them through the chart API.
-It checks six modes, including bounded settling in Unknown, held allowance
+It checks six modes, including unavailable evidence in Unknown, load allowance
 versus effective/native settings, keyboard
 and touch inspection, persistent touch readout, badge details and focus return,
 unknown hatching and separate colors at 320/390/1440 px in both themes. It also

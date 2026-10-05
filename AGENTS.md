@@ -224,28 +224,47 @@ permission to act. See [the configuration guide](docs/configuration.md).
   Integration setup, commissioning and electrical limits remain configured.
 - Charging current adjusts to property loading and shared charger priority by
   default, independently of Automatic scheduling and including Charge now.
-  Charger 1 retains native Equalizer current control. With Charger 2 priority,
-  Shelly uses the headroom remaining after household demand, excluding Charger
-  1's draw; Equalizer must reduce Charger 1 as needed. A forecast allocation or
-  temporary combined excess caused by Charger 1 must not reduce Shelly's live
-  entitlement. Native, vehicle and electrical limits still apply. Current
-  adjustment requires supported capabilities, explicitly configured electrical
-  limits and valid current source evidence. Held property, Easee current and
-  Equalizer allowance values may remain usable on healthy, synchronized current
-  connections when their independent consistency checks pass; their original
-  last-change clocks are preserved, not renewed by polling. The allowance
-  comparison uses the independently verified native Equalizer budget; it never
-  substitutes that budget for the configured electrical limits on Shelly.
-  Missing or unusable native budget evidence selects fallback. Shelly current,
-  command and native readback freshness remain separately enforced. After
-  confirming its own current-setting change, a bounded measurement-settling
-  interval may retain at most the confirmed setting and last validated ceiling,
-  without increasing current or
-  presenting uncertain headroom as verified. Hard feed outages do not receive
-  that settling allowance. Otherwise unavailable or inconsistent evidence uses
-  the configured fallback, still respecting known
-  tighter limits and never inventing headroom. An explicit configuration opt-out
-  remains supported.
+  Charger 1 retains native Equalizer current control. Shelly applies the shared
+  planner's allocation policy to admitted live household headroom, using priority,
+  remaining energy and ready-by requirements;
+  Balanced is not necessarily an equal split. Charger 1's momentary draw,
+  Equalizer allowance and response delay must not redistribute that entitlement,
+  directly or through replanning. Charger 1's measured current is used to remove
+  its contribution from property consumption, not to reserve its entitlement.
+  Shelly reduces for property protection only when household demand plus Shelly
+  alone exceeds the configured effective phase limit. If reducing Charger 1
+  could remove the excess, Shelly leaves that correction to Equalizer regardless
+  of the amount or duration of the excess; no response watchdog takes over.
+  Allocation changes and native/vehicle restrictions remain independent.
+  With Charger 2 priority, a conservative forecast allocation or secondary
+  deadline reservation must not lower Shelly's live household headroom.
+  Current adjustment requires supported capabilities, explicitly configured
+  electrical limits and valid property and charger source evidence. Equalizer
+  supplies property current; its reported allowance, native budget and an
+  agreement comparison are not prerequisites for Shelly's calculation.
+  Healthy synchronized reporting or current native status readback can confirm
+  unchanged measurements without renewing their original last-change clocks.
+  Reading an application cache or retained MQTT message cannot establish that
+  health. Observed charger transitions must be paired with property changes
+  before their subtraction revises household demand; matching changes that
+  leave household demand unchanged retain the same entitlement. Periodic OCPP
+  measurements confirm peer state after a changed property total, while a
+  healthy synchronized cloud feed can retain an unchanged peer value without
+  advancing its change clock. While observed transitions remain ambiguous,
+  retain at most the last validated ceiling and confirmed current
+  setting, report unknown headroom and permit no increase. No elapsed-time limit
+  turns that wait into an Equalizer takeover. This bounded observation state
+  resets on physical/source connection changes and actual feed loss. These
+  independent reports do not prove an atomic snapshot.
+  Command readiness, native readback and physical identification retain
+  their separate freshness requirements. Unavailable or invalid source evidence
+  uses the configured fallback, still respecting known tighter limits and never
+  inventing headroom. The per-phase effective budget is `mainFuseA - marginA`;
+  a negative configured margin intentionally increases it for owner calibration,
+  without changing the declared physical fuse rating or native protection.
+  An explicit configuration opt-out remains supported. This lasting amendment,
+  approved on 2026-10-05, removes the independent Equalizer cross-check and the
+  unchanged-value expiry to avoid competing balancing loops and false fallback.
 - When future charging current is unknown, economic scheduling assumes the
   maximum the charger can deliver within its configured/verified ceiling and
   forecast property headroom on every phase after household and peer load. Use

@@ -3,7 +3,7 @@ import { acceptVehicleReading, validateBmwChargingHistory, bmwConsumedChargingAt
 import { chargingConfiguration } from './config.js';
 import { TIME_ZONE } from '../domain/prices.js';
 import { CHARGER_DEFINITIONS, buildCharger } from './model.js';
-import { forecastFixedPlans } from './planner.js';
+import { forecastFixedPlans, currentChargingAllocation } from './planner.js';
 import { createChargingPlannerService } from './planner-service.js';
 import { chargingPlannerInput, chargingPlanValidUntil } from './planner-input.js';
 import { chargingPlanInputsUnavailable } from './plan-inputs.js';
@@ -43,6 +43,24 @@ const vehicleReception = (feed, now) => ({ ...feed.mqtt, provider: feed.provider
   reason: !feed.mqtt.connected || !feed.mqtt.subscribed ? feed.mqtt.reason
     : vehicleFeedAvailable(feed, now) ? null : feed.mqtt.lastValidLiveAt === null ? 'awaiting-report' : 'vehicle-feed-stale' });
 const MIN_PRICE_PAUSE_MS = 15 * MINUTE, MIN_PRICE_SAVINGS_CENTS = 0;
+// Current sharing follows native permission, never the momentary charging
+// state. Equalizer may reduce a permitted transaction to zero without changing
+// its request or surrendering its planned entitlement.
+function currentSharingActive(control, now) {
+  const snapshot = control?.snapshot;
+  if (control?.session?.connected !== true || snapshot?.online !== true
+    || !Number.isSafeInteger(snapshot.readAt) || snapshot.readAt > now
+    || control.manual?.kind === 'stop' || snapshot.stopped || snapshot.faulted || snapshot.authorizationBlocked
+    || snapshot.appControl?.stopped || snapshot.appControl?.enabled === false
+    || snapshot.appControl?.faulted || snapshot.appControl?.authorizationBlocked) return false;
+  const execution = control.execution?.periods;
+  if (execution?.length) return execution.some(row => row.startAt <= now && (row.endAt === null || row.endAt > now));
+  if (snapshot.transport === 'shelly-evse')
+    return snapshot.fields?.start_charging?.value === true || control.ownedPause === true;
+  if (snapshot.transport === 'ocpp') return snapshot.transactionConfirmed === true
+    && ['Charging', 'SuspendedEV', 'SuspendedEVSE'].includes(snapshot.connectorStatus) && !control.ownsInstruction;
+  return snapshot.controlKnown === true && snapshot.enabled === true && !snapshot.stopped;
+}
 const copyRequest = value => structuredClone(value);
 const object = input => input && typeof input === 'object' && !Array.isArray(input);
 const sessionConnectedAt = request => Number(request.scope.split(':').at(-1));
@@ -766,6 +784,7 @@ export class ChargingRuntime {
       const control = controls[id] = item.controller?.status(), snapshot = control?.snapshot;
       const normalize = item.adapter?.normalize ?? (item.definition.provider === 'easee' ? easeeChargerTelemetry : null);
       result[id] = normalize ? normalize(snapshot ?? {}, { now }) : {};
+      result[id].currentSharingActive = currentSharingActive(control, now);
       if (item.definition.provider === 'easee' && snapshot) {
         item.supplyEstimate = updateSupplyEstimate(item.supplyEstimate, snapshot, now);
         if (result[id].supply) result[id].supply = { ...result[id].supply, estimate: item.supplyEstimate };
@@ -1344,7 +1363,10 @@ export class ChargingRuntime {
   planningEvidence() {
     const views = this.views(this.clock());
     const external = views.find(view => view.capabilities.externalLoadBalancing);
-    const supply = external?.telemetry.providerConnected === false ? {} : external?.telemetry.supply ?? {};
+    const installation = this.configuration.chargers.charger2;
+    const supply = { ...(external?.telemetry.providerConnected === false ? {} : external?.telemetry.supply),
+      ...(installation.enabled && installation.limiterEnabled ? { configuredBudgetCurrentA:
+        installation.mainFuseA.map((amps, phase) => Math.max(0, amps - installation.marginA[phase])) } : {}) };
     return digest({ revision: this.revision, canControl: this.canControl(),
       inputs: chargingPlannerInput({ chargers: views, supply }),
       sessions: views.map(view => {
@@ -1455,7 +1477,8 @@ export class ChargingRuntime {
     const stabilityBasis = digest({ priority: this.settings.priority,
       prices: priceWindow(currentPrices, -Infinity, Infinity),
       chargers: views.map(view => [view.id, view.association, view.deadlineAt, view.settings, view.request?.revision,
-        view.referenceGridKwh, ...['connected', 'soc', 'minimumSoc', 'capacityKwh', 'maximumCurrentA', 'currentA',
+        view.referenceGridKwh, view.capabilities.externalLoadBalancing || view.capabilities.currentControl ? null : view.values.currentA.value,
+        ...['connected', 'soc', 'minimumSoc', 'capacityKwh', 'maximumCurrentA',
           'vehicleNotBefore', 'vehicleCurrentA', 'nativeCurrentA', 'vehicleCeilingSoc'].map(key => view.values[key]?.value ?? null)]) });
     const previousPeriods = Object.fromEntries(views.flatMap(view => {
       const item = this.charger(view.id), previous = item.plan;
@@ -1526,11 +1549,13 @@ export class ChargingRuntime {
       result = await this.plannerService.request({ ...planning, chargers: planningViews, previousPeriods, fixedPeriods });
       if (!acceptResult(result)) return;
     }
-    const environment = { supply: { budget: supply?.estimate?.available ? supply.estimate.budgetCurrentA : supply?.availableCurrentA,
-        voltageV: planningVoltageV, allocationA: supply?.allocationA, quality: supply?.estimate?.quality },
+    const environment = { supply: { budget: supply?.configuredBudgetCurrentA
+        ?? (supply?.estimate?.available ? supply.estimate.budgetCurrentA : supply?.availableCurrentA),
+        voltageV: planningVoltageV, allocationA: supply?.allocationA,
+        quality: supply?.configuredBudgetCurrentA ? 'configured-budget' : supply?.estimate?.quality },
       household: this.household.map(row => [row.start, row.end, row.phaseCurrentA, row.scenarios]),
       chargers: views.map(view => [view.id, view.requiredGridKwh, view.values.connected.value,
-        view.values.currentA.value, view.values.maximumCurrentA.value,
+        view.capabilities.externalLoadBalancing || view.capabilities.currentControl ? null : view.values.currentA.value, view.values.maximumCurrentA.value,
         view.values.scheduledStartAt.value, view.values.scheduledEndAt.value,
         ...['vehicleNotBefore', 'vehicleCurrentA', 'nativeCurrentA', 'vehicleCeilingSoc'].map(key =>
           view.values[key]?.available === false ? null : view.values[key]?.value ?? null)]) };
@@ -1689,14 +1714,11 @@ export class ChargingRuntime {
     }
   }
   fenceChangedCommands(now, sourceId) {
-    const current = this.coordination?.allocations?.find(row => row.start <= now && row.end > now);
     for (const [id, item] of Object.entries(this.chargers)) {
       const basis = digest({ association: item.association, session: item.request?.sessionId,
         enabled: item.controls.enabled, chargeNow: item.request?.chargeNow === true,
         periods: remainingPeriods(item.plan?.periods, now).map(row => [row.startAt <= now ? 'open' : row.startAt, row.endAt]),
-        provisional: item.plan?.provisional === true,
-        ...(id === 'charger2' ? { current: this.settings.priority === 'charger2' ? null : current?.chargers?.charger2?.currentLimitA ?? null,
-          reservation: this.settings.priority === 'charger2' ? 0 : current?.chargers?.charger1?.currentA ?? 0 } : {}) });
+        provisional: item.plan?.provisional === true });
       const changed = item.commandBasis !== undefined && item.commandBasis !== basis;
       item.commandBasis = basis;
       const control = item.controller?.status(), pause = control?.identification;
@@ -1773,44 +1795,48 @@ export class ChargingRuntime {
     // This adapter method reads admitted local source evidence only. It must
     // never perform provider requests or advance a measurement's source clock.
     const first = firstItem?.adapter?.readCurrentSupply?.() ?? firstItem?.controller?.status()?.snapshot, supply = first?.supply;
-    const views = this.views(), view = views.find(row => row.id === 'charger2'), peer = views.find(row => row.id === 'charger1');
-    const now = this.clock(), active = this.coordination?.allocations?.find(row => row.start <= now && row.end > now);
-    const control = view?.control, peerControl = peer?.control, peerSnapshot = peerControl?.snapshot;
-    const unscheduled = !view?.settings.enabled || view?.request?.chargeNow === true || Boolean(control?.manual);
-    const liveUnscheduled = unscheduled && control?.manual?.kind !== 'stop'
-      && (control?.snapshot?.fields?.start_charging?.value === true || control?.ownedPause === true);
-    const peerScoped = peer?.request && peerControl?.session?.connected === true
-      && peerControl.session.connectedAt === sessionConnectedAt(peer.request)
-      && peerSnapshot?.online === true && Number.isSafeInteger(peerSnapshot.readAt)
-      && peerSnapshot.readAt <= now && now - peerSnapshot.readAt <= MINUTE;
-    const peerRestricted = peerControl?.manual?.kind === 'stop' || peerSnapshot?.stopped === true
-      || peerSnapshot?.appControl?.stopped === true || peerSnapshot?.appControl?.enabled === false
-      || peerSnapshot?.faulted || peerSnapshot?.authorizationBlocked
-      || peer?.values.vehicleCurrentA?.value === 0 || peer?.values.nativeCurrentA?.value === 0
-      || peer?.values.vehicleNotBefore?.value > now;
-    const peerDrawing = Array.isArray(supply?.chargerCurrentA) && supply.chargerCurrentA.some(value => value > .5)
-      && Array.isArray(supply?.observationTimes?.charger) && supply.observationTimes.charger.length === 3
-      && supply.observationTimes.charger.every(at => Number.isSafeInteger(at) && at <= now && now - at <= 15_000);
-    const peerOpen = !peerControl?.pending && !peerControl?.errorCode && (['enable', 'charge-now'].includes(peerControl?.manual?.kind)
-      || this.settings.priority === 'charger1' && peerDrawing
-      || ['active', 'released', 'charging'].includes(peerControl?.phase)
-        && (peerControl.released === true || peerControl.execution?.periods?.some(row => row.startAt <= now
-          && (row.endAt === null || row.endAt > now))));
-    const peerCeilings = [peer?.values.maximumCurrentA?.value, peer?.values.nativeCurrentA?.value,
-      peer?.values.vehicleCurrentA?.value].filter(value => Number.isFinite(value) && value >= 0);
-    const peerDemandA = peerScoped && !peerRestricted && peerOpen && peerCeilings.length ? Math.min(...peerCeilings) : null;
+    const views = this.views(), view = views.find(row => row.id === 'charger2');
+    const now = this.clock(), priority = this.settings.priority;
+    // Forecast household demand sizes future delivery, not a live entitlement.
+    // Apply the planner's request/deadline policy to admitted present headroom.
+    // C1 participates through confirmed native permission; C2's requested open
+    // period may participate prospectively before its own Start is confirmed.
+    const requests = views.map(charger => {
+      const plan = this.chargers[charger.id]?.plan;
+      const requested = charger.id === 'charger2' && (charger.settings.enabled || charger.request?.chargeNow)
+        && !charger.control?.manual && plan?.periods?.some(row => row.startAt <= now && (row.endAt === null || row.endAt > now));
+      return requested ? { ...charger, telemetry: { ...charger.telemetry, currentSharingActive: true } } : charger;
+    });
+    // Below two minimum pilots, retain an assigned turn through ordinary
+    // delivery progress. Its fixed deadline is never an Equalizer response timer.
+    const holdScope = priority === 'balanced' ? digest(requests.map(charger => [charger.id, charger.association,
+      charger.request?.sessionId, charger.request?.revision, charger.deadlineAt, charger.settings.enabled,
+      charger.request?.chargeNow === true, charger.control?.session?.connectedAt, charger.control?.manual,
+      charger.requiredGridKwh > 1e-7,
+      ...['connected', 'maximumCurrentA', 'nativeCurrentA', 'vehicleCurrentA', 'vehicleNotBefore']
+        .map(key => charger.values[key]?.value ?? null)])) : null;
+    if (!holdScope) this.currentAllocationHold = null;
+    const allocateCurrent = priority === 'charger2' ? undefined : headroom => {
+      if (this.currentAllocationHold?.scope !== holdScope
+        || now < this.currentAllocationHold.startedAt || now >= this.currentAllocationHold.end) this.currentAllocationHold = null;
+      const selected = currentChargingAllocation({ now, chargers: requests, priority, budgetCurrentA: headroom,
+        allocationHold: this.currentAllocationHold });
+      const winners = Object.entries(selected).filter(([, row]) => row.currentA > 1e-7);
+      if (holdScope && Math.min(...headroom) < 12 && winners.length === 1) {
+        if (this.currentAllocationHold?.chargerId !== winners[0][0]) {
+          const deadline = Math.min(now + 15 * MINUTE, ...requests.map(charger => charger.deadlineAt).filter(at => at > now));
+          this.currentAllocationHold = { scope: holdScope, chargerId: winners[0][0], startedAt: now, end: deadline };
+        }
+      } else this.currentAllocationHold = null;
+      return { allocationA: selected.charger2?.currentLimitA ?? null, reservationA: selected.charger1?.currentA ?? 0 };
+    };
     return { property: { healthy: first?.online === true, currents: supply?.propertyCurrentA, times: supply?.observationTimes?.property,
       evidence: supply?.feedEvidence?.property },
       easee: { healthy: first?.online === true, currents: supply?.chargerCurrentA, times: supply?.observationTimes?.charger,
         evidence: supply?.feedEvidence?.charger },
-      allowance: { healthy: first?.online === true, currents: supply?.availableCurrentA, times: supply?.observationTimes?.allowance,
-        evidence: supply?.feedEvidence?.allowance },
-      nativeBudget: supply?.nativeBudget ?? null,
       vehicleCurrentA: view?.values.vehicleCurrentA?.value, notBefore: view?.values.vehicleNotBefore?.value,
-      priority: this.settings.priority,
-      liveUnscheduled, peerDemandA,
-      allocationA: this.settings.priority === 'charger2' ? null : active?.chargers?.charger2?.currentLimitA ?? null,
-      reservationA: this.settings.priority === 'charger2' ? 0 : active?.chargers?.charger1?.currentA ?? 0 };
+      priority, allocateCurrent,
+      allocationA: null, reservationA: 0 };
   }
   currentPlanBasis(item) {
     const control = item.controller?.status();

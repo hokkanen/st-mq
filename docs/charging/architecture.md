@@ -108,7 +108,7 @@ that an uncertain earlier command has been resolved.
 | --- | --- |
 | BMW/Tesla feed | Withdraw unusable automatic values and identity certainty as applicable; continue planning from valid session/default inputs. Same-connection last-known charge has an explicit scope. |
 | Shared price/capacity forecast | Follow the adopted-instruction preservation and provisional-release rules; missing current alone uses the planning assumption. |
-| Live property/peer/native-budget evidence | Select bounded Shelly fallback under known tighter limits; hard feed outages bypass a measurement-settling hold. |
+| Live property/charger evidence | Select bounded Shelly fallback under known tighter limits when usable source evidence is lost; unchanged values confirmed by healthy current reporting remain usable. Equalizer allowance and native-budget evidence do not gate Shelly's calculation. |
 | Charger communication | Commands/readback cannot be claimed; retain uncertainty and restoration. Software cannot deliver a fallback over a broken link. |
 | Application stop or handover | Preserve native instructions and OCPP configuration; reconcile saved scope with fresh evidence after recovery. |
 | Report storage | Surface the failure while ordinary control and restoration remain available. |

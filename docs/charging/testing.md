@@ -182,21 +182,20 @@ invalid or incomplete input. These exits do not actuate equipment.
 
 ### Additional independent load evidence
 
-For a case involving disputed feed health, native budget or allowance
-consistency, capture independent Easee evidence during the same window:
+For a case involving disputed feed health or property/current measurements,
+capture independent Easee evidence during the same window:
 
 ```sh
 node scripts/charging-physical/independent.js --config /path/to/private/observer.json --status /path/to/private/run/trial-status.jsonl --out /path/to/private/run/independent.jsonl --duration-seconds 300
 ```
 
-This optional observer uses one native-budget GET and a separate read-only
+This optional observer uses a separate read-only property and charger-current
 stream. The private connection file additionally supplies `easee.accessToken`
 (an existing valid token), `chargerId`, `equalizerId`, `mainFuseA`, `marginA`
-and `toleranceA`. Copy the relevant verified installation assumptions into this
+with a signed calibration margin. Copy the relevant installation assumptions into this
 private test context; they do not replace runtime configuration. The tool does
-not refresh tokens. Keep `independent.jsonl` and `independent-budget-read.json`
-private with the original observation clocks. Set the audit manifest's optional
-`independentFeedSource` to the recording filename when the case needs it.
+not refresh tokens or request native Equalizer configuration. Keep
+`independent.jsonl` private with the original observation clocks.
 Ordinary current-response cases do not automatically need this additional
 connection. A configuration read or a declaration that a feed was interrupted
 is not by itself independent proof of the observed fallback cause.
@@ -226,11 +225,12 @@ Keep these evidence layers separate in the case record:
   vehicle reports support the specific load-sharing or identification claim.
 
 Retain source clocks, receipt clocks, units, quality, connection changes and
-errors. For held Easee values, record healthy synchronized feed evidence and the
-independent consistency basis. Original older last-change times remain old;
-native Shelly measurements/readback still have their own freshness requirements.
-The allowance comparison's native Equalizer budget is distinct from configured
-electrical limits. Do not assume Shelly phase names correspond to Easee phase
+errors. For held values, record healthy synchronized feed or current native
+readback evidence. Original older last-change times remain old; fresh command
+confirmation and physical identification still require their own evidence.
+The configured effective phase limits govern Shelly's calculation independently
+of Equalizer allowance or native-budget readback. Do not assume Shelly phase
+names correspond to Easee phase
 names; the limiter uses the conservative common Shelly current described in
 the [allocation contract](current-allocation.md#charger-2-current-allocation).
 
@@ -249,12 +249,12 @@ to the feature and available conditions.
 | Naturally occurring Shelly `sys` permission cycle, during identification or later charging | Preserve ordered native false/true edges and source provenance. False holds physical charging and blocks replacement Start until fresh permission returns. True clears only that device hold. An interrupted pause cannot count as continuous BMW stop evidence; original attempt deadlines remain. **If no cycle occurs, this case is not exercised.** Do not manufacture a `sys` event by relabeling a manual action. |
 | Charge now during BMW's identification pause | Trigger only after the recorded pause starts. Identification keeps its attempt and deadline, then restores normal current and continues charging under Charge now when permitted. The action does not cancel identification, establish vehicle identity or bypass a native restriction. |
 | Ubuntu runtime master without BMW/Tesla publishers | Only use an explicitly authorized, already verified host setup. Confirm vehicle feeds are actually unavailable, charger links remain usable and defaults/manual session inputs support scheduling without an invented identity. Preserve the last known charge estimate only for its original identified connection. Vehicle-feed loss alone does not imply load-feed loss or require the 12 A limiter fallback. |
-| Unusable property/Easee/native-budget evidence | Keep charger control reachable. Observe visible fallback and its configured cap (normally 12 A), still below any independently known tighter limit. This tests telemetry-loss fallback; loss of the controller or broker cannot prove autonomous charger fallback. |
+| Unusable property or charger-current evidence | Keep charger control reachable. Observe visible fallback and its configured cap (normally 12 A), still below any independently known tighter limit. Equalizer allowance and native-budget availability do not select fallback. This tests telemetry-loss fallback; loss of the controller or broker cannot prove autonomous charger fallback. |
 | Charger 2 priority with enough household headroom | Shelly's entitlement excludes Charger 1 draw, up to the configured 16 A ceiling; Equalizer reduces Charger 1 as needed. Record both measured responses and property currents over the settling interval. A 16 A setting while the vehicle draws less qualifies setting control only, not sustained 16 A delivery or property protection. |
-| Balanced and Charger 1 priority | With useful simultaneous demand, record sharing or Charger 1's reservation and the corresponding Shelly reduction. Unused peer capacity remains available. Do not turn an economic forecast ceiling or a connected idle vehicle into observed live demand. |
+| Balanced and Charger 1 priority | With useful simultaneous demand, record the planned allocation or Charger 1 reservation and the corresponding Shelly setting. Vary Charger 1's draw without changing household demand or the plan; Shelly must retain its entitlement. Balanced accounts for charging needs and deadlines and need not split equally. |
 | Insufficient headroom, then recovery | Observe Shelly's controller-owned balancing pause with fresh zero draw, then permitted resume after usable headroom reaches the supported minimum and dwell completes. Supported pilot settings are 6–16 A within configured limits; below minimum requests a pause, not a 1–5 A pilot. |
 | Native Stop while running; repeat during an owned pause when relevant | Capture native provenance/readback and physical zero. Subsequent headroom, priority, Charge now or feed recovery must not clear an independently recognized native Stop. A same-value native Stop that cannot be distinguished from an existing pause remains an explicit evidence limitation. |
-| Measurement settling and feed recovery | After a confirmed application current change, record any Unknown settling hold, its fixed deadline, retained ceiling and lack of further increase. Hard outages bypass the hold. Recovery needs usable matching evidence; repeated cached observations do not renew clocks or prove recovery. |
+| Separately arriving measurements and feed recovery | Record Unknown / Awaiting measurements while property and charger transitions are being paired. The previous confirmed ceiling cannot increase during this hold. No waiting deadline transfers balancing from Equalizer to Shelly. Genuine outages select fallback; recovery needs usable source evidence. Repeated cached observations do not renew measurement clocks or prove physical effects. |
 | Optional limiter history/UI check | Compare bounded recorded transitions with chart/API modes, allowance and separate native readback. Stable observations extend coverage without periodic state rows; gaps stay Unknown. History agreement establishes recording semantics, not additional physical current proof. |
 
 Start/stop patterns are not sufficient for joint identification when the vehicle

@@ -8,7 +8,7 @@ test('physical EVSE defaults keep acquisition disabled and discover control read
   const config = chargingConfiguration();
   assert.equal(config.chargers.charger2.enabled, false);
   assert.equal(config.chargers.charger2.limiterEnabled, true);
-  assert.equal(config.chargers.charger2.agreementToleranceA, 2);
+  assert.equal(Object.hasOwn(config.chargers.charger2, 'agreementToleranceA'), false);
   assert.equal(Object.hasOwn(config.chargers.charger2, 'verified'), false);
   assert.equal(Object.hasOwn(config.chargers.charger2, 'sessionEnergyVerified'), false);
   assert.equal(config.chargers.charger2.fallbackCurrentA, 12);
@@ -25,7 +25,7 @@ test('public charging defaults enable current adjustment without granting commis
     enabled: true, deviceId: 'synthetic-default-evse', topicPrefix: 'synthetic/default-evse',
   } } });
   assert.equal(enabled.chargers.charger2.limiterEnabled, true);
-  assert.equal(enabled.chargers.charger2.agreementToleranceA, 2);
+  assert.equal(Object.hasOwn(enabled.chargers.charger2, 'agreementToleranceA'), false);
   assert.equal(chargingSettingsFromConfiguration(enabled).chargers.charger2.enabled, false);
 });
 test('current adjustment retains explicit configuration opt-out and rejects non-boolean permission', () => {
@@ -35,14 +35,30 @@ test('current adjustment retains explicit configuration opt-out and rejects non-
   for (const limiterEnabled of [null, 0, 1, 'false', 'true'])
     assert.throws(() => chargingConfiguration({ chargers: { charger2: { limiterEnabled } } }), /limiterEnabled/);
 });
-test('fallback and agreement tolerance are configuration values with bounded electrical meaning', () => {
+test('fallback is a bounded configuration cap and the retired Equalizer comparison setting is rejected', () => {
   for (const fallbackCurrentA of [0, 6, 8, 12, 16])
     assert.equal(chargingConfiguration({ chargers: { charger2: { fallbackCurrentA } } }).chargers.charger2.fallbackCurrentA, fallbackCurrentA);
-  for (const agreementToleranceA of [0, .5, 2, 5])
-    assert.equal(chargingConfiguration({ chargers: { charger2: { agreementToleranceA } } }).chargers.charger2.agreementToleranceA, agreementToleranceA);
-  for (const field of [{ fallbackCurrentA: 17 }, { fallbackCurrentA: -1 }, { agreementToleranceA: -1 },
-    { agreementToleranceA: 5.1 }, { agreementToleranceA: '2' }])
+  for (const agreementToleranceA of [0, .5, 2, 5, null])
+    assert.throws(() => chargingConfiguration({ chargers: { charger2: { agreementToleranceA } } }), /current physical-EVSE configuration/);
+  for (const field of [{ fallbackCurrentA: 17 }, { fallbackCurrentA: -1 }])
     assert.throws(() => chargingConfiguration({ chargers: { charger2: field } }));
+});
+test('signed per-phase calibration margins preserve configured values and require a positive effective budget', () => {
+  for (const marginA of [[-1, 0, 1], [-.25, -.5, -1.75], [-200, 0, 24.5]]) {
+    const configuration = chargingConfiguration({ chargers: { charger2: { marginA } } });
+    assert.deepEqual(configuration.chargers.charger2.marginA, marginA);
+    assert.deepEqual(chargingConfiguration(configuration), configuration);
+  }
+  for (const field of [
+    { marginA: [-200.1, 0, 0] }, { marginA: [0, 200.1, 0] }, { marginA: [0, '0', 0] },
+    { marginA: [0, NaN, 0] }, { marginA: [0, Infinity, 0] }, { marginA: [-1, 0] },
+    { marginA: [25, 0, 0] }, { mainFuseA: [-1, 25, 25], marginA: [-2, 0, 0] },
+    { mainFuseA: [201, 25, 25] },
+  ]) assert.throws(() => chargingConfiguration({ chargers: { charger2: field } }));
+  const manifest = JSON.parse(readFileSync(new URL('../config.json', import.meta.url), 'utf8'));
+  assert.deepEqual(manifest.schema.charging.chargers.charger2.mainFuseA, ['float(0,200)']);
+  assert.deepEqual(manifest.schema.charging.chargers.charger2.marginA, ['float(-200,200)']);
+  assert.equal(Object.hasOwn(manifest.schema.charging.chargers.charger2, 'agreementToleranceA'), false);
 });
 test('retired Shelly commissioning assertions are rejected even when disabled', () => {
   for (const key of ['additiveCurrentVerified', 'maxSkewMs', 'sessionEnergyVerified', 'verified', 'model', 'firmware', 'connectedStates', 'disconnectedStates', 'chargingStates', 'minimumCurrentA', 'currentStepA'])

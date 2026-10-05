@@ -935,9 +935,8 @@ test('Charger 2 popups explain manual priority and unconfirmed instructions with
     ['device-permission-held', null, /charger withdrew charging permission.*no replacement Start is sent/i],
     ['native-schedule', { kind: 'schedule' }, /charger’s own schedule has priority/i],
     ['evse-command-unconfirmed', null, /outcome is still unknown.*fresh reading/i],
-    ['telemetry-fallback', null, /configured fallback.*fresh measurements/i],
-    ['measurement-settling', null, /Waiting for matching load readings.*Current headroom is not yet confirmed.*held ceiling cannot increase/],
-    ['equalizer-budget-unavailable', null, /Equalizer’s configured current budget is not verified for the current connection.*configured fallback applies, respecting tighter limits/],
+    ['telemetry-fallback', null, /configured fallback.*usable load measurements/i],
+    ['measurement-pair-pending', null, /previous confirmed ceiling is retained without an increase.*Waiting does not trigger fallback/i],
     ['future-control-condition', null, /Check the charger controls for details/],
   ]) {
     panel.update(status({ ...item, control: { phase: manual ? 'manual' : 'uncertain', reason, manual, confirmed: false } }));
@@ -2162,26 +2161,27 @@ test('Shelly limiter badge presents the controller mode without inferring pauses
   assert.match(popup.textContent, /Charger setting: 12 A confirmed/);
   assert.match(popup.textContent, /not measured charging current/);
   assert.equal(Boolean($('charger2-device').open), false, 'Badge inspection leaves the charger card folded');
-  panel.update(status({ ...item, limiter: { ...limiter, loadAllowanceA: 8, allowanceA: 8,
-    appliedCurrentA: 8, reason: 'equalizer-budget-unavailable' } }));
-  assert.equal($('charger2-limiter').textContent, 'Load balancing: Fallback · 8 A');
-  assert.match(popup.textContent, /Equalizer budget unavailable/);
-  assert.match(popup.textContent, /Charger setting: 8 A confirmed/);
+  panel.update(status({ ...item, limiter: { ...limiter, loadAllowanceA: 12, allowanceA: 9,
+    appliedCurrentA: 9, reason: 'native-current-limit' } }));
+  assert.equal($('charger2-limiter').textContent, 'Load balancing: Fallback · 12 A');
+  assert.match(popup.textContent, /Native charger limit/);
+  assert.match(popup.textContent, /Effective allowance: 9 A/);
+  assert.match(popup.textContent, /Charger setting: 9 A confirmed/);
   assert.match(popup.textContent, /fallback cap applies, respecting tighter limits/);
-  assert.doesNotMatch(popup.textContent, /equalizer-budget-unavailable|Unrestricted|12 A/);
+  assert.doesNotMatch(popup.textContent, /Unrestricted/);
   panel.update(status({ ...item, limiter: { ...limiter, mode: 'unrestricted', loadAllowanceA: 16, allowanceA: 8, appliedCurrentA: 8, reason: 'native-current-limit' } }));
   assert.equal($('charger2-limiter').textContent, 'Load balancing: Unrestricted · 16 A');
   assert.match(popup.textContent, /Effective allowance: 8 A/);
   panel.update(status({ ...item, limiter: { ...limiter, mode: 'paused-by-balancing', loadAllowanceA: 0, allowanceA: 0, applicationStatus: 'pending' } }));
   assert.match(popup.textContent, /Awaiting charger confirmation/);
   assert.doesNotMatch(popup.textContent, /Pause instruction confirmed/);
-  panel.update(status({ ...item, limiter: { ...limiter, mode: 'unknown', loadAllowanceA: 14,
-    allowanceA: 14, appliedCurrentA: 14, reason: 'measurement-settling' } }));
-  assert.equal($('charger2-limiter').textContent, 'Load balancing: Unknown · Waiting for matching load readings');
-  assert.match(popup.textContent, /Held allowance: 14 A/);
-  assert.match(popup.textContent, /Charger setting: 14 A confirmed/);
-  assert.match(popup.textContent, /Current headroom is not yet confirmed; no further increase is allowed/);
-  assert.doesNotMatch(popup.textContent, /Unrestricted|full configured ceiling/);
+  panel.update(status({ ...item, limiter: { ...limiter, mode: 'unknown', loadAllowanceA: 12,
+    allowanceA: 12, appliedCurrentA: 12, reason: 'measurement-pair-pending' } }));
+  assert.equal($('charger2-limiter').textContent, 'Load balancing: Awaiting measurements');
+  assert.match(popup.textContent, /Held ceiling: 12 A/);
+  assert.match(popup.textContent, /previous confirmed ceiling is retained and cannot increase/);
+  assert.match(popup.textContent, /Waiting alone does not trigger fallback/);
+  assert.match(popup.textContent, /Charger setting: 12 A confirmed/);
   panel.update(status({ ...item, limiter: { mode: 'unknown', applicationStatus: 'unknown' } }));
   assert.equal($('charger2-limiter').textContent, 'Load balancing: Unknown');
   assert.match(popup.textContent, /Charger setting unconfirmed/);

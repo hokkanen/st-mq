@@ -66,38 +66,46 @@ test('charging reads shared observations while schedule and allocation stay on R
   assert.equal(h.requests.filter(row => row.url.endsWith('/config')).length, 1);
 });
 
-test('native budget preserves actual configuration receipt across cached telemetry and expires after failed rereads', async () => {
+test('fixed site allocation survives brief refresh failures and expires after its actual successful read', async () => {
   const h = harness();
-  const original = (await h.adapter.readTelemetry({ configurationEpoch: 1 })).supply.nativeBudget;
-  assert.equal(original.currentA, 20); assert.equal(original.source, 'easee-equalizer-config');
-  assert.equal(original.confirmedAt, NOW); assert.equal(original.validUntil, NOW + 24 * 3600_000);
-  assert.equal(typeof original.equipment, 'string');
+  const original = await h.adapter.readTelemetry({ configurationEpoch: 1 });
+  assert.equal(original.supply.allocationA, 20);
+  assert.equal(Object.hasOwn(original.supply, 'nativeBudget'), false);
   h.now += 30 * 60_000;
-  assert.deepEqual((await h.adapter.readTelemetry({ configurationEpoch: 1 })).supply.nativeBudget, original,
-    'Ordinary telemetry cannot renew a cached configuration readback');
+  assert.equal((await h.adapter.readTelemetry({ configurationEpoch: 1 })).supply.allocationA, 20);
   assert.equal(h.requests.filter(row => row.url.endsWith('/config')).length, 1);
   h.allocationFailure = true; h.now += 3600_000;
-  assert.deepEqual((await h.adapter.readTelemetry({ configurationEpoch: 1 })).supply.nativeBudget, original);
+  assert.equal((await h.adapter.readTelemetry({ configurationEpoch: 1 })).supply.allocationA, 20);
   h.now = NOW + 24 * 3600_000 + 1;
-  assert.equal((await h.adapter.readTelemetry({ configurationEpoch: 1 })).supply.nativeBudget, null);
+  assert.equal((await h.adapter.readTelemetry({ configurationEpoch: 1 })).supply.allocationA, null,
+    'Ordinary telemetry cannot renew a cached fixed site limit');
 });
 
-test('a new acquisition epoch cannot relabel cached native configuration as current proof', async () => {
+test('a changed acquisition epoch promptly refreshes the fixed allocation and bounds failed retries', async () => {
   const h = harness();
-  const first = (await h.adapter.readTelemetry({ configurationEpoch: 1 })).supply.nativeBudget;
+  await h.adapter.readTelemetry({ configurationEpoch: 1 });
   h.now += 1000; h.allocationFailure = true;
-  const disconnected = await h.adapter.readTelemetry({ configurationEpoch: 2 });
-  assert.equal(disconnected.supply.nativeBudget, null);
-  assert.equal(disconnected.supply.allocationA, 20, 'The existing forecast observation remains distinct from live proof');
+  assert.equal((await h.adapter.readTelemetry({ configurationEpoch: 2 })).supply.allocationA, 20);
   const attempts = h.requests.filter(row => row.url.endsWith('/config')).length;
   h.now += 1000;
-  assert.equal((await h.adapter.readTelemetry({ configurationEpoch: 2 })).supply.nativeBudget, null);
+  await h.adapter.readTelemetry({ configurationEpoch: 2 });
   assert.equal(h.requests.filter(row => row.url.endsWith('/config')).length, attempts,
     'A failed recheck is bounded to at most one retry per minute');
-  h.now += 60_000; h.allocationFailure = false;
-  const recovered = (await h.adapter.readTelemetry({ configurationEpoch: 2 })).supply.nativeBudget;
-  assert.equal(recovered.currentA, 20); assert.equal(recovered.equipment, first.equipment);
-  assert.equal(recovered.confirmedAt, h.now); assert.notEqual(recovered.confirmedAt, first.confirmedAt);
+  h.now += 60_000; h.allocationFailure = false; h.allocationA = 18;
+  assert.equal((await h.adapter.readTelemetry({ configurationEpoch: 2 })).supply.allocationA, 18);
+});
+
+test('missing or invalid successful allocation responses retry within a minute rather than an hour', async () => {
+  for (const configurationEpoch of [undefined, 1]) for (const invalid of [null, undefined, -1, 'invalid', 1001]) {
+    const h = harness(); h.allocationA = invalid;
+    assert.equal((await h.adapter.readTelemetry({ configurationEpoch })).supply.allocationA, null);
+    h.now += 30_000; h.allocationA = 22;
+    assert.equal((await h.adapter.readTelemetry({ configurationEpoch })).supply.allocationA, null);
+    assert.equal(h.requests.filter(row => row.url.endsWith('/config')).length, 1);
+    h.now += 30_000;
+    assert.equal((await h.adapter.readTelemetry({ configurationEpoch })).supply.allocationA, 22);
+    assert.equal(h.requests.filter(row => row.url.endsWith('/config')).length, 2);
+  }
 });
 
 test('install and handover force fresh observations before each write and for readback', async () => {

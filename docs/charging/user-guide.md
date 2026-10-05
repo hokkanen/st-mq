@@ -75,7 +75,7 @@ must not be displayed as observed charging.
 | Identification pending | The attempt is waiting for the evidence or readiness it needs. Ordinary scheduling can use configured/session inputs. |
 | Identification inconclusive | The active attempt ended unresolved. Passive evidence can still complete the match within this connection. |
 | Load balancing: Fallback | Current uses its configured fallback cap subject to known tighter limits. It is not proof of healthy household headroom. |
-| Load balancing: Unknown | Current headroom is unconfirmed; the details explain any bounded settling hold and retained allowance. |
+| Load balancing: Unknown | Current headroom or the controller decision is unavailable. When measurements are arriving separately, the details show the bounded held allowance and native setting while waiting for matching readings. |
 
 **How charging works** explains the session behavior for that backend. Easee cloud
 and OCPP pauses can expire on the charger; a Shelly pause needs a running

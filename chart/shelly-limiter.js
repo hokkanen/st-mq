@@ -14,12 +14,10 @@ const reasons = {
   'limiter-unavailable': 'Limiter status unavailable',
   'fuse-limit': 'Property headroom', 'priority-allocation': 'Charger priority',
   'hardware-restriction': 'Full configured ceiling', 'native-current-limit': 'Native charger limit',
-  'vehicle-current-limit': 'Vehicle limit', 'equalizer-limit': 'Equalizer headroom',
+  'vehicle-current-limit': 'Vehicle limit',
   'feed-unsynchronized': 'Waiting for synchronized feeds', 'charger-current-unavailable': 'Easee current unavailable',
   'shelly-current-unavailable': 'Shelly current unavailable', 'non-additive-currents': 'Load readings disagree',
-  'allowance-disagreement': 'Equalizer allowance and property readings disagree',
-  'equalizer-budget-unavailable': 'Equalizer budget unavailable',
-  'measurement-settling': 'Waiting for matching load readings',
+  'measurement-pair-pending': 'Awaiting measurements',
   'below-minimum-current': 'Below the minimum charging current',
   'telemetry-fallback': 'Load evidence unavailable', 'feed-unavailable': 'Load feed unavailable',
   'limiter-disabled': 'Limiter disabled', 'disconnected': 'No vehicle connected',
@@ -33,7 +31,7 @@ export function shellyLimiterDisplay(value) {
   const allowance = mode === 'unknown' || mode === 'inactive' ? null : current(value?.loadAllowanceA ?? value?.allowanceA);
   const effective = current(value?.allowanceA);
   const applied = current(value?.appliedCurrentA);
-  const settling = mode === 'unknown' && value?.reason === 'measurement-settling';
+  const pending = mode === 'unknown' && value?.reason === 'measurement-pair-pending';
   const reason = reasons[value?.reason] ?? (mode === 'fallback' ? 'Load evidence unavailable'
     : mode === 'limited' || mode === 'paused-by-balancing' ? 'Property load or charger priority' : '');
   const application = ({ confirmed: value?.allowanceA === 0 ? 'Pause instruction confirmed'
@@ -42,12 +40,12 @@ export function shellyLimiterDisplay(value) {
     blocked: `Application blocked${applied ? ` · charger setting ${applied}` : ''}`,
     inactive: 'No limiter instruction applied', unknown: 'Charger setting unconfirmed' })[value?.applicationStatus]
       ?? 'Charger setting unconfirmed';
-  const label = `${state.label}${settling ? ` · ${reason}` : allowance ? ` · ${allowance}` : ''}`;
-  const effectiveAllowance = effective && effective !== allowance ? `${settling ? 'Held' : 'Effective'} allowance: ${effective}` : '';
-  const description = settling
-    ? 'Load readings are catching up after a controller command. Current headroom is not yet confirmed; no further increase is allowed during this wait.'
+  const label = pending ? 'Awaiting measurements' : `${state.label}${allowance ? ` · ${allowance}` : ''}`;
+  const effectiveAllowance = effective && effective !== allowance ? `${pending ? 'Held ceiling' : 'Effective allowance'}: ${effective}` : '';
+  const description = pending
+    ? 'Property and charger changes have arrived separately. The previous confirmed ceiling is retained and cannot increase while measurements are paired. Waiting alone does not trigger fallback or take balancing over from Equalizer.'
     : state.description;
-  return { mode, color: state.color, pattern: state.pattern, label, allowance, reason, reasonInLabel: settling, application,
+  return { mode, color: state.color, pattern: state.pattern, label, allowance, reason, reasonInLabel: pending, application,
     effectiveAllowance,
     detail: [`${state.label}${allowance ? ` · ${allowance} allowance` : ''}${reason ? ` · ${reason}` : ''}`,
       effectiveAllowance ? `${effectiveAllowance}, respecting other restrictions.` : '',

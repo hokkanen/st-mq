@@ -52,14 +52,36 @@ Versions follow Semantic Versioning. `-dev.N` denotes a development prerelease.
   implementation responsibilities, integrations and optional physical testing.
 - Shelly current adjustment defaults on independently of Automatic scheduling,
   including Charge now. Healthy synchronized Easee feeds can retain unchanged
-  older values when property and allowed-current evidence agree. Shelly uses
+  older values, and current Shelly status readback can confirm unchanged readings
+  without expiring them solely because their value-update clock is over 15 seconds
+  old. Shelly uses
   0 or 6–16 A with priority sharing; unusable feeds select the configurable 12 A
   fallback cap, still respecting known lower limits. Charger 2 priority excludes
   Charger 1's draw; Equalizer must yield. The limiter needs no Shelly phase map,
   while recorded phase association remains configured.
-- `agreementToleranceA` defaults to 2 A for the live allowance comparison.
-  Retired `additiveCurrentVerified` and `maxSkewMs` configuration fields are
-  rejected; Shelly command and measurement freshness limits remain enforced.
+- Shelly applies the planner's priority, energy-request and ready-by allocation
+  policy to actual household headroom, including during Charge now. Forecast
+  household demand no longer reserves capacity a second time. Charger 1's momentary draw and
+  Equalizer response delay no longer redistribute its entitlement. Shelly reduces
+  for property protection only when household demand plus Shelly alone exceeds
+  the effective phase limit; it leaves excess that reducing Charger 1 could
+  remove to Equalizer. Balanced allocation is not necessarily 50/50.
+- The owner-approved F3 amendment removes the Equalizer allowance/native-budget
+  comparison, its held references and comparison-settling state from Shelly's
+  live limiter. Property and charger measurements determine household headroom
+  against configured limits. Retired `agreementToleranceA`,
+  `additiveCurrentVerified` and `maxSkewMs` configuration fields are rejected.
+  Genuine source outages, native restrictions and command confirmation retain
+  their separate protections.
+- Separately arriving property and charger changes hold the previous validated
+  ceiling, capped by the confirmed native setting, until the observations can
+  be paired. The badge shows unknown headroom during that wait; no response
+  deadline makes Shelly take over from Equalizer. Healthy unchanged cloud values
+  remain usable without a new change timestamp, while real feed loss still
+  selects fallback.
+- Per-phase `marginA` accepts signed calibration values. A negative margin
+  intentionally increases the effective `mainFuseA - marginA` budget without
+  changing the declared physical fuse rating or native protection.
 - History recovery now has a compact entry inside its own Recording details fold
   and an aligned action in Paired computers. The shared window separates new
   recovery from previous recoveries, keeps reviews tied to their source, and
@@ -93,26 +115,11 @@ Versions follow Semantic Versioning. `-dev.N` denotes a development prerelease.
 - Home Assistant deployment accepts unchanged configuration whose JSON object
   keys were reordered, and identifies failed app checks without exposing private
   settings. Missing or malformed configuration still blocks deployment.
-- Shelly's allowance comparison uses the independently verified native Equalizer
-  budget, keeping it separate from the configured fuse limit and safety margin.
-  Missing or unusable budget evidence selects fallback. Equalizer allowances
-  remain separate from circuit limits and keep their reported numeric meaning.
-- A zero Equalizer allowance can agree operationally with less than the verified
-  minimum charging current when all native Easee phase readings independently
-  confirm idle draw. This bounded inference preserves the original readings and
-  calculated headroom; stale evidence or other phase contradictions still fail.
-- Shelly's measured current changes no longer cause repeated fallback against
-  an unchanged Equalizer allowance. A fixed comparison reference preserves
-  genuine household-load disagreements and is discarded on lost evidence,
-  connection/session changes or restart.
-- After a confirmed controller current change, Shelly can briefly hold its current
-  ceiling while matching load readings arrive, without increasing it further.
-  The badge and history show unknown headroom during this bounded wait; hard
-  outages or persistent disagreement still select fallback.
 - Load-balancing history records changed decisions when they become visible,
   including while a charger command is awaiting confirmation.
-- Unscheduled Shelly charging with Charger 1 priority uses live peer demand;
-  an economic forecast no longer reduces its current when the peer is stopped.
+- Native OCPP and cloud scheduling expose the same validated property-current
+  source to Shelly. Choosing cloud scheduling no longer creates fallback solely
+  because the live supply interface is missing its feed-health evidence.
 - Easee reads, command acknowledgements and automatic takeover wait briefly for
   an admitted device timestamp to become current, then recheck the original
   connection and native instructions without repeating a command. Small clock

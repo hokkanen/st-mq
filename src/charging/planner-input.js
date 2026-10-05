@@ -4,6 +4,8 @@ const fields = (object, names) => Object.fromEntries(names.map(name => [name, ob
 // earlier plan output do not change a numerical search or belong in its cache.
 export function chargingPlannerInput(options) {
   const supply = options.supply;
+  const configuredBudget = Array.isArray(supply?.configuredBudgetCurrentA)
+    && supply.configuredBudgetCurrentA.length === 3 && supply.configuredBudgetCurrentA.every(value => Number.isFinite(value) && value >= 0);
   return { ...options,
     chargers: (options.chargers ?? []).map(charger => ({
       ...fields(charger, ['id', 'label', 'requiredGridKwh', 'referenceGridKwh', 'deadlineAt']),
@@ -16,7 +18,7 @@ export function chargingPlannerInput(options) {
         phase: ['released', 'charging'].includes(charger.control?.phase) ? charger.control.phase : null,
         errorCode: Boolean(charger.control?.errorCode),
         manual: charger.control?.manual ? fields(charger.control.manual, ['kind', 'resumeAt']) : null },
-      telemetry: { ...fields(charger.telemetry, ['manualStop', 'scheduledEndKind', 'providerConnected']),
+      telemetry: { ...fields(charger.telemetry, ['manualStop', 'scheduledEndKind', 'providerConnected', 'currentSharingActive']),
         ...(supply === undefined ? { supply: charger.telemetry?.supply } : {}) },
       values: Object.fromEntries(['connected', 'charging', 'currentA', 'maximumCurrentA', 'actualCurrentA',
         'voltageV', 'powerKw', 'minimumSoc', 'vehicleCeilingSoc', 'soc', 'scheduledStartAt',
@@ -24,9 +26,10 @@ export function chargingPlannerInput(options) {
         key === 'soc' ? charger.values?.soc : fields(charger.values?.[key], ['value', 'available', 'assumed'])])),
     })),
     ...(supply === undefined ? {} : { supply: {
-      ...fields(supply, ['availableCurrentA', 'configuredBudgetCurrentA', 'propertyCurrentA', 'chargerCurrentA', 'allocationA', 'voltageV']),
+      ...fields(supply, ['configuredBudgetCurrentA', 'allocationA', 'voltageV',
+        ...(!configuredBudget ? ['availableCurrentA', 'propertyCurrentA', 'chargerCurrentA'] : [])]),
       ...(Object.hasOwn(supply ?? {}, 'planningVoltageV') ? { planningVoltageV: supply.planningVoltageV } : {}),
-      estimate: fields(supply?.estimate, ['available', 'budgetCurrentA', 'quality']),
+      ...(!configuredBudget ? { estimate: fields(supply?.estimate, ['available', 'budgetCurrentA', 'quality']) } : {}),
     } }),
   };
 }

@@ -14,7 +14,7 @@ const status = () => ({ now: Date.now(), pair: { role: 'master', canControl: tru
     telemetry: { powerKw: { value: 0, measuredAt: 1000, available: true } } })) } });
 const baseConfig = () => ({ status: { url: 'http://127.0.0.1:1/api/status' } });
 const easeeConfig = () => ({ accessToken: 'synthetic-observer-token', chargerId: 'fixture-charger',
-  equalizerId: 'fixture-equalizer', mainFuseA: [25, 25, 25], marginA: 1, toleranceA: 2 });
+  equalizerId: 'fixture-equalizer', mainFuseA: [25, 25, 25], marginA: 1 });
 function fixture(t) {
   const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'charger-observer-test-'));
   fs.chmodSync(directory, 0o700);
@@ -120,28 +120,26 @@ test('independent tail reader does not resurrect a cached status after a gap or 
   assert.equal(latestStatus(file), null);
 });
 
-test('independent observer reads native budget once without commands or clock renewal', async t => {
+test('independent observer reads property and peer streams without native budget requests or clock renewal', async t => {
   const directory = fixture(t), file = path.join(directory, 'run-status.jsonl');
   fs.writeFileSync(file, JSON.stringify({ ...status(), receivedAt: Date.now() }) + '\n', { mode: 0o600 });
-  const sourceTime = Date.now() - 600000, requests = [], cancel = new AbortController();
+  const sourceTime = Date.now() - 600000, cancel = new AbortController();
   let closed = false;
   const result = await observeIndependent({ config: { easee: easeeConfig() }, statusFile: file,
     outputFile: path.join(directory, 'independent.jsonl'), duration: 1, signal: cancel.signal,
-    request: async (url, options) => { requests.push(options.method); assert.equal(options.redirect, 'error'); return Response.json({ maxAllocatedCurrent: 27 }); },
     createStream: () => ({ start() { setTimeout(() => cancel.abort(), 40); },
       snapshot: () => [{ id: 31, value: 4, measuredAt: sourceTime }],
       evidence: () => ({ connected: false, online: false, synchronized: false, epoch: 1 }),
       close: async () => { closed = true; } }) });
-  assert.deepEqual(requests, ['GET']);
   assert.equal(closed, true);
   assert.equal(result.count, 1);
-  assert.equal(result.healthyComparableSamples, 0);
+  assert.equal(result.healthyLoadSamples, 0);
   const [row] = rows(path.join(directory, 'independent.jsonl'));
   assert.equal(row.property[0].measuredAt, sourceTime);
-  const proof = readPrivateJson(path.join(directory, 'independent-budget-read.json'));
-  assert.equal(proof.nativeBudget.currentA, 27);
-  assert.equal(proof.httpStatus, 200);
-  assert.ok(proof.nativeBudget.confirmedAt >= proof.requestedAt);
+  assert.equal(fs.existsSync(path.join(directory, 'independent-budget-read.json')), false);
+  assert.equal(Object.hasOwn(row, 'nativeBudget'), false);
+  assert.equal(validateEaseeConfig({ ...easeeConfig(), marginA: -2 }).margin, -2);
+  assert.throws(() => validateEaseeConfig({ ...easeeConfig(), toleranceA: 2 }), /Unsupported/);
 });
 
 test('oversized or invalid read-only responses cannot become observations', async () => {

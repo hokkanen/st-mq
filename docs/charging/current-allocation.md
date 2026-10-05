@@ -18,10 +18,15 @@ when it is unknown; scheduling sends Boolean start/stop only. The allocation
 below applies with `limiterEnabled:true`;
 missing current-control capabilities block that mode rather than bypass it.
 
-Configure the installation's per-phase fuse ratings, safety margins and charger
-ceiling. Property and Easee currents use the same Easee phase basis. Shelly does
+Configure the installation's per-phase fuse ratings, calibration margins and
+charger ceiling. The effective phase budget is `mainFuseA - marginA`: a positive
+margin leaves headroom and a negative margin intentionally increases the budget.
+Margins may be finite values from -200 to 200 A, including decimals, provided
+each effective budget remains positive. The default is 1 A per phase. Calibration
+does not rewrite the declared physical fuse rating or the equipment's protection.
+Property and Easee currents use the same Easee phase basis. Shelly does
 not need a phase correspondence for this limiter: its contribution is the
-minimum of its three freshly measured phase currents, subtracted equally from
+minimum of its three admitted measured phase currents, subtracted equally from
 each property phase. This remains conservative when the phase currents differ.
 The configured `phaseMap` still owns recorded phase-energy association; this
 calculation does not change or verify that recording map.
@@ -39,129 +44,101 @@ room with an absolute current setting.
 
 ## Source health and held readings
 
-The property, Easee-current and Equalizer-allowance feeds must be online and
-synchronized in their current connection epochs, with complete valid phase
-values and original source times. A field's older last-change timestamp alone
-does not invalidate held state on such a connection. Reconnects, disconnected
-providers, incomplete synchronization and contradictory values do not pass by
-rereading a cache. Source clocks remain unchanged and held state is not counted
-as another observation or learning sample.
+The property and Charger 1 current feeds must be online and synchronized in their
+current connection epochs, with complete valid phase values and original source
+times. A field's older last-change timestamp alone does not invalidate held state
+on such a connection. Reconnects, disconnected providers, incomplete
+synchronization and contradictory values do not pass by rereading a cache.
 
-## Independent native-budget comparison
+Shelly's correlated `GetStatus` response can confirm unchanged `phase_info`
+values and their matching `last_update_ts` without rewriting that clock. That old
+last-update clock alone does not expire the measurement after 15 seconds.
+Availability, native component health and current readback remain required.
+Retained MQTT messages and repeated application-cache reads cannot renew that
+health. Source clocks remain unchanged; held state is not another observation
+or identification/learning sample.
 
-Equalizer's per-phase allowed-current fields 230–232 provide an independent
-consistency check. The ordinary numeric comparison requires
-`abs(allowance − max(0, nativeBudget − property + Easee)) <= agreementToleranceA`,
-which defaults to 2 A. `nativeBudget` is the independently read and verified
-Equalizer current budget for the current equipment and connection. It is not
-inferred from the allowance being checked. The native budget may differ from
-the configured fuse rating used in `H`; reading it never raises or rewrites
-Shelly's configured electrical limits or safety margin.
+Equalizer supplies the property current. Its reported charging allowance and
+independently acquired native budget are not inputs or prerequisites for
+Shelly's live limiter. There is no allowance agreement test, below-minimum
+allowance inference, held comparison reference or comparison-settling state.
+The configured electrical budget remains the source of the phase limits.
+Property and charger measurements must still support their additive
+interpretation; deleting the Equalizer comparison does not turn invalid or
+missing phase measurements into usable headroom.
 
-Budget proof comes from a successful read-only native configuration response,
-with the actual receipt time and the existing 24-hour allocation-cache validity.
-It belongs to the current equipment and acquisition epoch. Ordinary telemetry
-polling does not renew that proof; replacement equipment, a new acquisition
-epoch, expiry or an invalid response cannot reuse an unverified budget.
+## Pairing changing measurements
 
-The pilot-current field 114 and the charger's circuit current ceiling are
-different quantities and cannot replace the Equalizer allowance. Nor is this
-allowance clipped to the circuit ceiling: it can report more current than that
-circuit permits. Zero remains the reported numeric value; the comparison does
-not invent a rule translating all headroom below 6 A to zero. Easee's documented
-minimum charging current describes charging behavior, not that field encoding.
-See [Easee's observation definitions](https://developer.easee.com/docs/charger-observation-ids)
-and [current limits](https://developer.easee.com/docs/current-limits-and-control).
+Property and charger reports arrive independently. The controller keeps one
+previous admitted property/peer/Shelly observation set, scoped to the physical
+connection and source epochs. When the derived household demand changes, an
+observed charger transition needs a property observation covering the first
+source clock for that changed current. Later unchanged samples cannot move that
+transition clock forward. Matching property and charger changes that leave
+household demand unchanged retain the same entitlement directly.
 
-Missing, stale or unverified native budget evidence selects fallback, still
-respecting known tighter limits. The comparison excludes the separate configured
-safety margin, which is deducted once in `H`. A zero or delayed Equalizer
-allowance does not establish an exact gross capacity budget.
-Easee can also keep its allowance low while waiting for capacity recovery; that
-delay alone does not prove agreement with current load readings.
+A changed property total needs current Shelly status confirmation. For Charger
+1's periodic OCPP metering, a subsequent measurement confirms peer current.
+An unchanged peer value from a healthy synchronized cloud stream instead remains
+usable under that feed's held-state semantics; it need not advance its original
+change clock merely because household demand changes. Repeated application-cache
+reads do not create either feed health or new measurement evidence.
 
-## Below-minimum idle inference
+While those reports remain incomplete on healthy sources, the controller holds
+at most the last validated ceiling and freshly confirmed native current setting.
+Applicable allocation, native and vehicle restrictions can lower that hold;
+unpaired readings cannot authorize an increase or a new household-load claim.
+The badge and history show **Unknown · Waiting for matching load readings**.
+There is no deadline that converts this wait into competing property balancing.
+Actual feed loss selects fallback, and a changed session, source epoch or
+controller restart discards the process-local observation set.
 
-One narrowly bounded operational inference can admit a zero allowance outside
-the ordinary numeric tolerance. The unrounded, unclipped native-budget headroom
-`nativeBudget − property + Easee` must be nonnegative and below the verified
-6 A native charging minimum. All three Easee phase currents must independently
-report at most 0.1 A through native OCPP, with each original phase measurement
-clock and the native feed's latest receipt/activity no older than 120 seconds
-on the same healthy connection epochs. Other phases still require their own
-valid comparisons. This `below-minimum-idle`
-basis means observed idle charging is consistent with less than a usable pilot;
-it does not assert an undocumented encoding rule for fields 230–232. Preserve
-the reported zero, the calculated nonzero headroom and their original clocks.
-It never seeds a positive held comparison reference. Headroom at least 6 A,
-negative headroom, positive or stale peer current, a non-native peer reading or
-another contradictory phase does not qualify. Otherwise disagreement selects
-fallback unless the bounded measurement-settling hold below applies.
+This is bounded observation pairing, not an atomic meter snapshot. Ambiguous
+observed transitions can remain pending; unchanged healthy cloud values alone
+do not cause that wait. Neither transport proves that independently received
+property and charger samples were taken simultaneously or that Equalizer acted.
 
-## Held comparison reference
+## Shared priority and Equalizer coordination
 
-Equalizer can hold that allowance through a change in Shelly's own draw. Once
-the raw comparison agrees at positive, unclipped headroom and Shelly's measured
-phase currents differ by no more than 0.5 A, the controller may
-retain a bounded comparison reference for that exact allowance observation and
-live connection/session scope. Subsequent comparisons account for the change
-in Shelly's **measured** common current since that reference:
-`max(0, nativeBudget − property + Easee + Shelly_now − Shelly_reference)`.
-This prevents a successful current increase from manufacturing a disagreement
-with the unchanged allowance. It does not compensate for household changes or
-use the requested pilot as measured current. The final headroom `H` still uses
-the current property and charger measurements.
+Shelly applies the shared planner's allocation policy to admitted live household
+headroom, using priority, remaining energy requests and ready-by times. Balanced
+therefore need not mean 50/50. Forecast household demand is not a second live
+reservation: current headroom is divided once using the same allocation policy.
+The same allocation policy applies during Automatic scheduling, Charge now and
+ordinary unscheduled charging. Charger 1's confirmed permission and applicable
+request determine participation; its momentary draw or an apparent stop caused
+by Equalizer does not release its entitlement to Shelly. Accepted progress,
+changed requests, deadlines, priority, native restrictions and session changes
+can legitimately revise the plan.
 
-The reference stays fixed while its allowance observation and verified native
-budget remain unchanged; later approximate matches cannot slide it to absorb
-gradual household changes.
-Changed observations require a new raw comparison. Zero/clipped observations
-never establish an exact offset; they retain the raw comparison or qualify
-separately for the `below-minimum-idle` inference above.
-Loss of usable feed or native budget evidence, a changed connection or physical
-session, and a controller restart discard this process-local reference.
-Original observations and timestamps remain unchanged; the comparison reports
-its derived basis.
+Charger 1 measured current is needed to subtract its contribution from the
+property meter. It must not redistribute the planned allocation, either directly
+or through replanning. There is no live peer-draw sharing or opportunistic
+redistribution merely because Charger 1 draws less than its entitlement. Below
+the capacity for two 6 A pilots, Balanced retains the selected allocation turn
+for up to 15 minutes, bounded by a nearer request deadline. Progress and polling
+do not renew that deadline. Changed priority, session, request, native
+instructions or eligibility clear the turn; measured draw does not select it.
 
-## Measurement settling
+Shelly reduces for property protection only when household demand plus Shelly
+alone exceeds the effective phase budget. If reducing Charger 1 could remove
+an excess, Equalizer owns that adjustment. The size, duration or trajectory of
+an excess that Charger 1 could remove must not reduce Shelly's entitlement.
+There is no response deadline or inference that Equalizer failed to act which
+hands balancing over to Shelly. This is about Equalizer's calculated ability to
+remove the excess, not proof that it has already responded.
 
-Property and charger measurements can arrive at different times after the
-controller changes its own current setting. Once that change is acknowledged
-and independently confirmed by native readback, a bounded measurement-settling
-hold may apply for at most 60 seconds from the first such command's dispatch.
-It may retain the lesser of the freshly confirmed native setting and last validated
-current allowance. It cannot authorize a further increase. Repeated polls or
-commands do not move that absolute deadline. Applicable native, vehicle and
-priority restrictions, and independently confirmed tighter property limits,
-still reduce the held ceiling. Contradictory phase readings do not establish
-new headroom. Lost feed health, authority, connection or session bypasses this
-hold immediately; a disagreement that remains at expiry uses the configured
-fallback. Neither the hold nor a command acknowledgement renews source clocks
-or claims a valid current load model. The badge and history show **Unknown ·
-Waiting for matching load readings**, with the held allowance and actual native
-setting readback kept separate from measured draw.
+With Charger 2 priority, Shelly can take its full household headroom within its
+own limits. A conservative forecast allocation or secondary deadline reservation
+must not lower that live entitlement. Economic scheduling still chooses
+permitted periods; native/vehicle restrictions and genuine source outages remain
+independent of this coordination rule. Forecast delivery remains an estimate,
+and the model does not prove Equalizer response or physical fuse protection.
 
-## Shared priority
-
-Shelly priority excludes Easee's present draw from this fuse test. If household
-demand excluding both chargers leaves 16 A on every phase, Shelly may take 16 A
-within its own limits, and Equalizer must reduce Charger 1. A temporary property
-total above the limit caused by Charger 1, a conservative forecast allocation or
-a secondary deadline reservation must not lower Shelly's live entitlement in
-this priority. Economic scheduling still chooses permitted charging periods;
-forecast delivery remains an estimate. Equalizer response and actual installation
-protection are not guaranteed by this model.
-
-For unscheduled charging, including Charge now, coherent live headroom follows
-the peer's measured draw or its confirmed open charging instruction. Balanced
-priority shares this headroom; Charger 1 priority reserves that peer demand
-first. Economic forecast ceilings do not cap unscheduled current. Unused peer
-capacity remains available to Shelly, including when Charger 1 is stopped. A
-controller-owned current pause can resume when that share reaches 6 A; an
-external Stop cannot. A connected idle car alone is not evidence of requested
-current. If total headroom cannot support two 6 A pilots, retain the existing
-charging turn in Balanced priority instead of repeatedly stopping and starting
-both cars. Scheduled Automatic charging continues to use the joint planned allocation.
+The core regression invariant is: hold household demand, planned entitlement
+and applicable limits fixed, vary Charger 1's draw and delay Equalizer's
+response, and Shelly's entitlement stays fixed. Include removable temporary
+property overload and separate arrival of property and charger measurements.
 
 ## Current steps, dwell and dispatch
 
@@ -196,12 +173,14 @@ binding even during fallback. Valid evidence of insufficient room therefore
 cannot cause a jump to 12 A. Fallback does not start a stopped vehicle or bypass
 its native timer, and is not independent fuse protection.
 
-Shelly's measured currents, command preflight and native readback retain the
-strict `maxAgeMs` bound, initially 15 seconds. This is separate from admitting
-held Easee stream state. The default per-phase margin is 1 A; increases ramp by
-2 A after a 30-second dwell. There is no second feed-age setting. The retired
-`additiveCurrentVerified` and `maxSkewMs` configuration fields are rejected;
-there are no aliases or configuration translations.
+Shelly command preflight and current native readback retain the `maxAgeMs`
+health bound, initially 15 seconds. Unchanged current measurements confirmed by
+that live readback keep their original source clocks without expiring solely
+because the value has not changed. Separate identification freshness and
+command-confirmation requirements remain intact. Increases ramp by 2 A after a
+30-second dwell. The retired `agreementToleranceA`, `additiveCurrentVerified`
+and `maxSkewMs` configuration fields are rejected; there are no aliases or
+configuration translations.
 
 A temporary live fallback does not impose a permanent 12 A delivery ceiling in
 the economic forecast. Unknown future supply uses the documented
@@ -229,10 +208,9 @@ manual stop never becomes a pause attributed to load balancing merely because
 the car draws no power. Fallback remains visibly fallback even when another
 restriction lowers its effective cap below 12 A.
 
-The bounded wait after a confirmed current-setting change uses the existing hatched
-**Unknown** state with **Waiting for matching load readings**. Its details retain
-the held allowance and confirmed charger setting, while stating that current
-headroom is unconfirmed and no further increase is permitted during the wait.
+When measurement pairing is pending, **Unknown** retains the bounded held
+allowance and native setting separately. It does not claim current verified
+headroom or extend an earlier verified interval.
 
 Hover or drag along the strip, including by touch, to inspect the recorded mode,
 integer allowance, reason and application status. Keyboard focus on the strip
