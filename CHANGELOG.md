@@ -113,6 +113,10 @@ Versions follow Semantic Versioning. `-dev.N` denotes a development prerelease.
 
 ### Fixed
 
+- Home Assistant deployment accepts a manually stopped app that Supervisor
+  still reports as `error` only with fresh Docker evidence of an absent or
+  exited container at every checkpoint. Initial refusals report app preflight
+  and no remote changes; rebuild warnings depend on an actual submission.
 - Charger 1 can begin its bounded vehicle-identification probe after unplugging
   and reconnecting before the planned charging period. An old disconnect no
   longer leaves the probe waiting for a transaction it needs to start. Native

@@ -38,9 +38,9 @@ export function selectApp(apps, slug) {
   return matches[0];
 }
 
-export function validateDeploymentState(app, manifest) {
+export function validateDeploymentState(app, manifest, evidence = {}) {
   if (typeof app.slug !== 'string' || !/^[a-z0-9_-]+$/.test(app.slug)) throw new DeploymentError('Invalid app identity');
-  if (app.state !== 'stopped') throw new DeploymentError('Stop Home Energy in HA before deploying; this script never stops or starts it');
+  if (!appIsStopped(app, evidence)) throw new DeploymentError(`Stop Home Energy in HA before deploying and wait until it is stopped (observed ${publicAppState(app.state)}); this script never stops or starts it.`);
   if (!/^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$/.test(manifest.version)) throw new DeploymentError('Invalid manifest version');
   if (app.version !== manifest.version) throw new DeploymentError('Installed and checkout versions differ; install the matching version through Supervisor first');
   if (typeof app.repository !== 'string' || !/^[a-z0-9_-]+$/.test(app.repository)) throw new DeploymentError('Expected a Git-backed app repository');
@@ -51,14 +51,38 @@ function validateAppOptions(options) {
   if (!options || typeof options !== 'object' || Array.isArray(options)) throw new DeploymentError('App configuration options are invalid or unavailable');
 }
 
-export function validateUnchangedApp(current, original, { compareOptions = true } = {}) {
+function publicAppState(state) {
+  // Only recognized public state labels may enter diagnostics, never raw API values.
+  return ['started', 'starting', 'startup', 'unknown', 'error'].includes(state) ? state : 'unrecognized';
+}
+
+function appIsStopped(app, { stoppedContainerVerified = false } = {}) {
+  return app.state === 'stopped' || (app.state === 'error' && stoppedContainerVerified === true);
+}
+
+export async function readStoppedEvidence(ssh, app) {
+  if (app.state !== 'error') return {};
+  if (typeof app.slug !== 'string' || !/^[a-z0-9_-]+$/.test(app.slug)) throw new DeploymentError('Invalid app identity');
+  // Supervisor can retain error after a manual stop removes the container.
+  // Check both names supported by current Supervisor; never infer absence from
+  // a failed inspect command or rewrite the original Supervisor observation.
+  const names = ['app_' + app.slug, 'addon_' + app.slug];
+  const result = await ssh.run(`docker container ls --all --filter ${shellQuote(`name=^/(app|addon)_${app.slug}$`)} --format ${shellQuote('{{json .}}')}`);
+  const message = 'Supervisor reports an app error; Docker could not confirm an absent or exited container. Inspect Home Energy in HA before retrying.';
+  if (result.exitCode !== 0) throw new DeploymentError(message);
+  let rows;
+  try { rows = result.output.trim().split('\n').filter(Boolean).map(line => JSON.parse(line)); }
+  catch { throw new DeploymentError(message); }
+  if (rows.length > 1 || rows.some(row => !row || !names.includes(row.Names) || row.State !== 'exited')) throw new DeploymentError(message);
+  return { stoppedContainerVerified: true };
+}
+
+export function validateUnchangedApp(current, original, { compareOptions = true, ...evidence } = {}) {
   validateAppOptions(original.options);
   validateAppOptions(current.options);
   const changed = [];
-  if (current.state !== 'stopped') {
-    // Only recognized public state labels may enter diagnostics, never raw API values.
-    const state = ['started', 'starting', 'startup', 'unknown', 'error'].includes(current.state) ? current.state : 'unrecognized';
-    changed.push(`state (expected stopped; observed ${state})`);
+  if (!appIsStopped(current, evidence)) {
+    changed.push(`state (expected stopped; observed ${publicAppState(current.state)})`);
   }
   for (const field of ['slug', 'repository', 'version']) if (current[field] !== original[field]) changed.push(field);
   // Supervisor may serialize object keys in a different order after rebuilding.
@@ -83,10 +107,7 @@ function validateRepositories(current, original, repository) {
     throw new DeploymentError('Supervisor repositories changed during deployment; inspect HA before retrying');
 }
 
-function validateInstalledApp(current, original, schema) {
-  // /info options includes manifest defaults. Raw saved overrides are checked
-  // independently on the Supervisor host, including retired fields and secrets.
-  validateUnchangedApp(current, original, { compareOptions: false });
+function validateInstalledSchema(current, schema) {
   if (!Array.isArray(schema) || !isDeepStrictEqual(current.schema, schema))
     throw new DeploymentError('Supervisor installed schema does not match the deployed commit');
 }
@@ -134,14 +155,24 @@ export async function main(args, { checkout = root, connect = connectSSH, superv
   const local = mkdtempSync(join(tmpdir(), 'home-energy-deploy-'));
   const remote = '/tmp/home-energy-deploy-' + randomBytes(10).toString('hex');
   let ssh, phase = 'SSH connection';
+  let remoteChangesPossible = false, rebuildSubmitted = false;
   try {
     ssh = await connect(config);
     const api = supervisor(ssh);
     const apps = (await api('/addons')).addons;
+    phase = 'app selection';
     const selected = selectApp(apps, config.app_slug);
+    phase = 'app preflight';
     const app = await api(`/addons/${selected.slug}/info`);
     if (app.slug !== selected.slug) throw new DeploymentError('Supervisor returned a different app identity');
-    validateDeploymentState(app, manifest);
+    validateDeploymentState(app, manifest, await readStoppedEvidence(ssh, app));
+    if (app.state === 'error') log('Supervisor reports error; Docker confirms Home Energy is stopped. Continuing with fresh container checks.');
+    const readUnchangedApp = async (options = {}) => {
+      const current = await api(`/addons/${app.slug}/info`);
+      if (current.slug !== app.slug) throw new DeploymentError('Supervisor returned a different app identity');
+      validateUnchangedApp(current, app, { ...options, ...await readStoppedEvidence(ssh, current) });
+      return current;
+    };
     const execute = async (script, timeoutMs = 30000) => {
       const result = await ssh.run(script, { timeoutMs });
       if (result.exitCode !== 0) throw new DeploymentError(`Remote command exited with status ${result.exitCode}; inspect the terminal or Supervisor locally`);
@@ -176,6 +207,8 @@ PY`));
     // The remote lock refuses concurrent deployments, including interrupted ones.
     // It is intentionally retained on failure for an operator to inspect.
     phase = 'remote lock';
+    // Mark before submission: a lost response cannot prove the lock was not created.
+    remoteChangesPossible = true;
     const lock = await ssh.run(`umask 077\nif mkdir /tmp/home-energy-deploy-${app.slug}.lock; then exit 0; fi\nif test -e /tmp/home-energy-deploy-${app.slug}.lock; then exit 73; fi\nexit 74`);
     if (lock.exitCode === 73) throw new DeploymentError('A deployment lock already exists. Confirm the previous deployment and any Supervisor rebuild have finished, then remove only the empty deployment lock before retrying');
     if (lock.exitCode !== 0) throw new DeploymentError('Could not create the remote deployment lock');
@@ -221,11 +254,11 @@ PY`));
       await upload(bundle, remote + '/update.bundle', true);
       await execute(`docker cp ${remote}/update.bundle hassio_supervisor:${remote}.bundle`);
       phase = 'source fast-forward';
-      validateUnchangedApp(await api(`/addons/${app.slug}/info`), app);
+      await readUnchangedApp();
       await python(`import subprocess,hashlib\nfrom pathlib import Path\nroot='${info.root}'\ndef git(*a):return subprocess.check_output(['git','-C',root,*a],stderr=subprocess.PIPE,text=True).strip()\nassert hashlib.sha256(Path('${remote}.bundle').read_bytes()).hexdigest()=='${hash(bundle)}'\nassert git('rev-parse','HEAD')=='${info.head}'\nassert not git('status','--porcelain')\ngit('fetch','${remote}.bundle','HEAD')\nassert git('rev-parse','FETCH_HEAD')=='${target}'\ngit('merge','--ff-only','FETCH_HEAD')\n`);
     }
     phase = 'Supervisor metadata refresh';
-    validateUnchangedApp(await api(`/addons/${app.slug}/info`), app);
+    await readUnchangedApp();
     const repositories = repositorySources(await api('/store'), app.repository);
     await checkState('verify');
     validateRepositories(await api('/store'), repositories, app.repository);
@@ -236,16 +269,18 @@ PY`));
     validateRepositories(await api('/store'), repositories, app.repository);
     await checkState('verify');
     phase = 'rebuild';
-    const before = await api(`/addons/${app.slug}/info`);
-    validateUnchangedApp(before, app);
+    await readUnchangedApp();
     log('Source verified. Supervisor is rebuilding the image…');
     const heartbeat = setInterval(() => log('Supervisor rebuild is still running…'), 30000);
-    try { await api(`/addons/${app.slug}/rebuild`, 'post', 900); } finally { clearInterval(heartbeat); }
+    try {
+      rebuildSubmitted = true;
+      await api(`/addons/${app.slug}/rebuild`, 'post', 900);
+    } finally { clearInterval(heartbeat); }
     phase = 'verification';
-    const current = await api(`/addons/${app.slug}/info`);
-    validateUnchangedApp(current, app, { compareOptions: false });
+    // Effective options include defaults; raw saved overrides are checked below.
+    const current = await readUnchangedApp({ compareOptions: false });
     const installedSchema = await checkState('verify', true);
-    validateInstalledApp(current, app, installedSchema);
+    validateInstalledSchema(current, installedSchema);
     const image = JSON.parse(await execute(`python3 - <<'PY'
 import json,subprocess
 rows=[json.loads(x) for x in subprocess.check_output(['docker','image','ls','--format','{{json .}}'],text=True).splitlines()]
@@ -257,7 +292,7 @@ PY`));
     const verify = `import{readFileSync,readdirSync}from'node:fs';import{createHash}from'node:crypto';\nconst hash=x=>createHash('sha256').update(x).digest('hex');const walk=p=>readdirSync(p,{withFileTypes:true}).flatMap(d=>d.isDirectory()?walk(p+'/'+d.name):[p+'/'+d.name]).sort();const tree=p=>hash(walk(p).map(f=>f+'\\0'+hash(readFileSync(f))+'\\n').join(''));\nif(tree('src')!=='${sourceHash}'||tree('dist')!=='${distHash}')process.exit(1);for(const[p,h]of Object.entries(${JSON.stringify(packageHashes)}))if(hash(readFileSync(p))!==h)process.exit(1);\nconsole.log(JSON.stringify({sourceFiles:walk('src').length,frontendFiles:walk('dist').length,architecture:process.arch}));`;
     await upload(Buffer.from(verify), remote + '/verify.mjs');
     const checked = JSON.parse(await execute(`cat ${remote}/verify.mjs | docker run --rm -i --network none --entrypoint node ${shellQuote(image)} --input-type=module`, 60000));
-    validateInstalledApp(await api(`/addons/${app.slug}/info`), app, installedSchema);
+    validateInstalledSchema(await readUnchangedApp({ compareOptions: false }), installedSchema);
     await checkState('verify', true, true);
     validateRepositories(await api('/store'), repositories, app.repository);
     // Only deployment-owned temporary files are removed, after all checks pass.
@@ -266,7 +301,10 @@ PY`));
     log('Start the app explicitly when ready. Incompatible saved fields require configuration recovery; deployment does not remove them.');
   } catch (error) {
     const detail = error instanceof DeploymentError || error instanceof DeploymentTransportError ? error.message + ' ' : '';
-    throw new DeploymentError(`${detail}Deployment stopped during ${phase}. No automatic rollback or restart was attempted. Inspect HA before retrying; any submitted rebuild may still be running. Any created remote deployment files and lock are retained.`);
+    const outcome = remoteChangesPossible
+      ? `No automatic rollback or restart was attempted. Inspect HA before retrying; ${rebuildSubmitted ? 'the submitted rebuild may still be running' : 'no rebuild was submitted by this run'}. Any created remote deployment files and lock are retained.`
+      : 'No remote changes were attempted by this run; no deployment lock, files or rebuild were created or submitted.';
+    throw new DeploymentError(`${detail}Deployment stopped during ${phase}. ${outcome}`);
   } finally { await ssh?.close(); rmSync(local, { recursive: true, force: true }); }
 }
 

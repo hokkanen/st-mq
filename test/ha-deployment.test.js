@@ -5,7 +5,7 @@ import { mkdtempSync, writeFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { shellQuote, DeploymentTransportError } from '../scripts/lib/ha-deploy-transport.js';
-import { validateConnection, selectApp, validateDeploymentState, validateUnchangedApp, createSupervisorAPI, repositorySources } from '../scripts/deploy-ha.js';
+import { validateConnection, selectApp, validateDeploymentState, validateUnchangedApp, createSupervisorAPI, repositorySources, readStoppedEvidence } from '../scripts/deploy-ha.js';
 
 test('deployment accepts SSH destinations and rejects retired or unknown connection fields', () => {
   const valid = { ssh_host: 'synthetic-ha', app_slug: 'synthetic_st-mq' };
@@ -39,6 +39,44 @@ test('deployment requires a stopped app with valid identity and matching manifes
   assert.throws(() => validateDeploymentState(app, { version: '0.9.6' }), /versions differ/);
   assert.throws(() => validateDeploymentState({ ...app, repository: undefined }, manifest), /Git-backed/);
   assert.throws(() => validateDeploymentState({ ...app, slug: "invalid'; false" }, manifest), /identity/);
+});
+
+test('Supervisor error requires separate stopped-container evidence and preserves the original state', async () => {
+  const failed = { ...app, state: 'error' };
+  assert.throws(() => validateDeploymentState(failed, { version: app.version }), /Stop Home Energy/);
+  assert.throws(() => validateUnchangedApp(failed, app), /state/);
+  for (const output of ['', ...['app_', 'addon_'].map(prefix => JSON.stringify({ Names: prefix + app.slug, State: 'exited' }))]) {
+    const evidence = await readStoppedEvidence({ run: async () => ({ exitCode: 0, output }) }, failed);
+    assert.doesNotThrow(() => validateDeploymentState(failed, { version: app.version }, evidence));
+    assert.doesNotThrow(() => validateUnchangedApp(failed, app, evidence));
+    assert.equal(failed.state, 'error');
+    for (const state of ['started', 'starting', 'startup', 'unknown', undefined]) {
+      assert.throws(() => validateDeploymentState({ ...app, state }, { version: app.version }, evidence), /Stop Home Energy/);
+      assert.throws(() => validateUnchangedApp({ ...app, state }, app, evidence), /state/);
+    }
+  }
+});
+
+test('Docker failure, malformed output, other containers and non-exited states never prove a stopped app', async () => {
+  const failed = { ...app, state: 'error' };
+  const stopped = JSON.stringify({ Names: 'app_' + app.slug, State: 'exited' });
+  const outputs = ['private-docker-output', 'null', '{}', '[]', 'false', stopped + '\n' + stopped,
+    JSON.stringify({ Names: 'app_other', State: 'exited' }),
+    ...['running', 'paused', 'restarting', 'removing', 'created', 'dead', '', undefined].map(State => JSON.stringify({ Names: 'app_' + app.slug, State })),
+  ];
+  for (const result of [{ exitCode: 1, output: '' }, { exitCode: 1, output: stopped }, ...outputs.map(output => ({ exitCode: 0, output }))]) {
+    await assert.rejects(readStoppedEvidence({ run: async () => result }, failed), error => {
+      assert.match(error.message, /Docker could not confirm/);
+      assert.doesNotMatch(error.message, /private-docker-output|app_other/);
+      return true;
+    });
+  }
+  let calls = 0;
+  const ssh = { run: async () => { calls++; throw new DeploymentTransportError('SSH connection lost'); } };
+  await assert.rejects(readStoppedEvidence(ssh, { ...failed, slug: 'invalid;private' }), /Invalid app identity/);
+  assert.equal(calls, 0);
+  await assert.rejects(readStoppedEvidence(ssh, failed), /SSH connection lost/);
+  assert.equal(calls, 1, 'uncertain checks are never replayed');
 });
 
 test('deployment requires saved options to be an available object at every check', () => {

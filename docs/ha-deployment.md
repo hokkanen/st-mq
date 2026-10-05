@@ -137,6 +137,20 @@ container can start; unknown removed fields normally allow that recovery startup
 
 ## If a deployment fails or is interrupted
 
+An **app preflight** refusal means SSH reached Supervisor but the app did not
+meet a deployment prerequisite. If it says to stop Home Energy, stop the app in
+HA, wait until it is stopped and rerun the command. This initial refusal makes
+no remote changes and creates no deployment lock or files. It does not submit a
+rebuild. An unknown or unrecognized app state also blocks deployment.
+
+Supervisor can retain an `error` state after a manual stop. For this state,
+deployment requires a fresh successful Docker listing confirming the selected
+app's container is absent or `exited`. It checks both container names supported
+by current Supervisor (`app_` and `addon_`) at every app-state checkpoint; a
+running container, ambiguous result or failed read blocks deployment. The
+Supervisor error remains visible and is not treated as proof that the app is
+stopped. No stop, start or status-reset command is sent to resolve it.
+
 The script does not automatically roll back, restart, reset storage or retry a
 possibly running rebuild. Inspect Supervisor's app status and logs locally first.
 Remote source may already have advanced while the image still contains the
@@ -159,6 +173,8 @@ A retry starts a fresh transfer. Neither retry nor lock removal erases app data.
 Errors identify existing locks, command failure, transport failure and the failed
 phase. App verification names the changed checks (state, slug, repository,
 version or configuration) without printing private identifiers or option values.
+Failure messages distinguish an initial refusal from possible remote changes,
+and warn about a possibly running rebuild only after this run submits one.
 Raw SSH, command and Supervisor error output remains hidden because it
 may contain private configuration.
 

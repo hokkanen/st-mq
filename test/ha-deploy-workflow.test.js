@@ -10,7 +10,8 @@ import { DeploymentTransportError } from '../scripts/lib/ha-deploy-transport.js'
 
 function workflowFixture(t, { existingLock = false, corruptBundle = false, changedApp = false, optionsAfterRebuild,
   lostRebuildResponse = false, lostRefreshResponse = false, changedRepositories = false, stateError,
-  wrongSchema = false, complete = false } = {}) {
+  wrongSchema = false, complete = false, initialState = 'stopped', lostDiscoveryResponse = false,
+  lostLockResponse = false, containerStartsAtRead = Infinity, stoppedAfterRebuild = false } = {}) {
   const directory = mkdtempSync(join(tmpdir(), 'ha-deploy-workflow-'));
   t.after(() => rmSync(directory, { recursive: true, force: true }));
   const checkout = join(directory, 'checkout');
@@ -55,16 +56,26 @@ function workflowFixture(t, { existingLock = false, corruptBundle = false, chang
   let rebuilt = false;
   let refreshed = false;
   let pythonCode = '';
+  let containerReads = 0;
   const ssh = {
     async run(script, { input } = {}) {
       events.push({ type: 'ssh', script, input });
+      if (script.startsWith('docker container ls ')) {
+        containerReads++;
+        assert.match(script, /--all --filter 'name=\^\/\(app\|addon\)_synthetic_st-mq\$'/);
+        return { exitCode: 0, output: containerReads >= containerStartsAtRead
+          ? JSON.stringify({ Names: 'app_synthetic_st-mq', State: 'running' }) : '' };
+      }
       if (script.includes('/data/addons/git') && script.includes("'rev-parse'")) {
         return { exitCode: 0, output: JSON.stringify({
           root: '/data/addons/git/synthetic', head: remoteHead,
           runtime: ['/data/addons/data/synthetic_st-mq', '/data/addon_configs/synthetic_st-mq'],
         }) };
       }
-      if (script.includes('if mkdir') && script.includes('.lock')) return { exitCode: existingLock ? 73 : 0, output: '' };
+      if (script.includes('if mkdir') && script.includes('.lock')) {
+        if (lostLockResponse) throw new DeploymentTransportError('SSH connection lost; the submitted operation may still be running');
+        return { exitCode: existingLock ? 73 : 0, output: '' };
+      }
       if (/^umask 077\nmkdir \/tmp\/home-energy-deploy-[a-f0-9]+$/.test(script)) return { exitCode: 0, output: '' };
       if (input !== undefined && script.includes('sha256sum')) {
         assert.ok(Buffer.isBuffer(input), 'upload streams bytes directly');
@@ -107,12 +118,15 @@ function workflowFixture(t, { existingLock = false, corruptBundle = false, chang
     assert.equal(connected, ssh);
     return async (endpoint, method = 'get', timeoutSeconds = 30, body) => {
       events.push({ type: 'api', endpoint, method, timeoutSeconds, body });
-      if (endpoint === '/addons') return { addons: [structuredClone(app)] };
+      if (endpoint === '/addons') {
+        if (lostDiscoveryResponse) throw new DeploymentTransportError('SSH connection failed; the remote operation may still be running');
+        return { addons: [structuredClone(app)] };
+      }
       if (endpoint === '/addons/synthetic_st-mq/info') {
         appReads++;
         return {
           ...structuredClone(app),
-          state: changedApp && appReads > 1 ? 'started' : 'stopped',
+          state: changedApp && appReads > 1 ? 'started' : rebuilt && stoppedAfterRebuild ? 'stopped' : initialState,
           ...(rebuilt && wrongSchema ? { schema: [{ name: 'unexpected' }] } : {}),
           ...(rebuilt && optionsAfterRebuild ? { options: structuredClone(optionsAfterRebuild) } : {}),
         };
@@ -163,6 +177,70 @@ function assertRetainedFailureState(events) {
   assert.ok(!events.some(event => event.type === 'api' && /\/(start|restart|stop)$/.test(event.endpoint)), 'deployment never changes app runtime state');
 }
 
+for (const state of ['started', 'unknown', 'synthetic-private-state']) {
+  test(`initial app state ${state} reports preflight refusal without implying deployment mutations`, async t => {
+    const fixture = workflowFixture(t, { initialState: state });
+    await assert.rejects(fixture.deploy(), error => {
+      assert.match(error.message, /Stop Home Energy in HA/);
+      assert.match(error.message, /Deployment stopped during app preflight/);
+      assert.match(error.message, /observed (started|unknown|unrecognized)/);
+      assert.match(error.message, /No remote changes were attempted by this run/);
+      assert.doesNotMatch(error.message, /SSH connection|may still be running|are retained|synthetic-private-state/);
+      return true;
+    });
+    assert.deepEqual(fixture.events.map(event => event.type), ['connect', 'api', 'api', 'close']);
+    assert.ok(fixture.events.filter(event => event.type === 'api').every(event => event.method === 'get'));
+    assertNoRebuild(fixture.events);
+  });
+}
+
+test('discovery transport failure still names SSH connection without implying deployment mutations', async t => {
+  const fixture = workflowFixture(t, { lostDiscoveryResponse: true });
+  await assert.rejects(fixture.deploy(), error => {
+    assert.match(error.message, /Deployment stopped during SSH connection/);
+    assert.match(error.message, /No remote changes were attempted by this run/);
+    assert.doesNotMatch(error.message, /rebuild may still be running|are retained/);
+    return true;
+  });
+  assert.deepEqual(fixture.events.map(event => event.type), ['connect', 'api', 'close']);
+});
+
+test('lost lock response retains possible remote changes without implying a rebuild was submitted', async t => {
+  const fixture = workflowFixture(t, { lostLockResponse: true });
+  await assert.rejects(fixture.deploy(), error => {
+    assert.match(error.message, /Deployment stopped during remote lock/);
+    assert.match(error.message, /no rebuild was submitted by this run/);
+    assert.match(error.message, /files and lock are retained/);
+    assert.doesNotMatch(error.message, /No remote changes were attempted/);
+    return true;
+  });
+  assertNoRebuild(fixture.events);
+  assertRetainedFailureState(fixture.events);
+});
+
+for (const stoppedAfterRebuild of [false, true]) {
+  test(`a stopped app reported as error completes deployment with fresh Docker checks (state clears: ${stoppedAfterRebuild})`, async t => {
+    const fixture = workflowFixture(t, { initialState: 'error', complete: true, stoppedAfterRebuild });
+    await fixture.deploy();
+    const reads = fixture.events.filter(event => event.type === 'ssh' && event.script.startsWith('docker container ls '));
+    assert.equal(reads.length, stoppedAfterRebuild ? 3 : 5, 'each error-state observation requires new Docker evidence');
+    assert.match(fixture.messages[0], /Supervisor reports error; Docker confirms Home Energy is stopped/);
+    assert.match(fixture.messages.at(-2), /App remains stopped/);
+    assert.ok(!fixture.events.some(event => event.type === 'api' && /\/(start|restart|stop)$/.test(event.endpoint)));
+  });
+}
+
+for (const containerStartsAtRead of [1, 2, 3, 4, 5]) {
+  test(`a running container behind Supervisor error blocks deployment at check ${containerStartsAtRead}`, async t => {
+    const fixture = workflowFixture(t, { initialState: 'error', complete: true, containerStartsAtRead });
+    await assert.rejects(fixture.deploy(), /Docker could not confirm an absent or exited container/);
+    const reads = fixture.events.filter(event => event.type === 'ssh' && event.script.startsWith('docker container ls '));
+    assert.equal(reads.length, containerStartsAtRead);
+    if (containerStartsAtRead <= 3) assertNoRebuild(fixture.events);
+    assertRetainedFailureState(fixture.events);
+  });
+}
+
 test('an existing deployment lock prevents remote workspace creation, uploads and rebuild', async t => {
   const fixture = workflowFixture(t, { existingLock: true });
   await assert.rejects(fixture.deploy(), /deployment lock already exists/);
@@ -194,7 +272,11 @@ test('an app started during deployment prevents Supervisor rebuild', async t => 
 
 test('a lost rebuild response is never replayed and retains the deployment lock and files', async t => {
   const fixture = workflowFixture(t, { lostRebuildResponse: true });
-  await assert.rejects(fixture.deploy(), /may still be running/);
+  await assert.rejects(fixture.deploy(), error => {
+    assert.match(error.message, /the submitted rebuild may still be running/);
+    assert.doesNotMatch(error.message, /no rebuild was submitted|No remote changes were attempted/);
+    return true;
+  });
   const rebuilds = fixture.events.filter(event => event.type === 'api' && event.endpoint.endsWith('/rebuild'));
   assert.equal(rebuilds.length, 1);
   const rebuildIndex = fixture.events.indexOf(rebuilds[0]);
