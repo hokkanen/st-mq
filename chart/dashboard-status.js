@@ -82,6 +82,9 @@ export function settingsReloadScope(status = {}) {
         ? reload?.reason || 'Applying configuration is not available for this instance.'
         : 'Startup environment overrides still apply. Finish heating tests or setting changes first; any pending heating restoration must complete. Changes to input mode, web address or port, or storage locations require restart and block the whole application of settings.';
   const configuration = reload?.configuration;
+  // Pair slaves expose their local platform through pair status, not reload metadata.
+  const pairCopyHelp = configuration?.environment === 'home-assistant'
+    || status?.topology === 'pair' && status.pair?.platform === 'hassio';
   const location = configurationLocation(configuration);
   const instructions = [], access = [];
   if (configuration?.environment === 'home-assistant') {
@@ -101,5 +104,5 @@ export function settingsReloadScope(status = {}) {
       ? 'Direct access is enabled and requires your admin or family password.'
       : 'Local access is enabled. Loopback access works without a password.');
   }
-  return { available, message, reloadable, restartRequired, instructions, access, location };
+  return { available, message, reloadable, restartRequired, instructions, access, location, pairCopyHelp };
 }

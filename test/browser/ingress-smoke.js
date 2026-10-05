@@ -3,7 +3,7 @@
 // isolated Chrome DevTools listener. No household configuration or live providers.
 import assert from 'node:assert/strict';
 import { createServer } from 'node:http';
-import { existsSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -13,6 +13,7 @@ import { createConfigurationSource } from '../../src/app/configuration-source.js
 import { seedChartFixture } from '../../scripts/lib/chart-fixture.js';
 
 const directory = mkdtempSync(join(tmpdir(), 'stmq-ingress-browser-'));
+const screenshots = process.env.STMQ_CONFIGURATION_SCREENSHOT_DIR;
 const privatePath = join(directory, 'supervisor-options.json');
 const importPath = join(directory, 'secrets.json');
 const prefix = '/api/hassio_ingress/synthetic-browser-session/';
@@ -146,6 +147,40 @@ try {
   assert.match(await evaluate("document.getElementById('settings-access').textContent"), /Host dashboard access.*host login.*Direct access is disabled/);
   assert.equal(await evaluate("document.getElementById('settings-reload').textContent"), 'Check & review configuration');
 
+  const writesBeforeHelp = requests.filter(request => request.method === 'POST').length;
+  assert.equal(await evaluate("document.getElementById('settings-pair-copy-help').checkVisibility()"), true,
+    'HA pairing import guidance is available before pair mode is configured');
+  assert.equal(await evaluate("document.getElementById('settings-pair-copy-help').open"), false,
+    'The guide starts compact');
+  await evaluate("document.querySelector('#settings-pair-copy-help > summary').focus()");
+  await send('Input.dispatchKeyEvent', { type: 'keyDown', key: 'Enter', code: 'Enter', windowsVirtualKeyCode: 13,
+    text: '\r', unmodifiedText: '\r' });
+  await send('Input.dispatchKeyEvent', { type: 'keyUp', key: 'Enter', code: 'Enter', windowsVirtualKeyCode: 13 });
+  await until("document.getElementById('settings-pair-copy-help').open");
+  if (screenshots) mkdirSync(screenshots, { recursive: true });
+  for (const width of [320, 390, 1440]) for (const theme of ['dark', 'light']) {
+    await send('Emulation.setDeviceMetricsOverride', { width, height: 900, deviceScaleFactor: 1, mobile: false });
+    await evaluate(`window.homeEnergyTheme.setTheme(${JSON.stringify(theme)});
+      document.getElementById('settings-pair-copy-help').scrollIntoView({block:'start',behavior:'instant'});
+      new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)))`);
+    const layout = await evaluate(`(() => {
+      const guide = document.getElementById('settings-pair-copy-help'), box = guide.getBoundingClientRect();
+      return { viewport:innerWidth, pageWidth:document.documentElement.scrollWidth,
+        escapes:[...guide.querySelectorAll('summary,p,dt,dd,code')].filter(node => {
+          const bounds = node.getBoundingClientRect();
+          return bounds.x < box.x - 2 || bounds.right > box.right + 2;
+        }).map(node => node.tagName) };
+    })()`);
+    assert(layout.pageWidth <= layout.viewport + 2, `${width}/${theme}: pair guide fits the viewport`);
+    assert.deepEqual(layout.escapes, [], `${width}/${theme}: instructions and field names stay inside the guide`);
+    if (screenshots) {
+      const shot = await send('Page.captureScreenshot', { format: 'png', captureBeyondViewport: false });
+      writeFileSync(join(screenshots, `pair-copy-${width}-${theme}.png`), Buffer.from(shot.data, 'base64'));
+    }
+  }
+  assert.equal(requests.filter(request => request.method === 'POST').length, writesBeforeHelp,
+    'Opening and reading the helper sends no configuration or control requests');
+
   writeFileSync(importPath, '{"controller":{"max_drop_c":0.6}}', { mode: 0o600 });
   cleanupPending = true;
   await evaluate("document.getElementById('settings-reload').click()");
@@ -158,6 +193,8 @@ try {
   assert.equal(savedOptions.controller.max_drop_c, 0.6, 'Reviewed import is saved to Supervisor');
   assert.equal(existsSync(importPath), false, 'Successful import removes only the uploaded file');
   assert.equal(existsSync(privatePath), true, 'Supervisor startup export remains intact');
+  assert.equal(await evaluate("document.getElementById('settings-pair-copy-help').open"), true,
+    'Status rendering after reviewed application preserves the open guide');
 
   await evaluate("document.getElementById('recording-details').open = true; document.getElementById('recording-overview-details').open = true; document.getElementById('energy-audit-details').open = true;");
   await until("document.getElementById('recording-overview-message').textContent.includes('Database snapshot:')");
@@ -184,6 +221,8 @@ try {
   assert.equal(await evaluate("document.getElementById('settings-location-message').textContent"),
     'Restart the controller to load configuration paths, then refresh this page');
   assert.equal(await evaluate("document.getElementById('settings-location').children.length"), 0, 'Missing backend metadata never invents a folder');
+  assert.equal(await evaluate("document.getElementById('settings-pair-copy-help').hidden"), true,
+    'Unknown platform metadata does not infer an HA installation');
   // Real browser timers and network: stalled initial auxiliary reads cannot
   // prevent status polling; a body that never completes cannot hold its latch.
   stallReads = 'chart-events'; requests.length = 0;
@@ -211,6 +250,7 @@ try {
   console.log(JSON.stringify({ result: 'ingress-browser-smoke-passed', checks: ['built theme, CSS and module assets under ingress prefix',
     'chart, events, recording, audits and configuration API requests under ingress prefix', 'actual upload path in instructions',
     'trusted ingress listener without direct access or token prompt', 'reviewed configuration import saves to Supervisor and updates visible state', 'persistent import cleanup warning', 'explicit restart guidance when backend path metadata is missing',
+    'passive pair-copy guide supports keyboard and 320/390/1440px in both themes',
     'configuration paths fit mobile width', 'stalled initial chart/events do not block status polling',
     'whole-body read timeout retries and monitoring staleness recovers online', 'expired HA session directs user back to Home Assistant'] }));
   await send('Page.close');

@@ -512,6 +512,28 @@
                         <p id="settings-location-message" role="status">Loading configuration paths…</p>
                       </section>
                       <ol id="settings-configuration-steps" class="muted"></ol>
+                      <details id="settings-pair-copy-help" class="configuration-example configuration-pair-help" hidden>
+                        <summary>Copying Ubuntu configuration to HA for pair mode?</summary>
+                        <p>Both computers share most pair settings. Before importing <code>secrets.json</code>, review the fields that belong to this Home Assistant installation.</p>
+                        <dl>
+                          <dt><code>mqtt.address</code>, <code>mqtt.user</code>, <code>mqtt.pw</code></dt>
+                          <dd>For the HA Mosquitto app, use <code>mqtt://core-mosquitto</code> and its credentials. Each controller connects to its own local broker; independent MQTT devices use the shared virtual IP.</dd>
+                          <dt><code>pair.peer_url</code></dt>
+                          <dd>Use Ubuntu’s fixed HTTP address and pair port, normally <code>1244</code>. This points to the other computer, never this HA computer or the virtual IP.</dd>
+                          <dt><code>pair.listen_host</code></dt>
+                          <dd>Use <code>0.0.0.0</code> (the default), or HA’s own fixed address if you restrict the listener. Replace any copied Ubuntu address.</dd>
+                          <dt><code>pair.vip_interface</code></dt>
+                          <dd>Use HA’s actual LAN interface, found under Settings → System → Network. Interface names can differ between the two computers.</dd>
+                          <dt><code>pair.vip_socket</code></dt>
+                          <dd>Set to <code>""</code> in HA to use the bundled helper. Ubuntu’s <code>/run/st-mq-vip/socket</code> is local to Ubuntu.</dd>
+                          <dt><code>mqtt.ha.address</code>, <code>mqtt.ha.user</code>, <code>mqtt.ha.pw</code></dt>
+                          <dd>When the primary broker already serves HA integrations, set all three to <code>""</code> to use that connection. Omitting them or importing <code>"ha": {}</code> preserves saved values.</dd>
+                          <dt><code>pair.directory</code>, <code>pair.snapshot_directory</code></dt>
+                          <dd>Preserve this HA installation’s storage paths. For a new installation, <code>""</code> selects HA’s defaults. Changing existing paths selects different pair state or snapshots.</dd>
+                        </dl>
+                        <p>Keep <code>controller.topology</code> set to <code>"pair"</code> on both, with the same pair ID, pairing token and virtual IP settings. Master/slave roles are managed through promotion and handover, not copied configuration.</p>
+                        <p class="muted">Normal imports merge into saved HA options: omitted fields keep their saved values. Review before applying; pair-setting changes require restart. This guide does not change or verify your settings.</p>
+                      </details>
                       <details id="settings-format-example" class="configuration-example">
                         <summary>JSON file example</summary>
                         <p class="muted">Include only fields you want to change, with no outer <code>options</code> wrapper. Replace these example values with your own. The admin <code>web_token</code> and optional <code>web_family_token</code> passwords must differ and each need at least 24 characters.</p>

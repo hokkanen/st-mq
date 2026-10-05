@@ -8,6 +8,8 @@ Versions follow Semantic Versioning. `-dev.N` denotes a development prerelease.
 
 ### Added
 
+- Home Assistant configuration includes a compact guide for copying Ubuntu
+  settings for pair mode, with local field guidance and import merge behavior.
 - Optional `mqtt.ha` broker access routes TeslaMate, BMW CarData, garage doors
   and the Tuya dehumidifier bridge together, without per-device selectors.
   Unset installations keep one broker connection; an HA outage leaves

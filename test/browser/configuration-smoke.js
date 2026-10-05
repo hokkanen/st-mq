@@ -178,6 +178,8 @@ try {
   await until("!document.getElementById('auth').hidden");
   await login(admin);
   assert.match(await evaluate("document.getElementById('settings-reload').textContent"), /check.*review/i);
+  assert.equal(await evaluate("document.getElementById('settings-pair-copy-help').hidden"), true,
+    'Ubuntu configuration does not show the HA import guide');
 
   const applied = structuredClone(initial);
   applied.controller.max_drop_c = 0.75;

@@ -859,6 +859,8 @@ function render(s) {
   }
   $('settings-location-message').textContent = scope.location.message;
   $('settings-location-message').hidden = !scope.location.message;
+  // Keep setup guidance available before a copied pair configuration can load.
+  $('settings-pair-copy-help').hidden = !scope.pairCopyHelp;
   $('settings-configuration-steps').replaceChildren();
   for (const text of scope.instructions) {
     const item = document.createElement('li'); item.textContent = text; $('settings-configuration-steps').append(item);

@@ -122,6 +122,39 @@ must use actual values; an explicit value replaces that field's saved reference.
 See [Home Assistant setup](../DOCS.md) for import paths and
 [standalone startup](startup.md) for environment overrides.
 
+### Copying Ubuntu configuration to HA for pair mode
+
+The HA Configuration form describes the fields below. In ST-MQ's
+**Data & settings → Connections & configuration → Configuration**, expand
+**Copying Ubuntu configuration to HA for pair mode?** for the same checklist.
+This guidance is available before enabling pair mode and does not rewrite
+configuration. Review the destination settings before importing the file.
+
+| Field | Review for Home Assistant |
+| --- | --- |
+| `mqtt.address`, `mqtt.user`, `mqtt.pw` | Use `mqtt://core-mosquitto` for HA's Mosquitto app and credentials accepted by that broker. Each controller uses its own local primary broker; devices use the shared VIP. |
+| `mqtt.ha.address`, `mqtt.ha.user`, `mqtt.ha.pw` | When primary already uses HA Mosquitto, explicitly set all three to `""` to share the primary connection. Ubuntu may need a separate HA connection; see [MQTT routing](#primary-mqtt-and-ha-hosted-integrations). |
+| `pair.peer_url` | Point to Ubuntu's fixed HTTP address and peer port, normally `1244`. The copied Ubuntu value points the other way. Do not use HA's own address or the VIP. |
+| `pair.listen_host` | Use `"0.0.0.0"` or HA's own fixed address for a specific local binding. Do not retain an Ubuntu-specific address. |
+| `pair.vip_interface` | Use HA's actual LAN interface name. It may differ from Ubuntu's; the helper does not discover it. |
+| `pair.vip_socket` | Set `""` to use HA's bundled helper. Do not import Ubuntu's `/run/st-mq-vip/socket`. |
+| `pair.directory`, `pair.snapshot_directory` and other explicit local paths | Preserve HA's existing storage locations and review any copied file paths. For a new installation, empty pair paths select HA defaults. Changing established storage can select different authority or history. |
+
+Keep `controller.topology: "pair"`, the intended live input, shared pair ID,
+private pairing token, VIP address/prefix and integration identities consistent
+on both computers. Pair roles are saved runtime state; there is no `pair.role`
+setting. Copying configuration never promotes a computer. Pair settings require
+a restart; use the [pair setup and handover instructions](pairing.md).
+
+Normal imports merge recursively: omitting `mqtt.ha`, importing `"ha": {}`,
+or omitting `pair.vip_socket` preserves the corresponding saved values. Use
+explicit empty strings to clear those fields; do not use JSON comments or
+`null`. Clear all three `mqtt.ha` fields together, because credentials without
+an address are invalid. Recovery's explicit **Replace saved settings** option
+has different semantics: omitted settings use current defaults. Include HA's
+existing local paths and every installation setting you intend to preserve
+when making that replacement.
+
 ### Schema and default changes in Home Assistant
 
 [Development deployment](ha-deployment.md) refreshes Supervisor's schema and

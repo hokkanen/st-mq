@@ -1021,6 +1021,10 @@ details details { margin-inline-start: 24px; }
 .configuration-example { margin: 12px 0; padding-left: 16px; }
 .configuration-example > summary { font-size: 12px; cursor: pointer; }
 .configuration-example pre { padding: 12px; border: 1px solid var(--border); border-radius: 6px; font-size: 11px; line-height: 1.6; white-space: pre-wrap; overflow-wrap: anywhere; }
+.configuration-pair-help { font-size: 12px; line-height: 1.6; overflow-wrap: anywhere; }
+.configuration-pair-help dl { margin: 12px 0; }
+.configuration-pair-help dt { font-weight: 550; }
+.configuration-pair-help dd { margin: 3px 0 12px; }
 .configuration-review { margin-top: 16px; padding: 14px; border: 1px solid var(--border); border-radius: 6px; }
 .configuration-review h3 { margin: 0 0 12px; font-size: 14px; }
 .configuration-review p, .configuration-review li { font-size: 12px; line-height: 1.6; overflow-wrap: anywhere; }

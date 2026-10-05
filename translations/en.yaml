@@ -172,7 +172,29 @@ configuration:
         name: Broker URL
         description: >-
           Use mqtt:// or mqtts:// followed by the broker address and optional
-          port. Both computers in a pair need their own local broker.
+          port. Both computers in a pair need their own local broker. When
+          copying Ubuntu configuration to Home Assistant for pair mode, use
+          mqtt://core-mosquitto for the Mosquitto app, with its credentials
+          below. The controller must not use the shared virtual IP.
+      user:
+        name: Broker username
+        description: >-
+          Credentials must work with this computer's primary broker. When
+          copying from Ubuntu, use the Home Assistant Mosquitto account;
+          matching accounts on both brokers can use the same credentials.
+      pw:
+        name: Broker password
+        description: >-
+          Password for the primary broker account above. Broker credentials
+          are separate from the shared pairing token.
+      ha:
+        name: Separate Home Assistant broker
+        description: >-
+          Ubuntu can use this connection for HA-hosted integrations. On HA,
+          when the primary broker is already core-mosquitto, set address,
+          user and pw all to empty strings. Omitting these fields or importing
+          an empty object keeps any saved values; clearing only the address
+          while leaving credentials is invalid.
       temperature_report_interval_minutes:
         name: Expected temperature report interval (minutes)
         description: >-
@@ -277,25 +299,48 @@ configuration:
       read-only until an explicit handover or promotion. New pairs start with
       two slaves; manually promote one first. Saved pair state governs later
       roles. Host networking uses port directly, normally 1244. The app requests
-      NET_ADMIN and NET_RAW capabilities for virtual IP management.
+      NET_ADMIN and NET_RAW capabilities for virtual IP management. Copying
+      Ubuntu configuration to HA for pair mode? Review mqtt.address and its
+      credentials, mqtt.ha, peer_url, listen_host, vip_interface, vip_socket and
+      local paths below before saving. Keep the pair ID, token and virtual IP
+      settings the same. Imports merge into saved options; omitted fields keep
+      their saved values. Pair changes require a restart.
     fields:
+      peer_url:
+        name: Other computer's fixed address
+        description: >-
+          On Home Assistant, use http:// followed by Ubuntu's fixed address
+          and peer port, normally 1244. A copied Ubuntu configuration points
+          to HA and must be changed. Do not use this computer's address or
+          the shared virtual IP.
+      listen_host:
+        name: Local peer listener address
+        description: >-
+          Use 0.0.0.0 to listen on local interfaces, or this Home Assistant
+          computer's fixed address for a specific binding. Do not copy an
+          Ubuntu-specific address here.
       directory:
         name: Private pair state directory
         description: >-
           Leave empty to use /data/st-mq/pairing in Home Assistant. Contains
-          local pair state and work, separate from received snapshots.
+          local pair state and work, separate from received snapshots. When
+          copying from Ubuntu, preserve HA's existing path; changing it can
+          select different saved authority and history.
       snapshot_directory:
         name: Received snapshot directory
         description: >-
           Leave empty to use /config/st-mq/pair-snapshots in Home Assistant.
           stale_seconds marks old snapshots stale. Pair has its own
-          synchronization and does not use mirror settings.
+          synchronization and does not use mirror settings. Preserve HA's
+          existing path when copying Ubuntu configuration; use the default
+          only for a new installation or an intentional storage change.
       vip_interface:
         name: Local LAN interface
         description: >-
           Use this computer's LAN interface name. The other paired computer
-          may use a different name. After changing it, restart the app to
-          regenerate its virtual-IP helper policy.
+          may use a different name. Check HA's actual interface before copying
+          a value from Ubuntu. After changing it, restart the app to regenerate
+          its virtual-IP helper policy.
       vip_address:
         name: Shared MQTT virtual IP
         description: >-
@@ -305,8 +350,9 @@ configuration:
       vip_socket:
         name: Address-helper socket
         description: >-
-          Leave empty in Home Assistant to use the bundled helper directly.
-          Standalone Linux uses /run/st-mq-vip/socket.
+          Set to an empty string in Home Assistant to use the bundled helper
+          directly. Standalone Linux uses /run/st-mq-vip/socket. Omitting this
+          field from an import does not clear an already saved Ubuntu path.
   mirror:
     name: Database mirroring over SSH
     description: >-

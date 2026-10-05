@@ -198,6 +198,10 @@ checks the diff at 320/390/1440 px in both themes; synthetic screenshots use
 `STMQ_CONFIGURATION_SCREENSHOT_DIR` when supplied. It never reads installation
 configuration or connects providers.
 
+The HA ingress suite also checks the pair-copy guide with keyboard navigation
+and at 320/390/1440 px in both themes. It confirms that reading the guide sends
+no write requests and uses the same screenshot-directory option.
+
 The history-recovery suite checks the shared Recording details/Paired computers
 window, nested recording disclosure, separate recovery/history views, peer
 preselection, upload and reviewed actions, operation pagination, revert/restore,

@@ -115,14 +115,17 @@ each machine's private configuration. The default simulated input cannot be
 used for pair mode. Pairing controls whether
 that runtime may start; copied active settings cannot activate a slave.
 
-On the second machine, also select `controller.topology: "pair"`. Swap
-`peer_url` and `listen_host` to its own and the other machine's fixed addresses,
-and use the same pair ID, private token and virtual IP. Interface names and
-storage paths are machine-local and may differ. The app's local broker address
-may be
-`mqtt://core-mosquitto`.
-Set `vip_socket` to an empty string in the app; it uses its bundled helper
-directly. Standalone Linux defaults to the restricted local helper socket.
+On the second machine, also select `controller.topology: "pair"`. Point
+`peer_url` back to the first machine; `listen_host` belongs to the computer
+being configured. Use the same pair ID, private token and virtual IP.
+Interface names and storage paths are machine-local and may differ. A listener
+using `0.0.0.0` can keep that value on both computers. When copying Ubuntu configuration to
+HA, use the [HA field checklist](configuration.md#copying-ubuntu-configuration-to-ha-for-pair-mode)
+before importing. It covers the local Mosquitto connection, clearing Ubuntu's
+separate `mqtt.ha` route and helper socket, peer/listener addresses, the actual
+HA interface and preserving HA's existing storage. Normal imports merge:
+omitting a field does not clear its saved value. The same guidance appears in
+HA's Configuration form and ST-MQ's Configuration disclosure.
 
 Generate a fresh random pairing token of at least 32 characters with a password
 manager or a script that writes directly to the private configuration. Do not

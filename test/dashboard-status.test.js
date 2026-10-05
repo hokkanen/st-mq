@@ -130,6 +130,19 @@ test('Home Assistant configuration instructions distinguish sparse import, saved
   assert.equal(missingSlug.location.message, 'Restart the controller to load configuration paths, then refresh this page');
 });
 
+test('HA pair-copy guidance is available before setup and on an HA slave without granting reload', () => {
+  assert.equal(settingsReloadScope({ settingsReload: { configuration: { environment: 'home-assistant' } } }).pairCopyHelp, true);
+  const slave = settingsReloadScope({ topology: 'pair', role: 'slave', pair: { platform: 'hassio' },
+    settingsReload: { available: false, reason: 'Read-only slave' } });
+  assert.equal(slave.pairCopyHelp, true);
+  assert.equal(slave.available, false);
+  for (const status of [{}, { settingsReload: { configuration: { environment: 'ubuntu' } } },
+    { topology: 'pair', pair: { platform: 'ubuntu' } }, { topology: 'pair', pair: {} },
+    { topology: 'mirror', pair: { platform: 'hassio' } }]) {
+    assert.equal(settingsReloadScope(status).pairCopyHelp, false);
+  }
+});
+
 test('configuration location reports missing metadata explicitly without guessing private paths', () => {
   for (const configuration of [undefined, null, {}, { environment: 'ubuntu' }, { environment: 'home-assistant' },
     { environment: 'ubuntu', privatePath: '' }, { environment: 'ubuntu', privatePath: '/folder/' }]) {
