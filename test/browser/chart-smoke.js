@@ -20,6 +20,7 @@ import { equipmentConfiguration } from '../../src/acquisition/equipment-config.j
 import { CHART_VIEWS, CHART_VIEW_BY_KEY } from '../../src/domain/chart-views.js';
 import { FLOOR_PREHEAT_SIGNALS } from '../../src/domain/floor-circuits.js';
 import { EXPLORER_SERIES } from '../../chart/series-explorer.js';
+import { recordingRows } from '../../chart/recording.js';
 
 // Requires a separately started isolated Firefox BiDi listener. This script
 // creates its own temporary simulation, never reads household credentials.
@@ -49,6 +50,13 @@ function seedRecordingFixture(app) {
     source:'shelly-mqtt',device:'private-caravan-meter',prefix:'caravan',start:now-(2-interval)*60_000,
     end:now-(1-interval)*60_000,receivedAt:now-(1-interval)*60_000,powers:[1],energies:[1/60],quality:[],
   });
+  for (const [device,offset] of [['private-previous-charger-route',10],['private-current-charger-route',4]]) {
+    for (let interval=0;interval<3;interval++) app.engine.recorder.recordEnergy({
+      source:'shelly-evse',device,prefix:'ev2',start:now-(offset-interval)*60_000,
+      end:now-(offset-interval-1)*60_000,receivedAt:now-(offset-interval-1)*60_000,
+      powers:[1,1,1],energies:[1/60,1/60,1/60],quality:[],
+    });
+  }
   // Current-format recovered observations need not have a live recorder checkpoint.
   app.store.observation({source:'mqtt-equipment',device:'private-recovered-probe',signal:'workshop_pressure',
     value:2,unit:'bar',sourceTime:now,receivedAt:now,quality:[],raw:{recorder:{policy:'adaptive-value'}}});
@@ -270,25 +278,28 @@ try {
   assert.match(await evaluate("document.getElementById('recording-content').textContent"),/Rolling target/);
   for(const label of ['Garage rear temperature','Garage front temperature','maximum interval'])
     assert(!await evaluate(`document.getElementById('recording-content').textContent.includes(${JSON.stringify(label)})`));
-  const expectedStreams=app.engine.recorder.status(now).parameters.map(row=>row.streamId).sort();
+  const expectedStreams=recordingRows(app.engine.recorder.status(now)).map(row=>row.rowId).sort();
   assert.deepEqual(await evaluate("[...document.querySelectorAll('#recording-content tr[data-stream-id]')].map(row=>row.dataset.streamId).sort()"),expectedStreams,
-    'every actual adaptive stream appears once; exact and never-observed streams do not appear');
+    'each logical adaptive measurement appears once; exact and never-observed streams do not appear');
   const duplicateRows=await evaluate("[...document.querySelectorAll('#recording-content tr[data-signal=workshop_temperature]')].map(row=>({id:row.dataset.streamId,text:row.querySelector('th').textContent}))");
   assert.equal(duplicateRows.length,3);assert.equal(new Set(duplicateRows.map(row=>row.id)).size,3);
-  assert(duplicateRows.every(row=>row.text.includes(`Stream ${row.id}`)));
+  assert(duplicateRows.every(row=>/Source [123]/.test(row.text)&&/Stream [0-9a-f]{12}/.test(row.text)));
   assert(duplicateRows.some(row=>row.text.includes('°C'))&&duplicateRows.some(row=>row.text.includes('%')));
   assert(!JSON.stringify(duplicateRows).includes('private-recording-probe'));
+  const sourceGroups=await evaluate("[...document.querySelectorAll('#recording-content tr[data-signal=ev2_energy_l3]')].filter(row=>row.querySelector('.recording-source-history').textContent.includes('2 identities')).map(row=>({open:row.querySelector('.recording-source-history').open,entries:row.querySelectorAll('.recording-source-entry').length,spacing:row.children[2].textContent,openEnergy:row.querySelector('.recording-open-interval')?.textContent}))");
+  assert.equal(sourceGroups.length,1);assert.equal(sourceGroups[0].open,false);assert.equal(sourceGroups[0].entries,2);
+  assert.match(sourceGroups[0].openEnergy,/over 2 min/,'only current source open energy is displayed');
   assert.match(await evaluate("document.querySelector('#recording-content tr[data-signal=caravan_energy]').textContent"),/Caravan energy.*1.*Open:.*kWh over 1 min.*saved as readings arrive/);
   assert.equal(await evaluate("Boolean(document.querySelector('#recording-content tr[data-signal=workshop_pressure]'))"),false,
     'saved history without a checkpoint does not invent a current threshold');
-  await evaluate("document.querySelector('#recording-content details[data-stream-id]').open=true; document.querySelector('#recording-content details[data-stream-id] summary').focus(); true");
+  await evaluate("document.querySelector('#recording-content .recording-source-history').open=true; document.querySelector('#recording-content .recording-source-history summary').focus(); true");
   const focusedReading=await evaluate("document.activeElement.closest('details').dataset.streamId");
   await evaluate("document.getElementById('recording-details').dispatchEvent(new Event('toggle')); true");
   assert.equal(await evaluate("document.activeElement.closest('details').dataset.streamId"),focusedReading);
   assert.equal(await evaluate(`document.querySelector('#recording-content details[data-stream-id="${focusedReading}"]').open`),true,
     'fresh status rendering preserves source disclosure and keyboard focus');
   assert.equal(await evaluate("window.recordingFixture.requests"),0,'opening the adaptive table does not fetch the separate inventory');
-  assert.equal(await evaluate("[...document.querySelectorAll('#recording-details > details')].map(node=>node.id).join(',')"),'recording-adaptive-details,recording-overview-details,energy-audit-details,database-export-details');
+  assert.equal(await evaluate("[...document.querySelectorAll('#recording-details > details')].map(node=>node.id).join(',')"),'recording-adaptive-details,recording-overview-details,energy-audit-details,database-export-details,history-recovery-details');
   await until("!document.getElementById('database-export-download').disabled && !document.getElementById('database-export-save').disabled");
   await evaluate(`(() => {
     window.exportFixture = { create: URL.createObjectURL, click: HTMLAnchorElement.prototype.click, picker: window.showSaveFilePicker };
@@ -484,10 +495,10 @@ try {
     /Charger 2 records lifetime meter increments directly; only the phase split is estimated, so it has no equivalent integration check/);
   assert.match(await checkText(methodCheck),/do not change recorded history, calibrate estimates, train the house model or adjust recording thresholds/);
   await evaluate("document.querySelectorAll('#energy-audit-content .energy-check-details').forEach(node=>node.open=true); true");
-  for(const theme of ['dark','light']) for(const width of [390,1440]) {
+  for(const theme of ['dark','light']) for(const width of [320,390,1440]) {
     if(await evaluate('document.documentElement.dataset.theme')!==theme)
       await evaluate("document.getElementById('theme-toggle').click(); true");
-    await command('browsingContext.setViewport',{context,viewport:{width,height:width===390?844:1100},devicePixelRatio:1});
+    await command('browsingContext.setViewport',{context,viewport:{width,height:width<=390?844:1100},devicePixelRatio:1});
     await evaluate("document.getElementById('energy-audit-details').scrollIntoView({block:'start'}); true");
     await checkEnergyLayout(`expanded ${theme}/${width}`);
     const shot=await command('browsingContext.captureScreenshot',{context,origin:'viewport'});
@@ -501,9 +512,9 @@ try {
   mkdirSync('var',{recursive:true});
   const recordingShot=await command('browsingContext.captureScreenshot',{context,origin:'viewport'});
   writeFileSync('var/home-energy-recording.png',Buffer.from(recordingShot.data,'base64'));
-  for(const theme of ['dark','light']) for(const width of [390,1440]) {
+  for(const theme of ['dark','light']) for(const width of [320,390,1440]) {
     if(await evaluate('document.documentElement.dataset.theme')!==theme) await evaluate("document.getElementById('theme-toggle').click(); true");
-    await command('browsingContext.setViewport',{context,viewport:{width,height:width===390?844:1100},devicePixelRatio:1});
+    await command('browsingContext.setViewport',{context,viewport:{width,height:width<=390?844:1100},devicePixelRatio:1});
     await evaluate("document.getElementById('recording-adaptive-details').scrollIntoView({block:'start'}); true");
     assert.equal(await evaluate('document.documentElement.scrollWidth<=innerWidth'),true,`${theme}/${width}: page stays within viewport`);
     assert.equal(await evaluate("document.querySelector('.recording-measurements').scrollWidth<=document.querySelector('.recording-measurements').clientWidth+1"),true,
@@ -1126,9 +1137,9 @@ try {
     checked: ['named-views-and-series-explorer', 'recording-inventory', 'power-visible-pixels', 'fullscreen-and-zoom',
       'pointer-gestures-and-keyboard', 'date-and-view-request-races', 'tooltips', 'charger-fills', 'coefficient-replay', 'activity-rows'] }
     : recordingOnly?{result:'recording-browser-smoke-passed',browserTimeZone,
-    checked:['actual-adaptive-streams-only','opaque-duplicate-stream-identities','unit-distinction','all-four-floor-outputs',
+    checked:['actual-adaptive-measurements-only','folded-source-identities','current-source-spacing-and-open-energy','unit-distinction','all-four-floor-outputs',
       'every-change-circulation-feedback','observed-defrost','abnormal-feed-events','event-type-breakdown','saved-history-without-checkpoint','durable-open-energy','lazy-read-only-inventory',
-      'counts-and-dates','persistent-charging-choices-and-separate-session-edits','keyboard-and-refresh-preservation','energy-check-device-rows','energy-check-focus-and-expansion-preservation','property-reading-gap-and-retained-result','tiny-session-sample-and-no-sessions','dark-and-light','390-and-1440-layouts','physical-table-accounting']}:{ result: 'chart-browser-smoke-passed', browserTimeZone, timings,
+      'counts-and-dates','persistent-charging-choices-and-separate-session-edits','keyboard-and-refresh-preservation','energy-check-device-rows','energy-check-focus-and-expansion-preservation','property-reading-gap-and-retained-result','tiny-session-sample-and-no-sessions','dark-and-light','320-390-and-1440-layouts','physical-table-accounting']}:{ result: 'chart-browser-smoke-passed', browserTimeZone, timings,
     electricityConnections: ['combined-source-overview-and-connection', 'charger2-native-phase-readings-and-total-energy',
       'source-scoped-charger2-errors', 'keyboard-expansion', 'refresh-preserves-expansion'],
     chargingChecks:['charger2-visible-power-dark-and-light','charger2-visible-with-lower-loads-hidden-or-absent','charger2-no-invented-phases','exactly-two-charger-session-axes','property-reading-status-and-retained-comparison','charger-session-totals-and-sample-size','session-counts-exclusions-and-energy-weighting'],

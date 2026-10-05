@@ -124,6 +124,28 @@ test('learning freezes ongoing energy context without flushing or reusing later 
   assert.equal(earlier.electricalContext.property.complete,false,'a later receipt cannot fill an earlier journal boundary');
 });
 
+test('resolved electrical outage coverage remains context only and does not rewrite committed learning or replay', t => {
+  const store = new Store(':memory:'); t.after(() => store.close());
+  knownContext(store);
+  const at = start + LEARNING_WINDOW_MS;
+  for (const point of [start, at]) for (const [signal, value] of [['indoor_temperature', 21], ['outdoor_temperature', 0]])
+    record(store, signal, value, point);
+  new Recorder(store).energyGap({ source: 'easee', device: 'invented-meter', prefix: 'property', start, end: at });
+  const unknown = committedLearningSample({ store, input: 'mqtt', at, config });
+  assert.equal(unknown.electricalContext.property.complete, false);
+  appendLearningRecord(store, 'mqtt', 'sample', unknown, { config });
+  const journal = store.learningJournal({ input: 'mqtt' });
+  const replay = replayLearningJournal(store, 'mqtt', null, { rebuild: true });
+  for (const phase of [1, 2, 3]) record(store, `property_energy_l${phase}`, 1, at, { source: 'easee',
+    device: 'invented-meter', unit: 'kWh', raw: { intervalStart: start, intervalEnd: at } });
+  const measured = committedLearningSample({ store, input: 'mqtt', at, config });
+  assert.equal(measured.electricalContext.property.complete, true);
+  assert.deepEqual(measured.electricalContext.property.phases.map(row => row.kwh), [1, 1, 1]);
+  assert.equal(measured.powerKw, null); assert.equal(measured.compressorDuty, null);
+  assert.deepEqual(store.learningJournal({ input: 'mqtt' }), journal);
+  assert.deepEqual(replayLearningJournal(store, 'mqtt', null, { rebuild: true }), replay);
+});
+
 test('held indoor input outlives freshness while retaining its actual source timestamp', t => {
   const store = new Store(':memory:'); t.after(() => store.close());
   knownContext(store);

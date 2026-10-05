@@ -248,6 +248,10 @@ test('real backup upload recovers, reverts and restores an old contribution whil
   assert.equal(view.preview.status, 'checked');
   assert.equal(view.preview.counts, undefined);
   assert.equal(view.preview.tables.find(row => row.name === 'observations').count, 1);
+  assert.equal(view.preview.coverage.categories.find(row => row.name === 'temperatures').source.count, 1);
+  const reportReader = createHistoryRecovery({ store: f.store,getEngine: () => f.engine,getExportDirectory: () => join(f.root,'exports') });
+  try { assert.equal((await reportReader.view()).preview.coverage.categories.find(row => row.name === 'temperatures').source.count, 1,
+    'The bounded read-only report survives coordinator reopening'); } finally { await reportReader.close(); }
   await f.post(request('recover', { previewId: view.preview.previewId, confirmed: true }));
   await f.coordinator.settled();
   view = await f.coordinator.view();

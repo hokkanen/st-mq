@@ -6,6 +6,10 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { Store } from '../src/storage/store.js';
 import { createMqttSourceContext, mqttSourceIdentity, MQTT_SOURCE_CONTEXT_KEY } from '../src/pairing/mqtt-source-context.js';
+import { HeatingAutomation } from '../src/app/automation.js';
+import { ChargingRuntime } from '../src/charging/runtime.js';
+import { GarageRuntime } from '../src/garage/runtime.js';
+import { Recorder } from '../src/storage/recorder.js';
 
 const token = randomUUID();
 const otherToken = randomUUID();
@@ -78,6 +82,56 @@ test('a replica cannot self-seed or adopt a copied seed without an explicit veri
   await f.remote.authorizePromotion({ dbPath: f.store.path });
   await f.remote.activate(f.ubuntu, f.store);
   assert.deepEqual(mqttSourceIdentity(f.ubuntu, 'ha'), mqttSourceIdentity(f.ha, 'ha'));
+});
+
+test('real equipment consumers and phase recording retain one identity through handover, restart and return', async t => {
+  const f = fixture(t), runtimes = [], now = Date.parse('2026-10-05T12:00:00Z');
+  for (const config of [f.ha, f.ubuntu]) config.charging.chargers.charger2.topicPrefix = 'synthetic/evse';
+  const engine = { clock: () => now };
+  t.after(async () => { for (const runtime of runtimes) await runtime.close(); });
+  const consumers = config => {
+    const charging = new ChargingRuntime({ engine, store: f.store, config, clock: engine.clock, canControl: () => false });
+    runtimes.push(charging);
+    const garage = new GarageRuntime({ engine, store: f.store, config, clock: engine.clock, canControl: () => false });
+    const heating = new HeatingAutomation({ store: f.store, config, clock: engine.clock, targetIdentity: () => 'a'.repeat(64) });
+    return { charging, heating, identities: { charger: charging.chargers.charger2.association,
+      bmw: charging.vehicleFeeds.bmw.association, garage: garage.adapterKey, home: heating.features.home.identity } };
+  };
+  await f.local.activate(f.ha, f.store, { allowSeed: true });
+  const first = consumers(f.ha);
+  first.heating.set('home', true);
+  const record = (consumer, index) => {
+    const recorder = new Recorder(f.store);
+    recorder.recordEnergy({ source: 'shelly-evse', device: consumer.identities.charger, prefix: 'ev2',
+      start: now + index * 60_000, end: now + (index + 1) * 60_000,
+      energies: [0.01,0.02,0.03], powers: [0.6,1.2,1.8], quality: ['native_counter'] });
+    recorder.flush(now + (index + 1) * 60_000, { force: true });
+  };
+  record(first, 0);
+  const forward = { requirements: f.local.requirements(f.store), token, dbPath: f.store.path };
+  await f.remote.prepare(forward); await f.remote.authorize(forward); await f.remote.activate(f.ubuntu, f.store);
+  const second = consumers(f.ubuntu);
+  assert.deepEqual(second.identities, first.identities);
+  assert.equal(second.heating.features.home.enabled, true);
+  record(second, 1);
+  const restarted = structuredClone(f.ubuntu);
+  const context = createMqttSourceContext({ configuration: () => restarted, directory: join(f.directory, 'ubuntu') });
+  await context.activate(restarted, f.store);
+  const third = consumers(restarted);
+  assert.deepEqual(third.identities, first.identities); record(third, 2);
+  const reverse = { requirements: context.requirements(f.store), token: otherToken, dbPath: f.store.path };
+  await f.local.prepare(reverse); await f.local.authorize(reverse); await f.local.activate(f.ha, f.store);
+  const returned = consumers(f.ha);
+  assert.deepEqual(returned.identities, first.identities);
+  assert.equal(returned.heating.features.home.enabled, true); record(returned, 3);
+  const rows = f.store.db.prepare("SELECT signal,COUNT(DISTINCT device) devices,COUNT(*) records,SUM(value) energy FROM observations WHERE source='shelly-evse' GROUP BY signal ORDER BY signal").all();
+  assert.deepEqual(rows.map(row => [row.devices,row.records]), [[1,4],[1,4],[1,4]]);
+  rows.forEach((row,i) => assert.ok(Math.abs(row.energy - (i + 1) * 0.04) < 1e-12));
+  const replacement = structuredClone(f.ha);
+  replacement.charging.chargers.charger2.deviceId = 'different-synthetic-evse';
+  await f.local.activate(replacement, f.store);
+  assert.notEqual(consumers(replacement).identities.charger, first.identities.charger,
+    'A real configured equipment change must still select a new identity');
 });
 
 test('source configuration, final snapshot, operation token and candidate route must all agree', async t => {

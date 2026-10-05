@@ -12,6 +12,7 @@ import { sensorRevision } from '../app/sensor-inputs.js';
 import { beginRecovery, rememberContribution, selectedHistory } from './ledger.js';
 import { assessRecoverySource } from './source-scope.js';
 import { recoveryFailure } from './errors.js';
+import { recoveryCoverageReport } from './coverage-report.js';
 
 const json = JSON.stringify;
 const decode = row => ({ id: row.id, key: row.key, kind: row.kind, at: row.at,
@@ -41,7 +42,12 @@ async function open() {
   // Semantic rows with missing references are rejected individually by merge;
   // only physical database corruption prevents scanning the donor altogether.
   const donorDigest = await fileDigest(workerData.donorPath);
-  if (workerData.mode === 'preview') target = new Store(workerData.masterPath, { readOnly: true });
+  if (workerData.mode === 'preview') {
+    target = new Store(workerData.masterPath, { readOnly: true });
+    // One brief read snapshot makes the category dates and recorded outages
+    // coherent while WAL writers continue. It is released when checking ends.
+    target.db.exec('BEGIN'); target.db.prepare('PRAGMA schema_version').get();
+  }
   else {
     if (donorDigest !== workerData.preview?.donorDigest || workerData.preview?.input !== workerData.input)
       throw invalid('Recovery preview is stale; check the other instance again');
@@ -72,6 +78,8 @@ async function checkSource(donorDigest) {
     reason: 'Saved charging reports are not included in history recovery.' })).filter(row => row.count > 0);
   const report = { status: 'checked', policy: RECOVERY_POLICY, tables, model: { status: 'not-assessed' },
     donorDigest, input: workerData.input, sourceSelection, sourceAssessment, unsupported };
+  report.coverage = await recoveryCoverageReport({ master: target, donor, input: workerData.input,
+    yieldControl: yieldTurn, progress });
   report.previewId = learningVersion(report);
   parentPort.postMessage({ type: 'complete', report }); cleanup();
 }

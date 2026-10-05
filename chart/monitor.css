@@ -910,6 +910,25 @@ details details { margin-inline-start: 24px; }
 .history-recovery-counts > div { min-width: 0; border-left: 2px solid var(--border); padding-left: 10px; }
 .history-recovery-counts dt { font-size: 11px; line-height: 1.4; }
 .history-recovery-counts dd { margin: 6px 0 0; font-size: 22px; line-height: 1.2; font-variant-numeric: tabular-nums; }
+.history-recovery-coverage h4 { margin: 16px 0 4px; font-size: 13px; }
+.history-recovery-ranges { table-layout: fixed; width: 100%; margin: 12px 0; border-collapse: collapse; font-size: 11px; }
+.history-recovery-ranges th, .history-recovery-ranges td { text-align: left; vertical-align: top; padding: 8px 5px; border-bottom: 1px solid var(--border); overflow-wrap: anywhere; }
+.history-recovery-ranges th:first-child { width: 26%; }
+.history-recovery-ranges small { display: block; margin-top: 5px; color: var(--muted); font-size: 10px; }
+.history-recovery-ranges .history-recovery-potential { color: var(--text); }
+.history-recovery-preview details { margin-top: 14px; }
+.history-recovery-preview summary { font-size: 12px; cursor: pointer; }
+.history-recovery-outages { margin: 10px 0; padding-left: 18px; font-size: 12px; }
+.history-recovery-outages li { margin: 10px 0; }
+.history-recovery-outages strong, .history-recovery-outages span, .history-recovery-outages small { display: block; overflow-wrap: anywhere; }
+.history-recovery-outages small { color: var(--muted); }
+@media (max-width: 540px) {
+  .history-recovery-ranges, .history-recovery-ranges thead, .history-recovery-ranges tbody { display: block; }
+  .history-recovery-ranges tr { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .history-recovery-ranges thead th:first-child { display: none; }
+  .history-recovery-ranges th:first-child { width: auto; }
+  .history-recovery-ranges tbody th { grid-column: 1 / -1; padding-top: 12px; padding-bottom: 2px; border-bottom: 0; }
+}
 .history-recovery-review-actions { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 8px; }
 .history-recovery-review-actions > button { margin: 16px 0 0; }
 .history-recovery-peer { margin-top: 20px; border-top: 1px solid var(--border); padding-top: 18px; }
@@ -1146,6 +1165,10 @@ details details { margin-inline-start: 24px; }
 .recording-table thead th { color: var(--muted); white-space: nowrap; }
 .recording-table th small, .recording-table td small { display: block; color: var(--muted); font-size: 10px; margin-top: 3px; font-weight: 400; }
 .recording-table .recording-group th { color: var(--accent); font-weight: 550; padding-top: 18px; }
+.recording-table .recording-source-history { margin: 5px 0 0; border: 0; padding: 0; font-size: 11px; }
+.recording-source-history > summary { color: var(--muted); font-size: 11px; padding: 4px 0; }
+.recording-source-history p { font-size: 11px; font-weight: 400; line-height: 1.5; overflow-wrap: anywhere; }
+.recording-source-entry { border-top: 1px solid var(--border); padding-top: 4px; margin-top: 8px; }
 .energy-check { display: grid; grid-template-columns: minmax(100px, 1fr) minmax(0, 4fr); gap: 12px 24px; padding: 18px 0; border-top: 1px solid var(--border); font-size: 12px; line-height: 1.6; }
 .energy-check h3 { margin: 0; font-size: 13px; font-weight: 550; }
 .energy-check-source { margin: 3px 0 0; color: var(--muted); font-size: 11px; }

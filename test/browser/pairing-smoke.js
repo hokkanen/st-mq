@@ -171,10 +171,11 @@ try {
     const image = await command('browsingContext.captureScreenshot', { context, origin: 'viewport', format: { type: 'image/png' } });
     writeFileSync(join(screenshots, `${name}.png`), Buffer.from(image.data, 'base64'), { mode: 0o600 });
   };
-  const confirmAction = async (button, accept) => {
+  const confirmAction = async (button, accept, screenshot = null) => {
     await evaluate(`${$(button)}.click(); true`);
     await until("document.querySelector('.confirmation-dialog[open]') !== null");
     const message = await evaluate("document.getElementById('confirmation-description').textContent");
+    if (screenshot) await capture(screenshot,true);
     await evaluate(`document.querySelector('.confirmation-dialog .confirmation-actions button:${accept ? 'last' : 'first'}-child').click(); true`);
     return message;
   };
@@ -322,7 +323,10 @@ try {
     assert.equal(await evaluate(`(() => { const d=${$('history-recovery-dialog')}; return d.scrollWidth <= d.clientWidth && d.getBoundingClientRect().right <= innerWidth; })()`), true, `${width}px ${theme}: shared recovery dialog fits`);
     if (width === 1440 || width === 320) await capture(`recovery-ready-${width}-${theme}`);
   }
-  assert.match(await confirmAction('pairing-rejoin', false), /discard|delete|lost|replaced/i);
+  const skipMessage=await confirmAction('pairing-rejoin',false,'rejoin-skip-confirmation-320-light');
+  assert.match(skipMessage,/previous database is retained inactive, including unmatched and unsupported history/);
+  assert.match(skipMessage,/does not determine how much history is missing/);
+  assert.doesNotMatch(skipMessage,/discarded|deleted|lost|replaced/i);
   assert.equal(actions.length, 2);
   assert.match(await confirmAction('history-recovery-apply', true), /history|rebuild/i);
   await until(`${$('pairing-recovery')}.textContent.includes('Recovering')`);
@@ -337,6 +341,13 @@ try {
     uiOperation: { id: actions.at(-1).requestId, action: 'recover', state: 'complete', progress: { phase: 'publishing', processed: 12 } } });
   await until(`${$('pairing-rejoin')}.textContent === 'Resume mirroring' && !${$('pairing-rejoin')}.disabled`);
   assert.equal(await evaluate(`${$('pairing-phase')}.textContent`), '');
+  await open();await evaluate(`${$('pairing-history-recovery')}.click(); true`);
+  await until(`${$('history-recovery-dialog')}.open`);
+  const resumeMessage=await confirmAction('pairing-rejoin',false,'rejoin-after-recovery-confirmation-320-light');
+  assert.match(resumeMessage,/previous database is retained inactive, including skipped history/);
+  assert.match(resumeMessage,/never reused automatically/);
+  assert.equal(actions.at(-1).action,'recover','Cancelling resume mirroring sends no rejoin request');
+  await evaluate(`${$('history-recovery-close')}.click(); true`);
 
   for (const role of ['slave', 'protected']) {
     pair = role === 'slave' ? { ...standby(role), sync: { state: 'waiting' } } : standby(role);
@@ -489,7 +500,7 @@ try {
   console.log(JSON.stringify({ result: 'pairing-browser-smoke-passed', measurements, screenshots,
     checked: ['actual built dashboard', 'all topology and role headers', 'mode-specific synchronization panels and read-only controls', 'role beside operating mode', 'compact desktop/mobile dark/light layout',
       'placement above events', 'keyboard disclosure', 'poll preserves disclosure', 'secondary read failures preserve local pairing evidence', 'older failed reads cannot erase newer status', 'local status failure and recovery', 'failed/running checks never enable recovery',
-      'successful preview unlocks recovery', 'skip recovery requires explicit discard confirmation',
+      'successful preview unlocks recovery', 'skip and completed recovery confirmations explain retained inactive original',
       'recovery sends checked identity', 'closed progress and failures', 'matching protected/slave layout without master controls', 'actual immutable ReplicaViewer projection',
       'visible Data and settings plus Garage', 'mutation event fencing', 'read-only downloads and navigation', 'centered protected badge', '320px protected layout and startup guidance', 'reset choices and archive receipt', 'fresh reset restoration and final confirmation', 'reset cancellation and focus', '320px reset dialog in both themes', 'all cards readable before the first snapshot', 'unavailable settings and charging preserve dashboard access'] }));
   await command('browser.close'); ownsBrowser = false;

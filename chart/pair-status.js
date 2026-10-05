@@ -88,13 +88,13 @@ export function pairConfirmation(action, { discardUnrecovered = false, bootstrap
     : 'Reset pairing and keep local history? Local recording and control stop. The database and saved settings remain intact. Old pairing state is archived. This computer stays in Protected recovery until you explicitly choose recovery or promotion. Configuration, credentials and the other computer are unchanged.';
   if (action === 'promote' && bootstrapPending) return 'Promote this computer to the pair’s first master? Confirm that the other computer is not already master or controlling equipment. Only one computer may be master. This starts local recording and enables control according to the saved equipment permissions. Leave the other computer as a read-only slave; it will synchronize from this master.';
   if (action === 'rejoin' && discardUnrecovered) {
-    return 'Skip recovery and replace the other computer’s database with this master’s database? The source check does not determine how much history is missing here. All unmatched history on the other computer, including conflicting and unsupported entries, will be discarded. No separate archive is kept. This master’s history and learned model stay as they are. Only continue if you accept losing that history.';
+    return 'Skip recovery and resume mirroring from this master? The source check does not determine how much history is missing here. The other computer’s previous database is retained inactive, including unmatched and unsupported history. Mirroring uses a verified copy of this master’s database; the previous database is never reused automatically. This master’s history and learned model stay as they are.';
   }
   return {
     promote: 'Promote this computer to master? Confirm that the previous master has failed or has been stopped or isolated from the home. If its host is still running, release its broker virtual IP or isolate the host first. An unreachable computer may still be controlling equipment. This uses the local history; data since its last snapshot may be missing.',
     handover: 'Hand control to the other computer? The current master will finish its handover and transfer a verified final snapshot before the other computer takes over. MQTT devices and a configured local charger will reconnect to the moved address.',
     recover: 'Recover missing history from the checked source? Recovery compares and imports history once. Existing master data wins overlaps; conflicting or unsupported entries are skipped. The model is rebuilt only if needed, while heating control remains available.',
-    rejoin: 'Resume mirroring to the other computer? Recovery must be complete. Its remaining divergent data will be replaced with an exact verified copy of the master database. Skipped donor entries will not be retained as a separate archive.',
+    rejoin: 'Resume mirroring to the other computer? Recovery must be complete. Mirroring uses an exact verified copy of the master database. The other computer’s previous database is retained inactive, including skipped history; it is never reused automatically.',
   }[action] ?? null;
 }
 
@@ -183,7 +183,7 @@ export function pairDisplay(view, { now = Date.now(), formatTime = at => new Dat
       : 'Source check complete. Recovery will compare history and import missing entries once. Gaps, conflicts and model changes have not yet been assessed.',
     recovering: 'Recovering gaps and rebuilding the model. Heating control remains available with the current model.',
     complete: 'Recovery is complete. Review the result, then resume mirroring to update the other computer from this master.',
-    resolved: recovery.report?.recoverySkipped === true ? 'The previous replacement completed without recovering gaps. The other computer’s unmatched history was discarded. See Paired computers for current mirroring status.'
+    resolved: recovery.report?.recoverySkipped === true ? 'Mirroring resumed without recovering gaps. The other computer’s previous database is retained inactive and is never reused automatically. See Paired computers for current mirroring status.'
       : 'The previous recovery and verified replacement completed. See Paired computers for current mirroring status.',
     error: pairIssueHelp({ error: recovery.error }) || 'The check or recovery could not finish. Review the current computer roles, then check again before retrying.',
   }[recovery.state] ?? '';

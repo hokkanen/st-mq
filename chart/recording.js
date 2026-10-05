@@ -1,4 +1,4 @@
-import { HISTORY_GROUPS } from '../src/domain/history-series.js';
+import { HISTORY_GROUPS, SIGNAL_INFO } from '../src/domain/history-series.js';
 import { durationText, qualityReasonText } from './reading-status.js';
 import { providerName } from './provider-status.js';
 import { recordingPolicy, recordedSignalInfo, RECORDING_POLICIES } from '../src/domain/recording-policy.js';
@@ -14,8 +14,18 @@ export function durationLabel(ms) {
 }
 const number = value => Number.isFinite(value) ? new Intl.NumberFormat('en-GB',{maximumSignificantDigits:3}).format(value) : '—';
 const readable = value => String(value ?? '').replaceAll('_',' ');
+const unitLabel = unit => ({degC:'°C','degree-minutes':'°min'})[unit] ?? unit ?? '';
+const thresholdLabel = row => Number.isFinite(row.threshold) ? row.threshold<1e-9 ? 'Any measurable change'
+  : `${number(row.threshold)} ${unitLabel(row.thresholdUnit??row.unit)}${row.grouped?' (phase group)':''}`
+  : row.activity==='historical'?'Historical':row.activity==='ambiguous'?'Unknown':'Collecting';
 
 export function recordingStatus(row = {}, { now = Date.now() } = {}) {
+  if (row.activity === 'historical') return { label: 'Historical',
+    detail: 'No acquisition from this source has been observed in this runtime. Saved source status and open energy remain historical evidence; they do not establish a current connection.' };
+  if (row.activity === 'snapshot') return { label: 'Latest recorded source',
+    detail: 'This source has the latest recorded acquisition for this measurement in the snapshot. Spacing, threshold and open energy describe saved recording state, not a live connection.' };
+  if (row.activity === 'ambiguous') return { label: 'Source selection uncertain',
+    detail: 'Multiple source identities have the same latest acquisition time. Their individual spacing, thresholds and saved intervals are available in Source history.' };
   if (row.voltage) {
     const v = row.voltage, provenance = voltageProvenanceDetails(v);
     const label = v.mature ? v.reporting ? 'Established estimate' : 'Estimate held · input unavailable'
@@ -66,13 +76,43 @@ export function recordingStatus(row = {}, { now = Date.now() } = {}) {
 }
 
 export function recordingRows(status = {}) {
-  const result = (status.parameters ?? []).filter(parameter =>
+  const parameters = (status.parameters ?? []).filter(parameter =>
     (RECORDING_POLICIES[parameter.policy] ?? recordingPolicy(parameter)).adaptive)
     .map(parameter => ({ ...recordedSignalInfo(parameter.signal, parameter.unit), ...parameter }));
+  const grouped = new Map();
+  for (const row of parameters) {
+    // The catalogue names installation measurement roles, not physical-device
+    // identity. This grouping is presentation only. Unregistered measurements
+    // keep their device stream separate; labels alone never join them.
+    const logical = Object.hasOwn(SIGNAL_INFO,row.signal);
+    const key = JSON.stringify([row.source,row.signal,row.unit,row.policy ?? recordingPolicy(row).id,
+      ...(logical ? [] : [row.streamId ?? parameters.indexOf(row)])]);
+    if (!grouped.has(key)) grouped.set(key,[]);
+    grouped.get(key).push(row);
+  }
+  const result = [...grouped].map(([key,streams]) => {
+    const recent = [...streams].sort((a,b)=>(b.lastPollAt ?? -Infinity)-(a.lastPollAt ?? -Infinity)
+      || String(a.streamId??'').localeCompare(String(b.streamId??'')));
+    const snapshot = status.readOnly === true || status.recorded === true;
+    const candidates = snapshot ? recent : recent.filter(row=>row.observedThisRun === true);
+    const latest = candidates[0], ambiguous = candidates.length>1 && candidates[1].lastPollAt === latest.lastPollAt;
+    const current = ambiguous ? null : latest;
+    const activity = ambiguous ? 'ambiguous' : current ? snapshot ? 'snapshot' : 'current' : 'historical';
+    const row = {...(current ?? recent[0]),activity,
+      rowId:`measurement-${encodeURIComponent(key)}`,sourceHistory:recent.map(source=>({...source,
+        activity:source===current?activity:'historical'})),currentStreamId:current?.streamId ?? null};
+    row.savedDay = {records:streams.reduce((sum,source)=>sum+(source.day?.records ?? 0),0),
+      estimatedBytes:streams.reduce((sum,source)=>sum+(source.day?.estimatedBytes ?? 0),0)};
+    if (!current) {
+      row.hour=null;row.day=null;row.week=null;row.threshold=null;row.openInterval=null;row.voltage=null;
+    }
+    return row;
+  });
   const duplicates = new Map();
-  const sourceKey = row => JSON.stringify([row.signal, row.source]);
-  for (const row of result) duplicates.set(sourceKey(row), (duplicates.get(sourceKey(row)) ?? 0) + 1);
-  for (const row of result) if (duplicates.get(sourceKey(row)) > 1) row.streamQualifier = row.streamId?`Stream ${row.streamId}`:'Stream identity unavailable';
+  const sourceKey = row => JSON.stringify([row.signal,row.source]);
+  for (const row of result) duplicates.set(sourceKey(row),(duplicates.get(sourceKey(row)) ?? 0)+1);
+  for (const row of result) if (duplicates.get(sourceKey(row))>1)
+    row.streamQualifier=`Source ${(result.filter(item=>sourceKey(item)===sourceKey(row))).indexOf(row)+1}`;
   return result.sort((a,b) => {
     const order = group => {const i=HISTORY_GROUPS.indexOf(group);return i<0?HISTORY_GROUPS.length:i;};
     return order(a.group)-order(b.group)||a.label.localeCompare(b.label)||String(a.source??'').localeCompare(String(b.source??''))
@@ -86,7 +126,7 @@ export function renderRecording(status, root) {
   const focusedStream=root.contains(document.activeElement)?document.activeElement.closest('details[data-stream-id]')?.dataset.streamId:null;
   const recording=status?.recording ?? {}, rows=recordingRows(recording), summary=document.createElement('dl');
   summary.className='recording-metrics';
-  for (const [label,value] of [['Adaptive streams',rows.length],
+  for (const [label,value] of [['Adaptive measurements',rows.length],
     ['Projected growth',recording.measurementHours?`${number(recording.projectedAnnualBytes/1e9)} GB/year`:'Collecting'],
     ['Rolling target',`${number((recording.annualBudgetBytes??1e10)/1e9)} GB/year`],
     ['Database',`${number((recording.measuredDatabaseBytes??0)/1e6)} MB`]]) {
@@ -94,9 +134,14 @@ export function renderRecording(status, root) {
     term.textContent=label;detail.textContent=String(value);group.append(term,detail);summary.append(group);
   }
   const description=document.createElement('p');description.className='muted';
-  description.textContent='These observed streams use learned change thresholds. Fresh unchanged readings extend availability coverage. Energy keeps accumulating in a saved open interval until power or quality changes close it. Exact sensor changes, states, settings, counters and circulation feedback are under Other recorded data.';
+  description.textContent='One row per installation measurement. Expand Source history to inspect its recording identities. Exact states, settings and counters are under Other recorded data.';
   const note=document.createElement('p');note.className='muted';
-  note.textContent='Mean spacing uses actual saved timestamps. Source details explain freshness separately. Payload sizes are approximate. The rolling target covers database growth; only adaptive streams use the learned threshold. Saved adaptive datasets, including recovered history without a current checkpoint, are listed under Other recorded data → Recording and storage support.';
+  note.textContent='Counts and approximate storage include all listed identities within 24 hours. Spacing, threshold and open interval use the current source, or the latest recorded source in a read-only snapshot.';
+  const help=document.createElement('details'),helpTitle=document.createElement('summary'),helpText=document.createElement('p');
+  help.className='recording-reading-details';help.dataset.streamId='recording-table-help';help.open=expanded.has(help.dataset.streamId);
+  helpTitle.textContent='How recording is counted';
+  helpText.textContent='Mean spacing uses actual saved receipt timestamps within each window. Source history uses Finnish time. Unchanged readings extend availability coverage. Energy keeps accumulating in a saved open interval until power or quality changes close it. The rolling target covers database growth; only adaptive measurements use learned thresholds. Saved datasets without a recorder checkpoint are under Other recorded data → Recording and storage support.';
+  help.append(helpTitle,helpText);
   const table=document.createElement('table');table.className='recording-table recording-measurements';
   const head=document.createElement('thead'),headers=document.createElement('tr');
   for(const name of ['Measurement / source','Saved · 24 h','Mean spacing · 1 h / 24 h / 7 d','Change threshold','Source / open interval']) {
@@ -108,7 +153,7 @@ export function renderRecording(status, root) {
     const availability=recordingStatus(row,{now:status?.now ?? Date.now()});
     if(row.group!==previousGroup) {const tr=document.createElement('tr'),cell=document.createElement('th');cell.colSpan=5;cell.scope='colgroup';cell.textContent=row.group;tr.className='recording-group';tr.append(cell);body.append(tr);previousGroup=row.group;}
     const tr=document.createElement('tr'),title=document.createElement('th');title.scope='row';title.textContent=row.label;
-    tr.dataset.signal=row.signal;tr.dataset.streamId=row.streamId??row.signal;
+    tr.dataset.signal=row.signal;tr.dataset.streamId=row.rowId;
     if(row.source) {const source=document.createElement('small');const name=recordingSourceLabel(row)??({ 'garage-adapter':'Garage heat pump', 'mqtt-equipment':'MQTT equipment', 'shelly-mqtt':'Shelly', simulation:'Simulation' })[row.source]??providerName(row.source)??readable(row.source);
       if(row.source==='voltage-estimate') setStatusDetail(source, {
         key:`recording-voltage-source-${row.streamId??row.signal}`, title:`${row.label} source`, label:name,
@@ -117,15 +162,32 @@ export function renderRecording(status, root) {
       else source.textContent=`${name} · ${({degC:'°C','degree-minutes':'°min'})[row.unit]??row.unit??''}`;
       title.append(source);}
     if(row.streamQualifier) {const qualifier=document.createElement('small');qualifier.className='recording-stream-qualifier';qualifier.textContent=row.streamQualifier;title.append(qualifier);}
+    const history=document.createElement('details'),historyTitle=document.createElement('summary'),explanation=document.createElement('p');
+    history.className='recording-source-history';history.dataset.streamId=`${row.rowId}-history`;history.open=expanded.has(history.dataset.streamId);
+    historyTitle.textContent=`Source history · ${row.sourceHistory.length} ${row.sourceHistory.length===1?'identity':'identities'}`;
+    explanation.textContent='Grouped by installation measurement. Separate identities may follow a routing or equipment change; this table does not establish the cause or prove that they are the same device. Dates use Finnish time.';
+    history.append(historyTitle,explanation);
+    for (const source of row.sourceHistory) {
+      const item=document.createElement('div'),name=document.createElement('p'),period=document.createElement('p'),spacing=document.createElement('p'),last=document.createElement('p'),selection=document.createElement('p');
+      item.className='recording-source-entry';
+      name.textContent=`${source.activity==='current'?'Current recording source':source.activity==='snapshot'?'Latest source in snapshot':'Historical source'} · Stream ${source.streamId??'identity unavailable'}`;
+      const first=dateLabel(source.recordedPeriod?.firstSavedAt),end=dateLabel(source.recordedPeriod?.lastSavedAt);
+      period.textContent=first||end?`Saved receipt dates: ${first??'unknown'} – ${end??'unknown'}.`:'Saved receipt dates unavailable.';
+      spacing.textContent=`Saved in 24 h: ${integerLabel(source.day?.records)}. Mean spacing · 1 h / 24 h / 7 d: ${[source.hour,source.day,source.week].map(value=>Number.isFinite(value?.averageIntervalMs)?durationLabel(value.averageIntervalMs):'—').join(' / ')}.`;
+      last.textContent=`Last acquisition received: ${dateLabel(source.lastPollAt)??'unknown'}. Latest accepted source time: ${dateLabel(source.lastSourceTime)??'unknown'}.`;
+      selection.textContent=`Saved change threshold: ${thresholdLabel(source)}.${source.openInterval?` Saved open interval: ${number(source.openInterval.kwh)} kWh over ${durationLabel(source.openInterval.end-source.openInterval.start)}.`:''}`;
+      item.append(name,period,spacing,last,selection);history.append(item);
+    }
+    title.append(history);
     tr.append(title);
-    const saved=document.createElement('td');saved.textContent=integerLabel(row.day?.records);saved.dataset.label='Saved · 24 h';
-    if(Number.isFinite(row.day?.estimatedBytes)) {const bytes=document.createElement('small');bytes.textContent=`Approx. ${number(row.day.estimatedBytes/1000)} kB payload`;saved.append(bytes);}tr.append(saved);
+    const saved=document.createElement('td');saved.textContent=integerLabel(row.savedDay.records);saved.dataset.label='Saved · 24 h';
+    if(Number.isFinite(row.savedDay.estimatedBytes)) {const bytes=document.createElement('small');bytes.textContent=`Approx. ${number(row.savedDay.estimatedBytes/1000)} kB payload`;saved.append(bytes);}tr.append(saved);
     for(const [label,text] of [
       ['Mean spacing · 1 h / 24 h / 7 d',[row.hour,row.day,row.week].map(period=>Number.isFinite(period?.averageIntervalMs)?durationLabel(period.averageIntervalMs):'—').join(' / ')],
-      ['Change threshold',Number.isFinite(row.threshold)?row.threshold<1e-9?'Any measurable change':`${number(row.threshold)} ${({degC:'°C','degree-minutes':'°min'})[row.thresholdUnit??row.unit]??row.thresholdUnit??row.unit??''}${row.grouped?' (phase group)':''}`:'Collecting'],
+      ['Change threshold',thresholdLabel(row)],
     ]) {const cell=document.createElement('td');cell.dataset.label=label;cell.textContent=text;tr.append(cell);}
     const sourceCell=document.createElement('td'),details=document.createElement('details'),heading=document.createElement('summary'),detail=document.createElement('p');
-    sourceCell.dataset.label='Source / open interval';details.className='recording-reading-details';details.dataset.streamId=row.streamId??row.signal;details.open=expanded.has(details.dataset.streamId);
+    sourceCell.dataset.label='Source / open interval';details.className='recording-reading-details';details.dataset.streamId=row.rowId;details.open=expanded.has(details.dataset.streamId);
     heading.textContent=availability.label;detail.textContent=availability.detail;details.append(heading,detail);sourceCell.append(details);
     if(row.openInterval) {const pending=document.createElement('small');pending.className='recording-open-interval';
       pending.textContent=`Open: ${number(row.openInterval.kwh)} kWh over ${durationLabel(row.openInterval.end-row.openInterval.start)} · saved as readings arrive`;sourceCell.append(pending);}
@@ -138,7 +200,7 @@ export function renderRecording(status, root) {
   }
   table.append(body);
   const wrap=document.createElement('div');wrap.className='table-scroll';wrap.append(table);
-  root.replaceChildren(summary,description,note,wrap);
+  root.replaceChildren(summary,description,note,help,wrap);
   if(focusedStream) [...root.querySelectorAll('details[data-stream-id]')].find(node=>node.dataset.streamId===focusedStream)?.querySelector('summary')?.focus({preventScroll:true});
 }
 

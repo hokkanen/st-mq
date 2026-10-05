@@ -779,6 +779,47 @@ test('ordinary slave comparisons cannot import its older history or replace it t
   assert.equal(slave.state.value.role, 'slave');
 });
 
+test('rejoin retains the original dedicated database without restoring its excluded data on later promotion', async t => {
+  for (const skip of [false, true]) await t.test(skip ? 'explicit skip' : 'completed recovery', async t => {
+    const root = await fixture(t);
+    const primary = await manager(t, root, 'master', { platform: 'hassio', hooks: {
+      recoveryPreview: async () => ({ previewId: randomBytes(32).toString('hex'), status: 'checked', model: { status: 'not-assessed' } }),
+      recoveryApply: async () => ({ status: 'complete', imported: 0, model: { status: 'unchanged' } }),
+    } });
+    const donor = await manager(t, root, 'donor', { role: 'slave' }); connect(primary, donor);
+    await donor.synchronize(primary.state.claim());
+    await donor.action('promote', command());
+    const originalPath = donor.state.value.activeDbPath;
+    assert.ok(originalPath.startsWith(join(donor.config.directory, 'master-')));
+    const original = new Store(originalPath);
+    original.db.prepare(`INSERT INTO charging_reports(namespace,charger_id,report_id,association,started_at,saved_at,summary,checkpoint)
+      VALUES(?,?,?,?,?,?,?,?)`).run('mqtt', 'charger2', 'synthetic-saved-report', 'synthetic-association', 100, 200, '{}', '{}');
+    original.setState('synthetic-excluded-control', { enabled: true });
+    original.close();
+    await donor.observeClaim(primary.state.claim());
+    const before = await readFile(originalPath);
+    await primary.action('check-recovery', command());
+    const previewId = primary.status().recovery.preview.previewId;
+    if (!skip) await primary.action('recover', { ...command(), previewId });
+    const rejoin = { ...command(), ...(skip ? { previewId, discardUnrecovered: true } : {}) };
+    await primary.action('rejoin', rejoin);
+    assert.equal(donor.state.value.role, 'slave');
+    assert.equal(donor.state.value.activeDbPath, null);
+    assert.deepEqual(await readFile(originalPath), before, 'Rejoin must retain every original database byte');
+    const retained = new Store(originalPath, { readOnly: true });
+    assert.equal(retained.db.prepare('SELECT COUNT(*) n FROM charging_reports').get().n, 1);
+    assert.equal(retained.db.prepare('PRAGMA integrity_check').get().integrity_check, 'ok');
+    retained.close();
+    await donor.action('promote', command());
+    assert.notEqual(donor.state.value.activeDbPath, originalPath);
+    const promoted = new Store(donor.state.value.activeDbPath, { readOnly: true });
+    assert.equal(promoted.db.prepare('SELECT COUNT(*) n FROM charging_reports').get().n, 0);
+    assert.equal(promoted.getState('synthetic-excluded-control'), null);
+    promoted.close();
+    assert.deepEqual(await readFile(originalPath), before);
+  });
+});
+
 test('a completed protected recovery survives rechecking unchanged history and rejects stale donor roles', async t => {
   const root = await fixture(t);
   const report = { status: 'complete', imported: 1, model: { status: 'rebuilt' } };

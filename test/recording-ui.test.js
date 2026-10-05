@@ -194,9 +194,53 @@ test('two devices reporting the same measurement remain distinct without exposin
   const status=recorder.status(now),rows=recordingRows(status);
   assert.equal(rows.length,2);
   assert.equal(new Set(rows.map(row=>row.streamId)).size,2);
-  assert(rows.every(row=>/^Stream [0-9a-f]{12}$/.test(row.streamQualifier)));
+  assert.deepEqual(rows.map(row=>row.streamQualifier),['Source 1','Source 2']);
   assert(!JSON.stringify(status).includes('private-probe'));
   const restarted=recordingRows(new Recorder(store,{clock:()=>now}).status(now));
   assert.deepEqual(restarted.map(row=>row.streamId),rows.map(row=>row.streamId));
   assert.equal(durationLabel(0),'0 s','equal receipt timestamps are not presented as missing statistics');
+});
+
+test('installation measurements collapse source history without combining current spacing, thresholds or open energy', t => {
+  const store=new Store(':memory:');t.after(()=>store.close());
+  const recorder=new Recorder(store),hour=3600000,now=5*hour;
+  const record=(device,start)=>{
+    for(let i=0;i<3;i++) recorder.recordEnergy({source:'shelly-evse',device,prefix:'ev2',
+      start:start+i*60000,end:start+(i+1)*60000,receivedAt:start+(i+1)*60000,
+      powers:[1,2,3],energies:[1/60,2/60,3/60]});
+  };
+  record('old-private-route',hour);record('current-private-route',4*hour);
+  const status=recorder.status(now),rows=recordingRows(status);
+  assert.equal(status.parameters.length,6);assert.equal(rows.length,3);
+  const phase=rows.find(row=>row.signal==='ev2_energy_l3');
+  assert.equal(phase.sourceHistory.length,2);assert.equal(phase.activity,'current');
+  const current=status.parameters.find(row=>row.signal===phase.signal&&row.lastPollAt===4*hour+180000);
+  assert.equal(phase.currentStreamId,current.streamId);
+  assert.deepEqual(phase.hour,current.hour);assert.deepEqual(phase.openInterval,current.openInterval);
+  assert.equal(phase.threshold,current.threshold);assert.equal(phase.savedDay.records,2);
+  assert.deepEqual(phase.sourceHistory.map(row=>row.activity),['current','historical']);
+  assert.equal(phase.sourceHistory[1].recordedPeriod.firstSavedAt,hour+60000);
+  assert(!JSON.stringify(rows).includes('private-route'));
+  const persisted=recordingRows(new Recorder(store).status(now)).find(row=>row.signal===phase.signal);
+  assert.equal(persisted.activity,'historical');assert.equal(persisted.openInterval,null);
+  assert.equal(persisted.threshold,null);assert.equal(persisted.day,null);
+  assert.equal(recordingStatus(persisted).label,'Historical');
+  const snapshot=recordingRows({...new Recorder(store).status(now),readOnly:true}).find(row=>row.signal===phase.signal);
+  assert.equal(snapshot.activity,'snapshot');assert.equal(snapshot.currentStreamId,current.streamId);
+  assert.deepEqual(snapshot.openInterval,current.openInterval);
+  assert.equal(recordingStatus(snapshot).label,'Latest recorded source');
+});
+
+test('recording presentation keeps different units, policies and ambiguous current identities distinct',()=>{
+  const parameters=[
+    {signal:'supply_temperature',source:'husdata-h66',unit:'degC',policy:'adaptive-value',streamId:'first',observedThisRun:true,lastPollAt:100},
+    {signal:'supply_temperature',source:'husdata-h66',unit:'degC',policy:'adaptive-value',streamId:'second',observedThisRun:true,lastPollAt:100},
+    {signal:'supply_temperature',source:'husdata-h66',unit:'F',policy:'adaptive-value',streamId:'fahrenheit',observedThisRun:true,lastPollAt:100},
+    {signal:'supply_temperature',source:'simulation',unit:'degC',policy:'adaptive-value',streamId:'simulation',observedThisRun:true,lastPollAt:100},
+  ];
+  const rows=recordingRows({parameters});assert.equal(rows.length,3);
+  const conflict=rows.find(row=>row.sourceHistory.length===2);
+  assert.equal(conflict.activity,'ambiguous');assert.equal(conflict.threshold,null);assert.equal(conflict.currentStreamId,null);
+  assert.equal(recordingStatus(conflict).label,'Source selection uncertain');
+  assert.equal(recordingRows({parameters:parameters.slice(0,1)})[0].rowId,conflict.rowId,'disclosure identity is stable across source changes');
 });

@@ -3,7 +3,7 @@ import { setImmediate as yieldTurn } from 'node:timers/promises';
 import { LEARNING_ALGORITHM, LEARNING_WINDOW_MS, learningVersion, assertCurrentLearningSample } from '../app/committed-learning.js';
 import { originalSensorSample } from '../app/sensor-samples.js';
 import { pendingEnergyObservations } from '../storage/pending-energy.js';
-import { recordedEnergyGroups, validEnergyQuality } from '../storage/energy-history.js';
+import { isRecordedEnergyGap, recordedEnergyGroups, validEnergyQuality } from '../storage/energy-history.js';
 import { Recorder, RECORDING_VERSION } from '../storage/recorder.js';
 import { recordingPolicy, recordingStreamKey, RECORDING_POLICIES } from '../domain/recording-policy.js';
 import { ENERGY_SIGNALS } from '../domain/history-series.js';
@@ -241,6 +241,9 @@ export class HistoryMerge {
       return null;
     }
     if (instant(raw?.intervalStart) && instant(raw?.intervalEnd) && raw.intervalEnd > raw.intervalStart) {
+      // Source unavailability is preserved evidence, not a competing energy
+      // total. Exact record identity still deduplicates it across snapshots.
+      if (ENERGY_SIGNALS.includes(row.signal) && isRecordedEnergyGap(row, raw, decode(row.quality))) return null;
       // Never prorate donor totals over partially overlapping master energy.
       const hourly = raw.timeBasis === 'completed-hour';
       const physical = !hourly && ENERGY_SIGNALS.includes(row.signal);
@@ -295,13 +298,19 @@ export class HistoryMerge {
   }
   observationCohort(row) {
     const signals = phaseSignals(row);
-    let raw; try { raw = decode(row.raw); } catch { return [row]; }
+    let raw, quality; try { raw = decode(row.raw); } catch { return [row]; }
     if (!signals || row.import_id !== null || raw?.timeBasis === 'completed-hour'
       || !instant(raw?.intervalStart) || !instant(raw?.intervalEnd) || raw.intervalEnd !== row.source_time) return [row];
+    try { quality = decode(row.quality); } catch { quality = null; }
+    const availabilityGap = isRecordedEnergyGap(row, raw, quality);
     return this.donor.db.prepare(`SELECT * FROM active_observations AS observations WHERE signal IN (?,?,?) AND source_time=?
       AND source=? AND device=? AND import_id IS NULL AND json_valid(raw)
       AND json_extract(raw,'$.intervalStart')=? AND json_extract(raw,'$.intervalEnd')=? ORDER BY id`)
-      .all(...signals, row.source_time, row.source, row.device, raw.intervalStart, raw.intervalEnd);
+      .all(...signals, row.source_time, row.source, row.device, raw.intervalStart, raw.intervalEnd)
+      .filter(member => {
+        try { return isRecordedEnergyGap(member, decode(member.raw), decode(member.quality)) === availabilityGap; }
+        catch { return !availabilityGap; } // Malformed measured members still reject their complete cohort.
+      });
   }
   prepareObservationCohort(cohort) {
     const row = cohort[0], signals = phaseSignals(row);

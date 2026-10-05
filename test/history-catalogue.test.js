@@ -12,7 +12,7 @@ test('every retained H66 parameter and garage temperature is selectable independ
   assert(selectable.has('brine_pump_speed'));assert(!selectable.has('brine_pump_active'));assert(!selectable.has('discharge_temperature'));
   assert.equal(new Set(HISTORY_AXES.map(a=>a.key)).size,HISTORY_AXES.length);
   const rows=recordingRows({parameters:[
-    {signal:'garage_native_indoor_temperature',policy:'adaptive-value',day:{averageIntervalMs:180000},threshold:0.04,status:'fresh'},
+    {signal:'garage_native_indoor_temperature',policy:'adaptive-value',observedThisRun:true,day:{averageIntervalMs:180000},threshold:0.04,status:'fresh'},
     {signal:'garage_temperature',policy:'change-only',day:{averageIntervalMs:180000},threshold:null,status:'fresh'},
   ]});
   const garage=rows.find(r=>r.signal==='garage_native_indoor_temperature');

@@ -729,6 +729,18 @@ next acquisition resumes from its own new endpoint. No donor total is prorated
 to fill a partial overlap. The inventory lists saved adaptive datasets even when
 recovery intentionally did not copy their original recorder checkpoints.
 
+An explicit `availability-gap` with null energy describes unavailable source
+measurements, not a contradictory measured total. Retain that original evidence
+while using complete valid phase cohorts within its bounds. The shared reader
+emits unknown spans only for the uncovered remainder, without dividing measured
+intervals or changing their energy. This applies to both same-identity and
+different-identity history, including pending energy and recovered observations.
+Unmarked null data, invalid measurements, incomplete cohorts and genuinely
+overlapping measured intervals retain their conservative quality/conflict rules.
+Charts, charging accounting and electrical context use this same interpretation.
+Previously committed journal payloads remain frozen; electrical context does not
+become heat-pump metering or alter the learned-model update function.
+
 ## Chart curves and popup meanings
 
 With **Interpolation ON** (the default), every plotted temperature in °C uses
@@ -1180,6 +1192,17 @@ freshness and growth. Its explanation distinguishes fast acquisition from
 recording changes against the last saved value, and describes the shared rolling
 storage objective. An average recording interval is not a fixed poll schedule.
 
+Known installation measurements retain one flat row per source, signal, unit
+and recording policy, with individual source identities under **Source history**.
+Different custom devices remain separate. Counts and approximate storage include
+the listed histories in the same reporting windows; current spacing, threshold
+and open interval describe the source observed by this recording runtime.
+Historical-only rows do not present old thresholds as current activity. Read-only
+snapshot views explicitly label their latest recorded source; they do not claim
+that this computer is acquiring measurements. Source details retain saved receipt
+periods and the separate accepted source timestamp. Grouping changes presentation,
+not physical identity, provenance, control permission or energy accounting.
+
 The **Other recorded data** fold appears immediately after **Adaptive measurements**,
 followed by **Recorded energy checks** and **Export database**. It
 describes the remaining datasets using field lists, counts, available dates and
@@ -1468,8 +1491,13 @@ working sources and do not replace an independent backup.
 
 For a backup, confirm **This backup belongs to this installation**, then select
 **Check backup**. The check validates the database's current format, integrity
-and input scope and reports source record counts. It does not run a trial import
-or change recorded history. Missing entries, conflicts and model changes remain
+and input scope and reports source record counts, category date ranges on both
+sides, explicitly recorded outage bounds and potential source coverage during
+those periods or outside the master's date range. A bounded outage list reports
+how many older records are omitted. Sparse observations never establish gaps,
+and relevant source records do not prove continuous coverage, physical identity
+or import acceptance. The check uses pinned read-only snapshots and does not run
+a trial import or change recorded history. Missing entries, conflicts and model changes remain
 unknown until you confirm **Recover history**. Recovery compares and imports
 history once, then rebuilds the model only when accepted history affects learning.
 Its result reports imported, conflicting, already present and skipped entries

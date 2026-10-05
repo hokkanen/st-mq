@@ -192,7 +192,7 @@ test('force promotion requires explicit confirmation and never becomes an automa
   assert.equal(requests.length, 0);
   assert.match(confirmations[0], /unreachable computer may still be controlling/i);
   assert.equal(actions.snapshot().pending, null);
-  assert.match(pairConfirmation('rejoin'), /divergent data will be replaced/);
+  assert.match(pairConfirmation('rejoin'), /previous database is retained inactive/);
 });
 
 test('first setup explains explicit master selection while both fresh computers remain read-only slaves', async () => {
@@ -520,8 +520,8 @@ test('skip recovery requires its own warning and sends the exact checked preview
   assert.equal(await controller.run('rejoin'), false);
   assert.equal(sent.length, 0);
   assert.match(warnings[0], /does not determine how much history is missing/);
-  assert.match(warnings[0], /will be discarded/);
-  assert.match(warnings[0], /No separate archive/);
+  assert.match(warnings[0], /previous database is retained inactive/);
+  assert.match(warnings[0], /never reused automatically/);
   accept = true;
   assert.equal(await controller.run('rejoin'), true);
   assert.deepEqual(sent[0], { action: 'rejoin', requestId: id, confirmed: true, discardUnrecovered: true, previewId });
@@ -560,14 +560,14 @@ test('an uncertain skip request retains its discard consent and preview across r
   assert.deepEqual(sent[2], { action: 'rejoin', requestId: id, confirmed: true });
 });
 
-test('skipped recovery reports explicitly describe discarded gaps without claiming a rebuild', () => {
+test('skipped recovery reports describe inactive retained history without claiming a rebuild', () => {
   const { document, $ } = fixture();
   const report = { ...preview(), status: 'skipped', recoverySkipped: true, imported: 0, model: { status: 'unchanged' } };
   renderRecoveryReport(document, $('report'), report, { report: true });
   const text = allText($('report'));
   assert.match(text, /Mirroring resumed without recovery/);
   assert.doesNotMatch(text, /Missing entries not recovered:/);
-  assert.match(text, /unmatched history was discarded/);
+  assert.match(text, /previous database is retained inactive/);
   assert.doesNotMatch(text, /rebuild|rebuilt/);
   assert.match(pairDisplay(primary({ recovery: { state: 'resolved', report } })).recovery, /without recovering gaps/);
 });
@@ -613,7 +613,7 @@ test('recovery reports render aggregate counts and periods while omitting donor 
   const text = allText(root);
   for (const phrase of ['Recovery result', 'Recovered entries: 12', 'Conflicting entries: 3', 'Already present: 4', 'Skipped entries: 5', 'Recovered entries span:', 'Unsupported learning entries skipped: 2']) assert(text.includes(phrase));
   assert.doesNotMatch(text, /private/);
-  assert.match(text, /not kept as a separate archive/);
+  assert.match(text, /previous database is retained inactive/);
   renderRecoveryReport(document, root, { counts: { missing: 0 }, from: now - 60000, to: now });
   assert.match(allText(root), /Missing entries: 0/);
   assert.doesNotMatch(allText(root), /entries span:/, 'Retired flattened bounds cannot supply current report provenance');

@@ -942,16 +942,17 @@ export class PairManager {
         await this.state.update({ role: 'protected', release: { epoch: metadata.claim.epoch, digest: metadata.digest, identity }, reason: 'rejoining' });
         const result = await this.installReplica(metadata, { signal: this.abort.signal, allowRelease: true });
         await this.hooks.closeReplica?.();
-        const oldPath = this.state.value.activeDbPath;
         await this.state.update({ role: 'slave', reason: null, release: null, transition: null, everWritten: false,
           activeDbPath: null, recovery: null, activationError: null, releaseReceipt: { requestId: body.requestId, identity } });
         this.sync = { state: 'ready', sourceAt: result.sourceAt, verifiedAt: result.verifiedAt, bytes: result.bytes,
           lastSuccessAt: this.clock(), error: null, transferredBytes: result.transferredBytes };
         this.error = null;
         await this.startReplica(result);
-        // Only our dedicated former primary files are owned for deletion. The
-        // initially configured path may be user-owned and is never reopened.
-        if (oldPath?.startsWith(join(this.config.directory, 'master-'))) await rm(oldPath, { force: true });
+        // Retain the former primary database, including its SQLite sidecars.
+        // Recovery intentionally excludes some datasets and may reject source
+        // records. Rejoin replaces the selected replica, not the only original
+        // evidence. A null activeDbPath fences these inactive files: later
+        // promotion always copies the verified publication, never this history.
         return { ...this.state.claim(), accepted: this.state.value.accepted, releaseReceipt: identity, sync: publicSync(this.sync) };
       } finally { this.busy = false; }
     }

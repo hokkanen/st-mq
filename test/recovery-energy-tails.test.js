@@ -6,9 +6,9 @@ import { join } from 'node:path';
 import { Store } from '../src/storage/store.js';
 import { Recorder } from '../src/storage/recorder.js';
 import { HistoryMerge } from '../src/recovery/merge.js';
-import { recoveryPreview, recoverHistory } from '../src/recovery/service.js';
+import { recoveryPreview, recoverHistory, previewRecoveryRevision, reviseRecovery } from '../src/recovery/service.js';
 import { recordedEnergyGroups } from '../src/storage/energy-history.js';
-import { fixture, start, HOUR } from './helpers/recovery-fixture.js';
+import { fixture, recover, start, HOUR } from './helpers/recovery-fixture.js';
 
 const END = start + 49 * HOUR;
 const hash = path => createHash('sha256').update(readFileSync(path)).digest('hex');
@@ -199,12 +199,14 @@ test('completed-hour equipment energy does not conflict with physical charger ta
 });
 
 test('malformed finalized phase members reject the whole cohort without aborting other recovery', async t => {
-  const f = memory(t); finalized(f.donor);
-  f.donor.db.prepare("UPDATE observations SET quality='malformed' WHERE signal='property_energy_l2'").run();
-  pending(f.donor, { prefix: 'ev2', device: 'invented-charger' });
-  const report = await f.merge().run();
-  assert.equal(report.counts.skipped, 3); assert.equal(report.counts.missing, 3);
-  assert.deepEqual(f.target.observations().map(row => row.signal), ['ev2_energy_l1', 'ev2_energy_l2', 'ev2_energy_l3']);
+  for (const phase of [1, 2, 3]) {
+    const f = memory(t); finalized(f.donor);
+    f.donor.db.prepare("UPDATE observations SET quality='malformed' WHERE signal=?").run(`property_energy_l${phase}`);
+    pending(f.donor, { prefix: 'ev2', device: 'invented-charger' });
+    const report = await f.merge().run();
+    assert.equal(report.counts.skipped, 3); assert.equal(report.counts.missing, 3);
+    assert.deepEqual(f.target.observations().map(row => row.signal), ['ev2_energy_l1', 'ev2_energy_l2', 'ev2_energy_l3']);
+  }
 });
 
 test('recovered archival energy before metric pruning stays readable without recreating old metric buckets', async t => {
@@ -219,4 +221,89 @@ test('recovered archival energy before metric pruning stays readable without rec
   assert.equal(f.target.db.prepare('SELECT COUNT(*) n FROM recorder_metrics WHERE bucket<?').get(global.metricsPrunedBefore).n, 0);
   assert.ok(recorder.status(END + 2 * HOUR).parameters.every(row => row.week.records === 2),
     'historical fallback counts the recovered raw records exactly');
+});
+
+test('recovery preserves outage provenance beside measured coverage in either direction and deduplicates new snapshots', async t => {
+  for (const device of ['invented-meter', 'invented-other-route']) for (const gapOnTarget of [false, true]) {
+    await t.test(`${device}: outage on ${gapOnTarget ? 'target' : 'donor'}`, async t => {
+      const f = memory(t), gapStore = gapOnTarget ? f.target : f.donor, measuredStore = gapOnTarget ? f.donor : f.target;
+      new Recorder(gapStore).energyGap({ source: 'easee', device, prefix: 'property', start, end: start + 4 * HOUR });
+      finalized(measuredStore, { from: start + HOUR, to: start + 2 * HOUR, energies: [1, 2, 0] });
+      const before = f.target.db.prepare('SELECT * FROM observations ORDER BY id').all();
+      const donorBefore = f.donor.db.prepare('SELECT * FROM observations ORDER BY id').all();
+      const report = await f.merge().run();
+      assert.equal(report.counts.conflicts, 0);
+      assert.equal(f.target.observations().length, 6);
+      const accepted = f.target.db.prepare('SELECT * FROM observations ORDER BY id').all();
+      assert.deepEqual(accepted.slice(0, before.length), before);
+      assert.deepEqual(f.donor.db.prepare('SELECT * FROM observations ORDER BY id').all(), donorBefore);
+      const rows = [...recordedEnergyGroups(f.target, { from: start, to: start + 4 * HOUR,
+        now: END, input: 'providers', prefix: 'property' })];
+      assert.deepEqual(rows.map(row => [row.start, row.end, row.values]), [
+        [start, start + HOUR, [null, null, null]],
+        [start + HOUR, start + 2 * HOUR, [1, 2, 0]],
+        [start + 2 * HOUR, start + 4 * HOUR, [null, null, null]],
+      ]);
+      for (const donorDigest of ['a'.repeat(64), 'b'.repeat(64)]) {
+        const repeated = await f.merge({ donorDigest }).run();
+        assert.equal(repeated.counts.missing, 0); assert.equal(repeated.counts.conflicts, 0);
+        assert.deepEqual(f.target.db.prepare('SELECT * FROM observations ORDER BY id').all(), accepted);
+      }
+      assert.equal(f.target.db.prepare('PRAGMA integrity_check').get().integrity_check, 'ok');
+      assert.equal(f.target.db.prepare('PRAGMA foreign_key_check').get(), undefined);
+    });
+  }
+});
+
+test('a frozen pending interval remains recoverable inside donor and master outage records', async t => {
+  const f = memory(t);
+  for (const store of [f.target, f.donor]) new Recorder(store).energyGap({ source: 'easee',
+    device: 'outage-route', prefix: 'property', start, end: start + 4 * HOUR });
+  pending(f.donor, { from: start + HOUR, to: start + 2 * HOUR, energies: [1, 2, 0] });
+  const report = await f.merge().run();
+  assert.equal(report.counts.conflicts, 0);
+  assert.equal(report.tables.find(row => row.name === 'recorder_pending_energy').missing, 3);
+  const rows = [...recordedEnergyGroups(f.target, { from: start + HOUR, to: start + 2 * HOUR,
+    now: END, input: 'providers', prefix: 'property' })];
+  assert.equal(rows.length, 1); assert.deepEqual(rows[0].values, [1, 2, 0]);
+  assert.equal((await f.merge({ donorDigest: 'b'.repeat(64) }).run()).counts.missing, 0);
+});
+
+test('same-source outage and measured cohorts sharing exact bounds recover separately and only once', async t => {
+  const f = memory(t);
+  new Recorder(f.donor).energyGap({ source: 'easee', device: 'invented-meter', prefix: 'property', start, end: END });
+  finalized(f.donor);
+  const report = await f.merge().run();
+  assert.equal(report.counts.conflicts, 0); assert.equal(report.counts.skipped, 0);
+  assert.equal(f.target.observations().length, 6);
+  const groups = [...recordedEnergyGroups(f.target, { from: start, to: END, now: END, input: 'providers', prefix: 'property' })];
+  assert.equal(groups.length, 1); assert.deepEqual(groups[0].values, [49, 98, 147]);
+  const again = await f.merge({ donorDigest: 'b'.repeat(64) }).run();
+  assert.equal(again.counts.missing, 0); assert.equal(again.counts.conflicts, 0);
+  assert.equal(f.target.observations().length, 6);
+});
+
+test('revert and restore select outage and measured contributions independently without rewriting source history', async t => {
+  for (const gapOnTarget of [true, false]) await t.test(gapOnTarget ? 'recover measurements' : 'recover outage', async t => {
+    const f = fixture(t), donor = await f.donor();
+    new Recorder(gapOnTarget ? f.master : donor).energyGap({ source: 'easee', device: 'invented-meter',
+      prefix: 'property', start, end: start + 4 * HOUR });
+    finalized(gapOnTarget ? donor : f.master, { from: start + HOUR, to: start + 2 * HOUR, energies: [1, 2, 0] });
+    const result = await recover(f, await f.snapshot(donor));
+    assert.equal(result.report.model.status, 'unchanged');
+    const raw = f.master.db.prepare('SELECT * FROM observations ORDER BY id').all();
+    const energy = () => [...recordedEnergyGroups(f.master, { from: start, to: start + 4 * HOUR,
+      now: END, input: 'providers', prefix: 'property' })]
+      .filter(row => !row.conflict && row.values.every(Number.isFinite))
+      .reduce((sum, row) => sum + row.values.reduce((a, b) => a + b, 0), 0);
+    assert.equal(energy(), 3);
+    for (const active of [false, true]) {
+      const args = { store: f.master, input: 'mqtt', recoveryId: result.report.recoveryId, active, signal: f.signal };
+      const preview = await previewRecoveryRevision(args);
+      await reviseRecovery({ ...args, preview });
+      assert.equal(energy(), !active && gapOnTarget ? 0 : 3);
+      assert.deepEqual(f.master.db.prepare('SELECT * FROM observations ORDER BY id').all(), raw);
+      assert.equal(f.master.db.prepare('PRAGMA foreign_key_check').get(), undefined);
+    }
+  });
 });

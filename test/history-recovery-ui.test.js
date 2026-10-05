@@ -119,6 +119,47 @@ function fixture() {
 }
 const text = root => [root.textContent, ...root.children.map(text)].join(' ');
 
+test('source reports show both category dates and explicit outages as potential coverage with folded inventory', () => {
+  const { document, $ } = fixture(), range = { count: 2,from: 1000,to: 3000,undated: 0 };
+  const coverage = { categories: [{ name: 'temperatures',master: range,source: { ...range,from: 500,
+    outsideMaster: { before: { count: 1,from: 500,to: 500 },after: { count: 0,from: null,to: null } } } }],
+    outages: { total: 101,omitted: 100,items: [{ signal: 'indoor_temperature',from: 1200,to: 1500,potentialCoverage: true }] } };
+  renderRecoveryReport(document,$('report'),{ ...preview,coverage },{ formatTime: value => `time ${value}` });
+  const output = text($('report'));
+  assert.match(output,/History date ranges.*Category.*Master.*Other computer.*Temperatures.*time 1000.*time 3000.*time 500/);
+  assert.match(output,/Potential coverage: 1 entries extend earlier/);
+  assert.match(output,/Explicitly recorded master outages · 101.*Showing the latest 1 outage records; 100 older/);
+  assert.match(output,/time 1200.*time 1500.*Relevant source records present · potential coverage/);
+  assert.match(output,/not a count of missing or recoverable records/);
+  assert.match(output,/Sparse measurements do not establish outages/);
+  const inventory = $('report').children.find(child => child.tagName === 'DETAILS');
+  assert.equal(inventory.children[0].textContent,'Source record inventory');
+  assert.equal(inventory.open,false);
+  renderRecoveryReport(document,$('report'),{ ...preview,coverage },{ source: 'backup',formatTime: value => `time ${value}` });
+  assert.match(text($('report')),/This computer.*Backup.*Explicitly recorded local outages/);
+  assert.doesNotMatch(text($('report')),/master|Other computer/);
+});
+
+test('coverage rendering exposes only recognized categories and measurement labels', () => {
+  const { document, $ } = fixture();
+  renderRecoveryReport(document,$('report'),{ ...preview,coverage: {
+    categories: [{ name: '/invented/private.sqlite', master: { count: 1 },source: { count: 1 } }],
+    outages: { total: 1,omitted: 0,items: [{ signal: '/invented/private-device',from: 1000,to: 2000,potentialCoverage: false }] },
+  } });
+  assert.doesNotMatch(text($('report')),/private/);
+  assert.match(text($('report')),/Recorded measurement.*No relevant usable source records found/);
+});
+
+test('saved charging report dates explain their excluded recovery scope', () => {
+  const { document, $ } = fixture(), none = { count: 0,from: null,to: null,undated: 0 };
+  renderRecoveryReport(document,$('report'),{ ...preview,coverage: { categories: [{ name: 'charging_reports',master: none,
+    source: { count: 1,from: 1000,to: 1000,undated: 0,outsideMaster: { withoutMasterRange: { count: 1,from: 1000,to: 1000 } } } }] } });
+  const output = text($('report'));
+  assert.match(output,/Saved charging reports.*Additional retained history/);
+  assert.match(output,/not merged by recovery.*original source database/);
+  assert.match(output,/unfinished report contributes its start date only/);
+});
+
 test('closing the shared dialog leaves server recovery running and reopening restores progress', async () => {
   const { document, $ } = fixture(), requests = [];
   const running = view({ busy: true, job: { kind: 'recover', status: 'running', source, progress: { phase: 'rebuilding' } } });

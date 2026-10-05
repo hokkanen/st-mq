@@ -11,6 +11,16 @@ const invalid = new Set(['missing','invalid-numeric','invalid-unit','invalid-val
 const invalidFlag = flag => typeof flag !== 'string' || invalid.has(flag.replaceAll('_','-'))
   || /failed|disconnected|unavailable|missing|invalid|out-of-order|future-source-time/.test(flag.replaceAll('_','-'));
 export const validEnergyQuality = quality => Array.isArray(quality) && !quality.some(invalidFlag);
+const invalidGapFlags = new Set(['retained', 'invalid-numeric', 'invalid-unit', 'invalid-value', 'future-source-time',
+  'out-of-order-source-time', 'source-time-unknown']);
+// Only an explicit recorder outage is absence of energy evidence. Invalid or
+// retained numeric observations and incomplete measured cohorts remain subject
+// to the ordinary overlap checks; they cannot be relabelled as harmless gaps.
+export const isRecordedEnergyGap = (row, raw, quality) => row.value === null && row.unit === 'kWh'
+  && raw?.basis === 'availability-gap' && !raw.auditOnly && !raw.acquisitionOnly
+  && raw.timeBasis !== 'completed-hour'
+  && Array.isArray(quality) && quality.includes('missing') && quality.every(flag => typeof flag === 'string'
+    && !invalidGapFlags.has(flag.replaceAll('_', '-')));
 const scope = input => input === 'simulated' ? "source='simulation'" : "source<>'simulation'";
 // Configurable equipment IDs can coincide with a physical energy signal. Their
 // direct hourly writer is a different dataset, not charger/property evidence.
@@ -36,7 +46,7 @@ function* rawRows(store, { from, to, now, input, prefix, source, device }) {
   const signals = prefix ? ENERGY_SIGNALS.filter(signal => prefixOf(signal) === prefix) : ENERGY_SIGNALS;
   const geometry = "json_extract(CASE WHEN json_valid(raw) THEN raw ELSE '{}' END,'$.intervalStart')";
   // The geometry index streams complete cohorts in start order. JavaScript
-  // retains one cohort and one overlap cluster per logical scope; no full-range
+  // retains one cohort, one overlap cluster and one gap per logical scope; no full-range
   // sort or source-row array is needed, including multi-year selections.
   const iterator = store.db.prepare(`SELECT id,source,device,signal,value,unit,source_time,received_at,quality,raw
     FROM observations INDEXED BY observations_energy_geometry
@@ -77,13 +87,48 @@ function* rawRows(store, { from, to, now, input, prefix, source, device }) {
 export function* recordedEnergyGroups(store, options, stats = { rows: 0, conflicts: 0 }) {
   const pending = new Map();
   for (const group of rawGroups(rawRows(store, options),stats)) {
-    const previous = pending.get(group.prefix);
-    if (previous && group.start < previous.end) {
+    const state = pending.get(group.prefix) ?? { energy: null, gap: null };
+    pending.set(group.prefix, state);
+    if (state.energy && state.energy.end <= group.start) {
+      yield state.energy; state.energy = null;
+    }
+    // Once a start boundary has passed, no later cohort can cover that earlier
+    // gap. Emit only the uncovered part, without prorating any measured energy.
+    if (state.gap && state.gap.start < group.start) {
+      const end = Math.min(state.gap.end, group.start);
+      yield { ...state.gap, end };
+      state.gap = end < state.gap.end ? { ...state.gap, start: end } : null;
+    }
+    if (group.availabilityGap) {
+      const start = Math.max(group.start, options.from, state.energy?.end ?? -Infinity);
+      const end = Math.min(group.end, options.to);
+      if (start >= end) continue;
+      const gap = { ...group, start, end, conflict: false };
+      if (!state.gap) state.gap = gap;
+      else {
+        // This is a resolved absence span, not a new source observation. Raw
+        // source records and their complete bounds remain unchanged in SQLite.
+        state.gap.end = Math.max(state.gap.end, gap.end);
+        state.gap.receivedAt = Math.max(state.gap.receivedAt, gap.receivedAt);
+        if (state.gap.source !== gap.source) state.gap.source = null;
+        if (state.gap.device !== gap.device) state.gap.device = null;
+        if (state.gap.transport !== gap.transport) state.gap.transport = null;
+        state.gap.observationIds = [];
+      }
+      continue;
+    }
+    const previous = state.energy;
+    if (previous) {
       if (!previous.conflict) stats.conflicts = (stats.conflicts ?? 0) + 1;
       previous.conflict = true; previous.end = Math.max(previous.end,group.end);
-    } else { if (previous) yield previous; pending.set(group.prefix,group); }
+    } else state.energy = group;
+    if (state.gap) state.gap = state.gap.end > state.energy.end
+      ? { ...state.gap, start: Math.max(state.gap.start, state.energy.end) } : null;
   }
-  yield* pending.values();
+  for (const state of pending.values()) {
+    if (state.energy) yield state.energy;
+    if (state.gap) yield state.gap;
+  }
 }
 
 function* rawGroups(rows, stats) {
@@ -96,14 +141,16 @@ function* rawGroups(rows, stats) {
       || raw.intervalEnd <= raw.intervalStart || raw.intervalEnd !== row.source_time
       || !Number.isSafeInteger(row.received_at) || row.source_time > row.received_at) continue;
     const prefix = prefixOf(row.signal);
-    const nextKey = JSON.stringify([row.source, row.device, prefix, raw?.intervalStart, raw?.intervalEnd]);
+    const availabilityGap = isRecordedEnergyGap(row, raw, flags);
+    const nextKey = JSON.stringify([row.source, row.device, prefix, raw?.intervalStart, raw?.intervalEnd, availabilityGap]);
     if (nextKey !== key) {
       if (group) yield group;
       key = nextKey;
       group = { source: row.source, device: row.device, prefix, start: raw?.intervalStart, end: raw?.intervalEnd,
         basis: raw?.basis, receivedAt: row.received_at, pending: raw?.pending === true, transport: recordedTransport(row),
-        observationIds: [], values: totalOnly(prefix)?[null]:[null, null, null] };
+        availabilityGap: true, observationIds: [], values: totalOnly(prefix)?[null]:[null, null, null] };
     }
+    group.availabilityGap &&= availabilityGap;
     group.receivedAt = Math.max(group.receivedAt, row.received_at);
     if (group.transport !== recordedTransport(row)) group.transport = null;
     const index = totalOnly(prefix)?0:Number(row.signal.at(-1)) - 1;

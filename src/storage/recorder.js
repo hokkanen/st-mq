@@ -115,6 +115,9 @@ function recordingFreshness(state, coverage, now) {
 export class Recorder {
   constructor(store, { config = {}, clock = Date.now } = {}) {
     this.store = store; this.clock = clock;
+    // Presentation evidence only. A restored checkpoint is not an acquisition
+    // made by this runtime, and this marker grants no device authority.
+    this.observedStreams = new Set();
     this.configure(config);
   }
 
@@ -426,6 +429,7 @@ export class Recorder {
       s.lastPollAt = o.receivedAt;
       if (fresh) s.lastSourceTime = Math.max(s.lastSourceTime ?? o.sourceTime,o.sourceTime);
       this.store.setState(stateKey(s.key),s); this.store.setState(GLOBAL_KEY,g);
+      this.observedStreams.add(s.key);
       return { saved:Boolean(reason),id:committed?.id ?? null,observation:committed,reason:reason ?? (freshUpdate ? 'within-threshold' : 'unchanged-source-time'),
         ...(o.quality.includes('out-of-order-source-time') ? { rejectedSourceTime: true } : {}) };
     });
@@ -525,6 +529,7 @@ export class Recorder {
         s.scale = state.scales[i].scale; s.lastPollAt = receivedAt; s.recordingPolicy = 'adaptive-energy';
         this.count(s,receivedAt,{elapsed:end-start,error:previousPowers && s.scale>0 ? Math.abs(powers[i]-previousPowers[i])/s.scale : null});
         this.store.setState(stateKey(s.key),s);
+        this.observedStreams.add(s.key);
       }
       g.energyRevision = (g.energyRevision ?? 0) + 1;
       this.store.setState(checkpointKey,state); this.store.setState(GLOBAL_KEY,g);
@@ -682,6 +687,11 @@ export class Recorder {
         AND json_extract(CASE WHEN json_valid(raw) THEN raw ELSE '{}' END,'$.recorder.policy')=?
         AND import_id IS NULL AND received_at>=? AND received_at<?`);
     const metrics = this.store.db.prepare('SELECT * FROM recorder_metrics WHERE key=? AND bucket>=? AND bucket<=? ORDER BY bucket');
+    const streamEndpoint = order => this.store.db.prepare(`SELECT received_at,source_time FROM observations INDEXED BY observations_stream_receipt
+      WHERE source=? AND device=? AND signal=? AND unit=?
+        AND json_extract(CASE WHEN json_valid(raw) THEN raw ELSE '{}' END,'$.recorder.policy')=?
+        AND import_id IS NULL AND received_at<=? ORDER BY received_at ${order} LIMIT 1`);
+    const firstSaved = streamEndpoint('ASC'), lastSaved = streamEndpoint('DESC');
     const parameters = states.map(s => {
       const stats = {};
       const stream = [s.source,s.device,s.signal,s.unit,s.recordingPolicy];
@@ -707,7 +717,10 @@ export class Recorder {
       const policy = recordingPolicy(s), exact = !policy.adaptive;
       const powerFloor = policy.id==='adaptive-energy' && /^ev[12]_energy_l[123]$/.test(s.signal) ? CHARGER_POWER_FLOOR_KW : 0;
       const voltage = voltageStatuses.get(s.device)?.[s.signal];
+      const first = firstSaved.get(...stream,now), last = lastSaved.get(...stream,now);
       return {signal:s.signal,source:s.source,unit:s.unit,status:s.status,lastSavedAt:s.last?.receivedAt ?? null,
+        observedThisRun:this.observedStreams.has(s.key),
+        recordedPeriod:{firstSavedAt:first?.received_at ?? null,lastSavedAt:last?.received_at ?? null},
         ...(s.source === 'easee' ? {transport:recordedTransport({raw:s.last?.semanticQuality,quality:s.last?.quality})} : {}),
         ...(voltage ? {voltage} : {}),
         streamId:createHash('sha256').update(s.key).digest('hex').slice(0,12),

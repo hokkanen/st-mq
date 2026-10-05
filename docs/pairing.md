@@ -742,8 +742,9 @@ the same layout, with recovery and handover performed from the master's UI.
 
 Checks are initiated on the master. When the other computer is a normal slave,
 the result is an informational **History source checked** result. It validates
-the donor database and reports its source inventory without comparing or importing
-history. Normal mirroring remains enabled, so recovery and resume-mirroring actions
+the donor database and reports category date ranges for both computers, explicit
+recorded outages and potential source coverage, without a trial import or model
+rebuild. Normal mirroring remains enabled, so recovery and resume-mirroring actions
 are unavailable. A record
 present only in that older snapshot can reflect a deliberate master deletion;
 the next ordinary snapshot applies the deletion. The source check does not
@@ -762,7 +763,11 @@ For a computer in **Protected recovery**:
 
 1. In **Review history**, **Check other computer** takes a consistent donor snapshot,
    verifies its database format and integrity, assesses its input scope and shows
-   source record counts. Checking does not copy the master database, run a trial
+   source record counts, both computers' history ranges by category, recorded
+   outage dates and whether the source has relevant records during those periods
+   or outside the master's date range. These are potential coverage, never a
+   promise of recoverable entries. Sparse measurements do not establish outages.
+   Checking does not copy the master database, run a trial
    import or change the master's history. Missing entries, conflicts and model
    changes remain unknown until recovery.
 2. Review the source check, then **Recover history**. The request
@@ -811,7 +816,7 @@ uncovered remainder stays unknown and later readings resume normally.
 
 Recovery is optional after a successful protected-history check. To keep the master's history
 and model as they are, choose **Skip recovery and resume mirroring** after reviewing the preview
-and confirm that the other computer's unrecovered history may be discarded.
+and confirm that the other computer's unrecovered history will not be merged.
 The source check does not establish whether any history is missing on the master.
 This does not import gaps or rebuild the model. The other database is replaced
 with a verified master snapshot, including removal of entries absent from the
@@ -853,16 +858,19 @@ inputs and 18 ordering references in a 1.86 MB database including its indexes
 and state. Actual storage depends on the retained history and its provenance.
 
 Conflicts and unsupported donor entries are counted, not silently rewritten
-into the master. They are not retained forever in a separate rejection
-archive. Temporary donor copies can be removed after the accepted result and
-verified rejoin. If those rejected records need to be kept for another
-purpose, export them before completing recovery/rejoin. A failed or
-interrupted recovery keeps protection in place for another explicit check.
+into the master. Temporary transfer copies can be removed after verified rejoin,
+but the other computer retains its original former-master database and any SQLite
+sidecars. This also preserves excluded datasets such as saved charging reports.
+A failed or interrupted recovery keeps protection in place for another explicit
+check. Independent self-contained database exports remain advisable before
+maintenance; an inactive database with sidecars is not a single-file backup.
 
-After successful rejoin, dedicated former-master database copies in the pairing
-directory are removed. The initially configured application database is an
-external, user-owned path and stays on disk, inactive. It is never reopened or
-promoted automatically; future promotion uses the latest verified publication.
+After successful rejoin, both dedicated `master-*.sqlite` databases in the pairing
+directory and the initially configured application database remain inactive.
+They are not automatically deleted, reopened or promoted. Later promotion always
+copies the latest verified publication, so retained history cannot restore old
+control permissions. These files consume storage until deliberately archived or
+removed by the owner; pairing does not silently discard them to reclaim space.
 
 ## Two masters reconnecting
 

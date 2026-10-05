@@ -5,6 +5,7 @@ import { dirname, join, resolve } from 'node:path';
 import { markRecoveryFailed } from '../recovery/state.js';
 import { RECOVERABLE_TABLES } from '../storage/schema.js';
 import { recoveryFailure } from '../recovery/errors.js';
+import { validRecoveryCoverageReport } from '../recovery/coverage-report.js';
 
 const UUID = /^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/;
 const EXPORT = /^stmq-\d{4}-\d{2}-\d{2}T\d{2}-\d{2}-\d{2}-\d{3}Z(?:-\d+)?\.sqlite$/;
@@ -28,8 +29,9 @@ function validSource(value) {
 function validReport(value) {
   const root = ['policy', 'counts', 'period', 'tables', 'model', 'donorDigest', 'input', 'sourceSelection', 'previewId',
     'sourceAssessment', 'status', 'imported', 'recoveryId', 'active', 'source', 'sourceEpoch', 'sourceHead',
-    'sourceFireplace', 'sourceSensor', 'decisionHead', 'contributionHead', 'conflictVersion', 'unsupported'];
+    'sourceFireplace', 'sourceSensor', 'decisionHead', 'contributionHead', 'conflictVersion', 'unsupported', 'coverage'];
   if (!fields(value, root)) return false;
+  if (value.coverage !== undefined && !validRecoveryCoverageReport(value.coverage)) return false;
   if (value.conflictVersion !== undefined && value.conflictVersion !== null
     && !/^[a-f0-9]{64}$/.test(value.conflictVersion)) return false;
   for (const key of ['policy', 'donorDigest', 'input', 'sourceSelection', 'previewId', 'status', 'recoveryId', 'sourceEpoch'])

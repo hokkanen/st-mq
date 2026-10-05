@@ -17,7 +17,13 @@ const previewId = 'a'.repeat(64), now = Date.now(), source = { id: 'backup-fixtu
 const preview = { previewId, status: 'checked', tables: ['imports', 'import_rows', 'observations', 'recorder_coverage',
   'provider_snapshot_contents', 'provider_snapshot_fetches', 'annotations', 'counters', 'fireplace_events',
   'learning_cycles', 'events', 'energy_audits', 'learning_journal', 'recorder_pending_energy', 'charging_session_keys']
-  .map(name => ({ name, count: name === 'observations' ? 57 : 0 })), model: { status: 'not-assessed' } };
+  .map(name => ({ name, count: name === 'observations' ? 57 : 0 })), model: { status: 'not-assessed' },
+  coverage: { checkedAt: now,categories: ['energy','temperatures','learning_journal','provider_snapshot_fetches'].map(name => ({ name,
+    master: { count: 42,from: now - 86400000,to: now,undated: 0 },
+    source: { count: 57,from: now - 172800000,to: now - 1000,undated: 0,
+      outsideMaster: { before: { count: 15,from: now - 172800000,to: now - 86400000 },after: { count: 0,from: null,to: null } } } })),
+    outages: { total: 3,omitted: 0,items: [true,false,true].map((potentialCoverage,i) => ({
+      signal: null,energyPrefix: 'ev2',basis: 'energy-interval',from: now - (3 - i) * 3600000,to: now - (2.5 - i) * 3600000,potentialCoverage })) } } };
 let app, server, browser, socket, sequence = 0, admin = true, topology = 'standalone', peer = null;
 let recovery = { available: true, readOnly: false, busy: false, job: null, preview: null, sources: [source], nextBefore: '10:old-operation',
   operations: [{ id: 'old-operation', startedAt: 1, source: { label: 'Earlier backup' }, active: true, status: 'interrupted', canRevert: true }] };
@@ -131,7 +137,13 @@ try {
   assert.equal(await evaluate(`${$('history-recovery-check')}.disabled`), true);
   await click('history-recovery-installation-confirm'); await click('history-recovery-check');
   await until(`!${$('history-recovery-apply')}.hidden && !${$('history-recovery-apply')}.disabled`);
-  assert.match(await evaluate(`${$('history-recovery-preview')}.innerText.replace(/\\s+/g, ' ')`), /Observations: 57/);
+  assert.match(await evaluate(`${$('history-recovery-preview')}.textContent.replace(/\\s+/g, ' ')`), /Observations:\s*57/);
+  assert.match(await evaluate(`${$('history-recovery-preview')}.innerText`), /History date ranges/);
+  assert.equal(await evaluate("document.querySelector('.history-recovery-coverage details').open"), false);
+  await evaluate("document.querySelector('.history-recovery-coverage details').open=true;true");
+  assert.match(await evaluate(`${$('history-recovery-preview')}.innerText`), /Charger 2 energy/);
+  await click('history-recovery-refresh');
+  assert.equal(await evaluate("document.querySelector('.history-recovery-coverage details').open"), true, 'Refreshing the same report preserves expanded outage details');
   assert.doesNotMatch(await evaluate(`${$('history-recovery-preview')}.textContent`), /master|mirroring/);
   for (const width of [1440, 768, 390, 320]) for (const theme of ['dark', 'light']) {
     await send('Emulation.setDeviceMetricsOverride', { width, height: width === 320 ? 568 : 900, deviceScaleFactor: 1, mobile: false });
@@ -142,6 +154,11 @@ try {
     assert.equal(await evaluate("(() => { const b=document.querySelector('.history-recovery-body'); return b.scrollWidth <= b.clientWidth; })()"), true, 'Review content has no horizontal scrolling');
     assert.equal(await evaluate(`${$('history-recovery-close')}.getBoundingClientRect().bottom <= innerHeight`), true, 'Close stays visible on short screens');
     const shot = await send('Page.captureScreenshot', { format: 'png' }); await writeFile(join(screenshots, `${width}-${theme}.png`), Buffer.from(shot.data, 'base64'), { mode: 0o600 });
+    await evaluate("document.querySelector('.history-recovery-ranges').scrollIntoView({block:'start'});true");
+    await capture(`coverage-ranges-${width}-${theme}`);
+    await evaluate("document.querySelector('.history-recovery-outages').scrollIntoView({block:'start'});true");
+    await capture(`coverage-outages-${width}-${theme}`);
+    await evaluate("document.querySelector('.history-recovery-body').scrollTop=0;true");
     if (width === 320) {
       await evaluate(`${$('history-recovery-apply')}.scrollIntoView({block:'end'});true`);
       assert.equal(await evaluate(`${$('history-recovery-close')}.getBoundingClientRect().top >= 0`), true, 'Header remains available while reviewing a long result');

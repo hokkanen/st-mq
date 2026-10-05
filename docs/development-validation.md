@@ -18,6 +18,17 @@ scheduling during journal reconstruction. Keep phase cohorts atomic when boundin
 transaction work; an event-loop yield in the worker alone does not prevent it
 from repeatedly taking the lock before the controller can write.
 
+Pair recovery validation also covers explicit outage intervals beside valid
+energy, whole phase cohorts, retry idempotency and unchanged original journal
+inputs. Recovery-report tests compare both category date ranges and explicitly
+recorded outages without inferring gaps from sparse readings; a source interval
+that merely touches an outage boundary is not potential energy coverage.
+Rejoin tests retain the original dedicated database byte-for-byte, including
+excluded records, while proving that later promotion uses the verified replica
+and cannot reactivate the retained database's control state. The paired MQTT
+source-context tests exercise actual recording and equipment consumers across
+handover and restart so a transport change cannot create a new device identity.
+
 ## Automated tests and build
 
 ```sh
