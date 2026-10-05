@@ -1453,7 +1453,7 @@ Open the **Recover history** fold within **Recording details**, then choose
 launcher stay inside that fold. Standalone controllers and active paired masters
 use this same window.
 **Paired computers → Review history** opens it with the other computer selected.
-The **Recover history** view holds source selection, the checked preview and its
+The **Recover history** view holds source selection, the source check and its
 action. **Previous recoveries** holds earlier operations and their revert/restore
 reviews. The window follows the Fireplace dialog's open/close behavior; closing
 it does not cancel work already running on the server. Admin access is required, and
@@ -1467,17 +1467,21 @@ development databases. Keep the original backup. Uploaded copies are temporary
 working sources and do not replace an independent backup.
 
 For a backup, confirm **This backup belongs to this installation**, then select
-**Check backup**. Review the missing, conflicting, already present and skipped
-record counts and periods before confirming **Recover gaps and rebuild model**.
-The check does not change recorded history. Existing local history takes
+**Check backup**. The check validates the database's current format, integrity
+and input scope and reports source record counts. It does not run a trial import
+or change recorded history. Missing entries, conflicts and model changes remain
+unknown until you confirm **Recover history**. Recovery compares and imports
+history once, then rebuilds the model only when accepted history affects learning.
+Its result reports imported, conflicting, already present and skipped entries
+and the recovered period. Existing local history takes
 precedence over conflicting source records. Recovery imports supported source
 evidence with provenance; it does not restore the backup's configuration,
 dashboard permissions, pairing role or equipment-control state. A normal paired
-slave is available for comparison only; protected paired history also requires
+slave is available for source checking only; protected paired history also requires
 the separate [resume-mirroring decision](pairing.md#protected-history-and-manual-recovery).
 The paired source shows the current paired operation and its saved outcome;
 an earlier backup recovery cannot stand in for that status. A normal slave
-comparison does not offer gap recovery or imply that it is needed.
+source check does not offer gap recovery or imply that it is needed.
 
 Switch to **Previous recoveries** for later review of a recovery. Select
 **Review revert**, inspect its effect, then confirm **Revert recovery** to exclude

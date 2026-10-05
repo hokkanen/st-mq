@@ -37,7 +37,7 @@ export function sample(store, at, extra = {}) {
   return appendLearningRecord(store, 'mqtt', 'sample', value, { config: {} });
 }
 export async function recover(f, donorPath, options = {}) {
-  const preview = await recoveryPreview({ signal: f.signal, masterPath: f.master.path, donorPath, input: 'mqtt', workDirectory: join(f.directory, 'work') });
+  const preview = await recoveryPreview({ signal: f.signal, masterPath: f.master.path, donorPath, input: 'mqtt' });
   return { preview, ...(await recoverHistory({ signal: f.signal, store: f.master, donorPath, input: 'mqtt', preview, ...options })) };
 }
 

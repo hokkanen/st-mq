@@ -5,14 +5,14 @@ import { renderRecoveryReport } from '../chart/history-recovery-report.js';
 
 const id = '11111111-1111-4111-8111-111111111111', previewId = 'a'.repeat(64);
 const source = { id: 'saved-backup', kind: 'backup', label: 'Saved backup', available: true };
-const preview = { previewId, counts: { missing: 12, conflicts: 2, duplicates: 4, skipped: 1 }, model: { status: 'rebuild-required' } };
+const preview = { previewId, status: 'checked', tables: [{ name: 'observations', count: 19 }], model: { status: 'not-assessed' } };
 const view = changes => ({ available: true, readOnly: false, busy: false, sources: [source], operations: [],
   preview, job: { kind: 'check', status: 'complete', source }, ...changes });
 const admin = { topology: 'standalone', role: 'master', webAccess: { role: 'admin' } };
 test('recovery errors expose only known actionable source rejections', () => {
   for (const error of [
-    'This database uses an unsupported format. Use a backup from this software version.',
-    'This database is damaged or malformed. Preserve the original file and choose an intact current backup.',
+    'The database schema does not match this application. Use an intact current-schema backup or deliberately start with a fresh database.',
+    'The database structure does not match its declared schema. Use an intact current-schema backup or deliberately start with a fresh database.',
     'This backup belongs to a different simulation or live environment. Choose history for the current environment.',
     'This recovery affects saved learning in another input. Keep it active or use a separate database for that input.',
   ]) assert.equal(recoveryJobText({ job: { status: 'error', error } }), error);
@@ -89,7 +89,7 @@ test('peer recovery uses its checked preview after reviewing an unrelated previo
   const calls = [], peerPreview = 'b'.repeat(64);
   const actions = createHistoryRecoveryActions({ makeRequestId: () => id, confirm: () => true,
     request: async (_path, body) => { calls.push(body); return view(); } });
-  actions.update(view({ peer: { recovery: { preview: { previewId: peerPreview } } },
+  actions.update(view({ peer: { recovery: { preview: { ...preview, previewId: peerPreview } } },
     job: { kind: 'review-revert', status: 'complete' } }));
   assert.equal(await actions.run('recover', { sourceId: 'peer', previewId: peerPreview }), true);
   assert.equal(calls[0].previewId, peerPreview);
@@ -154,8 +154,8 @@ test('normal peer comparison stays informational and both entry points use the s
   panel.update({ ...admin, topology: 'pair', pair: peer });
   await panel.open({ sourceId: 'peer', trigger: $('pairing-history-recovery') });
   assert.equal($('history-recovery-source').value, 'peer');
-  assert.match(text($('history-recovery-preview')), /History comparison/);
-  assert.match($('history-recovery-status').textContent, /Comparison complete/);
+  assert.match(text($('history-recovery-preview')), /History source checked/);
+  assert.match($('history-recovery-status').textContent, /Source check complete/);
   assert.doesNotMatch($('history-recovery-status').textContent, /before recovering/);
   assert.match($('history-recovery-source-help').textContent, /Normal mirroring/);
   assert.equal($('history-recovery-apply').hidden, true);
@@ -173,7 +173,7 @@ test('paired check outcomes use current pair state when the coordinator retains 
       job: { kind: 'recover', status: 'complete', source } }) });
     panel.update({ ...admin, topology: 'pair', pair: peer });
     await panel.open({ sourceId: 'peer' });
-    assert.match($('history-recovery-status').textContent, state === 'ready' ? /Comparison complete/ : /could not finish/);
+    assert.match($('history-recovery-status').textContent, state === 'ready' ? /Source check complete/ : /could not finish/);
     assert.doesNotMatch($('history-recovery-status').textContent, /History recovery complete/);
     assert.equal($('history-recovery-notice').dataset.tone, state === 'error' ? 'attention' : 'neutral');
   }
@@ -194,7 +194,7 @@ test('an unavailable paired source explains why checking is disabled', async () 
 
 test('skipping recovery never labels the missing time range as recovered', () => {
   const { document, $ } = fixture();
-  renderRecoveryReport(document, $('report'), { ...preview, recoverySkipped: true, imported: 0,
+  renderRecoveryReport(document, $('report'), { ...preview, status: 'skipped', recoverySkipped: true, imported: 0,
     period: { from: 1, to: 1000 }, model: { status: 'unchanged' } }, { report: true });
   assert.match(text($('report')), /Unrecovered entries span/);
   assert.doesNotMatch(text($('report')), /Recovered entries span/);
@@ -288,7 +288,7 @@ test('explicit paired entry opens its comparison instead of an unrelated saved r
   assert.equal($('history-recovery-history').hidden, true);
   assert.equal($('history-recovery-source').value, 'peer');
   assert.equal($('history-recovery-revision-apply').hidden, true);
-  assert.match(text($('history-recovery-preview')), /History comparison/);
+  assert.match(text($('history-recovery-preview')), /History source checked/);
   assert.doesNotMatch(text($('history-recovery-preview')), /Revert recovery|Affected records/);
   assert.doesNotMatch($('history-recovery-status').textContent, /Reverting|Restoring/);
   panel.close();
@@ -303,7 +303,7 @@ test('selecting another source clears the previous source review, result message
   } });
   panel.update(admin); await panel.open();
   assert.equal($('history-recovery-apply').hidden, false);
-  assert.match($('history-recovery-status').textContent, /Check complete/);
+  assert.match($('history-recovery-status').textContent, /Source check complete/);
   $('history-recovery-installation-confirm').checked = true;
   $('history-recovery-source').value = other.id;
   $('history-recovery-source').listeners.get('change')();

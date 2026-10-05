@@ -3,7 +3,6 @@ import assert from 'node:assert/strict';
 import { Store } from '../src/storage/store.js';
 import { Recorder } from '../src/storage/recorder.js';
 import { HistoryMerge } from '../src/recovery/merge.js';
-import { recoveryPreview } from '../src/recovery/service.js';
 import { recordLearningContext, replayLearningJournal } from '../src/app/committed-learning.js';
 import { fixture, observation, sample, recover, start, W, HOUR } from './helpers/recovery-fixture.js';
 
@@ -29,8 +28,8 @@ test('recovering fresh mirrored snapshots does not multiply unavailable records 
     const donorPath = await f.snapshot(f.master);
     const result = await recover(f, donorPath);
     digests.add(result.preview.donorDigest);
-    assert.equal(result.preview.counts.missing, 0);
-    assert.equal(result.preview.counts.conflicts, 0);
+    assert.equal(result.report.counts.missing, 0);
+    assert.equal(result.report.counts.conflicts, 0);
     assert.equal(result.report.imported, 0);
     assert.equal(result.report.model.status, 'unchanged');
     assert.deepEqual(f.master.db.prepare('SELECT * FROM observations ORDER BY id').all(), before);
@@ -59,9 +58,9 @@ test('a true unavailable-history gap is accepted once across new donor snapshots
   assert.equal(second.report.imported, 1, 'only the new event is absent');
   assert.equal(second.report.counts.conflicts, 0);
   assert.deepEqual(f.master.db.prepare('SELECT * FROM observations ORDER BY id').all(), accepted);
-  const again = await recoveryPreview({ signal: f.signal, masterPath: f.master.path, donorPath: nextPath });
-  assert.equal(again.counts.missing, 0);
-  assert.equal(again.counts.conflicts, 0);
+  const again = await recover(f, nextPath);
+  assert.equal(again.report.counts.missing, 0);
+  assert.equal(again.report.counts.conflicts, 0);
 });
 
 test('unavailable observation identity includes source, device, both clocks, unit, quality and raw meaning', async t => {
@@ -93,8 +92,8 @@ test('pre-existing repeated unknown records retain their own mirrored coverage w
     quality,raw,import_id,row_number FROM observations`);
   const before = f.master.db.prepare('SELECT * FROM observations ORDER BY id').all();
   const result = await recover(f, await f.snapshot(f.master));
-  assert.equal(result.preview.counts.missing, 0);
-  assert.equal(result.preview.counts.conflicts, 0);
+  assert.equal(result.report.counts.missing, 0);
+  assert.equal(result.report.counts.conflicts, 0);
   assert.deepEqual(f.master.db.prepare('SELECT * FROM observations ORDER BY id').all(), before);
   assert.equal(f.master.db.prepare('SELECT observation_id FROM recorder_coverage').get().observation_id, before[0].id);
 });
@@ -112,7 +111,7 @@ test('an already mirrored repeated unavailable phase cohort is present without i
   const observations = f.master.db.prepare('SELECT * FROM observations ORDER BY id').all();
   const coverage = f.master.db.prepare('SELECT * FROM recorder_coverage ORDER BY id').all();
   const result = await recover(f, await f.snapshot(f.master));
-  assert.deepEqual(result.preview.counts, { missing: 0, conflicts: 0, duplicates: 12, skipped: 0 });
+  assert.deepEqual(result.report.counts, { missing: 0, conflicts: 0, duplicates: 12, skipped: 0 });
   assert.equal(result.report.imported, 0);
   assert.deepEqual(f.master.db.prepare('SELECT * FROM observations ORDER BY id').all(), observations);
   assert.deepEqual(f.master.db.prepare('SELECT * FROM recorder_coverage ORDER BY id').all(), coverage);
@@ -130,7 +129,7 @@ test('an exact existing coverage span is present even when a later contrary span
   insert(f.master, 'unavailable', start, start + 2 * HOUR, start + HOUR, unknown, 3);
   const before = f.master.db.prepare('SELECT * FROM recorder_coverage ORDER BY id').all();
   const same = await recover(f, await f.snapshot(f.master));
-  assert.deepEqual(same.preview.counts, { missing: 0, conflicts: 0, duplicates: 4, skipped: 0 });
+  assert.deepEqual(same.report.counts, { missing: 0, conflicts: 0, duplicates: 4, skipped: 0 });
   assert.deepEqual(f.master.db.prepare('SELECT * FROM recorder_coverage ORDER BY id').all(), before);
   const donor = await f.donor();
   insert(donor, 'fresh', start + HOUR / 4, start + HOUR / 2, start, fresh, 2);
@@ -170,7 +169,7 @@ test('distinct existing events and learning contexts sharing a timestamp are rec
   const journal = f.master.learningJournal({ input: 'mqtt' });
   assert.equal(journal.length, 2);
   const result = await recover(f, await f.snapshot(f.master));
-  assert.deepEqual(result.preview.counts, { missing: 0, conflicts: 0, duplicates: 4, skipped: 0 });
+  assert.deepEqual(result.report.counts, { missing: 0, conflicts: 0, duplicates: 4, skipped: 0 });
   assert.deepEqual(f.master.learningJournal({ input: 'mqtt' }), journal);
   assert.equal(result.report.model.status, 'unchanged');
 });
@@ -204,9 +203,9 @@ test('recovered learning provenance stays already present across new donor snaps
   sample(donor, start + W, { indoorC: 20, provenance });
   const firstPath = await f.snapshot(donor);
   const first = await recover(f, firstPath);
-  const firstAgain = await recoveryPreview({ signal: f.signal, masterPath: f.master.path, donorPath: firstPath });
-  assert.equal(firstAgain.counts.missing, 0);
-  assert.equal(firstAgain.counts.conflicts, 0);
+  const firstAgain = await recover(f, firstPath);
+  assert.equal(firstAgain.report.counts.missing, 0);
+  assert.equal(firstAgain.report.counts.conflicts, 0);
   sample(donor, start + 2 * W, { indoorC: 20, provenance });
   const secondPath = await f.snapshot(donor);
   const second = await recover(f, secondPath);

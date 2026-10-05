@@ -6,7 +6,7 @@ The master records measurements, learns and controls the home. The slave
 displays verified database snapshots. Losing the slave or the connection to it
 does not stop the master, and the slave never promotes itself after a timeout.
 
-Mirroring verifies a copied database snapshot; recovery checks whether another
+Mirroring verifies a copied database snapshot; recovery determines whether another
 computer has history absent from the master. An observation recording an
 unavailable measurement is still a stored record. Its missing-value quality must
 never make an identical record appear absent or cause recovery to copy it again.
@@ -741,16 +741,18 @@ stays compact when closed and still shows important progress or attention messag
 the same layout, with recovery and handover performed from the master's UI.
 
 Checks are initiated on the master. When the other computer is a normal slave,
-the result is an informational **History comparison**. Normal mirroring remains
-enabled, so recovery and resume-mirroring actions are unavailable. A record
+the result is an informational **History source checked** result. It validates
+the donor database and reports its source inventory without comparing or importing
+history. Normal mirroring remains enabled, so recovery and resume-mirroring actions
+are unavailable. A record
 present only in that older snapshot can reflect a deliberate master deletion;
-the next ordinary snapshot applies the deletion. The comparison does not
+the next ordinary snapshot applies the deletion. The source check does not
 authorize resurrecting it. A healthy mirror containing the same records must
-not report those records as missing merely because their measurements are
+not cause recovery to duplicate those records merely because their measurements are
 unavailable, stale or invalid.
 
 During normal mirroring, the window's paired-history workflow offers the optional
-comparison. Recovery and resume-mirroring steps appear when the peer reports
+source check. Recovery and resume-mirroring steps appear when the peer reports
 protected history or a protected-history decision remains unresolved. Backup
 sources and previous recoveries use the same window, including outside pair mode.
 These presentation choices do not change the server's readiness checks or the
@@ -758,15 +760,20 @@ required confirmations.
 
 For a computer in **Protected recovery**:
 
-1. In **Review history**, **Check other computer** takes a consistent donor snapshot
-   and shows counts and periods for missing, conflicting, already present and
-   skipped entries. Checking does not change the master's history.
-2. Review the preview, then **Recover gaps and rebuild model**. The request
-   identifies the checked donor snapshot. Existing master history wins
+1. In **Review history**, **Check other computer** takes a consistent donor snapshot,
+   verifies its database format and integrity, assesses its input scope and shows
+   source record counts. Checking does not copy the master database, run a trial
+   import or change the master's history. Missing entries, conflicts and model
+   changes remain unknown until recovery.
+2. Review the source check, then **Recover history**. The request
+   identifies the checked donor snapshot. One merge compares and imports history
+   against the current master. Existing master history wins
    overlaps. The importer accepts supported gaps with their provenance;
    it does not combine arbitrary SQLite rows or overwrite the master's
    existing journal, forecasts or control records.
-3. Wait for the recovery result and model reconstruction. Recovery selects a
+3. Wait for the recovery result and any necessary model reconstruction. The result
+   reports missing, conflicting, already present and skipped entries. When accepted
+   history affects learning, recovery selects a
    documented learning epoch and uses the established ordered replay contract.
    The existing model keeps control available while the replacement catches
    up; a partial or stale rebuilt model is not published.
@@ -776,8 +783,8 @@ For a computer in **Protected recovery**:
 
 If you stop after recovery, protection stays active. Waiting, closing the
 dashboard or restarting does not resume mirroring. A repeated check of the same
-unchanged donor keeps the completed recovery result when no further recovery is
-needed; it does not turn **Resume mirroring** into a request to skip recovery.
+unchanged donor keeps the completed recovery result; it does not turn
+**Resume mirroring** into a request to skip recovery.
 New donor history requires a fresh review. Handover remains unavailable while
 the other computer is protected. Recovery and rejoin recheck the donor's role
 and identity before acting, so a preview cannot authorize a different computer
@@ -790,8 +797,8 @@ independent work. They do not undo a completed mirroring handover, change either
 computer's role or grant equipment control. See
 [reversible recovery](recording.md#recover-history-from-a-backup-or-paired-computer).
 
-The displayed period spans the earliest and latest missing entries; it is not
-necessarily one continuous recording outage. Counts describe stored records,
+The recovery result's displayed period spans the earliest and latest imported
+entries; it is not necessarily one continuous recording outage. Counts describe stored records,
 not the number of measurements that were physically acquired or lost.
 
 The checked snapshot includes durable energy still in an open recorder interval.
@@ -805,15 +812,17 @@ uncovered remainder stays unknown and later readings resume normally.
 Recovery is optional after a successful protected-history check. To keep the master's history
 and model as they are, choose **Skip recovery and resume mirroring** after reviewing the preview
 and confirm that the other computer's unrecovered history may be discarded.
+The source check does not establish whether any history is missing on the master.
 This does not import gaps or rebuild the model. The other database is replaced
 with a verified master snapshot, including removal of entries absent from the
-master. The result says that mirroring resumed without recovery; missing entries
-shown in the preview were not recovered. A pending or failed check cannot enable
-this option, and a changed donor or an outdated preview requires a new check.
-When the check finds no missing entries or learning work, recovery is unnecessary;
-**Resume mirroring** still requires confirmation before replacing protected
-history. If a release response is lost, retry the saved request. A new check
-cannot replace an unresolved release and silently abandon its outcome.
+master. The result says that mirroring resumed without recovery. A pending or
+failed check cannot enable this option, and a changed donor or an outdated preview
+requires a new check.
+Unknown gap counts never authorize skipping recovery without that explicit discard
+confirmation. After a successful recovery, **Resume mirroring** still requires
+confirmation before replacing protected history. If a release response is lost,
+retry the saved request. A new check cannot replace an unresolved release and
+silently abandon its outcome.
 
 Accepted historical entries are imported in bounded transactions and may
 become visible before the model rebuild finishes. An interruption can leave

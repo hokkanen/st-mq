@@ -69,12 +69,13 @@ export function emptyReport() {
  * accumulators and old adaptive checkpoints are never copied from the donor.
  * Valid frozen energy tails become immutable history with separate provenance. */
 export class HistoryMerge {
-  constructor({ target, donor, donorDigest, input, recoveryId, progress = () => {}, now = Date.now() }) {
+  constructor({ target, donor, donorDigest, input, recoveryId, progress = () => {}, now = Date.now(), yieldControl = yieldTurn }) {
     this.target = target; this.donor = donor; this.digest = donorDigest; this.input = input;
     this.progress = progress; this.report = emptyReport(); this.maps = Object.fromEntries(ID_TABLES.map(table => [table, new Map()]));
     this.journal = []; this.processed = 0;
     this.now = now; this.metrics = new Recorder(target);
     this.recoveryId = recoveryId;
+    this.yieldControl = yieldControl;
   }
   count(table, disposition, at = null) {
     let row = this.report.tables.find(value => value.name === table);
@@ -126,52 +127,62 @@ export class HistoryMerge {
     let batch = [], size = 0;
     const grouped = new Set();
     const flush = async () => {
-      this.target.transaction(() => {
-        for (const cohort of batch) {
-          const forced = prepare?.(cohort);
-          for (const row of cohort) {
-          try {
-            this.sourceRow = row;
-            if (rejectedContribution(this.target, table, row, this.donor)) {
-              this.count(table, 'conflicts');
-              if (map && this.maps[table]) this.maps[table].set(row.id, { id: null, disposition: 'conflicts' });
-              continue;
-            }
-            if (forced) {
-              this.count(table, forced);
+      let next = 0;
+      while (next < batch.length) {
+        const started = performance.now();
+        this.target.transaction(() => {
+          do {
+            const cohort = batch[next++];
+            const forced = prepare?.(cohort);
+            for (const row of cohort) {
+            try {
+              this.sourceRow = row;
+              if (rejectedContribution(this.target, table, row, this.donor)) {
+                this.count(table, 'conflicts');
+                if (map && this.maps[table]) this.maps[table].set(row.id, { id: null, disposition: 'conflicts' });
+                continue;
+              }
+              if (forced) {
+                this.count(table, forced);
+                const prior = map ? this.known(table, row.id) : null;
+                if (map && prior?.disposition !== 'missing') this.remember(table, row.id, prior?.id ?? null, forced);
+                // Keep the persisted deletion tombstone, but reject this run's
+                // dependent coverage and journal references to every lost phase.
+                if (map && this.maps[table]) this.maps[table].set(row.id, { id: null, disposition: forced });
+                continue;
+              }
               const prior = map ? this.known(table, row.id) : null;
-              if (map && prior?.disposition !== 'missing') this.remember(table, row.id, prior?.id ?? null, forced);
-              // Keep the persisted deletion tombstone, but reject this run's
-              // dependent coverage and journal references to every lost phase.
-              if (map && this.maps[table]) this.maps[table].set(row.id, { id: null, disposition: forced });
-              continue;
+              if (prior?.id !== null && prior && this.target.db.prepare(`SELECT 1 FROM ${table} WHERE id=?`).get(prior.id)) {
+                if (this.maps[table]) this.maps[table].set(row.id, prior);
+                this.count(table, prior.disposition === 'conflicts' ? 'conflicts' : 'duplicates'); continue;
+              }
+              // A previously accepted source row deliberately removed on the
+              // master stays removed. An interrupted/skipped record may retry.
+              if (prior?.id !== null && prior?.disposition === 'missing') {
+                if (this.maps[table]) this.maps[table].set(row.id, { id: null, disposition: 'conflicts' });
+                this.count(table, 'conflicts'); continue;
+              }
+              const result = fn(row);
+              this.count(table, result.disposition, result.at);
+              if (map) this.remember(table, row.id, result.id ?? null, result.disposition);
+            } catch (error) {
+              // Invalid donor payloads are not copied. Database errors (disk
+              // full, locks, malformed schema) abort instead of claiming success.
+              if (!(error instanceof TypeError || error instanceof SyntaxError || error?.code === 'RECOVERY_ROW_INVALID')) throw error;
+              this.count(table, 'skipped'); if (map) this.remember(table, row.id, null, 'skipped');
+            } finally { this.sourceRow = null; }
             }
-            const prior = map ? this.known(table, row.id) : null;
-            if (prior?.id !== null && prior && this.target.db.prepare(`SELECT 1 FROM ${table} WHERE id=?`).get(prior.id)) {
-              if (this.maps[table]) this.maps[table].set(row.id, prior);
-              this.count(table, prior.disposition === 'conflicts' ? 'conflicts' : 'duplicates'); continue;
-            }
-            // A previously accepted source row deliberately removed on the
-            // master stays removed. An interrupted/skipped record may retry.
-            if (prior?.id !== null && prior?.disposition === 'missing') {
-              if (this.maps[table]) this.maps[table].set(row.id, { id: null, disposition: 'conflicts' });
-              this.count(table, 'conflicts'); continue;
-            }
-            const result = fn(row);
-            this.count(table, result.disposition, result.at);
-            if (map) this.remember(table, row.id, result.id ?? null, result.disposition);
-          } catch (error) {
-            // Invalid donor payloads are not copied. Database errors (disk
-            // full, locks, malformed schema) abort instead of claiming success.
-            if (!(error instanceof TypeError || error instanceof SyntaxError || error?.code === 'RECOVERY_ROW_INVALID')) throw error;
-            this.count(table, 'skipped'); if (map) this.remember(table, row.id, null, 'skipped');
-          } finally { this.sourceRow = null; }
-          }
+          // Keep a phase cohort indivisible, but release the writer promptly even
+          // when comparison/provenance work makes a nominal 64-row batch costly.
+          } while (next < batch.length && performance.now() - started < 16);
+        });
+        if (next === batch.length) {
+          this.processed += size;
+          this.progress({ phase: 'importing', processed: this.processed });
         }
-      });
-      this.processed += size; batch = []; size = 0;
-      this.progress({ phase: 'importing', processed: this.processed });
-      await yieldTurn();
+        await this.yieldControl();
+      }
+      batch = []; size = 0;
     };
     for (const row of this.donor.db.prepare(query).iterate()) {
       if (grouped.delete(row.id)) continue;
@@ -408,7 +419,7 @@ export class HistoryMerge {
       // Keep incomplete CSV recovery invisible to consumers which require a
       // complete import. Row numbers, units and original source times survive.
       this.target.db.prepare("UPDATE imports SET status='complete' WHERE id=? AND status='recovering'").run(mapped.id);
-      if (++completed % 64 === 0) await yieldTurn();
+      if (++completed % 64 === 0) await this.yieldControl();
     }
   }
   async pendingEnergy() {
@@ -469,7 +480,7 @@ export class HistoryMerge {
       });
       this.processed += Math.max(rows.length, 1);
       this.progress({ phase: 'importing', processed: this.processed });
-      await yieldTurn();
+      await this.yieldControl();
     }
   }
   async snapshots() {
@@ -720,7 +731,7 @@ export class HistoryMerge {
         }
       } catch (error) { if (!(error instanceof TypeError || error instanceof SyntaxError)) throw error; }
       this.count('learning_journal', disposition, row.at);
-      if (++this.processed % 64 === 0) { this.progress({ phase: 'importing', processed: this.processed }); await yieldTurn(); }
+      if (++this.processed % 64 === 0) { this.progress({ phase: 'importing', processed: this.processed }); await this.yieldControl(); }
     }
     if (this.journal.length || this.report.tables.find(row => row.name === 'fireplace_events')?.missing)
       this.report.model.status = 'rebuild-required';

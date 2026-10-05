@@ -5,6 +5,7 @@ import { fireplaceLearningContext } from '../app/fireplace-inputs.js';
 import { sensorRevision } from '../app/sensor-inputs.js';
 import { markRecoveryFailed, projectedSensorContext } from './state.js';
 import { selectedHistory, recoveryEvidenceVersion } from './ledger.js';
+import { RECOVERY_ERROR_CODES, recoveryFailure } from './errors.js';
 export { listRecoveries } from './ledger.js';
 
 const running = new WeakSet();
@@ -12,13 +13,13 @@ const validInput = input => {
   if (!['mqtt', 'providers', 'simulated', 'history'].includes(input)) throw new TypeError('Choose an existing learning input for recovery');
   return input;
 };
-const unavailable = message => Object.assign(new Error(message), { statusCode: 409 });
+const unavailable = message => Object.assign(new Error(message), { statusCode: 409, code: 'recovery_invalid', public: true });
 const journalHead = (store, input) => store.db.prepare('SELECT COALESCE(MAX(id),0) id FROM learning_journal WHERE input=?').get(input).id;
 
-/** Read-only comparison. The worker scans a private SQLite backup, so a preview
- * never changes the live application database or waits for provider polling. */
-export function recoveryPreview({ masterPath, donorPath, input = 'mqtt', workDirectory, onProgress = () => {}, signal }) {
-  return workerJob({ mode: 'preview', masterPath, donorPath, input: validInput(input), workDirectory }, { onProgress, signal });
+/** Read-only source validation and inventory. No master backup or trial merge
+ * is created; recovery makes acceptance decisions against current master data. */
+export function recoveryPreview({ masterPath, donorPath, input = 'mqtt', onProgress = () => {}, signal }) {
+  return workerJob({ mode: 'preview', masterPath, donorPath, input: validInput(input) }, { onProgress, signal });
 }
 
 /** Accepted source rows commit in bounded worker batches. Until publication,
@@ -31,7 +32,9 @@ export async function recoverHistory({ store, donorPath, input = 'mqtt', preview
   if (store.path === ':memory:' || store.readOnly) throw new TypeError('Recovery requires the writable master database on disk');
   if (running.has(store)) throw unavailable('A recovery is already running');
   const { previewId, ...signed } = preview ?? {};
-  if (typeof previewId !== 'string' || previewId !== learningVersion(signed)) throw unavailable('Check the other instance before recovering');
+  if (preview?.status !== 'checked' || preview?.model?.status !== 'not-assessed'
+    || preview.counts !== undefined
+    || typeof previewId !== 'string' || previewId !== learningVersion(signed)) throw unavailable('Check the other instance before recovering');
   if (!isCurrent()) throw unavailable('Recovery requires the current master');
   running.add(store);
   try {
@@ -105,18 +108,34 @@ function workerJob(workerData, { onProgress, onReady, signal }) {
     const abort = () => finish(unavailable('Recovery was cancelled; the other instance remains protected'));
     if (signal?.aborted) { abort(); return; }
     signal?.addEventListener('abort', abort, { once: true });
-    worker.on('error', () => finish(new Error('Recovery worker failed; the previous model remains available.')));
-    worker.on('exit', code => { if (!settled) finish(new Error(`Recovery worker stopped before completion (${code}).`)); });
+    worker.on('error', error => {
+      const failure = recoveryFailure(error, 'recovery_worker_failed');
+      finish(Object.assign(new Error(failure.error), { code: failure.code }));
+    });
+    worker.on('exit', () => {
+      if (!settled) {
+        const failure = recoveryFailure(null, 'recovery_worker_failed');
+        finish(Object.assign(new Error(failure.error), { code: failure.code }));
+      }
+    });
     worker.on('message', message => {
       if (settled) return;
       try {
         if (message.type === 'temporary') temporary = message.path;
         else if (message.type === 'progress') onProgress?.({ phase: message.phase, processed: message.processed });
+        else if (message.type === 'yield') {
+          // The worker has committed and will not acquire another write lock
+          // until this controller has serviced queued callbacks and timers.
+          setImmediate(() => { if (!settled) worker.postMessage({ type: 'continue', id: message.id }); });
+        }
         else if (message.type === 'failed') finish(Object.assign(new Error(message.error),
-          { code: ['recovery_scope_mismatch', 'recovery_other_input', 'database_schema_mismatch', 'database_schema_invalid'].includes(message.code) ? message.code : undefined }));
+          { code: RECOVERY_ERROR_CODES.includes(message.code) ? message.code : 'recovery_failed' }));
         else if (message.type === 'complete') finish(null, message.report);
         else if (message.type === 'ready') { const result = onReady(message, worker); if (result) finish(null, result); }
-      } catch (error) { finish(error); }
+      } catch (error) {
+        const failure = recoveryFailure(error);
+        finish(Object.assign(new Error(failure.error), { code: failure.code, statusCode: error?.statusCode }));
+      }
     });
   });
 }

@@ -245,7 +245,9 @@ test('real backup upload recovers, reverts and restores an old contribution whil
   await f.coordinator.settled();
   let view = await f.coordinator.view();
   assert.equal(view.job.status, 'complete', JSON.stringify(view.job));
-  assert.equal(view.preview.counts.missing, 1);
+  assert.equal(view.preview.status, 'checked');
+  assert.equal(view.preview.counts, undefined);
+  assert.equal(view.preview.tables.find(row => row.name === 'observations').count, 1);
   await f.post(request('recover', { previewId: view.preview.previewId, confirmed: true }));
   await f.coordinator.settled();
   view = await f.coordinator.view();

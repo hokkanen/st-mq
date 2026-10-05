@@ -50,9 +50,9 @@ test('service preview and apply preserve a frozen multi-day tail as history with
   const donorPath = await f.snapshot(donor), beforeHash = hash(donorPath);
   const stateBefore = f.master.db.prepare("SELECT key,value FROM state WHERE key LIKE 'recorder:%' ORDER BY key").all();
   const observationsBefore = f.master.observations();
-  const preview = await recoveryPreview({ signal: f.signal, masterPath: f.master.path, donorPath, input: 'mqtt',
-    workDirectory: join(f.directory, 'work') });
-  assert.equal(preview.counts.missing, 5, 'three phase values, one exact reading and its coverage');
+  const preview = await recoveryPreview({ signal: f.signal, masterPath: f.master.path, donorPath, input: 'mqtt' });
+  assert.equal(preview.counts, undefined, 'check reports source inventory without pretending to know the gaps');
+  assert.equal(preview.tables.find(row => row.name === 'recorder_pending_energy').count, 1);
   assert.deepEqual(f.master.observations(), observationsBefore, 'preview does not materialize a master or donor tail');
   assert.deepEqual(f.master.db.prepare("SELECT key,value FROM state WHERE key LIKE 'recorder:%' ORDER BY key").all(), stateBefore);
   assert.equal(hash(donorPath), beforeHash);
@@ -71,9 +71,8 @@ test('service preview and apply preserve a frozen multi-day tail as history with
   const exact = status.exactParameters.find(row => row.signal === 'custom_feedback');
   assert.equal(exact.week.records, 2, 'explicit change-only recovery uses the same policy key as the live writer');
   assert.equal(exact.week.polls, 1, 'donor poll metrics are not imported');
-  const again = await recoveryPreview({ signal: f.signal, masterPath: f.master.path, donorPath, input: 'mqtt',
-    workDirectory: join(f.directory, 'work') });
-  assert.equal(again.counts.missing, 0);
+  const again = await recoveryPreview({ signal: f.signal, masterPath: f.master.path, donorPath, input: 'mqtt' });
+  assert.equal(again.status, 'checked');
   assert.equal((await recoverHistory({ signal: f.signal, store: f.master, donorPath, input: 'mqtt', preview: again })).report.imported, 0);
   assert.equal(hash(donorPath), beforeHash, 'both service phases keep source bytes unchanged');
 });

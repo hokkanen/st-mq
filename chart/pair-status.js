@@ -1,4 +1,5 @@
 import { confirmAction } from './confirmation.js';
+import { recoveryErrorMessage } from '../src/recovery/errors.js';
 const actions = ['check-recovery', 'recover', 'handover', 'promote', 'rejoin', 'reset'];
 const validResetToken = value => typeof value === 'string' && /^[a-f0-9]{64}$/i.test(value);
 const resetModes = ['keep', 'fresh'];
@@ -8,9 +9,17 @@ const validPreviewId = value => typeof value === 'string' && /^[a-f0-9]{64}$/.te
 const stamp = value => Number.isFinite(value) && value > 0 ? value : null;
 const count = value => Number.isSafeInteger(value) && value >= 0 ? value : null;
 const roleName = role => ({ master: 'Master', slave: 'Slave', protected: 'Protected recovery' })[role] ?? 'Checking role';
-const checkedPreview = view => view?.recovery?.state === 'ready' && validPreviewId(view.recovery.preview?.previewId);
+const checkedPreview = view => view?.recovery?.state === 'ready' && view.recovery.preview?.status === 'checked'
+  && view.recovery.preview.model?.status === 'not-assessed' && view.recovery.preview.counts === undefined
+  && validPreviewId(view.recovery.preview.previewId);
+const savedRelease = view => uuid.test(view?.recovery?.pendingRelease?.requestId ?? '')
+  && typeof view.recovery.pendingRelease.discardUnrecovered === 'boolean'
+  && (!view.recovery.pendingRelease.discardUnrecovered || validPreviewId(view.recovery.pendingRelease.previewId));
+const matchesRelease = (view, body) => savedRelease(view) && body.action === 'rejoin'
+  && body.requestId === view.recovery.pendingRelease.requestId
+  && (body.discardUnrecovered === true) === view.recovery.pendingRelease.discardUnrecovered
+  && (!body.discardUnrecovered || body.previewId === view.recovery.pendingRelease.previewId);
 const mirrorComparison = view => view?.recovery?.donorRole === 'slave';
-const hasMissing = view => count(view?.recovery?.preview?.counts?.missing) > 0;
 const donorRoleChanged = view => view?.recovery?.donorRole === 'protected' && view?.peer?.reachable === true && view.peer.role !== 'protected';
 const ocppReadinessHelp = 'The other computer is not ready to accept the local charger connection. Check that both computers use the same charger endpoint, credentials and authorization tags, and that its OCPP port is available.';
 
@@ -19,7 +28,7 @@ const startupProblem = view => view?.role === 'protected' && ['activation_failed
 /** Only stable public error codes become instructions; raw exceptions stay private. */
 export function pairIssueHelp(view) {
   const resetCode = view?.uiOperation?.action === 'reset' && view.uiOperation.state === 'error' ? view.uiOperation.errorCode : null;
-  const code = resetCode ?? view?.error ?? view?.vip?.error ?? view?.mqttFrontend?.error ?? view?.sync?.error;
+  const code = resetCode ?? view?.error ?? view?.vip?.error ?? view?.mqttFrontend?.error ?? view?.sync?.error ?? view?.recovery?.error;
   return {
     vip_helper_unavailable: 'The virtual-IP helper is unavailable. Check that the address-helper socket service is running on this computer and that its socket path matches the pair configuration.',
     vip_helper_permission: 'The controller cannot access the virtual-IP helper. Check the socket permissions and the group membership of the user running the controller; sign in again after changing groups.',
@@ -48,7 +57,7 @@ export function pairIssueHelp(view) {
     pair_reset_restoration_required: 'Resolve outstanding temporary equipment changes before starting fresh. Keep local history preserves their restoration records. Archiving records does not restore equipment.',
     snapshot_failed: 'Local history could not be opened for viewing. Keep the database files intact and check the application log. Any last verified snapshot remains available.',
     ocpp_handover_not_ready: ocppReadinessHelp,
-  }[code] ?? (startupProblem(view) ? 'The controller could not start. Check the application’s terminal or service log for the startup error, then correct the local setup.' : '');
+  }[code] ?? recoveryErrorMessage(code) ?? (startupProblem(view) ? 'The controller could not start. Check the application’s terminal or service log for the startup error, then correct the local setup.' : '');
 }
 
 export function pairAllowsControl(status) {
@@ -68,34 +77,34 @@ export function pairActionAllowed(view, action) {
   if (action === 'promote') return ['slave', 'protected'].includes(view.role);
   if (view.role !== 'master') return false;
   if (action === 'recover') return view.recovery?.donorRole === 'protected' && checkedPreview(view);
-  if (action === 'rejoin') return view.recovery?.donorRole === 'protected' && (view.recovery?.state === 'complete' || checkedPreview(view));
+  if (action === 'rejoin') return view.recovery?.donorRole === 'protected'
+    && (savedRelease(view) || view.recovery?.state === 'complete' || checkedPreview(view));
   return ['check-recovery', 'handover'].includes(action);
 }
 
-export function pairConfirmation(action, { discardUnrecovered = false, counts = {}, bootstrapPending = false, mode } = {}) {
+export function pairConfirmation(action, { discardUnrecovered = false, bootstrapPending = false, mode } = {}) {
   if (action === 'reset') return mode === 'fresh'
     ? 'Archive this computer’s database and pairing state, then start as an empty slave? Local recording and control stop. Current history, learning and saved dashboard choices leave the active database. Archives are kept until you manually delete them; configuration and credentials stay in place. The other computer is unchanged and may supply its database through mirroring. This computer will not become master automatically.'
     : 'Reset pairing and keep local history? Local recording and control stop. The database and saved settings remain intact. Old pairing state is archived. This computer stays in Protected recovery until you explicitly choose recovery or promotion. Configuration, credentials and the other computer are unchanged.';
   if (action === 'promote' && bootstrapPending) return 'Promote this computer to the pair’s first master? Confirm that the other computer is not already master or controlling equipment. Only one computer may be master. This starts local recording and enables control according to the saved equipment permissions. Leave the other computer as a read-only slave; it will synchronize from this master.';
   if (action === 'rejoin' && discardUnrecovered) {
-    const missing = count(counts.missing);
-    return `${missing === 0 ? 'Replace the other computer’s database with this master’s database and resume mirroring?' : 'Skip recovery and replace the other computer’s database with this master’s database?'} ${missing !== null && missing > 0 ? `The check found ${missing} missing entries that will NOT be recovered. ` : missing === 0 ? 'The check found no missing entries to recover. ' : ''}All unmatched history on the other computer, including conflicting and unsupported entries, will be discarded. No separate archive is kept. This master’s history and learned model stay as they are. Only continue if you accept losing that history.`;
+    return 'Skip recovery and replace the other computer’s database with this master’s database? The source check does not determine how much history is missing here. All unmatched history on the other computer, including conflicting and unsupported entries, will be discarded. No separate archive is kept. This master’s history and learned model stay as they are. Only continue if you accept losing that history.';
   }
   return {
     promote: 'Promote this computer to master? Confirm that the previous master has failed or has been stopped or isolated from the home. If its host is still running, release its broker virtual IP or isolate the host first. An unreachable computer may still be controlling equipment. This uses the local history; data since its last snapshot may be missing.',
     handover: 'Hand control to the other computer? The current master will finish its handover and transfer a verified final snapshot before the other computer takes over. MQTT devices and a configured local charger will reconnect to the moved address.',
-    recover: 'Recover the checked gaps from the other computer and rebuild the model? Existing master data wins all overlaps. Conflicting or unsupported donor entries are skipped. Heating control remains available while the model rebuilds.',
+    recover: 'Recover missing history from the checked source? Recovery compares and imports history once. Existing master data wins overlaps; conflicting or unsupported entries are skipped. The model is rebuilt only if needed, while heating control remains available.',
     rejoin: 'Resume mirroring to the other computer? Recovery must be complete. Its remaining divergent data will be replaced with an exact verified copy of the master database. Skipped donor entries will not be retained as a separate archive.',
   }[action] ?? null;
 }
 
 const phaseText = {
-  'check-recovery': 'Checking the other computer for missing history.', recover: 'Recovering gaps and rebuilding the model.',
+  'check-recovery': 'Validating the other computer’s history source.', recover: 'Recovering gaps and rebuilding the model when needed.',
   handover: 'Handing control to the other computer.', promote: 'Preparing this computer to become master.',
   rejoin: 'Preparing a verified master copy to resume mirroring.', reset: 'Archiving the previous pairing state and resetting this computer.',
   importing: 'Importing missing history.', 'catching-up': 'Catching the rebuilt model up to current observations.',
   publishing: 'Publishing the verified recovery result.',
-  checking: 'Checking the other computer for missing history.', recovering: 'Recovering missing history.',
+  checking: 'Validating the other computer’s history source.', recovering: 'Recovering missing history.',
   rebuilding: 'Rebuilding the model. Heating control remains available.', snapshotting: 'Preparing a consistent database snapshot.',
   transferring: 'Sending database changes.', verifying: 'Verifying database identity.',
   connecting: 'Connecting to the other computer.', quiescing: 'Finishing control on the current master.',
@@ -163,21 +172,20 @@ export function pairDisplay(view, { now = Date.now(), formatTime = at => new Dat
       ? `${Math.min(100, Math.floor(sync.completedBytes / sync.bytes * 100))}% checked or transferred.` : ''].filter(Boolean).join(' ');
   const progress = view.uiOperation?.state === 'running' ? view.uiOperation.progress : null;
   const phase = [phaseText[progress?.phase ?? view.transition?.phase ?? view.phase] ?? (view.busy || view.uiOperation?.state === 'running' ? 'An operation is in progress.' : ''),
-    count(progress?.processed) !== null ? `${progress.processed} entries processed.` : ''].filter(Boolean).join(' ');
+    count(progress?.processed) !== null ? `${progress.processed} ${progress?.phase === 'checking' ? 'source groups checked' : 'entries processed'}.` : ''].filter(Boolean).join(' ');
   const recovery = view.recovery ?? {};
   const recoveryText = recovery.pendingRelease ? 'Mirroring completion is uncertain. Retry to verify the same saved release with the other computer.'
     : donorRoleChanged(view) ? 'The other computer’s role changed after this check. Review its current status and run a new check before any recovery or replacement.' : {
-    idle: '', checking: 'Checking the other computer for missing data. No history is changed by this check.',
+    idle: '', checking: 'Validating the other computer’s history source. No history is changed by this check.',
     ready: mirrorComparison(view) ? view.peer?.reachable === true && view.peer.role === 'protected'
-      ? 'This comparison used a normal slave snapshot. The other computer now reports protected history; run a new check before recovery.'
-      : 'Comparison complete. The checked snapshot came from a normal slave. Normal mirroring is automatic. Differences can reflect snapshot age or master deletions; they cannot be recovered from this comparison.'
-      : hasMissing(view) ? 'Check complete. Review the missing history before recovering or resuming mirroring.'
-      : 'No missing entries were found. Review any conflicting or skipped history, then confirm replacement to resume mirroring.',
+      ? 'This check used a normal slave snapshot. The other computer now reports protected history; run a new check before recovery.'
+      : 'Source check complete. The checked snapshot came from a normal slave. Normal mirroring is automatic. Gaps and conflicts were not assessed; this check does not authorize recovery.'
+      : 'Source check complete. Recovery will compare history and import missing entries once. Gaps, conflicts and model changes have not yet been assessed.',
     recovering: 'Recovering gaps and rebuilding the model. Heating control remains available with the current model.',
     complete: 'Recovery is complete. Review the result, then resume mirroring to update the other computer from this master.',
     resolved: recovery.report?.recoverySkipped === true ? 'The previous replacement completed without recovering gaps. The other computer’s unmatched history was discarded. See Paired computers for current mirroring status.'
       : 'The previous recovery and verified replacement completed. See Paired computers for current mirroring status.',
-    error: 'The check or recovery could not finish. Review the current computer roles, then check again before retrying.',
+    error: pairIssueHelp({ error: recovery.error }) || 'The check or recovery could not finish. Review the current computer roles, then check again before retrying.',
   }[recovery.state] ?? '';
   const peerProtected = peer.reachable === true && peer.role === 'protected';
   const peerAlsoMaster = view.role === 'master' && peer.reachable === true && peer.role === 'master';
@@ -229,9 +237,8 @@ export function pairDisplay(view, { now = Date.now(), formatTime = at => new Dat
       : state === 'master' && view.canControl !== true && !view.transition ? 'Master control is unavailable · waiting for local readiness.'
       : brokerTone === 'attention' ? 'Device MQTT connection needs attention · open details to check local readiness.' : '';
   const attention = currentIssue || phase || (recovery.state === 'ready' ? mirrorComparison(view) ? peerProtected
-        ? 'Other computer now reports protected history · check again before recovery.' : 'History comparison complete · check connection status for current mirroring.'
-        : hasMissing(view) ? `Check ready · ${recovery.preview.counts.missing} missing entries · review before continuing.`
-        : 'No missing entries · review protected history before resuming mirroring.'
+        ? 'Other computer now reports protected history · check again before recovery.' : 'Source check complete · check connection status for current mirroring.'
+        : 'Source checked · recover to compare and import missing history.'
         : recovery.state === 'complete' ? 'Recovery complete · ready to resume mirroring.'
           : view.role === 'master' && peerProtected ? 'Other computer’s history is protected · open details to recover and resume mirroring.' : '');
   return { state, title: `${roleName(view.role)}${state === 'transition' ? ' · changing role' : ''}`, summary, peerStat, syncStat, attention,
@@ -253,25 +260,24 @@ export function pairActionHelp(view) {
       : view?.actions?.reset === true ? 'Choose whether to keep local history or archive it and start fresh. Neither choice promotes this computer.'
       : 'Reset is unavailable until this computer’s state is confirmed.'),
     check: wait ?? (view?.recovery?.pendingRelease ? 'Verify the pending mirroring request before starting another check.'
-      : view?.actions?.['check-recovery'] === true ? view?.peer?.role === 'slave' ? 'Compare the slave snapshot with this master. Normal mirroring does not need manual recovery.'
-        : recovery === 'complete' ? 'Recovery finished. Review the result and resume mirroring in the history window; checking again does not resume it.' : 'Ready to compare. You can run this check again to refresh the preview.'
+      : view?.actions?.['check-recovery'] === true ? view?.peer?.role === 'slave' ? 'Validate the slave snapshot. Normal mirroring does not need manual recovery.'
+        : recovery === 'complete' ? 'Recovery finished. Review the result and resume mirroring in the history window; checking again does not resume it.' : 'Ready to validate the source. Gaps and conflicts are assessed during recovery.'
       : view?.peer?.reachable !== true ? 'Connect the other computer before checking its history.' : 'Checking is unavailable until this master is ready.'),
     recover: wait ?? (donorRoleChanged(view) ? 'The checked role changed. Review the current status and check again before recovery.'
-      : mirrorComparison(view) ? 'Normal slave snapshots are comparison only. Master changes and deletions propagate through mirroring.'
+      : mirrorComparison(view) ? 'Normal slave snapshots are checked for source validity only. Master changes and deletions propagate through mirroring.'
       : checked ? view?.peer?.reachable !== true ? 'Reconnect the other computer before confirming recovery of its protected history.'
         : view?.actions?.recover === true ? 'The checked snapshot is ready. Review the preview, then confirm recovery.'
-        : count(view.recovery?.preview?.counts?.missing) === 0 ? 'No missing entries need recovery. Review the protected history before resuming mirroring.' : 'The preview is ready; wait for this master to be ready to recover.'
+        : 'The source is checked; wait for this master to be ready to recover.'
       : recovery === 'complete' ? 'Recovery is complete. Resume mirroring in the history window to finish.' : recovery === 'resolved' ? 'The previous recovery decision is complete. Current mirroring status is shown above.'
         : recovery === 'error' ? 'The previous operation failed. Complete a new check before recovering.'
           : 'Check the other computer’s history first, then review the result before recovering.'),
     rejoin: wait ?? (view?.recovery?.pendingRelease ? 'Verify the previous mirroring request using its saved identity. A new replacement is not started.'
       : mirrorComparison(view) ? view?.peer?.reachable === true && view.peer.role === 'protected'
       ? 'Run a new check of the protected history before resuming mirroring.'
-      : 'This comparison does not require resuming mirroring. Normal synchronization follows the connection status above.'
+      : 'This source check does not require resuming mirroring. Normal synchronization follows the connection status above.'
       : view?.peer?.reachable === true && view.peer.role === 'slave' && !view?.recovery?.pendingRelease ? 'Normal mirroring is already enabled; there is nothing to resume.'
       : ['ready', 'complete'].includes(recovery) && view?.peer?.reachable !== true ? 'Reconnect the other computer before replacing its database and resuming mirroring.'
-      : checked ? hasMissing(view) ? 'Optional: skip recovery and discard the other computer’s unmatched history. A separate confirmation is required.'
-        : 'No missing entries were found. Confirm replacement of conflicting or skipped history to resume mirroring.'
+      : checked ? 'Optional: skip recovery and discard the other computer’s unmatched history. Missing history has not been assessed. A separate confirmation is required.'
       : recovery === 'complete' ? 'Recovery finished. Confirm replacement to resume mirroring.'
         : recovery === 'resolved' ? 'The previous replacement completed. Current mirroring status is shown above.'
           : 'Complete a check first. Then recover the gaps, or explicitly choose to discard them.'),
@@ -340,7 +346,7 @@ export function createPairActions({ request, storage, confirm = message => confi
         ? 'Mirroring completion is unconfirmed. Verify the saved request with the other computer.'
         : 'The operation could not finish. Review the current computer roles and operation status before trying again.'
         : pending.action === 'check-recovery' ? mirrorComparison(next)
-          ? 'Comparison complete. Review the result in the history window.' : 'Check complete. Review the recovery preview in the history window.'
+          ? 'Source check complete. Review the result in the history window.' : 'Source check complete. Review the source before recovering in the history window.'
           : 'Operation completed. The current status is shown above.';
       pending = null; persist();
     }
@@ -351,16 +357,16 @@ export function createPairActions({ request, storage, confirm = message => confi
     busy = true; notify();
     if (body) {
       const confirmation = body.action === 'rejoin' && view.recovery?.pendingRelease?.requestId === body.requestId ? null : pairConfirmation(body.action, { discardUnrecovered: body.discardUnrecovered,
-        counts: view.recovery?.preview?.counts, mode: body.mode, bootstrapPending: view.bootstrapPending && !(view.peer?.reachable === true && view.peer.role === 'master') });
+        mode: body.mode, bootstrapPending: view.bootstrapPending && !(view.peer?.reachable === true && view.peer.role === 'master') });
       let accepted = !confirmation;
       try { if (confirmation) accepted = await confirm(confirmation); } catch { /* A blocked dialog is a cancelled action. */ }
       if (!accepted || !available || !pairActionAllowed(view, body.action)) { busy = false; notify(); return false; }
       if (body.action === 'reset' && (body.resetToken !== view.reset?.token || (view.reset?.pendingMode && view.reset.pendingMode !== body.mode) || (body.mode === 'keep' && view.reset?.keepBlockedReason))) {
         busy = false; error = true; message = 'This computer’s pairing state changed. Review the current status before resetting it.'; notify(); return false;
       }
-      if ((body.previewId && body.previewId !== view.recovery?.preview?.previewId)
+      if (!matchesRelease(view, body) && ((body.previewId && body.previewId !== view.recovery?.preview?.previewId)
           || (body.discardUnrecovered && !checkedPreview(view))
-          || (body.action === 'rejoin' && !body.discardUnrecovered && view.recovery?.state !== 'complete')) {
+          || (body.action === 'rejoin' && !body.discardUnrecovered && view.recovery?.state !== 'complete'))) {
         busy = false; error = true; message = 'The recovery preview changed. Review the current check before confirming again.'; notify(); return false;
       }
       pending = body; persist();
@@ -394,7 +400,9 @@ export function createPairActions({ request, storage, confirm = message => confi
       if (action === 'reset' && (!resetModes.includes(options.mode) || (options.mode === 'fresh' && options.restorationConfirmed !== true) || (view.reset?.pendingMode && view.reset.pendingMode !== options.mode) || (options.mode === 'keep' && view.reset?.keepBlockedReason))) return Promise.resolve(false);
       return send({ action, ...(action === 'reset' ? { mode: options.mode, resetToken: view.reset.token, ...(options.mode === 'fresh' ? { restorationConfirmed: true } : {}) } : {}), requestId: action === 'rejoin' && view.recovery?.pendingRelease ? view.recovery.pendingRelease.requestId : requestId(), ...(action !== 'check-recovery' ? { confirmed: true } : {}),
         ...(action === 'recover' ? { previewId: view.recovery.preview.previewId } : {}),
-        ...(action === 'rejoin' && checkedPreview(view) ? { discardUnrecovered: true, previewId: view.recovery.preview.previewId } : {}) });
+        ...(action === 'rejoin' && savedRelease(view) ? view.recovery.pendingRelease.discardUnrecovered
+          ? { discardUnrecovered: true, previewId: view.recovery.pendingRelease.previewId } : {}
+          : action === 'rejoin' && checkedPreview(view) ? { discardUnrecovered: true, previewId: view.recovery.preview.previewId } : {}) });
     } };
 }
 
@@ -485,7 +493,7 @@ export function createPairPanel({ document, request, storage, confirm, afterMuta
       : state.view.peer?.reachable !== true ? 'Reconnect the other computer to run a new check.'
       : recoveryNeeded ? 'Existing master history takes precedence.' : 'Opens with the other computer selected.';
     $('pairing-rejoin').textContent = state.view.recovery?.pendingRelease ? 'Verify mirroring completion'
-      : checkedPreview(state.view) && hasMissing(state.view) && !mirrorComparison(state.view) ? 'Skip recovery and resume mirroring' : 'Resume mirroring';
+      : checkedPreview(state.view) && !mirrorComparison(state.view) ? 'Skip recovery and resume mirroring' : 'Resume mirroring';
     $('pairing-rejoin').dataset.tone = checkedPreview(state.view) && !mirrorComparison(state.view) ? 'attention' : 'neutral';
     $('pairing-rejoin-help').dataset.tone = $('pairing-rejoin').dataset.tone;
     for (const action of actions.filter(action => !['check-recovery', 'recover'].includes(action))) {

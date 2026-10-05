@@ -23,7 +23,9 @@ const canBootstrap = local => local.bootstrapPending === true && !local.everWrit
 const sameDonor = (left, right) => left && right && left.claim.nodeId === right.claim.nodeId
   && left.claim.epoch === right.claim.epoch && left.claim.role === right.claim.role
   && left.digest === right.digest && left.bytes === right.bytes;
-const needsRecovery = preview => preview?.counts?.missing > 0 || preview?.model?.status === 'rebuild-required';
+const checkedSource = preview => preview?.status === 'checked' && preview.model?.status === 'not-assessed'
+  && typeof preview.previewId === 'string' && /^[a-f0-9]{64}$/.test(preview.previewId)
+  && preview.counts === undefined;
 
 // Peer status is observation only. Never copy private diagnostics or use it as
 // permission to replace history or acquire equipment control.
@@ -342,9 +344,10 @@ export class PairManager {
           || local.role === 'protected' && local.everWritten && !!local.activeDbPath),
         'check-recovery': free && primary && !recovery.pendingRelease && this.peerState.reachable && this.peerState.role !== 'master',
         recover: free && primary && protectedDonor && this.peerState.reachable
-          && recovery.state === 'ready' && needsRecovery(recovery.preview),
+          && recovery.state === 'ready' && checkedSource(recovery.preview),
         rejoin: free && primary && (protectedDonor || Boolean(recovery.pendingRelease))
-          && ['ready', 'complete'].includes(recovery.state) && this.peerState.reachable } };
+          && (Boolean(recovery.pendingRelease) || recovery.state === 'complete' || recovery.state === 'ready' && checkedSource(recovery.preview))
+          && this.peerState.reachable } };
   }
 
   schedule(delay) {
@@ -757,9 +760,9 @@ export class PairManager {
         peer: this.peer, signal: this.abort.signal, publish: false,
         guard: async () => { if (!this.canControl()) throw pairError('not_master'); } });
       const preview = await this.hooks.recoveryPreview({ donorPath: donor.dbPath, requestId });
-      if (typeof preview?.previewId !== 'string' || !/^[a-f0-9]{64}$/.test(preview.previewId))
+      if (!checkedSource(preview))
         throw pairError('recovery_unavailable');
-      const completed = completedReceipt.report && sameDonor(previous.metadata, metadata) && !needsRecovery(preview);
+      const completed = completedReceipt.report && sameDonor(previous.metadata, metadata);
       await this.state.update({ recovery: { state: completed ? 'complete' : 'ready', metadata, donorPath: donor.dbPath, preview,
         ...(completed ? { report: previous.report } : {}) } });
     } catch (error) {
@@ -772,7 +775,7 @@ export class PairManager {
     if (!this.canControl()) throw pairError('not_master');
     const recovery = this.state.value.recovery;
     if (recovery?.state !== 'ready' || recovery.metadata?.claim?.role !== 'protected'
-      || body.previewId !== recovery.preview.previewId || !needsRecovery(recovery.preview)) throw pairError('invalid_transition');
+      || !checkedSource(recovery.preview) || body.previewId !== recovery.preview.previewId) throw pairError('invalid_transition');
     if (!this.hooks.recoveryApply) throw pairError('recovery_unavailable');
     await this.assertRecoveryDonor(recovery);
     await this.state.update({ recovery: { ...recovery, state: 'recovering' } });
@@ -802,12 +805,17 @@ export class PairManager {
     const recovery = this.state.value.recovery;
     if (recovery?.metadata?.claim?.role !== 'protected') throw pairError('recovery_required');
     const skipRecovery = body.discardUnrecovered === true;
-    if (skipRecovery) {
-      if (recovery?.state !== 'ready') throw pairError('recovery_required');
+    let operation = recovery.releaseOperation;
+    if (operation) {
+      // A saved release is an already authorized replacement with an uncertain
+      // result. Verify exactly that request even after the source-check UI
+      // contract changes; an old preview alone grants no new permission.
+      if (operation.requestId !== body.requestId || operation.skipRecovery !== skipRecovery
+        || skipRecovery && body.previewId !== recovery.preview?.previewId) throw pairError('invalid_transition');
+    } else if (skipRecovery) {
+      if (recovery?.state !== 'ready' || !checkedSource(recovery.preview)) throw pairError('recovery_required');
       if (body.previewId !== recovery.preview.previewId) throw pairError('invalid_transition');
     } else if (recovery?.state !== 'complete') throw pairError('recovery_required');
-    let operation = recovery.releaseOperation;
-    if (operation && (operation.requestId !== body.requestId || operation.skipRecovery !== skipRecovery)) throw pairError('invalid_transition');
     if (!operation) {
       await this.assertRecoveryDonor(recovery);
       const metadata = await this.exportSnapshot({ force: true, pin: true });

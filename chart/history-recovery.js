@@ -1,6 +1,7 @@
 import { confirmAction } from './confirmation.js';
 import { pairActionAllowed, pairDisplay } from './pair-status.js';
 import { renderRecoveryReport } from './history-recovery-report.js';
+import { RECOVERY_ERROR_CODES, recoveryErrorMessage } from '../src/recovery/errors.js';
 
 const pendingKey = 'stmq-history-recovery-pending';
 const actions = new Set(['check', 'recover', 'review-revert', 'revert', 'review-restore', 'restore']);
@@ -8,15 +9,10 @@ const mutation = action => ['recover', 'revert', 'restore'].includes(action);
 const uuid = /^[a-f0-9]{8}-[a-f0-9]{4}-[1-5][a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/i;
 const total = value => Number.isSafeInteger(value) && value >= 0 ? value : null;
 const activeJob = view => view?.busy === true || view?.job?.status === 'running';
-const phaseLabels = { checking: 'Checking the selected history.', snapshotting: 'Preparing a consistent copy.',
+const phaseLabels = { checking: 'Validating the selected history source.', snapshotting: 'Preparing a consistent copy.',
   importing: 'Recovering missing history.', rebuilding: 'Rebuilding the model. Heating control remains available.',
   'catching-up': 'Catching up with current observations.', publishing: 'Publishing the verified result.' };
-const sourceErrors = new Set([
-  'This database uses an unsupported format. Use a backup from this software version.',
-  'This database is damaged or malformed. Preserve the original file and choose an intact current backup.',
-  'This backup belongs to a different simulation or live environment. Choose history for the current environment.',
-  'This recovery affects saved learning in another input. Keep it active or use a separate database for that input.',
-]);
+const sourceErrors = new Set(RECOVERY_ERROR_CODES.map(recoveryErrorMessage));
 function requestId() {
   if (globalThis.crypto?.randomUUID) return globalThis.crypto.randomUUID();
   const bytes = new Uint8Array(16);
@@ -38,7 +34,7 @@ function savedRequest(storage) {
 }
 
 export function recoveryConfirmation(action) {
-  return { recover: 'Recover the checked missing history? Existing history takes precedence. Conflicting and unsupported entries are skipped. The model is rebuilt when needed while heating control remains available. Current settings and control permissions stay in place.',
+  return { recover: 'Recover missing history from the checked source? Recovery compares and imports history once. Existing history takes precedence; conflicting and unsupported entries are skipped. The model is rebuilt when needed while heating control remains available. Current settings and control permissions stay in place.',
     revert: 'Revert this recovery? Its accepted history will be excluded and the model rebuilt from the remaining history. Later independent observations and corrections stay in place. You can restore this recovery later.',
     restore: 'Restore this recovery? Its accepted history will be included again and the model rebuilt with current observations and corrections. Current settings and control permissions stay in place.' }[action];
 }
@@ -65,9 +61,13 @@ export function createHistoryRecoveryActions({ request, storage, onChange = () =
   async function send(body) {
     if (busy || !connected || !view || view.readOnly || view.available === false || body && (pending || activeJob(view))) return false;
     if (body && mutation(body.action)) {
-      const checkedPreview = () => body.action === 'recover' && body.sourceId === 'peer'
-        ? view.peer?.recovery?.preview?.previewId ?? (view.job?.source?.id === 'peer' ? view.preview?.previewId : undefined)
-        : view.preview?.previewId;
+      const checkedPreview = () => {
+        const checked = body.action === 'recover' && body.sourceId === 'peer'
+          ? view.peer?.recovery?.preview ?? (view.job?.source?.id === 'peer' ? view.preview : undefined) : view.preview;
+        if (body.action === 'recover' && (checked?.status !== 'checked' || checked.model?.status !== 'not-assessed'
+          || checked.counts !== undefined)) return undefined;
+        return checked?.previewId;
+      };
       const checkedId = checkedPreview();
       if (!checkedId || body.previewId !== checkedId) return false;
       busy = true; notify();
@@ -109,12 +109,16 @@ export function createHistoryRecoveryActions({ request, storage, onChange = () =
 export function recoveryJobText(view) {
   const job = view?.job;
   if (!job) return '';
-  if (job.status === 'running') return phaseLabels[job.progress?.phase]
-    ?? (job.kind === 'check' ? 'Checking the selected history.' : job.kind?.startsWith('review-') ? 'Reviewing the effect on history and learning.' : 'Updating history and the model.');
+  if (job.status === 'running') {
+    const phase = phaseLabels[job.progress?.phase]
+      ?? (job.kind === 'check' ? 'Validating the selected history source.' : job.kind?.startsWith('review-') ? 'Reviewing the effect on history and learning.' : 'Updating history and the model.');
+    const processed = total(job.progress?.processed);
+    return `${phase}${processed !== null ? ` ${processed} ${job.progress?.phase === 'checking' ? 'source groups checked' : 'entries processed'}.` : ''}`;
+  }
   if (job.status === 'interrupted') return 'Recovery was interrupted. Accepted history remains recorded; review the previous recovery to revert it, or check the source again to finish.';
   if (job.status === 'error') return sourceErrors.has(job.error) ? job.error
     : 'Recovery could not finish. The previous model remains available. Open Previous recoveries to review any accepted history before retrying.';
-  if (job.status === 'complete') return { check: 'Check complete. Review the result before recovering.', recover: 'History recovery complete.',
+  if (job.status === 'complete') return { check: 'Source check complete. Review the result before recovering.', recover: 'History recovery complete.',
     'review-revert': 'Review complete. Reverting excludes this recovery’s accepted history.', revert: 'Recovery reverted.',
     'review-restore': 'Review complete. Restoring includes this recovery’s accepted history again.', restore: 'Recovery restored.' }[job.kind] ?? 'Operation complete.';
   return '';
@@ -192,7 +196,7 @@ export function createHistoryRecoveryPanel({ document, request, upload, storage,
     $('history-recovery-retry').hidden = !state.pending;
     $('history-recovery-retry').disabled = state.busy || !state.connected || readonly;
     $('history-recovery-source-help').textContent = peer
-      ? currentPair?.peer?.role === 'slave' ? 'Compare the slave snapshot with this master. Normal mirroring applies the master’s changes automatically.'
+      ? currentPair?.peer?.role === 'slave' ? 'Validate the slave snapshot. Normal mirroring applies the master’s changes automatically.'
         : 'Check preserved history before recovery. Resuming mirroring is a separate decision.'
       : 'Use a backup from this installation and software version. Checking does not change recorded history.';
     const comparison = peer && peerRecovery?.donorRole === 'slave';
@@ -209,7 +213,7 @@ export function createHistoryRecoveryPanel({ document, request, upload, storage,
       { formatTime, report: finished, comparison, source: peer ? 'peer' : 'backup' });
     const canRecover = mode === 'recover' && !sourceDirty && (peer ? pairActionAllowed(currentPair, 'recover')
       : selectedJob && !!checked?.previewId && state.view?.job?.kind === 'check' && state.view?.job?.status === 'complete'
-        && (total(checked.counts?.missing) > 0 || checked.model?.status === 'rebuild-required'));
+        && checked.status === 'checked' && checked.model?.status === 'not-assessed' && checked.counts === undefined);
     $('history-recovery-apply').hidden = !canRecover || comparison;
     $('history-recovery-apply').disabled = blocked || !canRecover;
     $('history-recovery-revision-apply').hidden = !isRevision;

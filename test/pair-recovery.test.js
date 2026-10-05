@@ -17,7 +17,7 @@ import { Engine } from '../src/app/engine.js';
 
 import { fixture, observation, sample, recover, learningCatchup, energyCatchup, start, HOUR, W } from './helpers/recovery-fixture.js';
 
-test('recovery preview is read only and master wins point and partial energy conflicts', { timeout: 10000 }, async t => {
+test('source check creates no trial database and the single merge preserves master conflicts', { timeout: 10000 }, async t => {
   const f = fixture(t);
   observation(f.master, start);
   const donor = await f.donor();
@@ -29,12 +29,18 @@ test('recovery preview is read only and master wins point and partial energy con
   observation(donor, start + 4 * HOUR, 9, { signal: 'property_energy_l1', unit: 'kWh',
     raw: { intervalStart: start + 2 * HOUR, intervalEnd: start + 4 * HOUR } });
   const donorPath = await f.snapshot(donor), before = f.master.observations();
-  const preview = await recoveryPreview({ signal: f.signal, masterPath: f.master.path, donorPath, input: 'mqtt', workDirectory: join(f.directory, 'work') });
+  const files = readdirSync(f.directory), progress = [];
+  const preview = await recoveryPreview({ signal: f.signal, masterPath: f.master.path, donorPath, input: 'mqtt',
+    onProgress: value => progress.push(value) });
   assert.deepEqual(f.master.observations(), before);
-  assert.equal(preview.counts.missing, 1); assert.equal(preview.counts.conflicts, 2);
-  assert.deepEqual(readdirSync(join(f.directory, 'work')), [], 'private comparison snapshots are cleaned');
+  assert.equal(preview.status, 'checked'); assert.equal(preview.model.status, 'not-assessed');
+  assert.equal(preview.counts, undefined, 'source counts are not missing or conflict counts');
+  assert.equal(preview.tables.find(row => row.name === 'observations').count, 4);
+  assert(progress.length > 0 && progress.every(value => value.phase === 'checking'));
+  assert.deepEqual(readdirSync(f.directory), files, 'check never creates a trial database');
   const result = await recoverHistory({ signal: f.signal, store: f.master, donorPath, preview });
   assert.equal(result.report.status, 'complete'); assert.equal(result.report.imported, 1);
+  assert.equal(result.report.counts.conflicts, 2);
   assert.equal(f.master.observations().find(row => row.sourceTime === start + HOUR).value, 22);
   assert.equal(f.master.observations().filter(row => row.signal === 'property_energy_l1').reduce((sum, row) => sum + row.value, 0), 1);
   const again = await recover(f, donorPath);
@@ -134,6 +140,38 @@ test('a modified donor invalidates its preview before source import', async t =>
   const preview = await recoveryPreview({ signal: f.signal, masterPath: f.master.path, donorPath });
   const changed = new Store(donorPath); observation(changed, start + HOUR); changed.close();
   await assert.rejects(recoverHistory({ signal: f.signal, store: f.master, donorPath, preview }), /preview is stale/);
+  assert.equal(f.master.observations().length, 0);
+});
+
+test('source check stays read only with a master writer and recovery uses later master evidence', async t => {
+  const f = fixture(t), donor = await f.donor();
+  observation(donor, start, 20);
+  observation(donor, start + HOUR, 21);
+  const donorPath = await f.snapshot(donor);
+  f.master.db.exec('BEGIN IMMEDIATE');
+  let preview;
+  try {
+    preview = await recoveryPreview({ signal: f.signal, masterPath: f.master.path, donorPath });
+    assert.equal(preview.status, 'checked');
+    assert.equal(preview.counts, undefined);
+  } finally { f.master.db.exec('ROLLBACK'); }
+  observation(f.master, start, 25);
+  const result = await recoverHistory({ signal: f.signal, store: f.master, donorPath, preview });
+  assert.equal(result.report.counts.conflicts, 1);
+  assert.equal(result.report.imported, 1);
+  assert.equal(f.master.observations().find(row => row.sourceTime === start).value, 25);
+});
+
+test('a retired trial-merge preview cannot authorize source recovery', async t => {
+  const f = fixture(t), donor = await f.donor();
+  observation(donor, start);
+  const donorPath = await f.snapshot(donor);
+  const checked = await recoveryPreview({ signal: f.signal, masterPath: f.master.path, donorPath });
+  const { previewId, status, ...retired } = checked;
+  retired.model = { status: 'unchanged', acceptedSamples: 0, unsupported: 0 };
+  retired.counts = { missing: 1, duplicates: 0, conflicts: 0, skipped: 0 };
+  retired.previewId = learningVersion(retired);
+  await assert.rejects(recoverHistory({ signal: f.signal, store: f.master, donorPath, preview: retired }), /Check the other instance/);
   assert.equal(f.master.observations().length, 0);
 });
 

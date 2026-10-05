@@ -4,6 +4,7 @@ import { chmod, lstat, mkdir, open, opendir, rename, rm } from 'node:fs/promises
 import { dirname, join, resolve } from 'node:path';
 import { markRecoveryFailed } from '../recovery/state.js';
 import { RECOVERABLE_TABLES } from '../storage/schema.js';
+import { recoveryFailure } from '../recovery/errors.js';
 
 const UUID = /^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/;
 const EXPORT = /^stmq-\d{4}-\d{2}-\d{2}T\d{2}-\d{2}-\d{2}-\d{3}Z(?:-\d+)?\.sqlite$/;
@@ -44,7 +45,7 @@ function validReport(value) {
     || !value.tables.every(row => fields(row, ['name', 'missing', 'conflicts', 'duplicates', 'skipped', 'count'])
       && tables.includes(row.name) && Object.entries(row).every(([field, number]) => field === 'name' || count(number))))) return false;
   if (value.model && (!fields(value.model, ['status', 'acceptedSamples', 'unsupported'])
-    || !['unchanged', 'rebuild-required', 'rebuilt'].includes(value.model.status)
+    || !['not-assessed', 'unchanged', 'rebuild-required', 'rebuilt'].includes(value.model.status)
     || Object.entries(value.model).some(([field, number]) => field !== 'status' && !count(number)))) return false;
   const source = value.sourceAssessment;
   if (source && (!fields(source, ['scope', 'selectedInput', 'learningInputs', 'skippedLearning', 'skippedLearningRecords', 'installationIdentity'])
@@ -77,11 +78,7 @@ function validState(state) {
   return !review || fields(review, ['kind', 'source', 'preview']) && ['recover', 'revert', 'restore'].includes(review.kind)
     && (!review.source || validSource(review.source)) && validReport(review.preview);
 }
-const safeError = error => error?.code === 'database_schema_mismatch' ? 'This database uses an unsupported format. Use a backup from this software version.'
-  : error?.code === 'database_schema_invalid' ? 'This database is damaged or malformed. Preserve the original file and choose an intact current backup.'
-    : error?.code === 'recovery_scope_mismatch' ? 'This backup belongs to a different simulation or live environment. Choose history for the current environment.'
-      : error?.code === 'recovery_other_input' ? 'This recovery affects saved learning in another input. Keep it active or use a separate database for that input.'
-  : 'Recovery could not finish. The existing model remains available. Check the source and review again to retry.';
+const safeError = error => recoveryFailure({ code: error?.code, errcode: error?.errcode }).error;
 
 /** One application-owned coordinator serves local backups and paired snapshots.
  * Paths remain private; browser requests identify sources issued by this owner.
@@ -195,7 +192,7 @@ export function createHistoryRecovery({ store, getEngine, canControl = () => tru
     return begin('check', requestId, source, async ({ signal, onProgress, isCurrent }) => {
       const module = await recoveryModule();
       const preview = await module.recoveryPreview({ masterPath: store.path, donorPath, input: input(),
-        workDirectory: join(directory, 'work'), signal, onProgress });
+        signal, onProgress });
       if (!isCurrent()) throw fail('Recovery authority changed.');
       state.review = { kind: 'recover', source, preview }; persist();
       return preview;

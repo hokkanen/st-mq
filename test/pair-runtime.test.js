@@ -145,7 +145,7 @@ test('outage promotion, returning Hassio, manual gap recovery and exact rejoin r
   assert.equal(b.pair.state.value.role, 'protected'); assert.equal(b.engine, undefined);
   await historyAction(returned, { action: 'check', requestId: randomUUID() });
   const preview = returned.pair.state.value.recovery.preview;
-  assert.match(preview.previewId, /^[a-f0-9]{64}$/); assert.ok(preview.counts.missing >= 1);
+  assert.match(preview.previewId, /^[a-f0-9]{64}$/); assert.equal(preview.status, 'checked'); assert.equal(preview.counts, undefined);
   await historyAction(returned, command('recover', { previewId: preview.previewId }));
   assert.equal(b.pair.state.value.role, 'protected');
   assert.equal(returned.store.observations().find(row => row.sourceTime === now - 3 * W).value, 21);
@@ -175,7 +175,7 @@ test('HTTP rejoin can explicitly skip checked gaps while preserving the master h
   connect(master, donor); await donor.pair.observeClaim(master.pair.state.claim());
   await apiAction(master, command('check-recovery'));
   const preview = master.status().recovery.preview;
-  assert.ok(preview.counts.missing > 0);
+  assert.equal(preview.status, 'checked'); assert.equal(preview.counts, undefined);
   const before = { observations: master.store.observations(), checkpoint: structuredClone(master.engine.checkpoint),
     epoch: master.store.learningEpoch('mqtt'), journal: master.store.db.prepare('SELECT * FROM learning_journal_all').all() };
   for (const body of [command('recover', { previewId: preview.previewId, discardUnrecovered: true }),
@@ -214,7 +214,7 @@ test('normal mirror checks preserve unavailable evidence and never restore delib
     await apiAction(master, command('check-recovery'));
     const status = master.status();
     assert.equal(status.recovery.donorRole, 'slave');
-    assert.equal(status.recovery.preview.counts.missing, 0, 'A verified mirror must not manufacture missing observations');
+    assert.equal(status.recovery.preview.counts, undefined, 'A source check must not claim a gap comparison');
     assert.equal(status.actions.recover, false);
     assert.equal(status.actions.rejoin, false);
     assert.doesNotMatch(pairDisplay(status).recovery, /discard|then resume|recover the gaps/i);
@@ -225,7 +225,7 @@ test('normal mirror checks preserve unavailable evidence and never restore delib
   const removed = master.store.db.prepare("SELECT id FROM observations WHERE source='synthetic' AND value=0").get().id;
   master.store.db.prepare('DELETE FROM observations WHERE id=?').run(removed);
   await apiAction(master, command('check-recovery'));
-  assert.ok(master.status().recovery.preview.counts.missing > 0, 'The old mirror still has the deliberately deleted record');
+  assert.equal(master.status().recovery.preview.counts, undefined, 'The source inventory does not grant recovery authority');
   assert.equal(master.status().actions.recover, false, 'A snapshot difference cannot authorize importing an old master deletion');
   assert.equal(master.status().actions.rejoin, false);
   await assert.rejects(master.pair.action('recover', command('recover', { previewId: master.status().recovery.preview.previewId })));
@@ -235,7 +235,10 @@ test('normal mirror checks preserve unavailable evidence and never restore delib
   await master.pair.exportSnapshot({ force: true });
   await slave.pair.synchronize(master.pair.state.claim());
   await apiAction(master, command('check-recovery'));
-  assert.equal(master.status().recovery.preview.counts.missing, 0, 'The next ordinary mirror applies the deletion');
+  assert.equal(master.status().recovery.preview.counts, undefined);
+  const mirrored = new Store((await readReplicaPublication(slave.pair.config.snapshotDirectory)).dbPath, { readOnly: true });
+  try { assert.equal(mirrored.db.prepare('SELECT 1 FROM observations WHERE id=?').get(removed), undefined, 'The next ordinary mirror applies the deletion'); }
+  finally { mirrored.close(); }
   await master.pair.poll();
   const masterStatus = master.status(), slaveStatus = slave.status();
   assert.equal(masterStatus.peer.role, slaveStatus.role);

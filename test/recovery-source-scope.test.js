@@ -39,7 +39,7 @@ test('other current learning inputs are counted as skipped without translating t
   assert.equal(preview.sourceAssessment.scope, 'live');
   assert.deepEqual(preview.sourceAssessment.learningInputs, ['providers']);
   assert.equal(preview.sourceAssessment.skippedLearning.providers, 1);
-  assert.equal(preview.tables.find(row => row.name === 'other_learning_inputs').skipped, 1);
+  assert.equal(preview.tables.find(row => row.name === 'other_learning_inputs').count, 1);
   assert.equal(target.observations().length, 0);
   await recoverHistory({ store: target, donorPath: path, input: 'mqtt', preview,
     source: { kind: 'upload', label: 'Uploaded database' }, operationId: randomUUID() });

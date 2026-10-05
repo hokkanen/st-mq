@@ -9,6 +9,15 @@ Run checks from the repository root. Ordinary tests, browser fixtures, container
 checks and Garage simulations use synthetic data. The separately invoked live
 suite contacts configured providers; see [live testing](live-testing.md).
 
+History recovery checks must validate and inventory the source without making a
+trial database or importing rows. Acceptance and model impact are assessed once,
+against the current master during recovery. `test/recovery-scheduling.test.js`
+exercises progress persistence and concurrent controller writes while import
+batches yield their SQLite write lock. Reversal tests cover the same worker
+scheduling during journal reconstruction. Keep phase cohorts atomic when bounding
+transaction work; an event-loop yield in the worker alone does not prevent it
+from repeatedly taking the lock before the controller can write.
+
 ## Automated tests and build
 
 ```sh

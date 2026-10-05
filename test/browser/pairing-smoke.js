@@ -17,8 +17,7 @@ const directory = mkdtempSync(join(tmpdir(), 'stmq-pairing-browser-'));
 const screenshots = mkdtempSync(join(tmpdir(), 'stmq-pairing-screenshots-'));
 const now = Date.now(), previewId = 'a'.repeat(64), resetToken = 'b'.repeat(64);
 const actions = [], pending = new Map(), errors = [], prompts = [], measurements = [];
-const preview = { previewId, counts: { missing: 12, conflicts: 3, duplicates: 4, skipped: 2 },
-  period: { from: now - 8 * 86400_000, to: now - 86400_000 }, model: { status: 'rebuild-required', unsupported: 2 } };
+const preview = { previewId, status: 'checked', tables: [{ name: 'observations', count: 21 }], model: { status: 'not-assessed' } };
 const master = (overrides = {}) => {
   const view = { role: 'master', canControl: true, busy: false,
     peer: { reachable: true, role: 'slave', lastSeenAt: now }, vip: { owned: true, ready: true },
@@ -284,12 +283,11 @@ try {
   }
   pair = master(); await until(`${$('pairing-peer')}.textContent.includes('connected')`);
 
-  pair = master({ recovery: { state: 'ready', donorRole: 'slave', preview: { ...preview,
-    counts: { missing: 0, conflicts: 0, duplicates: 21, skipped: 0 } } },
+  pair = master({ recovery: { state: 'ready', donorRole: 'slave', preview },
     peer: { reachable: true, role: 'slave', lastSeenAt: now, syncReceivedAt: now,
       sync: { state: 'ready', sourceAt: now - 60_000, verifiedAt: now - 30_000, bytes: 2e6 } } });
   await evaluate(`${$('pairing-history-recovery')}.click(); true`);
-  await until(`${$('history-recovery-dialog')}.open && ${$('history-recovery-preview')}.textContent.includes('History comparison')`);
+  await until(`${$('history-recovery-dialog')}.open && ${$('history-recovery-preview')}.textContent.includes('History source checked')`);
   assert.equal(await evaluate(`${$('history-recovery-source')}.value`), 'peer');
   assert.equal(await evaluate(`${$('history-recovery-apply')}.hidden`), true, 'Normal comparisons cannot become recovery');
   assert.equal(await evaluate(`${$('pairing-rejoin')}.disabled`), true);
@@ -299,7 +297,7 @@ try {
   await evaluate(`${$('pairing-history-recovery')}.click(); true`);
   await until(`${$('history-recovery-check')}.disabled === false`);
   await evaluate(`${$('history-recovery-check')}.click(); true`);
-  await until(`${$('pairing-recovery')}.textContent.includes('Checking')`);
+  await until(`${$('pairing-recovery')}.textContent.includes('Validating')`);
   assert.equal(actions.length, 1);
   assert.equal(await evaluate(`${$('history-recovery-apply')}.disabled`), true);
   await evaluate(`${$('history-recovery-close')}.click(); true`);
@@ -313,7 +311,7 @@ try {
   assert.equal(await evaluate(`${$('history-recovery-apply')}.hidden`), true);
   assert.doesNotMatch(await evaluate(`${$('history-recovery-dialog')}.textContent`), /synthetic-unrendered-detail/);
   await evaluate(`${$('history-recovery-check')}.click(); true`);
-  await until(`${$('pairing-recovery')}.textContent.includes('Checking')`);
+  await until(`${$('pairing-recovery')}.textContent.includes('Validating')`);
   assert.equal(actions.length, 2);
   pair = { ...checked(), uiOperation: { id: actions.at(-1).requestId, action: 'check-recovery', state: 'complete' } };
   await until(`${$('history-recovery-apply')}.disabled === false && !${$('history-recovery-apply')}.hidden`);
@@ -334,7 +332,7 @@ try {
   await close();
   assert.equal(await evaluate(`${$('pairing-attention')}.checkVisibility()`), true);
   pair = master({ peer: { reachable: true, role: 'protected', lastSeenAt: now },
-    recovery: { state: 'complete', donorRole: 'protected', report: { ...preview, imported: 12, model: { status: 'rebuilt' } } },
+    recovery: { state: 'complete', donorRole: 'protected', report: { status: 'complete', counts: { missing: 12, conflicts: 3, duplicates: 4, skipped: 2 }, imported: 12, model: { status: 'rebuilt' } } },
     actions: { 'check-recovery': true, recover: false, rejoin: true },
     uiOperation: { id: actions.at(-1).requestId, action: 'recover', state: 'complete', progress: { phase: 'publishing', processed: 12 } } });
   await until(`${$('pairing-rejoin')}.textContent === 'Resume mirroring' && !${$('pairing-rejoin')}.disabled`);

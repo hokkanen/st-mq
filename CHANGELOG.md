@@ -94,6 +94,13 @@ Versions follow Semantic Versioning. `-dev.N` denotes a development prerelease.
 
 ### Fixed
 
+- History recovery validates and inventories its source without a trial import,
+  then merges history once after confirmation. Missing, conflicting and skipped
+  counts are reported by that merge; model rebuilding runs only when needed.
+  Recovery batches release the database and wait for the controller's next turn,
+  preventing repeated worker writes from starving normal recording.
+  Recovery errors now distinguish database contention, storage failures and
+  invalid data instead of reporting an unrelated peer protocol failure.
 - Home Assistant deployment refreshes Supervisor's schema and defaults from the
   committed source before rebuilding, then verifies them against the image.
   Saved installation settings and credentials remain unchanged; retired fields

@@ -2,7 +2,7 @@ import { parentPort, workerData } from 'node:worker_threads';
 import { randomUUID } from 'node:crypto';
 import { mkdir, mkdtemp } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
-import { setImmediate as yieldTurn } from 'node:timers/promises';
+import { yieldToController as yieldTurn } from './scheduler.js';
 import { Store } from '../storage/store.js';
 import { RECOVERABLE_TABLES, recoveryRecordKey } from '../storage/schema.js';
 import { selectedHistory, recoverySource, recoveryEvidenceVersion } from './ledger.js';
@@ -10,6 +10,7 @@ import { applyLearningRecord, learningVersion, LEARNING_ALGORITHM } from '../app
 import { fireplaceLearningContext } from '../app/fireplace-inputs.js';
 import { sensorRevision } from '../app/sensor-inputs.js';
 import { HistoryMerge } from './merge.js';
+import { recoveryFailure } from './errors.js';
 
 let path = workerData.masterPath;
 if (workerData.mode === 'revision-preview') {
@@ -214,7 +215,7 @@ async function restorationConflicts({ apply = false } = {}) {
   // the recorder continues to append independent observations.
   current.db.exec('BEGIN');
   try {
-    const merge = new HistoryMerge({ target: current, donor: current, donorDigest: '', input });
+    const merge = new HistoryMerge({ target: current, donor: current, donorDigest: '', input, yieldControl: yieldTurn });
     let after = 0, token = null;
     for (;;) {
       const rows = db.prepare(`SELECT o.* FROM observations o JOIN recovery_members m ON m.table_name='observations'
@@ -369,7 +370,7 @@ async function catchup() {
 }
 
 function close() { if (!closed) { closed = true; store.close(); parentPort.close(); } }
-function failed(error) { parentPort.postMessage({ type: 'failed', code: error.code, error: error.public ? error.message : 'Recovery revision failed; the previous history and model remain selected.' }); close(); }
+function failed(error) { parentPort.postMessage({ type: 'failed', ...recoveryFailure(error) }); close(); }
 async function start() {
   if (workerData.mode !== 'revision-preview') await discardUnpublished();
   await prepareSelection();

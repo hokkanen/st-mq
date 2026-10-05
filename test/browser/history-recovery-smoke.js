@@ -14,7 +14,10 @@ const screenshots = await mkdtemp(join(tmpdir(), 'history-recovery-screenshots-'
 const pause = ms => new Promise(resolve => setTimeout(resolve, ms));
 const errors = [], requests = [], layouts = [], pending = new Map();
 const previewId = 'a'.repeat(64), now = Date.now(), source = { id: 'backup-fixture', kind: 'backup', label: 'Saved backup · 1 October 2026', available: true };
-const preview = { previewId, counts: { missing: 12, conflicts: 2, duplicates: 42, skipped: 1 }, period: { from: now - 86400000, to: now }, model: { status: 'rebuild-required' } };
+const preview = { previewId, status: 'checked', tables: ['imports', 'import_rows', 'observations', 'recorder_coverage',
+  'provider_snapshot_contents', 'provider_snapshot_fetches', 'annotations', 'counters', 'fireplace_events',
+  'learning_cycles', 'events', 'energy_audits', 'learning_journal', 'recorder_pending_energy', 'charging_session_keys']
+  .map(name => ({ name, count: name === 'observations' ? 57 : 0 })), model: { status: 'not-assessed' } };
 let app, server, browser, socket, sequence = 0, admin = true, topology = 'standalone', peer = null;
 let recovery = { available: true, readOnly: false, busy: false, job: null, preview: null, sources: [source], nextBefore: '10:old-operation',
   operations: [{ id: 'old-operation', startedAt: 1, source: { label: 'Earlier backup' }, active: true, status: 'interrupted', canRevert: true }] };
@@ -128,7 +131,7 @@ try {
   assert.equal(await evaluate(`${$('history-recovery-check')}.disabled`), true);
   await click('history-recovery-installation-confirm'); await click('history-recovery-check');
   await until(`!${$('history-recovery-apply')}.hidden && !${$('history-recovery-apply')}.disabled`);
-  assert.match(await evaluate(`${$('history-recovery-preview')}.innerText.replace(/\\s+/g, ' ')`), /Missing entries: 12/);
+  assert.match(await evaluate(`${$('history-recovery-preview')}.innerText.replace(/\\s+/g, ' ')`), /Observations: 57/);
   assert.doesNotMatch(await evaluate(`${$('history-recovery-preview')}.textContent`), /master|mirroring/);
   for (const width of [1440, 768, 390, 320]) for (const theme of ['dark', 'light']) {
     await send('Emulation.setDeviceMetricsOverride', { width, height: width === 320 ? 568 : 900, deviceScaleFactor: 1, mobile: false });
@@ -156,7 +159,7 @@ try {
   assert.equal(recovery.job.status, 'running');
   await click('history-recovery-open'); await until(`${$('history-recovery-status')}.textContent.includes('Rebuilding')`);
   assert.equal(requests.filter(item => item.action === 'recover').length, 1);
-  recovery = { ...recovery, busy: false, job: { ...recovery.job, status: 'complete', result: { ...preview, imported: 12, model: { status: 'rebuilt' } } } };
+  recovery = { ...recovery, busy: false, job: { ...recovery.job, status: 'complete', result: { status: 'complete', counts: { missing: 12, conflicts: 2, duplicates: 42, skipped: 1 }, imported: 12, model: { status: 'rebuilt' } } } };
   await click('history-recovery-refresh'); await until(`${$('history-recovery-preview')}.innerText.replace(/\\s+/g, ' ').includes('Recovered entries: 12')`);
   await click('history-recovery-tab-history');
   assert.equal(await evaluate(`${$('history-recovery-source-section')}.checkVisibility()`), false, 'Previous recoveries is separate from selecting a new source');
@@ -190,8 +193,8 @@ try {
   await send('Page.reload'); await until(`${$('pairing-panel')} && !${$('pairing-panel')}.hidden`);
   await evaluate(`${$('pairing-details')}.open=true; ${$('pairing-history-recovery')}.click();true`);
   await until(`${$('history-recovery-dialog')}.open && ${$('history-recovery-source')}.value==='peer'`);
-  await until(`${$('history-recovery-preview')}.textContent.includes('History comparison')`);
-  assert.match(await evaluate(`${$('history-recovery-status')}.textContent`), /Comparison complete/);
+  await until(`${$('history-recovery-preview')}.textContent.includes('History source checked')`);
+  assert.match(await evaluate(`${$('history-recovery-status')}.textContent`), /Source check complete/);
   assert.doesNotMatch(await evaluate(`${$('history-recovery-status')}.textContent`), /before recovering|History recovery complete/);
   assert.equal(await evaluate("[...document.querySelectorAll('#history-recovery-details button, #history-recovery-dialog button, #pairing-panel button')].some(button => /(?:…|\\.\\.\\.)$/.test(button.textContent.trim()))"), false, 'Recovery and pairing actions use complete labels without ellipses');
   assert.equal(await evaluate(`${$('history-recovery-apply')}.hidden`), true);

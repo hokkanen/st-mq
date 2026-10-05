@@ -1,16 +1,17 @@
 import { parentPort, workerData } from 'node:worker_threads';
 import { createHash, randomUUID } from 'node:crypto';
-import { createReadStream, mkdirSync, mkdtempSync, chmodSync, rmSync } from 'node:fs';
-import { dirname, join } from 'node:path';
-import { setImmediate as yieldTurn } from 'node:timers/promises';
+import { createReadStream } from 'node:fs';
+import { yieldToController as yieldTurn } from './scheduler.js';
 import { Store } from '../storage/store.js';
-import { HistoryMerge } from './merge.js';
+import { HistoryMerge, RECOVERY_POLICY } from './merge.js';
+import { RECOVERABLE_TABLES } from '../storage/schema.js';
 import { markRecoveryFailed, projectedSensorContext } from './state.js';
 import { applyLearningRecord, learningVersion, LEARNING_ALGORITHM, LEARNING_WINDOW_MS } from '../app/committed-learning.js';
 import { fireplaceLearningContext } from '../app/fireplace-inputs.js';
 import { sensorRevision } from '../app/sensor-inputs.js';
 import { beginRecovery, rememberContribution, selectedHistory } from './ledger.js';
 import { assessRecoverySource } from './source-scope.js';
+import { recoveryFailure } from './errors.js';
 
 const json = JSON.stringify;
 const decode = row => ({ id: row.id, key: row.key, kind: row.kind, at: row.at,
@@ -19,7 +20,7 @@ const decode = row => ({ id: row.id, key: row.key, kind: row.kind, at: row.at,
 const head = (store, input) => store.db.prepare('SELECT COALESCE(MAX(id),0) id FROM learning_journal WHERE input=?').get(input).id;
 const epochOf = (store, input) => store.learningEpoch(input);
 const invalid = message => Object.assign(new Error(message), { code: 'RECOVERY_INVALID' });
-let target, donor, temporary, running = false, projection = null;
+let target, donor, running = false, projection = null;
 let originalFireplaceRevision = 0;
 let recoveryId = null, sourceSelection = null, sourceAssessment = null;
 let progressAt = 0;
@@ -34,26 +35,45 @@ async function fileDigest(path) {
 async function open() {
   donor = new Store(workerData.donorPath, { readOnly: true });
   donor.db.exec('BEGIN'); donor.db.prepare('PRAGMA schema_version').get();
-  if (donor.db.prepare('PRAGMA integrity_check').get().integrity_check !== 'ok') throw invalid('Donor database integrity check failed');
+  if (donor.db.prepare('PRAGMA integrity_check').get().integrity_check !== 'ok')
+    throw Object.assign(new Error('Donor database integrity check failed'), { code: 'recovery_database_corrupt' });
   sourceAssessment = assessRecoverySource(donor, workerData.input);
   // Semantic rows with missing references are rejected individually by merge;
   // only physical database corruption prevents scanning the donor altogether.
   const donorDigest = await fileDigest(workerData.donorPath);
-  if (workerData.mode === 'preview') {
-    const base = workerData.workDirectory ?? join(dirname(workerData.masterPath), 'recovery');
-    mkdirSync(base, { recursive: true, mode: 0o700 });
-    temporary = mkdtempSync(join(base, 'preview-')); chmodSync(temporary, 0o700);
-    parentPort.postMessage({ type: 'temporary', path: temporary });
-    const master = new Store(workerData.masterPath, { readOnly: true });
-    try { await master.backup(join(temporary, 'candidate.sqlite')); } finally { master.close(); }
-    target = new Store(join(temporary, 'candidate.sqlite'));
-  } else {
+  if (workerData.mode === 'preview') target = new Store(workerData.masterPath, { readOnly: true });
+  else {
     if (donorDigest !== workerData.preview?.donorDigest || workerData.preview?.input !== workerData.input)
       throw invalid('Recovery preview is stale; check the other instance again');
     target = new Store(workerData.masterPath);
     if (workerData.preview?.sourceSelection !== selectedHistory(target)) throw invalid('Selected history changed; check the source again');
   }
   return donorDigest;
+}
+
+// A check validates the frozen source and inventories its selected records. It
+// does not attempt an import or claim which records the advancing master lacks.
+// Actual acceptance, conflicts and model impact are decided once by the merge.
+async function checkSource(donorDigest) {
+  const tables = [];
+  for (const name of RECOVERABLE_TABLES) {
+    const count = donor.db.prepare(`SELECT COUNT(*) count FROM active_${name}`).get().count;
+    tables.push({ name, count });
+    progress({ phase: 'checking', processed: tables.length }); await yieldTurn();
+  }
+  tables.push({ name: 'learning_journal', count: donor.db.prepare('SELECT COUNT(*) count FROM learning_journal WHERE input=?').get(workerData.input).count });
+  tables.push({ name: 'charging_session_keys', count: donor.db.prepare("SELECT COUNT(*) count FROM state WHERE key LIKE 'charging-session-check:%'").get().count });
+  tables.push({ name: 'recorder_pending_energy', count: donor.db.prepare(`SELECT COUNT(*) count FROM state
+    WHERE key LIKE 'recorder:energy:%' AND json_valid(value) AND json_type(value,'$.pending')='object'`).get().count });
+  if (sourceAssessment.skippedLearningRecords)
+    tables.push({ name: 'other_learning_inputs', count: sourceAssessment.skippedLearningRecords });
+  const unsupported = ['charging_reports', 'charging_report_events'].map(name => ({ name,
+    count: donor.db.prepare(`SELECT COUNT(*) count FROM ${name}`).get().count,
+    reason: 'Saved charging reports are not included in history recovery.' })).filter(row => row.count > 0);
+  const report = { status: 'checked', policy: RECOVERY_POLICY, tables, model: { status: 'not-assessed' },
+    donorDigest, input: workerData.input, sourceSelection, sourceAssessment, unsupported };
+  report.previewId = learningVersion(report);
+  parentPort.postMessage({ type: 'complete', report }); cleanup();
 }
 
 function journalReferences(value, masterIds, donorIds, source) {
@@ -260,29 +280,28 @@ async function catchup() {
 async function start() {
   const donorDigest = await open();
   sourceSelection = selectedHistory(target);
-  if (workerData.mode !== 'preview') recoveryId = beginRecovery(target, { input: workerData.input, donorDigest,
+  if (workerData.mode === 'preview') { await checkSource(donorDigest); return; }
+  recoveryId = beginRecovery(target, { input: workerData.input, donorDigest,
     source: workerData.source, operationId: workerData.operationId });
   originalFireplaceRevision = target.getState(`adaptive:${workerData.input}`)?.fireplaceRevision
     ?? fireplaceLearningContext(target, workerData.input).fireplaceRevision;
-  const merge = new HistoryMerge({ target, donor, donorDigest, input: workerData.input, recoveryId, progress });
-  if (workerData.mode !== 'preview') {
-    target.setState(`recovery:active:${workerData.input}`, { status: 'importing', recoveryId, startedAt: Date.now() });
-    // A stopped worker can leave an unpublished projection. Remove only those
-    // abandoned staging epochs, in bounded batches; successful prior epochs
-    // remain the reconstruction archive for their original checkpoints.
-    const abandoned = target.db.prepare(`SELECT r.id,r.epoch FROM recovery_runs r WHERE r.input=? AND r.status<>'complete'
-      AND NOT EXISTS(SELECT 1 FROM learning_epochs e WHERE e.epoch=r.epoch)
-      AND NOT EXISTS(SELECT 1 FROM learning_journal_entries j JOIN recovery_members m
-        ON m.table_name='learning_journal' AND m.record_key=CAST(j.id AS TEXT) WHERE j.epoch=r.epoch)`).all(workerData.input);
-    for (const run of abandoned) {
-      for (;;) {
-        const removed = target.db.prepare(`DELETE FROM learning_journal_entries WHERE id IN
-          (SELECT id FROM learning_journal_entries WHERE epoch=? LIMIT 64)`).run(run.epoch).changes;
-        if (!removed) break;
-        await yieldTurn();
-      }
-      target.db.prepare('DELETE FROM recovery_runs WHERE id=?').run(run.id);
+  const merge = new HistoryMerge({ target, donor, donorDigest, input: workerData.input, recoveryId, progress, yieldControl: yieldTurn });
+  target.setState(`recovery:active:${workerData.input}`, { status: 'importing', recoveryId, startedAt: Date.now() });
+  // A stopped worker can leave an unpublished projection. Remove only those
+  // abandoned staging epochs, in bounded batches; successful prior epochs
+  // remain the reconstruction archive for their original checkpoints.
+  const abandoned = target.db.prepare(`SELECT r.id,r.epoch FROM recovery_runs r WHERE r.input=? AND r.status<>'complete'
+    AND NOT EXISTS(SELECT 1 FROM learning_epochs e WHERE e.epoch=r.epoch)
+    AND NOT EXISTS(SELECT 1 FROM learning_journal_entries j JOIN recovery_members m
+      ON m.table_name='learning_journal' AND m.record_key=CAST(j.id AS TEXT) WHERE j.epoch=r.epoch)`).all(workerData.input);
+  for (const run of abandoned) {
+    for (;;) {
+      const removed = target.db.prepare(`DELETE FROM learning_journal_entries WHERE id IN
+        (SELECT id FROM learning_journal_entries WHERE epoch=? LIMIT 64)`).run(run.epoch).changes;
+      if (!removed) break;
+      await yieldTurn();
     }
+    target.db.prepare('DELETE FROM recovery_runs WHERE id=?').run(run.id);
   }
   const report = await merge.run();
   report.sourceAssessment = sourceAssessment;
@@ -293,11 +312,6 @@ async function start() {
   }
   if (recoveryId) target.db.prepare('UPDATE history_recoveries SET report=?,status=? WHERE id=?')
     .run(JSON.stringify(report), 'rebuilding', recoveryId);
-  if (workerData.mode === 'preview') {
-    const publicReport = { ...report, donorDigest, input: workerData.input, sourceSelection };
-    publicReport.previewId = learningVersion(publicReport);
-    parentPort.postMessage({ type: 'complete', report: publicReport }); cleanup(); return;
-  }
   target.setState(`recovery:active:${workerData.input}`, { status: 'rebuilding', startedAt: Date.now() });
   // Nothing affected learning: still return a guarded publication message so
   // permission to overwrite the donor follows successful source verification.
@@ -314,14 +328,11 @@ async function start() {
 
 function cleanup() {
   try { donor?.close(); } catch {} try { target?.close(); } catch {}
-  if (temporary) rmSync(temporary, { recursive: true, force: true });
   parentPort.close();
 }
 function failed(error) {
   try { if (target && workerData.mode !== 'preview') markRecoveryFailed(target, workerData.input); } catch {}
-  const code = ['recovery_scope_mismatch', 'database_schema_mismatch', 'database_schema_invalid'].includes(error?.code) ? error.code : undefined;
-  parentPort.postMessage({ type: 'failed', code, error: error?.code === 'RECOVERY_INVALID' ? error.message
-    : 'Recovery failed; accepted history remains valid and the previous model remains active.' }); cleanup();
+  parentPort.postMessage({ type: 'failed', ...recoveryFailure(error) }); cleanup();
 }
 async function handleMessage(message) {
   if (running) return;
