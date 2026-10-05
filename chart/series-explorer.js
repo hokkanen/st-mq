@@ -30,6 +30,7 @@ function meaning(signal, info) {
   if (MODEL_INPUT_INFO[signal]) return [`saved-input:${info.unit}`, 'Saved learning input'];
   if (signal.startsWith('learning_')) return [signal === 'learning_indoor_temperature' ? 'temperature' : `assessed-cycle:${info.unit}`, 'Saved model assessment'];
   if (signal === 'solar_radiation') return ['historical-solar-estimate', 'Historical solar estimate'];
+  if (/^ev[12]_current_(allowance|fallback)$/.test(signal)) return ['charging-allowance', 'Recorded load-balancing allowance'];
   if (/^voltage_estimate_l[123]$/.test(signal)) return ['voltage-estimate', 'Recorded voltage estimate'];
   if (signal.includes('forecast')) return [`forecast:${info.unit}`, 'Weather forecast'];
   if (['controller_phase', 'dhwr_request'].includes(signal)) return [`state:${signal}`, 'Recorded control request'];
@@ -120,6 +121,6 @@ export function explorerSelection(key) {
     requestKey: row.requestKey, description: `${row.basis}. ${row.description === row.basis ? '' : row.description}`.trim(),
     leftSignals: price ? prices : categorical || temperature ? [] : [row.signal],
     rightSignals: price ? [] : [...(temperature ? [row.signal] : []), ...prices],
-    tracks: categorical ? [row.signal] : row.signal === 'charger2_power' ? ['shellyLimiter'] : [], defaults: {},
+    tracks: categorical ? [row.signal] : [], defaults: {},
     unit: row.compatibilityKey === 'saved-temperature-difference' ? 'Δ°C' : row.unit, stackPower: false };
 }

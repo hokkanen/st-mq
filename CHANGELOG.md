@@ -4,6 +4,21 @@ Release notes describe changes relevant to users. Detailed implementation and
 validation history is available in Git; unfinished work belongs in GitHub issues.
 Versions follow Semantic Versioning. `-dev.N` denotes a development prerelease.
 
+## Unreleased
+
+- Both charger cards show a compact available-current or fallback value beside
+  Details & settings. Action messages keep their existing place and lifetime;
+  planned starts awaiting approval stay within two lines, and native current
+  settings no longer repeat their label.
+- Charging currents replaces the dedicated session-check view, with the highest
+  property phase current and both charger allowances. Fallback is a separate
+  purple dash-dot line. Charger 1 session checks remain in All series; the old
+  Shelly load-balancing strips are removed.
+- Both allowances use compact change-only history with explicit fallback status
+  and original source evidence. SQLite schema 21 replaces the earlier Shelly-only
+  history format; incompatible development databases require an intentional fresh
+  start and are never migrated or reset automatically.
+
 ## 0.9.5-dev.4 — 2026-10-05
 
 ### Added

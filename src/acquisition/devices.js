@@ -569,10 +569,17 @@ export function createDeviceProviders({ connections = {}, http, tokenStore, cloc
     const optional = new Set([110, 114, 129, 130, 132, 136, 150, 223,
       ...(!supplied(easee.equalizer_id) ? [230, 231, 232] : [])]);
     const requiredIds = ids.filter(id => !optional.has(id));
-    return (await observationResult(device, ids, { requiredIds, ...options })).payload;
+    const result = await observationResult(device, ids, { requiredIds, ...options });
+    if (device !== easee.charger_id || !ids.includes(230)) return result.payload;
+    const rows = Array.isArray(result.payload) ? result.payload : result.payload?.observations;
+    const evidence = result.transport === 'stream' ? stream?.evidence?.(device, [230, 231, 232])
+      : { source: 'easee-cloud', receivedAt: clock(), connected: true, synchronized: true, epoch: String(electricityEpoch) };
+    return { observations: rows, allowanceEvidence: evidence ?? { source: 'easee-stream', connected: false, synchronized: false } };
   }
   const scheduleControl = Object.assign(createEaseeScheduleAdapter({ request: easeeAuthenticated, readObservations,
-    chargerId: easee.charger_id, equalizerId: easee.equalizer_id, clock, canControl: () => !invalidOcppSetup && canControl() }),
+    chargerId: easee.charger_id, equalizerId: easee.equalizer_id, clock,
+    readAllowanceEvidence: () => stream?.evidence?.(easee.charger_id, [230, 231, 232]),
+    canControl: () => !invalidOcppSetup && canControl() }),
   { readCurrentSupply });
   async function settleNativeClock({ signal } = {}) {
     const remaining = local.controlClockDelayMs?.() ?? 0;
@@ -707,7 +714,14 @@ export function createDeviceProviders({ connections = {}, http, tokenStore, cloc
       currentSources: { property: property.source, charger: charger.source },
       feedEvidence: { property: property.evidence, charger: charger.evidence } } };
   }
+  const nativeAllowanceTelemetry = () => {
+    const now = clock(), cloud = nativeCloudSnapshot;
+    if (!cloud || now < cloud.readAt || now - cloud.readAt > 300_000) return null;
+    const telemetry = scheduleControl.normalize(cloud, { now });
+    return { availableCurrentA: telemetry.availableCurrentA, maxCurrentA: telemetry.maxCurrentA };
+  };
   const nativeScheduleControl = ocppInstallation ? createOcppScheduleAdapter({ scope: ocppInstallation.scope, clock,
+    readAllowanceTelemetry: nativeAllowanceTelemetry,
     readCurrentSupply,
     readDeviceInfo: () => local.deviceInfo?.() ?? null,
     canControl: () => !closed && canControl() && controlBackend === 'native',
@@ -754,6 +768,7 @@ export function createDeviceProviders({ connections = {}, http, tokenStore, cloc
         const values = ids.map(id => current?.readings.find(row => row.id === id)?.value);
         return values.every(Number.isFinite) ? values : null;
       };
+      const allowanceTelemetry = nativeAllowanceTelemetry();
       const pluggedIn = current ? current.connectorStatus === 'Available' ? false
         : ['Preparing', 'Charging', 'SuspendedEV', 'SuspendedEVSE', 'Finishing'].includes(current.connectorStatus) ? true : null : null;
       return { transport: 'ocpp', scope: ocppInstallation.scope, connectionId: current?.connectionId ?? null,
@@ -766,7 +781,7 @@ export function createDeviceProviders({ connections = {}, http, tokenStore, cloc
         appControl: nativeAppControl(),
         externalLoadBalancing: cloud?.externalLoadBalancing ?? null,
         powerKw: power?.value ?? null, powerAt: power ? sourceTime(power.timestamp) : null, powerReceivedAt: power?.receivedAt ?? null,
-        ...(cloud ? { limits: cloud.limits } : {}),
+        ...(cloud ? { limits: cloud.limits, allowanceTelemetry } : {}),
         supply: { ...cloud?.supply, chargerCurrentA: vector([183, 184, 185]), voltageV: vector([194, 195, 196]),
           observationTimes: { ...cloud?.supply?.observationTimes,
             charger: [183, 184, 185].map(id => sourceTime(current?.readings.find(row => row.id === id)?.timestamp)),

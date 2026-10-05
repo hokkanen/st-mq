@@ -91,7 +91,18 @@ export function historyTooltipLabel(item) {
     if (raw.provisional) details.push('provisional estimate');
     details.push(raw.accuracyVerified === true ? 'accuracy verified' : 'accuracy unverified');
   }
-  else if (raw.equivalentCurrent) details.push('interval average', 'equivalent current; unity power factor assumed');
+  else if (raw.chargingAllowance) {
+    const native = raw.source === 'easee-equalizer';
+    details.push(native ? 'native Equalizer allowance' : raw.mode === 'fallback'
+      ? 'controller fallback cap; verified load headroom unavailable' : 'controller load-balancing allowance');
+    details.push('not measured draw or charging permission');
+    if (raw.reason) details.push(raw.reason.replaceAll('-', ' '));
+    if (Number.isFinite(raw.measuredAt)) details.push(`${native ? 'oldest phase source time' : 'decision time'} ${dateTime.format(raw.measuredAt)}`);
+    if (Number.isFinite(raw.receivedAt)) details.push(`received ${dateTime.format(raw.receivedAt)}`);
+  }
+  else if (raw.equivalentCurrent) details.push(...(raw.maximumPhase ? ['highest simultaneous phase'] : []),
+    'interval average', 'equivalent current; unity power factor assumed');
+  else if (raw.maximumPhase) details.push('highest phase in the recorded current snapshot');
   else if (['property_power', 'charger_power', 'charger2_power', 'caravan_power'].includes(key) && Number.isFinite(raw.intervalStart)) details.push('interval average from recorded energy');
   else if (key.endsWith('_energy') || /_energy_l[123]$/.test(key)) details.push('recorded interval energy');
   else if (key === 'solar_radiation') details.push('historical solar estimate from the forecast available at the time');

@@ -92,6 +92,10 @@ const seriesInfo = {
   property_current_l1: ['Property L1', 'A', 'phase1'],
   property_current_l2: ['Property L2', 'A', 'phase2'],
   property_current_l3: ['Property L3', 'A', 'phase3'],
+  property_current_max: ['Property highest phase', 'A · highest simultaneous phase-current estimate', 'property'],
+  ev1_current_allowance: ['Charger 1 allowance', 'A · native Equalizer minimum phase allowance', 'ev'],
+  ev2_current_allowance: ['Charger 2 allowance', 'A · controller load-balancing allowance', 'outdoor'],
+  ev2_current_fallback: ['Charger 2 fallback', 'A · fallback cap; verified load allowance unavailable', 'learning'],
   ev1_current_l1: ['Charger 1 L1', 'A', 'phase1'],
   ev1_current_l2: ['Charger 1 L2', 'A', 'phase2'],
   ev1_current_l3: ['Charger 1 L3', 'A', 'phase3'],
@@ -149,7 +153,7 @@ for (const [key, info] of Object.entries(SIGNAL_INFO)) if (info.color) seriesInf
 const forecastSignals = new Set(['outdoor_forecast', 'solar_forecast']);
 export const chartLinePatterns = Object.freeze({
   solid: Object.freeze([]), temperature: Object.freeze([6, 4]),
-  reference: Object.freeze([12, 4]), forecast: Object.freeze([8, 3, 2, 3]), price: Object.freeze([1, 3]),
+  reference: Object.freeze([12, 4]), forecast: Object.freeze([8, 3, 2, 3]), fallback: Object.freeze([8, 3, 2, 3]), price: Object.freeze([1, 3]),
 });
 
 /** Colour stays semantic; stroke distinguishes axes, references and forecasts. */
@@ -163,7 +167,7 @@ export function historySeriesStyle(key, axis, kind = 'line', { interpolation: en
     : key === 'heating_integral' ? 'linear' : 'step';
   return {
     forecast, interpolation, showLine: !pointsOnly,
-    borderDash: forecast ? chartLinePatterns.forecast : price ? chartLinePatterns.price
+    borderDash: key === 'ev2_current_fallback' ? chartLinePatterns.fallback : forecast ? chartLinePatterns.forecast : price ? chartLinePatterns.price
       : axis === 'right' && temperatureUnit ? chartLinePatterns.temperature : chartLinePatterns.solid,
     stepped: pointsOnly || interpolation !== 'step' ? false : price ? 'before' : true,
     cubicInterpolationMode: interpolation === 'monotone' ? 'monotone' : 'default',

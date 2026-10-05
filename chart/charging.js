@@ -3,6 +3,7 @@ import { actionReceiptRecent } from './action-receipts.js';
 import { isReadOnlyReplica, replicaSnapshotKey } from './replica-status.js';
 import { setStatusDetail } from './status-details.js';
 import { shellyLimiterDisplay } from './shelly-limiter.js';
+import { chargingAllowanceDisplay } from './charging-allowance.js';
 import { chargerSummary, chargingCost, chargingNotice } from './charging-summary.js';
 import { createChargingPriority } from './charging-priority.js';
 import { createChargingTime } from './charging-time.js';
@@ -282,7 +283,7 @@ export function chargerDisplay(charger, { now = Date.now(), timezone = 'Europe/H
       : `Automatic control resumes ${time(resumeAt)}${cycleCapped ? ' at the ready-by boundary' : ''}.`;
   const identification = identificationPresentation(charger, { now, timezone });
   let state = connected === false ? 'Not connected' : connected === true ? 'Connected' : 'Connection unknown';
-  let event = '', eventAt = null, eventKind = null;
+  let event = '', eventAt = null, eventKind = null, activityTiming = null;
   let pauseUnconfirmed = false;
   if (connected !== true) {
     event = activeManual && resumption ? resumption.replace(/\.$/, '') : enabled ? connected === false ? 'Automatic charging is ready for the next connection' : 'Waiting for charger readings'
@@ -325,6 +326,7 @@ export function chargerDisplay(charger, { now = Date.now(), timezone = 'Europe/H
     eventAt = nextPeriod?.startAt ?? (validTime(plan.startAt) && Number(plan.startAt) > now ? plan.startAt : null);
     eventKind = 'proposed';
     event = eventAt ? `Planned start ${time(eventAt)} · charging approval pending` : 'Waiting for charging approval';
+    if (eventAt) activityTiming = { label: 'Start pending approval', value: time(eventAt).replace(/^tomorrow/, 'Tomorrow') };
   } else if (uncertain) {
     state = 'Control unavailable'; event = 'Waiting for charger confirmation';
   } else if (released || provisional || (owned || execution) && currentPeriod) {
@@ -501,7 +503,7 @@ export function chargerDisplay(charger, { now = Date.now(), timezone = 'Europe/H
     'Edit the target in Session settings and save to change the plan until unplugging. This does not change the car’s charging limit.',
   ].filter(Boolean).join('\n\n') : '';
   const vehicle = vehiclePresentation(charger, { now, timezone });
-  return { id: charger.id, label: charger.label, state, event, eventAt, eventKind, summary: `${state} · ${event}`, risk, showMetrics, defaultsPreview, vehicle, identification,
+  return { id: charger.id, label: charger.label, state, event, eventAt, eventKind, activityTiming, summary: `${state} · ${event}`, risk, showMetrics, defaultsPreview, vehicle, identification,
     soc: estimatedSoc ? `≈${Math.round(progress.estimatedSoc)} %` : socKnown ? number(soc.value, '%') : 'Unknown', socSource, minimum: number(minimum, '%'),
     minimumSource: targetSource, sources: socSource, targetHeld, targetDetail,
     gridEnergy: `${estimatedSoc && requiredGridKwh > 0 ? '≈' : ''}${number(requiredGridKwh, 'kWh')}`, deadline, readiness, readingTime, periodCount, periodRows,
@@ -658,8 +660,7 @@ export function createChargingPanel({ document, request, beforeRequest = () => {
     const timing = make('div', '', 'charging-timing'), event = make('div', '', 'charging-event', `${id}-event`);
     const eventLabel = make('span', '', 'charging-event-label', `${id}-event-label`);
     const eventValue = make('strong', '', 'charging-event-value', `${id}-event-value`);
-    const limiterBadge = make('span', '', 'charging-limiter', `${id}-limiter`); limiterBadge.hidden = true;
-    event.append(eventLabel, eventValue, limiterBadge);
+    event.append(eventLabel, eventValue);
     const deadlineGroup = make('div', '', 'charging-ready-by');
     const deadline = make('strong', '', 'charging-deadline', `${id}-deadline`);
     const deadlineLabel = make('span', 'Ready by');
@@ -682,7 +683,7 @@ export function createChargingPanel({ document, request, beforeRequest = () => {
     const notice = make('div', '', 'charging-notice', `${id}-notice`);
     const footer = make('div', '', 'charging-disclosure');
     footer.append(make('span', 'Details & settings', 'charging-disclosure-closed'), make('span', 'Close details', 'charging-disclosure-open'));
-    const footerHint = make('span', '', 'charging-disclosure-hint'); footer.append(footerHint);
+    const allowance = make('span', '', 'charging-allowance', `${id}-allowance`); footer.append(allowance);
     summary.append(facts, notice, footer, controlMessage);
     const readingTime = make('p', '', 'charging-reading-time', `${id}-reading-time`);
     const scheduleHeading = make('div', '', 'charging-schedule-heading');
@@ -738,7 +739,7 @@ export function createChargingPanel({ document, request, beforeRequest = () => {
     });
     setupReference.append(setupLink); body.append(setupReference);
     section.append(summary, body); $('charging-devices')?.append(section);
-    const device = { id, limiterBadge, chargeNow, chargeNowState, controlMessage, identify, identificationSection, identificationState, identificationStatus, identificationMessage, section, title, vehicle, state, event, eventLabel, eventValue, overview, sources, metrics, chargeLabel, targetLabel, targetSource, completionLabel, completion, readiness, priority, readingTime, deadline, deadlineLabel, deadlineGroup, facts, deliveredLabel, deliveredValue, remaining, energyLabel, energyValue, costLabel, cost, costMetric, scheduleInfo, scheduleHeading, periodCount, periods, problem, explanations, readings, notes, settings, enabledValue, useAutomatic, takeoverHelp, takeoverMessage, controlDetail, charger, notice, footerHint, sessionStatus };
+    const device = { id, allowance, chargeNow, chargeNowState, controlMessage, identify, identificationSection, identificationState, identificationStatus, identificationMessage, section, title, vehicle, state, event, eventLabel, eventValue, overview, sources, metrics, chargeLabel, targetLabel, targetSource, completionLabel, completion, readiness, priority, readingTime, deadline, deadlineLabel, deadlineGroup, facts, deliveredLabel, deliveredValue, remaining, energyLabel, energyValue, costLabel, cost, costMetric, scheduleInfo, scheduleHeading, periodCount, periods, problem, explanations, readings, notes, settings, enabledValue, useAutomatic, takeoverHelp, takeoverMessage, controlDetail, charger, notice, sessionStatus };
     bind(identify, 'click', () => {
       if (identify.disabled) return;
       const current = device.charger;
@@ -928,15 +929,12 @@ export function createChargingPanel({ document, request, beforeRequest = () => {
       metricDetail(device.state, { label: presentation.roleLabel, title: 'Charging control', detail: presentation.roleDetail, key: `${charger.id}:role` });
       device.state.dataset.state = presentation.roleState;
       const limiter = shellyLimiterDisplay(charger.limiter);
-      device.limiterBadge.hidden = !charger.limiter;
-      device.limiterBadge.dataset.mode = limiter.mode;
-      metricDetail(device.limiterBadge, { label: `Load balancing: ${limiter.label}`, title: 'Shelly load balancing',
-        detail: limiter.detail, key: `${charger.id}:limiter` });
       const timedEvent = presentation.activity.match(/^(Starts|Scheduled start|Proposed start|Last confirmed start|Resumes|Last confirmed resume) (.+)$/);
-      device.eventLabel.textContent = timedEvent ? timedEvent[1] === 'Scheduled start' ? 'Starts' : timedEvent[1] : '';
-      device.eventLabel.hidden = !timedEvent;
+      device.eventLabel.textContent = view.activityTiming?.label ?? (timedEvent ? timedEvent[1] === 'Scheduled start' ? 'Starts' : timedEvent[1] : '');
+      device.eventLabel.hidden = !device.eventLabel.textContent;
+      device.event.dataset.timing = view.activityTiming ? 'approval-pending' : 'ordinary';
       const activity = view.showMetrics ? presentation.activity : charger.values?.connected?.value === false ? 'Not connected' : 'Connection unknown';
-      metricDetail(device.eventValue, { label: timedEvent ? timedEvent[2].replace(' · update awaiting confirmation', '') : activity,
+      metricDetail(device.eventValue, { label: view.activityTiming?.value ?? (timedEvent ? timedEvent[2].replace(' · update awaiting confirmation', '') : activity),
         title: 'Charging activity', detail: [...new Set([presentation.activity, view.controlReason, view.identification?.detail, view.controlDetail].filter(Boolean))].join('\n\n'), key: `${charger.id}:activity` });
       device.event.dataset.state = view.risk ? 'attention' : 'normal';
       device.overview.hidden = false;
@@ -983,7 +981,11 @@ export function createChargingPanel({ document, request, beforeRequest = () => {
       const notice = chargingNotice(charger, view, presentation);
       device.notice.dataset.state = notice.state;
       metricDetail(device.notice, { label: notice.label, title: 'Charging status', detail: notice.detail, key: `${charger.id}:notice` });
-      device.footerHint.textContent = view.supported ? 'Schedule · readings · help' : 'Readings · help';
+      const allowance = chargingAllowanceDisplay(charger.allowance, { limiter: charger.limiter,
+        formatTime: at => chargingReadingTime(at, charging.timezone) });
+      device.allowance.dataset.tone = allowance.tone;
+      metricDetail(device.allowance, { label: allowance.label, title: 'Available charging current',
+        detail: allowance.detail, key: `${charger.id}:allowance` });
       device.priority.textContent = view.priority; device.priority.hidden = !view.priority;
       device.periodCount.textContent = view.periodCount; device.periodCount.hidden = !view.periodCount;
       device.problem.textContent = view.problem; device.problem.hidden = !view.problem;
@@ -1002,7 +1004,7 @@ export function createChargingPanel({ document, request, beforeRequest = () => {
         return [label, text, detail];
       });
       if (charger.limiter) rows.push(['Load balancing', limiter.label, limiter.detail],
-        ['Charger setting', limiter.application, 'Native current setting and limiter instruction confirmation, separate from measured charging current.']);
+        ['Charger setting', limiter.setting, 'Native current setting and limiter instruction confirmation, separate from measured charging current.']);
       if (charger.values?.vehicleNotBefore?.available) rows.push(['Vehicle may accept from', chargingTime(charger.values.vehicleNotBefore.value, charging.timezone, next.now)]);
       if (charger.values?.vehicleCurrentA?.available) rows.push(['Vehicle current ceiling', number(charger.values.vehicleCurrentA.value, 'A')]);
       if (charger.sessionCost) rows.push(['Connection delivered', number(charger.sessionCost.deliveredGridKwh, 'kWh')]);

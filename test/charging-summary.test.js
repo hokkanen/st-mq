@@ -44,6 +44,7 @@ test('OCPP approval pending shows proposed periods without claiming applied cont
   assert.equal(display.periodRows.length, 1);
   assert.equal(display.eventKind, 'proposed');
   assert.match(display.event, /Planned start.*approval pending/);
+  assert.deepEqual(display.activityTiming, { label: 'Start pending approval', value: '23:00' });
   assert.equal(result.roleLabel, 'Approval pending');
   assert.match(result.roleDetail, /start approval waits until the plan/);
   assert.equal(result.roleState, 'uncertain');

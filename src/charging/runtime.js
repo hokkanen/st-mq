@@ -24,7 +24,7 @@ import { advanceIdentification, prepareActiveBmwCandidate, matchActiveBmwPause, 
 import { shellyAssociation, shellyCurrentCommandReadback } from './shelly-evse.js';
 import { mqttSourceIdentity } from '../pairing/mqtt-source-context.js';
 import { ChargingSessionDiagnostics } from './session-diagnostics.js';
-import { ChargingLimiterHistory, shellyLimiterStatus } from './limiter-history.js';
+import { ChargingAllowanceHistory, shellyLimiterStatus, shellyAllowanceStatus, easeeAllowanceStatus } from './allowance-history.js';
 import { ChargingPhysicalTests } from './physical-tests.js';
 import { bmwVehicleSetup, teslaVehicleSetup } from './setup.js';
 import { readPlanningVoltage } from '../storage/voltage.js';
@@ -172,7 +172,7 @@ export class ChargingRuntime {
     this.configuration = chargingConfiguration(config.charging);
     this.sessionDiagnostics = new ChargingSessionDiagnostics({ store, key: `${this.key}:session-diagnostics`, clock,
       retentionDays: this.configuration.report_retention_days });
-    this.limiterHistory = new ChargingLimiterHistory({ store, input: config.input });
+    this.limiterHistory = new ChargingAllowanceHistory({ store, input: config.input });
     this.physicalTests = new ChargingPhysicalTests({ store, key: `${this.key}:physical-tests`, clock });
     const saved = store.getState(this.key) ?? {};
     if (Object.keys(saved).length && (saved.version !== 6 || Object.keys(saved).some(key => !['version', 'revision', 'controls', 'chargers', 'vehicleFeeds', 'consumedTeslaPower', 'consumedTeslaCurrent', 'view'].includes(key)))) throw new Error('Unsupported charging state; start a fresh development database');
@@ -268,11 +268,12 @@ export class ChargingRuntime {
   }
   recordLimiterHistory(now = this.clock()) {
     try {
-      if (!this.closed && this.canControl() && ['providers', 'mqtt'].includes(this.config.input)
-        && this.configuration.chargers.charger2.enabled) {
-        const item = this.chargers.charger2;
-        this.limiterHistory.observe({ association: item.association,
-          status: this.limiterStatus(this.controlStatus('charger2'), now) }, now);
+      if (!this.closed && this.canControl() && ['providers', 'mqtt'].includes(this.config.input)) {
+        for (const [id, item] of Object.entries(this.chargers)) {
+          if (this.configuration.chargers[id].enabled) this.limiterHistory.observe({ chargerId: id, association: item.association,
+            status: this.allowanceStatus(id, this.controlStatus(id), now) }, now);
+          else this.limiterHistory.suspend(id);
+        }
       } else this.limiterHistory.suspend();
       this.limiterHistoryError = null;
     } catch {
@@ -1276,6 +1277,14 @@ export class ChargingRuntime {
         : snapshot?.controlReady === false || control.errorCode ? 'blocked' : recent && applied !== null ? 'pending' : 'unknown',
       pausedByLimiter: limit?.pausedByLimiter === true && fresh(permission) && permission.value === false && control.ownedPause });
   }
+  allowanceStatus(id, control, now) {
+    if (id === 'charger2') return shellyAllowanceStatus({ limiter: this.limiterStatus(control, now),
+      maximumCurrentA: this.configuration.chargers.charger2.maximumCurrentA, evaluatedAt: control.limiter?.evaluatedAt,
+      sourceEpoch: control.limiter?.scope ? digest([control.limiter.scope, control.limiter.sourceEpochs]) : null });
+    const item = this.chargers[id], normalize = item.adapter?.normalize ?? easeeChargerTelemetry;
+    return easeeAllowanceStatus({ enabled: this.configuration.chargers[id].enabled,
+      telemetry: normalize(control.snapshot ?? {}, { now }), now });
+  }
   views(now = this.clock()) {
     const telemetry = this.telemetry(now);
     return Object.entries(this.chargers).map(([id, item]) => {
@@ -1318,7 +1327,7 @@ export class ChargingRuntime {
       const limiter = item.definition.provider === 'shelly-evse' ? this.limiterStatus(control, now) : null;
       return { ...charger, defaults, association: item.association, controls: { ...item.controls },
         device: item.adapter?.deviceInfo?.() ?? null,
-        ...(limiter ? { limiter } : {}),
+        ...(limiter ? { limiter } : {}), allowance: this.allowanceStatus(id, control, now),
         identification: { ...item.identification,
           currentTest,
           pauseRecovery: item.definition.provider === 'shelly-evse' ? 'controller' : 'charger',

@@ -1517,7 +1517,8 @@ export function createShellyController({ adapter, initialState, saveState = () =
         const limitation = adapter.config.limiterEnabled ? limitCurrent({ ...context, allocationA })
           : { currentA: nativeCap, pause: nativeCap < adapter.config.minimumCurrentA,
             reason: 'native-current-limit', fallback: false, modelAvailable: false, guaranteedProtection: false };
-        state.limiter = { ...limitation, scope: { generation: snapshot.generation,
+        state.limiter = { ...limitation, sourceEpochs: [context.property?.evidence?.epoch ?? null, context.easee?.evidence?.epoch ?? null],
+          scope: { generation: snapshot.generation,
           sessionId: snapshot.session?.sessionId, connectedAt: snapshot.session?.connectedAt } };
         const windows = chargeNow ? [{ startAt: clock(), endAt: null }] : plan?.periods ?? [];
         const economic = !identification && (input.enabled || chargeNow) && !state.manual && !snapshot.nativeScheduleActive && windows.length > 0;

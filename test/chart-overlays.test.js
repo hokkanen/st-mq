@@ -383,34 +383,3 @@ test('overlay disposal removes pointer listeners, releases capture and removes o
   f.pointer('pointermove');
   assert.equal(f.chart.drawCount, draws);
 });
-
-test('Shelly limiter history keeps exact allowance changes, fallback and unknown spans separate from power', t => {
-  const f = fixture(t), descriptor = activityTracks.find(track => track.key === 'shellyLimiter');
-  const spans = [
-    { start: 0, end: 100, mode: 'unrestricted', allowanceA: 16, reason: 'hardware-restriction', appliedCurrentA: 16, applicationStatus: 'confirmed' },
-    { start: 100, end: 200, mode: 'limited', allowanceA: 8, reason: 'priority-allocation', appliedCurrentA: 12, applicationStatus: 'pending' },
-    { start: 200, end: 300, mode: 'paused-by-balancing', allowanceA: 0, reason: 'fuse-limit', appliedCurrentA: 6, applicationStatus: 'confirmed' },
-    { start: 300, end: 400, mode: 'fallback', allowanceA: 12, reason: 'feed-unavailable', appliedCurrentA: null, applicationStatus: 'unknown' },
-    { start: 400, end: 500, mode: 'unknown', allowanceA: null, reason: 'controller-unavailable', appliedCurrentA: null, applicationStatus: 'unknown' },
-    { start: 500, end: 600, mode: 'unknown', allowanceA: null, loadAllowanceA: null, reason: 'charger-unavailable', appliedCurrentA: null, applicationStatus: 'unknown' },
-  ];
-  f.payload.limiterHistory = { spans }; f.setTracks([descriptor]);
-  assert.deepEqual(activityIntervals(descriptor, f.payload).map(({ value, ...interval }) => interval), spans);
-  assert.match(activityIntervalLabel(descriptor, spans[1]), /Limited · 8 A allowance · Charger priority\nAwaiting charger confirmation · last confirmed setting 12 A/);
-  assert.match(activityIntervalLabel(descriptor, spans[2]), /Paused by balancing · 0 A.*\nPause instruction confirmed/);
-  assert.match(activityIntervalLabel(descriptor, spans[5]), /Unknown · Charger unavailable\nCharger setting unconfirmed/);
-  const track = f.container.children[0].children[1].children[0];
-  assert.equal(track.children.at(-1).dataset.pattern, 'unknown');
-  assert.equal(track.children[0].dataset.value, 'unrestricted');
-  assert.equal(track.tabIndex, 0);
-  track.focus(); f.overlays.render();
-  assert.equal(f.document.activeElement, f.container.children[0].children[1].children[0], 'Polling retains keyboard focus on the strip');
-  f.pointer('keydown', { key: 'Home' }, f.document.activeElement);
-  assert.match(f.readout.textContent, /Unrestricted · 16 A/);
-  f.pointer('keydown', { key: 'ArrowRight' }, f.document.activeElement);
-  assert.match(f.readout.textContent, /Limited · 8 A/);
-  f.pointer('keydown', { key: 'End' }, f.document.activeElement);
-  assert.match(f.readout.textContent, /Unknown/);
-  assert.match(f.readout.textContent, /Charger unavailable/);
-  assert.match(f.container.children[0].children[2].textContent, /Unknown/, 'The selected interval is available to screen readers with the title fold closed');
-});

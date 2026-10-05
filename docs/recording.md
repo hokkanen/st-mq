@@ -387,55 +387,54 @@ The native Shelly role/profile and the hardware checks still required are in
 configuration/state has no translation path; only the two supported v0.7.5 CSV
 import formats retain backwards compatibility.
 
-### Shelly load-balancing decisions
+### Charger current allowances
 
-`shelly_limiter_mode` records the controller's own load-balancing decisions,
-independently of charger energy and charging-session reports. A semantic change
-stores one exact state observation with equipment association, observation time,
-mode, integer load allowance, effective allowance, reason, native current-setting
-readback and application status. There are no copied property/charger snapshots,
-raw current time series or periodic duplicate state observations.
+`charger1_current_allowance` and `charger2_current_allowance` record the minimum
+load-balancing current available to each charger. Both use one change-only
+observation and compact coverage contract. The numeric value is nonnegative
+amperes; explicit metadata distinguishes unrestricted, limited, fallback,
+inactive and unknown. Fallback zero remains distinct from ordinary zero. No
+negative-value encoding or separate fallback observation stream is used.
 
-Unchanged successful controller observations extend the existing compact
-coverage row in place. They still require a database update, but do not append a
-new observation. A process-local continuity cursor prevents restart, ownership
-changes or more than 30 seconds without observation from joining unobserved time
-to a previous state. Unknown results do not extend the preceding known interval.
-The cursor is not a persisted control instruction and cannot grant authority.
+Charger 1 uses the minimum of all three reported Equalizer allowances, capped
+by its known fixed equipment ceiling. Zero participates in that minimum. The
+original Equalizer/cloud source evidence remains attached even when charger
+control uses OCPP; a local OCPP status cannot refresh a cloud allowance.
+Charger 2 uses the controller's load allowance after property headroom, shared
+priority and configured maximum. Effective restrictions and confirmed native
+settings remain separate from that load allowance. Neither value grants Start
+permission or proves actual charging current.
 
-The chart reads covered decisions from the existing observation and coverage
-tables; this adds no database schema change or new schema-conversion path. Missing
-coverage, conflicting overlaps and invalid records are shown as unknown. Query
-work is bounded by the requested chart resolution and at most 4000 recorded
-decisions. If a long selection exceeds that budget, the chart retains recent
-exact detail and marks omitted earlier detail unknown; zooming requests that
-period independently. It does not average modes or silently discard stored
-changes to fit a chart.
+A semantic change stores one exact observation with equipment identity, mode,
+allowance, applicable maximum, reason and source evidence. Unchanged valid
+observations extend compact coverage in place rather than append duplicate rows
+on every poll. Original measurement clocks are not renewed by reading a cache.
+Restart, ownership changes, equipment/source changes and missing observations
+must not join unobserved time to a previous known state. Pending measurement
+pairing remains unknown, with any bounded held setting described separately.
 
-The timeline and live badge distinguish **Unrestricted**, **Limited**, **Paused
-by balancing**, **Fallback**, **Inactive** and **Unknown**. Allowance means a
-controller ceiling, and a confirmed native setting or pause instruction is not
-physical charging or zero-power evidence. Native and vehicle restrictions can
-reduce the effective allowance without changing an unrestricted load allowance.
-Manual and scheduled stops never become balancing pauses merely because power
-is zero. Unavailable or invalid property/charger source evidence records
-**Fallback** with its specific reason; fallback is not verified load headroom.
-Equalizer's reported allowance and native budget do not gate live current
-allocation. Held unchanged readings admitted through healthy current reporting
-preserve their original source clocks. Missing decision coverage stays
-**Unknown** rather than claiming a confirmed allocation or physical result.
-Pending observation pairing records **Unknown** with reason
-`measurement-pair-pending`, its bounded held allowance and separate native
-setting. It does not extend the earlier verified interval or claim a newly
-validated household subtraction.
-See [current allocation](charging/current-allocation.md#charger-2-current-allocation).
+Queries are bounded by the requested period and a finite decision budget. Missing
+coverage, invalid records and conflicting overlaps remain unknown. Omitted detail
+in dense selections remains a gap with an explanation to zoom in; modes and
+fallback boundaries are never averaged into a misleading continuous allowance.
+The two allowance histories do not expire with unsaved charging-session reports.
+They participate in ordinary current-format backup, recovery and inventory.
 
-This history does not expire with unsaved charging-session reports, whose default
-retention is 30 days. It is part of ordinary recorded history and current-format
-backup/recovery. Stable operation therefore retains one decision and its compact
-coverage rather than a row per five-second poll. Its growth follows actual
-changes in state, allowance, reason or native-setting confirmation, not elapsed
-poll count.
+The **Charging currents** view plots both allowances as step lines. Charger 2
+fallback occupies a separate purple dash-dot display series, derived from the
+same stored observations. Its normal line stops for fallback and unknown periods.
+The property line is the maximum of its three existing phase-current histories
+at each timestamp. Native historical currents retain their reconstructed
+interval-average meaning; supported imported current snapshots retain their own
+basis. All three phases are required. This derived maximum adds no property
+recording stream. Temperature context keeps its existing right axis.
+
+Both charger cards show the same compact allowance beside **Details & settings**.
+Full allowance is green, a reduced positive allowance blue, ordinary zero red
+and fallback purple, including fallback zero. Unknown/inactive is neutral.
+Existing action messages temporarily replace the allowance in that footer slot.
+The old Shelly-only history strip is removed from all charts. See
+[current allocation](charging/current-allocation.md#load-balancing-status-and-history).
 
 ### Diagnostic meter and session checks
 
@@ -480,8 +479,9 @@ scope. Disclosure state and keyboard focus survive refreshes; a failed refresh
 keeps the last displayed results with an explicit notice. Property cumulative
 readings remain available in history.
 
-The **Charging session checks** view shows Charger 1's finalized meter totals
-as separate points at the session end, directly from its session records.
+Charger 1's finalized meter totals remain available through **All series** as
+separate points at the session end, directly from its session records. There is
+no dedicated session-check view and no Charger 2 session-check series.
 The **Property meter counter** view keeps its cumulative meaning separate, using
 individual readings without a connecting line.
 The explorer's **All series** mode can isolate the Charger 1 session check or a supported cumulative
@@ -713,7 +713,7 @@ byte and variation metrics remain labeled as such. Current open energy is shown
 separately from finalized observation counts. The annual target measures overall
 SQLite growth; mandatory exact/history records are never dropped to meet it.
 
-This recording contract uses database schema 20. An incompatible development
+This recording contract uses database schema 21. An incompatible development
 schema is rejected before mutation with fresh-database guidance; no migration,
 backfill or automatic reset is provided. Supported read-only v0.7.5 CSV import,
 current-version restart, backup/restore and deterministic journal replay remain.
@@ -1309,9 +1309,8 @@ wood or the reconstructible model. All fireplace chart and savings data are
 derived on demand without new telemetry or daily savings rows;
 see [fireplace logging](fireplace.md#visibility-and-estimated-savings).
 
-The **Property meter counter** and **Charging session checks** views preserve
-these distinct quantities. The explorer's **All series** mode can isolate either charger's
-session reference, independently of recorded interval energy.
+The **Property meter counter** view and Charger 1's **All series** session check
+preserve these distinct quantities independently of recorded interval energy.
 
 ## Synthetic year benchmark
 
@@ -1443,7 +1442,7 @@ The retained data has distinct responsibilities:
 | Dated power assumptions and controller auxiliary estimates | Historical equipment interpretation and the estimate actually available to control; not separately measured heat-pump electricity. |
 | Learning outcome assessments and cycle events | Original assessment known at that time, kept distinct from corrected replay. |
 | Meter/session checks | Independent reference evidence for accuracy; not duplicate energy contributions. |
-| Shelly limiter decisions and compact coverage | Exact controller allowance, fallback and application-status changes; separate from actual draw and charging-report retention. |
+| Charger allowances and compact coverage | Exact nonnegative allowances with explicit mode, source evidence and restrictions; separate from actual draw and charging-report retention. |
 | Native garage pump interpreted indoor temperature/frequency | Adaptive observed diagnostics with explicit validity bounds; separate from room/protection sensor measurements. |
 | Native garage compressor activity and defrost | Exact observed state changes; no inferred fault or defrost interpretation from arbitrary diagnostic bytes. |
 | External feed diagnostics | Abnormal onset, changed reason and recovery events; no numeric feed series or healthy renewal log. |

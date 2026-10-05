@@ -2182,41 +2182,62 @@ test('a lower-revision replica snapshot revokes previously writable charger sett
   panel.close();
 });
 
-test('Shelly limiter badge presents the controller mode without inferring pauses from stopped power', () => {
+test('both compact allowances retain distinct source, effective current and native confirmation details', () => {
   const document = documentFixture(), $ = id => document.getElementById(id);
   const panel = createChargingPanel({ document, request: async () => status() });
+  const one = { ...connected(), allowance: { mode: 'unrestricted', allowanceA: 16, maximumCurrentA: 16,
+    reportedAllowanceA: 23, source: 'easee-equalizer', measuredAt: now - 60_000, receivedAt: now } };
   const item = connected('charger2');
-  const limiter = { mode: 'fallback', allowanceA: 12, loadAllowanceA: 12, reason: 'feed-unavailable', appliedCurrentA: 12, applicationStatus: 'confirmed' };
-  panel.update(status(connected(), { ...item, limiter, values: { ...item.values, powerKw: reading(0), charging: reading(false) }, control: { phase: 'yielded', manual: { kind: 'stop' } } }));
-  assert($('charger1-limiter').hidden);
-  assert.equal($('charger2-limiter').textContent, 'Load balancing: Fallback · 12 A');
-  const popup = openDetail($('charger2-limiter'));
-  assert.match(popup.textContent, /Charger setting: 12 A confirmed/);
-  assert.match(popup.textContent, /not measured charging current/);
-  assert.equal(Boolean($('charger2-device').open), false, 'Badge inspection leaves the charger card folded');
-  panel.update(status({ ...item, limiter: { ...limiter, loadAllowanceA: 12, allowanceA: 9,
-    appliedCurrentA: 9, reason: 'native-current-limit' } }));
-  assert.equal($('charger2-limiter').textContent, 'Load balancing: Fallback · 12 A');
-  assert.match(popup.textContent, /Charger current choice/);
+  const allowance = { mode: 'fallback', allowanceA: 12, maximumCurrentA: 16, source: 'st-mq-load-balancing' };
+  const limiter = { mode: 'fallback', allowanceA: 9, loadAllowanceA: 12, reason: 'native-current-limit', appliedCurrentA: 8, applicationStatus: 'confirmed' };
+  panel.update(status(one, { ...item, allowance, limiter,
+    values: { ...item.values, powerKw: reading(0), charging: reading(false) }, control: { phase: 'yielded', manual: { kind: 'stop' } } }));
+  for (const id of ['charger1', 'charger2']) {
+    assert.equal($(`${id}-limiter`), null, 'No prominent limiter badge remains in timing');
+    assert($(`${id}-allowance`).parentElement.matches('.charging-disclosure'));
+  }
+  assert.equal($('charger1-allowance').textContent, '16 A Available');
+  assert.equal($('charger1-allowance').dataset.tone, 'full');
+  let popup = openDetail($('charger1-allowance'));
+  assert.match(popup.textContent, /Reported Equalizer allowance: 23 A per phase/);
+  assert.match(popup.textContent, /Equipment ceiling: 16 A per phase/);
+  assert.match(popup.textContent, /Oldest phase source time/);
+  assert.equal($('charger2-allowance').textContent, '12 A Fallback');
+  popup = openDetail($('charger2-allowance'));
   assert.match(popup.textContent, /Effective allowance: 9 A/);
-  assert.match(popup.textContent, /Charger setting: 9 A confirmed/);
-  assert.match(popup.textContent, /fallback cap applies, respecting tighter limits/);
-  assert.doesNotMatch(popup.textContent, /Unrestricted/);
-  panel.update(status({ ...item, limiter: { ...limiter, mode: 'unrestricted', loadAllowanceA: 16, allowanceA: 8, appliedCurrentA: 8, reason: 'native-current-limit' } }));
-  assert.equal($('charger2-limiter').textContent, 'Load balancing: Unrestricted · 16 A');
-  assert.match(popup.textContent, /Effective allowance: 8 A/);
-  panel.update(status({ ...item, limiter: { ...limiter, mode: 'paused-by-balancing', loadAllowanceA: 0, allowanceA: 0, applicationStatus: 'pending' } }));
-  assert.match(popup.textContent, /Awaiting charger confirmation/);
-  assert.doesNotMatch(popup.textContent, /Pause instruction confirmed/);
-  panel.update(status({ ...item, limiter: { ...limiter, mode: 'unknown', loadAllowanceA: 12,
-    allowanceA: 12, appliedCurrentA: 12, reason: 'measurement-pair-pending' } }));
-  assert.equal($('charger2-limiter').textContent, 'Load balancing: Awaiting measurements');
-  assert.match(popup.textContent, /Held ceiling: 12 A/);
+  assert.match(popup.textContent, /Charger setting: 8 A confirmed/);
+  assert.match($('charger2-readings').textContent, /Charger setting8 A confirmed/);
+  assert.doesNotMatch($('charger2-readings').textContent, /Charger settingCharger setting/);
+  assert.equal(Boolean($('charger2-device').open), false, 'Allowance details leave the charger card folded');
+  for (const [mode, amps, label, tone] of [
+    ['unrestricted', 16, '16 A Available', 'full'], ['limited', 8, '8 A Available', 'limited'],
+    ['limited', 0, '0 A Available', 'zero'], ['fallback', 0, '0 A Fallback', 'fallback'],
+    ['unknown', null, 'Allowance unknown', 'neutral'], ['inactive', null, 'Inactive', 'neutral'],
+  ]) {
+    panel.update(status(one, { ...item, allowance: { ...allowance, mode, allowanceA: amps }, limiter }));
+    assert.equal($('charger2-allowance').textContent, label);
+    assert.equal($('charger2-allowance').dataset.tone, tone);
+  }
+  panel.update(status(one, { ...item, allowance: { ...allowance, mode: 'unknown', allowanceA: null, reason: 'measurement-pair-pending' },
+    limiter: { ...limiter, mode: 'unknown', allowanceA: 8, loadAllowanceA: 12, reason: 'measurement-pair-pending' } }));
+  assert.match(popup.textContent, /Held ceiling: 8 A/);
   assert.match(popup.textContent, /previous confirmed ceiling is retained and cannot increase/);
   assert.match(popup.textContent, /Waiting alone does not trigger fallback/);
-  assert.match(popup.textContent, /Charger setting: 12 A confirmed/);
-  panel.update(status({ ...item, limiter: { mode: 'unknown', applicationStatus: 'unknown' } }));
-  assert.equal($('charger2-limiter').textContent, 'Load balancing: Unknown');
-  assert.match(popup.textContent, /Charger setting unconfirmed/);
+  panel.close();
+});
+
+test('pending approval uses an intentional label and time while keeping the complete explanation', () => {
+  const document = documentFixture(), $ = id => document.getElementById(id);
+  const panel = createChargingPanel({ document, request: async () => status() });
+  const plannedAt = now + 4 * 3600_000;
+  const item = { ...active(), control: { phase: 'unavailable', errorCode: 'transaction-unconfirmed',
+    reason: 'Waiting for a current transaction confirmed on this connection.', snapshot: { transport: 'ocpp', transactionConfirmed: false } },
+    plan: { state: 'waiting', startAt: plannedAt, finishAt: deadlineAt, deadlineAt, feasible: true, periods: [{ startAt: plannedAt, endAt: null }] } };
+  panel.update(status(item));
+  assert.equal($('charger1-event-label').textContent, 'Start pending approval');
+  assert.equal($('charger1-event-value').textContent, 'Tomorrow 01:00');
+  const popup = openDetail($('charger1-event-value'));
+  assert.match(popup.textContent, /Planned start tomorrow 01:00 · charging approval pending/);
+  assert.equal($('charger1-event').children.length, 2);
   panel.close();
 });

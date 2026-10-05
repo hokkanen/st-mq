@@ -10,6 +10,7 @@ import { createDeviceProviders } from '../src/acquisition/devices.js';
 import { createHttp } from '../src/acquisition/http.js';
 import { ocppInstallation } from '../src/acquisition/easee-ocpp-setup.js';
 import { CHARGING_OBSERVATION_IDS } from '../src/charging/easee.js';
+import { easeeAllowanceStatus } from '../src/charging/allowance-history.js';
 import { updateSupplyEstimate } from '../src/charging/supply.js';
 import { ChargingRuntime } from '../src/charging/runtime.js';
 import { loadConfig } from '../src/app/config.js';
@@ -1291,4 +1292,19 @@ test('automatic takeover waits for recovered transaction authority before replac
   const count = writes(f).length;
   result = await restarted.update({ enabled: true, plan: x.plan });
   assert.equal(result.phase, 'paused'); assert.equal(writes(f).length, count);
+});
+
+
+test('native allowance uses supplemental cloud receipt and phase clocks rather than repeated OCPP status', async t => {
+  const { f, adapter, physical } = await nativeAppFixture(t, { equalizer: true });
+  const first = await adapter.read(), initial = easeeAllowanceStatus({ telemetry: adapter.normalize(first), now: f.now });
+  assert.equal(initial.allowanceA, 16); assert.equal(initial.source, 'easee-equalizer');
+  assert.equal(initial.receivedAt, AT); assert.deepEqual(initial.sourceTimes, [AT, AT, AT]);
+  f.advance(5000); physical();
+  const reread = await adapter.read(), repeated = easeeAllowanceStatus({ telemetry: adapter.normalize(reread), now: f.now });
+  assert.equal(repeated.receivedAt, AT); assert.deepEqual(repeated.sourceTimes, [AT, AT, AT]);
+  assert.equal(reread.statusAt, f.now);
+  f.cloudOffline = true; f.advance(300_001); physical();
+  const stale = await adapter.read();
+  assert.equal(easeeAllowanceStatus({ telemetry: adapter.normalize(stale), now: f.now }).mode, 'unknown');
 });

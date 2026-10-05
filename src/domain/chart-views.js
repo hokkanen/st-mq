@@ -18,16 +18,17 @@ function view(key, label, group, description, unit, leftSignals, rightSignals, t
     defaults: Object.freeze(Object.fromEntries(keys.map(key => [key, show.includes(key)]))), ...extra }));
 }
 view('power', 'Electrical power', 'Electricity', 'Compare property demand with charging and estimated heating loads.', 'kW',
-  ['property_power', 'charger_power', 'charger2_power', 'heat_pump_power', 'auxiliary_power'], property, ['shellyLimiter', ...homeRows],
-  ['property_power', 'charger_power', 'charger2_power', 'model_indoor_temperature', 'outdoor_temperature', 'outdoor_forecast', 'shellyLimiter', ...homeRows], { stackPower: true });
+  ['property_power', 'charger_power', 'charger2_power', 'heat_pump_power', 'auxiliary_power'], property, homeRows,
+  ['property_power', 'charger_power', 'charger2_power', 'model_indoor_temperature', 'outdoor_temperature', 'outdoor_forecast', ...homeRows], { stackPower: true });
 view('phases', 'Phase loading', 'Electricity', 'Compare property phase currents with charger fills stacked separately for each phase. Reconstructed currents are interval averages.', 'A',
-  ['property', 'ev1', 'ev2'].flatMap(prefix => [1, 2, 3].map(phase => `${prefix}_current_l${phase}`)), property, ['shellyLimiter'],
-  ['property_current_l1', 'property_current_l2', 'property_current_l3', 'shellyLimiter'], { stackPhases: true });
+  ['property', 'ev1', 'ev2'].flatMap(prefix => [1, 2, 3].map(phase => `${prefix}_current_l${phase}`)), property, [],
+  ['property_current_l1', 'property_current_l2', 'property_current_l3'], { stackPhases: true });
 view('voltage_estimates', 'Phase voltage estimates', 'Electricity', 'Saved smoothed voltage estimates for each supply phase, not live measurements. Inspect a point for the contributing sources and the feed used for its latest update.', 'V',
   ['voltage_estimate_l1', 'voltage_estimate_l2', 'voltage_estimate_l3'], [], [],
   ['voltage_estimate_l1', 'voltage_estimate_l2', 'voltage_estimate_l3']);
-view('session_checks', 'Charging session checks', 'Electricity', 'Charger 1 final meter readings for completed sessions; inspect a point for its reconstruction and difference.', 'kWh / session',
-  ['ev1_session_energy_check'], property, [], ['ev1_session_energy_check']);
+view('charging_currents', 'Charging currents', 'Electricity', 'Compare the highest property phase-current estimate with each charger’s load-balancing allowance. Purple dash-dot segments show Charger 2 fallback; allowances do not establish actual draw or permission to charge.', 'A',
+  ['property_current_max', 'ev1_current_allowance', 'ev2_current_allowance', 'ev2_current_fallback'], property, [],
+  ['property_current_max', 'ev1_current_allowance', 'ev2_current_allowance', 'ev2_current_fallback']);
 view('temperatures', 'Property temperatures', 'Temperatures & weather', 'Compare the three home rooms and both garage probes on one temperature scale.', '', [],
   ['indoor_temperature', 'bedroom_temperature', 'downstairs_temperature', ...property, 'garage_temperature_2', 'caravan_temperature'],
   ['controller_phase', 'operatingMode', 'compressorHome', 'fireplace', 'garage_frost_active', ...garageRows],

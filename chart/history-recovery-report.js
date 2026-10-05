@@ -10,7 +10,7 @@ const sourceTables = { imports: 'CSV imports', import_rows: 'CSV rows', observat
   recorder_pending_energy: 'Open energy intervals', charging_session_keys: 'Charging session references' };
 const coverageCategories = { ...sourceTables, energy: 'Recorded energy', temperatures: 'Temperatures', other_observations: 'Other measurements and states',
   charging_reports: 'Saved charging reports',charging_report_events: 'Charging report events' };
-const signalLabel = signal => Object.hasOwn(SIGNAL_INFO,signal) || signal === 'shelly_limiter_mode'
+const signalLabel = signal => Object.hasOwn(SIGNAL_INFO,signal) || ['charger1_current_allowance', 'charger2_current_allowance'].includes(signal)
   ? recordedSignalInfo(signal).label : 'Recorded measurement';
 const energyLabel = prefix => ({ ev1: 'Charger 1 energy',ev2: 'Charger 2 energy',property: 'Property energy',caravan: 'Caravan energy' })[prefix];
 const evidenceRecords = item => count(item.records) > 0 ? item.records : 1;

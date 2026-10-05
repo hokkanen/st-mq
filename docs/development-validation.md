@@ -138,11 +138,11 @@ reception and useful heating require separate installation checks.
 
 Focused offline checks cover held Easee stream state, synchronization and
 connection epochs, allocation independence, native limits and
-change-only limiter history:
+change-only allowance history:
 
 ```sh
-node --test test/easee-stream.test.js test/easee-ocpp-lifecycle.test.js test/charging-shelly-limit.test.js test/charging-limiter-evidence-policy.test.js test/charging-shelly-evse.test.js test/charging-limiter-history.test.js
-node --test test/charging-ui.test.js test/chart-overlays.test.js test/chart-views.test.js
+node --test test/easee-stream.test.js test/easee-ocpp-lifecycle.test.js test/charging-shelly-limit.test.js test/charging-limiter-evidence-policy.test.js test/charging-shelly-evse.test.js test/charging-allowance-history.test.js
+node --test test/charging-ui.test.js test/chart-overlays.test.js test/chart-views.test.js test/chart-charging-currents.test.js
 ```
 
 Use synthetic source observations to exercise unchanged last-change values
@@ -213,7 +213,7 @@ node test/browser/equipment-smoke.js --caravan-only
 node test/browser/charging-controls-smoke.js
 node test/browser/charging-tests-smoke.js
 node test/browser/ocpp-setup-smoke.js
-node test/browser/shelly-limiter-smoke.js
+node test/browser/charging-currents-smoke.js
 node test/browser/home-controls-smoke.js
 node test/browser/history-recovery-smoke.js
 node test/browser/heating-explorer-smoke.js
@@ -313,16 +313,16 @@ temporary screenshot directory is printed on completion. It never connects to a
 vehicle or charger; overnight hardware behavior still requires an actual guided
 run by the installation user.
 
-The Shelly-limiter browser suite seeds actual decision observations and compact
-coverage in a fresh synthetic database, then reads them through the chart API.
-It checks six modes, including unavailable evidence in Unknown, load allowance
-versus effective/native settings, keyboard
-and touch inspection, persistent touch readout, badge details and focus return,
-unknown hatching and separate colors at 320/390/1440 px in both themes. It also
-checks the timeline in Phase loading and individual Charger 2 power. Synthetic
-screenshots are saved in the temporary directory printed on completion. The
-suite makes no household or charger connections; it is UI and storage-path
-validation, not a physical charger test.
+The charging-currents browser suite seeds actual allowance observations and
+compact coverage in a fresh synthetic database, then reads them through the
+chart API. It checks the property maximum, both chargers' allowance lines,
+separate purple dash-dot fallback including zero, missing coverage, unchanged
+right-axis meaning and removal of old load-balancing strips. Charger 1 session
+checks remain accessible in All series. The charging-controls suite covers
+compact footer allowances, action-message replacement, unknown/inactive states,
+source details, and the two-line planned-start approval label at narrow and wide
+widths in both themes. These fixtures make no household or charger connections;
+they validate UI and storage behavior rather than physical charger response.
 
 The physical-test API and runtime-independence tests exercise real BMW and Tesla
 acquisition with synthetic hardware. They compare all production settings, session

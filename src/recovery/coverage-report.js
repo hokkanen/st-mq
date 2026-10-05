@@ -3,8 +3,9 @@ import { pendingEnergyObservations } from '../storage/pending-energy.js';
 import { isRecordedEnergyGap, validEnergyQuality } from '../storage/energy-history.js';
 
 export const RECOVERY_OUTAGE_LIMIT = 100;
-const publicSignal = signal => Object.hasOwn(SIGNAL_INFO,signal) || signal === 'shelly_limiter_mode';
-const publicSignals = [...Object.keys(SIGNAL_INFO), 'shelly_limiter_mode'];
+const allowanceSignals = ['charger1_current_allowance', 'charger2_current_allowance'];
+const publicSignal = signal => Object.hasOwn(SIGNAL_INFO,signal) || allowanceSignals.includes(signal);
+const publicSignals = [...Object.keys(SIGNAL_INFO), ...allowanceSignals];
 const publicSignalSql = publicSignals.map(signal => `'${signal}'`).join(',');
 const evidenceKind = row => row.basis === 'energy-interval' ? 'energyIntervals'
   : row.to > row.from ? 'reportPeriods' : 'pointEvents';

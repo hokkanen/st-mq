@@ -64,9 +64,10 @@ const coversZero = (composite, from, until) => composite.startAt <= from && comp
 
 function snapshotFor(value, scope, now) {
   if (!fields(value, ['transport', 'scope', 'connectionId', 'readAt', 'online', 'connectorStatus', 'statusAt', 'statusReceivedAt',
-    'transactionId', 'transactionStartedAt', 'transactionConfirmedAt', 'transactionProvenance', 'transactionConfirmed', 'pluggedIn', 'powerKw', 'powerAt', 'powerReceivedAt', 'appControl', 'limits', 'supply', 'externalLoadBalancing'])
+    'transactionId', 'transactionStartedAt', 'transactionConfirmedAt', 'transactionProvenance', 'transactionConfirmed', 'pluggedIn', 'powerKw', 'powerAt', 'powerReceivedAt', 'appControl', 'limits', 'supply', 'externalLoadBalancing', 'allowanceTelemetry'])
     || value.transport !== 'ocpp' || value.scope !== scope || typeof value.online !== 'boolean'
     || !time(value.readAt) || value.readAt > now || ![true, false, null].includes(value.pluggedIn)
+    || value.allowanceTelemetry != null && !fields(value.allowanceTelemetry, ['availableCurrentA', 'maxCurrentA'])
     || value.externalLoadBalancing !== undefined && ![true, false, null].includes(value.externalLoadBalancing)
     || value.online && (!text(value.connectionId) || !STATUSES.includes(value.connectorStatus)
       || !time(value.statusAt) || value.statusAt > now || !fresh(value.readAt, now))
@@ -119,7 +120,7 @@ async function handoverOperation(step, operation) {
 
 export function createOcppScheduleAdapter({ request, readSnapshot, isCurrent = () => false,
   scope, clock = Date.now, canControl = () => false, takeoverNative, setStartPermission = () => {}, readCurrentSupply,
-  readDeviceInfo = () => null } = {}) {
+  readDeviceInfo = () => null, readAllowanceTelemetry = null } = {}) {
   if (!scopeValid(scope) || typeof request !== 'function' || typeof readSnapshot !== 'function') throw fail('invalid-ocpp-adapter');
   const adapter = {
     scope, ownershipNamespace: 'ocpp', supportsTakeover: typeof takeoverNative === 'function',
@@ -193,6 +194,7 @@ export function createOcppScheduleAdapter({ request, readSnapshot, isCurrent = (
         value: available && value != null ? value : null, available: available && value != null,
         source, measuredAt: at ?? null, receivedAt });
       const limits = snapshot.limits ?? {}, supply = snapshot.supply ?? {};
+      const allowanceTelemetry = readAllowanceTelemetry ? readAllowanceTelemetry() : snapshot.allowanceTelemetry;
       const ceilings = [limits.chargerA, limits.cableA, ...(limits.circuitA ?? [])].filter(value => Number.isFinite(value) && value > 0);
       const allowance = limits.equalizerAvailableA;
       const complete = values => Array.isArray(values) && values.length === 3 && values.every(Number.isFinite);
@@ -205,8 +207,9 @@ export function createOcppScheduleAdapter({ request, readSnapshot, isCurrent = (
           snapshot.statusAt, 'easee-ocpp', snapshot.statusReceivedAt ?? null),
         powerKw: signal(fresh(snapshot.powerAt, now) ? snapshot.powerKw : null, snapshot.powerAt, 'easee-ocpp', snapshot.powerReceivedAt ?? null),
         currentA: signal(complete(allowance) && ceilings.length ? Math.min(...allowance, ...ceilings) : null),
-        availableCurrentA: signal(complete(allowance) ? Math.min(...allowance) : null),
-        maxCurrentA: signal(ceilings.length ? Math.min(...ceilings) : null),
+        availableCurrentA: allowanceTelemetry?.availableCurrentA
+          ?? { value: null, available: false, source: 'easee-equalizer', measuredAt: null, receivedAt: null, inputs: [] },
+        maxCurrentA: allowanceTelemetry?.maxCurrentA ?? signal(ceilings.length ? Math.min(...ceilings) : null),
         actualCurrentA: signal(complete(supply.chargerCurrentA) ? supply.chargerCurrentA.reduce((sum, value) => sum + value, 0) / 3 : null),
         phaseCurrentA: { ...signal(complete(supply.chargerCurrentA) ? supply.chargerCurrentA : null,
           complete(supply.observationTimes?.charger) ? Math.min(...supply.observationTimes.charger) : null),

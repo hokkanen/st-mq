@@ -44,7 +44,7 @@ export function chartSubjectAvailability(view, datasets, payload, preferences) {
   const primary = enabled.filter(dataset => view.leftSignals.includes(dataset.key));
   if (primary.length && !primary.some(hasValues) && enabled.some(hasValues)) return `No ${view.unit} values in this period · temperature context shown`;
   if (enabled.some(hasValues)) return '';
-  if (tracks.some(key => key === 'shellyLimiter' ? payload.limiterHistory?.spans?.length : key === 'operatingMode' ? payload.operatingModes?.length
+  if (tracks.some(key => key === 'operatingMode' ? payload.operatingModes?.length
     : payload.shading?.[key]?.length || payload.series?.[key]?.some(point => Number.isFinite(point.y)))) return '';
   return 'No recorded values for the visible subject in this period';
 }

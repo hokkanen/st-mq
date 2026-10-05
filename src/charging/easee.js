@@ -237,7 +237,7 @@ export function chargingSnapshot(observations, scheduling, now, allocationA = nu
 /** Adapt charger observations to the same vehicle/charger signals used by
  * TeslaMate. Unsupported vehicle values remain absent; AC charging energy and
  * cable ratings cannot establish a vehicle's usable capacity or charge target. */
-export function easeeChargerTelemetry(snapshot = {}, { now = Date.now() } = {}) {
+export function easeeChargerTelemetry(snapshot = {}, { now = Date.now(), allowanceEvidence = snapshot.allowanceEvidence } = {}) {
   const available = snapshot.online === true && Number.isFinite(snapshot.readAt)
     && snapshot.readAt <= now && now - snapshot.readAt <= 5 * 60_000;
   const signal = (value, ids = [], source = 'easee') => {
@@ -262,6 +262,13 @@ export function easeeChargerTelemetry(snapshot = {}, { now = Date.now() } = {}) 
   const voltageV = Array.isArray(voltage) && voltage.length === 3 && voltage.every(value => Number.isFinite(value) && value >= 200 && value <= 250)
     ? voltage.reduce((sum, value) => sum + value, 0) / 3 : null;
   const schedule = nextScheduleOccurrence(snapshot.schedule, now);
+  const allowanceRows = allowanceEvidence?.source === 'easee-stream' ? allowanceEvidence.observations : null;
+  const allowanceValues = allowanceEvidence?.source === 'easee-stream'
+    ? [230, 231, 232].map(id => amps(allowanceRows?.find(row => Number(row.id) === id)?.value)) : limits.equalizerAvailableA;
+  const allowanceKnown = Array.isArray(allowanceValues) && allowanceValues.length === 3
+    && allowanceValues.every(value => amps(value) !== null);
+  const allowanceInputs = [230, 231, 232].map(id => ({ id, measuredAt: allowanceEvidence?.source === 'easee-stream'
+    ? instant(allowanceRows?.find(row => Number(row.id) === id)?.timestamp) : snapshot.observations?.[id]?.at ?? null }));
   return { ...snapshot, provider: 'easee', providerConnected: available,
     capabilities: { scheduling: true, currentControl: false, externalLoadBalancing,
       automatic: { capacityKwh: false, soc: false, minimumSoc: false, connected: true, currentA: true, schedule: true } },
@@ -269,7 +276,13 @@ export function easeeChargerTelemetry(snapshot = {}, { now = Date.now() } = {}) 
     connected: signal(snapshot.pluggedIn, [100, 109]),
     currentA: signal(currentA, currentIds, externalLoadBalancing ? 'easee-equalizer' : 'easee'),
     maxCurrentA: signal(maxCurrentA, [22, 23, 24, 47, 104]),
-    availableCurrentA: signal(equalizerKnown ? Math.min(...limits.equalizerAvailableA) : null, [230, 231, 232], 'easee-equalizer'),
+    availableCurrentA: { ...signal(allowanceKnown ? Math.min(...allowanceValues) : null, [230, 231, 232], 'easee-equalizer'),
+      inputs: allowanceInputs,
+      ...(allowanceEvidence ? { available: available && allowanceKnown && allowanceEvidence.connected === true
+          && allowanceEvidence.synchronized === true && allowanceEvidence.online !== false,
+        receivedAt: allowanceEvidence.receivedAt ?? null, sourceEvidence: { source: allowanceEvidence.source,
+          connected: allowanceEvidence.connected, synchronized: allowanceEvidence.synchronized,
+          online: allowanceEvidence.online ?? null, epoch: allowanceEvidence.epoch ?? null } } : {}) },
     actualCurrentA: signal(snapshot.supply?.chargerCurrentA?.reduce((sum, value) => sum + value, 0) / 3, [183, 184, 185]),
     phaseCurrentA: { ...signal(snapshot.supply?.chargerCurrentA, [183, 184, 185]),
       inputs: [183, 184, 185].map((id, index) => ({ measuredAt: snapshot.supply?.observationTimes?.charger?.[index]
@@ -286,14 +299,16 @@ export function easeeChargerTelemetry(snapshot = {}, { now = Date.now() } = {}) 
 
 /** Inject existing authenticated/rate-limited transport; raw account data stays local. */
 export function createEaseeScheduleAdapter({ request, readObservations, chargerId, equalizerId, clock = Date.now, canControl = () => false,
-  waitForReadback = (ms, signal) => delay(ms, undefined, { signal }), settleReadback = null }) {
+  waitForReadback = (ms, signal) => delay(ms, undefined, { signal }), settleReadback = null, readAllowanceEvidence = null }) {
   const base = `https://api.easee.com/api/chargers/${encodeURIComponent(chargerId)}/schedules`;
   readObservations ??= (deviceId, ids, { signal } = {}) => request(
     `https://api.easee.com/state/${encodeURIComponent(deviceId)}/observations?ids=${ids.join(',')}`, { method: 'GET', signal });
   let allocationA = null, allocationReadAt = -Infinity, allocationConfirmedAt = -Infinity;
   let allocationEpoch = null, allocationReadEpoch = null, allocationConfirmedEpoch = null;
   const adapter = {
-    normalize(snapshot, options = {}) { return easeeChargerTelemetry(snapshot, { now: clock(), ...options }); },
+    normalize(snapshot, options = {}) { return easeeChargerTelemetry(snapshot, { now: clock(), ...options,
+      ...(snapshot?.allowanceEvidence?.source === 'easee-stream' && readAllowanceEvidence
+        ? { allowanceEvidence: readAllowanceEvidence() ?? { connected: false, synchronized: false } } : {}) }); },
     async read({ signal, forceRest = false, telemetryOnly = false, configurationEpoch = allocationEpoch } = {}) {
       if (!chargerId) throw new Error('Charger 1 Easee connection is not configured');
       let now = clock();
@@ -330,6 +345,7 @@ export function createEaseeScheduleAdapter({ request, readObservations, chargerI
       now = clock();
       try {
         const snapshot = chargingSnapshot(observations, scheduling, now, allocationA, { externalLoadBalancing: Boolean(equalizerId) });
+        snapshot.allowanceEvidence = observations?.allowanceEvidence ?? null;
         const rows = Array.isArray(property) ? property : property?.observations ?? [];
         const pick = id => {
           const entries = rows.filter(row => Number(row?.id) === id && instant(row.timestamp) !== null && instant(row.timestamp) <= now)

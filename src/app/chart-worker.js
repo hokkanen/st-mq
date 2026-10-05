@@ -7,7 +7,8 @@ import { pendingEnergyObservations } from '../storage/pending-energy.js';
 import { H66_MAX_AGE_MS } from '../domain/reading-freshness.js';
 import { temperatureReportMaxAge } from '../domain/temperature-reports.js';
 import { CHART_VIEW_BY_KEY } from '../domain/chart-views.js';
-import { SHELLY_LIMITER_SIGNAL } from '../charging/limiter-history.js';
+import { CHARGING_ALLOWANCE_SIGNALS } from '../charging/allowance-history.js';
+import { CHARGING_ALLOWANCE_SERIES } from './chart-charging-allowances.js';
 
 // The chart worker owns a separate read-only SQLite connection. A large history
 // view cannot block control decisions or the application's HTTP event loop.
@@ -35,18 +36,21 @@ function sourceCoverageFingerprint(args,range) {
     const end=Math.min(range.to,confirmed+age);
     if(end>Math.max(range.from,row.start_at)) spans.push([row.id,end,row.end_at<=args.now]);
   }
-  const selected = args.view !== undefined ? CHART_VIEW_BY_KEY[args.view]?.tracks.includes('shellyLimiter')
-    : ['power', 'charger2_power'].includes(args.left ?? 'power');
+  const selected = args.view !== undefined ? CHART_VIEW_BY_KEY[args.view]?.leftSignals.some(signal => CHARGING_ALLOWANCE_SERIES.includes(signal))
+    : CHARGING_ALLOWANCE_SERIES.includes(args.left);
   if (selected) {
-    // Limiter decisions have no recorder checkpoint or fresh-measurement tail.
-    // Only their already-observed coverage endpoint changes on identical ticks.
+    // Allowances have no fresh-measurement tail. Their already-observed
+    // coverage endpoints change on identical ticks independently per charger.
     // A clipped finished selection stays cached when later ticks extend beyond it.
-    const row = db.prepare(`SELECT c.id,c.start_at,c.end_at FROM active_recorder_coverage c
-      JOIN active_observations o ON o.id=c.observation_id WHERE c.signal=? AND c.source='charging-limiter'
+    const query = db.prepare(`SELECT c.id,c.start_at,c.end_at FROM active_recorder_coverage c
+      JOIN active_observations o ON o.id=c.observation_id WHERE c.signal=? AND c.source='charging-allowance'
         AND c.start_at<? AND c.end_at>? AND o.received_at<=?
         AND json_extract(o.raw,'$.input') ${args.input === 'simulated' ? '=' : '<>'} 'simulated'
-      ORDER BY c.end_at DESC,c.id DESC LIMIT 1`).get(SHELLY_LIMITER_SIGNAL, range.to, range.from, args.now);
-    if (row) spans.push(['shelly-limiter', row.id, Math.min(row.end_at, range.to, args.now)]);
+      ORDER BY c.end_at DESC,c.id DESC LIMIT 1`);
+    for (const signal of Object.values(CHARGING_ALLOWANCE_SIGNALS)) {
+      const row = query.get(signal, range.to, range.from, args.now);
+      if (row) spans.push([signal, row.id, Math.min(row.end_at, range.to, args.now)]);
+    }
   }
   return JSON.stringify(spans);
 }

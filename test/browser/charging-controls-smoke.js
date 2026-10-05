@@ -26,6 +26,7 @@ function charger(id, provider) {
     settings: { enabled: true, readyBy: '06:00', manualSoc: 20, minimumSoc: 80, capacityKwh: 74 },
     defaults: { readyBy: '06:00', manualSoc: 20, minimumSoc: 80, capacityKwh: 74 },
     controls: { enabled: true, revision: 4 }, request: { sessionId: 'session:' + id, revision: 7, overrides: {} },
+    allowance: { mode: 'unrestricted', allowanceA: 16, maximumCurrentA: 16, reportedAllowanceA: provider === 'easee' ? 23 : null, source: provider === 'easee' ? 'easee-equalizer' : 'st-mq-load-balancing', measuredAt: now, receivedAt: now },
     capabilities: { scheduling: true, currentControl: provider === 'shelly-evse', externalLoadBalancing: provider === 'easee' },
     values: { connected: reading(true), charging: reading(false), soc: reading(42, 'teslamate'), minimumSoc: reading(80, 'manual-fallback'), capacityKwh: reading(74, 'manual-fallback') },
     requiredGridKwh: 30, plan: { startAt: now + 3600000, finishAt: now + 7200000, deadlineAt: now + 10800000, feasible: true },
@@ -63,10 +64,14 @@ fixture.setCase = name => {
       item.identification = { phase: 'waiting', active: true, available: false, reason: 'vehicle-feed-stale' };
       item.values.soc = reading(20, 'manual-fallback');
       item.plan.periods = [{ startAt: now + 3600000, endAt: null }];
-      if (name === 'approval-pending' && item.id === 'charger1') item.control = {
+      if (name === 'approval-pending' && item.id === 'charger1') {
+        item.plan = { ...item.plan, startAt: now + 10 * 3600_000, deadlineAt: now + 15 * 3600_000,
+          periods: [{ startAt: now + 10 * 3600_000, endAt: null }] };
+        item.control = {
         phase: 'unavailable', errorCode: 'transaction-unconfirmed',
         reason: 'Waiting for a current transaction confirmed on this connection.',
         snapshot: { transport: 'ocpp', transactionConfirmed: false } };
+      }
     }
     if (name === 'confirmed-pause') {
       const periods = [{ startAt: now - 7200000, endAt: now - 3600000 }, { startAt: now + 3600000, endAt: null }];
@@ -165,6 +170,53 @@ try {
   for (const width of [320, 390, 1440]) for (const theme of ['dark', 'light']) {
     await send('Emulation.setDeviceMetricsOverride', { width, height: 1000, deviceScaleFactor: 1, mobile: false });
     await evaluate(`document.documentElement.dataset.theme = '${theme}'`);
+    await evaluate("chargingFixture.setCase('ordinary'); document.querySelectorAll('.charging-device').forEach(card => card.open = false)");
+    const originalHeights = await evaluate("[...document.querySelectorAll('.equipment-device-summary')].map(node => node.getBoundingClientRect().height)");
+    for (const [mode, amps, expected, tone, palette] of [
+      ['unrestricted', 16, '16 A Available', 'full', '--chart-indoor'],
+      ['limited', 8, '8 A Available', 'limited', '--chart-outdoor'],
+      ['limited', 0, '0 A Available', 'zero', '--error-text'],
+      ['fallback', 12, '12 A Fallback', 'fallback', '--chart-learning'],
+      ['fallback', 0, '0 A Fallback', 'fallback', '--chart-learning'],
+      ['unknown', null, 'Allowance unknown', 'neutral', '--muted'],
+      ['inactive', null, 'Inactive', 'neutral', '--muted'],
+    ]) {
+      await evaluate(`chargingFixture.status.charging.chargers.forEach(item => { item.allowance = {...item.allowance, mode: '${mode}', allowanceA: ${amps}}; }); chargingFixture.refresh()`);
+      const layout = await evaluate(`(() => {
+        const token = document.createElement('span'); token.style.color = 'var(${palette})'; document.body.append(token);
+        const expectedColor = getComputedStyle(token).color; token.remove();
+        return [...document.querySelectorAll('.charging-allowance')].map(node => {
+          const button = node.querySelector('button'), bounds = node.getBoundingClientRect(), footer = node.closest('.charging-disclosure').getBoundingClientRect();
+          return { text: node.textContent, tone: node.dataset.tone, color: getComputedStyle(node).color, expectedColor,
+            fontSize: getComputedStyle(node).fontSize, nowrap: getComputedStyle(button).whiteSpace,
+            inside: bounds.left >= footer.left && bounds.right <= footer.right + 1, rightAligned: Math.abs(bounds.right - footer.right) < 1,
+            height: node.closest('summary').getBoundingClientRect().height };
+        });
+      })()`);
+      for (const [index, result] of layout.entries()) {
+        const context = `${width}px ${theme} ${mode} charger${index + 1}`;
+        assert.equal(result.text, expected, context); assert.equal(result.tone, tone, context);
+        assert.equal(result.color, result.expectedColor, `${context}: source state color`);
+        assert.equal(result.fontSize, '11px', `${context}: small footer text`);
+        assert.equal(result.nowrap, 'nowrap', `${context}: allowance never wraps`);
+        assert(result.inside && result.rightAligned, `${context}: allowance occupies the right footer slot`);
+        assert.equal(result.height, originalHeights[index], `${context}: changing allowance does not grow the card`);
+      }
+    }
+    await evaluate(`chargingFixture.setCase('ordinary'); chargingFixture.status.charging.chargers[1].allowance = { mode: 'fallback', allowanceA: 12, maximumCurrentA: 16, source: 'st-mq-load-balancing' };
+      chargingFixture.status.charging.chargers[1].limiter = { mode: 'fallback', loadAllowanceA: 12, allowanceA: 9, appliedCurrentA: 8, applicationStatus: 'confirmed', reason: 'native-current-limit' }; chargingFixture.refresh()`);
+    for (const id of ['charger1', 'charger2']) {
+      await evaluate(`document.querySelector('#${id}-allowance button').scrollIntoView({block:'center'}); document.querySelector('#${id}-allowance button').focus(); document.querySelector('#${id}-allowance button').click()`);
+      const detail = await evaluate("document.getElementById('status-detail-popover').textContent");
+      if (id === 'charger1') assert.match(detail, /Reported Equalizer allowance: 23 A per phase/);
+      else { assert.match(detail, /Effective allowance: 9 A/); assert.match(detail, /Charger setting: 8 A confirmed/); }
+      assert.equal(await evaluate(`document.getElementById('${id}-device').open`), false, 'Allowance inspection keeps Details closed');
+      await send('Input.dispatchKeyEvent', { type: 'keyDown', key: 'Escape', code: 'Escape', windowsVirtualKeyCode: 27 });
+      assert.equal(await evaluate(`document.activeElement === document.querySelector('#${id}-allowance button')`), true, 'Dismissing details restores allowance focus');
+    }
+    assert.equal(await evaluate("document.querySelectorAll('.charging-limiter').length"), 0, 'No prominent limiter badge remains');
+    const compactShot = await send('Page.captureScreenshot', { format: 'png', captureBeyondViewport: true });
+    writeFileSync(join(artifacts, `charging-allowances-${width}-${theme}.png`), Buffer.from(compactShot.data, 'base64'));
     for (const state of ['ordinary', 'backend-readings', 'missing-vehicle-feed', 'approval-pending', 'confirmed-pause', 'long', 'manual-stop', 'manual-start', 'manual-window', 'pending', 'blocked', 'handover-timeout', 'handover-cancelled', 'handover-protocol', 'unavailable', 'estimate', 'readonly', 'disconnected', 'unknown-connection', 'missing-token', 'monitoring', 'uncertain', 'startup-stop', 'unavailable-startup-stop']) {
       await evaluate(`chargingFixture.setCase('${state}'); document.querySelectorAll('.charging-device').forEach(card => card.open = true)`);
       const layout = await evaluate(`(() => {
@@ -221,7 +273,12 @@ try {
           assert.match(await evaluate(`document.getElementById('${id}-vehicle').textContent`), /Identification pending/);
           assert.match(await evaluate(`document.getElementById('${id}-periods').textContent`), /Period 1/);
         }
-        if (state === 'approval-pending') assert.match(layout.cards[0].event, /Planned start.*approval pending/);
+        if (state === 'approval-pending') {
+          assert.equal(await evaluate("document.getElementById('charger1-event-label').textContent"), 'Start pending approval');
+          assert.equal(layout.cards[0].event, 'Tomorrow 01:00');
+          assert.equal(await evaluate("document.querySelector('#charger1-event-label').getBoundingClientRect().height <= 16 && document.querySelector('#charger1-event-value').getBoundingClientRect().height <= 18"), true, 'Pending approval fits two intentional lines');
+          assert.deepEqual(await evaluate("[...document.querySelectorAll('.equipment-device-summary')].map(node => node.getBoundingClientRect().height)"), originalHeights, 'Pending approval does not grow the charger cards');
+        }
         else assert.equal(await evaluate(`document.getElementById('charger1-event-label').textContent`), 'Starts');
         assert.equal(await evaluate(`document.getElementById('charger2-event-label').textContent`), 'Starts');
       }
@@ -278,7 +335,7 @@ try {
           assert.equal(await evaluate(`document.getElementById('${id}-energy').textContent`), '—');
         }
       }
-      if (['ordinary', 'backend-readings', 'long', 'manual-stop', 'estimate', 'uncertain', 'startup-stop', 'unavailable-startup-stop', 'handover-timeout', 'unknown-connection'].includes(state)) {
+      if (['ordinary', 'backend-readings', 'approval-pending', 'long', 'manual-stop', 'estimate', 'uncertain', 'startup-stop', 'unavailable-startup-stop', 'handover-timeout', 'unknown-connection'].includes(state)) {
         const metrics = await send('Page.getLayoutMetrics');
         const shot = await send('Page.captureScreenshot', { format: 'png', captureBeyondViewport: true,
           clip: { x: 0, y: 0, width, height: Math.min(metrics.cssContentSize.height, 12000), scale: 1 } });
@@ -298,6 +355,12 @@ try {
   for (const id of ['charger1', 'charger2']) {
     await evaluate(`chargingFixture.setCase('manual-stop'); chargingFixture.writes = []; document.getElementById('${id}-enabled').click()`);
     await until('chargingFixture.writes.length === 1');
+    assert.equal(await evaluate(`getComputedStyle(document.getElementById('${id}-allowance')).visibility`), 'hidden', 'Receipt replaces allowance in the existing right footer slot');
+    assert.equal(await evaluate(`document.getElementById('${id}-control-message').textContent`), 'Preference saved');
+    await evaluate(`chargingFixture.status.now += 24 * 3600_000; chargingFixture.refresh()`);
+    assert.equal(await evaluate(`document.getElementById('${id}-control-message').textContent`), '', 'Receipt expires after its unchanged 24-hour lifetime');
+    assert.equal(await evaluate(`getComputedStyle(document.getElementById('${id}-allowance')).visibility`), 'visible', 'Allowance returns to the same slot after receipt expiry');
+    await evaluate(`chargingFixture.status.now -= 24 * 3600_000; chargingFixture.refresh()`);
     assert.equal((await evaluate('chargingFixture.writes[0]'))[0], `/api/charging/chargers/${id}/control`, 'The preference switch does not take over');
     await evaluate(`chargingFixture.hold = true; document.getElementById('${id}-use-automatic').click()`);
     await until('Boolean(chargingFixture.finish)');
@@ -316,7 +379,7 @@ try {
     assert.match(await evaluate(`document.getElementById('${id}-takeover-message').textContent`), /charger changed.*latest state/);
   }
   assert.deepEqual(errors, []);
-  console.log(`Charging controls browser checks passed: conditional shared controls, explicit takeover fencing, pending/errors and retained receipts, expanded session settings, shared readings with capability differences, setup links without installation rows, read-only inspection, consistent compact statuses, readable long states and popups at 320/390/1440px in both themes. Screenshots: ${artifacts}`);
+  console.log(`Charging controls browser checks passed: conditional shared controls, explicit takeover fencing, pending/errors and retained 24-hour receipts replacing compact allowance text, shared allowance colors and details, two-line approval status, expanded session settings, shared readings with capability differences, setup links without installation rows, read-only inspection, consistent compact statuses, readable long states and popups at 320/390/1440px in both themes. Screenshots: ${artifacts}`);
 } finally {
   socket?.close(); for (const task of pending.values()) clearTimeout(task.timer);
   if (browser && browser.exitCode === null) { browser.kill(); await new Promise(resolve => browser.once('exit', resolve)); }

@@ -71,8 +71,8 @@ test('limiter history reads the published snapshot without entering identificati
     assert(observers.every(observer => observer.mock.callCount() === 0));
     assert.deepEqual(state(), before, 'Recording cannot advance a session, identification attempt or plan');
     assert.equal(f.commands.length, commands);
-    const row = f.store.db.prepare("SELECT raw FROM observations WHERE signal='shelly_limiter_mode' ORDER BY id DESC LIMIT 1").get();
-    assert.deepEqual(JSON.parse(row.raw).limiter, expected, 'The card and recorder share one snapshot projection');
+    const row = f.store.db.prepare("SELECT raw FROM observations WHERE signal='charger2_current_allowance' ORDER BY id DESC LIMIT 1").get();
+    assert.deepEqual(JSON.parse(row.raw).allowance.limiter, expected, 'The card and recorder share one snapshot projection');
   } finally { for (const observer of observers) observer.mock.restore(); }
 });
 
@@ -86,7 +86,7 @@ test('limiter observation rejects another connection, replica authority and repl
     { ...control.snapshot, session: { ...control.snapshot.session, sessionId: 'synthetic-reconnected', connectedAt: f.now + 1 } },
   ]) assert.equal(f.runtime.limiterStatus({ ...control, snapshot }, f.now).mode, 'unknown',
     'A prior decision cannot cross a native generation or physical connection boundary');
-  const rows = () => f.store.db.prepare("SELECT id,raw FROM observations WHERE signal='shelly_limiter_mode' ORDER BY id").all();
+  const rows = () => f.store.db.prepare("SELECT id,raw FROM observations WHERE signal='charger2_current_allowance' ORDER BY id").all();
   const initial = rows(), generation = item.adapterGeneration, authority = f.runtime.canControl;
   const accept = value => {
     f.advance(1000); f.fields.current_limit = { value, at: f.now };
@@ -119,8 +119,8 @@ test('limiter history records publication before a five-second current-command a
   await f.connect('charger2'); await f.priority('charger2'); await f.plan();
   assert.equal(f.view('charger2').limiter.mode, 'unrestricted');
   const history = () => f.store.db.prepare(`SELECT c.start_at,c.end_at,o.id,o.raw FROM recorder_coverage c
-    JOIN observations o ON o.id=c.observation_id WHERE c.signal='shelly_limiter_mode' ORDER BY c.id`)
-    .all().map(row => ({ ...row, status: JSON.parse(row.raw).limiter }));
+    JOIN observations o ON o.id=c.observation_id WHERE c.signal='charger2_current_allowance' ORDER BY c.id`)
+    .all().map(row => ({ ...row, status: JSON.parse(row.raw).allowance.limiter }));
   const held = f.holdNextShellyCurrentWrite();
   f.household.currentA = 17; f.advance(5000);
   const changedAt = f.now, flight = f.runtime.reconcileShellyObservation();
@@ -147,8 +147,8 @@ test('limiter history publishes native readback while another role refresh is st
   const f = await fixture(t, { budgetA: 25 });
   await f.connect('charger2'); await f.priority('charger2'); await f.plan();
   const history = () => f.store.db.prepare(`SELECT c.start_at,c.end_at,o.id,o.raw FROM recorder_coverage c
-    JOIN observations o ON o.id=c.observation_id WHERE c.signal='shelly_limiter_mode' ORDER BY c.id`)
-    .all().map(row => ({ ...row, status: JSON.parse(row.raw).limiter }));
+    JOIN observations o ON o.id=c.observation_id WHERE c.signal='charger2_current_allowance' ORDER BY c.id`)
+    .all().map(row => ({ ...row, status: JSON.parse(row.raw).allowance.limiter }));
   const held = f.holdShellyReadAfterCurrentWrite();
   f.household.currentA = 17; f.advance(5000);
   const flight = f.runtime.reconcileShellyObservation();
@@ -178,7 +178,7 @@ test('unchanged owned balancing pauses do not produce transient limiter-mode row
   f.cars.charger1.demandA = 16; f.cars.charger2.demandA = 16;
   await f.priority('charger1'); await f.plan();
   assert.equal(f.view('charger2').limiter.mode, 'paused-by-balancing');
-  const rows = () => f.store.db.prepare("SELECT id,raw FROM observations WHERE signal='shelly_limiter_mode' ORDER BY id").all();
+  const rows = () => f.store.db.prepare("SELECT id,raw FROM observations WHERE signal='charger2_current_allowance' ORDER BY id").all();
   const initial = rows();
   for (let i = 0; i < 3; i++) {
     f.advance(5000); await f.runtime.reconcileShellyObservation();

@@ -99,7 +99,8 @@ While those reports remain incomplete on healthy sources, the controller holds
 at most the last validated ceiling and freshly confirmed native current setting.
 Applicable allocation, native and vehicle restrictions can lower that hold;
 unpaired readings cannot authorize an increase or a new household-load claim.
-The badge and history show **Unknown · Waiting for matching load readings**.
+The compact allowance shows **Allowance unknown**; its details and history
+explain **Waiting for matching load readings**.
 There is no deadline that converts this wait into competing property balancing.
 Actual feed loss selects fallback, and a changed session, source epoch or
 controller restart discards the process-local observation set.
@@ -205,30 +206,40 @@ If the process, broker or charger is unavailable, ST-MQ cannot apply a new fallb
 
 ## Load-balancing status and history
 
-Shelly's card shows a **Load balancing** badge. The Electrical power, Phase
-loading and individual Charger 2 power charts show the same meanings in a thin,
-time-aligned row below the plot: green **Unrestricted**, blue **Limited**, purple
-**Paused by balancing**, amber **Fallback**, grey **Inactive** and hatched
-**Unknown**. The row title opens its explanation and complete colour key.
+Both charger cards show a small current allowance beside **Details & settings**:
+for example **16 A Available**, **0 A Available** or **12 A Fallback**. Full
+allowance is green, a reduced positive allowance blue, ordinary zero red and
+fallback purple, including **0 A Fallback**. Unknown and inactive are neutral.
+The existing action-message slot temporarily replaces the allowance while a
+receipt is visible, retaining its normal lifetime and accessible explanation.
 
-The load allowance is a controller ceiling, not measured charging current.
-Unrestricted means load balancing allows the configured maximum; a tighter
-native or vehicle limit can still reduce the effective allowance. The detail
-shows that effective allowance and confirmed native setting separately. A pause
-instruction confirmation is not physical zero-power evidence. A scheduled or
-manual stop never becomes a pause attributed to load balancing merely because
-the car draws no power. Fallback remains visibly fallback even when another
-restriction lowers its effective cap below 12 A.
+Charger 1 shows the minimum native Equalizer phase allowance capped at its known
+fixed equipment ceiling. Its raw Equalizer value and source evidence remain in
+details, independently of OCPP control. Charger 2 shows the load allowance after
+property headroom, shared priority and configured maximum. These are two
+load-balancing ceilings, not additive shares of a single reported property budget.
 
-When measurement pairing is pending, **Unknown** retains the bounded held
-allowance and native setting separately. It does not claim current verified
-headroom or extend an earlier verified interval.
+The load allowance is separate from measured charging current, permission to
+start and native-setting confirmation. A tighter native or vehicle restriction
+can reduce the effective allowance; details retain the distinction and confirmed
+setting. A pause instruction confirmation is not physical zero-power evidence.
+Scheduled or manual stops do not become load-balancing pauses merely because
+power is zero. Fallback remains explicit when a tighter restriction lowers it.
+Pending measurement pairing shows **Allowance unknown** and explains any bounded
+held ceiling separately, without claiming newly verified headroom.
 
-Hover or drag along the strip, including by touch, to inspect the recorded mode,
-integer allowance, reason and application status. Keyboard focus on the strip
-supports Left/Right, Home and End. Missing recording coverage stays unknown;
-current settings do not rewrite an earlier interval. Dense long selections keep
-bounded recent detail and mark omitted older detail unknown, with a prompt to
-zoom in. The [change-only recorder](../recording.md#shelly-load-balancing-decisions)
-retains this history independently of the 30-day default expiry for unsaved
-charging-session reports.
+The **Charging currents** view replaces the dedicated session-check view. It
+plots the highest property phase current at each timestamp and both charger
+allowances on the ampere axis, retaining temperature context on the right axis.
+Property current is derived from existing phase history; its reconstructed
+interval-average meaning remains explicit. Allowance lines use steps; Charger 2
+fallback is a separate purple dash-dot display series derived from the same
+nonnegative value and explicit mode. Missing or unknown periods remain gaps.
+Charger 1's native session-check points remain available in **All series**.
+There is no Charger 2 session-check calculation or recording.
+
+The old Shelly-only bars are removed from electrical, phase-loading and individual
+charger charts. The [change-only recorder](../recording.md#charger-current-allowances)
+retains both chargers' allowance histories independently of charging-session
+report expiry. Historical maxima, modes and source evidence are recorded at the
+time; today's settings cannot reinterpret an earlier allowance.

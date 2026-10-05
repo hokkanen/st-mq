@@ -329,7 +329,6 @@ input[data-date-picker] { padding-right: 32px; background-image: url("data:image
 .activity-summary:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; border-radius: 2px; }
 .activity-title { min-width: 0; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
 .activity-empty { flex: none; font-size: 9px; }
-.activity-screen-reader { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
 .mode-track[tabindex]:focus-visible { outline: 2px solid var(--focus); outline-offset: 2px; }
 .activity-description { padding: 3px 0 5px 17px; line-height: 1.6; }
 .mode-history .activity-description > p { white-space: normal; margin: 3px 0 6px; }
@@ -1867,14 +1866,9 @@ button.garage-door-action:disabled { opacity: 1; cursor: default; }
 .charging-event-label { display: block; color: var(--muted); font-size: 10px; line-height: 1.5; }
 .charging-event-value { display: block; font-weight: 550; font-variant-numeric: tabular-nums; line-height: 1.5; }
 .charging-event-value .status-detail-trigger { display: block; white-space: normal; overflow-wrap: anywhere; }
-.charging-limiter { display: inline-flex; align-items: baseline; max-width: 100%; margin-top: 4px; color: var(--muted); font-size: 10px; font-weight: 500; }
-.charging-limiter::before { content: ''; flex: none; width: 8px; height: 8px; margin-right: 5px; border-radius: 2px; background: currentColor; }
-.charging-limiter .status-detail-trigger { color: inherit; }
-.charging-limiter[data-mode="unrestricted"] { color: var(--chart-indoor); }
-.charging-limiter[data-mode="limited"] { color: var(--chart-outdoor); }
-.charging-limiter[data-mode="paused-by-balancing"] { color: var(--chart-learning); }
-.charging-limiter[data-mode="fallback"] { color: var(--chart-solar); }
-.charging-limiter[data-mode="unknown"]::before { background: repeating-linear-gradient(135deg, currentColor 0 2px, transparent 2px 4px); }
+/* A pending start has two intentional lines, independent of its full detail. */
+.charging-event[data-timing="approval-pending"] .charging-event-label,
+.charging-event[data-timing="approval-pending"] .charging-event-value .status-detail-trigger { white-space: nowrap; overflow-wrap: normal; }
 .charging-timing:has(.charging-ready-by[hidden]) { grid-template-columns: minmax(0, 1fr); }
 .charging-ready-by { text-align: right; font-size: 11px; line-height: 1.5; }
 .charging-ready-by > span { display: block; color: var(--muted); font-size: 10px; }
@@ -1910,7 +1904,12 @@ button.garage-door-action:disabled { opacity: 1; cursor: default; }
 .charging-disclosure-open::before { content: '−'; }
 .charging-disclosure-open, .charging-device[open] .charging-disclosure-closed { display: none; }
 .charging-device[open] .charging-disclosure-open { display: inline; }
-.charging-disclosure-hint { text-align: right; font-size: 9px; }
+.charging-allowance { justify-self: end; text-align: right; font-size: 11px; line-height: 16px; font-weight: 500; white-space: nowrap; color: var(--muted); }
+.charging-allowance .status-detail-trigger { color: inherit; white-space: nowrap; }
+.charging-allowance[data-tone="full"] { color: var(--chart-indoor); }
+.charging-allowance[data-tone="limited"] { color: var(--chart-outdoor); }
+.charging-allowance[data-tone="zero"] { color: var(--error-text); }
+.charging-allowance[data-tone="fallback"] { color: var(--chart-learning); }
 .charging-detail-section { padding: 18px 0; border-top: 1px solid var(--border); }
 .charging-detail-section > h5 { margin: 0 0 12px; font-size: 12px; font-weight: 600; }
 .charging-priority, .charging-readiness, .charging-problem, .charging-session-status { font-size: 11px; line-height: 1.6; margin: 0 0 12px; }
@@ -1999,11 +1998,11 @@ button.garage-door-action:disabled { opacity: 1; cursor: default; }
 .charging-charge-now-state::after { content: ''; position: absolute; top: 2px; left: 2px; width: 10px; height: 10px; border-radius: 50%; background: currentColor; }
 .charging-charge-now[aria-pressed="true"] .charging-charge-now-state { padding-inline: 3px 15px; }
 .charging-charge-now[aria-pressed="true"] .charging-charge-now-state::after { transform: translateX(28px); }
-/* Receipts replace the secondary footer hint, keeping both the disclosure and
+/* Receipts replace the current allowance, keeping both the disclosure and
    the independent session-report button available without adding another row. */
 .charging-device > .equipment-device-summary > .charging-disclosure { grid-area: 6 / 1; }
 .charging-device > .equipment-device-summary > .charging-control-message { grid-area: 6 / 1; align-self: start; justify-self: end; max-width: 50%; min-width: 0; margin: 0; min-height: 16px; font-size: 10px; line-height: 16px; text-align: right; }
-.charging-device > .equipment-device-summary:has(> .charging-control-message:not(:empty)) .charging-disclosure-hint { visibility: hidden; }
+.charging-device > .equipment-device-summary:has(> .charging-control-message:not(:empty)) .charging-allowance { visibility: hidden; }
 .charging-control-message .status-detail-trigger { display: block; white-space: normal; overflow-wrap: anywhere; }
 .charging-detail-section > .equipment-device-status { display: inline-block; margin-bottom: 10px; }
 .charging-device .temporary-status:empty { display: none; }
@@ -2032,7 +2031,6 @@ button.garage-door-action:disabled { opacity: 1; cursor: default; }
   .charging-cost > strong { font-size: 14px; }
   .charging-device .equipment-device-status { padding-inline: 4px; font-size: 9px; }
   .charging-device .equipment-device-heading h4 { font-size: 13px; }
-  .charging-disclosure-hint { font-size: 8px; }
 }
 /* Pair only when each card has at least the space of the narrow mobile layout.
    Sizing the contents against their own card also handles narrow desktop columns. */

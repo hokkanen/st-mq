@@ -46,15 +46,24 @@ export function addRecordedEnergy({store,range,now,input,envelopes,timing,voltag
       ? { basis: 'native-meter-counter-delta' } : {}) };
     project(prefix === 'ev1' ? 'charger_power' : prefix === 'ev2' ? 'charger2_power' : 'property_power',
       start,end,total === null ? null : total*HOUR/duration,totalMetadata);
-    if ([1,2,3].some(phase => envelopes[`${prefix}_current_l${phase}`]))
-      for (const segment of voltageSegments(voltageReader,Math.max(start,range.from),Math.min(end,range.to,now)))
+    if ([1,2,3].some(phase => envelopes[`${prefix}_current_l${phase}`]) || prefix === 'property' && envelopes.property_current_max)
+      for (const segment of voltageSegments(voltageReader,Math.max(start,range.from),Math.min(end,range.to,now))) {
+        const currents = [];
         for (let phase=0;phase<3;phase++) {
           const value = values[phase] ?? null, power = value === null ? null : value*HOUR/duration;
           const voltage = segment.estimate.voltageV[phase];
+          const current = power === null || !Number.isFinite(voltage) || voltage <= 0 ? null : power*1000/voltage;
+          currents.push(current);
           project(`${prefix}_current_l${phase+1}`,segment.start,segment.end,
-            power === null || !Number.isFinite(voltage) || voltage <= 0 ? null : power*1000/voltage,
+            current,
             {...phaseMetadata,...voltageMetadata(segment.estimate,phase),equivalentCurrent:true});
         }
+        // Reduce a complete original phase group before display decimation.
+        // Independent phase envelopes can retain extrema from different times.
+        if (prefix === 'property') project('property_current_max', segment.start, segment.end,
+          currents.every(Number.isFinite) ? Math.max(...currents) : null,
+          { ...phaseMetadata, ...voltageMetadata(segment.estimate), equivalentCurrent: true, maximumPhase: true });
+      }
     for (let phase=0;phase<3;phase++) {
       const value = values[phase] ?? null;
       const energyLine = envelopes[`${prefix}_energy_l${phase+1}`];
