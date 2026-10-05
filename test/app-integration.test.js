@@ -73,14 +73,17 @@ test('retired Garage pause state rejects before startup writes or MQTT connectio
 test('retired voltage estimate state rejects before any Engine startup mutation', t => {
   const store = new Store(':memory:');
   t.after(() => store.close());
-  store.setState('voltage:estimate:providers', { version: 'voltage-ewma-v1', candidates: {}, phases: [] });
-  const before = store.db.prepare('SELECT total_changes() AS changes').get().changes;
-  assert.throws(() => new Engine({ store, config: { input: 'providers', settings: {} } }),
-    /Unsupported voltage estimate state; start a fresh development database/);
-  assert.equal(store.db.prepare('SELECT total_changes() AS changes').get().changes, before);
+  for (const value of [null, { version: 'voltage-ewma-v2', candidates: {}, phases: [] }]) {
+    store.setState('voltage:estimate:providers', value);
+    const before = store.db.prepare('SELECT total_changes() AS changes').get().changes;
+    assert.throws(() => new Engine({ store, config: { input: 'providers', settings: {} } }),
+      /Unsupported voltage estimate state; start a fresh development database/);
+    assert.equal(store.db.prepare('SELECT total_changes() AS changes').get().changes, before);
+    assert.deepEqual(store.getState('voltage:estimate:providers'), value);
+  }
 });
 
-test('changing charger transport preserves mature voltage while changed physical phase mapping resets it', t => {
+test('changing charger transport preserves saved voltage while changed physical phase mapping resets it', t => {
   const f = setup(t, 'providers');
   f.config.connections = { easee: { charger_id: 'voltage-fixture-charger', charger_voltage_ids: [194, 195, 196],
     local_ocpp: { enabled: false } } };
@@ -102,7 +105,7 @@ test('changing charger transport preserves mature voltage while changed physical
   }
   f.config.connections.easee.charger_voltage_ids = [195, 196, 194];
   f.createEngine();
-  assert.deepEqual(read().voltageV, [null, null, null], 'A changed physical phase assignment requires new coverage');
+  assert.deepEqual(read().voltageV, [null, null, null], 'A changed physical phase assignment requires a new valid reading');
 });
 
 test('automatic simulation applies pulse sequence once and restart preserves recency and timed override', async t => {

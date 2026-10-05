@@ -1885,15 +1885,17 @@ button.garage-door-action:disabled { opacity: 1; cursor: default; }
 .charging-overview .charging-completion > strong { font-size: 17px; white-space: normal; overflow-wrap: anywhere; grid-row: 2 / span 2; }
 .charging-progress-arrow { grid-column: 2; grid-row: 2; align-self: start; text-align: center; color: var(--muted); font-size: var(--charging-value-size); line-height: 1.3; }
 .charging-overview .equipment-value > small { display: block; margin: 0; color: var(--muted); font-size: 10px; line-height: 1.3; }
-.charging-fact-overview { display: grid; grid-template-columns: var(--charging-columns); grid-template-rows: minmax(calc(20px - var(--charging-compact, 0) * 4px), auto) minmax(34px, auto); column-gap: var(--charging-gap); padding-top: calc(11px - var(--charging-compact, 0) * 2px); border-top: 1px solid var(--border); }
+/* Energy has three metrics and needs none of the charge row's arrow column. */
+.charging-fact-overview { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); grid-template-rows: minmax(calc(20px - var(--charging-compact, 0) * 4px), auto) minmax(34px, auto); column-gap: var(--charging-gap); padding-top: calc(11px - var(--charging-compact, 0) * 2px); border-top: 1px solid var(--border); }
 .charging-detail-metric { display: grid; grid-template-rows: subgrid; grid-row: 1 / span 2; min-width: 0; }
 .charging-delivered { grid-column: 1; }
-.charging-remaining { grid-column: 3; }
-.charging-cost { grid-column: 4; padding-left: 12px; border-left: 1px solid var(--border); }
+.charging-remaining { grid-column: 2; }
+.charging-cost { grid-column: 3; padding-left: 12px; border-left: 1px solid var(--border); }
 .charging-detail-metric > span { color: var(--muted); font-size: 10px; line-height: 1.5; }
 .charging-detail-metric > strong { display: block; margin: 0; font-size: 18px; line-height: 1.4; font-weight: 500; font-variant-numeric: tabular-nums; }
+.charging-delivered > strong, .charging-remaining > strong { white-space: nowrap; overflow-wrap: normal; }
 .charging-cost > strong { font-size: 16px; line-height: 1.2; }
-.charging-energy-unit { font-size: calc(.72em - var(--charging-compact, 0) * .07em); white-space: normal; }
+.charging-energy-unit { font-size: calc(.72em - var(--charging-compact, 0) * .07em); }
 .charging-notice { display: flex; align-items: center; min-width: 0; padding: 5px 9px; border-radius: 5px; background: var(--surface-soft); color: var(--muted); font-size: 11px; line-height: 1.4; }
 .charging-notice::before { content: ''; width: 5px; height: 5px; flex: 0 0 5px; border-radius: 50%; background: currentColor; margin-right: 8px; }
 .charging-notice[data-state="good"] { color: var(--accent); }

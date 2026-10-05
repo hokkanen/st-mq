@@ -270,7 +270,11 @@ export class ChargingRuntime {
     try {
       if (!this.closed && this.canControl() && ['providers', 'mqtt'].includes(this.config.input)) {
         for (const [id, item] of Object.entries(this.chargers)) {
-          if (this.configuration.chargers[id].enabled) this.limiterHistory.observe({ chargerId: id, association: item.association,
+          // Easee installation belongs to connections; only Shelly has a
+          // configured enabled switch. Automatic scheduling is independent.
+          const configured = id === 'charger1' ? Boolean(this.config.connections?.easee?.charger_id)
+            : this.configuration.chargers[id].enabled;
+          if (configured) this.limiterHistory.observe({ chargerId: id, association: item.association,
             status: this.allowanceStatus(id, this.controlStatus(id), now) }, now);
           else this.limiterHistory.suspend(id);
         }
@@ -1282,8 +1286,7 @@ export class ChargingRuntime {
       maximumCurrentA: this.configuration.chargers.charger2.maximumCurrentA, evaluatedAt: control.limiter?.evaluatedAt,
       sourceEpoch: control.limiter?.scope ? digest([control.limiter.scope, control.limiter.sourceEpochs]) : null });
     const item = this.chargers[id], normalize = item.adapter?.normalize ?? easeeChargerTelemetry;
-    return easeeAllowanceStatus({ enabled: this.configuration.chargers[id].enabled,
-      telemetry: normalize(control.snapshot ?? {}, { now }), now });
+    return easeeAllowanceStatus({ telemetry: normalize(control.snapshot ?? {}, { now }), now });
   }
   views(now = this.clock()) {
     const telemetry = this.telemetry(now);

@@ -90,7 +90,7 @@ export function summarizeHousehold(spans, { timezone, priority = 0, voltageV } =
       const referenceVoltageV = span.referenceVoltageV ?? (priority === 1 && !span.legacy ? voltageV : undefined);
       // Native interval power needs no historical voltage assumption. Imported
       // currents acquire an estimated power basis only with an explicit saved
-      // historical or first-mature retrospective voltage reference.
+      // historical or first-usable retrospective voltage reference.
       const phasePowerKw = span.phasePowerKw ?? (referenceVoltageV?.every(finite)
         ? span.phaseCurrentA.map((value, phase) => value * referenceVoltageV[phase] / 1000) : undefined);
       const patternKey = phasePowerKw ? `power:${phasePowerKw.map(value => Math.round(value * 10)).join(':')}`

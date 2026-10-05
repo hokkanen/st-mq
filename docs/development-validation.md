@@ -317,7 +317,11 @@ The charging-currents browser suite seeds actual allowance observations and
 compact coverage in a fresh synthetic database, then reads them through the
 chart API. It checks the property maximum, both chargers' allowance lines,
 separate purple dash-dot fallback including zero, missing coverage, unchanged
-right-axis meaning and removal of old load-balancing strips. Charger 1 session
+right-axis meaning and removal of old load-balancing strips. The runtime allowance
+regression also runs both production charger adapters with synthetic devices,
+records Charger 1 with Automatic off and verifies both histories reach the chart.
+It covers native zero, unknown evidence and replica/configuration fencing.
+Charger 1 session
 checks remain accessible in All series. The charging-controls suite covers
 compact footer allowances, action-message replacement, unknown/inactive states,
 source details, and the two-line planned-start approval label at narrow and wide
@@ -362,6 +366,10 @@ external fullscreen changes and fallback behavior with synthetic data.
 The chart-views `--voltage-only` mode checks the dedicated Phase voltage estimates
 view, all three default traces and individual series, saved source provenance,
 and both themes at 320/390/1280px using synthetic data.
+Voltage tests pass the first valid per-phase acquisitions through the actual
+estimator, recorder and chart reader with zero accumulated coverage. They check
+immediate voltage/current availability, gradual smoothing, missing phases,
+restart and source-loss evidence, and rejection of retired estimator state.
 
 The chart-views suite exercises every named view, the complete supported series
 explorer, view-specific legend choices, global price visibility, reset behavior,

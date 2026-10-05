@@ -10,6 +10,7 @@ import { HeatingAutomation } from '../src/app/automation.js';
 import { ChargingRuntime } from '../src/charging/runtime.js';
 import { GarageRuntime } from '../src/garage/runtime.js';
 import { Recorder } from '../src/storage/recorder.js';
+import { getDatabaseOverview } from '../src/app/database-overview.js';
 
 const token = randomUUID();
 const otherToken = randomUUID();
@@ -70,6 +71,10 @@ test('authenticated current handover keeps source identities through both endpoi
   await f.local.prepare(reverse); f.local.verify(reverse); await f.local.authorize(reverse);
   await f.local.activate(f.ha, f.store);
   assert.deepEqual(f.local.requirements(f.store), requirements);
+  const overview = getDatabaseOverview({ store: f.store });
+  assert.equal(overview.catalogueComplete, true, overview.inventoryIssues.join('; '));
+  assert.equal(overview.groups.flatMap(group => group.items).find(row => row.id === 'state-pair-mqtt').count, 1,
+    'Handover and restart update the existing current source context without inventing history');
 });
 
 test('a replica cannot self-seed or adopt a copied seed without an explicit verified action', async t => {

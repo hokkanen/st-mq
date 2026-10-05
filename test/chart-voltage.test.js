@@ -4,6 +4,8 @@ import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { Store } from '../src/storage/store.js';
+import { Recorder } from '../src/storage/recorder.js';
+import { VoltageEstimator, readPlanningVoltage } from '../src/storage/voltage.js';
 import { importCsv } from '../src/storage/history.js';
 import { getChartData } from '../src/app/chart-data.js';
 import { historyTooltipLabel } from '../chart/history-tooltips.js';
@@ -20,11 +22,33 @@ const pricing = {
 const query = (store, left, extra = {}) => getChartData({ store, ...base, left, ...extra });
 const at = (rows, time) => rows.find(point => point.x === time)?.y;
 const near = (actual, expected) => assert(Math.abs(actual - expected) < 1e-10, `${actual} != ${expected}`);
-function energy(store, from = start, to = start + 2 * HOUR) {
+function energy(store, from = start, to = start + 2 * HOUR, kwh = 2) {
   for (let phase = 1; phase <= 3; phase++) store.observation({ source: 'easee', device: 'synthetic-charger',
-    signal: `ev1_energy_l${phase}`, value: 2, unit: 'kWh', sourceTime: to, receivedAt: to, quality: ['estimated'],
+    signal: `ev1_energy_l${phase}`, value: kwh, unit: 'kWh', sourceTime: to, receivedAt: to, quality: ['estimated'],
     raw: { intervalStart: from, intervalEnd: to, durationMs: to - from, basis: 'integrated-power-phase-allocation' } });
 }
+
+test('fresh database charts and planning use the first valid voltage with no coverage waiting period', t => {
+  const store = new Store(':memory:'); t.after(() => store.close());
+  const recorder = new Recorder(store, { clock: () => start });
+  const estimator = new VoltageEstimator(store, { recorder, input: 'providers', clock: () => start });
+  for (const [phase, value] of [220, 225, 240].entries()) estimator.ingest({
+    source: 'easee', device: 'synthetic-charger', signal: `ev1_voltage_l${phase + 1}`, value,
+    unit: 'V', sourceTime: start, receivedAt: start, quality: ['local_ocpp'],
+    raw: { transport: 'ocpp', voltageMapping: 'phase-neutral' },
+  });
+  energy(store, start, start + MINUTE, 1 / 60);
+  const plan = readPlanningVoltage(store, { input: 'providers', now: start });
+  assert.deepEqual(plan.voltageV, [220, 225, 240]);
+  assert(plan.phases.every(phase => phase.coverageMs === 0));
+  const voltage = query(store, 'voltage_estimates', { now: start + MINUTE });
+  const current = query(store, 'phases', { now: start + MINUTE });
+  for (const [phase, value] of [220, 225, 240].entries()) {
+    assert.equal(at(voltage.series[`voltage_estimate_l${phase + 1}`], start), value);
+    near(at(current.series[`ev1_current_l${phase + 1}`], start), 1000 / value);
+  }
+  assert.equal(store.observations().filter(row => row.source === 'voltage-estimate').length, 3);
+});
 
 test('energy stays available without voltage; equivalent currents split at historical phase-estimate changes', t => {
   const store = new Store(':memory:'); t.after(() => store.close()); energy(store);
@@ -49,7 +73,7 @@ test('energy stays available without voltage; equivalent currents split at histo
   assert.match(tooltip, /250 V/);
 });
 
-test('CSV before voltage history uses the first mature estimates without changing imported currents', async t => {
+test('CSV before voltage history uses the first usable estimates without changing imported currents', async t => {
   const store = new Store(':memory:'), directory = mkdtempSync(join(tmpdir(), 'voltage-csv-'));
   t.after(() => { store.close(); rmSync(directory, { recursive: true, force: true }); });
   const path = join(directory, 'easee.csv');
@@ -59,7 +83,7 @@ test('CSV before voltage history uses the first mature estimates without changin
   const now = Date.now();
   const original = store.observations().filter(row => row.source === 'csv:easee');
   assert(query(store, 'power', { now }).series.charger_power.every(point => point.y === null));
-  seedVoltage(store, start + HOUR, [205, 205, 205], { mature: false });
+  seedVoltage(store, start + HOUR, [null, null, null]);
   seedVoltage(store, start + 2 * HOUR, [220, 225, 240]);
   seedVoltage(store, start + 3 * HOUR, [245, 245, 245]);
   const power = query(store, 'power', { now }).series.charger_power.find(point => point.x === start);
@@ -75,7 +99,7 @@ test('CSV before voltage history uses the first mature estimates without changin
   assert.deepEqual(timing.evidence.sources.map(source => source.key), ['retrospective-currents']);
   const tooltip = historyTooltipLabel({ dataset: { key: 'charger_power', label: 'Charger 1', unit: 'kW' },
     parsed: { x: start, y: power.y }, raw: power });
-  assert.match(tooltip, /retrospective voltage assumption: first established database estimate/);
+  assert.match(tooltip, /retrospective voltage assumption: first usable database estimate/);
   assert.match(tooltip, /unity power factor assumed/);
 });
 

@@ -15,7 +15,17 @@ Versions follow Semantic Versioning. `-dev.N` denotes a development prerelease.
   purple dash-dot line. Charger 1 session checks remain in All series; the old
   Shelly load-balancing strips are removed.
 - Both allowances use compact change-only history with explicit fallback status
-  and original source evidence. SQLite schema 21 replaces the earlier Shelly-only
+  and original source evidence. Charger 1 allowance history now records whenever
+  its Easee integration is configured, independently of Automatic scheduling.
+- A fresh database uses the first valid voltage reading for each phase immediately,
+  then smooths subsequent readings. Voltage and reconstructed-current charts no
+  longer wait for an hour of voltage coverage; missing or invalid phases stay unknown.
+- Recording inventory now describes all current checkpoint and event writers,
+  including voltage estimates, Caravan controls, paired MQTT source context and
+  Home heating permission/pause changes.
+- Charger energy figures keep their number and kWh unit on one line at narrow
+  widths without stretching the card vertically.
+- SQLite schema 22 replaces the earlier voltage maturity contract and Shelly-only
   history format; incompatible development databases require an intentional fresh
   start and are never migrated or reset automatically.
 

@@ -28,11 +28,12 @@ export function recordingStatus(row = {}, { now = Date.now() } = {}) {
     detail: 'Multiple source identities have the same latest acquisition time. Their individual spacing, thresholds and saved intervals are available in Source history.' };
   if (row.voltage) {
     const v = row.voltage, provenance = voltageProvenanceDetails(v);
-    const label = v.mature ? v.reporting ? 'Established estimate' : 'Estimate held · input unavailable'
+    const label = v.available ? v.reporting ? 'Smoothed estimate' : 'Estimate held · input unavailable'
       : v.reason === 'source-unconfigured' ? 'Waiting for voltage source'
-        : v.reporting ? 'Collecting voltage history' : 'Voltage collection paused';
-    const messages = [v.mature ? 'Saved smoothed voltage for planning; this is not a live voltage reading.'
-      : `${number(Math.min(60,Math.max(0,v.coverageMs ?? 0)/60000))} of 60 minutes of valid coverage collected.`];
+        : 'Waiting for valid voltage';
+    const messages = [v.available ? 'Saved smoothed voltage for planning; this is not a live voltage reading. The first valid reading is usable immediately; smoothing builds with observed time.'
+      : 'A valid phase-voltage reading is needed before an estimate is available.'];
+    if (v.available) messages.push(`${number(Math.max(0,v.coverageMs ?? 0)/60000)} minutes of valid coverage collected.`);
     if (!v.reporting) messages.push(v.reason === 'source-unconfigured'
       ? 'No eligible configured phase-voltage source is available.'
       : 'Waiting for a valid phase-voltage report or confirmed device telemetry. Missing time does not add coverage.');

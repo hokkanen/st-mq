@@ -112,7 +112,7 @@ export function historyTooltipLabel(item) {
   if (raw.assumedPrice) details.push('assumed price');
   if (raw.voltageBasis) {
     const voltages = (Array.isArray(raw.voltageV) ? raw.voltageV : [raw.voltageV]).filter(Number.isFinite);
-    details.push(raw.retrospectiveVoltage ? 'retrospective voltage assumption: first established database estimate'
+    details.push(raw.retrospectiveVoltage ? 'retrospective voltage assumption: first usable database estimate'
       : voltages.length ? 'historical voltage estimate' : 'voltage estimate unavailable');
     if (voltages.length) details.push(`${voltages.map(value => Number(value.toFixed(1))).join(' / ')} V`);
     if (!raw.equivalentCurrent && raw.powerFactorAssumption === 1) details.push('unity power factor assumed');

@@ -53,7 +53,7 @@ function sameEnergyQuality(a,b,{ zeroA = false,zeroB = false } = {}) {
 }
 const semanticQuality = raw => Object.fromEntries(['usableForControl','verified','retained','cached','installationVerified',
   'verification','diagnosticAvailable','accuracyVerified','contractVersion','supported','timeBasis','publicationMayUseGatewayCache','basis','reportIntervalMs','reportGraceMs','eventOnly','temperatureRouteSignature',
-  'transport','voltageSource','voltageMature','voltageAvailability'].filter(key=>raw?.[key]!==undefined).map(key=>[key,raw[key]])
+  'transport','voltageSource','voltageAvailability'].filter(key=>raw?.[key]!==undefined).map(key=>[key,raw[key]])
   .concat(raw?.voltageEstimate ? [['voltageInputs',raw.voltageEstimate.inputs],['voltageInput',raw.voltageEstimate.input]] : []));
 // Source validity is independent of the recording budget.
 // Increasing storage compression must never make old measurements fresher.
@@ -753,7 +753,7 @@ function compactRaw(raw, observation) {
     'basis','energyBasis','source','issuedAt','fetchedAt','snapshotId','provenance','intervalStart','intervalEnd','durationMs',
     'modelVersion','controllerPhase','estimated','forecast','reportIntervalMs','reportGraceMs','eventOnly','maxAgeMs',
     'reportPolicyChangedAt','originalReportReceivedAt','originalReportSourceTime','originalReportTimeBasis','transportRecoveredAt','temperatureRouteSignature',
-    'transport','voltageSource','voltageMature','voltageAvailability','voltageEstimate'];
+    'transport','voltageSource','voltageAvailability','voltageEstimate'];
   const result = Object.fromEntries(allowed.filter(key=>raw[key] !== undefined).map(key=>[key,raw[key]]));
   // Caravan appliance history stores one power/fan state. Keep its physical
   // identity and evidence clocks without retaining sensor or setting values.

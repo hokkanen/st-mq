@@ -4,6 +4,7 @@ import { Engine } from '../src/app/engine.js';
 import { Store } from '../src/storage/store.js';
 import { createAppServer } from '../src/app/server.js';
 import { HeatingAutomation } from '../src/app/automation.js';
+import { getDatabaseOverview } from '../src/app/database-overview.js';
 
 function setup(t, { input = 'simulated', canControl = () => true, commandTransport = null,
   clock = () => Date.parse('2026-09-28T12:00Z') } = {}) {
@@ -34,6 +35,10 @@ test('Home starts paused and persists for unchanged equipment; Garage has no aut
   assert.equal(Object.hasOwn(engine.settings, 'mode'), false);
   assert.equal(Object.hasOwn(engine.status(), 'mode'), false);
   assert.equal(Object.hasOwn(engine.status(), 'liveWrites'), false);
+  const overview = getDatabaseOverview({ store, now: engine.clock() });
+  assert.equal(overview.catalogueComplete, true, overview.inventoryIssues.join('; '));
+  const history = overview.groups.flatMap(group => group.items).find(row => row.id === 'events-heating-automation');
+  assert.deepEqual(history.breakdown.map(row => [row.label, row.count]), [['heating-automation-changed', 2]]);
 });
 
 test('device destination changes invalidate only the affected heating permission', async t => {
@@ -145,7 +150,7 @@ test('scheduled Pause resumes only the originally selected equipment and a chang
   let now = Date.parse('2026-09-28T12:00Z');
   const commands = [], commandTransport = { targetIdentity: { tariff: 'a'.repeat(64), dhwr: 'b'.repeat(64) },
     async publish(batch) { commands.push(batch); return { status: 'mqtt', sent: true }; } };
-  const { engine } = setup(t, { input: 'mqtt', commandTransport, clock: () => now });
+  const { engine, store } = setup(t, { input: 'mqtt', commandTransport, clock: () => now });
   engine.setTemporary({ pauseUntil: new Date(now + 60_000).toISOString() });
   assert.equal(engine.status().automation.home.enabled, false);
   assert.deepEqual(commands, []);
@@ -157,6 +162,12 @@ test('scheduled Pause resumes only the originally selected equipment and a chang
   now += 60_000; engine.tick(); await engine.dispatchPending;
   assert.equal(engine.status().automation.home.enabled, false);
   assert.equal(engine.status().override.expiresAt, null);
+  const overview = getDatabaseOverview({ store, now });
+  assert.equal(overview.catalogueComplete, true, overview.inventoryIssues.join('; '));
+  const history = overview.groups.flatMap(group => group.items).find(row => row.id === 'events-heating-automation');
+  assert.deepEqual(history.breakdown.map(row => [row.label, row.count]), [
+    ['heating-pause-changed', 2], ['heating-pause-ended', 1],
+  ]);
 });
 
 test('retired parallel pause state and prior automation schema reject without changing the database', t => {

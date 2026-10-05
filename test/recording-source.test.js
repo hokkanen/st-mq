@@ -33,7 +33,7 @@ test('voltage source subtitles show only the latest saved contributor or unknown
     'transport without saved voltage contributors cannot relabel the estimate');
 });
 
-test('voltage recorder shows live collection progress and held estimates without false quality failures', t => {
+test('voltage recorder shows immediate availability and smoothing coverage and held estimates without false quality failures', t => {
   const store = new Store(':memory:'); t.after(() => store.close());
   const start = Date.UTC(2026,0,1); let now = start;
   const recorder = new Recorder(store,{clock:()=>now});
@@ -45,21 +45,21 @@ test('voltage recorder shows live collection progress and held estimates without
   ingest(); now += 17000;
   assert.equal(recordingSourceLabel(row()),'Easee · OCPP');
   let display = recordingStatus(row(),{now});
-  assert.equal(display.label,'Collecting voltage history');
-  assert.match(display.detail,/0 of 60 minutes/);
+  assert.equal(display.label,'Smoothed estimate');
+  assert.match(display.detail,/0 minutes of valid coverage/);
   assert.doesNotMatch(display.detail,/failed.*quality|No age cutoff/);
   for(let minute=1;minute<=60;minute++) {
     now=start+minute*60000; ingest();
-    if(minute===30) assert.match(recordingStatus(row(),{now}).detail,/30 of 60 minutes/);
+    if(minute===30) assert.match(recordingStatus(row(),{now}).detail,/30 minutes of valid coverage/);
   }
   display=recordingStatus(row(),{now});
-  assert.equal(display.label,'Established estimate');
+  assert.equal(display.label,'Smoothed estimate');
   assert.match(display.detail,/Charger 1 · OCPP/);
   assert.doesNotMatch(JSON.stringify(row()),/invented-charger/,'status excludes private device identifiers');
   now+=6*60000;
   assert.equal(recordingStatus(row(),{now}).label,'Estimate held · input unavailable');
   assert.equal(recordingSourceLabel(row()),'Easee · OCPP','unavailable inputs preserve established source provenance');
-  assert.equal(store.observations().length,2,'progress reads and steady acquisitions add no historical rows');
+  assert.equal(store.observations().length,1,'progress reads and steady acquisitions add no historical rows');
 });
 
 test('energy transport survives adaptive pending tails and a source change closes the prior interval', t => {

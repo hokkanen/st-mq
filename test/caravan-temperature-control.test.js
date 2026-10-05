@@ -5,6 +5,7 @@ import { Recorder } from '../src/storage/recorder.js';
 import { equipmentConfiguration } from '../src/acquisition/equipment-config.js';
 import { createEquipmentCapture } from '../src/acquisition/equipment.js';
 import { bluHtEquipment } from '../integrations/shelly/blu-ht.js';
+import { getDatabaseOverview } from '../src/app/database-overview.js';
 
 const START = Date.parse('2026-09-22T10:00:00Z');
 const SIGNAL = 'caravan_dehumidifier_state';
@@ -92,6 +93,12 @@ test('a small matched electrical rise and fall qualify recording without applian
   assert.equal(actual[0].sourceTime, f.now, 'A successful test never fills its waiting period backwards');
   assert.equal(actual[0].value, 0, 'Command publication cannot fabricate appliance On history');
   assert.equal(f.store.getState(RESTORE_KEY), null);
+  const overview = getDatabaseOverview({ store: f.store, now: f.now });
+  assert.equal(overview.catalogueComplete, true, overview.inventoryIssues.join('; '));
+  const inventory = overview.groups.flatMap(group => group.items);
+  assert.equal(inventory.find(row => row.id === 'state-caravan-restoration').count, 1);
+  assert.equal(inventory.find(row => row.id === 'state-caravan-restoration').missingCount, 1);
+  assert.equal(inventory.find(row => row.id === 'state-caravan-temperature-control').count, 1);
   for (const publication of f.publications) {
     assert.equal(publication.body.expiresAt, publication.body.requestedAt + 10000);
     assert.deepEqual(publication.flags, { qos: 1, retain: false, noReplay: true });

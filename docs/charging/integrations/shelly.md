@@ -152,7 +152,7 @@ With an enabled but unavailable limiter, control waits for its requirements.
 Manual `verified`, model/firmware pins, state lists, `minimumCurrentA` and
 `currentStepA` are retired configuration fields and are rejected. Readiness is
 computed from actual supported capabilities. An older development database must
-be replaced explicitly with a fresh schema 21 database; it is never migrated or
+be replaced explicitly with a fresh schema 22 database; it is never migrated or
 reset automatically. This prevents previous commissioning/ownership records from
 authorizing the new control contract. Shelly acquisition state version 2 also
 rejects the earlier incorrect power interpretation and derived meter weights;

@@ -200,7 +200,7 @@ Heating configuration → Home learning → Model inputs → Average indoor → 
 Whole-house and EV power estimates use recorded
 phase-energy increments divided by their actual intervals. Equivalent chart
 currents use the applicable recorded per-phase voltage estimates and assume
-unity power factor. Older current-only CSV history uses the first established
+unity power factor. Older current-only CSV history uses the first usable
 voltage estimates retrospectively where no earlier estimate exists; missing
 voltage leaves the derived power unavailable. H66 AUX power is a red fill derived from the
 configured rated power (9 kW by default), with Charger 1 and Charger 2 stacked

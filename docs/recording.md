@@ -202,11 +202,13 @@ missing in energy and timing comparisons.
 
 ### Smoothed phase voltage
 
-`voltage_estimate_l1` through `voltage_estimate_l3` retain established estimates of
+`voltage_estimate_l1` through `voltage_estimate_l3` retain smoothed estimates of
 typical phase-neutral voltage in volts. Each phase uses a time-aware exponentially
 weighted average with a six-hour half-life, calculated from valid acquisitions
-before adaptive recording. One hour of accepted elapsed coverage establishes an
-estimate. Successive accepted acquisitions must be no more than five minutes
+before adaptive recording. The first valid reading seeds each phase's usable
+estimate immediately, including in a fresh database. Early estimates have less
+observed history behind their smoothing; there is no minimum coverage threshold.
+Successive accepted acquisitions must be no more than five minutes
 apart. Their original voltage report must remain fresh, or an explicitly online
 device's independently recent telemetry must confirm a held reading under the
 same bounded telemetry window used for energy integration. Held values keep their
@@ -224,7 +226,8 @@ A missing phase cannot borrow
 another phase's value. OCPP voltage acquisition does not depend on a complete
 charger power/current snapshot. It grants no additional electrical/control readiness.
 Retain a usable selected feed during brief interruptions; require stable recovery
-for five minutes before returning to a preferred feed after establishment.
+for five minutes before returning to a preferred feed after elapsed smoothing
+coverage has begun. At initial seeding, the source priority applies immediately.
 Unverified terminal pairs and remote vehicle voltage cannot establish a household
 phase estimate.
 
@@ -245,14 +248,14 @@ source, such as **Easee · OCPP** or **Easee · Cloud**; missing provenance is
 to the smoothed estimate and retains the full contributor list and voltage unit.
 The subtitle uses recorded provenance, never today's connection.
 
-The current persisted estimator format is `voltage-ewma-v2`. Unsupported estimator
+The current persisted estimator format is `voltage-ewma-v3`. Unsupported estimator
 state is rejected before engine initialization writes, with fresh-development-database
 guidance; no migration, backfill or automatic reset is performed.
 
 The adaptive recorder compares each estimate with its last saved value using
 `max(0.5 V, learned adaptive threshold)`. Small changes accumulate internally until
 the saved-value difference crosses that floor. Source and availability changes
-remain semantic boundaries regardless of numeric difference. Constant established
+remain semantic boundaries regardless of numeric difference. Constant valid
 voltage needs no periodic historical row. The internal smoothing checkpoint keeps
 full precision; consumers use the last published database estimate so discarded
 subthreshold changes cannot revise the charging schedule. Source provenance adds
@@ -262,18 +265,19 @@ A synthetic comparison of 12,000 otherwise identical saved estimate records
 measured 21 additional JSON bytes per record for the two compact provenance fields.
 Both test databases occupied the same number of SQLite pages after compaction;
 page allocation depends on record packing and is not a zero-overhead guarantee.
-A separate 24-hour steady-input run at one acquisition per minute saved six voltage
-rows total: initial collection and establishment for each of three phases.
+A 24-hour steady-input run at one acquisition per minute saves three voltage
+rows total: the initial valid estimate for each of three phases.
 
-An established value remains a historical estimate during an acquisition gap or
+A saved value remains a historical estimate during an acquisition gap or
 restart; it never establishes fresh electrical or control evidence. Startup may
-use valid live local voltage provisionally until estimates are established. With
+use valid live local voltage provisionally until the first estimates are saved. With
 neither usable estimates nor live voltage, voltage-dependent calculations remain
 unavailable rather than inventing nominal voltage. Live power integration, local
 current limiting and displays retain their actual measurement requirements. The
-recorder shows initial valid-coverage progress, whether acquisition is paused,
-and original input timing separately from estimate publication. An estimate still
-collecting coverage is not described as a failed-quality reading. The chart's
+recorder shows accumulated valid coverage, whether acquisition is paused,
+and original input timing separately from estimate publication. Early estimates
+are usable and are not described as failed-quality readings or as waiting for
+an hour of observations. The chart's
 Phase voltage estimates view uses Voltage estimate L1–L3 labels and saved source
 provenance.
 
@@ -285,7 +289,7 @@ meter-reference transport does not imply that every integrated energy interval
 came through the same transport.
 
 Historical conversions use the estimate available at their historical time. Only
-supported CSV history predating the estimates may use the first fully established
+supported CSV history predating the estimates may use the first usable
 database value for each phase, explicitly marked as a retrospective voltage
 assumption. Later voltage changes do not revise that fallback. CSV source bytes,
 original currents, timestamps and import provenance remain unchanged. No estimate
@@ -693,6 +697,12 @@ unobserved chart options or mix exact contacts into the adaptive table.
   journals, session checks, imported rows and provenance, source corrections,
   recovery records, bounded statistics and overwritten operational state each
   have their own saving rules and retention description.
+- Current state includes phase-voltage estimator checkpoints, Caravan probe
+  power-restoration obligations and device-bound Automatic power choices, and
+  paired MQTT source context. Their update dates and current-entry counts are
+  separate from retained observation history. Home Automatic/Pause changes and
+  scheduled Pause expiry have their own event history; they are permission
+  changes, not physical heating measurements.
 
 The inventory reports actual stream and event-type counts, units/basis, dates,
 write behaviour and retention. It lists unregistered stored writers explicitly
@@ -713,7 +723,7 @@ byte and variation metrics remain labeled as such. Current open energy is shown
 separately from finalized observation counts. The annual target measures overall
 SQLite growth; mandatory exact/history records are never dropped to meet it.
 
-This recording contract uses database schema 21. An incompatible development
+This recording contract uses database schema 22. An incompatible development
 schema is rejected before mutation with fresh-database guidance; no migration,
 backfill or automatic reset is provided. Supported read-only v0.7.5 CSV import,
 current-version restart, backup/restore and deterministic journal replay remain.

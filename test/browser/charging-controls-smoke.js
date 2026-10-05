@@ -172,6 +172,36 @@ try {
     await evaluate(`document.documentElement.dataset.theme = '${theme}'`);
     await evaluate("chargingFixture.setCase('ordinary'); document.querySelectorAll('.charging-device').forEach(card => card.open = false)");
     const originalHeights = await evaluate("[...document.querySelectorAll('.equipment-device-summary')].map(node => node.getBoundingClientRect().height)");
+    for (const energy of [16.3, 116.3]) {
+      await evaluate(`chargingFixture.setCase('ordinary'); chargingFixture.status.charging.chargers.forEach(item => {
+        item.progress = {estimatedSoc: 55, hasEnergyEstimate: true, deliveredGridKwh: ${energy}, remainingGridKwh: ${energy}};
+        item.sessionCost = {recordedGridKwh: ${energy}};
+      }); chargingFixture.refresh()`);
+      const energyLayout = await evaluate(`(() => [...document.querySelectorAll('.charging-device')].map(card => {
+        const row = card.querySelector('.charging-fact-overview'), area = row.getBoundingClientRect();
+        return {height: card.querySelector('summary').getBoundingClientRect().height,
+          metrics: [...row.querySelectorAll('.charging-delivered > strong, .charging-remaining > strong')].map(metric => {
+            const value = metric.firstElementChild, unit = metric.lastElementChild;
+            const numeric = value.getBoundingClientRect(), suffix = unit.getBoundingClientRect(), cell = metric.getBoundingClientRect();
+            return {text: metric.textContent, oneLine: value.getClientRects().length === 1 && unit.getClientRects().length === 1
+              && numeric.top < suffix.bottom && suffix.top < numeric.bottom,
+              inside: numeric.left >= cell.left - 1 && suffix.right <= cell.right + 1
+                && numeric.left >= area.left && suffix.right <= area.right};
+          })};
+      }))()`);
+      for (const [index, result] of energyLayout.entries()) {
+        const context = `${width}px ${theme} ${energy} kWh charger${index + 1}`;
+        assert.deepEqual(result.metrics.map(metric => metric.text), [`${energy} kWh`, `≈${energy} kWh`], context);
+        assert(result.metrics.every(metric => metric.oneLine), `${context}: energy and unit remain on one line`);
+        assert(result.metrics.every(metric => metric.inside), `${context}: complete energy fits its own column`);
+        assert.equal(result.height, originalHeights[index], `${context}: estimated energy does not grow the charger card`);
+      }
+      if (energy === 16.3) {
+        const shot = await send('Page.captureScreenshot', {format: 'png', captureBeyondViewport: true});
+        writeFileSync(join(artifacts, `charging-energy-${width}-${theme}.png`), Buffer.from(shot.data, 'base64'));
+      }
+    }
+    await evaluate("chargingFixture.setCase('ordinary')");
     for (const [mode, amps, expected, tone, palette] of [
       ['unrestricted', 16, '16 A Available', 'full', '--chart-indoor'],
       ['limited', 8, '8 A Available', 'limited', '--chart-outdoor'],

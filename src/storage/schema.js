@@ -1,5 +1,5 @@
 // One current schema. Pre-production databases are never migrated.
-export const SCHEMA_VERSION = 21;
+export const SCHEMA_VERSION = 22;
 // Original source rows remain immutable evidence. The active views select the
 // current recovery interpretation without erasing history or changing local IDs.
 export const RECOVERABLE_TABLES = ['annotations', 'counters', 'energy_audits', 'events',

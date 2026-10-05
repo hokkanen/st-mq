@@ -3,6 +3,7 @@ import { EventEmitter } from 'node:events';
 import { Store } from '../../src/storage/store.js';
 import { ChargingRuntime } from '../../src/charging/runtime.js';
 import { createOcppScheduleAdapter } from '../../src/charging/ocpp.js';
+import { easeeChargerTelemetry } from '../../src/charging/easee.js';
 import { createShellyEvseAdapter } from '../../src/charging/shelly-evse.js';
 import { createChargingTeslaCapture } from '../../src/charging/teslamate.js';
 
@@ -106,6 +107,12 @@ export async function fixture(t, { limiter = true, budgetA = 16, notifyRuntime =
         supply: supply() };
     };
     ocpp = createOcppScheduleAdapter({ scope, readSnapshot: snapshot, clock: () => now, canControl: () => true,
+      readAllowanceTelemetry: () => easeeChargerTelemetry({ online: true, readAt: now,
+        pluggedIn: cars.charger1.connected, externalLoadBalancing: true,
+        limits: { chargerA: 16, cableA: 16, circuitA: triple(16), equalizerAvailableA: supply().availableCurrentA },
+        observations: Object.fromEntries([230, 231, 232].map((id, index) => [id, { value: supply().availableCurrentA[index], at: now }])),
+        allowanceEvidence: { source: 'easee-cloud', connected: true, synchronized: household.feedsSynchronized, receivedAt: now, epoch: 'fixture-epoch' },
+      }, { now }),
       isCurrent: value => value.transactionId === (cars.charger1.connected ? cars.charger1.connectedAt / 1000 : null),
       request: async (action, payload, options) => {
         if (action === 'SetChargingProfile' && heldOcppWrite) {

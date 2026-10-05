@@ -270,7 +270,7 @@ test('a later recorded Charger 2 interval updates an already cached imported nig
   assert.equal(after.reference.unknownCharger2, false);
 });
 
-test('the first mature voltage estimate enables retrospective CSV conversion and peer subtraction', async t => {
+test('the first usable voltage estimate enables retrospective CSV conversion and peer subtraction', async t => {
   const { store, dir } = fixture(t);
   await legacy(store, dir, ['2026-02-14'], { current: [10, 11, 12] });
   const start = Date.parse('2026-02-14T01:00:00Z');

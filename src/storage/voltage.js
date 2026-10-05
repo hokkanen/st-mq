@@ -2,9 +2,8 @@ import { voltageInput, validVoltageProvenance } from '../domain/voltage-provenan
 
 // One slow planning estimate per installation phase. Candidate readings are
 // bounded restart state, never a second raw-observation history.
-export const VOLTAGE_VERSION = 'voltage-ewma-v2';
+export const VOLTAGE_VERSION = 'voltage-ewma-v3';
 export const VOLTAGE_HALF_LIFE_MS = 6 * 3600000;
-export const VOLTAGE_MATURITY_MS = 3600000;
 export const VOLTAGE_MAX_GAP_MS = 5 * 60000;
 export const VOLTAGE_PREFERENCE_MS = 5 * 60000;
 export const VOLTAGE_RECORDING_FLOOR_V = 0.5;
@@ -28,6 +27,8 @@ const sourceFor = input => input === 8 ? 'simulation' : 'easee';
 const reporting = (candidate, now) => candidate?.reporting === true && now <= candidate.validUntil;
 function restored(store, input) {
   const state = store.getState(stateKey(input));
+  if (state == null && store.db?.prepare('SELECT 1 FROM state WHERE key = ?').get(stateKey(input)))
+    throw new Error('Unsupported voltage estimate state; start a fresh development database');
   if (state != null) {
     const validCandidate = (key, row) => /^(1|2|4|8):[012]$/.test(key)
       && fields(row, ['identity', 'source', 'device', 'input', 'sourceTime', 'receivedAt', 'reporting',
@@ -64,16 +65,19 @@ function restored(store, input) {
     const validPublished = (row, phase) => row === null || object(row) && row.source === 'voltage-estimate'
       && row.device === input && row.signal === VOLTAGE_SIGNALS[phase] && row.unit === 'V'
       && validTime(row.sourceTime) && row.sourceTime === row.receivedAt && Array.isArray(row.quality)
-      && row.quality.includes('estimated') && row.quality.every(flag => ['estimated', 'insufficient-coverage', 'unavailable'].includes(flag))
-      && object(row.raw) && row.raw.voltageEstimate?.version === VOLTAGE_VERSION
-      && row.raw.voltageEstimate.phase === phase + 1 && typeof row.raw.voltageMature === 'boolean'
+      && row.quality.includes('estimated') && row.quality.every(flag => ['estimated', 'unavailable'].includes(flag))
+      && fields(row.raw, ['basis', 'voltageSource', 'voltageAvailability', 'voltageEstimate', 'recorder'])
+      && row.raw.basis === 'time-weighted-voltage-estimate' && row.raw.voltageEstimate?.version === VOLTAGE_VERSION
+      && row.raw.voltageEstimate.phase === phase + 1
       && row.raw.voltageEstimate.halfLifeMs === VOLTAGE_HALF_LIFE_MS
       && Number.isSafeInteger(row.raw.voltageEstimate.coverageMs) && row.raw.voltageEstimate.coverageMs >= 0
       && (row.raw.voltageEstimate.lastObservedAt === null || validTime(row.raw.voltageEstimate.lastObservedAt)
         && row.raw.voltageEstimate.lastObservedAt <= row.receivedAt)
       && (row.raw.voltageEstimate.input === 0 && row.raw.voltageEstimate.inputs === 0 || validVoltageProvenance(row.raw.voltageEstimate))
       && typeof row.raw.voltageSource === 'string' && ['reporting', 'held'].includes(row.raw.voltageAvailability)
-      && (row.raw.voltageMature ? validVoltage(row.value) && row.raw.voltageEstimate.coverageMs >= VOLTAGE_MATURITY_MS : row.value === null);
+      && (row.value === null ? row.quality.includes('unavailable') && row.raw.voltageEstimate.input === 0
+        && row.raw.voltageEstimate.inputs === 0 && row.raw.voltageEstimate.coverageMs === 0
+        : validVoltage(row.value) && !row.quality.includes('unavailable') && validVoltageProvenance(row.raw.voltageEstimate));
     if (!object(state) || Object.keys(state).some(key => !['version', 'candidates', 'phases', 'published', 'sourcePolicy'].includes(key))
       || state.version !== VOLTAGE_VERSION || !object(state.candidates)
       || state.sourcePolicy !== undefined && !validPolicy(state.sourcePolicy)
@@ -216,7 +220,7 @@ export class VoltageEstimator {
     let selected = accumulator.selected;
     if (!reporting(current, now)) selected = preferred ?? selected;
     else if (preferred && state.candidates[preferred].input < current.input
-      && (accumulator.coverageMs < VOLTAGE_MATURITY_MS || state.candidates[preferred].healthyMs >= VOLTAGE_PREFERENCE_MS)) selected = preferred;
+      && (accumulator.coverageMs === 0 || state.candidates[preferred].healthyMs >= VOLTAGE_PREFERENCE_MS)) selected = preferred;
     if (selected !== accumulator.selected) {
       accumulator.selected = selected;
       if (accumulator.mean !== null) accumulator.lastUpdatedAt = now;
@@ -239,12 +243,12 @@ export class VoltageEstimator {
     const accumulator = state.phases[phase], chosen = state.candidates[accumulator.selected]
       ?? priorities.map(input => state.candidates[`${input}:${phase}`]).find(Boolean);
     if (!chosen && !state.published[phase]) return;
-    const mature = accumulator.coverageMs >= VOLTAGE_MATURITY_MS;
+    const available = validVoltage(accumulator.mean);
     const result = this.recorder.record({ source: 'voltage-estimate', device: this.input,
-      signal: VOLTAGE_SIGNALS[phase], value: mature ? accumulator.mean : null, unit: 'V',
-      sourceTime: now, receivedAt: now, quality: mature ? ['estimated'] : ['estimated', 'insufficient-coverage'],
+      signal: VOLTAGE_SIGNALS[phase], value: accumulator.mean, unit: 'V',
+      sourceTime: now, receivedAt: now, quality: available ? ['estimated'] : ['estimated', 'unavailable'],
       raw: { basis: 'time-weighted-voltage-estimate', voltageSource: chosen?.identity ?? 'source-unconfigured',
-        voltageMature: mature, voltageAvailability: reporting(chosen, now) ? 'reporting' : 'held',
+        voltageAvailability: reporting(chosen, now) ? 'reporting' : 'held',
         voltageEstimate: { version: VOLTAGE_VERSION, phase: phase + 1, source: accumulator.source,
           device: accumulator.device, halfLifeMs: VOLTAGE_HALF_LIFE_MS, coverageMs: accumulator.coverageMs,
           lastObservedAt: accumulator.lastObservedAt, lastUpdatedAt: accumulator.lastUpdatedAt,
@@ -272,10 +276,10 @@ export function voltageRecordingStatus(store, input, now = Date.now()) {
   return Object.fromEntries(VOLTAGE_SIGNALS.map((signal, phase) => {
     const row = state.phases[phase], selected = state.candidates[row.selected]
       ?? priorities.map(input => state.candidates[`${input}:${phase}`]).find(Boolean), active = reporting(selected, now);
-    const mature = row.coverageMs >= VOLTAGE_MATURITY_MS;
-    return [signal, { coverageMs: row.coverageMs, mature, reporting: active, lastObservedAt: row.lastObservedAt,
+    const available = validVoltage(row.mean);
+    return [signal, { coverageMs: row.coverageMs, available, reporting: active, lastObservedAt: row.lastObservedAt,
       lastUpdatedAt: row.lastUpdatedAt, input: row.input, inputs: row.inputs,
-      reason: !selected ? 'source-unconfigured' : !active ? 'source-unavailable' : mature ? 'reporting' : 'collecting' }];
+      reason: !selected ? 'source-unconfigured' : !active ? 'source-unavailable' : 'reporting' }];
   }));
 }
 
@@ -283,10 +287,12 @@ function decoded(row, retrospective = false) {
   if (!row) return null;
   const raw = typeof row.raw === 'string' ? JSON.parse(row.raw) : row.raw;
   const quality = typeof row.quality === 'string' ? JSON.parse(row.quality) : row.quality;
-  const valid = Array.isArray(quality) && quality.every(flag => ['estimated', 'good', 'simulated'].includes(flag));
-  return { value: valid && raw?.voltageMature === true && validVoltage(row.value) ? row.value : null,
+  const valid = raw?.voltageEstimate?.version === VOLTAGE_VERSION && !Object.hasOwn(raw, 'voltageMature')
+    && validVoltageProvenance(raw.voltageEstimate)
+    && Array.isArray(quality) && quality.every(flag => ['estimated', 'good', 'simulated'].includes(flag));
+  return { value: valid && validVoltage(row.value) ? row.value : null,
     at: Math.max(row.source_time ?? row.sourceTime, row.received_at ?? row.receivedAt), receivedAt: row.received_at ?? row.receivedAt,
-    mature: raw?.voltageMature === true, source: raw?.voltageSource ?? null,
+    source: raw?.voltageSource ?? null,
     availability: raw?.voltageAvailability ?? null, retrospective,
     coverageMs: raw?.voltageEstimate?.coverageMs ?? null,
     inputs: raw?.voltageEstimate?.inputs ?? null, input: raw?.voltageEstimate?.input ?? null,
@@ -309,7 +315,12 @@ export function createVoltageReader(store, { input = 'live', now = Date.now() } 
   const before = store.db.prepare(`SELECT *,${availableAt} AS available_at FROM active_observations AS observations WHERE ${where} AND signal=?
     AND source_time<=? ORDER BY available_at DESC,id DESC LIMIT 1`);
   const first = store.db.prepare(`SELECT * FROM active_observations AS observations WHERE ${where} AND signal=?
-    AND source_time<=? AND value BETWEEN 200 AND 250 AND json_extract(raw,'$.voltageMature')=1
+    AND source_time<=? AND value BETWEEN 200 AND 250 AND json_extract(raw,'$.voltageEstimate.version')='${VOLTAGE_VERSION}'
+    AND json_type(raw,'$.voltageMature') IS NULL
+    AND json_type(raw,'$.voltageEstimate.input')='integer' AND json_extract(raw,'$.voltageEstimate.input') IN (1,2,4,8)
+    AND json_type(raw,'$.voltageEstimate.inputs')='integer' AND json_extract(raw,'$.voltageEstimate.inputs') BETWEEN 1 AND 15
+    AND (json_extract(raw,'$.voltageEstimate.inputs') & json_extract(raw,'$.voltageEstimate.input'))=json_extract(raw,'$.voltageEstimate.input')
+    AND (json_extract(raw,'$.voltageEstimate.inputs') & 8)=CASE WHEN json_extract(raw,'$.voltageEstimate.inputs')=8 THEN 8 ELSE 0 END
     AND NOT EXISTS (SELECT 1 FROM json_each(observations.quality) WHERE value NOT IN ('estimated','good','simulated'))
     ORDER BY ${availableAt},id LIMIT 1`);
   const next = store.db.prepare(`SELECT ${availableAt} AS available_at FROM active_observations AS observations WHERE ${where} AND signal=?

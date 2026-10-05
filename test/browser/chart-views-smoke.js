@@ -663,17 +663,17 @@ try {
       }
     }
     await evaluate("document.getElementById('recording-details').open=true; document.getElementById('recording-adaptive-details').open=true; true");
-    await until("[...document.querySelectorAll('tr[data-signal=\"voltage_estimate_l1\"]')].some(row=>row.textContent.includes('Collecting voltage history'))");
+    await until("[...document.querySelectorAll('tr[data-signal=\"voltage_estimate_l1\"]')].some(row=>row.textContent.includes('Smoothed estimate'))");
     const recordingRows = await evaluate(`(() => Object.fromEntries([1,2,3].map(phase => {
       const source = ['Charger 1 · OCPP','Charger 1 · Easee Cloud','Equalizer · Easee Cloud'][phase-1];
       const row = [...document.querySelectorAll('tr[data-signal="voltage_estimate_l' + phase + '"]')].find(row=>row.textContent.includes(source));
       row.querySelector('details').open = true;
       return [phase, row.textContent];
     })))()`);
-    assert.match(recordingRows[1], /Voltage estimate L1.*Easee · OCPP.*Collecting voltage history.*30 of 60 minutes/);
+    assert.match(recordingRows[1], /Voltage estimate L1.*Easee · OCPP.*Smoothed estimate.*30 minutes of valid coverage/);
     assert.match(recordingRows[1], /Charger 1 · OCPP/);
-    assert.match(recordingRows[2], /Established estimate.*Charger 1 · Easee Cloud/);
-    assert.match(recordingRows[3], /Voltage collection paused.*25 of 60 minutes.*Equalizer · Easee Cloud/);
+    assert.match(recordingRows[2], /Smoothed estimate.*Charger 1 · Easee Cloud/);
+    assert.match(recordingRows[3], /Estimate held · input unavailable.*25 minutes of valid coverage.*Equalizer · Easee Cloud/);
     for (const text of Object.values(recordingRows)) assert.doesNotMatch(text, /failed its source quality checks|No age cutoff applies/);
     const voltageSource = 'tr[data-signal="voltage_estimate_l1"] th small .status-detail-trigger';
     assert.equal(await evaluate(`document.querySelector(${JSON.stringify(voltageSource)}).textContent`), 'Easee · OCPP');
@@ -684,14 +684,15 @@ try {
     assert.match(sourcePopup, /volts \(V\)/);
     await pressKey('Escape');
     assert(await evaluate("document.getElementById('status-detail-popover').hidden"));
-    const energySourceLabels = await evaluate("[...document.querySelectorAll('tr[data-signal=\"ev1_energy_l1\"] th small')].map(node=>node.textContent)");
-    assert(energySourceLabels.includes('Easee · OCPP · kWh'));
-    assert(energySourceLabels.includes('Easee · Cloud · kWh'));
+    const energyRows = await evaluate("[...document.querySelectorAll('tr[data-signal=\"ev1_energy_l1\"]')].map(node=>node.textContent)");
+    assert.equal(energyRows.length, 1, 'One measurement groups both saved source identities');
+    assert.match(energyRows[0], /Source history · 2 identities/);
+    assert.match(energyRows[0], /Source selection uncertain/, 'Equal latest acquisition times cannot pick a current source');
     await viewport(1280, 1100);
     await evaluate("document.getElementById('recording-adaptive-details').scrollIntoView({block:'start'}); true");
     await settle(); await capture('voltage-recording-status');
     assert.deepEqual(errors, [], 'Voltage views and tooltip interactions have no uncaught browser exceptions');
-    console.log('Voltage browser checks passed: dedicated phase view, three default traces, per-phase explorer labels and saved-source tooltips, both themes at 320/390/1280px; real estimator collecting/established/paused recorder states and distinct OCPP/cloud recording labels.');
+    console.log('Voltage browser checks passed: dedicated phase view, three default traces, per-phase explorer labels and saved-source tooltips, both themes at 320/390/1280px; real estimator early/accumulated/held recorder states, OCPP/cloud voltage labels and grouped ambiguous energy identities.');
     console.log(`Screenshots: ${screenshots.join(', ')}`);
   } else {
   await choose('view', 'power');

@@ -127,11 +127,15 @@ test('provider electrical batches form voltage history before raw acquisition fi
   }));
   const providers = startProviders(f.options);
   try {
-    for (let minute = 0; minute <= 60; minute++) { f.setTime(initial + minute * MINUTE); await providers.runDue(); }
+    for (let minute = 0; minute <= 60; minute++) {
+      f.setTime(initial + minute * MINUTE); await providers.runDue();
+      if (minute === 0) assert.deepEqual(readPlanningVoltage(f.store, { input: 'providers', now: initial }).voltageV,
+        [231, 232, 233], 'the first provider batch immediately seeds usable phase estimates');
+    }
     const estimate = readPlanningVoltage(f.store, { input: 'providers', now: initial + 60 * MINUTE });
     assert.deepEqual(estimate.voltageV, [231, 232, 233]);
     assert(estimate.phases.every(phase => phase.input === 1 && phase.inputs === 1), 'only explicitly identified OCPP contributes');
-    assert.equal(f.store.observations().filter(row => row.source === 'voltage-estimate').length, 6, 'only initial and formed estimates are archived');
+    assert.equal(f.store.observations().filter(row => row.source === 'voltage-estimate').length, 3, 'only initial usable estimates are archived');
     assert.equal(f.store.observations({ signal: 'ev1_voltage_l1' }).length, 0, 'original voltage acquisitions stay outside history');
   } finally { await providers.close(); }
 });

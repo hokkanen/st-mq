@@ -237,6 +237,49 @@ test('inactive journals, state families and individual event types have separate
   assert(!JSON.stringify(overview).includes('private-'));
 });
 
+test('current operational checkpoints stay distinct from retained measurements and unregistered families remain visible', t => {
+  const store = new Store(':memory:'); t.after(() => store.close());
+  const marker = 'private-synthetic-current-state';
+  const registrations = [
+    [`voltage:estimate:providers`, 'state-voltage'],
+    [`equipment:caravan-probe-restoration:v1:${marker}:identity`, 'state-caravan-restoration'],
+    [`equipment:dehumidifier-temperature-control:v1:${marker}`, 'state-caravan-temperature-control'],
+    ['pair:mqtt-source-context', 'state-pair-mqtt'],
+  ];
+  for (const [key] of registrations) {
+    store.setState(key, { value: marker });
+    store.setState(key, { value: marker, revised: true });
+  }
+  store.setState(registrations[1][0], null);
+  const overview = getDatabaseOverview({ store, now: at }), rows = items(overview);
+  assert.equal(overview.catalogueComplete, true);
+  for (const [, id] of registrations) {
+    assert.equal(rows.get(id).count, 1, id);
+    assert.equal(rows.get(id).retention, 'current', id);
+    assert.equal(rows.get(id).countLabel, 'current entries', id);
+    assert.equal(rows.get(id).dateBasis, 'last updates', id);
+  }
+  assert.equal(rows.get('state-caravan-restoration').missingCount, 1, 'Completed restoration remains an explicit null current entry');
+  assert.equal(rows.get('adaptive-observations').count, 0, 'A checkpoint is not recorded voltage history');
+  assert.match(rows.get('state-caravan-temperature-control').description, /dashboard choices/);
+  assert.match(rows.get('state-pair-mqtt').description, /grants no control authority/);
+  assert(!JSON.stringify(overview).includes(marker));
+
+  for (const key of [`equipment:unregistered:${marker}`, `pair:unregistered:${marker}`,
+    `voltage:unregistered:${marker}`, `learned:${marker}`, `shelly-evse:${marker}`,
+    `equipment:caravan-probe-restoration:v0:${marker}`, `equipment:dehumidifier-temperature-control:v0:${marker}`])
+    store.setState(key, { value: marker });
+  for (const type of ['override-changed', 'override-expired', 'heating-automation-unregistered'])
+    store.event(type, { value: marker }, at);
+  store.db.exec('PRAGMA query_only=ON');
+  const unsupported = getDatabaseOverview({ store, now: at });
+  assert.equal(unsupported.catalogueComplete, false);
+  assert.equal(items(unsupported).get('state-other').count, 7);
+  assert.equal(items(unsupported).get('events-other').count, 3);
+  assert.equal(unsupported.inventoryIssues.length, 2);
+  assert(!JSON.stringify(unsupported).includes(marker));
+});
+
 test('charging report inventory counts sessions and retained evidence without exposing report payloads', t => {
   const store = new Store(':memory:'); t.after(() => store.close());
   const marker = 'private-synthetic-report-payload';

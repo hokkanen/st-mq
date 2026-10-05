@@ -208,7 +208,7 @@ function householdReferenceText(reference, now) {
     && reference.temperatureRangeC.every(finite)) parts.push(`${number(reference.temperatureRangeC[0])} to ${number(reference.temperatureRangeC[1], '°C')}`);
   if (validTime(reference.oldestAt) && now - Number(reference.oldestAt) > 180 * 86400_000) parts.push('includes older seasonal readings');
   if (reference.unknownCharger2) parts.push('older readings may include unmeasured charging');
-  if (reference.retrospectiveVoltage) parts.push('older current readings use the first established voltage estimate retrospectively');
+  if (reference.retrospectiveVoltage) parts.push('older current readings use the first usable voltage estimate retrospectively');
   if (reference.missingHours > 0) parts.push('zero other load for hours without any usable reference');
   if (reference.loading) parts.push('refreshing the reference');
   else if (reference.unavailable || reference.error) parts.push('last reference retained while refresh retries');

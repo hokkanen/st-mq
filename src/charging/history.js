@@ -310,7 +310,7 @@ function updateModern(store, reference, { from, to, now, input, voltageV }) {
 export function householdReference(store, { now, input = 'live', voltageV, timezone = TIME_ZONE }) {
   if (!store?.db) return new HouseholdReference({ timezone });
   const imports = input === 'simulated' ? '' : JSON.stringify(store.db.prepare("SELECT id,row_count,completed_at FROM active_imports AS imports WHERE status='complete' AND kind IN ('stmq','easee') ORDER BY id").all());
-  // Only first-mature fallback publication changes pre-estimate CSV meaning.
+  // Only first-usable fallback publication changes pre-estimate CSV meaning.
   // Ordinary later estimates must not repeatedly reinterpret that archive.
   const csvVoltageKey = input === 'simulated' ? '' : JSON.stringify(createVoltageReader(store, { input, now })(0, { allowFuture: true }));
   const voltageAvailable = voltages(voltageV).every(value => finite(value) && value >= 200 && value <= 250);

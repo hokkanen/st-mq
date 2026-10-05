@@ -2,7 +2,8 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { Store } from '../src/storage/store.js';
 import { Recorder } from '../src/storage/recorder.js';
-import { VoltageEstimator, createVoltageReader, readPlanningVoltage, voltageRecordingStatus, voltageTelemetryAt, VOLTAGE_MATURITY_MS } from '../src/storage/voltage.js';
+import { getDatabaseOverview } from '../src/app/database-overview.js';
+import { VoltageEstimator, createVoltageReader, readPlanningVoltage, voltageRecordingStatus, voltageTelemetryAt, VOLTAGE_VERSION } from '../src/storage/voltage.js';
 
 const MINUTE = 60000, HOUR = 60 * MINUTE, START = Date.UTC(2026, 0, 1);
 function fixture(t, input = 'providers') {
@@ -24,46 +25,82 @@ function fixture(t, input = 'providers') {
 function formed(f, from = START, voltages) {
   for (let at = from; at <= from + HOUR; at += MINUTE) f.put(at, voltages);
 }
-function estimate(store, at, values, { input = 'providers', receivedAt = at, mature = true } = {}) {
+function estimate(store, at, values, { input = 'providers', receivedAt = at } = {}) {
   for (let phase = 0; phase < 3; phase++) store.observation({ source: 'voltage-estimate', device: input,
     signal: `voltage_estimate_l${phase + 1}`, value: values[phase], unit: 'V', sourceTime: at, receivedAt,
-    quality: ['estimated'], raw: { voltageMature: mature, voltageSource: 'invented-meter',
+    quality: ['estimated'], raw: { voltageEstimate: { version: VOLTAGE_VERSION, input: input === 'simulated' ? 8 : 4, inputs: input === 'simulated' ? 8 : 4 }, voltageSource: 'invented-meter',
       voltageAvailability: 'reporting', basis: 'time-weighted-voltage-estimate' } });
 }
 
-test('valid elapsed phase coverage matures independently and tiny voltage drift adds no historical rows', t => {
+test('the first valid reading publishes each phase immediately and tiny drift adds no historical rows', t => {
   const f = fixture(t);
   for (let minute = 0; minute <= 24 * 60; minute++) {
     f.put(START + minute * MINUTE, [231 + .02 * Math.sin(minute), 232, minute < 30 ? null : 233]);
-    if (minute === 59) assert.deepEqual(f.plan().voltageV, [null, null, null]);
-    if (minute === 60) {
-      assert.equal(f.plan().available, false); assert.equal(f.plan().voltageV[1], 232);
-      assert.equal(f.plan().voltageV[2], null);
+    if (minute === 0 || minute === 29) {
+      assert.deepEqual(f.plan().voltageV, [231, 232, null]);
+      assert.equal(f.plan().available, false);
     }
+    if (minute === 30) assert.deepEqual(f.plan().voltageV, [231, 232, 233]);
   }
   assert.equal(f.plan().available, true);
-  assert.equal(f.store.observations().length, 7, 'initial rows, L3 acquisition recovery, and maturity only');
+  assert.equal(f.store.observations().length, 4, 'one initial row per phase and L3 acquisition recovery only');
   assert.equal(f.store.db.prepare('SELECT COUNT(*) n FROM state WHERE key LIKE ?').get('voltage:estimate:%').n, 1);
   const voltageRows = f.recorder.status(START + 24 * HOUR).parameters;
   assert(voltageRows.every(row => row.threshold >= .5 && row.thresholdUnit === 'V'));
   assert(f.plan().voltageV[0] < 231.01 && f.plan().voltageV[0] > 230.99);
+  const inventory = getDatabaseOverview({ store: f.store, now: START + 24 * HOUR });
+  assert.equal(inventory.catalogueComplete, true);
+  const voltageState = inventory.groups.flatMap(group => group.items).find(row => row.id === 'state-voltage');
+  assert.equal(voltageState.count, 1);
+  assert.equal(voltageState.retention, 'current');
 });
 
-test('duplicates, invalid units, retained reports and missing source coverage cannot mature voltage', t => {
+test('duplicates, invalid units and retained reports cannot renew voltage or manufacture smoothing coverage', t => {
   const f = fixture(t);
   f.put(START);
   for (let i = 1; i <= 70; i++) f.put(START + i * MINUTE, [231, 232, 233], { sourceTime: START });
-  assert.deepEqual(f.plan().voltageV, [null, null, null]);
+  assert.deepEqual(f.plan().voltageV, [231, 232, 233]);
+  assert(f.plan().phases.every(phase => phase.availability === 'held'));
   f.put(START + 80 * MINUTE);
   for (let i = 81; i <= 150; i++) f.put(START + i * MINUTE, [231, 232, 233], { unit: 'kWh' });
   f.put(START + 160 * MINUTE, [231, 232, 233], { raw: { voltageMapping: 'phase-neutral', retained: true } });
-  assert.deepEqual(f.plan().voltageV, [null, null, null]);
+  assert.deepEqual(f.plan().voltageV, [231, 232, 233]);
   const state = f.store.getState('voltage:estimate:providers');
   assert(state.phases.every(candidate => candidate.coverageMs === 5 * MINUTE),
     'only the original source report freshness window can contribute without new telemetry');
 });
 
-test('unchanged source voltage matures only with bounded genuine same-device telemetry coverage', t => {
+test('invalid initial readings stay unknown; a zero-coverage valid seed survives restart and interruption', t => {
+  const f = fixture(t);
+  f.put(START, [null, 199, 251]);
+  assert.deepEqual(f.plan().voltageV, [null, null, null]);
+  assert(Object.values(voltageRecordingStatus(f.store, 'providers', START)).every(row => !row.available));
+  f.put(START + MINUTE, [228, 230, 232], { raw: { voltageMapping: 'phase-neutral', cached: true } });
+  assert.deepEqual(f.plan().voltageV, [null, null, null]);
+  f.put(START + 2 * MINUTE, [228, 230, 232]);
+  assert.deepEqual(f.plan().voltageV, [228, 230, 232]);
+  assert(f.plan().phases.every(phase => phase.coverageMs === 0));
+  const seeded = f.plan();
+  f.restart();
+  assert.deepEqual(f.plan(), seeded);
+  f.setNow(START + 3 * MINUTE);
+  f.estimator.interrupt({ source: 'easee', devices: ['invented-grid-meter'] });
+  assert.deepEqual(f.plan().voltageV, [228, 230, 232]);
+  assert(f.plan().phases.every(phase => phase.availability === 'held' && phase.coverageMs === 0));
+});
+
+test('early usable estimates continue the six-hour smoothing and published-value recording policy', t => {
+  const f = fixture(t);
+  f.put(START, [230, 230, 230]);
+  assert.deepEqual(f.plan().voltageV, [230, 230, 230]);
+  for (let minute = 1; minute <= 6 * 60; minute++) f.put(START + minute * MINUTE, [240, 240, 240]);
+  const state = f.store.getState('voltage:estimate:providers');
+  for (const phase of state.phases) assert(Math.abs(phase.mean - 235) < 1e-10, 'six hours halves the original 10 V difference');
+  assert(f.plan().voltageV.every(value => value > 234 && value <= 235), 'subthreshold internal updates cannot rewrite published planning voltage');
+  assert(f.store.observations().length < 40, 'smoothing never becomes a raw voltage poll archive');
+});
+
+test('unchanged source voltage gains smoothing coverage only with bounded genuine same-device telemetry', t => {
   const f = fixture(t);
   for (let minute = 0; minute <= 65; minute++) f.put(START + minute * MINUTE, [231, 232, 233], {
     sourceTime: START, quality: minute > 5 ? ['stale'] : [], raw: { voltageMapping: 'phase-neutral',
@@ -105,15 +142,15 @@ test('restart retains exact smoothing state; an outage holds recorded estimates 
   f.put(START + 3 * HOUR, [245, 246, 247]);
   assert.deepEqual(f.plan().voltageV, [231, 232, 233], 'unknown outage time never weights a new endpoint');
   assert(f.store.getState('voltage:estimate:providers').phases
-    .every(candidate => candidate.coverageMs === VOLTAGE_MATURITY_MS));
+    .every(candidate => candidate.coverageMs === HOUR));
   for (let at = START + 3 * HOUR + MINUTE; at <= START + 4 * HOUR; at += MINUTE) f.put(at, [245, 246, 247]);
   assert(f.plan().voltageV[0] > 232 && f.plan().voltageV[0] < 233);
   assert(f.store.observations().length < rows + 18, 'the 0.5 V floor aggregates gradual EWMA drift');
 });
 
-test('historical reader uses causal publication and only explicit old CSV queries use first mature estimates', t => {
+test('historical reader uses causal publication and only explicit old CSV queries use first usable estimates', t => {
   const f = fixture(t);
-  estimate(f.store, START, [null, null, null], { mature: false });
+  estimate(f.store, START, [null, null, null]);
   estimate(f.store, START + HOUR, [231, 232, 233]);
   estimate(f.store, START + 2 * HOUR, [235, 236, 237]);
   estimate(f.store, START + 3 * HOUR, [239, 240, 241], { receivedAt: START + 4 * HOUR });
@@ -129,10 +166,29 @@ test('historical reader uses causal publication and only explicit old CSV querie
   assert.deepEqual(createVoltageReader(f.store, { now: START + 30 * MINUTE })(START - HOUR, { allowFuture: true }).voltageV, [null, null, null]);
 });
 
+test('retired and invalid published voltage cannot mask the first current usable retrospective estimate', t => {
+  const f = fixture(t);
+  for (const [index, raw] of [
+    { voltageEstimate: { version: 'voltage-ewma-v2', input: 4, inputs: 4 }, voltageMature: true },
+    { voltageEstimate: { version: VOLTAGE_VERSION, input: 4, inputs: 4 }, voltageMature: true },
+    { voltageEstimate: { version: VOLTAGE_VERSION, input: 4, inputs: 1 } },
+  ].entries()) {
+    const at = START + index * MINUTE;
+    for (let phase = 1; phase <= 3; phase++) f.store.observation({ source: 'voltage-estimate', device: 'providers',
+      signal: `voltage_estimate_l${phase}`, value: 245, unit: 'V', sourceTime: at, receivedAt: at,
+      quality: ['estimated'], raw });
+  }
+  f.put(START + 3 * MINUTE);
+  const reader = createVoltageReader(f.store, { input: 'providers', now: START + 4 * MINUTE });
+  for (let minute = 0; minute <= 2; minute++) assert.deepEqual(reader(START + minute * MINUTE).voltageV, [null, null, null]);
+  assert.deepEqual(reader(START - HOUR, { allowFuture: true }).voltageV, [231, 232, 233]);
+  assert.deepEqual(reader(START + 3 * MINUTE).voltageV, [231, 232, 233]);
+});
+
 test('recorder floor compares against last publication and source or availability changes remain visible', t => {
   const f = fixture(t), put = (value, at, raw = {}) => f.recorder.record({ source: 'voltage-estimate', device: 'providers',
     signal: 'voltage_estimate_l1', value, unit: 'V', sourceTime: at, receivedAt: at, quality: ['estimated'],
-    raw: { voltageSource: 'invented-meter', voltageMature: true, voltageAvailability: 'reporting', ...raw } });
+    raw: { voltageSource: 'invented-meter', voltageAvailability: 'reporting', ...raw } });
   assert.equal(put(231, START).saved, true);
   for (let i = 1; i <= 5; i++) assert.equal(put(231 + i / 10, START + i * MINUTE).saved, false);
   assert.equal(put(231.6, START + 6 * MINUTE).saved, true);
@@ -168,13 +224,14 @@ test('malformed and retired voltage checkpoints fail closed before mutation', t 
   const f = fixture(t); formed(f);
   const saved = f.store.getState('voltage:estimate:providers');
   const invalid = [
-    { ...saved, version: 'voltage-ewma-v1' }, { ...saved, unexpected: true },
+    { ...saved, version: 'voltage-ewma-v2' }, { ...saved, unexpected: true },
     { ...saved, candidates: [] },
     { ...saved, phases: saved.phases.map(row => ({ ...row, inputs: 12 })) },
     { ...saved, phases: saved.phases.map(row => ({ ...row, input: '4' })) },
     { ...saved, candidates: { ...saved.candidates, '4:4': saved.candidates['4:0'] } },
     { ...saved, candidates: { ...saved.candidates, '4:0': { ...saved.candidates['4:0'], healthyMs: -1 } } },
     { ...saved, published: [ { ...saved.published[0], device: 'simulated' }, ...saved.published.slice(1) ] },
+    { ...saved, published: [ { ...saved.published[0], raw: { ...saved.published[0].raw, voltageMature: true } }, ...saved.published.slice(1) ] },
   ];
   const rows = f.store.observations().length;
   for (const state of invalid) {
@@ -199,7 +256,7 @@ test('explicit provider failure and stream interruption break coverage immediate
   assert(f.plan().phases.every(phase => phase.availability === 'held'));
   f.put(START + HOUR + 4 * MINUTE);
   state = f.store.getState('voltage:estimate:providers');
-  assert(state.phases.every(candidate => candidate.coverageMs === HOUR), 'a short outage is not hidden inside maturity coverage');
+  assert(state.phases.every(candidate => candidate.coverageMs === HOUR), 'a short outage is not hidden inside observed coverage');
 });
 
 function feed(f, at, input, { phase = null, value = 231, quality = [], ...extra } = {}) {
@@ -231,13 +288,13 @@ test('fallback preserves the shared accumulator and historical contributors; pre
   for (let minute = 0; minute <= 60; minute++) {
     feed(f, START + minute * MINUTE, 1); feed(f, START + minute * MINUTE, 2, { value: 241 });
   }
-  const historicalAt = START + HOUR, mature = f.plan();
-  assert.deepEqual(mature.phases.map(row => row.inputs), [1, 1, 1]);
+  const historicalAt = START + HOUR, previous = f.plan();
+  assert.deepEqual(previous.phases.map(row => row.inputs), [1, 1, 1]);
   f.setNow(START + 61 * MINUTE);
   f.estimator.interrupt({ source: 'easee', devices: ['invented-charger'], transport: 'cloud' });
   assert(f.plan().phases.every(row => row.availability === 'reporting'), 'cloud interruption does not stop OCPP');
   f.estimator.interrupt({ source: 'easee', devices: ['invented-charger'], transport: 'ocpp' });
-  assert.deepEqual(f.plan().voltageV, mature.voltageV, 'fallback begins without an instantaneous voltage jump');
+  assert.deepEqual(f.plan().voltageV, previous.voltageV, 'fallback begins without an instantaneous voltage jump');
   for (let minute = 61; minute <= 66; minute++) feed(f, START + minute * MINUTE, 2, { value: 241 });
   let state = f.store.getState('voltage:estimate:providers');
   assert.deepEqual(state.phases.map(row => row.input), [2, 2, 2]);
@@ -262,7 +319,7 @@ test('loss of all inputs holds the estimate, keeps coverage unchanged and report
   const f = fixture(t); formed(f);
   f.setNow(START + 2 * HOUR); f.estimator.tick();
   const statuses = Object.values(voltageRecordingStatus(f.store, 'providers', START + 2 * HOUR));
-  assert(statuses.every(row => row.reason === 'source-unavailable' && row.mature && !row.reporting));
+  assert(statuses.every(row => row.reason === 'source-unavailable' && row.available && !row.reporting));
   assert(statuses.every(row => row.coverageMs === HOUR && row.lastObservedAt === START + HOUR));
 });
 
@@ -271,7 +328,7 @@ test('recording status exposes accumulating coverage without adding progress row
   for (let minute = 0; minute <= 35; minute++) f.put(START + minute * MINUTE);
   assert.equal(f.store.observations().length, 3);
   const statuses = Object.values(voltageRecordingStatus(f.store, 'providers', START + 35 * MINUTE));
-  assert(statuses.every(row => row.coverageMs === 35 * MINUTE && row.reason === 'collecting' && row.reporting && !row.mature));
+  assert(statuses.every(row => row.coverageMs === 35 * MINUTE && row.reason === 'reporting' && row.reporting && row.available));
   assert(statuses.every(row => row.inputs === 4 && row.input === 4 && row.lastObservedAt === START + 35 * MINUTE));
 });
 
@@ -290,14 +347,14 @@ test('replacement of a contributing device resets its shared phase accumulator a
   const f = fixture(t); formed(f);
   const old = f.plan();
   feed(f, START + HOUR + MINUTE, 4, { device: 'invented-replacement-meter', value: 241 });
-  assert.deepEqual(f.plan().voltageV, [null, null, null]);
+  assert.deepEqual(f.plan().voltageV, [241, 241, 241]);
   assert(f.store.getState('voltage:estimate:providers').phases.every(row => row.coverageMs === 0));
   const prior = createVoltageReader(f.store, { input: 'providers', now: START + 2 * HOUR })(START + HOUR);
   assert.deepEqual(prior, old);
   assert(prior.phases.every(row => row.source.includes('invented-grid-meter')));
 });
 
-test('Charger 2 voltage is never a shared input, including simulation and mature-estimate fallback', t => {
+test('Charger 2 voltage is never a shared input, including simulation and recorded-estimate fallback', t => {
   const f = fixture(t), simulated = fixture(t, 'simulated');
   const row = { source: 'shelly-evse', device: 'invented-evse', signal: 'ev2_voltage_l1', value: 249,
     unit: 'V', sourceTime: START, receivedAt: START, quality: [], raw: { voltageMapping: 'phase-neutral' } };

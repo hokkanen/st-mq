@@ -15,6 +15,7 @@ import { seedChartFixture } from '../../scripts/lib/chart-fixture.js';
 const directory = mkdtempSync(join(tmpdir(), 'stmq-current-browser-'));
 const artifacts = mkdtempSync(join(tmpdir(), 'stmq-current-screenshots-'));
 const now = Date.parse('2026-09-30T12:00:00Z');
+const outage = { from: now - 90 * 60_000, to: now - 75 * 60_000 };
 const pause = ms => new Promise(resolve => setTimeout(resolve, ms));
 const pending = new Map(), errors = [];
 let app, browser, socket, sequence = 0;
@@ -31,6 +32,7 @@ try {
   for (let at = now - 6 * 3600_000; at <= now; at += 20_000) {
     const index = Math.min(5, Math.floor((at - now + 6 * 3600_000) / 3600_000));
     for (const chargerId of ['charger1', 'charger2']) {
+      if (chargerId === 'charger1' && at >= outage.from && at < outage.to) continue;
       const [mode, allowanceA] = chargerId === 'charger1' ? index < 3 ? ['unrestricted', 16] : ['limited', 10.5] : states[index];
       recorder.observe({ chargerId, association: (chargerId === 'charger1' ? 'a' : 'b').repeat(64), status: {
         mode, allowanceA, maximumCurrentA: 16, reportedAllowanceA: null,
@@ -120,6 +122,17 @@ try {
   assert(payload.series.ev2_current_allowance.some(point => point.y === 0));
   assert(payload.series.ev2_current_fallback.some(point => point.y === 0));
   assert(payload.series.ev2_current_fallback.every(point => point.y === null || point.y >= 0));
+  const firstAllowance = payload.series.ev1_current_allowance;
+  assert(firstAllowance.some(point => point.y === 16));
+  assert(firstAllowance.some(point => point.y === 10.5 && point.x < outage.from));
+  assert(firstAllowance.some(point => point.y === 10.5 && point.x >= outage.to));
+  assert(firstAllowance.some(point => point.y === null && point.x >= outage.from && point.x < outage.to));
+  assert(firstAllowance.filter(point => point.x >= outage.from && point.x < outage.to).every(point => point.y === null),
+    'Charger 1 source outage cannot be bridged by its allowance');
+  for (const signal of ['ev2_current_allowance', 'ev2_current_fallback']) {
+    const missing = payload.series[signal].filter(point => point.x >= now - 3600_000);
+    assert(missing.length > 0 && missing.every(point => point.y === null), `${signal}: unknown source evidence remains a gap`);
+  }
   assert(!Object.keys(payload.series).some(key => key.includes('session')));
   assert(Object.hasOwn(payload.series, 'outdoor_temperature'));
   assert.equal(payload.limiterHistory, undefined);
@@ -144,13 +157,21 @@ try {
       context.strokeStyle=getComputedStyle(document.documentElement).getPropertyValue('--chart-learning').trim();
       return {pattern:swatch.dataset.pattern,color:getComputedStyle(swatch).color,purple:context.strokeStyle,
         stroke:matching.some(row=>JSON.stringify(row.dash)==='[8,3,2,3]'),
-        ordinary:['property_current_max','ev1_current_allowance','ev2_current_allowance'].map(key=>document.querySelector('[data-chart-key='+key+'] .chart-legend-swatch').dataset.pattern),
+        ordinary:['property_current_max','ev1_current_allowance','ev2_current_allowance'].map(key=> {
+          const item=document.querySelector('[data-chart-key='+key+'] .chart-legend-swatch');
+          const line=document.createElement('canvas').getContext('2d'); line.strokeStyle=getComputedStyle(item).color;
+          return {pattern:item.dataset.pattern,color:line.strokeStyle,
+            stroke:window.currentStrokes.some(row=>row.color===line.strokeStyle&&row.dash.length===0)};
+        }),
         temperature:document.querySelector('[data-chart-key=outdoor_temperature]').dataset.axis,
         colorMatch:matching.some(row=>row.color===context.strokeStyle)};
     })()`);
     assert.equal(style.pattern, 'dash-dot'); assert.equal(style.stroke, true, `${theme} ${width}: fallback is drawn dash-dot`);
     assert.equal(style.colorMatch, true, `${theme} ${width}: fallback uses theme purple`);
-    assert.deepEqual(style.ordinary, ['solid','solid','solid']); assert.equal(style.temperature, 'right');
+    assert.deepEqual(style.ordinary.map(row => row.pattern), ['solid','solid','solid']);
+    assert(style.ordinary.every(row => row.stroke), `${theme} ${width}: property and both allowance lines are drawn`);
+    assert.equal(new Set(style.ordinary.map(row => row.color)).size, 3, 'Both chargers and property have distinct line colors');
+    assert.equal(style.temperature, 'right');
     assert.equal(await evaluate('document.documentElement.scrollWidth <= innerWidth'), true, `${theme} ${width}px fits`);
     assert.equal(await evaluate("document.querySelector('[data-activity-key=shellyLimiter]') !== null"), false);
     const shot=await send('Page.captureScreenshot',{format:'png'});
@@ -163,6 +184,9 @@ try {
   await choose('series','ev1_session_energy_check');
   await until("window.currentCharts.some(row=>row.left==='ev1_session_energy_check'&&row.series?.ev1_session_energy_check?.some(point=>point.y===12))");
   assert.equal(await evaluate("document.querySelector('[data-chart-key=ev1_session_energy_check] .chart-legend-swatch').dataset.kind"), 'session');
+  await choose('view', 'charging_currents');
+  assert.equal(await evaluate("document.querySelector('[data-chart-key=ev1_current_allowance]').getAttribute('aria-pressed')"), 'true');
+  assert.equal(await evaluate("document.querySelector('[data-chart-key=ev2_current_allowance]').getAttribute('aria-pressed')"), 'true');
   assert.deepEqual(errors, []);
   console.log(`Charging currents browser checks passed: native and controller allowances, zero and fallback zero, purple dash-dot canvas strokes, temperature context, retired strips absent, C1 All series session check, 320/390/1440px dark and light. Synthetic screenshots: ${artifacts}`);
 } finally {

@@ -241,5 +241,7 @@ There is no Charger 2 session-check calculation or recording.
 The old Shelly-only bars are removed from electrical, phase-loading and individual
 charger charts. The [change-only recorder](../recording.md#charger-current-allowances)
 retains both chargers' allowance histories independently of charging-session
-report expiry. Historical maxima, modes and source evidence are recorded at the
+report expiry. Charger 1 is recorded when its Easee connection is configured;
+Charger 2 uses its configured integration enablement. Neither history depends
+on the Automatic scheduling choice. Historical maxima, modes and source evidence are recorded at the
 time; today's settings cannot reinterpret an earlier allowance.

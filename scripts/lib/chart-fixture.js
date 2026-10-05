@@ -1,3 +1,5 @@
+import { VOLTAGE_VERSION } from '../../src/storage/voltage.js';
+
 // Artificial visual-test observations only. Never called by application startup.
 export const CHART_FIXTURE_VOLTAGE_V = Object.freeze([228, 230, 232]);
 
@@ -6,9 +8,9 @@ export function seedVoltageFixture(store, { at, input, voltageV }) {
     source: 'voltage-estimate', device: input, signal: `voltage_estimate_l${phase + 1}`,
     value: voltageV[phase], unit: 'V', sourceTime: at, receivedAt: at,
     quality: ['estimated', ...(input === 'simulated' ? ['simulated'] : [])],
-    raw: { fixture: true, basis: 'time-weighted-voltage-estimate', voltageMature: true,
+    raw: { fixture: true, basis: 'time-weighted-voltage-estimate',
       voltageSource: 'synthetic-visual-voltage', voltageAvailability: 'reporting',
-      voltageEstimate: { phase: phase + 1, coverageMs: 3600_000, inputs: input === 'simulated' ? 8 : 4,
+      voltageEstimate: { version: VOLTAGE_VERSION, phase: phase + 1, coverageMs: 3600_000, inputs: input === 'simulated' ? 8 : 4,
         input: input === 'simulated' ? 8 : 4 } },
   });
 }
