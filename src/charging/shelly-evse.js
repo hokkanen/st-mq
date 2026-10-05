@@ -42,6 +42,8 @@ export function createShellyEvseAdapter({ config, broker, client, store, engine,
     || ['checkSession', 'sessionCheck'].some(key => Object.hasOwn(state, key))
     || state.counter && Object.hasOwn(state.counter, 'powerW')
     || Object.keys(state.fields ?? {}).some(role => !Object.hasOwn(TYPES, role))
+    || state.fields?.current_limit?.instructionAt !== undefined
+      && (!time(state.fields.current_limit.instructionAt) || state.fields.current_limit.instructionAt > state.fields.current_limit.receivedAt)
     || state.notificationRevision !== undefined && (!Number.isSafeInteger(state.notificationRevision) || state.notificationRevision < 0)
     || state.permissionSequence !== undefined && (!Number.isSafeInteger(state.permissionSequence) || state.permissionSequence < 0)
     || state.permissionEvents !== undefined && (!Array.isArray(state.permissionEvents) || state.permissionEvents.length > PERMISSION_EVENT_LIMIT
@@ -51,7 +53,8 @@ export function createShellyEvseAdapter({ config, broker, client, store, engine,
     || state.notificationPending !== undefined && (!state.notificationPending || typeof state.notificationPending !== 'object'
       || Array.isArray(state.notificationPending) || Object.entries(state.notificationPending).some(([role, event]) =>
         !['start_charging', 'current_limit', 'work_state'].includes(role) || !event || typeof event !== 'object'
-        || Object.keys(event).sort().join(',') !== 'commandSource,eventAt,receivedAt,value,valueKnown'
+        || Object.keys(event).filter(key => key !== 'instructionAt').sort().join(',') !== 'commandSource,eventAt,receivedAt,value,valueKnown'
+        || event.instructionAt !== undefined && (role !== 'current_limit' || event.instructionAt !== event.eventAt)
         || !time(event.eventAt) || !time(event.receivedAt) || event.receivedAt < event.eventAt || typeof event.valueKnown !== 'boolean'
         || event.commandSource !== null && typeof event.commandSource !== 'string'
         || event.value !== null && (role === 'start_charging' ? typeof event.value !== 'boolean'
@@ -351,6 +354,13 @@ export function createShellyEvseAdapter({ config, broker, client, store, engine,
                 && (!awaiting.valueKnown || awaiting.value === null || JSON.stringify(frame.result.value) === JSON.stringify(awaiting.value)
                   || state.fields[role].measuredAt > awaiting.eventAt)) {
                 const before = copy(state);
+                // A source-only selection can leave last_update_ts unchanged.
+                // Retain its separate event clock only after matching readback;
+                // polling itself never creates a new instruction.
+                if (role === 'current_limit' && awaiting.instructionAt !== undefined && state.fields[role].measuredAt <= awaiting.eventAt
+                  && (!awaiting.valueKnown || frame.result.value === awaiting.value)
+                  && (!Object.hasOwn(frame.result, 'source') || frame.result.source === awaiting.commandSource))
+                  state.fields[role].instructionAt = awaiting.instructionAt;
                 delete state.notificationPending?.[role];
                 try { persist(); } catch (cause) { state = before; throw cause; }
                 notificationPending.delete(role);
@@ -434,6 +444,8 @@ export function createShellyEvseAdapter({ config, broker, client, store, engine,
           if (changed && role !== 'phase_info') {
             state.notificationPending ??= {};
             state.notificationPending[role] = { value: value === undefined ? null : copy(value), valueKnown: value !== undefined, eventAt, receivedAt: at, commandSource };
+            if (role === 'current_limit' && (method !== 'NotifyFullStatus' || baseline))
+              state.notificationPending[role].instructionAt = eventAt;
           }
           if (field && Object.hasOwn(delta, 'value') && (role === 'phase_info' && valueChanged && phaseReadingError(value) || value === null))
             state.fields[role] = { ...field, invalidatedAt: eventAt };
@@ -735,6 +747,7 @@ const identificationKeys = ['purpose', 'identificationId', 'identificationConnec
   'requestedAt', 'confirmedAt', 'permissionAt', 'startAt', 'witnessedCharging'];
 const time = value => Number.isSafeInteger(value) && value >= 0;
 const token = value => typeof value === 'string' && value.length > 0 && value.length <= 256;
+const currentInstructionAt = field => Math.max(field.measuredAt, field.instructionAt ?? 0);
 const commandReadback = (field, pending) => field.measuredAt >= pending.dispatchedAt
   // Integer native timestamps locate an update within a whole second. A
   // correlated read after acknowledgement can confirm that setting without
@@ -750,7 +763,7 @@ const commandReadback = (field, pending) => field.measuredAt >= pending.dispatch
 export function shellyCurrentCommandReadback(field, pending) {
   return Boolean(field && field.invalidatedAt === undefined && pending && time(pending.acceptedAt) && field.value === pending.value
     && commandReadback(field, { ...pending, stage: 'accepted' })
-    && (field.measuredAt <= pending.acceptedAt || field.commandSource === 'sys'));
+    && (currentInstructionAt(field) <= pending.acceptedAt || field.commandSource === 'sys'));
 }
 
 function validIdentificationPause(value) {
@@ -802,6 +815,7 @@ export function createShellyController({ adapter, initialState, saveState = () =
       || !token(initialState.automaticTakeover.sessionId)
       || initialState.automaticTakeover.fingerprint !== null && !/^[a-f0-9]{64}$/.test(initialState.automaticTakeover.fingerprint))
     || initialState.permissionEventCursor !== undefined && (!Number.isSafeInteger(initialState.permissionEventCursor) || initialState.permissionEventCursor < 0)
+    || initialState.lastCurrentInstructionAt !== undefined && !time(initialState.lastCurrentInstructionAt)
     || initialState.permissionCommand != null && (!token(initialState.permissionCommand.sessionId)
       || Object.keys(initialState.permissionCommand).sort().join(',') !== 'acceptedAt,dispatchedAt,sessionId,value'
       || typeof initialState.permissionCommand.value !== 'boolean' || !time(initialState.permissionCommand.dispatchedAt)
@@ -832,6 +846,20 @@ export function createShellyController({ adapter, initialState, saveState = () =
   };
   const scheduleToken = snapshot => snapshot.nativeScheduleFingerprint ?? (snapshot.nativeScheduleActive ? 'active' : null);
   const systemEcho = (field, value) => field?.commandSource === 'sys' && field.value === value;
+  const rememberCurrent = field => {
+    state.lastCurrent = field.value; state.lastCurrentAtSource = field.measuredAt;
+    state.lastCurrentInstructionAt = currentInstructionAt(field);
+  };
+  const observeCurrentChoice = (field, session) => {
+    const instructionAt = currentInstructionAt(field);
+    // With current control enabled, the carried setting is only readback.
+    // Only a later instruction belongs to this physical connection. Basic
+    // scheduling still leaves the entire current setting to the charger.
+    const boundary = adapter.config.limiterEnabled ? session.connectedAt : 0;
+    if (instructionAt > Math.max(boundary, state.lastCurrentInstructionAt ?? state.lastCurrentAtSource ?? 0)
+      && !systemEcho(field, state.lastCurrent))
+      state.manualCurrentA = field.value < adapter.config.maximumCurrentA ? field.value : null;
+  };
   const manualEvent = field => ({ kind: field.value ? 'enable' : 'stop', detectedAt: field.measuredAt,
     origin: field.commandSource === 'sys' ? 'device' : field.commandSource ? 'external-command' : 'unknown',
     commandSource: field.commandSource ?? null });
@@ -1019,18 +1047,15 @@ export function createShellyController({ adapter, initialState, saveState = () =
       await persist();
     }
     if (terminal() || !usable()) return;
-    const updateLastCurrent = field => {
-      state.lastCurrent = field.value; state.lastCurrentAtSource = field.measuredAt;
-    };
     if (test.pending) {
       const pending = test.pending;
       const confirmed = shellyCurrentCommandReadback(current, pending);
       if (confirmed) {
         test.permissionAt = current.measuredAt; test.pending = null;
         test.phase = test.restoreCurrentA === null ? 'active' : 'restored';
-        test.confirmedAt ??= clock(); updateLastCurrent(current); await persist();
-      } else if (current.measuredAt > pending.dispatchedAt && (current.value !== pending.value
-        || time(pending.acceptedAt) && current.measuredAt > pending.acceptedAt && !systemEcho(current, pending.value))) {
+        test.confirmedAt ??= clock(); rememberCurrent(current); await persist();
+      } else if (currentInstructionAt(current) > pending.dispatchedAt && (current.value !== pending.value
+        || time(pending.acceptedAt) && currentInstructionAt(current) > pending.acceptedAt && !systemEcho(current, pending.value))) {
         test.phase = 'superseded'; test.pending = null; await persist();
       } else {
         // An absent acknowledgement cannot be replaced by matching amperage.
@@ -1040,9 +1065,10 @@ export function createShellyController({ adapter, initialState, saveState = () =
     }
     if (terminal()) return;
     const expectedValue = test.phase === 'proposed' ? test.originalCurrentA : test.appliedCurrentA;
-    if (current.value !== expectedValue || current.measuredAt !== test.permissionAt) {
-      if (current.measuredAt > test.permissionAt && systemEcho(current, expectedValue)) {
-        test.permissionAt = current.measuredAt; updateLastCurrent(current); await persist();
+    if (current.value !== expectedValue || current.measuredAt !== test.permissionAt
+      || currentInstructionAt(current) > (state.lastCurrentInstructionAt ?? test.permissionAt)) {
+      if (currentInstructionAt(current) > test.permissionAt && systemEcho(current, expectedValue)) {
+        test.permissionAt = current.measuredAt; rememberCurrent(current); await persist();
       } else {
         // A changed native limit, including a same-value external selection,
         // owns its new value. Restoring would overwrite that instruction.
@@ -1122,7 +1148,7 @@ export function createShellyController({ adapter, initialState, saveState = () =
       const actual = adapter.snapshot().fields.current_limit;
       if (!fresh(actual) || !shellyCurrentCommandReadback(actual, test.pending)) throw fail('evse-command-unconfirmed');
       test.pending = null; test.phase = restoring ? 'restored' : 'active';
-      test.confirmedAt ??= clock(); test.permissionAt = actual.measuredAt; updateLastCurrent(actual);
+      test.confirmedAt ??= clock(); test.permissionAt = actual.measuredAt; rememberCurrent(actual);
       await persist();
     } catch (cause) {
       if (['evse-control-unavailable', 'evse-command-revoked', 'invalid-evse-command',
@@ -1178,6 +1204,7 @@ export function createShellyController({ adapter, initialState, saveState = () =
           if (state.pending?.owned) state.owned ??= copy(state.pending.owned);
           state.pending = null;
           delete state.lastStart; delete state.lastStartAt; delete state.lastCurrent; delete state.lastCurrentAtSource; delete state.permissionCommand;
+          delete state.lastCurrentInstructionAt;
         }
         let start = snapshot.fields.start_charging;
         let current = snapshot.fields.current_limit;
@@ -1224,7 +1251,8 @@ export function createShellyController({ adapter, initialState, saveState = () =
           const takeoverContextCurrent = () => !closed && intentRevision === revision && canControl()
             && adapter.snapshot().generation === epoch && adapter.snapshot().association === state.association
             && adapter.snapshot().session?.sessionId === sessionId
-            && sameSetting(adapter.snapshot().fields.current_limit, expectedCurrent);
+            && sameSetting(adapter.snapshot().fields.current_limit, expectedCurrent)
+            && currentInstructionAt(adapter.snapshot().fields.current_limit) === currentInstructionAt(expectedCurrent);
           const takeoverGuard = () => takeoverContextCurrent()
             && sameSetting(adapter.snapshot().fields.start_charging, expectedStart);
           try {
@@ -1287,6 +1315,10 @@ export function createShellyController({ adapter, initialState, saveState = () =
             // when the economic plan will leave an existing Stop in place. Its
             // source clock prevents that old stop reappearing after unplug/restart.
             state.manual = null; state.pending = null; state.owned = null;
+            if (typeof input.takeover === 'string' && adapter.config.limiterEnabled) {
+              state.manualCurrentA = null;
+              rememberCurrent(current);
+            }
             state.automaticTakeover = null;
             state.ownedPause = start.value === false;
             state.automaticPermission = { value: start.value, measuredAt: start.measuredAt };
@@ -1342,9 +1374,9 @@ export function createShellyController({ adapter, initialState, saveState = () =
               // A later same-value app selection is still a native ceiling.
               // Without an acknowledgement time, attribution is also unknown.
               if (pending.stage !== 'accepted' || !time(pending.acceptedAt)
-                || readback.measuredAt > pending.acceptedAt && !systemEcho(readback, pending.value))
+                || currentInstructionAt(readback) > pending.acceptedAt && !systemEcho(readback, pending.value))
                 state.manualCurrentA = readback.value < adapter.config.maximumCurrentA ? readback.value : null;
-              state.lastCurrent = pending.value; state.lastCurrentAtSource = readback.measuredAt;
+              rememberCurrent(readback);
             }
             state.pending = null;
           } else if (pending.role === 'start_charging' && fresh(readback) && readback.commandSource === 'sys') {
@@ -1368,7 +1400,7 @@ export function createShellyController({ adapter, initialState, saveState = () =
             state.pending = null; state.ownedPause = false;
             state.manual = manualEvent(readback);
             state.lastStart = readback.value; state.lastStartAt = readback.measuredAt;
-          } else if (pending.role === 'current_limit' && fresh(readback) && readback.measuredAt > pending.dispatchedAt) {
+          } else if (pending.role === 'current_limit' && fresh(readback) && currentInstructionAt(readback) > pending.dispatchedAt) {
             state.pending = null;
             state.manualCurrentA = readback.value < adapter.config.maximumCurrentA ? readback.value : null;
           }
@@ -1396,9 +1428,7 @@ export function createShellyController({ adapter, initialState, saveState = () =
         if (state.owned && start.value === true && start.measuredAt >= state.owned.requestedAt) {
           state.owned = null; state.ownedPause = false;
         }
-        if (state.lastCurrent === undefined || current.measuredAt > (state.lastCurrentAtSource ?? 0)
-          && !systemEcho(current, state.lastCurrent))
-          state.manualCurrentA = current.value < adapter.config.maximumCurrentA ? current.value : null;
+        observeCurrentChoice(current, snapshot.session);
         const nativeSchedule = scheduleToken(snapshot);
         if (state.scheduleTakeoverPending && state.nativeSchedule !== undefined && nativeSchedule !== state.nativeSchedule) {
           // A lost reply to our own removal must never look like a new native
@@ -1416,7 +1446,7 @@ export function createShellyController({ adapter, initialState, saveState = () =
         // Keep device choices independently of ordinary automation permission.
         // These source clocks also distinguish readback from a later app action.
         state.lastStart = start.value; state.lastStartAt = start.measuredAt;
-        state.lastCurrent = current.value; state.lastCurrentAtSource = current.measuredAt;
+        rememberCurrent(current);
         await refreshIdentification(snapshot);
         if (closed || intentRevision !== revision) return;
         if (state.manual || snapshot.nativeScheduleActive) identification = null;
@@ -1470,8 +1500,7 @@ export function createShellyController({ adapter, initialState, saveState = () =
           state.manual = manualEvent(start); state.ownedPause = false; state.automaticPermission = null;
           identification = null; state.lastStart = start.value; state.lastStartAt = start.measuredAt;
         }
-        if (current.measuredAt > (state.lastCurrentAtSource ?? 0) && !systemEcho(current, state.lastCurrent))
-          state.manualCurrentA = current.value < adapter.config.maximumCurrentA ? current.value : null;
+        observeCurrentChoice(current, snapshot.session);
         if (takeoverRequested && (closed || intentRevision !== revision || !canControl() || !takeoverStatus(adapter.snapshot()).available
           || takeoverToken(adapter.snapshot()) !== acceptedTakeoverToken)) {
           takeoverResult = { state: 'blocked', reason: 'evse-takeover-changed' };
@@ -1599,9 +1628,9 @@ export function createShellyController({ adapter, initialState, saveState = () =
             if (state.pending.owned) state.owned = { ...state.pending.owned, confirmedAt: clock(), permissionAt: readback.measuredAt };
             else if (value === true) state.owned = null;
           } else {
-            if (readback.measuredAt > state.pending.acceptedAt && !systemEcho(readback, value))
+            if (currentInstructionAt(readback) > state.pending.acceptedAt && !systemEcho(readback, value))
               state.manualCurrentA = readback.value < adapter.config.maximumCurrentA ? readback.value : null;
-            state.lastCurrent = value; state.lastCurrentAtSource = readback.measuredAt; expectedCurrent = copy(readback);
+            rememberCurrent(readback); expectedCurrent = copy(readback);
           }
           expectedNotificationRevision = adapter.snapshot().notificationRevision;
           state.pending = null;

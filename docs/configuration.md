@@ -396,7 +396,11 @@ physical integration and does not grant scheduling or commissioning permission.
 `charging.chargers.charger2.limiterEnabled` defaults to `true`: current follows
 property load and shared charger priority during ordinary charging and Charge
 now, independently of Automatic scheduling. An explicit `false` opts into basic
-native-current start/stop. Configure `maximumCurrentA` (normally 16), per-phase
+native-current start/stop. With current adjustment enabled, a current setting
+carried into a new physical connection does not become a permanent cap. A later
+external current choice lasts for that connection or until **Use automatic**;
+the scheduling switch does not clear it. Configure `maximumCurrentA` (normally
+16), per-phase
 `mainFuseA` and `marginA`; these are installation settings, not inferred values.
 The effective phase budget is `mainFuseA - marginA`. Positive margins leave
 headroom; negative margins intentionally increase the budget for user

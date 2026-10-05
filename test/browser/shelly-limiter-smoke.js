@@ -134,7 +134,7 @@ try {
     await keyPress('ArrowRight');
     assert.match(await evaluate("document.querySelector('.chart-crosshair-readout').textContent"), /Limited · 8 A.*\nAwaiting charger confirmation/);
     await keyPress('End'); await keyPress('ArrowLeft'); await keyPress('ArrowLeft');
-    assert.match(await evaluate("document.querySelector('.chart-crosshair-readout').textContent"), /Fallback · 12 A allowance · Native charger limit\nEffective allowance: 9 A\nCharger setting: 9 A confirmed/);
+    assert.match(await evaluate("document.querySelector('.chart-crosshair-readout').textContent"), /Fallback · 12 A allowance · Charger current choice\nEffective allowance: 9 A\nCharger setting: 9 A confirmed/);
     assert.equal(await evaluate(`document.querySelector('${row} .activity-caption').open`), false, 'Keyboard inspection works with the title folded');
     const colors = await evaluate(`(() => [...document.querySelectorAll('${track} .mode-segment')].reduce((out,node)=>({...out,[node.dataset.value]:getComputedStyle(node).backgroundColor}),{}))()`);
     assert.equal(new Set(Object.entries(colors).filter(([mode])=>!['inactive','unknown'].includes(mode)).map(([,color])=>color)).size, 4);

@@ -51,6 +51,8 @@ const connectedSession = charger => Boolean(charger.request && charger.values?.c
 const hasPriorityInstruction = charger => {
   const control = charger.control ?? {}, manual = control.manual ?? control.manualOverride;
   return Boolean(manual && manual.kind !== 'unknown') || ['yielded', 'manual'].includes(control.phase)
+    || charger.provider === 'shelly-evse' && charger.configuration?.limiterEnabled === true
+      && charger.capabilities?.currentControl === true && finite(control.manualCurrentA) && control.manualCurrentA >= 0
     || control.errorCode === 'charger-stopped' || control.reason === 'identification-resume-required';
 };
 const manualChargeReference = field => ['manual', 'session-anchor'].includes(field?.source);

@@ -23,6 +23,12 @@ when an explicit physical stop is required and check the observed response.
 [Ownership and takeover](execution-and-recovery.md) explains which instructions
 can be superseded and which remain binding.
 
+Charger 2's load balancing remains active when Automatic scheduling is off,
+unless it was explicitly disabled in configuration. An old current setting does
+not permanently cap a new connection. A current choice made on the charger
+during the connection remains a ceiling until unplugging or **Use automatic**;
+restart preserves it. Hardware, electrical and vehicle limits still apply.
+
 **Use automatic** appears in Charging controls only when a supported takeover is
 available. It is disabled while its request runs and hides when no longer needed;
 its pending or failed outcome remains visible. **Identify** is at the end of

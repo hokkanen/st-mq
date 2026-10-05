@@ -13,7 +13,7 @@ const reasons = {
   'invalid-history': 'Recorded status unavailable', 'overlapping-history': 'Conflicting recorded status',
   'limiter-unavailable': 'Limiter status unavailable',
   'fuse-limit': 'Property headroom', 'priority-allocation': 'Charger priority',
-  'hardware-restriction': 'Full configured ceiling', 'native-current-limit': 'Native charger limit',
+  'hardware-restriction': 'Full configured ceiling', 'native-current-limit': 'Charger current choice',
   'vehicle-current-limit': 'Vehicle limit',
   'feed-unsynchronized': 'Waiting for synchronized feeds', 'charger-current-unavailable': 'Easee current unavailable',
   'shelly-current-unavailable': 'Shelly current unavailable', 'non-additive-currents': 'Load readings disagree',

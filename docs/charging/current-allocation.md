@@ -18,6 +18,17 @@ when it is unknown; scheduling sends Boolean start/stop only. The allocation
 below applies with `limiterEnabled:true`;
 missing current-control capabilities block that mode rather than bypass it.
 
+The adjustable Shelly current setting follows the current physical session's
+instruction precedence. With the limiter enabled, a setting carried into a new
+confirmed connection is the initial device readback, not an enduring current
+ceiling. The controller may adjust it using the allocation below even with
+Automatic scheduling off. A genuine external current choice observed during
+that connection remains a ceiling until unplugging or explicit **Use automatic**.
+Restart and MQTT reconnection within the same connection retain that choice;
+confirmed controller writes do not create it. The Automatic switch and Charge
+now do not clear a later external choice. This policy does not change native
+hardware, electrical or vehicle limits, or provide permission to start charging.
+
 Configure the installation's per-phase fuse ratings, calibration margins and
 charger ceiling. The effective phase budget is `mainFuseA - marginA`: a positive
 margin leaves headroom and a negative margin intentionally increases the budget.
@@ -149,8 +160,9 @@ supported integer current writes, while contradictory reported metadata blocks
 them. Values below 6 A cause an EVSE pause, not an invalid current RPC. Decreases
 do not wait for the increase dwell; increases ramp by the configured step budget
 after dwell, and resumption also requires dwell and permission. Native lower
-current choices, start/stop, energy/time caps, faults and schedules retain
-authority. Enabled native schedules conservatively own start/stop until
+current choices made during the connection retain their session precedence;
+start/stop, energy/time caps, faults and schedules retain their authority.
+Enabled native schedules conservatively own start/stop until
 disabled/removed; ST-MQ does not guess their cron window or rewrite them.
 Current limiting remains separate.
 

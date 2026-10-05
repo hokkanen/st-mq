@@ -38,12 +38,24 @@ Automatic preference alone does not take over an already established session.
 
 **Use automatic** is a separate, explicit new
 instruction: enable Automatic, end Charge now, supersede the observed manual
-Start/Stop and disable supported native charging schedules. Those earlier
+Start/Stop, supersede Shelly's adjustable session current choice when its limiter
+is enabled, and disable supported native charging schedules. Those earlier
 instructions are not restored after the session, unplugging or restart; a new
 external instruction takes priority again. Returning to the price plan may keep
 charging paused until a cheaper period. The action is available only for the current connection and control authority.
 Pending, blocked and unconfirmed outcomes remain distinct; success requires
 charger readback.
+
+Shelly current adjustment has independent permission through `limiterEnabled`.
+It remains active with Automatic scheduling off. A current setting carried into
+a new confirmed physical connection supplies initial device readback, not a
+permanent external ceiling. An external current choice made during the current
+connection retains precedence across restart and transport reconnection until
+unplugging or explicit **Use automatic**. Ordinary polling, the Automatic switch
+and Charge now cannot clear it. Confirmed controller current writes are owned
+commands, not new external instructions. Clearing a session choice permits the
+normal limiter to calculate its next setting; it does not start the vehicle or
+override hardware, configured electrical or vehicle restrictions.
 
 For local OCPP, a handover that needs an economic wait must first install and
 confirm its zero-current pause before clearing the existing native stop. A failed

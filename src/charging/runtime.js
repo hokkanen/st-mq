@@ -1407,10 +1407,13 @@ export class ChargingRuntime {
       // Plan the explicitly requested handover without claiming native success.
       // Observed readings, progress and the public view keep their provenance;
       // only this candidate removes the earlier instructions being superseded.
+      const supersedeCurrent = view.id === 'charger2' && view.configuration.limiterEnabled === true;
       return { ...view, control: { ...view.control, manual: null, released: false,
+        ...(supersedeCurrent ? { manualCurrentA: null } : {}),
         phase: 'planning', execution: null, provisional: false },
       telemetry: { ...view.telemetry, manualStop: false, scheduledEndKind: null },
       values: { ...view.values,
+        ...(supersedeCurrent ? { nativeCurrentA: { ...view.values.nativeCurrentA, value: null, available: false } } : {}),
         scheduledStartAt: { ...view.values.scheduledStartAt, value: null, available: false },
         scheduledEndAt: { ...view.values.scheduledEndAt, value: null, available: false } } };
     });

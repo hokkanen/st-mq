@@ -41,6 +41,10 @@ anchors. Known applicable native/manual, vehicle, cable, installation and
 electrical limits still constrain the forecast, including a confirmed 6 A
 setting or a known vehicle not-before time. Observed low draw by itself does
 not establish a lasting current restriction.
+For Shelly with current adjustment enabled, an adjustable current choice is
+applicable according to its [session precedence](execution-and-recovery.md#automatic-takeover-and-native-instructions).
+A setting carried into a new connection is not a permanent forecast cap; a later
+external choice remains binding until unplugging or explicit **Use automatic**.
 
 Expose the maximum-available-current assumption with the proposed plan, keep
 estimated delivery and completion distinct from measured progress, and recompute

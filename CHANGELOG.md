@@ -82,6 +82,13 @@ Versions follow Semantic Versioning. `-dev.N` denotes a development prerelease.
 - Per-phase `marginA` accepts signed calibration values. A negative margin
   intentionally increases the effective `mainFuseA - marginA` budget without
   changing the declared physical fuse rating or native protection.
+- Shelly load balancing no longer treats a current setting carried into a new
+  physical connection as a permanent limit. A later external current choice
+  retains precedence for that connection across restart and MQTT reconnection,
+  until unplugging or explicit **Use automatic**. Confirmed controller writes
+  remain owned settings. This owner-approved F3 amendment leaves hardware,
+  electrical and vehicle restrictions binding and keeps current adjustment
+  independent of the Automatic scheduling switch.
 - History recovery now has a compact entry inside its own Recording details fold
   and an aligned action in Paired computers. The shared window separates new
   recovery from previous recoveries, keeps reviews tied to their source, and

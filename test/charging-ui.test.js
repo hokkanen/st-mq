@@ -1073,6 +1073,39 @@ test('Use automatic availability follows capabilities, authority, session and na
   }
 });
 
+test('a Shelly current choice alone offers Use automatic only with current adjustment enabled', async () => {
+  for (const manualCurrentA of [0, 9]) for (const enabled of [false, true]) {
+    const document = documentFixture(), $ = id => document.getElementById(id), calls = [];
+    const item = { ...connected('charger2'), configuration: { limiterEnabled: true },
+      controls: { enabled, revision: 4 }, control: { phase: 'off', manual: null, manualCurrentA,
+        takeover: { available: true, token: 'fixture-current-choice' } } };
+    item.settings.enabled = enabled;
+    const confirmed = { ...item, controls: { enabled: true, revision: 5 }, settings: { ...item.settings, enabled: true },
+      control: { phase: 'waiting', manual: null, manualCurrentA: null,
+        takeover: { available: true, token: 'fixture-current-cleared', state: 'confirmed', attemptToken: 'fixture-current-choice' } } };
+    const panel = createChargingPanel({ document, request: async (...args) => { calls.push(args); return status(confirmed); } });
+    for (const unavailable of [
+      { ...item, configuration: { limiterEnabled: false } },
+      { ...item, capabilities: { ...item.capabilities, currentControl: false } },
+      { ...item, provider: 'easee' },
+      { ...item, control: { ...item.control, manualCurrentA: null } },
+    ]) {
+      panel.update(status(unavailable)); const button = $('charger2-use-automatic');
+      assert(button.hidden && button.disabled);
+      await clickAction(button); assert.deepEqual(calls, []);
+    }
+    panel.update(status(item)); const button = $('charger2-use-automatic');
+    assert(!button.hidden && !button.disabled, 'Current choices, including zero, are replaceable independently of Automatic');
+    await clickAction(button);
+    assert.deepEqual(calls, [['/api/charging/chargers/charger2/use-automatic', {
+      association: item.association, sessionId: item.request.sessionId, revision: item.request.revision,
+      controlRevision: 4, takeoverToken: 'fixture-current-choice',
+    }]]);
+    assert(button.hidden && button.disabled, 'Clearing the choice removes the reason to offer takeover');
+    panel.close();
+  }
+});
+
 test('Use automatic errors remain readable and keep the current preference and native state', async () => {
   const document = documentFixture(), $ = id => document.getElementById(id);
   const item = { ...connected('charger2'), control: { phase: 'manual', reason: 'manual-stop',
@@ -2164,7 +2197,7 @@ test('Shelly limiter badge presents the controller mode without inferring pauses
   panel.update(status({ ...item, limiter: { ...limiter, loadAllowanceA: 12, allowanceA: 9,
     appliedCurrentA: 9, reason: 'native-current-limit' } }));
   assert.equal($('charger2-limiter').textContent, 'Load balancing: Fallback · 12 A');
-  assert.match(popup.textContent, /Native charger limit/);
+  assert.match(popup.textContent, /Charger current choice/);
   assert.match(popup.textContent, /Effective allowance: 9 A/);
   assert.match(popup.textContent, /Charger setting: 9 A confirmed/);
   assert.match(popup.textContent, /fallback cap applies, respecting tighter limits/);

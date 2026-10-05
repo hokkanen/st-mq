@@ -145,8 +145,12 @@ cloud peer values during household changes, frozen observed-transition clocks,
 simultaneous charger changes, ambiguous transitions, source-epoch resets, Charge
 now, energy/deadline-weighted
 Balanced sharing against actual headroom, differing forecast headroom, restart
-and actual outages. Native command freshness and identification ownership remain
-separate checks. History checks cover exact changes, compact unchanged
+and actual outages. Current-choice tests distinguish an initial setting carried
+into a new connection from a later external selection. Cover same-session
+restart/reconnect, unplug, explicit **Use automatic**, own writes, and Automatic
+scheduling off with current adjustment enabled. Hardware, configured electrical
+and vehicle ceilings remain binding. Native command freshness and identification
+ownership remain separate checks. History checks cover exact changes, compact unchanged
 coverage, restart/outage gaps, equipment replacement, malformed/overlapping
 history, bounded query detail and independence from charging-report expiry.
 

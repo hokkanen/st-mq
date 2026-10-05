@@ -265,6 +265,21 @@ permission to act. See [the configuration guide](docs/configuration.md).
   An explicit configuration opt-out remains supported. This lasting amendment,
   approved on 2026-10-05, removes the independent Equalizer cross-check and the
   unchanged-value expiry to avoid competing balancing loops and false fallback.
+- Shelly's adjustable current setting follows the physical session's instruction
+  precedence. With `limiterEnabled:true`, a setting carried into a new confirmed
+  connection is readback, not a permanent restriction on load balancing. A
+  genuinely observed external current choice made during that connection remains
+  a ceiling until unplugging or explicit **Use automatic** supersedes it;
+  same-session restart and transport reconnection preserve that choice. Confirmed
+  controller writes cannot become external choices. The Automatic scheduling
+  switch does not enable or disable current adjustment, and changing it or using
+  Charge now does not clear a later external current choice. Current adjustment
+  still requires its own capability, evidence and command confirmation; it grants
+  no Start permission and cannot relax configured electrical, native hardware or
+  vehicle limits. `limiterEnabled:false` preserves the native setting except for
+  separately scoped identification and restoration. This owner-approved lasting
+  amendment on 2026-10-05 separates an adjustable session choice from an equipment
+  limit so a carried-over setting cannot permanently cap a new connection.
 - When future charging current is unknown, economic scheduling assumes the
   maximum the charger can deliver within its configured/verified ceiling and
   forecast property headroom on every phase after household and peer load. Use

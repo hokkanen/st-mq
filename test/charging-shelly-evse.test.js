@@ -648,14 +648,90 @@ test('withdrawing optional UI step preserves supported current writes but contra
     assert.equal(f.writes.some(row => row.method.endsWith('.Set')), false);
   });
 });
-test('a lower native current choice survives explicit automatic takeover',async t=>{
- const f=fixture(t,{limiterEnabled:true});f.fields.current_limit=8;await f.ready();
- const controller=createShellyController({adapter:f.adapter,clock:()=>NOW,canControl:()=>true});t.after(()=>controller.close());
- await controller.update({enabled:false,allocation:{}});
- const result=await controller.update({enabled:true,takeover:controller.status().takeover.token,plan:{periods:[{startAt:NOW,endAt:null}]},allocation:{}});
- assert.equal(result.takeover.state,'confirmed');
- assert.equal(controller.status().manualCurrentA,8);assert.equal(controller.status().limiter.currentA,8);
- assert.equal(f.writes.some(row=>row.method.endsWith('.Set')),false);
+test('explicit automatic takeover clears a later external current choice and uses normal current allocation', async t => {
+ const f = fixture(t, { limiterEnabled: true }); await f.ready(); advanceCommandClock(f);
+ const controller = createShellyController({ adapter: f.adapter, clock: f.now, canControl: () => true }); t.after(() => controller.close());
+ await controller.update({ enabled: false });
+ f.setNow(f.now() + 1000); f.fields.current_limit = 8; f.notify('current_limit', 8);
+ await controller.update({ enabled: false });
+ assert.equal(controller.status().manualCurrentA, 8);
+ f.setNow(f.now() + 30_000); await f.adapter.refresh();
+ const result = await controller.update({ enabled: true, takeover: controller.status().takeover.token,
+   plan: { periods: [{ startAt: NOW, endAt: null }] }, allocation: {} });
+ assert.equal(result.takeover.state, 'confirmed');
+ assert.equal(result.manualCurrentA, null); assert.equal(result.limiter.currentA, 12);
+ assert.equal(f.fields.current_limit, 10, 'Normal ramping applies after clearing the external choice');
+});
+
+test('a source-only postplug current selection retains its event clock and ceiling across restart', async t => {
+ const f = fixture(t, { limiterEnabled: true }); f.fields.current_limit = 9;
+ f.sources.set('current_limit', 'sys'); await f.ready();
+ const session = f.adapter.snapshot().session;
+ f.setNow(NOW + 125); f.delta('current_limit', { source: 'rpc' });
+ await f.adapter.refresh({ force: true });
+ assert.equal(f.adapter.snapshot().fields.current_limit.measuredAt, NOW);
+ assert.equal(f.adapter.snapshot().fields.current_limit.instructionAt, NOW + 125);
+ let saved, controller;
+ const attach = () => createShellyController({ adapter: f.adapter, initialState: saved, clock: f.now,
+   canControl: () => true, saveState: value => { saved = structuredClone(value); } });
+ controller = attach(); t.after(() => controller.close());
+ await controller.update({ enabled: false });
+ assert.equal(saved.manualCurrentA, 9, 'A postplug instruction before the first controller poll still wins');
+ await controller.close(); f.restartAdapter(); f.setNow(NOW + 1000); await f.ready(); controller = attach();
+ await controller.update({ enabled: false });
+ assert.equal(saved.manualCurrentA, 9); assert.deepEqual(f.adapter.snapshot().session, session);
+ assert.equal(f.writes.some(row => row.method === 'Number.Set'), false);
+});
+
+test('a same-value current selection supersedes identification restoration without renewing native time', async t => {
+ const f = fixture(t, { limiterEnabled: true }); f.sources.set('current_limit', 'sys'); await f.ready(); advanceCommandClock(f);
+ let request = { id: 'current-choice-test', connectedAt: NOW, phase: 'charging', minimumCurrent: true };
+ const controller = createShellyController({ adapter: f.adapter, clock: f.now, canControl: () => true,
+   getIdentification: () => request }); t.after(() => controller.close());
+ await controller.update({ enabled: false });
+ assert.equal(controller.status().currentTest.phase, 'active'); assert.equal(f.fields.current_limit, 6);
+ const nativeAt = f.adapter.snapshot().fields.current_limit.measuredAt;
+ f.setNow(f.now() + 125); f.delta('current_limit', { source: 'rpc' });
+ await f.adapter.refresh({ force: true }); request = null;
+ const result = await controller.update({ enabled: false });
+ assert.equal(result.currentTest.phase, 'superseded'); assert.equal(result.manualCurrentA, 6);
+ assert.equal(f.adapter.snapshot().fields.current_limit.measuredAt, nativeAt);
+ assert.deepEqual(f.writes.filter(row => row.method === 'Number.Set').map(row => row.params.value), [6]);
+});
+
+test('replayed full current status after reconnect does not create a current instruction', async t => {
+ const f = fixture(t, { limiterEnabled: true }); f.fields.current_limit = 9;
+ f.sources.set('current_limit', 'rpc'); await f.ready();
+ f.client.emit('offline'); f.client.emit('connect'); f.setNow(NOW + 1000);
+ f.delta('current_limit', { value: 9, source: 'rpc', last_update_ts: NOW / 1000 }, { method: 'NotifyFullStatus', apply: false });
+ f.client.emit('message', 'test/evse/online', Buffer.from('true'), {}); await f.adapter.refresh({ force: true });
+ assert.equal(f.adapter.snapshot().fields.current_limit.instructionAt, undefined);
+ const controller = createShellyController({ adapter: f.adapter, clock: f.now, canControl: () => true }); t.after(() => controller.close());
+ advanceCommandClock(f); await controller.update({ enabled: false });
+ assert.equal(controller.status().manualCurrentA, null); assert.equal(f.fields.current_limit, 11);
+});
+
+test('a source-only current instruction during explicit takeover wins over that takeover', async t => {
+ const f = fixture(t, { limiterEnabled: true }); await f.ready(); advanceCommandClock(f);
+ let race = false, injected = false;
+ const controller = createShellyController({ adapter: f.adapter, clock: f.now, canControl: () => true,
+   saveState: async state => {
+     if (race && !injected && state.manualCurrentA === null) {
+       injected = true; f.setNow(f.now() + 125); f.delta('current_limit', { source: 'rpc' });
+       await f.adapter.refresh({ force: true });
+     }
+   } }); t.after(() => controller.close());
+ await controller.update({ enabled: false });
+ f.setNow(f.now() + 1000); f.fields.current_limit = 8; f.notify('current_limit', 8);
+ await controller.update({ enabled: false }); assert.equal(controller.status().manualCurrentA, 8);
+ const writesBefore = f.writes.filter(row => row.method === 'Number.Set').length;
+ race = true;
+ const result = await controller.update({ enabled: true, takeover: controller.status().takeover.token,
+   plan: { periods: [{ startAt: NOW, endAt: null }] } });
+ assert.equal(injected, true); assert.equal(result.takeover.state, 'blocked');
+ await controller.update({ enabled: false });
+ assert.equal(controller.status().manualCurrentA, 8); assert.equal(f.fields.current_limit, 8);
+ assert.equal(f.writes.filter(row => row.method === 'Number.Set').length, writesBefore);
 });
 test('a successful current command needs fresh native readback and then observed physical effect',async t=>{
  const f=fixture(t,{limiterEnabled:true});await f.ready();

@@ -33,6 +33,7 @@ not create a separate permission model.
 | Session battery/ready-by edits | Current confirmed physical connection | Unplug; a newer applicable vehicle charge reading can supersede a manual charge anchor |
 | Charge now | Explicit action for the current connection | Turning it off returns to Automatic; unplug ends its scope |
 | Native schedules, stops and current choices | Observed native device instructions | An applicable later native instruction or explicitly authorized takeover |
+| Shelly adjustable current with load balancing enabled | Controller allocation, constrained by any later external choice for the current physical connection | Unplug or explicit **Use automatic** ends that external current choice; a carried-over initial setting is not a permanent cap |
 | Identification attempt and temporary settings | Bounded attempt with saved equipment/session scope | Completion, expiry or supersession; unresolved restoration remains an obligation |
 | Vehicle readings and device metadata | Their original observed source, clock and quality | New admissible evidence; a status poll cannot refresh their origin |
 | Guided-assessment assumptions | Exact assessment and physical connection | Assessment edits or closure; never a production request |

@@ -86,9 +86,10 @@ not establish a firmware cause or cure for the
 Basic start/stop requires fresh native state, start permission and current setting, working MQTT,
 a running service and no active errors or flags. It preserves native current
 settings, energy/time caps, automatic-start settings and `auto_balance`.
-Automatic charging remains a separate dashboard choice. Changing a setting in
-the native app takes priority; turning Automatic charging on does not enable a native Stop or
-raise a native current limit. Enabled native schedules own start/stop until
+Automatic charging remains a separate dashboard choice. A later setting change
+in the native app takes priority for the connection; turning Automatic charging
+on does not clear a native Stop or a current choice made during that connection.
+Enabled native schedules own start/stop until
 removed; removal gives the app release priority for the current connection.
 Shelly schedule windows are not inferred from unverified cron semantics.
 
@@ -103,6 +104,13 @@ documents `Number.Set` for `current_limit`. Missing `meta.ui.step` therefore doe
 not block these supported writes; a supplied value other than numeric 1 does.
 Discovery and command preflight retain the same identity, range, native balancing
 and freshness checks. Explicit `limiterEnabled:false` retains basic start/stop.
+With the limiter enabled, an adjustable current setting carried into a new
+confirmed physical connection is not a permanent ceiling. The limiter can
+replace it, independently of Automatic scheduling. A genuine external current
+choice observed after connection remains a ceiling until unplugging or explicit
+**Use automatic**, including across same-session restart and MQTT reconnection.
+Owned current writes cannot become external choices. Hardware range, configured
+electrical limits and vehicle restrictions remain separate and binding.
 The advertised pilot current and the vehicle's selected draw are separate.
 A positive vehicle setting below the 6 A pilot minimum can use a valid 6 A
 offer while the vehicle retains its own lower limit. Basic scheduling leaves
@@ -253,7 +261,9 @@ instructions retain priority until unplugging or Use automatic; a genuinely
 missing saved session can take automatic control after fresh native evidence.
 An unreadable or invalid state cannot supply that permission. Takeover follows
 the economic plan, which can keep start permission false
-during a planned pause. It does not alter a current limit as part of takeover.
+during a planned pause. With the limiter enabled, takeover supersedes the
+adjustable session current choice and leaves the next confirmed current write
+to ordinary allocation; it does not replace hardware or electrical limits.
 Relay writes, service configuration writes and vehicle writes remain forbidden.
 
 A reply to an already dispatched command is retained even if replanning revokes
