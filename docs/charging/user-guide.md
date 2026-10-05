@@ -6,6 +6,11 @@ The two charger cards use the same controls and layout. The activity line tells
 you what the charger is observed to be doing; the controls tell you what has been
 requested. A connected vehicle can be waiting even when charging is allowed.
 
+Use the chevron beside **Charger 1** or **Charger 2** to expand readings and
+settings. Below the energy figures, the compact footer keeps the current status
+and allowance visible, including while an action is pending, saved or failed.
+**Session report → Open ↗** opens the report window independently of the card.
+
 ## Daily controls
 
 | Control | Effect and scope |
@@ -52,6 +57,10 @@ connection. A newer applicable vehicle reading can supersede that reference;
 a pinned capacity takes precedence over reported capacity. The requested target
 remains separate from the car's actual ceiling: requesting 95% does not bypass an
 80% limit set in the vehicle. Original readings remain available beside edits.
+The last reported charge shows its value and source above a separate **Measured**
+or **Received** timestamp. Receipt time is not measurement time. Open the reading's
+information for the full date and any unavailable measurement time; compact dates
+include the year when it differs from the dashboard's current local year.
 
 Type ready-by as **HH:mm**, or use **Choose time → Set** and then **Save for this
 session**. The deadline becomes one concrete occurrence for this connection;

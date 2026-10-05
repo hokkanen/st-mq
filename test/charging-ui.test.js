@@ -93,7 +93,7 @@ test('unfolded charge reading includes original date and time, distinguishing re
   assert(!measured.rows.some(([label]) => label === 'Charge reading'));
   const received = view({ ...state, values: { ...state.values, soc: reading(35, 'teslamate', { measuredAt: null, receivedAt: now }) },
     telemetry: { fields: { geofence: { value: 'Not user-facing metadata' }, charge_current_request: { value: 13 } } } });
-  assert.match(received.readingTime, /Charge received 15 Sept 2026, 21:00 · measurement time unknown/);
+  assert.match(received.readingTime, /Charge received 15 Sept 2026, 21:00 · measurement time unavailable/);
   assert(!JSON.stringify(received).includes('Not user-facing metadata'));
 });
 
@@ -363,7 +363,7 @@ test('delivered energy raises estimated charge while retaining the original vehi
   assert.equal(result.soc, '≈35 %'); assert.equal(result.gridEnergy, '≈20.9 kWh'); assert.equal(result.energyLabel, 'Grid remaining');
   assert.match(result.readingTime, /14 Sept 2026/);
   assert.equal(Object.fromEntries(result.rows)['Delivered since charge reference'], '12 kWh from the grid');
-  assert.equal(Object.fromEntries(result.rows)['Last reported charge'], '20 % · Vehicle MQTT · measured 14 Sept 2026, 21:00');
+  assert.equal(Object.fromEntries(result.rows)['Last reported charge'], '20 % · Vehicle MQTT\nMeasured 14 Sept, 21:00');
   assert.equal(result.sources, 'Estimated from vehicle charge and measured energy');
 });
 
@@ -374,7 +374,7 @@ test('vehicle-feed outage shows the retained connection estimate instead of the 
       retainedVehicleReference: true, referenceSoc: { value: 40, source: 'bmw-cardata', measuredAt } } });
   assert.equal(result.soc, '≈40 %');
   assert.equal(result.socSource, 'Estimated from last known vehicle charge');
-  assert.equal(Object.fromEntries(result.rows)['Last reported charge'], '40 % · BMW CarData · measured 15 Sept 2026, 20:00');
+  assert.equal(Object.fromEntries(result.rows)['Last reported charge'], '40 % · BMW CarData\nMeasured 15 Sept, 20:00');
   assert.equal(Object.fromEntries(result.rows)['Manual charge reference'], undefined);
   assert.ok(result.notes.some(note => /Vehicle readings are unavailable.*Edit Current charge/.test(note)));
 });
@@ -387,13 +387,24 @@ test('last reported charge preserves the source and original time beside the cur
       progress: { deliveredGridKwh: 3.5, remainingGridKwh: 5, estimatedSoc: 89, hasEnergyEstimate: true } });
     assert.equal(result.soc, '≈89 %'); assert.equal(result.minimum, '95 %');
     const row = result.rows.find(([name]) => name === 'Last reported charge');
-    assert.equal(row[1], `85 % · ${id === 'bmw' ? 'BMW CarData' : 'TeslaMate'} · measured 15 Sept 2026, 20:00`);
+    assert.equal(row[1], `85 % · ${id === 'bmw' ? 'BMW CarData' : 'TeslaMate'}\nMeasured 15 Sept, 20:00`);
+    assert.match(row[2], /Charge measured 15 Sept 2026, 20:00/);
     assert.match(row[2], /main charge estimate adds measured energy.*not necessarily the session’s starting charge/);
     assert.doesNotMatch(JSON.stringify(result.rows), /Vehicle charge reading|Vehicle MQTT/);
   }
   const received = view({ ...item, values: { ...item.values, soc: reading(85, 'teslamate', { receivedAt: now }) },
     progress: { estimatedSoc: 89, hasEnergyEstimate: true } });
-  assert.match(Object.fromEntries(received.rows)['Last reported charge'], /received 15 Sept 2026, 21:00 · measurement time unknown$/);
+  assert.equal(Object.fromEntries(received.rows)['Last reported charge'], '85 % · TeslaMate\nReceived 15 Sept, 21:00');
+  assert.match(received.rows.find(([name]) => name === 'Last reported charge')[2], /Charge received 15 Sept 2026, 21:00 · measurement time unavailable/);
+  const missing = view({ ...item, values: { ...item.values, soc: reading(0, 'teslamate') },
+    progress: { estimatedSoc: 1, hasEnergyEstimate: true } });
+  assert.equal(Object.fromEntries(missing.rows)['Last reported charge'], '0 % · TeslaMate\nMeasurement time unavailable');
+  const old = view({ ...item, values: { ...item.values, soc: reading(85, 'teslamate', { measuredAt: Date.parse('2025-12-31T23:30:00Z') }) },
+    progress: { estimatedSoc: 89, hasEnergyEstimate: true } });
+  assert.match(Object.fromEntries(old.rows)['Last reported charge'], /Measured 1 Jan, 01:30$/);
+  const previousYear = view({ ...item, values: { ...item.values, soc: reading(85, 'teslamate', { measuredAt: Date.parse('2025-12-31T20:00:00Z') }) },
+    progress: { estimatedSoc: 89, hasEnergyEstimate: true } });
+  assert.match(Object.fromEntries(previousYear.rows)['Last reported charge'], /Measured 31 Dec 2025, 22:00$/);
   const manual = view({ ...item, values: { ...item.values, soc: reading(30, 'manual-fallback') },
     progress: { estimatedSoc: 39, hasEnergyEstimate: true } });
   assert.equal(manual.soc, '≈39 %'); assert.equal(Object.fromEntries(manual.rows)['Configured starting charge'], '30 %');
@@ -1435,7 +1446,7 @@ test('expanded last reported charge explains why the current charging estimate i
     progress: { deliveredGridKwh: 3.5, remainingGridKwh: 5, estimatedSoc: 89, hasEnergyEstimate: true } }));
   assert.equal($('charger1-soc').textContent, '≈89 %'); assert.equal($('charger1-minimum').textContent, '95 %');
   const readings = $('charger1-readings');
-  assert.match(readings.textContent, /Last reported charge85 % · BMW CarData · measured 15 Sept 2026, 20:00/);
+  assert.match(readings.textContent, /Last reported charge85 % · BMW CarDataMeasured 15 Sept, 20:00/);
   const label = descendants(readings).find(node => node.tagName === 'DT' && node.textContent === 'Last reported charge');
   assert.match(openDetail(label).textContent, /main charge estimate adds measured energy.*not necessarily the session’s starting charge/);
   panel.close();
@@ -2194,7 +2205,7 @@ test('both compact allowances retain distinct source, effective current and nati
     values: { ...item.values, powerKw: reading(0), charging: reading(false) }, control: { phase: 'yielded', manual: { kind: 'stop' } } }));
   for (const id of ['charger1', 'charger2']) {
     assert.equal($(`${id}-limiter`), null, 'No prominent limiter badge remains in timing');
-    assert($(`${id}-allowance`).parentElement.matches('.charging-disclosure'));
+    assert($(`${id}-allowance`).parentElement.matches('.charging-footer-status'));
   }
   assert.equal($('charger1-allowance').textContent, '16 A Available');
   assert.equal($('charger1-allowance').dataset.tone, 'full');

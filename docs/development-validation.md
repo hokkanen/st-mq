@@ -278,6 +278,7 @@ popup details, focus restoration, aligned values and captions, roof/header
 clearance, buildings centered between their side groups, centered Explore content,
 compact section gaps and approximately balanced desktop columns. Receipts and
 popovers must not add space; returning to normal must restore the compact height.
+Charging feedback must leave its current allowance visible and unobstructed.
 Opening a fold must not resize neighboring cards to compensate for its content.
 Set `STMQ_DASHBOARD_SCREENSHOT_DIR` to retain folded dashboard screenshots.
 

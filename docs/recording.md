@@ -433,10 +433,10 @@ interval-average meaning; supported imported current snapshots retain their own
 basis. All three phases are required. This derived maximum adds no property
 recording stream. Temperature context keeps its existing right axis.
 
-Both charger cards show the same compact allowance beside **Details & settings**.
+Both charger cards show the same compact allowance beside their footer status.
 Full allowance is green, a reduced positive allowance blue, ordinary zero red
 and fallback purple, including fallback zero. Unknown/inactive is neutral.
-Existing action messages temporarily replace the allowance in that footer slot.
+Action messages use a separate reserved line; the allowance stays visible.
 The old Shelly-only history strip is removed from all charts. See
 [current allocation](charging/current-allocation.md#load-balancing-status-and-history).
 

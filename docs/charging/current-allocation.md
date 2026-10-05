@@ -206,12 +206,13 @@ If the process, broker or charger is unavailable, ST-MQ cannot apply a new fallb
 
 ## Load-balancing status and history
 
-Both charger cards show a small current allowance beside **Details & settings**:
+Both charger cards show a small current allowance beside their footer status:
 for example **16 A Available**, **0 A Available** or **12 A Fallback**. Full
 allowance is green, a reduced positive allowance blue, ordinary zero red and
 fallback purple, including **0 A Fallback**. Unknown and inactive are neutral.
-The existing action-message slot temporarily replaces the allowance while a
-receipt is visible, retaining its normal lifetime and accessible explanation.
+Action feedback has its own reserved line, keeping the allowance visible while
+saving and after success or failure. Receipts retain their normal lifetime and
+accessible explanation without covering the status or report action.
 
 Charger 1 shows the minimum native Equalizer phase allowance capped at its known
 fixed equipment ceiling. Its raw Equalizer value and source evidence remain in

@@ -13,11 +13,12 @@ const pending = new Map(), errors = [];
 const pause = ms => new Promise(resolve => setTimeout(resolve, ms));
 let browser, socket, sequence = 0;
 const html = `<!doctype html><html lang="en" data-theme="dark"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-<link rel="stylesheet" href="/chart/monitor.css"><link rel="stylesheet" href="/chart/charging-setup.css"><title>Charging controls fixture</title></head>
+<link rel="stylesheet" href="/chart/monitor.css"><link rel="stylesheet" href="/chart/charging-setup.css"><link rel="stylesheet" href="/chart/charging-diagnostics.css"><title>Charging controls fixture</title></head>
 <body data-authenticated="true"><main style="max-width:1100px;margin:auto;padding:16px"><section class="garage-chargers zone-content">
 <p id="charging-status"></p><div id="charging-devices" class="charging-device-list"></div></section></main>
 <script type="module">
 import { createChargingPanel } from '/chart/charging.js';
+import { createChargingDiagnosticsPanel } from '/chart/charging-diagnostics.js';
 const now = Date.parse('2026-10-02T12:00:00Z');
 const reading = (value, source = 'fixture') => ({ value, source, available: true, measuredAt: now });
 const longText = 'The charger has not confirmed whether the earlier stop instruction belongs to automatic scheduling or another controller. Review the current charger state before requesting a handover. This explanation must remain fully readable even when the charger is offline and its recorded message includes '+ 'UnbrokenSyntheticStatus'.repeat(7) + '. End of complete explanation.';
@@ -33,6 +34,8 @@ function charger(id, provider) {
     control: { phase: 'manual', reason: 'manual-stop', manual: { kind: 'stop' }, takeover: { available: true, token: 'native:' + id } } };
 }
 const fixture = globalThis.chargingFixture = { writes: [], longText };
+const diagnostics = createChargingDiagnosticsPanel({ document,
+  request: async () => ({ reports: [], nextBefore: null }) });
 const panel = createChargingPanel({ document, request: async (path, payload) => {
   fixture.writes.push([path, payload]);
   if (fixture.hold) await new Promise(resolve => { fixture.finish = resolve; });
@@ -104,6 +107,14 @@ fixture.setCase = name => {
       item.values.soc = reading(20, 'session-anchor');
       item.progress = { estimatedSoc: 23, hasEnergyEstimate: true, deliveredGridKwh: 2.5, remainingGridKwh: 44 };
     }
+    if (name === 'vehicle-reference') {
+      item.control = { phase: 'waiting', owned: { startAt: now + 3600000 } };
+      item.values.soc = item.id === 'charger1'
+        ? { ...reading(79, 'bmw-cardata'), measuredAt: now - 60000, receivedAt: now }
+        : { ...reading(100, 'teslamate'), measuredAt: null, receivedAt: now };
+      item.progress = { estimatedSoc: item.id === 'charger1' ? 80 : 100, hasEnergyEstimate: true,
+        deliveredGridKwh: 2.5, remainingGridKwh: 0 };
+    }
     if (name === 'readonly') item.readOnly = true;
     if (name === 'disconnected') item.values.connected = reading(false);
     if (name === 'unknown-connection') item.values.connected = { value: null, available: false };
@@ -117,9 +128,9 @@ fixture.setCase = name => {
         : { available: false, token: null, reason: 'Fresh charger readings are unavailable. Check the connection and try again.' },
     };
   }
-  panel.update(fixture.status);
+  panel.update(fixture.status); diagnostics.update(fixture.status);
 };
-fixture.refresh = () => panel.update(fixture.status);
+fixture.refresh = () => { panel.update(fixture.status); diagnostics.update(fixture.status); };
 fixture.setCase('ordinary');
 </script></body></html>`;
 const server = createServer((request, response) => {
@@ -163,6 +174,34 @@ try {
     return result.result.value;
   };
   const until = async expression => { for (let n = 0; n < 150; n++) { if (await evaluate(expression)) return; await pause(30); } throw new Error(`Timed out: ${expression}; ${JSON.stringify(errors)}`); };
+  const keyPress = async (key, code = key, windowsVirtualKeyCode) => {
+    await send('Input.dispatchKeyEvent', { type: 'keyDown', key, code, windowsVirtualKeyCode,
+      ...(key === 'Enter' ? { text: '\r', unmodifiedText: '\r' } : {}) });
+    await send('Input.dispatchKeyEvent', { type: 'keyUp', key, code, windowsVirtualKeyCode });
+  };
+  const receiptFits = async (id, label) => {
+    const layout = await evaluate(`(() => {
+      const card = document.getElementById('${id}-device'), summary = card.querySelector('summary');
+      const allowance = document.getElementById('${id}-allowance'), receipt = document.getElementById('${id}-control-message');
+      const report = document.getElementById('${id}-session-report');
+      const area = summary.getBoundingClientRect(), bounds = allowance.getBoundingClientRect(), message = receipt.getBoundingClientRect();
+      const overlapping = [...summary.querySelectorAll('.charging-notice, .charging-control-message, .charging-session-report')]
+        .filter(node => node.checkVisibility({ visibilityProperty: true })).filter(node => {
+          const other = node.getBoundingClientRect();
+          return bounds.left < other.right && bounds.right > other.left && bounds.top < other.bottom && bounds.bottom > other.top;
+        }).map(node => node.className);
+      return { visible: allowance.checkVisibility({ visibilityProperty: true }) && bounds.width > 0 && bounds.height > 0,
+        inside: bounds.left >= area.left && bounds.right <= area.right && bounds.top >= area.top && bounds.bottom <= area.bottom,
+        overlapping, feedbackBeforeReport: message.bottom <= report.getBoundingClientRect().top + 1,
+        open: card.open, height: area.height };
+    })()`);
+    assert.equal(layout.visible, true, `${label}: allowance stays visible`);
+    assert.equal(layout.inside, true, `${label}: allowance stays inside the card`);
+    assert.deepEqual(layout.overlapping, [], `${label}: information, feedback and report never overlap the allowance`);
+    assert.equal(layout.feedbackBeforeReport, true, `${label}: feedback stays above the report button`);
+    assert.equal(layout.open, false, `${label}: receipt updates preserve the folded card`);
+    return layout.height;
+  };
   await send('Page.enable'); await send('Runtime.enable');
   await send('Page.navigate', { url: `http://127.0.0.1:${server.address().port}/` });
   await until('Boolean(globalThis.chargingFixture) && Boolean(document.getElementById("charger2-use-automatic"))');
@@ -172,6 +211,39 @@ try {
     await evaluate(`document.documentElement.dataset.theme = '${theme}'`);
     await evaluate("chargingFixture.setCase('ordinary'); document.querySelectorAll('.charging-device').forEach(card => card.open = false)");
     const originalHeights = await evaluate("[...document.querySelectorAll('.equipment-device-summary')].map(node => node.getBoundingClientRect().height)");
+    assert.equal(await evaluate("document.querySelector('.charging-disclosure') === null"), true, 'The old bottom disclosure row is removed');
+    for (const id of ['charger1', 'charger2']) {
+      const marker = await evaluate(`(() => {
+        const arrow = document.querySelector('#${id}-device .charging-expand'), title = document.getElementById('${id}-title').firstElementChild;
+        const a = arrow.getBoundingClientRect(), t = title.getBoundingClientRect();
+        return { glyph: getComputedStyle(arrow, '::before').content,
+          besideTitle: a.left >= t.right - 1 && a.left - t.right <= 12 && a.top < t.bottom && a.bottom > t.top };
+      })()`);
+      assert.match(marker.glyph, /›/, `${width}px ${theme}: charger title uses the shared disclosure arrow`);
+      assert.equal(marker.besideTitle, true, `${width}px ${theme}: arrow stays beside the charger title`);
+      assert.equal(await evaluate(`document.querySelector('#${id}-session-report .charging-session-report-label').textContent`), 'Session report');
+      assert.equal(await evaluate(`document.querySelector('#${id}-session-report .charging-session-report-open').textContent`), 'Open ↗');
+      await evaluate(`document.querySelector('#${id}-device .charging-expand').click()`);
+      assert.equal(await evaluate(`document.getElementById('${id}-device').open`), true, 'Clicking the title arrow opens charging details');
+      await evaluate(`document.getElementById('${id}-device-summary').focus()`);
+      await keyPress(' ', 'Space', 32);
+      assert.equal(await evaluate(`document.getElementById('${id}-device').open`), false, 'Space closes the charger disclosure');
+      for (const expanded of [false, true]) {
+        await evaluate(`document.getElementById('${id}-device').open = ${expanded};
+          document.getElementById('${id}-session-report').focus()`);
+        assert.equal(await evaluate('document.activeElement.id'), `${id}-session-report`, 'The report button receives keyboard focus');
+        await keyPress('Enter', 'Enter', 13);
+        await until("document.getElementById('charging-report-dialog').matches(':modal')");
+        assert.equal(await evaluate(`document.getElementById('${id}-device').open`), expanded,
+          'Session report opens a window without changing the card disclosure');
+        assert.equal(await evaluate(`document.getElementById('${id}-session-report').getAttribute('aria-expanded')`), 'true');
+        await keyPress('Escape', 'Escape', 27);
+        await until(`!document.getElementById('charging-report-dialog').open
+          && document.getElementById('${id}-session-report').getAttribute('aria-expanded') === 'false'
+          && document.activeElement.id === '${id}-session-report'`);
+      }
+      await evaluate(`document.getElementById('${id}-device').open = false`);
+    }
     for (const energy of [16.3, 116.3]) {
       await evaluate(`chargingFixture.setCase('ordinary'); chargingFixture.status.charging.chargers.forEach(item => {
         item.progress = {estimatedSoc: 55, hasEnergyEstimate: true, deliveredGridKwh: ${energy}, remainingGridKwh: ${energy}};
@@ -216,7 +288,7 @@ try {
         const token = document.createElement('span'); token.style.color = 'var(${palette})'; document.body.append(token);
         const expectedColor = getComputedStyle(token).color; token.remove();
         return [...document.querySelectorAll('.charging-allowance')].map(node => {
-          const button = node.querySelector('button'), bounds = node.getBoundingClientRect(), footer = node.closest('.charging-disclosure').getBoundingClientRect();
+          const button = node.querySelector('button'), bounds = node.getBoundingClientRect(), footer = node.closest('.charging-footer-status').getBoundingClientRect();
           return { text: node.textContent, tone: node.dataset.tone, color: getComputedStyle(node).color, expectedColor,
             fontSize: getComputedStyle(node).fontSize, nowrap: getComputedStyle(button).whiteSpace,
             inside: bounds.left >= footer.left && bounds.right <= footer.right + 1, rightAligned: Math.abs(bounds.right - footer.right) < 1,
@@ -247,7 +319,28 @@ try {
     assert.equal(await evaluate("document.querySelectorAll('.charging-limiter').length"), 0, 'No prominent limiter badge remains');
     const compactShot = await send('Page.captureScreenshot', { format: 'png', captureBeyondViewport: true });
     writeFileSync(join(artifacts, `charging-allowances-${width}-${theme}.png`), Buffer.from(compactShot.data, 'base64'));
-    for (const state of ['ordinary', 'backend-readings', 'missing-vehicle-feed', 'approval-pending', 'confirmed-pause', 'long', 'manual-stop', 'manual-start', 'manual-window', 'pending', 'blocked', 'handover-timeout', 'handover-cancelled', 'handover-protocol', 'unavailable', 'estimate', 'readonly', 'disconnected', 'unknown-connection', 'missing-token', 'monitoring', 'uncertain', 'startup-stop', 'unavailable-startup-stop']) {
+    for (const id of ['charger1', 'charger2']) for (const fail of [false, true]) {
+      await evaluate(`chargingFixture.setCase('ordinary'); chargingFixture.hold = true;
+        chargingFixture.error = ${fail ? JSON.stringify('The charger did not confirm the latest preference. Review its current connection before trying again.') : 'null'};
+        document.getElementById('${id}-device').open = true;
+        document.getElementById('${id}-enabled').click();
+        document.getElementById('${id}-device').open = false`);
+      await until('Boolean(chargingFixture.finish)');
+      for (const phase of ['pending', fail ? 'failed' : 'saved']) {
+        if (phase !== 'pending') {
+          await evaluate('chargingFixture.hold = false; chargingFixture.finish(); chargingFixture.finish = null');
+          await until(`!document.getElementById('${id}-enabled').disabled`);
+        }
+        const label = `${width}px ${theme} ${id} ${phase}`;
+        assert.equal(await receiptFits(id, label), originalHeights[id === 'charger1' ? 0 : 1], `${label}: compact feedback preserves the card height`);
+        assert.match(await evaluate(`document.getElementById('${id}-control-message').textContent`),
+          phase === 'pending' ? /saving/i : fail ? /action failed/i : /preference saved/i);
+      }
+      await evaluate('chargingFixture.status.now += 24 * 3600_000; chargingFixture.refresh()');
+      assert.equal(await evaluate(`document.getElementById('${id}-control-message').textContent`), '', 'Success and failure receipts expire after 24 hours');
+      await receiptFits(id, `${width}px ${theme} ${id} expired receipt`);
+    }
+    for (const state of ['ordinary', 'backend-readings', 'missing-vehicle-feed', 'approval-pending', 'confirmed-pause', 'long', 'manual-stop', 'manual-start', 'manual-window', 'pending', 'blocked', 'handover-timeout', 'handover-cancelled', 'handover-protocol', 'unavailable', 'estimate', 'vehicle-reference', 'readonly', 'disconnected', 'unknown-connection', 'missing-token', 'monitoring', 'uncertain', 'startup-stop', 'unavailable-startup-stop']) {
       await evaluate(`chargingFixture.setCase('${state}'); document.querySelectorAll('.charging-device').forEach(card => card.open = true)`);
       const layout = await evaluate(`(() => {
         const cards = [...document.querySelectorAll('.charging-device')];
@@ -292,6 +385,24 @@ try {
         assert.match(await evaluate("document.getElementById('charger2-readings').textContent"), /Selected charging current10 A per phase/,
           'Shelly keeps its selected current distinct from measured draw');
       }
+      if (state === 'vehicle-reference') {
+        for (const [id, expected] of [['charger1', ['79 % · BMW CarData', 'Measured 2 Oct, 14:59']],
+          ['charger2', ['100 % · TeslaMate', 'Received 2 Oct, 15:00']]]) {
+          const reference = await evaluate(`(() => {
+            const label = [...document.querySelectorAll('#${id}-readings dt')].find(node => node.textContent === 'Last reported charge');
+            const value = label.nextElementSibling, lines = [...value.querySelectorAll('.charging-reading-line')];
+            const boxes = lines.map(node => node.getBoundingClientRect()), bounds = value.getBoundingClientRect();
+            return { lines: lines.map(node => node.textContent), separateLines: boxes[0].bottom <= boxes[1].top + 1,
+              fits: boxes.every(box => box.left >= bounds.left - 1 && box.right <= bounds.right + 1) };
+          })()`);
+          assert.deepEqual(reference.lines, expected, `${width}px ${theme}: source and clock retain their distinct meanings`);
+          assert.equal(reference.separateLines && reference.fits, true, 'Battery source and timestamp fit on separate lines');
+          await evaluate(`[...document.querySelectorAll('#${id}-readings dt')].find(node => node.textContent === 'Last reported charge').querySelector('button').click()`);
+          const detail = await evaluate("document.getElementById('status-detail-popover').textContent");
+          assert.match(detail, id === 'charger1' ? /Charge measured 2 Oct 2026, 14:59/ : /Charge received 2 Oct 2026, 15:00 · measurement time unavailable/);
+          await keyPress('Escape', 'Escape', 27);
+        }
+      }
       if (state === 'readonly') for (const id of ['charger1', 'charger2']) {
         assert.equal(await evaluate(`document.getElementById('${id}-enabled').disabled && document.getElementById('${id}-charge-now').disabled`), true,
           'Read-only cards preserve control restrictions');
@@ -320,7 +431,7 @@ try {
       const actionVisible = ['long', 'manual-stop', 'manual-start', 'manual-window', 'startup-stop'].includes(state);
       assert.equal(layout.cards[0].action.visible, actionVisible, `${state}: takeover is offered only for a replaceable external instruction`);
       if (actionVisible) assert.equal(layout.cards[0].action.helpVisible, true, `${state}: the available action has an explanation`);
-      if (['ordinary', 'estimate', 'disconnected', 'unknown-connection', 'monitoring', 'uncertain'].includes(state))
+      if (['ordinary', 'estimate', 'vehicle-reference', 'disconnected', 'unknown-connection', 'monitoring', 'uncertain'].includes(state))
         assert.equal(layout.cards[0].action.helpVisible, false, `${state}: unrelated takeover guidance stays hidden`);
       assert.equal(layout.cards[0].action.inSummary, false, 'Use automatic belongs with Charging controls');
       if (actionVisible) {
@@ -365,7 +476,7 @@ try {
           assert.equal(await evaluate(`document.getElementById('${id}-energy').textContent`), '—');
         }
       }
-      if (['ordinary', 'backend-readings', 'approval-pending', 'long', 'manual-stop', 'estimate', 'uncertain', 'startup-stop', 'unavailable-startup-stop', 'handover-timeout', 'unknown-connection'].includes(state)) {
+      if (['ordinary', 'backend-readings', 'approval-pending', 'long', 'manual-stop', 'estimate', 'vehicle-reference', 'uncertain', 'startup-stop', 'unavailable-startup-stop', 'handover-timeout', 'unknown-connection'].includes(state)) {
         const metrics = await send('Page.getLayoutMetrics');
         const shot = await send('Page.captureScreenshot', { format: 'png', captureBeyondViewport: true,
           clip: { x: 0, y: 0, width, height: Math.min(metrics.cssContentSize.height, 12000), scale: 1 } });
@@ -385,11 +496,11 @@ try {
   for (const id of ['charger1', 'charger2']) {
     await evaluate(`chargingFixture.setCase('manual-stop'); chargingFixture.writes = []; document.getElementById('${id}-enabled').click()`);
     await until('chargingFixture.writes.length === 1');
-    assert.equal(await evaluate(`getComputedStyle(document.getElementById('${id}-allowance')).visibility`), 'hidden', 'Receipt replaces allowance in the existing right footer slot');
+    assert.equal(await evaluate(`document.getElementById('${id}-allowance').checkVisibility({ visibilityProperty: true })`), true, 'The allowance remains visible beside a saved preference');
     assert.equal(await evaluate(`document.getElementById('${id}-control-message').textContent`), 'Preference saved');
     await evaluate(`chargingFixture.status.now += 24 * 3600_000; chargingFixture.refresh()`);
     assert.equal(await evaluate(`document.getElementById('${id}-control-message').textContent`), '', 'Receipt expires after its unchanged 24-hour lifetime');
-    assert.equal(await evaluate(`getComputedStyle(document.getElementById('${id}-allowance')).visibility`), 'visible', 'Allowance returns to the same slot after receipt expiry');
+    assert.equal(await evaluate(`document.getElementById('${id}-allowance').checkVisibility({ visibilityProperty: true })`), true, 'Allowance remains visible after receipt expiry');
     await evaluate(`chargingFixture.status.now -= 24 * 3600_000; chargingFixture.refresh()`);
     assert.equal((await evaluate('chargingFixture.writes[0]'))[0], `/api/charging/chargers/${id}/control`, 'The preference switch does not take over');
     await evaluate(`chargingFixture.hold = true; document.getElementById('${id}-use-automatic').click()`);
@@ -409,7 +520,7 @@ try {
     assert.match(await evaluate(`document.getElementById('${id}-takeover-message').textContent`), /charger changed.*latest state/);
   }
   assert.deepEqual(errors, []);
-  console.log(`Charging controls browser checks passed: conditional shared controls, explicit takeover fencing, pending/errors and retained 24-hour receipts replacing compact allowance text, shared allowance colors and details, two-line approval status, expanded session settings, shared readings with capability differences, setup links without installation rows, read-only inspection, consistent compact statuses, readable long states and popups at 320/390/1440px in both themes. Screenshots: ${artifacts}`);
+  console.log(`Charging controls browser checks passed: title disclosures, independent report dialogs, conditional shared controls, explicit takeover fencing, visible allowances beside pending/errors and retained 24-hour receipts, shared allowance colors and details, two-line approval status, expanded session settings, shared readings with capability differences, setup links without installation rows, read-only inspection, consistent compact statuses, readable long states and popups at 320/390/1440px in both themes. Screenshots: ${artifacts}`);
 } finally {
   socket?.close(); for (const task of pending.values()) clearTimeout(task.timer);
   if (browser && browser.exitCode === null) { browser.kill(); await new Promise(resolve => browser.once('exit', resolve)); }

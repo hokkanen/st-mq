@@ -204,18 +204,23 @@ export async function checkDashboardHeights({ evaluate, command, context, refres
       const box = trigger.getBoundingClientRect();
       const summary = receipt.closest('summary').getBoundingClientRect();
       const report = document.getElementById('charger1-session-report').getBoundingClientRect();
-      const overlaps = [...receipt.closest('summary').querySelectorAll('.charging-disclosure > span, .charging-session-report')]
+      const allowance = document.getElementById('charger1-allowance');
+      const allowanceBox = allowance.getBoundingClientRect();
+      const overlaps = [...receipt.closest('summary').querySelectorAll('.charging-notice, .charging-allowance, .charging-session-report')]
         .filter(node => node.checkVisibility({ visibilityProperty: true })).filter(node => {
           const other = node.getBoundingClientRect();
           return box.left < other.right && box.right > other.left && box.top < other.bottom && box.bottom > other.top;
         }).map(node => node.className);
-      return { overlaps, beforeReport: box.bottom <= report.top + 1,
+      return { overlaps, allowanceVisible: allowance.checkVisibility({ visibilityProperty: true })
+          && allowanceBox.width > 0 && allowanceBox.height > 0,
+        beforeReport: box.bottom <= report.top + 1,
         contained: box.left >= summary.left && box.right <= summary.right
         && box.top >= summary.top && box.bottom <= summary.bottom };
     })()`);
     assert.equal(layout.contained, true, `${label}: the receipt stays inside its summary`);
+    assert.equal(layout.allowanceVisible, true, `${label}: action feedback never hides the allowance`);
     assert.equal(layout.beforeReport, true, `${label}: feedback stays above Session report`);
-    assert.deepEqual(layout.overlaps, [], `${label}: the receipt never covers charger details or Session report`);
+    assert.deepEqual(layout.overlaps, [], `${label}: the receipt never covers information, allowance or Session report`);
   };
   const explain = async (selector, expected, label) => {
     const baseline = await geometry();

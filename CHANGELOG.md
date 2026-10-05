@@ -6,9 +6,12 @@ Versions follow Semantic Versioning. `-dev.N` denotes a development prerelease.
 
 ## Unreleased
 
-- Both charger cards show a compact available-current or fallback value beside
-  Details & settings. Action messages keep their existing place and lifetime;
-  planned starts awaiting approval stay within two lines, and native current
+- Charger cards expand with a chevron beside their title. The compact footer
+  keeps charging status and available-current or fallback allowance visible
+  alongside action feedback, with a distinct **Session report · Open ↗** button.
+  Battery readings use separate source and timestamp lines, preserving measured
+  versus received times and full provenance in their information details.
+- Planned starts awaiting approval stay within two lines, and native current
   settings no longer repeat their label.
 - Charging currents replaces the dedicated session-check view, with the highest
   property phase current and both charger allowances. Fallback is a separate

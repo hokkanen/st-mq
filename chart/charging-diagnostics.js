@@ -607,19 +607,24 @@ export function createChargingDiagnosticsPanel({ document, request, onOpenTest =
   return { open, close, update(next) {
     status = next;
     for (const charger of status?.charging?.chargers ?? []) {
-      const footer = document.getElementById(`${charger.id}-device-summary`)?.querySelector('.charging-disclosure');
+      const footer = document.getElementById(`${charger.id}-device-summary`)?.querySelector('.charging-footer');
       if (!footer) continue;
       let button = buttons.get(charger.id);
       if (!button) {
-        button = make('button', 'Session report', 'charging-session-report secondary-button'); button.id = `${charger.id}-session-report`; button.type = 'button';
+        button = make('button', '', 'charging-session-report secondary-button'); button.id = `${charger.id}-session-report`; button.type = 'button';
+        const copy = make('span', '', 'charging-session-report-copy'), label = make('span', 'Session report', 'charging-session-report-label');
+        const statusText = make('span', '', 'charging-session-report-status'), openLabel = make('span', 'Open ↗', 'charging-session-report-open');
+        openLabel.setAttribute('aria-hidden', 'true');
+        copy.append(label, statusText); button.append(copy, openLabel); parts.set(button, { statusText });
         button.setAttribute('aria-haspopup', 'dialog'); button.setAttribute('aria-controls', dialog.id); button.setAttribute('aria-expanded', 'false');
         button.addEventListener('click', event => { event.preventDefault(); event.stopPropagation(); open(charger.id); });
         buttons.set(charger.id, button); footer.append(button);
       }
       const slot = status.charging.diagnostics?.chargers?.find(row => row.id === charger.id), report = slot?.current ?? slot?.recent?.[0];
       const summary = chargingReportSummary(report, status.charging.diagnostics?.available !== false);
-      setText(button, summary.label === 'Session report' ? 'Session report' : `Report · ${summary.label}`);
-      button.dataset.state = summary.state; button.setAttribute('aria-label', `${charger.label ?? charger.id} session report · ${summary.label}`);
+      const statusLabel = summary.label === 'Session report' ? '' : summary.label;
+      const { statusText } = parts.get(button); setText(statusText, statusLabel); statusText.hidden = !statusLabel;
+      button.dataset.state = summary.state; button.setAttribute('aria-label', `Open ${charger.label ?? charger.id} session report${statusLabel ? ` · ${statusLabel}` : ''}`);
     }
     if (dialog.open) {
       render();

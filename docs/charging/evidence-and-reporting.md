@@ -30,8 +30,8 @@ it. Energy inferred only for a cost estimate is not shown as recorded energy.
 
 ## Session reports
 
-Every ordinary connection also gets a passive **Session report**, in its own row
-below **Details & settings** on its charger card. The action's text and color indicate
+Every ordinary connection also gets a passive **Session report**, opened with
+**Open ↗** in the charger card's footer. The action's status and color indicate
 attention, incomplete evidence or the observed result. The report summarizes
 outcome, current findings and observation coverage, followed by one **Events**
 history. Filters select **All**, **Findings**, **Plans & inputs**, **Charging**,

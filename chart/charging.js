@@ -188,9 +188,10 @@ export const chargingFields = [
     help: 'Capacity used to estimate charging time and energy.' },
 ].map(field => ({ type: 'text', ...field }));
 
-export function chargingReadingTime(value, timezone = 'Europe/Helsinki') {
+export function chargingReadingTime(value, timezone = 'Europe/Helsinki', { compact = false, now = Date.now() } = {}) {
   if (!validTime(value)) return 'Time unknown';
-  return new Intl.DateTimeFormat('en-GB', { timeZone: timezone, day: 'numeric', month: 'short', year: 'numeric',
+  const showYear = !compact || dateKey(value, timezone).slice(0, 4) !== dateKey(now, timezone).slice(0, 4);
+  return new Intl.DateTimeFormat('en-GB', { timeZone: timezone, day: 'numeric', month: 'short', ...(showYear ? { year: 'numeric' } : {}),
     hour: '2-digit', minute: '2-digit' }).format(new Date(value));
 }
 
@@ -359,7 +360,7 @@ export function chargerDisplay(charger, { now = Date.now(), timezone = 'Europe/H
         ? currentAssumption ? 'Estimated on time at assumed current' : 'Expected on time'
         : estimateOnly ? 'Estimate only · control unconfirmed' : 'Readiness being checked';
   const readingTime = showMetrics && vehicleCharge(referenceSoc) ? validTime(referenceSoc.measuredAt) ? `Charge measured ${chargingReadingTime(referenceSoc.measuredAt, timezone)}`
-    : validTime(referenceSoc.receivedAt) ? `Charge received ${chargingReadingTime(referenceSoc.receivedAt, timezone)} · measurement time unknown` : 'Charge measurement time unknown' : '';
+    : validTime(referenceSoc.receivedAt) ? `Charge received ${chargingReadingTime(referenceSoc.receivedAt, timezone)} · measurement time unavailable` : 'Charge measurement time unavailable' : '';
   const rows = [];
   if (showPlan && currentAssumption) rows.push(['Planning current', `Up to ${number(currentAssumption.maximumCurrentA, 'A per phase')} assumed · shared capacity may reduce it`]);
   if (activeManual && validTime(manual.detectedAt)) rows.push(['Manual change noticed', chargingReadingTime(manual.detectedAt, timezone)]);
@@ -379,10 +380,14 @@ export function chargerDisplay(charger, { now = Date.now(), timezone = 'Europe/H
     rows.push(['Other scheduled charging', `${load.label ?? human(load.chargerId)} · ${Number(load.startAt) > now ? `starts ${time(load.startAt)} · ` : ''}${number(load.powerKw, 'kW')} until about ${time(load.endAt)}`]);
   }
   if (showMetrics && hasProgress) rows.push(['Delivered since charge reference', `${number(creditedGridKwh, 'kWh')} from the grid`]);
-  if (showMetrics && estimatedSoc && vehicleCharge(referenceSoc)) rows.push(['Last reported charge',
-    `${number(referenceSoc.value, '%')} · ${sourceLabel(referenceSoc, charger.vehicle)} · ${readingTime.replace(/^Charge /, '')}`,
-    'This is the last charge reported by the vehicle. The main charge estimate adds measured energy delivered after this reference, allowing for charging losses. The reference can be newer than plugging in; it is not necessarily the session’s starting charge.']);
-  else if (showMetrics && estimatedSoc && finite(soc.value)) rows.push([manualChargeReference(soc) ? 'Manual charge reference' : 'Configured starting charge', number(soc.value, '%'),
+  if (showMetrics && estimatedSoc && vehicleCharge(referenceSoc)) {
+    const measured = validTime(referenceSoc.measuredAt), received = validTime(referenceSoc.receivedAt);
+    const stamp = measured || received
+      ? `${measured ? 'Measured' : 'Received'} ${chargingReadingTime(measured ? referenceSoc.measuredAt : referenceSoc.receivedAt, timezone, { compact: true, now })}`
+      : 'Measurement time unavailable';
+    rows.push(['Last reported charge', `${number(referenceSoc.value, '%')} · ${sourceLabel(referenceSoc, charger.vehicle)}\n${stamp}`,
+      `${readingTime}.\n\nThis is the last charge reported by the vehicle. The main charge estimate adds measured energy delivered after this reference, allowing for charging losses. The reference can be newer than plugging in; it is not necessarily the session’s starting charge.`]);
+  } else if (showMetrics && estimatedSoc && finite(soc.value)) rows.push([manualChargeReference(soc) ? 'Manual charge reference' : 'Configured starting charge', number(soc.value, '%'),
     `The estimate starts from the ${chargeReferenceLabel(soc)} and adds measured charging energy, allowing for losses. Edit Current charge in Session settings to set a new reference.`]);
   if (showPlan && !released && !charging && finite(plan.costCents) && !uncertain && !revisionPending) {
     rows.push(['Estimated cost to target', `€${(plan.costCents / 100).toFixed(2)}`]);
@@ -495,10 +500,10 @@ export function chargerDisplay(charger, { now = Date.now(), timezone = 'Europe/H
   const targetDetail = targetSelection ? [
     `Selected planning target: ${number(minimum, '%')}${validTime(values.minimumSoc?.measuredAt)
       ? `, measured ${chargingReadingTime(values.minimumSoc.measuredAt, timezone)}`
-      : validTime(values.minimumSoc?.receivedAt) ? `, received ${chargingReadingTime(values.minimumSoc.receivedAt, timezone)}; measurement time unknown` : ''}.`,
+      : validTime(values.minimumSoc?.receivedAt) ? `, received ${chargingReadingTime(values.minimumSoc.receivedAt, timezone)}; measurement time unavailable` : ''}.`,
     `Latest BMW target report: ${number(targetSelection.raw?.value, '%')}${validTime(targetSelection.raw?.measuredAt)
       ? `, measured ${chargingReadingTime(targetSelection.raw.measuredAt, timezone)}`
-      : validTime(targetSelection.raw?.receivedAt) ? `, received ${chargingReadingTime(targetSelection.raw.receivedAt, timezone)}; measurement time unknown` : '; measurement time unknown'}.`,
+      : validTime(targetSelection.raw?.receivedAt) ? `, received ${chargingReadingTime(targetSelection.raw.receivedAt, timezone)}; measurement time unavailable` : '; measurement time unavailable'}.`,
     targetHeld ? 'After BMW reports a change from 100% to a lower target, automatic planning holds the latest target below 100% for this connection and ignores later 100% reports.' : '',
     'Edit the target in Session settings and save to change the plan until unplugging. This does not change the car’s charging limit.',
   ].filter(Boolean).join('\n\n') : '';
@@ -577,7 +582,9 @@ export function createChargingPanel({ document, request, beforeRequest = () => {
       let row = nodes.get(key);
       if (!row) { row = { term: make('dt'), value: make('dd') }; nodes.set(key, row); root.append(row.term, row.value); }
       setStatusDetail(row.term, { label, title: label, detail, key: `${root.id}:${key}` });
-      row.value.textContent = text;
+      if (text.includes('\n')) row.value.replaceChildren(...text.split('\n').map((line, index) =>
+        make(index === 0 ? 'span' : 'small', line, 'charging-reading-line')));
+      else row.value.textContent = text;
       if (root.children[index * 2] !== row.term) root.insertBefore(row.term, root.children[index * 2] ?? null);
       if (root.children[index * 2 + 1] !== row.value) root.insertBefore(row.value, root.children[index * 2 + 1] ?? null);
     });
@@ -631,7 +638,10 @@ export function createChargingPanel({ document, request, beforeRequest = () => {
     const section = make('details', '', 'equipment-device charging-device', `${id}-device`);
     section.setAttribute('aria-labelledby', `${id}-title`);
     const summary = make('summary', '', 'equipment-device-summary', `${id}-device-summary`);
-    const heading = make('div', '', 'equipment-device-heading'), title = make('h4', charger.label, '', `${id}-title`);
+    const heading = make('div', '', 'equipment-device-heading'), title = make('h4', '', '', `${id}-title`);
+    const titleLabel = make('span', charger.label);
+    const expand = make('span', '', 'charging-expand'); expand.setAttribute('aria-hidden', 'true');
+    title.append(titleLabel, expand);
     const identity = make('div', '', 'charging-identity'), vehicle = make('span', '', 'charging-vehicle', `${id}-vehicle`); identity.append(title, vehicle);
     const state = make('span', '', 'equipment-device-status', `${id}-state`);
     const actions = make('div', '', 'charging-actions');
@@ -681,10 +691,11 @@ export function createChargingPanel({ document, request, beforeRequest = () => {
     const costLabel = make('span', '', '', `${id}-cost-label`), cost = make('strong', '', '', `${id}-cost`); costMetric.append(costLabel, cost);
     facts.append(delivered, remaining, costMetric);
     const notice = make('div', '', 'charging-notice', `${id}-notice`);
-    const footer = make('div', '', 'charging-disclosure');
-    footer.append(make('span', 'Details & settings', 'charging-disclosure-closed'), make('span', 'Close details', 'charging-disclosure-open'));
-    const allowance = make('span', '', 'charging-allowance', `${id}-allowance`); footer.append(allowance);
-    summary.append(facts, notice, footer, controlMessage);
+    const footer = make('div', '', 'charging-footer');
+    const footerStatus = make('div', '', 'charging-footer-status');
+    const allowance = make('span', '', 'charging-allowance', `${id}-allowance`);
+    footerStatus.append(notice, allowance); footer.append(footerStatus, controlMessage);
+    summary.append(facts, footer);
     const readingTime = make('p', '', 'charging-reading-time', `${id}-reading-time`);
     const scheduleHeading = make('div', '', 'charging-schedule-heading');
     const scheduleInfo = make('span', '', '', `${id}-schedule-info`), periodCount = make('span', '', 'charging-period-count', `${id}-period-count`);
@@ -739,7 +750,7 @@ export function createChargingPanel({ document, request, beforeRequest = () => {
     });
     setupReference.append(setupLink); body.append(setupReference);
     section.append(summary, body); $('charging-devices')?.append(section);
-    const device = { id, allowance, chargeNow, chargeNowState, controlMessage, identify, identificationSection, identificationState, identificationStatus, identificationMessage, section, title, vehicle, state, event, eventLabel, eventValue, overview, sources, metrics, chargeLabel, targetLabel, targetSource, completionLabel, completion, readiness, priority, readingTime, deadline, deadlineLabel, deadlineGroup, facts, deliveredLabel, deliveredValue, remaining, energyLabel, energyValue, costLabel, cost, costMetric, scheduleInfo, scheduleHeading, periodCount, periods, problem, explanations, readings, notes, settings, enabledValue, useAutomatic, takeoverHelp, takeoverMessage, controlDetail, charger, notice, sessionStatus };
+    const device = { id, allowance, chargeNow, chargeNowState, controlMessage, identify, identificationSection, identificationState, identificationStatus, identificationMessage, section, titleLabel, vehicle, state, event, eventLabel, eventValue, overview, sources, metrics, chargeLabel, targetLabel, targetSource, completionLabel, completion, readiness, priority, readingTime, deadline, deadlineLabel, deadlineGroup, facts, deliveredLabel, deliveredValue, remaining, energyLabel, energyValue, costLabel, cost, costMetric, scheduleInfo, scheduleHeading, periodCount, periods, problem, explanations, readings, notes, settings, enabledValue, useAutomatic, takeoverHelp, takeoverMessage, controlDetail, charger, notice, sessionStatus };
     bind(identify, 'click', () => {
       if (identify.disabled) return;
       const current = device.charger;
@@ -911,7 +922,7 @@ export function createChargingPanel({ document, request, beforeRequest = () => {
       const presentation = chargerSummary(charger, view, { now: next.now,
         formatTime: value => chargingTime(value, charging.timezone ?? 'Europe/Helsinki', next.now) });
       const explanation = Object.fromEntries(view.explanations);
-      device.charger = charger; device.title.textContent = charger.label;
+      device.charger = charger; device.titleLabel.textContent = charger.label;
       const receipt = device.takeoverReceipt, takeover = charger.control?.takeover;
       if (receipt?.pending && actionMessages.has(device.takeoverMessage) && !device.takeoverMessage.matches('.form-error')
         && receipt.association === charger.association

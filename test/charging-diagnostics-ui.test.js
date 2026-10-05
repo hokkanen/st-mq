@@ -30,7 +30,7 @@ function fixture() {
     : document.body.querySelector(selector);
   for (const id of ['charger1', 'charger2']) {
     const summary = document.createElement('summary'); summary.id = `${id}-device-summary`;
-    const footer = document.createElement('div'); footer.className = 'charging-disclosure';
+    const footer = document.createElement('div'); footer.className = 'charging-footer';
     summary.append(footer); document.body.append(summary);
   }
   return document;
@@ -73,6 +73,36 @@ function setup() {
   return { document, calls, state, current, previous, reports, records, request, panel,
     dialog: document.getElementById('charging-report-dialog'), async open(id = 'current') { panel.open('charger1', id); await flush(); } };
 }
+
+test('report buttons retain their label, report state and dialog behavior across refreshes', async () => {
+  const f = setup(), button = f.document.getElementById('charger1-session-report');
+  const label = button.querySelector('.charging-session-report-label'), statusText = button.querySelector('.charging-session-report-status');
+  assert.equal(label.textContent, 'Session report'); assert.equal(statusText.textContent, 'Checks passed');
+  assert.equal(button.dataset.state, 'good');
+  assert.equal(button.querySelector('.charging-session-report-open').textContent, 'Open ↗');
+  assert.equal(button.getAttribute('aria-haspopup'), 'dialog');
+  assert.equal(button.getAttribute('aria-controls'), 'charging-report-dialog');
+  assert.equal(button.getAttribute('aria-label'), 'Open Charger 1 session report · Checks passed');
+  const empty = f.document.getElementById('charger2-session-report');
+  assert.equal(empty.querySelector('.charging-session-report-label').textContent, 'Session report');
+  assert.equal(empty.querySelector('.charging-session-report-status').hidden, true);
+  assert.equal(empty.getAttribute('aria-label'), 'Open Charger 2 session report');
+
+  button.focus(); f.current.attentionCount = 1; f.panel.update(structuredClone(f.state));
+  assert.equal(f.document.getElementById('charger1-session-report'), button); assert.equal(f.document.activeElement, button);
+  assert.equal(button.querySelector('.charging-session-report-label'), label);
+  assert.equal(label.textContent, 'Session report'); assert.equal(statusText.textContent, '1 issue'); assert.equal(button.dataset.state, 'attention');
+  let prevented = false, stopped = false;
+  button.dispatch('click', { preventDefault() { prevented = true; }, stopPropagation() { stopped = true; } }); await flush();
+  assert.equal(prevented, true); assert.equal(stopped, true);
+  assert.equal(f.dialog.open, true); assert.equal(button.getAttribute('aria-expanded'), 'true');
+  f.panel.close(); assert.equal(f.dialog.open, false); assert.equal(button.getAttribute('aria-expanded'), 'false');
+  assert.equal(f.document.activeElement, button);
+
+  f.state.charging.diagnostics.available = false; f.panel.update(f.state);
+  assert.equal(statusText.textContent, 'Report unavailable'); assert.equal(button.dataset.state, 'unknown');
+  assert.equal(label.textContent, 'Session report');
+});
 
 test('one event section contains full plan details exactly once and filtering replaces its rows', async () => {
   const f = setup(), changes = [{ field: 'target', before: 70, after: 80 }];
