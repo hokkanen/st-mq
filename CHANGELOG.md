@@ -113,8 +113,12 @@ Versions follow Semantic Versioning. `-dev.N` denotes a development prerelease.
 
 ### Fixed
 
-- Home Assistant deployment allows up to 15 minutes for stored-file snapshots
-  and final comparisons, with progress every 30 seconds. Verification errors
+- Home Assistant deployment compares stored-file sizes and modification times
+  without reading database or backup contents, so file size does not increase
+  verification work. Saved settings, source and image contents retain full
+  comparisons; storage metadata checks do not prove byte-for-byte preservation.
+  Metadata inventories allow up to 15 minutes with progress every 30 seconds.
+  Verification errors
   identify the failed step and distinguish an already completed rebuild.
 - Home Assistant deployment accepts a manually stopped app that Supervisor
   still reports as `error` only with fresh Docker evidence of an absent or

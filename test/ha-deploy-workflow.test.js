@@ -308,7 +308,7 @@ test('successful deployment runs the emitted image verifier before final stopped
   assert.match(fixture.messages.at(-2), /App remains stopped/);
 });
 
-test('large stored-file checks get a bounded longer deadline and progress, with no lingering heartbeat', async t => {
+test('slow metadata inventories get a bounded deadline and progress, with no lingering heartbeat', async t => {
   t.mock.timers.enable({ apis: ['setInterval'] });
   let fileChecks = 0;
   const fixture = workflowFixture(t, { complete: true, storedFileCheck: timeoutMs => {
@@ -317,7 +317,7 @@ test('large stored-file checks get a bounded longer deadline and progress, with 
     t.mock.timers.tick(45000);
   } });
   await fixture.deploy();
-  assert.equal(fileChecks, 2, 'both snapshot and final comparison read all stored files');
+  assert.equal(fileChecks, 2, 'both snapshot and final comparison inventory stored-file metadata');
   assert.ok(fixture.messages.includes('Stored-file snapshot is still running…'));
   assert.ok(fixture.messages.includes('Stored-file verification is still running…'));
   assert.ok(fixture.messages.includes('Supervisor rebuild completed. Verifying the image and preserved settings…'));
@@ -353,7 +353,7 @@ test('Supervisor reordering saved options during rebuild still completes image v
   assert.ok(fixture.events.some(event => event.type === 'ssh' && event.script.includes('docker run')));
   assert.ok(fixture.events.some(event => event.type === 'ssh' && /rmdir \/tmp\/home-energy-deploy-synthetic_st-mq\.lock/.test(event.script)));
   assert.ok(!fixture.events.some(event => event.type === 'api' && /\/(start|restart|stop)$/.test(event.endpoint)));
-  assert.match(fixture.messages.at(-2), /Stored files and saved settings unchanged\. App remains stopped/);
+  assert.match(fixture.messages.at(-2), /Stored-file metadata and saved settings unchanged\. App remains stopped/);
 });
 
 test('a genuine saved-options change after rebuild retains the lock without runtime commands or retry', async t => {

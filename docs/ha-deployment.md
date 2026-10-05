@@ -77,9 +77,9 @@ An earlier local token file is unused and is never automatically deleted.
    per-chunk acknowledgements. The bundle transfer reports verified bytes and
    elapsed time. Supervisor's image rebuild can still take several minutes.
    The initial stored-file snapshot and final comparison each allow up to
-   15 minutes and report progress every 30 seconds while reading application
-   storage. Large databases are fully hashed; checks are never skipped to meet
-   a short SSH command timeout.
+   15 minutes and report progress every 30 seconds while listing file metadata.
+   Database and backup contents are never read: a 500 GB file costs the same
+   metadata lookup as a small file. Work scales with file count, not stored bytes.
    Both local and HA source trees must be clean, and HA's source commit must be
    an ancestor of local HEAD. Do not change app settings, edit the HA repository
    or refresh/update app repositories while deployment is running.
@@ -108,9 +108,13 @@ and fields retired by the new schema. Effective options must remain available as
 an object, but are not compared for equality before and after: adding or changing
 an unoverridden default can legitimately change them. Saved-object comparisons
 ignore object-key order while preserving values, types and array order. The
-command also fingerprints regular files and symbolic links under the app's
-Supervisor data/configuration directories before and after. Targets outside
-those directories are not included in the file comparison. A successful run
+command also compares entry names and types, regular-file sizes and nanosecond
+modification times, and symbolic-link targets under the app's Supervisor
+data/configuration directories before and after. It does not follow links or
+read stored-file contents. This detects metadata changes, not byte-for-byte
+preservation: same-size changes with unchanged modification times are not
+detected. Supervisor saved settings, source and image contents retain their
+full comparisons. A successful run
 reports the exact commit and confirms that the app is stopped.
 
 The operation touches the HA repository cache directly. A later Supervisor

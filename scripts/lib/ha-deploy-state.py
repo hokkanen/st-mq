@@ -18,7 +18,7 @@ class DeploymentStateError(Exception):
     MESSAGES = {
         "state": "Saved Supervisor configuration is unavailable or invalid",
         "snapshot": "Deployment preservation snapshot is unavailable or invalid",
-        "files": "Stored files changed during deployment or could not be verified",
+        "files": "Stored-file metadata changed during deployment or could not be verified",
         "saved-settings": "Saved installation settings changed during deployment",
         "metadata": "Installed Supervisor metadata changed before rebuilding",
         "source": "Deployment source no longer matches the selected clean revision",
@@ -72,7 +72,7 @@ def _state(state_path, slug):
         raise DeploymentStateError("state") from None
 
 
-def _files(roots):
+def _file_metadata(roots):
     records = {}
 
     def walk(path):
@@ -84,11 +84,10 @@ def _files(roots):
             for child in sorted(path.iterdir()):
                 walk(child)
         elif stat.S_ISREG(value.st_mode):
-            digest = hashlib.sha256()
-            with path.open("rb") as source:
-                for chunk in iter(lambda: source.read(1024 * 1024), b""):
-                    digest.update(chunk)
-            records[str(path)] = ["file", digest.hexdigest()]
+            # Never read database, backup or other stored-file contents. Work
+            # depends on entry count, not file sizes. This is not a byte-level
+            # integrity check: equal size and mtime can conceal content changes.
+            records[str(path)] = ["file", value.st_size, value.st_mtime_ns]
         else:
             raise ValueError("Unsupported stored file type")
 
@@ -109,12 +108,12 @@ def _scope(state_path, slug, roots):
 
 
 def snapshot(state_path, slug, roots, snapshot_path):
-    """Save only digests of raw settings, metadata and stored files, exclusively."""
+    """Save private digests of raw settings and metadata, without reading storage."""
     roots = list(roots)
     user, system = _state(state_path, slug)
     data = {
         "scope": _scope(state_path, slug, roots),
-        "files": _files(roots),
+        "file_metadata": _file_metadata(roots),
         "user": _digest(user),
         "system": _digest(system),
     }
@@ -135,8 +134,9 @@ def verify(state_path, slug, roots, snapshot_path, root, target, manifest_hash,
     Before rebuilding, installed metadata must remain as snapshotted. Afterwards,
     its schema/defaults/version must match the selected source; saved user state
     must remain identical in both phases, including retired override fields.
-    Intermediate fences may skip stored-file hashes; final verification must use
-    the default check_files=True to compare every stored file with the snapshot.
+    Intermediate fences may skip the stored-file metadata inventory; final
+    verification compares names, types, sizes, mtimes and symlink targets.
+    Stored-file contents are never read or claimed to be byte-for-byte unchanged.
     """
     roots = list(roots)
     try:
@@ -146,7 +146,7 @@ def verify(state_path, slug, roots, snapshot_path, root, target, manifest_hash,
         if stat.S_IMODE(snapshot_stat.st_mode) != 0o600:
             raise ValueError()
         saved = _read_json(snapshot_path)
-        if set(saved) != {"scope", "files", "user", "system"}:
+        if set(saved) != {"scope", "file_metadata", "user", "system"}:
             raise ValueError()
         if any(not isinstance(value, str) or len(value) != 64 or
                any(char not in "0123456789abcdef" for char in value)
@@ -160,7 +160,7 @@ def verify(state_path, slug, roots, snapshot_path, root, target, manifest_hash,
     user, system = _state(state_path, slug)
     if _digest(user) != saved["user"]:
         raise DeploymentStateError("saved-settings")
-    if check_files and _files(roots) != saved["files"]:
+    if check_files and _file_metadata(roots) != saved["file_metadata"]:
         raise DeploymentStateError("files")
     try:
         def git(*args):

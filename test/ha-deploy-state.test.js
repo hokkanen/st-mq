@@ -2,19 +2,27 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { execFileSync, spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, symlinkSync, unlinkSync, writeFileSync } from 'node:fs';
+import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, symlinkSync, unlinkSync, utimesSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const helperPath = fileURLToPath(new URL('../scripts/lib/ha-deploy-state.py', import.meta.url));
 const driver = `
-import importlib.util,json,sys
+import importlib.util,json,os,sys
 sys.dont_write_bytecode=True
 spec=importlib.util.spec_from_file_location('deployment_state',sys.argv[1])
 module=importlib.util.module_from_spec(spec)
 spec.loader.exec_module(module)
 request=json.load(sys.stdin)
+# Storage contents must never be opened, even for small fixtures. Settings,
+# source and the private snapshot live outside these roots and remain readable.
+def forbid_storage_reads(event,args):
+ if event=='open' and isinstance(args[0],(str,bytes,os.PathLike)):
+  path=os.path.abspath(os.fsdecode(args[0]))
+  if any(path==root or path.startswith(root+os.sep) for root in request['arguments']['roots']):
+   raise AssertionError('Stored-file content read attempted')
+sys.addaudithook(forbid_storage_reads)
 try:
  getattr(module,request['action'])(**request['arguments'])
  print(json.dumps({'ok':True}))
@@ -138,7 +146,7 @@ test('snapshots contain digests only, have private permissions and never overwri
   assert.equal(statSync(f.snapshotPath).mode & 0o777, 0o600);
   const bytes = readFileSync(f.snapshotPath);
   const snapshot = JSON.parse(bytes);
-  assert.deepEqual(Object.keys(snapshot).sort(), ['files', 'scope', 'system', 'user']);
+  assert.deepEqual(Object.keys(snapshot).sort(), ['file_metadata', 'scope', 'system', 'user']);
   for (const value of Object.values(snapshot)) assert.match(value, /^[0-9a-f]{64}$/);
   expectError(f.snapshot(), 'snapshot');
   assert.deepEqual(readFileSync(f.snapshotPath), bytes);
@@ -266,7 +274,7 @@ test('symbolic links are preserved without reading their outside targets', t => 
   assert.deepEqual(f.verify(), { ok: true });
 });
 
-test('intermediate fences skip stored-file hashing while preserving settings and source checks', t => {
+test('intermediate fences skip stored-file metadata while preserving settings and source checks', t => {
   const f = fixture(t);
   assert.deepEqual(f.snapshot(), { ok: true });
   writeFileSync(f.databasePath, 'changed database');
@@ -281,6 +289,34 @@ test('intermediate fences skip stored-file hashing while preserving settings and
   expectError(f.verify({ check_files: false }), 'source');
   unlinkSync(unexpected);
   expectError(f.verify(), 'files');
+});
+
+test('stored-file metadata detects timestamp-only changes and documents equal-metadata limits', t => {
+  const f = fixture(t);
+  const timestamp = 1700000000;
+  utimesSync(f.databasePath, timestamp, timestamp);
+  assert.deepEqual(f.snapshot(), { ok: true });
+  utimesSync(f.databasePath, timestamp, timestamp + 1);
+  expectError(f.verify(), 'files');
+  const size = statSync(f.databasePath).size;
+  writeFileSync(f.databasePath, 'x'.repeat(size));
+  utimesSync(f.databasePath, timestamp, timestamp);
+  assert.deepEqual(f.verify(), { ok: true }, 'equal size and modification time are not proof of equal contents');
+  writeFileSync(f.databasePath, 'x'.repeat(size + 1));
+  utimesSync(f.databasePath, timestamp, timestamp);
+  expectError(f.verify(), 'files');
+});
+
+test('obsolete content-hash snapshots are rejected without translation or mutation', t => {
+  const f = fixture(t);
+  assert.deepEqual(f.snapshot(), { ok: true });
+  const saved = JSON.parse(readFileSync(f.snapshotPath));
+  saved.files = saved.file_metadata;
+  delete saved.file_metadata;
+  writeFileSync(f.snapshotPath, JSON.stringify(saved));
+  const before = readFileSync(f.snapshotPath);
+  expectError(f.verify(), 'snapshot');
+  assert.deepEqual(readFileSync(f.snapshotPath), before);
 });
 
 for (const [name, mutate] of [

@@ -230,8 +230,8 @@ PY`));
       return execute(`docker exec hassio_supervisor python3 ${remote}-step.py`, timeoutMs);
     };
     const stateHelper = readFileSync(new URL('./lib/ha-deploy-state.py', import.meta.url), 'utf8');
-    const stateChecks = { state: 'Supervisor saved state is unavailable or malformed', snapshot: 'Deployment state snapshot is unavailable or malformed',
-      files: 'Stored application files changed during deployment', 'saved-settings': 'Saved installation settings changed during deployment',
+    const stateChecks = { state: 'Supervisor saved state is unavailable or malformed', snapshot: 'Deployment state snapshot is unavailable or incompatible; start a fresh deployment after inspecting the retained lock',
+      files: 'Stored-file metadata changed during deployment', 'saved-settings': 'Saved installation settings changed during deployment',
       metadata: 'Installed app metadata changed before rebuild', source: 'Remote source no longer matches the selected commit',
       schema: 'Supervisor installed schema does not match the deployed commit', defaults: 'Supervisor installed defaults do not match the deployed commit',
       version: 'Supervisor installed version does not match the deployed commit' };
@@ -242,13 +242,13 @@ PY`));
       const code = stateHelper + `\nfrom supervisor.const import FILE_HASSIO_APPS\ntry:\n ${statement}\nexcept DeploymentStateError as error:\n print(json.dumps({'error': error.code}))\nelse:\n` + (installed && !checkFiles
         ? ` from supervisor.apps.options import UiOptions\n manifest=json.loads(Path('${info.root}/config.json').read_text())\n print(json.dumps({'ok': True, 'schema': UiOptions(None)(manifest['schema'])}))\n`
         : ` print(json.dumps({'ok': True}))\n`);
-      const readsStoredFiles = action === 'snapshot' || checkFiles;
+      const checksStoredMetadata = action === 'snapshot' || checkFiles;
       const label = action === 'snapshot' ? 'Stored-file snapshot' : 'Stored-file verification';
-      if (readsStoredFiles) log(`${label}: reading application storage; large histories can take several minutes…`);
-      const heartbeat = readsStoredFiles ? setInterval(() => log(`${label} is still running…`), 30000) : undefined;
+      if (checksStoredMetadata) log(`${label}: checking file sizes and modification times without reading stored contents…`);
+      const heartbeat = checksStoredMetadata ? setInterval(() => log(`${label} is still running…`), 30000) : undefined;
       let result;
       try {
-        result = JSON.parse(await python(code, readsStoredFiles ? STORED_FILES_TIMEOUT_MS : 30000));
+        result = JSON.parse(await python(code, checksStoredMetadata ? STORED_FILES_TIMEOUT_MS : 30000));
       } finally { clearInterval(heartbeat); }
       if (result?.ok !== true) throw new DeploymentError(Object.hasOwn(stateChecks, result?.error) ? stateChecks[result.error] : 'Deployment state verification failed');
       return result.schema;
@@ -315,7 +315,7 @@ PY`));
     // Only deployment-owned temporary files are removed, after all checks pass.
     phase = 'cleanup';
     await execute(`docker exec hassio_supervisor rm -f ${remote}-step.py ${remote}-before.json ${remote}.bundle && rm -rf ${remote} && rmdir /tmp/home-energy-deploy-${app.slug}.lock`);
-    log(`Verified ${target.slice(0, 12)}: ${checked.sourceFiles} source files, ${checked.frontendFiles} frontend files, ${checked.architecture}. Supervisor schema and defaults match. Stored files and saved settings unchanged. App remains stopped.`);
+    log(`Verified ${target.slice(0, 12)}: ${checked.sourceFiles} source files, ${checked.frontendFiles} frontend files, ${checked.architecture}. Supervisor schema and defaults match. Stored-file metadata and saved settings unchanged. App remains stopped.`);
     log('Start the app explicitly when ready. Incompatible saved fields require configuration recovery; deployment does not remove them.');
   } catch (error) {
     const detail = error instanceof DeploymentError || error instanceof DeploymentTransportError ? error.message + ' ' : '';
