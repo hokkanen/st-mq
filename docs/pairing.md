@@ -50,6 +50,31 @@ use authenticated encryption with the shared pairing token. This token is
 distinct from the web access token and MQTT credentials. Neither the token nor household contents
 belong in Git or diagnostic output.
 
+### Updating a locally built Home Assistant app
+
+A local rebuild can leave Supervisor validating options against cached app
+metadata. If it still requires retired fields, keep the app stopped and preserve
+its private options before refreshing the metadata. Supervisor 2026.09.3 supports
+this procedure through its v1 API:
+
+1. Read `GET /store/repositories` and retain the exact set of `source` values,
+   including built-in repositories. Record the checkout's current commit.
+2. Send `POST /supervisor/options` with only `addons_repositories` set to that
+   unchanged list. Verify that the repository set and checkout commit remain
+   unchanged. This rereads local manifests without fetching or resetting Git.
+3. Run `POST /addons/<app-slug>/rebuild` again, then inspect the changed field
+   descriptors in `GET /addons/<app-slug>/info`. Apply the current options only
+   after the installed schema has refreshed, before starting the app.
+
+The installed `schema` is a descriptor array, not the manifest's raw mapping;
+`GET /store/addons/<app-slug>` does not expose it. The repository-list option is
+deprecated but supported in that Supervisor release; if unavailable, stop and
+check the installed API. Do not substitute `/addons/reload` or `/store/reload`:
+their Git update can reset an unpublished checkout to the remote branch. See
+Supervisor's [options handler](https://github.com/home-assistant/supervisor/blob/2026.09.3/supervisor/api/supervisor.py#L157-L174),
+[manifest refresh](https://github.com/home-assistant/supervisor/blob/2026.09.3/supervisor/store/__init__.py#L261-L308)
+and [Git update](https://github.com/home-assistant/supervisor/blob/2026.09.3/supervisor/store/git.py#L241-L278).
+
 ## Configuration
 
 Store settings in each installation's private configuration. These invented
