@@ -64,6 +64,10 @@ Versions follow Semantic Versioning. `-dev.N` denotes a development prerelease.
 
 ### Fixed
 
+- Home Assistant deployment accepts unchanged configuration whose JSON object
+  keys were reordered, and identifies failed app checks without exposing private
+  settings. Missing or malformed configuration still blocks deployment.
+
 - Shelly's allowance comparison uses the independently verified native Equalizer
   budget, keeping it separate from the configured fuse limit and safety margin.
   Missing or unusable budget evidence selects fallback. Equalizer allowances

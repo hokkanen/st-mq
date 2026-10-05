@@ -87,7 +87,9 @@ update, and asks Supervisor to rebuild the installed image. It compares all
 runtime `src` files, package/manifest files and frontend assets with the local
 commit/build in an isolated, networkless container without household mounts.
 It checks app identity, state, version and saved Supervisor options around the
-update and rebuild, and fingerprints regular files and symbolic links under the
+update and rebuild. Options must be available as an object; comparison ignores
+object-key order while preserving values, types and array order. It fingerprints
+regular files and symbolic links under the
 app's Supervisor data/configuration directories before and after. Targets outside
 those directories are not included in the file comparison. A successful run
 reports the exact commit and confirms that the app is stopped.
@@ -118,7 +120,9 @@ Deployment-owned temporary files under `/tmp/home-energy-deploy-*` are retained
 on failure for inspection; successful runs remove their own files and lock.
 A retry starts a fresh transfer. Neither retry nor lock removal erases app data.
 Errors identify existing locks, command failure, transport failure and the failed
-phase. Raw SSH, command and Supervisor error output remains hidden because it
+phase. App verification names the changed checks (state, slug, repository,
+version or configuration) without printing private identifiers or option values.
+Raw SSH, command and Supervisor error output remains hidden because it
 may contain private configuration.
 
 Offline transport, boundary and deployment workflow tests run with:

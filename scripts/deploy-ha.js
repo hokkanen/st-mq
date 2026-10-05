@@ -5,6 +5,7 @@ import { readFileSync, readdirSync, realpathSync, statSync, mkdtempSync, rmSync 
 import { homedir, tmpdir } from 'node:os';
 import { dirname, isAbsolute, join, relative, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { isDeepStrictEqual } from 'node:util';
 import { connectSSH, validateSSHHost, shellQuote, DeploymentTransportError } from './lib/ha-deploy-transport.js';
 
 const root = fileURLToPath(new URL('../', import.meta.url));
@@ -42,12 +43,27 @@ export function validateDeploymentState(app, manifest) {
   if (!/^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$/.test(manifest.version)) throw new DeploymentError('Invalid manifest version');
   if (app.version !== manifest.version) throw new DeploymentError('Installed and checkout versions differ; install the matching version through Supervisor first');
   if (typeof app.repository !== 'string' || !/^[a-z0-9_-]+$/.test(app.repository)) throw new DeploymentError('Expected a Git-backed app repository');
+  validateAppOptions(app.options);
+}
+
+function validateAppOptions(options) {
+  if (!options || typeof options !== 'object' || Array.isArray(options)) throw new DeploymentError('App configuration options are invalid or unavailable');
 }
 
 export function validateUnchangedApp(current, original) {
-  if (current.state !== 'stopped' || current.slug !== original.slug || current.repository !== original.repository || current.version !== original.version || hash(JSON.stringify(current.options)) !== hash(JSON.stringify(original.options))) {
-    throw new DeploymentError('App state, identity, version or configuration changed during deployment');
+  validateAppOptions(original.options);
+  validateAppOptions(current.options);
+  const changed = [];
+  if (current.state !== 'stopped') {
+    // Only recognized public state labels may enter diagnostics, never raw API values.
+    const state = ['started', 'starting', 'startup', 'unknown', 'error'].includes(current.state) ? current.state : 'unrecognized';
+    changed.push(`state (expected stopped; observed ${state})`);
   }
+  for (const field of ['slug', 'repository', 'version']) if (current[field] !== original[field]) changed.push(field);
+  // Supervisor may serialize object keys in a different order after rebuilding.
+  // Values, types, missing keys and array order must still match exactly.
+  if (!isDeepStrictEqual(current.options, original.options)) changed.push('configuration');
+  if (changed.length) throw new DeploymentError(`App checks changed during deployment: ${changed.join(', ')}`);
 }
 
 export function createSupervisorAPI(ssh) {

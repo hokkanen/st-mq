@@ -8,7 +8,7 @@ import { join } from 'node:path';
 import { main } from '../scripts/deploy-ha.js';
 import { DeploymentTransportError } from '../scripts/lib/ha-deploy-transport.js';
 
-function workflowFixture(t, { existingLock = false, corruptBundle = false, changedApp = false, lostRebuildResponse = false, complete = false } = {}) {
+function workflowFixture(t, { existingLock = false, corruptBundle = false, changedApp = false, optionsAfterRebuild, lostRebuildResponse = false, complete = false } = {}) {
   const directory = mkdtempSync(join(tmpdir(), 'ha-deploy-workflow-'));
   t.after(() => rmSync(directory, { recursive: true, force: true }));
   const checkout = join(directory, 'checkout');
@@ -44,8 +44,12 @@ function workflowFixture(t, { existingLock = false, corruptBundle = false, chang
   const events = [];
   const messages = [];
   const uploads = new Map();
-  const app = { slug: 'synthetic_st-mq', repository: 'synthetic', state: 'stopped', version: '0.9.5-dev.3', options: {} };
+  const app = { slug: 'synthetic_st-mq', repository: 'synthetic', state: 'stopped', version: '0.9.5-dev.3', options: {
+    enabled: false,
+    charging: { limit: 0, schedule: [{ start: '01:00', target: 80 }, { start: '02:00', target: null }] },
+  } };
   let appReads = 0;
+  let rebuilt = false;
   const ssh = {
     async run(script, { input } = {}) {
       events.push({ type: 'ssh', script, input });
@@ -89,13 +93,17 @@ function workflowFixture(t, { existingLock = false, corruptBundle = false, chang
       if (endpoint === '/addons') return { addons: [structuredClone(app)] };
       if (endpoint === '/addons/synthetic_st-mq/info') {
         appReads++;
-        return { ...structuredClone(app), state: changedApp && appReads > 1 ? 'started' : 'stopped' };
+        return {
+          ...structuredClone(app),
+          state: changedApp && appReads > 1 ? 'started' : 'stopped',
+          ...(rebuilt && optionsAfterRebuild ? { options: structuredClone(optionsAfterRebuild) } : {}),
+        };
       }
       if (endpoint === '/addons/synthetic_st-mq/rebuild') {
         assert.equal(method, 'post');
         assert.equal(timeoutSeconds, 900);
         if (lostRebuildResponse) throw new DeploymentTransportError('SSH connection lost; the submitted operation may still be running');
-        if (complete) return {};
+        if (complete) { rebuilt = true; return {}; }
       }
       assert.fail('Unexpected Supervisor request in deployment fixture');
     };
@@ -144,7 +152,7 @@ test('a corrupted uploaded bundle prevents source replacement and rebuild', asyn
 
 test('an app started during deployment prevents Supervisor rebuild', async t => {
   const fixture = workflowFixture(t, { changedApp: true });
-  await assert.rejects(fixture.deploy(), /App state|Stop Home Energy|App started/);
+  await assert.rejects(fixture.deploy(), /changed during deployment: state \(expected stopped; observed started\)/);
   assert.equal(fixture.events.filter(event => event.type === 'api' && event.endpoint.endsWith('/info')).length, 2);
   assertNoRebuild(fixture.events);
   assertRetainedFailureState(fixture.events);
@@ -174,4 +182,32 @@ test('successful deployment runs the emitted image verifier before final stopped
   assert.ok(!fixture.events.some(event => event.type === 'api' && /\/(start|restart|stop)$/.test(event.endpoint)));
   assert.match(fixture.messages.at(-1), /1 source files, 1 frontend files/);
   assert.match(fixture.messages.at(-1), /App remains stopped/);
+});
+
+test('Supervisor reordering saved options during rebuild still completes image verification and cleanup', async t => {
+  const fixture = workflowFixture(t, { complete: true, optionsAfterRebuild: {
+    charging: { schedule: [{ target: 80, start: '01:00' }, { target: null, start: '02:00' }], limit: 0 },
+    enabled: false,
+  } });
+  await fixture.deploy();
+  assert.equal(fixture.events.filter(event => event.type === 'api' && event.endpoint.endsWith('/rebuild')).length, 1);
+  assert.ok(fixture.events.some(event => event.type === 'ssh' && event.script.includes('docker run')));
+  assert.ok(fixture.events.some(event => event.type === 'ssh' && /rmdir \/tmp\/home-energy-deploy-synthetic_st-mq\.lock/.test(event.script)));
+  assert.ok(!fixture.events.some(event => event.type === 'api' && /\/(start|restart|stop)$/.test(event.endpoint)));
+  assert.match(fixture.messages.at(-1), /Stored files and configuration unchanged\. App remains stopped/);
+});
+
+test('a genuine saved-options change after rebuild retains the lock without runtime commands or retry', async t => {
+  const fixture = workflowFixture(t, { complete: true, optionsAfterRebuild: {
+    enabled: false,
+    charging: { limit: 1, schedule: [{ start: '01:00', target: 80 }, { start: '02:00', target: null }] },
+  } });
+  await assert.rejects(fixture.deploy(), /changed during deployment: configuration.*Deployment stopped during verification/i);
+  const rebuilds = fixture.events.filter(event => event.type === 'api' && event.endpoint.endsWith('/rebuild'));
+  assert.equal(rebuilds.length, 1);
+  const afterRebuild = fixture.events.slice(fixture.events.indexOf(rebuilds[0]) + 1);
+  assert.deepEqual(afterRebuild.map(event => event.type), ['api', 'close']);
+  assert.equal(afterRebuild[0].endpoint, '/addons/synthetic_st-mq/info');
+  assert.equal(fixture.events.filter(event => event.type === 'connect').length, 1);
+  assertRetainedFailureState(fixture.events);
 });

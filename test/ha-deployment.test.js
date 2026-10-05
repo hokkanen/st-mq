@@ -41,10 +41,91 @@ test('deployment requires a stopped app with valid identity and matching manifes
   assert.throws(() => validateDeploymentState({ ...app, slug: "invalid'; false" }, manifest), /identity/);
 });
 
-test('later checks fence app identity, state, version and saved options', () => {
+test('deployment requires saved options to be an available object at every check', () => {
+  assert.doesNotThrow(() => validateDeploymentState({ ...app, options: {} }, { version: app.version }));
+  for (const options of [undefined, null, [], 'synthetic-private-value', false, 0]) {
+    const invalid = { ...app, options };
+    for (const validate of [
+      () => validateDeploymentState(invalid, { version: app.version }),
+      () => validateUnchangedApp(invalid, app),
+      () => validateUnchangedApp(app, invalid),
+      () => validateUnchangedApp(invalid, invalid),
+    ]) {
+      assert.throws(validate, error => {
+        assert.match(error.message, /options|configuration/i);
+        assert.match(error.message, /invalid|unavailable/i);
+        assert.doesNotMatch(error.message, /synthetic-private-value/);
+        return true;
+      });
+    }
+  }
+});
+
+test('later checks identify changed app state, identity, repository, version and saved options without private values', () => {
   assert.doesNotThrow(() => validateUnchangedApp(structuredClone(app), app));
-  for (const patch of [{ state: 'started' }, { slug: 'other_st-mq' }, { repository: 'different' }, { version: '0.9.6' }, { options: { enabled: true } }]) {
-    assert.throws(() => validateUnchangedApp({ ...app, ...patch }, app), /changed during deployment/);
+  for (const [field, pattern] of [
+    ['state', /state/i], ['slug', /identity|slug/i], ['repository', /repository/i],
+    ['version', /version/i], ['options', /options|configuration/i],
+  ]) {
+    const value = field === 'options' ? { 'synthetic-private-key': 'synthetic-private-value' } : 'synthetic-private-value';
+    assert.throws(() => validateUnchangedApp({ ...app, [field]: value }, app), error => {
+      assert.match(error.message, pattern);
+      assert.match(error.message, /changed during deployment/);
+      assert.doesNotMatch(error.message, /synthetic-private-key|synthetic-private-value/);
+      return true;
+    });
+  }
+});
+
+test('saved options ignore object key order at every depth while preserving array order', () => {
+  const original = { ...app, options: {
+    enabled: false,
+    charging: { limit: 0, name: 'synthetic', schedule: [
+      { start: '01:00', details: { enabled: true, target: null } },
+      { start: '02:00', details: { enabled: false, target: 80 } },
+    ] },
+  } };
+  const reordered = { ...app, options: {
+    charging: { schedule: [
+      { details: { target: null, enabled: true }, start: '01:00' },
+      { details: { target: 80, enabled: false }, start: '02:00' },
+    ], name: 'synthetic', limit: 0 },
+    enabled: false,
+  } };
+  assert.doesNotThrow(() => validateUnchangedApp(reordered, original));
+  assert.doesNotThrow(() => validateUnchangedApp(original, reordered));
+});
+
+test('saved options still reject scalar, type, key and ordered-array changes', () => {
+  const original = { ...app, options: {
+    nested: { enabled: false, limit: 0, target: null, label: 'synthetic' },
+    order: [1, 2],
+    records: [{ name: 'first', enabled: false }, { name: 'second', enabled: true }],
+  } };
+  const changes = [
+    options => { options.nested.enabled = true; },
+    options => { options.nested.limit = 1; },
+    options => { options.nested.limit = '0'; },
+    options => { options.nested.enabled = 0; },
+    options => { options.nested.target = ''; },
+    options => { options.nested.label = 'changed'; },
+    options => { delete options.nested.target; },
+    options => { options.nested.extra = null; },
+    options => { options.nested = []; },
+    options => { options.order.reverse(); },
+    options => { options.order.push(3); },
+    options => { options.order = { 0: 1, 1: 2 }; },
+    options => { options.records.reverse(); },
+    options => { options.records[0].enabled = true; },
+  ];
+  for (const change of changes) {
+    const current = structuredClone(original);
+    change(current.options);
+    assert.throws(() => validateUnchangedApp(current, original), error => {
+      assert.match(error.message, /changed during deployment/i);
+      assert.match(error.message, /options|configuration/i);
+      return true;
+    });
   }
 });
 
