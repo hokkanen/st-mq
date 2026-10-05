@@ -7,10 +7,11 @@ const CHARGER = 'synthetic-charger', EQUALIZER = 'synthetic-equalizer';
 const obs = (id, value) => ({ id, value, timestamp: new Date(NOW - 30_000).toISOString() });
 
 function harness() {
-  const h = { schedule: normalizeScheduleState({ enabled: 'none' }), requests: [], observations: [],
+  const h = { schedule: normalizeScheduleState({ enabled: 'none' }), requests: [], observations: [], now: NOW,
+    allocationA: 20, allocationFailure: false,
     enabled: true, freshEnabled: true };
   h.adapter = createEaseeScheduleAdapter({ chargerId: CHARGER, equalizerId: EQUALIZER,
-    clock: () => NOW, canControl: () => true,
+    clock: () => h.now, canControl: () => true,
     readObservations: async (deviceId, ids, options) => {
       h.observations.push({ deviceId, ids: [...ids], ...options });
       const rows = deviceId === EQUALIZER
@@ -24,7 +25,10 @@ function harness() {
     request: async (url, options) => {
       h.requests.push({ url, ...options });
       if (options.method === 'GET' && url.endsWith('/schedules')) return structuredClone(h.schedule);
-      if (options.method === 'GET' && url.endsWith('/config')) return { maxAllocatedCurrent: 20 };
+      if (options.method === 'GET' && url.endsWith('/config')) {
+        if (h.allocationFailure) throw Error('Synthetic configuration unavailable');
+        return { maxAllocatedCurrent: h.allocationA };
+      }
       if (options.method === 'POST' && url.endsWith('/delayed')) {
         const { enabled, ...delayed } = JSON.parse(options.body);
         assert.equal(enabled, true);
@@ -60,6 +64,40 @@ test('charging reads shared observations while schedule and allocation stay on R
   ]);
   await h.adapter.read();
   assert.equal(h.requests.filter(row => row.url.endsWith('/config')).length, 1);
+});
+
+test('native budget preserves actual configuration receipt across cached telemetry and expires after failed rereads', async () => {
+  const h = harness();
+  const original = (await h.adapter.readTelemetry({ configurationEpoch: 1 })).supply.nativeBudget;
+  assert.equal(original.currentA, 20); assert.equal(original.source, 'easee-equalizer-config');
+  assert.equal(original.confirmedAt, NOW); assert.equal(original.validUntil, NOW + 24 * 3600_000);
+  assert.equal(typeof original.equipment, 'string');
+  h.now += 30 * 60_000;
+  assert.deepEqual((await h.adapter.readTelemetry({ configurationEpoch: 1 })).supply.nativeBudget, original,
+    'Ordinary telemetry cannot renew a cached configuration readback');
+  assert.equal(h.requests.filter(row => row.url.endsWith('/config')).length, 1);
+  h.allocationFailure = true; h.now += 3600_000;
+  assert.deepEqual((await h.adapter.readTelemetry({ configurationEpoch: 1 })).supply.nativeBudget, original);
+  h.now = NOW + 24 * 3600_000 + 1;
+  assert.equal((await h.adapter.readTelemetry({ configurationEpoch: 1 })).supply.nativeBudget, null);
+});
+
+test('a new acquisition epoch cannot relabel cached native configuration as current proof', async () => {
+  const h = harness();
+  const first = (await h.adapter.readTelemetry({ configurationEpoch: 1 })).supply.nativeBudget;
+  h.now += 1000; h.allocationFailure = true;
+  const disconnected = await h.adapter.readTelemetry({ configurationEpoch: 2 });
+  assert.equal(disconnected.supply.nativeBudget, null);
+  assert.equal(disconnected.supply.allocationA, 20, 'The existing forecast observation remains distinct from live proof');
+  const attempts = h.requests.filter(row => row.url.endsWith('/config')).length;
+  h.now += 1000;
+  assert.equal((await h.adapter.readTelemetry({ configurationEpoch: 2 })).supply.nativeBudget, null);
+  assert.equal(h.requests.filter(row => row.url.endsWith('/config')).length, attempts,
+    'A failed recheck is bounded to at most one retry per minute');
+  h.now += 60_000; h.allocationFailure = false;
+  const recovered = (await h.adapter.readTelemetry({ configurationEpoch: 2 })).supply.nativeBudget;
+  assert.equal(recovered.currentA, 20); assert.equal(recovered.equipment, first.equipment);
+  assert.equal(recovered.confirmedAt, h.now); assert.notEqual(recovered.confirmedAt, first.confirmedAt);
 });
 
 test('install and handover force fresh observations before each write and for readback', async () => {

@@ -56,6 +56,14 @@ Versions follow Semantic Versioning. `-dev.N` denotes a development prerelease.
 
 ### Fixed
 
+- Shelly's allowance comparison uses the independently verified native Equalizer
+  budget, keeping it separate from the configured fuse limit and safety margin.
+  Missing or unusable budget evidence selects fallback. Equalizer allowances
+  remain separate from circuit limits and keep their reported numeric meaning.
+- A zero Equalizer allowance can agree operationally with less than the verified
+  minimum charging current when all native Easee phase readings independently
+  confirm idle draw. This bounded inference preserves the original readings and
+  calculated headroom; stale evidence or other phase contradictions still fail.
 - Shelly's measured current changes no longer cause repeated fallback against
   an unchanged Equalizer allowance. A fixed comparison reference preserves
   genuine household-load disagreements and is discarded on lost evidence,

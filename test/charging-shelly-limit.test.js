@@ -8,7 +8,9 @@ const phases = value => ({ healthy: true, currents: [value, value, value], times
 const config = { maximumCurrentA: 16, minimumCurrentA: 6, currentStepA: 1,
   mainFuseA: [25, 25, 25], marginA: [1, 1, 1],
   maxAgeMs: 15_000, agreementToleranceA: 2, fallbackCurrentA: 12 };
-const input = () => ({ config, now: NOW, property: phases(34), easee: phases(16), shelly: phases(10), allowance: phases(7) });
+const input = () => ({ config, now: NOW, property: phases(34), easee: phases(16), shelly: phases(10), allowance: phases(7),
+  nativeBudget: { currentA: 25, source: 'easee-equalizer-config', equipment: 'synthetic-equalizer',
+    confirmedAt: NOW, validUntil: NOW + 24 * 3600_000 } });
 
 test('a configured fallback is a cap, with zero and minimum-current behavior preserved', () => {
   for (const [fallbackCurrentA, expected] of [[0, 0], [5, 0], [6, 6], [8, 8], [12, 12], [16, 16]]) {

@@ -12,19 +12,21 @@ import { Recorder } from '../src/storage/recorder.js';
 const NOW = 1800000000000;
 const config = extra => shellyProfile(chargingConfiguration({chargers:{charger2:{enabled:true, deviceId:'synthetic-evse',topicPrefix:'test/evse',
   limiterEnabled:false,marginA:[0,0,0],...extra}}}).chargers.charger2);
+const budget = (currentA = 25) => ({ currentA, source: 'easee-equalizer-config', equipment: 'synthetic-equalizer',
+  confirmedAt: NOW, validUntil: NOW + 24 * 3600_000 });
 const reading = currents => ({currents,times:[NOW,NOW,NOW],healthy:true,
   evidence:{connected:true,online:true,synchronized:true,epoch:'fixture-epoch'}});
 test('phase limiter preserves absolute Shelly capacity, reservation and minimum-current boundary', () => {
-  const args={config:config(),now:NOW,property:reading([34,30,32]),easee:reading([12,12,12]),shelly:reading([12,12,12]),allowance:reading([3,7,5])};
+  const args={config:config(),now:NOW,nativeBudget:budget(),property:reading([34,30,32]),easee:reading([12,12,12]),shelly:reading([12,12,12]),allowance:reading([3,7,5])};
   assert.equal(shellyCurrentLimit(args).currentA,15);
   assert.equal(shellyCurrentLimit({...args,reservationA:8}).currentA,7);
-  assert.equal(shellyCurrentLimit({...args,property:reading([44,30,32]),allowance:reading([0,7,5])}).currentA,0);
-  assert.equal(shellyCurrentLimit({...args,property:reading([43,30,32]),allowance:reading([0,7,5])}).currentA,6);
+  assert.equal(shellyCurrentLimit({...args,nativeBudget:budget(),property:reading([44,30,32]),allowance:reading([0,7,5])}).currentA,0);
+  assert.equal(shellyCurrentLimit({...args,nativeBudget:budget(),property:reading([43,30,32]),allowance:reading([0,7,5])}).currentA,6);
   assert.equal(shellyCurrentLimit({...args,config:config({marginA:[1,1,1]})}).currentA,14);
-  assert.equal(shellyCurrentLimit({...args,property:reading([40,36,38]),easee:reading([18,18,18])}).currentA,15);
+  assert.equal(shellyCurrentLimit({...args,nativeBudget:budget(),property:reading([40,36,38]),easee:reading([18,18,18])}).currentA,15);
 });
 test('unsynchronized feeds, nonadditive residual and telemetry loss use accepted fallback with tighter known bounds', () => {
-  const args={config:config(),now:NOW,property:reading([34,30,32]),easee:reading([12,12,12]),shelly:reading([12,12,12]),allowance:reading([3,7,5])};
+  const args={config:config(),now:NOW,nativeBudget:budget(),property:reading([34,30,32]),easee:reading([12,12,12]),shelly:reading([12,12,12]),allowance:reading([3,7,5])};
   for(const property of [null,{...reading([34,30,32]),evidence:{connected:true,online:true,synchronized:false,epoch:'fixture-epoch'}},reading([1,1,1])]) {
     const result=shellyCurrentLimit({...args,property});assert.equal(result.currentA,12);assert.equal(result.reason,'telemetry-fallback');assert.equal(result.guaranteedProtection,false);
   }
@@ -32,13 +34,13 @@ test('unsynchronized feeds, nonadditive residual and telemetry loss use accepted
   assert.equal(shellyCurrentLimit({...args,property:null,allocationA:0}).currentA,0);
 });
 test('positive vehicle demand below the pilot minimum preserves electrical and zero-current stops', () => {
-  const args = { config: config(), now: NOW, property: reading([34, 30, 32]),
+  const args = { config: config(), now: NOW, nativeBudget: budget(), property: reading([34, 30, 32]),
     easee: reading([12, 12, 12]), shelly: reading([12, 12, 12]), allowance: reading([3, 7, 5]) };
   for (const vehicleCurrentA of [1, 5, 5.5]) {
     assert.equal(shellyCurrentLimit({ ...args, vehicleCurrentA }).currentA, 6,
       'The smallest valid pilot can supply a car that independently draws less');
     assert.equal(shellyCurrentLimit({ ...args, vehicleCurrentA, property: null }).currentA, 6);
-    for (const tighter of [{ nativeCurrentA: 5 }, { allocationA: 5 }, { property: reading([44, 30, 32]), allowance: reading([0,7,5]) }]) {
+    for (const tighter of [{ nativeCurrentA: 5 }, { allocationA: 5 }, { nativeBudget: budget(), property: reading([44, 30, 32]), allowance: reading([0,7,5]) }]) {
       const limited = shellyCurrentLimit({ ...args, vehicleCurrentA, ...tighter });
       assert.equal(limited.currentA, 0); assert.equal(limited.pause, true,
         'A native, allocated or physical electrical ceiling below the pilot minimum still stops charging');
@@ -465,7 +467,7 @@ test('fuse pause is an EVSE Boolean action and reply/readback is distinct from p
   const f=fixture(t,{limiterEnabled:true});await f.ready();
   let saved;const controller=createShellyController({adapter:f.adapter,clock:()=>NOW,canControl:()=>true,saveState:value=>saved=structuredClone(value)});
   t.after(()=>controller.close());
-  await controller.update({enabled:false,allocation:{property:reading([44,30,32]),easee:reading([12,12,12]),allowance:reading([0,7,5])}});
+  await controller.update({enabled:false,allocation:{nativeBudget:budget(),property:reading([44,30,32]),easee:reading([12,12,12]),allowance:reading([0,7,5])}});
   const commands=f.writes.filter(row=>row.method.endsWith('.Set'));
   assert.equal(commands.length,1);assert.equal(commands[0].method,'Boolean.Set');assert.equal(commands[0].params.value,false);assert.equal(commands[0].options.retain,false);
   assert.notEqual(controller.status().executionStage,'physical-effect');assert.equal(saved.association,f.adapter.association);
@@ -490,7 +492,7 @@ test('controller comparison survives priority and Charge now invalidation but lo
   };
   const controller = createShellyController({ adapter: f.adapter, clock: f.now, canControl: () => authority,
     getAllocation: () => ({ priority, liveUnscheduled: true, peerDemandA: 16,
-      property: reading([4 + own, 4 + own, 4 + own]), easee: reading([0, 0, 0]), allowance: reading([9, 9, 9]) }) });
+      nativeBudget: budget(), property: reading([4 + own, 4 + own, 4 + own]), easee: reading([0, 0, 0]), allowance: reading([9, 9, 9]) }) });
   t.after(() => controller.close());
   await controller.update({ enabled: false });
   physical(16);
@@ -513,7 +515,7 @@ test('confirmed controller current transitions wait for matching meters without 
   let property = 22, priority = 'balanced';
   const controller = createShellyController({ adapter: f.adapter, clock: f.now, canControl: () => true,
     getAllocation: () => ({ priority, liveUnscheduled: true, peerDemandA: 6,
-      property: reading([property, property, property]), easee: reading([0, 0, 0]), allowance: reading([8, 8, 8]) }) });
+      nativeBudget: budget(30), property: reading([property, property, property]), easee: reading([0, 0, 0]), allowance: reading([8, 8, 8]) }) });
   t.after(() => controller.close());
   let result = await controller.update({ enabled: false });
   assert.equal(result.limiter.currentA, 14); assert.equal(f.fields.current_limit, 14);
@@ -539,7 +541,7 @@ test('an admitted matching current readback with an older source clock still sup
   let property = 22;
   const controller = createShellyController({ adapter: f.adapter, clock: f.now, canControl: () => true,
     getAllocation: () => ({ priority: 'balanced', liveUnscheduled: true, peerDemandA: 6,
-      property: reading([property, property, property]), easee: reading([0, 0, 0]), allowance: reading([8, 8, 8]) }) });
+      nativeBudget: budget(30), property: reading([property, property, property]), easee: reading([0, 0, 0]), allowance: reading([8, 8, 8]) }) });
   t.after(() => controller.close());
   await controller.update({ enabled: false }); assert.equal(f.fields.current_limit, 14);
   f.setNow(NOW + 2000); f.delta('current_limit', { value: 14, source: 'sys', last_update_ts: (NOW + 2000) / 1000 });
@@ -557,7 +559,7 @@ test('measurement settling cannot release a native Stop or override a new priori
     let property = 22, priority = 'balanced', peerDemandA = 6;
     const controller = createShellyController({ adapter: f.adapter, clock: f.now, canControl: () => true,
       getAllocation: () => ({ priority, liveUnscheduled: true, peerDemandA,
-        property: reading([property, property, property]), easee: reading([0, 0, 0]), allowance: reading([8, 8, 8]) }) });
+        nativeBudget: budget(30), property: reading([property, property, property]), easee: reading([0, 0, 0]), allowance: reading([8, 8, 8]) }) });
     t.after(() => controller.close());
     await controller.update({ enabled: false });
     property = 25; f.setNow(NOW + 5000);
@@ -577,7 +579,7 @@ test('a persisted comparison diagnostic cannot restore a controller reference af
   let saved = null, own = 12;
   const attach = () => createShellyController({ adapter: f.adapter, initialState: saved, clock: f.now,
     canControl: () => true, saveState: value => { saved = structuredClone(value); },
-    getAllocation: () => ({ priority: 'charger2', property: reading([4 + own, 4 + own, 4 + own]),
+    getAllocation: () => ({ priority: 'charger2', nativeBudget: budget(), property: reading([4 + own, 4 + own, 4 + own]),
       easee: reading([0, 0, 0]), allowance: reading([9, 9, 9]) }) });
   let controller = attach(); t.after(() => controller.close());
   await controller.update({ enabled: false });
@@ -598,7 +600,7 @@ test('identification current restoration shares the normal limiter reference ins
   let request = null, own = 12;
   const controller = createShellyController({ adapter: f.adapter, clock: f.now, canControl: () => true,
     getIdentification: () => request,
-    getAllocation: () => ({ priority: 'charger2', property: reading([4 + own, 4 + own, 4 + own]),
+    getAllocation: () => ({ priority: 'charger2', nativeBudget: budget(), property: reading([4 + own, 4 + own, 4 + own]),
       easee: reading([0, 0, 0]), allowance: reading([9, 9, 9]) }) });
   t.after(() => controller.close());
   await controller.update({ enabled: false });
@@ -922,7 +924,7 @@ test('Shelly Charge Now still pauses for the property fuse limit and rejects a p
   };
   const controller = createShellyController({ adapter: f.adapter, clock: f.now, canControl: () => true }); t.after(() => controller.close());
   const connectedAt = f.adapter.snapshot().session.connectedAt;
-  await controller.update({ enabled: false, chargeNow: { connectedAt }, allocation: { property: reading([44, 30, 32]), easee: reading([12, 12, 12]), allowance: reading([0,7,5]) } });
+  await controller.update({ enabled: false, chargeNow: { connectedAt }, allocation: { nativeBudget: budget(), property: reading([44, 30, 32]), easee: reading([12, 12, 12]), allowance: reading([0,7,5]) } });
   assert.equal(controller.status().limiter.currentA, 0); assert.equal(f.fields.start_charging, false);
   f.setNow(f.now() + 1000); f.notify('work_state', 'charger_free');
   f.setNow(f.now() + f.adapter.config.dwellMs + 1000); f.notify('work_state', 'charger_wait');

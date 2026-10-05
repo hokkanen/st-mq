@@ -291,9 +291,10 @@ export function createEaseeScheduleAdapter({ request, readObservations, chargerI
   readObservations ??= (deviceId, ids, { signal } = {}) => request(
     `https://api.easee.com/state/${encodeURIComponent(deviceId)}/observations?ids=${ids.join(',')}`, { method: 'GET', signal });
   let allocationA = null, allocationReadAt = -Infinity, allocationConfirmedAt = -Infinity;
+  let allocationEpoch = null, allocationReadEpoch = null, allocationConfirmedEpoch = null;
   const adapter = {
     normalize(snapshot, options = {}) { return easeeChargerTelemetry(snapshot, { now: clock(), ...options }); },
-    async read({ signal, forceRest = false, telemetryOnly = false } = {}) {
+    async read({ signal, forceRest = false, telemetryOnly = false, configurationEpoch = allocationEpoch } = {}) {
       if (!chargerId) throw new Error('Charger 1 Easee connection is not configured');
       let now = clock();
       let scheduling, observations, property;
@@ -309,11 +310,15 @@ export function createEaseeScheduleAdapter({ request, readObservations, chargerI
         // still supersede this operation. This never repeats a device command.
         if (await settleReadback?.({ signal })) [scheduling, observations, property] = await readSources();
       } catch { throw failure('read-failed', 'Easee state could not be read.'); }
-      if (equalizerId && now - allocationReadAt >= 3600_000) {
+      allocationEpoch = configurationEpoch;
+      if (equalizerId && (allocationReadEpoch !== configurationEpoch
+        || now - allocationReadAt >= (allocationConfirmedEpoch === configurationEpoch ? 3600_000 : 60_000))) {
         allocationReadAt = now;
+        allocationReadEpoch = configurationEpoch;
         try {
           allocationA = amps((await request(`https://api.easee.com/api/equalizers/${encodeURIComponent(equalizerId)}/config`, { method: 'GET', signal }))?.maxAllocatedCurrent);
           allocationConfirmedAt = clock();
+          allocationConfirmedEpoch = configurationEpoch;
         } catch {
           // An occasional config failure must not erase a still-supported
           // ceiling while current observations remain available.
@@ -344,6 +349,11 @@ export function createEaseeScheduleAdapter({ request, readObservations, chargerI
           reportedPropertyCurrentA: vector([31, 32, 33]),
           chargerCurrentA: currents.every(value => value !== null) ? currents : null,
           voltageV: vector([34, 35, 36], 200, 250), allocationA, observedAt: now,
+          // This is a native configuration readback, not the configured hard
+          // property fuse and not a fresh observation on each telemetry read.
+          nativeBudget: allocationA !== null && Number.isFinite(allocationConfirmedAt) && allocationConfirmedEpoch === configurationEpoch
+            ? { currentA: allocationA, source: 'easee-equalizer-config', equipment: hash([chargerId, equalizerId]),
+              confirmedAt: allocationConfirmedAt, validUntil: allocationConfirmedAt + 24 * 3600_000 } : null,
           observationTimes: { allowance: snapshot.limits.equalizerAvailableAt,
             property: [31, 32, 33].map(id => instant(pick(id)?.timestamp)),
             charger: [183, 184, 185].map(id => snapshot.observations[id]?.at ?? null),

@@ -601,7 +601,7 @@ export function createDeviceProviders({ connections = {}, http, tokenStore, cloc
     // Cloud evidence supplements the local connection; failures never grant app
     // priority or prevent exact-ID native cleanup. No cloud schedules are written.
     nativeCloudFlight = Promise.allSettled([
-      scheduleControl.readTelemetry({ signal: lifetime.signal, forceRest: force }).then(snapshot => {
+      scheduleControl.readTelemetry({ signal: lifetime.signal, forceRest: force, configurationEpoch: epoch }).then(snapshot => {
         nativeCloudSnapshot = snapshot; nativeCloudSnapshotEpoch = epoch;
       }),
       easeeAuthenticated(`${API}/api/chargers/${encodeURIComponent(easee.charger_id)}/schedules`,
@@ -671,6 +671,8 @@ export function createDeviceProviders({ connections = {}, http, tokenStore, cloc
     };
     const cloud = current && nativeCloudSnapshotEpoch === electricityEpoch && nativeCloudSnapshot?.online === true
       && now >= nativeCloudSnapshot.readAt && now - nativeCloudSnapshot.readAt <= 300_000 ? nativeCloudSnapshot.supply : null;
+    const nativeBudget = current && nativeCloudSnapshotEpoch === electricityEpoch
+      ? nativeCloudSnapshot?.supply?.nativeBudget ?? null : null;
     const cached = (kind, field) => cloud ? {
       currents: Array.isArray(cloud[field]) ? [...cloud[field]] : null,
       times: [...(cloud.observationTimes?.[kind] ?? [null, null, null])], source: 'easee-cloud',
@@ -712,6 +714,7 @@ export function createDeviceProviders({ connections = {}, http, tokenStore, cloc
     return { online: Boolean(current), supply: { propertyCurrentA: property.currents, chargerCurrentA: charger.currents,
       availableCurrentA: allowance.currents, circuitCurrentA: circuit.currents,
       allocationA: cloud ? cloud.allocationA ?? nativeCloudSnapshot.limits?.allocationA ?? null : null,
+      nativeBudget: nativeBudget ? { ...nativeBudget } : null,
       observationTimes: { property: property.times, charger: charger.times, allowance: allowance.times, circuit: circuit.times },
       currentSources: { property: property.source, charger: charger.source },
       feedEvidence: { property: property.evidence, charger: charger.evidence, allowance: allowance.evidence, circuit: circuit.evidence } } };

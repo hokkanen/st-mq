@@ -140,11 +140,27 @@ Property, Easee-current and Equalizer-allowance streams must be healthy, online
 and synchronized in their current connection epochs. Older last-change values
 can remain usable without altering source timestamps. The allowed-current
 fields 230–232 must agree within configured `agreementToleranceA` (2 A by
-default) with `max(0, fuse − property + Easee)` on every phase. Pilot field 114
-and a circuit current ceiling cannot supply that check. A frozen comparison
-reference may account for measured Shelly current changes under the
+default) with `max(0, nativeBudget − property + Easee)` on every phase. The
+native Equalizer budget requires independent verified readback for the current
+equipment and connection; it never replaces Shelly's configured fuse limit and
+margin. Its proof retains the successful native configuration response receipt,
+existing 24-hour cache validity and current acquisition epoch; telemetry reads
+do not refresh it. Pilot field 114 and a circuit current ceiling cannot supply
+that check.
+The comparison does not clip allowance to the circuit ceiling or invent a
+sub-6 A encoding rule. Missing, stale or unverified native budget evidence uses
+fallback. A frozen comparison reference may account for measured Shelly current
+changes under the
 [current-allocation rules](charging.md#charger-2-current-allocation). Clipped or
-delayed allowances must still satisfy the tolerance. Missing or inconsistent feeds
+delayed allowances must still satisfy the tolerance, except the explicitly
+bounded `below-minimum-idle` inference: observed zero, nonnegative raw native
+headroom below the verified 6 A minimum, and all three native OCPP Easee phase
+currents at most 0.1 A with each original phase source clock and the native
+feed's latest receipt/activity no older than 120 seconds in the same healthy
+epochs. Preserve the reported zero and calculated headroom; this inference does
+not define field encoding or seed a positive comparison
+reference. Other phase contradictions still fail. Changed native budget
+invalidates the comparison reference. Missing or inconsistent feeds
 select configurable `fallbackCurrentA` (12 A by default), respecting known lower
 limits; valid insufficient headroom can instead require a pause. After confirming
 an own current-setting command, asynchronous measurements may hold at most the confirmed

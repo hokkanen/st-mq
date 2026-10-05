@@ -338,13 +338,30 @@ and Charger 1's Equalizer must yield.
 
 `agreementToleranceA`, initially 2 A, bounds the difference between Equalizer's
 per-phase allowed-current feed and headroom independently calculated from
-property and Easee currents before the configured safety margin. Healthy feeds
-synchronized in their current connection epochs can retain older last-change
-values when the comparison passes; original timestamps remain unchanged. No
+property and Easee currents using its verified native current budget, before
+the configured safety margin. That budget is native device evidence, not another
+configuration default. It never replaces `mainFuseA` or raises Shelly's configured
+electrical ceiling. The comparison does not clip Equalizer allowance to the
+charger circuit limit or translate headroom below 6 A to zero. Missing, stale or
+unverified budget evidence uses `fallbackCurrentA`, with known tighter limits
+still applied. Budget evidence comes from actual native configuration readback,
+uses the existing 24-hour allocation-cache lifetime and is bound to the current
+equipment and acquisition epoch. Telemetry polling does not renew its clocks.
+A zero allowance can instead support the bounded `below-minimum-idle`
+consistency inference when raw native headroom is nonnegative and below the
+verified 6 A minimum, and all three native OCPP Easee currents are at most 0.1 A
+with each phase source clock and the native feed's latest receipt/activity no
+older than 120 seconds. This is not an encoding rule, does not alter observations
+and does not seed a held reference.
+Other phase contradictions and stale, positive or non-native peer current still
+prevent that inference. These checks introduce no additional configuration.
+Healthy feeds synchronized in their current connection epochs can retain older
+last-change values when the comparison passes; original timestamps remain unchanged. No
 additional feed-age configuration is needed. A fixed, process-local reference
 can account for Shelly's measured current change while the same admitted
-positive allowance observation remains held. Household changes still affect
-the comparison; reconnect, session changes and restart discard the reference.
+positive allowance observation and verified native budget remain held. Household
+changes still affect the comparison; changed budget, reconnect, session changes
+and restart discard the reference.
 After an own current-setting command is confirmed, a measurement disagreement
 may hold at most the confirmed setting and last validated ceiling for an
 absolute 60 seconds, with no further

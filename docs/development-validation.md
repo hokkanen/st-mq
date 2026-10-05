@@ -123,8 +123,17 @@ Use synthetic source observations to exercise matching older last-change values,
 missing/reconnecting feeds, allowance disagreement on either side of tolerance,
 unequal Shelly phase measurements, 0 and 6–16 A entitlement, a configurable
 fallback below known limits, all priorities and future forecasts without a
-permanent fallback cap. Measurement-settling cases cover the absolute deadline,
-no further increases, hard-outage bypass and tighter known restrictions. Its
+permanent fallback cap. Native-budget cases use a different observed Equalizer
+budget from the configured hard fuse limit, retain that hard limit, admit
+allowance above the charger circuit ceiling, preserve numeric zero and reject
+missing, stale or unverified budget evidence. Budget changes invalidate held
+comparison references. The separate `below-minimum-idle` inference requires
+zero allowance, raw native headroom from zero to below the verified minimum,
+and all three fresh native OCPP phase currents at most 0.1 A. Reject headroom
+at or above the minimum, negative headroom, stale or positive peer currents,
+non-native evidence and contradictory other phases. Preserve the calculated
+headroom and prohibit reference seeding. Measurement-settling cases cover the
+absolute deadline, no further increases, hard-outage bypass and tighter known restrictions. Its
 unknown history retains held allowances and separate native setting readback
 without extending earlier verified coverage. Native command freshness and identification ownership
 remain separate checks. History checks cover exact changes, compact unchanged

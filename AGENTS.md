@@ -233,7 +233,10 @@ permission to act. See [the configuration guide](docs/configuration.md).
   limits and valid current source evidence. Held property, Easee current and
   Equalizer allowance values may remain usable on healthy, synchronized current
   connections when their independent consistency checks pass; their original
-  last-change clocks are preserved, not renewed by polling. Shelly current,
+  last-change clocks are preserved, not renewed by polling. The allowance
+  comparison uses the independently verified native Equalizer budget; it never
+  substitutes that budget for the configured electrical limits on Shelly.
+  Missing or unusable native budget evidence selects fallback. Shelly current,
   command and native readback freshness remain separately enforced. After
   confirming its own current-setting change, a bounded measurement-settling
   interval may retain at most the confirmed setting and last validated ceiling,

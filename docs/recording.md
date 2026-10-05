@@ -418,8 +418,11 @@ controller ceiling, and a confirmed native setting or pause instruction is not
 physical charging or zero-power evidence. Native and vehicle restrictions can
 reduce the effective allowance without changing an unrestricted load allowance.
 Manual and scheduled stops never become balancing pauses merely because power
-is zero. A bounded measurement-settling hold records the existing **Unknown**
-mode with reason `measurement-settling`, the held allowance and separate native
+is zero. An unavailable native Equalizer budget records **Fallback** with its
+specific reason; it is not verified load headroom. The native budget supplies
+comparison context only and never reinterprets recorded configured electrical
+limits or earlier decisions. A bounded measurement-settling hold records the
+existing **Unknown** mode with reason `measurement-settling`, the held allowance and separate native
 setting readback. It does not present the held ceiling as newly verified headroom
 or extend the preceding verified span. Repeated unchanged waiting observations
 only extend that unknown span; they add no periodic rows or new schema fields.

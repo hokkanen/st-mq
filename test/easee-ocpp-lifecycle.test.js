@@ -359,6 +359,9 @@ test('native current supply reads admitted stream and OCPP samples without polli
   assert.deepEqual(reading.supply.propertyCurrentA, [20, 21, 22]);
   assert.deepEqual(reading.supply.chargerCurrentA, [3, 4, 5], 'Admitted local meter samples precede cloud charger samples');
   assert.deepEqual(reading.supply.currentSources, { property: 'easee-stream', charger: 'easee-ocpp' });
+  const budget = structuredClone(reading.supply.nativeBudget);
+  assert.equal(budget.currentA, 27); assert.equal(budget.source, 'easee-equalizer-config');
+  assert.ok(budget.confirmedAt <= f.now); assert.equal(budget.validUntil - budget.confirmedAt, 24 * 3600_000);
   f.advance(1000); property = rows([31, 32, 33], [25, 26, 27]); stream();
   reading = adapter.readCurrentSupply();
   assert.deepEqual(reading.supply.propertyCurrentA, [25, 26, 27], 'A new stream sample is visible without controller/cloud polling');
@@ -367,6 +370,8 @@ test('native current supply reads admitted stream and OCPP samples without polli
   assert.deepEqual(adapter.readCurrentSupply().supply.observationTimes, sourceTimes,
     'Repeated getters leave old samples old so the limiter can choose fallback');
   assert.equal(f.events.filter(row => row.type === 'http').length, httpCount);
+  assert.deepEqual(adapter.readCurrentSupply().supply.nativeBudget, budget,
+    'The live evidence getter preserves the actual native configuration receipt');
   for (const invalid of [
     rows([31, 32, 33], [null, 20, 20]), rows([31, 32], [20, 20]),
     rows([31, 32, 33], [20, 20, 20], f.now + 1000),
@@ -386,12 +391,18 @@ test('native current supply reads admitted stream and OCPP samples without polli
   assert.deepEqual(adapter.readCurrentSupply().supply.chargerCurrentA, [9, 9, 9],
     'An independent admitted stream can supply phases when no local phases exist');
   f.streamConnected = false;
+  assert.equal(adapter.readCurrentSupply().supply.nativeBudget, null,
+    'A new acquisition epoch cannot borrow the old native configuration proof');
   assert.equal(adapter.readCurrentSupply().supply.propertyCurrentA, null,
     'Disconnect fences cached supply from before the acquisition boundary');
   assert.equal(f.events.filter(row => row.type === 'http').length, httpCount);
   await adapter.read({ forceAppRefresh: true });
   httpCount = f.events.filter(row => row.type === 'http').length;
   reading = adapter.readCurrentSupply();
+  assert.equal(reading.supply.nativeBudget.currentA, 27);
+  assert.equal(reading.supply.nativeBudget.equipment, budget.equipment);
+  assert.ok(reading.supply.nativeBudget.confirmedAt > budget.confirmedAt,
+    'A successful configuration GET establishes new proof after acquisition recovery');
   assert.deepEqual(reading.supply.propertyCurrentA, [5, 5, 5]);
   assert.deepEqual(reading.supply.observationTimes.property, [AT, AT, AT]);
   assert.equal(reading.supply.currentSources.property, 'easee-cloud');

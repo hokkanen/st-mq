@@ -1801,6 +1801,7 @@ export class ChargingRuntime {
         evidence: supply?.feedEvidence?.charger },
       allowance: { healthy: first?.online === true, currents: supply?.availableCurrentA, times: supply?.observationTimes?.allowance,
         evidence: supply?.feedEvidence?.allowance },
+      nativeBudget: supply?.nativeBudget ?? null,
       vehicleCurrentA: view?.values.vehicleCurrentA?.value, notBefore: view?.values.vehicleNotBefore?.value,
       priority: this.settings.priority,
       liveUnscheduled, peerDemandA,

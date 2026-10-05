@@ -937,6 +937,7 @@ test('Charger 2 popups explain manual priority and unconfirmed instructions with
     ['evse-command-unconfirmed', null, /outcome is still unknown.*fresh reading/i],
     ['telemetry-fallback', null, /configured fallback.*fresh measurements/i],
     ['measurement-settling', null, /Waiting for matching load readings.*Current headroom is not yet confirmed.*held ceiling cannot increase/],
+    ['equalizer-budget-unavailable', null, /Equalizer’s configured current budget is not verified for the current connection.*configured fallback applies, respecting tighter limits/],
     ['future-control-condition', null, /Check the charger controls for details/],
   ]) {
     panel.update(status({ ...item, control: { phase: manual ? 'manual' : 'uncertain', reason, manual, confirmed: false } }));
@@ -2160,6 +2161,13 @@ test('Shelly limiter badge presents the controller mode without inferring pauses
   assert.match(popup.textContent, /Charger setting: 12 A confirmed/);
   assert.match(popup.textContent, /not measured charging current/);
   assert.equal(Boolean($('charger2-device').open), false, 'Badge inspection leaves the charger card folded');
+  panel.update(status({ ...item, limiter: { ...limiter, loadAllowanceA: 8, allowanceA: 8,
+    appliedCurrentA: 8, reason: 'equalizer-budget-unavailable' } }));
+  assert.equal($('charger2-limiter').textContent, 'Load balancing: Fallback · 8 A');
+  assert.match(popup.textContent, /Equalizer budget unavailable/);
+  assert.match(popup.textContent, /Charger setting: 8 A confirmed/);
+  assert.match(popup.textContent, /fallback cap applies, respecting tighter limits/);
+  assert.doesNotMatch(popup.textContent, /equalizer-budget-unavailable|Unrestricted|12 A/);
   panel.update(status({ ...item, limiter: { ...limiter, mode: 'unrestricted', loadAllowanceA: 16, allowanceA: 8, appliedCurrentA: 8, reason: 'native-current-limit' } }));
   assert.equal($('charger2-limiter').textContent, 'Load balancing: Unrestricted · 16 A');
   assert.match(popup.textContent, /Effective allowance: 8 A/);

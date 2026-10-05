@@ -123,6 +123,8 @@ async function fixture(t, { limiter = true, budgetA = 16, notifyRuntime = false,
     const scope = runtime.chargers.charger1.association;
     const supply = () => ({ availableCurrentA: triple(Math.max(0, budgetA - household.currentA - amps2())),
       propertyCurrentA: triple(household.currentA + amps1() + amps2()), chargerCurrentA: triple(amps1()),
+      nativeBudget: { currentA: budgetA, source: 'easee-equalizer-config', equipment: 'synthetic-joint-equalizer',
+        confirmedAt: START, validUntil: START + 24 * HOUR },
       feedEvidence: Object.fromEntries(['property','charger','allowance'].map(key => [key,
         {connected:true,online:true,synchronized:household.feedsSynchronized,epoch:'fixture-epoch'}])),
       voltageV: triple(230), observationTimes: { allowance: triple(now), property: triple(household.sourceAt ?? now), charger: triple(now), voltage: triple(now) } });

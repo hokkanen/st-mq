@@ -1103,16 +1103,51 @@ rereading a cache. Source clocks remain unchanged and held state is not counted
 as another observation or learning sample.
 
 Equalizer's per-phase allowed-current fields 230–232 provide an independent
-consistency check. Each must satisfy
-`abs(allowance − max(0, fuse − property + Easee)) <= agreementToleranceA`,
-which defaults to 2 A. The pilot-current field 114 and the charger's circuit
-current ceiling are different quantities and cannot replace these fields.
-Allowance is not the final Shelly setpoint: its comparison excludes the separate
-configured safety margin, which is deducted once in `H`. A clipped zero or a
-delayed Equalizer allowance does not establish an exact gross capacity budget.
-It is usable only while the comparison stays within the configured tolerance;
-a larger disagreement selects fallback unless the bounded measurement-settling
-hold below applies.
+consistency check. The ordinary numeric comparison requires
+`abs(allowance − max(0, nativeBudget − property + Easee)) <= agreementToleranceA`,
+which defaults to 2 A. `nativeBudget` is the independently read and verified
+Equalizer current budget for the current equipment and connection. It is not
+inferred from the allowance being checked. The native budget may differ from
+the configured fuse rating used in `H`; reading it never raises or rewrites
+Shelly's configured electrical limits or safety margin.
+
+Budget proof comes from a successful read-only native configuration response,
+with the actual receipt time and the existing 24-hour allocation-cache validity.
+It belongs to the current equipment and acquisition epoch. Ordinary telemetry
+polling does not renew that proof; replacement equipment, a new acquisition
+epoch, expiry or an invalid response cannot reuse an unverified budget.
+
+The pilot-current field 114 and the charger's circuit current ceiling are
+different quantities and cannot replace the Equalizer allowance. Nor is this
+allowance clipped to the circuit ceiling: it can report more current than that
+circuit permits. Zero remains the reported numeric value; the comparison does
+not invent a rule translating all headroom below 6 A to zero. Easee's documented
+minimum charging current describes charging behavior, not that field encoding.
+See [Easee's observation definitions](https://developer.easee.com/docs/charger-observation-ids)
+and [current limits](https://developer.easee.com/docs/current-limits-and-control).
+
+Missing, stale or unverified native budget evidence selects fallback, still
+respecting known tighter limits. The comparison excludes the separate configured
+safety margin, which is deducted once in `H`. A zero or delayed Equalizer
+allowance does not establish an exact gross capacity budget.
+Easee can also keep its allowance low while waiting for capacity recovery; that
+delay alone does not prove agreement with current load readings.
+
+One narrowly bounded operational inference can admit a zero allowance outside
+the ordinary numeric tolerance. The unrounded, unclipped native-budget headroom
+`nativeBudget − property + Easee` must be nonnegative and below the verified
+6 A native charging minimum. All three Easee phase currents must independently
+report at most 0.1 A through native OCPP, with each original phase measurement
+clock and the native feed's latest receipt/activity no older than 120 seconds
+on the same healthy connection epochs. Other phases still require their own
+valid comparisons. This `below-minimum-idle`
+basis means observed idle charging is consistent with less than a usable pilot;
+it does not assert an undocumented encoding rule for fields 230–232. Preserve
+the reported zero, the calculated nonzero headroom and their original clocks.
+It never seeds a positive held comparison reference. Headroom at least 6 A,
+negative headroom, positive or stale peer current, a non-native peer reading or
+another contradictory phase does not qualify. Otherwise disagreement selects
+fallback unless the bounded measurement-settling hold below applies.
 
 Equalizer can hold that allowance through a change in Shelly's own draw. Once
 the raw comparison agrees at positive, unclipped headroom and Shelly's measured
@@ -1120,19 +1155,22 @@ phase currents differ by no more than 0.5 A, the controller may
 retain a bounded comparison reference for that exact allowance observation and
 live connection/session scope. Subsequent comparisons account for the change
 in Shelly's **measured** common current since that reference:
-`max(0, fuse − property + Easee + Shelly_now − Shelly_reference)`.
+`max(0, nativeBudget − property + Easee + Shelly_now − Shelly_reference)`.
 This prevents a successful current increase from manufacturing a disagreement
 with the unchanged allowance. It does not compensate for household changes or
 use the requested pilot as measured current. The final headroom `H` still uses
 the current property and charger measurements.
 
-The reference stays fixed while its allowance observation remains unchanged;
-later approximate matches cannot slide it to absorb gradual household changes.
+The reference stays fixed while its allowance observation and verified native
+budget remain unchanged; later approximate matches cannot slide it to absorb
+gradual household changes.
 Changed observations require a new raw comparison. Zero/clipped observations
-retain the raw comparison because they do not establish an exact offset.
-Loss of usable feed evidence, a changed connection or physical session, and a
-controller restart discard this process-local reference. Original observations
-and timestamps remain unchanged; the comparison reports its derived basis.
+never establish an exact offset; they retain the raw comparison or qualify
+separately for the `below-minimum-idle` inference above.
+Loss of usable feed or native budget evidence, a changed connection or physical
+session, and a controller restart discard this process-local reference.
+Original observations and timestamps remain unchanged; the comparison reports
+its derived basis.
 
 Property and charger measurements can arrive at different times after the
 controller changes its own current setting. Once that change is acknowledged

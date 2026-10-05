@@ -19,8 +19,33 @@ const feedUsable = (input, now) => input?.healthy === true && vector(input.curre
     && input.evidence.activityAt <= now && now - input.evidence.activityAt <= 120_000);
 const shellyUsable = (input, config, now) => input?.healthy === true && vector(input.currents) && times(input, now)
   && input.times.every(at => now - at <= config.maxAgeMs);
-const rawComparison = ({ config, property, easee }) => ({ basis: ['raw', 'raw', 'raw'],
-  expectedCurrentA: property.currents.map((p, i) => Math.max(0, config.mainFuseA[i] - p + easee.currents[i])) });
+const nativeBudgetUsable = (budget, now) => budget?.source === 'easee-equalizer-config'
+  && typeof budget.equipment === 'string' && budget.equipment.length > 0
+  && Number.isFinite(budget.currentA) && budget.currentA >= 0 && budget.currentA <= 1000
+  && Number.isSafeInteger(budget.confirmedAt) && budget.confirmedAt > 0 && budget.confirmedAt <= now
+  && Number.isSafeInteger(budget.validUntil) && budget.validUntil > budget.confirmedAt
+  && budget.validUntil - budget.confirmedAt <= 24 * 3600_000 && now < budget.validUntil;
+const rawComparison = ({ nativeBudget, property, easee }) => ({ basis: ['raw', 'raw', 'raw'],
+  expectedCurrentA: property.currents.map((p, i) => Math.max(0, nativeBudget.currentA - p + easee.currents[i])) });
+const phaseAgrees = (allowance, comparison, tolerance, i) => comparison.basis[i] === 'below-minimum-idle'
+  || Math.abs(allowance.currents[i] - comparison.expectedCurrentA[i]) <= tolerance;
+function compareIdleMinimum(input, comparison) {
+  const { easee, allowance, nativeBudget, property, now } = input;
+  // This is operational consistency with a stopped Easee below its supported
+  // 6 A pilot minimum, not a claim that observations 230–232 encode 1–5 A as 0.
+  // Require independently recent native phase observations, not held cloud state.
+  const idle = easee.evidence?.source === 'easee-ocpp' && feedUsable(easee, now)
+    && Number.isFinite(easee.evidence.receivedAt) && easee.evidence.receivedAt <= now
+    && now - easee.evidence.receivedAt <= 120_000
+    && easee.currents.every(value => value <= .1)
+    && easee.times.every(at => now - at <= 120_000);
+  if (idle) for (let i = 0; i < 3; i++) {
+    const remaining = nativeBudget.currentA - property.currents[i] + easee.currents[i];
+    if (allowance.currents[i] === 0 && remaining >= 0 && remaining < 6)
+      comparison.basis[i] = 'below-minimum-idle';
+  }
+  return comparison;
+}
 
 /** One controller's bounded, nonpersistent held-allowance comparison. A matched
  * allowance establishes a fixed measured Shelly reference for that phase's
@@ -48,19 +73,19 @@ export function createShellyCurrentLimiter() {
         commandWindow = { until: dispatchedAt + 60_000, currentA };
       } else commandWindow.currentA = currentA;
     }, evaluate(input, scope) {
-    const { config, property, easee, allowance, shelly, now } = input;
+    const { config, property, easee, allowance, shelly, nativeBudget, now } = input;
     const eligible = scope?.authorized === true && scope.connected === true
       && typeof scope.association === 'string' && scope.association.length > 0
       && typeof scope.sessionId === 'string' && scope.sessionId.length > 0
       && Number.isFinite(scope.connectedAt) && scope.connectedAt > 0 && scope.connectedAt <= now
       && scope.generation != null && [property, easee, allowance].every(feed => feedUsable(feed, now))
-      && shellyUsable(shelly, config, now);
+      && shellyUsable(shelly, config, now) && nativeBudgetUsable(nativeBudget, now);
     if (!eligible) { reset(); return shellyCurrentLimit(input); }
     const common = Math.min(...shelly.currents);
     const additive = property.currents.every((p, i) => p - easee.currents[i] - common >= -.25);
     const key = JSON.stringify([scope.association, scope.sessionId, scope.connectedAt, scope.generation,
       ...[property, easee, allowance].map(feed => [feed.evidence.source ?? null, feed.evidence.epoch]),
-      config.mainFuseA, config.agreementToleranceA]);
+      config.mainFuseA, config.agreementToleranceA, nativeBudget.currentA, nativeBudget.equipment]);
     if (key !== scopeKey) { reset(); scopeKey = key; physicalScopeKey = physicalKey(scope); }
     const comparison = rawComparison(input);
     // A transient missing phase is real evidence for conservative headroom,
@@ -69,7 +94,7 @@ export function createShellyCurrentLimiter() {
     for (let i = 0; i < 3; i++) {
       const value = allowance.currents[i], at = allowance.times[i];
       if (phases[i]?.value !== value || phases[i]?.at !== at) phases[i] = { value, at, reference: null };
-      const phase = phases[i], unclipped = config.mainFuseA[i] - property.currents[i] + easee.currents[i];
+      const phase = phases[i], unclipped = nativeBudget.currentA - property.currents[i] + easee.currents[i];
       if (phase.reference !== null) {
         // Normalize before clipping: a negative transient budget must not turn
         // into positive allowance by clipping away its deficit first.
@@ -81,6 +106,7 @@ export function createShellyCurrentLimiter() {
         phase.reference = common;
       }
     }
+    compareIdleMinimum(input, comparison);
     const candidate = calculateCurrentLimit(input, comparison);
     lastEvaluationGood = !candidate.fallback;
     if (lastEvaluationGood) {
@@ -99,7 +125,7 @@ export function createShellyCurrentLimiter() {
     // Native/vehicle limits and the current priority are reapplied regardless.
     const headroom = lastGood.headroom.map((previous, i) => {
       const base = property.currents[i] - easee.currents[i] - common;
-      const agrees = base >= -.25 && Math.abs(allowance.currents[i] - comparison.expectedCurrentA[i]) <= config.agreementToleranceA;
+      const agrees = base >= -.25 && phaseAgrees(allowance, comparison, config.agreementToleranceA, i);
       return agrees ? Math.min(previous, config.mainFuseA[i] - config.marginA[i] - Math.max(0, base)) : previous;
     });
     const bound = headroomLimit(restrictionContext(input), headroom, easee, input.peerDemandA);
@@ -163,17 +189,19 @@ function headroomLimit({ config, known, allocationA, nativeCurrentA, vehiclePilo
 }
 /** Conservative common Shelly current; no Shelly/Easee phase correspondence. */
 export function shellyCurrentLimit(input = {}) { return calculateCurrentLimit(input); }
-function calculateCurrentLimit({ config, property, easee, allowance, shelly, now, priority, liveUnscheduled = false, peerDemandA = null,
+function calculateCurrentLimit({ config, property, easee, allowance, shelly, nativeBudget, now, priority, liveUnscheduled = false, peerDemandA = null,
   reservationA = 0, vehicleCurrentA = null, nativeCurrentA = null, allocationA = null } = {}, heldComparison = null) {
   const limits = restrictionContext({ config, priority, liveUnscheduled, reservationA, vehicleCurrentA, nativeCurrentA, allocationA });
   const { known } = limits;
   const usableShelly = shellyUsable(shelly, config, now);
   const propertyUsable = [property, easee].every(input => feedUsable(input, now)) && usableShelly;
-  const coherent = propertyUsable && feedUsable(allowance, now);
+  const budgetUsable = nativeBudgetUsable(nativeBudget, now);
+  const coherent = propertyUsable && feedUsable(allowance, now) && budgetUsable;
   let ceiling, reason, base = null, headroom = null, comparison = null, fallback = !coherent;
   let fallbackReason = !usableShelly ? 'shelly-current-unavailable'
     : ![property, easee, allowance].every(input => input?.evidence?.synchronized === true) ? 'feed-unsynchronized'
-      : !coherent ? 'feed-unavailable' : null;
+      : !propertyUsable || !feedUsable(allowance, now) ? 'feed-unavailable'
+        : !budgetUsable ? 'equalizer-budget-unavailable' : null;
   let loadCeiling = config.maximumCurrentA, loadReason = 'hardware-restriction';
   if (propertyUsable) {
     const common = Math.min(...shelly.currents);
@@ -182,8 +210,9 @@ function calculateCurrentLimit({ config, property, easee, allowance, shelly, now
     if (base.some(v => v < -.25)) { fallback = true; fallbackReason = 'non-additive-currents'; }
     else {
       headroom = base.map((b, i) => config.mainFuseA[i] - config.marginA[i] - Math.max(0, b));
-      comparison = coherent ? heldComparison ?? rawComparison({ config, property, easee }) : null;
-      const disagreement = coherent && allowance.currents.some((a, i) => Math.abs(a - comparison.expectedCurrentA[i]) > config.agreementToleranceA);
+      comparison = coherent ? heldComparison ?? compareIdleMinimum({ nativeBudget, property, easee, allowance, now },
+        rawComparison({ nativeBudget, property, easee })) : null;
+      const disagreement = coherent && allowance.currents.some((a, i) => !phaseAgrees(allowance, comparison, config.agreementToleranceA, i));
       // Allow a small reserve/quantization difference. Larger discrepancies in
       // either direction can mean one held field missed a real load change.
       // Zero may be clipped after excess caused by Easee: it checks consistency,

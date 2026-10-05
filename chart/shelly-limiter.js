@@ -18,6 +18,7 @@ const reasons = {
   'feed-unsynchronized': 'Waiting for synchronized feeds', 'charger-current-unavailable': 'Easee current unavailable',
   'shelly-current-unavailable': 'Shelly current unavailable', 'non-additive-currents': 'Load readings disagree',
   'allowance-disagreement': 'Equalizer allowance and property readings disagree',
+  'equalizer-budget-unavailable': 'Equalizer budget unavailable',
   'measurement-settling': 'Waiting for matching load readings',
   'below-minimum-current': 'Below the minimum charging current',
   'telemetry-fallback': 'Load evidence unavailable', 'feed-unavailable': 'Load feed unavailable',

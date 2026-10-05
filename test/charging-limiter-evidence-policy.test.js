@@ -13,7 +13,9 @@ const held = (currents, epoch = '1:0') => ({ healthy: true, currents, times: tri
 const native = currents => ({ healthy: true, currents, times: triple(NOW), evidence: {
   source: 'easee-ocpp', connected: true, online: true, synchronized: true, epoch: 'synthetic-connection',
   receivedAt: NOW, activityAt: NOW, sourceAt: NOW } });
-const fixture = () => ({ config, now: NOW, priority: 'charger2', liveUnscheduled: true,
+const budget = (currentA = 25) => ({ currentA, source: 'easee-equalizer-config', equipment: 'synthetic-equalizer',
+  confirmedAt: NOW, validUntil: NOW + 24 * 3600_000 });
+const fixture = () => ({ nativeBudget: budget(), config, now: NOW, priority: 'charger2', liveUnscheduled: true,
   property: held(triple(8)), easee: native(triple(0)), allowance: held(triple(17)),
   shelly: { healthy: true, currents: triple(0), times: triple(NOW) } });
 const scope = () => ({ authorized: true, association: 'synthetic-shelly', generation: 1,
@@ -33,6 +35,95 @@ const settlingFixture = () => {
   limiter.confirmCurrentCommand({ dispatchedAt: NOW + 1000, confirmedAt: NOW + 2000, previousCurrentA: 12, currentA: 14 }, connection);
   return { limiter, connection };
 };
+
+test('native Equalizer budget is distinct from the hard property fuse and charger circuit ceiling', () => {
+  const input = fixture(); input.nativeBudget = budget(27);
+  input.property.currents = triple(10); input.allowance.currents = triple(17);
+  let result = shellyCurrentLimit(input);
+  assert.equal(result.fallback, false); assert.equal(result.currentA, 14);
+  assert.deepEqual(result.allowanceComparison.expectedCurrentA, triple(17));
+  assert.deepEqual(result.phaseHeadroomA, triple(14), 'The hard25 fuse minus1 margin remains authoritative');
+  input.property.currents = triple(3); input.allowance.currents = triple(24);
+  input.circuit = held(triple(16));
+  result = shellyCurrentLimit(input);
+  assert.equal(result.fallback, false); assert.equal(result.currentA, 16);
+  assert.deepEqual(result.allowanceComparison.expectedCurrentA, triple(24),
+    'Upstream Equalizer allowance can exceed the downstream16A circuit ceiling');
+});
+
+test('missing, stale, invalid and unverified native budget use fallback while retaining tighter property caps', () => {
+  for (const nativeBudget of [null, { ...budget(), source: 'forecast' }, { ...budget(), equipment: '' },
+    { ...budget(), confirmedAt: NOW + 1 }, { ...budget(), validUntil: NOW },
+    { ...budget(), validUntil: NOW + 25 * 3600_000 }, { ...budget(), currentA: NaN }]) {
+    const input = fixture(); input.nativeBudget = nativeBudget;
+    let result = shellyCurrentLimit(input);
+    assert.equal(result.fallbackReason, 'equalizer-budget-unavailable'); assert.equal(result.currentA, 12);
+    input.property.currents = triple(17);
+    result = shellyCurrentLimit(input);
+    assert.equal(result.currentA, 7, 'Unknown native comparison budget cannot erase a known lower hard limit');
+  }
+});
+
+test('native budget value or equipment changes retire references, while same-value confirmation preserves them', () => {
+  for (const change of [input => { input.nativeBudget.currentA = 27; },
+    input => { input.nativeBudget.equipment = 'replacement-equalizer'; }]) {
+    const limiter = createShellyCurrentLimiter(), connection = scope(); limiter.evaluate(loaded(), connection);
+    const changed = loaded({ own: 14 }); change(changed);
+    const result = limiter.evaluate(changed, connection);
+    assert.deepEqual(result.allowanceComparison.basis, triple('raw'));
+  }
+  const limiter = createShellyCurrentLimiter(), connection = scope(); limiter.evaluate(loaded(), connection);
+  const refreshed = atTime(loaded({ own: 14 }), NOW + 5000);
+  refreshed.nativeBudget = { ...budget(), confirmedAt: NOW + 5000, validUntil: NOW + 5000 + 24 * 3600_000 };
+  const result = limiter.evaluate(refreshed, connection);
+  assert.equal(result.fallback, false);
+  assert.deepEqual(result.allowanceComparison.basis, triple('held-shelly-reference'));
+});
+
+test('loss of native budget proof immediately cancels an active settling allowance', () => {
+  const { limiter, connection } = settlingFixture(), input = atTime(loaded({ household: 8, own: 14 }), NOW + 5000);
+  input.nativeBudget = null;
+  const result = limiter.evaluate(input, connection);
+  assert.equal(result.currentA, 12); assert.equal(result.settling, undefined);
+  assert.equal(result.fallbackReason, 'equalizer-budget-unavailable');
+});
+
+test('zero allowance can agree with independently observed idle Easee below one usable native pilot', () => {
+  const input = fixture(); input.nativeBudget = budget(27);
+  input.property.currents = [23, 19, 21]; input.easee.currents = triple(0);
+  input.shelly.currents = triple(16); input.allowance.currents = [0, 8, 6];
+  const limiter = createShellyCurrentLimiter(), result = limiter.evaluate(input, scope());
+  assert.equal(result.currentA, 16); assert.equal(result.fallback, false);
+  assert.deepEqual(result.allowanceComparison.basis, ['below-minimum-idle', 'raw', 'raw']);
+  assert.equal(result.allowanceComparison.expectedCurrentA[0], 4,
+    'The diagnostic preserves the nonzero numeric comparison; it does not invent zero encoding');
+  const continued = limiter.evaluate(input, scope());
+  assert.equal(continued.allowanceComparison.basis[0], 'below-minimum-idle', 'Zero cannot seed a held positive reference');
+  input.allowance.currents[1] = 15;
+  assert.equal(limiter.evaluate(input, scope()).fallback, true, 'Other phases still require independent numeric agreement');
+});
+
+test('below-minimum idle inference has a strict6A boundary and requires all native phase source clocks', () => {
+  const create = remaining => {
+    const input = fixture(); input.nativeBudget = budget(27); input.property.currents = triple(27 - remaining);
+    input.shelly.currents = triple(16); input.allowance.currents = triple(0); return input;
+  };
+  assert.equal(shellyCurrentLimit(create(5.999)).fallback, false);
+  assert.equal(shellyCurrentLimit(create(6)).fallback, true);
+  for (const change of [input => { input.easee.currents[2] = .101; },
+    input => { input.easee.times[2] = NOW - 120_001; },
+    input => { input.easee.evidence.activityAt = NOW - 120_001; },
+    input => { input.easee.evidence.receivedAt = null; },
+    input => { input.easee.evidence.receivedAt = NOW - 120_001; },
+    input => { input.easee.evidence.receivedAt = NOW + 1; },
+    input => { input.easee.evidence.source = 'easee-stream'; },
+    input => { input.property.evidence.synchronized = false; }]) {
+    const input = create(5); change(input);
+    assert.equal(shellyCurrentLimit(input).fallback, true);
+  }
+  const boundary = create(5); boundary.easee.times = triple(NOW - 120_000);
+  assert.equal(shellyCurrentLimit(boundary).fallback, false, 'Normal30-second OCPP cadence remains usable');
+});
 
 test('a confirmed own current change holds its readback while property arrives before Shelly measurements', () => {
   const { limiter, connection } = settlingFixture();
@@ -404,7 +495,7 @@ test('recent native meter receipts are separate from permissive held stream cloc
 
 test('allocation context transfers independent field evidence without polling or writing Easee', () => {
   const input = fixture(); let reads = 0;
-  const supply = { propertyCurrentA: input.property.currents, chargerCurrentA: input.easee.currents,
+  const supply = { nativeBudget: input.nativeBudget, propertyCurrentA: input.property.currents, chargerCurrentA: input.easee.currents,
     availableCurrentA: input.allowance.currents, observationTimes: { property: input.property.times,
       charger: input.easee.times, allowance: input.allowance.times }, feedEvidence: {
       property: input.property.evidence, charger: input.easee.evidence, allowance: input.allowance.evidence } };
@@ -417,5 +508,6 @@ test('allocation context transfers independent field evidence without polling or
   assert.deepEqual(result.easee, input.easee);
   assert.deepEqual(result.allowance, input.allowance);
   assert.equal(result.allocationA, null);
+  assert.deepEqual(result.nativeBudget, input.nativeBudget);
   assert.equal(result.reservationA, 0);
 });
