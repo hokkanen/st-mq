@@ -115,7 +115,7 @@ connection epochs, allowance consistency, priority allocation, native limits and
 change-only limiter history:
 
 ```sh
-node --test test/easee-stream.test.js test/easee-ocpp-lifecycle.test.js test/charging-shelly-limit.test.js test/charging-shelly-evse.test.js test/charging-limiter-history.test.js
+node --test test/easee-stream.test.js test/easee-ocpp-lifecycle.test.js test/charging-shelly-limit.test.js test/charging-limiter-evidence-policy.test.js test/charging-shelly-evse.test.js test/charging-limiter-history.test.js
 node --test test/charging-ui.test.js test/chart-overlays.test.js test/chart-views.test.js
 ```
 
@@ -123,7 +123,10 @@ Use synthetic source observations to exercise matching older last-change values,
 missing/reconnecting feeds, allowance disagreement on either side of tolerance,
 unequal Shelly phase measurements, 0 and 6–16 A entitlement, a configurable
 fallback below known limits, all priorities and future forecasts without a
-permanent fallback cap. Native command freshness and identification ownership
+permanent fallback cap. Measurement-settling cases cover the absolute deadline,
+no further increases, hard-outage bypass and tighter known restrictions. Its
+unknown history retains held allowances and separate native setting readback
+without extending earlier verified coverage. Native command freshness and identification ownership
 remain separate checks. History checks cover exact changes, compact unchanged
 coverage, restart/outage gaps, equipment replacement, malformed/overlapping
 history, bounded query detail and independence from charging-report expiry.
@@ -244,7 +247,8 @@ run by the installation user.
 
 The Shelly-limiter browser suite seeds actual decision observations and compact
 coverage in a fresh synthetic database, then reads them through the chart API.
-It checks six modes, load allowance versus effective/native settings, keyboard
+It checks six modes, including bounded settling in Unknown, held allowance
+versus effective/native settings, keyboard
 and touch inspection, persistent touch readout, badge details and focus return,
 unknown hatching and separate colors at 320/390/1440 px in both themes. It also
 checks the timeline in Phase loading and individual Charger 2 power. Synthetic

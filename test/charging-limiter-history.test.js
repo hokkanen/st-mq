@@ -39,6 +39,35 @@ test('modes describe balancing entitlement separately from native setting and ch
   assert.equal(decision({ limit: { currentA: 16, reason: 'property-headroom' } }).mode, 'unknown', 'missing distinct load allowance cannot classify a native limit');
 });
 
+test('measurement settling keeps headroom unknown while preserving the held allowance and confirmed setting', () => {
+  for (const currentA of [0, 8, 14, 16]) {
+    const result = decision({ limit: { currentA, loadCurrentA: currentA, settling: true,
+      fallback: false, reason: 'measurement-settling', loadReason: 'hardware-restriction', modelAvailable: false },
+    appliedCurrentA: currentA || 6, pausedByLimiter: currentA === 0 });
+    assert.deepEqual(result, { mode: 'unknown', allowanceA: currentA, loadAllowanceA: currentA,
+      reason: 'measurement-settling', appliedCurrentA: currentA || 6, applicationStatus: 'confirmed' });
+  }
+  assert.equal(decision({ limit: { currentA: 12, loadCurrentA: 12, settling: true, fallback: true,
+    reason: 'measurement-settling', fallbackReason: 'feed-unavailable' } }).mode, 'fallback',
+  'An actual fallback must not be presented as a measurement wait');
+});
+
+test('settling spans retain their held setting without extending previous verified coverage', t => {
+  const { store, put, read } = fixture(t);
+  const settling = decision({ limit: { currentA: 14, loadCurrentA: 14, settling: true, reason: 'measurement-settling' }, appliedCurrentA: 14 });
+  put(decision(), at); put(decision(), at + 5000);
+  for (const offset of [10_000, 15_000, 20_000]) put(settling, at + offset);
+  put(decision(), at + 25_000); put(decision(), at + 30_000);
+  assert.equal(store.observations({ signal: SHELLY_LIMITER_SIGNAL }).length, 3, 'Unchanged settling observations add no duplicate rows');
+  assert.deepEqual(read(at, at + 30_000).spans.map(({ start, end, mode, reason, allowanceA, appliedCurrentA }) =>
+    [start - at, end - at, mode, reason, allowanceA, appliedCurrentA]), [
+    [0, 5000, 'unrestricted', 'property-headroom', 16, 16],
+    [5000, 10_000, 'unknown', 'unobserved', null, null],
+    [10_000, 25_000, 'unknown', 'measurement-settling', 14, 14],
+    [25_000, 30_000, 'unrestricted', 'property-headroom', 16, 16],
+  ]);
+});
+
 test('every changed allowance, reason and application status is retained; identical observations only extend coverage', t => {
   const { store, put, read } = fixture(t);
   const states = [decision(), decision({ applicationStatus: 'pending' }), decision({ appliedCurrentA: 14 }),

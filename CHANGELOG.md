@@ -60,6 +60,10 @@ Versions follow Semantic Versioning. `-dev.N` denotes a development prerelease.
   an unchanged Equalizer allowance. A fixed comparison reference preserves
   genuine household-load disagreements and is discarded on lost evidence,
   connection/session changes or restart.
+- After a confirmed controller current change, Shelly can briefly hold its current
+  ceiling while matching load readings arrive, without increasing it further.
+  The badge and history show unknown headroom during this bounded wait; hard
+  outages or persistent disagreement still select fallback.
 - Load-balancing history records changed decisions when they become visible,
   including while a charger command is awaiting confirmation.
 - Unscheduled Shelly charging with Charger 1 priority uses live peer demand;

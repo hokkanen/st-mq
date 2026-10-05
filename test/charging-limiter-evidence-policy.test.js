@@ -23,6 +23,142 @@ const loaded = ({ household = 4, peer = 0, own = 12, allowance = 9 } = {}) => {
   input.easee.currents = triple(peer); input.shelly.currents = triple(own); input.allowance.currents = triple(allowance);
   return input;
 };
+const atTime = (input, at, currentA = 14) => ({ ...input, now: at,
+  easee: { ...input.easee, times: triple(at), evidence: { ...input.easee.evidence, activityAt: at } },
+  shelly: { ...input.shelly, times: triple(at) },
+  currentSetting: { confirmed: true, currentA, measuredAt: NOW + 1000, receivedAt: at } });
+const settlingFixture = () => {
+  const limiter = createShellyCurrentLimiter(), connection = scope();
+  limiter.evaluate(loaded(), connection);
+  limiter.confirmCurrentCommand({ dispatchedAt: NOW + 1000, confirmedAt: NOW + 2000, previousCurrentA: 12, currentA: 14 }, connection);
+  return { limiter, connection };
+};
+
+test('a confirmed own current change holds its readback while property arrives before Shelly measurements', () => {
+  const { limiter, connection } = settlingFixture();
+  const asynchronous = loaded({ household: 6.5, own: 12 });
+  const result = limiter.evaluate(atTime(asynchronous, NOW + 5000), connection);
+  assert.equal(result.currentA, 14); assert.equal(result.loadCurrentA, 14);
+  assert.equal(result.settling, true); assert.equal(result.reason, 'measurement-settling');
+  assert.equal(result.modelAvailable, false); assert.equal(result.fallback, false);
+  assert.equal(result.fallbackReason, 'allowance-disagreement');
+  assert.equal(result.settlingUntil, NOW + 61_000);
+  const recovered = limiter.evaluate(atTime(loaded({ household: 4.5, own: 14 }), NOW + 15_000), connection);
+  assert.equal(recovered.currentA, 16); assert.equal(recovered.fallback, false);
+  assert.equal(recovered.settling, undefined);
+});
+
+test('Shelly-first and peer-delayed source arrivals retain the fixed reference and recover without lowering the pilot', () => {
+  const { limiter, connection } = settlingFixture();
+  const earlyShelly = loaded({ household: 1, own: 14 }); earlyShelly.property.currents = triple(13);
+  const pending = limiter.evaluate(atTime(earlyShelly, NOW + 5000), connection);
+  assert.equal(pending.currentA, 14); assert.equal(pending.settling, true);
+  assert.equal(pending.fallbackReason, 'non-additive-currents');
+  const recovered = limiter.evaluate(atTime(loaded({ own: 14 }), NOW + 15_000), connection);
+  assert.equal(recovered.fallback, false); assert.equal(recovered.currentA, 16);
+  assert.deepEqual(recovered.allowanceComparison.basis, triple('held-shelly-reference'));
+  const earlyProperty = loaded({ own: 14, peer: 3 }); earlyProperty.easee.currents = triple(0);
+  assert.equal(limiter.evaluate(atTime(earlyProperty, NOW + 20_000), connection).settling, true);
+  assert.equal(limiter.evaluate(atTime(loaded({ own: 14, peer: 3 }), NOW + 35_000), connection).fallback, false);
+});
+
+test('polls, intermediate agreement and further commands cannot renew the first absolute settling deadline', () => {
+  const { limiter, connection } = settlingFixture(), mismatch = loaded({ household: 8, own: 14 });
+  assert.equal(limiter.evaluate(atTime(mismatch, NOW + 5000), connection).currentA, 14);
+  limiter.evaluate(atTime(loaded({ own: 14 }), NOW + 20_000), connection);
+  limiter.confirmCurrentCommand({ dispatchedAt: NOW + 25_000, confirmedAt: NOW + 26_000, previousCurrentA: 14, currentA: 16 }, connection);
+  const before = limiter.evaluate(atTime(mismatch, NOW + 60_999, 16), connection);
+  assert.equal(before.settlingUntil, NOW + 61_000); assert.equal(before.currentA, 16);
+  const expired = limiter.evaluate(atTime(mismatch, NOW + 61_000, 16), connection);
+  assert.equal(expired.settling, undefined); assert.equal(expired.fallback, true); assert.equal(expired.currentA, 12);
+  limiter.confirmCurrentCommand({ dispatchedAt: NOW + 61_500, confirmedAt: NOW + 62_000, previousCurrentA: 16, currentA: 12 }, connection);
+  assert.equal(limiter.evaluate(atTime(mismatch, NOW + 63_000, 12), connection).settling, undefined,
+    'The fallback decrease cannot grant a replacement window for the persistent contradiction');
+});
+
+test('a command dispatched inside the original window cannot renew it through a later acknowledgement', () => {
+  const { limiter, connection } = settlingFixture();
+  limiter.evaluate(atTime(loaded({ own: 14 }), NOW + 59_000), connection);
+  limiter.confirmCurrentCommand({ dispatchedAt: NOW + 60_500, confirmedAt: NOW + 62_000,
+    previousCurrentA: 14, currentA: 16 }, connection);
+  const result = limiter.evaluate(atTime(loaded({ household: 8, own: 14 }), NOW + 63_000, 16), connection);
+  assert.equal(result.settling, undefined); assert.equal(result.fallback, true); assert.equal(result.currentA, 12);
+});
+
+test('settling requires a changed acknowledged own command, prior agreement and matching fresh readback', () => {
+  const mismatch = loaded({ household: 8, own: 14 });
+  for (const command of [null, { previousCurrentA: 14, currentA: 14 }, { confirmedAt: NOW }, { confirmedAt: NOW + 61_000 }]) {
+    const limiter = createShellyCurrentLimiter(), connection = scope(); limiter.evaluate(loaded(), connection);
+    if (command) limiter.confirmCurrentCommand({ dispatchedAt: NOW + 1000, confirmedAt: NOW + 2000,
+      previousCurrentA: 12, currentA: 14, ...command }, connection);
+    assert.equal(limiter.evaluate(atTime(mismatch, NOW + 5000), connection).settling, undefined);
+  }
+  for (const change of [input => { input.currentSetting.confirmed = false; },
+    input => { input.currentSetting.receivedAt = NOW - config.maxAgeMs; },
+    input => { input.currentSetting.currentA = 16; }, input => { input.currentSetting.measuredAt = NOW + 6000; }]) {
+    const { limiter, connection } = settlingFixture(), input = atTime(mismatch, NOW + 5000); change(input);
+    assert.equal(limiter.evaluate(input, connection).settling, undefined);
+  }
+  const limiter = createShellyCurrentLimiter(), connection = scope();
+  limiter.evaluate(mismatch, connection);
+  limiter.confirmCurrentCommand({ dispatchedAt: NOW + 1000, confirmedAt: NOW + 2000, previousCurrentA: 12, currentA: 14 }, connection);
+  assert.equal(limiter.evaluate(atTime(mismatch, NOW + 5000), connection).settling, undefined);
+});
+
+test('true feed loss and physical/control scope changes immediately withdraw settling', () => {
+  for (const change of [
+    (input) => { input.property.evidence.connected = false; },
+    (input) => { input.allowance.evidence.synchronized = false; },
+    (input) => { input.easee.evidence.activityAt = input.now - 120_001; },
+    (input) => { input.shelly.healthy = false; },
+    (input) => { input.property.evidence.epoch = 'replacement-epoch'; },
+    (_input, connection) => { connection.authorized = false; },
+    (_input, connection) => { connection.sessionId = 'new-session'; },
+    (_input, connection) => { connection.generation++; }
+  ]) {
+    const { limiter, connection } = settlingFixture(), input = atTime(loaded({ household: 8, own: 14 }), NOW + 5000);
+    change(input, connection);
+    const result = limiter.evaluate(input, connection);
+    assert.equal(result.settling, undefined); assert.equal(result.fallback, true); assert.equal(result.currentA, 12);
+    assert.equal(limiter.evaluate(atTime(loaded({ household: 8, own: 14 }), NOW + 6000), scope()).settling, undefined);
+  }
+});
+
+test('new allowance observations wait only within the own-command deadline and still require raw agreement', () => {
+  const { limiter, connection } = settlingFixture(), input = loaded({ own: 14, allowance: 10 });
+  input.allowance.times = triple(NOW + 3000); input.property.currents = triple(20);
+  const pending = limiter.evaluate(atTime(input, NOW + 5000), connection);
+  assert.equal(pending.settling, true); assert.deepEqual(pending.allowanceComparison.basis, triple('raw'));
+  input.property.currents = triple(18);
+  const stillWaiting = limiter.evaluate(atTime(input, NOW + 10_000), connection);
+  assert.equal(stillWaiting.settling, true); assert.deepEqual(stillWaiting.allowanceComparison.basis, triple('raw'));
+  input.property.currents = triple(16);
+  assert.equal(limiter.evaluate(atTime(input, NOW + 15_000), connection).fallback, false);
+});
+
+test('settling preserves native/vehicle/priority restrictions and independently matching tighter property phases', () => {
+  for (const [restriction, expected] of [[{ nativeCurrentA: 6 }, 6], [{ vehicleCurrentA: 0 }, 0],
+    [{ priority: 'charger1', peerDemandA: 16 }, 0], [{ priority: 'balanced', peerDemandA: 16 }, 10]]) {
+    const { limiter, connection } = settlingFixture();
+    const result = limiter.evaluate(atTime({ ...loaded({ household: 8, own: 14 }), ...restriction }, NOW + 5000), connection);
+    assert.equal(result.currentA, expected); assert.equal(result.settling, true);
+  }
+  const { limiter, connection } = settlingFixture();
+  const input = loaded({ household: 8, own: 14 });
+  input.property.currents[1] = 34; input.allowance.currents[1] = 0; input.allowance.times[1]++;
+  const result = limiter.evaluate(atTime(input, NOW + 5000), connection);
+  assert.equal(result.currentA, 0, 'The matching clipped-zero phase establishes a real subminimum bound');
+  assert.equal(result.pause, true);
+});
+
+test('a prior valid zero entitlement cannot become positive through settling or a current restoration report', () => {
+  const limiter = createShellyCurrentLimiter(), connection = scope(), input = loaded();
+  input.priority = 'charger1'; input.peerDemandA = 16;
+  assert.equal(limiter.evaluate(input, connection).currentA, 0);
+  limiter.confirmCurrentCommand({ dispatchedAt: NOW + 1000, confirmedAt: NOW + 2000, previousCurrentA: 6, currentA: 14 }, connection);
+  const pending = limiter.evaluate(atTime(loaded({ household: 8, own: 14 }), NOW + 5000), connection);
+  assert.equal(pending.currentA, 0); assert.equal(pending.pause, true);
+});
 
 test('a frozen measured reference admits 12 to 14 to 16A with unchanged allowance clocks', () => {
   const limiter = createShellyCurrentLimiter(), connection = scope();

@@ -141,10 +141,16 @@ and synchronized in their current connection epochs. Older last-change values
 can remain usable without altering source timestamps. The allowed-current
 fields 230–232 must agree within configured `agreementToleranceA` (2 A by
 default) with `max(0, fuse − property + Easee)` on every phase. Pilot field 114
-and a circuit current ceiling cannot supply that check. Clipped or delayed
-allowances must still satisfy the tolerance. Missing or inconsistent feeds
+and a circuit current ceiling cannot supply that check. A frozen comparison
+reference may account for measured Shelly current changes under the
+[current-allocation rules](charging.md#charger-2-current-allocation). Clipped or
+delayed allowances must still satisfy the tolerance. Missing or inconsistent feeds
 select configurable `fallbackCurrentA` (12 A by default), respecting known lower
-limits; valid insufficient headroom can instead require a pause. Shelly's
+limits; valid insufficient headroom can instead require a pause. After confirming
+an own current-setting command, asynchronous measurements may hold at most the confirmed
+setting and last validated ceiling for an absolute 60 seconds. Headroom is
+reported unknown during this bounded wait, which permits no further increase
+and never delays fallback for a hard feed outage. Shelly's
 current measurements, commands and native readback retain their strict
 `maxAgeMs` freshness checks. `additiveCurrentVerified` and `maxSkewMs` are retired
 and rejected, without aliases.

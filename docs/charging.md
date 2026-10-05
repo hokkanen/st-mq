@@ -1111,7 +1111,8 @@ Allowance is not the final Shelly setpoint: its comparison excludes the separate
 configured safety margin, which is deducted once in `H`. A clipped zero or a
 delayed Equalizer allowance does not establish an exact gross capacity budget.
 It is usable only while the comparison stays within the configured tolerance;
-a larger disagreement selects fallback until the feeds agree again.
+a larger disagreement selects fallback unless the bounded measurement-settling
+hold below applies.
 
 Equalizer can hold that allowance through a change in Shelly's own draw. Once
 the raw comparison agrees at positive, unclipped headroom and Shelly's measured
@@ -1132,6 +1133,22 @@ retain the raw comparison because they do not establish an exact offset.
 Loss of usable feed evidence, a changed connection or physical session, and a
 controller restart discard this process-local reference. Original observations
 and timestamps remain unchanged; the comparison reports its derived basis.
+
+Property and charger measurements can arrive at different times after the
+controller changes its own current setting. Once that change is acknowledged
+and independently confirmed by native readback, a bounded measurement-settling
+hold may apply for at most 60 seconds from the first such command's dispatch.
+It may retain the lesser of the freshly confirmed native setting and last validated
+current allowance. It cannot authorize a further increase. Repeated polls or
+commands do not move that absolute deadline. Applicable native, vehicle and
+priority restrictions, and independently confirmed tighter property limits,
+still reduce the held ceiling. Contradictory phase readings do not establish
+new headroom. Lost feed health, authority, connection or session bypasses this
+hold immediately; a disagreement that remains at expiry uses the configured
+fallback. Neither the hold nor a command acknowledgement renews source clocks
+or claims a valid current load model. The badge and history show **Unknown ·
+Waiting for matching load readings**, with the held allowance and actual native
+setting readback kept separate from measured draw.
 
 Shelly priority excludes Easee's present draw from this fuse test. If household
 demand excluding both chargers leaves 16 A on every phase, Shelly may take 16 A
@@ -1214,6 +1231,11 @@ instruction confirmation is not physical zero-power evidence. A scheduled or
 manual stop never becomes a pause attributed to load balancing merely because
 the car draws no power. Fallback remains visibly fallback even when another
 restriction lowers its effective cap below 12 A.
+
+The bounded wait after a confirmed current-setting change uses the existing hatched
+**Unknown** state with **Waiting for matching load readings**. Its details retain
+the held allowance and confirmed charger setting, while stating that current
+headroom is unconfirmed and no further increase is permitted during the wait.
 
 Hover or drag along the strip, including by touch, to inspect the recorded mode,
 integer allowance, reason and application status. Keyboard focus on the strip

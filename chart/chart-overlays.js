@@ -100,7 +100,7 @@ export function activityIntervals(descriptor, payload) {
 export function activityIntervalLabel(descriptor, interval) {
   if (descriptor.key === 'shellyLimiter') {
     const display = shellyLimiterDisplay(interval);
-    return `${display.label}${display.allowance ? ' allowance' : ''}${display.reason ? ` · ${display.reason}` : ''}\n${display.effectiveAllowance ? `${display.effectiveAllowance}\n` : ''}${display.application}\n${dateTime.format(interval.start)} – ${dateTime.format(interval.end)}`;
+    return `${display.label}${display.allowance ? ' allowance' : ''}${display.reason && !display.reasonInLabel ? ` · ${display.reason}` : ''}\n${display.effectiveAllowance ? `${display.effectiveAllowance}\n` : ''}${display.application}\n${dateTime.format(interval.start)} – ${dateTime.format(interval.end)}`;
   }
   const state = Number.isFinite(interval.value)
     ? descriptor.values?.[interval.value] ? `${descriptor.values[interval.value]} (${interval.value})` : `Value ${interval.value}` : descriptor.label;

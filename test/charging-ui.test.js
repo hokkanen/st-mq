@@ -936,6 +936,7 @@ test('Charger 2 popups explain manual priority and unconfirmed instructions with
     ['native-schedule', { kind: 'schedule' }, /charger’s own schedule has priority/i],
     ['evse-command-unconfirmed', null, /outcome is still unknown.*fresh reading/i],
     ['telemetry-fallback', null, /configured fallback.*fresh measurements/i],
+    ['measurement-settling', null, /Waiting for matching load readings.*Current headroom is not yet confirmed.*held ceiling cannot increase/],
     ['future-control-condition', null, /Check the charger controls for details/],
   ]) {
     panel.update(status({ ...item, control: { phase: manual ? 'manual' : 'uncertain', reason, manual, confirmed: false } }));
@@ -2165,6 +2166,13 @@ test('Shelly limiter badge presents the controller mode without inferring pauses
   panel.update(status({ ...item, limiter: { ...limiter, mode: 'paused-by-balancing', loadAllowanceA: 0, allowanceA: 0, applicationStatus: 'pending' } }));
   assert.match(popup.textContent, /Awaiting charger confirmation/);
   assert.doesNotMatch(popup.textContent, /Pause instruction confirmed/);
+  panel.update(status({ ...item, limiter: { ...limiter, mode: 'unknown', loadAllowanceA: 14,
+    allowanceA: 14, appliedCurrentA: 14, reason: 'measurement-settling' } }));
+  assert.equal($('charger2-limiter').textContent, 'Load balancing: Unknown · Waiting for matching load readings');
+  assert.match(popup.textContent, /Held allowance: 14 A/);
+  assert.match(popup.textContent, /Charger setting: 14 A confirmed/);
+  assert.match(popup.textContent, /Current headroom is not yet confirmed; no further increase is allowed/);
+  assert.doesNotMatch(popup.textContent, /Unrestricted|full configured ceiling/);
   panel.update(status({ ...item, limiter: { mode: 'unknown', applicationStatus: 'unknown' } }));
   assert.equal($('charger2-limiter').textContent, 'Load balancing: Unknown');
   assert.match(popup.textContent, /Charger setting unconfirmed/);

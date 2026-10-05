@@ -418,7 +418,12 @@ controller ceiling, and a confirmed native setting or pause instruction is not
 physical charging or zero-power evidence. Native and vehicle restrictions can
 reduce the effective allowance without changing an unrestricted load allowance.
 Manual and scheduled stops never become balancing pauses merely because power
-is zero. See [current allocation](charging.md#charger-2-current-allocation).
+is zero. A bounded measurement-settling hold records the existing **Unknown**
+mode with reason `measurement-settling`, the held allowance and separate native
+setting readback. It does not present the held ceiling as newly verified headroom
+or extend the preceding verified span. Repeated unchanged waiting observations
+only extend that unknown span; they add no periodic rows or new schema fields.
+See [current allocation](charging.md#charger-2-current-allocation).
 
 This history does not expire with unsaved charging-session reports, whose default
 retention is 30 days. It is part of ordinary recorded history and current-format

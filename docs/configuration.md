@@ -345,6 +345,13 @@ additional feed-age configuration is needed. A fixed, process-local reference
 can account for Shelly's measured current change while the same admitted
 positive allowance observation remains held. Household changes still affect
 the comparison; reconnect, session changes and restart discard the reference.
+After an own current-setting command is confirmed, a measurement disagreement
+may hold at most the confirmed setting and last validated ceiling for an
+absolute 60 seconds, with no further
+increase. This fixed settling bound adds no configuration field. Hard feed
+outages bypass it; unresolved disagreement at expiry uses `fallbackCurrentA`.
+The held ceiling still respects known tighter restrictions and appears as
+unknown headroom in the badge and history.
 See the [current allocation contract](charging.md#charger-2-current-allocation).
 `maxAgeMs`, initially 15000 ms,
 continues to bound Shelly measurements, command readiness and native readback.

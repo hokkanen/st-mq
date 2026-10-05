@@ -18,6 +18,7 @@ const reasons = {
   'feed-unsynchronized': 'Waiting for synchronized feeds', 'charger-current-unavailable': 'Easee current unavailable',
   'shelly-current-unavailable': 'Shelly current unavailable', 'non-additive-currents': 'Load readings disagree',
   'allowance-disagreement': 'Equalizer allowance and property readings disagree',
+  'measurement-settling': 'Waiting for matching load readings',
   'below-minimum-current': 'Below the minimum charging current',
   'telemetry-fallback': 'Load evidence unavailable', 'feed-unavailable': 'Load feed unavailable',
   'limiter-disabled': 'Limiter disabled', 'disconnected': 'No vehicle connected',
@@ -31,6 +32,7 @@ export function shellyLimiterDisplay(value) {
   const allowance = mode === 'unknown' || mode === 'inactive' ? null : current(value?.loadAllowanceA ?? value?.allowanceA);
   const effective = current(value?.allowanceA);
   const applied = current(value?.appliedCurrentA);
+  const settling = mode === 'unknown' && value?.reason === 'measurement-settling';
   const reason = reasons[value?.reason] ?? (mode === 'fallback' ? 'Load evidence unavailable'
     : mode === 'limited' || mode === 'paused-by-balancing' ? 'Property load or charger priority' : '');
   const application = ({ confirmed: value?.allowanceA === 0 ? 'Pause instruction confirmed'
@@ -39,12 +41,16 @@ export function shellyLimiterDisplay(value) {
     blocked: `Application blocked${applied ? ` · charger setting ${applied}` : ''}`,
     inactive: 'No limiter instruction applied', unknown: 'Charger setting unconfirmed' })[value?.applicationStatus]
       ?? 'Charger setting unconfirmed';
-  const label = `${state.label}${allowance ? ` · ${allowance}` : ''}`;
-  return { mode, color: state.color, pattern: state.pattern, label, allowance, reason, application,
-    effectiveAllowance: effective && effective !== allowance ? `Effective allowance: ${effective}` : '',
+  const label = `${state.label}${settling ? ` · ${reason}` : allowance ? ` · ${allowance}` : ''}`;
+  const effectiveAllowance = effective && effective !== allowance ? `${settling ? 'Held' : 'Effective'} allowance: ${effective}` : '';
+  const description = settling
+    ? 'Load readings are catching up after a controller command. Current headroom is not yet confirmed; no further increase is allowed during this wait.'
+    : state.description;
+  return { mode, color: state.color, pattern: state.pattern, label, allowance, reason, reasonInLabel: settling, application,
+    effectiveAllowance,
     detail: [`${state.label}${allowance ? ` · ${allowance} allowance` : ''}${reason ? ` · ${reason}` : ''}`,
-      effective && effective !== allowance ? `Effective allowance: ${effective}, respecting other restrictions.` : '',
-      application, state.description, 'Allowance is a controller ceiling, not measured charging current. Scheduled and manual stops remain separate.'].filter(Boolean).join('\n\n') };
+      effectiveAllowance ? `${effectiveAllowance}, respecting other restrictions.` : '',
+      application, description, 'Allowance is a controller ceiling, not measured charging current. Scheduled and manual stops remain separate.'].filter(Boolean).join('\n\n') };
 }
 
 export const shellyLimiterTrack = Object.freeze({

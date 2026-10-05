@@ -234,8 +234,13 @@ permission to act. See [the configuration guide](docs/configuration.md).
   Equalizer allowance values may remain usable on healthy, synchronized current
   connections when their independent consistency checks pass; their original
   last-change clocks are preserved, not renewed by polling. Shelly current,
-  command and native readback freshness remain separately enforced. Unavailable
-  or inconsistent evidence uses the configured fallback, still respecting known
+  command and native readback freshness remain separately enforced. After
+  confirming its own current-setting change, a bounded measurement-settling
+  interval may retain at most the confirmed setting and last validated ceiling,
+  without increasing current or
+  presenting uncertain headroom as verified. Hard feed outages do not receive
+  that settling allowance. Otherwise unavailable or inconsistent evidence uses
+  the configured fallback, still respecting known
   tighter limits and never inventing headroom. An explicit configuration opt-out
   remains supported.
 - When future charging current is unknown, economic scheduling assumes the

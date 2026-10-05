@@ -1236,7 +1236,10 @@ export class ChargingRuntime {
     const setting = snapshot?.fields?.current_limit, permission = snapshot?.fields?.start_charging;
     const fresh = field => field?.invalidatedAt === undefined && field?.retained !== true
       && Number.isFinite(field?.receivedAt) && field.receivedAt <= now && now - field.receivedAt <= installation.maxAgeMs;
-    const recent = Number.isFinite(control.limiter?.evaluatedAt) && control.limiter.evaluatedAt <= now
+    const scope = control.limiter?.scope;
+    const recent = scope && scope.generation === snapshot?.generation
+      && scope.sessionId === snapshot?.session?.sessionId && scope.connectedAt === snapshot?.session?.connectedAt
+      && Number.isFinite(control.limiter?.evaluatedAt) && control.limiter.evaluatedAt <= now
       && now - control.limiter.evaluatedAt <= 30_000;
     const limit = recent ? control.limiter : null;
     const applied = fresh(setting) ? setting.value : null;

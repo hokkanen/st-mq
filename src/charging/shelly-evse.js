@@ -67,6 +67,13 @@ export function createShellyEvseAdapter({ config, broker, client, store, engine,
   const notificationBaselines = new Map(), notificationPending = new Map(Object.entries(state.notificationPending ?? {}));
   let notificationRefreshQueued = false;
   let subscriptionStatus = 'disconnected', lastLiveAt = null, readAt = null;
+  let statusObserver = null;
+  const publishStatus = () => {
+    if (closed) return;
+    // The observer reads an already published snapshot. Its storage failure
+    // cannot reject a native reading or interfere with command/readback work.
+    try { statusObserver?.()?.catch?.(() => {}); } catch {}
+  };
   const topics = [
     { role: 'RPC responses', topic: `${source}/rpc`, direction: 'subscribe' },
     { role: 'Charger status', topic: `${config.topicPrefix}/events/rpc`, direction: 'subscribe' },
@@ -307,7 +314,7 @@ export function createShellyEvseAdapter({ config, broker, client, store, engine,
       if (!packet.retain && ['true', 'false'].includes(payload.toString())) lastLiveAt = receivedAt;
       online = payload.toString() === 'true'; if (!online) {
         discovered = controlReady = false; readinessRevision++; rejectPending('evse-offline');
-      } return;
+      } publishStatus(); return;
     }
     let frame; try { frame = JSON.parse(payload); } catch { return; }
     if (frame.src !== config.deviceId) return;
@@ -347,6 +354,10 @@ export function createShellyEvseAdapter({ config, broker, client, store, engine,
           item.reject(cause);
         }
       }
+      // Role replies become public independently of the other parallel reads.
+      // Publish after accepting the field and clearing its notification fence,
+      // before yielding to the still-pending full refresh or controller command.
+      if (item.readback) publishStatus();
       return;
     }
     if (topic === `${config.topicPrefix}/events/rpc` && ['NotifyStatus', 'NotifyFullStatus'].includes(frame.method)) {
@@ -358,6 +369,7 @@ export function createShellyEvseAdapter({ config, broker, client, store, engine,
         if (pendingEvents.length < 128) pendingEvents.push({ admissionCheckpoint, params: frame.params, method: frame.method, at: receivedAt, retained: packet.retain === true });
         else { eventOverflow = true; controlReady = false; readinessRevision++; error = 'evse-event-overflow'; }
       } else if (!admitNotification(frame.params, receivedAt, packet.retain === true, frame.method)) admission.restore(admissionCheckpoint);
+      publishStatus();
     }
   }
   function requestNotificationReadback() {
@@ -516,7 +528,7 @@ export function createShellyEvseAdapter({ config, broker, client, store, engine,
       readAt = clock();
     })().catch(cause => {
       if (epoch === generation) { controlReady = false; error = cause.code ?? 'evse-read-unavailable'; }
-    }).finally(() => { polling = null; });
+    }).finally(() => { polling = null; if (epoch === generation) publishStatus(); });
     return polling;
   }
   function connect() {
@@ -535,6 +547,7 @@ export function createShellyEvseAdapter({ config, broker, client, store, engine,
   }
   function disconnect() {
     connected = admitted = online = discovered = controlReady = false; subscriptionStatus = 'disconnected'; generation++; buffer = []; rejectPending('evse-offline');
+    publishStatus();
   }
   client.on('connect', connect); client.on('message', receive); client.on('offline', disconnect); client.on('close', disconnect);
   const timer = setInterval(() => {
@@ -608,7 +621,13 @@ export function createShellyEvseAdapter({ config, broker, client, store, engine,
       ['ev2_import_energy_counter', reading(physical?.total_act_energy, 'kWh')],
     ]);
   };
-  const adapter = { association, config, snapshot, readings, refresh, rpc, accept,
+  const adapter = { association, config, snapshot, readings, refresh, rpc,
+    accept(...args) { const accepted = accept(...args); publishStatus(); return accepted; },
+    observeStatus(observer) {
+      if (typeof observer !== 'function') throw new TypeError('A status observer is required');
+      statusObserver = observer;
+      return () => { if (statusObserver === observer) statusObserver = null; };
+    },
     async disableNativeSchedules({ guard = () => false, beforePublish = () => {} } = {}) {
       if (!snapshot().nativeScheduleTakeoverSupported) throw fail('evse-native-schedule-unsupported');
       let expected = copy(nativeSchedules);
@@ -772,6 +791,9 @@ export function createShellyController({ adapter, initialState, saveState = () =
     || initialState.pending?.owned != null && (!validIdentificationPause(initialState.pending.owned)
       || initialState.pending.role !== 'start_charging' || initialState.pending.value !== false))) throw fail('unsupported-shelly-ownership');
   let state = initialState ? copy(initialState) : { version: 1, association: adapter.association, phase: 'off', manual: null, ownedPause: false, pending: null };
+  // A saved diagnostic is not a decision made by this controller instance.
+  // Native generation counters can repeat after a process restart.
+  state.limiter = null;
   let closed = false, revision = 0, planningRevision = null, identification = null, enabled = false, queue = Promise.resolve(),
     takeoverResult = null, takeoverAttemptToken = null, takeoverAttemptRevision = null;
   const currentLimiter = createShellyCurrentLimiter();
@@ -780,10 +802,16 @@ export function createShellyController({ adapter, initialState, saveState = () =
     try { onStatusChange()?.catch?.(() => {}); } catch {}
   };
   const persist = async () => { await saveState(copy(state)); notifyStatus(); };
-  const limitCurrent = (context, snapshot = adapter.snapshot()) => currentLimiter.evaluate({
-    config: adapter.config, ...context, nativeCurrentA: state.manualCurrentA, shelly: adapter.liveCurrents(), now: clock()
-  }, { authorized: !closed && canControl(), association: snapshot.association, generation: snapshot.generation,
+  const limiterScope = snapshot => ({ authorized: !closed && canControl(), association: snapshot.association, generation: snapshot.generation,
     connected: snapshot.session?.connected, sessionId: snapshot.session?.sessionId, connectedAt: snapshot.session?.connectedAt });
+  const limitCurrent = (context, snapshot = adapter.snapshot()) => {
+    const setting = snapshot.fields.current_limit, readback = setting?.readback;
+    return currentLimiter.evaluate({ config: adapter.config, ...context, nativeCurrentA: state.manualCurrentA,
+      shelly: adapter.liveCurrents(), now: clock(), currentSetting: { currentA: setting?.value, measuredAt: setting?.measuredAt,
+        receivedAt: readback?.receivedAt, confirmed: fresh(setting) && time(readback?.measuredAt) && readback.measuredAt > 0
+          && readback.measuredAt <= setting.measuredAt && time(readback.requestedAt) && readback.requestedAt <= readback.receivedAt
+          && readback.receivedAt === setting.receivedAt } }, limiterScope(snapshot));
+  };
   const scheduleToken = snapshot => snapshot.nativeScheduleFingerprint ?? (snapshot.nativeScheduleActive ? 'active' : null);
   const systemEcho = (field, value) => field?.commandSource === 'sys' && field.value === value;
   const manualEvent = field => ({ kind: field.value ? 'enable' : 'stop', detectedAt: field.measuredAt,
@@ -1075,6 +1103,8 @@ export function createShellyController({ adapter, initialState, saveState = () =
       await refreshCommandReadback('current_limit', snapshot);
       const actual = adapter.snapshot().fields.current_limit;
       if (!fresh(actual) || !shellyCurrentCommandReadback(actual, test.pending)) throw fail('evse-command-unconfirmed');
+      currentLimiter.confirmCurrentCommand({ dispatchedAt: test.pending.dispatchedAt, confirmedAt: clock(),
+        previousCurrentA: current.value, currentA: target }, limiterScope(adapter.snapshot()));
       test.pending = null; test.phase = restoring ? 'restored' : 'active';
       test.confirmedAt ??= clock(); test.permissionAt = actual.measuredAt; updateLastCurrent(actual);
       await persist();
@@ -1086,8 +1116,9 @@ export function createShellyController({ adapter, initialState, saveState = () =
       await persist();
     }
   }
+  const stopObserving = adapter.observeStatus?.(() => { if (!closed) notifyStatus(); });
   return { status, supportsIdentification: true, invalidate() { revision++; if (!canControl()) currentLimiter.reset(); },
-    close() { closed = true; revision++; currentLimiter.reset(); return queue.catch(() => {}); },
+    close() { closed = true; stopObserving?.(); revision++; currentLimiter.reset(); return queue.catch(() => {}); },
     update(input = {}) {
       if (Object.hasOwn(input, 'resume')) throw fail('unsupported-shelly-control-input');
       const intentRevision = ++revision;
@@ -1441,7 +1472,8 @@ export function createShellyController({ adapter, initialState, saveState = () =
         const limitation = adapter.config.limiterEnabled ? limitCurrent({ ...context, allocationA }, snapshot)
           : { currentA: nativeCap, pause: nativeCap < adapter.config.minimumCurrentA,
             reason: 'native-current-limit', fallback: false, modelAvailable: false, guaranteedProtection: false };
-        state.limiter = limitation;
+        state.limiter = { ...limitation, scope: { generation: snapshot.generation,
+          sessionId: snapshot.session?.sessionId, connectedAt: snapshot.session?.connectedAt } };
         const windows = chargeNow ? [{ startAt: clock(), endAt: null }] : plan?.periods ?? [];
         const economic = !identification && (input.enabled || chargeNow) && !state.manual && !snapshot.nativeScheduleActive && windows.length > 0;
         const inWindow = windows.some(period => period.startAt <= clock() && (period.endAt === null || period.endAt > clock()));
@@ -1551,6 +1583,8 @@ export function createShellyController({ adapter, initialState, saveState = () =
             if (state.pending.owned) state.owned = { ...state.pending.owned, confirmedAt: clock(), permissionAt: readback.measuredAt };
             else if (value === true) state.owned = null;
           } else {
+            currentLimiter.confirmCurrentCommand({ dispatchedAt: state.pending.dispatchedAt, confirmedAt: clock(),
+              previousCurrentA: expectedCurrent.value, currentA: value }, limiterScope(after));
             if (readback.measuredAt > state.pending.acceptedAt && !systemEcho(readback, value))
               state.manualCurrentA = readback.value < adapter.config.maximumCurrentA ? readback.value : null;
             state.lastCurrent = value; state.lastCurrentAtSource = readback.measuredAt; expectedCurrent = copy(readback);

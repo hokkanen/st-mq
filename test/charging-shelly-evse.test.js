@@ -508,6 +508,70 @@ test('controller comparison survives priority and Charge now invalidation but lo
   assert.equal(result.limiter.fallbackReason, 'allowance-disagreement');
 });
 
+test('confirmed controller current transitions wait for matching meters without repeated pilot writes, then time out', async t => {
+  const f = fixture(t, { limiterEnabled: true, mainFuseA: [30, 30, 30] }); await f.ready(); advanceCommandClock(f);
+  let property = 22, priority = 'balanced';
+  const controller = createShellyController({ adapter: f.adapter, clock: f.now, canControl: () => true,
+    getAllocation: () => ({ priority, liveUnscheduled: true, peerDemandA: 6,
+      property: reading([property, property, property]), easee: reading([0, 0, 0]), allowance: reading([8, 8, 8]) }) });
+  t.after(() => controller.close());
+  let result = await controller.update({ enabled: false });
+  assert.equal(result.limiter.currentA, 14); assert.equal(f.fields.current_limit, 14);
+  const dispatchedAt = NOW;
+  property = 25; priority = 'charger2'; controller.invalidate();
+  for (const at of [NOW + 5000, NOW + 20_000, NOW + 40_000, NOW + 59_999]) {
+    f.setNow(at); result = await controller.update({ enabled: false });
+    assert.equal(result.limiter.currentA, 14); assert.equal(result.limiter.settling, true);
+    assert.equal(result.limiter.modelAvailable, false);
+    assert.equal(result.limiter.settlingUntil, dispatchedAt + 60_000);
+    assert.equal(f.fields.current_limit, 14);
+  }
+  assert.deepEqual(f.writes.filter(row => row.method === 'Number.Set').map(row => row.params.value), [14],
+    'Polling and a higher priority cannot raise or churn the pilot while source agreement is pending');
+  f.setNow(NOW + 60_000); result = await controller.update({ enabled: false });
+  assert.equal(result.limiter.fallback, true); assert.equal(result.limiter.settling, undefined);
+  assert.equal(f.fields.current_limit, 12);
+  assert.deepEqual(f.writes.filter(row => row.method === 'Number.Set').map(row => row.params.value), [14, 12]);
+});
+
+test('an admitted matching current readback with an older source clock still supports bounded settling', async t => {
+  const f = fixture(t, { limiterEnabled: true, mainFuseA: [30, 30, 30] }); await f.ready(); advanceCommandClock(f);
+  let property = 22;
+  const controller = createShellyController({ adapter: f.adapter, clock: f.now, canControl: () => true,
+    getAllocation: () => ({ priority: 'balanced', liveUnscheduled: true, peerDemandA: 6,
+      property: reading([property, property, property]), easee: reading([0, 0, 0]), allowance: reading([8, 8, 8]) }) });
+  t.after(() => controller.close());
+  await controller.update({ enabled: false }); assert.equal(f.fields.current_limit, 14);
+  f.setNow(NOW + 2000); f.delta('current_limit', { value: 14, source: 'sys', last_update_ts: (NOW + 2000) / 1000 });
+  f.setSourceTime('current_limit', NOW + 1000);
+  property = 25; f.setNow(NOW + 5000);
+  const result = await controller.update({ enabled: false }), setting = f.adapter.snapshot().fields.current_limit;
+  assert.equal(setting.measuredAt, NOW + 2000); assert.equal(setting.readback.measuredAt, NOW + 1000);
+  assert.equal(result.limiter.settling, true); assert.equal(result.limiter.currentA, 14);
+  assert.deepEqual(f.writes.filter(row => row.method === 'Number.Set').map(row => row.params.value), [14]);
+});
+
+test('measurement settling cannot release a native Stop or override a new priority pause', async t => {
+  for (const restriction of ['native-stop', 'priority-pause']) await t.test(restriction, async t => {
+    const f = fixture(t, { limiterEnabled: true, mainFuseA: [30, 30, 30] }); await f.ready(); advanceCommandClock(f);
+    let property = 22, priority = 'balanced', peerDemandA = 6;
+    const controller = createShellyController({ adapter: f.adapter, clock: f.now, canControl: () => true,
+      getAllocation: () => ({ priority, liveUnscheduled: true, peerDemandA,
+        property: reading([property, property, property]), easee: reading([0, 0, 0]), allowance: reading([8, 8, 8]) }) });
+    t.after(() => controller.close());
+    await controller.update({ enabled: false });
+    property = 25; f.setNow(NOW + 5000);
+    if (restriction === 'native-stop') { f.fields.start_charging = false; f.notify('start_charging', false); }
+    else { priority = 'charger1'; peerDemandA = 16; controller.invalidate(); }
+    const result = await controller.update({ enabled: false });
+    assert.equal(result.limiter.settling, true);
+    if (restriction === 'priority-pause') { assert.equal(result.limiter.currentA, 0); assert.equal(result.limiter.pause, true); }
+    else assert.equal(result.manual.kind, 'stop');
+    assert.equal(f.fields.start_charging, false);
+    assert.equal(f.writes.some(row => row.method === 'Boolean.Set' && row.params.value === true), false);
+  });
+});
+
 test('a persisted comparison diagnostic cannot restore a controller reference after restart', async t => {
   const f = fixture(t, { limiterEnabled: true }); await f.ready(); advanceCommandClock(f);
   let saved = null, own = 12;
