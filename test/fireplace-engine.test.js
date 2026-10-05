@@ -25,6 +25,7 @@ function fixture(t) {
     return row ? JSON.parse(row.value) : null;
   };
   t.after(async () => {
+    await engine.charging.close();
     await engine.closeFireplace();
     engine.executor.closed = true; clearTimeout(engine.executor.timer);
     observer.close(); store.close(); rmSync(directory, { recursive: true, force: true });
@@ -42,6 +43,7 @@ function fixture(t) {
   return { store, sample, externalState,
     get engine() { return engine; }, get now() { return now; }, set now(value) { now = value; },
     async restart() {
+      await engine.charging.close();
       await engine.closeFireplace(); engine.executor.closed = true; clearTimeout(engine.executor.timer);
       engine = new Engine({ store, config, clock: () => now }); return engine;
     } };

@@ -39,13 +39,13 @@ export function garageDoorControl(status, device, snapshot = {}) {
   if (known) {
     if (moving || pending) {
       if (device.controls?.cover?.stop === true) { action = 'stop'; label = 'Stop'; }
-      else label = moving ? `${state}…` : 'Waiting…';
+      else label = moving ? `${state}` : 'Waiting';
     } else {
       action = state === 'Closed' ? 'open' : 'close';
       label = action === 'open' ? 'Open' : 'Close';
     }
   }
-  if (sending) label = 'Sending…';
+  if (sending) label = 'Sending';
   if (ownRequest && snapshot.error) feedback = snapshot.message;
   if (isReadOnlyReplica(status)) feedback = 'Door controls are available on the master computer.';
   else if (!known) feedback ||= 'Waiting for a current door report.';

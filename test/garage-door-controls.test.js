@@ -38,7 +38,7 @@ test('live reported movement exposes only configured Stop, including motion with
     assert.equal(moving.state, state);
     assert.equal(moving.moving, true);
     assert.equal(moving.action, null);
-    assert.equal(moving.label, `${state}…`);
+    assert.equal(moving.label, state);
     assert.equal(moving.disabled, true);
     assert.equal(device.cover.operation, null);
     device.controls.cover.stop = true;
@@ -54,7 +54,7 @@ test('sending and broker acknowledgement retain the observed state and block rep
   const sending = garageDoorControl(current, device, { busy: true, actionKind: 'cover', actionDeviceId: device.id });
   assert.equal(sending.state, 'Closed');
   assert.equal(sending.position, 'closed', 'Delivery cannot move the illustrated shutter');
-  assert.equal(sending.label, 'Sending…');
+  assert.equal(sending.label, 'Sending');
   assert.equal(sending.sending, true);
   assert.equal(sending.disabled, true);
   for (const phase of ['publishing', 'published']) {
@@ -63,7 +63,7 @@ test('sending and broker acknowledgement retain the observed state and block rep
     assert.equal(view.state, 'Closed');
     assert.equal(view.position, 'closed');
     assert.equal(view.moving, false);
-    assert.equal(view.label, 'Waiting…');
+    assert.equal(view.label, 'Waiting');
     assert.equal(view.action, null);
     assert.equal(view.disabled, true);
     assert.match(view.feedback, /Open requested/);

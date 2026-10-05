@@ -213,7 +213,7 @@ try {
   assert.equal(await evaluate("document.querySelector('label[for=sensor-change-reason]').firstChild.textContent"), 'Reason');
   assert.deepEqual(await evaluate("Array.from(document.getElementById('sensor-change-reason').options, option => option.textContent)"),
     ['Replacement', 'New location', 'Calibration', 'Other']);
-  assert.equal(await evaluate("document.getElementById('sensor-change-submit').textContent"), 'Record change now…');
+  assert.equal(await evaluate("document.getElementById('sensor-change-submit').textContent"), 'Record change now');
   await evaluate("document.getElementById('sensor-change-signal').value='downstairs_temperature'; document.getElementById('sensor-change-reason').value='moved'; document.getElementById('sensor-change-signal').focus();");
   await evaluate("document.getElementById('sensor-change-refresh').click()");
   await until("!document.getElementById('sensor-change-refresh').disabled");

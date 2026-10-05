@@ -267,8 +267,15 @@ test(`BMW pause survives restoration ${boundary} before the controller saves com
 test('a lost restoration acknowledgement preserves Stop across Charge now and restart without replay', async t => {
   const f = await bmwPauseRestorationFixture(t), before = f.writes.length;
   const pauseUntil = f.item('charger2').identification.pauseUntil;
-  f.onCurrentWrite(() => { f.notifyCurrent(16); f.observe(); }); f.dropCurrentReply();
+  // This MQTT fixture owns no live socket. Advance the real adapter's unref'd
+  // RPC deadline explicitly so a lost reply does not end the test process.
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  f.onCurrentWrite(() => {
+    f.notifyCurrent(16); f.observe();
+    queueMicrotask(() => t.mock.timers.tick(5000));
+  }); f.dropCurrentReply();
   f.advance(5000); f.setMeasuredCurrent(0); await f.update();
+  t.mock.timers.reset();
   assert.equal(f.item('charger2').controller.status().currentTest.phase, 'uncertain');
   await f.update();
   assert.equal(f.fields.start_charging.value, false, 'Unconfirmed restoration cannot release the owned Stop');

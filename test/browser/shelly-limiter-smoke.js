@@ -139,8 +139,11 @@ try {
     assert.equal(new Set(Object.entries(colors).filter(([mode])=>!['inactive','unknown'].includes(mode)).map(([,color])=>color)).size, 4);
     assert.match(await evaluate(`getComputedStyle(document.querySelector('${track} [data-value=unknown]')).backgroundImage`), /linear-gradient/);
     await keyPress('Escape');
-    const point = await evaluate(`(() => {const r=document.querySelector('${track} [data-value=fallback]').getBoundingClientRect();return {x:r.left+r.width/2,y:r.top+r.height/2};})()`);
     await send('Emulation.setTouchEmulationEnabled', { enabled: true, maxTouchPoints: 1 });
+    // Pointer-capability media queries rebuild the strips. Finish that layout
+    // change before locating the target and starting a real touch gesture.
+    await settle();
+    const point = await evaluate(`(() => {const r=document.querySelector('${track} [data-value=fallback]').getBoundingClientRect();return {x:r.left+r.width/2,y:r.top+r.height/2};})()`);
     await send('Input.dispatchTouchEvent', { type: 'touchStart', touchPoints: [{ ...point, id: 1 }] });
     await send('Input.dispatchTouchEvent', { type: 'touchEnd', touchPoints: [] }); await settle();
     assert.match(await evaluate("document.querySelector('.chart-crosshair-readout').textContent"), /Fallback · 12 A/);

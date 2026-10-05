@@ -19,14 +19,20 @@ const now = Date.now(), previewId = 'a'.repeat(64), resetToken = 'b'.repeat(64);
 const actions = [], pending = new Map(), errors = [], prompts = [], measurements = [];
 const preview = { previewId, counts: { missing: 12, conflicts: 3, duplicates: 4, skipped: 2 },
   period: { from: now - 8 * 86400_000, to: now - 86400_000 }, model: { status: 'rebuild-required', unsupported: 2 } };
-const master = (overrides = {}) => ({ role: 'master', canControl: true, busy: false,
-  peer: { reachable: true, role: 'slave', lastSeenAt: now }, vip: { owned: true, ready: true },
-  recovery: { state: 'idle' }, actions: { 'check-recovery': true, recover: false, rejoin: false, handover: true, promote: false },
-  ...overrides });
+const master = (overrides = {}) => {
+  const view = { role: 'master', canControl: true, busy: false,
+    peer: { reachable: true, role: 'slave', lastSeenAt: now }, vip: { owned: true, ready: true },
+    mqttFrontend: { listening: true, ready: true, connections: 3, error: null },
+    recovery: { state: 'idle' }, reset: { token: resetToken }, ...overrides };
+  return { ...view, actions: { 'check-recovery': view.peer.reachable === true && view.peer.role !== 'master',
+    recover: false, rejoin: false, handover: view.peer.reachable === true && view.peer.role === 'slave',
+    promote: false, reset: true, ...overrides.actions } };
+};
 const checked = () => master({ peer: { reachable: true, role: 'protected', lastSeenAt: now },
   recovery: { state: 'ready', donorRole: 'protected', preview },
   actions: { 'check-recovery': true, recover: true, rejoin: true, handover: false, promote: false } });
 const standby = role => ({ ...master(), role, canControl: false, vip: { owned: false, ready: true },
+  mqttFrontend: { listening: false, ready: false, connections: 0, error: null },
   peer: { reachable: true, role: 'master', lastSeenAt: now }, actions: { promote: true },
   sync: { state: 'ready', sourceAt: now - 60_000, verifiedAt: now - 30_000, bytes: 2e6 } });
 let sectionUnavailable = false;
@@ -80,7 +86,8 @@ try {
           assert.equal(body.resetToken, resetToken); assert.equal(body.confirmed, true);
           if (body.mode === 'fresh') assert.equal(body.restorationConfirmed, true);
           pair = { ...standby(body.mode === 'keep' ? 'protected' : 'slave'), reason: body.mode === 'keep' ? 'pairing_reset' : null,
-            reset: { token: resetToken, lastResult: { mode: body.mode, completedAt: Date.now(), archiveDirectory: '/config/st-mq/reset-archives/synthetic-reset' } },
+            reset: { token: resetToken, lastResult: { mode: body.mode, completedAt: Date.now(), archiveDirectory: '/config/st-mq/reset-archives/synthetic-reset',
+              backupCount: 1, unavailableCount: 0, unavailableReasons: [] } },
             actions: { promote: true, reset: true }, uiOperation: { id: body.requestId, action: 'reset', state: 'complete' } };
           return json(200, { status: pair });
         }
@@ -191,6 +198,8 @@ try {
   assert.equal(await evaluate(`${$('connection')}.textContent`), 'Live');
   assert.equal(await evaluate(`${$('pairing-details')}.open`), false, 'Pairing starts folded');
   assert.equal(await evaluate(`${$('error')}.hidden`), true);
+  assert.equal(await evaluate("[...document.querySelectorAll('#pairing-panel button, #pairing-reset-dialog button, #history-recovery-dialog button, #history-recovery-open')].every(button => !/(?:…|\\.\\.\\.)$/.test(button.textContent.trim()))"), true,
+    'Pairing and history recovery actions use plain button labels');
   for (const width of [1440, 390, 320]) for (const theme of ['dark', 'light']) await checkLayout(width, theme);
   await capture('mobile-closed');
   await capture('mobile-header', true);
@@ -207,6 +216,11 @@ try {
   assert.equal(actions.length, 0, 'Opening pairing details does not issue a history request');
   pair = master({ peer: { reachable: false, lastSeenAt: now - 120_000 } });
   await until(`${$('pairing-peer')}.textContent.includes('unavailable')`);
+  assert.equal(await evaluate(`${$('pairing-attention')}.textContent`), 'Other computer unavailable · mirroring cannot be confirmed.');
+  assert.match(await evaluate(`${$('pairing-summary')}.textContent`), /does not stop control/);
+  assert.match(await evaluate(`${$('pairing-broker')}.textContent`), /listener active · 3 connections/);
+  assert.equal(await evaluate(`${$('pairing-handover')}.disabled`), true);
+  assert.match(await evaluate(`${$('pairing-handover-help')}.textContent`), /must be connected/);
   assert.equal(await evaluate(`${$('pairing-details')}.open`), true, 'Polling preserves the open disclosure');
   await evaluate(`window.pairingDisconnects = []; window.pairingObserver = new MutationObserver(() => {
     const summary = ${$('pairing-summary')}.textContent;
@@ -417,6 +431,7 @@ try {
       await evaluate("document.getElementById('theme-toggle').click(); true");
     await evaluate(`${$('pairing-reset')}.click(); true`);
     await until(`${$('pairing-reset-dialog')}.open`);
+    assert.equal(await evaluate(`${$('pairing-reset')}.getAttribute('aria-expanded')`), 'true');
     assert.equal(await evaluate("document.activeElement.id"), 'pairing-reset-cancel', 'Reset dialog opens with Cancel focused');
     assert.equal(await evaluate(`${$('pairing-reset-fresh')}.disabled`), true, 'Fresh reset needs explicit restoration acknowledgement');
     assert.equal(await evaluate('document.documentElement.scrollWidth <= innerWidth'), true, 'Reset choices fit the viewport');
@@ -424,6 +439,7 @@ try {
     if (width === 320) await capture(`reset-choices-${theme}`);
     await evaluate(`${$('pairing-reset-cancel')}.click(); true`);
     await until(`${$('pairing-reset-dialog')}.open === false`);
+    assert.equal(await evaluate(`${$('pairing-reset')}.getAttribute('aria-expanded')`), 'false');
     assert.equal(await evaluate('document.activeElement.id'), 'pairing-reset', 'Cancel restores focus to reset button');
   }
   assert.equal(actions.length, beforeResets, 'Reviewing or cancelling reset choices sends no mutation');
@@ -436,6 +452,7 @@ try {
   assert.equal(actions.at(-1).restorationConfirmed, undefined);
   assert.equal(pair.role, 'protected');
   assert.equal(await evaluate(`${$('pairing-reset-receipt')}.hidden`), false);
+  assert.match(await evaluate(`${$('pairing-reset-receipt')}.textContent`), /1 verified backup was created/);
   await evaluate(`${$('pairing-reset')}.click(); ${$('pairing-reset-restoration')}.click(); ${$('pairing-reset-fresh')}.click(); true`);
   await until("document.querySelector('.confirmation-dialog[open] #confirmation-description') !== null");
   assert.match(await evaluate("document.getElementById('confirmation-description').textContent"), /Archives are kept until you manually delete/);

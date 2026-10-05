@@ -32,10 +32,16 @@ function fixture(t, input) {
   const config = loadConfig({ STMQ_CONFIG: path, STMQ_DATA_DIR: directory }, directory);
   const store = new Store(config.dbPath);
   let now = initial;
-  const clock = () => now, engine = new Engine({ store, config, clock }), calls = [];
+  const clock = () => now, engine = new Engine({ store, config, clock }), engines = [engine], calls = [];
   const http = { async json(url) { calls.push(url); throw new Error('Temperature acquisition must not use HTTP'); } };
-  t.after(() => { store.close(); rmSync(directory, { recursive: true, force: true }); });
-  return { config, store, clock, engine, http, calls, setTime: at => { now = at; } };
+  t.after(async () => {
+    for (const runtime of engines) {
+      await runtime.charging.close(); await runtime.garage.close({ restore: false });
+      await runtime.closeFireplace(); await runtime.executor.close({ restore: false });
+    }
+    store.close(); rmSync(directory, { recursive: true, force: true });
+  });
+  return { config, store, clock, engine, engines, http, calls, setTime: at => { now = at; } };
 }
 
 async function connect(f) {
@@ -156,6 +162,7 @@ test('unchanged room reports survive compression and restart, then expire indepe
       assert.equal(f.store.observations({ signal }).length, 1, 'Equal genuine reports extend coverage instead of inserting temperature rows');
     }
     const restored = new Engine({ store: f.store, config: f.config, clock: f.clock });
+    f.engines.push(restored);
     const resumed = restored.status();
     assert.equal(resumed.observations.indoor.value, 21);
     assert.equal(resumed.observations.indoor.stale, false);

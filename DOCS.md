@@ -8,7 +8,7 @@ this repository as **Home Energy**, not through HACS or as a Home Assistant Core
 integration. The project and installation slug remain `st-mq`.
 See Home Assistant's [installation types](https://www.home-assistant.io/installation/#about-installation-types).
 
-The 0.9.5-dev.3 development prerelease starts with **simulated devices and Pause heating**. Default
+The 0.9.5-dev.4 development prerelease starts with **simulated devices and Pause heating**. Default
 startup launches no live controller or provider. Live automation is enabled separately in each feature after configuring its connection. See [learning and control](docs/learning-and-control.md)
 for the algorithm, native-setting restoration and equipment testing limits.
 [Automation and manual heating](docs/automation-and-manual-control.md) explains
@@ -17,7 +17,7 @@ the independent feature controls and Garage local temperature regulation.
 1. Open **Settings → Apps → Install app → ⋮ → Repositories**, add
    `https://github.com/hokkanen/st-mq` and install **Home Energy** from the
    **Home Energy apps** repository. The default branch, `main`, contains the
-   integrated H66 work and the 0.9.5-dev.3 development prerelease. An existing
+   integrated H66 work and the 0.9.5-dev.4 development prerelease. An existing
    repository configured with `#H66` needs the default repository source for
    this release.
    A Git tag or GitHub prerelease does not change the branch installed by HA.
@@ -398,8 +398,8 @@ successfully imported values.
 ## Moving from an earlier version
 
 Back up the installed app, its options and any original CSV exports before
-replacing it. Publishing 0.9.5-dev.1 on `main` makes it available from the default
-repository; it does not convert an existing installation's saved options or
+replacing it. The current development prerelease is available from `main` in the
+default repository; it does not convert an existing installation's saved options or
 database. An app configured with `#H66` needs the default repository source for
 this release; publishing a tag does not change that setting.
 

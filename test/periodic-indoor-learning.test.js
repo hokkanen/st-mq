@@ -138,7 +138,14 @@ test('restart restores report coverage separately from temperature age and expir
   const directory = mkdtempSync(join(tmpdir(), 'stmq-periodic-indoor-'));
   const path = join(directory, 'invented.sqlite'); let store = new Store(path);
   let engine, now = start;
-  t.after(async () => { await engine?.closeFireplace(); store.close(); rmSync(directory, { recursive: true, force: true }); });
+  t.after(async () => {
+    // A file-backed engine also starts the household forecast reader on tick.
+    // Wait for its database worker before closing and removing the fixture store.
+    await engine?.charging.close();
+    await engine?.closeFireplace();
+    store.close();
+    rmSync(directory, { recursive: true, force: true });
+  });
   const recorder = new Recorder(store);
   for (let minute = 0; minute <= 180; minute += 15) recorder.record(report(minute));
   store.close(); store = new Store(path); now = start + 181 * MINUTE;

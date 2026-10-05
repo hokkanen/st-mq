@@ -34,8 +34,9 @@ npm run test:all        # routine followed by extended
 ```
 
 Extended tests live in `test/extended/`, with at most two files in parallel and
-a three-minute test deadline. They cover recovery at larger history volumes
-and real SQLite mirroring through SSH. A sensor duplicate-delivery regression
+a three-minute test deadline. They cover recovery at larger history volumes,
+full persisted-learning replay across a restart, and real SQLite mirroring
+through SSH. A sensor duplicate-delivery regression
 also runs the installed MQTT.js client against an isolated Mosquitto broker and
 packet proxy. Install `mosquitto` to run it; set `STMQ_REQUIRE_MQTT_TESTS=1` to
 make a missing broker fail instead of skip. Cheap mocked transport validation stays

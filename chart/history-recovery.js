@@ -1,5 +1,5 @@
 import { confirmAction } from './confirmation.js';
-import { pairActionAllowed } from './pair-status.js';
+import { pairActionAllowed, pairDisplay } from './pair-status.js';
 import { renderRecoveryReport } from './history-recovery-report.js';
 
 const pendingKey = 'stmq-history-recovery-pending';
@@ -8,9 +8,9 @@ const mutation = action => ['recover', 'revert', 'restore'].includes(action);
 const uuid = /^[a-f0-9]{8}-[a-f0-9]{4}-[1-5][a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/i;
 const total = value => Number.isSafeInteger(value) && value >= 0 ? value : null;
 const activeJob = view => view?.busy === true || view?.job?.status === 'running';
-const phaseLabels = { checking: 'Checking the selected history…', snapshotting: 'Preparing a consistent copy…',
-  importing: 'Recovering missing history…', rebuilding: 'Rebuilding the model. Heating control continues.',
-  'catching-up': 'Catching up with current observations…', publishing: 'Publishing the verified result…' };
+const phaseLabels = { checking: 'Checking the selected history.', snapshotting: 'Preparing a consistent copy.',
+  importing: 'Recovering missing history.', rebuilding: 'Rebuilding the model. Heating control remains available.',
+  'catching-up': 'Catching up with current observations.', publishing: 'Publishing the verified result.' };
 const sourceErrors = new Set([
   'This database uses an unsupported format. Use a backup from this software version.',
   'This database is damaged or malformed. Preserve the original file and choose an intact current backup.',
@@ -38,7 +38,7 @@ function savedRequest(storage) {
 }
 
 export function recoveryConfirmation(action) {
-  return { recover: 'Recover the checked missing history? Existing history takes precedence. Conflicting and unsupported entries are skipped. The model is rebuilt when needed while heating control continues. Current settings and control permissions stay in place.',
+  return { recover: 'Recover the checked missing history? Existing history takes precedence. Conflicting and unsupported entries are skipped. The model is rebuilt when needed while heating control remains available. Current settings and control permissions stay in place.',
     revert: 'Revert this recovery? Its accepted history will be excluded and the model rebuilt from the remaining history. Later independent observations and corrections stay in place. You can restore this recovery later.',
     restore: 'Restore this recovery? Its accepted history will be included again and the model rebuilt with current observations and corrections. Current settings and control permissions stay in place.' }[action];
 }
@@ -79,7 +79,7 @@ export function createHistoryRecoveryActions({ request, storage, onChange = () =
     }
     pending ??= body;
     if (!pending) return false;
-    busy = true; message = 'Sending request…'; error = false; persist(); notify();
+    busy = true; message = 'Sending request.'; error = false; persist(); notify();
     let accepted = false;
     try {
       const result = await request('/api/history-recovery/action', pending);
@@ -110,10 +110,10 @@ export function recoveryJobText(view) {
   const job = view?.job;
   if (!job) return '';
   if (job.status === 'running') return phaseLabels[job.progress?.phase]
-    ?? (job.kind === 'check' ? 'Checking the selected history…' : job.kind?.startsWith('review-') ? 'Reviewing the effect on history and learning…' : 'Updating history and the model…');
+    ?? (job.kind === 'check' ? 'Checking the selected history.' : job.kind?.startsWith('review-') ? 'Reviewing the effect on history and learning.' : 'Updating history and the model.');
   if (job.status === 'interrupted') return 'Recovery was interrupted. Accepted history remains recorded; review the previous recovery to revert it, or check the source again to finish.';
   if (job.status === 'error') return sourceErrors.has(job.error) ? job.error
-    : 'Recovery could not finish. The previous model remains available. Review any accepted history below before retrying.';
+    : 'Recovery could not finish. The previous model remains available. Open Previous recoveries to review any accepted history before retrying.';
   if (job.status === 'complete') return { check: 'Check complete. Review the result before recovering.', recover: 'History recovery complete.',
     'review-revert': 'Review complete. Reverting excludes this recovery’s accepted history.', revert: 'Recovery reverted.',
     'review-restore': 'Review complete. Restoring includes this recovery’s accepted history again.', restore: 'Recovery restored.' }[job.kind] ?? 'Operation complete.';
@@ -150,6 +150,8 @@ export function createHistoryRecoveryPanel({ document, request, upload, storage,
     }
     selector.value = selected; selector.disabled = blocked;
     const choice = source(state), peer = selected === 'peer';
+    const currentPair = pair(state), peerRecovery = currentPair?.recovery;
+    const peerView = peer && mode === 'recover' ? pairDisplay(currentPair, { formatTime }) : null;
     const job = state.view?.job, revisionJob = ['review-revert', 'review-restore', 'revert', 'restore'].includes(job?.kind);
     if (revision && !revision.id && revisionJob) {
       const recoveredId = job.operationId ?? state.view?.preview?.recoveryId ?? job.result?.recoveryId;
@@ -169,13 +171,18 @@ export function createHistoryRecoveryPanel({ document, request, upload, storage,
       || !peer && !$('history-recovery-installation-confirm').checked;
     $('history-recovery-check').textContent = peer ? 'Check other computer' : 'Check backup';
     $('history-recovery-dialog').setAttribute('aria-busy', String(state.busy || running || uploadBusy));
-    const status = uploadError || state.message || (uploadBusy ? 'Uploading a private copy…'
-      : running && job?.status !== 'running' ? 'A history operation is in progress…'
-      : running || relevantJob ? recoveryJobText(state.view) : '');
+    const status = uploadError || state.message || (uploadBusy ? 'Uploading a private copy.'
+      : peerView && (currentPair.busy || currentPair.uiOperation?.state === 'running') ? peerView.phase || 'A paired-computer operation is in progress.'
+      : running && job?.status !== 'running' ? 'A history operation is in progress.'
+      : running ? recoveryJobText(state.view)
+      : peerView ? peerView.recovery || (currentPair.peer?.reachable !== true ? 'The other computer is unavailable. Reconnect it before checking its history.'
+        : choice?.available === false ? 'History checking is unavailable. Review the paired computers’ status before retrying.' : '')
+      : relevantJob ? recoveryJobText(state.view) : '');
     $('history-recovery-status').textContent = !admin() ? 'Admin access is required to recover history.'
       : !state.connected ? 'Recovery status is unavailable. Reconnect to check the saved outcome.'
         : readonly ? 'History recovery is read-only on this computer.' : status;
-    const tone = !state.connected || readonly || uploadError || state.error || relevantJob && ['error', 'interrupted'].includes(job?.status) ? 'attention'
+    const tone = !state.connected || readonly || uploadError || state.error || peerView && (peerRecovery?.state === 'error' || currentPair.peer?.reachable !== true)
+      || relevantJob && ['error', 'interrupted'].includes(job?.status) ? 'attention'
       : running || uploadBusy || state.busy ? 'progress' : 'neutral';
     $('history-recovery-notice').dataset.tone = tone;
     $('history-recovery-notice').hidden = !$('history-recovery-status').textContent && !state.pending;
@@ -185,9 +192,9 @@ export function createHistoryRecoveryPanel({ document, request, upload, storage,
     $('history-recovery-retry').hidden = !state.pending;
     $('history-recovery-retry').disabled = state.busy || !state.connected || readonly;
     $('history-recovery-source-help').textContent = peer
-      ? 'Normal slave history is comparison only. Protected history can be recovered before a separate decision to resume mirroring.'
+      ? currentPair?.peer?.role === 'slave' ? 'Compare the slave snapshot with this master. Normal mirroring applies the master’s changes automatically.'
+        : 'Check preserved history before recovery. Resuming mirroring is a separate decision.'
       : 'Use a backup from this installation and software version. Checking does not change recorded history.';
-    const currentPair = pair(state), peerRecovery = currentPair?.recovery;
     const comparison = peer && peerRecovery?.donorRole === 'slave';
     const checked = revisionView ? state.view?.preview : peer ? peerRecovery?.preview : state.view?.preview;
     const result = peer ? peerRecovery?.report : state.view?.job?.result?.report ?? state.view?.job?.result;

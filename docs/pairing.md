@@ -175,7 +175,7 @@ computers must run this contract; earlier formats are not translated.
 
 ## Deliberate fresh start after a development schema change
 
-The paired dashboard's **Reset pairing… → Start fresh** is the preferred way
+The paired dashboard's **Reset pairing → Start fresh** is the preferred way
 to start over. It archives the database and pairing storage together, including
 promoted databases hidden in private app storage. No manual path changes are
 needed. See [Reset pairing](#reset-pairing) for the two choices, restoration
@@ -394,6 +394,15 @@ status until a new report arrives. Neither connectivity nor color grants control
 Chart and event-history failures do not invalidate a successful local status
 report. A late failed request also cannot overwrite newer pairing evidence.
 An intentionally stopped peer affects the other-computer status independently.
+An unavailable slave leaves the master's equipment control running; it makes
+mirroring unconfirmed, without implying that the slave normally controls equipment.
+The warning that an unreachable master may still control equipment belongs to
+manual promotion. A reported conflict between two masters is shown separately.
+
+MQTT address ownership and device-listener readiness are checked separately.
+An assigned address alone cannot confirm an active listener. Connection counts
+describe open transport connections; individual device readiness still requires
+fresh reports. Listener errors remain visible even when the virtual IP is assigned.
 
 The master also shows the slave's reported snapshot and verification times,
 with the time that report was received. These are observations from the peer,
@@ -582,7 +591,7 @@ simultaneous control.
 
 ## Reset pairing
 
-The admin-only **Reset pairing…** action changes only this computer. It keeps
+The admin-only **Reset pairing** action changes only this computer. It keeps
 configuration, peer addresses, shared credentials, provider tokens and the other
 computer's data unchanged. A confirmation is required; a changed pairing role
 or history invalidates an open confirmation.
@@ -625,7 +634,7 @@ These files include committed WAL content and require no companion files. Distin
 databases get separately identified backups; reset never merges their histories.
 The current archive manifest records each portable backup and its checksum only
 after verified publication. These backups are available from **Recording details
-→ Recover history…**, including when the computer later runs standalone. The
+→ Recover history → Open recovery**, including when the computer later runs standalone. The
 reset result reports how many usable backups were made and any unavailable
 history; it does not claim that preserved raw files are portable backups.
 
@@ -716,11 +725,11 @@ file on the server requires the active master. Explicit pairing actions retain
 their own confirmation and authority checks. Internal snapshot publication and
 pair-state persistence remain necessary and do not grant dashboard editing rights.
 
-The header shows **Pair · Master** or **Pair · Slave** alongside the control
-mode: owning the master role does not mean automatic control is enabled.
+The header identifies this computer as **Pair · Master** or **Pair · Slave**.
+Owning the master role does not enable automatic equipment control by itself.
 Protected recovery and transitions are shown separately from normal roles.
 Open **Paired computers**, just above **Event log**, for connection and snapshot details,
-recovery controls, handover or manual promotion. **Review history…** opens the
+recovery controls, handover or manual promotion. **Review history** opens the
 same [Recover history window](recording.md#recover-history-from-a-backup-or-paired-computer)
 as the **Recover history** fold in **Recording details**, with the peer preselected
 in the **Recover history** view. It uses the same aligned action layout as
@@ -729,8 +738,8 @@ stays compact when closed and still shows important progress or attention messag
 the same layout, with recovery and handover performed from the master's UI.
 
 Checks are initiated on the master. When the other computer is a normal slave,
-the result is an informational **History comparison**. Mirroring is already
-running, so recovery and resume-mirroring actions are unavailable. A record
+the result is an informational **History comparison**. Normal mirroring remains
+enabled, so recovery and resume-mirroring actions are unavailable. A record
 present only in that older snapshot can reflect a deliberate master deletion;
 the next ordinary snapshot applies the deletion. The comparison does not
 authorize resurrecting it. A healthy mirror containing the same records must
@@ -746,7 +755,7 @@ required confirmations.
 
 For a computer in **Protected recovery**:
 
-1. In **Review history…**, **Check other computer** takes a consistent donor snapshot
+1. In **Review history**, **Check other computer** takes a consistent donor snapshot
    and shows counts and periods for missing, conflicting, already present and
    skipped entries. Checking does not change the master's history.
 2. Review the preview, then **Recover gaps and rebuild model**. The request

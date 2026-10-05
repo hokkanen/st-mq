@@ -40,6 +40,7 @@ function fixture(t) {
     return row ? JSON.parse(row.value) : null;
   };
   t.after(async () => {
+    await engine.charging.close();
     await engine.closeFireplace(); engine.executor.closed = true; clearTimeout(engine.executor.timer);
     observer.close(); store.close(); rmSync(directory, { recursive: true, force: true });
   });
@@ -50,6 +51,7 @@ function fixture(t) {
       appendLearningRecord(store, config.input, 'context', { timestamp: now }, { config: engine.control });
     },
     async restart() {
+      await engine.charging.close();
       await engine.closeFireplace(); engine.executor.closed = true; clearTimeout(engine.executor.timer);
       engine = new Engine({ store, config, clock: () => now }); engine.tick = () => {};
     } };

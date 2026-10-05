@@ -7,7 +7,7 @@ const BASE = 1_800_000_000_000;
 function fixture(source = 'none', options = {}) {
   let now = BASE, sequence = 0;
   const energy = [], observations = [];
-  const adapter = createGarageAdapter({ clock: () => now,
+  const adapter = createGarageAdapter({ clock: () => now, monotonicClock: () => now - BASE,
     settings: { telemetryTopic: 'fixture/garage/telemetry', electricalSource: source },
     onEnergy: row => energy.push(row), onObservation: row => observations.push(row), ...options });
   adapter.setConnected(true);

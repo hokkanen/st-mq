@@ -200,7 +200,7 @@ continues using only the historical upstairs measurement.
 Open **Home → Heating configuration → Home learning → Model inputs → Average indoor → Sensor
 changes** for indoor sensors, or **Outdoor temperature → Sensor changes** for
 the outdoor sensor, after completing a replacement, move or calibration. Select
-**Sensor** and **Reason**, then choose **Record change now…**. Review the
+**Sensor** and **Reason**, then choose **Record change now**. Review the
 confirmation, which explains the effect on learning, before accepting. The reason choices are
 **Replacement**, **New location**, **Calibration** and **Other**. Reason is saved
 as descriptive history; all four choices have the same learning effect for the

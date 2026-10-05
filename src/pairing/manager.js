@@ -757,7 +757,8 @@ export class PairManager {
         peer: this.peer, signal: this.abort.signal, publish: false,
         guard: async () => { if (!this.canControl()) throw pairError('not_master'); } });
       const preview = await this.hooks.recoveryPreview({ donorPath: donor.dbPath, requestId });
-      preview.previewId ??= randomUUID();
+      if (typeof preview?.previewId !== 'string' || !/^[a-f0-9]{64}$/.test(preview.previewId))
+        throw pairError('recovery_unavailable');
       const completed = completedReceipt.report && sameDonor(previous.metadata, metadata) && !needsRecovery(preview);
       await this.state.update({ recovery: { state: completed ? 'complete' : 'ready', metadata, donorPath: donor.dbPath, preview,
         ...(completed ? { report: previous.report } : {}) } });

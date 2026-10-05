@@ -330,7 +330,7 @@ export function createHeatingExplorerPanel({ document, request, afterMutation = 
     }
     $('heating-explorer-snapshot').textContent = `${state.stale ? 'Comparison needs refreshing' : 'Conditions pinned'} · ${atTime(result.snapshotAt)} · Europe/Helsinki`;
     $('heating-explorer-calculate').disabled = busy || state.stale;
-    $('heating-explorer-calculate').textContent = busy ? 'Working…' : 'Compare scenario';
+    $('heating-explorer-calculate').textContent = busy ? 'Working' : 'Compare scenario';
     $('heating-explorer-reset').disabled = busy;
     $('heating-explorer-dirty').hidden = !state.dirty || !result.previewId;
     const context = [status?.input === 'simulated' ? 'Simulated installation: all conditions and outcomes are synthetic.' : '',

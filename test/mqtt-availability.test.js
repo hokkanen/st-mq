@@ -96,7 +96,11 @@ test('H66 broker loss records all twenty-eight recorded signals once and preserv
   config.garage.adapter = isolatedGarageAdapter(); config.garage.sender = { stateTopic: '', commandTopic: '' };
   const engine = new Engine({ store, config, clock: () => now }), client = broker();
   const reader = await startMqtt({ engine, store, config, connect: () => client });
-  t.after(async () => { await reader.close(); store.close(); rmSync(directory, { recursive: true, force: true }); });
+  t.after(async () => {
+    await reader.close(); await engine.charging.close(); await engine.garage.close({ restore: false });
+    await engine.closeFireplace(); await engine.executor.close({ restore: false });
+    store.close(); rmSync(directory, { recursive: true, force: true });
+  });
   client.emit('connect');
   client.emit('message', 'invented-h66/HP/8105', Buffer.from('-100'));
   client.emit('message', 'invented-h66/HP/0008', Buffer.from('21.2'));
@@ -130,7 +134,11 @@ test('temperature subscription rejection records failure without exposing broker
   config.garage.adapter = isolatedGarageAdapter(); config.garage.sender = { stateTopic: '', commandTopic: '' };
   const engine = new Engine({ store, config, clock: () => initial }), client = broker({ rejectedTopic: 'invented/garage' });
   const reader = await startMqtt({ engine, store, config, connect: () => client });
-  t.after(async () => { await reader.close(); store.close(); rmSync(directory, { recursive: true, force: true }); });
+  t.after(async () => {
+    await reader.close(); await engine.charging.close(); await engine.garage.close({ restore: false });
+    await engine.closeFireplace(); await engine.executor.close({ restore: false });
+    store.close(); rmSync(directory, { recursive: true, force: true });
+  });
   client.emit('connect');
   const failure = store.latestObservation('garage_temperature');
   assert.equal(failure.value, null); assert(failure.quality.includes('mqtt-subscription-failed'));

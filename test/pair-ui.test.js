@@ -10,8 +10,10 @@ const id = '11111111-1111-4111-8111-111111111111';
 const previewId = 'a'.repeat(64);
 const primary = (overrides = {}) => ({ role: 'master', canControl: true, busy: false,
   peer: { reachable: true, role: 'slave' }, vip: { owned: true, ready: true },
+  mqttFrontend: { listening: true, ready: true, connections: 0, error: null },
   recovery: { state: 'idle' }, actions: { 'check-recovery': true, recover: false, handover: true, promote: false, rejoin: false }, ...overrides });
 const standby = (overrides = {}) => primary({ role: 'slave', canControl: false, vip: { owned: false },
+  mqttFrontend: { listening: false, ready: false, connections: 0, error: null },
   actions: { promote: true }, ...overrides });
 const preview = () => ({ previewId, counts: { missing: 12, conflicts: 3, duplicates: 4, skipped: 5 },
   period: { from: now - 2 * 86400_000, to: now - 86400_000 }, model: { status: 'rebuild-required', unsupported: 2 } });
@@ -40,12 +42,47 @@ test('schema failures explain deliberate recovery without suggesting broker fixe
 test('MQTT listener status distinguishes socket connections from fresh device readiness', () => {
   const waiting = pairDisplay(primary({ mqttFrontend: { listening: false, ready: false, connections: 0, error: null } }));
   assert.match(waiting.broker, /listener is not ready/);
+  assert.equal(waiting.brokerTone, 'attention');
+  assert.equal(waiting.tone, 'attention');
   const listening = pairDisplay(primary({ mqttFrontend: { listening: true, ready: true, connections: 3, error: null } }));
   assert.match(listening.broker, /3 connections/);
   assert.match(listening.broker, /requires fresh reports/);
   assert.match(pairIssueHelp({ error: 'mqtt_frontend_unavailable' }), /port 1883/);
   assert.match(pairIssueHelp({ error: 'mqtt_upstream_unavailable' }), /local MQTT broker/);
   assert.match(pairIssueHelp({ error: 'mqtt_handover_not_ready' }), /matching MQTT transport/);
+});
+
+test('MQTT address ownership cannot substitute for current listener evidence or invent connection counts', () => {
+  const unconfirmed = pairDisplay(primary({ mqttFrontend: undefined }), { now });
+  assert.match(unconfirmed.broker, /listener readiness is unconfirmed/);
+  assert.equal(unconfirmed.brokerTone, 'attention');
+  assert.doesNotMatch(unconfirmed.broker, /listener active|0 connections/);
+  for (const connections of [undefined, null, -1]) {
+    const display = pairDisplay(primary({ mqttFrontend: { listening: true, ready: true, connections } }), { now });
+    assert.match(display.broker, /listener active/);
+    assert.doesNotMatch(display.broker, /\d+ connections/);
+  }
+  assert.match(pairDisplay(primary()).broker, /0 connections/);
+  assert.match(pairDisplay(primary({ mqttFrontend: { listening: true, ready: true, connections: 1 } })).broker, /1 connection\./);
+  const failed = pairDisplay(primary({ mqttFrontend: { listening: false, ready: false, connections: 0, error: 'mqtt_upstream_unavailable' } }));
+  assert.match(failed.broker, /local MQTT broker could not be reached/);
+  assert.match(failed.attention, /MQTT listener needs attention/);
+  assert.equal(failed.brokerTone, 'attention');
+  assert.equal(failed.error, true);
+  assert.doesNotMatch(pairDisplay(primary({ mqttFrontend: { error: 'private transport error' } })).broker, /private/);
+});
+
+test('peer outages describe mirroring and local role without suggesting a slave controls equipment', () => {
+  for (const peer of [{ reachable: false, role: 'slave' }, { reachable: false }]) {
+    const display = pairDisplay(primary({ peer }), { now });
+    assert.equal(display.attention, 'Other computer unavailable · mirroring cannot be confirmed.');
+    assert.match(display.summary, /does not stop control/);
+    assert.doesNotMatch(display.attention, /controlling|stopped/);
+  }
+  const slave = pairDisplay(standby({ peer: { reachable: false, role: 'master' } }), { now });
+  assert.match(slave.attention, /this slave remains read-only/);
+  assert.match(pairConfirmation('promote'), /unreachable computer may still be controlling equipment/i,
+    'The old master must still be fenced before explicit promotion');
 });
 
 function memoryStorage() {
@@ -106,7 +143,7 @@ test('pair display distinguishes protected history, peer outages, broker readine
     sync: { sourceAt: now - 86400_000, verifiedAt: now - 86000_000 } });
   assert.match(copied.summary, /explicitly resolves recovery/);
   assert.doesNotMatch(copied.summary, /automatically/);
-  assert.match(pairDisplay(primary({ peer: { reachable: false } })).summary, /does not stop home control/);
+  assert.match(pairDisplay(primary({ peer: { reachable: false } })).summary, /does not stop control/);
   assert.match(pairDisplay(standby({ sync: { state: 'syncing', phase: 'verifying' } })).sync, /Verifying/);
   assert.match(pairDisplay(standby({ sync: { sourceAt: now - 180000, verifiedAt: now - 120000, bytes: 1e6 } }), { now }).sync, /3 minutes old/);
   assert.match(pairDisplay(primary({ transition: { kind: 'handover', phase: 'quiescing' } })).phase, /Finishing control/);
@@ -131,7 +168,11 @@ test('management capability flags are restricted by role, transition, operation 
   assert.equal(pairActionAllowed(standby({ actions: { recover: true } }), 'recover'), false);
   assert.equal(pairActionAllowed(primary({ actions: { recover: true } }), 'recover'), false);
   assert.equal(pairActionAllowed(checked(), 'recover'), true);
-  assert.equal(pairActionAllowed({ ...checked(), recovery: { state: 'ready', donorRole: 'protected', preview: { previewId: 'invalid' } } }, 'recover'), false);
+  for (const invalid of ['invalid', id, 'A'.repeat(64)]) {
+    const view = { ...checked(), recovery: { state: 'ready', donorRole: 'protected', preview: { previewId: invalid } } };
+    assert.equal(pairActionAllowed(view, 'recover'), false, 'Only the current checked content hash permits recovery');
+    assert.equal(pairActionAllowed(view, 'rejoin'), false, 'An unsupported preview cannot permit replacement');
+  }
   assert.equal(pairActionAllowed(primary({ recovery: { state: 'complete', donorRole: 'protected' }, actions: { rejoin: true } }), 'rejoin'), true);
   for (const change of [{ busy: true }, { transition: { kind: 'handover' } }, { uiOperation: { state: 'running' } }, { role: 'unknown' }])
     assert.equal(pairActionAllowed(primary(change), 'handover'), false);
@@ -388,7 +429,7 @@ test('compact master status reports mirroring evidence independently of the acti
     assert.match(display.syncStat, expected);
     assert.equal(display.syncTone, 'attention');
     assert.equal(display.tone, 'attention');
-    assert.match(display.broker, /active on this computer/);
+    assert.match(display.broker, /Device MQTT listener active/);
     assert.equal(display.brokerTone, 'neutral');
   }
 });
@@ -460,7 +501,7 @@ test('recovery and skipping it both require a successful checked preview, includ
     assert.equal(await controller.run('recover'), false);
     assert.equal(await controller.run('rejoin'), false);
   }
-  assert.match(pairActionHelp(primary()).recover, /Locked until step 1 finishes successfully/);
+  assert.match(pairActionHelp(primary()).recover, /Check the other computer’s history first/);
   assert.match(pairActionHelp(primary({ recovery: { state: 'error' } })).recover, /new check/);
   assert.equal(pairActionAllowed(checked(), 'rejoin'), true);
 });
@@ -549,12 +590,12 @@ test('the pair panel hides outside pair mode, shows promotion only on a slave, a
   assert.equal($('pairing-slave-controls').hidden, true);
   assert.equal($('pairing-promote').hidden, true);
   assert.equal($('pairing-history-recovery').disabled, false);
-  assert.equal($('pairing-history-recovery').textContent, 'Recover history…');
+  assert.equal($('pairing-history-recovery').textContent, 'Recover history');
   assert.equal($('pairing-rejoin').textContent, 'Skip recovery and resume mirroring');
   assert.equal($('pairing-rejoin').disabled, false);
   panel.update(primary());
   assert.equal($('pairing-rejoin').disabled, true);
-  assert.equal($('pairing-history-recovery').textContent, 'Review history…');
+  assert.equal($('pairing-history-recovery').textContent, 'Review history');
   panel.update(null);
   assert.equal($('pairing-panel').hidden, true, 'leaving pair topology removes controls from a previous pair status');
 });
@@ -658,7 +699,7 @@ test('protected no-gap previews and completed recovery explain the remaining exp
   panel.update({ ...view, recovery: { ...view.recovery, state: 'complete', report: { imported: 12, counts: {}, model: { status: 'rebuilt' } } } });
   assert.equal($('pairing-rejoin').textContent, 'Resume mirroring');
   assert.match($('pairing-check-help').textContent, /Open history.*resume mirroring/);
-  assert.equal($('pairing-history-recovery').textContent, 'Recover history…');
+  assert.equal($('pairing-history-recovery').textContent, 'Recover history');
 });
 
 test('master and slave show the same reported snapshot while unreachable or protected peers never look synchronized', () => {
@@ -759,7 +800,7 @@ test('past recovery receipts stay distinct from current protection or an unavail
   for (const peer of [{ reachable: true, role: 'protected' }, { reachable: false, role: 'slave' }]) {
     const view = primary({ peer, recovery: { state: 'resolved', report: {} } });
     const display = pairDisplay(view, { now });
-    assert.match(display.recovery, /previous recovery.*completed.*Current mirroring status/);
+    assert.match(display.recovery, /previous recovery.*completed.*current mirroring status/);
     assert.doesNotMatch(display.recovery, /Normal one-way synchronization has resumed/);
     assert.doesNotMatch(pairActionHelp(view).recover, /No further action is needed/);
     if (peer.role === 'protected') assert.match(display.sync, /Mirroring is blocked/);
@@ -868,13 +909,16 @@ test('incomplete saved reset consent is rejected, and an interrupted reset can o
 test('reset panel displays completed archive receipts for one day and stays available on protected schema errors', () => {
   const { document, $ } = fixture();
   const panel = createPairPanel({ document, request: async () => {}, now: () => now });
-  const lastResult = { mode: 'fresh', completedAt: now - 1000, archiveDirectory: '/config/st-mq/reset-archives/synthetic-reset' };
+  const lastResult = { mode: 'fresh', completedAt: now - 1000, archiveDirectory: '/config/st-mq/reset-archives/synthetic-reset',
+    backupCount: 1, unavailableCount: 0, unavailableReasons: [] };
   panel.update(resettable({ reset: { token: resetToken, lastResult } }));
   assert.equal($('pairing-reset').hidden, false);
   assert.equal($('pairing-reset').disabled, false);
   assert.equal($('pairing-reset-receipt').hidden, false);
   assert.match($('pairing-reset-receipt').textContent, /synthetic-reset/);
   assert.match($('pairing-reset-receipt').textContent, /manually delete/);
+  assert.match($('pairing-reset-receipt').textContent, /1 verified backup was created.*Recording details → Recover history/);
+  assert.equal($('pairing-reset-receipt').dataset.tone, 'neutral');
   panel.update(resettable({ reset: { token: resetToken, lastResult: { ...lastResult, completedAt: now - 86400_001 } } }));
   assert.equal($('pairing-reset-receipt').hidden, true);
   assert.equal($('pairing-reset-receipt').textContent, '');
@@ -882,6 +926,25 @@ test('reset panel displays completed archive receipts for one day and stays avai
   assert.equal($('pairing-reset').disabled, true);
 });
 
+
+test('reset receipt distinguishes portable recovery backups from preserved unusable originals', () => {
+  const { document, $ } = fixture();
+  const panel = createPairPanel({ document, request: async () => {}, now: () => now });
+  const receipt = { mode: 'fresh', completedAt: now - 1000, archiveDirectory: '/config/st-mq/reset-archives/synthetic-reset',
+    backupCount: 1, unavailableCount: 2, unavailableReasons: ['incompatible-database', 'invalid-database', 'private error'] };
+  panel.update(resettable({ reset: { token: resetToken, lastResult: receipt } }));
+  const text = $('pairing-reset-receipt').textContent;
+  assert.match(text, /1 verified backup was created/);
+  assert.match(text, /2 history sources could not produce a recovery backup/);
+  assert.match(text, /incompatible database; damaged or malformed database/);
+  assert.match(text, /Original files were preserved/);
+  assert.doesNotMatch(text, /private error/);
+  assert.equal($('pairing-reset-receipt').dataset.tone, 'attention');
+  panel.update(resettable({ reset: { token: resetToken, lastResult: { ...receipt, backupCount: 0,
+    unavailableCount: 1, unavailableReasons: ['history-unavailable'] } } }));
+  assert.match($('pairing-reset-receipt').textContent, /No usable recovery backup was created/);
+  assert.match($('pairing-reset-receipt').textContent, /local history could not be identified/);
+});
 
 test('reset failures explain known recovery steps without displaying arbitrary error text', () => {
   for (const [errorCode, message] of [['pair_reset_storage_failed', /disk space and storage permissions/],
@@ -956,7 +1019,8 @@ test('durable reset receipt resolves a pending browser request after server rest
     request: async () => { throw new TypeError('response lost'); } });
   first.update(resettable()); await first.run('reset', { mode: 'keep' });
   const restored = createPairActions({ storage, request: async () => { throw Error('Must not repeat completed reset'); } });
-  const lastResult = { requestId: id, mode: 'fresh', completedAt: now, archiveDirectory: '/config/st-mq/reset-archives/synthetic-reset' };
+  const lastResult = { requestId: id, mode: 'fresh', completedAt: now, archiveDirectory: '/config/st-mq/reset-archives/synthetic-reset',
+    backupCount: 1, unavailableCount: 0, unavailableReasons: [] };
   restored.update(resettable({ reset: { token: resetToken, lastResult } }));
   assert.notEqual(restored.snapshot().pending, null, 'A different reset mode cannot acknowledge this request');
   restored.update(resettable({ reset: { token: resetToken, lastResult: { ...lastResult, mode: 'keep' } } }));

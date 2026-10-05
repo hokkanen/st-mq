@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { createHistoryRecoveryActions, createHistoryRecoveryPanel, recoveryConfirmation, recoveryJobText } from '../chart/history-recovery.js';
+import { renderRecoveryReport } from '../chart/history-recovery-report.js';
 
 const id = '11111111-1111-4111-8111-111111111111', previewId = 'a'.repeat(64);
 const source = { id: 'saved-backup', kind: 'backup', label: 'Saved backup', available: true };
@@ -124,7 +125,7 @@ test('closing the shared dialog leaves server recovery running and reopening res
   const panel = createHistoryRecoveryPanel({ document, request: async (path, body) => { requests.push({ path, body }); return running; } });
   panel.update(admin); await panel.open();
   assert.equal($('history-recovery-dialog').open, true);
-  assert.match($('history-recovery-status').textContent, /Rebuilding.*Heating control continues/);
+  assert.match($('history-recovery-status').textContent, /Rebuilding.*Heating control remains available/);
   assert.equal($('history-recovery-background').hidden, false);
   panel.close(); assert.equal($('history-recovery-dialog').open, false);
   assert.equal(document.activeElement, $('history-recovery-open'));
@@ -150,13 +151,53 @@ test('normal peer comparison stays informational and both entry points use the s
     actions: { 'check-recovery': true, recover: false, rejoin: false }, recovery: { state: 'ready', donorRole: 'slave', preview } };
   const panel = createHistoryRecoveryPanel({ document, request: async () => view({ peer, sources: [{ id: 'peer', kind: 'peer', label: 'Paired computer', available: true }],
     job: { kind: 'check', status: 'complete', source: { id: 'peer' } } }) });
-  panel.update({ ...admin, topology: 'pair', peer });
+  panel.update({ ...admin, topology: 'pair', pair: peer });
   await panel.open({ sourceId: 'peer', trigger: $('pairing-history-recovery') });
   assert.equal($('history-recovery-source').value, 'peer');
   assert.match(text($('history-recovery-preview')), /History comparison/);
+  assert.match($('history-recovery-status').textContent, /Comparison complete/);
+  assert.doesNotMatch($('history-recovery-status').textContent, /before recovering/);
+  assert.match($('history-recovery-source-help').textContent, /Normal mirroring/);
   assert.equal($('history-recovery-apply').hidden, true);
   assert.equal($('history-recovery-installation').hidden, true);
   panel.close(); assert.equal(document.activeElement, $('pairing-history-recovery'));
+});
+
+test('paired check outcomes use current pair state when the coordinator retains an earlier backup job', async () => {
+  for (const state of ['ready', 'error']) {
+    const { document, $ } = fixture();
+    const peer = { role: 'master', canControl: true, peer: { role: 'slave', reachable: true },
+      actions: { 'check-recovery': true, recover: false, rejoin: false }, recovery: { state, donorRole: 'slave', preview } };
+    const panel = createHistoryRecoveryPanel({ document, request: async () => view({ peer,
+      sources: [{ id: 'peer', kind: 'peer', label: 'Paired computer', available: true }],
+      job: { kind: 'recover', status: 'complete', source } }) });
+    panel.update({ ...admin, topology: 'pair', pair: peer });
+    await panel.open({ sourceId: 'peer' });
+    assert.match($('history-recovery-status').textContent, state === 'ready' ? /Comparison complete/ : /could not finish/);
+    assert.doesNotMatch($('history-recovery-status').textContent, /History recovery complete/);
+    assert.equal($('history-recovery-notice').dataset.tone, state === 'error' ? 'attention' : 'neutral');
+  }
+});
+
+test('an unavailable paired source explains why checking is disabled', async () => {
+  const { document, $ } = fixture();
+  const peer = { role: 'master', canControl: true, peer: { role: 'slave', reachable: false },
+    actions: { 'check-recovery': false }, recovery: { state: 'idle' } };
+  const panel = createHistoryRecoveryPanel({ document, request: async () => view({ peer, job: null, preview: null,
+    sources: [{ id: 'peer', kind: 'peer', label: 'Paired computer', available: false }] }) });
+  panel.update({ ...admin, topology: 'pair', pair: peer });
+  await panel.open({ sourceId: 'peer' });
+  assert.equal($('history-recovery-check').disabled, true);
+  assert.match($('history-recovery-status').textContent, /other computer is unavailable.*Reconnect/);
+  assert.equal($('history-recovery-notice').dataset.tone, 'attention');
+});
+
+test('skipping recovery never labels the missing time range as recovered', () => {
+  const { document, $ } = fixture();
+  renderRecoveryReport(document, $('report'), { ...preview, recoverySkipped: true, imported: 0,
+    period: { from: 1, to: 1000 }, model: { status: 'unchanged' } }, { report: true });
+  assert.match(text($('report')), /Unrecovered entries span/);
+  assert.doesNotMatch(text($('report')), /Recovered entries span/);
 });
 
 test('fresh dashboard authority replaces an older recovery read without restoring stale pair controls', async () => {

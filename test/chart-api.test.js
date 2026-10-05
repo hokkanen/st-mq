@@ -24,6 +24,8 @@ async function fixture(t, overrides = {}) {
   t.after(async () => {
     await service.close();
     await new Promise(resolve => server.close(resolve));
+    await engine.charging.close(); await engine.garage.close({ restore: false });
+    await engine.closeFireplace(); await engine.executor.close({ restore: false });
     store.close(); rmSync(directory, { recursive: true, force: true });
   });
   return { store, engine, service, now, base: `http://127.0.0.1:${server.address().port}`, headers: { Authorization: `Bearer ${token}` } };

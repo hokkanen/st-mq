@@ -38,7 +38,7 @@ export function createChargingPriority({ document, save }) {
         : `Favor this charging point when both requests cannot be met.${provider ? ` ${provider} · any connected vehicle.` : ' Applies to any connected vehicle.'}`;
     }
     apply.disabled = locked || !choices.includes(draft) || draft === selected;
-    apply.textContent = saving ? 'Saving…' : 'Save priority';
+    apply.textContent = saving ? 'Saving' : 'Save priority';
     cancel.disabled = saving;
     cancel.textContent = writable && draft !== selected ? 'Cancel' : 'Close';
     form.setAttribute('aria-busy', String(saving));

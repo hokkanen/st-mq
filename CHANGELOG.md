@@ -4,7 +4,7 @@ Release notes describe changes relevant to users. Detailed implementation and
 validation history is available in Git; unfinished work belongs in GitHub issues.
 Versions follow Semantic Versioning. `-dev.N` denotes a development prerelease.
 
-## Unreleased
+## 0.9.5-dev.4 — 2026-10-05
 
 ### Added
 
@@ -22,7 +22,6 @@ Versions follow Semantic Versioning. `-dev.N` denotes a development prerelease.
 - `npm run deploy:ha` deploys the committed checkout to a stopped Home Assistant
   app through SSH, verifies the rebuilt image and preserves stored files.
   Credentials stay outside the checkout; the app remains stopped.
-
 - **Recover history** opens one shared window from Recording details and Paired
   computers. Preview and recover missing history from a paired computer, a saved
   backup or an uploaded SQLite file. Earlier recoveries remain available to
@@ -31,8 +30,7 @@ Versions follow Semantic Versioning. `-dev.N` denotes a development prerelease.
   self-contained `.sqlite` format. Reset archives also retain the original files;
   incompatible or damaged originals remain preserved with an explicit explanation
   when a usable SQLite backup cannot be made.
-
-- **Reset pairing…** offers **Keep local history** or **Start fresh** from the
+- **Reset pairing** offers **Keep local history** or **Start fresh** from the
   paired dashboard, including protected startup failures. Both archive the
   previous pairing files; Start fresh also archives local databases and snapshots
   before returning as a slave. Archives remain until manually deleted and are
@@ -41,6 +39,10 @@ Versions follow Semantic Versioning. `-dev.N` denotes a development prerelease.
 
 ### Changed
 
+- Paired computers now uses role-aware connection and mirroring messages,
+  verified MQTT listener status and actions aligned with the shared history
+  recovery window. Recovery comparisons and completed results describe only
+  the actions actually available. Dashboard button labels omit trailing ellipses.
 - Charging setup now groups charger device information, reported firmware,
   connection setup, vehicle feeds and documentation in Data & settings.
   Charger cards keep session schedules, readings and controls, with direct
@@ -68,6 +70,7 @@ Versions follow Semantic Versioning. `-dev.N` denotes a development prerelease.
 
 ### Fixed
 
+- Updated compatible Moment and IP-address dependencies to their patched releases.
 - Paired masters own a dedicated MQTT frontend at the virtual IP and disconnect
   its clients before releasing that address. Fixed HA connections remain open;
   both brokers keep running. Deployment requires freeing host port 1883 for the
@@ -82,7 +85,6 @@ Versions follow Semantic Versioning. `-dev.N` denotes a development prerelease.
 - Home Assistant deployment accepts unchanged configuration whose JSON object
   keys were reordered, and identifies failed app checks without exposing private
   settings. Missing or malformed configuration still blocks deployment.
-
 - Shelly's allowance comparison uses the independently verified native Equalizer
   budget, keeping it separate from the configured fuse limit and safety margin.
   Missing or unusable budget evidence selects fallback. Equalizer allowances

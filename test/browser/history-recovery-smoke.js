@@ -191,6 +191,9 @@ try {
   await evaluate(`${$('pairing-details')}.open=true; ${$('pairing-history-recovery')}.click();true`);
   await until(`${$('history-recovery-dialog')}.open && ${$('history-recovery-source')}.value==='peer'`);
   await until(`${$('history-recovery-preview')}.textContent.includes('History comparison')`);
+  assert.match(await evaluate(`${$('history-recovery-status')}.textContent`), /Comparison complete/);
+  assert.doesNotMatch(await evaluate(`${$('history-recovery-status')}.textContent`), /before recovering|History recovery complete/);
+  assert.equal(await evaluate("[...document.querySelectorAll('#history-recovery-details button, #history-recovery-dialog button, #pairing-panel button')].some(button => /(?:…|\\.\\.\\.)$/.test(button.textContent.trim()))"), false, 'Recovery and pairing actions use complete labels without ellipses');
   assert.equal(await evaluate(`${$('history-recovery-apply')}.hidden`), true);
   assert.equal(await evaluate(`${$('pairing-rejoin')}.disabled`), true);
   assert.equal(await evaluate("document.querySelectorAll('dialog#history-recovery-dialog').length"), 1);

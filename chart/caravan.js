@@ -148,7 +148,7 @@ export function createCaravanContents({ document, actions, blocked, readingsFor,
       input.disabled = locked; input.setAttribute('aria-invalid', policyDirty && !valid ? 'true' : 'false');
     }
     save.disabled = locked || !policyDirty || !valid;
-    save.textContent = policySaving ? 'Saving…' : 'Save changes';
+    save.textContent = policySaving ? 'Saving' : 'Save changes';
     cancel.hidden = !policyDirty; cancel.disabled = locked;
     draftState.textContent = policyDirty ? 'Unsaved changes' : '';
     draftState.hidden = !policyDirty;

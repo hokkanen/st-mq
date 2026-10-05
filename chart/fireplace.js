@@ -124,7 +124,7 @@ export function createFireplacePanel({ document, request, storage, beforeMutatio
     slider.disabled = state.busy || !!state.pending || !available;
     showAmount();
     $('fireplace-submit').disabled = state.busy || !!state.pending || !available;
-    $('fireplace-submit').textContent = state.busy && state.pending?.path === '/api/fireplace' ? 'Recording…' : 'Record firewood now';
+    $('fireplace-submit').textContent = state.busy && state.pending?.path === '/api/fireplace' ? 'Recording' : 'Record firewood now';
     $('fireplace-content').setAttribute('aria-busy', String(state.busy));
     $('fireplace-message').textContent = state.message;
     $('fireplace-message').classList.toggle('form-error', state.error);
