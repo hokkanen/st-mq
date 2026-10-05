@@ -147,6 +147,15 @@ separately. Software or browser tests cannot establish physical property-load
 sharing, Equalizer response time, fuse protection or autonomous controller-loss
 behavior.
 
+For substantial charger features, select relevant cases from the
+[optional physical development runbook](charging-physical-testing.md). It provides
+bounded read-only observation and offline evidence assessment around explicitly
+operated hardware. These cases are not a per-commit requirement and do not run
+inside `npm run check`, CI or `npm run test:live`. The tool regression tests use
+synthetic observations in the ordinary suite. Small fixes can use focused
+offline coverage; record any remaining physical limits for the next relevant
+development session instead of repeating the whole hardware matrix.
+
 ## Browser suites
 
 Build first with `npm run build`. Browser sweeps are extended/manual checks,

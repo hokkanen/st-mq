@@ -7,7 +7,13 @@ The separate live section checks the configured providers with real requests:
 npm run test:live
 ```
 
-Run it from the repository. It reads public `config.json` defaults and
+For observation of deliberately operated chargers, use the separate
+[optional physical development runbook](charging-physical-testing.md). Its
+observer and offline auditor help qualify selected new charger features; they
+are not part of this provider suite or a requirement for every commit. Neither
+the provider suite nor the physical observer starts/stops a charger.
+
+Run the provider suite from the repository. It reads public `config.json` defaults and
 `~/.config/st-mq/secrets.json` (honoring `XDG_CONFIG_HOME`), or the private file
 named by `STMQ_CONFIG`. With `STMQ_ADDON=1`, the default is `/data/options.json`, and
 `STMQ_CONFIG` still takes precedence. Both a plain connection object and the add-on's `options` wrapper

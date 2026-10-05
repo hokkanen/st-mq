@@ -8,6 +8,9 @@ Versions follow Semantic Versioning. `-dev.N` denotes a development prerelease.
 
 ### Added
 
+- Optional charger development observers, an offline physical-evidence auditor
+  and a focused hardware-test runbook make selected feature checks repeatable.
+  Routine tests stay offline; private installation recordings stay outside Git.
 - Shelly load balancing has a current-status badge and a compact history strip
   below electrical charts. Inspect allowance, fallback reasons and charger
   confirmation by pointer, touch or keyboard. Only changes add state records;
