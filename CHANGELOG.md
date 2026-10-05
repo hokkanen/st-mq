@@ -41,10 +41,12 @@ Versions follow Semantic Versioning. `-dev.N` denotes a development prerelease.
 
 ### Changed
 
-- Recovery checks show both computers' history dates by category, explicit
-  recorded outages and potential source coverage, without a trial import or
+- Recovery checks show both computers' history dates by category, recorded
+  energy gaps and potential source coverage, without a trial import or
   model rebuild. Rejoining retains the other computer's original inactive
   database, including records that recovery does not import.
+  Availability notifications appear in separate grouped diagnostics; single
+  reports show unknown duration instead of being labeled zero-second outages.
 - Adaptive recording keeps one row per known measurement with storage frequency
   immediately visible. Expand source history for older recording identities;
   historical source status is distinguished from current acquisition.

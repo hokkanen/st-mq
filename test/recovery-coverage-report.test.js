@@ -5,6 +5,7 @@ import { readFile, readdir } from 'node:fs/promises';
 import { Store } from '../src/storage/store.js';
 import { recoveryCoverageReport, validRecoveryCoverageReport, RECOVERY_OUTAGE_LIMIT } from '../src/recovery/coverage-report.js';
 import { Recorder } from '../src/storage/recorder.js';
+import { SIGNAL_INFO } from '../src/domain/history-series.js';
 import { recoveryPreview } from '../src/recovery/service.js';
 import { fixture, start, HOUR, observation } from './helpers/recovery-fixture.js';
 
@@ -12,9 +13,9 @@ function stores(t) {
   const master = new Store(':memory:'), donor = new Store(':memory:');
   t.after(() => { master.close(); donor.close(); }); return { master, donor, input: 'mqtt', now: start + 100 * HOUR };
 }
-function outage(store, from, to, { signal = 'indoor_temperature', status = 'unavailable' } = {}) {
-  store.db.prepare(`INSERT INTO recorder_coverage(source,device,signal,status,start_at,end_at,source_time,samples)
-    VALUES('synthetic','invented-house',?,?,?,?,NULL,2)`).run(signal,status,from,to);
+function outage(store, from, to, { signal = 'indoor_temperature', status = 'unavailable', source = 'synthetic', observationId = null } = {}) {
+  store.db.prepare(`INSERT INTO recorder_coverage(source,device,signal,status,start_at,end_at,source_time,samples,observation_id)
+    VALUES(?,'invented-house',?,?,?,?,NULL,2,?)`).run(source,signal,status,from,to,observationId);
 }
 const category = (report, name) => report.categories.find(row => row.name === name);
 
@@ -50,6 +51,10 @@ test('phase energy gaps use their explicit interval bounds once, instead of repe
   assert.deepEqual(report.outages.items,[{ signal: null,energyPrefix: 'ev2',basis: 'energy-interval',
     from,to,status: 'unavailable',potentialCoverage: true }]);
   assert.equal(validRecoveryCoverageReport(report),true);
+  for (const change of [{ to: from },{ energyPrefix: null },{ signal: 'indoor_temperature' },{ status: 'stale' }]) {
+    assert.equal(validRecoveryCoverageReport({ ...report,outages: { ...report.outages,
+      items: [{ ...report.outages.items[0],...change }] } }),false);
+  }
 });
 
 test('excluded charging reports have dates without claiming merged coverage or extending an unfinished report', async t => {
@@ -65,7 +70,7 @@ test('excluded charging reports have dates without claiming merged coverage or e
   assert.equal(validRecoveryCoverageReport(report),true);
 });
 
-test('explicit outage periods retain original bounds and report relevant donor evidence without promising recovery', async t => {
+test('availability report periods retain original evidence bounds without promising recovery', async t => {
   const f = stores(t);
   for (const offset of [1,3,5,7]) outage(f.master,start + offset * HOUR,start + (offset + 1) * HOUR);
   observation(f.donor,start + HOUR + 1000,0, { device: 'another-route-identity' });
@@ -78,6 +83,81 @@ test('explicit outage periods retain original bounds and report relevant donor e
   assert.equal(report.outages.items[0].to,start + 8 * HOUR,'The unavailable period is not extended to now');
   assert(!JSON.stringify(report).includes('another-route-identity'));
   assert.equal(report.counts,undefined);
+});
+
+test('retained point notifications group their signals without inventing an outage duration or coverage', async t => {
+  const f = stores(t), at = start + HOUR, signals = Object.keys(SIGNAL_INFO).slice(0,28);
+  for (const signal of signals) {
+    const observationId = observation(f.master,at,null,{ signal,quality: ['retained','unavailable'] });
+    outage(f.master,at,at,{ signal,observationId });
+    observation(f.donor,at,21,{ signal });
+  }
+  observation(f.master,at + 1000,21,{ signal: signals[0] });
+  const before = f.master.db.prepare('SELECT * FROM recorder_coverage').all();
+  const report = await recoveryCoverageReport(f);
+  assert.deepEqual(report.outages.counts,{ energyIntervals: 0,reportPeriods: 0,pointEvents: 28 });
+  assert.equal(report.outages.total,28);
+  assert.equal(report.outages.omitted,0);
+  assert.deepEqual(report.outages.items,[{ signal: null,energyPrefix: null,basis: 'receipt-coverage',
+    from: at,to: at,status: 'unavailable',potentialCoverage: false,records: 28,signals: signals.sort(),reason: 'retained' }]);
+  assert.deepEqual(f.master.db.prepare('SELECT * FROM recorder_coverage').all(),before);
+  assert.equal(validRecoveryCoverageReport(report),true);
+  const item = report.outages.items[0];
+  for (const bad of [
+    { ...item,records: 0 },{ ...item,signals: ['private-device'] },{ ...item,signals: [signals[0],signals[0]] },
+    { ...item,source: '/invented/private.sqlite' },{ ...item,reason: 'arbitrary-reason' },
+  ]) assert.equal(validRecoveryCoverageReport({ ...report,outages: { ...report.outages,items: [bad] } }),false);
+  assert.equal(validRecoveryCoverageReport({ ...report,outages: { ...report.outages,counts: { energyIntervals: 28,reportPeriods: 0,pointEvents: 0 } } }),false);
+  assert.equal(validRecoveryCoverageReport({ ...report,outages: { ...report.outages,omitted: 1 } }),false);
+  const withoutMetadata = structuredClone(report);
+  delete withoutMetadata.outages.counts;
+  withoutMetadata.outages.total = 1;
+  for (const key of ['records','signals','reason']) delete withoutMetadata.outages.items[0][key];
+  assert.equal(validRecoveryCoverageReport(withoutMetadata),true,'Aggregate display metadata is optional');
+});
+
+test('diagnostics group only exact source, evidence bounds, status and reason without exposing private names', async t => {
+  const f = stores(t), at = start + HOUR;
+  outage(f.master,at,at);
+  outage(f.master,at,at,{ signal: 'outdoor_temperature' });
+  outage(f.master,at,at,{ signal: 'private-signal-name' });
+  outage(f.master,at,at,{ source: 'private-other-source' });
+  outage(f.master,at + 1,at + 1);
+  outage(f.master,at,at,{ status: 'failed' });
+  const observationId = observation(f.master,at,null,{ quality: ['retained','unavailable'] });
+  outage(f.master,at,at,{ observationId });
+  outage(f.master,at,at + 1);
+  outage(f.master,at,at + 2);
+  outage(f.master,at,f.now + 1);
+  const report = await recoveryCoverageReport(f), rows = report.outages.items;
+  assert.deepEqual(report.outages.counts,{ energyIntervals: 0,reportPeriods: 2,pointEvents: 7 });
+  assert.equal(rows.length,7);
+  assert.equal(rows.filter(row => row.records === 3).length,1);
+  assert.equal(rows.find(row => row.records === 3).signals.length,2);
+  assert(!JSON.stringify(report).includes('private-'));
+  assert.equal(validRecoveryCoverageReport(report),true);
+});
+
+test('point notifications cannot displace recorded energy gaps or report periods and omitted counts retain grouped records', async t => {
+  const f = stores(t);
+  new Recorder(f.master).energyGap({ source: 'shelly-evse',device: 'invented-charger',prefix: 'ev2',
+    start,end: start + 1000,receivedAt: start + 1000 });
+  for (let i = 0; i < RECOVERY_OUTAGE_LIMIT + 8; i++) {
+    const at = start + HOUR + i * 1000;
+    for (const signal of ['indoor_temperature','outdoor_temperature']) {
+      outage(f.master,at,at,{ signal });
+      outage(f.master,at,at + 500,{ signal });
+    }
+  }
+  const report = await recoveryCoverageReport(f);
+  assert.deepEqual(report.outages.counts,{ energyIntervals: 1,reportPeriods: 216,pointEvents: 216 });
+  assert.equal(report.outages.items.length,201);
+  assert.equal(report.outages.items.filter(row => row.basis === 'energy-interval').length,1);
+  assert(report.outages.items.every((row,index,rows) => index === 0 || rows[index - 1].from >= row.from),
+    'Displayed kinds retain chronological order when combined');
+  assert.equal(report.outages.total,433);
+  assert.equal(report.outages.omitted,32);
+  assert.equal(validRecoveryCoverageReport(report),true);
 });
 
 test('source interval overlap and fresh unchanged reports count as potential evidence while unavailable evidence does not', async t => {

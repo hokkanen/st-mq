@@ -10,6 +10,71 @@ const sourceTables = { imports: 'CSV imports', import_rows: 'CSV rows', observat
   recorder_pending_energy: 'Open energy intervals', charging_session_keys: 'Charging session references' };
 const coverageCategories = { ...sourceTables, energy: 'Recorded energy', temperatures: 'Temperatures', other_observations: 'Other measurements and states',
   charging_reports: 'Saved charging reports',charging_report_events: 'Charging report events' };
+const signalLabel = signal => Object.hasOwn(SIGNAL_INFO,signal) || signal === 'shelly_limiter_mode'
+  ? recordedSignalInfo(signal).label : 'Recorded measurement';
+const energyLabel = prefix => ({ ev1: 'Charger 1 energy',ev2: 'Charger 2 energy',property: 'Property energy',caravan: 'Caravan energy' })[prefix];
+const evidenceRecords = item => count(item.records) > 0 ? item.records : 1;
+const recordCount = value => `${value} ${value === 1 ? 'record' : 'records'}`;
+
+function renderEvidence(document, section, evidence, { formatTime, expanded }) {
+  if (count(evidence?.total) === null) return;
+  const items = Array.isArray(evidence.items) ? evidence.items : [];
+  const energy = items.filter(item => item.basis === 'energy-interval' && stamp(item.from) && stamp(item.to) > item.from);
+  const diagnostics = items.filter(item => !energy.includes(item));
+  const energyTotal = count(evidence.counts?.energyIntervals);
+  const periodTotal = count(evidence.counts?.reportPeriods), pointTotal = count(evidence.counts?.pointEvents);
+  const diagnosticTotal = periodTotal !== null && pointTotal !== null ? periodTotal + pointTotal : null;
+  const disclosure = (parent, key, title) => {
+    const details = document.createElement('details'), summary = document.createElement('summary');
+    details.dataset.recoverySection = key; details.open = expanded.has(key);
+    summary.textContent = title; details.append(summary); parent.append(details); return details;
+  };
+  const paragraph = (parent, value) => {
+    const note = document.createElement('p'); note.className = 'muted'; note.textContent = value; parent.append(note);
+  };
+  const shown = rows => rows.reduce((sum,item) => sum + evidenceRecords(item),0);
+  const titleCount = (total, rows) => total === null ? `${shown(rows)} shown` : String(total);
+  const limited = (parent, total, rows, noun) => {
+    if (total !== null && total > shown(rows)) paragraph(parent, `Showing ${shown(rows)} of ${total} ${noun}; older records are not shown.`);
+  };
+  const gaps = disclosure(section,'energy-gaps',`Recorded energy gaps · ${titleCount(energyTotal,energy)}`);
+  paragraph(gaps,'Explicit unavailable energy intervals. Relevant source records are potential coverage; device identity, phase completeness and import acceptance are assessed during recovery.');
+  limited(gaps,energyTotal,energy,'energy intervals');
+  if (!energy.length) paragraph(gaps,energyTotal === 0 ? 'No recorded energy gaps.' : 'No energy intervals in the displayed evidence.');
+  const list = document.createElement('ul'); list.className = 'history-recovery-outages';
+  for (const gap of energy) {
+    const item = document.createElement('li'), label = document.createElement('strong'), period = document.createElement('span'), match = document.createElement('small');
+    label.textContent = energyLabel(gap.energyPrefix) ?? signalLabel(gap.signal);
+    period.textContent = `${formatTime(gap.from)} – ${formatTime(gap.to)}`;
+    match.textContent = gap.potentialCoverage === true ? 'Relevant source records present · potential coverage'
+      : 'No relevant usable source records found in this interval';
+    item.append(label,period,match); list.append(item);
+  }
+  gaps.append(list);
+  const details = disclosure(section,'availability-diagnostics',`Availability diagnostics · ${diagnosticTotal === null ? `${recordCount(shown(diagnostics))} shown` : recordCount(diagnosticTotal)}`);
+  paragraph(details,`${pointTotal !== null && periodTotal !== null ? `${pointTotal} point ${pointTotal === 1 ? 'record' : 'records'} · ${periodTotal} report-period ${periodTotal === 1 ? 'record' : 'records'}. ` : ''}These are availability reports, not computer outages.`);
+  paragraph(details,'Grouped signals share source, evidence times and reason. Periods end at the last report, not a confirmed recovery time.');
+  limited(details,diagnosticTotal,diagnostics,'diagnostic records');
+  const events = document.createElement('ul'); events.className = 'history-recovery-diagnostics';
+  for (const [index, entry] of diagnostics.entries()) {
+    const item = document.createElement('li'), from = stamp(entry.from), to = stamp(entry.to), point = from === to || !to;
+    const reason = ({ retained: 'Retained message',stale: 'Stale report',failed: 'Failed report',unavailable: 'Unavailable report' })[entry.reason]
+      ?? ({ stale: 'Stale report',failed: 'Failed report' })[entry.status] ?? 'Unavailable report';
+    const records = evidenceRecords(entry);
+    const group = disclosure(item,`diagnostic-${index}`,`${reason}${records === 1 ? '' : 's'} · ${recordCount(records)}`);
+    const period = document.createElement('span'); period.className = 'history-recovery-diagnostic-time';
+    period.textContent = !from ? 'Evidence time unavailable' : point ? `${formatTime(from)} · duration unknown`
+      : `${formatTime(from)} – ${formatTime(to)} · first and last evidence${to - from < 1000 ? ` (${to - from} ms apart)` : ''}`;
+    group.children[0].append(period);
+    const signals = document.createElement('ul'); signals.className = 'history-recovery-diagnostic-signals';
+    for (const label of new Set((Array.isArray(entry.signals) && entry.signals.length ? entry.signals : [entry.signal]).map(signalLabel))) {
+      const signal = document.createElement('li'); signal.textContent = label; signals.append(signal);
+    }
+    group.append(signals); events.append(item);
+  }
+  details.append(events);
+  if (energyTotal === null && count(evidence.omitted) > 0) paragraph(section,`${evidence.omitted} older evidence records are not shown. Category totals are unavailable for this check.`);
+}
 
 function renderCoverage(document, root, data, { formatTime, source, expanded }) {
   if (!Array.isArray(data?.categories)) return;
@@ -56,30 +121,7 @@ function renderCoverage(document, root, data, { formatTime, source, expanded }) 
     const note = document.createElement('p'); note.className = 'muted';
     note.textContent = 'Saved charging reports and their events are not merged by recovery. They remain in the original source database. An unfinished report contributes its start date only.'; section.append(note);
   }
-  const outages = data.outages;
-  if (count(outages?.total) !== null) {
-    const details = document.createElement('details'), summary = document.createElement('summary');
-    details.dataset.recoverySection = 'outages'; details.open = expanded.has('outages');
-    summary.textContent = `Explicitly recorded ${source === 'backup' ? 'local' : 'master'} outages · ${outages.total}`; details.append(summary);
-    const note = document.createElement('p'); note.className = 'muted';
-    note.textContent = 'Each entry is an explicit unavailable energy interval or a period with recorded unavailable, stale or failed reports. Report periods end at the last saved outage evidence, not a claimed recovery time. Relevant source records are potential coverage only; matching measurement names do not prove device identity, complete phase groups or recoverability.';
-    details.append(note);
-    if (count(outages.omitted) > 0) {
-      const limit = document.createElement('p'); limit.textContent = `Showing the latest ${outages.items.length} outage records; ${outages.omitted} older records are not shown.`; details.append(limit);
-    }
-    const list = document.createElement('ul'); list.className = 'history-recovery-outages';
-    for (const outage of outages.items ?? []) {
-      const item = document.createElement('li'), label = document.createElement('strong'), period = document.createElement('span'), match = document.createElement('small');
-      label.textContent = ({ ev1: 'Charger 1 energy',ev2: 'Charger 2 energy',property: 'Property energy',caravan: 'Caravan energy' })[outage.energyPrefix]
-        ?? (Object.hasOwn(SIGNAL_INFO,outage.signal) || outage.signal === 'shelly_limiter_mode'
-        ? recordedSignalInfo(outage.signal).label : 'Recorded measurement');
-      period.textContent = `${dates(outage)} · ${outage.basis === 'energy-interval' ? 'Unavailable energy interval' : 'Recorded report period'}`;
-      match.textContent = outage.potentialCoverage === true ? 'Relevant source records present · potential coverage'
-        : 'No relevant usable source records found in this recorded period';
-      item.append(label,period,match); list.append(item);
-    }
-    details.append(list); section.append(details);
-  }
+  renderEvidence(document,section,data.outages,{ formatTime,expanded });
   const limits = document.createElement('p'); limits.className = 'muted';
   limits.textContent = 'Potential coverage is not a count of missing or recoverable records. Existing records, conflicts, source quality and learning effects are decided during recovery. An entry spanning both date boundaries can appear in both extension counts.';
   section.append(limits); root.append(section);
@@ -88,6 +130,8 @@ function renderCoverage(document, root, data, { formatTime, source, expanded }) 
 /** Render only whitelisted aggregates, never a donor record or serialized error. */
 export function renderRecoveryReport(document, root, data, { formatTime = at => new Date(at).toISOString(), report = false, comparison = false, source = 'peer' } = {}) {
   const reportKey = data?.previewId ?? '';
+  const focused = root.dataset.recoveryReportId === reportKey && root.contains?.(document.activeElement)
+    ? document.activeElement?.closest?.('details[data-recovery-section]')?.dataset.recoverySection : null;
   const expanded = new Set(root.dataset.recoveryReportId === reportKey
     ? [...(root.querySelectorAll?.('details[data-recovery-section][open]') ?? [])].map(node => node.dataset.recoverySection) : []);
   root.dataset.recoveryReportId = reportKey;
@@ -148,4 +192,6 @@ export function renderRecoveryReport(document, root, data, { formatTime = at => 
     : source === 'backup' ? 'Existing history takes precedence. The source backup stays unchanged. Conflicting or unsupported entries are skipped; recorded gaps remain unknown where no usable evidence exists.'
       : 'Existing master history wins overlaps. After verified mirroring, the other computer’s previous database is retained inactive, including skipped history. It is never reused automatically.';
   root.append(policy);
+  if (focused) [...(root.querySelectorAll?.('details[data-recovery-section]') ?? [])]
+    .find(node => node.dataset.recoverySection === focused)?.querySelector('summary')?.focus({ preventScroll: true });
 }

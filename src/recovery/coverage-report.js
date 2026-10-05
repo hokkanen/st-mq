@@ -4,6 +4,10 @@ import { isRecordedEnergyGap, validEnergyQuality } from '../storage/energy-histo
 
 export const RECOVERY_OUTAGE_LIMIT = 100;
 const publicSignal = signal => Object.hasOwn(SIGNAL_INFO,signal) || signal === 'shelly_limiter_mode';
+const publicSignals = [...Object.keys(SIGNAL_INFO), 'shelly_limiter_mode'];
+const publicSignalSql = publicSignals.map(signal => `'${signal}'`).join(',');
+const evidenceKind = row => row.basis === 'energy-interval' ? 'energyIntervals'
+  : row.to > row.from ? 'reportPeriods' : 'pointEvents';
 const energySignals = [...ENERGY_SIGNALS, 'garage_energy'];
 const energySql = energySignals.map(signal => `'${signal}'`).join(',');
 const raw = "CASE WHEN json_valid(raw) THEN raw ELSE '{}' END";
@@ -66,6 +70,7 @@ function pendingRange(rows, master) {
  * Call in a worker with both read snapshots pinned. Query results and response
  * size stay bounded; no history-sized arrays, trial merge or model rebuild. */
 export async function recoveryCoverageReport({ master, donor, input, now = Date.now(), yieldControl = async () => {}, progress = () => {} }) {
+  if (!Number.isSafeInteger(now) || now <= 0) throw new TypeError('Invalid report time');
   donor.db.function('recovery_report_usable',{ deterministic: true },quality => {
     try { return Number(validEnergyQuality(JSON.parse(quality))); } catch { return 0; }
   });
@@ -90,17 +95,39 @@ export async function recoveryCoverageReport({ master, donor, input, now = Date.
   report.categories.push({ name: 'recorder_pending_energy', master: localPending, source: pendingRange(sourcePending, localPending) });
   const gap = alias => `recovery_report_gap(${alias}.value,${alias}.unit,${alias}.raw,${alias}.quality,${alias}.source_time,${alias}.received_at)=1`;
   const prefix = "CASE WHEN signal LIKE 'ev1_%' THEN 'ev1' WHEN signal LIKE 'ev2_%' THEN 'ev2' WHEN signal='caravan_energy' THEN 'caravan' ELSE 'property' END";
-  const outageRows = `SELECT c.signal,c.start_at,c.end_at,c.status,${scope('c')} simulated,NULL energy_prefix,'receipt-coverage' basis
-    FROM active_recorder_coverage c WHERE c.status<>'fresh' AND c.status IN ('stale','failed','unavailable')
-      AND c.start_at>0 AND c.end_at>=c.start_at AND NOT EXISTS(SELECT 1 FROM active_observations o
-        WHERE o.id=c.observation_id AND o.signal IN (${energySql}) AND ${gap('o')})
-    UNION ALL
+  const quality = "CASE WHEN json_valid(o.quality) AND json_type(o.quality)='array' THEN o.quality ELSE '[]' END";
+  const receipts = `SELECT c.signal,c.source,c.start_at,c.end_at,c.status,${scope('c')} simulated,
+      CASE WHEN EXISTS(SELECT 1 FROM json_each(${quality}) WHERE value='retained')
+        THEN 'retained' ELSE c.status END reason
+    FROM active_recorder_coverage c LEFT JOIN active_observations o ON o.id=c.observation_id
+    WHERE c.status IN ('stale','failed','unavailable')
+      AND typeof(c.start_at)='integer' AND typeof(c.end_at)='integer'
+      AND c.start_at>0 AND c.end_at>=c.start_at AND c.end_at<=${now}
+      AND NOT EXISTS(SELECT 1 FROM active_observations o
+        WHERE o.id=c.observation_id AND o.signal IN (${energySql}) AND ${gap('o')})`;
+  const energyRows = `
     SELECT NULL signal,json_extract(o.raw,'$.intervalStart') start_at,o.source_time end_at,'unavailable' status,
       ${scope('o')} simulated,${prefix} energy_prefix,'energy-interval' basis FROM active_observations o
     WHERE o.signal IN (${ENERGY_SIGNALS.map(signal => `'${signal}'`).join(',')}) AND o.import_id IS NULL AND ${gap('o')}
     GROUP BY o.source,o.device,energy_prefix,start_at,end_at`;
-  report.outages.total = master.db.prepare(`SELECT COUNT(*) count FROM (${outageRows})`).get().count;
-  const outages = master.db.prepare(`SELECT * FROM (${outageRows}) ORDER BY start_at DESC,end_at DESC,signal LIMIT ?`).all(RECOVERY_OUTAGE_LIMIT);
+  const counts = master.db.prepare(`SELECT COALESCE(SUM(end_at>start_at),0) reportPeriods,
+    COALESCE(SUM(end_at=start_at),0) pointEvents FROM (${receipts})`).get();
+  counts.energyIntervals = master.db.prepare(`SELECT COUNT(*) count FROM (${energyRows})`).get().count;
+  report.outages.counts = { energyIntervals: counts.energyIntervals, reportPeriods: counts.reportPeriods, pointEvents: counts.pointEvents };
+  report.outages.total = counts.energyIntervals + counts.reportPeriods + counts.pointEvents;
+  // Bound each evidence kind separately: reconnect notifications must never
+  // displace recorded energy gaps. Group only exact source/bounds/status/reason matches;
+  // this is display compression, not an inferred causal incident or outage.
+  const outages = master.db.prepare(`SELECT * FROM (${energyRows}) ORDER BY start_at DESC,end_at DESC,energy_prefix LIMIT ?`).all(RECOVERY_OUTAGE_LIMIT);
+  for (const relation of ['>', '=']) {
+    outages.push(...master.db.prepare(`SELECT start_at,end_at,status,simulated,reason,
+      NULL energy_prefix,'receipt-coverage' basis,COUNT(*) records,
+      json_group_array(DISTINCT CASE WHEN signal IN (${publicSignalSql}) THEN signal END) signals
+      FROM (${receipts}) WHERE end_at${relation}start_at
+      GROUP BY source,start_at,end_at,status,simulated,reason
+      ORDER BY start_at DESC,end_at DESC,source,status,reason LIMIT ?`).all(RECOVERY_OUTAGE_LIMIT));
+  }
+  outages.sort((a,b) => b.start_at - a.start_at || b.end_at - a.end_at);
   const observation = donor.db.prepare(`SELECT 1 FROM active_observations o WHERE signal=? AND source_time>=? AND source_time<=?
     AND source_time<=received_at AND received_at<=? AND ${scope('o')}=? AND ${usable('o')} LIMIT 1`);
   const energy = donor.db.prepare(`SELECT 1 FROM active_observations o WHERE signal=? AND source_time>?
@@ -115,19 +142,23 @@ export async function recoveryCoverageReport({ master, donor, input, now = Date.
       AND ${scope('c')}=? AND ${usable('o')} LIMIT 1`);
   for (const row of outages) {
     const signals = row.energy_prefix ? row.energy_prefix === 'caravan' ? ['caravan_energy']
-      : [1,2,3].map(phase => `${row.energy_prefix}_energy_l${phase}`) : [row.signal];
-    const matches = signals.some(signal => Boolean((energySignals.includes(signal)
+      : [1,2,3].map(phase => `${row.energy_prefix}_energy_l${phase}`)
+      : JSON.parse(row.signals).filter(publicSignal).sort();
+    // A point marker supplies no outage duration against which to assess
+    // coverage. Do not turn an exact-instant lookup into recovery advice.
+    const matches = row.end_at > row.start_at && signals.some(signal => Boolean((energySignals.includes(signal)
       ? energy.get(signal,row.start_at,now,row.simulated,row.end_at)
       : observation.get(signal,row.start_at,row.end_at,now,row.simulated)
         || coverage.get(signal,row.start_at,row.end_at,now,now,row.simulated))
       || sourcePending.some(item => item.signal === signal && Number(item.source === 'simulation') === row.simulated
         && JSON.parse(item.raw).intervalStart < row.end_at && item.source_time > row.start_at)));
-    report.outages.items.push({ signal: publicSignal(row.signal) ? row.signal : null,
+    report.outages.items.push({ signal: signals.length === 1 && !row.energy_prefix ? signals[0] : null,
       energyPrefix: row.energy_prefix, basis: row.basis,
-      from: row.start_at, to: row.end_at, status: row.status, potentialCoverage: matches });
+      from: row.start_at, to: row.end_at, status: row.status, potentialCoverage: matches,
+      ...(row.basis === 'receipt-coverage' ? { records: row.records,signals,reason: row.reason } : {}) });
     if (report.outages.items.length % 10 === 0) await yieldControl();
   }
-  report.outages.omitted = report.outages.total - report.outages.items.length;
+  report.outages.omitted = report.outages.total - report.outages.items.reduce((sum,row) => sum + (row.records ?? 1),0);
   return report;
 }
 
@@ -153,13 +184,30 @@ export function validRecoveryCoverageReport(value) {
     || !value.categories.every(row => fields(row,['name','master','source']) && names.includes(row.name)
       && range(row.master) && sourceRange(row.source))) return false;
   const outages = value.outages;
-  return fields(outages,['total','limit','items','omitted']) && count(outages.total)
-    && outages.limit === RECOVERY_OUTAGE_LIMIT && Array.isArray(outages.items) && outages.items.length <= outages.limit
-    && count(outages.omitted) && outages.total === outages.items.length + outages.omitted
-    && outages.items.every(row => fields(row,['signal','energyPrefix','basis','from','to','status','potentialCoverage'])
+  if (!fields(outages,['total','limit','items','omitted','counts']) || !count(outages.total)
+    || outages.limit !== RECOVERY_OUTAGE_LIMIT || !Array.isArray(outages.items) || outages.items.length > outages.limit * 3
+    || !count(outages.omitted)
+    || !outages.items.every(row => fields(row,['signal','energyPrefix','basis','from','to','status','potentialCoverage','records','signals','reason'])
       && (row.signal === null || typeof row.signal === 'string' && publicSignal(row.signal))
       && (row.energyPrefix === null || ['ev1','ev2','property','caravan'].includes(row.energyPrefix))
       && ['receipt-coverage','energy-interval'].includes(row.basis)
       && date(row.from) && date(row.to) && row.to >= row.from && ['stale','failed','unavailable'].includes(row.status)
-      && typeof row.potentialCoverage === 'boolean');
+      && (row.basis === 'energy-interval' ? row.to > row.from && row.energyPrefix !== null
+        && row.signal === null && row.status === 'unavailable' : row.energyPrefix === null)
+      && typeof row.potentialCoverage === 'boolean'
+      && (row.records === undefined && row.signals === undefined && row.reason === undefined
+        || row.basis === 'receipt-coverage' && count(row.records) && row.records > 0
+          && Array.isArray(row.signals) && row.signals.length <= Math.min(row.records,publicSignals.length)
+          && new Set(row.signals).size === row.signals.length
+          && row.signals.every(signal => typeof signal === 'string' && publicSignal(signal))
+          && row.signal === (row.signals.length === 1 ? row.signals[0] : null)
+          && (row.reason === 'retained' || row.reason === row.status)))) return false;
+  const kinds = ['energyIntervals','reportPeriods','pointEvents'];
+  const shown = Object.fromEntries(kinds.map(kind => [kind,outages.items.filter(row => evidenceKind(row) === kind)]));
+  const shownRecords = kind => shown[kind].reduce((sum,row) => sum + (row.records ?? 1),0);
+  return kinds.every(kind => shown[kind].length <= outages.limit)
+    && outages.total === kinds.reduce((sum,kind) => sum + shownRecords(kind),0) + outages.omitted
+    && (outages.counts === undefined || fields(outages.counts,kinds)
+      && kinds.every(kind => count(outages.counts[kind]) && outages.counts[kind] >= shownRecords(kind))
+      && outages.total === kinds.reduce((sum,kind) => sum + outages.counts[kind],0));
 }

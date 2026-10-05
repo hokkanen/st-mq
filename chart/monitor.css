@@ -922,12 +922,21 @@ details details { margin-inline-start: 24px; }
 .history-recovery-outages li { margin: 10px 0; }
 .history-recovery-outages strong, .history-recovery-outages span, .history-recovery-outages small { display: block; overflow-wrap: anywhere; }
 .history-recovery-outages small { color: var(--muted); }
+.history-recovery-diagnostics { list-style: none; margin: 10px 0; padding: 0; font-size: 12px; }
+.history-recovery-diagnostics > li { border-top: 1px solid var(--border); padding: 8px 0; }
+.history-recovery-diagnostics details { margin: 0; }
+.history-recovery-diagnostics summary { line-height: 1.6; overflow-wrap: anywhere; }
+.history-recovery-diagnostic-time { display: block; color: var(--muted); font-size: 11px; margin-left: 15px; }
+.history-recovery-diagnostic-signals { padding-left: 30px; margin: 8px 0; columns: 2; column-gap: 20px; }
+.history-recovery-diagnostic-signals li { break-inside: avoid; overflow-wrap: anywhere; margin: 3px 0; }
+.history-recovery-preview summary:focus-visible { outline: 2px solid var(--focus); outline-offset: 3px; }
 @media (max-width: 540px) {
   .history-recovery-ranges, .history-recovery-ranges thead, .history-recovery-ranges tbody { display: block; }
   .history-recovery-ranges tr { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .history-recovery-ranges thead th:first-child { display: none; }
   .history-recovery-ranges th:first-child { width: auto; }
   .history-recovery-ranges tbody th { grid-column: 1 / -1; padding-top: 12px; padding-bottom: 2px; border-bottom: 0; }
+  .history-recovery-diagnostic-signals { columns: 1; }
 }
 .history-recovery-review-actions { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 8px; }
 .history-recovery-review-actions > button { margin: 16px 0 0; }

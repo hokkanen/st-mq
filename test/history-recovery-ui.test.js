@@ -108,6 +108,13 @@ function fixture() {
     addEventListener(type, callback) { this.listeners.set(type, callback); }
     setAttribute(name, value) { this.attributes[name] = value; }
     focus() { document.activeElement = this; }
+    contains(node) { return this === node || this.children.some(child => child.contains(node)); }
+    matches(selector) { return selector === 'summary' ? this.tagName === 'SUMMARY'
+      : selector.startsWith('details[data-recovery-section]') && this.tagName === 'DETAILS'
+        && this.dataset.recoverySection !== undefined && (!selector.endsWith('[open]') || this.open); }
+    closest(selector) { return this.matches(selector) ? this : this.parentElement?.closest(selector); }
+    querySelectorAll(selector) { return this.children.flatMap(child => [...(child.matches(selector) ? [child] : []),...child.querySelectorAll(selector)]); }
+    querySelector(selector) { return this.querySelectorAll(selector)[0]; }
     showModal() { this.open = true; }
     close() { this.open = false; this.listeners.get('close')?.(); }
     click() { if (!this.disabled) this.listeners.get('click')?.(); }
@@ -119,16 +126,17 @@ function fixture() {
 }
 const text = root => [root.textContent, ...root.children.map(text)].join(' ');
 
-test('source reports show both category dates and explicit outages as potential coverage with folded inventory', () => {
+test('source reports show category dates and explicit energy gaps with separate folded diagnostics and inventory', () => {
   const { document, $ } = fixture(), range = { count: 2,from: 1000,to: 3000,undated: 0 };
   const coverage = { categories: [{ name: 'temperatures',master: range,source: { ...range,from: 500,
     outsideMaster: { before: { count: 1,from: 500,to: 500 },after: { count: 0,from: null,to: null } } } }],
-    outages: { total: 101,omitted: 100,items: [{ signal: 'indoor_temperature',from: 1200,to: 1500,potentialCoverage: true }] } };
+    outages: { total: 101,omitted: 100,counts: { energyIntervals: 101,reportPeriods: 0,pointEvents: 0 },
+      items: [{ energyPrefix: 'ev2',basis: 'energy-interval',from: 1200,to: 1500,potentialCoverage: true }] } };
   renderRecoveryReport(document,$('report'),{ ...preview,coverage },{ formatTime: value => `time ${value}` });
   const output = text($('report'));
   assert.match(output,/History date ranges.*Category.*Master.*Other computer.*Temperatures.*time 1000.*time 3000.*time 500/);
   assert.match(output,/Potential coverage: 1 entries extend earlier/);
-  assert.match(output,/Explicitly recorded master outages · 101.*Showing the latest 1 outage records; 100 older/);
+  assert.match(output,/Recorded energy gaps · 101.*Showing 1 of 101 energy intervals; older records are not shown/);
   assert.match(output,/time 1200.*time 1500.*Relevant source records present · potential coverage/);
   assert.match(output,/not a count of missing or recoverable records/);
   assert.match(output,/Sparse measurements do not establish outages/);
@@ -136,7 +144,7 @@ test('source reports show both category dates and explicit outages as potential 
   assert.equal(inventory.children[0].textContent,'Source record inventory');
   assert.equal(inventory.open,false);
   renderRecoveryReport(document,$('report'),{ ...preview,coverage },{ source: 'backup',formatTime: value => `time ${value}` });
-  assert.match(text($('report')),/This computer.*Backup.*Explicitly recorded local outages/);
+  assert.match(text($('report')),/This computer.*Backup.*Recorded energy gaps/);
   assert.doesNotMatch(text($('report')),/master|Other computer/);
 });
 
@@ -144,10 +152,73 @@ test('coverage rendering exposes only recognized categories and measurement labe
   const { document, $ } = fixture();
   renderRecoveryReport(document,$('report'),{ ...preview,coverage: {
     categories: [{ name: '/invented/private.sqlite', master: { count: 1 },source: { count: 1 } }],
-    outages: { total: 1,omitted: 0,items: [{ signal: '/invented/private-device',from: 1000,to: 2000,potentialCoverage: false }] },
+    outages: { total: 1,omitted: 0,items: [{ signal: '/invented/private-device',signals: ['/invented/private-device'],
+      reason: '/invented/private-reason',from: 1000,to: 2000,potentialCoverage: true }] },
   } });
   assert.doesNotMatch(text($('report')),/private/);
-  assert.match(text($('report')),/Recorded measurement.*No relevant usable source records found/);
+  assert.match(text($('report')),/Unavailable report.*first and last evidence.*Recorded measurement/);
+  assert.doesNotMatch(text($('report')),/Relevant source records present|No relevant usable source records found/);
+});
+
+test('simultaneous retained reports are one expandable diagnostic group with unknown duration, never energy gaps', () => {
+  const { document, $ } = fixture();
+  const coverage = { categories: [],outages: { total: 30,omitted: 0,
+    counts: { energyIntervals: 1,reportPeriods: 1,pointEvents: 28 },items: [
+      { energyPrefix: 'ev2',basis: 'energy-interval',from: 1000,to: 2000,potentialCoverage: true },
+      { basis: 'receipt-coverage',from: 2500,to: 2500,reason: 'retained',status: 'unavailable',records: 28,
+        signals: ['indoor_temperature','heating_curve','alarm_active'],potentialCoverage: false },
+      { basis: 'receipt-coverage',from: 2600,to: 2700,reason: 'stale',status: 'stale',signal: 'indoor_temperature',potentialCoverage: true },
+    ] } };
+  renderRecoveryReport(document,$('report'),{ ...preview,coverage },{ formatTime: value => `time ${value}` });
+  const details = $('report').querySelectorAll('details[data-recovery-section]');
+  const gaps = details.find(node => node.dataset.recoverySection === 'energy-gaps');
+  const diagnostics = details.find(node => node.dataset.recoverySection === 'availability-diagnostics');
+  const group = details.find(node => node.dataset.recoverySection === 'diagnostic-0');
+  assert.match(text(gaps),/Recorded energy gaps · 1.*Charger 2 energy.*time 1000 – time 2000.*potential coverage/);
+  assert.doesNotMatch(text(gaps),/2500|2600|Retained|Stale/);
+  assert.match(text(diagnostics),/Availability diagnostics · 29 records.*28 point records · 1 report-period record/);
+  assert.match(text(group),/Retained messages · 28 records.*time 2500 · duration unknown.*Upstairs.*Heating curve.*Alarm active/);
+  assert.equal((text(group).match(/time 2500/g) ?? []).length,1);
+  assert.match(text(diagnostics),/time 2600 – time 2700 · first and last evidence/);
+  assert.doesNotMatch(text(diagnostics),/potential coverage|No relevant usable source records|master outages|zero seconds|0 s/);
+  assert.equal(gaps.open,false); assert.equal(diagnostics.open,false); assert.equal(group.open,false);
+});
+
+test('saved checks without optional category counts report only displayed evidence and unknown category totals', () => {
+  const { document, $ } = fixture();
+  renderRecoveryReport(document,$('report'),{ ...preview,coverage: { categories: [],outages: { total: 2986,omitted: 2984,items: [
+    { energyPrefix: 'ev2',basis: 'energy-interval',from: 1000,to: 2000,potentialCoverage: true },
+    { signal: 'indoor_temperature',basis: 'receipt-coverage',from: 2500,to: 2500,potentialCoverage: true },
+  ] } } },{ formatTime: value => `time ${value}` });
+  const output = text($('report'));
+  assert.match(output,/Recorded energy gaps · 1 shown/);
+  assert.match(output,/Availability diagnostics · 1 record shown/);
+  assert.match(output,/2984 older evidence records are not shown. Category totals are unavailable/);
+  assert.doesNotMatch(output,/2986|master outages/);
+});
+
+test('subsecond report spans remain distinguishable from point markers when formatted clocks match', () => {
+  const { document, $ } = fixture();
+  renderRecoveryReport(document,$('report'),{ ...preview,coverage: { categories: [],outages: { total: 1,omitted: 0,
+    items: [{ basis: 'receipt-coverage',from: 1000,to: 1250,reason: 'stale',signal: 'indoor_temperature' }] } } },
+  { formatTime: () => 'same second' });
+  assert.match(text($('report')),/same second – same second · first and last evidence \(250 ms apart\)/);
+  assert.doesNotMatch(text($('report')),/duration unknown/);
+});
+
+test('refresh preserves nested evidence disclosures and summary focus only for the same checked report', () => {
+  const { document, $ } = fixture(), data = { ...preview,coverage: { categories: [],outages: { total: 2,omitted: 0,items: [
+    { basis: 'receipt-coverage',from: 1000,to: 1000,reason: 'retained',records: 2,signals: ['indoor_temperature','heating_curve'] },
+  ] } } };
+  renderRecoveryReport(document,$('report'),data);
+  for (const node of $('report').querySelectorAll('details[data-recovery-section]')) node.open = true;
+  $('report').querySelectorAll('details[data-recovery-section]').find(node => node.dataset.recoverySection === 'diagnostic-0').querySelector('summary').focus();
+  renderRecoveryReport(document,$('report'),data);
+  assert($('report').querySelectorAll('details[data-recovery-section]').every(node => node.open));
+  assert.equal(document.activeElement.closest('details[data-recovery-section]').dataset.recoverySection,'diagnostic-0');
+  assert($('report').contains(document.activeElement));
+  renderRecoveryReport(document,$('report'),{ ...data,previewId: 'b'.repeat(64) });
+  assert($('report').querySelectorAll('details[data-recovery-section]').every(node => !node.open));
 });
 
 test('saved charging report dates explain their excluded recovery scope', () => {

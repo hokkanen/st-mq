@@ -14,6 +14,11 @@ const screenshots = await mkdtemp(join(tmpdir(), 'history-recovery-screenshots-'
 const pause = ms => new Promise(resolve => setTimeout(resolve, ms));
 const errors = [], requests = [], layouts = [], pending = new Map();
 const previewId = 'a'.repeat(64), now = Date.now(), source = { id: 'backup-fixture', kind: 'backup', label: 'Saved backup · 1 October 2026', available: true };
+const retainedSignals = ['return_temperature','supply_temperature','brine_in_temperature','brine_out_temperature',
+  'dhw_temperature','heating_setpoint','heating_integral','auxiliary_output','compressor_hours','auxiliary_3kw_hours',
+  'auxiliary_6kw_hours','dhw_hours','compressor_active','heating_pump_active','dhw_routing','heating_pump_speed',
+  'brine_pump_speed','room_setting','dhw_stop_setting','dhw_start_setting','operating_mode','room_influence',
+  'heating_curve','maximum_supply_setting','heat_stop_setting','tariff_reduction_setting','alarm_active','alarm_code'];
 const preview = { previewId, status: 'checked', tables: ['imports', 'import_rows', 'observations', 'recorder_coverage',
   'provider_snapshot_contents', 'provider_snapshot_fetches', 'annotations', 'counters', 'fireplace_events',
   'learning_cycles', 'events', 'energy_audits', 'learning_journal', 'recorder_pending_energy', 'charging_session_keys']
@@ -22,8 +27,13 @@ const preview = { previewId, status: 'checked', tables: ['imports', 'import_rows
     master: { count: 42,from: now - 86400000,to: now,undated: 0 },
     source: { count: 57,from: now - 172800000,to: now - 1000,undated: 0,
       outsideMaster: { before: { count: 15,from: now - 172800000,to: now - 86400000 },after: { count: 0,from: null,to: null } } } })),
-    outages: { total: 3,omitted: 0,items: [true,false,true].map((potentialCoverage,i) => ({
-      signal: null,energyPrefix: 'ev2',basis: 'energy-interval',from: now - (3 - i) * 3600000,to: now - (2.5 - i) * 3600000,potentialCoverage })) } } };
+    outages: { total: 30,omitted: 0,counts: { energyIntervals: 1,reportPeriods: 1,pointEvents: 28 },items: [
+      { signal: null,energyPrefix: 'ev2',basis: 'energy-interval',from: now - 3600000,to: now - 1800000,potentialCoverage: true },
+      { signal: null,signals: retainedSignals,records: 28,basis: 'receipt-coverage',reason: 'retained',status: 'unavailable',
+        from: now - 10000,to: now - 10000,potentialCoverage: false },
+      { signal: 'indoor_temperature',basis: 'receipt-coverage',reason: 'stale',status: 'stale',
+        from: Math.floor(now / 1000) * 1000 - 100000,to: Math.floor(now / 1000) * 1000 - 99750,potentialCoverage: true },
+    ] } } };
 let app, server, browser, socket, sequence = 0, admin = true, topology = 'standalone', peer = null;
 let recovery = { available: true, readOnly: false, busy: false, job: null, preview: null, sources: [source], nextBefore: '10:old-operation',
   operations: [{ id: 'old-operation', startedAt: 1, source: { label: 'Earlier backup' }, active: true, status: 'interrupted', canRevert: true }] };
@@ -142,8 +152,21 @@ try {
   assert.equal(await evaluate("document.querySelector('.history-recovery-coverage details').open"), false);
   await evaluate("document.querySelector('.history-recovery-coverage details').open=true;true");
   assert.match(await evaluate(`${$('history-recovery-preview')}.innerText`), /Charger 2 energy/);
+  assert.equal(await evaluate("document.querySelector('[data-recovery-section=availability-diagnostics]').open"),false,'Availability diagnostics start collapsed');
+  assert.equal(await evaluate("document.querySelector('.history-recovery-outages').children.length"),1,'28 retained messages do not inflate the energy-gap list');
+  assert.doesNotMatch(await evaluate("document.querySelector('[data-recovery-section=energy-gaps]').textContent"),/Retained|duration unknown/);
+  await evaluate("document.querySelector('[data-recovery-section=availability-diagnostics]').open=true;document.querySelector('[data-recovery-section=diagnostic-0]').open=true;document.querySelector('[data-recovery-section=diagnostic-0] summary').focus();document.querySelector('[data-recovery-section=diagnostic-0]').dataset.beforeRefresh='yes';true");
+  assert.match(await evaluate("document.querySelector('[data-recovery-section=diagnostic-0]').innerText"),/Retained messages · 28 records/);
+  assert.match(await evaluate("document.querySelector('[data-recovery-section=diagnostic-0]').innerText"),/duration unknown/);
+  assert.equal(await evaluate("document.querySelectorAll('[data-recovery-section=diagnostic-0] .history-recovery-diagnostic-signals li').length"),28);
+  assert.match(await evaluate("document.querySelector('[data-recovery-section=diagnostic-1]').innerText"),/250 ms apart/,'Same formatted endpoints preserve a known subsecond report span');
+  assert.doesNotMatch(await evaluate("document.querySelector('[data-recovery-section=availability-diagnostics]').textContent"),/potential coverage|No relevant usable source records|master outages/);
   await click('history-recovery-refresh');
-  assert.equal(await evaluate("document.querySelector('.history-recovery-coverage details').open"), true, 'Refreshing the same report preserves expanded outage details');
+  await until("!document.querySelector('[data-before-refresh]')");
+  assert.equal(await evaluate("document.querySelector('[data-recovery-section=energy-gaps]').open"), true, 'Refreshing the same report preserves expanded energy gaps');
+  assert.equal(await evaluate("document.querySelector('[data-recovery-section=availability-diagnostics]').open"),true);
+  assert.equal(await evaluate("document.querySelector('[data-recovery-section=diagnostic-0]').open"),true,'Refreshing preserves the nested signal disclosure');
+  assert.equal(await evaluate("document.activeElement.closest('details').dataset.recoverySection"),'diagnostic-0','Refreshing preserves nested summary focus');
   assert.doesNotMatch(await evaluate(`${$('history-recovery-preview')}.textContent`), /master|mirroring/);
   for (const width of [1440, 768, 390, 320]) for (const theme of ['dark', 'light']) {
     await send('Emulation.setDeviceMetricsOverride', { width, height: width === 320 ? 568 : 900, deviceScaleFactor: 1, mobile: false });
@@ -158,6 +181,11 @@ try {
     await capture(`coverage-ranges-${width}-${theme}`);
     await evaluate("document.querySelector('.history-recovery-outages').scrollIntoView({block:'start'});true");
     await capture(`coverage-outages-${width}-${theme}`);
+    await evaluate("document.querySelector('[data-recovery-section=diagnostic-0]').open=false;document.querySelector('[data-recovery-section=availability-diagnostics]').scrollIntoView({block:'start'});true");
+    await capture(`availability-diagnostics-${width}-${theme}`);
+    await evaluate("document.querySelector('[data-recovery-section=diagnostic-0]').open=true;true");
+    assert.equal(await evaluate("(() => { const b=document.querySelector('.history-recovery-body'); return b.scrollWidth <= b.clientWidth; })()"),true,'Expanded grouped diagnostics fit without horizontal scrolling');
+    await capture(`availability-signals-${width}-${theme}`);
     await evaluate("document.querySelector('.history-recovery-body').scrollTop=0;true");
     if (width === 320) {
       await evaluate(`${$('history-recovery-apply')}.scrollIntoView({block:'end'});true`);
@@ -225,7 +253,8 @@ try {
   assert.deepEqual(errors, []);
   console.log(JSON.stringify({ result: 'history-recovery-browser-passed', layouts, screenshots,
     checks: ['production standalone opener', 'peer same modal and preselection', 'normal comparison cannot recover', 'installation confirmation', 'preview', 'recover with confirmation',
-      'nested recording fold', 'separate recovery/history views', 'close and reopen running job', 'complete result', 'whole operation revert and restore', 'old interrupted recovery', 'earlier pages', 'upload', 'keyboard focus and escape', '320/390/768/1440 both themes', 'short-screen header and scrolled review', 'family restriction'] }));
+      'nested recording fold', 'energy gaps separate from 28 retained-message diagnostics', 'point duration unknown', 'grouped signal disclosure and focus preserved on refresh',
+      'separate recovery/history views', 'close and reopen running job', 'complete result', 'whole operation revert and restore', 'old interrupted recovery', 'earlier pages', 'upload', 'keyboard focus and escape', '320/390/768/1440 both themes', 'short-screen header and scrolled review', 'family restriction'] }));
   await send('Browser.close');
 } finally {
   socket?.close(); for (const task of pending.values()) clearTimeout(task.timer);

@@ -1492,9 +1492,17 @@ working sources and do not replace an independent backup.
 For a backup, confirm **This backup belongs to this installation**, then select
 **Check backup**. The check validates the database's current format, integrity
 and input scope and reports source record counts, category date ranges on both
-sides, explicitly recorded outage bounds and potential source coverage during
-those periods or outside the master's date range. A bounded outage list reports
-how many older records are omitted. Sparse observations never establish gaps,
+sides, recorded energy gaps and potential source coverage during those intervals
+or outside the master's date range. Availability reports have a separate collapsed
+diagnostics fold: a point event has one timestamp and unknown duration, while a
+report period ends at the last saved evidence, not a confirmed recovery time.
+Neither is labeled a computer outage. Diagnostics group only records with the
+same source, exact evidence bounds, status and reason; expanding a group shows
+the affected measurements. Retained-message reasons remain visible. The latest
+100 energy intervals, 100 diagnostic periods and 100 point groups have independent
+limits, so reconnect notifications cannot crowd energy gaps out of the report.
+Category totals and omitted counts refer to evidence records, not inferred incidents.
+Sparse observations never establish gaps,
 and relevant source records do not prove continuous coverage, physical identity
 or import acceptance. The check uses pinned read-only snapshots and does not run
 a trial import or change recorded history. Missing entries, conflicts and model changes remain

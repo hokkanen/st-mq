@@ -742,8 +742,8 @@ the same layout, with recovery and handover performed from the master's UI.
 
 Checks are initiated on the master. When the other computer is a normal slave,
 the result is an informational **History source checked** result. It validates
-the donor database and reports category date ranges for both computers, explicit
-recorded outages and potential source coverage, without a trial import or model
+the donor database and reports category date ranges for both computers, recorded
+energy gaps and potential source coverage, without a trial import or model
 rebuild. Normal mirroring remains enabled, so recovery and resume-mirroring actions
 are unavailable. A record
 present only in that older snapshot can reflect a deliberate master deletion;
@@ -751,6 +751,14 @@ the next ordinary snapshot applies the deletion. The source check does not
 authorize resurrecting it. A healthy mirror containing the same records must
 not cause recovery to duplicate those records merely because their measurements are
 unavailable, stale or invalid.
+
+Availability notifications appear separately in collapsed diagnostics, grouped
+only when source, exact evidence times, status and reason match. A point event
+shows one timestamp and **duration unknown**; a positive report span shows first
+and last evidence, not a confirmed recovery time. These are not computer outages.
+Energy gaps, diagnostic periods and point groups each have an independent display
+limit. Totals count evidence records, and expanding a group reveals its signals.
+Point notifications do not receive an instantaneous potential-coverage assessment.
 
 During normal mirroring, the window's paired-history workflow offers the optional
 source check. Recovery and resume-mirroring steps appear when the peer reports
@@ -764,7 +772,7 @@ For a computer in **Protected recovery**:
 1. In **Review history**, **Check other computer** takes a consistent donor snapshot,
    verifies its database format and integrity, assesses its input scope and shows
    source record counts, both computers' history ranges by category, recorded
-   outage dates and whether the source has relevant records during those periods
+   energy-gap dates and whether the source has relevant records during those intervals
    or outside the master's date range. These are potential coverage, never a
    promise of recoverable entries. Sparse measurements do not establish outages.
    Checking does not copy the master database, run a trial
