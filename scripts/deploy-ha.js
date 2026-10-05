@@ -11,6 +11,7 @@ import { connectSSH, validateSSHHost, shellQuote, DeploymentTransportError } fro
 const root = fileURLToPath(new URL('../', import.meta.url));
 const hash = value => createHash('sha256').update(value).digest('hex');
 class DeploymentError extends Error {}
+const STORED_FILES_TIMEOUT_MS = 15 * 60 * 1000;
 
 const help = `Usage: node scripts/deploy-ha.js [--connection /private/path/ha-deploy.json]
 
@@ -155,7 +156,7 @@ export async function main(args, { checkout = root, connect = connectSSH, superv
   const local = mkdtempSync(join(tmpdir(), 'home-energy-deploy-'));
   const remote = '/tmp/home-energy-deploy-' + randomBytes(10).toString('hex');
   let ssh, phase = 'SSH connection';
-  let remoteChangesPossible = false, rebuildSubmitted = false;
+  let remoteChangesPossible = false, rebuildSubmitted = false, rebuildCompleted = false;
   try {
     ssh = await connect(config);
     const api = supervisor(ssh);
@@ -222,11 +223,11 @@ PY`));
       if (progress) log(`Transferred and verified ${bytes.length} bytes over SSH in ${((performance.now() - start) / 1000).toFixed(2)} s.`);
     };
     let step = 0;
-    const python = async code => {
+    const python = async (code, timeoutMs = 30000) => {
       const path = remote + '/step-' + (++step) + '.py';
       await upload(Buffer.from(code), path);
       await execute(`docker cp ${path} hassio_supervisor:${remote}-step.py`);
-      return execute(`docker exec hassio_supervisor python3 ${remote}-step.py`);
+      return execute(`docker exec hassio_supervisor python3 ${remote}-step.py`, timeoutMs);
     };
     const stateHelper = readFileSync(new URL('./lib/ha-deploy-state.py', import.meta.url), 'utf8');
     const stateChecks = { state: 'Supervisor saved state is unavailable or malformed', snapshot: 'Deployment state snapshot is unavailable or malformed',
@@ -238,9 +239,17 @@ PY`));
       const argumentsPrefix = `FILE_HASSIO_APPS, '${app.slug}', ${JSON.stringify(info.runtime)}, '${remote}-before.json'`;
       const statement = action === 'snapshot' ? `snapshot(${argumentsPrefix})`
         : `verify(${argumentsPrefix}, '${info.root}', '${target}', '${packageHashes['config.json']}', installed=${installed ? 'True' : 'False'}, check_files=${checkFiles ? 'True' : 'False'})`;
-      const result = JSON.parse(await python(stateHelper + `\nfrom supervisor.const import FILE_HASSIO_APPS\ntry:\n ${statement}\nexcept DeploymentStateError as error:\n print(json.dumps({'error': error.code}))\nelse:\n` + (installed
+      const code = stateHelper + `\nfrom supervisor.const import FILE_HASSIO_APPS\ntry:\n ${statement}\nexcept DeploymentStateError as error:\n print(json.dumps({'error': error.code}))\nelse:\n` + (installed && !checkFiles
         ? ` from supervisor.apps.options import UiOptions\n manifest=json.loads(Path('${info.root}/config.json').read_text())\n print(json.dumps({'ok': True, 'schema': UiOptions(None)(manifest['schema'])}))\n`
-        : ` print(json.dumps({'ok': True}))\n`)));
+        : ` print(json.dumps({'ok': True}))\n`);
+      const readsStoredFiles = action === 'snapshot' || checkFiles;
+      const label = action === 'snapshot' ? 'Stored-file snapshot' : 'Stored-file verification';
+      if (readsStoredFiles) log(`${label}: reading application storage; large histories can take several minutes…`);
+      const heartbeat = readsStoredFiles ? setInterval(() => log(`${label} is still running…`), 30000) : undefined;
+      let result;
+      try {
+        result = JSON.parse(await python(code, readsStoredFiles ? STORED_FILES_TIMEOUT_MS : 30000));
+      } finally { clearInterval(heartbeat); }
       if (result?.ok !== true) throw new DeploymentError(Object.hasOwn(stateChecks, result?.error) ? stateChecks[result.error] : 'Deployment state verification failed');
       return result.schema;
     };
@@ -275,12 +284,16 @@ PY`));
     try {
       rebuildSubmitted = true;
       await api(`/addons/${app.slug}/rebuild`, 'post', 900);
+      rebuildCompleted = true;
     } finally { clearInterval(heartbeat); }
-    phase = 'verification';
+    log('Supervisor rebuild completed. Verifying the image and preserved settings…');
+    phase = 'verification: app state';
     // Effective options include defaults; raw saved overrides are checked below.
     const current = await readUnchangedApp({ compareOptions: false });
+    phase = 'verification: installed metadata';
     const installedSchema = await checkState('verify', true);
     validateInstalledSchema(current, installedSchema);
+    phase = 'verification: image lookup';
     const image = JSON.parse(await execute(`python3 - <<'PY'
 import json,subprocess
 rows=[json.loads(x) for x in subprocess.check_output(['docker','image','ls','--format','{{json .}}'],text=True).splitlines()]
@@ -290,19 +303,26 @@ print(json.dumps(rows[0]['Repository']+':'+rows[0]['Tag']))
 PY`));
     if (!/^[a-zA-Z0-9_./:-]+$/.test(image)) throw new DeploymentError('Unexpected image reference');
     const verify = `import{readFileSync,readdirSync}from'node:fs';import{createHash}from'node:crypto';\nconst hash=x=>createHash('sha256').update(x).digest('hex');const walk=p=>readdirSync(p,{withFileTypes:true}).flatMap(d=>d.isDirectory()?walk(p+'/'+d.name):[p+'/'+d.name]).sort();const tree=p=>hash(walk(p).map(f=>f+'\\0'+hash(readFileSync(f))+'\\n').join(''));\nif(tree('src')!=='${sourceHash}'||tree('dist')!=='${distHash}')process.exit(1);for(const[p,h]of Object.entries(${JSON.stringify(packageHashes)}))if(hash(readFileSync(p))!==h)process.exit(1);\nconsole.log(JSON.stringify({sourceFiles:walk('src').length,frontendFiles:walk('dist').length,architecture:process.arch}));`;
+    phase = 'verification: image contents';
     await upload(Buffer.from(verify), remote + '/verify.mjs');
     const checked = JSON.parse(await execute(`cat ${remote}/verify.mjs | docker run --rm -i --network none --entrypoint node ${shellQuote(image)} --input-type=module`, 60000));
+    phase = 'verification: final app state';
     validateInstalledSchema(await readUnchangedApp({ compareOptions: false }), installedSchema);
+    phase = 'verification: stored files and saved settings';
     await checkState('verify', true, true);
+    phase = 'verification: repositories';
     validateRepositories(await api('/store'), repositories, app.repository);
     // Only deployment-owned temporary files are removed, after all checks pass.
+    phase = 'cleanup';
     await execute(`docker exec hassio_supervisor rm -f ${remote}-step.py ${remote}-before.json ${remote}.bundle && rm -rf ${remote} && rmdir /tmp/home-energy-deploy-${app.slug}.lock`);
     log(`Verified ${target.slice(0, 12)}: ${checked.sourceFiles} source files, ${checked.frontendFiles} frontend files, ${checked.architecture}. Supervisor schema and defaults match. Stored files and saved settings unchanged. App remains stopped.`);
     log('Start the app explicitly when ready. Incompatible saved fields require configuration recovery; deployment does not remove them.');
   } catch (error) {
     const detail = error instanceof DeploymentError || error instanceof DeploymentTransportError ? error.message + ' ' : '';
+    const rebuildStatus = rebuildCompleted ? 'Supervisor confirmed rebuild completion, but deployment verification or cleanup did not finish'
+      : rebuildSubmitted ? 'the submitted rebuild may still be running' : 'no rebuild was submitted by this run';
     const outcome = remoteChangesPossible
-      ? `No automatic rollback or restart was attempted. Inspect HA before retrying; ${rebuildSubmitted ? 'the submitted rebuild may still be running' : 'no rebuild was submitted by this run'}. Any created remote deployment files and lock are retained.`
+      ? `No automatic rollback or restart was attempted. Inspect HA before retrying; ${rebuildStatus}. Any created remote deployment files and lock are retained.`
       : 'No remote changes were attempted by this run; no deployment lock, files or rebuild were created or submitted.';
     throw new DeploymentError(`${detail}Deployment stopped during ${phase}. ${outcome}`);
   } finally { await ssh?.close(); rmSync(local, { recursive: true, force: true }); }

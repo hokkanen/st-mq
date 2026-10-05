@@ -11,7 +11,8 @@ import { DeploymentTransportError } from '../scripts/lib/ha-deploy-transport.js'
 function workflowFixture(t, { existingLock = false, corruptBundle = false, changedApp = false, optionsAfterRebuild,
   lostRebuildResponse = false, lostRefreshResponse = false, changedRepositories = false, stateError,
   wrongSchema = false, complete = false, initialState = 'stopped', lostDiscoveryResponse = false,
-  lostLockResponse = false, containerStartsAtRead = Infinity, stoppedAfterRebuild = false } = {}) {
+  lostLockResponse = false, containerStartsAtRead = Infinity, stoppedAfterRebuild = false,
+  storedFileCheck, finalFileTimeout = false } = {}) {
   const directory = mkdtempSync(join(tmpdir(), 'ha-deploy-workflow-'));
   t.after(() => rmSync(directory, { recursive: true, force: true }));
   const checkout = join(directory, 'checkout');
@@ -58,8 +59,8 @@ function workflowFixture(t, { existingLock = false, corruptBundle = false, chang
   let pythonCode = '';
   let containerReads = 0;
   const ssh = {
-    async run(script, { input } = {}) {
-      events.push({ type: 'ssh', script, input });
+    async run(script, { input, timeoutMs } = {}) {
+      events.push({ type: 'ssh', script, input, timeoutMs });
       if (script.startsWith('docker container ls ')) {
         containerReads++;
         assert.match(script, /--all --filter 'name=\^\/\(app\|addon\)_synthetic_st-mq\$'/);
@@ -92,6 +93,12 @@ function workflowFixture(t, { existingLock = false, corruptBundle = false, chang
       }
       if (/^docker exec hassio_supervisor python3 /.test(script)) {
         if (pythonCode.includes('\n snapshot(FILE_HASSIO_APPS') || pythonCode.includes('\n verify(FILE_HASSIO_APPS')) {
+          const readsFiles = pythonCode.includes('\n snapshot(FILE_HASSIO_APPS') || /^ verify\(FILE_HASSIO_APPS,.*check_files=True\)/m.test(pythonCode);
+          if (readsFiles) {
+            storedFileCheck?.(timeoutMs);
+            if (finalFileTimeout && rebuilt) throw new DeploymentTransportError('SSH command timed out; the remote operation may still be running');
+          } else assert.equal(timeoutMs, 30000, 'intermediate metadata checks retain their short deadline');
+          if (rebuilt && readsFiles) assert.ok(!pythonCode.includes('from supervisor.apps.options import UiOptions'), 'final file check does not repeat unused schema presentation imports');
           const failed = stateError && (rebuilt || (refreshed && stateError === 'source'));
           return { exitCode: 0, output: JSON.stringify(failed ? { error: stateError } : { ok: true, schema: [] }) };
         }
@@ -299,6 +306,41 @@ test('successful deployment runs the emitted image verifier before final stopped
   assert.ok(!fixture.events.some(event => event.type === 'api' && /\/(start|restart|stop)$/.test(event.endpoint)));
   assert.match(fixture.messages.at(-2), /1 source files, 1 frontend files/);
   assert.match(fixture.messages.at(-2), /App remains stopped/);
+});
+
+test('large stored-file checks get a bounded longer deadline and progress, with no lingering heartbeat', async t => {
+  t.mock.timers.enable({ apis: ['setInterval'] });
+  let fileChecks = 0;
+  const fixture = workflowFixture(t, { complete: true, storedFileCheck: timeoutMs => {
+    fileChecks++;
+    assert.ok(timeoutMs > 45000 && timeoutMs <= 15 * 60 * 1000, 'allow a realistic slow scan without an unlimited wait');
+    t.mock.timers.tick(45000);
+  } });
+  await fixture.deploy();
+  assert.equal(fileChecks, 2, 'both snapshot and final comparison read all stored files');
+  assert.ok(fixture.messages.includes('Stored-file snapshot is still running…'));
+  assert.ok(fixture.messages.includes('Stored-file verification is still running…'));
+  assert.ok(fixture.messages.includes('Supervisor rebuild completed. Verifying the image and preserved settings…'));
+  const count = fixture.messages.length;
+  t.mock.timers.tick(60000);
+  assert.equal(fixture.messages.length, count, 'completed checks clear their progress timers');
+});
+
+test('final stored-file timeout names the step, preserves the lock and distinguishes completed rebuild', async t => {
+  t.mock.timers.enable({ apis: ['setInterval'] });
+  const fixture = workflowFixture(t, { complete: true, finalFileTimeout: true });
+  await assert.rejects(fixture.deploy(), error => {
+    assert.match(error.message, /Deployment stopped during verification: stored files and saved settings/);
+    assert.match(error.message, /Supervisor confirmed rebuild completion/);
+    assert.doesNotMatch(error.message, /submitted rebuild may still be running/);
+    return true;
+  });
+  const rebuilds = fixture.events.filter(event => event.type === 'api' && event.endpoint.endsWith('/rebuild'));
+  assert.equal(rebuilds.length, 1, 'a verification failure never submits another rebuild');
+  assertRetainedFailureState(fixture.events);
+  const count = fixture.messages.length;
+  t.mock.timers.tick(60000);
+  assert.equal(fixture.messages.length, count, 'failed checks clear their progress timers');
 });
 
 test('Supervisor reordering saved options during rebuild still completes image verification and cleanup', async t => {

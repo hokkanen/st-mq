@@ -113,6 +113,9 @@ Versions follow Semantic Versioning. `-dev.N` denotes a development prerelease.
 
 ### Fixed
 
+- Home Assistant deployment allows up to 15 minutes for stored-file snapshots
+  and final comparisons, with progress every 30 seconds. Verification errors
+  identify the failed step and distinguish an already completed rebuild.
 - Home Assistant deployment accepts a manually stopped app that Supervisor
   still reports as `error` only with fresh Docker evidence of an absent or
   exited container at every checkpoint. Initial refusals report app preflight

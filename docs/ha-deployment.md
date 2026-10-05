@@ -76,6 +76,10 @@ An earlier local token file is unused and is never automatically deleted.
    before use. There are no terminal chunks, base64 encoding, screen redraws or
    per-chunk acknowledgements. The bundle transfer reports verified bytes and
    elapsed time. Supervisor's image rebuild can still take several minutes.
+   The initial stored-file snapshot and final comparison each allow up to
+   15 minutes and report progress every 30 seconds while reading application
+   storage. Large databases are fully hashed; checks are never skipped to meet
+   a short SSH command timeout.
    Both local and HA source trees must be clean, and HA's source commit must be
    an ancestor of local HEAD. Do not change app settings, edit the HA repository
    or refresh/update app repositories while deployment is running.
@@ -174,7 +178,9 @@ Errors identify existing locks, command failure, transport failure and the faile
 phase. App verification names the changed checks (state, slug, repository,
 version or configuration) without printing private identifiers or option values.
 Failure messages distinguish an initial refusal from possible remote changes,
-and warn about a possibly running rebuild only after this run submits one.
+and warn about a possibly running rebuild only when this run submitted one
+without receiving successful completion. Later failures identify the specific
+verification step and report that Supervisor already confirmed the rebuild.
 Raw SSH, command and Supervisor error output remains hidden because it
 may contain private configuration.
 
