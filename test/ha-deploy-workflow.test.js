@@ -8,7 +8,9 @@ import { join } from 'node:path';
 import { main } from '../scripts/deploy-ha.js';
 import { DeploymentTransportError } from '../scripts/lib/ha-deploy-transport.js';
 
-function workflowFixture(t, { existingLock = false, corruptBundle = false, changedApp = false, optionsAfterRebuild, lostRebuildResponse = false, complete = false } = {}) {
+function workflowFixture(t, { existingLock = false, corruptBundle = false, changedApp = false, optionsAfterRebuild,
+  lostRebuildResponse = false, lostRefreshResponse = false, changedRepositories = false, stateError,
+  wrongSchema = false, complete = false } = {}) {
   const directory = mkdtempSync(join(tmpdir(), 'ha-deploy-workflow-'));
   t.after(() => rmSync(directory, { recursive: true, force: true }));
   const checkout = join(directory, 'checkout');
@@ -19,7 +21,7 @@ function workflowFixture(t, { existingLock = false, corruptBundle = false, chang
   const connectionPath = join(privateDirectory, 'connection.json');
   writeFileSync(connectionPath, JSON.stringify({ ssh_host: 'synthetic-ha' }), { mode: 0o600 });
   writeFileSync(join(checkout, '.gitignore'), 'dist/\n');
-  writeFileSync(join(checkout, 'config.json'), JSON.stringify({ version: '0.9.5-dev.3' }));
+  writeFileSync(join(checkout, 'config.json'), JSON.stringify({ version: '0.9.5-dev.3', options: {}, schema: {} }));
   writeFileSync(join(checkout, 'package.json'), JSON.stringify({
     name: 'synthetic-deployment-fixture', version: '0.9.5-dev.3', private: true,
     scripts: { build: 'node build.cjs' },
@@ -44,12 +46,15 @@ function workflowFixture(t, { existingLock = false, corruptBundle = false, chang
   const events = [];
   const messages = [];
   const uploads = new Map();
-  const app = { slug: 'synthetic_st-mq', repository: 'synthetic', state: 'stopped', version: '0.9.5-dev.3', options: {
+  const app = { slug: 'synthetic_st-mq', repository: 'synthetic', state: 'stopped', version: '0.9.5-dev.3', schema: [], options: {
     enabled: false,
     charging: { limit: 0, schedule: [{ start: '01:00', target: 80 }, { start: '02:00', target: null }] },
   } };
   let appReads = 0;
+  let storeReads = 0;
   let rebuilt = false;
+  let refreshed = false;
+  let pythonCode = '';
   const ssh = {
     async run(script, { input } = {}) {
       events.push({ type: 'ssh', script, input });
@@ -64,11 +69,23 @@ function workflowFixture(t, { existingLock = false, corruptBundle = false, chang
       if (input !== undefined && script.includes('sha256sum')) {
         assert.ok(Buffer.isBuffer(input), 'upload streams bytes directly');
         const path = script.match(/sha256sum '([^']+)'/)[1];
+        if (path.endsWith('.py')) execFileSync('python3', ['-c', 'import sys; compile(sys.stdin.read(), "deployment-step", "exec")'], { input, stdio: ['pipe', 'pipe', 'pipe'] });
         uploads.set(path, input);
         const checksum = corruptBundle && path.endsWith('.bundle') ? '0'.repeat(64) : createHash('sha256').update(input).digest('hex');
         return { exitCode: 0, output: `${checksum}  ${path}\n` };
       }
-      if (script.startsWith('docker cp ') || /^docker exec hassio_supervisor python3 /.test(script)) return { exitCode: 0, output: '' };
+      if (script.startsWith('docker cp ')) {
+        const path = script.split(' ')[2];
+        if (path.endsWith('.py')) pythonCode = uploads.get(path).toString();
+        return { exitCode: 0, output: '' };
+      }
+      if (/^docker exec hassio_supervisor python3 /.test(script)) {
+        if (pythonCode.includes('\n snapshot(FILE_HASSIO_APPS') || pythonCode.includes('\n verify(FILE_HASSIO_APPS')) {
+          const failed = stateError && (rebuilt || (refreshed && stateError === 'source'));
+          return { exitCode: 0, output: JSON.stringify(failed ? { error: stateError } : { ok: true, schema: [] }) };
+        }
+        return { exitCode: 0, output: '' };
+      }
       if (complete && script.includes("['docker','image','ls'")) return { exitCode: 0, output: JSON.stringify('synthetic-st-mq:0.9.5-dev.3') };
       if (complete && script.includes('docker run')) {
         assert.match(script, /--network none/);
@@ -88,18 +105,35 @@ function workflowFixture(t, { existingLock = false, corruptBundle = false, chang
   };
   const supervisor = connected => {
     assert.equal(connected, ssh);
-    return async (endpoint, method = 'get', timeoutSeconds = 30) => {
-      events.push({ type: 'api', endpoint, method, timeoutSeconds });
+    return async (endpoint, method = 'get', timeoutSeconds = 30, body) => {
+      events.push({ type: 'api', endpoint, method, timeoutSeconds, body });
       if (endpoint === '/addons') return { addons: [structuredClone(app)] };
       if (endpoint === '/addons/synthetic_st-mq/info') {
         appReads++;
         return {
           ...structuredClone(app),
           state: changedApp && appReads > 1 ? 'started' : 'stopped',
+          ...(rebuilt && wrongSchema ? { schema: [{ name: 'unexpected' }] } : {}),
           ...(rebuilt && optionsAfterRebuild ? { options: structuredClone(optionsAfterRebuild) } : {}),
         };
       }
+      if (endpoint === '/store') {
+        storeReads++;
+        return { repositories: [
+          { slug: 'core', source: 'core' }, { slug: 'local', source: 'local' },
+          { slug: 'synthetic', source: 'https://example.invalid/synthetic' },
+          ...(changedRepositories && storeReads > 1 ? [{ slug: 'added', source: 'https://example.invalid/added' }] : []),
+        ] };
+      }
+      if (endpoint === '/supervisor/options') {
+        assert.equal(method, 'post');
+        assert.deepEqual(body, { addons_repositories: ['core', 'https://example.invalid/synthetic', 'local'] });
+        if (lostRefreshResponse) throw new DeploymentTransportError('SSH connection lost; the submitted operation may still be running');
+        refreshed = true;
+        return {};
+      }
       if (endpoint === '/addons/synthetic_st-mq/rebuild') {
+        assert.equal(refreshed, true, 'metadata is refreshed before rebuilding');
         assert.equal(method, 'post');
         assert.equal(timeoutSeconds, 900);
         if (lostRebuildResponse) throw new DeploymentTransportError('SSH connection lost; the submitted operation may still be running');
@@ -176,12 +210,13 @@ test('successful deployment runs the emitted image verifier before final stopped
   assert.notEqual(verificationIndex, -1);
   const finalEvents = fixture.events.slice(verificationIndex + 1);
   assert.equal(finalEvents[0].endpoint, '/addons/synthetic_st-mq/info');
-  assert.match(finalEvents[1].script, /rmdir \/tmp\/home-energy-deploy-synthetic_st-mq\.lock/);
-  assert.deepEqual(finalEvents.map(event => event.type), ['api', 'ssh', 'close']);
+  assert.match(finalEvents.at(-2).script, /rmdir \/tmp\/home-energy-deploy-synthetic_st-mq\.lock/);
+  assert.equal(finalEvents.at(-3).endpoint, '/store');
+  assert.equal(finalEvents.at(-1).type, 'close');
   assert.equal(fixture.events.filter(event => event.type === 'api' && event.endpoint.endsWith('/rebuild')).length, 1);
   assert.ok(!fixture.events.some(event => event.type === 'api' && /\/(start|restart|stop)$/.test(event.endpoint)));
-  assert.match(fixture.messages.at(-1), /1 source files, 1 frontend files/);
-  assert.match(fixture.messages.at(-1), /App remains stopped/);
+  assert.match(fixture.messages.at(-2), /1 source files, 1 frontend files/);
+  assert.match(fixture.messages.at(-2), /App remains stopped/);
 });
 
 test('Supervisor reordering saved options during rebuild still completes image verification and cleanup', async t => {
@@ -194,20 +229,69 @@ test('Supervisor reordering saved options during rebuild still completes image v
   assert.ok(fixture.events.some(event => event.type === 'ssh' && event.script.includes('docker run')));
   assert.ok(fixture.events.some(event => event.type === 'ssh' && /rmdir \/tmp\/home-energy-deploy-synthetic_st-mq\.lock/.test(event.script)));
   assert.ok(!fixture.events.some(event => event.type === 'api' && /\/(start|restart|stop)$/.test(event.endpoint)));
-  assert.match(fixture.messages.at(-1), /Stored files and configuration unchanged\. App remains stopped/);
+  assert.match(fixture.messages.at(-2), /Stored files and saved settings unchanged\. App remains stopped/);
 });
 
 test('a genuine saved-options change after rebuild retains the lock without runtime commands or retry', async t => {
-  const fixture = workflowFixture(t, { complete: true, optionsAfterRebuild: {
+  const fixture = workflowFixture(t, { complete: true, stateError: 'saved-settings', optionsAfterRebuild: {
     enabled: false,
     charging: { limit: 1, schedule: [{ start: '01:00', target: 80 }, { start: '02:00', target: null }] },
   } });
-  await assert.rejects(fixture.deploy(), /changed during deployment: configuration.*Deployment stopped during verification/i);
+  await assert.rejects(fixture.deploy(), /Saved installation settings changed during deployment.*Deployment stopped during verification/i);
   const rebuilds = fixture.events.filter(event => event.type === 'api' && event.endpoint.endsWith('/rebuild'));
   assert.equal(rebuilds.length, 1);
   const afterRebuild = fixture.events.slice(fixture.events.indexOf(rebuilds[0]) + 1);
-  assert.deepEqual(afterRebuild.map(event => event.type), ['api', 'close']);
   assert.equal(afterRebuild[0].endpoint, '/addons/synthetic_st-mq/info');
   assert.equal(fixture.events.filter(event => event.type === 'connect').length, 1);
+  assertRetainedFailureState(fixture.events);
+});
+
+test('new and changed effective defaults do not masquerade as saved-settings changes', async t => {
+  const fixture = workflowFixture(t, { complete: true, optionsAfterRebuild: { newDefault: 2, enabled: true } });
+  await fixture.deploy();
+  assert.match(fixture.messages.at(-2), /Supervisor schema and defaults match/);
+  assert.match(fixture.messages.at(-1), /Incompatible saved fields require configuration recovery/);
+  const calls = fixture.events.filter(event => event.type === 'api' && event.method === 'post');
+  assert.deepEqual(calls.map(call => call.endpoint), ['/supervisor/options', '/addons/synthetic_st-mq/rebuild']);
+  assert.ok(!fixture.events.some(event => /\/store\/reload|\/addons\/reload/.test(event.endpoint ?? '')));
+});
+
+test('repository changes abort before applying the saved repository list', async t => {
+  const fixture = workflowFixture(t, { changedRepositories: true });
+  await assert.rejects(fixture.deploy(), /repositories changed during deployment/);
+  assert.ok(!fixture.events.some(event => event.type === 'api' && event.method === 'post'));
+  assertNoRebuild(fixture.events);
+  assertRetainedFailureState(fixture.events);
+});
+
+test('lost metadata refresh response is never replayed and prevents rebuilding', async t => {
+  const fixture = workflowFixture(t, { lostRefreshResponse: true });
+  await assert.rejects(fixture.deploy(), /may still be running.*Supervisor metadata refresh/);
+  const calls = fixture.events.filter(event => event.endpoint === '/supervisor/options');
+  assert.equal(calls.length, 1);
+  assert.deepEqual(fixture.events.slice(fixture.events.indexOf(calls[0]) + 1).map(event => event.type), ['close']);
+  assertNoRebuild(fixture.events);
+  assertRetainedFailureState(fixture.events);
+});
+
+test('source movement during metadata refresh prevents rebuilding a different commit', async t => {
+  const fixture = workflowFixture(t, { stateError: 'source' });
+  await assert.rejects(fixture.deploy(), /Remote source no longer matches the selected commit/);
+  assertNoRebuild(fixture.events);
+  assertRetainedFailureState(fixture.events);
+});
+
+for (const stateError of ['schema', 'defaults', 'files', 'version']) {
+  test(`a failed ${stateError} check after rebuild cannot report success or clean up`, async t => {
+    const fixture = workflowFixture(t, { complete: true, stateError });
+    await assert.rejects(fixture.deploy(), /Deployment stopped during verification/);
+    assert.ok(!fixture.messages.some(message => message.startsWith('Verified ')));
+    assertRetainedFailureState(fixture.events);
+  });
+}
+
+test('the installed schema must also match through the running Supervisor API', async t => {
+  const fixture = workflowFixture(t, { complete: true, wrongSchema: true });
+  await assert.rejects(fixture.deploy(), /installed schema does not match/);
   assertRetainedFailureState(fixture.events);
 });

@@ -54,6 +54,10 @@ export function validateTopologyOptions(options) {
 }
 
 export function validateOptionFields(options, schema, path = '') {
+  validateFields(options, schema, path, false);
+}
+
+function validateFields(options, schema, path, allowSecretReferences) {
   if (!object(options) || !object(schema)) throw new Error(`Invalid configuration section${path ? `: ${path}` : ''}.`);
   if (!path) validateTopologyOptions(options);
   for (const [key, value] of Object.entries(options)) {
@@ -61,18 +65,19 @@ export function validateOptionFields(options, schema, path = '') {
     if (!Object.hasOwn(schema, key) || forbiddenKeys.has(key))
       throw new Error(`Unknown configuration field in ${path || 'root'}: [unsupported field].`);
     const rule = schema[key];
-    if (object(rule)) validateOptionFields(value, rule, field);
+    if (object(rule)) validateFields(value, rule, field, allowSecretReferences);
     else if (Array.isArray(rule)) {
       if (!Array.isArray(value)) throw new Error(`Configuration field must be an array: ${field}.`);
       for (const item of value) {
-        if (object(rule[0])) validateOptionFields(item, rule[0], field);
-        else validateScalar(item, rule[0], field);
+        if (object(rule[0])) validateFields(item, rule[0], field, allowSecretReferences);
+        else validateScalar(item, rule[0], field, allowSecretReferences);
       }
-    } else validateScalar(value, rule, field);
+    } else validateScalar(value, rule, field, allowSecretReferences);
   }
 }
 
-function validateScalar(value, rule, field) {
+function validateScalar(value, rule, field, allowSecretReferences) {
+  if (allowSecretReferences && typeof value === 'string' && value.startsWith('!secret ')) return;
   const specification = String(rule), optional = specification.endsWith('?');
   const type = optional ? specification.slice(0, -1) : specification;
   if (value === null && optional) return;
@@ -207,10 +212,10 @@ function visitValues(options, visit, path = '') {
   }
 }
 
-function validateHomeAssistantValues(options) {
+function validateHomeAssistantValues(options, { allowSecretReferences = false } = {}) {
   visitValues(options, (value, field) => {
     if (value === null) throw new Error(`Home Assistant does not support null: ${field}. Use an empty string for optional text, or remove the field in Home Assistant settings.`);
-    if (typeof value === 'string' && value.startsWith('!secret '))
+    if (!allowSecretReferences && typeof value === 'string' && value.startsWith('!secret '))
       throw new Error(`Use the actual value in secrets.json instead of a Home Assistant secret reference: ${field}.`);
   });
 }
@@ -279,6 +284,7 @@ export function createConfigurationSource({ env, cwd, buildConfig, paths = confi
           reviewFingerprint: optionsDigest({ options, overrides }), backupPath: null,
           async persist() {}, async complete() { return { cleanupPending: false }; } };
       }
+      fromSource('defaults', () => validateHomeAssistantValues(defaults.options));
       const file = fromSource('import-file', () => snapshot(paths.importPath));
       if (replacement && !file) throw new Error('Upload a current secrets.json file before reviewing replacement of Home Assistant settings.');
       let current;
@@ -313,6 +319,14 @@ export function createConfigurationSource({ env, cwd, buildConfig, paths = confi
         });
       }
       const input = file && !saved ? replacement ? file.options : mergeOptions(current, file.options) : current;
+      // Supervisor removes unknown fields from options/config. Check the raw
+      // candidate before resolving saved scalar references so that retired
+      // fields and invalid ordinary values cannot disappear during resolution.
+      // Uploaded values and defaults were already checked without references.
+      fromSource('home-assistant-options', () => {
+        validateFields(input, defaults.schema, '', true);
+        validateHomeAssistantValues(input, { allowSecretReferences: true });
+      });
       const options = homeAssistantOptions(mergeOptions(defaults.options, input), defaults.schema);
       let resolvedCurrent = current;
       if (!(replacement && !saved) && containsReferences(current)) {

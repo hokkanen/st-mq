@@ -18,6 +18,7 @@ Deploy this checkout's committed HEAD over SSH to Home Assistant's
 Advanced SSH & Web Terminal app. The installed app MUST be stopped and
 remains stopped. No Git push, release publication, configuration edit or data
 reset is performed. The installed manifest version must match this checkout.
+Supervisor schema/defaults are refreshed; saved installation settings are preserved.
 
 Default connection: $XDG_CONFIG_HOME/st-mq/ha-deploy.json
 (or ~/.config/st-mq/ha-deploy.json). See docs/ha-deployment.md.
@@ -50,7 +51,7 @@ function validateAppOptions(options) {
   if (!options || typeof options !== 'object' || Array.isArray(options)) throw new DeploymentError('App configuration options are invalid or unavailable');
 }
 
-export function validateUnchangedApp(current, original) {
+export function validateUnchangedApp(current, original, { compareOptions = true } = {}) {
   validateAppOptions(original.options);
   validateAppOptions(current.options);
   const changed = [];
@@ -62,23 +63,50 @@ export function validateUnchangedApp(current, original) {
   for (const field of ['slug', 'repository', 'version']) if (current[field] !== original[field]) changed.push(field);
   // Supervisor may serialize object keys in a different order after rebuilding.
   // Values, types, missing keys and array order must still match exactly.
-  if (!isDeepStrictEqual(current.options, original.options)) changed.push('configuration');
+  if (compareOptions && !isDeepStrictEqual(current.options, original.options)) changed.push('configuration');
   if (changed.length) throw new DeploymentError(`App checks changed during deployment: ${changed.join(', ')}`);
 }
 
+export function repositorySources(store, repository) {
+  const entries = store?.repositories;
+  if (!Array.isArray(entries) || !entries.length
+    || entries.some(entry => !entry || typeof entry.slug !== 'string' || typeof entry.source !== 'string' || !entry.source.trim())
+    || !entries.some(entry => entry.slug === repository)
+    || new Set(entries.map(entry => entry.slug)).size !== entries.length
+    || new Set(entries.map(entry => entry.source)).size !== entries.length)
+    throw new DeploymentError('Supervisor repository information is invalid or unavailable');
+  return entries.map(({ source }) => source).sort();
+}
+
+function validateRepositories(current, original, repository) {
+  if (!isDeepStrictEqual(repositorySources(current, repository), original))
+    throw new DeploymentError('Supervisor repositories changed during deployment; inspect HA before retrying');
+}
+
+function validateInstalledApp(current, original, schema) {
+  // /info options includes manifest defaults. Raw saved overrides are checked
+  // independently on the Supervisor host, including retired fields and secrets.
+  validateUnchangedApp(current, original, { compareOptions: false });
+  if (!Array.isArray(schema) || !isDeepStrictEqual(current.schema, schema))
+    throw new DeploymentError('Supervisor installed schema does not match the deployed commit');
+}
+
 export function createSupervisorAPI(ssh) {
-  return async (endpoint, method = 'get', timeout = 30) => {
-    if (!/^\/[a-z0-9_/-]+$/.test(endpoint) || !['get', 'post'].includes(method) || !Number.isInteger(timeout) || timeout < 1 || timeout > 900) throw new DeploymentError('Invalid Supervisor request');
+  return async (endpoint, method = 'get', timeout = 30, body) => {
+    if (!/^\/[a-z0-9_/-]+$/.test(endpoint) || !['get', 'post'].includes(method) || !Number.isInteger(timeout) || timeout < 1 || timeout > 900
+      || (body !== undefined && (method !== 'post' || !body || typeof body !== 'object' || Array.isArray(body)))) throw new DeploymentError('Invalid Supervisor request');
     // The login shell supplies the app-local token. It never crosses SSH or
     // appears in command arguments, logs or the Ubuntu connection file.
-    const code = `import os,urllib.request
-request=urllib.request.Request('http://supervisor${endpoint}',method='${method.toUpperCase()}',headers={'Authorization':'Bearer '+os.environ['SUPERVISOR_TOKEN']},data=${method === 'post' ? "b''" : 'None'})
+    const code = `import os,sys,urllib.request
+request=urllib.request.Request('http://supervisor${endpoint}',method='${method.toUpperCase()}',headers={'Authorization':'Bearer '+os.environ['SUPERVISOR_TOKEN'],'Content-Type':'application/json'},data=${method === 'post' ? 'sys.stdin.buffer.read()' : 'None'})
 with urllib.request.urlopen(request,timeout=${timeout}) as response:
  print(response.read(2097153).decode('utf-8'))
 `;
     // Login profiles may print an installation banner. Reserve fd 3 for the
     // API response and discard profile stdout without parsing around it.
-    const result = await ssh.run(`bash -lc ${shellQuote('python3 -c ' + shellQuote(code) + ' >&3')} 3>&1 1>/dev/null`, { timeoutMs: (timeout + 5) * 1000 });
+    const result = await ssh.run(`bash -lc ${shellQuote('python3 -c ' + shellQuote(code) + ' >&3')} 3>&1 1>/dev/null`, {
+      timeoutMs: (timeout + 5) * 1000, ...(body === undefined ? {} : { input: Buffer.from(JSON.stringify(body)) }),
+    });
     if (result.exitCode !== 0) throw new DeploymentError('Supervisor request failed; inspect Supervisor locally. Any submitted operation may still be running');
     let response;
     try { response = JSON.parse(result.output); } catch { throw new DeploymentError('Invalid Supervisor response; any submitted operation may still be running'); }
@@ -167,9 +195,24 @@ PY`));
       await execute(`docker cp ${path} hassio_supervisor:${remote}-step.py`);
       return execute(`docker exec hassio_supervisor python3 ${remote}-step.py`);
     };
-    const fingerprintCode = `from pathlib import Path\nimport hashlib,json\ndef digest(p):\n h=hashlib.sha256()\n with p.open('rb') as f:\n  for chunk in iter(lambda:f.read(1048576),b''):h.update(chunk)\n return h.hexdigest()\nroots=${JSON.stringify(info.runtime)}\nrecords={}\nfor root in roots:\n for p in Path(root).rglob('*'):\n  if p.is_symlink(): records[str(p)]=['link',str(p.readlink())]\n  elif p.is_file(): records[str(p)]=['file',digest(p)]\n`;
-    phase = 'stored-file fingerprints';
-    await python(fingerprintCode + `\nimport os\nfd=os.open('${remote}-before.json',os.O_WRONLY|os.O_CREAT|os.O_EXCL,0o600)\nwith os.fdopen(fd,'w') as f:json.dump(records,f)\n`);
+    const stateHelper = readFileSync(new URL('./lib/ha-deploy-state.py', import.meta.url), 'utf8');
+    const stateChecks = { state: 'Supervisor saved state is unavailable or malformed', snapshot: 'Deployment state snapshot is unavailable or malformed',
+      files: 'Stored application files changed during deployment', 'saved-settings': 'Saved installation settings changed during deployment',
+      metadata: 'Installed app metadata changed before rebuild', source: 'Remote source no longer matches the selected commit',
+      schema: 'Supervisor installed schema does not match the deployed commit', defaults: 'Supervisor installed defaults do not match the deployed commit',
+      version: 'Supervisor installed version does not match the deployed commit' };
+    const checkState = async (action, installed = false, checkFiles = false) => {
+      const argumentsPrefix = `FILE_HASSIO_APPS, '${app.slug}', ${JSON.stringify(info.runtime)}, '${remote}-before.json'`;
+      const statement = action === 'snapshot' ? `snapshot(${argumentsPrefix})`
+        : `verify(${argumentsPrefix}, '${info.root}', '${target}', '${packageHashes['config.json']}', installed=${installed ? 'True' : 'False'}, check_files=${checkFiles ? 'True' : 'False'})`;
+      const result = JSON.parse(await python(stateHelper + `\nfrom supervisor.const import FILE_HASSIO_APPS\ntry:\n ${statement}\nexcept DeploymentStateError as error:\n print(json.dumps({'error': error.code}))\nelse:\n` + (installed
+        ? ` from supervisor.apps.options import UiOptions\n manifest=json.loads(Path('${info.root}/config.json').read_text())\n print(json.dumps({'ok': True, 'schema': UiOptions(None)(manifest['schema'])}))\n`
+        : ` print(json.dumps({'ok': True}))\n`)));
+      if (result?.ok !== true) throw new DeploymentError(Object.hasOwn(stateChecks, result?.error) ? stateChecks[result.error] : 'Deployment state verification failed');
+      return result.schema;
+    };
+    phase = 'saved settings and stored-file snapshot';
+    await checkState('snapshot');
     if (info.head !== target) {
       phase = 'bundle transfer';
       git('bundle', 'create', join(local, 'update.bundle'), info.head + '..' + target, 'HEAD');
@@ -181,6 +224,17 @@ PY`));
       validateUnchangedApp(await api(`/addons/${app.slug}/info`), app);
       await python(`import subprocess,hashlib\nfrom pathlib import Path\nroot='${info.root}'\ndef git(*a):return subprocess.check_output(['git','-C',root,*a],stderr=subprocess.PIPE,text=True).strip()\nassert hashlib.sha256(Path('${remote}.bundle').read_bytes()).hexdigest()=='${hash(bundle)}'\nassert git('rev-parse','HEAD')=='${info.head}'\nassert not git('status','--porcelain')\ngit('fetch','${remote}.bundle','HEAD')\nassert git('rev-parse','FETCH_HEAD')=='${target}'\ngit('merge','--ff-only','FETCH_HEAD')\n`);
     }
+    phase = 'Supervisor metadata refresh';
+    validateUnchangedApp(await api(`/addons/${app.slug}/info`), app);
+    const repositories = repositorySources(await api('/store'), app.repository);
+    await checkState('verify');
+    validateRepositories(await api('/store'), repositories, app.repository);
+    // Supervisor v1 supports reapplying the unchanged repository list. Unlike
+    // /store/reload it rereads local manifests without fetching Git branches.
+    // Never fall back to a pull, change the list, or replay an uncertain request.
+    await api('/supervisor/options', 'post', 60, { addons_repositories: repositories });
+    validateRepositories(await api('/store'), repositories, app.repository);
+    await checkState('verify');
     phase = 'rebuild';
     const before = await api(`/addons/${app.slug}/info`);
     validateUnchangedApp(before, app);
@@ -189,8 +243,9 @@ PY`));
     try { await api(`/addons/${app.slug}/rebuild`, 'post', 900); } finally { clearInterval(heartbeat); }
     phase = 'verification';
     const current = await api(`/addons/${app.slug}/info`);
-    validateUnchangedApp(current, app);
-    await python(fingerprintCode + `\nimport subprocess\nassert records==json.loads(Path('${remote}-before.json').read_text())\nassert subprocess.check_output(['git','-C','${info.root}','rev-parse','HEAD'],text=True).strip()=='${target}'\nassert not subprocess.check_output(['git','-C','${info.root}','status','--porcelain'],text=True).strip()\n`);
+    validateUnchangedApp(current, app, { compareOptions: false });
+    const installedSchema = await checkState('verify', true);
+    validateInstalledApp(current, app, installedSchema);
     const image = JSON.parse(await execute(`python3 - <<'PY'
 import json,subprocess
 rows=[json.loads(x) for x in subprocess.check_output(['docker','image','ls','--format','{{json .}}'],text=True).splitlines()]
@@ -202,10 +257,13 @@ PY`));
     const verify = `import{readFileSync,readdirSync}from'node:fs';import{createHash}from'node:crypto';\nconst hash=x=>createHash('sha256').update(x).digest('hex');const walk=p=>readdirSync(p,{withFileTypes:true}).flatMap(d=>d.isDirectory()?walk(p+'/'+d.name):[p+'/'+d.name]).sort();const tree=p=>hash(walk(p).map(f=>f+'\\0'+hash(readFileSync(f))+'\\n').join(''));\nif(tree('src')!=='${sourceHash}'||tree('dist')!=='${distHash}')process.exit(1);for(const[p,h]of Object.entries(${JSON.stringify(packageHashes)}))if(hash(readFileSync(p))!==h)process.exit(1);\nconsole.log(JSON.stringify({sourceFiles:walk('src').length,frontendFiles:walk('dist').length,architecture:process.arch}));`;
     await upload(Buffer.from(verify), remote + '/verify.mjs');
     const checked = JSON.parse(await execute(`cat ${remote}/verify.mjs | docker run --rm -i --network none --entrypoint node ${shellQuote(image)} --input-type=module`, 60000));
-    validateUnchangedApp(await api(`/addons/${app.slug}/info`), app);
+    validateInstalledApp(await api(`/addons/${app.slug}/info`), app, installedSchema);
+    await checkState('verify', true, true);
+    validateRepositories(await api('/store'), repositories, app.repository);
     // Only deployment-owned temporary files are removed, after all checks pass.
     await execute(`docker exec hassio_supervisor rm -f ${remote}-step.py ${remote}-before.json ${remote}.bundle && rm -rf ${remote} && rmdir /tmp/home-energy-deploy-${app.slug}.lock`);
-    log(`Verified ${target.slice(0, 12)}: ${checked.sourceFiles} source files, ${checked.frontendFiles} frontend files, ${checked.architecture}. Stored files and configuration unchanged. App remains stopped.`);
+    log(`Verified ${target.slice(0, 12)}: ${checked.sourceFiles} source files, ${checked.frontendFiles} frontend files, ${checked.architecture}. Supervisor schema and defaults match. Stored files and saved settings unchanged. App remains stopped.`);
+    log('Start the app explicitly when ready. Incompatible saved fields require configuration recovery; deployment does not remove them.');
   } catch (error) {
     const detail = error instanceof DeploymentError || error instanceof DeploymentTransportError ? error.message + ' ' : '';
     throw new DeploymentError(`${detail}Deployment stopped during ${phase}. No automatic rollback or restart was attempted. Inspect HA before retrying; any submitted rebuild may still be running. Any created remote deployment files and lock are retained.`);

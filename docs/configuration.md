@@ -122,6 +122,26 @@ must use actual values; an explicit value replaces that field's saved reference.
 See [Home Assistant setup](../DOCS.md) for import paths and
 [standalone startup](startup.md) for environment overrides.
 
+### Schema and default changes in Home Assistant
+
+[Development deployment](ha-deployment.md) refreshes Supervisor's schema and
+shared defaults to the deployed commit while preserving saved installation
+overrides and leaving the app stopped. Schema/defaults, saved overrides and
+effective settings are separate: a changed default affects only fields without
+a saved override. Deployment does not require re-uploading existing credentials.
+
+| Change | Result when loading the new configuration |
+| --- | --- |
+| New field with a default, absent from saved settings | The current default supplies its value. |
+| Changed default for a field with a saved override | The saved override remains authoritative. |
+| Optional field absent from both defaults and saved settings | The documented unset behavior applies. |
+| Saved field has been removed from the schema | Application validation fails and configuration recovery is required; saved settings are not automatically deleted or translated. |
+| Required setting remains missing or a value is malformed | Validation fails. If Supervisor prevents the container from starting, correct the app's settings in Home Assistant's Configuration editor first. |
+
+Supervisor's schema must match the application before correcting saved options.
+A metadata mismatch is a deployment problem: deleting valid settings or repeatedly
+uploading a private file does not repair it.
+
 ## Configuration recovery
 
 If startup cannot load valid configuration, the application serves only a
@@ -130,14 +150,28 @@ to equipment or start control. The screen explains the failure, identifies the
 configuration source and lets you check corrected settings before restarting.
 Database and other runtime failures are not configuration recovery cases.
 
-In Home Assistant, open **Home Energy → Open Web UI**. Recovery accepts only
-Home Assistant ingress; direct access stays closed. Correct and save the app's
-options, or copy a current `secrets.json` to the upload path shown by the screen.
-If saved options contain incompatible fields, choose the explicit replacement
-workflow: the uploaded options replace saved installation overrides, and omitted
-settings use public defaults. Review that full replacement before saving. The
-previous saved options are backed up privately before replacement. A normal
-import still merges and cannot remove an omitted incompatible field.
+In Home Assistant, start the app explicitly after deployment and open
+**Home Energy → Open Web UI**. Recovery accepts only Home Assistant ingress;
+direct access stays closed. Unknown removed fields normally permit the container
+to start into application recovery. If Supervisor rejects missing required
+settings or malformed values before starting the container, correct those in
+Home Assistant's Configuration editor first; the recovery page cannot run until
+the container starts. For incompatible saved settings, use either route:
+
+- Correct the app's saved options in Home Assistant's Configuration editor. Remove
+  the retired field or supply the missing setting, save, then check the corrected
+  configuration in the recovery page and restart explicitly.
+- Copy a current `secrets.json` to the upload path shown by the screen and select
+  **Replace saved settings from the uploaded file**. Include every installation
+  setting and credential you want to keep. Choose **Check & review configuration**,
+  review the full replacement, then **Save reviewed configuration** and restart
+  explicitly. The application privately backs up the previous saved options
+  before replacement. Only the uploaded overrides are retained; omitted settings
+  use current public defaults, including empty connection/credential defaults.
+
+A normal import still merges and cannot remove an omitted incompatible field.
+Uploading or checking a file does not save a replacement. A failed check leaves
+saved settings unchanged and keeps recovery available.
 
 On standalone Linux, recovery listens only on `127.0.0.1`, using a valid
 `STMQ_PORT` or port `1234`. The startup log identifies a temporary private access-key

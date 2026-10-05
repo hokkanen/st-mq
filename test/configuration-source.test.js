@@ -30,7 +30,7 @@ function fixture(t) {
     if (request.method === 'GET') {
       if (state.failRead) throw new Error('synthetic-private-server-error');
       if (url === 'http://supervisor/addons/self/options/config')
-        return { ok: true, json: async () => ({ result: 'ok', data: resolveReferences(state.current) }) };
+        return { ok: true, json: async () => ({ result: 'ok', data: state.resolvedOptions ?? resolveReferences(state.current) }) };
       assert.equal(url, 'http://supervisor/addons/self/info');
       return { ok: true, json: async () => ({ result: 'ok', data: { slug: 'synthetic_st-mq', ingress_port: state.ingressPort,
         options: structuredClone(state.current) } }) };
@@ -168,7 +168,9 @@ test('HA validates resolved field names before rendering unsupported value error
   const f = fixture(t);
   f.state.current.controller.web_token = '!secret synthetic_existing_web_token';
   f.state.secretValues.synthetic_existing_web_token = 'synthetic-resolved-web-token-value';
-  f.state.current['synthetic-private-field-name'] = null;
+  f.state.resolvedOptions = structuredClone(f.state.current);
+  f.state.resolvedOptions.controller.web_token = 'synthetic-resolved-web-token-value';
+  f.state.resolvedOptions['synthetic-private-field-name'] = null;
   await assert.rejects(f.source.prepare(), error => /Unknown configuration field in root/.test(error.message)
     && !/synthetic-private|synthetic-resolved/.test(error.message));
   assert.equal(f.posts(), 0);
@@ -201,6 +203,70 @@ test('HA numeric and boolean secret references resolve before validation and rem
   await replaced.persist();
   assert.equal(f.state.current.controller.max_drop_c, 0.9);
   assert.equal(f.state.current.controller.learning_trials, true);
+});
+
+test('removed saved fields cannot disappear through secret resolution and explicit replacement remains available', async t => {
+  for (const [field, resolvedValue] of [['max_drop_c', 0.6], ['learning_trials', false]]) {
+    const f = fixture(t);
+    f.state.current.controller[field] = '!secret fixture-private-reference';
+    f.state.current.easee['fixture-private-removed-field'] = 'fixture-private-removed-value';
+    // The actual pinned Supervisor filters unknown saved fields from this
+    // endpoint. It must never get a chance to hide the invalid raw candidate.
+    f.state.resolvedOptions = structuredClone(f.state.current);
+    delete f.state.resolvedOptions.easee['fixture-private-removed-field'];
+    f.state.resolvedOptions.controller[field] = resolvedValue;
+    const original = structuredClone(f.state.current);
+    const rejected = error => error.message === 'Unknown configuration field in easee: [unsupported field].'
+      && error.configurationSource === 'home-assistant-options';
+    await assert.rejects(f.source.prepare(), rejected);
+    f.upload({ mqtt: { pw: 'fixture-new-installation-password' } });
+    const uploaded = readFileSync(f.paths.importPath);
+    await assert.rejects(f.source.prepare(), rejected);
+    assert.deepEqual(f.state.current, original);
+    assert.deepEqual(readFileSync(f.paths.importPath), uploaded);
+    assert.equal(existsSync(f.paths.receiptPath), false);
+    assert.equal(f.posts(), 0);
+    assert.ok(!f.state.requests.some(request => request.url.endsWith('options/config')));
+
+    const replacement = await f.source.prepare({ replacement: true });
+    assert.equal(replacement.config.options.controller[field], f.defaults.controller[field]);
+    assert.ok(!Object.hasOwn(replacement.config.options.easee, 'fixture-private-removed-field'));
+    assert.ok(!f.state.requests.some(request => request.url.endsWith('options/config')));
+    await replacement.persist();
+    assert.deepEqual(JSON.parse(readFileSync(join(replacement.backupPath, 'supervisor-options.json'), 'utf8')), original);
+    assert.equal(f.state.current.mqtt.pw, 'fixture-new-installation-password');
+    assert.equal(f.posts(), 1);
+  }
+});
+
+test('raw saved non-reference values and shapes are validated before resolving unrelated references', async t => {
+  for (const patch of [{ controller: { max_drop_c: 'fixture-private-invalid-value' } },
+    { controller: { compressor_integral_a1: null } }, { easee: { charger_voltage_ids: [200] } },
+    { easee: { charger_voltage_ids: '!secret fixture-private-array-reference' } }]) {
+    const f = fixture(t);
+    f.state.current = mergeOptions(f.state.current, patch);
+    f.state.current.controller.learning_trials = '!secret fixture-private-boolean-reference';
+    f.state.resolvedOptions = f.defaults;
+    const original = structuredClone(f.state.current);
+    f.upload({ mqtt: { user: 'fixture-imported-user' } });
+    const uploaded = readFileSync(f.paths.importPath);
+    await assert.rejects(f.source.prepare(), error => error.configurationSource === 'home-assistant-options'
+      && /Invalid configuration field|must be an array|does not support null/.test(error.message)
+      && !error.message.includes('fixture-private'));
+    assert.deepEqual(f.state.current, original);
+    assert.deepEqual(readFileSync(f.paths.importPath), uploaded);
+    assert.equal(f.posts(), 0);
+    assert.ok(!f.state.requests.some(request => request.url.endsWith('options/config')));
+  }
+});
+
+test('HA references are accepted only from saved options, never from shared defaults', async t => {
+  const f = fixture(t);
+  f.defaults.mqtt.pw = '!secret fixture-private-default-reference';
+  writeFileSync(f.paths.defaultsPath, JSON.stringify({ options: f.defaults, schema: f.schema }));
+  await assert.rejects(f.source.prepare(), error => error.configurationSource === 'defaults'
+    && error.message.includes('actual value') && !error.message.includes('fixture-private'));
+  assert.equal(f.state.requests.length, 0);
 });
 
 test('recovery fingerprint rejects resolved secret rotation even when saved references stay unchanged', async t => {

@@ -70,6 +70,12 @@ Versions follow Semantic Versioning. `-dev.N` denotes a development prerelease.
 
 ### Fixed
 
+- Home Assistant deployment refreshes Supervisor's schema and defaults from the
+  committed source before rebuilding, then verifies them against the image.
+  Saved installation settings and credentials remain unchanged; retired fields
+  require explicit correction or reviewed replacement through configuration recovery.
+- Configuration recovery detects retired saved fields before Supervisor resolves
+  secret references, so filtering cannot hide incompatible settings.
 - Updated compatible Moment and IP-address dependencies to their patched releases.
 - Paired masters own a dedicated MQTT frontend at the virtual IP and disconnect
   its clients before releasing that address. Fixed HA connections remain open;

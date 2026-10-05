@@ -5,7 +5,7 @@ import { mkdtempSync, writeFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { shellQuote, DeploymentTransportError } from '../scripts/lib/ha-deploy-transport.js';
-import { validateConnection, selectApp, validateDeploymentState, validateUnchangedApp, createSupervisorAPI } from '../scripts/deploy-ha.js';
+import { validateConnection, selectApp, validateDeploymentState, validateUnchangedApp, createSupervisorAPI, repositorySources } from '../scripts/deploy-ha.js';
 
 test('deployment accepts SSH destinations and rejects retired or unknown connection fields', () => {
   const valid = { ssh_host: 'synthetic-ha', app_slug: 'synthetic_st-mq' };
@@ -140,6 +140,30 @@ test('Supervisor calls run over SSH with remote login environment and bounded de
   assert.match(calls[1][0], /POST/);
   assert.equal(calls[0][1].timeoutMs, 35000);
   assert.equal(calls[1][1].timeoutMs, 905000);
+});
+
+test('metadata refresh sends repository sources through stdin without shell interpolation or command arguments', async () => {
+  const body = { addons_repositories: ["https://example.invalid/private'$(false)`false`\nrepository"] };
+  const api = createSupervisorAPI({ run: async (script, options) => {
+    assert.doesNotMatch(script, /example\.invalid|private|repository/);
+    assert.deepEqual(JSON.parse(options.input), body);
+    assert.match(script, /sys.stdin.buffer.read/);
+    assert.match(script, /application\/json/);
+    return { exitCode: 0, output: '{"result":"ok","data":{}}' };
+  } });
+  await api('/supervisor/options', 'post', 60, body);
+});
+
+test('repository refresh requires the complete unique source list and selected repository', () => {
+  const repositories = [{ slug: 'local', source: 'local' }, { slug: 'synthetic', source: 'https://example.invalid/repo' }];
+  assert.deepEqual(repositorySources({ repositories }, 'synthetic'), ['https://example.invalid/repo', 'local']);
+  for (const entries of [undefined, [], [null], [{ slug: 'synthetic' }], [repositories[0]],
+    [...repositories, repositories[1]], [...repositories, { slug: 'other', source: repositories[1].source }]]) {
+    assert.throws(() => repositorySources({ repositories: entries }, 'synthetic'), error => {
+      assert.doesNotMatch(error.message, /example\.invalid/);
+      return /repository information/.test(error.message);
+    });
+  }
 });
 
 test('Supervisor rejects HTTP failures, malformed responses and error envelopes without exposing output', async () => {
