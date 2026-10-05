@@ -234,9 +234,11 @@ test('native physical reconnect restores the charger card without granting trans
   assert.ok(charger.request);
   assert.equal(control.session.connectedAt, START);
   assert.equal(control.session.transactionId, null, 'The disconnected transaction must not enter the new physical session');
-  assert.equal(control.vehicleDisconnect.awaitingConnection, true);
+  assert.equal(control.vehicleDisconnect.awaitingConnection, false,
+    'Fresh physical reconnection resolves the old disconnect independently of transaction authority');
   assert.equal(control.released, false);
-  assert.equal(charger.identification.available, false);
+  assert.equal(runtime.identificationAvailable(runtime.chargers.charger1, f.now), true,
+    'The new connection may gather identity evidence before its transaction starts');
   assert.equal(f.calls.length, 0, 'Physical charging evidence does not authorize a native profile');
   const request = structuredClone(charger.request);
   runtime.persist();
@@ -273,7 +275,7 @@ test('an old confirmed transaction cannot control a newer physical connection', 
   assert.equal(view.session.connected, true);
   assert.equal(view.session.connectedAt, START);
   assert.equal(view.session.transactionId, null);
-  assert.equal(view.vehicleDisconnect.awaitingConnection, true);
+  assert.equal(view.vehicleDisconnect.awaitingConnection, false);
   f.advance(MINUTE);
   view = await f.controller.update({ enabled: true });
   assert.equal(view.session.connectedAt, START);
@@ -281,9 +283,10 @@ test('an old confirmed transaction cannot control a newer physical connection', 
   assert.equal(f.calls.length, 0);
 });
 
-test('old, unknown and offline OCPP status cannot reopen a disconnected physical session', async () => {
+test('old, future, unknown and offline OCPP status cannot reopen a disconnected physical session', async () => {
   for (const patch of [
     { statusAt: START - MINUTE - 1 }, { statusAt: START - MINUTE },
+    { statusAt: START + 2000 },
     { pluggedIn: null, connectorStatus: 'Unavailable' }, { online: false },
   ]) {
     const f = fixture({ initialState: disconnectedState() });

@@ -639,11 +639,12 @@ export function createOcppChargingController({ adapter, initialState = null, sav
       const confirmedTransaction = snapshot.transactionConfirmed && transactionBoundary > lastDisconnectedAt;
       const changedTransaction = prior?.transactionId !== null && prior?.transactionId !== undefined
         && confirmedTransaction && snapshot.transactionId !== prior.transactionId;
-      const awaiting = state.vehicleDisconnect?.awaitingConnection && !confirmedTransaction;
       // Physical connection evidence does not require transaction authority. A
-      // newer source-timed status can reopen the card while native control waits
-      // for a confirmed transaction. Never reuse the disconnected session's ID.
+      // newer source-timed status also releases the old disconnect fence so a
+      // bounded identification probe can authorize transaction startup. Profile
+      // writes still require a transaction newer than the disconnect below.
       const physicallyConnected = snapshot.pluggedIn === true && snapshot.statusAt > lastDisconnectedAt;
+      const awaiting = state.vehicleDisconnect?.awaitingConnection && !physicallyConnected;
       const newConnection = physicallyConnected && (prior?.connectedAt == null || prior.connectedAt <= lastDisconnectedAt);
       const session = { transactionId: confirmedTransaction ? snapshot.transactionId : newConnection ? null : prior?.transactionId ?? null,
         connected: disconnected ? false : awaiting && !physicallyConnected ? null : snapshot.pluggedIn,

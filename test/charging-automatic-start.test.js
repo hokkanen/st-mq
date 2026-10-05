@@ -82,6 +82,29 @@ test('automatic wait denies transaction startup until its scheduled period begin
   assert.equal(f.startAllowed, false, 'A subsequent control edit immediately revokes queued authorization');
 });
 
+test('reconnection resolves the old disconnect without granting an unscheduled start', async t => {
+  const saved = initialOcppControllerState(SCOPE);
+  saved.session = { transactionId: null, connected: false, connectedAt: null, lastDisconnectedAt: AT - MINUTE };
+  saved.vehicleDisconnect = { source: 'easee-stream', readingId: 'fixture-old-unplug',
+    endedConnectedAt: AT - 2 * MINUTE, measuredAt: AT - MINUTE, receivedAt: AT - MINUTE, awaitingConnection: true };
+  const f = fixture(t, { saved });
+  const waiting = await f.controller.update({ enabled: true, plan: plan(AT + 30 * MINUTE) });
+  assert.equal(waiting.session.connectedAt, AT);
+  assert.equal(waiting.vehicleDisconnect.awaitingConnection, false);
+  assert.equal(waiting.errorCode, 'transaction-unconfirmed');
+  assert.equal(f.startAllowed, false, 'Physical reconnection alone cannot replace the economic wait');
+  assert.equal(f.commands.length, 0, 'A new physical connection does not grant profile authority');
+
+  const chargeNow = { connectedAt: AT };
+  await f.controller.update({ enabled: true, chargeNow });
+  assert.equal(f.startAllowed, true, 'Explicit Charge now can authorize the new transaction');
+  assert.equal(f.commands.length, 0);
+  f.advance(1000); f.app(appState(AT + 1000, true));
+  const stopped = await f.controller.update({ enabled: true, chargeNow });
+  assert.equal(stopped.manual.kind, 'stop');
+  assert.equal(f.startAllowed, false, 'A later native Stop still revokes transaction startup');
+});
+
 test('missing startup planning inputs preserve an adopted native pause and deny early authorization', async t => {
   for (const reason of ['electrical-telemetry-unavailable', 'equalizer-allowance-unavailable', 'price-coverage-unavailable']) {
     const first = fixture(t, { transactionId: 7 }), startAt = AT + 30 * MINUTE;

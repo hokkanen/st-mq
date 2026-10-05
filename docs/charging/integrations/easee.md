@@ -673,8 +673,13 @@ charger supplied the needed measurements.
 
 A live local OCPP connection status newer than the last disconnect restores
 Charger 1's physical session and readings even while its transaction is
-unconfirmed. Native scheduling still waits for transaction evidence newer than
-that disconnect. An existing transaction can be recovered from two distinct,
+unconfirmed. It also resolves the previous disconnect's waiting flag, including
+after restart of an already observed connection. A separately authorized bounded
+identification probe or session Charge now can then permit transaction startup;
+reconnection alone does not authorize charging before the economic start.
+Native Stop, schedules, faults and authorization restrictions still apply.
+Native profile writes still wait for transaction evidence newer than that
+disconnect. An existing transaction can be recovered from two distinct,
 fresh, advancing transaction-bearing meter reports on the authenticated local
 connection, with an active connector status. Its original start time and
 authorization remain unknown. Transaction confirmation does not restart the

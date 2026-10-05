@@ -113,6 +113,11 @@ Versions follow Semantic Versioning. `-dev.N` denotes a development prerelease.
 
 ### Fixed
 
+- Charger 1 can begin its bounded vehicle-identification probe after unplugging
+  and reconnecting before the planned charging period. An old disconnect no
+  longer leaves the probe waiting for a transaction it needs to start. Native
+  restrictions retain priority; profile writes still require a confirmed new
+  transaction.
 - History recovery validates and inventories its source without a trial import,
   then merges history once after confirmation. Missing, conflicting and skipped
   counts are reported by that merge; model rebuilding runs only when needed.

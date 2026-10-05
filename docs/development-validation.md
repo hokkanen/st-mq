@@ -186,6 +186,14 @@ synthetic observations in the ordinary suite. Small fixes can use focused
 offline coverage; record any remaining physical limits for the next relevant
 development session instead of repeating the whole hardware matrix.
 
+The OCPP identification reconnect regression exercises the production runtime,
+BMW ingestion and controller through unplug, reconnect at zero draw, a future
+economic start, bounded probe, transaction, physical pause and BMW match. Its
+synthetic charger cannot supply a transaction until the controller has granted
+start permission. Restart checks preserve the original attempt and deadline;
+native restrictions remain separate. This verifies the startup dependency with
+synthetic hardware, not actual charger or BMW response.
+
 ## Browser suites
 
 Build first with `npm run build`. Browser sweeps are extended/manual checks,

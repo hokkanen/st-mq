@@ -249,6 +249,11 @@ An already confirmed passive match skips the test. Otherwise, live charger
 readiness and plausible at-home vehicle context allow one bounded charging
 test using the charger's native limits, with the scoped Charger 2 minimum-current
 comparison when its verified capability and Tesla context permit it.
+On local OCPP, a newly confirmed physical connection can begin this bounded
+probe before a charging transaction exists. The previous connection's disconnect
+cannot keep the probe waiting for the transaction it is intended to start.
+Transaction-specific pause commands still require confirmation of the new
+transaction; reconnecting never supplies that confirmation or vehicle identity.
 For a stopped Charger 2, the same plausible context permits preparation before
 Tesla reports positive current. The controller confirms the scoped 6 A setting
 before granting an identification start. Failed or uncertain current readback
