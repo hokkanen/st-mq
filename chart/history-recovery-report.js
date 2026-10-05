@@ -16,7 +16,7 @@ function renderCoverage(document, root, data, { formatTime, source, expanded }) 
   const section = document.createElement('section'); section.className = 'history-recovery-coverage';
   const heading = document.createElement('h4'); heading.textContent = 'History date ranges'; section.append(heading);
   const explanation = document.createElement('p'); explanation.className = 'muted';
-  explanation.textContent = 'First and last recorded dates are not continuous coverage. Sparse measurements do not establish outages. Dates use saved measurement or interval times, receipt times when missing, and fetch times for provider data.';
+  explanation.textContent = 'First and last recorded dates are not continuous coverage. Sparse measurements do not establish outages. Dates use saved measurement or interval times, receipt times when missing, and fetch times for provider data. Times are shown in Finnish time.';
   section.append(explanation);
   const table = document.createElement('table'); table.className = 'history-recovery-ranges';
   const head = document.createElement('thead'), headings = document.createElement('tr');

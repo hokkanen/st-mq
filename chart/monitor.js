@@ -107,6 +107,9 @@ const heatingCommandLabel = command => ({ reduction: 'Reduced heating', normal: 
 const heatingTestButtons = [...document.querySelectorAll('[data-heating-command]')];
 const dateFormat = new Intl.DateTimeFormat('en-GB', { timeZone: 'Europe/Helsinki', month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' });
 const time = value => dateFormat.format(new Date(value));
+const historyDateFormat = new Intl.DateTimeFormat('en-GB', { timeZone: 'Europe/Helsinki', year: 'numeric',
+  month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit', second: '2-digit' });
+const historyTime = value => historyDateFormat.format(new Date(value));
 const dayFormat = new Intl.DateTimeFormat('en-GB', { timeZone: 'Europe/Helsinki', year: 'numeric', month: 'short', day: 'numeric' });
 const day = value => dayFormat.format(new Date(value));
 const decimal = value => Number.isFinite(value) ? new Intl.NumberFormat('en-GB', { maximumFractionDigits: 5 }).format(value) : '—';
@@ -185,7 +188,7 @@ const sensorChangePanel = createSensorChangePanel({ document, request: api, stor
   beforeMutation: () => { ++refreshSequence; }, afterMutation: () => refresh({ forceChart: true }) });
 const pairPanel = createPairPanel({ document, request: api, storage: sessionStorage, formatTime: time,
   afterMutation: () => refresh({ forceChart: true }), onRecovery: options => historyRecovery.open(options) });
-const historyRecovery = createHistoryRecoveryPanel({ document, request: api, storage: sessionStorage, formatTime: time,
+const historyRecovery = createHistoryRecoveryPanel({ document, request: api, storage: sessionStorage, formatTime: historyTime,
   upload: file => api('/api/history-recovery/upload', file, { binary: true }),
   afterMutation: () => refresh({ forceChart: true }) });
 const garageDoors = createGarageDoorPanel({ document,
