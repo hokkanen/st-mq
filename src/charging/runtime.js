@@ -22,6 +22,7 @@ import { acceptEaseeTransition } from './stream-evidence.js';
 import { confirmedIdentityPause } from './identity-evidence.js';
 import { advanceIdentification, prepareActiveBmwCandidate, matchActiveBmwPause, validateIdentificationState, IDENTIFICATION_ENERGY_LIMIT_KWH, IDENTIFICATION_PAUSE_WAIT_MS } from './identification.js';
 import { shellyAssociation, shellyCurrentCommandReadback } from './shelly-evse.js';
+import { mqttSourceIdentity } from '../pairing/mqtt-source-context.js';
 import { ChargingSessionDiagnostics } from './session-diagnostics.js';
 import { ChargingLimiterHistory, shellyLimiterStatus } from './limiter-history.js';
 import { ChargingPhysicalTests } from './physical-tests.js';
@@ -178,7 +179,8 @@ export class ChargingRuntime {
     this.streamPending = new Set(); this.streamPersistencePending = false;
     this.vehicleFeeds = Object.fromEntries(Object.entries(this.configuration.vehicles).filter(([, definition]) => definition.provider === 'bmw-cardata').map(([id, definition]) => {
       const previous = saved.vehicleFeeds?.[id];
-      const association = digest([definition.provider, definition.mqttTopic, config.connections?.mqtt?.address, config.connections?.mqtt?.user]);
+      const broker = mqttSourceIdentity(config, 'ha');
+      const association = digest([definition.provider, definition.mqttTopic, broker.address, broker.username]);
       const reading = previous?.reading?.association === association ? previous.reading : null;
       validateBmwChargingHistory(reading);
       return [id, { ...definition, id, association, mqtt: initialMqtt(),
@@ -187,7 +189,8 @@ export class ChargingRuntime {
     }));
     this.chargers = Object.fromEntries(definitions.map(definition => {
       const association = definition.id === 'charger1' ? digest(['easee', config.connections?.easee?.charger_id, config.connections?.easee?.equalizer_id])
-        : shellyAssociation(this.configuration.chargers.charger2, config.connections?.mqtt);
+        : shellyAssociation(this.configuration.chargers.charger2, { address: mqttSourceIdentity(config, 'primary').address,
+          user: mqttSourceIdentity(config, 'primary').username });
       const previous = saved.chargers?.[definition.id]?.association === association ? saved.chargers[definition.id] : {};
       validateSavedRequest(previous.request, association);
       validateCurrentIdentificationEvidence(previous.vehicleEvidence);

@@ -190,8 +190,11 @@ reference. Validate the generated template through Home Assistant's template API
 save the automation, read it back, and verify live and retained MQTT publication.
 Install the generated object as one Core automation using **Edit in YAML**;
 see [installing the automations](../../homeassistant-mqtt.md#installing-the-automations).
-The MQTT integration must use the same broker as ST-MQ and its standard
-`homeassistant/status` birth/will topic. The ST-MQ app does not install this
+The MQTT integration stays on HA's fixed broker and uses its standard
+`homeassistant/status` birth/will topic. ST-MQ receives BMW through `mqtt.ha`
+when configured, otherwise through primary. See
+[broker routing](../../configuration.md#primary-mqtt-and-ha-hosted-integrations).
+The ST-MQ app does not install this
 publisher automatically.
 The automation uses standard [`mqtt.publish`](https://www.home-assistant.io/integrations/mqtt/#examples)
 and [automation triggers](https://www.home-assistant.io/docs/automation/trigger/).

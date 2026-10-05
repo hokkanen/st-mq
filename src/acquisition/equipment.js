@@ -45,11 +45,12 @@ const validTemperatureControl = value => value && typeof value === 'object' && !
     && temperature >= -10 && temperature <= 30 && Math.abs(temperature * 10 - Math.round(temperature * 10)) < 1e-8)
   && value.onAtC - value.offAtC >= 0.5 - 1e-8;
 
-/** One broker, explicit per-device protocol selection, independent capabilities.
+/** Explicit per-device protocol and broker routing, independent capabilities.
  * Event-only contacts preserve last-reported values without inventing heartbeats. */
 export function createEquipmentCapture({ engine, store, settings, publish, canControl = () => true, readbackTimeoutMs = 10_000,
   temperatureReportIntervalMs = DEFAULT_TEMPERATURE_REPORT_INTERVAL_MS,
-  temperatureReportGraceMs = DEFAULT_TEMPERATURE_REPORT_GRACE_MS, brokerIdentity = null, refreshSubscriptions = null, topicGroups = [] }) {
+  temperatureReportGraceMs = DEFAULT_TEMPERATURE_REPORT_GRACE_MS, brokerIdentity = null, brokerForDevice = () => 'primary', brokerIdentityForDevice = () => brokerIdentity,
+  refreshSubscriptions = null, topicGroups = [] }) {
   const configured = settings.devices ?? [], enabled = configured.filter(row => row.enabled);
   const feedbackRecorder = enabled.some(row => row.id === 'dhwr')
     ? engine.recorder ?? new Recorder(store, { clock: engine.clock }) : null;
@@ -57,8 +58,9 @@ export function createEquipmentCapture({ engine, store, settings, publish, canCo
     settings: { ...settings, devices: enabled.filter(row => row.protocol === 'shelly') }, publish, canControl, readbackTimeoutMs, brokerIdentity }) : null;
   let connected = false, closed = false, heatingBusy = false, caravanStopping = false, sequence = 0;
   const devices = enabled.filter(row => row.protocol === 'mqtt').map(config => ({ ...config, readings: {}, mappings: config.readings,
+    broker: brokerForDevice(config), brokerConnected: false,
     roomRouteSignature: config.kind === 'temperature' && INDOOR_SIGNALS.includes(config.temperatureSignal)
-      ? temperatureRouteSignature({ brokerIdentity, topic: config.topic, statePath: config.mqtt.statePath, timestampPath: config.mqtt.timestampPath,
+      ? temperatureRouteSignature({ brokerIdentity: brokerIdentityForDevice(config), topic: config.topic, statePath: config.mqtt.statePath, timestampPath: config.mqtt.timestampPath,
         mappings: config.readings.filter(mapping => mapping.signal === config.temperatureSignal) }) : null,
     online: null, bridgeOnline: null, liveSinceConnect: false, lastAt: null, heartbeatAt: null, waiters: new Set(), checks: new Set(), check: null, invalid: false,
     subscriptionStatus: 'unconfirmed', subscriptionRefresh: null, lastReceivedAt: null, lastLiveAt: null, lastRetainedAt: null,
@@ -69,7 +71,6 @@ export function createEquipmentCapture({ engine, store, settings, publish, canCo
       probe: null, meterSignature: null, sessionActive: false, restoration: null,
       qualified: false, boundIdentity: null }, recordingLocation: false }));
   const admission = createMqttAdmission();
-  const brokerDigest = createHash('sha256').update(JSON.stringify(brokerIdentity)).digest('hex');
   const temperatures = devices.filter(canonicalTemperature);
   for (const device of temperatures) {
     const garage = ['garage_temperature', 'garage_temperature_2'].includes(device.temperatureSignal);
@@ -78,7 +79,7 @@ export function createEquipmentCapture({ engine, store, settings, publish, canCo
         reportGraceMs: garage ? Math.max(0, device.maxAgeMs - settings.pollIntervalMs) : temperatureReportGraceMs });
   }
   const energy = new Map(devices.filter(row => row.metered).map(device => [device.id, createCaravanEnergy({ store, recorder: engine.recorder,
-    device: equipmentMeterIdentity({ ...device, readings: device.mappings }, { brokerIdentity }),
+    device: equipmentMeterIdentity({ ...device, readings: device.mappings }, { brokerIdentity: brokerIdentityForDevice(device) }),
     maxGapMs: device.maxAgeMs || settings.maxAgeMs, source: 'mqtt-equipment',
     signal: `${device.id}_energy`, recordDevice: device.id, stateKey: `mqtt:equipment-energy:v1:${device.id}` })]));
   const reception = createMqttReception({ store, engine, admission, devices, meters: energy });
@@ -197,12 +198,12 @@ export function createEquipmentCapture({ engine, store, settings, publish, canCo
     const at = device.dehumidifierReport?.fieldTimestamps[field];
     return scalar(at) && at >= 0 && at <= now && now - at < device.maxAgeMs;
   };
-  const powerFeedbackReady = (device, now) => connected && !closed && device.liveSinceConnect && availabilityConfirmed(device)
+  const powerFeedbackReady = (device, now) => device.brokerConnected && !closed && device.liveSinceConnect && availabilityConfirmed(device)
     && device.subscriptionStatus === 'subscribed' && validDehumidifierIdentity(device.dehumidifierReport?.identity)
     && fieldFresh(device, 'power', now) && ['on', 'off'].includes(device.dehumidifierState.power)
     && (!device.mqtt.heartbeatMs || scalar(device.heartbeatAt) && now - device.heartbeatAt <= device.mqtt.heartbeatMs);
   const healthy = (device, now) => device.kind === 'dehumidifier' ? powerFeedbackReady(device, now) && !device.invalid
-    : connected && device.liveSinceConnect && availabilityConfirmed(device) && !device.invalid
+    : device.brokerConnected && device.liveSinceConnect && availabilityConfirmed(device) && !device.invalid
     && !['failed', 'disconnected'].includes(device.subscriptionStatus)
     && (!device.mqtt.heartbeatMs || scalar(device.heartbeatAt) && now - device.heartbeatAt <= device.mqtt.heartbeatMs)
     && definitions(device).filter(row => row.required).every(definition => fresh(device, device.readings[definition.signal], now));
@@ -241,7 +242,7 @@ export function createEquipmentCapture({ engine, store, settings, publish, canCo
     if (!device.temperatureGuard.settings.enabled) return false;
     const sensor = devices.find(row => row.id === device.temperatureControl?.sensorDeviceId);
     const air = sensor?.readings.caravan_temperature;
-    return Boolean(sensor && connected && sensor.liveSinceConnect && availabilityConfirmed(sensor)
+    return Boolean(sensor && sensor.brokerConnected && sensor.liveSinceConnect && availabilityConfirmed(sensor)
       && sensor.subscriptionStatus === 'subscribed' && fresh(sensor, air, now)
       && air.value <= device.temperatureGuard.settings.offAtC);
   }
@@ -251,7 +252,7 @@ export function createEquipmentCapture({ engine, store, settings, publish, canCo
     const air = sensor?.readings.caravan_temperature, humidity = sensor?.readings.caravan_humidity;
     // RH is informational. A missing humidity field must not invalidate a fresh
     // independent temperature observation or the meter-based recording gate.
-    const airFresh = Boolean(sensor && connected && sensor.liveSinceConnect && availabilityConfirmed(sensor)
+    const airFresh = Boolean(sensor && sensor.brokerConnected && sensor.liveSinceConnect && availabilityConfirmed(sensor)
       && sensor.subscriptionStatus === 'subscribed' && fresh(sensor, air, now));
     const report = device.dehumidifierReport, state = device.temperatureGuard, policy = state.settings;
     const meter = caravanPower(device, now), ready = healthy(device, now);
@@ -460,6 +461,7 @@ export function createEquipmentCapture({ engine, store, settings, publish, canCo
     const config = enabled.find(row => row.id === id);
     if (!config) return null;
     const target = config.protocol === 'shelly' ? native.signature(id) : equipmentSignature(config);
+    const brokerDigest = createHash('sha256').update(JSON.stringify(brokerIdentityForDevice(config))).digest('hex');
     return target ? createHash('sha256').update(`${brokerDigest}:${target}`).digest('hex') : null;
   }
   const temperatureControlKey = device => `equipment:dehumidifier-temperature-control:v1:${device.id}`;
@@ -661,21 +663,21 @@ export function createEquipmentCapture({ engine, store, settings, publish, canCo
   }
   async function switchDevice(device, on) {
     if (!device || typeof on !== 'boolean') throw fail('invalid switch selection');
-    if (!connected || closed || !canControl()) throw fail('control authority unavailable');
+    if (!device.brokerConnected || closed || !canControl()) throw fail('control authority unavailable');
     if (device.waiters.size) throw fail('switch operation already in progress');
     await new Promise((resolve, reject) => {
       let completed = false;
       const waiter = { id: ++sequence, at: engine.clock(), on, observed: false, published: false, dispatched: false, revision: sequence, finish: reason => {
         if (completed) return;
-        if (!reason && (!canControl() || !connected || closed)) reason = fail('control authority unavailable');
+        if (!reason && (!canControl() || !device.brokerConnected || closed)) reason = fail('control authority unavailable');
         completed = true; clearTimeout(timer); device.waiters.delete(waiter); reason ? reject(reason) : resolve();
       } };
       const timer = setTimeout(() => waiter.finish(fail('state confirmation timed out; delivery unconfirmed')), readbackTimeoutMs);
       device.waiters.add(waiter);
       Promise.resolve().then(() => {
-        if (!canControl() || !connected || closed) throw fail('control authority unavailable');
+        if (!canControl() || !device.brokerConnected || closed) throw fail('control authority unavailable');
         waiter.dispatched = true; waiter.at = engine.clock(); waiter.revision = sequence;
-        return publish(device.mqtt.commandTopic, on ? device.mqtt.onPayload : device.mqtt.offPayload, { qos: 1, retain: false, noReplay: true });
+        return publish(device.mqtt.commandTopic, on ? device.mqtt.onPayload : device.mqtt.offPayload, { qos: 1, retain: false, noReplay: true }, device.broker);
       }).then(() => { waiter.published = true; if (waiter.observed) waiter.finish(); }, () => waiter.finish(fail('switch publication failed; delivery unconfirmed')));
     });
     return { confirmed: true, status: 'confirmed', deviceId: device.id, on, sent: true, acknowledgement: 'mqtt-live-state' };
@@ -699,10 +701,10 @@ export function createEquipmentCapture({ engine, store, settings, publish, canCo
     try {
       await publish(device.mqtt.commandTopic, JSON.stringify({ [setting]: value,
         identity: operation.identity, requestedAt: operation.requestedAt, expiresAt: operation.requestedAt + Math.min(readbackTimeoutMs, 10_000) }),
-      { qos: 1, retain: false, noReplay: true });
+      { qos: 1, retain: false, noReplay: true }, device.broker);
       operation.acknowledgedAt = engine.clock();
       if (operation.status === 'publishing') operation.status = operation.observedAt !== undefined ? 'observed' : 'published';
-      if (closed || !canControl() || !connected) {
+      if (closed || !canControl() || !device.brokerConnected) {
         operation.status = 'unconfirmed'; operation.error = 'Control connection changed. Check the dehumidifier live state.';
       }
     } catch {
@@ -714,24 +716,29 @@ export function createEquipmentCapture({ engine, store, settings, publish, canCo
   const api = {
     topics: [...new Set([...(native?.topics ?? []), ...devices.flatMap(readTopics)])],
     ownsGarage: settings.ownsGarage === true, hasHeating: enabled.some(device => device.controlsHeat), signature,
-    setConnected(value) {
-      connected = value; native?.setConnected(value);
-      for (const device of devices) {
+    topicsForBroker(broker) { return [...new Set([...(broker === 'primary' ? native?.topics ?? [] : []),
+      ...devices.filter(device => device.broker === broker).flatMap(readTopics)])]; },
+    setConnected(value, broker = null) {
+      if (broker === null || broker === 'primary') { connected = value; native?.setConnected(value); }
+      for (const device of devices.filter(device => broker === null || device.broker === broker)) {
+        device.brokerConnected = value;
         device.subscriptionRefresh = null;
         device.subscriptionStatus = value ? 'unconfirmed' : 'disconnected';
         if (!value) unavailable(device, 'mqtt-disconnected'); else { device.online = null; device.bridgeOnline = null; device.liveSinceConnect = false; }
       }
     },
-    confirmSubscriptions(topics) {
-      if (!connected || closed) return;
+    confirmSubscriptions(topics, broker = null) {
+      if (closed) return;
       const confirmed = new Set(topics);
       const requests = [];
-      for (const device of devices) if (readTopics(device).every(topic => confirmed.has(topic))) {
+      for (const device of devices) if (device.brokerConnected && (broker === null || device.broker === broker)
+        && readTopics(device).every(topic => confirmed.has(topic))) {
         if (device.subscriptionStatus !== 'subscribed' && device.mqtt.requestTopic) requests.push(device.id);
         device.subscriptionStatus = 'subscribed';
         completeChecks(device, engine.clock());
       }
-      for (const device of devices.filter(row => row.roomRouteSignature && !row.controlsSwitch && !row.controlsHeat)) {
+      for (const device of devices.filter(row => row.brokerConnected && (broker === null || row.broker === broker)
+        && row.roomRouteSignature && !row.controlsSwitch && !row.controlsHeat)) {
         if (device.bridgeOnline === false) continue;
         const requiredTopics = [device.topic, device.mqtt.availabilityTopic, device.mqtt.bridgeAvailabilityTopic, device.mqtt.heartbeatTopic,
           ...device.mappings.filter(mapping => mapping.required).map(mapping => mapping.topic)].filter(Boolean);
@@ -756,14 +763,14 @@ export function createEquipmentCapture({ engine, store, settings, publish, canCo
       // response topics are subscribed, including on broker reconnection.
       for (const deviceId of requests) void api.recheck({ deviceId }).catch(() => {});
     },
-    subscriptionFailed(topic) {
-      native?.subscriptionFailed(topic);
-      for (const device of devices) if (readTopics(device).includes(topic)) {
+    subscriptionFailed(topic, broker = null) {
+      if (broker === null || broker === 'primary') native?.subscriptionFailed(topic);
+      for (const device of devices) if ((broker === null || device.broker === broker) && readTopics(device).includes(topic)) {
         device.subscriptionStatus = 'failed'; unavailable(device, 'mqtt-subscription-failed');
       }
     },
-    receive(topic, payload, packet = {}, receivedAt = engine.clock()) {
-      if (native?.receive(topic, payload, packet, receivedAt)) {
+    receive(topic, payload, packet = {}, receivedAt = engine.clock(), broker = null) {
+      if ((broker === null || broker === 'primary') && native?.receive(topic, payload, packet, receivedAt)) {
         reception.run(() => {
           for (const device of devices.filter(row => row.temperatureControl)) {
             confirmDehumidifier(device, receivedAt); controlTemperature(device, receivedAt);
@@ -771,9 +778,9 @@ export function createEquipmentCapture({ engine, store, settings, publish, canCo
         });
         return true;
       }
-      const selected = devices.filter(device => readTopics(device).includes(topic));
+      const selected = devices.filter(device => device.brokerConnected && (broker === null || device.broker === broker) && readTopics(device).includes(topic));
       if (!selected.length) return false;
-      if (!connected || closed) return true;
+      if (closed) return true;
       const body = Buffer.isBuffer(payload) ? payload.toString('utf8') : String(payload ?? '');
       if (body.length > 65536) return true;
       return reception.run(() => {
@@ -863,10 +870,10 @@ export function createEquipmentCapture({ engine, store, settings, publish, canCo
       // Each callback belongs to this request, so older replies cannot replace
       // the visible result of a later command. Nothing is replayed on restart.
       try {
-        await publish(device.mqtt.commandTopic, payload, { qos: 1, retain: false, noReplay: true });
+        await publish(device.mqtt.commandTopic, payload, { qos: 1, retain: false, noReplay: true }, device.broker);
         operation.acknowledgedAt = engine.clock();
         if (operation.status === 'publishing') operation.status = operation.observedAt !== undefined ? 'observed' : 'published';
-        if (closed || !canControl() || !connected) {
+        if (closed || !canControl() || !device.brokerConnected) {
           operation.status = 'unconfirmed'; operation.error = 'Control connection changed. Check the door live state.';
         }
       } catch {
@@ -901,13 +908,13 @@ export function createEquipmentCapture({ engine, store, settings, publish, canCo
           } else check.finish(method === 'request' ? 'timeout' : 'unavailable');
         }, readbackTimeoutMs);
         device.checks.add(check); device.check = { checking: true, startedAt: check.at, status: 'checking', method };
-        if (!connected || closed) { check.finish('unavailable'); return; }
+        if (!device.brokerConnected || closed) { check.finish('unavailable'); return; }
         Promise.resolve().then(async () => {
           if (refreshSubscriptions) {
             device.subscriptionStatus = 'refreshing'; device.subscriptionRefresh = check;
-            try { await refreshSubscriptions(readTopics(device)); }
+            try { await refreshSubscriptions(readTopics(device), device.broker); }
             catch {
-              if (device.subscriptionRefresh === check && connected && !closed) {
+              if (device.subscriptionRefresh === check && device.brokerConnected && !closed) {
                 device.subscriptionRefresh = null;
                 device.subscriptionStatus = 'failed'; unavailable(device, 'mqtt-subscription-failed');
               }
@@ -915,17 +922,17 @@ export function createEquipmentCapture({ engine, store, settings, publish, canCo
             }
             // Retained offline can finish the device check before SUBACK. The
             // subscription still succeeded and must allow later bridge recovery.
-            if (device.subscriptionRefresh === check && connected && !closed) {
+            if (device.subscriptionRefresh === check && device.brokerConnected && !closed) {
               device.subscriptionRefresh = null;
               if (device.subscriptionStatus === 'refreshing') device.subscriptionStatus = 'subscribed';
             }
-            if (completed || !connected || closed) return;
+            if (completed || !device.brokerConnected || closed) return;
           }
-          if (completed || !connected || closed) return;
+          if (completed || !device.brokerConnected || closed) return;
           // Reports replayed by subscription refresh are not replies to a later request.
           if (method === 'request') {
             check.reported.clear(); check.at = engine.clock();
-            await publish(device.mqtt.requestTopic, device.mqtt.requestPayload, { qos: 1, retain: false });
+            await publish(device.mqtt.requestTopic, device.mqtt.requestPayload, { qos: 1, retain: false }, device.broker);
           }
           check.ready = true; completeChecks(device, engine.clock());
           if (method === 'subscription') check.finish(healthy(device, engine.clock()) ? 'last-reported'
@@ -975,15 +982,15 @@ export function createEquipmentCapture({ engine, store, settings, publish, canCo
         topics: topicDetails(device), recheck: { method: recheckMethod(device), requestSupported: Boolean(device.mqtt.requestTopic),
           description: device.mqtt.requestTopic ? 'Refresh subscriptions and send the configured status request.'
             : 'Refresh subscriptions. This publisher has no configured status request; live values arrive on its next report.' },
-        mqttStatus: { subscriptionStatus: device.subscriptionStatus, lastReceivedAt: device.lastReceivedAt,
+        mqttStatus: { broker: device.broker, brokerConnected: device.brokerConnected, subscriptionStatus: device.subscriptionStatus, lastReceivedAt: device.lastReceivedAt,
           lastLiveAt: device.lastLiveAt, lastRetainedAt: device.lastRetainedAt },
         readings: Object.fromEntries(Object.entries(device.readings).map(([signal, reading]) => [signal,
-          { ...reading, stale: !connected || !device.liveSinceConnect || !availabilityConfirmed(device) || !fresh(device, reading, now)
+          { ...reading, stale: !device.brokerConnected || !device.liveSinceConnect || !availabilityConfirmed(device) || !fresh(device, reading, now)
             || device.kind === 'dehumidifier' && dehumidifierHistory(device, now).value === null
             || Boolean(device.mqtt.heartbeatMs && (!scalar(device.heartbeatAt) || now - device.heartbeatAt > device.mqtt.heartbeatMs)) }])),
         ...(energy.has(device.id) ? { energy: energy.get(device.id).status(now) } : {}) }))];
       return { configured: configured.length > 0, connected, checking: rows.some(row => row.check?.checking),
-        topicGroups,
+        topicGroups, brokers: api.brokerStatus?.(),
         lastCheckedAt: Math.max(0, ...rows.map(row => row.check?.checkedAt ?? 0)) || null,
         devices: configured.map(config => rows.find(row => row.id === config.id) ?? { id: config.id, role: config.id, label: config.label,
           area: config.area, kind: config.kind, source: config.source, connection: config.connection, enabled: false, available: false,
@@ -1003,7 +1010,7 @@ export function createEquipmentCapture({ engine, store, settings, publish, canCo
           }
         });
         const deadline = Date.now() + Math.max(0, timeoutMs);
-        while (pending() && connected && !closed && canControl() && Date.now() < deadline) {
+        while (pending() && appliances.some(device => device.brokerConnected) && !closed && canControl() && Date.now() < deadline) {
           await new Promise(resolve => setTimeout(resolve, Math.min(50, Math.max(1, deadline - Date.now()))));
           reception.run(() => {
             for (const device of appliances) confirmDehumidifier(device, engine.clock());

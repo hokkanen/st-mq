@@ -412,12 +412,12 @@
                   <details id="mqtt-devices-details" class="section-fold controller-fold">
                     <summary><span>MQTT</span><small> · Devices &amp; topics</small></summary>
                     <div class="section-fold-body">
-                      <p class="muted mqtt-connections-intro">Local devices and vehicle services use the MQTT broker. Open a connection for its topics, subscription status and packet diagnostics. Vehicle readings are described under Vehicle telemetry.</p>
+                      <p class="muted mqtt-connections-intro">Independent devices use primary MQTT. TeslaMate, BMW CarData, garage doors and the Tuya bridge use the separate HA broker when configured. Open a connection for its topics, subscription status and packet diagnostics.</p>
                       <p id="equipment-check-message" class="muted" role="status" aria-live="polite"></p>
                       <div id="equipment-connections"></div>
                       <section id="heating-mqtt-topics" class="equipment-command-topics" aria-label="Heating command topics"></section>
                       <details id="connection-setup-details" class="equipment-fold"><summary>Connection setup</summary>
-                        <p class="muted">Connect the app and each device to the same MQTT broker. Set device login details on the device and keep app credentials in the private configuration.</p>
+                        <p class="muted">In a pair, connect independent devices through the virtual IP and keep HA services on HA’s fixed broker. Configure primary and optional HA broker access in private configuration; set device login details on each device.</p>
                         <p class="muted">Give temperature probes physical names and map door values explicitly to Open and Closed. Use <code>shelly:</code> for a native Shelly prefix, or <code>mqtt:</code> followed by an exact topic.</p>
                         <details class="equipment-fold"><summary>Shelly MQTT options</summary>
                           <p class="muted">Enable status and RPC notifications (<code>status_ntf</code> and <code>rpc_ntf</code>), plus RPC over MQTT (<code>enable_rpc</code>) when available.</p>

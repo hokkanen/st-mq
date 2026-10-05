@@ -8,6 +8,10 @@ Versions follow Semantic Versioning. `-dev.N` denotes a development prerelease.
 
 ### Added
 
+- Optional `mqtt.ha` broker access routes TeslaMate, BMW CarData, garage doors
+  and the Tuya dehumidifier bridge together, without per-device selectors.
+  Unset installations keep one broker connection; an HA outage leaves
+  independent primary equipment connected and never reroutes commands.
 - Optional charger development observers, an offline physical-evidence auditor
   and a focused hardware-test runbook make selected feature checks repeatable.
   Routine tests stay offline; private installation recordings stay outside Git.
@@ -64,6 +68,17 @@ Versions follow Semantic Versioning. `-dev.N` denotes a development prerelease.
 
 ### Fixed
 
+- Paired masters own a dedicated MQTT frontend at the virtual IP and disconnect
+  its clients before releasing that address. Fixed HA connections remain open;
+  both brokers keep running. Deployment requires freeing host port 1883 for the
+  frontend: publish HA's broker on a separate fixed port and bind Ubuntu's broker
+  to loopback. Fresh MQTT and OCPP device evidence remains separate from a
+  completed role transfer.
+- Current paired handovers preserve equipment and vehicle source identities
+  across the two broker endpoints, keeping saved control choices, restoration
+  obligations and already consumed identification evidence. The verified
+  transfer binds current integration definitions and machine-local routes;
+  copied state and retained messages grant no new permission or freshness.
 - Home Assistant deployment accepts unchanged configuration whose JSON object
   keys were reordered, and identifies failed app checks without exposing private
   settings. Missing or malformed configuration still blocks deployment.

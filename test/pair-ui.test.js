@@ -37,6 +37,17 @@ test('schema failures explain deliberate recovery without suggesting broker fixe
     assert.doesNotMatch(text, /MQTT|credentials/);
 });
 
+test('MQTT listener status distinguishes socket connections from fresh device readiness', () => {
+  const waiting = pairDisplay(primary({ mqttFrontend: { listening: false, ready: false, connections: 0, error: null } }));
+  assert.match(waiting.broker, /listener is not ready/);
+  const listening = pairDisplay(primary({ mqttFrontend: { listening: true, ready: true, connections: 3, error: null } }));
+  assert.match(listening.broker, /3 connections/);
+  assert.match(listening.broker, /requires fresh reports/);
+  assert.match(pairIssueHelp({ error: 'mqtt_frontend_unavailable' }), /port 1883/);
+  assert.match(pairIssueHelp({ error: 'mqtt_upstream_unavailable' }), /local MQTT broker/);
+  assert.match(pairIssueHelp({ error: 'mqtt_handover_not_ready' }), /matching MQTT transport/);
+});
+
 function memoryStorage() {
   const values = new Map();
   return { getItem: key => values.get(key) ?? null, setItem: (key, value) => values.set(key, value), removeItem: key => values.delete(key) };

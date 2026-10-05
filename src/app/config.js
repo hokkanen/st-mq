@@ -21,6 +21,29 @@ const configurationSources = new WeakMap();
 export function configurationReader(config) { return configurationReaders.get(config) ?? null; }
 export function configurationSource(config) { return configurationSources.get(config) ?? null; }
 
+// One optional source for the integrations hosted by Home Assistant. Empty
+// means use primary; an explicitly configured outage never means fallback.
+export function haMqttConfiguration(input = {}) {
+  const invalid = field => new Error(`Invalid configuration field: mqtt.ha${field ? `.${field}` : ''}.`);
+  if (!input || typeof input !== 'object' || Array.isArray(input)) throw invalid('');
+  if (Object.keys(input).some(key => !['address', 'user', 'pw'].includes(key)))
+    throw new Error('Unknown configuration field in mqtt.ha: [unsupported field].');
+  for (const key of ['address', 'user', 'pw']) if (Object.hasOwn(input, key)
+    && (typeof input[key] !== 'string' || input[key].length > (key === 'address' ? 2048 : 65535))) throw invalid(key);
+  const { address = '', user = '', pw = '' } = input;
+  if (!address) {
+    if (user || pw) throw new Error('mqtt.ha.address is required when separate HA MQTT credentials are configured.');
+    return undefined;
+  }
+  let endpoint;
+  try { endpoint = new URL(address); } catch { throw invalid('address'); }
+  if (!['mqtt:', 'mqtts:', 'ws:', 'wss:'].includes(endpoint.protocol) || !endpoint.hostname
+    || endpoint.username || endpoint.password || endpoint.search || endpoint.hash
+    || /[\s\u0000-\u001f\u007f]/.test(address) || endpoint.port === '0'
+    || ['mqtt:', 'mqtts:'].includes(endpoint.protocol) && !['', '/'].includes(endpoint.pathname)) throw invalid('address');
+  return { address, user, pw };
+}
+
 export function validateSettings(input = {}) {
   if (!input || typeof input !== 'object' || Array.isArray(input)) throw new Error('Heating settings must be an object');
   const fields = ['savingsStrategy', 'preheatRoomBoostC', 'comfort', 'occupancy', 'recoveryHoldMinutes'];
@@ -261,9 +284,11 @@ function buildConfiguration(options, env, cwd, configuration, source, { bootstra
   if (!['simulated', 'mqtt', 'offline', 'providers'].includes(input)) throw new Error('STMQ_INPUT must be simulated, mqtt, offline or providers');
   const dataDir = resolve(env.STMQ_DATA_DIR ?? (addon ? '/data/st-mq' : `${cwd}/var`));
   const databaseDir = resolve(env.STMQ_DATABASE_DIR ?? (addon ? '/config/st-mq' : dataDir));
+  const haMqtt = haMqttConfiguration(options.mqtt?.ha);
   let connections = {};
   if (input === 'mqtt' || input === 'providers') {
-    const mqtt = { ...(options.mqtt ?? {}) };
+    const { ha: _ha, ...mqtt } = options.mqtt ?? {};
+    if (haMqtt) mqtt.ha = haMqtt;
     mqtt.dhwr_topic = mqtt.dhwr_topic || 'stmq/home/dhwr/command/switch';
     if (typeof mqtt.dhwr_topic !== 'string' || !mqtt.dhwr_topic.trim() || mqtt.dhwr_topic.length > 500
       || /[+#\u0000]/.test(mqtt.dhwr_topic)) throw new Error('DHWR MQTT topic must be an exact switch command topic');
@@ -329,6 +354,8 @@ function buildConfiguration(options, env, cwd, configuration, source, { bootstra
       preheatRoomBoostC: options.controller?.preheat_room_boost_c ?? 5,
       comfort: { targetC: null, maxRiseC: options.controller?.max_rise_c ?? 1.5, maxDropC: env.STMQ_MAX_DROP_C == null ? options.controller?.max_drop_c ?? 1.5 : Number(env.STMQ_MAX_DROP_C) } }) };
   config.pair = pairConfiguration(options.pair, env, config);
+  if (config.topology === 'pair' && haMqtt && new URL(haMqtt.address).hostname === config.pair.vip.address)
+    throw new Error('mqtt.ha.address must use the fixed HA broker address, not the pairing virtual IP.');
   if (config.topology === 'pair' && config.connections.easee?.local_ocpp?.enabled) {
     const ocpp = config.connections.easee.local_ocpp;
     const expected = `ws://${config.pair.vip.address}:${ocpp.port}/ocpp`;

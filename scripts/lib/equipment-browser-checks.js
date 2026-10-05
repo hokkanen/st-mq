@@ -98,7 +98,7 @@ export async function checkEquipmentBrowser({ evaluate, command, context, until,
     const at = Date.parse('2026-09-07T11:00:00Z');
     const reading = (label,value,unit,observedAt=at) => ({label,value,unit,observedAt,stale:false});
     const fixture = window.equipmentUiFixture = {fetch:window.fetch.bind(window),calls:[],responses:0,now:at,lastResult:null,heatingResult:null,status:{},
-      originalHash:location.hash,openDetails:[...document.querySelectorAll('.controller-panels details[open]')].map(node=>node.id)};
+      brokers:{primary:{connected:true,ready:true},ha:{connected:true,ready:true}},originalHash:location.hash,openDetails:[...document.querySelectorAll('.controller-panels details[open]')].map(node=>node.id)};
     const temperature=(source,value)=>({source,value,observedAt:at,stale:false});
     fixture.observations={indoor:temperature('indoor-average',20.8),upstairs:temperature('mqtt-temperature',21.2),
       downstairs:temperature('mqtt-temperature',20.4),bedroom:temperature('shelly-mqtt',20.8),
@@ -108,7 +108,7 @@ export async function checkEquipmentBrowser({ evaluate, command, context, until,
         controls:{switch:false},readings:{garage_temperature:reading('By the entrance',18.2,'degC'),garage_temperature_2:reading('By the back wall',16.5,'degC')},
         topics:[{role:'Native status',topic:'invented-garage/status/temperature:100',direction:'subscribe'}]},
       {id:'caravan',label:'Caravan',area:'garage',kind:'metered_switch',source:'MQTT-shelly',available:true,
-        mqttStatus:{subscriptionStatus:'subscribed',lastLiveAt:at,lastRetainedAt:at-60000},
+        mqttStatus:{broker:'primary',brokerConnected:true,subscriptionStatus:'subscribed',lastLiveAt:at,lastRetainedAt:at-60000},
         controls:{switch:true},readings:{caravan_active:reading('Switch',1,'state'),caravan_power:reading('Power',0.35,'kW')},energy:{dailyKwh:1.234,observedAt:at,partial:true},
         topics:[{role:'Native requests',topic:'invented-caravan/rpc',direction:'publish'}]},
       ...[1,2].map(index=>({id:'door'+index,label:'Door '+index,area:'garage',kind:'door',source:'MQTT',available:true,
@@ -123,10 +123,10 @@ export async function checkEquipmentBrowser({ evaluate, command, context, until,
     ].map(([signal,value,unit])=>[signal,{value,unit,sourceTime:at,receivedAt:at,available:true,quality:[]}]));
     fixture.dhwr={active:false,durationMinutes:10,actualOn:false,confirmed:false,requestedAt:null,commandTopic:'invented/dhwr/set',feedback:{configured:true,available:true,
       state:reading('Switch',0,'state'),power:reading('Live power',0,'W')}};
-    fixture.response = base => { if(fixture.dhwr.feedback.basis==='power') { const feedback=fixture.dhwr.feedback,power=feedback.power; feedback.state=power?{...power,value:power.value>0?1:0,unit:'state'}:null; fixture.dhwr.actualOn=feedback.available&&power&&!power.stale?power.value>0:null; } return ({...base,...fixture.status,now:fixture.now,observations:{...base.observations,...fixture.observations,...fixture.status.observations},providers:{...base.providers,temperatures:{source:'mqtt-temperature',status:'ok',lastSuccessAt:at},outdoor:{source:'fmi',status:'ok',lastSuccessAt:at},easee:{status:'ok',currentReadings:{property:{qualityIssues:[],lastSuccessAt:at},charger:{qualityIssues:[],lastSuccessAt:at}},deviceTransports:{charger:'ocpp',property:'stream'},localOcpp:{configured:true,connected:true,available:true,setup:{state:'ready',endpointSource:'configured'}}},'shelly-evse':{enabled:true,status:'ok',connected:true,recording:true,maxAgeMs:300000,readings:fixture.chargerReadings,...fixture.chargerStatus,mqttStatus:{brokerConnected:true,subscriptionStatus:'subscribed',lastLiveAt:at},topics:[{role:'Charger status',topic:'invented/evse/events/rpc',direction:'subscribe'},{role:'RPC requests',topic:'invented/evse/rpc',direction:'publish'}]}},equipment:{configured:true,connected:true,devices:fixture.devices,topicGroups:[
+    fixture.response = base => { if(fixture.dhwr.feedback.basis==='power') { const feedback=fixture.dhwr.feedback,power=feedback.power; feedback.state=power?{...power,value:power.value>0?1:0,unit:'state'}:null; fixture.dhwr.actualOn=feedback.available&&power&&!power.stale?power.value>0:null; } return ({...base,...fixture.status,now:fixture.now,observations:{...base.observations,...fixture.observations,...fixture.status.observations},providers:{...base.providers,temperatures:{source:'mqtt-temperature',status:'ok',lastSuccessAt:at},outdoor:{source:'fmi',status:'ok',lastSuccessAt:at},easee:{status:'ok',currentReadings:{property:{qualityIssues:[],lastSuccessAt:at},charger:{qualityIssues:[],lastSuccessAt:at}},deviceTransports:{charger:'ocpp',property:'stream'},localOcpp:{configured:true,connected:true,available:true,setup:{state:'ready',endpointSource:'configured'}}},'shelly-evse':{enabled:true,status:'ok',connected:true,recording:true,maxAgeMs:300000,readings:fixture.chargerReadings,...fixture.chargerStatus,mqttStatus:{brokerConnected:true,subscriptionStatus:'subscribed',lastLiveAt:at},topics:[{role:'Charger status',topic:'invented/evse/events/rpc',direction:'subscribe'},{role:'RPC requests',topic:'invented/evse/rpc',direction:'publish'}]}},equipment:{configured:true,connected:true,brokers:fixture.brokers,devices:fixture.devices,topicGroups:[
       {id:'temperatures',label:'Temperature feeds',topics:[{role:'Upstairs',topic:'invented/home/upstairs/temperature',direction:'subscribe'}]},
-      {id:'vehicle:bmw',vehicleFeedId:'bmw',label:'BMW',topics:[{role:'Timestamped vehicle readings',topic:'invented/vehicles/bmw',direction:'subscribe'}]},
-      {id:'vehicle:tesla',vehicleFeedId:'tesla',label:'TeslaMate',topics:[{role:'Vehicle subscription',topic:'invented/teslamate/cars/1/#',direction:'subscribe'}]}
+      {id:'vehicle:bmw',vehicleFeedId:'bmw',label:'BMW',broker:'ha',topics:[{role:'Timestamped vehicle readings',topic:'invented/vehicles/bmw',direction:'subscribe'}]},
+      {id:'vehicle:tesla',vehicleFeedId:'tesla',label:'TeslaMate',broker:'ha',topics:[{role:'Vehicle subscription',topic:'invented/teslamate/cars/1/#',direction:'subscribe'}]}
     ]},charging:{...base.charging,vehicleFeeds:[{id:'bmw',label:'BMW',provider:'bmw-cardata',topic:'invented/vehicles/bmw',enabled:true,reception:{brokerConnected:true,subscriptionStatus:'subscribed',lastLiveAt:at,lastMessageAt:at}},{id:'tesla',label:'Tesla',provider:'teslamate',topic:'invented/teslamate/cars/1/#',enabled:true,reception:{brokerConnected:true,subscriptionStatus:'subscribed',lastLiveAt:at,lastMessageAt:at}}]},dhwr:fixture.dhwr,
       heatingTests:{available:true,lastResult:fixture.heatingResult},equipmentControls:{available:true,busy:false,lastResult:fixture.lastResult},equipmentTests:{available:true,busy:false}}); };
     window.fetch = async (...args) => {
@@ -201,18 +201,27 @@ export async function checkEquipmentBrowser({ evaluate, command, context, until,
     assert.equal(await evaluate(`[...document.querySelectorAll('${charger2}')].filter(node=>!node.dataset.series.startsWith('ev2_energy')).every(node=>node.dataset.state==='available')`), true, 'Fresh native measurements do not become unavailable when charging control needs commissioning');
     await evaluate('window.equipmentUiFixture.chargerStatus={};true');
     await refresh();
+    const brokerCard = id => '#equipment-connections [data-device-id="mqtt-broker:' + id + '"]';
+    assert.equal(await evaluate(`document.querySelector('${brokerCard('primary')} .equipment-device-status').textContent`), 'Connected');
+    assert.equal(await evaluate(`document.querySelector('${brokerCard('ha')} .equipment-device-status').textContent`), 'Connected');
+    await evaluate('window.equipmentUiFixture.brokers.ha={connected:false,ready:false};true'); await refresh();
+    assert.equal(await evaluate(`document.querySelector('${brokerCard('ha')} .equipment-device-status').textContent`), 'Disconnected');
+    assert.equal(await evaluate(`document.querySelector('${brokerCard('primary')} .equipment-device-status').textContent`), 'Connected', 'HA broker outage keeps primary connection health independent');
+    await evaluate('window.equipmentUiFixture.brokers.ha={connected:true,ready:true};true'); await refresh();
     const vehicles = '[data-provider=vehicle-telemetry] .provider-body';
     assert.deepEqual(await evaluate(`[...document.querySelectorAll('${vehicles} .provider-series > li > strong')].map(node=>node.textContent)`), ['BMW','Tesla']);
     assert.equal(await evaluate(`document.querySelectorAll('${vehicles} details').length`), 0, 'Vehicle feeds are ordinary rows within the category');
     assert.doesNotMatch(await evaluate(`document.querySelector('${vehicles}').textContent`), /invented\/vehicles|invented\/teslamate/, 'MQTT addresses stay in MQTT connections');
-    const local = '[data-source-section=easee-ocpp] .provider-local-connection';
-    assert.equal(await evaluate(`document.querySelector('${local}').previousElementSibling.className`), 'muted provider-source-description');
-    assert.equal(await evaluate(`document.querySelector('${local}').nextElementSibling.className`), 'provider-source-readings', 'Connection setup follows the OCPP introduction and precedes readings');
-    assert.equal(await evaluate(`document.querySelector('${local} > summary').textContent`), 'Local connection & charging control');
+    const local = '#charging-setup-ocpp .provider-local-connection';
+    assert.equal(await evaluate(`document.querySelector('${local}').closest('.charging-setup-device').id`), 'charging-setup-charger1-details', 'Local OCPP setup belongs to the Charger 1 setup section');
+    assert.equal(await evaluate("document.querySelectorAll('[data-source-section=easee-ocpp] .provider-local-connection').length"), 0, 'Provider readings do not duplicate device setup');
+    assert.equal(await evaluate(`document.querySelector('${local} > summary').textContent`), 'Local OCPP connection');
     assert.doesNotMatch(await evaluate(`document.querySelector('${local}').textContent`), /ST-MQ|property readings/i);
     assert.equal(await evaluate("document.querySelector('#equipment-connections [data-device-id=\"connection:vehicle:bmw:other\"] .equipment-connection-meta').textContent"), 'Vehicle · BMW CarData');
+    assert.match(await evaluate("document.querySelector('#equipment-connections [data-device-id=\"connection:vehicle:bmw:other\"] .equipment-packet-status').textContent"), /Broker: Home Assistant/);
     await evaluate("document.querySelectorAll('#providers .provider-fold, #equipment-connections [data-connection-area=vehicles] .equipment-connection-fold, #equipment-connections [data-connection-area=vehicles] .equipment-packet-details').forEach(node=>node.open=true);window.equipmentUiFixture.bmwCard=document.querySelector('#equipment-connections [data-device-id=\"connection:vehicle:bmw:other\"]');true");
-    assert.equal(await evaluate(`document.querySelector('${local}').open`), false, 'Setup details begin collapsed below the OCPP introduction');
+    await evaluate("document.getElementById('connections-details').open=true;document.getElementById('charging-setup-details').open=true;document.getElementById('charging-setup-charger1-details').open=true;true");
+    assert.equal(await evaluate(`document.querySelector('${local}').open`), false, 'Local OCPP setup details begin collapsed within Charger 1 setup');
     await evaluate(`document.querySelector('${local} > summary').focus();true`);
     await command('input.performActions',{context,actions:[{type:'key',id:'local-connection',actions:[{type:'keyDown',value:'\uE007'},{type:'keyUp',value:'\uE007'}]}]});
     await settle();
@@ -235,7 +244,7 @@ export async function checkEquipmentBrowser({ evaluate, command, context, until,
       writeFileSync(`var/data-settings-expanded-${width}.png`,Buffer.from(screenshot.data,'base64'));
       if (width !== 320) {
         await command('browsingContext.setViewport',{context,viewport:{width,height:1000},devicePixelRatio:1}); await settle();
-        await evaluate(`document.querySelector('${local}').open=false;document.querySelector('[data-source-section=easee-ocpp]').scrollIntoView({block:'start'});true`); await settle();
+        await evaluate(`document.querySelector('${local}').open=false;document.querySelector('#charging-setup-charger1-details').scrollIntoView({block:'start'});true`); await settle();
         const chargerShot=await command('browsingContext.captureScreenshot',{context,origin:'viewport'});
         writeFileSync(`var/charger-source-settings-${width}.png`,Buffer.from(chargerShot.data,'base64'));
         await evaluate(`document.querySelector('${local}').open=true;document.querySelector('[data-provider=vehicle-telemetry]').scrollIntoView({block:'start'});true`); await settle();

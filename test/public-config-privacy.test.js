@@ -32,6 +32,7 @@ test('public connection defaults use generic service names and MQTT topics', () 
     'The public broker default must name the standard Home Assistant service without credentials');
   assert.ok(manifest.options.easee.local_ocpp.host === '0.0.0.0' && manifest.options.pair.listen_host === '0.0.0.0',
     'Public listeners must not contain installation addresses');
+  assert.deepEqual(manifest.options.mqtt.ha, {}, 'No separate HA broker is selected in public defaults');
   for (const path of ['easee.local_ocpp.server_url', 'pair.vip_address', 'mirror.remote_directory',
     'mirror.receiver_path', 'pair.directory', 'pair.snapshot_directory', 'mirror.directory']) {
     assert.ok(path.split('.').reduce((parent, key) => parent?.[key], manifest.options) === '',

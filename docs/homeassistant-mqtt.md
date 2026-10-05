@@ -10,8 +10,11 @@ also creates separate cover-command handlers for SmartThings and ST-MQ controls.
 
 These are Home Assistant Core automations. Installing the ST-MQ app does not
 install them. First configure the [MQTT integration](https://www.home-assistant.io/integrations/mqtt/)
-under **Settings → Devices & services** and connect it to the same broker as
-ST-MQ. Configure ST-MQ's broker login separately in its saved app options. Keep
+under **Settings → Devices & services** and connect it to HA's fixed broker.
+ST-MQ's garage-door integration uses `mqtt.ha` when configured, otherwise primary;
+configure that broker login separately in ST-MQ's private settings. The optional
+air-temperature feed remains a primary-broker integration and is not part of the
+four HA routes. See [broker routing](configuration.md#primary-mqtt-and-ha-hosted-integrations). Keep
 Home Assistant's birth/will topic `homeassistant/status` with payloads `online`
 and `offline`: the generated triggers and default bridge availability use it.
 If that topic has been customized, update both the generated definitions and

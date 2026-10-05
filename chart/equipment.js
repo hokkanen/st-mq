@@ -432,6 +432,15 @@ export function equipmentConnections(status = {}, devices = equipmentDevices(sta
     needsAttention: device.needsAttention || inventory.find(row => row.id === device.id)?.needsAttention,
     topics: device.topics?.length ? [...device.topics]
     : device.connection ? [{ role: 'Connection', topic: device.connection, direction: 'subscribe' }] : [] }));
+  for (const [broker, health] of Object.entries(status.equipment?.brokers ?? {})) rows.push({
+    id: `mqtt-broker:${broker}`, label: broker === 'ha' ? 'Home Assistant MQTT' : 'Primary MQTT',
+    kind: 'broker', area: 'other', source: 'MQTT', topics: [],
+    mqttStatus: { broker, brokerConnected: health.connected },
+    connectionState: !health.connected ? { label: 'Disconnected', state: 'attention' }
+      : health.ready ? { label: 'Connected', state: 'available' } : { label: 'Awaiting subscriptions', state: 'pending' },
+    connectionDetail: broker === 'ha' ? 'TeslaMate, BMW CarData, garage doors and the Tuya bridge use this connection.'
+      : 'Direct devices use this connection. HA services also use it when no separate HA broker is configured.',
+  });
   const charger = shellyChargerConnection(status);
   if (charger) rows.push(charger);
   const owner = new Map(rows.flatMap(row => row.topics.map(topic => [topicKey(topic), row])));
@@ -483,7 +492,7 @@ export function equipmentConnections(status = {}, devices = equipmentDevices(sta
         const feed = vehicleFeedFor(group);
         const source = ({ 'bmw-cardata': 'BMW CarData', teslamate: 'TeslaMate' })[feed.provider] ?? 'MQTT';
         const usedBy = status.charging?.chargers?.find(charger => charger.id === feed.usedByChargerId)?.label;
-        Object.assign(row, vehicleConnection({ label: feed.label, source, enabled: feed.enabled, reception: feed.reception, usedBy,
+        Object.assign(row, vehicleConnection({ label: feed.label, source, enabled: feed.enabled, reception: { ...feed.reception, broker: group.broker ?? feed.reception?.broker }, usedBy,
           detail: feed.provider === 'teslamate' ? 'TeslaMate supplies charge and charge target, plus vehicle state for charger identification. Times show when each reading was first received.'
             : feed.provider === 'bmw-cardata' ? 'BMW CarData supplies charge, charge target and usable battery capacity, with the original measurement time for each reading.'
               : 'Available charge, charge target and battery capacity support charging when this vehicle is identified at a charger. Each reading keeps its original measurement time.' }));
@@ -871,7 +880,8 @@ export function createEquipmentPanel({ document, request, onStatus, beforeReques
         device.kind === 'floor_override' ? device.model : equipmentSource(device)].join(' · ');
       renderTopics(node.topics, device.topics); node.topics.hidden = !device.topics.length;
       const mqtt = device.mqttStatus;
-      node.packets.textContent = [mqtt?.subscriptionStatus ? `Subscription: ${pretty(mqtt.subscriptionStatus)}` : '',
+      node.packets.textContent = [mqtt?.broker ? `Broker: ${mqtt.broker === 'ha' ? 'Home Assistant' : 'Primary'}${mqtt.brokerConnected === false ? ' (disconnected)' : ''}` : '',
+        mqtt?.subscriptionStatus ? `Subscription: ${pretty(mqtt.subscriptionStatus)}` : '',
         Number.isFinite(mqtt?.lastLiveAt) ? `Last live packet: ${clock.format(mqtt.lastLiveAt)}` : mqtt ? 'No live packet received' : '',
         Number.isFinite(mqtt?.lastRetainedAt) ? `Saved broker packet: ${clock.format(mqtt.lastRetainedAt)}` : '',
         device.packetDetail ?? '', device.recheck?.description ?? ''].filter(Boolean).join(' · ');

@@ -8,6 +8,7 @@ import { loadConfig } from '../src/app/config.js';
 import { Engine } from '../src/app/engine.js';
 import { startPaired } from '../src/pairing/runtime.js';
 import { startReplica } from '../src/app/replica.js';
+import { fixtureMqttFrontend, fixtureMqttSourceContext } from './helpers/pair-frontend.js';
 function configuration(t) {
   const dir=mkdtempSync(join(tmpdir(),'stmq-lifecycle-audit-'));
   t.after(()=>rmSync(dir,{recursive:true,force:true}));
@@ -63,6 +64,7 @@ test('paired signal ownership reaches a child still executing its first tick and
     const result = original.apply(this,args); process.emit('SIGTERM'); return result;
   });
   await assert.rejects(startPaired({ config, startRuntime: start, prepareVipPolicy: async () => {}, validateBroker: async () => {},
+    frontendFactory: fixtureMqttFrontend, sourceContextFactory: fixtureMqttSourceContext,
     managerFactory: options => { hooks=options.hooks; return {
       init: async()=>{}, start:()=>hooks.startPrimary({dbPath:config.dbPath}), canControl:()=>!managerClosed,
       status:()=>({role:'master'}), prepareShutdown:()=>{}, close:async()=>{managerClosed=true;},

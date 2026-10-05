@@ -5,6 +5,13 @@ Custom topics follow `stmq/<area>/<device>/command/<property>` for actions and
 and protocols remain as configured. This convention uses Shelly's command/status
 vocabulary; custom MQTT devices are still configured with `mqtt:` connections.
 
+The primary broker carries independent equipment. When a separate `mqtt.ha`
+endpoint is configured, TeslaMate, BMW CarData, garage doors and the Tuya
+dehumidifier bridge use that endpoint for their complete integration, including
+availability and commands. Without it they share primary. See
+[broker routing](configuration.md#primary-mqtt-and-ha-hosted-integrations) and
+[paired frontend ownership](pairing.md#mqtt-address-management).
+
 | Purpose | Previous topic | New topic | Payload |
 | --- | --- | --- | --- |
 | DHWR command | `from_stmq/dhwr/set` | `stmq/home/dhwr/command/switch` | `ON` / `OFF` |

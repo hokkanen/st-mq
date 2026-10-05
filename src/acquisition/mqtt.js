@@ -13,10 +13,11 @@ import { createShellyCn105Transport } from '../garage/shelly-cn105.js';
 import { teslamateConfiguration } from '../app/config.js';
 import { createShellyEvseAdapter } from '../charging/shelly-evse.js';
 import { createChargingTeslaCapture } from '../charging/teslamate.js';
+import { mqttRouting } from './mqtt-routing.js';
 
 export { decodeMqttTemperature } from './mqtt-temperature.js';
 
-// Observations and the four permitted native-setting writes share this connection.
+// Each integration owns one explicit MQTT route for observations and commands.
 // Credentials and raw broker errors never enter event logs.
 export async function startMqtt({ engine, store, config, connect = mqtt.connect, canControl = () => true,
   reportStorageFailure = diagnostic => process.stderr.write(`${JSON.stringify(diagnostic)}\n`) }) {
@@ -34,18 +35,18 @@ export async function startMqtt({ engine, store, config, connect = mqtt.connect,
     decoder = createH66Decoder({ deviceId, verifiedRegisters, maxAgeMs: settings.maxAgeMs,
       mqttScaleByRegister: settings.mqttScaleByRegister });
   }
-  const { address, user: username, pw: password } = config.connections.mqtt;
+  const routing = mqttRouting(config);
   const equipmentSettings = config.connections.equipment;
   const equipmentOwnedSignals = equipmentSettings?.ownedSignals ?? [];
   const teslaSettings = teslamateConfiguration(config.connections.teslamate);
   const teslamate = teslaSettings.enabled ? createChargingTeslaCapture({ settings: teslaSettings,
     clock: () => engine.clock(), initialState: store.getState('charging:teslamate'),
-    brokerIdentity: { address, username }, saveState: state => store.setState('charging:teslamate', state),
+    brokerIdentity: routing.identity('ha'), saveState: state => store.setState('charging:teslamate', state),
     onBoundary: event => engine.charging?.receiveVehicleBoundary?.('tesla', event) }) : null;
   const chargingTesla = teslamate;
   if (chargingTesla && engine.charging) engine.charging.teslaCapture = chargingTesla;
   const topicGroups = [
-    ...(engine.charging?.mqttRoutes() ?? []).map(route => ({ id: `vehicle:${route.id}`, vehicleFeedId: route.id, label: route.label,
+    ...(engine.charging?.mqttRoutes() ?? []).map(route => ({ id: `vehicle:${route.id}`, vehicleFeedId: route.id, label: route.label, broker: routing.vehicleBroker(route),
       source: route.provider === 'bmw-cardata' ? 'BMW CarData' : 'MQTT', topics: [
       { role: 'Timestamped vehicle readings', topic: route.topic, direction: 'subscribe' },
     ] })),
@@ -57,21 +58,29 @@ export async function startMqtt({ engine, store, config, connect = mqtt.connect,
       { role: 'Status request', topic: `${deviceId}/HP/CMD`, direction: 'publish' },
       ...(settings.writeEnabled === true ? H66_WRITABLE_REGISTERS.map(index => ({ role: `Setting ${index}`, topic: `${deviceId}/HP/SET/${index}`, direction: 'publish' })) : []),
     ] }] : []),
-    ...(teslamate ? [{ id: 'vehicle:tesla', vehicleFeedId: 'tesla', label: 'Tesla', source: 'TeslaMate', topics: [
+    ...(teslamate ? [{ id: 'vehicle:tesla', vehicleFeedId: 'tesla', label: 'Tesla', source: 'TeslaMate', broker: routing.teslaBroker, topics: [
       { role: 'Vehicle subscription', topic: teslamate.topic, direction: 'subscribe' },
     ] }] : []),
   ];
   if (teslamate) engine.teslamate = teslamate;
   // Every connect explicitly subscribes below. MQTT.js automatic resubscription
   // can otherwise report cached success before the broker acknowledges a route.
-  const client = connect(address, { username, password, reconnectPeriod: 5000, clean: true, connectTimeout: 10_000, queueQoSZero: false, resubscribe: false });
-  const publicationGate = gateMqttPublications(client, { canControl, timeoutMs: settings.readbackTimeoutMs ?? 10_000 });
+  const channels = new Map();
+  let stopping = false, stopped = false, disconnectedRecorded = false, lastSnapshotRequestedAt = null, lastGatewayStatusAt = null;
+  for (const [id, connection] of [['primary', config.connections.mqtt], ...(routing.ha ? [['ha', routing.ha]] : [])]) {
+    const client = connect(connection.address, { username: connection.user, password: connection.pw,
+      reconnectPeriod: 5000, clean: true, connectTimeout: 10_000, queueQoSZero: false, resubscribe: false });
+    channels.set(id, { id, client, gate: gateMqttPublications(client, { canControl, timeoutMs: settings.readbackTimeoutMs ?? 10_000 }),
+      connected: false, generation: 0, ready: false, readinessFailed: false, readinessWaiters: new Set(),
+      vehicleSubscriptions: new Map(), equipmentSubscriptionBuffer: null, teslaSubscriptionBuffer: null, teslaSubscriptionOverflow: false,
+      pendingPublications: new Set(), pendingSubscriptions: new Set() });
+  }
+  const primary = channels.get('primary'), client = primary.client;
   const evseConfig = engine.charging?.configuration?.chargers?.charger2;
-  const evse = evseConfig?.enabled ? createShellyEvseAdapter({ config: evseConfig, broker: config.connections.mqtt, client, store, engine, clock: () => engine.clock(), canControl }) : null;
+  const primaryIdentity = routing.identity('primary');
+  const evse = evseConfig?.enabled ? createShellyEvseAdapter({ config: evseConfig,
+    broker: { address: primaryIdentity.address, user: primaryIdentity.username }, client, store, engine, clock: () => engine.clock(), canControl }) : null;
   if (evse) void engine.charging.setAdapter('charger2', evse);
-  const vehicleSubscriptions = new Map();
-  let connectionGeneration = 0, stopping = false, equipmentSubscriptionBuffer = null, teslaSubscriptionBuffer = null, teslaSubscriptionOverflow = false;
-  let connected = false, stopped = false, disconnectedRecorded = false, lastSnapshotRequestedAt = null, lastGatewayStatusAt = null;
   const source = decoder ? 'husdata-h66' : teslamate ? 'teslamate' : 'mqtt-temperature';
   const h66Signals = decoder ? Object.values(H66_REGISTERS).map(({ signal, unit }) => ({
     source: 'husdata-h66', device: deviceId, signal: signal === 'integral' ? 'heating_integral' : signal, unit,
@@ -88,7 +97,6 @@ export async function startMqtt({ engine, store, config, connect = mqtt.connect,
     if (store.transaction) store.transaction(record); else record();
     for (const observation of observations) engine.rememberObservation?.(observation, at);
   };
-  const pendingPublications = new Set(), pendingSubscriptions = new Set();
   const subscriptionRejected = (topic, error, granted) => Boolean(error || Array.isArray(granted)
     && (!granted.length || !granted.some(row => row.topic === topic && [0, 1, 2].includes(row.qos))));
   const lastErrorAt = new Map();
@@ -109,9 +117,11 @@ export async function startMqtt({ engine, store, config, connect = mqtt.connect,
       }
     }
   };
-  const publish = (topic, payload, options) => new Promise((resolve, reject) => {
-    if (!connected || stopped) { reject(new Error('MQTT unavailable')); return; }
+  const publish = (topic, payload, options, broker = 'primary') => new Promise((resolve, reject) => {
+    const channel = channels.get(broker);
+    if (!channel?.connected || stopped) { reject(new Error('MQTT unavailable')); return; }
     if (!canControl()) { reject(new Error('This instance no longer owns device control')); return; }
+    const { client, pendingPublications } = channel;
     const { noReplay = false, ...publicationOptions } = options ?? {};
     // MQTT.js can defer ID allocation while replaying its outgoing store. Do
     // not enqueue a new movement during that phase. These queue guards match
@@ -153,9 +163,11 @@ export async function startMqtt({ engine, store, config, connect = mqtt.connect,
       removeOutgoing();
     }
   });
-  const refreshSubscriptions = topics => Promise.all([...new Set(topics)].map(topic => new Promise((resolve, reject) => {
-    if (!connected || stopping || stopped) { reject(new Error('MQTT unavailable')); return; }
-    const generation = connectionGeneration; let finished = false;
+  const refreshSubscriptions = (topics, broker = 'primary') => Promise.all([...new Set(topics)].map(topic => new Promise((resolve, reject) => {
+    const channel = channels.get(broker);
+    if (!channel?.connected || stopping || stopped) { reject(new Error('MQTT unavailable')); return; }
+    const { client, pendingSubscriptions } = channel;
+    const generation = channel.generation; let finished = false;
     const finish = error => {
       if (finished) return;
       finished = true; clearTimeout(timer); pendingSubscriptions.delete(finish);
@@ -167,14 +179,15 @@ export async function startMqtt({ engine, store, config, connect = mqtt.connect,
       // Re-subscribing asks the broker to confirm this exact route and may replay
       // retained context. It does not request a new measurement from a publisher.
       client.subscribe(topic, { qos: 1 }, (error, granted) => finish(subscriptionRejected(topic, error, granted)
-        || !connected || stopping || stopped || generation !== connectionGeneration ? new Error('MQTT subscription unavailable') : null));
+        || !channel.connected || stopping || stopped || generation !== channel.generation ? new Error('MQTT subscription unavailable') : null));
     } catch { finish(new Error('MQTT subscription failed')); }
   })));
   const floorOverride = createFloorOverride({ store, settings: config.floorPreheat ?? floorOverrideConfiguration() });
   engine.floorOverride = floorOverride;
   if (engine.executor) engine.executor.floorOverride = floorOverride;
   const equipment = equipmentSettings ? createEquipmentCapture({ engine, store, settings: equipmentSettings, publish, canControl,
-    brokerIdentity: { address, username }, refreshSubscriptions, topicGroups, readbackTimeoutMs: settings.readbackTimeoutMs ?? 10_000,
+    brokerIdentity: primaryIdentity, brokerForDevice: routing.equipmentBroker,
+    brokerIdentityForDevice: routing.equipmentIdentity, refreshSubscriptions, topicGroups, readbackTimeoutMs: settings.readbackTimeoutMs ?? 10_000,
     temperatureReportIntervalMs: config.connections.mqtt.temperatureReportIntervalMs ?? DEFAULT_TEMPERATURE_REPORT_INTERVAL_MS,
     temperatureReportGraceMs: config.connections.mqtt.temperatureReportGraceMs ?? DEFAULT_TEMPERATURE_REPORT_GRACE_MS }) : null;
   const shelly = equipment;
@@ -222,159 +235,192 @@ export async function startMqtt({ engine, store, config, connect = mqtt.connect,
     await publish(`${deviceId}/HP/CMD`, 'GETALL', { qos: 0, retain: false });
   };
   const h66 = decoder ? createH66Controller({ deviceId, publish, requestSnapshot, store, clock: () => engine.clock(), config: settings }) : null;
-  const subscribeChargingSoc = selectedId => {
-    if (!engine.charging || !connected || stopped || stopping) return;
-    const generation = connectionGeneration;
-    for (const { id, topic } of engine.charging.mqttRoutes().filter(route => !selectedId || route.id === selectedId)) {
-      const subscription = { subscribed: false, messages: [] };
-      vehicleSubscriptions.set(topic, subscription);
-      engine.charging.setMqttStatus({ connected: true, subscribed: false, reason: 'awaiting-subscription' }, id);
-      const acknowledged = (error, granted) => {
-        if (!connected || stopped || stopping || generation !== connectionGeneration
-          || vehicleSubscriptions.get(topic) !== subscription || subscription.messages === null
-          || !engine.charging.mqttRoutes().some(route => route.id === id && route.topic === topic)) return;
-        const rejected = subscriptionRejected(topic, error, granted);
-        subscription.subscribed = !rejected;
-        engine.charging.setMqttStatus({ connected: true, subscribed: !rejected, reason: rejected ? 'mqtt-subscription-failed' : null }, id);
-        const buffered = subscription.messages; subscription.messages = null;
-        if (!rejected) for (const message of buffered ?? []) {
-          try { engine.charging.receiveSoc(topic, message.payload, message.packet, message.at); }
-          catch { report('mqtt-observation-rejected'); }
-        }
-      };
-      try { client.subscribe(topic, { qos: 1 }, acknowledged); }
-      catch { acknowledged(new Error('MQTT subscription failed')); }
-    }
+  const matchesTopic = (topic, subscription) => subscription.endsWith('/#')
+    ? topic.startsWith(subscription.slice(0, -1)) : subscription === topic;
+  const finishReadiness = (channel, failed = false) => {
+    channel.readinessFailed ||= failed;
+    channel.ready = channel.connected && !channel.readinessFailed;
+    for (const finish of [...channel.readinessWaiters]) finish(channel.ready ? null : new Error('MQTT primary subscriptions unavailable'));
   };
-  const connectedHandler = () => {
-    if (connected || stopped || stopping) return;
-    const generation = ++connectionGeneration;
-    const currentSubscription = () => connected && !stopped && !stopping && generation === connectionGeneration;
-    connected = true; disconnectedRecorded = false; h66?.setConnected(true);
-    subscribeChargingSoc();
-    garage?.setConnected(true);
-    garageSender?.setConnected(true);
-    let floorSubscriptions = floorOverride.topics.length, floorSubscriptionFailed = false;
-    for (const topic of floorOverride.topics) client.subscribe(topic, { qos: 1 }, (error, granted) => {
-      if (!currentSubscription()) return;
-      if (subscriptionRejected(topic, error, granted)) floorSubscriptionFailed = true;
-      if (--floorSubscriptions === 0) {
-        floorOverride.setConnected(!floorSubscriptionFailed);
-        floorOverride.tick(engine.clock()).catch(() => report('mqtt-floor-unavailable'));
-      }
-    });
-    store.event('mqtt-connected', { source, writesEnabled: Boolean(h66 && settings.writeEnabled === true) }, engine.clock());
-    if (h66) client.subscribe(`${deviceId}/HP/#`, { qos: 0 }, error => {
-      if (!currentSubscription()) return;
-      if (error) { markUnavailable(h66Signals, ['mqtt-subscription-failed']); report('mqtt-subscribe-error'); return; }
-      requestSnapshot().catch(() => report('mqtt-snapshot-request-failed'));
-    });
-    if (shelly) {
-      let subscriptions = shelly.topics.length; const failedTopics = [], confirmedTopics = [];
-      const buffered = { messages: [], bytes: 0, overflow: new Set() };
-      equipmentSubscriptionBuffer = subscriptions ? buffered : null;
-      if (!subscriptions) shelly.setConnected(true);
-      for (const topic of shelly.topics) client.subscribe(topic, { qos: 1 }, (error, granted) => {
-        if (!currentSubscription()) return;
-        if (subscriptionRejected(topic, error, granted)) { failedTopics.push(topic); report('mqtt-shelly-subscribe-error'); }
-        else confirmedTopics.push(topic);
-        if (--subscriptions === 0) {
-          equipmentSubscriptionBuffer = null;
-          shelly.setConnected(true);
-          // Packets can arrive after their own SUBACK while unrelated routes
-          // still subscribe. Keep their original receipt clocks when replaying.
-          for (const message of buffered.messages) {
-            try { shelly.receive(message.topic, message.payload, message.packet, message.receivedAt); }
+  const primaryReady = () => new Promise((resolve, reject) => {
+    if (primary.ready) { resolve(); return; }
+    if (stopped || stopping || primary.readinessFailed) { reject(new Error('MQTT primary subscriptions unavailable')); return; }
+    const finish = error => { clearTimeout(timer); primary.readinessWaiters.delete(finish); error ? reject(error) : resolve(); };
+    const timer = setTimeout(() => finish(new Error('MQTT primary subscription readiness timed out')), 10_000);
+    primary.readinessWaiters.add(finish);
+  });
+  const ready = async () => {
+    const deadline = Date.now() + 10_000;
+    await primaryReady();
+    // Shelly owns its RPC subscriptions directly on the primary client. Wait
+    // for their SUBACK as well, without waiting for a device to be online.
+    while (evse && evse.snapshot().mqtt.subscriptionStatus !== 'subscribed') {
+      if (stopped || stopping || !primary.connected || evse.snapshot().mqtt.subscriptionStatus === 'failed' || Date.now() >= deadline)
+        throw new Error('MQTT primary charger subscriptions unavailable');
+      await new Promise(resolve => setTimeout(resolve, 25));
+    }
+    if (stopped || stopping || !primary.connected || !primary.ready)
+      throw new Error('MQTT primary subscriptions unavailable');
+  };
+  for (const channel of channels.values()) {
+    const { client, vehicleSubscriptions } = channel;
+    const isPrimary = channel.id === 'primary', ownsTesla = channel.id === routing.teslaBroker;
+    const equipmentTopics = shelly?.topicsForBroker(channel.id) ?? [];
+    const connectedHandler = () => {
+      if (channel.connected || stopped || stopping) return;
+      const generation = ++channel.generation;
+      channel.connected = true; channel.ready = false; channel.readinessFailed = false;
+      const currentSubscription = () => channel.connected && !stopped && !stopping && generation === channel.generation;
+      let pending = 1;
+      const subscribe = (topic, options, callback) => {
+        pending++;
+        let acknowledged = false;
+        const done = (error, granted) => {
+          if (acknowledged || !currentSubscription()) return;
+          acknowledged = true;
+          channel.readinessFailed ||= subscriptionRejected(topic, error, granted);
+          try { callback(error, granted); }
+          finally { if (--pending === 0) finishReadiness(channel); }
+        };
+        try { client.subscribe(topic, options, done); }
+        catch { done(new Error('MQTT subscription failed')); }
+      };
+      for (const { id, topic } of (engine.charging?.mqttRoutes() ?? []).filter(route => routing.vehicleBroker(route) === channel.id)) {
+        const subscription = { subscribed: false, messages: [] };
+        vehicleSubscriptions.set(topic, subscription);
+        engine.charging.setMqttStatus({ connected: true, subscribed: false, reason: 'awaiting-subscription', broker: channel.id }, id);
+        subscribe(topic, { qos: 1 }, (error, granted) => {
+          const rejected = subscriptionRejected(topic, error, granted);
+          subscription.subscribed = !rejected;
+          engine.charging.setMqttStatus({ connected: true, subscribed: !rejected, reason: rejected ? 'mqtt-subscription-failed' : null, broker: channel.id }, id);
+          const buffered = subscription.messages; subscription.messages = null;
+          if (!rejected) for (const message of buffered ?? []) {
+            try { engine.charging.receiveSoc(topic, message.payload, message.packet, message.at); }
             catch { report('mqtt-observation-rejected'); }
           }
-          for (const failed of [...failedTopics, ...buffered.overflow]) shelly.subscriptionFailed(failed);
-          try { shelly.confirmSubscriptions?.(confirmedTopics.filter(topic => !buffered.overflow.has(topic))); }
-          catch (error) { report('mqtt-temperature-recovery-failed', error); }
-        }
-      });
-    }
-    if (teslamate) { chargingTesla?.setConnected(false, 'awaiting-subscription'); teslaSubscriptionBuffer = []; teslaSubscriptionOverflow = false; }
-    if (teslamate) client.subscribe(teslamate.topic, { qos: 0 }, (error, granted) => {
-      if (!currentSubscription()) return;
-      const buffered = teslaSubscriptionBuffer; teslaSubscriptionBuffer = null;
-      if (teslaSubscriptionOverflow || !Array.isArray(granted) || subscriptionRejected(teslamate.topic, error, granted)) { teslamate.setConnected(false); chargingTesla?.setConnected(false, 'subscription-failed'); report('mqtt-teslamate-subscribe-error'); }
-      else {
-        teslamate.setConnected(true); chargingTesla?.setConnected(true);
-        for (const message of (buffered ?? [])) {
-          try {
-            chargingTesla?.receive(message.topic, message.payload, message.packet, message.at);
-          } catch { report('mqtt-observation-rejected'); }
-        }
+        });
       }
-    });
-    for (const topic of garage?.topics ?? []) client.subscribe(topic, { qos: 1 }, (error, granted) => {
-      if (!currentSubscription()) return;
-      if (subscriptionRejected(topic, error, granted)) { garage.subscriptionFailed(); report('mqtt-garage-subscribe-error'); }
-    });
-    for (const topic of garageSender?.topics ?? []) client.subscribe(topic, { qos: 1 }, (error, granted) => {
-      if (!currentSubscription()) return;
-      if (subscriptionRejected(topic, error, granted)) { garageSender.subscriptionFailed(); report('mqtt-garage-sender-subscribe-error'); }
-    });
-  };
-  client.on('connect', connectedHandler);
-  client.on('error', () => report('mqtt-error'));
-  const disconnected = () => {
-    if (stopped) return;
-    connected = false; connectionGeneration++; vehicleSubscriptions.clear(); equipmentSubscriptionBuffer = null; teslaSubscriptionBuffer = null; h66?.setConnected(false);
-    teslamate?.setConnected(false);
-    chargingTesla?.setConnected(false);
-    engine.charging?.setMqttStatus({ connected: false, subscribed: false, reason: 'mqtt-disconnected' });
-    shelly?.setConnected(false);
-    garage?.setConnected(false);
-    garageSender?.setConnected(false);
-    floorOverride.setConnected(false);
-    for (const finish of [...pendingPublications]) finish(new Error('MQTT disconnected'));
-    for (const finish of [...pendingSubscriptions]) finish(new Error('MQTT disconnected'));
-    if (!disconnectedRecorded) {
-      markUnavailable(h66Signals, ['mqtt-disconnected']);
-      disconnectedRecorded = true;
-    }
-    report('mqtt-offline');
-  };
-  client.on('offline', disconnected);
-  client.on('close', disconnected);
-  client.on('message', (topic, payload, packet = {}) => {
-    if (!connected || stopped || stopping) return;
-    try {
-      const vehicleSubscription = vehicleSubscriptions.get(topic);
-      if (vehicleSubscription) {
-        if (vehicleSubscription.messages) {
-          // The broker may send retained data before SUBACK. Keep original
-          // reception times and only apply it after this route is acknowledged.
-          if (vehicleSubscription.messages.length >= 32) vehicleSubscription.messages.shift();
-          vehicleSubscription.messages.push({ payload: Buffer.from(payload.subarray(0, 4097)),
-            packet: { retain: packet.retain, dup: packet.dup, qos: packet.qos, messageId: packet.messageId }, at: engine.clock() });
-        } else if (vehicleSubscription.subscribed) engine.charging.receiveSoc(topic, payload, packet, engine.clock());
-        return;
+      if (isPrimary) {
+        disconnectedRecorded = false; h66?.setConnected(true);
+        garage?.setConnected(true); garageSender?.setConnected(true);
+        let floorSubscriptions = floorOverride.topics.length, floorSubscriptionFailed = false;
+        for (const topic of floorOverride.topics) subscribe(topic, { qos: 1 }, (error, granted) => {
+          if (subscriptionRejected(topic, error, granted)) floorSubscriptionFailed = true;
+          if (--floorSubscriptions === 0) {
+            floorOverride.setConnected(!floorSubscriptionFailed);
+            floorOverride.tick(engine.clock()).catch(() => report('mqtt-floor-unavailable'));
+          }
+        });
+        if (h66) subscribe(`${deviceId}/HP/#`, { qos: 0 }, (error, granted) => {
+          if (subscriptionRejected(`${deviceId}/HP/#`, error, granted)) { markUnavailable(h66Signals, ['mqtt-subscription-failed']); report('mqtt-subscribe-error'); return; }
+          requestSnapshot().catch(() => report('mqtt-snapshot-request-failed'));
+        });
+        for (const topic of garage?.topics ?? []) subscribe(topic, { qos: 1 }, (error, granted) => {
+          if (subscriptionRejected(topic, error, granted)) { garage.subscriptionFailed(); report('mqtt-garage-subscribe-error'); }
+        });
+        for (const topic of garageSender?.topics ?? []) subscribe(topic, { qos: 1 }, (error, granted) => {
+          if (subscriptionRejected(topic, error, granted)) { garageSender.subscriptionFailed(); report('mqtt-garage-sender-subscribe-error'); }
+        });
       }
-      if (teslaSubscriptionBuffer && topic.startsWith(teslamate.topic.slice(0, -1))) {
-        if (!teslaSubscriptionOverflow && Buffer.byteLength(payload) <= 4096 && teslaSubscriptionBuffer.length < 128)
-          teslaSubscriptionBuffer.push({ topic, payload: Buffer.from(payload), packet: { retain: packet.retain, dup: packet.dup, qos: packet.qos, messageId: packet.messageId }, at: engine.clock() });
-        else { teslaSubscriptionOverflow = true; teslaSubscriptionBuffer = []; chargingTesla?.setConnected(false, 'subscription-overflow'); }
-        return;
+      store.event('mqtt-connected', { source, broker: channel.id, writesEnabled: Boolean(isPrimary && h66 && settings.writeEnabled === true) }, engine.clock());
+      if (shelly) {
+        let subscriptions = equipmentTopics.length; const failedTopics = [], confirmedTopics = [];
+        const buffered = { messages: [], bytes: 0, overflow: new Set() };
+        channel.equipmentSubscriptionBuffer = subscriptions ? buffered : null;
+        if (!subscriptions) shelly.setConnected(true, channel.id);
+        for (const topic of equipmentTopics) subscribe(topic, { qos: 1 }, (error, granted) => {
+          if (subscriptionRejected(topic, error, granted)) { failedTopics.push(topic); report('mqtt-shelly-subscribe-error'); }
+          else confirmedTopics.push(topic);
+          if (--subscriptions === 0) {
+            channel.equipmentSubscriptionBuffer = null;
+            shelly.setConnected(true, channel.id);
+            // Retain original receipt clocks across SUBACK buffering.
+            for (const message of buffered.messages) {
+              try { shelly.receive(message.topic, message.payload, message.packet, message.receivedAt, channel.id); }
+              catch { report('mqtt-observation-rejected'); }
+            }
+            for (const failed of [...failedTopics, ...buffered.overflow]) shelly.subscriptionFailed(failed, channel.id);
+            try { shelly.confirmSubscriptions?.(confirmedTopics.filter(topic => !buffered.overflow.has(topic)), channel.id); }
+            catch (error) { report('mqtt-temperature-recovery-failed', error); }
+          }
+        });
       }
-      if (engine.charging?.receiveSoc(topic, payload, packet, engine.clock())) return;
-      if (chargingTesla?.receive(topic, payload, packet, engine.clock())) return;
-      if (floorOverride.ingest(topic, payload, packet, engine.clock())) return;
-      if (garage?.receive(topic, payload, packet, engine.clock())) return;
-      if (garageSender?.receive(topic, payload, packet, engine.clock())) return;
-      if (equipmentSubscriptionBuffer) {
-        const matched = shelly.topics.filter(subscription => subscription.endsWith('/#')
-          ? topic.startsWith(subscription.slice(0, -1)) : subscription === topic);
-        if (matched.length) {
-          const buffered = equipmentSubscriptionBuffer, bytes = Buffer.byteLength(payload);
-          if (buffered.messages.length >= 256 || bytes > 65_536 || buffered.bytes + bytes > 262_144)
-            for (const subscription of matched) buffered.overflow.add(subscription);
-          else { buffered.messages.push({ topic, payload: Buffer.from(payload), packet: { retain: packet.retain, dup: packet.dup, qos: packet.qos, messageId: packet.messageId }, receivedAt: engine.clock() }); buffered.bytes += bytes; }
+      if (teslamate && ownsTesla) {
+        chargingTesla.setConnected(false, 'awaiting-subscription'); channel.teslaSubscriptionBuffer = []; channel.teslaSubscriptionOverflow = false;
+        subscribe(teslamate.topic, { qos: 0 }, (error, granted) => {
+          const buffered = channel.teslaSubscriptionBuffer; channel.teslaSubscriptionBuffer = null;
+          if (channel.teslaSubscriptionOverflow || !Array.isArray(granted) || subscriptionRejected(teslamate.topic, error, granted)) {
+            chargingTesla.setConnected(false, 'subscription-failed'); report('mqtt-teslamate-subscribe-error');
+          } else {
+            chargingTesla.setConnected(true);
+            for (const message of buffered ?? []) {
+              try { chargingTesla.receive(message.topic, message.payload, message.packet, message.at); }
+              catch { report('mqtt-observation-rejected'); }
+            }
+          }
+        });
+      }
+      if (--pending === 0) finishReadiness(channel);
+    };
+    const disconnected = () => {
+      if (stopped) return;
+      channel.connected = false; channel.ready = false; channel.generation++; vehicleSubscriptions.clear();
+      channel.equipmentSubscriptionBuffer = null; channel.teslaSubscriptionBuffer = null;
+      if (ownsTesla) chargingTesla?.setConnected(false);
+      for (const route of engine.charging?.mqttRoutes() ?? []) if (routing.vehicleBroker(route) === channel.id)
+        engine.charging.setMqttStatus({ connected: false, subscribed: false, reason: 'mqtt-disconnected', broker: channel.id }, route.id);
+      shelly?.setConnected(false, channel.id);
+      for (const finish of [...channel.pendingPublications]) finish(new Error('MQTT disconnected'));
+      for (const finish of [...channel.pendingSubscriptions]) finish(new Error('MQTT disconnected'));
+      if (isPrimary) {
+        h66?.setConnected(false); garage?.setConnected(false); garageSender?.setConnected(false); floorOverride.setConnected(false);
+        if (!disconnectedRecorded) { markUnavailable(h66Signals, ['mqtt-disconnected']); disconnectedRecorded = true; }
+      }
+      report(isPrimary ? 'mqtt-offline' : 'mqtt-ha-offline');
+    };
+    client.on('connect', connectedHandler);
+    client.on('error', () => report(isPrimary ? 'mqtt-error' : 'mqtt-ha-error'));
+    client.on('offline', disconnected); client.on('close', disconnected);
+    client.on('message', (topic, payload, packet = {}) => {
+      if (!channel.connected || stopped || stopping) return;
+      try {
+        const vehicleSubscription = vehicleSubscriptions.get(topic);
+        if (vehicleSubscription) {
+          if (vehicleSubscription.messages) {
+            if (vehicleSubscription.messages.length >= 32) vehicleSubscription.messages.shift();
+            vehicleSubscription.messages.push({ payload: Buffer.from(payload.subarray(0, 4097)),
+              packet: { retain: packet.retain, dup: packet.dup, qos: packet.qos, messageId: packet.messageId }, at: engine.clock() });
+          } else if (vehicleSubscription.subscribed) engine.charging.receiveSoc(topic, payload, packet, engine.clock());
           return;
         }
-      }
-      if (shelly?.receive(topic, payload, packet, engine.clock())) return;
+        if (ownsTesla && chargingTesla) {
+          if (channel.teslaSubscriptionBuffer && matchesTopic(topic, teslamate.topic)) {
+            if (!channel.teslaSubscriptionOverflow && Buffer.byteLength(payload) <= 4096 && channel.teslaSubscriptionBuffer.length < 128)
+              channel.teslaSubscriptionBuffer.push({ topic, payload: Buffer.from(payload),
+                packet: { retain: packet.retain, dup: packet.dup, qos: packet.qos, messageId: packet.messageId }, at: engine.clock() });
+            else { channel.teslaSubscriptionOverflow = true; channel.teslaSubscriptionBuffer = []; chargingTesla.setConnected(false, 'subscription-overflow'); }
+            return;
+          }
+          if (chargingTesla.receive(topic, payload, packet, engine.clock())) return;
+        }
+        if (isPrimary) {
+          if (floorOverride.ingest(topic, payload, packet, engine.clock())) return;
+          if (garage?.receive(topic, payload, packet, engine.clock())) return;
+          if (garageSender?.receive(topic, payload, packet, engine.clock())) return;
+        }
+        if (channel.equipmentSubscriptionBuffer) {
+          const matched = equipmentTopics.filter(subscription => matchesTopic(topic, subscription));
+          if (matched.length) {
+            const buffered = channel.equipmentSubscriptionBuffer, bytes = Buffer.byteLength(payload);
+            if (buffered.messages.length >= 256 || bytes > 65_536 || buffered.bytes + bytes > 262_144)
+              for (const subscription of matched) buffered.overflow.add(subscription);
+            else { buffered.messages.push({ topic, payload: Buffer.from(payload),
+              packet: { retain: packet.retain, dup: packet.dup, qos: packet.qos, messageId: packet.messageId }, receivedAt: engine.clock() }); buffered.bytes += bytes; }
+            return;
+          }
+        }
+        if (shelly?.receive(topic, payload, packet, engine.clock(), channel.id)) return;
+        if (!isPrimary) return;
       if (!decoder) return;
       if (topic.startsWith(`${deviceId}/HP/STATUS`) && !packet.retain) lastGatewayStatusAt = engine.clock();
       const decoderCheckpoint = decoder.checkpoint(), held = engine.ingestionCheckpoint?.();
@@ -404,10 +450,12 @@ export async function startMqtt({ engine, store, config, connect = mqtt.connect,
         throw error;
       }
       for (const effect of effects) effect();
-    } catch { report('mqtt-observation-rejected'); }
-  });
+      } catch { report('mqtt-observation-rejected'); }
+    });
+    channel.startIfConnected = () => { if (client.connected) connectedHandler(); };
+  }
   const maintenance = h66 ? setInterval(() => {
-    if (!connected || stopped) return;
+    if (!primary.connected || stopped) return;
     requestSnapshot().catch(() => report('mqtt-snapshot-request-failed'));
     h66.reconcile({ now: engine.clock() }).catch(() => {});
   }, intervalMs) : null;
@@ -421,8 +469,12 @@ export async function startMqtt({ engine, store, config, connect = mqtt.connect,
     if (!stopped && !stopping) floorOverride.tick(engine.clock()).catch(() => report('mqtt-floor-unavailable'));
   }, 30_000);
   floorMaintenance.unref?.();
-  if (client.connected) connectedHandler();
-  return { h66, garage, floorOverride, equipment, revoke: () => publicationGate.revoke(), status: () => ({ ...(h66?.status() ?? { connected, writesEnabled: false }), lastSnapshotRequestedAt, lastGatewayStatusAt }),
+  for (const channel of channels.values()) channel.startIfConnected();
+  const brokerStatus = () => Object.fromEntries([...channels].map(([id, channel]) => [id, { connected: channel.connected,
+    ready: channel.ready && (id !== 'primary' || !evse || evse.snapshot().mqtt.subscriptionStatus === 'subscribed') }]));
+  if (equipment) equipment.brokerStatus = brokerStatus;
+  return { h66, garage, floorOverride, equipment, ready, revoke: () => { for (const channel of channels.values()) channel.gate.revoke(); },
+    status: () => ({ ...(h66?.status() ?? { connected: primary.connected, writesEnabled: false }), brokers: brokerStatus(), lastSnapshotRequestedAt, lastGatewayStatusAt }),
     ...(h66 ? { setPhase: args => h66.setPhase(args), writeSettings: (...args) => h66.writeSettings(...args),
       restore: args => h66.restore(args), test: args => h66.test(args), requestSnapshot } : {}),
     close: async ({ restore = true } = {}) => {
@@ -436,8 +488,11 @@ export async function startMqtt({ engine, store, config, connect = mqtt.connect,
         } catch { report('caravan-shutdown-restoration-pending'); }
       }
       if (restore && canControl()) await floorOverride.release({ reason: 'application-shutdown', now: engine.clock() }).catch(() => report('floor-shutdown-restoration-pending'));
-      stopping = true; connectionGeneration++; vehicleSubscriptions.clear(); equipmentSubscriptionBuffer = null; teslaSubscriptionBuffer = null;
-      for (const finish of [...pendingSubscriptions]) finish(new Error('MQTT closed'));
+      stopping = true;
+      for (const channel of channels.values()) {
+        channel.generation++; channel.vehicleSubscriptions.clear(); channel.equipmentSubscriptionBuffer = null; channel.teslaSubscriptionBuffer = null;
+        for (const finish of [...channel.pendingSubscriptions, ...channel.readinessWaiters]) finish(new Error('MQTT closed'));
+      }
       clearInterval(maintenance);
       clearInterval(shellyMaintenance);
       clearInterval(floorMaintenance);
@@ -458,18 +513,20 @@ export async function startMqtt({ engine, store, config, connect = mqtt.connect,
         engine.charging.setMqttStatus({ connected: false, subscribed: false, reason: 'mqtt-disconnected' });
       }
       if (engine.teslamate === teslamate) engine.teslamate = null;
-      if (restore && canControl() && h66 && connected && settings.writeEnabled === true) {
+      if (restore && canControl() && h66 && primary.connected && settings.writeEnabled === true) {
         try { await h66.restore({ now: engine.clock(), reason: 'application-shutdown' }); }
         catch { report('h66-shutdown-restoration-pending'); }
       }
       stopped = true;
-      publicationGate.revoke();
-      for (const finish of [...pendingPublications]) finish(new Error('MQTT closed'));
+      for (const channel of channels.values()) {
+        channel.gate.revoke(); channel.connected = false; channel.ready = false;
+        for (const finish of [...channel.pendingPublications]) finish(new Error('MQTT closed'));
+      }
       await h66?.close();
-      await new Promise(resolve => {
+      await Promise.all([...channels.values()].map(({ client }) => new Promise(resolve => {
         const timer = setTimeout(() => { try { client.stream?.destroy(); } catch {} resolve(); }, 1000);
         try { client.end(true, {}, () => { clearTimeout(timer); resolve(); }); }
         catch { clearTimeout(timer); resolve(); }
-      });
+      })));
     } };
 }

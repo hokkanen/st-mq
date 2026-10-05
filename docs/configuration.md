@@ -506,6 +506,62 @@ assumptions are labelled in the interface; known dated rates remain unchanged.
 Simulation prices remain labelled synthetic and independent of the household
 contract.
 
+## Primary MQTT and HA-hosted integrations
+
+`mqtt.address`, `mqtt.user` and `mqtt.pw` own the primary broker connection.
+One optional `mqtt.ha` object supplies a separate Home Assistant broker. It has
+its own `address`, `user` and `pw`; credentials never inherit from primary.
+Leave it absent or empty to use primary for every integration. Supplying
+credentials without an address is invalid. Broker addresses cannot contain
+credentials; keep those in the separate private fields.
+
+When `mqtt.ha.address` is configured, these integrations use it automatically:
+
+| Integration | Routing basis |
+| --- | --- |
+| TeslaMate | TeslaMate integration |
+| BMW CarData | BMW CarData vehicle provider |
+| Garage doors | Garage door equipment using MQTT |
+| Tuya bridge | Supported MQTT dehumidifier bridge |
+
+Reports, availability, read-only queries, commands and replies use the same
+selected connection. There are no per-device broker selectors and no guesses
+from a device's display name or topic. Other equipment and generic vehicle MQTT
+feeds remain on primary, including H66, direct Shelly devices, the Garage pump
+adapter and probe sender. The optional HA garage-air publisher is not part of
+the four routed integration groups; the default garage temperature source is
+direct Shelly MQTT.
+
+A configured HA connection that is offline never falls back to primary. Its
+integrations become unavailable while independent primary equipment continues
+under its own evidence and protection rules. Neither reconnection nor retained
+messages renew measurement clocks or grant new control authority. Commands are
+not queued for later execution through an unavailable broker.
+
+For an Ubuntu master alongside Home Assistant, this invented sparse override
+keeps primary local and routes the four HA-backed groups to HA's fixed address:
+
+```json
+{
+  "mqtt": {
+    "address": "mqtt://127.0.0.1",
+    "ha": {
+      "address": "mqtt://ha-broker.example.invalid:1885",
+      "user": "example-ha-mqtt-user",
+      "pw": "replace-with-private-ha-mqtt-password"
+    }
+  }
+}
+```
+
+On HA, keep primary `mqtt://core-mosquitto` and leave `mqtt.ha` empty. All
+integrations then share one connection. HA apps and Core keep their fixed broker
+connection during handover; independent devices use the VIP. The broker port
+and listener requirements are part of [paired MQTT setup](pairing.md#mqtt-address-management).
+The separate HA broker is allowed to be remote; pair mode's local-broker rule
+continues to apply to primary. Configuration reviews show these field names but
+conceal addresses and credentials.
+
 ## Section map
 
 The public `options` and `schema` use the same section order. Settings stay with
@@ -515,7 +571,7 @@ larger sections without adding another configuration format.
 | Sections, in file order | Settings they own |
 | --- | --- |
 | `controller`, `garage`, `charging`, `electricity` | Topology, Home operation/heating and web access passwords, Garage presets, local-protection sender and pump adapter, charger/vehicle sources, permanent charging defaults and report retention, electricity tariffs. |
-| `geoloc`, `mqtt`, `entsoe`, `easee`, `teslamate` | Location, broker access and provider connections. `easee.local_ocpp` contains the authenticated local charger listener and explicit authorization tags; see [Easee setup](charging/integrations/easee.md#direct-local-ocpp-telemetry-firmware-344-or-later). |
+| `geoloc`, `mqtt`, `entsoe`, `easee`, `teslamate` | Location, primary broker access, optional `mqtt.ha` access for the four HA-hosted integrations, and provider connections. `easee.local_ocpp` contains the authenticated local charger listener and explicit authorization tags; see [Easee setup](charging/integrations/easee.md#direct-local-ocpp-telemetry-firmware-344-or-later). |
 | `equipment` | The current MQTT/Shelly equipment inventory and device mappings. |
 | `acquisition`, `recording` | Provider polling/freshness and recording/storage settings. |
 | `pair`, `mirror` | Pair peer connection, snapshots, manual handover and recovery; mirror role, SSH connection and snapshots. `controller.topology` selects which is used. |

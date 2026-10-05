@@ -1,5 +1,6 @@
 import { createHash, randomUUID } from 'node:crypto';
 import { equipmentSignature } from '../acquisition/equipment-config.js';
+import { mqttSourceIdentity } from '../pairing/mqtt-source-context.js';
 
 const FEATURES = ['home'];
 const object = value => value !== null && typeof value === 'object' && !Array.isArray(value);
@@ -8,7 +9,8 @@ const digest = value => createHash('sha256').update(JSON.stringify(value)).diges
 // Permissions belong to the configured equipment, never to a global operating
 // mode. Broker/account changes also select a new physical command destination.
 export function heatingAutomationIdentity(config, feature) {
-  const broker = { address: config.connections?.mqtt?.address ?? null, user: config.connections?.mqtt?.user ?? null };
+  const source = mqttSourceIdentity(config, 'primary');
+  const broker = { address: source.address ?? null, user: source.username ?? null };
   if (feature !== 'home') throw new Error('Unknown heating feature.');
   return digest({ input: config.input, broker, native: config.deviceId ?? config.h66?.deviceId ?? null,
     tariff: (config.connections?.equipment?.devices ?? []).filter(device => device.enabled !== false && device.controlsHeat)

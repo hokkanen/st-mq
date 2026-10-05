@@ -176,6 +176,11 @@ export async function start({ config = loadConfig(), readConfig = configurationR
   async function createRuntime() {
     requireRunning();
     runtimeStopPending = null;
+    // A paired handover carries current source identity independently of each
+    // host's transport endpoint. Validate that binding before loading any
+    // equipment permission, consumed vehicle evidence or restoration state.
+    await pairContext?.activateMqttSources?.(config, store);
+    requireRunning();
     await authority?.reconfigure(config.connections.mqtt);
     requireRunning();
     if (['mqtt', 'providers'].includes(config.input) && config.connections.mqtt?.address) {
@@ -202,6 +207,9 @@ export async function start({ config = loadConfig(), readConfig = configurationR
         requireRunning();
       }
       acquisitions.push(acquisition);
+      // A paired master opens its VIP frontend only after primary subscriptions
+      // are acknowledged. The optional HA broker does not gate local operation.
+      if (pairContext) await acquisition.ready();
       engine.equipment = acquisition.equipment ?? null;
       if (acquisition.equipment?.hasHeating) commandTransport.setHeatingRelay(acquisition.equipment.publishHeating, () => {
         const ids = acquisition.equipment.status(clock()).devices.filter(device => device.controls?.tariff).map(device => device.id).sort();

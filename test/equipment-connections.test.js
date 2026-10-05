@@ -8,6 +8,17 @@ const topic = (role, value, direction = 'subscribe') => ({ role, topic: value, d
 const circulation = { id: 'fixture-circulation', label: 'Hot-water circulation', area: 'home', source: 'MQTT',
   kind: 'switch', available: true, topics: [topic('State', 'fixture/circulation/state')], readings: {} };
 
+test('primary and HA broker diagnostics preserve independent health and selected vehicle route', () => {
+  const rows = equipmentConnections({ equipment: { devices: [], brokers: {
+    primary: { connected: true, ready: true }, ha: { connected: false, ready: false },
+  }, topicGroups: [{ id: 'vehicle:bmw', vehicleFeedId: 'bmw', broker: 'ha', topics: [topic('Vehicle', 'fixture/bmw')] }] },
+  charging: { vehicleFeeds: [{ id: 'bmw', label: 'BMW', provider: 'bmw-cardata', topic: 'fixture/bmw',
+    reception: { brokerConnected: false, subscribed: false } }] } });
+  assert.equal(rows.find(row => row.id === 'mqtt-broker:primary').connectionState.label, 'Connected');
+  assert.equal(rows.find(row => row.id === 'mqtt-broker:ha').connectionState.label, 'Disconnected');
+  assert.equal(rows.find(row => row.kind === 'vehicle').mqttStatus.broker, 'ha');
+});
+
 test('home connections show pump, temperatures in configured order, circulation and tariff while preserving MQTT routes', () => {
   const temperatures = ['Upstairs', 'Downstairs', 'Bedroom'].map(label => ({ id: `fixture-${label.toLowerCase()}`,
     label, area: 'home', kind: 'temperature', source: 'MQTT',

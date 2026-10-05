@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { loadConfig as readConfig, configurationSource, validateSettings, recordingConfiguration, acquisitionConfiguration, teslamateConfiguration, indoorSensorWeightsConfiguration } from '../src/app/config.js';
+import { loadConfig as readConfig, configurationSource, validateSettings, recordingConfiguration, acquisitionConfiguration, teslamateConfiguration, indoorSensorWeightsConfiguration, haMqttConfiguration } from '../src/app/config.js';
 import { chargingConfiguration } from '../src/charging/config.js';
 import { mkdtempSync, rmSync, writeFileSync, readFileSync, mkdirSync } from 'node:fs';
 import { homedir, tmpdir } from 'node:os';
@@ -86,6 +86,65 @@ test('TeslaMate opt-in uses existing MQTT and validates exact car/geofence/names
   const config = loadConfig({ STMQ_INPUT: 'providers', STMQ_CONFIG: path }, directory);
   assert.equal(config.connections.teslamate.enabled, true);
   assert.equal(config.connections.teslamate.homeGeofence, 'Home');
+});
+test('optional HA MQTT keeps primary defaults and uses only its own credentials', t => {
+  const directory = mkdtempSync(join(tmpdir(), 'stmq-ha-mqtt-config-'));
+  t.after(() => rmSync(directory, { recursive: true, force: true }));
+  const path = join(directory, 'fixture.json');
+  const read = ha => {
+    const source = JSON.stringify({ mqtt: { address: 'mqtt://127.0.0.1', user: 'synthetic-primary-user', pw: 'synthetic-primary-password',
+      ...(ha === undefined ? {} : { ha }) } });
+    writeFileSync(path, source, { mode: 0o600 });
+    const config = loadConfig({ STMQ_INPUT: 'mqtt', STMQ_CONFIG: path }, directory);
+    assert.equal(readFileSync(path, 'utf8'), source);
+    return config.connections.mqtt;
+  };
+  for (const ha of [undefined, {}, { address: '', user: '', pw: '' }]) assert.equal(read(ha).ha, undefined);
+  const secondary = read({ address: 'mqtt://ha-broker.invalid:1885' });
+  assert.equal(secondary.address, 'mqtt://127.0.0.1');
+  assert.equal(secondary.user, 'synthetic-primary-user');
+  assert.deepEqual(secondary.ha, { address: 'mqtt://ha-broker.invalid:1885', user: '', pw: '' });
+  assert.deepEqual(read({ address: 'mqtts://ha-broker.invalid', user: 'synthetic-ha-user', pw: 'synthetic-ha-password' }).ha,
+    { address: 'mqtts://ha-broker.invalid', user: 'synthetic-ha-user', pw: 'synthetic-ha-password' });
+  assert.equal(haMqttConfiguration({ address: 'wss://ha-broker.invalid/mqtt' }).address, 'wss://ha-broker.invalid/mqtt');
+  const manifest = JSON.parse(readFileSync(new URL('../config.json', import.meta.url), 'utf8'));
+  assert.deepEqual(manifest.options.mqtt.ha, {}, 'Supervisor requires optional nested dictionary containers');
+  assert(Object.values(manifest.schema.mqtt.ha).every(type => type.endsWith('?')));
+});
+test('HA MQTT rejects malformed, ambiguous and unsupported settings without exposing credentials', t => {
+  const directory = mkdtempSync(join(tmpdir(), 'stmq-invalid-ha-mqtt-'));
+  t.after(() => rmSync(directory, { recursive: true, force: true }));
+  const path = join(directory, 'fixture.json');
+  for (const ha of [null, [], 'synthetic-private-value', { address: null }, { address: false },
+    { user: 'synthetic-private-user' }, { pw: 'synthetic-private-password' },
+    { address: 'mqtt://ha.invalid', pw: null }, { address: 'mqtt://ha.invalid', fallback: true },
+    ...['ha.invalid', 'http://ha.invalid', 'mqtt://', 'mqtt://ha.invalid:0', 'mqtt://ha.invalid/topic',
+      'mqtt://ha.invalid?clientId=synthetic-private', 'mqtt://ha.invalid#synthetic-private',
+      'mqtt://synthetic-private-user:synthetic-private-password@ha.invalid', ' mqtt://ha.invalid',
+      'mqtt://ha.invalid\n'].map(address => ({ address }))]) {
+    const source = JSON.stringify({ mqtt: { ha } });
+    writeFileSync(path, source, { mode: 0o600 });
+    for (const input of ['mqtt', 'simulated']) assert.throws(() => loadConfig({ STMQ_INPUT: input, STMQ_CONFIG: path }, directory),
+      error => /mqtt.ha/.test(error.message) && !error.message.includes('synthetic-private'));
+    assert.equal(readFileSync(path, 'utf8'), source);
+  }
+});
+test('paired HA MQTT may be remote while primary stays local and cannot follow the VIP', t => {
+  const directory = mkdtempSync(join(tmpdir(), 'stmq-paired-ha-mqtt-'));
+  t.after(() => rmSync(directory, { recursive: true, force: true }));
+  const path = join(directory, 'fixture.json');
+  const options = { controller: { input: 'mqtt', topology: 'pair' }, mqtt: { address: 'mqtt://127.0.0.1',
+    ha: { address: 'mqtt://192.0.2.20:1885' } }, pair: { pair_id: 'synthetic-pair',
+    token: 'synthetic-pair-token-longer-than-thirty-two-characters', peer_url: 'http://192.0.2.20:1244',
+    vip_interface: 'eth0', vip_address: '192.0.2.30' } };
+  writeFileSync(path, JSON.stringify(options), { mode: 0o600 });
+  const config = loadConfig({ STMQ_CONFIG: path }, directory);
+  assert.equal(config.pair.mqtt.address, 'mqtt://127.0.0.1');
+  assert.equal(config.connections.mqtt.ha.address, 'mqtt://192.0.2.20:1885');
+  assert.equal(config.role, 'slave', 'Configuring a second broker grants no pair authority');
+  options.mqtt.ha.address = 'mqtt://192.0.2.30:1883';
+  writeFileSync(path, JSON.stringify(options), { mode: 0o600 });
+  assert.throws(() => loadConfig({ STMQ_CONFIG: path }, directory), /fixed HA broker address/);
 });
 test('current equipment topics are exact, own each sensor and preserve the private source', t => {
   const directory = mkdtempSync(join(tmpdir(),'stmq-temperature-config-')); t.after(() => rmSync(directory,{recursive:true,force:true}));

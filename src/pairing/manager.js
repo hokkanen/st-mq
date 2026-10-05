@@ -9,6 +9,7 @@ import { acceptsLineage, compareAuthority, NODE_PATTERN, PairState, pairError, v
 import { PairPeer, publicPairError } from './peer.js';
 import { createReplicaPublicationGuard, receiveSnapshot, SnapshotRepository, validateSnapshot, verifySnapshot } from './snapshots.js';
 import { VirtualIP, VIP_ERRORS } from './vip.js';
+import { MQTT_FRONTEND_ERRORS } from './mqtt-frontend.js';
 import { createControllerAnnouncements } from './announcements.js';
 import { copySnapshot, ownedDirectory, readReplicaPublication, syncDirectory } from '../replication/publication.js';
 import { databaseErrorDetails, databaseErrorGuidance } from '../storage/database-errors.js';
@@ -150,7 +151,7 @@ export class PairManager {
       if (this.state.value.role === 'master' && !this.state.value.transition) await this.startPrimary();
       else {
         if (this.state.value.role === 'master') await this.state.update({ role: 'protected', reason: 'interrupted_handover' });
-        try { await this.vip.release(); this.controlReleased = true; }
+        try { await this.releaseTransport(); this.controlReleased = true; }
         catch (error) {
           // A broken address helper must not make protected history and setup
           // diagnostics inaccessible. No controller is started on this path.
@@ -165,7 +166,7 @@ export class PairManager {
       if (this.state.value.epoch === startingEpoch) {
         this.activeAllowed = false;
         this.error = publicPairError(error);
-        await this.vip.release().catch(() => {});
+        await this.releaseTransport().catch(() => {});
         if (!this.activationFallbackReady || this.state.value.role !== 'protected') throw error;
       } else if (!this.canControl() && this.state.value.role !== 'protected') throw error;
     }
@@ -235,6 +236,13 @@ export class PairManager {
     return task;
   }
 
+  async releaseTransport() {
+    // Removing an address does not close established broker or NAT sessions.
+    // Never acknowledge release before all VIP-owned connections have closed.
+    await this.hooks.stopTransport?.();
+    await this.vip.release();
+  }
+
   async startPrimary() {
     if (this.stopping || this.closed) throw pairError('stopped');
     const activationEpoch = this.state.value.epoch, activationDbPath = this.state.value.activeDbPath;
@@ -243,6 +251,9 @@ export class PairManager {
     this.controlReleased = false;
     let code = 'vip_failed';
     try {
+      await this.hooks.preparePrimary?.();
+      if (this.stopping || this.closed) throw pairError('stopped');
+      if (!ownsActivation()) throw pairError('authority_changed');
       await this.vip.acquire();
       if (this.stopping || this.closed) throw pairError('stopped');
       if (!ownsActivation()) throw pairError('authority_changed');
@@ -266,9 +277,14 @@ export class PairManager {
     } catch (error) {
       if (!ownsActivation()) throw pairError('authority_changed');
       this.activeAllowed = false;
+      this.hooks.revokeControl?.();
       if (code === 'runtime_failed' && databaseErrorDetails(error)) code = error.code;
-      if (VIP_ERRORS.has(error?.code) || ['mqtt_local_required', 'mqtt_resolution_failed'].includes(error?.code)) code = error.code;
-      try { await this.vip.release(); }
+      if (VIP_ERRORS.has(error?.code) || MQTT_FRONTEND_ERRORS.has(error?.code)
+        || ['mqtt_local_required', 'mqtt_resolution_failed', 'mqtt_source_context_invalid'].includes(error?.code)) code = error.code;
+      let stopped = true;
+      try { await this.hooks.stopControl?.({ restore: false }); }
+      catch { stopped = false; }
+      try { await this.releaseTransport(); }
       catch (releaseError) { code = VIP_ERRORS.has(releaseError?.code) ? releaseError.code : 'vip_release_failed'; }
       if (this.stopping || this.closed) throw pairError('stopped');
       if (!ownsActivation()) throw pairError('authority_changed');
@@ -283,8 +299,7 @@ export class PairManager {
         return { role: 'protected', reason: 'activation_failed', activationError: code, transition: null, release: null };
       }));
       this.error = code;
-      await this.hooks.stopControl?.({ restore: false });
-      this.controlReleased = this.vip.status().owned === false && !this.vip.status().error;
+      this.controlReleased = stopped && this.vip.status().owned === false && !this.vip.status().error;
       await this.startReplica();
       this.activationFallbackReady = true;
       throw pairError(code);
@@ -417,7 +432,8 @@ export class PairManager {
           await this.state.update({ role: 'protected', reason, release: null, transition: null });
         });
       } catch (error) { persistenceError = error; }
-      const [released, stopped] = await Promise.allSettled([this.vip.release(), this.hooks.stopControl?.({ restore: false })]);
+      const [stopped] = await Promise.allSettled([this.hooks.stopControl?.({ restore: false })]);
+      const [released] = await Promise.allSettled([this.releaseTransport()]);
       if (persistenceError) { this.error = 'invalid_pair_state'; throw persistenceError; }
       const failure = released.status === 'rejected' ? pairError(VIP_ERRORS.has(released.reason?.code) ? released.reason.code : 'vip_release_failed')
         : stopped.status === 'rejected' ? pairError('runtime_failed') : null;
@@ -640,6 +656,7 @@ export class PairManager {
     if (this.state.value.role === 'protected' && this.state.value.everWritten && this.state.value.activeDbPath && !handover) {
       const source = await this.exportSnapshot({ force: true });
       await verifySnapshot(join(this.snapshots.directory, `export-${source.generation}.sqlite`), source, this.abort.signal);
+      await this.hooks.authorizeMqttPromotion?.({ dbPath: join(this.snapshots.directory, `export-${source.generation}.sqlite`) });
       await this.hooks.closeReplica?.();
       const epoch = randomUUID();
       await this.serialized(() => this.state.update({ role: 'master', epoch, sequence: 0,
@@ -655,6 +672,7 @@ export class PairManager {
       || publication.claim?.epoch !== accepted.epoch || publication.claim?.nodeId !== accepted.nodeId
       || publication.sequence !== accepted.sequence) throw pairError('verification_failed');
     await verifySnapshot(publication.dbPath, publication, this.abort.signal);
+    if (!handover) await this.hooks.authorizeMqttPromotion?.({ dbPath: publication.dbPath });
     await this.hooks.closeReplica?.();
     const epoch = randomUUID(), destination = join(this.config.directory, `master-${epoch}.sqlite`);
     await copySnapshot(publication.dbPath, destination);
@@ -674,9 +692,11 @@ export class PairManager {
     if (this.state.value.recovery?.releaseOperation) throw pairError('invalid_transition');
     const claim = this.state.claim(), token = randomUUID();
     const ocpp = await this.hooks.handoverRequirements?.() ?? null;
-    const remote = await this.peer.request('handover-prepare', { claim, token, ocpp });
+    const mqtt = await this.hooks.mqttHandoverRequirements?.() ?? null;
+    const remote = await this.peer.request('handover-prepare', { claim, token, ocpp, mqtt });
     if (remote.role !== 'slave') throw pairError('invalid_transition');
     if (!Object.hasOwn(remote, 'ocpp') || !isDeepStrictEqual(remote.ocpp, ocpp)) throw pairError('ocpp_handover_not_ready');
+    if (!Object.hasOwn(remote, 'mqtt') || !isDeepStrictEqual(remote.mqtt, mqtt)) throw pairError('mqtt_handover_not_ready');
     if (!this.canControl() || this.state.value.epoch !== claim.epoch) throw pairError('authority_changed');
     await this.state.update(value => {
       if (!this.canControl() || value.epoch !== claim.epoch) throw pairError('authority_changed');
@@ -687,7 +707,7 @@ export class PairManager {
       // demotion can still synchronously revoke the gate during this await.
       await this.hooks.stopControl?.({ restore: true });
       this.activeAllowed = false;
-      await this.vip.release();
+      await this.releaseTransport();
       this.controlReleased = true;
       if (this.state.value.role !== 'master') throw pairError('authority_changed');
       const metadata = await this.exportSnapshot({ force: true });
@@ -712,8 +732,10 @@ export class PairManager {
       this.nextSyncAt = 0;
     } catch (error) {
       this.activeAllowed = false;
+      this.hooks.revokeControl?.();
       await this.state.update({ role: 'protected', reason: 'interrupted_handover' });
-      await this.vip.release().catch(() => {});
+      await this.hooks.stopControl?.({ restore: false }).catch(() => {});
+      await this.releaseTransport().catch(() => {});
       await this.startReplica();
       throw error;
     }
@@ -831,16 +853,21 @@ export class PairManager {
     if (operation === 'handover-prepare') {
       if (!validClaim(body.claim) || body.claim.role !== 'master' || !NODE_PATTERN.test(body.token ?? '')) throw pairError('invalid_transition');
       if (!Object.hasOwn(body, 'ocpp')) throw pairError('ocpp_handover_not_ready');
+      if (!Object.hasOwn(body, 'mqtt') || !this.hooks.prepareMqttHandover
+        && !isDeepStrictEqual(body.mqtt, await this.hooks.mqttHandoverRequirements?.() ?? null))
+        throw pairError('mqtt_handover_not_ready');
       await this.assertReplica(body.claim);
       if (this.busy) throw pairError('peer_busy');
       this.busy = true;
       try {
+        await this.hooks.preparePrimary?.();
+        await this.hooks.prepareMqttHandover?.({ requirements: body.mqtt, token: body.token });
         if (body.ocpp !== null && (!this.hooks.prepareHandover || !this.hooks.verifyHandover)) throw pairError('ocpp_handover_not_ready');
         await this.hooks.prepareHandover?.(body.ocpp);
         await this.assertReplica(body.claim);
         await this.state.update({ transition: { kind: 'handover', phase: 'prepared', token: body.token,
-          peerNodeId: body.claim.nodeId, epoch: body.claim.epoch, ocpp: body.ocpp } });
-        return { ...this.state.claim(), ocpp: body.ocpp };
+          peerNodeId: body.claim.nodeId, epoch: body.claim.epoch, ocpp: body.ocpp, mqtt: body.mqtt } });
+        return { ...this.state.claim(), ocpp: body.ocpp, mqtt: body.mqtt };
       } finally { this.busy = false; }
     }
     if (operation === 'handover-stage') {
@@ -852,6 +879,8 @@ export class PairManager {
         this.syncAbort?.abort(pairError('authority_changed')); await this.syncTask;
         const publication = await this.installReplica(metadata, { signal: this.abort.signal });
         await this.hooks.verifyHandover?.({ dbPath: publication.dbPath, requirements: this.state.value.transition.ocpp });
+        await this.hooks.verifyMqttHandover?.({ dbPath: publication.dbPath, requirements: this.state.value.transition.mqtt,
+          token: body.token });
         await this.state.update({ transition: { ...this.state.value.transition, phase: 'staged' } });
         return this.state.claim();
       } finally { this.busy = false; }
@@ -860,12 +889,15 @@ export class PairManager {
       if (this.state.value.transition?.token !== body.token || this.state.value.transition.phase !== 'staged') throw pairError('invalid_transition');
       if (this.busy) throw pairError('peer_busy');
       const remote = await this.peer.request('status', { claim: this.state.claim(), sync: publicSync(this.sync) });
-      if (remote.claim?.role !== 'protected' || remote.claim.transition?.phase !== 'released') throw pairError('invalid_transition');
+      if (remote.claim?.role !== 'protected' || remote.claim.transition?.phase !== 'released'
+        || remote.controlReleased !== true) throw pairError('invalid_transition');
       this.busy = true;
       try {
         const publication = await readReplicaPublication(this.config.snapshotDirectory);
         if (!publication || publication.generation !== this.state.value.accepted?.generation) throw pairError('verification_failed');
         await this.hooks.verifyHandover?.({ dbPath: publication.dbPath, requirements: this.state.value.transition.ocpp });
+        await this.hooks.authorizeMqttHandover?.({ dbPath: publication.dbPath, requirements: this.state.value.transition.mqtt,
+          token: body.token });
         await this.promote({ handover: true });
         return { ...this.state.claim(), accepted: this.state.value.accepted };
       }
@@ -928,7 +960,7 @@ export class PairManager {
     this.prepareShutdown();
     this.closed = true;
     this.activeAllowed = false;
-    await Promise.allSettled([this.peer.close(), this.announcements?.close(), this.vip.release()]);
+    await Promise.allSettled([this.peer.close(), this.announcements?.close(), this.releaseTransport()]);
     await Promise.allSettled([this.polling, this.syncTask, this.demoting, ...this.localActions]);
     await this.lock;
     if (!preserveState) await this.state.close();

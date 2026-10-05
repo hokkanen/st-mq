@@ -27,15 +27,19 @@ controller configuration provisioned locally before it can take over.
 
 Use two fixed management addresses and reserve a third, unused IPv4 address as
 the broker's virtual IP on their common LAN/subnet. Keep that address outside
-the DHCP allocation range. Devices and other MQTT clients use the virtual IP.
-ST-MQ itself connects to the broker on its own computer, through loopback, a
+the DHCP allocation range. Independent MQTT devices use the virtual IP; apps
+and publishers that require HA keep using its fixed broker endpoint. ST-MQ's
+primary connection uses the broker on its own computer, through loopback, a
 local interface address or the Home Assistant `core-mosquitto` app. ST-MQ
-rejects a remote broker or its own virtual IP as the controller's broker.
+rejects a remote primary broker or its own virtual IP as primary. Ubuntu can
+also configure `mqtt.ha` for TeslaMate, BMW CarData, garage doors and the Tuya
+dehumidifier bridge. See [MQTT routing](configuration.md#primary-mqtt-and-ha-hosted-integrations).
 
 Configure equivalent MQTT users, permissions and required listeners on both
-brokers. Moving the address causes clients to reconnect; it does not move
-existing TCP connections, retained messages, broker sessions or queued MQTT
-messages. Fresh measurements must be reacquired after takeover. ST-MQ's database
+brokers. The master owns a TCP frontend at `VIP:1883` and closes its accepted
+connections before releasing the VIP, forcing those clients to reconnect.
+Fixed HA connections remain open. This does not transfer retained messages,
+broker sessions or queued MQTT messages. Fresh measurements must be reacquired after takeover. ST-MQ's database
 copy is separate from the broker's data and cannot provide a lossless MQTT
 handover.
 
@@ -244,6 +248,50 @@ uses different storage mounts, preserve and replace those selected paths instead
 
 ## MQTT address management
 
+The controlling runtime owns a TCP frontend bound only to `VIP:1883`. It forwards
+the connection to the configured local primary broker without inspecting,
+buffering for later delivery or changing MQTT messages. Authentication stays
+with the broker. Protocol bytes pass through unchanged; devices must use the
+same MQTT transport as the primary endpoint. There is no extra broker process
+or bidirectional topic bridge. Both existing brokers keep running.
+
+The broker's own listener must leave `VIP:1883` free. A normal HA/Ubuntu setup is:
+
+| Client | Destination |
+| --- | --- |
+| Independent equipment | `VIP:1883` |
+| HA apps and HA ST-MQ | `core-mosquitto:1883` on HA's internal app network |
+| External fixed HA clients and Ubuntu's `mqtt.ha` | HA fixed address, host port `1885` |
+| Ubuntu ST-MQ and its frontend upstream | `127.0.0.1:1883` |
+
+Publish HA Mosquitto's container port 1883 as host port 1885, after checking that
+the host port is free. Bind Ubuntu Mosquitto's listener to loopback instead of
+all host addresses. A wildcard listener or Docker port publication on host 1883
+would conflict with the frontend or intercept VIP traffic. The one-time broker
+port/binding changes require a planned broker restart and adjustment of any
+fixed-address clients that used the old host port. Internal HA clients using
+`core-mosquitto:1883` retain that endpoint. Ordinary handovers do not restart
+either broker.
+
+Before handover, the receiving computer checks its local broker TCP endpoint
+and whether it can bind the prospective frontend port. The probe has no MQTT
+credentials or device commands; it proves TCP reachability, not authentication,
+device subscriptions or eventual recovery. The master opens its frontend only
+after primary MQTT subscriptions are ready. Losing an optional HA connection
+does not block independent equipment from reconnecting.
+
+The peers must agree on the current frontend implementation, VIP port and wire
+protocol before the old master stops. A missing or different frontend contract
+blocks handover. Install the same current implementation on both computers
+before the first handover; there is no mixed-version transport bridge.
+
+The frontend bounds concurrent sessions and connection establishment, uses
+stream backpressure, and closes both ends when either end fails. Demotion stops
+accepting connections and closes all accepted frontend/upstream sockets while
+the old master still owns the VIP. Stopping a listening socket alone would leave
+existing TCP connections alive. Pair authority, device evidence and restoration
+rules still govern every command independently of frontend readiness.
+
 The address helper accepts only acquisition or release of a locally configured
 interface/address pair. Its root-owned policy is
 `/etc/st-mq-vip/policy.json`, with this structure:
@@ -371,17 +419,60 @@ its native settings. Directly connected devices can recover independently of HA.
 
 When both computers are available and the slave is ready, use **Hand over to
 the other computer** on the master and confirm the operation. The old master
-finishes its control work while it still owns authority, prepares the final
-verified history and releases its role/address. The new master then starts
-its local controller and owns the MQTT address. Clients reconnect to that
-broker, and fresh input becomes available according to their normal publishing
-schedule.
+finishes required restoration and control work while it still owns authority,
+closes VIP MQTT and local OCPP connections, prepares the final verified history
+and releases its role/address. The new master then starts its local controller,
+owns the MQTT address and opens its frontend after primary subscriptions are
+ready. Devices reconnect to the new local broker; fixed HA clients retain their
+connections. Fresh input becomes available according to each device's normal
+publishing schedule. A transferred master role and listening frontend are not
+proof that every device has recovered. Check device connection status and fresh
+reports separately, including OCPP.
 
 The dashboard may briefly reconnect while its runtime changes. An accepted
 request is not yet a completed handover: wait for the confirmed role. If the
 response is lost, **Recheck the same request** uses its original identifier;
 it does not create another promotion or handover. A browser reload retains
 that pending identifier. It never retries a promotion automatically.
+
+### MQTT source identity across computers
+
+The two computers use different broker addresses even when they receive the
+same equipment and vehicle reports. Those transport addresses must not reset
+saved Home permission, Garage intent, charger instructions, Caravan settings
+or consumed vehicle-identification evidence during a handover.
+
+The active current master initializes one `pair:mqtt-source-context` record
+from its current primary and HA source identities. An absent separate HA
+connection uses primary's identity. This current record travels in verified
+snapshots, with a digest of the current effective integration definitions. It
+does not scan, translate or rewrite existing equipment state or evidence.
+The original source identities remain stable; current transport addresses,
+connection health and message freshness remain separate.
+
+Handover preparation compares the current equipment/provider contract and
+pins the receiving computer's actual routes to that operation. The final
+snapshot must contain the same source context and contract. Only after the
+old master confirms control release does activation commit the local binding.
+Its private `mqtt-source-context.json` file lives in the pair state directory.
+A restart must match that binding; changing broker addresses or users cannot
+silently reuse earlier equipment authority. Ordinary equipment configuration
+edits still apply their own identity boundaries and update the current
+contract for the next transfer.
+
+An explicitly confirmed outage promotion may bind its current routes after
+validating the accepted snapshot's existing source context and current
+integration definitions. A replica cannot invent missing source context from
+its own endpoints. A copied database, retained MQTT publication or a binding
+record alone never grants command permission or proves a live device identity.
+Malformed or contradictory context stays protected instead of being repaired
+or reset automatically.
+
+For the initial installation of this implementation, start the already
+authoritative HA master with its existing internal broker address before the
+first new handover. That preserves its current identity bytes while establishing
+the source context. Install the same current implementation on both peers and
+align their effective equipment/provider definitions before transferring control.
 
 ### Local Easee charger continuity
 
@@ -575,6 +666,10 @@ does not clear protection or promote the computer automatically.
 | Address release failed | Keep this computer protected. Check the helper and address ownership before promoting either computer. |
 | MQTT broker must be local | Point this controller at its local broker, such as `mqtt://127.0.0.1`, with credentials in the separate MQTT fields. Devices use the virtual IP. |
 | MQTT name cannot be resolved | Check the local broker hostname; `core-mosquitto` is the Home Assistant app alias. |
+| Device MQTT listener unavailable | Free host port 1883 for the VIP frontend. Bind the Linux broker to loopback and publish HA's broker on a separate fixed host port. |
+| Local MQTT broker unavailable | Restore the configured local broker's TCP listener before retrying. This readiness probe does not verify credentials. |
+| MQTT handover not ready | Run the same current frontend implementation on both peers and match the VIP port and wire protocol. |
+| MQTT source context invalid | Match the current integration definitions and preserve the pair's source context and local route binding. Route changes require an explicitly verified handover or promotion; do not delete binding files to bypass the check. |
 
 Fix saved configuration outside the dashboard, restart when configuration changed,
 then explicitly retry promotion after confirming that no other controller owns

@@ -1,6 +1,7 @@
 import { join } from 'node:path';
 import { createHash, randomUUID } from 'node:crypto';
 import { existsSync } from 'node:fs';
+import { isDeepStrictEqual } from 'node:util';
 import { mkdir, rm } from 'node:fs/promises';
 import { configurationSource } from '../app/config.js';
 import { inheritConfigurationSnapshot } from '../app/configuration-preview.js';
@@ -11,6 +12,9 @@ import { databaseErrorDetails } from '../storage/database-errors.js';
 import { requireLocalBroker } from './config.js';
 import { PairManager } from './manager.js';
 import { ocppHandoverHooks } from './ocpp.js';
+import { MqttFrontend } from './mqtt-frontend.js';
+import { createMqttSourceContext } from './mqtt-source-context.js';
+import { pairError } from './state.js';
 import { archiveRoot, createResetArchive, resumeResetArchive, selectResetDatabase } from './reset-storage.js';
 import { resetRestorationStatus } from './reset-safety.js';
 
@@ -30,6 +34,8 @@ async function prepareAddonVipPolicy(config) {
 export async function startPaired({ config, readConfig, clock = Date.now, providerOptions, mqttOptions,
   startRuntime, installSignalHandlers = true, managerFactory = options => new PairManager(options),
   validateBroker = requireLocalBroker, recoveryModule = () => import('../recovery/service.js'),
+  frontendFactory = options => new MqttFrontend(options),
+  sourceContextFactory = createMqttSourceContext,
   managerOptions = {}, prepareVipPolicy = prepareAddonVipPolicy, snapshotSource = createSourceSnapshot,
   resetStorage = { createResetArchive, resumeResetArchive, selectResetDatabase } } = {}) {
   let runtime = null, manager, closed = false, latestOperation = null;
@@ -41,8 +47,16 @@ export async function startPaired({ config, readConfig, clock = Date.now, provid
   let finishStartup;
   const startupSettled = new Promise(resolve => { finishStartup = resolve; });
   const requireOpen = () => { if (closing) throw requestError('The instance is shutting down.'); };
-  let runtimeStarting = null, controllerToken = null;
+  let runtimeStarting = null, runtimeStopping = null, controllerToken = null;
   let replicaAbort = null;
+  let initialMasterSeedAllowed = false;
+  const mqttSources = sourceContextFactory({ configuration: () => manager?.canControl() && runtime?.engine?.config?.connections
+    ? runtime.engine.config : config, directory: config.pair.directory });
+  const frontend = frontendFactory({ connection: config.connections.mqtt, vip: config.pair.vip,
+    onFailure: () => {
+      hooks.revokeControl();
+      if (!closed && !closing && manager?.canControl()) return manager.demote('mqtt_frontend_unavailable');
+    } });
   const operations = new Map(), handlers = new Map();
   const runtimeConfiguration = next => inheritConfigurationSnapshot(next, { ...next, role: 'master', dbPath: primaryPath });
   function resetStatus() {
@@ -62,7 +76,7 @@ export async function startPaired({ config, readConfig, clock = Date.now, provid
     status: () => {
       const status = manager.status(), reset = resetStatus();
       const historyBusy = Boolean(runtime?.historyRecovery?.working()), job = runtime?.historyRecovery?.currentJob();
-      return { ...status, busy: status.busy || historyBusy,
+      return { ...status, mqttFrontend: frontend.status(), busy: status.busy || historyBusy,
         actions: { ...Object.fromEntries(Object.entries(status.actions ?? {}).map(([key, allowed]) => [key, allowed && !historyBusy])),
           reset: !reset.blockedReason }, reset,
         ...(latestOperation ? { uiOperation: { ...latestOperation,
@@ -132,6 +146,21 @@ export async function startPaired({ config, readConfig, clock = Date.now, provid
     revokeControl() {
       if (controllerToken) controllerToken.revoked = true;
       runtime?.revokeControl?.();
+      void frontend.stop().catch(() => {});
+    },
+    stopTransport: () => frontend.stop(),
+    mqttHandoverRequirements: () => ({ ...frontend.handoverRequirements(), sources: mqttSources.requirements(runtime?.store) }),
+    async prepareMqttHandover({ requirements, token }) {
+      const { sources, ...transport } = requirements ?? {};
+      if (!isDeepStrictEqual(transport, frontend.handoverRequirements())) throw pairError('mqtt_handover_not_ready');
+      await mqttSources.prepare({ requirements: sources, token });
+    },
+    verifyMqttHandover: ({ dbPath, requirements, token }) => mqttSources.verify({ dbPath, requirements: requirements?.sources, token }),
+    authorizeMqttHandover: ({ dbPath, requirements, token }) => mqttSources.authorize({ dbPath, requirements: requirements?.sources, token }),
+    authorizeMqttPromotion: ({ dbPath }) => initialMasterSeedAllowed ? undefined : mqttSources.authorizePromotion({ dbPath }),
+    async preparePrimary() {
+      await validateBroker(config.connections.mqtt, { addon: config.addon, vipAddress: config.pair.vip.address });
+      await frontend.prepare();
     },
     async stopControl({ restore = false } = {}) {
       if (!restore) hooks.revokeControl();
@@ -139,30 +168,64 @@ export async function startPaired({ config, readConfig, clock = Date.now, provid
       const token = controllerToken;
       if (token && (!previous || !restore)) token.revoked = true;
       replicaAbort?.abort();
-      await previous?.historyRecovery?.close();
-      try { await previous?.close({ restore }); }
-      finally { if (token) token.revoked = true; }
+      if (previous) {
+        const earlier = runtimeStopping;
+        const stopping = runtimeStopping = (async () => {
+          await earlier?.catch(() => {});
+          try {
+            await previous.historyRecovery?.close();
+            await previous.close({ restore });
+          } finally {
+            if (token) token.revoked = true;
+            await frontend.stop();
+          }
+        })();
+        try { await stopping; }
+        finally { if (runtimeStopping === stopping) runtimeStopping = null; }
+      } else {
+        // A competing claim may revoke an already-running graceful close.
+        // Join it before acknowledging that OCPP and all providers stopped.
+        await runtimeStopping;
+        await frontend.stop();
+      }
       await runtimeStarting?.catch(() => {});
     },
     async closeReplica() { const previous = runtime; runtime = null; await previous?.close(); },
     async startPrimary({ dbPath, onWriting } = {}) {
       if (closed || closing) throw requestError('The instance is shutting down.');
-      await validateBroker(config.connections.mqtt, { addon: config.addon, vipAddress: config.pair.vip.address });
-      if (closed || closing) throw requestError('The instance is shutting down.');
       primaryPath = dbPath ?? primaryPath;
       if (runtime) await hooks.stopControl({ restore: false });
       if (closed || closing) throw requestError('The instance is shutting down.');
+      // Latch before onWriting consumes the genuinely fresh bootstrap marker.
+      // Accepted/restored replicas must bring a verified current source seed.
+      const local = manager.state?.value;
+      let allowSourceSeed = initialMasterSeedAllowed || local?.bootstrapPending === true && !local.accepted && !local.everWritten;
       await onWriting?.();
       if (closed || closing) throw requestError('The instance is shutting down.');
       if (!context.canControl()) throw requestError('Controller authority changed before startup.');
       const token = controllerToken = { revoked: false };
       runtimeStarting = startRuntime({ config: runtimeConfiguration(config), readConfig, clock, providerOptions, mqttOptions,
-        pairContext: { ...context, canControl: () => !token.revoked && context.canControl() }, installSignalHandlers: false,
+        pairContext: { ...context, canControl: () => !token.revoked && context.canControl(),
+          activateMqttSources: async (currentConfig, store) => {
+            await mqttSources.activate(currentConfig, store, { allowSeed: allowSourceSeed });
+            allowSourceSeed = false;
+            initialMasterSeedAllowed = false;
+            // Keep the last successfully applied local configuration across a
+            // later standby/promote cycle. Its configured storage path remains
+            // distinct from the runtime's selected promoted database copy.
+            config = inheritConfigurationSnapshot(currentConfig, { ...currentConfig, role: config.role, dbPath: config.dbPath });
+          } }, installSignalHandlers: false,
         historyRecoveryOptions: { recoveryModule, timeoutMs: config.pair.timeoutMs ?? 3_600_000 },
         shutdownSignal: startupAbort.signal })
         .then(async started => {
           if (closed || closing || token.revoked) { await started.close({ restore: false }); throw requestError('The instance is shutting down.'); }
           runtime = started;
+          initialMasterSeedAllowed = false;
+          await frontend.start();
+          if (closed || closing || token.revoked) {
+            await frontend.stop();
+            throw requestError('The instance is shutting down.');
+          }
         });
       try { await runtimeStarting; } finally { runtimeStarting = null; }
     },
@@ -300,6 +363,7 @@ export async function startPaired({ config, readConfig, clock = Date.now, provid
     // The same SQLite lock remains held across manager replacement. There is no
     // interval in which another process can adopt these paths during a reset.
     manager = makeManager(old.state);
+    initialMasterSeedAllowed = false;
     if (!closing) {
       try { await manager.init({ stateOpen: true }); await manager.start(); }
       catch (error) { failure ??= error; }
@@ -335,6 +399,7 @@ export async function startPaired({ config, readConfig, clock = Date.now, provid
     await prepareVipPolicy(config);
     requireOpen();
     await manager.init({ allowInvalidState: true });
+    initialMasterSeedAllowed = manager.state?.value?.role === 'master' && !manager.state?.value?.transition;
     requireOpen();
     await manager.start();
     requireOpen();

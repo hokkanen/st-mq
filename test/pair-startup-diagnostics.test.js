@@ -1,3 +1,4 @@
+import { fixtureMqttFrontend, fixtureMqttSourceContext } from './helpers/pair-frontend.js';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { mkdtemp, rm, access, readFile } from 'node:fs/promises';
@@ -40,7 +41,7 @@ async function fixture(t) {
     const fresh = await access(join(config.pair.directory, 'state.json')).then(() => false, () => true);
     let owned = false, error = null, primaryStarts = 0;
     const diagnostics = [];
-    const app = await startPaired({ config, clock: () => now, installSignalHandlers: false,
+    const app = await startPaired({ config, frontendFactory: fixtureMqttFrontend, sourceContextFactory: fixtureMqttSourceContext, clock: () => now, installSignalHandlers: false,
       prepareVipPolicy: async () => {}, validateBroker: async () => { if (brokerError) throw failure(brokerError); },
       // Device I/O is deliberately absent. The real supervisor, peer service,
       // snapshot verifier and protected HTTP viewer still run end to end.

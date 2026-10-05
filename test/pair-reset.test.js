@@ -1,3 +1,4 @@
+import { fixtureMqttFrontend, fixtureMqttSourceContext } from './helpers/pair-frontend.js';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { mkdtemp, mkdir, readFile, writeFile, readdir, rm, symlink } from 'node:fs/promises';
@@ -16,6 +17,8 @@ async function fixture(t) {
   const directory = join(root, 'data');
   const config = { ...loadConfig({ XDG_CONFIG_HOME: root, STMQ_DATA_DIR: directory, STMQ_PORT: '0' }, root),
     input: 'mqtt', role: 'slave', topology: 'pair', connections: { mqtt: { address: 'mqtt://127.0.0.1' } } };
+  config.charging.vehicles.bmw.mqttTopic = '';
+  config.garage = { ...config.garage, enabled: false, adapter: {}, sender: {} };
   config.pair = { directory: join(directory, 'pairing'), databasePath: config.dbPath,
     snapshotDirectory: join(directory, 'pair-snapshots'), platform: 'ubuntu', pairId: 'synthetic-reset-pair',
     token: 'synthetic-reset-shared-token-0123456789', peerUrl: 'http://127.0.0.1:1', listenHost: '127.0.0.1',
@@ -23,7 +26,8 @@ async function fixture(t) {
   return { root, config, async open(options = {}) {
     let owned = false;
     const app = await start({ config, installSignalHandlers: false, providerOptions: { automatic: false },
-      pairOptions: { validateBroker: async () => {}, prepareVipPolicy: async () => {}, ...options,
+      mqttOptions: { connect: () => { throw Error('Unexpected MQTT connection in a paired storage fixture'); } },
+      pairOptions: { frontendFactory: fixtureMqttFrontend, sourceContextFactory: fixtureMqttSourceContext, validateBroker: async () => {}, prepareVipPolicy: async () => {}, ...options,
         managerOptions: { announcements: () => null, vip: {
           acquire: async () => { owned = true; }, release: async () => { owned = false; }, status: () => ({ owned }) } } } });
     apps.add(app); return app;

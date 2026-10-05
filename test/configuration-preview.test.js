@@ -76,3 +76,13 @@ test('pair runtime clones preserve source snapshots and unchanged reviewed reapp
   assert.deepEqual(unchanged.changes, []);
   assert.equal(unchanged.canApply, true);
 });
+
+test('optional HA broker review names its fields and conceals endpoint and independent credentials', () => {
+  const before = config({ mqtt: { ha: {} } });
+  const after = config({ mqtt: { ha: { address: 'mqtt://synthetic-private-ha.invalid:1885',
+    user: 'synthetic-private-user', pw: 'synthetic-private-password' } } });
+  const review = createConfigurationReviews().preview(before, after);
+  assert.deepEqual(review.changes.map(row => row.path), ['mqtt.ha.address', 'mqtt.ha.user', 'mqtt.ha.pw']);
+  assert(review.changes.every(row => row.redacted));
+  assert.doesNotMatch(JSON.stringify(review), /synthetic-private/);
+});

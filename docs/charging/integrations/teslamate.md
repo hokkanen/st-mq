@@ -4,7 +4,10 @@
 
 TeslaMate supplies read-only vehicle evidence for either charger. It never creates
 a household electricity contribution and receives no vehicle commands from this
-integration. Connect TeslaMate to the existing configured `mqtt` broker. In the
+integration. Connect TeslaMate to the HA broker when `mqtt.ha` is configured,
+otherwise to primary `mqtt`. HA-hosted TeslaMate keeps its fixed HA endpoint
+during paired handover; Ubuntu subscribes through its optional HA connection.
+See [broker routing](../../configuration.md#primary-mqtt-and-ha-hosted-integrations). In the
 `teslamate` section, configure `enabled`, `namespace`, `carId` and `homeGeofence`;
 keep private installation identifiers in private configuration. Vehicle-specific
 battery defaults belong in

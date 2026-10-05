@@ -34,6 +34,10 @@ export function pairIssueHelp(view) {
     vip_failed: 'The virtual IP could not be activated. Check the local network interface, helper service and matching address policy.',
     mqtt_local_required: 'Pair mode needs a broker on this computer. Set the controller’s MQTT address to its local broker, usually mqtt://127.0.0.1. Devices use the shared virtual IP.',
     mqtt_resolution_failed: 'The MQTT broker name could not be resolved. Check the configured local broker address; use mqtt://127.0.0.1 when the broker runs directly on this computer.',
+    mqtt_frontend_unavailable: 'The device MQTT listener is unavailable. Reserve port 1883 on the virtual IP for this application: bind the Linux broker to loopback, or publish the Home Assistant broker on a different host port.',
+    mqtt_upstream_unavailable: 'The local MQTT broker could not be reached. Check its configured address and listener before retrying promotion or handover.',
+    mqtt_handover_not_ready: 'The other computer has not confirmed the same device MQTT transport. Run the same current release on both computers and use matching MQTT transport protocols.',
+    mqtt_source_context_invalid: 'MQTT source identity could not be confirmed. Check that both computers have matching equipment configuration and that their selected broker routes have not changed. Keep control stopped until the source binding is verified.',
     runtime_failed: 'The controller could not start. Check the application’s terminal or service log for the reported reason and source location.',
     database_schema_mismatch: 'The database schema does not match this application. Run the same current application on both computers. Use Reset pairing → Start fresh to archive the old database and pairing state. Earlier development databases cannot be migrated.',
     database_schema_invalid: 'The database structure does not match its declared schema. Restore an intact current-schema backup, or use Reset pairing → Start fresh to archive the old database and pairing state.',
@@ -128,6 +132,10 @@ export function pairDisplay(view, { now = Date.now(), formatTime = at => new Dat
     : `${peer.reachable === false ? 'Other computer unavailable.' : 'Connection status unknown.'}${stamp(peer.lastSeenAt) ? ` Last seen ${formatTime(peer.lastSeenAt)}.` : ''}`;
   const vip = view.vip ?? {};
   const brokerText = vip.error ? 'Virtual-IP setup needs attention.'
+    : view.mqttFrontend?.error ? pairIssueHelp({ error: view.mqttFrontend.error })
+    : vip.owned === true && view.mqttFrontend ? view.mqttFrontend.ready === true
+      ? `Device MQTT listener active · ${count(view.mqttFrontend.connections) ?? 0} connections. Device readiness requires fresh reports.`
+      : 'Virtual IP assigned; device MQTT listener is not ready.'
     : vip.owned === true ? vip.ready === true ? 'MQTT address is active on this computer.' : 'MQTT address is assigned; waiting for readiness confirmation.'
       : state === 'master' ? 'Waiting for this computer’s MQTT address.' : 'The virtual IP is not active here. This is expected while this computer is read-only.';
   const sync = view.sync ?? {}, sourceAt = stamp(sync.sourceAt), verifiedAt = stamp(sync.verifiedAt);

@@ -170,6 +170,54 @@ test('handover requires current OCPP readiness acknowledgement before stopping',
   assert.equal(source.calls.some(call => call[0] === 'stop'), false);
 });
 
+test('MQTT preflight failure or missing current frontend acknowledgement leaves the master running', async t => {
+  for (const problem of ['upstream', 'transport', 'old-peer']) await t.test(problem, async t => {
+    const root = await fixture(t), source = await manager(t, root, 'source');
+    const target = await manager(t, root, 'target', { role: 'slave' }); connect(source, target);
+    source.hooks.mqttHandoverRequirements = () => ({ version: 1, protocol: 'mqtt:', port: 1883 });
+    target.hooks.mqttHandoverRequirements = () => ({ version: 1, protocol: problem === 'transport' ? 'mqtts:' : 'mqtt:', port: 1883 });
+    if (problem === 'upstream') target.hooks.preparePrimary = async () => { throw Object.assign(Error(), { code: 'mqtt_upstream_unavailable' }); };
+    if (problem === 'old-peer') {
+      const request = source.peer.request.bind(source.peer);
+      source.peer.request = async (operation, ...args) => {
+        const result = await request(operation, ...args);
+        if (operation === 'handover-prepare') delete result.mqtt;
+        return result;
+      };
+    }
+    await assert.rejects(source.action('handover', command()),
+      { code: problem === 'upstream' ? 'mqtt_upstream_unavailable' : 'mqtt_handover_not_ready' });
+    assert.equal(source.canControl(), true);
+    assert.equal(source.vip.status().owned, true);
+    assert.equal(source.calls.some(call => call[0] === 'stop'), false);
+  });
+});
+
+test('handover completes restoration and closes VIP connections before address release or peer activation', async t => {
+  const root = await fixture(t), source = await manager(t, root, 'source');
+  const target = await manager(t, root, 'target', { role: 'slave' }); connect(source, target);
+  const events = [];
+  let entered, resume;
+  const closing = new Promise(resolve => { entered = resolve; });
+  const closed = new Promise(resolve => { resume = resolve; });
+  source.hooks.stopControl = async ({ restore }) => { events.push(`control:${restore}`); };
+  source.hooks.stopTransport = async () => { events.push('transport:closing'); entered(); await closed; events.push('transport:closed'); };
+  const release = source.vip.release;
+  source.vip.release = async () => { events.push('vip:release'); await release(); };
+  const start = target.hooks.startPrimary;
+  target.hooks.startPrimary = async options => { events.push('peer:start'); await start(options); };
+  const transfer = source.action('handover', command());
+  await closing;
+  assert.deepEqual(events, ['control:true', 'transport:closing']);
+  assert.equal(source.vip.status().owned, true);
+  assert.equal(source.controlReleased, false);
+  assert.equal(target.canControl(), false);
+  resume(); await transfer;
+  assert.deepEqual(events.slice(0, 5), ['control:true', 'transport:closing', 'transport:closed', 'vip:release', 'peer:start']);
+  assert.equal(source.canControl(), false);
+  assert.equal(target.canControl(), true);
+});
+
 test('final handover snapshot preserves OCPP transactions and setup after listener shutdown', async t => {
   const root = await fixture(t), requirements = { version: 1, fingerprint: 'b'.repeat(64) };
   let source, checked = 0;

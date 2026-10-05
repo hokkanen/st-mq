@@ -1,3 +1,4 @@
+import { fixtureMqttFrontend, fixtureMqttSourceContext } from './helpers/pair-frontend.js';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { mkdtemp, rm, access } from 'node:fs/promises';
@@ -18,12 +19,14 @@ async function until(check) {
   throw new Error('Paired runtime did not reach the expected state');
 }
 async function fixture(t) {
-  const root = await mkdtemp(join(tmpdir(), 'stmq-pair-runtime-')), running = new Set();
+  const root = await mkdtemp(join(tmpdir(), 'stmq-pair-runtime-')), running = new Set(), sourceSeedAttempts = new Map();
   t.after(async () => { for (const app of running) await app.close(); await rm(root, { recursive: true, force: true }); });
   async function open(name, role, platform) {
     const directory = join(root, name);
     const config = { ...loadConfig({ XDG_CONFIG_HOME: root, STMQ_DATA_DIR: directory, STMQ_PORT: '0' }, directory),
       input: 'mqtt', role: 'slave', connections: { mqtt: { address: 'mqtt://127.0.0.1' } } };
+    config.charging.vehicles.bmw.mqttTopic = '';
+    config.garage = { ...config.garage, enabled: false, adapter: {}, sender: {} };
     config.topology = 'pair';
     config.pair = { directory: join(directory, 'pairing'), databasePath: config.dbPath,
       snapshotDirectory: join(directory, 'pair-snapshots'), platform, pairId: 'synthetic-runtime-pair',
@@ -31,8 +34,13 @@ async function fixture(t) {
       listenHost: '127.0.0.1', port: 0, intervalMs: 60000, timeoutMs: 30000, vip: {}, mqtt: config.connections.mqtt };
     const fresh = await access(join(config.pair.directory, 'state.json')).then(() => false, () => true);
     let owned = false;
+    const seedAttempts = [];
+    sourceSeedAttempts.set(name, seedAttempts);
     const app = await start({ config, clock: () => now, installSignalHandlers: false, providerOptions: { automatic: false },
-      pairOptions: { validateBroker: async () => {}, prepareVipPolicy: async () => {}, managerOptions: {
+      mqttOptions: { connect: () => { throw Error('Unexpected MQTT connection in a paired storage fixture'); } },
+      pairOptions: { frontendFactory: fixtureMqttFrontend, sourceContextFactory: () => ({ ...fixtureMqttSourceContext(),
+        activate: async (_config, _store, { allowSeed }) => { seedAttempts.push(allowSeed); } }),
+      validateBroker: async () => {}, prepareVipPolicy: async () => {}, managerOptions: {
         announcements: () => null, vip: { acquire: async () => { owned = true; }, release: async () => { owned = false; },
           status: () => ({ owned, ready: owned }) } } } });
     if (fresh && role === 'master') {
@@ -42,7 +50,7 @@ async function fixture(t) {
     clearTimeout(app.pair.timer); await app.pair.polling; clearTimeout(app.pair.timer);
     running.add(app); return app;
   }
-  return { open, async close(app) { await app.close(); running.delete(app); } };
+  return { open, sourceSeedAttempts, async close(app) { await app.close(); running.delete(app); } };
 }
 function connect(a, b) {
   a.pair.peer.peerUrl = `http://127.0.0.1:${b.pair.peer.server.address().port}`;
@@ -87,6 +95,7 @@ test('both fresh pair nodes stay read-only until explicit promotion, then restar
   }
   await assert.rejects(a.pair.action('promote', { requestId: randomUUID() }), { code: 'confirmation_required' });
   await apiAction(a, command('promote'));
+  assert.deepEqual(f.sourceSeedAttempts.get('a'), [true], 'only the explicit fresh bootstrap may initialize a source seed');
   assert.equal(a.pair.canControl(), true);
   assert.equal(a.pair.status().bootstrapPending, false);
   assert.equal(a.pair.state.value.everWritten, true);
@@ -97,6 +106,7 @@ test('both fresh pair nodes stay read-only until explicit promotion, then restar
   const restarted = await f.open('a', 'slave', 'hassio');
   assert.equal(restarted.pair.status().role, 'master');
   assert.equal(restarted.pair.canControl(), true);
+  assert.deepEqual(f.sourceSeedAttempts.get('a'), [true], 'the persisted authoritative master is latched before startup changes');
 });
 
 test('full application handover switches controller/viewer, preserves durable roles and exposes idempotent UI actions', async t => {
@@ -111,6 +121,7 @@ test('full application handover switches controller/viewer, preserves durable ro
   assert.equal(a.pair.canControl(), false); assert.equal(b.pair.canControl(), true);
   assert.equal(a.engine, undefined); assert.equal(b.engine.config.input, 'mqtt');
   assert.equal(b.store.latestObservation('indoor_temperature').value, 20);
+  assert.deepEqual(f.sourceSeedAttempts.get('b'), [false], 'a handover recipient must bring the final verified source seed');
   await apiAction(a, handover);
   await a.pair.poll();
   assert.equal(a.pair.state.value.role, 'slave', 'intentional Hassio demotion does not automatically take control back');

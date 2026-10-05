@@ -102,6 +102,25 @@ test('add-on bootstrap with no token exposes ingress and leaves direct access di
   assert.equal(f.posts, 0);
 });
 
+test('HA broker import saves independent access and rejects invalid settings before persistence', async t => {
+  const f = fixture(t);
+  await f.launch();
+  const ha = { address: 'mqtt://synthetic-ha.invalid:1885', user: 'synthetic-ha-user', pw: 'synthetic-ha-password' };
+  f.writeImport({ mqtt: { ha } });
+  assert.equal((await f.reload()).status, 200);
+  assert.deepEqual(f.saved.mqtt.ha, ha);
+  assert.equal(f.saved.mqtt.address, 'mqtt://core-mosquitto');
+  assert.equal(f.saved.mqtt.user, '');
+  const saves = f.posts;
+  f.writeImport({ mqtt: { ha: { address: 'mqtt://synthetic-private-user:synthetic-private-password@invalid.example' } } });
+  const refused = await f.reload();
+  assert.equal(refused.status, 400);
+  assert.equal(f.posts, saves);
+  assert.equal(existsSync(f.paths.importPath), true);
+  assert.deepEqual(f.saved.mqtt.ha, ha);
+  assert.doesNotMatch(await refused.text(), /synthetic-private/);
+});
+
 test('startup import is saved before storage/runtime and removed only after successful startup', async t => {
   const f = fixture(t);
   f.writeImport({ controller: { max_drop_c: 0.5, web_token: firstToken } });

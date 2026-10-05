@@ -1,3 +1,4 @@
+import { fixtureMqttFrontend, fixtureMqttSourceContext } from './helpers/pair-frontend.js';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { mkdtemp, rm, writeFile } from 'node:fs/promises';
@@ -36,17 +37,19 @@ async function fixture(t, { runtimeFactory, recoveryModule, snapshotSource } = {
     settings: {  }, connections: { mqtt: { address: 'mqtt://127.0.0.1' } },
     topology: 'pair', pair: { snapshotDirectory: join(root, 'pair-snapshots'), directory: join(root, 'pair'), timeoutMs: 30000, vip: {} } };
   let hooks, controlling = true, closed = false;
-  const instances = [], gates = [];
+  const instances = [], gates = [], runtimeConfigurations = [], sourceActivations = [];
   const defaultRuntime = async () => {
     const server = createServer((req, res) => res.end('fixture')); server.listen(0, '127.0.0.1'); await once(server, 'listening');
     const instance = { server, store: { path: dbPath }, engine: { config: { input: 'mqtt' }, closeFireplace: async () => {} },
       close: async () => { if (server.listening) await new Promise(resolve => server.close(resolve)); } };
     return instance;
   };
-  const app = await startPaired({ config, installSignalHandlers: false, prepareVipPolicy: async () => {},
+  const app = await startPaired({ config, frontendFactory: fixtureMqttFrontend, sourceContextFactory: fixtureMqttSourceContext, installSignalHandlers: false, prepareVipPolicy: async () => {},
     validateBroker: async () => {}, recoveryModule, snapshotSource,
     startRuntime: async options => {
       gates.push(options.pairContext.canControl);
+      runtimeConfigurations.push(options.config);
+      sourceActivations.push(options.pairContext.activateMqttSources);
       const instance = await (runtimeFactory ?? defaultRuntime)({ index: instances.length, defaultRuntime });
       const saved = new Map();
       instance.store.getState = key => saved.get(key) ?? null;
@@ -61,7 +64,7 @@ async function fixture(t, { runtimeFactory, recoveryModule, snapshotSource } = {
         prepareShutdown: () => {}, close: async () => { closed = true; controlling = false; } };
     } });
   t.after(async () => { await app.close(); for (const instance of instances) await instance.close(); await rm(root, { recursive: true, force: true }); });
-  return { app, hooks, instances, gates, config, demote: () => { controlling = false; } };
+  return { app, hooks, instances, gates, config, runtimeConfigurations, sourceActivations, demote: () => { controlling = false; } };
 }
 
 test('shutdown cancels protected-view snapshot creation before opening a new listener', async t => {
@@ -127,6 +130,39 @@ test('shutdown while the previous primary closes prevents starting its replaceme
   releaseOld.resolve(); await bounded(closing); await replacement;
   assert.equal(f.instances.length, 1, 'shutdown does not open a replacement listener or start providers');
   assert.equal(f.instances[0].server.listening, false);
+});
+
+test('authority-loss shutdown joins an in-flight restoring close before acknowledging stopped equipment', async t => {
+  const entered = deferred(), finish = deferred();
+  const f = await fixture(t, { runtimeFactory: async ({ defaultRuntime }) => {
+    const instance = await defaultRuntime(), close = instance.close;
+    instance.close = async () => { entered.resolve(); await finish.promise; await close(); };
+    return instance;
+  } });
+  const restoring = f.hooks.stopControl({ restore: true });
+  await entered.promise;
+  let acknowledged = false;
+  const fencing = f.hooks.stopControl({ restore: false }).then(() => { acknowledged = true; });
+  await Promise.resolve();
+  assert.equal(acknowledged, false);
+  assert.equal(f.gates[0](), false, 'authority is revoked before waiting for the older close');
+  finish.resolve(); await bounded(Promise.all([restoring, fencing]));
+  assert.equal(f.instances[0].server.listening, false);
+});
+
+test('successful configuration application survives runtime replacement without adopting its promoted storage path', async t => {
+  const f = await fixture(t);
+  const applied = { ...f.runtimeConfigurations[0], dbPath: join(f.config.dataDir, 'promoted-copy.sqlite'),
+    settings: { syntheticSetting: 'applied' } };
+  await f.sourceActivations[0](applied, f.instances[0].store);
+  await f.hooks.startPrimary({ dbPath: f.config.dbPath });
+  assert.equal(f.runtimeConfigurations[1].settings.syntheticSetting, 'applied');
+  assert.equal(f.runtimeConfigurations[1].dbPath, f.config.dbPath);
+  assert.equal(f.config.dbPath.endsWith('source.sqlite'), true);
+  // A settings rollback passes through the same validated activation boundary.
+  await f.sourceActivations[1]({ ...f.runtimeConfigurations[1], settings: { syntheticSetting: 'restored' } }, f.instances[1].store);
+  await f.hooks.startPrimary({ dbPath: f.config.dbPath });
+  assert.equal(f.runtimeConfigurations[2].settings.syntheticSetting, 'restored');
 });
 
 test('an unreadable protected donor retains its management API and read-only waiting view', async t => {

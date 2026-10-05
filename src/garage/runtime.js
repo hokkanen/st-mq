@@ -4,6 +4,7 @@ import { validateGarageNativeSetting } from './native-settings.js';
 import { validateGarageModeState, validGarageTarget, GARAGE_WARMING_WARNING } from './room-temperature.js';
 import { confirmedGarageDoor, GARAGE_DOOR_SIGNALS } from './door-state.js';
 import { temperatureReportMaxAge } from '../domain/temperature-reports.js';
+import { mqttSourceIdentity } from '../pairing/mqtt-source-context.js';
 
 const finite = Number.isFinite;
 const copy = value => structuredClone(value);
@@ -22,9 +23,10 @@ export class GarageRuntime {
     const { adapter: _adapter, sender: _sender, ...settings } = config.garage ?? {};
     this.settings = garageSettings(settings); this.input = config.input;
     this.keys = { mode: `garage:mode:${this.input}`, adapter: `garage:adapter:${this.input}`, sender: `garage:sender:${this.input}` };
+    const source = mqttSourceIdentity(config, 'primary');
     this.adapterKey = createHash('sha256').update(JSON.stringify({ adapter: Object.fromEntries(
       ['driver', 'stateTopic', 'telemetryTopic', 'commandTopic'].map(key => [key, config.garage?.adapter?.[key] ?? null])),
-      broker: { address: config.connections?.mqtt?.address ?? null, user: config.connections?.mqtt?.user ?? null } })).digest('hex');
+      broker: { address: source.address ?? null, user: source.username ?? null } })).digest('hex');
     const saved = validateGarageModeState(store.getState(this.keys.mode));
     this.selection = saved?.adapterKey === this.adapterKey ? saved : null;
     this.closed = false; this.busy = false;

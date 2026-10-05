@@ -51,8 +51,11 @@ local integration and bridge in this order:
    Review and install each generated object as a separate automation using
    Home Assistant's **Edit in YAML** editor, as described in
    [installing the automations](homeassistant-mqtt.md#installing-the-automations).
-   Its MQTT integration must use the controller's broker and the standard
-   `homeassistant/status` birth/will topic. ST-MQ app installation does not
+   Its MQTT integration stays on HA's fixed broker and uses the standard
+   `homeassistant/status` birth/will topic. ST-MQ routes this bridge through
+   `mqtt.ha` when configured, otherwise primary; see
+   [broker routing](configuration.md#primary-mqtt-and-ha-hosted-integrations).
+   ST-MQ app installation does not
    install the profile, source patch or these Core automations.
 
 `deviceIdentity` is the lowercase SHA-256 digest of the UTF-8 Tuya Local native
