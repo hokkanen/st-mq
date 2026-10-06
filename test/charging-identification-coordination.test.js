@@ -19,6 +19,145 @@ function fixture() {
     available: () => runtime.identificationPauseAvailable(item, { charger2: physical }, NOW) };
 }
 
+function idlePeerFixture(transport = 'shelly-evse') {
+  const f = fixture();
+  const permission = { controlKnown: true, enabled: true, stopped: false,
+    faulted: false, authorizationBlocked: false, schedule: { enabled: 'none' } };
+  f.control.snapshot = { online: true, transport, readAt: NOW,
+    ...(transport === 'ocpp' ? { appControl: { ...permission, readAt: NOW } }
+      : transport === 'shelly-evse' ? { nativeScheduleActive: false, controlReady: true,
+        fields: { start_charging: { value: true, measuredAt: NOW - 300_000 } } }
+        : { ...permission, manualStop: false }) };
+  f.physical.charging = signal(false); f.physical.powerKw = signal(0);
+  f.peer.vehicleEvidence.stoppedTimes = [NOW - 61_000];
+  return f;
+}
+
+test('a settled connected car drawing zero does not block the other charger despite permission to charge', () => {
+  for (const transport of ['ocpp', 'shelly-evse', 'easee-cloud']) {
+    const f = idlePeerFixture(transport);
+    const before = structuredClone({ control: f.control, plan: f.peer.plan, evidence: f.peer.vehicleEvidence });
+    assert.equal(f.available(), true, `${transport} can confirm an idle peer without knowing its battery state`);
+    assert.deepEqual({ control: f.control, plan: f.peer.plan, evidence: f.peer.vehicleEvidence }, before,
+      'A quiet-peer check does not change permission, economics or vehicle evidence');
+    f.peer.controls.enabled = false;
+    assert.equal(f.available(), true, 'Automatic off remains independent of physical idle evidence');
+    f.peer.controls.enabled = true; f.peer.request.chargeNow = true;
+    assert.equal(f.available(), true, 'Charge now does not require the vehicle to accept energy');
+  }
+});
+
+test('an allowed idle peer needs fresh native permission and absence of native schedules', async t => {
+  for (const transport of ['ocpp', 'shelly-evse', 'easee-cloud']) {
+    const changes = {
+      'missing readback clock': f => { delete f.control.snapshot.readAt; },
+      'stale readback': f => { f.control.snapshot.readAt = NOW - 61_000; },
+      'future readback': f => { f.control.snapshot.readAt = NOW + 1; },
+      'active native schedule': f => {
+        if (transport === 'shelly-evse') f.control.snapshot.nativeScheduleActive = true;
+        else (f.control.snapshot.appControl ?? f.control.snapshot).schedule.enabled = 'delayed';
+      },
+      'missing native schedule': f => {
+        if (transport === 'shelly-evse') delete f.control.snapshot.nativeScheduleActive;
+        else delete (f.control.snapshot.appControl ?? f.control.snapshot).schedule;
+      },
+      'missing native permission': f => {
+        if (transport === 'shelly-evse') delete f.control.snapshot.fields.start_charging;
+        else delete (f.control.snapshot.appControl ?? f.control.snapshot).enabled;
+      },
+      'native permission denied': f => {
+        if (transport === 'shelly-evse') f.control.snapshot.fields.start_charging.value = false;
+        else (f.control.snapshot.appControl ?? f.control.snapshot).enabled = false;
+      },
+      ...(transport === 'shelly-evse' ? {
+        'controller not ready': f => { f.control.snapshot.controlReady = false; },
+        'missing permission clock': f => { delete f.control.snapshot.fields.start_charging.measuredAt; },
+        'future permission clock': f => { f.control.snapshot.fields.start_charging.measuredAt = NOW + 1; },
+      } : {
+        'unknown native control': f => { (f.control.snapshot.appControl ?? f.control.snapshot).controlKnown = false; },
+        'unknown native stop': f => { delete (f.control.snapshot.appControl ?? f.control.snapshot).stopped; },
+        'native stop': f => { (f.control.snapshot.appControl ?? f.control.snapshot).stopped = true; },
+      }),
+      ...(transport === 'ocpp' ? {
+        'local zero profile remains': f => { f.control.owned = { action: 'pause', confirmedAt: NOW - 1000 }; },
+        'local instruction remains owned': f => { f.control.ownsInstruction = true; },
+        'missing native readback clock': f => { delete f.control.snapshot.appControl.readAt; },
+        'stale native readback': f => { f.control.snapshot.appControl.readAt = NOW - 61_000; },
+        'future native readback': f => { f.control.snapshot.appControl.readAt = NOW + 1; },
+        'native fault': f => { f.control.snapshot.appControl.faulted = true; },
+        'native authorization blocked': f => { f.control.snapshot.appControl.authorizationBlocked = true; },
+      } : {}),
+    };
+    for (const [name, change] of Object.entries(changes)) await t.test(`${transport}: ${name}`, () => {
+      const f = idlePeerFixture(transport); change(f);
+      assert.equal(f.available(), false, 'Idle draw alone cannot establish a quiet native-control horizon');
+    });
+  }
+});
+
+test('a quiet full-car permission hold permits peer identification without releasing the hold', () => {
+  const f = idlePeerFixture();
+  f.control.devicePermissionHeld = true;
+  f.control.snapshot.fields.start_charging.value = false;
+  const before = structuredClone(f.control);
+  assert.equal(f.available(), true, 'A confirmed device Stop with settled zero remains quiet during an allowed period');
+  assert.deepEqual(f.control, before, 'Identification does not resume the peer or change a system hold into a manual instruction');
+  f.control.devicePermissionHeld = false;
+  assert.equal(f.available(), false, 'An unresolved ordinary permission mismatch still blocks');
+  f.control.devicePermissionHeld = true;
+  f.control.snapshot.fields.start_charging.value = true;
+  assert.equal(f.available(), false, 'Contradictory permission cannot establish a quiet held peer');
+  delete f.control.snapshot.fields.start_charging;
+  assert.equal(f.available(), false, 'A saved hold alone cannot replace current native Stop evidence');
+});
+
+test('expired untouched preparation yields while dispatched or unresolved current work retains exclusivity', () => {
+  const f = idlePeerFixture();
+  f.peer.controller.supportsIdentification = true;
+  f.runtime.minimumCurrentIdentification = () => false;
+  f.control.currentTest = { phase: 'proposed', startedAt: NOW - 120_000, expiresAt: NOW - 30_000, pending: null };
+  const original = structuredClone(f.control.currentTest);
+  assert.equal(f.runtime.identificationTurn(f.item), true);
+  assert.equal(f.available(), true);
+  assert.deepEqual(f.control.currentTest, original, 'Yielding the turn does not forge restoration or change saved attempt limits');
+  for (const phase of ['applying', 'active', 'restoring', 'uncertain']) {
+    f.control.currentTest.phase = phase;
+    assert.equal(f.runtime.identificationTurn(f.item), false, `${phase} retains its physical duty after expiry`);
+    assert.equal(f.available(), false);
+  }
+  f.control.currentTest.phase = 'proposed'; f.control.currentTest.pending = { value: 6 };
+  assert.equal(f.runtime.identificationTurn(f.item), false, 'A pending write cannot be treated as untouched preparation');
+  f.control.currentTest.pending = null; f.control.currentTest.expiresAt = NOW + 1000;
+  assert.equal(f.runtime.identificationTurn(f.item), false, 'Unexpired preparation still owns the slot');
+});
+
+test('idle peer admission still waits for physical settling and approaching economic transitions', async t => {
+  const changes = {
+    'recent stop': f => { f.peer.vehicleEvidence.stoppedTimes = [NOW - 30_000]; },
+    'recent start': f => { f.peer.vehicleEvidence.chargingTimes = [NOW - 30_000]; },
+    'approaching stop': f => { f.control.execution.periods[0].endAt = NOW + 90_000; },
+    'approaching start': f => { f.control.execution.periods = [{ startAt: NOW + 90_000, endAt: NOW + 600_000 }]; },
+    'pending start': f => { f.control.pending = { role: 'start_charging', value: true }; },
+    'pending stop': f => { f.control.pending = { role: 'start_charging', value: false }; },
+    'peer current test': f => { f.control.currentTest = { phase: 'active' }; },
+    'peer current restoration': f => { f.control.currentTest = { phase: 'restoring' }; },
+    'positive power below charging threshold': f => { f.physical.powerKw = signal(.2); },
+    'charging-state contradiction': f => { f.physical.charging = signal(true); },
+    'power-state contradiction': f => { f.physical.powerKw = signal(11); },
+    'stale physical zero': f => { f.physical.powerKw.measuredAt = NOW - 61_000; },
+    'charging while disallowed': f => {
+      f.physical.charging = signal(true); f.physical.powerKw = signal(11);
+      f.control.execution.periods = [{ startAt: NOW + 600_000, endAt: NOW + 1_200_000 }];
+    },
+  };
+  for (const [name, change] of Object.entries(changes)) await t.test(name, () => {
+    const f = idlePeerFixture(); change(f); assert.equal(f.available(), false);
+  });
+  const f = idlePeerFixture();
+  f.control.execution.periods[0].endAt = NOW + 121_000;
+  assert.equal(f.available(), true, 'A settled idle peer does not need to block beyond the observation horizon');
+});
+
 test('a BMW pause waits after the other charger stops instead of reusing one overlapping BMW episode', () => {
   const f = fixture();
   f.physical.charging = signal(false); f.physical.powerKw = signal(0);

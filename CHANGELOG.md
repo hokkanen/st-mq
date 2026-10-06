@@ -6,6 +6,10 @@ Versions follow Semantic Versioning. `-dev.N` denotes a development prerelease.
 
 ## Unreleased
 
+- An idle or fully charged car no longer reserves the other charger's
+  identification test indefinitely. Native permission holds and settled zero
+  draw are handled separately from active tests; preparation waits are bounded,
+  while test deadlines, native instructions and restoration remain in force.
 - Slave dashboards consistently identify recorded snapshots across electricity,
   prices, vehicles and temperatures/weather, with original report times and
   explicit missing data. Saved circulation and Garage sender evidence remains

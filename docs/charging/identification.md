@@ -303,12 +303,36 @@ recent charging transition, pending control or an upcoming economic transition
 within the pause and correlation window. This avoids creating two matching stop
 episodes without holding the peer away from its economic schedule. Unexpected
 physical or manual changes still take priority and ambiguous evidence stays unresolved.
+An observed peer transition in that pause's causal window disqualifies the pause
+as identity evidence, including when the report arrives later. The restriction
+survives restart and replacement of the peer's connection history; it does not
+cancel the owned pause or renew testing. A later contradiction withdraws an
+assignment supported only by that pause. Independently qualified complete
+charging episodes and an earlier identity retained during a retry keep their
+own evidence requirements.
+Waiting for vehicle evidence does not own the shared test slot. Charger 2's
+initial minimum-current preparation preference requires current native write
+readiness and no device permission hold or pending command. That preference
+ends 90 seconds after the saved attempt started; polling and restart cannot
+renew it. Expiry leaves passive identification pending and allows either charger
+to start a ready test when the slot is free. Actual current preparation, testing
+and unresolved restoration retain exclusive ownership and their existing fixed
+deadlines. Expired preparation with no dispatched or pending current write can
+yield without claiming restoration; uncertain writes and applied settings cannot.
+An explicit Identify request may wait for the peer; the request alone
+grants no command permission.
 A provisional plan alone does not block that pause when the peer has accepted
 its ordinary charging choice and fresh physical readings confirm a settled
 state with no upcoming transition. A connected peer under a confirmed native
 Stop may remain stopped: fresh zero draw, native stop readback and absence of
 an active native schedule provide the quiet evidence. The pause never acquires
-control of that peer. Missing vehicle evidence, unavailable current control and
+control of that peer. A confirmed Shelly system permission hold follows the
+same quiet-peer rule without becoming a manual instruction or authorizing Start.
+A car permitted to charge may also remain idle because it is full or waiting
+on a vehicle timer. Fresh zero draw and confirmed native charging permission,
+with no native schedule, pending action or nearby transition, allow the peer's
+pause; charging permission is not evidence that the car is drawing power.
+Missing vehicle evidence, unavailable current control and
 an unsettled peer are displayed separately; ordinary charging can continue while
 an identification action is blocked.
 Shelly requires available start/stop control,

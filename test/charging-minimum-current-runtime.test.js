@@ -68,7 +68,7 @@ async function fixture(t, { firstCurrentA = 16, firstAvailable = true, stepMetad
       if (statusReadHook) { const hook = statusReadHook; statusReadHook = null; hook(); }
       result = { value: role === 'phase_info' ? phaseInfo() : fields[role].value,
         last_update_ts: (role === 'phase_info' ? phaseMeasuredAt ?? now : fields[role].at) / 1000,
-        ...(['start_charging', 'current_limit'].includes(role) ? { source: 'rpc' } : {}) };
+        ...(['start_charging', 'current_limit'].includes(role) ? { source: fields[role].source ?? 'rpc' } : {}) };
     }
     done?.(); if (respond) queueMicrotask(() => {
       client.emit('message', `${frame.src}/rpc`, Buffer.from(JSON.stringify({
@@ -1313,8 +1313,11 @@ for (const winner of ['charger1', 'charger2'])
 test(`an older shared BMW episode cannot hide a newer independent contradiction on ${winner}`, async t => {
   const { f, publish } = await sharedBmwEpisodeFixture(t);
   // Keep the earlier complete shared episode. A later source episode has its
-  // own physical start and stop on only the eventual Tesla winner.
-  f.advance(90_000); await f.adapter.refresh();
+  // own physical start and stop on only the eventual Tesla winner. Separate
+  // it beyond the 30-second correlation tolerance while remaining inside the
+  // initial comparison preparation preference; this fixture has not reconciled
+  // Charger 2 yet and must not depend on an unlimited reservation.
+  f.advance(40_000); await f.adapter.refresh();
   f.item(winner).vehicleEvidence.chargingTimes.push(f.now); publish({ charging: true });
   f.advance(20_000); await f.adapter.refresh();
   f.item(winner).vehicleEvidence.stoppedTimes.push(f.now); publish({ charging: false });
@@ -1432,6 +1435,96 @@ test('minimum-current runtime gives Charger 2 the identification turn before a C
   const request = f.runtime.identificationControl(f.item('charger2'), f.adapter.snapshot());
   assert.equal(request.minimumCurrent, true); assert.notEqual(request.phase, 'pausing');
   await f.update(); assert.equal(f.writes.some(row => row.role === 'start_charging'), false);
+});
+
+test('an idle system-held Charger 2 cannot reserve identification before a test exists', async t => {
+  const f = await fixture(t);
+  f.publishTesla({ healthy: false }); await f.update();
+  f.advance(1000); f.publishTesla({ healthy: true });
+  f.fields.start_charging = { value: false, at: f.now, source: 'sys' };
+  f.fields.work_state = { value: 'charger_pause', at: f.now };
+  await f.adapter.refresh();
+  f.observe(); await f.update();
+  const second = f.item('charger2'), original = structuredClone(second.identification);
+  const assertWaiting = () => {
+    const control = f.item('charger2').controller.status();
+    assert.equal(control.devicePermissionHeld, true);
+    assert.equal(control.currentTest ?? null, null);
+    assert.equal(f.item('charger2').identification.phase, 'waiting');
+    assert.equal(f.runtime.identificationTurn(f.item('charger1')), true);
+    assert.equal(f.writes.length, 0, 'Neither a current setting nor Start is sent to the held peer');
+  };
+  assertWaiting();
+  for (const delay of [60_000, 3600_000]) {
+    f.advance(delay); f.publishTesla({ healthy: true });
+    await f.update(); assertWaiting();
+  }
+  await f.restart(); await f.update(); assertWaiting();
+  assert.equal(f.item('charger2').identification.id, original.id);
+  assert.equal(f.item('charger2').identification.chargeUsedKwh, original.chargeUsedKwh);
+  f.advance(1000);
+  f.fields.start_charging = { value: true, at: f.now, source: 'sys' };
+  f.fields.work_state = { value: 'charger_charging', at: f.now };
+  await f.update();
+  assert.equal(f.item('charger2').controller.status().currentTest.phase, 'active',
+    'Fresh native permission can start the original unused attempt when the shared slot is free');
+  assert.equal(f.item('charger2').identification.id, original.id);
+});
+
+test('unused minimum-current preparation priority expires without expiring identification or renewing at restart', async t => {
+  const f = await fixture(t); f.observe();
+  const original = structuredClone(f.item('charger2').identification);
+  assert.equal(f.runtime.identificationTurn(f.item('charger1')), false);
+  f.advance(90_000); f.publishTesla({ healthy: true }); await f.adapter.refresh(); f.observe();
+  assert.equal(f.runtime.identificationTurn(f.item('charger1')), true);
+  assert.equal(f.item('charger2').identification.id, original.id);
+  assert.equal(f.item('charger2').identification.completedAt, null);
+  await f.restart(); f.observe();
+  assert.equal(f.runtime.identificationTurn(f.item('charger1')), true);
+  assert.equal(f.item('charger2').identification.id, original.id);
+  await f.update();
+  assert.equal(f.item('charger2').controller.status().currentTest.phase, 'active');
+  assert.equal(f.runtime.identificationTurn(f.item('charger1')), false,
+    'An actual current test owns the slot even after its initial preparation preference expires');
+});
+
+for (const boundary of ['native readback pending', 'command pending', 'retained current', 'old current receipt'])
+test(`unready preparation yields the peer turn without bypassing the low-current requirement: ${boundary}`, async t => {
+  const f = await fixture(t); f.observe();
+  const second = f.item('charger2'), originalStatus = second.controller.status;
+  second.controller.status = () => {
+    const control = originalStatus();
+    if (boundary === 'native readback pending') control.snapshot.controlReady = false;
+    if (boundary === 'command pending') control.pending = { stage: 'accepted', role: 'start_charging' };
+    if (boundary === 'retained current') control.snapshot.fields.current_limit.retained = true;
+    if (boundary === 'old current receipt') control.snapshot.fields.current_limit.receivedAt = f.now - f.adapter.config.maxAgeMs - 1;
+    return control;
+  };
+  assert.equal(f.runtime.minimumCurrentIdentification(second, f.now), true,
+    'Capability still requires minimum-current preparation before any extra charging probe');
+  assert.equal(f.runtime.identificationTurn(f.item('charger1')), true);
+  const request = f.runtime.identificationControl(second, f.adapter.snapshot());
+  assert.equal(request.minimumCurrent, true);
+  assert.equal(f.writes.length, 0);
+});
+
+test('a full car releases the actual current-test slot after its bounded attempt and restoration', async t => {
+  const f = await fixture(t); f.advance(1000);
+  f.setMeasuredCurrent(0); f.fields.work_state = { value: 'charger_pause', at: f.now };
+  await f.update();
+  const test = structuredClone(f.item('charger2').controller.status().currentTest);
+  assert.equal(test.phase, 'active');
+  assert.equal(f.runtime.identificationTurn(f.item('charger1')), false);
+  f.advance(test.expiresAt - f.now + 1); f.publishTesla({ healthy: true });
+  await f.update();
+  assert.equal(f.item('charger2').controller.status().currentTest.phase, 'restored');
+  assert.equal(f.item('charger2').identification.phase, 'inconclusive');
+  assert.equal(f.runtime.identificationTurn(f.item('charger1')), true);
+  const writes = f.writes.length;
+  await f.restart(); await f.update();
+  assert.equal(f.writes.length, writes, 'Polling and restart cannot repeat the exhausted comparison');
+  assert.equal(f.item('charger2').controller.status().currentTest.expiresAt, test.expiresAt);
+  assert.equal(f.runtime.identificationTurn(f.item('charger1')), true);
 });
 
 for (const savedConflict of [false, true]) test(`minimum-current runtime replaces a saved wrong Tesla ${savedConflict ? 'conflict' : 'assignment'} only after positive unique evidence`, async t => {

@@ -32,6 +32,12 @@ import { validateJointTeslaComparison, jointTeslaComparisonScope } from './joint
 
 const MINUTE = 60_000;
 const CURRENT_RECONCILE_MS = 5000;
+// Initial preference is preparation time, not a lease on passive observation.
+// The saved attempt clock prevents polling or restart from renewing it.
+const IDENTIFICATION_PREPARATION_WAIT_MS = 90_000;
+const identificationCurrentBusy = (test, now) => ['proposed', 'applying', 'active', 'restoring', 'uncertain'].includes(test?.phase)
+  // Only untouched preparation can expire without physical restoration.
+  && !(test.phase === 'proposed' && test.pending === null && Number.isSafeInteger(test.expiresAt) && test.expiresAt <= now);
 // The CarData Home Assistant bridge publishes unchanged facts every five
 // minutes. Broker connectivity alone cannot prove that bridge is still alive.
 const VEHICLE_FEED_MAX_AGE_MS = 10 * MINUTE;
@@ -97,6 +103,7 @@ function validateCurrentIdentificationEvidence(evidence) {
     || !id(candidate.testId) || !id(candidate.vehicleAssociation) || !time(candidate.observedAt)
     || ['receivedAt', 'physicalAt', 'minimumPhysicalAt'].some(key => !time(candidate[key]) || candidate[key] > candidate.observedAt))
     || ['teslaCurrentResolvedTestId', 'teslaCurrentMatchTestId'].some(key => evidence?.[key] != null && !id(evidence[key]))
+    || evidence?.bmwContestedPauseRequestedAt !== undefined && !time(evidence.bmwContestedPauseRequestedAt)
     || evidence?.teslaCurrentMatch != null && evidence.teslaCurrentMatch.testId !== evidence.teslaCurrentMatchTestId)
     throw new Error('Unsupported saved current identification evidence; start a fresh development database');
 }
@@ -468,15 +475,32 @@ export class ChargingRuntime {
         || ['restoring', 'restored', 'superseded', 'uncertain'].includes(control.currentTest.phase))));
   }
   identificationTurn(item) {
+    const now = this.clock();
     const busy = Object.values(this.chargers).filter(other => other.controller?.supportsIdentification
       && (other.identification?.phase === 'pausing'
-        || ['waiting', 'charging'].includes(other.identification?.phase) && other.identification?.probe?.endedAt === null))
-      .sort((a, b) => a.identification.startedAt - b.identification.startedAt || a.definition.id.localeCompare(b.definition.id));
+        || ['waiting', 'charging'].includes(other.identification?.phase) && other.identification?.probe?.endedAt === null
+        || identificationCurrentBusy(other.controller.status()?.currentTest, now)))
+      .sort((a, b) => (a.identification?.startedAt ?? a.controller.status().currentTest.startedAt)
+        - (b.identification?.startedAt ?? b.controller.status().currentTest.startedAt)
+        || a.definition.id.localeCompare(b.definition.id));
     if (busy.length) return busy[0] === item;
-    const second = this.chargers.charger2, now = this.clock();
+    const second = this.chargers.charger2;
     if (second && this.minimumCurrentIdentification(second, now)) {
-      const choice = this.identificationChargingChoice(second, now);
-      if (choice.normalCharging || choice.probeReturnAt > now) return item === second;
+      const control = second.controller.status(), current = control.snapshot?.fields?.current_limit;
+      const startedAt = second.identification?.startedAt ?? control.session?.connectedAt;
+      // Match native preparation readiness without changing minimum-current
+      // eligibility: a temporarily unready comparison must never fall through
+      // to a probe at the old, higher pilot setting. A device permission hold
+      // cannot start this test and therefore cannot reserve the peer's turn.
+      const ready = !control.devicePermissionHeld && !control.pending && control.snapshot?.controlReady === true
+        && current?.invalidatedAt === undefined && current?.retained === false
+        && Number.isSafeInteger(current.measuredAt) && current.measuredAt > 0 && current.measuredAt <= now
+        && Number.isSafeInteger(current.receivedAt) && current.receivedAt <= now
+        && now - current.receivedAt <= second.adapter?.config?.maxAgeMs;
+      if (ready && Number.isSafeInteger(startedAt) && now >= startedAt && now - startedAt < IDENTIFICATION_PREPARATION_WAIT_MS) {
+        const choice = this.identificationChargingChoice(second, now);
+        if (choice.normalCharging || choice.probeReturnAt > now) return item === second;
+      }
     }
     return true;
   }
@@ -518,21 +542,30 @@ export class ChargingRuntime {
       if ([...(peer.vehicleEvidence?.chargingTimes ?? []), ...(peer.vehicleEvidence?.stoppedTimes ?? [])]
         .some(at => at > now - MINUTE && at <= now)) return false;
       if (peer.identification?.phase === 'pausing' || peer.identification?.probe?.endedAt === null
-        || ['proposed', 'applying', 'active', 'restoring', 'uncertain'].includes(control.currentTest?.phase)) return false;
+        || identificationCurrentBusy(control.currentTest, now)) return false;
+      const snapshot = control.snapshot, appControl = snapshot.appControl, permission = snapshot.fields?.start_charging;
+      const freshRead = at => Number.isSafeInteger(at) && at >= 0 && at <= now && now - at <= MINUTE;
+      const noNativeSchedule = snapshot.transport === 'ocpp' ? appControl?.schedule?.enabled === 'none'
+        : snapshot.transport === 'shelly-evse' ? snapshot.nativeScheduleActive === false && snapshot.controlReady === true
+          : snapshot.schedule?.enabled === 'none';
+      const shellyPermission = value => permission?.value === value && permission.invalidatedAt === undefined
+        && permission.retained !== true && Number.isSafeInteger(permission.measuredAt)
+        && permission.measuredAt >= 0 && permission.measuredAt <= now;
       if (control.manual) {
-        const snapshot = control.snapshot, permission = snapshot.fields?.start_charging, appControl = snapshot.appControl;
         const nativeStop = snapshot.manualStop === true || snapshot.stopped === true
           || snapshot.transport === 'ocpp' && appControl?.controlKnown === true && appControl.stopped === true
             && !appControl.faulted && !appControl.authorizationBlocked && Number.isSafeInteger(appControl.readAt)
             && appControl.readAt <= now && now - appControl.readAt <= MINUTE
           || snapshot.transport === 'shelly-evse' && permission?.value === false
             && Number.isSafeInteger(permission.measuredAt) && permission.measuredAt <= now;
-        const noNativeSchedule = snapshot.transport === 'ocpp' ? appControl?.schedule?.enabled === 'none'
-          : snapshot.transport === 'shelly-evse' ? snapshot.nativeScheduleActive === false && snapshot.controlReady === true
-            : snapshot.schedule?.enabled === 'none';
         return control.manual.kind === 'stop' && nativeStop && noNativeSchedule && charging.value === false && power.value === 0
           && Number.isSafeInteger(snapshot.readAt) && snapshot.readAt <= now && now - snapshot.readAt <= MINUTE;
       }
+      // A system permission hold is a device restriction, not a manual Stop
+      // and not an active identification test. Fresh native and physical zero
+      // evidence lets the other charger test without changing that restriction.
+      if (control.devicePermissionHeld) return snapshot.transport === 'shelly-evse' && shellyPermission(false)
+        && noNativeSchedule && freshRead(snapshot.readAt) && charging.value === false && power.value === 0;
       if (!peer.controls.enabled || peer.request?.chargeNow) return true;
       const periods = control.execution?.periods?.length ? control.execution.periods : peer.plan?.periods;
       // A confirmed provisional allowance is still an ordinary charging
@@ -542,7 +575,18 @@ export class ChargingRuntime {
       if (!periods?.length || (peer.plan?.provisional || peer.plan?.feasible === false)
         && control.phase !== 'provisional' && control.provisional !== true) return false;
       const allowed = periods.some(row => row.startAt <= now && (row.endAt === null || row.endAt > now));
-      if (allowed !== charging.value) return false;
+      if (allowed !== charging.value) {
+        // Permission is not demand: a full or timer-delayed car can remain
+        // connected at zero indefinitely. Confirm the ordinary native release;
+        // an unconfirmed release or a running car still awaiting Stop is unsafe.
+        const nativeRelease = snapshot.transport === 'shelly-evse' ? shellyPermission(true)
+          : snapshot.transport === 'ocpp' ? appControl?.controlKnown === true && appControl.enabled === true
+            && appControl.stopped === false && !appControl.faulted && !appControl.authorizationBlocked && freshRead(appControl.readAt)
+            && !control.owned && control.ownsInstruction !== true
+            : snapshot.controlKnown === true && snapshot.enabled === true && snapshot.stopped === false && !snapshot.manualStop;
+        if (!allowed || charging.value !== false || power.value !== 0 || !nativeRelease
+          || !noNativeSchedule || !freshRead(snapshot.readAt)) return false;
+      }
       const horizon = now + IDENTIFICATION_PAUSE_WAIT_MS + 30_000;
       return !periods.some(row => [row.startAt, row.endAt].some(at => at > now && at <= horizon));
     });
@@ -869,16 +913,53 @@ export class ChargingRuntime {
         // Withdrawing an assignment into a same-connection conflict does not
         // erase its positive evidence. Explicitly retired shared episodes have
         // their conflicts cleared below and remain fenced by consumption.
+        const confirmedPause = confirmedIdentityPause(control, now)
+          ?? (item.identification?.pause?.connectedAt === connectedAt ? item.identification.pause : null);
+        const pendingPause = [control.owned, control.pending?.owned, control.pending?.instruction, control.pending]
+          .find(owned => owned?.purpose === 'identification' && owned.identificationId === item.identification?.id
+            && owned.identificationConnectedAt === connectedAt);
+        const pauseRequestedAt = confirmedPause?.requestedAt
+          ?? pendingPause?.pauseRequestedAt ?? pendingPause?.requestedAt;
+        if (Number.isSafeInteger(pauseRequestedAt) && pauseRequestedAt >= connectedAt && pauseRequestedAt <= now) {
+          // Admission required a quiet minute. Keep checking that causal
+          // window through the physical stop and its 30-second correlation
+          // tolerance. A peer's unexpected edge cannot turn an ongoing BMW
+          // baseline into proof of which car our pause stopped.
+          const until = confirmedPause ? confirmedPause.stoppedAt + 30_000
+            : item.identification?.pauseUntil + 30_000;
+          const contested = Object.entries(this.chargers).some(([peerId, peer]) => {
+            if (peerId === id) return false;
+            const peerEvidence = peer.vehicleEvidence, peerPhysical = result[peerId];
+            const transitions = [...(peerEvidence?.chargingTimes ?? []), ...(peerEvidence?.stoppedTimes ?? []),
+              ...(peer.streamEvidence?.chargingTimes ?? []), ...(peer.streamEvidence?.stoppedTimes ?? [])];
+            const charging = peerPhysical?.charging;
+            // Both physical views were frozen before this loop. Include a
+            // newly arrived peer edge before that peer's own iteration saves
+            // it, so assignment never depends on charger iteration order.
+            if (charging?.available === true && typeof charging.value === 'boolean'
+              && peerEvidence?.physicalCharging !== charging.value
+              && Number.isSafeInteger(charging.measuredAt) && charging.measuredAt <= now
+              && now - charging.measuredAt < 5 * MINUTE) transitions.push(charging.measuredAt);
+            return transitions.some(at => Number.isSafeInteger(at) && at >= pauseRequestedAt - MINUTE
+              && at <= until && at <= now);
+          });
+          // This restriction belongs to the paused connection. Preserve it
+          // if the peer later disconnects or replaces its own history; a
+          // retry's distinct request boundary cannot inherit this verdict.
+          if (contested) evidence.bmwContestedPauseRequestedAt = pauseRequestedAt;
+        }
+        const pauseUncontested = !Number.isSafeInteger(pauseRequestedAt)
+          || evidence.bmwContestedPauseRequestedAt !== pauseRequestedAt;
         const retainedBmw = item.vehicleMatch?.id === 'bmw' || item.vehicleConflict?.ids.includes('bmw');
-        const bmwPause = !evidence.historyOverflow && !reidentifying && bmwAvailable && matchBmwControlledPause(bmw.reading, { connectedAt, lastDisconnectedAt: session.lastDisconnectedAt,
+        const bmwPause = pauseUncontested && !evidence.historyOverflow && !reidentifying && bmwAvailable && matchBmwControlledPause(bmw.reading, { connectedAt, lastDisconnectedAt: session.lastDisconnectedAt,
           chargingAt: evidence.chargingTimes, stoppedAt: evidence.stoppedTimes, now, consumedChargingId: retainedBmw ? null : bmw.consumedChargingId,
           matchingSince: retrySince,
-          pause: confirmedIdentityPause(control, now) ?? item.identification?.pause });
+          pause: confirmedPause });
         if (bmwPause) { candidates[id].push('bmw'); evidence.bmwReason = 'matched-controlled-pause';
           evidence.bmwChargingReadingId = bmwPause.chargingReadingId; evidence.bmwPlugReadingId = null; }
         const activePause = control.owned?.purpose === 'identification'
           && control.owned.identificationId === item.identification?.id ? confirmedIdentityPause(control, now) : null;
-        const activeBmw = !evidence.historyOverflow && bmwAvailable && item.identification?.connectedAt === connectedAt
+        const activeBmw = pauseUncontested && !evidence.historyOverflow && bmwAvailable && item.identification?.connectedAt === connectedAt
           && matchActiveBmwPause(bmw.reading, { state: { ...item.identification,
             pause: activePause ?? item.identification.pause }, now, lastDisconnectedAt: session.lastDisconnectedAt,
             consumedChargingId: retainedBmw ? null : bmw.consumedChargingId });
@@ -897,6 +978,23 @@ export class ChargingRuntime {
           candidates[id].push('bmw');
           if (!activeBmw) { evidence.bmwReason = 'matched-physical-session';
             evidence.bmwChargingReadingId = passiveBmw.chargingReadingId; evidence.bmwPlugReadingId = passiveBmw.plugReadingId; }
+        }
+        if (!pauseUncontested && !passiveBmw
+          && ['matched-controlled-pause', 'matched-identification-pause'].includes(evidence.bmwReason)) {
+          // A delayed peer source edge may arrive after the vehicle stop.
+          // Withdraw only an assignment made from this now-contested pause;
+          // an older identity retained during an explicit retry keeps its
+          // own scope, and complete independent episodes remain usable.
+          if (item.vehicleMatch?.id === 'bmw' && item.vehicleMatch.matchedAt >= pauseRequestedAt) {
+            item.vehicleMatch = null;
+            if (item.identification?.phase === 'completed') item.identification = {
+              ...item.identification, phase: 'observing', action: null, completedAt: null, reason: 'awaiting-evidence',
+            };
+          }
+          if (item.vehicleConflict?.at >= pauseRequestedAt) {
+            item.vehicleConflict.ids = item.vehicleConflict.ids.filter(vehicle => vehicle !== 'bmw');
+            if (!item.vehicleConflict.ids.length) item.vehicleConflict = null;
+          }
         }
         bmwMatches[id] = [bmwPause, activeBmw, passiveBmw, otherPassiveBmw].filter(Boolean);
         const peers = Object.entries(result).filter(([peerId]) => peerId !== id
@@ -1338,7 +1436,9 @@ export class ChargingRuntime {
           reason: this.identificationReason(item, telemetry, now),
           available: !identificationPauseOutstanding && !currentTestOutstanding
             && this.identificationAvailable(item, now)
-            && this.identificationFeedReady(item, now) && this.identificationTurn(item),
+            // An explicit retry may wait for its peer. Requesting observation
+            // does not acquire the shared slot or authorize a device command.
+            && this.identificationFeedReady(item, now),
           active: ['waiting', 'charging', 'pausing'].includes(item.identification?.phase),
           attempted: Boolean(item.identification?.chargingStartedAt) },
         request: telemetry[id]?.vehicle?.sessionId ? item.request : null, vehicle: telemetry[id]?.vehicle ?? null,
