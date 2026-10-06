@@ -168,15 +168,17 @@ async function fixture(t, transport, vehicle = 'bmw', { retainedOnly = false, he
 }
 
 for (const change of ['economic forecast', 'native stop', 'ended session', 'pause deadline', 'explicit edit'])
-test(`OCPP: a slow identification preflight handles a concurrent ${change}`, async t => {
+test(`OCPP: a slow local identification preflight handles a concurrent ${change}`, { timeout: 5000 }, async t => {
   const f = await fixture(t, 'ocpp', 'bmw', { normalCharging: true });
   f.setNow(START + 1000);
   const item = f.runtime.chargers.charger1;
   let releaseRead, enteredRead;
   const entered = new Promise(resolve => { enteredRead = resolve; });
   const read = new Promise(resolve => { releaseRead = resolve; });
-  f.nativeReadHook(async options => {
-    if (options.forceAppRefresh) { enteredRead(); await read; }
+  f.nativeReadHook(async () => {
+    // The durable install intent precedes the last local state read. Cloud
+    // refresh is supplementary and is no longer an execution boundary.
+    if (item.controller.status().pending?.action === 'install') { enteredRead(); await read; }
   });
   const work = f.runtime.reconcile('charger1');
   await entered;

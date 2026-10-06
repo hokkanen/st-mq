@@ -10,7 +10,8 @@ const CALL_TIMEOUT_MS = 15_000;
 const FIRST_MESSAGE_TIMEOUT_MS = 30_000;
 const NO_TRANSACTION_STATUSES = new Set(['Available', 'Finishing']);
 const RECOVERABLE_STATUSES = new Set(['Charging', 'SuspendedEVSE', 'SuspendedEV']);
-const REQUEST_ACTIONS = new Set(['SetChargingProfile', 'ClearChargingProfile', 'GetCompositeSchedule', 'GetConfiguration']);
+const EXTERNAL_STOP_REASONS = new Set(['Remote', 'Local', 'DeAuthorized']);
+const REQUEST_ACTIONS = new Set(['SetChargingProfile', 'ClearChargingProfile', 'GetCompositeSchedule', 'GetConfiguration', 'ChangeAvailability']);
 const requestError = code => Object.assign(new Error(code), { code });
 const unreachableAddresses = new BlockList();
 for (const [address, prefix, type] of [['0.0.0.0', 8, 'ipv4'], ['127.0.0.0', 8, 'ipv4'],
@@ -113,6 +114,7 @@ export function createEaseeOcpp({ config: input, chargerId, clock = Date.now, ca
   const instanceId = randomUUID(); let connectionSequence = 0;
   let statusTransition = 0;
   const values = new Map(), replies = new Map(), pendingCalls = new Map();
+  const deferredTransactions = new Map();
   const futureReadings = [];
   const callQueue = [];
   const digest = value => createHash('sha256').update(JSON.stringify(value)).digest('hex');
@@ -126,12 +128,16 @@ export function createEaseeOcpp({ config: input, chargerId, clock = Date.now, ca
     && (value.activeId === null || Number.isSafeInteger(value.activeId))
     && Array.isArray(value.transactions) && value.transactions.length <= 128
     && new Set(value.transactions.map(row => row.id)).size === value.transactions.length
-    && value.transactions.every(row => row && Object.keys(row).every(key => ['id', 'fingerprint', 'tagHash', 'status', 'startedAt', 'lastEvidenceAt', 'meterStart', 'stopFingerprint', 'stoppedAt', 'meterStop', 'endedByStatus', 'modeDisableIntent', 'endedByNewStart'].includes(key))
+    && value.transactions.every(row => row && Object.keys(row).every(key => ['id', 'fingerprint', 'tagHash', 'status', 'startedAt', 'startReceivedAt', 'lastEvidenceAt', 'meterStart', 'stopFingerprint', 'stoppedAt', 'stopReason', 'stopReceivedAt', 'meterStop', 'endedByStatus', 'modeDisableIntent', 'endedByNewStart'].includes(key))
       && Number.isSafeInteger(row.id) && row.id > 0 && row.id < value.nextId
       && /^[a-f0-9]{64}$/.test(row.fingerprint) && /^[a-f0-9]{64}$/.test(row.tagHash) && ['Accepted', 'Blocked', 'Invalid'].includes(row.status)
       && Number.isSafeInteger(row.startedAt) && row.startedAt >= 0 && row.startedAt <= value.latestStartAt
+      && (row.startReceivedAt === undefined || Number.isSafeInteger(row.startReceivedAt) && row.startReceivedAt >= 0
+        && row.startedAt - row.startReceivedAt <= MAX_FUTURE_MS)
       && Number.isSafeInteger(row.lastEvidenceAt) && row.lastEvidenceAt >= row.startedAt
       && Number.isSafeInteger(row.meterStart) && row.meterStart >= 0
+      && (row.stopReason === undefined && row.stopReceivedAt === undefined || EXTERNAL_STOP_REASONS.has(row.stopReason)
+        && Number.isSafeInteger(row.stopReceivedAt) && row.stopReceivedAt >= 0 && row.stoppedAt - row.stopReceivedAt <= MAX_FUTURE_MS)
       && (row.modeDisableIntent === undefined || row.status === 'Accepted' && row.modeDisableIntent
         && Object.keys(row.modeDisableIntent).every(key => ['requestedAt', 'connectionId', 'attemptedAt'].includes(key))
         && Number.isSafeInteger(row.modeDisableIntent.requestedAt) && row.modeDisableIntent.requestedAt >= row.startedAt
@@ -174,12 +180,14 @@ export function createEaseeOcpp({ config: input, chargerId, clock = Date.now, ca
       && Array.isArray(recovered.transactions) && recovered.transactions.length <= 128
       && new Set(recovered.transactions.map(row => row?.id)).size === recovered.transactions.length
       && recovered.transactions.every(row => row && Object.keys(row).every(key => ['id', 'observedAt', 'confirmedAt', 'lastEvidenceAt',
-        'endedByStatus', 'endedByNewStart', 'stoppedAt', 'meterStop', 'stopFingerprint', 'modeDisableIntent'].includes(key))
+        'endedByStatus', 'endedByNewStart', 'stoppedAt', 'stopReason', 'stopReceivedAt', 'meterStop', 'stopFingerprint', 'modeDisableIntent'].includes(key))
         && Number.isSafeInteger(row.id) && row.id > 0 && row.id < 2147483647
         && !value.transactions.some(known => known.id === row.id)
         && Number.isSafeInteger(row.observedAt) && row.observedAt >= 0
         && Number.isSafeInteger(row.confirmedAt) && row.confirmedAt - row.observedAt >= 1000
         && Number.isSafeInteger(row.lastEvidenceAt) && row.lastEvidenceAt >= row.confirmedAt
+        && (row.stopReason === undefined && row.stopReceivedAt === undefined || EXTERNAL_STOP_REASONS.has(row.stopReason)
+          && Number.isSafeInteger(row.stopReceivedAt) && row.stopReceivedAt >= 0 && row.stoppedAt - row.stopReceivedAt <= MAX_FUTURE_MS)
         && (row.endedByStatus === undefined || row.endedByStatus
           && row.endedByNewStart === undefined
           && Object.keys(row.endedByStatus).length === 3
@@ -246,6 +254,8 @@ export function createEaseeOcpp({ config: input, chargerId, clock = Date.now, ca
     lastMessageAt = now;
   }
   function reset() {
+    for (const pending of deferredTransactions.values()) clearTimeout(pending.timer);
+    deferredTransactions.clear();
     rejectRequests('ocpp-disconnected');
     booted = false; values.clear(); futureReadings.length = 0; replies.clear();
     configurationFailures.clear(); lastMessageAt = null; connectedAt = null; telemetryConfigured = false;
@@ -325,7 +335,7 @@ export function createEaseeOcpp({ config: input, chargerId, clock = Date.now, ca
     const validId = Number.isSafeInteger(transactionId) && transactionId > 0 && transactionId < 2147483647;
     const powerReadings = readings.filter(row => row.id === 120);
     const at = Math.max(...powerReadings.map(row => instant(row.timestamp)));
-    const fresh = validId && Number.isSafeInteger(at) && at >= evidenceBoundaryAt && at <= receivedAt
+    const fresh = validId && Number.isSafeInteger(at) && at >= evidenceBoundaryAt && at - receivedAt <= MAX_FUTURE_MS
       && clock() >= at && clock() - at <= MAX_AGE_MS;
     if (!fresh) return true;
     const currentPower = powerReadings.filter(row => instant(row.timestamp) === at), priorPower = values.get(120);
@@ -463,7 +473,7 @@ export function createEaseeOcpp({ config: input, chargerId, clock = Date.now, ca
     }
     sendNextCall();
   }
-  function receive(data, binary) {
+  function receive(data, binary, deferred = null) {
     refreshAuthority();
     if (!canControl() || closed) { socket?.close(1008, 'Unavailable'); return; }
     if (binary) { socket.close(1008, 'Unavailable'); return; }
@@ -497,8 +507,14 @@ export function createEaseeOcpp({ config: input, chargerId, clock = Date.now, ca
     const [, id, action, payload] = frame;
     if (frame.length !== 4 || typeof id !== 'string' || !id.length || id.length > 36 || typeof action !== 'string'
       || !payload || typeof payload !== 'object' || Array.isArray(payload)) { socket.close(1002, 'Invalid OCPP call'); return; }
-    transportActivity();
+    if (!deferred) transportActivity();
+    const receivedAt = deferred?.receivedAt ?? clock();
     const requestHash = digest({ action, payload });
+    const waiting = deferredTransactions.get(id);
+    if (waiting) {
+      if (waiting.requestHash !== requestHash) send([4, id, 'ProtocolError', 'Conflicting message identifier', {}]);
+      return;
+    }
     if (replies.has(id)) {
       const prior = replies.get(id);
       if (prior.requestHash !== requestHash) { send([4, id, 'ProtocolError', 'Conflicting message identifier', {}]); return; }
@@ -511,12 +527,35 @@ export function createEaseeOcpp({ config: input, chargerId, clock = Date.now, ca
       else send(prior.reply);
       return;
     }
+    const sourceAt = ['StartTransaction', 'StopTransaction'].includes(action) ? instant(payload.timestamp) : NaN;
+    const validFuture = Number.isSafeInteger(sourceAt) && sourceAt > clock() && sourceAt - receivedAt <= MAX_FUTURE_MS
+      && (action === 'StartTransaction' ? payload.connectorId === 1 && Number.isSafeInteger(payload.meterStart) && payload.meterStart >= 0
+        && typeof payload.idTag === 'string' && payload.idTag.length > 0 && payload.idTag.length <= 20
+        : Number.isSafeInteger(payload.transactionId) && payload.transactionId > 0
+          && Number.isSafeInteger(payload.meterStop) && payload.meterStop >= 0);
+    if (!deferred && validFuture) {
+      if (deferredTransactions.size >= 8) { send([4, id, 'OccurrenceConstraintViolation', 'Too many pending transaction messages', {}]); return; }
+      const pending = { requestHash, receivedAt, connection: socket, connectionId };
+      deferredTransactions.set(id, pending);
+      pending.timer = setTimeout(() => {
+        if (deferredTransactions.get(id) !== pending) return;
+        deferredTransactions.delete(id);
+        if (pending.connection !== socket || pending.connectionId !== connectionId || !refreshAuthority() || !transportFresh()) return;
+        // One bounded wait only. Recheck payload, present authorization and
+        // storage after the source time arrives, retaining the actual receipt.
+        receive(data, false, pending);
+      }, sourceAt - clock() + 1);
+      pending.timer.unref();
+      return;
+    }
     let response;
     if (action === 'BootNotification') {
       if (typeof payload.chargePointVendor !== 'string' || typeof payload.chargePointModel !== 'string') {
         send([4, id, 'FormationViolation', 'Missing product fields', {}]); return;
       }
       values.clear(); futureReadings.length = 0; rejectRequests('ocpp-reconfigured'); booted = true; onDisconnect();
+      for (const pending of deferredTransactions.values()) clearTimeout(pending.timer);
+      deferredTransactions.clear();
       connectionId = `${instanceId}:${++connectionSequence}`;
       device = chargingDeviceInfo({ model: payload.chargePointModel, firmware: payload.firmwareVersion,
         source: 'ocpp-boot', receivedAt: lastMessageAt });
@@ -567,7 +606,7 @@ export function createEaseeOcpp({ config: input, chargerId, clock = Date.now, ca
         while (ledger.recovered?.transactions.some(row => row.id === nextId)) nextId++;
         if (nextId >= 2147483646) { send([4, id, 'OccurrenceConstraintViolation', 'Transaction identifier unavailable', {}]); return; }
         transaction = { id: nextId, fingerprint, tagHash: digest({ scope, idTag: payload.idTag }),
-          status: authorization.status, startedAt, lastEvidenceAt: startedAt, meterStart: payload.meterStart };
+          status: authorization.status, startedAt, startReceivedAt: receivedAt, lastEvidenceAt: startedAt, meterStart: payload.meterStart };
         const updated = supersedes ? updateTransaction({ ...active,
           endedByNewStart: { transactionId: transaction.id, startedAt } }, true) : ledger;
         const next = { ...updated, nextId: nextId + 1, latestStartAt: startedAt,
@@ -594,11 +633,16 @@ export function createEaseeOcpp({ config: input, chargerId, clock = Date.now, ca
         || transaction.endedByStatus && stoppedAt > transaction.endedByStatus.at) {
         send([4, id, 'PropertyConstraintViolation', 'Unknown or invalid transaction end', {}]); return;
       }
-      const fingerprint = digest({ scope, id: transaction.id, stoppedAt, meterStop: payload.meterStop });
+      const stopReason = EXTERNAL_STOP_REASONS.has(payload.reason) ? payload.reason : undefined;
+      const fingerprint = digest({ scope, id: transaction.id, stoppedAt, meterStop: payload.meterStop,
+        ...(stopReason ? { stopReason } : {}) });
       if (transaction.stopFingerprint && transaction.stopFingerprint !== fingerprint) {
         send([4, id, 'ProtocolError', 'Conflicting transaction end', {}]); return;
       }
-      const next = updateTransaction({ ...transaction, stoppedAt, meterStop: payload.meterStop, stopFingerprint: fingerprint }, true);
+      // Device timestamps may have second precision. Preserve the first actual
+      // receipt separately, without letting retries manufacture a later event.
+      const next = updateTransaction({ ...transaction, stoppedAt, meterStop: payload.meterStop, stopFingerprint: fingerprint,
+        ...(stopReason ? { stopReason, stopReceivedAt: transaction.stopReceivedAt ?? receivedAt } : {}) }, true);
       try { persist(next); } catch { send([4, id, 'InternalError', 'Transaction storage unavailable', {}]); return; }
       if (observedTransaction?.id === transaction.id) observedTransaction = null;
       if (transactionEvidence?.id === transaction.id) transactionEvidence = null;
@@ -715,6 +759,9 @@ export function createEaseeOcpp({ config: input, chargerId, clock = Date.now, ca
     },
     request(action, payload, { signal, guard = () => true, beforeSend = () => true } = {}) {
       if (!REQUEST_ACTIONS.has(action)) return Promise.reject(requestError('ocpp-action-not-allowed'));
+      if (action === 'ChangeAvailability' && (!payload || payload.connectorId !== 0 || payload.type !== 'Operative'
+        || Object.keys(payload).some(key => !['connectorId', 'type'].includes(key))))
+        return Promise.reject(requestError('ocpp-invalid-payload'));
       let encoded;
       try { encoded = JSON.stringify(payload); } catch { return Promise.reject(requestError('ocpp-invalid-payload')); }
       if (!payload || typeof payload !== 'object' || Array.isArray(payload) || !encoded || encoded.length > 16_384)
@@ -763,7 +810,12 @@ export function createEaseeOcpp({ config: input, chargerId, clock = Date.now, ca
       const active = activeTransaction();
       const confirmed = !recoveryConflict && observedTransaction?.id === active?.id && clock() >= observedTransaction?.at
         && clock() - observedTransaction.at <= MAX_AGE_MS;
+      const stopped = [...ledger.transactions, ...(ledger.recovered?.transactions ?? [])]
+        .filter(row => row.stopReason && (isRecovered(row) || row.status === 'Accepted') && row.stoppedAt <= clock())
+        .sort((left, right) => right.stoppedAt - left.stoppedAt || right.stopReceivedAt - left.stopReceivedAt || right.id - left.id)[0];
       return { connectionId, connectorStatus, timestamp: connectorStatusAt, receivedAt: connectorReceivedAt,
+        nativeStop: stopped ? { transactionId: stopped.id, at: stopped.stoppedAt,
+          receivedAt: stopped.stopReceivedAt, reason: stopped.stopReason } : null,
         transaction: active ? { id: active.id, startedAt: active.startedAt ?? null, tagHash: active.tagHash ?? null, confirmed,
           provenance: isRecovered(active) ? 'meter-values' : 'start-transaction', confirmedAt: active.confirmedAt ?? active.startedAt } : null,
         readings: [...values.values()].filter(row => row.value !== null && instant(row.timestamp) <= clock()

@@ -122,6 +122,11 @@ Equalizer limiting, do not establish that the requested schedule took effect.
 
 ## Ownership and manual controls
 
+The REST preflight and schedule operations in this section describe the cloud
+backend. Direct OCPP keeps the same instruction precedence through the separate
+[native app priority](#native-app-priority) and
+[cloud outage](#easee-cloud-outages) rules below.
+
 Before each mutation the adapter rereads the schedule and control observations over REST,
 then compares them with the expected state. It persists the write intent before
 dispatch and confirms the result by reading back. A successful HTTP response
@@ -353,7 +358,7 @@ the site operator. `easee.local_ocpp.authorization_mode` selects authorization:
   A remote-start acknowledgement alone does not prove charging: the native
   transaction and physical state must follow. The controller grants a short-lived
   start permission only when the current plan or an allowed session action calls
-  for charging. A scheduled wait, saved stop, missing fresh instructions or
+  for charging. A scheduled wait, saved stop, missing fresh local readiness or
   incomplete takeover cannot authorize startup. This gate covers outgoing remote
   starts and incoming authorization/start requests for the private virtual tag.
   Virtual-tag authorization replies expire immediately from the charger cache;
@@ -364,7 +369,8 @@ the site operator. `easee.local_ocpp.authorization_mode` selects authorization:
   **Awaiting Authentication** mode (7) and **Pending authorization** reason (55)
   describe approval the controller must supply. They do not independently block
   an otherwise permitted start. The current plan, physical connection and fresh
-  native instructions still determine permission; a future charging period keeps
+  local readiness, together with known applicable instructions, determine
+  permission; a future charging period keeps
   waiting. De-authenticating mode (8), faults, external stops and RFID restrictions
   retain their existing meaning. Cloud scheduling cannot grant this local
   authorization. These values follow the documented
@@ -381,19 +387,41 @@ control while native OCPP is inactive.
 
 ### Native app priority
 
-Local OCPP follows the cloud controller's ownership rules. The production adapter
-combines source-timed cloud/stream enable and stop observations with cloud
-schedules. Ordinary scheduling within an established session does not mutate
-cloud schedules. New-connection automatic takeover and explicit **Use automatic**
-may disable the superseded native schedule and enable/resume the
-charger through the cloud API after a local economic pause is confirmed where
-needed. It never installs a cloud economic schedule while OCPP owns control.
-Observed native Stop prevents ordinary automatic resumption. Observed enable or schedule
-removal yields the current physical connection to external control; only the application's
-exact OCPP profile is released. Native current limits remain in the charger.
+Local OCPP follows the same session ownership and instruction precedence as the
+cloud controller. Local connection state, transaction reports and measurements
+provide local readiness and physical evidence. Source-timed cloud/stream enable,
+stop and schedule observations supplement that evidence when available; their
+absence is not a charging restriction. Ordinary scheduling within an established
+session does not mutate cloud schedules and never installs a cloud economic
+schedule while OCPP owns control.
+
+New-connection automatic takeover and explicit **Use automatic** supersede earlier
+instructions using the supported operation for the observed restriction. Local
+operations use OCPP; exceptional removal of a positively identified native
+dynamic-current zero Pause can still need cloud Resume. Required economic pauses
+must be confirmed before releasing an observed restriction. Unsupported removal
+remains visible instead of being claimed as successful. Observed later native
+Stop prevents ordinary automatic resumption. Observed later enable or schedule
+removal yields the current physical connection to external control; only the
+application's exact OCPP profile is released. Native current limits remain in
+the charger.
 A fresh Charging observation before an owned, physically confirmed pause expires
 also establishes an app release. `SuspendedEVSE` or zero power alone does not
 identify a manual action.
+
+An actual OCPP `StopTransaction` with reason `Remote`, `Local` or `DeAuthorized`
+is definite local stop evidence. It blocks replacement Start for the same
+physical connection and survives restart until the applicable instruction is
+superseded. ST-MQ's own charging-profile pauses do not create that transaction
+stop. A missing reason or generic suspended status does not establish a manual
+instruction, and the reported stop reason does not identify a particular person
+or application.
+
+The receiver tolerates a source clock lead of at most one second. Transaction
+messages wait once until their source time arrives, then recheck authorization,
+connection and storage. Original source and first-receipt times stay distinct;
+retries and buffered messages cannot renew evidence. Larger clock leads remain
+invalid. Meter-based transaction recovery uses the same bounded tolerance.
 
 Known schedule windows retain their original end across restart, Automatic
 OFF/ON and ready-by edits; ambiguous ends require explicit resumption. Handback
@@ -401,11 +429,42 @@ requires fresh schedule evidence, and a newer app change wins over a queued
 resume or profile write. Manual session priority lasts until physical unplug or
 explicit resumption; transaction rollover alone is not an unplug.
 
-The supplemental cloud read can be unavailable while local charging continues.
-Then unreported app intent remains unknown; exact-ID cleanup stays available
-locally and existing observed manual priority is retained. The integration cannot
-identify app taps that produce no observable change. A controller outage still
-has the authorization and pause-expiry limitations described above.
+The integration cannot identify app taps that produce no observable change.
+OCPP status alone cannot identify who issued an instruction or distinguish every
+native pause from other causes of suspension. A controller outage still has the
+authorization and pause-expiry limitations described above.
+
+### Easee cloud outages
+
+Once Direct OCPP is commissioned, normal local approval, scheduled starts and
+pauses, Charge now, permitted identification and valid session recovery operate
+without a successful Easee cloud read. A confirmed new plug-in follows Automatic
+takeover locally. A same-session restart preserves its durable authority and
+known later external instructions. Local commands do not wait for cloud polling
+or renew permission from a cached cloud response. Background setup checks remain
+distinct from an already authenticated, working local installation.
+
+Missing, stale or unknown cloud data supplies no new contrary instruction. It
+does not become synthetic fresh `enabled`, `none` or zero-current evidence and
+does not erase a known Stop or manual schedule. A returning observation keeps its
+original source time and session scope; a later receipt alone cannot turn an
+old instruction into a later external choice. New admissible contrary evidence
+still fences queued commands. Local disconnection, device refusal, faults,
+authorization restrictions and unresolved restoration remain independent of the
+cloud service's availability.
+
+Property and supplementary limit readings retain their actual source and
+availability. Charger 2 uses its configured current fallback when the cloud
+Equalizer feed is unavailable; the local charger retains native protection.
+Unknown cloud current data is not invented headroom or proof of electrical
+readiness. This contract covers Easee cloud loss, not the loss of the local
+controller, LAN, price source or vehicle feeds.
+
+Initial commissioning still uses Easee's API. A positively identified native
+Pause that sets the dynamic charger ceiling to 0 A also has a separate cloud
+Resume recovery path. It is distinct from an ST-MQ-owned 0 A OCPP profile, which
+can be cleared locally by its exact ID or expire on the device. An unexplained
+zero-power or suspended state never authorizes Resume or raising current.
 
 ### Native charging pauses and identification current
 
@@ -445,6 +504,36 @@ that economic hold. See the
 [qualification scope](#qualification-scope) for the physical validation scope.
 
 ### Qualification scope
+
+Temporary candidate-component tests on 6 October 2026 blocked all candidate
+Easee HTTP requests and disabled its cloud stream while using the real charger.
+They confirmed an accepted local transaction and about 11 kW measured charging,
+an OCPP economic pause with composite readback and fresh zero power, recovery of
+that pause after restarting the receiver and controller from serialized state,
+and local profile release with measured charging resumed. An external Stop was
+received directly as `StopTransaction(reason: Remote)`, survived controller
+restart and Charge now, and was superseded only by explicit Use automatic.
+Local `ChangeAvailability(Operative)` also recovered an externally disabled
+charger and restored measured charging without candidate cloud access.
+The tested source also handles the observed subsecond charger clock lead without
+inventing timestamps. These tests exercise the actual candidate control and
+acquisition components, not a complete HA reboot or physical unplug/replug.
+The installed application files and pair roles were unchanged.
+
+Bounded physical command tests on 6 October 2026 confirmed local Start and
+measured charging, local `ChangeAvailability(Operative)` recovery
+after a cloud-issued Disable, local Start after a cloud-issued Stop, and a local
+0 A OCPP pause followed by exact-profile release and resumed charging. Delayed
+and daily schedule activation requests were rejected with HTTP 409 while the
+reported scheduling provider remained `ocpp.direct`. These observations do not
+establish that every schedule type or firmware behaves identically.
+
+The same tests could not clear a cloud-issued dynamic-current 0 A Pause through
+local Start, `ChangeAvailability`, or a stop/start cycle. The charger reported
+`DynamicChargerCurrent` as an unknown OCPP configuration key. Cloud Resume
+restored the original setting. These were supervised command-path tests; they
+did not themselves qualify the complete application under a cloud network
+outage, an application restart or a physical unplug/replug during that outage.
 
 A bounded live experiment verified a private virtual-tag start, physical
 charging, a transaction-scoped zero-current pause, and resumed charging after

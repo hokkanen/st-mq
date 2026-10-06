@@ -18,6 +18,16 @@ can also show proposed periods alongside pending approval, without claiming a
 profile was accepted. Plug-and-charge approval requires the price plan or a
 permitted charging action to call for charging.
 
+For an already commissioned Easee Direct OCPP connection, authenticated local
+readiness and valid saved equipment/session authority are sufficient for normal
+operation without an Easee cloud reply. This includes scheduled charging,
+Charge now, permitted identification, new connections and restart recovery.
+Missing or expired supplementary cloud data does not itself deny approval and
+is never relabeled as fresh evidence that no native instruction exists. Local
+faults, authorization requirements, observed later external instructions and
+unresolved restoration remain separate restrictions. See
+[Easee cloud outages](integrations/easee.md#easee-cloud-outages).
+
 ## Automatic takeover and native instructions
 
 **Charge now** releases the controller's automatic scheduling delay for the
@@ -35,6 +45,13 @@ invalid saved state cannot authorize takeover. Restart and network reconnection
 preserve a known session's automatic or manual ownership. A later external change
 has priority for that connection; unplugging ends that manual scope. Changing the
 Automatic preference alone does not take over an already established session.
+Cloud unavailability neither creates such a later instruction nor erases one
+already observed. A returning cloud observation retains its original source time
+and session association; receiving it again does not make it a new instruction.
+For Direct OCPP, an actual `StopTransaction` reporting `Remote`, `Local` or
+`DeAuthorized` also preserves a stop restriction across same-connection restart
+and blocks replacement Start. An owned profile pause, missing stop reason or
+generic suspension does not supply that evidence or identify who acted.
 
 **Use automatic** is a separate, explicit new
 instruction: enable Automatic, end Charge now, supersede the observed manual
@@ -63,6 +80,12 @@ step keeps the handover blocked. Its message identifies the failed operation and
 distinguishes a timeout, cancelled command and protocol failure. Session reports
 retain the supported error code and operation for later diagnosis; older generic
 failures cannot establish which of those causes occurred.
+An ordinary local handover with no observed contrary restriction does not need a
+cloud preflight or a fabricated native schedule readback. Locally supported
+recovery uses local command confirmation. A positively identified native
+dynamic-current zero Pause is separate: its cloud Resume recovery may remain
+unavailable during a cloud outage, and zero power alone never authorizes that
+operation. It is not the OCPP profile used by ST-MQ's economic scheduler.
 
 Automatic and explicit handover are bound to the current equipment, connection, request/control
 revisions and observed native instruction. A newer observed instruction fences

@@ -175,8 +175,8 @@ test('a price revision moving an open period into the future revokes authorizati
     assert.equal(f.startAllowed, true, 'The existing active period has a fresh authorization decision');
     if (!transactionConfirmed) f.transaction(null);
     let pausePreflight = false;
-    f.readHook(options => {
-      if (options.forceAppRefresh) {
+    f.readHook(() => {
+      if (f.controller.status().pending?.action === 'install') {
         pausePreflight = true;
         assert.equal(f.startAllowed, false, 'A new waiting plan cannot authorize a start while its pause is being installed');
       }
@@ -196,11 +196,11 @@ test('a price revision moving an open period into the future revokes authorizati
   }
 });
 
-test('unknown charger instructions cannot authorize startup with automatic on or off', async t => {
+test('missing cloud observations do not prevent locally authorized startup with automatic on or off', async t => {
   for (const enabled of [true, false]) {
     const f = fixture(t, { app: null });
     await f.controller.update({ enabled, plan: plan(AT) });
-    assert.equal(f.startAllowed, false);
+    assert.equal(f.startAllowed, true);
     assert.equal(f.commands.length, 0);
   }
 });
@@ -300,7 +300,7 @@ test('manual observation receipt time cannot hide a later physical disconnect so
 test('fault or authorization readiness recovery does not cancel a pending automatic takeover of unchanged instructions', async t => {
   for (const readiness of ['faulted', 'authorizationBlocked']) {
     for (const stopped of [true, false]) {
-      const app = { ...appState(AT, stopped), [readiness]: true };
+      const app = { ...appState(AT - MINUTE, stopped), [readiness]: true };
       if (!stopped) app.schedule = normalizeScheduleState({ enabled: 'daily', daily: { timezone: 'Europe/Helsinki',
         periods: [{ startTime: '01:00:00', stopTime: '03:00:00', maximumAmps: 16 }] } });
       const f = fixture(t, { app, transactionId: 7 });
@@ -346,7 +346,7 @@ test('new connection takeover installs and confirms the waiting restriction befo
 });
 
 test('an unconfirmed waiting restriction preserves the external pause and never authorizes start', async t => {
-  const f = fixture(t, { app: appState(AT, true), transactionId: 7 });
+  const f = fixture(t, { app: appState(AT - MINUTE, true), transactionId: 7 });
   f.compositeLimit(16);
   const view = await f.controller.update({ enabled: true, plan: plan(AT + 30 * MINUTE) });
   assert.equal(view.errorCode, 'readback-mismatch');
@@ -369,7 +369,11 @@ test('a newer external edit wins while automatic takeover awaits a transaction',
 
 test('profile preflight rejects a newer external stop before any charger mutation', async t => {
   const f = fixture(t, { app: appState(AT), transactionId: 7 });
-  f.readHook(options => { if (options.forceAppRefresh) f.app(appState(AT, true)); });
+  f.readHook(() => {
+    if (f.controller.status().pending?.action === 'install') {
+      f.advance(1); f.app(appState(AT + 1, true));
+    }
+  });
   const view = await f.controller.update({ enabled: true, plan: plan(AT + 30 * MINUTE) });
   assert.equal(view.errorCode, 'control-revoked');
   assert.equal(f.commands.length, 0);

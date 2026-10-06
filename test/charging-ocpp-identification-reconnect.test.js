@@ -239,7 +239,7 @@ test('an already observed stalled physical connection recovers after restart wit
   assert.equal(f.commands.length, 0);
 });
 
-test('reconnect probe still requires new physical status, current native instructions and control authority', async t => {
+test('reconnect probe respects local readiness and known instructions while tolerating missing cloud evidence', async t => {
   for (const restriction of ['old-status', 'offline', 'unknown-connection', 'fault', 'authorization',
     'unknown-native', 'read-only', 'manual-stop', 'native-schedule', 'no-feed']) {
     await t.test(restriction, async t => {
@@ -260,7 +260,8 @@ test('reconnect probe still requires new physical status, current native instruc
       }
       if (restriction !== 'no-feed') f.publishBmw({ atHome: true, pluggedIn: true, charging: false });
       await f.update();
-      assert.equal(f.startAllowed, false);
+      assert.equal(f.startAllowed, restriction === 'unknown-native',
+        'Missing cloud observations are not a restriction; positive local or external blockers retain priority');
       assert.equal(f.commands.length, 0);
       assert.equal(f.item.vehicleMatch, null);
     });

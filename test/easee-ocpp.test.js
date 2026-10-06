@@ -606,6 +606,133 @@ test('a real StopTransaction closes an observed transaction and cannot resurrect
   assert.equal(f.local.controlSnapshot().transaction, null);
 });
 
+test('explicit local transaction stop reasons survive receiver restart with their original source clock', async t => {
+  for (const reason of ['Remote', 'Local', 'DeAuthorized']) {
+    const f = await fixture(t), client = await f.connect();
+    await client.call('StatusNotification', connector('Preparing'));
+    const started = await client.call('StartTransaction', { connectorId: 1, idTag: 'fixture-tag', meterStart: 0,
+      timestamp: new Date(at).toISOString() });
+    const transactionId = started[2].transactionId;
+    f.now = at + 1100;
+    const stopped = { transactionId, timestamp: new Date(at + 1000).toISOString(), meterStop: 1, reason };
+    assert.equal((await client.call('StopTransaction', stopped))[0], 3);
+    const expected = { transactionId, at: at + 1000, receivedAt: at + 1100, reason };
+    assert.deepEqual(f.local.controlSnapshot().nativeStop, expected);
+    f.now = at + 1800;
+    assert.equal((await client.call('StopTransaction', stopped))[0], 3, 'Identical stops remain idempotent');
+    assert.deepEqual(f.local.controlSnapshot().nativeStop, expected, 'Retries cannot renew the first receipt clock');
+    assert.equal((await client.call('StopTransaction', { ...stopped, reason: reason === 'Local' ? 'Remote' : 'Local' }))[0], 4,
+      'A conflicting stop reason cannot rewrite recorded instruction evidence');
+    const restarted = await fixture(t, {}, '', f.saved); restarted.now = at + 2000;
+    const current = await restarted.connect();
+    await current.call('StatusNotification', connector('Preparing', at + 2000));
+    assert.deepEqual(restarted.local.controlSnapshot().nativeStop, expected);
+  }
+});
+
+test('small future Start and Stop calls wait once for source time and retain their first receipt clocks', async t => {
+  const f = await fixture(t), client = await f.connect();
+  await client.call('StatusNotification', connector('Preparing'));
+  const start = client.call('StartTransaction', { connectorId: 1, idTag: 'fixture-tag', meterStart: 0,
+    timestamp: new Date(at + 80).toISOString() });
+  await new Promise(resolve => setTimeout(resolve, 15));
+  assert.equal(f.saved.transactions.length, 0, 'A future transaction cannot authorize control before its source time');
+  f.now = at + 80;
+  const started = await start, transactionId = started[2].transactionId;
+  assert.equal(started[2].idTagInfo.status, 'Accepted');
+  assert.equal(f.saved.transactions[0].startedAt, at + 80);
+  assert.equal(f.saved.transactions[0].startReceivedAt, at);
+  const body = { transactionId, meterStop: 1, reason: 'Remote', timestamp: new Date(at + 160).toISOString() };
+  const stop = client.call('StopTransaction', body, 'deferred-stop');
+  await new Promise(resolve => setTimeout(resolve, 15));
+  assert.equal(f.saved.transactions[0].stoppedAt, undefined);
+  f.now = at + 130;
+  client.ws.send(JSON.stringify([2, 'deferred-stop', 'StopTransaction', body]));
+  await new Promise(resolve => setTimeout(resolve, 10));
+  f.now = at + 160;
+  assert.equal((await stop)[0], 3);
+  assert.deepEqual(f.local.controlSnapshot().nativeStop,
+    { transactionId, at: at + 160, receivedAt: at + 80, reason: 'Remote' });
+  assert.equal(f.local.status().lastMessageAt, at + 130, 'Releasing a quarantined frame cannot renew transport activity');
+  const restarted = await fixture(t, {}, '', f.saved); restarted.now = at + 200;
+  const again = await restarted.connect(); await again.call('StatusNotification', connector('Preparing', at + 200));
+  assert.equal(restarted.local.controlSnapshot().nativeStop.receivedAt, at + 80);
+});
+
+test('future transaction waiting preserves payload, connection and current authorization fences', async t => {
+  const malformed = await fixture(t), client = await malformed.connect();
+  await client.call('StatusNotification', connector('Preparing'));
+  for (const body of [{ meterStart: 0, timestamp: new Date(at + 1001).toISOString() },
+    { meterStart: 1.5, timestamp: new Date(at + 80).toISOString() }]) {
+    const reply = await client.call('StartTransaction', { connectorId: 1, idTag: 'fixture-tag', ...body });
+    assert.equal(reply[0], 4); assert.equal(reply[2], 'FormationViolation');
+  }
+  assert.equal(malformed.saved.transactions.length, 0);
+  for (const change of ['permission', 'reconnect', 'boot', 'authority']) {
+    const f = await fixture(t, { authorization_mode: 'plug-and-charge' }, 'fixture-virtual-tag'), current = await f.connect();
+    await current.call('StatusNotification', connector('Preparing'));
+    const body = { connectorId: 1, idTag: 'fixture-virtual-tag', meterStart: 0, timestamp: new Date(at + 80).toISOString() };
+    const replies = [];
+    current.ws.on('message', data => { const frame = JSON.parse(data); if (frame[1] === 'future-start') replies.push(frame); });
+    current.ws.send(JSON.stringify([2, 'future-start', 'StartTransaction', body]));
+    await new Promise(resolve => setTimeout(resolve, 15));
+    assert.equal(f.saved.transactions.length, 0);
+    if (change === 'permission') f.startPermitted = false;
+    if (change === 'reconnect') await f.connect();
+    if (change === 'boot') await current.call('BootNotification', { chargePointVendor: 'Fixture', chargePointModel: 'Fixture' });
+    if (change === 'authority') { f.permitted = false; f.local.refreshAuthority(); }
+    f.now = at + 80;
+    await new Promise(resolve => setTimeout(resolve, 90));
+    if (change === 'permission') {
+      assert.equal(f.saved.transactions[0].status, 'Blocked');
+      assert.equal(replies[0][2].idTagInfo.status, 'Blocked');
+    } else {
+      assert.equal(f.saved.transactions.length, 0, change);
+      assert.deepEqual(replies, [], change);
+    }
+  }
+});
+
+test('quarantined native meter evidence can recover a transaction only after both source times arrive', async t => {
+  const f = await fixture(t), client = await f.connect();
+  await client.call('StatusNotification', connector('Charging'));
+  await client.call('MeterValues', { ...meter(samples, at + 80), transactionId: 777 });
+  assert.equal(f.local.controlSnapshot().transaction, null);
+  f.now = at + 80; assert.equal(f.local.controlSnapshot().transaction, null);
+  f.now = at + 1000;
+  await client.call('MeterValues', { ...meter(samples, at + 1080), transactionId: 777 });
+  assert.equal(f.local.controlSnapshot().transaction, null);
+  f.now = at + 1080;
+  assert.equal(f.local.controlSnapshot().transaction.id, 777);
+  assert.equal(f.local.controlSnapshot().transaction.confirmed, true);
+  assert.equal(f.local.controlSnapshot().readings.find(row => row.id === 120).receivedAt, at + 1000);
+});
+
+test('suspension and unrelated transaction endings never invent external stop instructions', async t => {
+  for (const reason of [undefined, 'EVDisconnected', 'PowerLoss', 'Other']) {
+    const f = await fixture(t), client = await f.connect();
+    await client.call('StatusNotification', connector('SuspendedEVSE'));
+    assert.equal(f.local.controlSnapshot().nativeStop, null);
+    await client.call('MeterValues', { ...meter(), transactionId: 716 });
+    f.now = at + 1000; await client.call('MeterValues', { ...meter(samples, at + 1000), transactionId: 716 });
+    const stopped = { transactionId: 716, timestamp: new Date(at + 1000).toISOString(), meterStop: 42,
+      ...(reason ? { reason } : {}) };
+    assert.equal((await client.call('StopTransaction', stopped))[0], 3);
+    assert.equal(f.local.controlSnapshot().nativeStop, null);
+    assert.equal(f.saved.recovered.transactions[0].stopReason, undefined);
+  }
+  const f = await fixture(t), client = await f.connect();
+  await client.call('StatusNotification', connector('Charging'));
+  await client.call('MeterValues', { ...meter(), transactionId: 716 });
+  f.now = at + 1000; await client.call('MeterValues', { ...meter(samples, at + 1000), transactionId: 716 });
+  await client.call('StopTransaction', { transactionId: 716, timestamp: new Date(at + 1000).toISOString(), meterStop: 42, reason: 'Remote' });
+  assert.deepEqual(f.local.controlSnapshot().nativeStop, { transactionId: 716, at: at + 1000, receivedAt: at + 1000, reason: 'Remote' });
+  const invalid = f.saved; invalid.recovered.transactions[0].stopReason = 'Unknown';
+  const rejected = await fixture(t, {}, '', invalid);
+  assert.equal(rejected.local.status().error, 'incompatible-transaction-state');
+  assert.equal(rejected.writes, 0);
+});
+
 test('a later authorized StartTransaction supersedes observed identity without fabricating its missing stop', async t => {
   const f = await fixture(t), client = await f.connect();
   await client.call('StatusNotification', connector('Charging'));
@@ -755,6 +882,9 @@ test('native request allowlist serializes calls, snapshots payloads and checks t
   const { f, client } = await readyRequests(t);
   await assert.rejects(f.local.request('RemoteStartTransaction', { idTag: 'untrusted' }), { code: 'ocpp-action-not-allowed' });
   await assert.rejects(f.local.request('SetChargingProfile', null), { code: 'ocpp-invalid-payload' });
+  for (const payload of [{ connectorId: 1, type: 'Operative' }, { connectorId: 0, type: 'Inoperative' },
+    { connectorId: 0, type: 'Operative', extra: true }])
+    await assert.rejects(f.local.request('ChangeAvailability', payload), { code: 'ocpp-invalid-payload' });
   const input = { connectorId: 1, csChargingProfiles: { chargingProfileId: 3 } };
   let next = once(client.ws, 'message');
   const first = f.local.request('SetChargingProfile', input); await next;
@@ -771,6 +901,10 @@ test('native request allowlist serializes calls, snapshots payloads and checks t
   const schedule = { status: 'Accepted', connectorId: 1, scheduleStart: new Date(at).toISOString(),
     chargingSchedule: { chargingRateUnit: 'A', chargingSchedulePeriod: [{ startPeriod: 0, limit: 6 }] } };
   respond(client, client.calls.at(-1), schedule); assert.deepEqual(await second, schedule);
+  next = once(client.ws, 'message');
+  const enabled = f.local.request('ChangeAvailability', { connectorId: 0, type: 'Operative' }); await next;
+  assert.deepEqual(client.calls.at(-1).slice(2), ['ChangeAvailability', { connectorId: 0, type: 'Operative' }]);
+  respond(client, client.calls.at(-1), { status: 'Accepted' }); assert.deepEqual(await enabled, { status: 'Accepted' });
 });
 
 test('native send-only guard rejects a queued natural stop but accepts a stop after the command was sent', async t => {

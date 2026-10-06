@@ -6,6 +6,14 @@ Versions follow Semantic Versioning. `-dev.N` denotes a development prerelease.
 
 ## Unreleased
 
+- Already configured Easee Direct OCPP charging no longer requires fresh Easee
+  cloud replies for local approval, scheduling, Charge now or session recovery.
+  Known later external instructions retain priority through outages; missing
+  cloud data remains unknown. Initial setup and clearing a confirmed native
+  zero-current Pause can still require Easee's cloud service.
+- Local OCPP transaction handling now tolerates the charger's bounded clock
+  lead, waiting for the original timestamp before accepting the event instead
+  of rejecting an otherwise valid transaction.
 - An idle or fully charged car no longer reserves the other charger's
   identification test indefinitely. Native permission holds and settled zero
   draw are handled separately from active tests; preparation waits are bounded,

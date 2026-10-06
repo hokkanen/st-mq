@@ -270,10 +270,12 @@ export function createDeviceProviders({ connections = {}, http, tokenStore, cloc
     canControl: () => !closed && !nativeStopped && !invalidOcppSetup && canControl(), state: ocppState,
     canStart: () => {
       const permission = nativeStartPermission, current = local.controlSnapshot?.();
+      observeNativeStop(current);
+      nativeAppControl();
       const permitted = Boolean(permission && !closed && controlBackend === 'native' && canControl()
         && permission.until > clock() && permission.guard() && current?.connectionId === permission.connectionId
         && ['Preparing', 'Charging', 'SuspendedEV', 'SuspendedEVSE'].includes(current.connectorStatus)
-        && startAppSignature(nativeAppControl()) === permission.appSignature);
+        && instructionRevision === permission.instructionRevision);
       if (!permitted) nativeStartPermission = null;
       return permitted;
     },
@@ -385,7 +387,7 @@ export function createDeviceProviders({ connections = {}, http, tokenStore, cloc
           // Preserve a live Stop/de-authorization edge even if its matching
           // recovery arrives before the next OCPP authorization check.
           if (restriction && Number.isSafeInteger(measuredAt) && measuredAt >= nativeStartPermission?.issuedAt
-            && measuredAt <= clock()) nativeStartPermission = null;
+            && measuredAt <= clock()) { nativeStartPermission = null; instructionRevision++; }
           onChargerObservation(observation);
         }
       },
@@ -587,8 +589,8 @@ export function createDeviceProviders({ connections = {}, http, tokenStore, cloc
     await delay(remaining, undefined, { signal: openSignal(signal) });
     return true;
   }
-  // Native OCPP still needs the vendor API to clear vendor Start/Stop and
-  // schedules on an explicit handover. It never installs a cloud schedule.
+  // A positively observed vendor zero-current pause (or supported vendor
+  // schedule) still needs its API. Ordinary local takeover does not read cloud.
   const nativeTakeoverControl = createEaseeScheduleAdapter({
     request: async (url, options, responseText) => {
       const result = await easeeAuthenticated(url, { ...options, nativeTakeover: true }, responseText);
@@ -599,7 +601,16 @@ export function createDeviceProviders({ connections = {}, http, tokenStore, cloc
     settleReadback: settleNativeClock,
   });
   let nativeCloudSnapshot = null, nativeCloudSchedule = null, nativeCloudFlight = null, nextNativeCloudRead = 0;
-  let nativeDynamicChargerAt = null;
+  let instructionRevision = 0, nativeInstruction = null, nativeScheduleInstruction = null, locallySuperseded = null;
+  let nativeDynamicChargerAt = null, nativeDynamicChargerPaused = null, nativePauseEvidence = null;
+  let observedNativeStop = null;
+  function observeNativeStop(current = local.controlSnapshot?.()) {
+    const stop = current?.nativeStop;
+    if (stop && (observedNativeStop === null || stop.at > observedNativeStop.at
+      || stop.at === observedNativeStop.at && stop.transactionId !== observedNativeStop.transactionId)) {
+      observedNativeStop = { ...stop }; instructionRevision++; nativeStartPermission = null;
+    }
+  }
   function refreshNativeCloudTelemetry({ force = false } = {}) {
     if (closed) return null;
     if (nativeCloudFlight) return force ? nativeCloudFlight.then(() => refreshNativeCloudTelemetry({ force: true })) : nativeCloudFlight;
@@ -620,6 +631,7 @@ export function createDeviceProviders({ connections = {}, http, tokenStore, cloc
     return nativeCloudFlight;
   }
   function nativeAppControl() {
+    observeNativeStop();
     const now = clock();
     let cloud = nativeCloudSnapshot && now - nativeCloudSnapshot.readAt <= 60_000 ? nativeCloudSnapshot : null;
     // A streamed app change must fence a queued OCPP write immediately, without
@@ -632,7 +644,6 @@ export function createDeviceProviders({ connections = {}, http, tokenStore, cloc
         cloud = chargingSnapshot([...previous, ...rows], null, now);
       } catch {}
     }
-    nativeDynamicChargerAt = cloud?.observations?.[48]?.at ?? null;
     const schedule = nativeCloudSchedule && now - nativeCloudSchedule.readAt <= 60_000 ? nativeCloudSchedule.schedule : null;
     if (!cloud && !schedule) return null;
     // In native plug-and-charge, pending authentication is the approval this
@@ -642,22 +653,43 @@ export function createDeviceProviders({ connections = {}, http, tokenStore, cloc
     const pendingLocalApproval = controlBackend === 'native' && localConfig?.authorization_mode === 'plug-and-charge'
       && ['Preparing', 'Charging', 'SuspendedEV', 'SuspendedEVSE'].includes(local.controlSnapshot?.()?.connectorStatus)
       && cloud?.mode !== 8 && (cloud?.mode === 7 || cloud?.reason === 55);
-    return { readAt: Math.max(cloud?.readAt ?? 0, schedule ? nativeCloudSchedule.readAt : 0),
+    const app = { readAt: Math.max(cloud?.readAt ?? 0, schedule ? nativeCloudSchedule.readAt : 0),
       enabled: cloud?.enabled ?? null, enabledAt: cloud?.observations?.[31]?.at ?? null,
       stopped: cloud?.stopped === true,
       stopAt: cloud ? Math.max(cloud.observations?.[31]?.at ?? 0, cloud.observations?.[48]?.at ?? 0, cloud.reasonAt ?? 0) : null,
       controlKnown: cloud?.controlKnown === true, faulted: cloud?.faulted === true,
       authorizationBlocked: cloud?.authorizationBlocked === true && !pendingLocalApproval, schedule };
+    // Fresh observations can revoke queued commands. Losing a cloud response
+    // cannot do so, and a repeated old observation is not a new instruction.
+    if (cloud?.controlKnown) {
+      nativeDynamicChargerAt = cloud.observations?.[48]?.at ?? null;
+      const pauseEvidence = { currentAt: nativeDynamicChargerAt ?? -1, reasonAt: cloud.reasonAt ?? -1 };
+      if (!nativePauseEvidence || pauseEvidence.currentAt >= nativePauseEvidence.currentAt
+        && pauseEvidence.reasonAt >= nativePauseEvidence.reasonAt) {
+        nativePauseEvidence = pauseEvidence;
+        nativeDynamicChargerPaused = cloud.limits?.dynamicChargerA === 0 && [52, 53].includes(cloud.reason);
+      }
+      const signature = JSON.stringify([app.enabled, app.enabledAt, app.stopped, app.stopped ? app.stopAt : null,
+        app.faulted, app.authorizationBlocked, nativeDynamicChargerAt]);
+      if (signature !== nativeInstruction && (nativeInstruction !== null || app.enabled === false || app.stopped
+        || app.faulted || app.authorizationBlocked)) instructionRevision++;
+      nativeInstruction = signature;
+    }
+    if (schedule) {
+      const signature = effectiveScheduleFingerprint(schedule);
+      if (signature !== nativeScheduleInstruction && (nativeScheduleInstruction !== null || schedule.enabled !== 'none')) instructionRevision++;
+      nativeScheduleInstruction = signature;
+    }
+    if (locallySuperseded === stopSignature(app)) {
+      // The local readback confirmed replacement of this exact instruction.
+      // Do not publish invented cloud readback or hide a newer cloud command.
+      return { ...app, enabled: null, enabledAt: null, stopped: false, stopAt: null, controlKnown: false };
+    }
+    return app;
   }
   const appSignature = value => value ? JSON.stringify([value.controlKnown, value.enabled, value.enabledAt, value.stopped, value.stopAt, value.faulted,
     value.authorizationBlocked, value.schedule ? effectiveScheduleFingerprint(value.schedule) : null]) : null;
-  // Pending approval advances ReasonForNoCurrent's clock without creating a
-  // Stop instruction. Keep startup permission through that transition; a real
-  // stop, enablement change, fault or schedule still fences it immediately.
-  // Keep the current-setting clock separately: a Stop/Resume between checks
-  // cannot borrow a permission issued before those commands.
-  const startAppSignature = value => JSON.stringify([appSignature(value ? { ...value,
-    stopAt: value.stopped ? value.stopAt : null } : null), nativeDynamicChargerAt]);
+  const stopSignature = value => JSON.stringify([value?.enabled, value?.enabledAt, value?.stopped, value?.stopAt]);
   function readCurrentSupply() {
     const now = clock(), current = !closed && controlBackend === 'native' ? local.currentSupplySnapshot?.() : null;
     const unavailableEvidence = source => ({ source, connected: false, online: null, synchronized: false,
@@ -726,14 +758,58 @@ export function createDeviceProviders({ connections = {}, http, tokenStore, cloc
     readDeviceInfo: () => local.deviceInfo?.() ?? null,
     canControl: () => !closed && canControl() && controlBackend === 'native',
     setStartPermission: (snapshot, options = {}) => {
-      const current = snapshot ? nativeAppControl() : null;
+      if (snapshot) nativeAppControl();
       nativeStartPermission = snapshot && typeof options.guard === 'function' && Number.isSafeInteger(options.until)
-        && appSignature(snapshot.appControl) === appSignature(current)
-        ? { connectionId: snapshot.connectionId, appSignature: startAppSignature(snapshot.appControl),
+        && snapshot.instructionRevision === instructionRevision
+        ? { connectionId: snapshot.connectionId, instructionRevision,
           issuedAt: clock(), until: options.until, guard: options.guard } : null;
     },
     request: (...args) => local.request(...args),
-    takeoverNative: async ({ expectedAppControl, signal, canMutate, beforeWrite }) => {
+    takeoverNative: async ({ expectedAppControl, expectedSnapshot, signal, canMutate, beforeWrite }) => {
+      nativeAppControl();
+      const expectedRevision = instructionRevision;
+      const allowed = () => { nativeAppControl(); return canMutate() && instructionRevision === expectedRevision; };
+      // Use the source-merged observation, including a newer streamed Resume.
+      // An older REST pause cannot reintroduce a cloud dependency after it ends.
+      const vendorPause = nativeDynamicChargerPaused === true;
+      const vendorSchedule = expectedAppControl?.schedule && expectedAppControl.schedule.enabled !== 'none';
+      if (!vendorPause && !vendorSchedule) {
+        if (!allowed()) throw Object.assign(new Error('The charger instruction changed before automatic handover.'), { code: 'takeover-stale' });
+        const current = local.controlSnapshot?.();
+        if (expectedAppControl?.enabled !== false && !expectedAppControl?.stopped && current?.connectorStatus !== 'Unavailable')
+          return nativeAppControl();
+        const dynamicAt = nativeDynamicChargerAt, scheduleInstruction = nativeScheduleInstruction, stopBefore = observedNativeStop;
+        await beforeWrite({ local: true });
+        let dispatchedAt = null;
+        const reply = await local.request('ChangeAvailability', { connectorId: 0, type: 'Operative' },
+          { signal, guard: canMutate, beforeSend: () => {
+            if (!allowed()) return false;
+            dispatchedAt = clock(); return true;
+          } });
+        if (reply?.status !== 'Accepted') throw Object.assign(new Error('The charger rejected local enablement.'), { code: 'availability-rejected' });
+        // Acknowledgement alone is not readback. Wait for the fresh operative
+        // connector status on the same authenticated local connection.
+        for (let attempt = 0; attempt < 50; attempt++) {
+          await settleNativeClock({ signal });
+          const confirmed = local.controlSnapshot?.();
+          const app = nativeAppControl();
+          const ownEnable = expectedAppControl?.enabled === false && app?.enabled === true && !app.stopped
+            && !app.faulted && !app.authorizationBlocked && app.enabledAt >= (expectedAppControl.enabledAt ?? 0)
+            && nativeDynamicChargerAt === dynamicAt && nativeScheduleInstruction === scheduleInstruction
+            && observedNativeStop === stopBefore;
+          if (!canMutate() || instructionRevision !== expectedRevision && !ownEnable)
+            throw Object.assign(new Error('Charging control authority changed.'), { code: 'control-revoked' });
+          if (confirmed?.connectionId === current?.connectionId
+            && (!expectedSnapshot || confirmed.connectionId === expectedSnapshot.connectionId)
+            && ['Available', 'Preparing', 'Charging', 'SuspendedEV', 'SuspendedEVSE'].includes(confirmed.connectorStatus)
+            && dispatchedAt !== null && confirmed.receivedAt >= dispatchedAt) {
+            locallySuperseded = ownEnable ? null : stopSignature(expectedAppControl);
+            return nativeAppControl();
+          }
+          await delay(100, undefined, { signal: openSignal(signal) });
+        }
+        throw Object.assign(new Error('Local enablement is not confirmed by the charger.'), { code: 'readback-mismatch' });
+      }
       const snapshot = await nativeTakeoverControl.read({ signal, forceRest: true });
       const remember = value => {
         nativeCloudSnapshot = value;
@@ -749,11 +825,12 @@ export function createDeviceProviders({ connections = {}, http, tokenStore, cloc
     },
     isCurrent: (snapshot, { requireTransaction = true, unchangedStatus = false } = {}) => {
       const current = local.controlSnapshot?.();
+      nativeAppControl();
       return Boolean(current && current.connectionId === snapshot.connectionId && (!requireTransaction
         || (current.transaction?.id ?? null) === snapshot.transactionId
           && (snapshot.transactionId === null || current.transaction?.confirmed))
         && (!unchangedStatus || current.connectorStatus === snapshot.connectorStatus && current.timestamp === snapshot.statusAt
-          && appSignature(nativeAppControl()) === appSignature(snapshot.appControl)));
+          && instructionRevision === snapshot.instructionRevision));
     },
     readSnapshot: async ({ signal, forceAppRefresh = false } = {}) => {
       if (forceAppRefresh) await refreshNativeCloudTelemetry({ force: true });
@@ -771,14 +848,16 @@ export function createDeviceProviders({ connections = {}, http, tokenStore, cloc
       const allowanceTelemetry = nativeAllowanceTelemetry();
       const pluggedIn = current ? current.connectorStatus === 'Available' ? false
         : ['Preparing', 'Charging', 'SuspendedEV', 'SuspendedEVSE', 'Finishing'].includes(current.connectorStatus) ? true : null : null;
-      return { transport: 'ocpp', scope: ocppInstallation.scope, connectionId: current?.connectionId ?? null,
+      const appControl = nativeAppControl();
+      return { transport: 'ocpp', scope: ocppInstallation.scope, connectionId: current?.connectionId ?? null, instructionRevision,
+        nativeStop: current?.nativeStop ?? null,
         readAt: now, online: Boolean(current), connectorStatus: current?.connectorStatus ?? null,
         statusAt: current?.timestamp ?? null, statusReceivedAt: current?.receivedAt ?? null, pluggedIn,
         transactionId: current?.transaction?.id ?? null, transactionStartedAt: current?.transaction?.startedAt ?? null,
         transactionProvenance: current?.transaction?.provenance ?? null,
         transactionConfirmedAt: current?.transaction?.confirmedAt ?? null,
         transactionConfirmed: current?.transaction?.confirmed === true,
-        appControl: nativeAppControl(),
+        appControl,
         externalLoadBalancing: cloud?.externalLoadBalancing ?? null,
         powerKw: power?.value ?? null, powerAt: power ? sourceTime(power.timestamp) : null, powerReceivedAt: power?.receivedAt ?? null,
         ...(cloud ? { limits: cloud.limits, allowanceTelemetry } : {}),

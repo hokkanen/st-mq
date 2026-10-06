@@ -158,7 +158,7 @@ function fixture(t, { streaming = false, authorizationMode = 'plug-and-charge', 
     set streamEvidence(value) { streamEvidence = clone(value); },
     set streamConnected(value) { if (streamConnected && !value) streamDisconnect?.(); streamConnected = value; },
     emitObservation(observation) { streamObservation?.(CHARGER, observation); },
-    set nativeRequest(value) { nativeRequest = value; },
+    get nativeRequest() { return nativeRequest; }, set nativeRequest(value) { nativeRequest = value; },
     set schedule(value) { schedule = clone(value); }, set transition(value) { transition = value; },
     set applyHook(value) { applyHook = value; }, set beforeRequest(value) { beforeRequest = value; },
     set setupStateReader(value) { readSetupState = value; }, revoke: () => { permitted = false; } };
@@ -633,6 +633,12 @@ async function nativeAppFixture(t, options) {
     assert.equal(options.beforeSend?.() ?? true, true);
     assert.equal(options.guard(), true);
     f.events.push({ type: 'native', action, payload: clone(payload) });
+    if (action === 'ChangeAvailability') {
+      assert.deepEqual(payload, { connectorId: 0, type: 'Operative' });
+      physical(listener.control.connectorStatus === 'Unavailable' ? 'Preparing' : listener.control.connectorStatus,
+        listener.control.readings.find(row => row.id === 120)?.value ?? 0, listener.control.transaction?.id ?? null);
+      return { status: 'Accepted' };
+    }
     if (action === 'SetChargingProfile') {
       profiles.set(payload.csChargingProfiles.chargingProfileId, clone(payload.csChargingProfiles));
       if (!preserveStoppedEvidence || listener.control.connectorStatus !== 'SuspendedEVSE') physical('SuspendedEVSE', 0);
@@ -833,9 +839,9 @@ test('production native adapter yields to a changed app schedule until its known
 });
 const finiteOnly = rows => rows.filter(row => row.action === 'SetChargingProfile').every(row => Boolean(row.payload.csChargingProfiles.validTo));
 
-test('production native pre-write reread fences a newer Easee app action without sending a profile', async t => {
+test('production native pre-write guard fences newly received Easee app evidence without sending a profile', async t => {
   const x = await nativeAppFixture(t), snapshot = await x.refresh();
-  x.f.advance(1000); x.observe({ 31: false, 96: 53 });
+  x.f.advance(1000); x.observe({ 31: false, 96: 53 }); await x.refresh();
   const { ocppPauseInstruction } = await import('../src/charging/ocpp.js');
   const instruction = ocppPauseInstruction({ profileId: 81, transactionId: 7, now: x.f.now, startAt: AT + 40 * 60_000 });
   await assert.rejects(x.adapter.install(instruction, snapshot), { code: 'control-revoked' });
@@ -863,7 +869,7 @@ test('production economic handover confirms an already stopped charger without i
   assert.equal(writes(f).filter(row => row.path.endsWith('/commands/resume_charging')).length, 1);
 });
 
-test('economic replanning preserves a selected identification pause through the production forced REST preflight', async t => {
+test('economic replanning preserves a selected identification pause through the production local command queue', async t => {
   const x = await nativeAppFixture(t), { f, adapter } = x;
   let identification = null;
   const controller = adapter.createController({ clock: () => f.now, canControl: () => true,
@@ -873,14 +879,15 @@ test('economic replanning preserves a selected identification pause through the 
   const initial = await controller.update({ enabled: true, plan: immediate });
   const connectedAt = initial.session.connectedAt;
   f.advance(1000); x.physical();
-  identification = { id: 'forced-rest-identification', connectedAt, phase: 'pausing', pauseUntil: f.now + 90_000 };
+  identification = { id: 'local-queue-identification', connectedAt, phase: 'pausing', pauseUntil: f.now + 90_000 };
   const item = { association: adapter.scope, controller, identification, controls: { enabled: true },
     request: { scope: `${adapter.scope}:${connectedAt}`, sessionId: `${adapter.scope}:${connectedAt}` }, plan: immediate };
   const context = { chargers: { charger1: item }, closed: false };
   const fence = sourceId => ChargingRuntime.prototype.fenceChangedCommands.call(context, f.now, sourceId);
   fence('charger1');
   const entered = deferred(), release = deferred();
-  f.beforeRequest = async () => { entered.resolve(); await release.promise; };
+  const nativeRequest = f.nativeRequest;
+  f.nativeRequest = async (...args) => { entered.resolve(); await release.promise; return nativeRequest(...args); };
   const work = controller.update({ enabled: true, plan: immediate });
   item.reconcileFlight = work;
   await entered.promise;
@@ -890,7 +897,7 @@ test('economic replanning preserves a selected identification pause through the 
       { startAt: AT + 2 * 3600_000, endAt: null }] };
     fence();
   }
-  f.beforeRequest = async () => {}; release.resolve();
+  f.nativeRequest = nativeRequest; release.resolve();
   const result = await work;
   assert.equal(item.reconcileAgain, undefined, 'Economic updates must not abort the independent native instruction');
   assert.equal(result.errorCode, null); assert.equal(result.ownsInstruction, true);
@@ -908,11 +915,113 @@ test('production native cleanup remains local when supplemental Easee cloud evid
   assert.equal(x.profiles.size, 0); assert.equal(view.snapshot.appControl, null);
 });
 
+test('native startup permission survives missing cloud evidence but a newly observed pause revokes it', async t => {
+  const x = await nativeAppFixture(t);
+  x.physical('Preparing', 0, null);
+  const baseline = await x.refresh();
+  x.adapter.setStartPermission(baseline, { until: x.f.now + 5 * 60_000, guard: () => true });
+  assert.equal(x.listener.options.canStart(), true);
+  x.f.cloudOffline = true; x.f.advance(61_000); x.physical('Preparing', 0, null);
+  const missing = await x.refresh();
+  assert.equal(missing.appControl, null);
+  assert.equal(missing.instructionRevision, baseline.instructionRevision);
+  assert.equal(x.listener.options.canStart(), true, 'Cloud disappearance cannot cancel unexpired local permission');
+  x.f.cloudOffline = false;
+  const repeated = await x.refresh();
+  assert.equal(repeated.instructionRevision, baseline.instructionRevision);
+  assert.equal(x.listener.options.canStart(), true, 'The same source observations do not become a new instruction on recovery');
+  x.f.advance(1000); x.observe({ 48: 0, 96: 52 }); await x.refresh();
+  assert.equal(x.listener.options.canStart(), false, 'A real later pause still fences the issued permission');
+});
+
+test('a locally reported external transaction stop fences startup immediately during a cloud outage', async t => {
+  const x = await nativeAppFixture(t);
+  x.f.cloudOffline = true; x.f.advance(61_000); x.physical('Preparing', 0, null);
+  const before = await x.refresh();
+  assert.equal(before.appControl, null);
+  x.adapter.setStartPermission(before, { until: x.f.now + 60_000, guard: () => true });
+  assert.equal(x.listener.options.canStart(), true);
+  x.f.advance(1000);
+  const nativeStop = { transactionId: 7, at: x.f.now, receivedAt: x.f.now, reason: 'Remote' };
+  x.listener.control = { ...x.listener.control, nativeStop };
+  assert.equal(x.listener.options.canStart(), false);
+  const after = await x.adapter.read();
+  assert.equal(after.instructionRevision, before.instructionRevision + 1);
+  assert.deepEqual(after.nativeStop, nativeStop);
+});
+
+test('native local takeover enables an unavailable connector without cloud access and confirms local readback', async t => {
+  const x = await nativeAppFixture(t);
+  x.f.cloudOffline = true; x.f.advance(61_000); x.physical('Unavailable', 0, null);
+  const snapshot = await x.refresh(), before = x.f.events.length, commands = [];
+  x.f.nativeRequest = async (action, payload, options) => {
+    assert.equal(options.guard(), true);
+    assert.equal(options.beforeSend(), true);
+    commands.push({ action, payload });
+    x.f.advance(1000); x.physical('Preparing', 0, null);
+    return { status: 'Accepted' };
+  };
+  const writes = [];
+  const result = await x.adapter.takeover(snapshot, { guard: () => true, beforeWrite: value => writes.push(value) });
+  assert.equal(result.connectorStatus, 'Preparing');
+  assert.equal(result.appControl, null);
+  assert.deepEqual(commands, [{ action: 'ChangeAvailability', payload: { connectorId: 0, type: 'Operative' } }]);
+  assert.deepEqual(writes, [{ local: true }]);
+  assert.equal(x.f.events.slice(before).some(event => event.type === 'http'), false, 'Local takeover performs no required cloud request');
+});
+
+test('a newer streamed resume prevents an older REST zero-current pause from forcing cloud takeover', async t => {
+  const x = await nativeAppFixture(t, { streaming: true });
+  x.observe({ 48: 0, 96: 52 }); await x.refresh();
+  const olderPause = x.f.observations;
+  x.f.advance(1000); x.observe({ 48: 16, 96: 0 }); x.f.streamRows = x.f.observations;
+  x.f.observations = olderPause; x.provider.startStreaming();
+  const snapshot = await x.refresh(), before = x.f.events.length;
+  assert.equal(snapshot.appControl.stopped, false);
+  const result = await x.adapter.takeover(snapshot, { guard: () => true });
+  assert.equal(result.appControl.stopped, false);
+  assert.equal(x.f.events.slice(before).some(event => event.type === 'http'), false);
+  x.f.streamConnected = false;
+  await x.adapter.read(); // Losing the stream may expose the older REST cache.
+  x.f.cloudOffline = true; x.f.advance(61_000); x.physical('Preparing', 0, null);
+  const missing = await x.refresh(), afterLoss = x.f.events.length;
+  assert.equal(missing.appControl, null);
+  await x.adapter.takeover(missing, { guard: () => true });
+  assert.equal(x.f.events.slice(afterLoss).some(event => event.type === 'http'), false,
+    'An old REST pause cannot regain authority when the newer resumed stream disappears');
+});
+
+test('native local takeover does not turn a rejected enable command into confirmed authority', async t => {
+  const x = await nativeAppFixture(t);
+  x.f.cloudOffline = true; x.f.advance(61_000); x.physical('Unavailable', 0, null);
+  const snapshot = await x.refresh();
+  x.f.nativeRequest = async () => ({ status: 'Rejected' });
+  await assert.rejects(x.adapter.takeover(snapshot, { guard: () => true }), { code: 'availability-rejected' });
+  assert.equal(x.listener.control.connectorStatus, 'Unavailable');
+});
+
+test('a new local Stop during cloud confirmation of our enable still revokes the takeover', async t => {
+  const x = await nativeAppFixture(t, { streaming: true });
+  x.observe({ 31: false, 96: 0 }); x.f.streamRows = x.f.observations; x.provider.startStreaming();
+  const snapshot = await x.refresh();
+  x.f.nativeRequest = async (action, payload, options) => {
+    assert.equal(action, 'ChangeAvailability');
+    assert.equal(options.beforeSend(), true);
+    x.f.advance(1000); x.observe({ 31: true }); x.f.streamRows = x.f.observations;
+    x.physical('Preparing', 0, null);
+    x.listener.control = { ...x.listener.control,
+      nativeStop: { transactionId: 7, at: x.f.now, receivedAt: x.f.now, reason: 'Remote' } };
+    return { status: 'Accepted' };
+  };
+  await assert.rejects(x.adapter.takeover(snapshot, { guard: () => true }), { code: 'control-revoked' });
+  assert.equal((await x.adapter.read()).nativeStop.reason, 'Remote');
+});
+
 test('newer REST app evidence fences a profile even when the stream still holds an older enabled value', async t => {
   const x = await nativeAppFixture(t, { streaming: true });
   x.f.streamRows = x.f.observations; x.provider.startStreaming();
   const snapshot = await x.refresh();
-  x.f.advance(1000); x.observe({ 31: false, 96: 53 });
+  x.f.advance(1000); x.observe({ 31: false, 96: 53 }); await x.refresh();
   const { ocppPauseInstruction } = await import('../src/charging/ocpp.js');
   const instruction = ocppPauseInstruction({ profileId: 82, transactionId: 7, now: x.f.now, startAt: AT + 40 * 60_000 });
   await assert.rejects(x.adapter.install(instruction, snapshot), { code: 'control-revoked' });
@@ -1045,6 +1154,8 @@ test('production Use automatic confirms a local economic hold before enabling an
 
 test('production Use automatic disables an active native daily schedule permanently through its guarded vendor API', async t => {
   const x = await nativeAppFixture(t), { f, controller } = x;
+  await controller.update({ enabled: false });
+  f.advance(1000);
   f.schedule = { enabled: 'daily', daily: { timezone: 'UTC', periods: [{ startTime: '13:00', stopTime: '14:00', maximumAmps: 8 }] } };
   await x.refresh();
   const immediate = { id: 'start-now', startAt: f.now, periods: [{ startAt: f.now, endAt: null }], feasible: true };
@@ -1203,7 +1314,8 @@ test('production takeover preserves restrictive positive current limits and fenc
   x.observe({ 31: true, 48: 8, 96: 53, 109: 2 }); await x.refresh();
   let prior = await controller.update({ enabled: false, plan: x.plan });
   let result = await controller.update({ enabled: true, takeover: prior.takeover.token });
-  assert.equal(result.takeover.state, 'blocked'); assert.equal(result.errorCode, 'resume-current-limit');
+  assert.equal(result.takeover.state, 'confirmed'); assert.equal(result.errorCode, null);
+  assert.equal(x.nativeWrites().some(row => row.action === 'ChangeAvailability'), true);
   assert.equal(writes(f).some(row => row.path.endsWith('/commands/resume_charging')), false);
   assert.equal(f.observations.find(row => row.id === 48).value, 8);
   prior = await controller.update({ enabled: true, plan: x.plan });

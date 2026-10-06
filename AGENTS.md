@@ -318,6 +318,22 @@ permission to act. See [the configuration guide](docs/configuration.md).
   superseded instructions after unplugging or restart, infer who caused an observed
   stop, change unrelated device schedules or bypass electrical protection, charger
   authorization, faults or vehicle restrictions.
+- Once Easee Direct OCPP is commissioned, normal local charging permission,
+  scheduling, Charge now, new-connection takeover and same-session recovery must
+  not require an Easee cloud reply. This owner-approved clarification on
+  2026-10-06 keeps the preceding instruction precedence: current authenticated
+  local evidence and valid equipment/session authority are sufficient when no
+  contrary instruction is known. Missing, expired or unknown cloud data supplies
+  no new restriction and must not be rewritten as fresh evidence of no schedule
+  or no Stop. A known later external instruction survives cloud loss and restart;
+  source-timed supplementary observations can establish newer instructions, but
+  cloud recovery cannot renew an old instruction merely by rereading it. OCPP
+  suspension or zero power alone cannot identify an external action. Initial
+  commissioning and clearing a positively identified native dynamic-current
+  zero Pause may still need Easee's cloud API. That exceptional recovery must be
+  separately scoped and confirmed; ordinary local scheduling never requires it
+  or automatically clears an unexplained zero-current state. See
+  [local Easee operation](docs/charging/integrations/easee.md#easee-cloud-outages).
 - The owner-approved [Shelly system permission exception](docs/charging/execution-and-recovery.md#shelly-system-permission-changes)
   classifies fresh, supported `sys` permission changes as device transitions at
   any time, including repeated cycles, independently of plug time, charging
@@ -449,6 +465,11 @@ Details: [recording and provenance](docs/recording.md),
   where applicable. Require the live evidence, commissioning and readiness for
   the action; owner approval alone is not evidence of adapter capability. Reject
   stale, unknown or retired authority rather than translating it into permission.
+  For commissioned Direct OCPP, the current local connection supplies local
+  command readiness; optional Easee cloud evidence has separate availability.
+  Loss of that optional source does not revoke valid local authority or erase a
+  known restriction. Physical device refusals, faults, electrical protection,
+  identification limits and restoration obligations remain authoritative.
 - Ordinary application stop, restart and paired handover preserve the charger's
   OCPP configuration and current instructions. Only explicit native-control
   deactivation or connection reconfiguration owns return to cloud control.
