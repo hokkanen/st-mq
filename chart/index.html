@@ -376,12 +376,12 @@
                 <div id="home-equipment-readings" class="equipment-device-list"></div>
                 <details id="dhwr-device" class="equipment-device" aria-labelledby="dhwr-title">
                   <summary class="equipment-device-summary">
-                    <div class="equipment-device-heading"><h4 id="dhwr-title">Hot-water circulation</h4><small class="equipment-device-meta">Circulation pump · Shelly</small></div>
+                    <div class="equipment-device-heading"><h4 id="dhwr-title">Hot-water circulation</h4><small id="dhwr-source" class="equipment-device-meta">Circulation pump · Shelly</small></div>
                     <p id="dhwr-preview" class="equipment-device-preview">Waiting for readings</p>
-                    <span class="equipment-device-health"><span id="dhwr-feedback-status" class="equipment-device-status">Awaiting feedback</span></span>
+                    <span class="equipment-device-health equipment-connection-health"><span id="dhwr-feedback-status" class="equipment-device-status">Awaiting feedback</span><small id="dhwr-feedback-time" class="equipment-connection-recent">No live report yet</small></span>
                   </summary>
                   <div class="equipment-device-body">
-                    <dl id="dhwr-live-readings" class="equipment-readings"><dt>Reported operation</dt><dd><strong id="dhwr-live-state">Unknown</strong></dd><dt id="dhwr-live-power-label">Live power</dt><dd><strong id="dhwr-live-power">Unavailable</strong><small id="dhwr-live-power-time" class="equipment-reading-qualifier" hidden></small></dd></dl>
+                    <dl id="dhwr-live-readings" class="equipment-readings"><dt>Reported operation</dt><dd><strong id="dhwr-live-state">Unknown</strong></dd><dt id="dhwr-live-power-label">Live power</dt><dd><strong id="dhwr-live-power">Unavailable</strong></dd></dl>
                     <div id="dhwr-controls" class="equipment-inline-controls">
                       <p id="dhwr-request-state" class="muted"></p>
                       <div class="equipment-switch-buttons" role="group" aria-label="Hot-water circulation" aria-describedby="dhwr-control-help">

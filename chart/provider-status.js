@@ -342,6 +342,99 @@ const providerIntroductions = {
   'main-temperatures': 'Local MQTT and Shelly sensors report indoor and garage temperatures. FMI supplies outdoor observations and weather forecasts, with Open-Meteo as backup. These readings support heating control and forecasts.',
 };
 
+const recordedView = status => status.readOnly === true || status.readView?.liveAvailable === false;
+
+/** A slave displays a published record, not provider connections on this
+ * computer. Keep each dataset's saved evidence separate from the copy's age. */
+function recordedProviderGroup(group, status, options) {
+  const at = status.readView?.snapshotAt ?? status.sync?.snapshotAt ?? null;
+  const knownTime = value => Number.isFinite(value) && value <= at;
+  const time = value => options.formatTime(value);
+  const snapshotDetail = Number.isFinite(at)
+    ? `Recorded snapshot ${time(at)}. ${status.sync?.state === 'stale' ? 'This snapshot is out of date. ' : ''}This computer does not open live provider connections.`
+    : 'Waiting for a verified snapshot. This computer does not open live provider connections.';
+  const temperatures = { indoor_temperature: status.observations?.upstairs ?? status.observations?.indoor,
+    downstairs_temperature: status.observations?.downstairs, bedroom_temperature: status.observations?.bedroom,
+    garage_temperature: status.observations?.garage, garage_temperature_2: status.observations?.garageFront ?? status.garage?.observations?.front,
+    outdoor_temperature: status.observations?.outdoor };
+  const templates = [...providerSeries('easee', status.providers?.easee), ...providerSeries('shelly-evse'),
+    ...providerSeries('market', status.providers?.market), ...providerSeries('weather', status.providers?.weather)];
+  const project = row => {
+    const first = row.signals[0];
+    let evidence = [], description = templates.find(template => template.signals[0] === first)?.detail ?? row.description ?? '',
+      reported = null, value, note = '';
+    if (group.key === 'electricity') {
+      const health = status.providers?.[first.startsWith('ev2_') ? 'shelly-evse' : 'easee'];
+      evidence = row.signals.map(signal => health?.readings?.[signal]).filter(Boolean);
+      if (!evidence.length && !row.signals.some(signal => /_energy_l[123]$/.test(signal)))
+        note = 'Instantaneous readings may be live-only; saved consumption history is shown separately.';
+    } else if (group.key === 'market') {
+      const allIn = first === 'all_in_price';
+      evidence = (allIn ? status.prices : status.spot) ?? [];
+      const success = status.providers?.market?.lastSuccessAt;
+      if (knownTime(success)) reported = `Downloaded ${time(success)}`;
+      if (!evidence.length && allIn && !status.contract) note = 'No recorded electricity contract covers these prices.';
+    } else if (Object.hasOwn(temperatures, first)) {
+      const reading = temperatures[first];
+      evidence = reading ? [reading] : [];
+      description = first.startsWith('garage_') ? 'Recorded pipe-location air temperature; separate from the sender’s pipe estimate.'
+        : first === 'outdoor_temperature' ? 'Recorded outdoor observation or model estimate; its source and original time are preserved.'
+          : 'Recorded indoor temperature with its original source time.';
+      value = Number.isFinite(reading?.value) ? `${reading.value.toFixed(1)} °C` : 'Not recorded';
+      if (reading?.needsAttention || reading?.stale) note = 'The saved reading is shown for reference; current sensor availability is unconfirmed.';
+    } else if (group.key === 'main-temperatures') {
+      const solar = row.signals.includes('solar_forecast'), field = solar ? 'solarRadiationWm2' : 'outdoorC';
+      evidence = (status.forecast ?? []).filter(interval => Number.isFinite(interval[field]));
+      const publications = evidence.map(interval => solar && interval.solar
+        && ['issuedAt', 'fetchedAt'].some(key => Object.hasOwn(interval.solar, key)) ? interval.solar : interval);
+      const knownIssued = interval => interval.issuedAtBasis !== 'fetched-snapshot' && knownTime(interval.issuedAt);
+      const issued = publications.filter(knownIssued).map(interval => interval.issuedAt);
+      const downloaded = publications.filter(interval => !knownIssued(interval))
+        .map(interval => interval.fetchedAt).filter(knownTime);
+      reported = [issued.length ? `Forecast issued ${time(Math.max(...issued))}` : '',
+        downloaded.length ? `Downloaded ${time(Math.max(...downloaded))} (issue time unavailable)` : ''].filter(Boolean).join('; ') || null;
+    } else if (group.key === 'vehicle-telemetry') {
+      const feed = status.charging?.vehicleFeeds?.find(feed => feed.label === row.label
+        && ({ 'bmw-cardata': 'BMW CarData', teslamate: 'TeslaMate' })[feed.provider] === row.source);
+      evidence = Object.values(feed?.setup?.fields ?? {}).filter(field => field?.value !== null && field?.value !== undefined);
+      const reception = feed?.reception ?? {};
+      const received = reception.lastLiveAt ?? reception.lastMessageAt;
+      if (knownTime(received)) reported = `Received ${time(received)}; vehicle measurements retain their own source times`;
+      // A saved receipt proves a report, not a fresh charge measurement.
+      if (!evidence.length && knownTime(received)) evidence = [{ receivedAt: received }];
+    }
+    const samples = evidence.filter(reading => reading.value !== null && reading.value !== undefined
+      || Number.isFinite(reading.start) || group.key === 'vehicle-telemetry' && knownTime(reading.receivedAt));
+    const clocks = samples.map(reading => reading.sourceTime ?? reading.observedAt ?? reading.measuredAt).filter(knownTime);
+    if (!reported && clocks.length) {
+      const firstAt = Math.min(...clocks), lastAt = Math.max(...clocks);
+      reported = firstAt === lastAt ? `Observed ${time(firstAt)}` : `Observed ${time(firstAt)} – ${time(lastAt)}`;
+    }
+    const present = samples.length > 0;
+    const state = present ? 'Recorded snapshot' : 'No saved readings';
+    const detail = [description, present ? 'Saved evidence; live availability is unconfirmed.' : 'No readings saved for this dataset in the snapshot.', note].filter(Boolean).join(' ');
+    const { statusDetail: _oldStatus, value: _oldValue, reported: _oldReported, ...base } = row;
+    return { ...base, state, tone: 'pending', detail, statusDetail: detail,
+      reported: reported ?? (present ? 'Original measurement time unavailable' : 'No saved readings'),
+      ...(value !== undefined ? { value } : {}) };
+  };
+  const datasets = group.datasets.map(project);
+  const savedStatus = group.key === 'electricity' ? ['easee', 'shelly-evse'].some(key => status.providers?.[key])
+    : group.key === 'market' ? Boolean(status.providers?.market)
+      : group.key === 'vehicle-telemetry' ? Boolean(status.charging?.vehicleFeeds?.length)
+        : ['temperatures', 'mqtt-temperature', 'outdoor', 'weather'].some(key => status.providers?.[key]);
+  const recorded = datasets.some(row => row.state === 'Recorded snapshot') || savedStatus;
+  const state = !Number.isFinite(at) ? 'Waiting for snapshot' : recorded ? 'Recorded snapshot' : 'No saved readings';
+  return { ...group, backup: false, datasets, series: group.series.map(project),
+    display: { ...group.display, state, attention: false, detail: snapshotDetail },
+    sourceStates: group.sourceStates.map(source => ({ ...source, state, tone: 'pending' })),
+    ...(group.sections ? { sections: group.sections.map(section => ({ ...section, datasets: section.datasets.map(project) })) } : {}),
+    ...(group.localConnection ? { localConnection: { ...group.localConnection,
+      setup: { label: 'Recorded snapshot', tone: 'pending', detail: snapshotDetail },
+      readings: { label: 'Recorded snapshot', tone: 'pending', detail: 'Live OCPP connection health is unavailable on this computer.' },
+      detail: 'Saved master setup. This computer does not connect to the charger.' } } : {}) };
+}
+
 function vehicleDisplay(status) {
   const connections = vehicleConnections(status);
   const summaries = connections.map(connection => ({ ...equipmentConnectionSummary(connection), source: connection.source }));
@@ -433,7 +526,8 @@ export function dashboardProviders(status, options) {
   return [consumption, market ? describe(market) : null,
     status.charging?.vehicleFeeds?.length || entries.some(([key]) => key === 'teslamate') ? vehicleDisplay(status) : null,
     currentTemperatures || weather ? temperatureWeatherDisplay(status, currentTemperatures, weather ? describe(weather) : null, options) : null,
-  ].filter(Boolean).map(group => ({ ...group, introduction: providerIntroductions[group.key] }));
+  ].filter(Boolean).map(group => ({ ...(recordedView(status) ? recordedProviderGroup(group, status, options) : group),
+    introduction: providerIntroductions[group.key] }));
 }
 
 function failureLabel(value) {

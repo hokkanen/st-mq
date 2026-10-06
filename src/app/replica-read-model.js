@@ -36,7 +36,7 @@ function observationReader(snapshot) {
     return { value: row.value, signal, source: row.source, unit: row.unit,
       observedAt: row.source_time, sourceTime: row.source_time, measuredAt: row.source_time,
       receivedAt: row.received_at, quality: JSON.parse(row.quality),
-      supported: raw.supported, accuracyVerified: raw.accuracyVerified, timeBasis: raw.timeBasis,
+      supported: raw.supported, accuracyVerified: raw.accuracyVerified, timeBasis: raw.timeBasis, basis: raw.basis,
       recorded: true, readOnly: true, snapshotAt: at, stale: true, usable: false,
       available: false, usableForControl: false };
   };
@@ -55,7 +55,7 @@ function equipmentSnapshot(config, read, snapshot) {
       return row ? [[mapping.signal, { ...row, label: mapping.label }]] : [];
     }));
     return { id: device.id, role: device.id, label: device.label, area: device.area, kind: device.kind,
-      source: device.source, enabled: device.enabled, readings, available: false, connected: null,
+      source: device.source, protocol: device.protocol, enabled: device.enabled, readings, available: false, connected: null,
       readOnly: true, recorded: true, snapshotAt, configurationSource: 'local-configuration',
       controls: { switch: false, tariff: false, dehumidifier: false, cover: { open: false, close: false, stop: false } },
       check: { checking: false, status: 'read-only-snapshot' },
@@ -130,6 +130,7 @@ function garageSnapshot(snapshot, read) {
     requestedTargetC, effectiveTargetC: saved?.control?.effectiveTargetC ?? null, targetConfirmed: false,
     warmingWarning: copy(mode?.warmingWarning ?? null),
     protection: { status: 'unavailable', available: false, active: null, reason,
+      observedAt: sender?.state?.observedAt ?? null, receivedAt: sender?.state?.receivedAt ?? null,
       recorded: true, readOnly: true, snapshotAt: at,
       configuredSettings: copy(settings?.protection ?? null), settings: copy(sender?.state?.config ?? null),
       configuration: { status: 'unknown', reason, attempts: 0 },
@@ -137,6 +138,7 @@ function garageSnapshot(snapshot, read) {
         configuration: { status: 'unknown', reason, attempts: 0 },
         settings: copy(sender?.state?.config ?? null), protection: copy(sender?.state?.protection ?? null),
         result: copy(sender?.lastCommand ?? null), observedAt: sender?.state?.observedAt ?? null,
+        receivedAt: sender?.state?.receivedAt ?? null,
         recorded: true, readOnly: true, snapshotAt: at } },
     errors, ...(errors.length ? { error: 'Some saved Garage data is unavailable. Other recorded data remains readable.' } : {}),
     nativeControls: { available: false, busy: false, pending: false, reason, result: null, settings: nativeSettings },
@@ -178,8 +180,48 @@ export function replicaReadModel(snapshot, config) {
   const providers = Object.fromEntries(Object.entries(state('providers:health') ?? {}).map(([name, saved]) =>
     [name, { ...copy(saved), recordedStatus: saved.status, status: 'snapshot', readOnly: true, recorded: true,
       snapshotAt: at, connected: null, healthy: null, reason, recording: false,
+      ...(saved.localOcpp ? { localOcpp: { ...copy(saved.localOcpp), available: false, connected: null,
+        readOnly: true, recorded: true, snapshotAt: at } } : {}),
+      ...(saved.mqttStatus ? { mqttStatus: { ...copy(saved.mqttStatus), connected: null,
+        brokerConnected: null, subscribed: null, subscriptionStatus: 'read-only-snapshot',
+        readOnly: true, recorded: true, snapshotAt: at } } : {}),
       ...(saved.reception ? { reception: { ...copy(saved.reception), connected: null,
         brokerConnected: null, subscribed: null, readOnly: true, snapshotAt: at } } : {}) }]));
+  // Provider health is a saved acquisition result, not the complete data
+  // catalogue. In particular Shelly health is composed only by the live engine.
+  // Read the bounded electrical catalogue from the snapshot itself, retaining
+  // absent instantaneous readings rather than deriving them from energy totals.
+  for (const [name, prefixes, source] of [['easee', ['property', 'ev1'], 'easee'],
+    ['shelly-evse', ['ev2'], 'shelly-evse']]) {
+    const signals = prefixes.flatMap(prefix => ['active_power', 'import_energy_counter',
+      ...['current', 'voltage', 'energy'].flatMap(field => [1, 2, 3].map(phase => `${field}_l${phase}`))]
+      .map(field => `${prefix}_${field}`));
+    const readings = Object.fromEntries(signals.flatMap(signal => {
+      const row = read(signal, source);
+      return row ? [[signal, row]] : [];
+    }));
+    if (name === 'easee' && store) {
+      const counter = store.db.prepare(`SELECT value,source_time,received_at,quality FROM active_energy_audits
+        WHERE source='easee' AND signal='property_import_energy_counter' AND source_time<=? AND received_at<=?
+        ORDER BY source_time DESC,id DESC LIMIT 1`).get(at, at);
+      const session = store.db.prepare(`SELECT payload FROM active_events WHERE type='charging-session-check'
+        AND at<=? AND json_extract(payload,'$.end')<=? ORDER BY at DESC,id DESC LIMIT 1`).get(at, at);
+      const check = session ? JSON.parse(session.payload) : null;
+      for (const [signal, row] of [
+        ['property_import_energy_counter', counter && { value: counter.value, observedAt: counter.source_time,
+          sourceTime: counter.source_time, receivedAt: counter.received_at, quality: JSON.parse(counter.quality) }],
+        ['ev1_session_energy_check', check && { value: check.referenceKwh, observedAt: check.end,
+          sourceTime: check.end, receivedAt: null, quality: check.quality }],
+      ]) if (row) readings[signal] = { ...row, signal, source, unit: 'kWh',
+        readOnly: true, recorded: true, snapshotAt: at, available: false, usable: false, usableForControl: false };
+    }
+    if (providers[name] || Object.keys(readings).length) providers[name] = { ...providers[name],
+      source, status: 'snapshot', readOnly: true, recorded: true, snapshotAt: at,
+      connected: null, healthy: null, controlReady: false, recording: false, reason, readings };
+  }
+  const circulationDevice = config.connections?.equipment?.devices?.find(device => device.id === 'dhwr' && device.enabled);
+  const circulation = read('dhwr_active', 'shelly-mqtt', 'dhwr');
+  const circulationConfigured = Boolean(circulationDevice || circulation);
   const readings = Object.fromEntries(Object.entries(H66_REGISTERS).flatMap(([register, definition]) => {
     const row = read(definition.signal, 'husdata-h66');
     return row ? [[register, { ...row, register }]] : [];
@@ -204,7 +246,12 @@ export function replicaReadModel(snapshot, config) {
     equipment: equipmentSnapshot(config, read, snapshot),
     equipmentTests: { ...unavailable, active: null }, equipmentControls: { ...unavailable },
     heatingTests: { ...unavailable, commands: [], lastResult: state(`heating-test:${input}`) },
-    dhwr: { ...unavailable, active: false }, preheatValves: { ...unavailable, active: false, devices: [] },
+    dhwr: { ...unavailable, active: false, actualOn: null, confirmed: false, recorded: true, snapshotAt: at,
+      feedback: { configured: circulationConfigured, stateConfigured: circulationConfigured, powerConfigured: false,
+        deviceId: circulationConfigured ? 'dhwr' : null, available: false,
+        basis: circulation?.basis ?? null, state: circulation, power: null,
+        readOnly: true, recorded: true, snapshotAt: at } },
+    preheatValves: { ...unavailable, active: false, devices: [] },
     h66: { available: false, connected: null, brokerConnected: null, writesEnabled: false,
       controlsReady: false, reason, readings, controls: {}, documentation: H66_DOCUMENTATION,
       readOnly: true, recorded: true, snapshotAt: at },

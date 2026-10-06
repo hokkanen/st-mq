@@ -728,6 +728,14 @@ viewing the page never connects to devices or starts the controller. Local
 configuration defaults and equipment mappings are identified separately from
 values saved by the source computer.
 
+Electricity, prices, vehicle telemetry and temperature/weather summaries use
+recorded-snapshot status on read-only computers. Individual readings retain
+their original source times; missing saved readings are identified explicitly,
+including instantaneous electrical readings that are intentionally live-only.
+Snapshot publication time never becomes a device measurement time. The Garage
+sender and circulation card follow the same rule: saved evidence remains
+inspectable, without implying a live device connection or protection readiness.
+
 All dashboard database edits, settings changes, configuration application and
 device commands are disabled, with the same restriction enforced by the API.
 Downloading a verified database copy remains available; saving a new database

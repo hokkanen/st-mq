@@ -6,6 +6,12 @@ Versions follow Semantic Versioning. `-dev.N` denotes a development prerelease.
 
 ## Unreleased
 
+- Slave dashboards consistently identify recorded snapshots across electricity,
+  prices, vehicles and temperatures/weather, with original report times and
+  explicit missing data. Saved circulation and Garage sender evidence remains
+  visible without claiming live device availability.
+- Circulation uses the standard equipment availability indicator and report
+  time, and consistently identifies its Shelly connection.
 - Shelly relay commands confirm correctly when a newer matching status
   notification arrives before the command readback. Newer measurements retain
   their timestamps; contradictory reports still prevent confirmation.

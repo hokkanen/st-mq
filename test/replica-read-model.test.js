@@ -9,6 +9,7 @@ import { Recorder } from '../src/storage/recorder.js';
 import { replicaReadModel } from '../src/app/replica-read-model.js';
 import { garageSettings } from '../src/garage/settings.js';
 import { GARAGE_SENDER_CONTRACT } from '../src/garage/sender.js';
+import { recordChargingSessionCheck } from '../src/app/charging-session-checks.js';
 
 const at = Date.parse('2026-05-07T12:00:00Z');
 const hash = path => createHash('sha256').update(readFileSync(path)).digest('hex');
@@ -60,8 +61,67 @@ test('recorded frost parameters preserve configured and reported values without 
   assert.equal(result.configuration.status, 'unknown');
   assert.equal(result.sender.configuration.status, 'unknown');
   assert.equal(result.sender.available, false);
+  assert.equal(result.observedAt, at - 1000);
+  assert.equal(result.receivedAt, at - 1000);
+  assert.equal(result.sender.receivedAt, at - 1000);
   assert.equal(result.recorded, true);
   assert.equal(result.readOnly, true);
+  assert.equal(hash(snapshot.path), snapshot.digest);
+});
+
+test('replica electricity uses recorded observations, including zero, without borrowing live-only values or crossing publication', t => {
+  const snapshot = fixture(t, store => {
+    store.setState('providers:health', { easee: { status: 'ok', lastSuccessAt: at - 60_000 } });
+    store.energyAudit({ device: 'fixture-property', signal: 'property_import_energy_counter', value: 123,
+      sourceTime: at - 20_000, receivedAt: at - 10_000 });
+    store.energyAudit({ device: 'fixture-property', signal: 'property_import_energy_counter', value: 124,
+      sourceTime: at - 1000, receivedAt: at + 1 });
+    recordChargingSessionCheck(store, { source: 'easee', sessionKey: 'fixture-session',
+      start: at - 120_000, end: at - 60_000, referenceKwh: .2, estimatedKwh: .19, complete: true });
+    store.observation(observation('easee', 'fixture-equalizer', 'property_energy_l1', .01, { unit: 'kWh' }));
+    store.observation(observation('shelly-evse', 'fixture-evse', 'ev2_energy_l1', 0, { unit: 'kWh' }));
+    store.observation(observation('shelly-evse', 'fixture-evse', 'ev2_energy_l2', null, { unit: 'kWh', quality: ['missing'] }));
+    store.observation(observation('shelly-evse', 'fixture-evse', 'ev2_energy_l1', 1,
+      { unit: 'kWh', sourceTime: at + 1, receivedAt: at + 1 }));
+    store.observation(observation('shelly-evse', 'fixture-evse', 'ev2_energy_l1', 2,
+      { unit: 'kWh', sourceTime: at - 1, receivedAt: at + 1 }));
+  });
+  const result = replicaReadModel(snapshot, config);
+  assert.equal(result.providers.easee.readings.property_energy_l1.value, .01);
+  assert.equal(result.providers.easee.readings.property_import_energy_counter.value, 123);
+  assert.equal(result.providers.easee.readings.property_import_energy_counter.receivedAt, at - 10_000);
+  assert.equal(result.providers.easee.readings.ev1_session_energy_check.value, .2);
+  assert.equal(result.providers.easee.readings.ev1_session_energy_check.sourceTime, at - 60_000);
+  assert.equal(result.providers.easee.readings.ev1_session_energy_check.receivedAt, null);
+  assert.equal(result.providers['shelly-evse'].readings.ev2_energy_l1.value, 0);
+  assert.equal(result.providers['shelly-evse'].readings.ev2_energy_l1.sourceTime, at - 20_000);
+  assert.equal(result.providers['shelly-evse'].readings.ev2_energy_l2.value, null);
+  assert.equal(result.providers['shelly-evse'].readings.ev2_current_l1, undefined);
+  assert.equal(result.providers['shelly-evse'].status, 'snapshot');
+  assert.equal(result.providers['shelly-evse'].controlReady, false);
+  assert.equal(result.providers['shelly-evse'].readings.ev2_energy_l1.available, false);
+  assert.equal(hash(snapshot.path), snapshot.digest);
+});
+
+test('replica circulation retains compact operation evidence and provenance without inventing watts or live confirmation', t => {
+  const snapshot = fixture(t, store => {
+    store.observation(observation('shelly-mqtt', 'dhwr', 'dhwr_active', 0,
+      { raw: { basis: 'measured-power', timeBasis: 'mqtt-live-status' } }));
+  });
+  const result = replicaReadModel(snapshot, { ...config, connections: { equipment: { devices: [
+    { id: 'dhwr', label: 'Circulation pump', protocol: 'shelly', source: 'Shelly', enabled: true,
+      stateSignal: 'dhwr_active', readings: [{ signal: 'dhwr_power' }] },
+  ] } } });
+  assert.equal(result.equipment.devices[0].protocol, 'shelly');
+  assert.equal(result.dhwr.feedback.configured, true);
+  assert.equal(result.dhwr.feedback.state.value, 0);
+  assert.equal(result.dhwr.feedback.state.observedAt, at - 20_000);
+  assert.equal(result.dhwr.feedback.state.receivedAt, at - 10_000);
+  assert.equal(result.dhwr.feedback.basis, 'measured-power');
+  assert.equal(result.dhwr.feedback.power, null);
+  assert.equal(result.dhwr.feedback.available, false);
+  assert.equal(result.dhwr.actualOn, null);
+  assert.equal(result.dhwr.confirmed, false);
   assert.equal(hash(snapshot.path), snapshot.digest);
 });
 

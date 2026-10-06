@@ -97,7 +97,7 @@ test('garage sender connection uses live sender evidence and preserves unavailab
     garage: { protection: { available: false, sender } },
     equipment: { topicGroups: [{ id: 'garage-sender', topics: [topic('Sender status', 'fixture/sender/state')] }] } })[0]);
   const live = summary({ available: true, observedAt: NOW - 1000, receivedAt: NOW });
-  assert.equal(live.label, 'Live reports');
+  assert.equal(live.label, 'Available');
   assert.equal(live.state, 'available');
   assert.match(live.recent, /^Reported /);
   const stale = summary({ available: false, observedAt: NOW - 300_000 });
@@ -108,6 +108,32 @@ test('garage sender connection uses live sender evidence and preserves unavailab
     assert.equal(summary(sender).label, 'Awaiting sender reports');
     assert.equal(summary(sender).recent, 'No live report yet');
   }
+});
+
+test('slave connections retain sender history and vehicle clocks without claiming live subscriptions', () => {
+  const rows = equipmentConnections({ readOnly: true, role: 'slave',
+    readView: { source: 'verified-snapshot', snapshotAt: NOW },
+    equipment: { devices: [{ id: 'dhwr', area: 'home', kind: 'switch', protocol: 'shelly', readings: {}, recorded: true }] },
+    dhwr: { feedback: { deviceId: 'dhwr', recorded: true, state: { value: 0, observedAt: NOW - 30_000 } } },
+    garage: { recorded: true, protection: { sender: { recorded: true, available: false,
+      observedAt: NOW - 60_000, receivedAt: NOW - 59_000 } } },
+    charging: { vehicleFeeds: [{ id: 'bmw', label: 'BMW', provider: 'bmw-cardata', topic: 'fixture/bmw',
+      reception: { brokerConnected: true, subscriptionStatus: 'subscribed', lastLiveAt: NOW - 120_000 } }] },
+  });
+  for (const row of rows.filter(row => row.kind !== 'floor_override')) {
+    assert.equal(equipmentConnectionSummary(row).label, 'Recorded snapshot');
+    assert.equal(equipmentConnectionSummary(row).state, 'pending');
+    assert.match(equipmentConnectionSummary(row).recent, /^Reported /);
+    assert.match(row.connectionDetail, /Live monitoring.*remain on the master/);
+    assert.equal(row.available, false);
+  }
+  const sender = rows.find(row => row.kind === 'sender');
+  assert.equal(sender.source, 'Shelly');
+  assert.equal(sender.lastReportAt, NOW - 60_000);
+  assert.equal(rows.find(row => row.kind === 'vehicle').lastReportAt, NOW - 120_000);
+  assert.equal(rows.find(row => row.id === 'dhwr').lastReportAt, NOW - 30_000, 'Compact operation retains the circulation connection report time even though raw watts are not stored');
+  assert.equal(equipmentConnectionSummary({ ...sender, lastReportAt: null }).label, 'No recorded report');
+  assert.equal(equipmentSource({ protocol: 'shelly' }), 'Shelly');
 });
 
 test('garage adapter requires the connection and all device health evidence before showing available', () => {

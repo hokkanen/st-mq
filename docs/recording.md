@@ -680,9 +680,11 @@ unobserved chart options or mix exact contacts into the adaptive table.
   [Home floor preheating](floor-preheat.md).
 - Hot-water circulation feedback: initial state and exact state, quality or
   availability changes. Unchanged ON/OFF reports extend compact coverage;
-  periodic feeds retain their configured deadline and event-only feeds retain
-  their last reported state until a new report or explicit outage. Raw watts
-  remain live-only; requested pulses are separate.
+  native Shelly reports retain the configured freshness deadline (120 seconds
+  by default). Missing or stale feedback is unknown. Raw watts remain live-only;
+  requested pulses are separate. A read-only snapshot can show the saved compact
+  operation and its original report time, but cannot show live power or confirm
+  current pump availability.
 - Garage compressor activity and reported defrost: exact state changes. Native
   interpreted temperature and compressor frequency belong in Adaptive measurements. Garage power
   remains live input only. Qualified dedicated garage energy intervals and saved

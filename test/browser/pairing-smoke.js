@@ -12,6 +12,8 @@ import { join } from 'node:path';
 import { start } from '../../src/main.js';
 import { loadConfig } from '../../src/app/config.js';
 import { seedChartFixture } from '../../scripts/lib/chart-fixture.js';
+import { chargingSettings } from '../../src/charging/settings.js';
+import { buildCharger, CHARGER_DEFINITIONS } from '../../src/charging/model.js';
 
 const directory = mkdtempSync(join(tmpdir(), 'stmq-pairing-browser-'));
 const screenshots = mkdtempSync(join(tmpdir(), 'stmq-pairing-screenshots-'));
@@ -46,6 +48,20 @@ try {
     STMQ_PORT: '0', STMQ_INPUT: 'simulated' }, directory);
   app = await start({ config, clock: () => now });
   seedChartFixture(app.store, now);
+  app.store.setState('providers:health', Object.fromEntries([
+    ['easee', 'easee'], ['market', 'entsoe'], ['weather', 'fmi'],
+    ['outdoor', 'fmi'], ['temperatures', 'mqtt-temperature'],
+  ].map(([key, source]) => [key, { source, status: 'ok', lastSuccessAt: now - 60_000 }])));
+  const savedChargingSettings = chargingSettings();
+  app.store.setState('charging:simulated', { version: 6, chargers: {}, view: {
+    settings: savedChargingSettings, controls: { priority: 'balanced', revision: 0 },
+    chargers: CHARGER_DEFINITIONS.map(definition => buildCharger({ definition,
+      settings: savedChargingSettings.chargers[definition.id], now, timezone: 'Europe/Helsinki' })),
+    vehicleFeeds: [{ id: 'tesla', label: 'Fixture vehicle', provider: 'teslamate', enabled: true,
+      reception: { brokerConnected: true, subscribed: true, lastLiveAt: now - 120_000 } }],
+  } });
+  app.store.observation({ source: 'shelly-mqtt', device: 'dhwr', signal: 'dhwr_active',
+    value: 0, unit: 'state', sourceTime: now - 60_000, receivedAt: now - 59_000, quality: [] });
   const upstream = `http://127.0.0.1:${app.server.address().port}`;
   const dbPath = await app.store.backup(join(directory, 'replica.sqlite'));
   const bytes = readFileSync(dbPath);
@@ -382,6 +398,13 @@ try {
     await evaluate(`${$('settings-reload')}.dispatchEvent(new MouseEvent('click', { bubbles: true })); ${$('temporary-form')}.dispatchEvent(new Event('submit', { bubbles: true, cancelable: true })); ${$('database-export-save')}.dispatchEvent(new MouseEvent('click', { bubbles: true })); true`);
     assert.equal(actions.length, requestsBefore, 'Synthetic events cannot bypass read-only controls');
     assert.equal(await evaluate(`${$('error')}.hidden`), true, 'Complete replica projection renders without an application error');
+    assert.deepEqual(JSON.parse(await evaluate("JSON.stringify([...document.querySelectorAll('#providers > li')].map(row => [row.dataset.provider, row.querySelector('.provider-category-state').textContent]))")),
+      ['electricity', 'market', 'vehicle-telemetry', 'main-temperatures'].map(key => [key, 'Recorded snapshot']),
+      `${role} provider categories consistently identify recorded evidence`);
+    assert.equal(await evaluate("[...document.querySelectorAll('#providers > li')].some(row => row.dataset.state === 'available')"), false,
+      'Recorded provider categories cannot claim live availability');
+    assert.match(await evaluate(`${$('dhwr-feedback-status')}.textContent`), /Recorded snapshot/);
+    assert.equal(await evaluate("document.querySelector('#dhwr-device .equipment-device-meta').textContent"), 'Circulation pump · Shelly');
     if (role === 'protected') {
       assert.equal(await evaluate(`(() => { const node = ${$('instance-role')}, box = node.getBoundingClientRect(), range = document.createRange(); range.selectNodeContents(node); const text = range.getBoundingClientRect(); return Math.abs((box.top + box.bottom) / 2 - (text.top + text.bottom) / 2) <= 1 && Math.abs((box.left + box.right) / 2 - (text.left + text.right) / 2) <= 1; })()`), true, 'Protected badge text is centered on both axes');
       await capture('protected-dashboard-mobile', true);

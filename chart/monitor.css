@@ -1558,8 +1558,8 @@ button.garage-door-action:disabled { opacity: 1; cursor: default; }
 #mqtt-devices-details .equipment-connection-name { font-size: 12px; font-weight: 550; line-height: 1.4; overflow-wrap: anywhere; }
 #mqtt-devices-details .equipment-connection-meta, #mqtt-devices-details .equipment-connection-recent { color: var(--muted); font-size: 10px; line-height: 1.4; }
 #mqtt-devices-details .equipment-connection-health { display: flex; flex-direction: column; align-items: flex-end; gap: 4px; max-width: 190px; text-align: right; }
-#mqtt-devices-details .equipment-connection-health > .equipment-device-status { display: inline-flex; align-items: center; gap: 6px; font-size: 11px; }
-#mqtt-devices-details .equipment-connection-health > .equipment-device-status::before { content: ''; flex: 0 0 5px; width: 5px; height: 5px; border-radius: 50%; background: currentColor; }
+.equipment-connection-health > .equipment-device-status { display: inline-flex; align-items: center; justify-content: flex-end; gap: 6px; font-size: 11px; }
+.equipment-connection-health > .equipment-device-status::before { content: ''; flex: 0 0 5px; width: 5px; height: 5px; border-radius: 50%; background: currentColor; }
 #mqtt-devices-details .equipment-connection-body { padding-bottom: 14px; }
 #mqtt-devices-details .equipment-connection-intro { margin: 0 0 12px; font-size: 11px; line-height: 1.65; overflow-wrap: anywhere; }
 #mqtt-devices-details .equipment-connection-check { display: grid; gap: 5px; margin: 0 0 14px; }
@@ -1778,6 +1778,7 @@ button.garage-door-action:disabled { opacity: 1; cursor: default; }
 .equipment-device-summary > .equipment-device-heading:has(.equipment-device-meta) { grid-column: 1; display: grid; align-content: start; }
 .equipment-device-meta, .equipment-device-recent { color: var(--muted); font-size: 10px; font-weight: 400; line-height: 1.6; }
 .equipment-device-summary > .equipment-device-health { grid-column: 2; grid-row: 1; display: grid; gap: 4px; align-content: start; text-align: right; }
+.equipment-device-health > .equipment-connection-recent { color: var(--muted); font-size: 10px; }
 .equipment-device-preview { display: block; margin: 2px 0 0; color: var(--muted); font-size: 12px; line-height: 1.65; overflow-wrap: anywhere; }
 .equipment-device > .equipment-device-body { min-width: 0; padding: 0 14px 18px; overflow-wrap: anywhere; }
 .equipment-device-body > :first-child { margin-top: 0; }

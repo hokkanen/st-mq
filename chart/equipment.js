@@ -17,7 +17,7 @@ function equipmentStateReading(device, now) {
   return device?.available && reading?.stale === false && [0, 1].includes(reading.value)
     && Number.isFinite(reading.observedAt) && (!Number.isFinite(now) || reading.observedAt <= now) ? reading : null;
 }
-export const equipmentSource = device => ['Shelly', 'MQTT-shelly', 'shelly-mqtt'].includes(device.source) ? 'Shelly'
+export const equipmentSource = device => device.protocol === 'shelly' || ['Shelly', 'MQTT-shelly', 'shelly-mqtt'].includes(device.source) ? 'Shelly'
   : ['H66', 'Mitsubishi', 'Simulation', 'TeslaMate', 'BMW CarData', 'Shelly EVSE', 'SONOFF'].includes(device.source) ? device.source : 'MQTT';
 const temperatureKeys = { indoor_temperature: 'upstairs', downstairs_temperature: 'downstairs', bedroom_temperature: 'bedroom',
   garage_temperature: 'garage', garage_temperature_2: 'garageFront', outdoor_temperature: 'outdoor' };
@@ -337,6 +337,12 @@ export function equipmentTopicGroups(topics = []) {
 
 export function equipmentConnectionSummary(device) {
   const mqtt = device.mqttStatus, check = device.check;
+  const reportedAt = device.lastReportAt ?? mqtt?.lastLiveAt ?? Math.max(...Object.values(device.readings ?? {})
+    .map(reading => reading.observedAt ?? reading.receivedAt).filter(Number.isFinite));
+  if (device.recorded === true || device.readOnly === true) return {
+    label: Number.isFinite(reportedAt) ? 'Recorded snapshot' : 'No recorded report', state: 'pending',
+    recent: Number.isFinite(reportedAt) ? `Reported ${clock.format(reportedAt)}` : 'Live connection is inactive on this computer',
+  };
   let label = device.connectionState?.label, state = device.connectionState?.state;
   if (!label) {
     [label, state] = device.enabled === false ? ['Not enabled', 'pending']
@@ -348,8 +354,6 @@ export function equipmentConnectionSummary(device) {
                 : ['failed', 'denied'].includes(mqtt?.subscriptionStatus) || check?.status === 'unavailable'
                   ? ['Connection issue', 'attention'] : ['Needs attention', 'attention'];
   }
-  const reportedAt = device.lastReportAt ?? mqtt?.lastLiveAt ?? Math.max(...Object.values(device.readings ?? {})
-    .map(reading => reading.observedAt ?? reading.receivedAt).filter(Number.isFinite));
   const checkedAt = check?.checkedAt;
   const recent = check?.checking ? 'Checking connection…'
     : Number.isFinite(checkedAt) && (!Number.isFinite(reportedAt) || checkedAt > reportedAt) ? `Checked ${clock.format(checkedAt)}`
@@ -505,7 +509,8 @@ export function equipmentConnections(status = {}, devices = equipmentDevices(sta
         const sender = status.garage?.protection?.sender;
         const reportedAt = sender?.observedAt ?? sender?.receivedAt;
         Object.assign(row, { kind: 'sender', source: 'Shelly', lastReportAt: reportedAt,
-          connectionState: sender?.available === true ? { label: 'Live reports', state: 'available' }
+          recorded: sender?.recorded === true, readOnly: sender?.readOnly === true,
+          connectionState: sender?.available === true ? { label: 'Available', state: 'available' }
             : Number.isFinite(reportedAt) ? { label: 'Live report unavailable', state: 'attention' }
               : { label: 'Awaiting sender reports', state: 'pending' },
           connectionDetail: 'Sender status and protection settings readback. Heat-pump protection readiness is shown in Garage.' });
@@ -537,11 +542,29 @@ export function equipmentConnections(status = {}, devices = equipmentDevices(sta
       if (row.topics.length) rows.push(row);
     }
   }
+  // Replica snapshots carry saved device evidence without any active MQTT routes.
+  // Keep those sources visible even though the slave has no subscriptions.
+  if (status.garage?.recorded === true) for (const [group, kind, label, source, saved, reportedAt] of [
+    ['garage-sender', 'sender', 'Garage local frost protection', 'Shelly', status.garage.protection?.sender,
+      status.garage.protection?.sender?.observedAt ?? status.garage.protection?.sender?.receivedAt],
+    ['garage-adapter', 'heat_pump', 'Garage heat pump', 'Mitsubishi', status.garage.adapter,
+      status.garage.adapter?.native?.powerAt],
+  ]) if (saved && !rows.some(row => row.id === `connection:${group}:garage`)) rows.push({
+    id: `connection:${group}:garage`, kind, label, source, area: 'garage', topics: [],
+    recorded: true, readOnly: true, lastReportAt: reportedAt,
+    connectionDetail: 'Recorded device reports from the master. Live monitoring and device commands remain on the master.',
+  });
   // Stable sorting keeps room temperatures in their configured order.
   const order = row => row.area === 'garage' ? garageEquipmentOrder(row) : row.kind === 'floor_override' ? 6 : row.area !== 'home' ? 4 : row.source === 'H66' ? 0 : row.kind === 'temperature' ? 1
     : row.id === status.dhwr?.feedback?.deviceId || row.id === 'connection:dhwr:home' ? 2
       : row.controls?.tariff || row.controlsHeat || row.role === 'heat_savings' || row.id === 'connection:heating:home' ? 3 : 4;
-  return rows.sort((a, b) => order(a) - order(b));
+  return rows.sort((a, b) => order(a) - order(b)).map(row => {
+    if (!(status.readOnly === true || status.readView?.source === 'verified-snapshot') || row.kind === 'floor_override') return row;
+    return { ...row, recorded: true, readOnly: true, available: false,
+      ...(row.id === status.dhwr?.feedback?.deviceId ? { lastReportAt: status.dhwr.feedback.state?.observedAt } : {}),
+      connectionDetail: 'Recorded device reports from the master. Live monitoring and device commands remain on the master.',
+      packetDetail: 'Packet times belong to the recorded master reports; this computer has no live device subscription.' };
+  });
 }
 
 function garageEquipmentOrder(device) {
@@ -552,43 +575,53 @@ function garageEquipmentOrder(device) {
 
 export function dhwrReadingSummary(status) {
   const dhwr = status.dhwr ?? {}, feedback = dhwr.feedback ?? {};
+  const recorded = status.readOnly === true || status.readView?.source === 'verified-snapshot'
+    || dhwr.recorded === true || feedback.recorded === true;
   const stateConfigured = feedback.stateConfigured ?? feedback.configured === true;
   const powerConfigured = feedback.powerConfigured ?? feedback.configured === true;
   const reading = (value, signal, configured) => {
+    if (recorded && !value) return { value: signal === 'state' ? 'Unknown' : 'Not recorded', stale: true,
+      detail: signal === 'state' ? 'No circulation operation report was saved in this snapshot.'
+        : 'Raw circulation power is live-only and is not included in recorded snapshots.' };
     if (feedback.configured && !configured) return { value: 'Not configured', stale: false,
       detail: signal === 'state' ? 'Circulation feedback is not configured.'
         : 'Power feedback is not configured.' };
-    return value ? equipmentReadingRows({ kind: 'switch', available: feedback.available,
-      readings: { [signal]: value } })[0] : { value: signal === 'state' ? 'Unknown' : 'Unavailable', stale: true,
-      detail: configured ? 'Waiting for a live MQTT report.' : 'Configure DHWR MQTT feedback to see device reports.' };
+    return value ? equipmentReadingRows({ kind: 'switch', available: !recorded && feedback.available, readOnly: recorded,
+      readings: { [signal]: recorded ? { ...value, stale: true } : value } })[0] : { value: signal === 'state' ? 'Unknown' : 'Unavailable', stale: true,
+      detail: configured ? 'Waiting for a live Shelly report.' : 'Configure the Shelly circulation pump to see device reports.' };
   };
   const state = reading(feedback.state, 'state', stateConfigured), power = reading(feedback.power, 'power', powerConfigured);
   const powerBasis = feedback.basis === 'power';
   if (powerBasis) state.detail += '. Positive power means circulation is on; zero power means it is off.';
-  const eventOnly = feedback.power?.eventOnly === true;
-  if (eventOnly) power.detail += '. Updated when power changes; there is no periodic measurement guarantee.';
-  const powerOnly = powerBasis || !stateConfigured && powerConfigured;
+  const reportedAt = feedback.power?.observedAt ?? feedback.state?.observedAt;
+  const feedbackLabel = recorded ? Number.isFinite(reportedAt) ? 'Recorded snapshot' : 'No recorded report'
+    : dhwr.attention ? 'Needs attention' : !feedback.configured ? 'Feedback not configured'
+      : feedback.available ? 'Available' : Number.isFinite(reportedAt) ? 'Needs attention' : 'Waiting for report';
+  const feedbackState = recorded ? 'pending' : dhwr.attention ? 'attention'
+    : feedback.available ? 'available' : Number.isFinite(reportedAt) ? 'attention' : 'pending';
+  const recordedOperation = recorded && ['On', 'Off'].includes(state.value) ? state.value : null;
   const reported = typeof dhwr.actualOn === 'boolean' ? `${dhwr.actualOn ? 'On' : 'Off'} · ${powerBasis ? 'power' : 'device'} reported` : '';
-  const summary = dhwr.restorationPending ? ['Stop delivery pending', reported].filter(Boolean).join(' · ')
+  const summary = recorded ? recordedOperation ? `${recordedOperation} · recorded operation` : 'No recorded operation'
+    : dhwr.restorationPending ? ['Stop delivery pending', reported].filter(Boolean).join(' · ')
     : dhwr.attention ? [reported || (dhwr.active ? 'On requested' : 'Off requested'), 'needs attention'].join(' · ')
     : reported || (dhwr.active ? 'On requested · state unknown' : 'No request · state unknown');
   return { state, power, summary,
-    summaryValue: dhwr.restorationPending ? 'Stop pending'
+    summaryValue: recorded ? recordedOperation ?? 'Unknown' : dhwr.restorationPending ? 'Stop pending'
       : typeof dhwr.actualOn === 'boolean' ? dhwr.actualOn ? 'On' : 'Off' : dhwr.active ? 'On requested' : 'Unknown',
-    summaryNote: dhwr.restorationPending ? reported || 'Delivery not confirmed'
+    summaryNote: recorded ? 'Recorded snapshot' : dhwr.restorationPending ? reported || 'Delivery not confirmed'
       : dhwr.attention ? 'Needs attention'
         : typeof dhwr.actualOn === 'boolean' ? powerBasis ? 'Power reported' : 'Device reported'
           : dhwr.active ? 'Not confirmed' : 'No device readback',
-    attention: dhwr.attention === true,
-    powerLabel: eventOnly ? 'Last reported power' : 'Live power',
-    powerReportedAt: eventOnly && Number.isFinite(feedback.power.observedAt) ? `Reported ${clock.format(feedback.power.observedAt)}` : '',
-    feedbackLabel: dhwr.attention ? 'Needs attention' : !feedback.configured ? 'Feedback not configured' : powerOnly
-      ? feedback.available ? eventOnly ? 'Power reported' : 'Power available' : feedback.power ? 'Power unavailable' : 'Waiting for power'
-      : feedback.available ? 'Available' : 'Needs attention',
-    request: dhwr.restorationPending ? 'Stop requested · delivery pending'
+    attention: !recorded && dhwr.attention === true,
+    powerLabel: recorded ? 'Power' : 'Live power',
+    feedbackLabel, feedbackState,
+    feedbackRecent: Number.isFinite(reportedAt) ? `Reported ${clock.format(reportedAt)}`
+      : recorded ? 'Live connection is inactive on this computer' : 'No live report yet',
+    request: recorded ? 'Recorded operation only. Circulation controls are available on the master.'
+      : dhwr.restorationPending ? 'Stop requested · delivery pending'
       : dhwr.reason || (dhwr.active ? 'Circulation requested' : 'No circulation requested'),
     duration: dhwr.durationMinutes ?? 10,
-    available: feedback.available === true, configured: feedback.configured === true };
+    available: !recorded && feedback.available === true, configured: feedback.configured === true };
 }
 
 export function createEquipmentPanel({ document, request, onStatus, beforeRequest, onBusy = () => {}, onChange = () => {}, blocked = () => false }) {
@@ -886,7 +919,9 @@ export function createEquipmentPanel({ document, request, onStatus, beforeReques
         device.kind === 'floor_override' ? device.model : equipmentSource(device)].join(' · ');
       renderTopics(node.topics, device.topics); node.topics.hidden = !device.topics.length;
       const mqtt = device.mqttStatus;
-      node.packets.textContent = [mqtt?.broker ? `Broker: ${mqtt.broker === 'ha' ? 'Home Assistant' : 'Primary'}${mqtt.brokerConnected === false ? ' (disconnected)' : ''}` : '',
+      node.packets.textContent = device.recorded === true || device.readOnly === true
+        ? [Number.isFinite(mqtt?.lastLiveAt) ? `Recorded packet: ${clock.format(mqtt.lastLiveAt)}` : '', device.packetDetail ?? ''].filter(Boolean).join(' · ')
+        : [mqtt?.broker ? `Broker: ${mqtt.broker === 'ha' ? 'Home Assistant' : 'Primary'}${mqtt.brokerConnected === false ? ' (disconnected)' : ''}` : '',
         mqtt?.subscriptionStatus ? `Subscription: ${pretty(mqtt.subscriptionStatus)}` : '',
         Number.isFinite(mqtt?.lastLiveAt) ? `Last live packet: ${clock.format(mqtt.lastLiveAt)}` : mqtt ? 'No live packet received' : '',
         Number.isFinite(mqtt?.lastRetainedAt) ? `Saved broker packet: ${clock.format(mqtt.lastRetainedAt)}` : '',
@@ -911,12 +946,11 @@ export function createEquipmentPanel({ document, request, onStatus, beforeReques
     const dhwrNode = $('dhwr-device'), dhwrAnchor = $(`${dhwrArea}-test-notice`);
     if (dhwrNode.parentElement !== dhwrAnchor.parentElement) dhwrAnchor.parentElement.insertBefore(dhwrNode, dhwrAnchor);
     $('dhwr-title').textContent = dhwrDevice?.label ?? 'Hot-water circulation';
+    $('dhwr-source').textContent = `Circulation pump · ${dhwrDevice ? equipmentSource(dhwrDevice) : 'Shelly'}`;
     const dhwr = dhwrReadingSummary(status);
     const dhwrPreview = $('dhwr-preview');
     if (dhwrPreview) dhwrPreview.textContent = `${dhwr.state.value} · ${dhwr.powerLabel}: ${dhwr.power.value}`;
     $('dhwr-live-power-label').textContent = dhwr.powerLabel;
-    $('dhwr-live-power-time').textContent = dhwr.powerReportedAt;
-    $('dhwr-live-power-time').hidden = !dhwr.powerReportedAt;
     for (const [key, row] of [['state', dhwr.state], ['power', dhwr.power]]) {
       const root = $(`dhwr-live-${key}`); root.classList.toggle('stale', row.stale);
       setStatusDetail(root, { key: `dhwr-live-${key}`, label: row.value,
@@ -924,7 +958,8 @@ export function createEquipmentPanel({ document, request, onStatus, beforeReques
         detail: row.detail + (key === 'power' ? ' Power readings also determine the circulation shading in history.' : '') });
     }
     $('dhwr-feedback-status').textContent = dhwr.feedbackLabel;
-    $('dhwr-feedback-status').dataset.state = dhwr.attention ? 'attention' : dhwr.available ? 'available' : dhwr.configured ? 'attention' : 'pending';
+    $('dhwr-feedback-status').dataset.state = dhwr.feedbackState;
+    $('dhwr-feedback-time').textContent = dhwr.feedbackRecent;
     $('dhwr-request-state').textContent = dhwr.request;
     $('dhwr-request-state').classList.toggle('stale', dhwr.attention);
     $('dhwr-control-help').textContent = `Each click starts a full ${dhwr.duration}-minute run, whether price control is paused or not. Stop ends it immediately.`;

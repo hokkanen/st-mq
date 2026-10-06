@@ -3,6 +3,50 @@ import { readFileSync, writeFileSync } from 'node:fs';
 import { checkGarageDoorBrowser } from './garage-door-browser-checks.js';
 import { checkDashboardHeights } from './dashboard-height-browser-checks.js';
 
+async function checkEquipmentReadbackBrowser({ evaluate, command, context, refresh, settle }) {
+  await evaluate(`(() => {const f=window.equipmentUiFixture;f.savedReadback={response:f.response,theme:document.documentElement.dataset.theme};
+    f.senderReport={available:true,observedAt:f.now-1000,receivedAt:f.now};f.readbackReplica=false;
+    f.response=base=>{const next=f.savedReadback.response(base);
+      next.equipment.topicGroups.push({id:'garage-sender',label:'Garage local frost protection',topics:[{role:'Sender status',topic:'fixture/sender/status',direction:'subscribe'}]});
+      next.garage={...next.garage,recorded:f.readbackReplica,protection:{...next.garage?.protection,sender:f.senderReport}};
+      if(f.readbackReplica){next.readOnly=true;next.dhwr={recorded:true,feedback:{configured:true,recorded:true,available:false,basis:'power',
+        state:{value:0,unit:'state',observedAt:f.now-60000,readOnly:true,stale:true}}};}
+      return next;};return true;})()`);
+  const sender = '#equipment-connections [data-device-id="connection:garage-sender:garage"]';
+  try {
+    await refresh();
+    assert.equal(await evaluate("document.getElementById('dhwr-source').textContent"), 'Circulation pump · Shelly');
+    assert.equal(await evaluate("document.getElementById('dhwr-feedback-status').textContent"), 'Available');
+    assert.match(await evaluate("document.getElementById('dhwr-feedback-time').textContent"), /^Reported /);
+    assert.equal(await evaluate("getComputedStyle(document.getElementById('dhwr-feedback-status'),'::before').width"), '5px');
+    assert.equal(await evaluate("getComputedStyle(document.getElementById('dhwr-feedback-status')).color===getComputedStyle(document.querySelector('#equipment-connections [data-state=available] .equipment-device-status')).color"), true);
+    assert.equal(await evaluate(`document.querySelector('${sender} .equipment-device-status').textContent`), 'Available');
+    assert.match(await evaluate(`document.querySelector('${sender} .equipment-connection-recent').textContent`), /^Reported /);
+    await evaluate('window.equipmentUiFixture.senderReport.available=false;true'); await refresh();
+    assert.equal(await evaluate(`document.querySelector('${sender} .equipment-device-status').textContent`), 'Live report unavailable');
+    assert.match(await evaluate(`document.querySelector('${sender} .equipment-connection-recent').textContent`), /^Reported /);
+    await evaluate('window.equipmentUiFixture.readbackReplica=true;window.equipmentUiFixture.senderReport.recorded=true;true'); await refresh();
+    for (const selector of [`${sender} .equipment-device-status`, '#dhwr-feedback-status']) {
+      assert.equal(await evaluate(`document.querySelector('${selector}').textContent`), 'Recorded snapshot');
+      assert.equal(await evaluate(`document.querySelector('${selector}').dataset.state`), 'pending');
+    }
+    assert.equal(await evaluate("document.querySelector('#dhwr-live-state .status-detail-label').textContent"), 'Off');
+    assert.equal(await evaluate("document.querySelector('#dhwr-live-power .status-detail-label').textContent"), 'Not recorded');
+    assert.equal(await evaluate("document.getElementById('test-circulation').disabled&&document.getElementById('dhwr-stop').disabled"), true);
+    for (const theme of ['dark', 'light']) for (const width of [1440, 390, 320]) {
+      await command('browsingContext.setViewport', { context, viewport: { width, height: 1100 }, devicePixelRatio: 1 });
+      await evaluate(`document.documentElement.dataset.theme='${theme}';document.getElementById('home-equipment-details').open=true;true`);
+      await settle();
+      assert.equal(await evaluate('document.documentElement.scrollWidth<=innerWidth'), true);
+      assert.equal(await evaluate("(() => {const panel=document.getElementById('dhwr-device').getBoundingClientRect();return [...document.querySelectorAll('#dhwr-source,#dhwr-feedback-status,#dhwr-feedback-time')].every(node=>[...node.getClientRects()].every(box=>box.left>=panel.left-1&&box.right<=panel.right+1));})()"), true, `Circulation status and original report time fit at ${width}px in ${theme}`);
+    }
+  } finally {
+    await evaluate('(() => {const f=window.equipmentUiFixture;f.response=f.savedReadback.response;document.documentElement.dataset.theme=f.savedReadback.theme;delete f.savedReadback;delete f.senderReport;delete f.readbackReplica;return true;})()');
+    await command('browsingContext.setViewport', { context, viewport: { width: 1440, height: 1100 }, devicePixelRatio: 1 });
+    await refresh();
+  }
+}
+
 /** Commissioning navigation and admin downloads use the same offline fixture. */
 async function checkFloorPreheatingBrowser({ evaluate, command, context, refresh, settle }) {
   await evaluate(`(() => {const f=window.equipmentUiFixture;f.savedFloorUi={
@@ -170,6 +214,7 @@ export async function checkEquipmentBrowser({ evaluate, command, context, until,
     await checkGarageDoorBrowser({ evaluate, command, context, refresh, settle, until, setReducedMotion });
     if (garageDoorsOnly) return;
     await checkFloorPreheatingBrowser({ evaluate, command, context, refresh, settle });
+    await checkEquipmentReadbackBrowser({ evaluate, command, context, refresh, settle });
     assert.deepEqual(await evaluate("[...document.querySelectorAll('#providers > li')].map(row=>row.dataset.provider)"), ['electricity','market','vehicle-telemetry','main-temperatures']);
     assert.equal(await evaluate("document.querySelectorAll('.provider-local-summary').length"), 0);
     assert.deepEqual(await evaluate("[...document.querySelectorAll('[data-provider=\"main-temperatures\"] .provider-source-title')].map(node=>node.textContent)"), ['Main temperatures','Weather forecast']);
@@ -317,13 +362,13 @@ export async function checkEquipmentBrowser({ evaluate, command, context, until,
     assert.match(await evaluate("document.getElementById('equipment-connections').textContent"), /Last live packet:/);
     assert.equal(await evaluate("document.querySelector('#equipment-connections [data-device-id=\"connection:temperatures:home\"] code').textContent"), 'invented/home/upstairs/temperature');
     // Power reports determine circulation operation independently of run requests.
-    await evaluate("window.equipmentUiFixture.savedDhwr=structuredClone(window.equipmentUiFixture.dhwr);window.equipmentUiFixture.dhwr.actualOn=null;Object.assign(window.equipmentUiFixture.dhwr.feedback,{stateConfigured:true,powerConfigured:true,basis:'power',state:null});window.equipmentUiFixture.dhwr.feedback.power.eventOnly=false;true");
+    await evaluate("window.equipmentUiFixture.savedDhwr=structuredClone(window.equipmentUiFixture.dhwr);window.equipmentUiFixture.dhwr.actualOn=null;Object.assign(window.equipmentUiFixture.dhwr.feedback,{stateConfigured:true,powerConfigured:true,basis:'power',state:null});true");
     await refresh();
     assert.equal(await evaluate("document.querySelector('#dhwr-live-power .status-detail-label').textContent"), '0 W');
     assert.equal(await evaluate("document.querySelector('#dhwr-live-state .status-detail-label').textContent"), 'Off');
     assert.equal(await evaluate("document.getElementById('dhwr-live-power-label').textContent"), 'Live power');
-    assert.equal(await evaluate("document.getElementById('dhwr-live-power-time').hidden"), true);
-    assert.equal(await evaluate("document.getElementById('dhwr-feedback-status').textContent"), 'Power available');
+    assert.match(await evaluate("document.getElementById('dhwr-feedback-time').textContent"), /^Reported /);
+    assert.equal(await evaluate("document.getElementById('dhwr-feedback-status').textContent"), 'Available');
     await evaluate("window.equipmentUiFixture.dhwr.feedback.power.value=38;true"); await refresh();
     assert.equal(await evaluate("document.querySelector('#dhwr-live-power .status-detail-label').textContent"), '38 W');
     assert.equal(await evaluate("document.getElementById('dhwr-stop').disabled"), false, 'Positive measured power enables stopping circulation');
@@ -332,11 +377,11 @@ export async function checkEquipmentBrowser({ evaluate, command, context, until,
     await evaluate("document.querySelector('#status-detail-popover .status-detail-close').click();window.equipmentUiFixture.dhwr.feedback.available=false;window.equipmentUiFixture.dhwr.feedback.power.stale=true;true");
     await refresh();
     assert.equal(await evaluate("document.querySelector('#dhwr-live-power .status-detail-label').textContent"), 'Unavailable');
-    assert.equal(await evaluate("document.getElementById('dhwr-feedback-status').textContent"), 'Power unavailable');
+    assert.equal(await evaluate("document.getElementById('dhwr-feedback-status').textContent"), 'Needs attention');
     await evaluate("window.equipmentUiFixture.dhwr.feedback.power=null;true"); await refresh();
     assert.equal(await evaluate("document.querySelector('#dhwr-live-power .status-detail-label').textContent"), 'Unavailable');
-    assert.equal(await evaluate("document.getElementById('dhwr-feedback-status').textContent"), 'Waiting for power');
-    assert.equal(await evaluate("document.getElementById('dhwr-live-power-time').hidden"), true);
+    assert.equal(await evaluate("document.getElementById('dhwr-feedback-status').textContent"), 'Waiting for report');
+    assert.equal(await evaluate("document.getElementById('dhwr-feedback-time').textContent"), 'No live report yet');
     assert.equal(await evaluate('window.equipmentUiFixture.calls.length'), 1, 'Reading updates never operate equipment');
     await evaluate("window.equipmentUiFixture.dhwr=window.equipmentUiFixture.savedDhwr;true"); await refresh();
     // Failed circulation feedback belongs beside that control, including externally started runs.
@@ -365,7 +410,7 @@ export async function checkEquipmentBrowser({ evaluate, command, context, until,
     assert.equal(await evaluate("document.getElementById('dhwr-device').closest('#garage-equipment-details')!==null"), true, 'Circulation follows its configured location');
     assert.equal(await evaluate("document.querySelectorAll('#garage-equipment-readings [data-device-id=dhwr]').length"), 0, 'Circulation feedback has one row');
     await evaluate("window.equipmentUiFixture.dhwr.feedback.deviceId=null;window.equipmentUiFixture.devices.pop();true"); await refresh();
-    await evaluate("window.equipmentUiFixture.dhwr.actualOn=null;window.equipmentUiFixture.dhwr.active=false;Object.assign(window.equipmentUiFixture.dhwr.feedback,{deviceId:'dhwr',stateConfigured:true,powerConfigured:true,basis:'power',state:null});window.equipmentUiFixture.dhwr.feedback.power.eventOnly=false;window.equipmentUiFixture.devices.push({id:'dhwr',label:'Hot-water circulation',area:'home',kind:'switch',source:'Shelly',available:true,topics:[{role:'State and power',topic:'stmq/home/dhwr/status/switch:0',direction:'subscribe'}]});true"); await refresh();
+    await evaluate("window.equipmentUiFixture.dhwr.actualOn=null;window.equipmentUiFixture.dhwr.active=false;Object.assign(window.equipmentUiFixture.dhwr.feedback,{deviceId:'dhwr',stateConfigured:true,powerConfigured:true,basis:'power',state:null});window.equipmentUiFixture.devices.push({id:'dhwr',label:'Hot-water circulation',area:'home',kind:'switch',source:'Shelly',available:true,topics:[{role:'State and power',topic:'stmq/home/dhwr/status/switch:0',direction:'subscribe'}]});true"); await refresh();
     assert.equal(await evaluate("document.querySelectorAll('#home-equipment-readings [data-device-id=dhwr]').length"), 0);
     assert.equal(await evaluate("[...document.querySelectorAll('#equipment-connections code')].some(n=>n.textContent==='stmq/home/dhwr/status/switch:0')"), true);
     await evaluate("document.getElementById('test-circulation').click();true");

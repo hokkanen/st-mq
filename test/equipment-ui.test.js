@@ -228,7 +228,9 @@ test('DHWR operation follows power feedback and requests still need new reports'
   assert.equal(summary.summary, 'On · power reported');
   assert.equal(summary.summaryValue, 'On');
   assert.equal(summary.summaryNote, 'Power reported');
-  assert.equal(summary.feedbackLabel, 'Power available');
+  assert.equal(summary.feedbackLabel, 'Available');
+  assert.equal(summary.feedbackState, 'available');
+  assert.match(summary.feedbackRecent, /^Reported 13 Sept.*GMT\+3/);
   assert.equal(summary.request, 'No circulation requested');
   status.dhwr.restorationPending = true;
   summary = dhwrReadingSummary(status);
@@ -240,30 +242,58 @@ test('DHWR operation follows power feedback and requests still need new reports'
   assert.equal(dhwrReadingSummary({}).summaryValue, 'Unknown');
 });
 
-test('change-only DHWR power identifies the last report and stays distinct from missing or invalidated readings', () => {
+test('Shelly circulation health shows standard availability and the original report time', () => {
   const status = { dhwr: { feedback: { configured: true, available: false,
     stateConfigured: true, powerConfigured: true, basis: 'power' } } };
   let summary = dhwrReadingSummary(status);
   assert.equal(summary.power.value, 'Unavailable');
-  assert.match(summary.power.detail, /Waiting for a live MQTT report/);
-  assert.equal(summary.feedbackLabel, 'Waiting for power');
+  assert.match(summary.power.detail, /Waiting for a live Shelly report/);
+  assert.equal(summary.feedbackLabel, 'Waiting for report');
+  assert.equal(summary.feedbackRecent, 'No live report yet');
   status.dhwr.feedback.available = true;
-  status.dhwr.feedback.power = { value: 0, unit: 'W', stale: false, eventOnly: true, observedAt: now - 7 * 86400000 };
+  status.dhwr.feedback.power = { value: 0, unit: 'W', stale: false, observedAt: now };
   status.dhwr.feedback.state = { ...status.dhwr.feedback.power, unit: 'state' };
   summary = dhwrReadingSummary(status);
-  assert.equal(summary.power.value, '0 W', 'The UI follows source health instead of imposing periodic-report semantics');
-  assert.equal(summary.powerLabel, 'Last reported power');
-  assert.match(summary.powerReportedAt, /Reported 6 Sept.*GMT\+3/);
-  assert.equal(summary.feedbackLabel, 'Power reported');
-  assert.match(summary.power.detail, /Last reported.*Sept.*Updated when power changes/);
+  assert.equal(summary.power.value, '0 W');
+  assert.equal(summary.powerLabel, 'Live power');
+  assert.match(summary.feedbackRecent, /Reported 13 Sept.*GMT\+3/);
+  assert.equal(summary.feedbackLabel, 'Available');
+  assert.equal(summary.feedbackState, 'available');
   status.dhwr.feedback.available = false;
   status.dhwr.feedback.power.stale = true;
   status.dhwr.feedback.state.stale = true;
   summary = dhwrReadingSummary(status);
   assert.equal(summary.power.value, 'Unavailable');
-  assert.equal(summary.feedbackLabel, 'Power unavailable');
+  assert.equal(summary.feedbackLabel, 'Needs attention');
+  assert.equal(summary.feedbackState, 'attention');
+  assert.match(summary.feedbackRecent, /Reported 13 Sept.*GMT\+3/);
   assert.match(summary.power.detail, /Last reported 0 W/);
   assert.equal(summary.state.value, 'Unknown');
+});
+
+test('recorded circulation shows saved operation without inventing raw power, live availability or a request', () => {
+  const status = { role: 'slave', readOnly: true, dhwr: { active: false, feedback: {
+    configured: true, available: false, recorded: true, basis: 'power',
+    state: { value: 0, unit: 'state', stale: true, observedAt: now, readOnly: true },
+  } } };
+  const summary = dhwrReadingSummary(status);
+  assert.equal(summary.state.value, 'Off');
+  assert.equal(summary.state.stale, true);
+  assert.equal(summary.power.value, 'Not recorded');
+  assert.equal(summary.feedbackLabel, 'Recorded snapshot');
+  assert.equal(summary.feedbackState, 'pending');
+  assert.equal(summary.available, false);
+  assert.equal(summary.summary, 'Off · recorded operation');
+  assert.equal(summary.summaryValue, 'Off');
+  assert.equal(summary.summaryNote, 'Recorded snapshot');
+  assert.match(summary.feedbackRecent, /Reported 13 Sept.*GMT\+3/);
+  assert.match(summary.request, /controls are available on the master/);
+  delete status.dhwr.feedback.state;
+  const missing = dhwrReadingSummary(status);
+  assert.equal(missing.feedbackLabel, 'No recorded report');
+  assert.equal(missing.state.value, 'Unknown');
+  assert.equal(missing.power.value, 'Not recorded');
+  assert.doesNotMatch(JSON.stringify(missing), /Feedback not configured|No circulation requested|live report yet/);
 });
 
 test('monitoring-only power devices never gain ordinary switch or timed-test controls', () => {
