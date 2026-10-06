@@ -31,6 +31,9 @@ output before command completion. Broker acknowledgement, `was_on`, retained
 messages and unrelated reports cannot confirm it. Request IDs, native device
 identity and component ID fence replies; disconnect and authority loss prohibit
 replaying queued commands.
+If a newer status notification arrives before that matching response, an equal
+output can still confirm the command without replacing the newer measurement or
+its timestamp. A contradictory newer output prevents confirmation.
 
 The circulation entry deliberately exposes no ordinary switch control or timed
 equipment test. Its sole writer is the durable circulation executor. **Start

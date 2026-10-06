@@ -92,6 +92,24 @@ test('checks remain historical diagnostics while the summary prefers newer live 
   assert.equal(equipmentConnectionSummary(device).label, 'Not enabled');
 });
 
+test('garage sender connection uses live sender evidence and preserves unavailable report history', () => {
+  const summary = sender => equipmentConnectionSummary(equipmentConnections({ now: NOW,
+    garage: { protection: { available: false, sender } },
+    equipment: { topicGroups: [{ id: 'garage-sender', topics: [topic('Sender status', 'fixture/sender/state')] }] } })[0]);
+  const live = summary({ available: true, observedAt: NOW - 1000, receivedAt: NOW });
+  assert.equal(live.label, 'Live reports');
+  assert.equal(live.state, 'available');
+  assert.match(live.recent, /^Reported /);
+  const stale = summary({ available: false, observedAt: NOW - 300_000 });
+  assert.equal(stale.state, 'attention');
+  assert.equal(stale.label, 'Live report unavailable');
+  assert.match(stale.recent, /^Reported /);
+  for (const sender of [undefined, { available: false, observedAt: null, receivedAt: null }]) {
+    assert.equal(summary(sender).label, 'Awaiting sender reports');
+    assert.equal(summary(sender).recent, 'No live report yet');
+  }
+});
+
 test('garage adapter requires the connection and all device health evidence before showing available', () => {
   const healthy = { connected: true, health: { deviceOnline: true, driverProgressing: true, pumpCommunicating: true } };
   const summary = adapter => equipmentConnectionSummary(equipmentConnections({ now: NOW, garage: { adapter },
@@ -300,5 +318,5 @@ test('Garage MQTT order puts local frost protection directly below heat pump bef
   assert.equal(protection.kind, 'sender');
   assert.equal(protection.source, 'Shelly');
   assert.deepEqual(protection.topics, protectionTopics);
-  assert.deepEqual(equipmentConnectionSummary(protection), { label: 'Configured', state: 'pending', recent: 'No live report yet' });
+  assert.deepEqual(equipmentConnectionSummary(protection), { label: 'Awaiting sender reports', state: 'pending', recent: 'No live report yet' });
 });

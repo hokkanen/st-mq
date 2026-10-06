@@ -167,7 +167,11 @@ system. See the [adapter contract](garage-adapter.md) for capabilities and
 [pipe assumptions](garage-protection-defaults.md).
 
 In **MQTT connections**, local freeze protection appears directly below the
-Garage heat pump. The heat-pump controller receives the sender's rear-probe
+Garage heat pump. Its connection row shows live sender reports and their source
+time, or explicitly marks unavailable reports while retaining the last report
+time. Sender connection health does not by itself confirm the heat-pump
+controller's protection readiness; that remains in **Freeze protection**.
+The heat-pump controller receives the sender's rear-probe
 temperature and all protection fields through native BTHome components.
 Replace a former temperature-only commissioning
 input only after verifying this complete mapping. Until fresh valid sender data

@@ -502,7 +502,13 @@ export function equipmentConnections(status = {}, devices = equipmentDevices(sta
         row.connectionDetail = group.id === 'dhwr' ? 'Hot-water circulation uses this timed ON/OFF command route.'
           : 'Heating mode requests use this command route; a configured topic does not confirm device delivery.';
       } else if (group.id === 'garage-sender') {
-        Object.assign(row, { kind: 'sender', source: 'Shelly' });
+        const sender = status.garage?.protection?.sender;
+        const reportedAt = sender?.observedAt ?? sender?.receivedAt;
+        Object.assign(row, { kind: 'sender', source: 'Shelly', lastReportAt: reportedAt,
+          connectionState: sender?.available === true ? { label: 'Live reports', state: 'available' }
+            : Number.isFinite(reportedAt) ? { label: 'Live report unavailable', state: 'attention' }
+              : { label: 'Awaiting sender reports', state: 'pending' },
+          connectionDetail: 'Sender status and protection settings readback. Heat-pump protection readiness is shown in Garage.' });
       } else if (group.id === 'garage-adapter') {
         const native = status.garage?.adapter ?? {};
         const communicating = native.connected === true && native.health?.deviceOnline === true

@@ -37,6 +37,17 @@ test('wrong key, replayed requests, plaintext routes and redirects are rejected'
   assert.equal(handled, 1);
 });
 
+test('equipment contract mismatch crosses the peer boundary without private details', async t => {
+  const server = new PairPeer({ ...options, handler: () => {
+    throw Object.assign(new Error('private synthetic device details'), { code: 'mqtt_source_contract_mismatch' });
+  } });
+  const address = await server.start();
+  const client = new PairPeer({ ...options, peerUrl: `http://127.0.0.1:${address.port}` });
+  t.after(async () => { await client.close(); await server.close(); });
+  await assert.rejects(client.request('handover-prepare'),
+    { code: 'mqtt_source_contract_mismatch', message: 'mqtt_source_contract_mismatch' });
+});
+
 test('peer error output contains only fixed public codes', async t => {
   const server = new PairPeer({ ...options, handler: () => { throw new Error('private-device-example'); } });
   const address = await server.start();

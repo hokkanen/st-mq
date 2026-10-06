@@ -22,6 +22,22 @@ const checked = () => primary({ peer: { reachable: true, role: 'protected' }, re
   actions: { 'check-recovery': true, recover: true, handover: false, promote: false, rejoin: true } });
 const operation = (view, state = 'complete', action = 'check-recovery') => ({ ...view, uiOperation: { id, action, state } });
 
+test('handover mismatch remains visible in the collapsed alert and operation message after refresh', () => {
+  const { document, $ } = fixture();
+  const panel = createPairPanel({ document, request: async () => {}, now: () => now });
+  const view = primary({ error: 'mqtt_source_contract_mismatch' });
+  panel.update(view);
+  assert.match($('pairing-attention').textContent, /different equipment or integration definitions/);
+  assert.match($('pairing-message').textContent, /same current build/);
+  assert.match(pairActionHelp(view).handover, /same current build/);
+  assert.equal(view.canControl, true);
+  assert.match(pairIssueHelp({ uiOperation: { action: 'handover', state: 'error', errorCode: view.error } }), /same current build/);
+  panel.update(view);
+  assert.match($('pairing-message').textContent, /same current build/);
+  panel.update(primary({ uiOperation: { action: 'handover', state: 'error', errorCode: view.error } }));
+  assert.match($('pairing-message').textContent, /same current build/);
+});
+
 test('schema failures explain deliberate recovery without suggesting broker fixes', () => {
   const mismatch = pairIssueHelp({ role: 'protected', error: 'database_schema_mismatch' });
   assert.match(mismatch, /database schema does not match/);

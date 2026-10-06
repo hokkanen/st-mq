@@ -6,6 +6,14 @@ Versions follow Semantic Versioning. `-dev.N` denotes a development prerelease.
 
 ## Unreleased
 
+- Shelly relay commands confirm correctly when a newer matching status
+  notification arrives before the command readback. Newer measurements retain
+  their timestamps; contradictory reports still prevent confirmation.
+- Pairing shows equipment-definition mismatches explicitly, with guidance to
+  run matching builds and configuration; handover errors stay visible after refresh.
+- The Garage protection sender connection shows its actual live report status
+  and preserves the last report time when unavailable. Circulation identifies
+  its native Shelly integration consistently.
 - Both charger allowances remain visible and recorded with no car plugged in.
   Charger 2 shows current available capacity without applying an instruction,
   preserving connected-peer commitments and existing historical gaps.

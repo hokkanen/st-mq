@@ -75,7 +75,8 @@ function requirementsFor(seed) {
 function validateRequirements(value, config) {
   if (!keys(value, ['version', 'pair', 'seedDigest', 'contract']) || value.version !== 1
     || value.pair !== pairIdentity(config) || !digestPattern.test(value.seedDigest ?? '')
-    || value.contract !== sourceContract(config)) throw fail();
+    || !digestPattern.test(value.contract ?? '')) throw fail();
+  if (value.contract !== sourceContract(config)) throw pairError('mqtt_source_contract_mismatch');
   return value;
 }
 function readJson(path) {
@@ -183,8 +184,8 @@ export function createMqttSourceContext({ configuration, directory }) {
       const config = configuration();
       let seed;
       try { seed = validateSeed(store?.getState(MQTT_SOURCE_CONTEXT_KEY), config); } catch { throw fail(); }
-      if (!active || active.seedDigest !== seedDigest(seed) || active.routeDigest !== routeDigest(config)
-        || seed.configurationContract !== sourceContract(config)) throw fail();
+      if (!active || active.seedDigest !== seedDigest(seed) || active.routeDigest !== routeDigest(config)) throw fail();
+      if (seed.configurationContract !== sourceContract(config)) throw pairError('mqtt_source_contract_mismatch');
       return requirementsFor(seed);
     },
     prepare({ requirements, token }) {

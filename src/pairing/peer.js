@@ -56,7 +56,7 @@ const PUBLIC_ERRORS = new Set(['peer_unavailable', 'peer_authentication_failed',
   'vip_interface_missing', 'vip_command_failed', 'vip_announce_failed', 'vip_release_failed',
   'mqtt_local_required', 'mqtt_resolution_failed', 'mqtt_frontend_unavailable', 'mqtt_upstream_unavailable',
   'runtime_failed', 'database_schema_mismatch', 'database_schema_invalid',
-  'ocpp_handover_not_ready', 'mqtt_handover_not_ready', 'mqtt_source_context_invalid', 'stopped', 'timed_out',
+  'ocpp_handover_not_ready', 'mqtt_handover_not_ready', 'mqtt_source_context_invalid', 'mqtt_source_contract_mismatch', 'stopped', 'timed_out',
   ...RECOVERY_ERROR_CODES]);
 export function publicPairError(error) { return PUBLIC_ERRORS.has(error?.code) ? error.code : 'peer_protocol_failed'; }
 

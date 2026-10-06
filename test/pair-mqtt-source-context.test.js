@@ -144,8 +144,8 @@ test('source configuration, final snapshot, operation token and candidate route 
   await f.local.activate(f.ha, f.store, { allowSeed: true });
   const args = { requirements: f.local.requirements(f.store), token, dbPath: f.store.path };
   f.ubuntu.charging.chargers.charger2.deviceId = 'different-synthetic-evse';
-  await assert.rejects(f.remote.prepare(args), { code: 'mqtt_source_context_invalid' });
-  await assert.rejects(f.remote.authorizePromotion({ dbPath: f.store.path }), { code: 'mqtt_source_context_invalid' });
+  await assert.rejects(f.remote.prepare(args), { code: 'mqtt_source_contract_mismatch' });
+  await assert.rejects(f.remote.authorizePromotion({ dbPath: f.store.path }), { code: 'mqtt_source_contract_mismatch' });
   f.ubuntu.charging.chargers.charger2.deviceId = 'synthetic-evse';
   await f.remote.prepare(args);
   assert.throws(() => f.remote.verify({ ...args, token: otherToken }), { code: 'mqtt_source_context_invalid' });
@@ -184,7 +184,7 @@ test('current equipment edits update the snapshot contract while preserving the 
   const current = f.local.requirements(f.store);
   assert.equal(current.seedDigest, initial.seedDigest);
   assert.notEqual(current.contract, initial.contract);
-  await assert.rejects(f.remote.prepare({ requirements: current, token }), { code: 'mqtt_source_context_invalid' });
+  await assert.rejects(f.remote.prepare({ requirements: current, token }), { code: 'mqtt_source_contract_mismatch' });
   f.ubuntu.connections.equipment.devices[0].mqtt.commandTopic = 'synthetic/door/new-command';
   await f.remote.prepare({ requirements: current, token });
   await f.remote.authorize({ requirements: current, token, dbPath: f.store.path });

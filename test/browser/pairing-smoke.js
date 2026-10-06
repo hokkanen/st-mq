@@ -416,6 +416,19 @@ try {
   await evaluate("document.querySelector('#status-detail-popover .status-detail-close').click(); true");
   assert.match(await evaluate(`${$('garage-controller-reason')}.textContent`), /Some saved Garage data is unavailable/);
   sectionUnavailable = false;
+  pair = master({ error: 'mqtt_source_contract_mismatch' });
+  await until(`${$('pairing-attention')}.textContent.includes('different equipment or integration definitions')`);
+  await close();
+  for (const width of [320, 1440]) for (const theme of ['dark', 'light']) {
+    await command('browsingContext.setViewport', { context, viewport: { width, height: 1000 }, devicePixelRatio: 1 });
+    if (await evaluate('document.documentElement.dataset.theme') !== theme)
+      await evaluate("document.getElementById('theme-toggle').click(); true");
+    assert.equal(await evaluate(`${$('pairing-attention')}.checkVisibility()`), true);
+    assert.match(await evaluate(`${$('pairing-attention')}.textContent`), /same current build/);
+    assert.equal(await evaluate('document.documentElement.scrollWidth <= innerWidth'), true, 'Handover mismatch fits the viewport');
+  }
+  await open();
+  assert.match(await evaluate(`${$('pairing-message')}.textContent`), /same current build/);
   for (const code of ['database_schema_mismatch', 'database_schema_invalid']) {
     pair = { ...standby('protected'), reason: 'activation_failed', error: code };
     await until(`${$('pairing-summary')}.textContent.includes('${code === 'database_schema_mismatch' ? 'database schema' : 'database structure'}')`);

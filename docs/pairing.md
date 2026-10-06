@@ -497,6 +497,13 @@ silently reuse earlier equipment authority. Ordinary equipment configuration
 edits still apply their own identity boundaries and update the current
 contract for the next transfer.
 
+Different effective equipment definitions, including definitions changed by a
+newer build, reject handover with `mqtt_source_contract_mismatch`. Run the same
+current build and matching equipment configuration on both computers. This is
+distinct from invalid saved source identity or route binding; neither failure
+authorizes deleting the binding or bypassing the check. The dashboard keeps the
+actionable failure visible in the pairing alert and operation message.
+
 An explicitly confirmed outage promotion may bind its current routes after
 validating the accepted snapshot's existing source context and current
 integration definitions. A replica cannot invent missing source context from

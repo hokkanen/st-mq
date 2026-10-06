@@ -93,6 +93,41 @@ test('native identity and exact Switch.GetStatus confirm circulation; PUBACK, wa
   assert.equal((await pending).confirmed, true); assert.equal(f.status().actualOn, true);
 });
 
+test('matching command readback confirms after newer equal notifications without rewinding their evidence', async t => {
+  const f = fixture(t);
+  f.report(0);
+  for (const [index, output] of [true, false, true, false].entries()) {
+    const at = INITIAL + 1000 + index * 1000;
+    const notificationAt = at + (index < 2 ? 10 : 0);
+    f.at(at);
+    let finished = false;
+    const action = f.capture.publishDhwr(output).then(result => { finished = true; return result; });
+    f.reply(f.publications.findLast(row => row.frame.method === 'Switch.Set'), { was_on: !output });
+    await settle();
+    const readback = f.publications.findLast(row => row.frame.method === 'Switch.GetStatus');
+    f.at(notificationAt); f.report(output ? 26 : 0, output);
+    await settle(); assert.equal(finished, false, 'Notification alone cannot confirm the command');
+    f.at(at + 20); f.reply(readback, { id: 0, output, apower: output ? 25 : 0 });
+    assert.equal((await action).confirmed, true);
+    const readings = f.capture.status().devices[0].readings;
+    assert.equal(readings.dhwr_active.observedAt, notificationAt);
+    assert.equal(readings.dhwr_power.observedAt, notificationAt);
+    assert.equal(readings.dhwr_power.value, output ? 26 : 0);
+  }
+});
+
+test('older command readback cannot override a newer contradictory notification', async t => {
+  const f = fixture(t); f.report(0); f.at(INITIAL + 1000);
+  const action = assert.rejects(f.capture.publishDhwr(true), { code: 'SHELLY_READBACK_TIMEOUT' });
+  f.reply(f.publications.findLast(row => row.frame.method === 'Switch.Set'), { was_on: false });
+  await settle();
+  const readback = f.publications.findLast(row => row.frame.method === 'Switch.GetStatus');
+  f.at(INITIAL + 1010); f.report(0, false);
+  f.at(INITIAL + 1020); f.reply(readback, { id: 0, output: true, apower: 25 });
+  await action;
+  assert.equal(f.status().actualOn, false);
+});
+
 test('failed native readback preserves durable OFF and clears it only after confirmed retry', async t => {
   const f = fixture(t); f.report(0);
   const transport = createHeatingTransport(); transport.setDhwrRelay(f.capture.publishDhwr, () => f.capture.signature('dhwr'));

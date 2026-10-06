@@ -27,8 +27,8 @@ const startupProblem = view => view?.role === 'protected' && ['activation_failed
 
 /** Only stable public error codes become instructions; raw exceptions stay private. */
 export function pairIssueHelp(view) {
-  const resetCode = view?.uiOperation?.action === 'reset' && view.uiOperation.state === 'error' ? view.uiOperation.errorCode : null;
-  const code = resetCode ?? view?.error ?? view?.vip?.error ?? view?.mqttFrontend?.error ?? view?.sync?.error ?? view?.recovery?.error;
+  const operationCode = view?.uiOperation?.state === 'error' ? view.uiOperation.errorCode : null;
+  const code = operationCode ?? view?.error ?? view?.vip?.error ?? view?.mqttFrontend?.error ?? view?.sync?.error ?? view?.recovery?.error;
   return {
     vip_helper_unavailable: 'The virtual-IP helper is unavailable. Check that the address-helper socket service is running on this computer and that its socket path matches the pair configuration.',
     vip_helper_permission: 'The controller cannot access the virtual-IP helper. Check the socket permissions and the group membership of the user running the controller; sign in again after changing groups.',
@@ -46,7 +46,8 @@ export function pairIssueHelp(view) {
     mqtt_frontend_unavailable: 'The device MQTT listener is unavailable. Reserve port 1883 on the virtual IP for this application: bind the Linux broker to loopback, or publish the Home Assistant broker on a different host port.',
     mqtt_upstream_unavailable: 'The local MQTT broker could not be reached. Check its configured address and listener before retrying promotion or handover.',
     mqtt_handover_not_ready: 'The other computer has not confirmed the same device MQTT transport. Run the same current release on both computers and use matching MQTT transport protocols.',
-    mqtt_source_context_invalid: 'MQTT source identity could not be confirmed. Check that both computers have matching equipment configuration and that their selected broker routes have not changed. Keep control stopped until the source binding is verified.',
+    mqtt_source_context_invalid: 'MQTT source identity could not be confirmed. Run the same current build on both computers, match their equipment configuration and check that their broker routes have not changed. Preserve the saved source binding; do not reset it to bypass this check.',
+    mqtt_source_contract_mismatch: 'The computers have different equipment or integration definitions. Run the same current build on both computers and match their equipment configuration before retrying handover.',
     runtime_failed: 'The controller could not start. Check the application’s terminal or service log for the reported reason and source location.',
     database_schema_mismatch: 'The database schema does not match this application. Run the same current application on both computers. Use Reset pairing → Start fresh to archive the old database and pairing state. Earlier development databases cannot be migrated.',
     database_schema_invalid: 'The database structure does not match its declared schema. Restore an intact current-schema backup, or use Reset pairing → Start fresh to archive the old database and pairing state.',
@@ -206,7 +207,8 @@ export function pairDisplay(view, { now = Date.now(), formatTime = at => new Dat
     : clockAhead ? 'Snapshot clock ahead'
     : reportedSourceAt && reportedVerifiedAt ? `${view.role === 'master' ? 'Slave snapshot' : 'Snapshot'} ${Math.floor((now - reportedSourceAt) / 60_000)} min old`
     : view.role === 'master' ? 'Waiting for snapshot status' : 'Waiting for first snapshot';
-  const error = Boolean(resetFailed || resetInterrupted || view.error || recovery.error || recovery.state === 'error' || vip.error || frontend?.error || syncFailed);
+  const operationFailed = view.uiOperation?.state === 'error';
+  const error = Boolean(operationFailed || resetInterrupted || view.error || recovery.error || recovery.state === 'error' || vip.error || frontend?.error || syncFailed);
   const roleTone = state === 'transition' ? 'progress'
     : state === 'protected' || state === 'unknown' || (state === 'master' && view.canControl !== true) ? 'attention' : 'neutral';
   const peerTone = peer.reachable === false || peerProtected || peerAlsoMaster || (peer.reachable === true && !['master', 'slave'].includes(peer.role)) ? 'attention' : 'neutral';
@@ -220,7 +222,7 @@ export function pairDisplay(view, { now = Date.now(), formatTime = at => new Dat
   const tone = error || [roleTone, peerTone, brokerTone, syncTone, recoveryTone].includes('attention') ? 'attention'
     : phase || syncTone === 'progress' || recoveryTone === 'progress' ? 'progress' : 'neutral';
   const currentIssue = resetFailed || resetInterrupted ? 'Pairing reset needs attention · open details before retrying.'
-    : view.error === 'ocpp_handover_not_ready' ? ocppReadinessHelp
+    : (view.error || operationFailed) && issue ? issue
     : startupProblem(view) ? 'Master startup needs attention · open details for the next step.'
     : state === 'protected' ? 'Local history is preserved · open details to choose the next step.'
       : recovery.pendingRelease ? 'Mirroring completion is unconfirmed · verify the saved request.'
@@ -282,7 +284,7 @@ export function pairActionHelp(view) {
         : recovery === 'resolved' ? 'The previous replacement completed. Current mirroring status is shown above.'
           : 'Complete a check first. Then recover the gaps, or explicitly choose to discard them.'),
     handover: wait ?? (view?.recovery?.pendingRelease ? 'Verify the pending mirroring completion before handing over control.'
-      : ['ocpp_handover_not_ready', 'mqtt_handover_not_ready', 'mqtt_source_context_invalid'].includes(view?.error) ? pairIssueHelp(view)
+      : ['ocpp_handover_not_ready', 'mqtt_handover_not_ready', 'mqtt_source_context_invalid', 'mqtt_source_contract_mismatch'].includes(view?.error) ? pairIssueHelp(view)
       : view?.actions?.handover === true ? 'Both computers are connected. MQTT and configured charger readiness are checked before this master stops.'
       : view?.peer?.reachable !== true ? 'The other computer must be connected for a graceful handover.'
         : view?.peer?.role === 'protected' ? 'Review the protected history and resume mirroring before handing over control.'
@@ -342,9 +344,9 @@ export function createPairActions({ request, storage, confirm = message => confi
         : resetReceipt ? { id: resetReceipt.requestId, state: 'complete' } : null;
     if (pending && operation?.id === pending.requestId && ['complete', 'error'].includes(operation.state)) {
       error = operation.state === 'error';
-      message = error ? pairIssueHelp(next) ? '' : next.recovery?.pendingRelease
+      message = error ? pairIssueHelp(next) || (next.recovery?.pendingRelease
         ? 'Mirroring completion is unconfirmed. Verify the saved request with the other computer.'
-        : 'The operation could not finish. Review the current computer roles and operation status before trying again.'
+        : 'The operation could not finish. Review the current computer roles and operation status before trying again.')
         : pending.action === 'check-recovery' ? mirrorComparison(next)
           ? 'Source check complete. Review the result in the history window.' : 'Source check complete. Review the source before recovering in the history window.'
           : 'Operation completed. The current status is shown above.';
@@ -443,7 +445,7 @@ export function createPairPanel({ document, request, storage, confirm, afterMuta
       $(`pairing-${field}`).dataset.tone = state.available ? tone : 'attention';
     }
     const message = !state.available ? 'This computer is reconnecting. Actions are unavailable until its role is confirmed.'
-      : state.message || (display.error && !pairIssueHelp(state.view) ? 'An operation needs attention. Review the current computer roles and operation status.' : '');
+      : display.error ? pairIssueHelp(state.view) || state.message || 'An operation needs attention. Review the current computer roles and operation status.' : state.message;
     if ($('pairing-message').textContent !== message) $('pairing-message').textContent = message;
     $('pairing-message').classList.toggle('form-error', state.error || display.error || !state.available);
     const attention = !state.available ? 'Connection to this computer lost · actions are paused.'

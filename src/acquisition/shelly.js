@@ -158,7 +158,7 @@ export function createShellyCapture({ engine, store, settings, publish, canContr
     });
     return device.identityPending;
   };
-  function switchStatus(device, status, at, { full = false, readback = false, commandId = null } = {}) {
+  function switchStatus(device, status, at, { full = false, readback = false, commandId = null, preserveObservation = false } = {}) {
     const signal = stateName(device);
     if (!signal) return;
     if (!status || typeof status !== 'object') {
@@ -166,17 +166,20 @@ export function createShellyCapture({ engine, store, settings, publish, canContr
       return;
     }
     if (device.generation > 1 && status.id !== device.switchId) return;
-    if (scalar(at) && scalar(device.readings[signal]?.observedAt) && at < device.readings[signal].observedAt) return;
     if (Array.isArray(status.errors) && status.errors.length) { unavailable(device, 'device-error'); return; }
     const output = device.kind === 'door' ? status.state : status.output ?? status.ison;
+    const older = preserveObservation || scalar(at) && scalar(device.readings[signal]?.observedAt) && at < device.readings[signal].observedAt;
+    // A matching command reply can arrive after the relay's push notification.
+    // Confirm an unchanged output without replacing that newer observation.
+    if (older && (!readback || output !== device.state)) return;
     if (typeof output === 'boolean') {
       if (scalar(at)) {
-        device.state = output; emit(device, signal, Number(output), 'state', at);
+        if (!older) { device.state = output; emit(device, signal, Number(output), 'state', at); }
         if (readback) for (const waiter of [...device.waiters])
           if (waiter.at <= at && waiter.output === output && (device.generation === 1 || waiter.commandId === commandId)) reception.afterCommit(() => waiter.resolve());
       }
     } else if (full) { device.state = null; emit(device, signal, null, 'state', at, ['missing']); }
-    if (!metered(device)) return;
+    if (older || !metered(device)) return;
     if (Object.hasOwn(status, 'apower') || full) emit(device, `${device.role}_power`, valid(status.apower, 0, 25000) ? status.apower / 1000 : null,
       'kW', at, valid(status.apower, 0, 25000) ? [] : ['missing']);
     if (Object.hasOwn(status, 'current') || full) emit(device, `${device.role}_current`, valid(status.current, 0, 100) ? status.current : null,
@@ -353,7 +356,10 @@ export function createShellyCapture({ engine, store, settings, publish, canContr
           // An unrelated partial notification must not discard this complete
           // snapshot. emit() compares each component's own evidence clock.
           if (frame.id < request.device.writeOrder || request.method === 'Switch.GetStatus'
-            && frame.id < request.device.observationOrder) { reception.afterCommit(() => request.complete?.('superseded')); return true; }
+            && frame.id < request.device.observationOrder
+            && (request.purpose !== 'readback' || result.output !== request.device.state)) {
+            reception.afterCommit(() => request.complete?.('superseded')); return true;
+          }
           if (request.method === 'Switch.GetStatus' && result.id !== request.device.switchId) { reception.afterCommit(() => request.complete?.('invalid')); return true; }
           // Relay evidence retains its packet-order fence even when a probe
           // from this complete snapshot can still supply newer source evidence.
@@ -362,9 +368,10 @@ export function createShellyCapture({ engine, store, settings, publish, canContr
         if (request.method === 'Shelly.GetStatus') fullStatus(request.device, result, request.at,
           frame.id < request.device.observationOrder);
         else if (request.method === 'Switch.GetStatus') {
+          const preserveObservation = frame.id < request.device.observationOrder;
           switchStatus(request.device, result, request.at,
-            { full: true, readback: request.purpose === 'readback', commandId: request.commandId });
-          customStatus(request.device, { [`switch:${request.device.switchId}`]: result }, request.at, true, false, `switch:${request.device.switchId}`);
+            { full: true, readback: request.purpose === 'readback', commandId: request.commandId, preserveObservation });
+          if (!preserveObservation) customStatus(request.device, { [`switch:${request.device.switchId}`]: result }, request.at, true, false, `switch:${request.device.switchId}`);
         }
         else if (request.method === 'Switch.Set') reception.afterCommit(() => { send(request.device, 'Switch.GetStatus', { id: request.device.switchId },
           { purpose: 'readback', commandId: request.commandId }).catch(() => {}); });
