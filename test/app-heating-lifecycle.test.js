@@ -11,7 +11,7 @@ import { providerFixture } from '../scripts/lib/provider-fixture.js';
 import { identityConnection, idleIdentityClient } from './helpers/identity-mqtt.js';
 import { isolatedGarageAdapter } from './helpers/garage-mqtt.js';
 
-test('live test transport stays idle until a POST and shutdown records an unconfirmed pending command before closing storage', { timeout: 15_000 }, async t => {
+test('direct circulation dispatch stays idle until a POST and shutdown saves uncertain readback before closing storage', { timeout: 15_000 }, async t => {
   const directory = mkdtempSync(join(tmpdir(), 'stmq-heating-lifecycle-'));
   const now = Date.parse('2026-09-07T12:00Z');
   const fixture = providerFixture(now);
@@ -74,14 +74,16 @@ test('live test transport stays idle until a POST and shutdown records an unconf
   assert.deepEqual(relayCommands, [['reduction']]);
   assert.equal(clients.length, 0, 'Direct tariff relay uses its configured adapter');
 
-  const pendingPacket = nextPacket();
+  let dispatched, resolveNative;
+  const pendingPacket = new Promise(resolve => { dispatched = resolve; });
+  app.engine.executor.commandTransport.setDhwrRelay(on => {
+    dispatched(on); return new Promise((resolve, reject) => { resolveNative = resolve;
+      setTimeout(() => reject(Object.assign(new Error('Native readback timed out'), { code: 'SHELLY_READBACK_TIMEOUT' })), 50); });
+  }, 'invented-circulation-route');
   const pendingResponse = post('circulation');
-  const pending = await pendingPacket;
-  assert.equal(clients.length, 1, 'Circulation has its own MQTT connection');
-  assert.equal(pending.topic, 'stmq/home/dhwr/command/switch');
-  assert.equal(pending.command, 'ON');
-  assert.deepEqual(pending.publishOptions, { qos: 1, retain: false });
-  assert.equal(app.store.getState('executor:home').dhwrOutstanding, true, 'Unacknowledged ON already has a durable OFF obligation');
+  assert.equal(await pendingPacket, true);
+  assert.equal(clients.length, 0, 'Circulation uses the existing native acquisition adapter');
+  assert.equal(app.store.getState('executor:home').dhwrOutstanding, true, 'Unconfirmed ON already has a durable OFF obligation');
   let stateAtClose, executorAtClose;
   const closeStore = app.store.close.bind(app.store);
   app.store.close = () => {
@@ -92,8 +94,8 @@ test('live test transport stays idle until a POST and shutdown records an unconf
   const [failure] = await Promise.all([pendingResponse, app.close()]);
   assert.equal(failure.status, 400);
   const failureBody = await failure.json();
-  assert.match(failureBody.error, /closed|unconfirmed/i);
-  assert.equal(pending.client.endCalls, 1);
+  assert.match(failureBody.error, /closed|unconfirmed|did not confirm/i);
+
   assert.equal(stateAtClose.command, 'circulation');
   assert.equal(stateAtClose.status, 'unconfirmed');
   assert.equal(stateAtClose.sent, null);
@@ -102,10 +104,8 @@ test('live test transport stays idle until a POST and shutdown records an unconf
   assert.equal(executorAtClose.legacyOutstanding, true, 'The earlier heat reduction still requires restoration too');
   assert.equal(app.engine.heatingTestBusy, false);
 
-  pending.acknowledge();
-  pending.client.emit('connect');
-  pending.client.emit('error', new Error(connection.pw));
-  assert.equal(packets.length, 1, 'Late callbacks cannot publish a command after shutdown');
+  resolveNative({ sent: true, confirmed: true });
+  assert.equal(packets.length, 0, 'Late callbacks cannot publish a command after shutdown');
   const reopened = new Store(config.dbPath);
   try {
     assert.deepEqual(reopened.getState('heating-test:providers'), stateAtClose);

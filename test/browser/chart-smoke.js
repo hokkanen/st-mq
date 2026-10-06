@@ -927,7 +927,7 @@ try {
     sourceTime: row.sourceTime - (row.signal.startsWith('property_current_') ? (Number(row.signal.at(-1)) - 1) * 90_000 : 0),
   }));
   const testPublishes = [];
-  let testConnections = 0, acknowledgeHeating;
+  let testConnections = 0, acknowledgeHeating, circulationOutput = false;
   const connectTestBroker = (_address, options = {}) => {
     // Identity and vehicle acquisition use separate startup connections; these
     // connection/publish assertions describe only manual heating commands.
@@ -937,6 +937,24 @@ try {
     const client = new EventEmitter();
     client.subscribe = (_topic, _options, callback) => callback?.();
     client.publish = (topic, payload, options, callback) => {
+      if (topic === 'synthetic/circulation/rpc') {
+        const request = JSON.parse(payload), nativeId = 'shelly1pmg3-browser';
+        const reply = result => queueMicrotask(() => client.emit('message', `${request.src}/rpc`,
+          Buffer.from(JSON.stringify({ id: request.id, src: nativeId, dst: request.src, result })), {}));
+        const status = () => ({ id: 0, output: circulationOutput, apower: circulationOutput ? 25 : 0 });
+        if (request.method === 'Switch.Set') {
+          testPublishes.push({ topic, method: request.method, params: request.params });
+          acknowledgeHeating = error => { callback?.(error); if (!error) {
+            const was_on = circulationOutput; circulationOutput = request.params.on; reply({ was_on });
+          } };
+        } else {
+          callback?.();
+          if (request.method === 'Shelly.GetDeviceInfo') reply({ id: nativeId, gen: 3 });
+          if (request.method === 'Shelly.GetStatus') reply({ 'switch:0': status() });
+          if (request.method === 'Switch.GetStatus') reply(status());
+        }
+        return;
+      }
       const tariff = topic === 'synthetic/tariff/set';
       if (!manual && !tariff) { callback?.(); return; }
       testPublishes.push({ topic, payload, options });
@@ -954,7 +972,9 @@ try {
     connections: { ...fixture.connections, mqtt: { address: 'mqtt://fixture.invalid' },
       equipment: equipmentConfiguration({ devices: [{ id: 'heat_savings', kind: 'switch',
         connection: 'mqtt:synthetic/tariff/status', tariff_control: true,
-        mqtt: { command_topic: 'synthetic/tariff/set', on_payload: 'ON', off_payload: 'OFF' } }] }) } },
+        mqtt: { command_topic: 'synthetic/tariff/set', on_payload: 'ON', off_payload: 'OFF' } },
+        { id: 'dhwr', kind: 'switch', generation: 3, connection: 'shelly:synthetic/circulation', record: false,
+          readings: [{ key: 'power', unit: 'W', component: 'switch:0', path: 'apower', record: false, required: true }] }] }) } },
     clock: () => now, providerOptions: fixture.providerOptions, mqttOptions: { connect: connectTestBroker } });
   // Supply capture health independently of the manual-command broker fixture.
   // No MQTT connection, household identifiers or raw TeslaMate fields are used.
@@ -1099,7 +1119,7 @@ try {
   }
   assert.deepEqual(testPublishes, [
     ...['ON', 'OFF'].map(payload => ({ topic: 'synthetic/tariff/set', payload, options: { qos: 1, retain: false } })),
-    { topic: 'stmq/home/dhwr/command/switch', payload: 'ON', options: { qos: 1, retain: false } },
+    { topic: 'synthetic/circulation/rpc', method: 'Switch.Set', params: { id: 0, on: true } },
   ]);
   const requestedHeating = app.engine.status().observations.actual;
   assert.equal(requestedHeating.mode, 'normal');

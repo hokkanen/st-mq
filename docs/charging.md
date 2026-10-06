@@ -50,7 +50,7 @@ before relying on local control.
 | --- | --- |
 | Positive vehicle evidence, attempts and identification restoration | [Identification](charging/identification.md) |
 | Forecast energy, shared schedules and deadlines | [Planning](charging/planning.md) |
-| Live current entitlement, headroom, fallback and settling | [Current allocation](charging/current-allocation.md) |
+| Live current entitlement, headroom, source health and fallback | [Current allocation](charging/current-allocation.md) |
 | Ownership, native instructions, command confirmation and recovery | [Execution and recovery](charging/execution-and-recovery.md) |
 | Measured energy, estimated progress, cost and historical reports | [Evidence and reporting](charging/evidence-and-reporting.md) |
 

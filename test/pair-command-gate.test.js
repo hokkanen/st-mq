@@ -6,30 +6,23 @@ import { createHeatingTransport } from '../src/control/mqtt.js';
 import { Executor } from '../src/app/executor.js';
 import { Store } from '../src/storage/store.js';
 
-test('authority lost while connecting prevents the first device publish', async () => {
-  const client = new EventEmitter(), messages = [];
-  client.publish = (...args) => messages.push(args);
-  client.end = (_force, _options, callback) => callback();
+test('authority lost before direct circulation dispatch prevents the native command', async () => {
   let allowed = true;
-  const transport = createHeatingTransport({ connection: { address: 'mqtt://invented.invalid' },
-    connect: () => client, canControl: () => allowed });
+  const messages = [], transport = createHeatingTransport({ canControl: () => allowed });
+  transport.setDhwrRelay(async on => { messages.push(on); return { sent: true }; }, 'fixture-route');
   const completion = transport.publishDhwr(true);
-  allowed = false; client.emit('connect');
-  await assert.rejects(completion, error => error.code === 'MQTT_AUTHORITY_LOST');
-  assert.equal(messages.length, 0); await transport.close();
+  allowed = false;
+  await assert.rejects(completion, { code: 'MQTT_AUTHORITY_LOST' });
+  assert.deepEqual(messages, []); await transport.close();
 });
 
-test('authority lost after an acknowledgement prevents the next circulation command', async () => {
-  const client = new EventEmitter(), messages = [];
-  client.publish = (topic, payload, options, callback) => messages.push({ topic, payload, callback });
-  client.end = (_force, _options, callback) => callback();
+test('authority lost after native readback prevents the next circulation command', async () => {
   let allowed = true;
-  const transport = createHeatingTransport({ connection: { address: 'mqtt://invented.invalid' },
-    connect: () => client, canControl: () => allowed });
-  const completion = transport.publishDhwr(true); client.emit('connect');
-  messages[0].callback(); await completion; allowed = false;
-  await assert.rejects(transport.publishDhwr(false), error => error.code === 'MQTT_AUTHORITY_LOST');
-  assert.equal(messages.length, 1); await transport.close();
+  const messages = [], transport = createHeatingTransport({ canControl: () => allowed });
+  transport.setDhwrRelay(async on => { messages.push(on); return { sent: true }; }, 'fixture-route');
+  await transport.publishDhwr(true); allowed = false;
+  await assert.rejects(transport.publishDhwr(false), { code: 'MQTT_AUTHORITY_LOST' });
+  assert.deepEqual(messages, [true]); await transport.close();
 });
 
 test('authority-loss executor close preserves obligations without publishing restoration', async () => {

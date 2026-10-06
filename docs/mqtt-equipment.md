@@ -202,13 +202,12 @@ to answer by adding an arbitrary request topic.
 Set `record: false` on an MQTT `switch` or `power` entry to keep its readings
 in live monitoring without adding database samples. Additional MQTT readings can
 individually use `record: false`; primary temperatures and cumulative energy
-counters retain their recording contracts. Native Shelly entries do not accept
-`record: false`. DHWR keeps raw watts live-only and records a compact ON/OFF
-state derived from measured power for chart shading. The public defaults enable
-`dhwr` as `kind: "power"` on `mqtt:stmq/home/dhwr/status/power`, with `record: false` and
-`max_age_seconds: 0`. Its SmartThings Rule publishes event-driven watts; ST-MQ
-owns the separate timed ON/OFF command path. See the
-[DHWR Rule, template and feedback setup](dhwr-mqtt.md).
+counters retain their recording contracts. The dedicated direct Shelly circulation
+entry also keeps raw readings live-only and records compact ON/OFF electrical
+operation derived from power. Public defaults use `dhwr` as a Gen3 switch on
+`shelly:stmq/home/dhwr`, with a required `switch:0.apower` reading in watts and
+a 120-second freshness deadline. The durable executor owns native ON/OFF RPC and
+requires relay readback. See [circulation setup](dhwr-mqtt.md).
 
 MQTT power feeds also default to an event-only maximum age of zero. The UI shows
 last reported watts with the original receive time while connected; this does
@@ -321,7 +320,7 @@ under its single equipment entry.
 Manual controls show current feedback alongside their actions. Ordinary switch
 controls require a fresh state and confirm the new output through live readback;
 they do not schedule a reversal. DHWR circulation retains its configured run length
-and automatic OFF through ST-MQ's durable executor and the MQTT switch integration. Timed tests keep their saved original
+and automatic OFF through ST-MQ's durable executor and the direct Shelly integration. Timed tests keep their saved original
 state and route until restoration completes; configuration cannot discard an
 unresolved restoration. Explicit manual controls can operate equipment with automation set to Pause;
 automatic control stays subject to each feature's permission and controller authority.
@@ -389,7 +388,7 @@ fresh start; startup never deletes or repairs their data.
 
 Use `equipment.devices` for every equipment route. Retired fixed Shelly roles
 and individual MQTT temperature-topic settings are rejected. The public defaults
-use direct Shelly routes for Garage temperatures, tariff control and Caravan.
+use direct Shelly routes for Garage temperatures, tariff control, circulation and Caravan.
 
 Canonical temperature primary readings honor their configured `path`, `scale` and
 `offset`. Convert publisher Fahrenheit to Celsius before applying the affine

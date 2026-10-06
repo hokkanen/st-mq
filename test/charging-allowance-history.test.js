@@ -31,7 +31,7 @@ function fixture(t, input = 'providers') {
     read: (from = at, to = at + 60_000, maxSpans) => readChargingAllowanceHistory({ store, input, range: { from, to }, now: to, maxSpans }) };
 }
 
-test('shared Shelly allowance reports load entitlement independently of setting, fallback zero and pending measurements', () => {
+test('shared Shelly allowance reports load entitlement independently of setting, fallback zero and connection', () => {
   const status = decision({ limit: { currentA: 8, loadCurrentA: 16, loadReason: 'property-headroom' }, appliedCurrentA: 8 });
   assert.equal(status.mode, 'unrestricted'); assert.equal(status.allowanceA, 16); assert.equal(status.limiter.allowanceA, 8);
   assert.equal(decision({ limit: { currentA: 8, loadCurrentA: 8, reason: 'charger1-priority' } }).mode, 'limited');
@@ -39,10 +39,26 @@ test('shared Shelly allowance reports load entitlement independently of setting,
   assert.equal(decision({ limit: zero, pausedByLimiter: true }).mode, 'limited');
   assert.equal(decision({ limit: { ...zero, fallback: true }, pausedByLimiter: true }).mode, 'fallback');
   assert.equal(decision({ limit: { ...zero, fallback: true } }).allowanceA, 0);
-  const pending = decision({ limit: { currentA: 12, loadCurrentA: 12, measurementPending: true, reason: 'measurement-pair-pending' } });
-  assert.equal(pending.mode, 'unknown'); assert.equal(pending.allowanceA, null); assert.equal(pending.limiter.loadAllowanceA, 12);
-  assert.equal(decision({ connected: false }).mode, 'inactive');
+  const disconnected = decision({ connected: false });
+  assert.equal(disconnected.mode, 'unrestricted'); assert.equal(disconnected.allowanceA, 16);
+  assert.equal(disconnected.limiter.applicationStatus, 'inactive');
+  assert.equal(decision({ connected: false, pausedByLimiter: true, limit: zero }).mode, 'limited');
+  assert.equal(decision({ connected: false, limit: null }).mode, 'unknown');
+  assert.equal(decision({ connected: undefined }).mode, 'unknown');
+  assert.equal(decision({ connected: false, enabled: false }).mode, 'inactive');
   assert.equal(decision({ online: false, connected: false }).mode, 'unknown');
+});
+
+test('Equalizer allowance remains observable without a connected vehicle, retaining zero and source loss', () => {
+  const status = (values, extra = {}) => easeeAllowanceStatus({ telemetry: native(values, { pluggedIn: false, ...extra }), now: at });
+  assert.equal(status([16, 14, 15]).allowanceA, 14);
+  assert.equal(status([16, 0, 15]).allowanceA, 0);
+  const noCable = status([20, 22, 21], { limits: { chargerA: 16, cableA: null,
+    circuitA: [25, 25, 25], equalizerAvailableA: [20, 22, 21] } });
+  assert.equal(noCable.maximumCurrentA, 16, 'An absent cable leaves known fixed equipment limits intact');
+  assert.equal(noCable.allowanceA, 16);
+  assert.equal(status([16, 14, 15], { online: false }).mode, 'unknown');
+  assert.equal(status([16, 14, 15], { externalLoadBalancing: false }).mode, 'inactive');
 });
 
 test('Equalizer allowance uses every phase including zero and decimals, with only fixed equipment ceilings', () => {
@@ -108,11 +124,11 @@ test('normal to fallback zero and back remain positive numeric observations and 
   assert.deepEqual(store.observations({ signal: CHARGING_ALLOWANCE_SIGNALS.charger2 }).map(row => row.value), [16, 0, 16]);
 });
 
-test('unavailable and pending evidence never extend preceding known coverage', t => {
+test('unavailable evidence never extends preceding known coverage', t => {
   const { put, read } = fixture(t);
   put(); put(decision(), at + 5000);
-  const pending = decision({ limit: { currentA: 12, loadCurrentA: 12, measurementPending: true, reason: 'measurement-pair-pending' } });
-  put(pending, at + 10_000); put(pending, at + 15_000); put(decision(), at + 20_000); put(decision(), at + 25_000);
+  const unavailable = decision({ online: false });
+  put(unavailable, at + 10_000); put(unavailable, at + 15_000); put(decision(), at + 20_000); put(decision(), at + 25_000);
   assert.deepEqual(read(at, at + 25_000).charger2.spans.map(row => [row.start - at, row.end - at, row.mode]),
     [[0, 5000, 'unrestricted'], [5000, 10000, 'unknown'], [10000, 20000, 'unknown'], [20000, 25000, 'unrestricted']]);
 });

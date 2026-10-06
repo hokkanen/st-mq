@@ -208,10 +208,10 @@ test('restart restores a previous reduction before processing a new command', as
 test('a lost ON acknowledgement requires an acknowledged OFF before reduction after restart', async t => {
   let fail = true;
   const r = rig(t, { native: false, publishDhwr: async on => {
-    if (fail && on) throw Object.assign(new Error('synthetic failure'), { code: 'MQTT_TIMEOUT' });
+    if (fail && on) throw Object.assign(new Error('synthetic failure'), { code: 'SHELLY_READBACK_TIMEOUT' });
     return { status: 'mqtt', sent: true, actual: null };
   } });
-  await assert.rejects(r.executor.execute({ commands: ['circulation'] }, { automationEnabled: false, manualTest: true, now: r.now }), { code: 'MQTT_TIMEOUT' });
+  await assert.rejects(r.executor.execute({ commands: ['circulation'] }, { automationEnabled: false, manualTest: true, now: r.now }), { code: 'SHELLY_READBACK_TIMEOUT' });
   assert.equal(r.saved.get('executor:home').dhwrOutstanding, true);
   fail = false;
   const restarted = new Executor({ input: 'mqtt', store: r.store, commandTransport: r.transport, clock: () => r.now });
@@ -300,7 +300,7 @@ test('manual DHWR expiry sends OFF and retries an unconfirmed OFF without a new 
   t.mock.timers.enable({ apis: ['setTimeout'] });
   let stops = 0;
   const r = rig(t, { native: false, config: { dhwrPulseMinutes: 1 }, publishDhwr: async on => {
-    if (!on && ++stops === 1) throw Object.assign(new Error('Synthetic timeout'), { code: 'MQTT_TIMEOUT' });
+    if (!on && ++stops === 1) throw Object.assign(new Error('Synthetic timeout'), { code: 'SHELLY_READBACK_TIMEOUT' });
     return { status: 'mqtt', sent: true, actual: null };
   } });
   await r.executor.execute({ commands: ['circulation'] }, { automationEnabled: false, manualTest: true, now: r.now });
@@ -321,7 +321,7 @@ test('manual DHWR expiry sends OFF and retries an unconfirmed OFF without a new 
 test('failed DHWR OFF cannot prevent independent native and tariff restoration', async t => {
   let failStop = true;
   const r = rig(t, { publishDhwr: async on => {
-    if (!on && failStop) throw Object.assign(new Error('Synthetic timeout'), { code: 'MQTT_TIMEOUT' });
+    if (!on && failStop) throw Object.assign(new Error('Synthetic timeout'), { code: 'SHELLY_READBACK_TIMEOUT' });
     return { status: 'mqtt', sent: true, actual: null };
   } });
   await r.run('preheat', 1_800_000, { commands: ['circulation', 'normal'] });
@@ -329,7 +329,7 @@ test('failed DHWR OFF cannot prevent independent native and tariff restoration',
   const before = r.log.length;
   const pending = await r.executor.restore();
   assert.equal(pending.restorationPending, true);
-  assert.equal(pending.dhwrError, 'MQTT_TIMEOUT');
+  assert.equal(pending.dhwrError, 'SHELLY_READBACK_TIMEOUT');
   assert.deepEqual(r.log.slice(before).map(row => row.commands ?? row.native ?? row.dhwr), [false, '0203', ['normal']]);
   assert.equal(r.values['0203'], 19);
   assert.equal(r.saved.get('executor:home').legacyOutstanding, false);
@@ -341,10 +341,10 @@ test('failed DHWR OFF cannot prevent independent native and tariff restoration',
 
 test('shutdown stops an uncertain ON and demotion preserves its obligation without a write', async t => {
   const shutdown = rig(t, { native: false, publishDhwr: async on => {
-    if (on) throw Object.assign(new Error('Synthetic timeout'), { code: 'MQTT_TIMEOUT' });
+    if (on) throw Object.assign(new Error('Synthetic timeout'), { code: 'SHELLY_READBACK_TIMEOUT' });
     return { status: 'mqtt', sent: true, actual: null };
   } });
-  await assert.rejects(shutdown.executor.execute({ commands: ['circulation'] }, { automationEnabled: false, manualTest: true, now: shutdown.now }), { code: 'MQTT_TIMEOUT' });
+  await assert.rejects(shutdown.executor.execute({ commands: ['circulation'] }, { automationEnabled: false, manualTest: true, now: shutdown.now }), { code: 'SHELLY_READBACK_TIMEOUT' });
   await shutdown.executor.close();
   assert.deepEqual(shutdown.log.map(row => row.dhwr), [true, false]);
   assert.equal(shutdown.saved.get('executor:home').dhwrOutstanding, false);
@@ -377,7 +377,7 @@ test('failed early DHWR stop retries without waiting for the original run deadli
   t.mock.timers.enable({ apis: ['setTimeout'] });
   let stops = 0;
   const r = rig(t, { native: false, publishDhwr: async on => {
-    if (!on && ++stops === 1) throw Object.assign(new Error('Synthetic timeout'), { code: 'MQTT_TIMEOUT' });
+    if (!on && ++stops === 1) throw Object.assign(new Error('Synthetic timeout'), { code: 'SHELLY_READBACK_TIMEOUT' });
     return { status: 'mqtt', sent: true, actual: null };
   } });
   await r.executor.execute({ commands: ['circulation'] }, { automationEnabled: false, manualTest: true, now: r.now });
@@ -630,4 +630,20 @@ test('orderly shutdown preserves a durable paused Reduced choice and its native 
   assert.equal(r.saved.get('executor:home').manualPause.id, pause.id);
   assert.equal(r.h66.status().obligations['2201'].baseline, 1);
   assert.equal(r.values['2201'], 2);
+});
+
+test('starting circulation at an expired-run boundary saves a new bound OFF obligation', async t => {
+  const r = rig(t, { native: false });
+  await r.executor.execute({ commands: ['circulation'] }, { manualTest: true, now: r.now });
+  const previous = r.saved.get('executor:home').targetBindings.dhwr;
+  r.advance(r.executor.pulseMs);
+  await r.executor.execute({ commands: ['circulation'] }, { manualTest: true, now: r.now });
+  assert.deepEqual(r.log.filter(row => 'dhwr' in row).map(row => row.dhwr), [true, false, true]);
+  const saved = r.saved.get('executor:home');
+  assert.equal(saved.dhwrOutstanding, true);
+  assert.equal(saved.targetBindings.dhwr.identity, previous.identity);
+  assert.notEqual(saved.targetBindings.dhwr.generation, previous.generation);
+  const restarted = rig(t, { native: false, saved: r.saved });
+  assert.equal(restarted.executor.status().dhwrOutstanding, true);
+  assert.deepEqual(restarted.executor.status().targetBindings.dhwr, saved.targetBindings.dhwr);
 });

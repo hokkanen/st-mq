@@ -5,7 +5,7 @@ const SHELLY_LIMITER_STATES = Object.freeze({
   limited: { label: 'Limited', description: 'Property load or charger priority reduces the current allowance.' },
   'paused-by-balancing': { label: 'Paused by balancing', description: 'Available room is below the minimum charging current. A pause is requested; charger confirmation is separate.' },
   fallback: { label: 'Fallback', description: 'Usable load evidence is unavailable. The configured fallback cap applies, respecting tighter limits.' },
-  inactive: { label: 'Inactive', description: 'Load balancing is disabled or has no connected session.' },
+  inactive: { label: 'Inactive', description: 'Load balancing is disabled.' },
   unknown: { label: 'Unknown', description: 'No reliable limiter status is available. This does not establish the charger setting or actual draw.' },
 });
 const reasons = {
@@ -17,7 +17,6 @@ const reasons = {
   'vehicle-current-limit': 'Vehicle limit',
   'feed-unsynchronized': 'Waiting for synchronized feeds', 'charger-current-unavailable': 'Easee current unavailable',
   'shelly-current-unavailable': 'Shelly current unavailable', 'non-additive-currents': 'Load readings disagree',
-  'measurement-pair-pending': 'Awaiting measurements',
   'below-minimum-current': 'Below the minimum charging current',
   'telemetry-fallback': 'Load evidence unavailable', 'feed-unavailable': 'Load feed unavailable',
   'limiter-disabled': 'Limiter disabled', 'disconnected': 'No vehicle connected',
@@ -31,7 +30,6 @@ export function shellyLimiterDisplay(value) {
   const allowance = mode === 'unknown' || mode === 'inactive' ? null : current(value?.loadAllowanceA ?? value?.allowanceA);
   const effective = current(value?.allowanceA);
   const applied = current(value?.appliedCurrentA);
-  const pending = mode === 'unknown' && value?.reason === 'measurement-pair-pending';
   const reason = reasons[value?.reason] ?? (mode === 'fallback' ? 'Load evidence unavailable'
     : mode === 'limited' || mode === 'paused-by-balancing' ? 'Property load or charger priority' : '');
   const application = ({ confirmed: value?.allowanceA === 0 ? 'Pause instruction confirmed'
@@ -42,14 +40,11 @@ export function shellyLimiterDisplay(value) {
       ?? 'Charger setting unconfirmed';
   const setting = value?.applicationStatus === 'confirmed' && value?.allowanceA !== 0 && applied
     ? `${applied} confirmed` : application;
-  const label = pending ? 'Awaiting measurements' : `${state.label}${allowance ? ` · ${allowance}` : ''}`;
-  const effectiveAllowance = effective && effective !== allowance ? `${pending ? 'Held ceiling' : 'Effective allowance'}: ${effective}` : '';
-  const description = pending
-    ? 'Property and charger changes have arrived separately. The previous confirmed ceiling is retained and cannot increase while measurements are paired. Waiting alone does not trigger fallback or take balancing over from Equalizer.'
-    : state.description;
-  return { mode, label, allowance, reason, reasonInLabel: pending, application, setting,
+  const label = `${state.label}${allowance ? ` · ${allowance}` : ''}`;
+  const effectiveAllowance = effective && effective !== allowance ? `Effective allowance: ${effective}` : '';
+  return { mode, label, allowance, reason, reasonInLabel: false, application, setting,
     effectiveAllowance,
     detail: [`${state.label}${allowance ? ` · ${allowance} allowance` : ''}${reason ? ` · ${reason}` : ''}`,
       effectiveAllowance ? `${effectiveAllowance}, respecting other restrictions.` : '',
-      application, description, 'Allowance is a controller ceiling, not measured charging current. Scheduled and manual stops remain separate.'].filter(Boolean).join('\n\n') };
+      application, state.description, 'Allowance is a controller ceiling, not measured charging current. Scheduled and manual stops remain separate.'].filter(Boolean).join('\n\n') };
 }

@@ -149,8 +149,11 @@ export class Executor {
       await this.stopDhwr(now);
     if (pulse && typeof this.commandTransport.publishDhwr !== 'function')
       throw failure('DHWR_UNAVAILABLE', 'MQTT switch control is required for DHWR.');
-    // A lost PUBACK may still mean ON delivery. Persist the OFF obligation first.
+    // Lost acknowledgement/readback may still mean ON delivery. Save OFF first.
     if (pulse) {
+      // Expired-run cleanup above releases the old binding; bind this new run
+      // before persisting its independently restorable OFF obligation.
+      this.target('dhwr', { acquire: true });
       this.state.dhwrOutstanding = true;
       this.state.dhwrRequested = { on: true, at: now };
       this.state.pulseUntil = now + this.pulseMs + this.deliveryBoundMs;
@@ -161,7 +164,7 @@ export class Executor {
     let result;
     try {
       if (pulse) {
-        try { result = await this.commandTransport.publishDhwr(true); }
+        try { result = await this.commandTransport.publishDhwr(true, { expectedTarget: this.target('dhwr') }); }
         finally {
           this.state.pulseUntil = this.clock() + this.pulseMs;
           this.state.manualDhwrUntil = manualCirculation ? this.state.pulseUntil : null;
@@ -197,14 +200,15 @@ export class Executor {
       throw failure('DHWR_UNAVAILABLE', 'DHWR OFF is pending until MQTT switch control is available.');
     this.state.dhwrRequested = { on: false, at: now };
     this.persist();
-    const result = await this.commandTransport.publishDhwr(false);
+    const result = await this.commandTransport.publishDhwr(false, { expectedTarget: this.target('dhwr') });
     if (result?.sent !== true) throw failure('EXECUTOR_UNCONFIRMED', 'DHWR OFF delivery is unconfirmed.');
     delete this.state.targetBindings.dhwr; this.elapsedDeadlines.delete('dhwr');
     this.state.dhwrOutstanding = false; this.state.pulseUntil = 0; this.state.manualDhwrUntil = null;
     this.state.dhwrStoppedAt = this.clock(); this.persist();
     this.store.observation?.({ source: 'controller', device: this.input, signal: 'dhwr_request', value: 0,
       unit: 'state', sourceTime: this.state.dhwrStoppedAt, receivedAt: this.state.dhwrStoppedAt,
-      quality: ['requested'], raw: { verified: false, basis: 'MQTT OFF acknowledged by broker; physical pump state is not observed' } });
+      quality: ['requested'], raw: { verified: false, basis: result.confirmed === true ? 'Native relay OFF confirmed; pump operation is recorded separately'
+        : 'OFF delivery acknowledged; physical pump state is not observed' } });
     return true;
   }
   async beginManual(now, pause) {

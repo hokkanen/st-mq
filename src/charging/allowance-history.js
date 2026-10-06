@@ -17,20 +17,18 @@ export function shellyLimiterStatus({ enabled, connected, online, maximumCurrent
   appliedCurrentA = null, applicationStatus = 'unknown', pausedByLimiter = false } = {}) {
   if (enabled === false) return { ...unknownLimiter('limiter-disabled'), mode: 'inactive', applicationStatus: 'inactive' };
   if (online !== true) return unknownLimiter('charger-unavailable');
-  if (connected === false) return { ...unknownLimiter('disconnected'), mode: 'inactive', applicationStatus: 'inactive' };
-  if (connected !== true || enabled !== true || !limit || current(limit.currentA) === null)
+  if (typeof connected !== 'boolean' || enabled !== true || !limit || current(limit.currentA) === null)
     return unknownLimiter('limiter-unavailable');
   const allowanceA = current(limit.currentA), loadAllowanceA = current(limit.loadCurrentA);
-  const pending = limit.measurementPending === true && limit.fallback !== true;
   const mode = limit.fallback === true ? 'fallback'
-    : pending ? 'unknown' : pausedByLimiter && loadAllowanceA === 0 ? 'paused-by-balancing'
+    : connected && pausedByLimiter && loadAllowanceA === 0 ? 'paused-by-balancing'
       : loadAllowanceA === null || current(maximumCurrentA) === null ? 'unknown'
         : loadAllowanceA >= maximumCurrentA ? 'unrestricted' : 'limited';
   return { mode, allowanceA, loadAllowanceA,
-    reason: pending ? 'measurement-pair-pending'
-      : reasonCode(loadAllowanceA !== null && allowanceA < loadAllowanceA ? limit.reason ?? limit.loadReason
+    reason: reasonCode(loadAllowanceA !== null && allowanceA < loadAllowanceA ? limit.reason ?? limit.loadReason
       : limit.fallback ? limit.fallbackReason ?? limit.reason : limit.loadReason ?? limit.reason) ?? 'limiter-unavailable',
-    appliedCurrentA: current(appliedCurrentA), applicationStatus: APPLICATION.has(applicationStatus) ? applicationStatus : 'unknown' };
+    appliedCurrentA: current(appliedCurrentA), applicationStatus: connected === false ? 'inactive'
+      : APPLICATION.has(applicationStatus) ? applicationStatus : 'unknown' };
 }
 
 
@@ -43,7 +41,6 @@ const unknown = (reason, extra = {}) => ({ mode: 'unknown', allowanceA: null, ma
 export function easeeAllowanceStatus({ enabled = true, telemetry = {}, now = Date.now() } = {}) {
   if (!enabled) return unknown('charger-disabled', { mode: 'inactive' });
   if (telemetry.providerConnected !== true) return unknown('charger-unavailable');
-  if (telemetry.connected?.available && telemetry.connected.value === false) return unknown('disconnected', { mode: 'inactive' });
   if (telemetry.externalLoadBalancing === false) return unknown('equalizer-disabled', { mode: 'inactive' });
   const field = telemetry.availableCurrentA, maximum = telemetry.maxCurrentA;
   const times = (field?.inputs ?? []).map(row => timestamp(row.measuredAt));
@@ -64,8 +61,8 @@ export function easeeAllowanceStatus({ enabled = true, telemetry = {}, now = Dat
     mode: allowanceA > 0 && allowanceA >= maximumCurrentA ? 'unrestricted' : 'limited' };
 }
 
-/** Keep the load entitlement separate from the effective setting and confirmed
- * readback. An unpaired measurement hold cannot claim currently known headroom. */
+/** Keep observed capacity separate from the effective setting and confirmed
+ * readback. An unplugged capacity observation grants no instruction to apply. */
 export function shellyAllowanceStatus({ limiter, maximumCurrentA, evaluatedAt = null, sourceEpoch = null } = {}) {
   const known = limiter && ['unrestricted', 'limited', 'paused-by-balancing', 'fallback'].includes(limiter.mode)
     && current(limiter.loadAllowanceA) !== null;

@@ -14,8 +14,6 @@ availability and commands. Without it they share primary. See
 
 | Purpose | Previous topic | New topic | Payload |
 | --- | --- | --- | --- |
-| DHWR command | `from_stmq/dhwr/set` | `stmq/home/dhwr/command/switch` | `ON` / `OFF` |
-| DHWR power | `to_stmq/dhwr/power` | `stmq/home/dhwr/status/power` | Numeric watts |
 | Upstairs temperature | `stmq/smoke/1/temperature` | `stmq/home/smoke1/status/temperature` | Numeric Celsius |
 | Bedroom temperature | `stmq/smoke/2/temperature` | `stmq/home/smoke2/status/temperature` | Numeric Celsius |
 | Downstairs temperature | `stmq/smoke/3/temperature` | `stmq/home/smoke3/status/temperature` | Numeric Celsius |
@@ -25,10 +23,9 @@ availability and commands. Without it they share primary. See
 | Garage door 2 operation | `to_hass/garage_door2/action` | `stmq/garage/door2/command/cover` | `open` / `closed`; `stop` only if supported |
 | Optional HA garage air temperature | Existing HA publisher retained | `stmq/garage/air/status/temperature` | JSON Celsius snapshot |
 
-The installation uses power-only DHWR feedback. No physical or virtual switch-state
-publisher is required or enabled. Positive power means on and zero means off.
-Every command needs a subsequent power report to verify its result; timed
-circulation and its durable OFF obligation remain independent. See [DHWR setup](dhwr-mqtt.md).
+Circulation uses the native Shelly prefix `stmq/home/dhwr`, including its
+RPC and status routes. It has no custom ON/OFF or SmartThings power-forwarding
+topics. See [direct circulation setup](dhwr-mqtt.md).
 
 [BMW CarData](charging/integrations/bmw.md) publishes retained QoS 1 JSON on the established
 vehicle feed `stmq/vehicles/bmw`: charge percentage, vehicle target,
@@ -46,11 +43,10 @@ share the Caravan energy plug’s native `stmq/garage/caravan` prefix.
 
 ## Publisher changes and cutover
 
-Update the SmartThings MQTT switch subscription to the new DHWR command topic,
-and the power and three temperature publishers to the new status topics. Keep the
-current payloads; select QoS 1 and leave retention disabled. These are manual
-SmartThings changes, separate from ST-MQ configuration. Smoke readings retain
-their 70-minute report interval and five-minute delivery grace.
+The three SmartThings temperature publishers use the current status topics,
+with QoS 1 and retention disabled. Their settings are separate from application
+configuration. Smoke readings retain the 70-minute report interval and
+five-minute delivery grace.
 
 The [Home Assistant publishers](homeassistant-mqtt.md) add door snapshots, queries
 and availability topics. Both public door configurations select this

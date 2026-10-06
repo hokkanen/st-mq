@@ -78,37 +78,53 @@ Property and charger measurements must still support their additive
 interpretation; deleting the Equalizer comparison does not turn invalid or
 missing phase measurements into usable headroom.
 
-## Pairing changing measurements
+## Latest healthy measurements
 
-Property and charger reports arrive independently. The controller keeps one
-previous admitted property/peer/Shelly observation set, scoped to the physical
-connection and source epochs. When the derived household demand changes, an
-observed charger transition needs a property observation covering the first
-source clock for that changed current. Later unchanged samples cannot move that
-transition clock forward. Matching property and charger changes that leave
-household demand unchanged retain the same entitlement directly.
+Use the latest valid property, Charger 1 and Shelly currents from their healthy
+current source connections. A charger measurement may precede or follow the
+property reading. OCPP and cloud sources follow the same ordering policy; a
+changed charger current also needs no later property confirmation. There is no
+measurement-pairing queue, previous-triplet hold, or awaiting-measurements mode.
+Each new usable observation can immediately revise the calculated allowance.
+Command dispatch retains the independent increase dwell and native readback gates.
+OCPP allowance acquisition retains the last phase readings while its current
+transport remains healthy; those held readings do not renew command or physical
+identification freshness. Reconnection or an actual feed-health gap needs new
+current evidence before the previous values can be used again.
 
-A changed property total needs current Shelly status confirmation. For Charger
-1's periodic OCPP metering, a subsequent measurement confirms peer current.
-An unchanged peer value from a healthy synchronized cloud stream instead remains
-usable under that feed's held-state semantics; it need not advance its original
-change clock merely because household demand changes. Repeated application-cache
-reads do not create either feed health or new measurement evidence.
+This owner-approved amendment of 2026-10-06 accepts temporary overestimation or
+underestimation of household demand when contributions and totals arrive at
+different times. For example, a property total that already includes a Charger 1
+reduction combined with its older, larger charger reading understates household
+load. The reverse arrival order can overstate it. Feed health does not prove
+simultaneous sampling; source and receipt clocks remain unchanged and distinct.
 
-While those reports remain incomplete on healthy sources, the controller holds
-at most the last validated ceiling and freshly confirmed native current setting.
-Applicable allocation, native and vehicle restrictions can lower that hold;
-unpaired readings cannot authorize an increase or a new household-load claim.
-The compact allowance shows **Allowance unknown**; its details and history
-explain **Waiting for matching load readings**.
-There is no deadline that converts this wait into competing property balancing.
-Actual feed loss selects fallback, and a changed session, source epoch or
-controller restart discards the process-local observation set.
+Health, complete phase values, current source epochs and additive-value validation
+still apply. Missing, invalid or contradictory evidence selects configured
+fallback under known tighter limits. Cached application reads and retained MQTT
+cannot establish source health. Ordering differences alone never select fallback.
+There is no elapsed-time rule that transfers Equalizer's control to Shelly.
 
-This is bounded observation pairing, not an atomic meter snapshot. Ambiguous
-observed transitions can remain pending; unchanged healthy cloud values alone
-do not cause that wait. Neither transport proves that independently received
-property and charger samples were taken simultaneously or that Equalizer acted.
+## Allowances without a connected vehicle
+
+Continue calculating, displaying and recording allowances with no car plugged in.
+Charger 1 records its actual healthy Equalizer-reported allowance, including zero,
+within the known equipment ceiling. An unplugged status neither nulls that
+observation nor replaces it with an invented potential Equalizer allowance.
+
+Charger 2 reports capacity available now from the latest healthy load measurements
+and configured limits. Preserve a connected peer's allocation commitment, including
+when Charger 2 priority is selected, but do not fabricate an energy request,
+vehicle restriction or deadline for an unplugged vehicle. With no connected peer
+commitment, available capacity is the household headroom within the configured
+maximum. Actual session allocation is reassessed when a car connects.
+
+The capacity observation itself sends no Start, Stop or current-setting command
+to the unplugged charger. Independently owned restoration duties still apply.
+Its application status is inactive, separately from numeric available capacity.
+Unknown feed evidence remains unknown or explicit fallback;
+unplugging is not proof of zero current. Disabled integration/current adjustment
+remains inactive. Old historical gaps are not backfilled.
 
 ## Shared priority and Equalizer coordination
 
@@ -150,7 +166,9 @@ and the model does not prove Equalizer response or physical fuse protection.
 The core regression invariant is: hold household demand, planned entitlement
 and applicable limits fixed, vary Charger 1's draw and delay Equalizer's
 response, and Shelly's entitlement stays fixed. Include removable temporary
-property overload and separate arrival of property and charger measurements.
+property overload with consistent latest measurements. Separately arriving
+changes use the latest healthy values immediately and may temporarily change the
+calculated entitlement.
 
 ## Current steps, dwell and dispatch
 
@@ -226,8 +244,8 @@ can reduce the effective allowance; details retain the distinction and confirmed
 setting. A pause instruction confirmation is not physical zero-power evidence.
 Scheduled or manual stops do not become load-balancing pauses merely because
 power is zero. Fallback remains explicit when a tighter restriction lowers it.
-Pending measurement pairing shows **Allowance unknown** and explains any bounded
-held ceiling separately, without claiming newly verified headroom.
+Unplugged chargers retain numeric allowances when source evidence is usable;
+current-setting application and vehicle connection are shown separately.
 
 The **Charging currents** view replaces the dedicated session-check view. It
 plots the highest property phase current at each timestamp and both charger

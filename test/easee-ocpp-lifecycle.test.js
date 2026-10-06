@@ -122,6 +122,9 @@ function fixture(t, { streaming = false, authorizationMode = 'plug-and-charge', 
           status: () => ({ configured: options.config.enabled, ready: ready && !closed && options.canControl(), available: false, controlTransport: 'ocpp' }),
           snapshot: () => null,
           controlSnapshot: () => ready && !closed && options.canControl() && control.timestamp <= now ? clone(control) : null,
+          currentSupplySnapshot: () => ready && !closed && options.canControl() ? {
+            connectionId: control.connectionId, epoch: control.connectionId, readings: clone(control.readings),
+          } : null,
           controlClockDelayMs: () => {
             const remaining = control.timestamp - now;
             if (!ready || closed || !options.canControl() || !(remaining > 0 && remaining <= 1000)) return 0;
@@ -466,6 +469,7 @@ test('cloud and native control use the same held property feed without Equalizer
     // Simulate an unavailable native control connection. Its availability must
     // not gate independent Equalizer state or admitted cloud peer measurements.
     f.listeners.at(-1).control = { ...f.listeners.at(-1).control, timestamp: f.now + 1000 };
+    f.listeners.at(-1).currentSupplySnapshot = () => null;
     const adapter = provider.chargerScheduleControl(), httpCount = f.events.filter(row => row.type === 'http').length;
     const reading = adapter.readCurrentSupply();
     assert.equal(reading.online, true);

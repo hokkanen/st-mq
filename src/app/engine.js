@@ -788,7 +788,7 @@ export class Engine {
       expiresAt: state.dhwrOutstanding ? state.pulseUntil : null,
       durationMinutes: this.executor.pulseMs / 60_000,
       restorationPending: Boolean(state.dhwrOutstanding && (state.restorationPending || state.pulseUntil <= now)),
-      commandTopic: this.config.connections?.mqtt?.dhwr_topic ?? 'stmq/home/dhwr/command/switch',
+      commandTopic: configuredDevice?.prefix ? `${configuredDevice.prefix}/rpc` : null,
       actualOn, confirmed, attention: !confirmed, reason, requestedAt,
       feedback: { configured: Boolean(device), stateConfigured, powerConfigured, deviceId: device?.id ?? null, available: device?.available === true,
         basis: powerConfigured ? 'power' : stateConfigured ? 'switch' : null, state: feedbackState, power: reportedPower } };
@@ -857,7 +857,7 @@ export class Engine {
       const message = heatingErrorMessage(error?.code);
       const code = message === heatingErrorMessage(undefined) ? 'EXECUTOR_UNCONFIRMED' : error.code;
       const unconfirmed = ['SHELLY_READBACK_TIMEOUT', 'SHELLY_READBACK_UNAVAILABLE', 'SHELLY_COMMAND_UNCONFIRMED',
-        'MQTT_TIMEOUT', 'MQTT_UNAVAILABLE', 'MQTT_CLOSED', 'EXECUTOR_UNCONFIRMED'].includes(code);
+        'MQTT_UNAVAILABLE', 'MQTT_CLOSED', 'EXECUTOR_UNCONFIRMED'].includes(code);
       const result = { command, status: unconfirmed ? 'unconfirmed' : 'failed', sent: unconfirmed ? null : false,
         code, actual: null, requestedAt, at: this.clock(), error: message };
       this.store.setState(`heating-test:${this.config.input}`, result);

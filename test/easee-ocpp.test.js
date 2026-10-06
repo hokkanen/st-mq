@@ -992,6 +992,71 @@ test('native control snapshots require fresh connector evidence and reconfirm sa
   assert.equal(f.local.controlSnapshot(), null, 'A silent connection cannot preserve current control evidence');
 });
 
+test('live current supply retains the latest OCPP values while healthy without extending command or physical evidence', async t => {
+  const f = await fixture(t), client = await f.connect();
+  await client.call('StatusNotification', preparing);
+  await client.call('MeterValues', meter());
+  const initial = f.local.currentSupplySnapshot();
+  assert.deepEqual(initial.readings.map(row => row.id), [183, 184, 185]);
+  assert.deepEqual(initial.readings.map(row => row.value), [10, 10, 10]);
+  for (const elapsed of [30_000, 60_000, 90_000, 120_000]) {
+    f.now = at + elapsed;
+    await client.call('Heartbeat', {});
+    assert.deepEqual(f.local.currentSupplySnapshot(), initial, 'Health keeps source and receipt clocks unchanged');
+  }
+  assert.deepEqual(f.local.controlSnapshot().readings, [], 'Held load evidence cannot grant command or identification freshness');
+  assert.equal(f.local.snapshot(), null, 'Ordinary measured electricity still expires');
+  initial.readings[0].value = 0;
+  assert.equal(f.local.currentSupplySnapshot().readings[0].value, 10, 'Returned snapshots cannot overwrite source evidence');
+  await client.call('MeterValues', meter(samples.map(sample => sample.measurand === 'Current.Import'
+    ? { ...sample, value: '6' } : sample), at + 120_000));
+  assert.deepEqual(f.local.currentSupplySnapshot().readings.map(row => row.value), [6, 6, 6]);
+  assert.deepEqual(f.local.currentSupplySnapshot().readings.map(row => row.receivedAt), [at + 120_000, at + 120_000, at + 120_000]);
+});
+
+test('current supply cannot revive cached readings after a transport outage, reconnect or native reboot', async t => {
+  const f = await fixture(t), client = await f.connect();
+  await client.call('StatusNotification', preparing);
+  await client.call('MeterValues', meter());
+  const first = f.local.currentSupplySnapshot();
+  f.now = at + 61_000;
+  assert.equal(f.local.currentSupplySnapshot(), null);
+  await client.call('Heartbeat', {});
+  const afterGap = f.local.currentSupplySnapshot();
+  assert.notEqual(afterGap.epoch, first.epoch);
+  assert.deepEqual(afterGap.readings, [], 'A later healthy heartbeat cannot revive pre-outage current');
+  await client.call('MeterValues', meter());
+  assert.deepEqual(f.local.currentSupplySnapshot().readings, [], 'Replayed old measurements do not cross the feed boundary');
+  await client.call('MeterValues', meter(samples, at + 61_000));
+  assert.equal(f.local.currentSupplySnapshot().readings.length, 3);
+  f.now = at + 62_000;
+  const replacement = await f.connect();
+  assert.equal(f.local.currentSupplySnapshot(), null);
+  await replacement.call('Heartbeat', {});
+  await replacement.call('MeterValues', meter(samples, at + 61_000));
+  assert.deepEqual(f.local.currentSupplySnapshot().readings, [], 'Old source evidence cannot cross a new socket');
+  await replacement.call('MeterValues', meter(samples, at + 62_000));
+  assert.equal(f.local.currentSupplySnapshot().readings.length, 3);
+  assert.notEqual(f.local.currentSupplySnapshot().connectionId, first.connectionId);
+  await replacement.call('BootNotification', { chargePointVendor: 'Easee', chargePointModel: 'fixture' });
+  assert.deepEqual(f.local.currentSupplySnapshot().readings, []);
+  f.permitted = false;
+  assert.equal(f.local.currentSupplySnapshot(), null, 'Authority loss clears the source connection');
+});
+
+test('current supply keeps conflicting phase evidence invalid and quarantines future source clocks', async t => {
+  const f = await fixture(t), client = await f.connect();
+  await client.call('MeterValues', meter(samples, at + 74));
+  assert.deepEqual(f.local.currentSupplySnapshot().readings, []);
+  f.now = at + 74;
+  assert.equal(f.local.currentSupplySnapshot().readings.length, 3);
+  assert.equal(f.local.currentSupplySnapshot().readings[0].receivedAt, at);
+  await client.call('MeterValues', meter([{ measurand: 'Current.Import', phase: 'L1', unit: 'A', value: '9' }], at + 74));
+  const invalid = f.local.currentSupplySnapshot().readings;
+  assert.equal(invalid.length, 3);
+  assert.equal(invalid.find(row => row.id === 183).value, null, 'Preserve an invalid phase so another source cannot silently replace it');
+});
+
 test('old transaction ledgers are rejected before mutation and native reboot revokes prior control evidence', async t => {
   const f = await fixture(t), client = await f.connect();
   assert.equal(f.saved.version, 4);

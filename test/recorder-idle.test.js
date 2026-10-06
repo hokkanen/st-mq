@@ -193,29 +193,30 @@ test('scalar report revision changes with real H66 confirmations while observati
   assert(!after.sourceReportRevision.includes('synthetic-pump'));
 });
 
-test('real event-only circulation feedback stays visible days later and ends at an actual disconnect',t=>{
-  const store=new Store(':memory:'),recorder=new Recorder(store),topic='synthetic/dhwr/power',ingested=[],published=[];
+test('native periodic circulation coverage expires and disconnects cannot be repaired by retained reports',t=>{
+  const store=new Store(':memory:'),recorder=new Recorder(store),prefix='synthetic/dhwr',ingested=[],published=[];
   let now=START;
-  const settings=equipmentConfiguration({devices:[{id:'dhwr',label:'Circulation',kind:'power',
-    connection:`mqtt:${topic}`,record:false,max_age_seconds:0}]});
+  const settings=equipmentConfiguration({devices:[{id:'dhwr',label:'Circulation',kind:'switch',generation:3,
+    connection:`shelly:${prefix}`,record:false,max_age_seconds:120,
+    readings:[{key:'power',unit:'W',component:'switch:0',path:'apower',required:true,record:false}]}]});
   const capture=createEquipmentCapture({store,settings,engine:{clock:()=>now,recorder,ingest:row=>ingested.push(row)},
-    publish:(...args)=>{published.push(args);return Promise.resolve();}});
-  t.after(()=>{capture.close();store.close();});capture.setConnected(true);capture.confirmSubscriptions([topic]);
-  capture.receive(topic,'0');now+=24*HOUR;capture.receive(topic,'0');
+    publish:(topic,payload)=>{published.push({topic,frame:JSON.parse(payload)});return Promise.resolve();}});
+  t.after(()=>{capture.close();store.close();});capture.setConnected(true);
+  const report=(packet={})=>capture.receive(`${prefix}/status/switch:0`,JSON.stringify({id:0,output:false,apower:0}),packet);
+  report();now+=60_000;report();
   const initial=store.observations({signal:'dhwr_active'});
-  assert.equal(initial.length,1);assert.equal(initial[0].raw.eventOnly,true);assert.equal(initial[0].raw.maxAgeMs,0);
-  const date='2026-09-03',from=chartRange({startDate:date,now:START+3*24*HOUR}).from;
-  now=from+HOUR;
-  const chart=()=>getChartData({store,input:'mqtt',startDate:date,endDate:date,now,view:'hot_water'}).series.dhwr_active;
-  const held=chart();
-  assert(held.some(row=>row.x===from&&row.y===0&&row.observedAt===START),
-    'A narrow chart days after the source event must retain the zero feedback line');
-  assert(held.some(row=>row.x>=now-1&&row.y===0));
-  const disconnectedAt=now;capture.setConnected(false);capture.setConnected(true);capture.confirmSubscriptions([topic]);
-  now+=60_000;capture.receive(topic,'0',{retain:true});
-  assert(chart().some(row=>row.x===disconnectedAt&&row.y===null));
-  assert(!chart().some(row=>row.x>disconnectedAt&&row.y!==null),'Retained replay cannot restore the event-only line');
-  const recoveredAt=now;capture.receive(topic,'0');now+=60_000;
+  assert.equal(initial.length,1);assert.equal(initial[0].source,'shelly-mqtt');assert.equal(initial[0].raw.maxAgeMs,120000);
+  const chart=()=>getChartData({store,input:'mqtt',startDate:'2026-09-01',endDate:'2026-09-01',now,view:'hot_water'}).series.dhwr_active;
+  now=START+180000;capture.tick();
+  assert(chart().some(row=>row.x===now&&row.y===null),'Native power expiry ends measured coverage');
+  now=START+240000;report();
+  const recoveredAt=now;
+  now+=30000;const disconnectedAt=now;capture.setConnected(false);capture.setConnected(true);
+  now+=30000;report({retain:true});
   assert(chart().some(row=>row.x===recoveredAt&&row.y===0));
-  assert.deepEqual(ingested,[]);assert.deepEqual(published,[]);
+  assert(chart().some(row=>row.x===disconnectedAt&&row.y===null));
+  assert(!chart().some(row=>row.x>disconnectedAt&&row.y!==null),'Retained replay cannot restore native measured coverage');
+  const liveAt=now;report();now+=30000;
+  assert(chart().some(row=>row.x===liveAt&&row.y===0));
+  assert.deepEqual(ingested,[]);assert(published.every(row=>!row.frame.method.startsWith('Switch.')));
 });

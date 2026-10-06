@@ -154,12 +154,11 @@ and native budget must not gate Shelly's live calculation. Hold household demand
 and planned allocation fixed while varying Charger 1's current and delaying its
 Equalizer response: Shelly's entitlement must stay fixed even during excess
 property load that reducing Charger 1 could remove. Include separately arriving
-property/charger readings in both orders: incomplete healthy observations must
-hold at most the prior validated ceiling and confirmed setting, expose unknown
-headroom and never time out into an Equalizer takeover. Cover unchanged healthy
-cloud peer values during household changes, frozen observed-transition clocks,
-simultaneous charger changes, ambiguous transitions, source-epoch resets, Charge
-now, energy/deadline-weighted
+property/charger readings in both orders: use the latest healthy measurements
+immediately without requiring a later charger or property timestamp. Cover the
+accepted temporary over/underestimate during transitions, unchanged healthy OCPP
+and cloud values during household changes, simultaneous charger changes, original
+source clocks, actual outages and recovery, Charge now, energy/deadline-weighted
 Balanced sharing against actual headroom, differing forecast headroom, restart
 and actual outages. Current-choice tests distinguish an initial setting carried
 into a new connection from a later external selection. Cover same-session
@@ -169,6 +168,9 @@ and vehicle ceilings remain binding. Native command freshness and identification
 ownership remain separate checks. History checks cover exact changes, compact unchanged
 coverage, restart/outage gaps, equipment replacement, malformed/overlapping
 history, bounded query detail and independence from charging-report expiry.
+Both plugged and unplugged chargers must record changing numeric capacity, keep
+confirmed settings separate, and send no commands for an unplugged capacity
+calculation. Cover active peer commitments without a fabricated unplugged request.
 
 Physical qualification additionally needs current installation evidence and
 explicitly authorized charger operations. Record requested limits, confirmed

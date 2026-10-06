@@ -46,7 +46,7 @@ function sourceContract(config) {
     chargers: charging.chargers ?? {},
     easee: { charger_id: easee.charger_id, equalizer_id: easee.equalizer_id },
     garage: { adapter: config.garage?.adapter, sender: config.garage?.sender },
-    dhwr: config.connections?.mqtt?.dhwr_topic, floor: config.floorPreheat });
+    floor: config.floorPreheat });
 }
 export const mqttSourceContract = sourceContract;
 function routeDigest(config) {

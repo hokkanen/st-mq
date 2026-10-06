@@ -189,7 +189,6 @@
       "user": "",
       "pw": "",
       "ha": {},
-      "dhwr_topic": "stmq/home/dhwr/command/switch",
       "temperature_report_interval_minutes": 70,
       "temperature_report_grace_seconds": 300
     },
@@ -282,14 +281,26 @@
           "id": "dhwr",
           "label": "Hot-water circulation",
           "area": "home",
-          "kind": "power",
+          "kind": "switch",
           "enabled": true,
-          "connection": "mqtt:stmq/home/dhwr/status/power",
+          "connection": "shelly:stmq/home/dhwr",
           "temperature_control": {},
-          "max_age_seconds": 0,
+          "max_age_seconds": 120,
           "record": false,
           "mqtt": {},
-          "readings": []
+          "readings": [
+            {
+              "key": "power",
+              "label": "Pump power",
+              "unit": "W",
+              "component": "switch:0",
+              "path": "apower",
+              "required": true,
+              "record": false
+            }
+          ],
+          "generation": 3,
+          "switch_id": 0
         },
         {
           "id": "garage",
@@ -648,7 +659,6 @@
         "user": "str?",
         "pw": "password?"
       },
-      "dhwr_topic": "str",
       "temperature_report_interval_minutes": "float(0,1440)",
       "temperature_report_grace_seconds": "float(0,900)"
     },

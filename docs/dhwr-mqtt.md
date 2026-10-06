@@ -1,275 +1,74 @@
-# DHWR MQTT switch setup
+# Hot-water circulation through direct Shelly MQTT
 
-See [custom MQTT topics](mqtt-topics.md) for publisher migration. This installation
-uses power-only feedback; it does not enable a physical or virtual switch-state feed.
+Hot-water circulation uses the standard direct Shelly connection, with a
+**Shelly 1PM Gen3** relay on `switch:0`. A power-meter-only PM device cannot
+operate the pump; the integration requires the native Switch component.
+See [direct Shelly setup](mqtt-equipment.md) and the manufacturer's
+[Switch RPC documentation](https://shelly-api-docs.shelly.cloud/gen2/ComponentsAndServices/Switch/).
 
-ST-MQ starts and stops domestic hot-water recirculation. Configure a **switch**
-with separate ON and OFF actions in the MQTT-to-device integration. Remove the
-old SmartThings push-button action and its fixed ten-minute duration from this
-path. No device setup or live commands are performed by installing this code.
+The public equipment entry uses `shelly:stmq/home/dhwr`, generation 3,
+`switch_id: 0`, `record: false`, and a required live power reading from
+`switch:0.apower` in watts. Configure the replacement relay's MQTT topic prefix
+as `stmq/home/dhwr`, on the existing primary MQTT broker, with native RPC and
+status notifications enabled. Broker credentials stay in private configuration.
+A different native prefix belongs in the existing private equipment override;
+an `equipment.devices` override replaces the complete public device list.
 
-The private configuration supports:
+The retired `mqtt.dhwr_topic`, generic MQTT DHWR feedback entry and SmartThings
+power-forwarding Rule are no longer supported. Remove the old publisher and
+command subscription when commissioning the replacement. Installing this code
+does not configure the relay or operate household equipment. Any outstanding
+restoration bound to the previous device remains unresolved; replacement hardware
+cannot satisfy an obligation belonging to the original relay.
 
-```json
-{
-  "mqtt": { "dhwr_topic": "stmq/home/dhwr/command/switch" },
-  "controller": { "dhwr_duration_minutes": 10 }
-}
-```
+## Commands and device evidence
 
-Keep the existing broker address and authentication settings. The topic must be
-an exact topic, without MQTT wildcards. ST-MQ sends the literal uppercase string
-`ON` to start, then `OFF` after the configured duration (1–60 minutes). Messages
-use QoS 1 with retain disabled. Configure the receiving integration to set the
-switch idempotently: duplicate ON messages must not create independent timers.
-The old `from_stmq/heat/action` `heaton60` button message is no longer published.
-**Start circulation** runs for the configured duration, whether paused or not.
-Clicking it again starts a full new run from that click; **Stop circulation** ends
-it immediately. A controller update, the end of Pause or restoration of manual
-heating parameters does not shorten the run. Manual Preheating changes ROOM and
-configured floor outputs independently; it does not start circulation. Use the
-separate circulation Start/Stop control to request a timed run.
-Reload settings to apply a new duration; an existing run is stopped through the
-normal runtime restoration before the new configuration starts.
+The shared acquisition connection discovers native identity with
+`Shelly.GetDeviceInfo`, polls `Shelly.GetStatus`, and subscribes to native status.
+Commands use non-retained QoS 1 `Switch.Set` RPC on `stmq/home/dhwr/rpc`.
+The matching post-command `Switch.GetStatus` response must confirm the requested
+output before command completion. Broker acknowledgement, `was_on`, retained
+messages and unrelated reports cannot confirm it. Request IDs, native device
+identity and component ID fence replies; disconnect and authority loss prohibit
+replaying queued commands.
 
-The run deadline starts when ON delivery completes; subsequent heating command or
-H66 readback latency does not extend it. ST-MQ saves an OFF obligation before
-attempting ON, because a lost broker acknowledgement can still mean delivery.
-The expiry timer sends OFF without waiting for the next control tick. Shutdown,
-control restoration and restart also send OFF. Failed OFF delivery remains
-pending and is retried while ST-MQ owns control. Turning off automatic control
-restores equipment; Home Pause never starts a new automatic run. Explicit timed circulation remains independent.
-In a paired installation, a demoted instance stops sending commands; its saved
-obligation is handled by the instance that owns control on restoration.
+The circulation entry deliberately exposes no ordinary switch control or timed
+equipment test. Its sole writer is the durable circulation executor. **Start
+circulation** runs for `controller.dhwr_duration_minutes` (default 10, range 1–60),
+including during Home Pause. Starting again begins a new full run; **Stop
+circulation** ends it immediately. An explicit Stop can also stop fresh reported
+operation started outside this application. Heating-phase changes and manual
+Preheat do not shorten or start a separately requested circulation run.
 
-A stopped process or unreachable broker cannot deliver OFF. Set the device's
-own maximum-on watchdog, if supported, above the longest configured ST-MQ run
-as an independent failsafe, and set its power-on state to OFF. This watchdog is
-not the normal run-duration control. Verify ON, timed OFF and restart restoration
-on the installed device before enabling active control.
+Before ON, the executor saves its OFF obligation and an opaque digest binding
+the broker/account, configured component and discovered native identity.
+The normal run deadline begins when native ON confirmation completes. An
+uncertain ON retains an OFF duty. Expiry, shutdown and restart attempt OFF;
+an uncertain OFF remains pending until native OFF confirmation. A replacement
+route or hardware identity cannot clear the earlier duty. Restart restores OFF
+instead of resuming ON. The elapsed deadline prevents clock rollback from
+extending an admitted run. Pair demotion fences commands; only the authorized
+controller can discharge restoration.
 
-## SmartThings power forwarding Rule
+Measured positive power means electrical pump operation and zero means idle.
+Native output state is shown separately. Each new request needs a subsequent
+power report for the dashboard's operation confirmation; relay OFF readback and
+power feedback remain separate evidence. Neither proves water flow. Native
+polling defaults to 30 seconds and the circulation readings expire after 120
+seconds. Missing power, component errors, disconnect and stale reports remain
+unknown. No cache or retained message renews physical evidence.
 
-The **DHWR power to MQTT** Rule forwards the physical circulation relay's
-`main.powerMeter.power` attribute to a separate MQTT Energy virtual device.
-The MQTT publisher uses the
-[MQTT Devices Edge driver](https://github.com/toddaustin07/MQTTDevices).
-This Rule publishes measured watts; it supplies neither the switch's ON/OFF
-state nor the commands that start and stop circulation.
+## Recording and commissioning
 
-| Step | Definition |
-| --- | --- |
-| Trigger source | The physical DHWR relay, component `main`, capability `powerMeter`, attribute `power`, with `trigger: "Always"` |
-| Condition | `greaterThanOrEquals` against numeric `0`, with `changesOnly: false` |
-| Destination | The separate MQTT Energy device, component `main`, capability `partyvoice23922.setpower`, command `setPower` |
-| Argument | A device operand reading the same physical relay's `main.powerMeter.power`; no fixed value or conversion |
-| MQTT output | Exact topic `stmq/home/dhwr/status/power`, plain numeric watts such as `24.5` or `0`, QoS 1, retain disabled |
+Raw relay state and power remain live-only. The recorder saves compact
+`dhwr_active` changes derived from power, including exact unavailable boundaries;
+unchanged reports extend recorded coverage. Actual operation stays distinct from
+requested circulation. Existing historical gaps remain gaps, and supported
+v0.7.5 CSV pulses retain their original ten-minute interpretation.
 
-The condition includes zero so a stopped pump can report its measured power.
-It remains true for positive readings instead of waiting for another threshold
-crossing. Do not wrap it in `changes` or compare the source against the virtual
-device: that would discard useful equal-value reports. `trigger: "Always"`
-selects the physical power attribute as a trigger; it does not poll the relay.
-See the [SmartThings Rules documentation](https://developer.smartthings.com/docs/automations/rules).
-
-`changesOnly: false` prevents the Rule's comparison from intentionally requiring
-a value change. It cannot force the physical driver or SmartThings event path
-to emit another event for an unchanged measurement. A successful device refresh
-or a newer cloud attribute timestamp does not by itself establish automatic
-forwarding. This setup has no verified periodic, unchanged-value reporting cadence.
-Do not schedule manual Rule execution to manufacture a heartbeat from cached power.
-
-### Configure the publisher and recreate the Rule
-
-Use the physical relay's device ID as the source and the separate MQTT Energy
-device ID as the destination. Verify their current identities, profiles and
-capabilities in the same SmartThings location; display labels can be renamed.
-The source must report watts. The destination's `setPower` command accepts a
-number in the range 0–100000; this template is for a nonnegative pump load,
-not a signed import/export meter. It does not forward cumulative `energyMeter`
-readings or convert kW to W.
-
-Configure the MQTT Energy device in the SmartThings app's device Settings:
-
-| Preference ID | Selection |
-| --- | --- |
-| `ppublish` | `true` — enable power publishing |
-| `ppubtopic` | `stmq/home/dhwr/status/power` |
-| `punitsset` | `watts` |
-| `qos` | `qos1` |
-
-Configure the broker on the MQTT Device Creator as required by that driver, and
-confirm its connection status. Changing ST-MQ configuration does not configure
-this publisher. Verify preferences after saving them; the available device
-preferences API rejected attempted writes with HTTP 405, so use the app's
-settings flow for this installation.
-
-The driver's [`handle_setpower`](https://github.com/toddaustin07/MQTTDevices/blob/main/hubpackage/src/cmdhandlers.lua)
-publishes the numeric command argument as a string whenever power publishing is
-enabled and the MQTT client is ready. It does not wait for the virtual device's
-stored value to change. The units preference affects its displayed power; it does
-not convert the published string. Keep watts throughout this route. The command
-handler does not buffer a missing MQTT connection for later measurement replay.
-
-Copy [dhwr-power-rule.template.json](smartthings/dhwr-power-rule.template.json)
-to a private file. Replace both `REPLACE_DHWR_RELAY_DEVICE_ID` occurrences and the
-`REPLACE_MQTT_ENERGY_DEVICE_ID` occurrence with the verified mapping. The template
-contains no account, location, hub or device identifiers and deliberately omits
-server-generated fields such as Rule ID, status and execution location.
-
-Use an authenticated SmartThings CLI. Save requests and responses outside Git
-with private directory mode `0700` and file mode `0600`; set `umask 077` first.
-The following are command templates: replace angle-bracket placeholders and
-capture stdout and stderr in private files, since the results contain identifiers.
-
-```text
-smartthings rules --location <location-id> --json
-smartthings rules:create --location <location-id> --input <private-rule.json> --json
-smartthings rules <rule-id> --location <location-id> --json
-smartthings devices:preferences <mqtt-energy-device-id> --json
-```
-
-Inspect existing Rules before creating a replacement to avoid duplicate publishers.
-Save the returned Rule ID and submitted JSON. Compare the installed `name` and
-`actions` with the private request and check `status: "Enabled"`. The verified
-installation reports `executionLocation: "Local"`; read this field after changes,
-since execution placement depends on the devices and services involved. Rule
-creation and publisher configuration are separate from ST-MQ subscriptions.
-
-### Verify automatic delivery
-
-Check these separately:
-
-1. The installed Rule has the intended source in both device operands, the
-   separate destination, the nonnegative comparison and the numeric argument.
-   Check source/destination health, source units and publisher preferences too.
-2. A manual Rule execution can test the destination command and MQTT transport.
-   It forwards cached source state, so an arrival proves only that command path;
-   it is not a new physical measurement or an automatic trigger test.
-3. During a normal circulation run, observe a genuine physical power event and
-   its automatic non-retained MQTT arrival with the same numeric watts, including
-   a zero report after stopping. Correlate private source/event and MQTT captures.
-   A successful Rule response or `ONLINE` device health alone is insufficient.
-4. Treat identical-value repetition and periodic delivery as unverified until
-   several genuine reports demonstrate them. An unchanged refresh that produces
-   no MQTT arrival is not evidence of a heartbeat. Fix upstream report/event
-   emission before choosing a finite ST-MQ freshness deadline.
-
-The setup check reached MQTT with a manual Rule execution, but did not establish
-automatic delivery from the unchanged-value refresh. No physical switch operation
-was performed as part of the subsequent read-only Rule verification.
-
-## Live power in ST-MQ
-
-The public defaults already contain this enabled monitoring entry:
-
-```json
-{
-  "id": "dhwr",
-  "label": "Hot-water circulation",
-  "area": "home",
-  "kind": "power",
-  "connection": "mqtt:stmq/home/dhwr/status/power",
-  "enabled": true,
-  "record": false,
-  "max_age_seconds": 0,
-  "mqtt": {},
-  "readings": []
-}
-```
-
-`kind: "power"` supplies the built-in `dhwr_power` reading in watts. A plain
-numeric payload needs no JSON path or extra reading mapping. The equipment card
-shows the last reported watts and their receive time alongside the requested
-run. Positive watts means circulation is on; zero means off. This confirms
-electrical pump operation, not water flow. Each ON/OFF request needs a subsequent
-non-retained power report; the pre-request value cannot confirm a new command.
-Missing or mismatching feedback remains marked as needing attention.
-
-`max_age_seconds: 0` is an explicit event-only policy: while connected, the last
-reported value remains available with its original timestamp until replaced.
-It does not establish a current measurement or detect a silent upstream failure.
-Disconnecting invalidates the reading, and reconnecting or restarting needs a new
-non-retained report. Rechecking subscriptions establishes that ST-MQ is listening;
-it neither refreshes the relay nor re-executes the Rule. No request endpoint or
-heartbeat is configured for this publisher. Retained messages cannot establish
-live DHWR feedback.
-
-A private `equipment.devices` override replaces the complete public list. If one
-is present, add this entry there while retaining the other equipment entries.
-Use `enabled: false` to disable monitoring where this publisher is not installed.
-The measurement topic must differ from `mqtt.dhwr_topic`, whose default is
-`stmq/home/dhwr/command/switch`. The feedback entry cannot enable `switch_control` or
-`tariff_control`; Start/Stop circulation uses ST-MQ's durable timed command path.
-
-## Optional switch feedback
-
-Add switch feedback only when an independent publisher actually reports the
-physical relay's switch state. Replace the power entry with a `kind: "switch"`
-entry on that publisher's exact state topic and map `dhwr_power` to the separate
-power topic. For example, with an invented switch publisher:
-
-```json
-{
-  "id": "dhwr",
-  "label": "Hot-water circulation",
-  "area": "home",
-  "kind": "switch",
-  "connection": "mqtt:example/dhwr/status",
-  "record": false,
-  "max_age_seconds": 120,
-  "mqtt": { "state_path": "switch" },
-  "readings": [
-    { "key": "power", "label": "Pump power", "unit": "W", "topic": "stmq/home/dhwr/status/power", "record": false }
-  ]
-}
-```
-
-This additional switch publisher is not created by the power Rule. For the
-example, it sends non-retained JSON such as `{"switch":"on"}` and
-`{"switch":"off"}`. State also accepts `ON`/`OFF`, JSON booleans, or numeric 1/0.
-Omit `mqtt.state_path` for a plain state payload. This finite two-minute deadline
-requires genuine repeated switch reports, preferably every minute. Power expires
-under that deadline too; do not assume the event-only power Rule provides that
-cadence. When power feedback is configured, it remains authoritative for pump
-operation; a switch report cannot replace missing power. Omit the power mapping
-only when deliberately using switch-only verification.
-
-Safe dotted paths can select nested JSON fields. `mqtt.timestamp_path` can select
-a UTC epoch-millisecond timestamp or an ISO timestamp with an explicit timezone.
-Without a source timestamp, a report uses its receive time. Command, state and
-separate power topics must be distinct. Configure a read-only request only if
-that integration implements it; its request topic must differ from the command.
-
-With power or switch feedback configured, **Stop** is available when a fresh report
-shows ON even without an ST-MQ run, such as circulation started in SmartThings.
-That explicit OFF uses the same durable delivery/retry path. Its broker
-acknowledgement remains separate from the reported switch becoming OFF.
-
-## Recording and chart interpretation
-
-Raw power stays in memory (`record: false`). Each accepted report also records
-compact `dhwr_active` state: positive watts is 1, zero is 0. Disconnects, invalid
-reports and configured expiry record unavailable boundaries. The chart shades
-these actual ON intervals; after feedback begins, commands cannot fill missing
-feedback. Event-only readings retain their last state until a subsequent report
-or loss of availability, without claiming periodic measurement coverage. Older
-history before the first feedback sample retains recorded requested intervals.
-Imported historical CSV `heaton60` pulses keep their original ten-minute
-interpretation. These changes preserve the committed learning algorithm and CSV
-provenance.
-
-Current Home state is version 2 under `executor:home`, shared by physical input
-modes. Before ON, ST-MQ saves the OFF obligation and an opaque digest of the exact
-broker/account/topic route. Tariff obligations independently bind the actual
-configured relay identities. A replacement route cannot acknowledge or clear an
-original obligation; the unresolved state remains visible until the original
-authorized route is available. Credentials are never copied into this state.
-Older unscoped development state is rejected and requires deliberate offline
-fresh initialization, without an automatic reset or migration.
-
-A run uses an in-process elapsed deadline as well as its displayed wall deadline.
-Clock rollback cannot extend its duration. Calendar pauses also cannot extend
-beyond their originally admitted elapsed duration. Restart attempts cleanup
-instead of resuming ON. Expiry is an OFF/restoration attempt; unavailable delivery
-leaves a visible obligation for retry, not a guarantee of physical pump receipt.
+Configure the device's power-on state to OFF. A device-local maximum-on watchdog
+above the longest configured run provides independent protection when the
+application or broker cannot deliver OFF; it does not replace the executor's
+normal timer. Verify native identity, current power, ON, timed OFF and restart
+restoration on the installed relay before enabling active circulation. These
+physical checks are separate from offline software validation.

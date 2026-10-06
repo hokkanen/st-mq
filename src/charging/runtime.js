@@ -1812,6 +1812,10 @@ export class ChargingRuntime {
     const first = firstItem?.adapter?.readCurrentSupply?.() ?? firstItem?.controller?.status()?.snapshot, supply = first?.supply;
     const views = this.views(), view = views.find(row => row.id === 'charger2');
     const now = this.clock(), priority = this.settings.priority;
+    // Without a physical C2 session, report remaining present capacity after
+    // connected requests. A preference for C2 cannot invent a competing request
+    // or remove the connected peer's commitment before a car arrives.
+    const capacityOnly = view?.values?.connected?.value === false;
     // Forecast household demand sizes future delivery, not a live entitlement.
     // Apply the planner's request/deadline policy to admitted present headroom.
     // C1 participates through confirmed native permission; C2's requested open
@@ -1831,7 +1835,7 @@ export class ChargingRuntime {
       ...['connected', 'maximumCurrentA', 'nativeCurrentA', 'vehicleCurrentA', 'vehicleNotBefore']
         .map(key => charger.values[key]?.value ?? null)])) : null;
     if (!holdScope) this.currentAllocationHold = null;
-    const allocateCurrent = priority === 'charger2' ? undefined : headroom => {
+    const allocateCurrent = priority === 'charger2' && !capacityOnly ? undefined : headroom => {
       if (this.currentAllocationHold?.scope !== holdScope
         || now < this.currentAllocationHold.startedAt || now >= this.currentAllocationHold.end) this.currentAllocationHold = null;
       const selected = currentChargingAllocation({ now, chargers: requests, priority, budgetCurrentA: headroom,
@@ -1849,8 +1853,9 @@ export class ChargingRuntime {
       evidence: supply?.feedEvidence?.property },
       easee: { healthy: first?.online === true, currents: supply?.chargerCurrentA, times: supply?.observationTimes?.charger,
         evidence: supply?.feedEvidence?.charger },
-      vehicleCurrentA: view?.values.vehicleCurrentA?.value, notBefore: view?.values.vehicleNotBefore?.value,
-      priority, allocateCurrent,
+      vehicleCurrentA: capacityOnly ? null : view?.values.vehicleCurrentA?.value,
+      notBefore: capacityOnly ? null : view?.values.vehicleNotBefore?.value,
+      priority: capacityOnly ? null : priority, allocateCurrent,
       allocationA: null, reservationA: 0 };
   }
   currentPlanBasis(item) {

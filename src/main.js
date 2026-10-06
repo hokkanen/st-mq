@@ -184,8 +184,7 @@ export async function start({ config = loadConfig(), readConfig = configurationR
     await authority?.reconfigure(config.connections.mqtt);
     requireRunning();
     if (['mqtt', 'providers'].includes(config.input) && config.connections.mqtt?.address) {
-      commandTransport = createHeatingTransport({ connection: config.connections.mqtt, connect: mqttOptions.connect,
-        canControl });
+      commandTransport = createHeatingTransport({ canControl });
     }
     engine = new Engine({ store, config, clock, commandTransport, canControl });
     engine.historyRecovery = historyRecovery;
@@ -216,6 +215,8 @@ export async function start({ config = loadConfig(), readConfig = configurationR
         const identities = ids.map(id => acquisition.equipment.signature(id));
         return ids.length && identities.every(Boolean) ? identities : null;
       });
+      if (acquisition.equipment?.hasDhwr) commandTransport.setDhwrRelay(acquisition.equipment.publishDhwr,
+        () => acquisition.equipment.signature('dhwr'));
       if (acquisition.h66) engine.setH66(acquisition);
     }
     engine.equipmentTests = createEquipmentTests({ store, clock, getEquipment: () => engine.equipment,

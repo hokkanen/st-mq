@@ -317,18 +317,18 @@ export async function checkEquipmentBrowser({ evaluate, command, context, until,
     assert.match(await evaluate("document.getElementById('equipment-connections').textContent"), /Last live packet:/);
     assert.equal(await evaluate("document.querySelector('#equipment-connections [data-device-id=\"connection:temperatures:home\"] code').textContent"), 'invented/home/upstairs/temperature');
     // Power reports determine circulation operation independently of run requests.
-    await evaluate("window.equipmentUiFixture.savedDhwr=structuredClone(window.equipmentUiFixture.dhwr);window.equipmentUiFixture.dhwr.actualOn=null;Object.assign(window.equipmentUiFixture.dhwr.feedback,{stateConfigured:true,powerConfigured:true,basis:'power',state:null});window.equipmentUiFixture.dhwr.feedback.power.eventOnly=true;true");
+    await evaluate("window.equipmentUiFixture.savedDhwr=structuredClone(window.equipmentUiFixture.dhwr);window.equipmentUiFixture.dhwr.actualOn=null;Object.assign(window.equipmentUiFixture.dhwr.feedback,{stateConfigured:true,powerConfigured:true,basis:'power',state:null});window.equipmentUiFixture.dhwr.feedback.power.eventOnly=false;true");
     await refresh();
     assert.equal(await evaluate("document.querySelector('#dhwr-live-power .status-detail-label').textContent"), '0 W');
     assert.equal(await evaluate("document.querySelector('#dhwr-live-state .status-detail-label').textContent"), 'Off');
-    assert.equal(await evaluate("document.getElementById('dhwr-live-power-label').textContent"), 'Last reported power');
-    assert.match(await evaluate("document.getElementById('dhwr-live-power-time').textContent"), /Reported 7 Sept/);
-    assert.equal(await evaluate("document.getElementById('dhwr-feedback-status').textContent"), 'Power reported');
+    assert.equal(await evaluate("document.getElementById('dhwr-live-power-label').textContent"), 'Live power');
+    assert.equal(await evaluate("document.getElementById('dhwr-live-power-time').hidden"), true);
+    assert.equal(await evaluate("document.getElementById('dhwr-feedback-status').textContent"), 'Power available');
     await evaluate("window.equipmentUiFixture.dhwr.feedback.power.value=38;true"); await refresh();
     assert.equal(await evaluate("document.querySelector('#dhwr-live-power .status-detail-label').textContent"), '38 W');
     assert.equal(await evaluate("document.getElementById('dhwr-stop').disabled"), false, 'Positive measured power enables stopping circulation');
     await evaluate("document.querySelector('#dhwr-live-power .status-detail-trigger').click();true"); await settle();
-    assert.match(await evaluate("document.getElementById('status-detail-popover').textContent"), /Updated when power changes/);
+    assert.doesNotMatch(await evaluate("document.getElementById('status-detail-popover').textContent"), /Updated when power changes/);
     await evaluate("document.querySelector('#status-detail-popover .status-detail-close').click();window.equipmentUiFixture.dhwr.feedback.available=false;window.equipmentUiFixture.dhwr.feedback.power.stale=true;true");
     await refresh();
     assert.equal(await evaluate("document.querySelector('#dhwr-live-power .status-detail-label').textContent"), 'Unavailable');
@@ -365,9 +365,9 @@ export async function checkEquipmentBrowser({ evaluate, command, context, until,
     assert.equal(await evaluate("document.getElementById('dhwr-device').closest('#garage-equipment-details')!==null"), true, 'Circulation follows its configured location');
     assert.equal(await evaluate("document.querySelectorAll('#garage-equipment-readings [data-device-id=dhwr]').length"), 0, 'Circulation feedback has one row');
     await evaluate("window.equipmentUiFixture.dhwr.feedback.deviceId=null;window.equipmentUiFixture.devices.pop();true"); await refresh();
-    await evaluate("window.equipmentUiFixture.dhwr.actualOn=null;window.equipmentUiFixture.dhwr.active=false;Object.assign(window.equipmentUiFixture.dhwr.feedback,{deviceId:'dhwr',stateConfigured:true,powerConfigured:true,basis:'power',state:null});window.equipmentUiFixture.dhwr.feedback.power.eventOnly=true;window.equipmentUiFixture.devices.push({id:'dhwr',label:'Hot-water circulation',area:'home',kind:'power',available:true,topics:[{role:'Power',topic:'stmq/home/dhwr/status/power',direction:'subscribe'}]});true"); await refresh();
+    await evaluate("window.equipmentUiFixture.dhwr.actualOn=null;window.equipmentUiFixture.dhwr.active=false;Object.assign(window.equipmentUiFixture.dhwr.feedback,{deviceId:'dhwr',stateConfigured:true,powerConfigured:true,basis:'power',state:null});window.equipmentUiFixture.dhwr.feedback.power.eventOnly=false;window.equipmentUiFixture.devices.push({id:'dhwr',label:'Hot-water circulation',area:'home',kind:'switch',source:'Shelly',available:true,topics:[{role:'State and power',topic:'stmq/home/dhwr/status/switch:0',direction:'subscribe'}]});true"); await refresh();
     assert.equal(await evaluate("document.querySelectorAll('#home-equipment-readings [data-device-id=dhwr]').length"), 0);
-    assert.equal(await evaluate("[...document.querySelectorAll('#equipment-connections code')].some(n=>n.textContent==='stmq/home/dhwr/status/power')"), true);
+    assert.equal(await evaluate("[...document.querySelectorAll('#equipment-connections code')].some(n=>n.textContent==='stmq/home/dhwr/status/switch:0')"), true);
     await evaluate("document.getElementById('test-circulation').click();true");
     await until("window.equipmentUiFixture.calls.length === 5 && !document.getElementById('test-circulation').disabled"); await settle();
     assert.match(await evaluate("document.getElementById('dhwr-message').textContent"), /Waiting for device feedback/);

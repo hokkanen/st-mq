@@ -109,6 +109,7 @@ export function createEaseeOcpp({ config: input, chargerId, clock = Date.now, ca
   let device = null;
   let observedTransaction = null, connectionId = null, authenticatedConnectionId = null, transactionEvidence = null;
   let recoveryCandidate = null, recoveryConflict = false, evidenceBoundaryAt = null;
+  let currentSupplyBoundaryAt = null;
   const instanceId = randomUUID(); let connectionSequence = 0;
   let statusTransition = 0;
   const values = new Map(), replies = new Map(), pendingCalls = new Map();
@@ -236,6 +237,14 @@ export function createEaseeOcpp({ config: input, chargerId, clock = Date.now, ca
   const permittedBy = guard => { try { return guard() === true; } catch { return false; } };
   const transportFresh = () => !closed && canControl() && stateReady && socket?.readyState === 1
     && lastMessageAt !== null && clock() >= lastMessageAt && clock() - lastMessageAt <= MAX_AGE_MS;
+  function transportActivity() {
+    const now = clock();
+    // A heartbeat can keep held current evidence healthy, but cannot revive
+    // measurements from before an actual feed outage on the same socket.
+    if (lastMessageAt !== null && (now < lastMessageAt || now - lastMessageAt > MAX_AGE_MS))
+      currentSupplyBoundaryAt = now;
+    lastMessageAt = now;
+  }
   function reset() {
     rejectRequests('ocpp-disconnected');
     booted = false; values.clear(); futureReadings.length = 0; replies.clear();
@@ -243,6 +252,7 @@ export function createEaseeOcpp({ config: input, chargerId, clock = Date.now, ca
     connectorStatus = null; connectorStatusAt = null; connectorReceivedAt = null; connectorStatusExplicit = false;
     observedTransaction = null; connectionId = null; authenticatedConnectionId = null; transactionEvidence = null;
     recoveryCandidate = null; recoveryConflict = false; evidenceBoundaryAt = null;
+    currentSupplyBoundaryAt = null;
     preparingAttempted = false; remoteStartStatus = 'idle'; statusTransition++;
     onDisconnect();
   }
@@ -469,7 +479,7 @@ export function createEaseeOcpp({ config: input, chargerId, clock = Date.now, ca
       }
       const pending = pendingCalls.get(frame[1]);
       if (!pending || pending.replyId) return;
-      lastMessageAt = clock();
+      transportActivity();
       const remaining = connectorStatusAt - clock();
       if (pending.resolve && !pending.settled && frame[0] === 3 && pending.connection === socket && transportFresh()
         && remaining > 0 && remaining <= MAX_FUTURE_MS) {
@@ -487,7 +497,7 @@ export function createEaseeOcpp({ config: input, chargerId, clock = Date.now, ca
     const [, id, action, payload] = frame;
     if (frame.length !== 4 || typeof id !== 'string' || !id.length || id.length > 36 || typeof action !== 'string'
       || !payload || typeof payload !== 'object' || Array.isArray(payload)) { socket.close(1002, 'Invalid OCPP call'); return; }
-    lastMessageAt = clock();
+    transportActivity();
     const requestHash = digest({ action, payload });
     if (replies.has(id)) {
       const prior = replies.get(id);
@@ -512,6 +522,7 @@ export function createEaseeOcpp({ config: input, chargerId, clock = Date.now, ca
         source: 'ocpp-boot', receivedAt: lastMessageAt });
       connectorStatus = null; connectorStatusAt = null; connectorReceivedAt = null; connectorStatusExplicit = false; observedTransaction = null;
       recoveryCandidate = null; recoveryConflict = false; evidenceBoundaryAt = clock();
+      currentSupplyBoundaryAt = clock();
       preparingAttempted = false; remoteStartStatus = 'idle'; statusTransition++;
       response = { status: 'Accepted', currentTime: currentTime(), interval: 30 };
     } else if (action === 'Heartbeat') response = { currentTime: currentTime() };
@@ -649,6 +660,7 @@ export function createEaseeOcpp({ config: input, chargerId, clock = Date.now, ca
             const previous = socket; socket = null; previous?.terminate();
             reset(); socket = connection; connectionId = `${instanceId}:${++connectionSequence}`;
             authenticatedConnectionId = connectionId; connectedAt = clock(); evidenceBoundaryAt = connectedAt; error = null;
+            currentSupplyBoundaryAt = connectedAt;
             socket.on('message', (data, binary) => { if (socket === connection) receive(data, binary); });
             socket.on('error', () => {});
             socket.on('close', () => { if (socket === connection) { socket = null; reset(); } });
@@ -756,6 +768,18 @@ export function createEaseeOcpp({ config: input, chargerId, clock = Date.now, ca
           provenance: isRecovered(active) ? 'meter-values' : 'start-transaction', confirmedAt: active.confirmedAt ?? active.startedAt } : null,
         readings: [...values.values()].filter(row => row.value !== null && instant(row.timestamp) <= clock()
           && clock() - instant(row.timestamp) <= MAX_AGE_MS).map(row => ({ ...row })) };
+    },
+    currentSupplySnapshot() {
+      // Load allocation admits the latest current on a healthy source epoch.
+      // This separate view does not loosen command, transaction, recording or
+      // identification freshness, and never updates a measurement's clocks.
+      if (!refreshAuthority() || !transportFresh() || currentSupplyBoundaryAt === null) return null;
+      releaseFutureReadings();
+      if (!stateReady) return null;
+      return { connectionId, epoch: `${connectionId}:${currentSupplyBoundaryAt}`,
+        readings: [...values.values()].filter(row => [183, 184, 185].includes(row.id)
+          && instant(row.timestamp) >= currentSupplyBoundaryAt && instant(row.timestamp) <= clock()
+          && row.receivedAt >= currentSupplyBoundaryAt).map(row => ({ ...row })) };
     },
     snapshot() {
       if (!refreshAuthority() || socket?.readyState !== 1 || lastMessageAt === null

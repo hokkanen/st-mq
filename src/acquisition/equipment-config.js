@@ -115,11 +115,11 @@ export function equipmentConfiguration(input = {}) {
     // DHWR commands belong to the executor's durable timed ON/OFF path. Its
     // equipment entry supplies independent device feedback, never another writer.
     if (kind === 'power' && protocol !== 'mqtt') throw new Error('Power-only equipment requires an MQTT measurement topic');
-    if (id === 'dhwr' && (protocol !== 'mqtt' || !['switch', 'power'].includes(kind) || controlsSwitch || controlsHeat
-      || row.signal && row.signal !== (kind === 'power' ? 'dhwr_power' : 'dhwr_active')))
-      throw new Error('DHWR feedback requires monitoring-only MQTT power or switch feedback with its DHWR signal');
+    if (id === 'dhwr' && (protocol !== 'shelly' || generation < 2 || kind !== 'switch' || controlsSwitch || controlsHeat
+      || row.signal && row.signal !== 'dhwr_active'))
+      throw new Error('DHWR requires a direct modern Shelly switch owned by the timed circulation controller');
     const record = bool(row.record, id !== 'dhwr');
-    if (!record && (protocol !== 'mqtt' || !['switch', 'power'].includes(kind)))
+    if (!record && id !== 'dhwr' && (protocol !== 'mqtt' || !['switch', 'power'].includes(kind)))
       throw new Error('Live-only equipment recording requires an MQTT switch or power sensor');
     if (id === 'dhwr' && record) throw new Error('DHWR raw telemetry must stay live-only; derived circulation feedback changes and availability are recorded separately');
     const reductionOn = bool(row.reduction_on, true), age = Math.round(number(row.max_age_seconds, ['door', 'power'].includes(kind) ? 0 : maxAgeMs / 1000, 0, 86400) * 1000);
@@ -152,7 +152,7 @@ export function equipmentConfiguration(input = {}) {
       throw new Error('Dehumidifiers record one Off/Low/Medium/High state; other settings remain live-only');
     if (kind === 'dehumidifier' && row.signal != null && row.signal !== `${id}_state`)
       throw new Error('Dehumidifier history must use its current <device_id>_state signal');
-    if (readings.some(value => !value.record && (protocol !== 'mqtt' || value.key === 'energy_counter')))
+    if (readings.some(value => !value.record && (protocol !== 'mqtt' && id !== 'dhwr' || value.key === 'energy_counter')))
       throw new Error('Live-only reading mappings require MQTT and cannot disable cumulative energy accounting');
     if (protocol === 'mqtt' && readings.some(value => value.component) || protocol === 'shelly' && readings.some(value => value.topic || !value.component))
       throw new Error('Equipment mapping must match its selected connection protocol');

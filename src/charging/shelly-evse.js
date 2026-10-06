@@ -1,5 +1,5 @@
 import { createHash, randomUUID } from 'node:crypto';
-import { createShellyCurrentLimiter, vehiclePilotLimit } from './shelly-limit.js';
+import { shellyCurrentLimit, vehiclePilotLimit } from './shelly-limit.js';
 import { createMqttAdmission } from '../acquisition/mqtt-admission.js';
 import { shellyProfile, supportedShellyStates } from './shelly-profile.js';
 import { chargingPlanInputsUnavailable } from './plan-inputs.js';
@@ -835,15 +835,8 @@ export function createShellyController({ adapter, initialState, saveState = () =
     try { onStatusChange()?.catch?.(() => {}); } catch {}
   };
   const persist = async () => { await saveState(copy(state)); notifyStatus(); };
-  const currentLimiter = createShellyCurrentLimiter();
-  const limitCurrent = context => {
-    const snapshot = adapter.snapshot(), setting = snapshot.fields.current_limit;
-    return currentLimiter.evaluate({ config: adapter.config, ...context,
-      nativeCurrentA: state.manualCurrentA, shelly: adapter.liveCurrents(), now: clock(),
-      currentSetting: { currentA: setting?.value, confirmed: fresh(setting) } },
-    { authorized: !closed && canControl(), association: snapshot.association, generation: snapshot.generation,
-      connected: snapshot.session?.connected, sessionId: snapshot.session?.sessionId, connectedAt: snapshot.session?.connectedAt });
-  };
+  const limitCurrent = context => shellyCurrentLimit({ config: adapter.config, ...context,
+    nativeCurrentA: state.manualCurrentA, shelly: adapter.liveCurrents(), now: clock() });
   const scheduleToken = snapshot => snapshot.nativeScheduleFingerprint ?? (snapshot.nativeScheduleActive ? 'active' : null);
   const systemEcho = (field, value) => field?.commandSource === 'sys' && field.value === value;
   const rememberCurrent = field => {
@@ -1159,8 +1152,8 @@ export function createShellyController({ adapter, initialState, saveState = () =
     }
   }
   const stopObserving = adapter.observeStatus?.(() => { if (!closed) notifyStatus(); });
-  return { status, supportsIdentification: true, invalidate() { revision++; if (!canControl()) currentLimiter.reset(); },
-    close() { closed = true; stopObserving?.(); revision++; currentLimiter.reset(); return queue.catch(() => {}); },
+  return { status, supportsIdentification: true, invalidate() { revision++; },
+    close() { closed = true; stopObserving?.(); revision++; return queue.catch(() => {}); },
     update(input = {}) {
       if (Object.hasOwn(input, 'resume')) throw fail('unsupported-shelly-control-input');
       const intentRevision = ++revision;
@@ -1174,13 +1167,11 @@ export function createShellyController({ adapter, initialState, saveState = () =
       }
       queue = queue.catch(() => {}).then(async () => {
         if (closed || intentRevision !== revision) return;
-        if (!canControl()) currentLimiter.reset();
         if (!takeoverRequested && takeoverResult?.state !== 'pending') takeoverResult = null;
         enabled = input.enabled === true;
         if (input.replan === true) { await persist(); planningRevision = input.controlsRevision ?? null; }
         await adapter.refresh();
         let snapshot = adapter.snapshot();
-        if (!snapshot.online || !snapshot.controlReady || !snapshot.session?.connected) currentLimiter.reset();
         await manageCurrentTest({ snapshot, intentRevision, early: true });
         snapshot = adapter.snapshot();
         const controlScope = snapshot;
@@ -1205,6 +1196,23 @@ export function createShellyController({ adapter, initialState, saveState = () =
           state.pending = null;
           delete state.lastStart; delete state.lastStartAt; delete state.lastCurrent; delete state.lastCurrentAtSource; delete state.permissionCommand;
           delete state.lastCurrentInstructionAt;
+        }
+        if (snapshot.session?.connected === false && snapshot.pluggedIn === false) {
+          // Available capacity is an observation even without a vehicle. Do not
+          // carry a departed vehicle's restrictions into this calculation or
+          // dispatch any instruction to the unplugged charger.
+          identification = null;
+          if (adapter.config.limiterEnabled) {
+            const context = typeof getAllocation === 'function' ? await getAllocation(copy(snapshot)) : input.allocation ?? {};
+            const limitation = shellyCurrentLimit({ config: adapter.config, ...context,
+              nativeCurrentA: null, vehicleCurrentA: null, shelly: adapter.liveCurrents(), now: clock() });
+            state.limiter = { ...limitation,
+              sourceEpochs: [context.property?.evidence?.epoch ?? null, context.easee?.evidence?.epoch ?? null],
+              scope: { generation: snapshot.generation,
+                sessionId: snapshot.session.sessionId, connectedAt: snapshot.session.connectedAt } };
+          } else state.limiter = null;
+          state.phase = 'off'; state.reason = 'disconnected';
+          await persist(); return;
         }
         let start = snapshot.fields.start_charging;
         let current = snapshot.fields.current_limit;

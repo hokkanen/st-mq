@@ -6,6 +6,17 @@ Versions follow Semantic Versioning. `-dev.N` denotes a development prerelease.
 
 ## Unreleased
 
+- Both charger allowances remain visible and recorded with no car plugged in.
+  Charger 2 shows current available capacity without applying an instruction,
+  preserving connected-peer commitments and existing historical gaps.
+- Charger 2 current allocation uses each healthy feed's latest valid measurement
+  immediately. The measurement-pairing hold is removed; independently timed
+  reports can temporarily overestimate or underestimate household headroom.
+  Source-health checks, fallback, native limits and command confirmation remain.
+- Hot-water circulation uses a direct Shelly 1PM Gen3 connection with native
+  relay confirmation and power feedback. Timed shutoff, restart restoration and
+  device identity checks remain; the old raw MQTT command route and SmartThings
+  power forwarding are removed. Configure the relay prefix as `stmq/home/dhwr`.
 - Charger cards expand with a chevron beside their title. The compact footer
   keeps charging status and available-current or fallback allowance visible
   alongside action feedback, with a distinct **Session report · Open ↗** button.

@@ -659,7 +659,7 @@ export function createDeviceProviders({ connections = {}, http, tokenStore, cloc
   const startAppSignature = value => JSON.stringify([appSignature(value ? { ...value,
     stopAt: value.stopped ? value.stopAt : null } : null), nativeDynamicChargerAt]);
   function readCurrentSupply() {
-    const now = clock(), current = !closed && controlBackend === 'native' ? local.controlSnapshot?.() : null;
+    const now = clock(), current = !closed && controlBackend === 'native' ? local.currentSupplySnapshot?.() : null;
     const unavailableEvidence = source => ({ source, connected: false, online: null, synchronized: false,
       epoch: null, receivedAt: null, activityAt: null, sourceAt: null });
     const unknown = () => ({ currents: null, times: [null, null, null], source: null, evidence: unavailableEvidence(null) });
@@ -699,7 +699,7 @@ export function createDeviceProviders({ connections = {}, http, tokenStore, cloc
     if (nativeRows.length) {
       const receipts = nativeRows.map(row => row.receivedAt).filter(at => Number.isSafeInteger(at) && at <= now);
       charger.evidence = { source: 'easee-ocpp', connected: true, online: true, synchronized: charger.currents !== null,
-        epoch: current.connectionId, receivedAt: receipts.length ? Math.max(...receipts) : null,
+        epoch: current.epoch, receivedAt: receipts.length ? Math.max(...receipts) : null,
         activityAt: receipts.length ? Math.max(...receipts) : null,
         sourceAt: charger.currents !== null ? Math.max(...charger.times) : null };
     }

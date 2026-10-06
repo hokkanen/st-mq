@@ -103,6 +103,43 @@ function fixture(t, extra={}) {
     async ready(){client.emit('connect');client.emit('message','test/evse/online',Buffer.from('true'),{retain:true});await adapter.refresh();},
     notify(role,value,packet={}){if (['start_charging','current_limit'].includes(role) && !packet.retain) settingClock.set(role,{value,at:now});client.emit('message','test/evse/events/rpc',Buffer.from(JSON.stringify({src:'synthetic-evse',method:'NotifyStatus',params:{[`${roleTypes[role]}:${ids[role]}`]:{value,last_update_ts:now/1000}}})),packet);}};
 }
+test('unplugged capacity keeps updating without current or charging commands', async t => {
+  const f = fixture(t, { limiterEnabled: true });
+  f.fields.work_state = 'charger_free'; f.fields.start_charging = false; f.fields.current_limit = 6;
+  for (const phase of ['phase_a', 'phase_b', 'phase_c']) f.fields.phase_info[phase].current = 0;
+  f.fields.phase_info.total_power = 0;
+  await f.ready();
+  let household = 12, healthy = true, saved;
+  const controller = createShellyController({ adapter: f.adapter, clock: f.now, canControl: () => true,
+    getAllocation: () => ({ property: { ...reading([household, household, household], f.now()), healthy },
+      easee: reading([0, 0, 0], NOW), vehicleCurrentA: 0, nativeCurrentA: 6 }),
+    saveState: value => { saved = structuredClone(value); } });
+  t.after(() => controller.close());
+  for (const [load, expected] of [[12, 13], [19, 6], [20, 0], [9, 16]]) {
+    household = load; f.setNow(f.now() + 5000);
+    const view = await controller.update({ enabled: true, chargeNow: true });
+    assert.equal(view.limiter.loadCurrentA, expected);
+    assert.equal(view.limiter.currentA, expected, 'Departed vehicle and native session choices are not carried over');
+    assert.equal(view.limiter.fallback, false);
+    assert.equal(view.limiter.evaluatedAt, f.now());
+    assert.equal(view.phase, 'off'); assert.equal(view.reason, 'disconnected');
+  }
+  healthy = false; f.setNow(f.now() + 5000);
+  assert.equal((await controller.update({ enabled: false })).limiter.fallback, true);
+  assert.equal(saved.limiter.currentA, 12);
+  assert.equal(f.fields.current_limit, 6); assert.equal(f.fields.start_charging, false);
+  assert.equal(f.writes.filter(row => row.method.endsWith('.Set') || row.method === 'Schedule.Update').length, 0);
+});
+
+test('unplugged disabled limiter publishes no capacity or device instruction', async t => {
+  const f = fixture(t, { limiterEnabled: false }); f.fields.work_state = 'charger_free'; await f.ready();
+  const controller = createShellyController({ adapter: f.adapter, clock: f.now, canControl: () => true,
+    getAllocation: () => { throw Error('Disabled current adjustment does not assess capacity'); } });
+  t.after(() => controller.close());
+  assert.equal((await controller.update({ enabled: true })).limiter, null);
+  assert.equal(f.writes.filter(row => row.method.endsWith('.Set') || row.method === 'Schedule.Update').length, 0);
+});
+
 test('charger product metadata is scoped, read-only and keeps its discovery receipt', async t => {
   const f = fixture(t);
   Object.assign(f.deviceInfo, { ver: '2.0.1', mac: '00:00:00:00:00:00', key: 'synthetic-cloud-key' });

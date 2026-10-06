@@ -947,7 +947,6 @@ test('Charger 2 popups explain manual priority and unconfirmed instructions with
     ['native-schedule', { kind: 'schedule' }, /charger’s own schedule has priority/i],
     ['evse-command-unconfirmed', null, /outcome is still unknown.*fresh reading/i],
     ['telemetry-fallback', null, /configured fallback.*usable load measurements/i],
-    ['measurement-pair-pending', null, /previous confirmed ceiling is retained without an increase.*Waiting does not trigger fallback/i],
     ['future-control-condition', null, /Check the charger controls for details/],
   ]) {
     panel.update(status({ ...item, control: { phase: manual ? 'manual' : 'uncertain', reason, manual, confirmed: false } }));
@@ -2229,11 +2228,15 @@ test('both compact allowances retain distinct source, effective current and nati
     assert.equal($('charger2-allowance').textContent, label);
     assert.equal($('charger2-allowance').dataset.tone, tone);
   }
-  panel.update(status(one, { ...item, allowance: { ...allowance, mode: 'unknown', allowanceA: null, reason: 'measurement-pair-pending' },
-    limiter: { ...limiter, mode: 'unknown', allowanceA: 8, loadAllowanceA: 12, reason: 'measurement-pair-pending' } }));
-  assert.match(popup.textContent, /Held ceiling: 8 A/);
-  assert.match(popup.textContent, /previous confirmed ceiling is retained and cannot increase/);
-  assert.match(popup.textContent, /Waiting alone does not trigger fallback/);
+  const unpluggedLimiter = { ...limiter, mode: 'limited', allowanceA: 9, loadAllowanceA: 9,
+    reason: 'priority-allocation', applicationStatus: 'inactive' };
+  panel.update(status({ ...one, values: { ...one.values, connected: reading(false) } },
+    { ...item, values: { ...item.values, connected: reading(false) }, limiter: unpluggedLimiter,
+      allowance: { ...allowance, mode: 'limited', allowanceA: 9, limiter: unpluggedLimiter } }));
+  assert.equal($('charger1-allowance').textContent, '16 A Available');
+  assert.equal($('charger2-allowance').textContent, '9 A Available');
+  assert.match(popup.textContent, /No vehicle is connected/);
+  assert.match(popup.textContent, /No limiter instruction applied/);
   panel.close();
 });
 

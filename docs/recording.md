@@ -414,8 +414,13 @@ allowance, applicable maximum, reason and source evidence. Unchanged valid
 observations extend compact coverage in place rather than append duplicate rows
 on every poll. Original measurement clocks are not renewed by reading a cache.
 Restart, ownership changes, equipment/source changes and missing observations
-must not join unobserved time to a previous known state. Pending measurement
-pairing remains unknown, with any bounded held setting described separately.
+must not join unobserved time to a previous known state. Both numeric allowances
+continue while cars are unplugged: Charger 1 retains its native reported
+allowance; Charger 2 records presently available capacity while preserving active
+peer commitments, without inventing a vehicle request or applying an instruction.
+Its latest healthy inputs need no timestamp pairing. Asynchronous reports can
+temporarily bias calculated headroom; source clocks retain their original meaning.
+No previously unobserved periods are backfilled.
 
 Queries are bounded by the requested period and a finite decision budget. Missing
 coverage, invalid records and conflicting overlaps remain unknown. Omitted detail

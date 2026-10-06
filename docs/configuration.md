@@ -9,6 +9,13 @@ ST-MQ uses shared defaults and sparse installation overrides. The JSON field
 paths are the same in both files; nested objects merge without copying their
 other fields. There is no separate file to maintain for each feature.
 
+Hot-water circulation is configured under `equipment.devices` as the direct
+Shelly Gen3 `dhwr` switch, using native prefix `stmq/home/dhwr` and component 0.
+`controller.dhwr_duration_minutes` owns its timed run duration. Native identity,
+relay readback and power feedback remain distinct from that configured duration.
+The retired `mqtt.dhwr_topic` field and generic MQTT circulation route are rejected.
+See [circulation setup](dhwr-mqtt.md) for device configuration and restoration.
+
 ## Where a setting belongs
 
 | Location | Purpose |

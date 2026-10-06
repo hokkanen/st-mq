@@ -242,8 +242,10 @@ test('reload reconnects subscriptions and command transport, ignores late old pu
   assert.equal(app.engine.latest.indoor_temperature, undefined);
   replacement.emit('message', 'invented/second', Buffer.from(JSON.stringify({value:22,timestamp:Date.now()})), { retain: false });
   assert.equal(app.engine.latest.indoor_temperature.value, 22);
-  await app.engine.testHeating({ command: 'circulation' });
-  assert.equal(mqtt.packets.at(-1).address, 'mqtt://second.invalid');
+  assert.notEqual(app.engine.executor.commandTransport, oldEngine.executor.commandTransport);
+  const before = mqtt.packets.length;
+  await assert.rejects(app.engine.testHeating({ command: 'circulation' }), /target is unavailable|target changed/i);
+  assert.equal(mqtt.packets.length, before, 'A broker alone cannot supply circulation authority without a configured relay');
   await app.close();
   assert.equal(replacement.endCalls, 1);
 });

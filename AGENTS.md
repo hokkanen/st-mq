@@ -245,17 +245,22 @@ permission to act. See [the configuration guide](docs/configuration.md).
   Healthy synchronized reporting or current native status readback can confirm
   unchanged measurements without renewing their original last-change clocks.
   Reading an application cache or retained MQTT message cannot establish that
-  health. Observed charger transitions must be paired with property changes
-  before their subtraction revises household demand; matching changes that
-  leave household demand unchanged retain the same entitlement. Periodic OCPP
-  measurements confirm peer state after a changed property total, while a
-  healthy synchronized cloud feed can retain an unchanged peer value without
-  advancing its change clock. While observed transitions remain ambiguous,
-  retain at most the last validated ceiling and confirmed current
-  setting, report unknown headroom and permit no increase. No elapsed-time limit
-  turns that wait into an Equalizer takeover. This bounded observation state
-  resets on physical/source connection changes and actual feed loss. These
-  independent reports do not prove an atomic snapshot.
+  health. Use each source's latest valid current measurement whenever that
+  source is healthy in its current connection, independently of other sources'
+  timestamps. Neither OCPP nor cloud readings need to follow a property update;
+  changed charger values also need no later property confirmation. There is no
+  measurement-pairing hold or retained prior ceiling for timestamp ordering.
+  Separately arriving changes can temporarily overestimate or underestimate
+  household demand and headroom. The owner explicitly accepted that uncertainty
+  on 2026-10-06 to keep current allocation responsive; independently received
+  reports remain non-atomic and retain their original clocks. Invalid or
+  contradictory measurements and actual feed loss still select fallback.
+  Record both charger allowances even without plugged-in vehicles: Charger 1
+  keeps its healthy native Equalizer allowance; Charger 2 reports available
+  capacity while preserving connected-peer commitments without inventing an
+  unplugged vehicle's request or deadline. Connection, applied current, session
+  restrictions and command permission remain separate. Observing unplugged
+  capacity sends no device command and cannot backfill unobserved history.
   Command readiness, native readback and physical identification retain
   their separate freshness requirements. Unavailable or invalid source evidence
   uses the configured fallback, still respecting known tighter limits and never

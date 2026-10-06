@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { createShellyCurrentLimiter, shellyCurrentLimit } from '../src/charging/shelly-limit.js';
+import { shellyCurrentLimit } from '../src/charging/shelly-limit.js';
 import { ChargingRuntime } from '../src/charging/runtime.js';
 
 const NOW = Date.parse('2026-10-05T12:00:00Z');
@@ -126,89 +126,77 @@ test('allocation context transfers property and charger evidence without polling
   assert.equal(Object.hasOwn(result, 'allowance'), false); assert.equal(Object.hasOwn(result, 'nativeBudget'), false);
 });
 
-const scope = { authorized: true, connected: true, association: 'synthetic-shelly', sessionId: 'synthetic-session',
-  connectedAt: NOW - 60_000, generation: 1 };
-const sample = ({ at = NOW, household = 2, peer = 16, own = 12 } = {}) => {
-  const input = { ...fixture({ household, peer, own }), now: at, priority: 'balanced', allocationA: 10, reservationA: 12,
-    currentSetting: { currentA: 10, confirmed: true } };
-  for (const key of ['property', 'easee', 'shelly']) input[key].times = triple(at);
-  input.shelly.confirmedAt = at;
-  input.easee.evidence.source = 'easee-ocpp';
-  return input;
-};
 
-test('separate peer and property arrivals cannot stop Shelly or cause a timeout takeover', () => {
-  for (const order of ['peer-first', 'property-first']) {
-    const limiter = createShellyCurrentLimiter();
-    assert.equal(limiter.evaluate(sample(), scope).currentA, 10);
-    const next = sample({ at: NOW + 30_000, peer: 0 });
-    if (order === 'peer-first') next.property = sample().property;
-    else next.easee = sample().easee;
-    for (const elapsed of [30_000, 90_000, 3_600_000]) {
-      next.now = NOW + elapsed; next.shelly.confirmedAt = next.now;
-      const result = limiter.evaluate(next, scope);
-      assert.equal(result.currentA, 10); assert.equal(result.measurementPending, true);
-      assert.equal(result.modelAvailable, false); assert.equal(result.fallback, false);
+test('healthy charger values are admitted before or after property readings without rewriting source times', () => {
+  for (const source of ['easee-ocpp', 'easee-stream']) {
+    for (const peerAt of [NOW - 3600_000, NOW - 1000]) {
+      for (const ownAt of [NOW - 3600_000, NOW - 1000]) {
+        const input = fixture({ household: 12, peer: 6, own: 6 });
+        input.property.times = triple(NOW - 2000);
+        input.easee.times = triple(peerAt); input.easee.evidence.source = source;
+        input.shelly.times = triple(ownAt); input.shelly.confirmedAt = ownAt;
+        const original = structuredClone(input);
+        const result = shellyCurrentLimit(input);
+        assert.equal(result.currentA, 13); assert.equal(result.fallback, false);
+        assert.equal(result.modelAvailable, true);
+        assert.deepEqual(input, original);
+      }
     }
-    const joined = limiter.evaluate(sample({ at: NOW + 3_601_000, peer: 0 }), scope);
-    assert.equal(joined.currentA, 10); assert.equal(joined.measurementPending, undefined);
-    assert.deepEqual(joined.baseCurrentA, triple(2));
   }
 });
 
-test('household changes wait for actual charger confirmation and then apply the measured budget', () => {
-  const limiter = createShellyCurrentLimiter(); limiter.evaluate(sample(), scope);
-  const input = sample({ at: NOW + 20_000, household: 9 });
-  input.easee = sample().easee;
-  assert.equal(limiter.evaluate(input, scope).measurementPending, true);
-  input.easee.times = triple(NOW + 30_000); input.now = NOW + 30_000;
-  input.shelly.confirmedAt = input.now;
-  const confirmed = limiter.evaluate(input, scope);
-  assert.equal(confirmed.measurementPending, undefined); assert.equal(confirmed.currentA, 0);
-  assert.equal(confirmed.fallback, false); assert.deepEqual(confirmed.baseCurrentA, triple(9));
+test('successive property changes immediately revise capacity against unchanged healthy charger readings', () => {
+  const input = fixture({ household: 12, peer: 6, own: 6 });
+  input.easee.evidence.source = 'easee-ocpp';
+  const chargerTimes = structuredClone([input.easee.times, input.shelly.times]);
+  for (const [household, expected] of [[12, 13], [19, 6], [20, 0], [9, 16]]) {
+    input.now += 1000;
+    input.property.times = triple(input.now);
+    input.property.currents = triple(household + 12);
+    const result = shellyCurrentLimit(input);
+    assert.equal(result.currentA, expected); assert.equal(result.fallback, false);
+  }
+  assert.deepEqual([input.easee.times, input.shelly.times], chargerTimes);
 });
 
-test('separate own-current arrivals hold the confirmed setting without inventing household consumption', () => {
-  const limiter = createShellyCurrentLimiter(); limiter.evaluate(sample(), scope);
-  const input = sample({ at: NOW + 10_000, own: 10 }); input.property = sample().property;
-  assert.equal(limiter.evaluate(input, scope).currentA, 10);
-  assert.equal(limiter.evaluate(input, scope).measurementPending, true);
-  const joined = limiter.evaluate(sample({ at: NOW + 20_000, own: 10 }), scope);
-  assert.equal(joined.currentA, 10); assert.equal(joined.measurementPending, undefined);
+test('separate transitions use the latest healthy readings in either arrival order', () => {
+  // A one-phase-equivalent fixture starts at 8 A household + 16 A peer + 8 A own.
+  // The peer then drops to 8 A. Different arrival orders intentionally produce
+  // temporary estimates; the next matching observations restore the same result.
+  for (const order of ['property-first', 'charger-first']) {
+    const input = fixture({ household: 8, peer: 16, own: 8 });
+    input.config = { ...config, maximumCurrentA: 20 };
+    input.easee.evidence.source = 'easee-ocpp';
+    assert.equal(shellyCurrentLimit(input).currentA, 17);
+    const updateProperty = () => { input.property.currents = triple(24); input.property.times = triple(input.now); };
+    const updateCharger = () => { input.easee.currents = triple(8); input.easee.times = triple(input.now); };
+    input.now += 1000;
+    (order === 'property-first' ? updateProperty : updateCharger)();
+    const separate = shellyCurrentLimit(input);
+    assert.equal(separate.currentA, order === 'property-first' ? 20 : 9);
+    assert.equal(separate.fallback, false); assert.equal(separate.modelAvailable, true);
+    input.now += 1000;
+    (order === 'property-first' ? updateCharger : updateProperty)();
+    assert.equal(shellyCurrentLimit(input).currentA, 17);
+  }
 });
 
-test('pending observations cannot increase or bypass new restrictions, and outages withdraw held evidence', () => {
-  const limiter = createShellyCurrentLimiter(); limiter.evaluate(sample(), scope);
-  const input = sample({ at: NOW + 30_000, peer: 0 }); input.property = sample().property;
-  assert.equal(limiter.evaluate({ ...input, allocationA: 16, reservationA: 0 }, scope).currentA, 10);
-  assert.equal(limiter.evaluate({ ...input, nativeCurrentA: 7 }, scope).currentA, 7);
-  assert.equal(limiter.evaluate({ ...input, vehicleCurrentA: 0 }, scope).currentA, 0);
-  const failed = limiter.evaluate({ ...input, property: { ...input.property, healthy: false } }, scope);
-  assert.equal(failed.fallback, true); assert.equal(failed.measurementPending, undefined);
-  const recovered = limiter.evaluate(sample({ at: NOW + 40_000, peer: 0 }), { ...scope, generation: 2 });
-  assert.equal(recovered.fallback, false); assert.equal(recovered.currentA, 10);
+test('a Shelly current change is used immediately even before the property observation follows', () => {
+  const input = fixture({ household: 12, peer: 6, own: 6 });
+  assert.equal(shellyCurrentLimit(input).currentA, 13);
+  input.shelly.currents = triple(10); input.shelly.times = triple(NOW);
+  assert.equal(shellyCurrentLimit(input).currentA, 16);
+  input.property.currents = triple(28); input.property.times = triple(NOW);
+  assert.equal(shellyCurrentLimit(input).currentA, 13);
 });
 
-
-test('unchanged healthy cloud peer state does not block genuine household changes indefinitely', () => {
-  const limiter = createShellyCurrentLimiter(), first = sample(); first.easee.evidence.source = 'easee-stream';
-  limiter.evaluate(first, scope);
-  const next = sample({ at: NOW + 3_600_000, household: 9 }); next.easee = first.easee;
-  const result = limiter.evaluate(next, scope);
-  assert.equal(result.measurementPending, undefined); assert.equal(result.currentA, 0);
-  assert.equal(result.fallback, false); assert.deepEqual(result.baseCurrentA, triple(9));
-});
-
-test('simultaneous own and peer changes cannot use an intervening property observation as their combined total', () => {
-  const limiter = createShellyCurrentLimiter(); limiter.evaluate(sample(), scope);
-  const next = sample({ at: NOW + 20_000, own: 16, peer: 0 });
-  next.property = sample({ at: NOW + 12_000, own: 16, peer: 16 }).property;
-  next.shelly.times = triple(NOW + 12_000);
-  const pending = limiter.evaluate(next, scope);
-  assert.equal(pending.measurementPending, true); assert.equal(pending.currentA, 10);
-  next.property = sample({ at: NOW + 22_000, own: 16, peer: 0, household: 3 }).property;
-  next.now = NOW + 50_000; next.easee.times = triple(next.now); next.shelly.confirmedAt = next.now;
-  const result = limiter.evaluate(next, scope);
-  assert.equal(result.measurementPending, undefined, 'Unchanged periodic peer reports cannot move the transition forward');
-  assert.deepEqual(result.baseCurrentA, triple(3)); assert.equal(result.currentA, 10);
+test('latest-reading calculation retains restrictions and real feed outage recovery', () => {
+  const input = fixture({ household: 8, peer: 8, own: 8 });
+  input.property.times = triple(NOW);
+  assert.equal(shellyCurrentLimit({ ...input, nativeCurrentA: 7 }).currentA, 7);
+  assert.equal(shellyCurrentLimit({ ...input, vehicleCurrentA: 0 }).currentA, 0);
+  const failed = shellyCurrentLimit({ ...input, property: { ...input.property, healthy: false } });
+  assert.equal(failed.fallback, true); assert.equal(failed.currentA, 12);
+  assert.equal(shellyCurrentLimit(input).fallback, false);
+  assert.equal(shellyCurrentLimit(input).currentA, 16);
 });

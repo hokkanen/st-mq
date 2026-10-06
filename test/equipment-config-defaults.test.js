@@ -41,7 +41,7 @@ test('public equipment defaults work with broker-only private settings and prese
   const config = loadConfig({ STMQ_INPUT: 'mqtt', STMQ_CONFIG: privatePath, HOME: directory }, directory);
   const devices = config.connections.equipment.devices;
   assert.deepEqual(devices.filter(row => row.enabled && row.protocol === 'shelly').map(row => row.id).sort(),
-    ['caravan', 'garage', 'heat_savings']);
+    ['caravan', 'dhwr', 'garage', 'heat_savings']);
   assert.equal(devices.some(row => row.id === 'garage_heat_pump' || row.id === 'garage_mqtt'), false);
   assert.deepEqual(config.control.indoorSensorWeights,
     { indoor_temperature: 1 / 3, downstairs_temperature: 1 / 3, bedroom_temperature: 1 / 3 });
@@ -81,14 +81,17 @@ test('public equipment defaults work with broker-only private settings and prese
   assert.equal(dehumidifier.maxAgeMs, 180_000);
   const dhwr = devices.find(row => row.id === 'dhwr');
   assert.equal(dhwr.enabled, true);
-  assert.equal(dhwr.kind, 'power');
-  assert.equal(dhwr.topic, 'stmq/home/dhwr/status/power');
-  assert.equal(dhwr.powerSignal, 'dhwr_power');
-  assert.equal(dhwr.stateSignal, null);
+  assert.equal(dhwr.kind, 'switch');
+  assert.equal(dhwr.prefix, 'stmq/home/dhwr');
+  assert.equal(dhwr.generation, 3);
+  assert.equal(dhwr.switchId, 0);
+  assert.equal(dhwr.stateSignal, 'dhwr_active');
+  assert.equal(dhwr.readings[0].signal, 'dhwr_power');
+  assert.equal(dhwr.readings[0].component, 'switch:0');
   assert.equal(dhwr.record, false);
-  assert.equal(dhwr.maxAgeMs, 0);
+  assert.equal(dhwr.maxAgeMs, 120000);
   assert.equal(dhwr.controlsSwitch, false);
-  assert.equal(config.connections.mqtt.dhwr_topic, 'stmq/home/dhwr/command/switch');
+  assert.equal(Object.hasOwn(config.connections.mqtt, 'dhwr_topic'), false);
   assert.equal(readFileSync(privatePath, 'utf8'), privateText);
   assert.equal(config.connections.mqtt.pw, 'synthetic-password');
 });

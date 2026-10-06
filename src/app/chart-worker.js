@@ -24,7 +24,7 @@ const latestSourceCoverage=db.prepare(`SELECT c.*,o.raw,o.source_time AS observe
   JOIN active_observations o ON o.id=c.observation_id WHERE s.key LIKE 'recorder:signal:%' AND (
     c.source IN ('husdata-h66','simulation') AND c.signal IN ('compressor_active','dhw_routing','operating_mode','auxiliary_output')
     OR c.source='controller-estimate' AND c.signal='auxiliary_power'
-    OR c.source='mqtt-equipment' AND c.signal='dhwr_active') ORDER BY c.id`);
+    OR c.source IN ('mqtt-equipment','shelly-mqtt') AND c.signal='dhwr_active') ORDER BY c.id`);
 function sourceCoverageFingerprint(args,range) {
   const spans=[];
   for(const row of latestSourceCoverage.iterate()) {

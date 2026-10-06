@@ -50,9 +50,6 @@ export async function startMqtt({ engine, store, config, connect = mqtt.connect,
       source: route.provider === 'bmw-cardata' ? 'BMW CarData' : 'MQTT', topics: [
       { role: 'Timestamped vehicle readings', topic: route.topic, direction: 'subscribe' },
     ] })),
-    { id: 'dhwr', label: 'Hot-water circulation commands', source: 'MQTT', topics: [
-      { role: 'Timed ON/OFF command', topic: config.connections.mqtt.dhwr_topic || 'stmq/home/dhwr/command/switch', direction: 'publish' },
-    ] },
     ...(decoder ? [{ id: 'h66', label: 'Heat pump · H66', source: 'MQTT', topics: [
       { role: 'Telemetry subscription', topic: `${deviceId}/HP/#`, direction: 'subscribe' },
       { role: 'Status request', topic: `${deviceId}/HP/CMD`, direction: 'publish' },

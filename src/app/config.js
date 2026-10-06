@@ -289,15 +289,8 @@ function buildConfiguration(options, env, cwd, configuration, source, { bootstra
   if (input === 'mqtt' || input === 'providers') {
     const { ha: _ha, ...mqtt } = options.mqtt ?? {};
     if (haMqtt) mqtt.ha = haMqtt;
-    mqtt.dhwr_topic = mqtt.dhwr_topic || 'stmq/home/dhwr/command/switch';
-    if (typeof mqtt.dhwr_topic !== 'string' || !mqtt.dhwr_topic.trim() || mqtt.dhwr_topic.length > 500
-      || /[+#\u0000]/.test(mqtt.dhwr_topic)) throw new Error('DHWR MQTT topic must be an exact switch command topic');
     const equipmentInput = options.equipment ?? {};
     const equipment = equipmentConfiguration(equipmentInput);
-    const dhwrFeedback = equipment.devices.find(device => device.enabled && device.id === 'dhwr');
-    if (dhwrFeedback && [dhwrFeedback.topic, dhwrFeedback.mqtt.requestTopic,
-      ...dhwrFeedback.readings.map(reading => reading.topic)].includes(mqtt.dhwr_topic))
-      throw new Error('DHWR feedback and read-only requests must use topics separate from the DHWR switch command');
     mqtt.temperatureReportIntervalMs = Math.round(interval(mqtt.temperature_report_interval_minutes, 70, 0, 1440,
       'temperature_report_interval_minutes') * 60_000);
     mqtt.temperatureReportGraceMs = Math.round(interval(mqtt.temperature_report_grace_seconds, 300, 0, 900,
