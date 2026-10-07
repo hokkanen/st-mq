@@ -429,9 +429,10 @@ permission to act. See [the configuration guide](docs/configuration.md).
   and cached republishes do not manufacture fresh observations or independent
   learning evidence. Corrections cannot invent data for actual acquisition gaps.
 - Charging may resolve both vehicle assignments jointly when fresh Tesla
-  actual-current evidence, corroborating power and confirmed measured 6 A draw
-  provide a unique comparison, and BMW's own valid start/stop episode matches
-  the other unchanged physical connection. That same BMW episode may fit the Tesla
+  actual-current evidence, corroborating power and confirmed positive measured
+  draw within a confirmed 6 A offer provide a unique comparison, and BMW's own
+  valid start/stop episode matches the other unchanged physical connection.
+  That same BMW episode may fit the Tesla
   connection's transitions; the unique Tesla comparison resolves this ambiguity.
   BMW still requires its own positive evidence. A negative Tesla result or the
   remaining charger alone cannot identify BMW, and a different contradictory BMW
@@ -441,7 +442,12 @@ permission to act. See [the configuration guide](docs/configuration.md).
   may retain its original clocks for a delayed BMW report within the same two
   physical connections, identification attempts and feed associations; it is
   historical identity evidence, not fresh current or control permission. This
-  narrow lasting amendment was explicitly approved by the owner on 2026-10-04. See
+  narrow lasting amendment was explicitly approved by the owner on 2026-10-04.
+  On 2026-10-07 the owner approved accepting matching lower measured draw:
+  6 A is the offered ceiling, not required vehicle consumption. Fresh, settled
+  current and corroborating power must still distinguish the chargers, every
+  measured Charger 2 phase must remain within the offer's measurement tolerance,
+  and BMW still needs its own positive episode. See
   [vehicle assignment](docs/charging/identification.md#vehicle-assignment).
 - Keep original frozen forecasts and outcomes separate from later corrected model
   assessments. Estimated or timing-only benefits are not measured causal savings;

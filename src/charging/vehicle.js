@@ -99,7 +99,8 @@ export function measuredChargingCurrent(physical, now) {
  * after actual draw and independent live Tesla current agree uniquely. Missing
  * peer evidence and equal currents remain ambiguous, never BMW by elimination.
  * Tesla's reported phase count is not a reliable count of energized phases;
- * measured current and corroborating power supply the electrical comparison. */
+ * measured current and corroborating power supply the electrical comparison.
+ * The confirmed setting is an offered ceiling, not a required vehicle draw. */
 export function matchTeslaMinimumCurrent(tesla, { physical, peers = [], minimumPhysical, currentTest,
   connectedAt, lastDisconnectedAt, consumedCurrentAt, now = Date.now() } = {}) {
   const field = tesla?.fields?.charger_actual_current, power = tesla?.fields?.charger_power;
@@ -113,6 +114,7 @@ export function matchTeslaMinimumCurrent(tesla, { physical, peers = [], minimumP
     && now - view.powerKw.measuredAt <= MINUTE && view.charging?.available === true && view.charging.value === true;
   if (!time(connectedAt) || connectedAt > now || tesla?.healthy !== true || !teslamateConnectionContext(tesla, { now })
     || tesla.atHome !== true || tesla.charging !== true || currentTest?.phase !== 'active'
+    || !Number.isFinite(currentTest.appliedCurrentA) || currentTest.appliedCurrentA <= 0
     || !time(currentTest.confirmedAt) || currentTest.confirmedAt < currentTest.startedAt
     || !time(currentTest.expiresAt) || now >= currentTest.expiresAt || now < currentTest.confirmedAt + 5000
     || field?.retained !== false || !time(field.receivedAt) || field.receivedAt < Math.max(since, currentTest.confirmedAt)
@@ -124,7 +126,8 @@ export function matchTeslaMinimumCurrent(tesla, { physical, peers = [], minimumP
     || Math.abs(physical.powerKw.value - tesla.actualPowerKw) > .75) return null;
   const current = measuredChargingCurrent(physical, now), minimum = measuredChargingCurrent(minimumPhysical, now);
   if (!current || !minimum || !freshPower(minimumPhysical) || minimum.measuredAt < currentTest.confirmedAt
-    || current.measuredAt < currentTest.confirmedAt || Math.abs(minimum.value - currentTest.appliedCurrentA) > .5
+    || current.measuredAt < currentTest.confirmedAt
+    || minimumPhysical.phaseCurrentA.value.some(value => value > currentTest.appliedCurrentA + .5)
     || Math.abs(current.value - tesla.actualCurrentA) > .5) return null;
   for (const peer of peers) {
     if (peer.connected?.available === true && peer.connected.value === false) continue;

@@ -6,6 +6,9 @@ Versions follow Semantic Versioning. `-dev.N` denotes a development prerelease.
 
 ## Unreleased
 
+- Charger 2 can identify Tesla when it draws less than the offered 6 A, provided
+  fresh, settled charger and Tesla current/power readings match uniquely.
+  Joint BMW assignment still requires BMW's own positive charging episode.
 - Home schedule searches run in a bounded background worker. Results are checked
   against current evidence and control ownership before adoption, keeping local
   timers and requests responsive during larger searches.

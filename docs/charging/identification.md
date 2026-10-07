@@ -70,6 +70,12 @@ Confirmation requires fresh measured phase currents after the minimum-setting
 readback, fresh live Tesla actual-current evidence from that test and
 corroborating power. Tesla's reported phase count is not authoritative for the
 charger's measured wiring; it cannot veto an otherwise unique current/power match.
+The confirmed 6 A setting is an offered ceiling, not a required draw: matching
+lower positive measured current and power can identify Tesla on either charger
+and support the joint assignment below. Each measured Charger 2 phase must
+remain at or below that ceiling within the 0.5 A measurement tolerance. Zero
+draw is not a positive match. This owner-approved clarification on 2026-10-07
+retains the independent BMW evidence requirement.
 The physical readings must settle and continue to agree on a later observation. Requested current and the pilot
 ceiling are not measured draw. A Tesla current held from before the test cannot
 identify either charger, even if its value matches. Each other observed charger

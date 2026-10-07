@@ -8,12 +8,12 @@ const field = value => ({ value, available: true, measuredAt: NOW - 1000, retain
 const physical = (current, power, phases = 3) => ({ providerConnected: true,
   connected: field(true), charging: field(true), powerKw: field(power),
   phaseCurrentA: field(Array.from({ length: 3 }, (_, index) => index < phases ? current : 0)) });
-function fixture() {
-  const minimumPhysical = physical(6, 4.1), first = physical(16, 11);
+function fixture({ current = 6, power = 4.1, teslaPower = 4, phases = 3 } = {}) {
+  const minimumPhysical = physical(current, power, phases), first = physical(16, 11);
   const tesla = { association: 'synthetic-tesla', healthy: true, pluggedIn: true, atHome: true, charging: true,
-    phases: 3, actualCurrentA: 6, actualPowerKw: 4,
-    fields: { charger_actual_current: { value: 6, receivedAt: NOW - 2000, retained: false },
-      charger_power: { value: 4, receivedAt: NOW - 2000, retained: false } } };
+    phases: 3, actualCurrentA: current, actualPowerKw: teslaPower,
+    fields: { charger_actual_current: { value: current, receivedAt: NOW - 2000, retained: false },
+      charger_power: { value: teslaPower, receivedAt: NOW - 2000, retained: false } } };
   const options = { physical: minimumPhysical, peers: [first], minimumPhysical,
     connectedAt: START, now: NOW, chargingAt: [START],
     currentTest: { id: 'synthetic-test', phase: 'active', connectedAt: START, sessionId: 'synthetic-session',
@@ -29,6 +29,64 @@ test('verified minimum on Charger 2 distinguishes the Tesla by measured current 
   assert.equal(matchTeslaMinimumCurrent(tesla, options), null, 'Tesla at 16 A is not assigned to the charger tested at 6 A');
   assert.ok(matchTeslaMinimumCurrent(tesla, { ...options, physical: first, peers: [minimumPhysical] }),
     'Fresh affirmative Tesla current supports Charger 1 independently of Charger 2 having a different car');
+});
+
+test('a confirmed 6 A offer identifies uniquely matching Tesla draw below the offered current', () => {
+  for (const [current, power, teslaPower] of [[2, 1.4, 1], [3, 2.1, 2], [4, 2.8, 3], [5, 3.5, 3]]) {
+    const { tesla, options, first, minimumPhysical } = fixture({ current, power, teslaPower });
+    assert.ok(matchTeslaMinimumCurrent(tesla, options), `${current} A of matching actual draw identifies Tesla on Charger 2`);
+    assert.equal(options.currentTest.appliedCurrentA, 6, 'Lower vehicle draw does not change the confirmed offer');
+    tesla.actualCurrentA = 16; tesla.actualPowerKw = 11;
+    tesla.fields.charger_actual_current.value = 16; tesla.fields.charger_power.value = 11;
+    assert.ok(matchTeslaMinimumCurrent(tesla, { ...options, physical: first, peers: [minimumPhysical] }),
+      'A positive unique match on Charger 1 also remains usable when Charger 2 draws below its offer');
+  }
+});
+
+test('lower single-phase draw identifies Tesla with corroborating positive power', () => {
+  const { tesla, options } = fixture({ current: 3, power: .69, teslaPower: 1, phases: 1 });
+  assert.ok(matchTeslaMinimumCurrent(tesla, options),
+    'Measured 3 A single-phase draw and independently reported 3 A agree despite a 6 A offer');
+});
+
+test('lower draw preserves positive, unique, fresh current and power requirements', () => {
+  const cases = [
+    ['zero draw', f => {
+      f.options.physical.phaseCurrentA = field([0, 0, 0]); f.options.physical.powerKw = field(0);
+      f.tesla.actualCurrentA = 0; f.tesla.actualPowerKw = 0;
+    }],
+    ['equal peer draw', f => { f.options.peers = [physical(3, 2.1)]; }],
+    ['overlapping peer draw', f => { f.options.peers = [physical(3.8, 2.6)]; }],
+    ['missing peer measurements', f => { f.options.peers = [{ connected: field(true) }]; }],
+    ['different Tesla current', f => { f.tesla.actualCurrentA = 5; }],
+    ['different Tesla power', f => { f.tesla.actualPowerKw = 4; }],
+    ['retained Tesla current', f => { f.tesla.fields.charger_actual_current.retained = true; }],
+    ['pre-test Tesla current', f => { f.tesla.fields.charger_actual_current.receivedAt = START; }],
+    ['pre-test physical current', f => { f.options.physical.phaseCurrentA.measuredAt = START; }],
+    ['stale physical current', f => { f.options.physical.phaseCurrentA.measuredAt = NOW - 61_000; }],
+  ];
+  for (const [reason, change] of cases) {
+    const f = fixture({ current: 3, power: 2.1, teslaPower: 2 });
+    assert.ok(matchTeslaMinimumCurrent(f.tesla, f.options), 'The unchanged lower-draw fixture supplies a valid match');
+    change(f);
+    assert.equal(matchTeslaMinimumCurrent(f.tesla, f.options), null, reason);
+  }
+});
+
+test('every measured phase must respect the confirmed current ceiling', () => {
+  const { tesla, options } = fixture();
+  options.minimumPhysical.phaseCurrentA = field([6.5, 6, 6]);
+  assert.ok(matchTeslaMinimumCurrent(tesla, options), 'The existing 0.5 A measurement tolerance remains available');
+  options.minimumPhysical.phaseCurrentA = field([6.51, 6, 6]);
+  assert.equal(matchTeslaMinimumCurrent(tesla, options), null,
+    'A phase above the confirmed ceiling and tolerance cannot hide in the average');
+});
+
+test('minimum-current matching rejects an absent or invalid offered-current ceiling', () => {
+  for (const appliedCurrentA of [undefined, null, NaN, Infinity, -1, 0, '6']) {
+    const { tesla, options } = fixture(); options.currentTest.appliedCurrentA = appliedCurrentA;
+    assert.equal(matchTeslaMinimumCurrent(tesla, options), null, `Invalid ceiling: ${String(appliedCurrentA)}`);
+  }
 });
 
 test('Tesla phase metadata does not veto corroborated measured current and power', () => {

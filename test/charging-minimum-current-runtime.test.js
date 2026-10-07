@@ -856,14 +856,16 @@ test('unplugging ends the cold-start energy scope and restores current without a
   assert.deepEqual(f.writes.slice(before).map(row => [row.role, row.value]), [['current_limit', 16]]);
 });
 
-for (const charger of ['charger1', 'charger2']) test(`minimum-current runtime identifies Tesla on ${charger} from two independent settled measurements`, async t => {
+for (const secondCurrentA of [6, 4]) for (const charger of ['charger1', 'charger2'])
+test(`minimum-current runtime identifies Tesla on ${charger} with Charger 2 drawing ${secondCurrentA} A from two independent settled measurements`, async t => {
   const f = await fixture(t);
   f.publishTesla({ charger_phases: 2 }); // The vehicle can report 2 while all three physical phases carry current.
   let control = await f.update();
   assert.equal(control.currentTest.phase, 'active'); assert.equal(f.fields.current_limit.value, 6);
   assert.equal(f.writes.filter(row => row.method === 'Number.Set').length, 1);
   assert.equal(f.item('charger1').vehicleMatch, null); assert.equal(f.item('charger2').vehicleMatch, null);
-  f.advance(6000); await f.sampleTesla(charger === 'charger1' ? 16 : 6);
+  f.setMeasuredCurrent(secondCurrentA);
+  f.advance(6000); await f.sampleTesla(charger === 'charger1' ? 16 : secondCurrentA);
   assert.equal(f.item(charger).vehicleMatch, null, 'One settling sample cannot identify a vehicle');
   f.advance(5000); await f.adapter.refresh(); f.observe();
   assert.equal(f.item(charger).vehicleMatch?.id, 'tesla');
@@ -1017,8 +1019,10 @@ async function sharedBmwEpisodeFixture(t, options = {}) {
   return { f, publish, chargingId, stopId };
 }
 
-async function settleTeslaCurrent(f, winner) {
-  await f.update(); f.advance(6000); await f.sampleTesla(winner === 'charger1' ? 16 : 6);
+async function settleTeslaCurrent(f, winner, secondCurrentA = null) {
+  await f.update();
+  if (secondCurrentA !== null) f.setMeasuredCurrent(secondCurrentA);
+  f.advance(6000); await f.sampleTesla(winner === 'charger1' ? 16 : secondCurrentA ?? 6);
   f.advance(5000); await f.adapter.refresh(); f.observe();
 }
 
@@ -1065,11 +1069,12 @@ test('a completed explicit retry keeps its BMW source boundary while the peer re
   assert.equal(f.item('charger1').vehicleConflict, null);
 });
 
-for (const winner of ['charger1', 'charger2']) test(`a unique Tesla test on ${winner} jointly assigns the BMW episode shared by both chargers`, async t => {
+for (const secondCurrentA of [6, 4]) for (const winner of ['charger1', 'charger2'])
+test(`a unique Tesla test on ${winner} with Charger 2 drawing ${secondCurrentA} A jointly assigns the BMW episode shared by both chargers`, async t => {
   const { f, publish, chargingId, stopId } = await sharedBmwEpisodeFixture(t);
   const peer = winner === 'charger1' ? 'charger2' : 'charger1';
   const scopes = Object.fromEntries(Object.entries(f.runtime.chargers).map(([id, item]) => [id, item.request.scope]));
-  await settleTeslaCurrent(f, winner);
+  await settleTeslaCurrent(f, winner, secondCurrentA);
   assert.equal(f.item(winner).vehicleMatch?.id, 'tesla');
   assert.equal(f.item(peer).vehicleMatch?.id, 'bmw', 'Its own complete physical BMW episode supports the other connection');
   assert.equal(f.item(peer).vehicleEvidence.bmwChargingReadingId, chargingId);
@@ -1105,8 +1110,8 @@ for (const winner of ['charger1', 'charger2']) test(`a unique Tesla test on ${wi
   assert.equal(f.item(winner).vehicleConflict, null); assert.equal(f.item(peer).vehicleConflict, null);
 });
 
-for (const bmwEvidence of ['absent', 'start only', 'stop only'])
-test(`joint current identification cannot supply BMW identity when its source episode is ${bmwEvidence}`, async t => {
+for (const secondCurrentA of [6, 4]) for (const bmwEvidence of ['absent', 'start only', 'stop only'])
+test(`joint current identification with Charger 2 drawing ${secondCurrentA} A cannot supply BMW identity when its source episode is ${bmwEvidence}`, async t => {
   const f = await fixture(t); f.observe();
   if (bmwEvidence !== 'absent') {
     f.advance(1000); publishBmw(f, { atHome: true, pluggedIn: true, charging: bmwEvidence === 'start only' });
@@ -1115,7 +1120,7 @@ test(`joint current identification cannot supply BMW identity when its source ep
       item.vehicleEvidence.chargingTimes = [START + 1000]; item.vehicleEvidence.stoppedTimes = [f.now];
     }
   }
-  await settleTeslaCurrent(f, 'charger1');
+  await settleTeslaCurrent(f, 'charger1', secondCurrentA);
   assert.equal(f.item('charger1').vehicleMatch?.id, 'tesla');
   assert.equal(f.item('charger2').vehicleMatch, null, 'Positive Tesla evidence is not a BMW source event');
   assert.equal(f.runtime.vehicleFeeds.bmw.consumedChargingId, null);
@@ -1350,13 +1355,15 @@ test('resolving a retained shared episode cannot move durable BMW consumption ba
   assert.equal(f.runtime.vehicleFeeds.bmw.consumedChargingId, newerChargingId);
 });
 
-for (const boundary of ['equal currents', 'missing peer measurements', 'held minimum measurement'])
+for (const boundary of ['equal currents', 'equal lower currents', 'missing peer measurements', 'held minimum measurement'])
 test(`a shared BMW episode cannot resolve joint identity with ${boundary}`, async t => {
+  const equalCurrentA = boundary === 'equal currents' ? 6 : boundary === 'equal lower currents' ? 4 : null;
   const { f } = await sharedBmwEpisodeFixture(t,
-    boundary === 'equal currents' ? { firstCurrentA: 6 } : boundary === 'missing peer measurements' ? { firstAvailable: false } : {});
+    equalCurrentA !== null ? { firstCurrentA: equalCurrentA } : boundary === 'missing peer measurements' ? { firstAvailable: false } : {});
   await f.update();
+  if (equalCurrentA !== null) f.setMeasuredCurrent(equalCurrentA);
   if (boundary === 'held minimum measurement') f.setPhysicalSourceTime(f.now);
-  f.advance(6000); await f.sampleTesla(boundary === 'equal currents' ? 6 : 16);
+  f.advance(6000); await f.sampleTesla(equalCurrentA ?? 16);
   f.advance(5000); await f.adapter.refresh(); f.observe();
   assert.equal(f.item('charger1').vehicleMatch, null);
   assert.equal(f.item('charger2').vehicleMatch, null);
@@ -1364,9 +1371,10 @@ test(`a shared BMW episode cannot resolve joint identity with ${boundary}`, asyn
   assert.equal(f.runtime.vehicleFeeds.bmw.consumedChargingId, null);
 });
 
-test('equal measured 6 A expires inconclusive without another current test or automatic retry', async t => {
-  const { f } = await sharedBmwEpisodeFixture(t, { firstCurrentA: 6 });
-  await f.update(); f.advance(6000); await f.sampleTesla(6);
+for (const measuredCurrentA of [6, 4])
+test(`equal measured ${measuredCurrentA} A expires inconclusive without another current test or automatic retry`, async t => {
+  const { f } = await sharedBmwEpisodeFixture(t, { firstCurrentA: measuredCurrentA });
+  await f.update(); f.setMeasuredCurrent(measuredCurrentA); f.advance(6000); await f.sampleTesla(measuredCurrentA);
   f.advance(5000); await f.adapter.refresh(); f.observe();
   const currentTest = structuredClone(f.item('charger2').controller.status().currentTest);
   const attempts = Object.fromEntries(Object.entries(f.runtime.chargers).map(([id, item]) => [id, item.identification.attempt]));
@@ -1376,7 +1384,7 @@ test('equal measured 6 A expires inconclusive without another current test or au
   const writes = structuredClone(f.writes);
   await f.restart(); f.runtime.setMqttStatus({ connected: true, subscribed: true }, 'bmw');
   for (let poll = 0; poll < 3; poll++) {
-    f.advance(10_000); await f.sampleTesla(6); await f.update();
+    f.advance(10_000); await f.sampleTesla(measuredCurrentA); await f.update();
     for (const id of ['charger1', 'charger2']) {
       assert.equal(f.item(id).vehicleMatch, null);
       assert.equal(f.item(id).identification.attempt, attempts[id]);
