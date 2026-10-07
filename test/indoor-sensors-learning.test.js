@@ -12,7 +12,7 @@ import { addSensorChange } from '../src/app/sensor-changes.js';
 import { restoreAdaptiveCheckpoint } from '../src/control/adaptive-learning.js';
 import { applyLearningRecord, committedLearningSample, recordLearningContext,
   replayLearningJournal, LEARNING_WINDOW_MS, LEARNING_ALGORITHM} from '../src/app/committed-learning.js';
-import { appendLearningRecord } from './helpers/home-learning-fixture.js';
+import { appendLearningRecord, currentComfortReference } from './helpers/home-learning-fixture.js';
 
 const start = Date.parse('2026-01-01T00:00:00Z'), W = LEARNING_WINDOW_MS;
 const config = { indoorSensorWeights: { indoor_temperature: 1, downstairs_temperature: 1, bedroom_temperature: 1 } };
@@ -244,29 +244,105 @@ test('changed sensors cannot regain obsolete validation from imported upstairs-o
   assert(engine.status().observations.indoor.stale);
 });
 
-test('cold and hot rooms independently block optimization against their own references', async t => {
+test('occupied comfort protects the configured average without individual room vetoes', async t => {
   const store = new Store(':memory:'); let now = start + W;
-  const engine = new Engine({ store, config: { input: 'providers', control: config,
-    settings: { comfort: { maxDropC: 1, maxRiseC: 1 } } }, clock: () => now });
-  t.after(async () => { await engine.closeFireplace(); store.close(); });
-  const reference = targetC => ({ version: 3, targetC, establishedAt: new Date(start - 86_400_000).toISOString(),
-    updatedAt: new Date(start).toISOString(), heatingEvidence: { kind: 'verified-space-heating-activity' } });
-  const seed = restoreAdaptiveCheckpoint(null, config);
-  seed.baselineC = 21; seed.comfortReference = reference(21);
-  seed.sensorComfortReferences = { indoor_temperature: reference(23), downstairs_temperature: reference(21), bedroom_temperature: reference(19) };
-  appendLearningRecord(store, 'providers', 'context', { timestamp: start }, { config, seed });
-  function readings(downstairs, upstairs = 24, bedroom = 20) {
+  const control = { indoorSensorWeights: { indoor_temperature: 1, downstairs_temperature: 1, bedroom_temperature: 2 } };
+  const engine = new Engine({ store, config: { input: 'providers', control,
+    settings: { comfort: { maxDropC: 1, maxRiseC: 1 } } }, clock: () => now,
+    commandTransport: { targetIdentity: { tariff: 'a'.repeat(64), dhwr: 'b'.repeat(64) },
+      publish: async () => ({ status: 'synthetic', sent: true, actual: null }), close: async () => {} } });
+  t.after(async () => { await engine.closeFireplace(); await engine.executor.close({ restore: false }); store.close(); });
+  engine.automation.set('home', true);
+  const seed = restoreAdaptiveCheckpoint(null, control);
+  seed.baselineC = 21; seed.comfortReference = currentComfortReference(21, start);
+  appendLearningRecord(store, 'providers', 'context', { timestamp: start }, { config: control, seed });
+  function readings(upstairs, downstairs, bedroom) {
     for (const [signal, value] of [['indoor_temperature', upstairs], ['downstairs_temperature', downstairs],
       ['bedroom_temperature', bedroom], ['outdoor_temperature', 0]]) engine.ingest({ signal, value,
-      source: signal === 'outdoor_temperature' ? 'fmi' : 'mqtt-temperature', device: `invented-${signal}`,
+      source: signal === 'outdoor_temperature' ? 'fmi' : 'mqtt-temperature', device: signal,
       sourceTime: now, receivedAt: now, quality: [], unit: 'degC' });
   }
-  readings(19);
-  const cold = engine.tick();
-  assert.equal(cold.observations.indoor.value, 21);
-  assert(cold.decision.reasons.includes('room-comfort-limit'));
-  now += 60_000; readings(20.5);
-  assert(engine.tick().decision.reasons.includes('room-comfort-limit'), 'Warm rooms at the upper bound retain the temperature margin');
-  now += 60_000; readings(20.5, 23, 19);
-  assert(!engine.tick().decision.reasons.includes('room-comfort-limit'));
+  readings(25, 23, 18);
+  let status = engine.tick();
+  assert.equal(status.observations.indoor.value, 21);
+  assert(!status.decision.reasons.includes('indoor-comfort-limit'), 'A cool Bedroom cannot veto a comfortable average');
+  assert.equal(Object.hasOwn(status, 'comfortRooms'), false);
+  now += 60_000; readings(19, 19, 20);
+  status = engine.tick();
+  assert.equal(status.observations.indoor.value, 19.5);
+  assert(status.decision.reasons.includes('indoor-comfort-limit'), JSON.stringify({ reasons: status.decision.reasons, baselineC: engine.checkpoint.baselineC, comfort: status.settings.comfort }));
+  now += 60_000; readings(25, 25, 23);
+  status = engine.tick();
+  assert.equal(status.observations.indoor.value, 24);
+  assert(!status.decision.reasons.includes('indoor-comfort-limit'), 'Warm average alone does not prohibit Normal or reduction');
+});
+
+test('one expired room uses a separate weighted control estimate through restart without training or filling history', async t => {
+  const directory = mkdtempSync(join(tmpdir(), 'stmq-indoor-estimate-engine-'));
+  const path = join(directory, 'synthetic.sqlite'); let store = new Store(path), now = start;
+  const control = { indoorSensorWeights: { indoor_temperature: 1, downstairs_temperature: 1, bedroom_temperature: 2 } };
+  const engineConfig = { input: 'providers', control, settings: { comfort: { maxDropC: 1, maxRiseC: 1 } } };
+  const runtimes = [];
+  const makeEngine = () => { const engine = new Engine({ store, config: engineConfig, clock: () => now,
+    commandTransport: { targetIdentity: { tariff: 'a'.repeat(64), dhwr: 'b'.repeat(64) },
+      publish: async () => ({ status: 'synthetic', sent: true, actual: null }), close: async () => {} } });
+    engine.automation.set('home', true); runtimes.push(engine); return engine; };
+  const stop = async engine => {
+    await engine.charging.close(); await engine.garage.close({ restore: false });
+    await engine.closeFireplace(); await engine.executor.close({ restore: false });
+  };
+  let engine = makeEngine();
+  t.after(async () => { for (const runtime of runtimes) await stop(runtime); store.close(); rmSync(directory, { recursive: true, force: true }); });
+  const ingest = (signal, value, room = false) => engine.ingest({ source: signal === 'outdoor_temperature' ? 'fmi' : 'mqtt-temperature',
+    device: signal, signal, value, unit: signal.endsWith('temperature') ? 'degC' : 'state',
+    sourceTime: now, receivedAt: now, quality: [], raw: room ? { reportIntervalMs: 10 * 60_000, reportGraceMs: 0 } : null });
+  function report(minute, { bedroom = true, warming = 0, equipment = true } = {}) {
+    now = start + minute * 60_000;
+    ingest('indoor_temperature', 22 + warming, true); ingest('downstairs_temperature', 20 + warming, true);
+    if (bedroom) ingest('bedroom_temperature', 19, true);
+    ingest('outdoor_temperature', 0);
+    if (equipment) for (const [signal, value] of [['compressor_active', 1], ['dhw_routing', 0], ['auxiliary_output', 0],
+      ['alarm_active', 0], ['operating_mode', 1]]) ingest(signal, value);
+    return engine.tick();
+  }
+  for (let minute = 0; minute <= 60; minute += 5) report(minute);
+  assert.equal(engine.status().observations.indoor.value, 20);
+  const reference = structuredClone(engine.checkpoint.comfortReference);
+  assert(reference, 'Ordinary occupied Normal heating establishes an aggregate reference');
+  const bedroomReports = store.observations({ signal: 'bedroom_temperature' }).length;
+  for (let minute = 65; minute <= 90; minute += 5) report(minute, { bedroom: false, warming: minute > 70 ? .4 : 0 });
+  let status = engine.status();
+  assert.equal(status.observations.indoor.value, null);
+  assert.equal(status.observations.indoor.stale, true);
+  assert.equal(status.observations.indoorControl.estimated, true);
+  assert.equal(status.observations.indoorControl.estimatedSensor, 'bedroom_temperature');
+  assert.equal(status.observations.indoorControl.value, 20.4);
+  assert.equal(status.observations.indoorControl.anchorAt, start + 60 * 60_000);
+  assert.equal(status.observations.indoorControl.estimatedSourceObservedAt, start + 60 * 60_000);
+  assert.equal(store.getState('indoor-control-state:providers')?.estimated, true, 'Covered actual heat inputs preserve a separate runtime forecast state');
+  assert(!status.decision.reasons.includes('estimated-indoor-thermal-state-unavailable'));
+  assert.deepEqual(engine.checkpoint.comfortReference, reference, 'A missing measured average contributes no comfort evidence');
+  assert.equal(store.observations({ signal: 'bedroom_temperature' }).length, bedroomReports);
+  const missing = store.learningJournal({ input: 'providers' }).filter(row => row.kind === 'sample'
+    && row.payload.value.timestamp >= start + 75 * 60_000);
+  assert(missing.length > 0);
+  assert(missing.every(row => row.payload.value.indoorC === null && row.payload.value.indoorSensors.bedroom_temperature.value === null));
+  const model = structuredClone(engine.checkpoint.model), anchor = structuredClone(store.getState('indoor-control-anchor:providers'));
+  await stop(engine); runtimes.splice(runtimes.indexOf(engine), 1); store.close(); store = new Store(path); engine = makeEngine();
+  status = engine.tick();
+  assert.equal(status.observations.indoor.value, null);
+  assert.equal(status.observations.indoorControl.estimated, true);
+  assert.equal(status.observations.indoorControl.value, 20.4);
+  assert.deepEqual(store.getState('indoor-control-anchor:providers'), anchor, 'Restart preserves original baseline clocks');
+  assert.deepEqual(engine.checkpoint.model, model);
+  assert.deepEqual(engine.checkpoint.comfortReference, reference);
+  status = report(95, { bedroom: false, warming: .6 });
+  assert.equal(status.observations.indoorControl.value, 20.6);
+  status = report(100, { bedroom: true, warming: .6 });
+  assert.equal(status.observations.indoorControl.estimated, false);
+  assert.equal(status.observations.indoor.value, 20.3, 'Returned actual Bedroom replaces its estimate immediately');
+  for (let minute = 105; minute <= 120; minute += 5) status = report(minute, { bedroom: false, warming: .6, equipment: false });
+  assert.equal(status.observations.indoorControl.estimated, true);
+  assert(status.decision.reasons.includes('estimated-indoor-thermal-state-unavailable'), 'Missing heat-input coverage keeps the temperature estimate visible but selects Normal');
+  assert.equal(status.decision.phase, 'normal');
 });

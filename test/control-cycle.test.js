@@ -226,3 +226,98 @@ test('an actually completed approved scenario retains consent provenance in the 
   assert.deepEqual(updateAdaptiveEpisode(null, episode), updateAdaptiveEpisode(null, ordinaryEvidence),
     'admin consent labels real exposure; it supplies no extra evidence or fitting weight');
 });
+
+const fallbackIndoor = (at, changes = {}) => ({ value: 21.5, estimated: true, stale: false,
+  uncertaintyC: 0.1, anchorAt: start, estimatedSensor: 'bedroom_temperature', validUntil: at + HOUR, ...changes });
+const neutralSample = (at, changes = {}) => sample(at, { outdoorC: 21,
+  thermalCompressorDuty: 0, thermalAuxKw: 0, ...changes });
+
+test('temperature outages retain real energy accounting and conservative fallback can finish control without validation', t => {
+  const { tracker, plan, store } = fixture(t, { intervals: intervals(8, { outdoorC: 21 }) });
+  tracker.start(plan, neutralSample(start), start);
+  let episode;
+  for (let quarter = 1; quarter <= 12 && tracker.active(); quarter++) {
+    const at = start + quarter * HOUR / 4;
+    episode = tracker.record(neutralSample(at, { indoorC: null }), at,
+      { controlIndoor: fallbackIndoor(at) }) ?? episode;
+    if (quarter === 1) {
+      const cycle = tracker.active();
+      assert.equal(cycle.actual.electricityKwh, 0.5);
+      assert.equal(cycle.actual.coveredHours, 0.25);
+      assert.equal(cycle.actual.temperatureMissingHours, 0.25);
+      assert.equal(cycle.actual.missingHours, 0);
+      assert.equal(cycle.observations[0].indoorC, null);
+      assert.equal(cycle.observations[0].indoorControlEstimate.value, 21.5);
+      assert.equal(cycle.observerState.indoorC, 21, 'The model observer does not assimilate an inferred room as a measured endpoint');
+    }
+  }
+  assert.equal(tracker.active(), null, 'Conservative operational recovery does not wait forever for the failed sensor');
+  assert.deepEqual({ complete: episode.complete, recoveryComplete: episode.recoveryComplete }, { complete: false, recoveryComplete: false });
+  const cycle = store.cycles({ input: 'synthetic', completedOnly: true })[0];
+  assert.equal(cycle.completionBasis, 'control-recovery-only');
+  assert.equal(cycle.assessment.basis, 'unassessed-indoor-observation-gap');
+  assert.equal(cycle.assessment.profitCents, null);
+  assert.equal(cycle.assessment.recoveryErrorCents, null);
+  assert.equal(cycle.actual.electricityKwh, (cycle.endedAt - start) / HOUR * 2);
+  assert.equal(store.learningJournal({ input: 'synthetic' }).some(entry => entry.kind === 'episode'), false);
+  assert.equal(updateAdaptiveEpisode(null, episode).model.energy.recoveryCalibrationEpisodes, 0);
+  assert.equal(tracker.metrics(21).profit.count, 0);
+});
+
+test('a returning sensor cannot turn an earlier estimated interval into observed validation', t => {
+  const { tracker, plan, store } = fixture(t, { intervals: intervals(8, { outdoorC: 21 }) });
+  tracker.start(plan, neutralSample(start), start);
+  tracker.record(neutralSample(start + HOUR / 4, { indoorC: null }), start + HOUR / 4,
+    { controlIndoor: fallbackIndoor(start + HOUR / 4) });
+  let episode;
+  for (let quarter = 2; quarter <= 12 && tracker.active(); quarter++) {
+    const at = start + quarter * HOUR / 4;
+    episode = tracker.record(neutralSample(at), at) ?? episode;
+  }
+  assert.equal(episode.complete, false);
+  assert.equal(episode.recoveryComplete, false);
+  const cycle = store.cycles({ input: 'synthetic', completedOnly: true })[0];
+  assert.equal(cycle.estimatedIndoorUsed, true);
+  assert.equal(cycle.actual.temperatureMissingHours, 0.5);
+  assert.ok(cycle.observations.slice(1).every(row => row.indoorC === 21.5));
+  assert.equal(cycle.observations[0].indoorC, null);
+  assert.equal(store.learningJournal({ input: 'synthetic' }).length, 0);
+  assert.equal(tracker.metrics(21).recoveryError.count, 0);
+});
+
+test('fallback recovery uses the lower uncertainty bound and resets its hold when support expires', t => {
+  const { tracker, plan } = fixture(t, { intervals: intervals(8, { outdoorC: 21 }) });
+  tracker.start(plan, neutralSample(start), start);
+  for (let quarter = 1; quarter <= 6; quarter++) {
+    const at = start + quarter * HOUR / 4;
+    const uncertaintyC = quarter <= 3 ? 0.4 : 0.1;
+    const controlIndoor = fallbackIndoor(at, { uncertaintyC, ...(quarter === 6 ? { validUntil: at - 1 } : {}) });
+    assert.equal(tracker.record(neutralSample(at, { indoorC: null }), at, { controlIndoor }), null);
+    const cycle = tracker.active();
+    if (quarter <= 3 || quarter === 6) assert.equal(cycle.stableSince, null);
+    else assert.equal(cycle.stableSince, start + HOUR);
+  }
+  let episode;
+  for (let quarter = 7; quarter <= 12 && tracker.active(); quarter++) {
+    const at = start + quarter * HOUR / 4;
+    episode = tracker.record(neutralSample(at, { indoorC: null }), at,
+      { controlIndoor: fallbackIndoor(at) }) ?? episode;
+  }
+  assert.equal(episode.complete, false);
+  assert.equal(tracker.active(), null);
+});
+
+test('a plan initialized from an estimate cannot validate after all sensors return before its first interval', t => {
+  const { tracker, plan, store } = fixture(t, { intervals: intervals(8, { outdoorC: 21 }), equipment: { indoorEstimated: true } });
+  tracker.start(plan, neutralSample(start), start);
+  let episode;
+  for (let quarter = 1; quarter <= 12 && tracker.active(); quarter++) {
+    const at = start + quarter * HOUR / 4;
+    episode = tracker.record(neutralSample(at), at) ?? episode;
+  }
+  assert.equal(episode.complete, false);
+  const cycle = store.cycles({ input: 'synthetic', completedOnly: true })[0];
+  assert.equal(cycle.actual.temperatureMissingHours, 0);
+  assert.equal(cycle.completionBasis, 'control-recovery-only');
+  assert.equal(store.learningJournal({ input: 'synthetic' }).length, 0);
+});

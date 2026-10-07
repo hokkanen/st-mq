@@ -27,7 +27,7 @@ function replay(store, input, through) {
     && entry.fireplaceRevision === replayContext.fireplaceRevision && entry.sensorRevision === replayContext.sensorRevision)
     .sort((a, b) => b.lastId - a.lastId)[0];
   const result = base ? { ...base.result, events: [...base.result.events] }
-    : { events: [], records: 0, replayedRecords: 0, unsupportedRecords: 0, invalidRecords: 0 };
+    : { events: [], records: 0, replayedRecords: 0, invalidRecords: 0 };
   let checkpoint = base?.checkpoint ?? null, at = base?.at ?? -Infinity, blocked = base?.blocked ?? true;
   const learned = new Set(base?.learned), fitted = new Set(base?.fitted);
   let previous = result.events.at(-1)?.coefficients;
@@ -45,19 +45,18 @@ function replay(store, input, through) {
     .iterate(input, base?.lastId ?? 0, lastId)) {
     at = Math.max(at, row.at);
     result.records++;
-    if (row.algorithm_version !== LEARNING_ALGORITHM) {
-      result.unsupportedRecords++; blocked = true; checkpoint = null; learned.clear(); fitted.clear(); emit(null); continue;
-    }
+    if (row.algorithm_version !== LEARNING_ALGORITHM)
+      throw new TypeError('Unsupported Home learning journal algorithm; start fresh.');
     try {
       const entry = { id: row.id, key: row.key, kind: row.kind, at: row.at,
         algorithmVersion: row.algorithm_version,
         configVersion: row.config_version === null ? null : JSON.parse(row.config_version),
         forecastVersion: row.forecast_version === null ? null : JSON.parse(row.forecast_version),
         payload: JSON.parse(row.payload) };
-      // Never silently restart a damaged prefix with today's defaults. A new
-      // algorithm's explicit journal seed can establish an independent start.
+      // Never silently restart a damaged prefix with today's defaults. An
+      // explicit current journal seed can establish an independent start.
       if (blocked && !Object.hasOwn(entry.payload ?? {}, 'seed')) {
-        if (!result.invalidRecords && !result.unsupportedRecords) result.invalidRecords++;
+        if (!result.invalidRecords) result.invalidRecords++;
         emit(null); continue;
       }
       const priorCheckpoint = blocked ? null : checkpoint;
@@ -123,7 +122,7 @@ function replay(store, input, through) {
  * calls its pure per-entry operation and never calls any store writer. */
 export function addModelCoefficients({ store, range, now, input, envelopes }) {
   const selected = Object.keys(MODEL_COEFFICIENT_INFO).filter(key => envelopes[key]);
-  const stats = { records: 0, replayedRecords: 0, unsupportedRecords: 0, invalidRecords: 0, basis: 'read-only-learning-replay' };
+  const stats = { records: 0, replayedRecords: 0, invalidRecords: 0, basis: 'read-only-learning-replay' };
   const end = Math.min(range.to, now);
   if (!selected.length || end < range.from) return stats;
   const primary = input === 'offline' ? 'history' : input;
@@ -137,7 +136,7 @@ export function addModelCoefficients({ store, range, now, input, envelopes }) {
   for (const stream of streams) {
     if (stream.through < range.from) continue;
     const replayed = replay(store, stream.input, stream.through);
-    for (const key of ['records', 'replayedRecords', 'unsupportedRecords', 'invalidRecords']) stats[key] += replayed[key];
+    for (const key of ['records', 'replayedRecords', 'invalidRecords']) stats[key] += replayed[key];
     const add = (at, event) => {
       for (const key of selected) {
         const coefficient = event?.coefficients?.[key];

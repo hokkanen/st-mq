@@ -123,10 +123,11 @@ try {
       status.settings.preheatRoomBoostC = 5;
       status.settings.comfort.maxDropC = 1.5;
       status.settings.comfort.maxRiseC = 1.5;
-      status.comfortRooms = [
-        { id: 'bedroom', label: 'Bedroom', referenceC: 20, referenceSource: 'room', minC: 18.5, maxC: 21.5, limitsApply: true },
-        { id: 'office', label: 'Office', referenceC: 21, referenceSource: 'overall', minC: 19.5, maxC: 22.5, limitsApply: true },
-      ];
+      if (homeFixture.estimatedIndoor) {
+        status.observations.indoor = { value: null, stale: true };
+        status.observations.indoorControl = { value: 20.4, stale: false, estimated: true,
+          estimatedSensor: 'bedroom_temperature', anchorAt: status.now - 3_600_000, uncertaintyC: .16 };
+      }
       status.override = homeFixture.paused ? { expiresAt: homeFixture.pauseEnd === undefined ? status.now + 3_600_000 : homeFixture.pauseEnd } : null;
       status.decision.manualHold = homeFixture.paused
         ? { until: homeFixture.manualPhase === 'preheat' ? status.now + 900000 : status.override.expiresAt, phase: homeFixture.manualPhase ?? 'preheat', changed: true } : null;
@@ -245,12 +246,11 @@ try {
   await evaluate(`homeFixture.automatic = false; await homeFixture.poll()`);
   assert.equal(await evaluate(`document.getElementById('test-reduction').disabled`), false,
     'Home manual reduction stays available while paused');
-  await evaluate(`homeFixture.automatic = true; await homeFixture.poll()`);
+  await evaluate(`homeFixture.automatic = true; homeFixture.estimatedIndoor = true; await homeFixture.poll()`);
   for (const width of [320, 360, 390, 768, 820, 1280]) for (const theme of ['dark', 'light']) {
     await send('Emulation.setDeviceMetricsOverride', { width, height: 1100, deviceScaleFactor: 1, mobile: false });
     await evaluate(`if (document.documentElement.dataset.theme !== '${theme}') document.getElementById('theme-toggle').click();
       document.getElementById('home-preferences-details').open = true;
-      document.getElementById('home-room-references-details').open = true;
       document.getElementById('garage-heating-details').open = true`);
     await checkOverviewTemperatureFit({ evaluate, width });
     const layout = await evaluate(`({ page: document.documentElement.scrollWidth, viewport: innerWidth,
@@ -284,7 +284,10 @@ try {
     assert(margins.every(row => JSON.stringify(row) === JSON.stringify(margins[0])),
       'Home preferences use matching nested indentation, spacing and dividers');
     assert.equal(margins[0][0], width <= 640 ? '16px' : '24px');
-    assert.match(await evaluate(`document.getElementById('home-room-references').textContent`), /Bedroom20 °C · Learned room reference.*18.5 °C – 21.5 °C.*Office21 °C · Overall reference/);
+    assert.equal(await evaluate(`document.getElementById('indoor-age').textContent`), 'Partly estimated · Bedroom');
+    assert.equal(await evaluate(`document.getElementById('indoor').textContent.includes('20.4 °C')`), true);
+    assert.equal(await evaluate(`document.getElementById('home-room-references')`), null);
+    assert.match(await evaluate(`document.getElementById('home-preferences-details').textContent`), /Individual room temperatures remain visible, but do not impose separate limits/);
     await screenshot(`${width}-${theme}-preferences`);
   }
   await evaluate(`document.getElementById('garage-heating-details').open = false`);

@@ -508,6 +508,24 @@ resistance use merely to obtain training labels, or treat reduced service during
 absence as ordinary occupied-operation savings. State uncertainty and distinguish
 engineering assumptions, simulated benefit and supported outcome evidence.
 
+Home uses one learned occupied comfort reference and one weighted indoor
+temperature for comfort limits, with fixed configured room weights (default
+Bedroom 50%, Downstairs 25%, Upstairs 25% when all three are configured). There
+are no individual room comfort vetoes or day/night schedules. The owner approved
+this policy on 2026-10-07: initialize provisionally from about one covered hour
+of eligible normal heating conditions, refine gradually, and pause rather than
+erase learning across reporting gaps. Native ROOM changes invalidate applicable
+equipment-response evidence without erasing the comfort reference.
+
+The same approval permits a bounded, explicitly labelled control estimate when
+exactly one of the three contributing indoor sensors is unavailable. Preserve
+its weight and estimate its change from two fresh rooms relative to a common
+observed anchor. Increase uncertainty with missing weight, age and disagreement;
+use it in planning and recovery and return to normal heating when margins or
+coverage are insufficient. Estimates never fill measured history, initialize or
+adapt comfort references, train thermal coefficients, or validate trials. Actual
+device readiness and restoration obligations remain independently required.
+
 Details: [learning and control](docs/learning-and-control.md),
 [Garage manual heating](docs/garage.md), [firewood estimates](docs/fireplace.md).
 

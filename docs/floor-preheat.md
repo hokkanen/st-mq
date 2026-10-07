@@ -37,7 +37,7 @@ feedback remains unknown.
 Preheating requests the captured normal ROOM setting plus
 `controller.preheat_room_boost_c` (default **5 °C**), capped at the device's supported
 maximum. Renewals maintain that request without adding another increment. This is
-a heat-pump demand setting; automatic planning constrains occupied room forecasts using the learned
+a heat-pump demand setting; automatic planning constrains the occupied indoor-average forecast using the learned
 reference and `max_drop_c` / `max_rise_c` (both default **1.5 °C**).
 
 A positive `controller.floor_thermal_priors.capacity_kwh_per_c` enables one separate
@@ -74,7 +74,7 @@ when reduction ends, followed by a bounded recovery hold
 (`controller.recovery_hold_minutes`, default **60 minutes**) with those hot-water
 restrictions retained. AUX shares that deadline when
 `controller.recovery_compressor_only` is enabled, with independent early release
-for room comfort. At expiry, native DHW settings and circulation eligibility return;
+for indoor-average comfort. At expiry, native DHW settings and circulation eligibility return;
 a circulation pulse is not forced. To restore normal hot-water settings earlier,
 pause price control; this selects Normal heating and restores the captured native
 settings. A timed circulation run can then be started if needed. The deadline is not extended by ongoing estimated

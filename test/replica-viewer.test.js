@@ -13,7 +13,7 @@ import { start } from '../src/main.js';
 import { addSensorChange } from '../src/app/sensor-changes.js';
 import { Recorder } from '../src/storage/recorder.js';
 import { applyLearningRecord, LEARNING_ALGORITHM} from '../src/app/committed-learning.js';
-import { appendLearningRecord } from './helpers/home-learning-fixture.js';
+import { appendLearningRecord, currentComfortReference } from './helpers/home-learning-fixture.js';
 import { restoreAdaptiveCheckpoint } from '../src/control/adaptive-learning.js';
 import { garageSettings } from '../src/garage/settings.js';
 import { mitsubishiControl } from '../chart/mitsubishi.js';
@@ -72,7 +72,7 @@ function recordLearningModels(publication, { recordedAt = publication.sourceAt, 
   const store = new Store(publication.dbPath), seed = restoreAdaptiveCheckpoint(null);
   seed.model.parameters.lossPerHour = .031;
   seed.baselineC = 21.4;
-  seed.comfortReference = { targetC: 21.4, confidence: 'observed-heating-baseline', updatedAt: recordedAt };
+  seed.comfortReference = currentComfortReference(21.4, recordedAt);
   seed.samples = [{ timestamp: recordedAt - 60_000, indoorC: 21, outdoorC: 5, phase: 'normal',
     regime: 'occupied', quality: [], privateFixture: 'invented-sample-marker-not-for-browser' }];
   appendLearningRecord(store, 'mqtt', 'context', { timestamp: recordedAt }, { seed });
@@ -141,7 +141,7 @@ test('replica infers the primary input from the Home journal and ignores unsuppo
   assert.equal(store.db.prepare("SELECT COUNT(*) n FROM state WHERE key LIKE 'contract:%'").get().n, 0);
   assert.equal(store.db.prepare('SELECT input FROM learning_journal ORDER BY id DESC LIMIT 1').get().input, 'mqtt');
   store.appendLearningJournal('garage:unsupported-scope', { kind: 'context', at,
-    algorithmVersion: 'invented-unsupported-algorithm', payload: { value: {} } });
+    algorithmVersion: LEARNING_ALGORITHM, payload: { value: {} } });
   store.close();
   const raw = new DatabaseSync(publication.dbPath); raw.exec('PRAGMA journal_mode=DELETE'); raw.close();
   publication.digest = digest(publication.dbPath); publication.bytes = readFileSync(publication.dbPath).length;

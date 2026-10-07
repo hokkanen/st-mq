@@ -5,8 +5,8 @@ import { createHeatingExplorerState, heatingComparisonMetrics } from '../chart/h
 const now = Date.parse('2026-09-30T09:00:00Z');
 const makeResult = (extra = {}) => ({ snapshotId: 'synthetic-snapshot', snapshotAt: now, expiresAt: now + 60_000,
   controls: [{ key: 'maxReductionHours', value: 4 }, { key: 'maxDropC', value: 1.5 }],
-  current: { outcomes: { maxRoomDropC: .7 } }, scenario: { outcomes: { maxRoomDropC: 1.1 }, schedule: { reductionStart: now, reductionEnd: now + 6 * 3_600_000 } },
-  comparison: { additionalBenefitCents: 55, additionalRoomDropC: .4 }, application: { allowed: true }, ...extra });
+  current: { outcomes: { maxIndoorDropC: .7 } }, scenario: { outcomes: { maxIndoorDropC: 1.1 }, schedule: { reductionStart: now, reductionEnd: now + 6 * 3_600_000 } },
+  comparison: { additionalBenefitCents: 55, additionalIndoorDropC: .4 }, application: { allowed: true }, ...extra });
 
 test('exploration pins conditions and changes only local values until explicit comparison', async () => {
   const requests = [];
@@ -132,8 +132,8 @@ test('cancel is limited to a pending or running cycle and leaves restoration vis
   assert.equal(await state.cancel(), false);
 });
 
-test('comparison cards preserve negative savings and unknown room predictions', () => {
-  const metrics = heatingComparisonMetrics(makeResult({ comparison: { additionalBenefitCents: -25, additionalRoomDropC: .4 } }));
+test('comparison cards preserve negative savings and unknown average predictions', () => {
+  const metrics = heatingComparisonMetrics(makeResult({ comparison: { additionalBenefitCents: -25, additionalIndoorDropC: .4 } }));
   assert.equal(metrics[0].value, '−€0.25');
   assert.equal(metrics[1].value, '1.1 °C');
   assert.equal(metrics[2].value, '6 h');

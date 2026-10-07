@@ -9,7 +9,7 @@ import { Engine } from '../src/app/engine.js';
 import { validateSettings } from '../src/app/config.js';
 import { restoreAdaptiveCheckpoint } from '../src/control/adaptive-learning.js';
 import { applyLearningRecord, LEARNING_ALGORITHM, validLearningCheckpoint} from '../src/app/committed-learning.js';
-import { appendLearningRecord } from './helpers/home-learning-fixture.js';
+import { appendLearningRecord, currentComfortReference } from './helpers/home-learning-fixture.js';
 import { fireplaceLearningContext } from '../src/app/fireplace-inputs.js';
 import { sensorLearningContext } from '../src/app/sensor-inputs.js';
 import { revertSensorChange } from '../src/app/sensor-changes.js';
@@ -26,8 +26,7 @@ function fixture(t) {
   engine.tick = () => {};
   const seed = restoreAdaptiveCheckpoint(null, engine.control);
   seed.baselineC = 21.5;
-  seed.comfortReference = { baselineC: 21.5, observedAt: now - HOUR };
-  seed.sensorComfortReferences = { indoor_temperature: { baselineC: 21.5 } };
+  seed.comfortReference = currentComfortReference(21.5, now - HOUR);
   seed.state = { indoorC: 21.5, reserveC: 22, observedAt: now - HOUR };
   seed.samples = [now - 2 * HOUR, now - HOUR].map(timestamp => ({ timestamp, indoorC: 21.5, outdoorC: 10,
     phase: 'normal', regime: 'occupied', quality: [], valid: true }));
@@ -119,7 +118,7 @@ test('sensor undo keeps the old model available, catches up and atomically repub
     assert.equal(current.sensorRevision, reversed.revision);
     assert.equal(current.baselineC, f.initial.baselineC);
     assert.deepEqual(current.samples, f.initial.samples);
-    assert.deepEqual(current.sensorComfortReferences, f.initial.sensorComfortReferences);
+    assert.deepEqual(current.comfortReference, f.initial.comfortReference);
     assert.equal(current.measurementEpochAt, undefined);
     assert.deepEqual(current, pureReplay(f.store));
     assert.equal(validLearningCheckpoint(current), true);

@@ -163,7 +163,6 @@ test('current saved indoor averages survive unrelated rejected learning inputs a
     bedroom_temperature: { value: 20, weight: 0.5, observedAt, held: true, needsAttention: true,
       attentionReasons: ['old-reading', 'disconnected', 'invented-private-reason'], privateFixture: 'invented-private-device' },
   } };
-  put(store, start + 15 * MINUTE, sample(0, 15, [segment(0, 15)], saved), 'mqtt', 'committed-house-v6-sensors');
   put(store, start + 30 * MINUTE, sample(15, 30, [segment(15, 30)], saved), 'mqtt', LEARNING_ALGORITHM);
   put(store, start + 45 * MINUTE, sample(30, 45, [segment(30, 45)], { ...saved, indoorC: null }),
     'mqtt', LEARNING_ALGORITHM);
@@ -247,7 +246,7 @@ test('current indoor averages survive unrelated failures while the chart retains
   assert.doesNotMatch(JSON.stringify(before), /measurementInputs|invented-configuration/);
 });
 
-test('combined thermal input and actual valve modes preserve saved treatment evidence without manufacturing legacy heat', t => {
+test('combined thermal input and actual valve modes preserve saved treatment evidence without manufacturing missing heat', t => {
   const store = new Store(':memory:'); t.after(() => store.close());
   put(store, start + 15 * MINUTE, sample(0, 15, [
     segment(0, 5, { hydronicHeatKw: 7.66, floorOverrideMode: 'on', treatmentKey: 'private-treatment-never-exposed' }),
@@ -255,7 +254,7 @@ test('combined thermal input and actual valve modes preserve saved treatment evi
     segment(10, 15, { hydronicHeatKw: 2, floorOverrideMode: 'unknown' }),
   ]), 'mqtt', LEARNING_ALGORITHM);
   put(store, start + 30 * MINUTE, sample(15, 30, [segment(15, 30, { thermalCompressorDuty: 1 })]),
-    'mqtt', 'committed-house-v9-reversible-sensors');
+    'mqtt', LEARNING_ALGORITHM);
   const result = project(store, 'mqtt');
   assert(result.series.model_hydronic_heat.some(row => row.y === 7.66));
   assert(result.series.model_hydronic_heat.some(row => row.y === 0));

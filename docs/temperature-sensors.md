@@ -27,8 +27,8 @@ The **Home temperatures & comfort** view compares Upstairs, Bedroom, Downstairs,
 **Average indoor** and the saved reference. **Property temperatures** keeps all
 three rooms and both garage probes together. Temperatures share one right-hand
 scale; views with no other quantitative subject hide the left scale. The average
-is the fixed configured indoor average used by the thermal model: the three rooms
-each contribute one third with default weights. Historical inputs retain their
+is the fixed configured indoor average used by the thermal model: Bedroom contributes 50%, Downstairs 25% and Upstairs 25% with default weights.
+The optional `controller.indoor_sensor_weights` map changes these fixed weights. Historical inputs retain their
 original membership instead of applying today's sensor configuration backwards.
 
 Average indoor is green, Upstairs terracotta, Bedroom violet, Downstairs amber and
@@ -113,8 +113,9 @@ The Average indoor chart follows saved inputs of completed 15-minute learning
 windows, preserving gaps when a participating room lacks report coverage. The
 current report-coverage rule rejects an interval containing a
 report outage even if a sensor recovers before its endpoint. Fixed weights never
-redistribute to the remaining rooms. Missing coverage makes the average
-unavailable for optimisation; ordinary heating remains available. Other missing
+redistribute to the remaining rooms. Missing coverage makes the measured average unavailable. A separate, explicitly
+identified control estimate may bridge one unavailable room as described below;
+ordinary heating remains available. Other missing
 learning inputs do not hide an otherwise known indoor average. Supported journal
 history retains its recorded membership and weights instead of being recalculated
 from today's configuration. Unsupported earlier learning algorithms are rejected;
@@ -151,7 +152,7 @@ not recorded instead of guessing.
 
 | Input | Availability rule | Warning or learning effect |
 | --- | --- | --- |
-| Periodic indoor MQTT | 70-minute reporting interval plus five-minute grace | At 75 minutes, or on an explicit acquisition failure, control falls back. Learning rejects a whole window containing a report gap. |
+| Periodic indoor MQTT | 70-minute reporting interval plus five-minute grace | At 75 minutes, or on an explicit acquisition failure, the measured average is unavailable. A bounded one-room estimate may support control. Learning rejects a whole window containing a report gap. |
 | Garage | Two minutes after the last genuine Shelly or MQTT report; direct Shelly is polled every 30 seconds | At expiry the reading becomes unavailable and the chart has a gap. Fresh sensor evidence is required for [Garage control](garage.md). |
 | Indoor without a periodic contract | Keep the last genuine valid value until replaced or excluded by a sensor change | Applies only when explicitly disabling the reporting contract, not the three configured room sensors. |
 | H66 equipment (outdoor register excluded from weather selection/history) | Five-minute source validity for equipment diagnostics | A stricter live transport/readback gate can reject sooner, and its actual limit is displayed. It cannot extend the source-validity limit. |
@@ -179,17 +180,16 @@ separately from sensor age. Historical model tooltips evaluate age at the saved
 window, not the current time.
 
 Source timestamps, seeds and current committed inputs retain deterministic replay.
-The current v13 sensor-boundary and FMI/Open-Meteo selection semantics require
+The current continuous-reference algorithm and source-evidence semantics require
 a deliberate fresh development start for older algorithm checkpoints. Incompatible development algorithms
 are rejected; permitted v0.7.5 CSV imports retain their timestamp/quality meaning.
 
 The committed journal saves each contributing endpoint and weight, observation
-lineage, the resolved average and its configuration. This remains one thermal
-model, with separate learned comfort references for participating rooms. During
-occupied operation, a room below its own reference minus the permitted drop
-prevents or ends a heating reduction even if the average is comfortable. These
-are observed room limits, not separate room-temperature forecasts or guarantees
-that the shared heating system can regulate every room independently.
+lineage, the resolved average and its configuration. This remains one thermal model and one learned normal-temperature reference.
+Occupied comfort limits, forecasts, discomfort costs and recovery checks use the
+same configured indoor average. Individual rooms have no separate reference or
+automatic veto; a room can depart further from its normal temperature than the
+average allowance. The shared heating system cannot regulate rooms independently.
 
 Historical CSV indoor readings retain their original upstairs meaning. The new
 rooms have no invented history before installation. Imported model learning
@@ -214,7 +214,7 @@ For a participating indoor sensor or the outdoor temperature, the action:
 
 - Preserves raw readings and the old measurement history.
 - Retains model validation, fitting samples, completed episodes, fitted coefficients
-  and aggregate and room comfort references. New clean observations recalibrate
+  and the aggregate comfort reference. New clean observations recalibrate
   them gradually through the existing adaptation rules; no offset is guessed.
 - Resets only the current temperature propagation state. Fitting and prediction
   never cross a sensor-change boundary, including a change between sparse samples.
@@ -259,22 +259,78 @@ side by side can establish relative agreement, but matching their readings does
 not prove absolute accuracy. A different position or response time may change
 thermal behaviour beyond a constant offset.
 
-## Changes to floor circulation thermostats
+## Normal-temperature reference
 
-The learned comfort reference can move both colder and warmer without a change
-to the heat pump's ROOM register. Initial establishment still requires sustained
-normal occupied heating. Once established, repeated stable normal fragments of
-at least eight hours, with stable final six hours, contribute evidence across
-days. At least 24 hours of qualifying evidence spanning 48 hours is required;
-updates are limited to 0.2°C per 24 hours of newly evidenced time. Repeated polls
-or replay of the same window cannot move the reference again.
+One supported hour of occupied Normal heating initializes an approximate reference
+from the configured indoor average. It remains provisional until 24
+hours are supported by verified heating. Weather-inferred hours do not satisfy
+that qualification. Ordinary valid Normal observations then refine it continuously
+with a 48-hour smoothing timescale and a 1°C bound on each temperature innovation.
+There is no plateau test, uninterrupted-day requirement or learned time-of-day
+schedule. Initial and later learning use the same evidence rules.
 
-Preheating, reduction and recovery hold the reference fixed. Missing or bad
-observations, away periods and fireplace effects clear pending adaptation.
-Each room uses the same rules for its own reference, allowing the bedroom to
-settle at a different normal temperature from Downstairs. This observes the
-temperature achieved with the household controls; it cannot independently tell
-whether every persistent lower plateau reflects a preference or reduced heating.
+Verified space-heating activity supports demand, including ordinary off cycles
+for up to six hours after heating. DHW activity alone does not count. When current
+native evidence is unavailable, outdoor temperature at most 12°C and an
+indoor–outdoor difference of at least 8°C provide a labelled provisional demand
+inference. Weather inference cannot replace known evidence of no space heating.
+
+Preheat, reduction, recovery, Away and material logged fireplace influence pause
+reference updates. Two hours of Normal settling after the controller's heating
+interventions keep their residual effects out of the reference. Small observation
+outages pause updates without clearing the reference or earned progress; missing
+time and cached readings earn no evidence. Genuine unchanged reports do count
+as source support. Reference support time refreshes even when the numerical
+reference does not move.
+
+Persistent changes to local floor thermostats gradually move the overall
+reference in either direction according to each room's configured weight. This
+observes achieved temperature, not the person's intent: a faulty valve or open
+window can resemble a changed preference. A native ROOM setting edit also retains
+the previous reference while new Normal evidence refines it. Provisional references
+limit automatic reduction to at most 0.5°C below the reference; equipment readiness,
+thermal-model evidence and all other comfort checks remain independent.
+
+## One missing room
+
+One unavailable participating room can be estimated only when two other
+participating rooms have fresh valid evidence and a complete common baseline is
+available from the preceding 72 hours. Keep the original weights and use:
+
+`missing room estimate = last baseline reading + remaining rooms' weighted average change`
+
+This retains the missing room's usual offset while following observed whole-house
+movement. Estimates never support another estimate. A sensor-change boundary,
+changed membership or weight, or insufficient supporting evidence prevents
+this fallback. Invalid readings cannot supply its baseline or fresh supporting
+measurements. Actual readings replace the estimate immediately when the sensor
+returns. A local thermostat change or open window in the missing room is invisible;
+the surviving sensors temporarily have more influence over estimated movement.
+
+The extra allowance on the overall average is the missing room's normalized
+weight multiplied by `0.3°C + 0.02°C × elapsed hours + surviving-room disagreement`.
+Disagreement is the absolute difference between the two surviving rooms' changes
+since the baseline. It grows with the forecast horizon too. The 72-hour baseline
+expiry remains fixed across repeated use and restart. These are engineering
+allowances, not statistically calibrated confidence bounds. Planning, live limits
+and recovery account for the allowance; new learning trials require a measured
+average. If the available
+comfort margin cannot absorb it, ordinary native heating remains available.
+There is no guarantee of indefinite optimization with a failed sensor. A separate
+runtime thermal state can continue the heat-reserve forecast from the last
+measured state only with continuously covered actual equipment/weather inputs.
+Missing thermal-input coverage selects Normal; inferred room temperatures never
+become fitted state or learning observations.
+
+The measured indoor average remains unavailable during the gap. The estimate is
+identified as **Partly estimated** with the missing room and baseline time. It
+cannot train thermal coefficients or the comfort reference, score observed
+prediction validation, or fill recorded temperature history. Individual room
+readings retain their original timestamps and unavailable status. Restart does not
+renew the baseline or source evidence. An already active cycle can complete its
+control recovery using the bounded estimate, but an indoor-observation gap marks
+its assessment `unassessed-indoor-observation-gap`. Such a cycle earns no learning
+or validation evidence and no claimed observed saving.
 
 ### Current acquisition boundary
 

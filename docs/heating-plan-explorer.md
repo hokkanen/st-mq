@@ -38,7 +38,7 @@ evidence and do not justify a permanent recommendation.
 ## Explore limits
 
 Change a hypothetical limit and calculate a comparison. The available controls
-cover reduction and preheat duration, permitted room-temperature drop and rise,
+cover reduction and preheat duration, permitted indoor-average drop and rise,
 savings strategy and the native ROOM increase used for preheat. The ceiling is
 the maximum permitted duration; it does not force the planner to choose that
 duration. Several limits can be changed together.
@@ -52,8 +52,8 @@ ROOM increase, rise and preheat across the second row. Enter durations directly.
 | --- | --- | --- |
 | Maximum reduction | `controller.max_reduction_hours` | 0.25–12 hours |
 | Maximum reduction while away | `controller.max_away_reduction_hours` | 0.25–24 hours |
-| Allowed room-temperature drop | `controller.max_drop_c` | 0–2 °C |
-| Allowed room-temperature rise | `controller.max_rise_c` | 0.25–2 °C |
+| Allowed average temperature drop | `controller.max_drop_c` | 0–2 °C |
+| Allowed average temperature rise | `controller.max_rise_c` | 0.25–2 °C |
 | Maximum preheat | `controller.max_preheat_hours` | 0.25–6 hours |
 | Preheat ROOM increase | `controller.preheat_room_boost_c` | Whole degrees, 1–5 °C |
 | Savings strategy | `controller.savings_strategy` | Gentle, Balanced, More savings |
@@ -72,10 +72,12 @@ that unobserved tail and show its estimate separately. Hot-water demand and
 recovery are not counterfactually modeled;
 the figures are not measured whole-house or bill savings.
 
-Room-temperature checks preserve each participating room's current offset and
-recent trend. They are conservative proxies, not separately identified room
-models. Temperature allowances and adverse physical scenarios are engineering
-uncertainty estimates, not statistical confidence levels. A prediction outside
+Temperature checks use the same configured indoor average and single normal
+reference as the Home model. Individual room limits and offset forecasts are not
+part of this policy. A bounded estimate for one unavailable room retains its
+weight and adds uncertainty; it cannot start a learning trial. Temperature
+allowances and adverse physical scenarios are engineering uncertainty estimates,
+not statistical confidence levels. A prediction outside
 demonstrated operating coverage does not become an executable plan merely because
 its nominal temperature looks acceptable.
 

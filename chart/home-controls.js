@@ -110,39 +110,30 @@ export function renderHomePolicy(document, status) {
   }
 }
 
-/** The backend resolves individual learned references and shared occupied bounds. */
-export function homeRoomReferences(status = {}) {
-  const temperature = value => Number.isFinite(value)
-    ? `${new Intl.NumberFormat('en-GB', { maximumFractionDigits: 1 }).format(value)} °C` : 'Unavailable';
-  return (status.comfortRooms ?? []).map(room => ({
-    id: room.id, label: room.label,
-    reference: temperature(room.referenceC),
-    basis: room.referenceSource === 'room' ? 'Learned room reference'
-      : room.referenceSource === 'overall' ? 'Overall reference' : 'Reference not established',
-    limits: Number.isFinite(room.minC) && Number.isFinite(room.maxC)
-      ? `${temperature(room.minC)} – ${temperature(room.maxC)}` : 'Limits unavailable',
-    inactive: room.limitsApply === false,
-  }));
+/** The control estimate stays separate from measured history and room readings. */
+export function homeIndoorEstimate(status = {}, { formatTime = value => new Date(value).toLocaleString('en-GB', { timeZone: 'Europe/Helsinki' }) } = {}) {
+  const reading = status.observations?.indoorControl;
+  if (reading?.estimated !== true || reading.stale || !Number.isFinite(reading.value)) return null;
+  const sensor = ({ indoor_temperature: 'Upstairs', downstairs_temperature: 'Downstairs', bedroom_temperature: 'Bedroom' })[reading.estimatedSensor] ?? 'One room';
+  const uncertainty = Number.isFinite(reading.uncertaintyC) ? ` Extra average-temperature allowance: ±${reading.uncertaintyC.toFixed(2)} °C.` : '';
+  const anchor = Number.isFinite(reading.anchorAt) ? ` Last complete baseline: ${formatTime(reading.anchorAt)}.` : '';
+  return { reading, usable: true, attention: true, label: `${reading.value.toFixed(1)} °C`,
+    note: `Partly estimated · ${sensor}`,
+    detail: `${sensor} is unavailable. Its temperature movement is estimated from the other rooms while keeping the configured weights.${uncertainty}${anchor} This estimate supports bounded control; learning and recorded measured temperatures retain the gap.` };
 }
 
-export function renderHomeRoomReferences(document, status) {
-  const root = document.getElementById('home-room-references');
-  if (!root) return;
-  const rows = homeRoomReferences(status);
-  const heading = document.getElementById('home-room-limits-status');
-  if (heading) heading.textContent = rows.length && rows.every(row => row.inactive) ? 'Inactive while away' : 'When you are home';
-  const fragment = document.createDocumentFragment();
-  for (const row of rows) {
-    const item = document.createElement('div'), title = document.createElement('dt'), detail = document.createElement('dd');
-    const reference = document.createElement('strong');
-    title.textContent = row.label; reference.textContent = row.reference;
-    detail.append(reference, ` · ${row.basis}. Limits: ${row.limits}${row.inactive ? ' · inactive while away' : ''}.`);
-    item.append(title, detail); fragment.append(item);
-  }
-  if (!rows.length) {
-    const unavailable = document.createElement('p');
-    unavailable.className = 'muted'; unavailable.textContent = 'Room references are unavailable.';
-    fragment.append(unavailable);
-  }
-  root.replaceChildren(fragment);
+export function homeReferenceSummary(status = {}) {
+  const reference = status.learning?.adaptive?.comfortReference;
+  const state = status.learning?.adaptive?.comfortLearning;
+  if (status.settings?.comfort?.targetC != null || status.decision?.comfort?.source === 'explicit-setting') return 'Configured normal temperature';
+  if (reference) return reference.provisional || reference.confidence === 'provisional-heating-demand-baseline'
+    ? 'Provisional normal temperature' : 'Learned normal temperature';
+  const reasons = {
+    'waiting-for-observations': 'Waiting for measured indoor temperatures',
+    'excluded-operation': 'Learning paused during current heating conditions',
+    'settling-after-intervention': 'Waiting for normal heating to settle',
+    'heating-demand-unavailable': 'Waiting for heating demand',
+    learning: 'Learning normal temperature',
+  };
+  return reasons[state?.status] ?? 'Normal temperature not established';
 }

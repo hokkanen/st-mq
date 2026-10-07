@@ -736,7 +736,7 @@ byte and variation metrics remain labeled as such. Current open energy is shown
 separately from finalized observation counts. The annual target measures overall
 SQLite growth; mandatory exact/history records are never dropped to meet it.
 
-This recording contract uses database schema 22. An incompatible development
+This recording contract uses database schema 23. An incompatible development
 schema is rejected before mutation with fresh-database guidance; no migration,
 backfill or automatic reset is provided. Supported read-only v0.7.5 CSV import,
 current-version restart, backup/restore and deterministic journal replay remain.
@@ -1047,7 +1047,7 @@ explicit initial seed when adopting an existing model; original discarded source
 polls are not required to reproduce subsequent learning. Older imported history is
 resampled causally with bounded holds, retaining unknown heating/solar information.
 
-The current algorithm is `committed-house-v14-reversible-recovery`. Saved configuration retains
+The current algorithm is `committed-house-v15-continuous-comfort`. Saved configuration retains
 source-output assumptions, selected-slab priors, the relative ROOM increase and the
 bounded recovery policy. Changed equipment assumptions invalidate affected
 equipment/cost calibration. Checkpoint digests and journal-prefix identity detect
@@ -1137,13 +1137,14 @@ the measurement clock. Outdoor temperature and H66 control signals retain their 
 and availability requirements. Subscription failures are recorded separately from
 unchanged sensor values.
 
-The model's indoor temperature defaults to an equal average of Upstairs
-and each configured extra indoor sensor: Upstairs, Bedroom and Downstairs each
-contribute one third when all three are configured. Membership is fixed by
+The model's indoor temperature uses a fixed weighted average of configured rooms.
+With all three configured, Bedroom contributes 50%, Upstairs 25% and Downstairs
+25%. Automatic membership gives Bedroom twice the relative weight of either other
+configured room. Membership is fixed by
 configuration, including sensors temporarily missing or stale. It does not change when one
 sensor stops reporting. The garage is excluded. Optional
 `controller.indoor_sensor_weights` assigns nonnegative weights by indoor signal
-name. Its default empty object `{}` selects the automatic equal average;
+name. Its default empty object `{}` selects this automatic configured membership and weighting;
 omitting the whole setting has the same meaning. Within a nonempty map, omitted
 or zero-weight sensors do not contribute. At least one weight in that map must
 be positive, and positive weights require the relevant extra sensor to be
@@ -1171,8 +1172,10 @@ under the new deadline from that boundary onward; no old gap is filled and no
 new sensor report is invented. Explicit acquisition failures and sensor-change
 exclusions still require recovery evidence. Periodic
 indoor outages instead make the configured average unavailable and suspend
-thermal and comfort learning across the affected interval. No room is removed
-from the weights or estimated from another room. Normal heating stays available.
+thermal and comfort learning across the affected interval. No room is removed from the weights. A separate bounded one-room control estimate
+can follow the remaining two rooms from a complete baseline. It is never recorded
+as measured temperature or used for reference/model learning or observed validation;
+see [one missing room](temperature-sensors.md#one-missing-room). Normal heating stays available.
 Sensor changes still require a genuine reading from the new measurement period.
 See [SmartThings forwarding](smartthings-temperature-rule.md) for the rule and
 physical-driver requirements: configuring an interval alone does not establish

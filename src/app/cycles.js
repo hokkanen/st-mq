@@ -57,7 +57,7 @@ export class CycleTracker {
               solarRadiationWm2: row.solarRadiationWm2, compressorDuty: row.thermalCompressorDuty,
               auxKw: row.thermalAuxKw, supplyC: row.supplyC, brineC: row.brineC,
               floorOverrideMode: row.floorOverrideMode, treatmentKey: row.treatmentKey, fireplaceKgPerHour: fireplaceRate(context.fireplaceEvents, row.start, row.end) }, (row.end - row.start) / HOUR);
-            if (row.indoorEndpoint !== false) state.indoorC = row.indoorC;
+            if (row.indoorEndpoint !== false && number(row.indoorC)) state.indoorC = row.indoorC;
           }
           cycle.observerState = state && { indoorC: state.indoorC, reserveC: state.reserveC, slabC: state.slabC };
           cycle.stableSince = null;
@@ -91,10 +91,11 @@ export class CycleTracker {
     plan.referencePrediction = summary(evaluateCycle({ ...common, schedule: plan.reference }));
     const cycle = { id: `${this.input}:${randomUUID()}`, startedAt: now, status: 'active', treatmentKey: plan.schedule.treatmentKey ?? 'native', plan,
       executionBasis: executed ? 'live-commanded' : 'simulated', modelConfig: { ...(plan.config ?? this.config) }, observations: [], lastSample: sample,
-      observerState: { ...plan.initialState },
+      observerState: { ...plan.initialState }, estimatedIndoorUsed: plan.equipment?.indoorEstimated === true,
       actual: { costCents: 0, electricityKwh: 0, recoveryCostCents: 0, recoveryEnergyKwh: 0,
         compressorKwh: 0, compressorRunHours: 0, spaceHeatingAuxKwh: 0, dhwAuxKwh: 0,
         compressorActivityObserved: true, auxiliarySpaceObserved: false, auxiliaryObserved: true, recoveryAuxKwh: 0, auxiliaryRouteKnown: true, metered: true, coveredHours: 0, missingHours: 0,
+        temperatureMissingHours: 0,
         spaceHeatingCostCents:0,spaceHeatingKwh:0,spaceHeatingRecoveryCostCents:0,spaceHeatingRecoveryKwh:0,
         dhwCostCents:0,dhwKwh:0,routeCoveredHours:0,routeMissingHours:0 },
       originalPrediction: { costCents: plan.prediction.costCents, recoveryCostCents: plan.prediction.recoveryCostCents,
@@ -122,13 +123,14 @@ export class CycleTracker {
     cycle.adjustments ??= []; cycle.adjustments.push({ at: now, reason });
     this.save(cycle);
   }
-  record(sample, now, { thermalState, equipment = {} } = {}) {
+  record(sample, now, { thermalState, equipment = {}, controlIndoor = null } = {}) {
     const cycle = this.active(); if (!cycle) return null;
     const previous = cycle.lastSample, dt = (now - previous.timestamp) / HOUR;
     if (dt <= 0) return null;
     const schedule = cycle.executionSchedule ?? cycle.plan.schedule;
     if (!number(dt) || dt > 0.5) { this.cancel(now, 'cycle-observation-gap'); return null; }
     const a = cycle.actual;
+    cycle.estimatedIndoorUsed ||= controlIndoor?.estimated === true;
     let cursor = previous.timestamp;
     while (cursor < now) {
       // The sample describes the completed interval ending now. Its power must
@@ -150,7 +152,11 @@ export class CycleTracker {
         ...cycle.plan.intervals.flatMap(i => [i.start,i.end])].filter(t => number(t) && t > cursor);
       const end = Math.min(now, segment?.end ?? now, currentQuote?.end ?? frozen?.end ?? now,...boundaries);
       const hours = (end - cursor) / HOUR;
-      const eligible = number(previous.indoorC) && number(sample.indoorC) && number(values.powerKw)
+      // Meter/equipment coverage remains useful when a temperature is missing.
+      // Temperature gaps separately prevent calibration and outcome validation.
+      if (!number(previous.indoorC) || !number(sample.indoorC) || sample.indoorEstimated || previous.indoorEstimated)
+        a.temperatureMissingHours = (a.temperatureMissingHours ?? 0) + hours;
+      const eligible = number(values.powerKw)
         && values.powerKw >= 0 && number(price) && (!sample.inputSegments || Boolean(segment))
         && (!number(sample.windowStart) || cursor >= sample.windowStart);
       if (eligible) {
@@ -194,14 +200,16 @@ export class CycleTracker {
         solarRadiationWm2: values.solarRadiationWm2, supplyC: values.supplyC ?? null, brineC: values.brineC ?? null,
         floorOverrideMode: values.floorOverrideMode ?? null, treatmentKey: values.treatmentKey ?? null, price: price ?? null,
         priceBasis: currentQuote ? 'applicable-observed-quote' : frozen ? 'frozen-published-price' : 'missing',
-        phase, indoorC: sample.indoorC, powerKw: values.powerKw, eligible,
+        phase, indoorC: sample.indoorEstimated ? null : sample.indoorC, powerKw: values.powerKw, eligible,
+        ...(controlIndoor?.estimated ? { indoorControlEstimate: { value: controlIndoor.value, uncertaintyC: controlIndoor.uncertaintyC,
+          anchorAt: controlIndoor.anchorAt, estimatedSensor: controlIndoor.estimatedSensor } } : {}),
         thermalCompressorDuty:values.thermalCompressorDuty??null,thermalAuxKw:values.thermalAuxKw??null,
         compressorDuty:values.compressorDuty??null,auxKw:values.auxKw??null,
         provenance: sample.provenance ?? null });
       cursor = end;
     }
     cycle.lastSample = sample;
-    if (cycle.observerState && number(sample.indoorC)) cycle.observerState.indoorC=sample.indoorC;
+    if (cycle.observerState && number(sample.indoorC) && !sample.indoorEstimated) cycle.observerState.indoorC=sample.indoorC;
     if (cycle.observations.length > 3000) { this.cancel(now, 'cycle-observation-limit'); return null; }
     if (now - cycle.startedAt > this.config.recoveryTimeoutHours * HOUR) {
       this.cancel(now, 'recovery-not-established-before-timeout'); return null;
@@ -215,10 +223,15 @@ export class CycleTracker {
       occupancy: cycle.plan.occupancy, maxDropC: cycle.plan.maxDropC, maxRiseC: cycle.plan.maxRiseC,
       equipment: { ...cycle.plan.equipment, fireplaceEvents: this.fireplaceContext?.fireplaceEvents ?? cycle.plan.equipment?.fireplaceEvents ?? [] }, includeTail: false });
     const reserve = cycle.observerState?.reserveC;
-    const settled = sample.indoorC >= reference.endState.indoorC - 0.2
-      && number(reserve) && reserve >= reference.endState.reserveC - 0.25
+    const recoveryIndoor = number(sample.indoorC) && !sample.indoorEstimated ? sample.indoorC
+      : controlIndoor && !controlIndoor.stale ? controlIndoor.value : null;
+    const sourceUncertainty = controlIndoor?.estimated ? controlIndoor.uncertaintyC : 0;
+    const settled = number(recoveryIndoor) && number(sourceUncertainty)
+      && (!controlIndoor?.estimated || now <= controlIndoor.validUntil)
+      && recoveryIndoor - sourceUncertainty >= reference.endState.indoorC - 0.2
+      && number(reserve) && reserve - sourceUncertainty >= reference.endState.reserveC - 0.25
       && (!cycle.plan.model.floor?.enabled || number(cycle.observerState?.slabC)
-        && cycle.observerState.slabC >= reference.endState.slabC - 0.25)
+        && cycle.observerState.slabC - sourceUncertainty >= reference.endState.slabC - 0.25)
       && (sample.indoorTrendCPerHour ?? 0) >= -0.15
       && (!number(equipment.integral) || !number(cycle.plan.initialState.integral) || equipment.integral >= cycle.plan.initialState.integral - 60);
     cycle.stableSince = settled ? cycle.stableSince ?? now : null;
@@ -226,6 +239,19 @@ export class CycleTracker {
       && now >= (cycle.recoveryHoldUntil ?? schedule.recoveryHoldUntil ?? schedule.reductionEnd)) {
       if (a.missingHours > 0.05) { this.cancel(now, 'insufficient-cycle-energy-coverage'); return null; }
       cycle.status = 'completed'; cycle.endedAt = now;
+      if (cycle.estimatedIndoorUsed || (a.temperatureMissingHours ?? 0) > 0) {
+        // The control operation ended conservatively. An inferred endpoint or
+        // unobserved trajectory cannot establish measured recovery or savings.
+        cycle.assessment = { profitCents: null, recoveryErrorCents: null, actualCostCents: a.costCents,
+          basis: 'unassessed-indoor-observation-gap', recoveryBasis: 'Conservative control estimate; physical recovery not validated',
+          referenceLabel: cycle.plan.referenceLabel, assessedAt: now };
+        cycle.completionBasis = 'control-recovery-only';
+        this.store.transaction(() => {
+          this.save(cycle);
+          this.store.event('cycle-completed', { id: cycle.id, assessment: cycle.assessment }, now);
+        });
+        return { id: cycle.id, complete: false, recoveryComplete: false };
+      }
       // Assess the executed recovery under the frozen model and original settings,
       // rather than comparing a short observed episode to a 48-hour forecast total.
       const originalCoverage = intervals.every(i => cycle.plan.intervals.some(x => x.start <= i.start && x.end >= i.end));

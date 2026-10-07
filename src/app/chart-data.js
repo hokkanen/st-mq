@@ -901,7 +901,7 @@ export function getChartData({ store, input = 'offline', contract = null, market
   if (leftNames.some(name => Object.hasOwn(MODEL_INPUT_INFO, name) && !FIREPLACE_INPUT_NAMES.includes(name)) && !modelInputs.records) warnings.push('No saved learning inputs exist for these dates and input source. Recording sensor values alone does not create learning-input history.');
   if (leftNames.some(name => Object.hasOwn(MODEL_COEFFICIENT_INFO, name))) {
     if (!leftNames.some(name => Object.hasOwn(MODEL_COEFFICIENT_INFO, name) && envelopes[name].values().some(point => Number.isFinite(point.y)))) warnings.push('No reconstructable model coefficients exist for these dates and input source.');
-    if (modelCoefficients.unsupportedRecords || modelCoefficients.invalidRecords) warnings.push('Some coefficient history is unavailable because its learning records are unsupported or incomplete.');
+    if (modelCoefficients.invalidRecords) warnings.push('Some coefficient history is unavailable because its learning records are invalid or incomplete.');
   }
   for(const signal of leftNames.filter(name=>AUDIT_SIGNALS.includes(name))) {
     for(const row of store.db.prepare('SELECT value,source_time,quality FROM active_energy_audits AS energy_audits WHERE signal=? AND source_time>=? AND source_time<=? ORDER BY source_time,id')

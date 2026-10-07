@@ -1,5 +1,9 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { DatabaseSync } from 'node:sqlite';
+import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { Store } from '../src/storage/store.js';
 import { Recorder } from '../src/storage/recorder.js';
 import { Engine } from '../src/app/engine.js';
@@ -363,15 +367,45 @@ test('configuration epochs update nominal prediction power and replay identicall
   assert.deepEqual(replayLearningJournal(store, 'mqtt', null, { rebuild: true }), checkpoint);
 });
 
-test('new algorithm starts its own journal while older entries remain explicitly archived', t => {
+test('unsupported journal algorithms are rejected at append, read and replay boundaries without mutation', t => {
   const store = new Store(':memory:'); t.after(() => store.close());
-  store.appendLearningJournal('mqtt', { kind: 'sample', at: start, key: `sample:${start}`,
-    algorithmVersion: 'committed-house-v2', payload: { value: { timestamp: start } } });
-  assert.equal(replayLearningJournal(store, 'mqtt').model.energy.compressorKw, 3);
-  knownContext(store);
-  assert.equal(store.learningJournal({ input: 'mqtt' }).length, 2);
-  assert.equal(store.learningJournal({ input: 'mqtt', algorithmVersion: LEARNING_ALGORITHM }).length, 1);
-  assert.equal(replayLearningJournal(store, 'mqtt').algorithmVersion, LEARNING_ALGORITHM);
+  const foreign = { kind: 'sample', at: start, key: `sample:${start}`,
+    algorithmVersion: 'invented-unsupported-algorithm', payload: { value: { timestamp: start } } };
+  assert.throws(() => store.appendLearningJournal('mqtt', foreign), /Unsupported Home learning journal algorithm/);
+  assert.equal(store.learningJournal({ input: 'mqtt' }).length, 0);
+  assert.throws(() => store.learningJournal({ input: 'mqtt', algorithmVersion: foreign.algorithmVersion }), /Unsupported Home learning journal algorithm/);
+  store.db.prepare(`INSERT INTO learning_journal_entries(epoch,input,key,kind,at,algorithm_version,payload)
+    VALUES('original','mqtt',?,'sample',?,?,?)`).run(foreign.key, start, foreign.algorithmVersion, JSON.stringify(foreign.payload));
+  const before = store.db.prepare('SELECT * FROM learning_journal_entries').all();
+  assert.throws(() => store.learningJournal({ input: 'mqtt', algorithmVersion: LEARNING_ALGORITHM }), /Unsupported Home learning journal algorithm/);
+  assert.throws(() => replayLearningJournal(store, 'mqtt'), /Unsupported Home learning journal algorithm/);
+  assert.equal(store.getState('adaptive:mqtt'), null);
+  assert.deepEqual(store.db.prepare('SELECT * FROM learning_journal_entries').all(), before);
+});
+
+test('opening a current-schema database with a foreign algorithm rejects before writable setup', t => {
+  const directory = mkdtempSync(join(tmpdir(), 'stmq-foreign-journal-'));
+  t.after(() => rmSync(directory, { recursive: true, force: true }));
+  const path = join(directory, 'synthetic.sqlite');
+  const store = new Store(path); store.close();
+  const raw = new DatabaseSync(path);
+  raw.prepare(`INSERT INTO learning_journal_entries(epoch,input,key,kind,at,algorithm_version,payload)
+    VALUES('unselected-epoch','mqtt','invented-foreign','context',?,'invented-unsupported-algorithm','{}')`).run(start);
+  raw.close();
+  const before = readFileSync(path);
+  for (const readOnly of [false, true]) {
+    assert.throws(() => new Store(path, { readOnly }), /Unsupported Home learning journal algorithm.*existing database was not changed/);
+    assert.deepEqual(readFileSync(path), before);
+  }
+});
+
+test('foreign seeds and historical contexts cannot enter the current journal', t => {
+  const store = new Store(':memory:'); t.after(() => store.close());
+  const seed = { version: 1, model: initialAdaptiveModel(), samples: [], algorithmVersion: 'invented-unsupported-algorithm' };
+  assert.throws(() => appendLearningRecord(store, 'mqtt', 'context', { timestamp: start }, { config, seed }), /Unsupported Home seed/);
+  assert.throws(() => appendLearningRecord(store, 'mqtt', 'context', { timestamp: start,
+    historySeed: { model: initialAdaptiveModel(), source: { algorithmVersion: seed.algorithmVersion } } }, { config }), /Unsupported Home historical seed/);
+  assert.equal(store.learningJournal({ input: 'mqtt' }).length, 0);
 });
 
 test('fresh learning saves the ROOM boost and shared recovery policy for deterministic replay', t => {
@@ -382,7 +416,7 @@ test('fresh learning saves the ROOM boost and shared recovery policy for determi
   appendLearningRecord(store, 'mqtt', 'context', { timestamp: start },
     { config: configuration, seed: { version: 1, samples: [], model } });
   const entry = store.learningJournal({ input: 'mqtt', algorithmVersion: LEARNING_ALGORITHM })[0];
-  assert.equal(LEARNING_ALGORITHM, 'committed-house-v14-reversible-recovery');
+  assert.equal(LEARNING_ALGORITHM, 'committed-house-v15-continuous-comfort');
   assert.equal(entry.payload.configuration.preheatRoomBoostC, 5);
   assert.equal(entry.payload.configuration.recoveryHoldMinutes, 60);
   assert.equal(entry.payload.seed.model.floor.enabled, true);
@@ -428,4 +462,52 @@ test('lightweight cycle summaries retain missing values and omit full observatio
   assert.equal(rows[1].auxiliarySpaceObserved, true);
   assert.ok(rows.every(row => !Object.hasOwn(row, 'observations') && !Object.hasOwn(row, 'payload')));
   assert.equal(store.cycleSummaries({ input: 'mqtt', completedOnly: true }).length, 1);
+});
+
+test('native ROOM edits preserve the achieved reference and its progress while invalidating action response', t => {
+  const store = new Store(':memory:'); t.after(() => store.close());
+  const configuration = { ...config, indoorSensorWeights: { indoor_temperature: 1 } };
+  knownContext(store, start, {}, configuration);
+  for (let quarter = 1; quarter <= 6; quarter++) appendLearningRecord(store, 'mqtt', 'sample', {
+    timestamp: start + quarter * LEARNING_WINDOW_MS, indoorC: 21, outdoorC: 5,
+    phase: 'normal', regime: 'occupied', quality: [], heating: null,
+  }, { config: configuration });
+  const before = replayLearningJournal(store, 'mqtt');
+  assert.equal(before.comfortReference.targetC, 21);
+  appendLearningRecord(store, 'mqtt', 'context', { timestamp: start + 7 * LEARNING_WINDOW_MS,
+    resetEquipmentResponseAt: start + 7 * LEARNING_WINDOW_MS }, { config: configuration });
+  const after = replayLearningJournal(store, 'mqtt', before);
+  assert.deepEqual(after.comfortReference, before.comfortReference);
+  assert.deepEqual(after.comfortLearning, before.comfortLearning);
+  assert.deepEqual(after.samples, before.samples);
+  assert.deepEqual(after.model.equipmentResponse, { phases: {}, validation: null });
+  assert.equal(after.model.forecastValidation, null);
+  assert.deepEqual(replayLearningJournal(store, 'mqtt', null, { rebuild: true }), after);
+});
+
+test('committed change-only cache reads cannot establish comfort, while actual unchanged reports can', t => {
+  for (const periodic of [false, true]) {
+    const store = new Store(':memory:'); t.after(() => store.close());
+    const configuration = { ...config, indoorSensorWeights: { indoor_temperature: 1 } };
+    knownContext(store, start, {}, configuration);
+    const recorder = new Recorder(store, { clock: () => start });
+    for (let minute = 0; minute <= 120; minute += 5) {
+      const at = start + minute * MINUTE;
+      record(store, 'outdoor_temperature', 5, at);
+      if (minute === 0 || periodic) recorder.record({ ...sourceFor('indoor_temperature'), signal: 'indoor_temperature',
+        value: 21, unit: 'degC', sourceTime: at, receivedAt: at, quality: [], raw: periodic
+          ? { reportIntervalMs: 15 * MINUTE, reportGraceMs: 2 * MINUTE } : {} });
+      if (minute > 0 && minute % 15 === 0) appendLearningRecord(store, 'mqtt', 'sample',
+        committedLearningSample({ store, input: 'mqtt', at, config: configuration }), { config: configuration });
+    }
+    const cp = replayLearningJournal(store, 'mqtt');
+    if (periodic) {
+      assert.equal(cp.comfortReference.targetC, 21);
+      assert.equal(cp.comfortReference.evidenceHours, 2);
+    } else {
+      assert.equal(cp.comfortReference, null);
+      assert.equal(cp.comfortLearning.evidenceHours, 0);
+      assert.equal(cp.samples.at(-1).indoorC, 21, 'Held readback remains distinct from support for learning');
+    }
+  }
 });

@@ -128,7 +128,7 @@ They correct the retained interpretation, not the physical actions already taken
 
 ## Version discipline
 
-The Home learning algorithm is `committed-house-v14-reversible-recovery`, with
+The Home learning algorithm is `committed-house-v15-continuous-comfort`, with
 thermal model version 4. Production starts from a fresh database and an explicit
 initial seed. There is no compatibility migration for development databases.
 
@@ -165,14 +165,19 @@ report-coverage contract. Required reporting gaps and acquisition failures exclu
 those intervals even if telemetry later recovers. A reconnection can end a
 transport-only gap only when the genuine reading remains valid and its saved route
 matches; it never creates a new temperature observation. Configuration and
-reporting-policy changes are recorded at their effective time.
+reporting-policy changes are recorded at their effective time. One-room estimates
+are control-only: no inferred temperature enters the learning journal as an observed
+endpoint, trains the thermal/reference learner or supplies validation outcomes.
+The comfort checkpoint contains one aggregate reference and its bounded continuous
+learning state, including supported duration, latest evidence and intervention
+settling. Ordered updates preserve the same result across restart and replay.
 
 Sensor changes and reversals are compact immutable journal events. A sensor change
 masks only the changed sensor during its settling period and prevents thermal
 intervals crossing the boundary. Existing coefficients, validation, completed
 episodes and comfort references remain available for gradual recalibration.
 Outdoor changes keep unrelated indoor measurements. Current live and committed
-outdoor selection uses FMI with Open-Meteo fallback, excluding noisy H66 reports. These are the v13 semantics;
+outdoor selection uses FMI with Open-Meteo fallback, excluding noisy H66 reports. These source and continuous-reference semantics form the current algorithm;
 old development learning checkpoints require a deliberate fresh start, not an
 old-algorithm interpreter or automatic migration. Corrected replay uses the same pure
 eligibility projection as live learning. It may recover preserved measurements

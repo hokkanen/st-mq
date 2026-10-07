@@ -67,9 +67,10 @@ export function addModelInputs({ store, range, now, input, envelopes, indoorLine
     lastEnd.set(key, b);
   };
   const accept = row => {
+    if (row.algorithm_version !== LEARNING_ALGORITHM)
+      throw new TypeError('Unsupported Home learning journal algorithm; start fresh.');
     let sample;
     try { sample = JSON.parse(row.payload)?.value; } catch { return; }
-    if (row.algorithm_version !== LEARNING_ALGORITHM) { stats.rejectedIntervals++; return; }
     try { assertCurrentLearningSample(sample); } catch { stats.rejectedIntervals++; return; }
     const end = finite(sample.windowEnd) ? sample.windowEnd : row.at;
     const start = finite(sample.windowStart) ? sample.windowStart : end - WINDOW;

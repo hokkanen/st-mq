@@ -43,7 +43,7 @@ function confirmation(view, body) {
   const sensor = view.sensors.find(sensor => sensor.signal === body.signal);
   return `Record ${labels[body.signal]} sensor ${reasons[body.reason].toLowerCase()} now?\n\n${sensor.affectsLearning === false
     ? 'This records a measurement change for this sensor. It does not reset house learning.'
-    : `This excludes only the changed sensor for ${view.settlingMinutes ?? 30} minutes while it settles. Previous observations, learned coefficients, validation evidence and room comfort references are kept. Learning never fits across the measurement change; new readings gradually recalibrate the model.`}\n\nRecorded readings are kept. You can revert a mistaken entry and relearn from that history.`;
+    : `This excludes only the changed sensor for ${view.settlingMinutes ?? 30} minutes while it settles. Previous observations, learned coefficients, validation evidence and the normal-temperature reference are kept. Learning never fits across the measurement change; new readings gradually recalibrate the model.`}\n\nRecorded readings are kept. You can revert a mistaken entry and relearn from that history.`;
 }
 
 /** Keep an uncertain submission intact across refreshes and retries. */

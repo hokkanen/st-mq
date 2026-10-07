@@ -239,7 +239,7 @@ try {
   const historicalReadings = () => ['indoor_temperature', 'downstairs_temperature', 'bedroom_temperature', 'outdoor_temperature']
     .map(signal => app.store.observations({ signal, from: now - 8 * 3600_000, to: now - 1, limit: 5000 }));
   const originalReadings = historicalReadings();
-  await confirmClick('#sensor-change-submit', false, /room comfort references are kept/);
+  await confirmClick('#sensor-change-submit', false, /the normal-temperature reference are kept/);
   assert.equal((await fetch(`${base}/api/sensor-changes`).then(response => response.json())).events.length, 0,
     'Cancelling the confirmation does not record a sensor change');
   assert.equal(await evaluate('globalThis.sensorSmokeSavedRequest === undefined'), true);

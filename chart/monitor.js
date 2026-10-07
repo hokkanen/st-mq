@@ -18,7 +18,7 @@ import './charging-tests.css';
 import './charging-setup.css';
 import { createHistoryChart } from './history-chart.js';
 import { dashboardProviders, outdoorSourceLabel, providerName, providerSeries, temperatureReadingStatus } from './provider-status.js';
-import { activeRates, rateRows, temporaryValues, priceControlState, renderHomePolicy, renderHomeRoomReferences } from './home-controls.js';
+import { activeRates, rateRows, temporaryValues, priceControlState, renderHomePolicy, homeIndoorEstimate, homeReferenceSummary } from './home-controls.js';
 import { learningDisplay, h66Control, h66HomeSummary, h66EquipmentSummary, h66ReadingStatus, h66ReadingValue, h66Registers, h66ReadingGroups, renderModelInputs } from './learning-status.js';
 import { renderRecording, renderEnergyAudits, recordingOverviewRefresh } from './recording.js';
 import { bindDatabaseExport } from './database-export.js';
@@ -125,7 +125,9 @@ const reasons = {
   'awaiting-tariff-response-evidence': 'Learning how the heat pump responds to tariff control',
   'timed-normal-override': 'Price control is paused',
   'missing-or-stale-observations': 'Waiting for fresh temperature observations',
-  'room-comfort-limit': 'A room has reached its permitted temperature drop',
+  'estimated-indoor-thermal-state-unavailable': 'The indoor estimate lacks continuous heating evidence for the heat-reserve forecast',
+  'trial-needs-measured-indoor-temperature': 'A learning trial requires measured indoor temperatures',
+  'indoor-comfort-limit': 'The indoor average has reached its permitted temperature limit',
   'sensor-measurement-changed': 'Re-establishing temperature learning after a sensor change',
   'continuous-normal-preferred': 'Continuous normal operation is preferred',
 };
@@ -789,8 +791,9 @@ function render(s) {
     : s.input === 'offline' ? 'Imported household history. No live device connection is open.'
       : 'Live observations. Each feature shows its automation permission and current activity.';
   for (const key of ['indoor', 'outdoor']) {
-    const obs = s.observations?.[key] ?? {};
-    const readingStatus = temperatureReadingStatus(obs, { now: s.now, formatTime: time, outdoor: key === 'outdoor' });
+    const estimate = key === 'indoor' ? homeIndoorEstimate(s, { formatTime: time }) : null;
+    const obs = estimate?.reading ?? s.observations?.[key] ?? {};
+    const readingStatus = estimate ?? temperatureReadingStatus(obs, { now: s.now, formatTime: time, outdoor: key === 'outdoor' });
     const title = key === 'indoor' ? 'Indoor average' : 'Outdoor temperature';
     const source = key === 'outdoor' ? outdoorSourceLabel(obs.source) : providerName(obs.source);
     setStatusDetail($(key), { key: `metric-${key}`, label: readingStatus.usable ? `${obs.value.toFixed(1)} °C` : 'Unavailable',
@@ -799,8 +802,8 @@ function render(s) {
     $(key).classList.toggle('metric-unavailable', !readingStatus.usable);
     const note = $(`${key}-age`);
     note.hidden = readingStatus.usable && !readingStatus.attention;
-    note.textContent = note.hidden ? '' : readingStatus.attention ? 'Needs attention'
-      : obs.configured === false ? 'Not configured' : 'No current reading';
+    note.textContent = estimate?.note ?? (note.hidden ? '' : readingStatus.attention ? 'Needs attention'
+      : obs.configured === false ? 'Not configured' : 'No current reading');
   }
   const manualHold = s.decision.manualHold && (s.decision.manualHold.until == null || s.decision.manualHold.until > s.now) ? s.decision.manualHold : null;
   const manualConfirmed = manualHold && heatingModeSelection(s).confirmed && heatingModeSelection(s).phase === manualHold.phase;
@@ -840,17 +843,15 @@ function render(s) {
   $('dhwr-note').textContent = dhwr.summaryNote;
   $('dhwr').classList.toggle('stale', dhwr.attention);
   const reference = s.decision.comfort?.targetC ?? s.settings?.comfort?.targetC;
-  const referenceSource = s.decision.comfort?.source === 'explicit-setting' || s.settings?.comfort?.targetC != null ? 'configured' : 'learned';
   $('reference').textContent = s.demoComfortTargetC ? `${s.demoComfortTargetC} °C` : Number.isFinite(reference) ? `${Number(reference).toFixed(1)} °C` : replica ? 'Unavailable' : 'Learning';
   $('reference').dataset.empty = !s.demoComfortTargetC && !Number.isFinite(reference);
-  $('reference-source').textContent = s.demoComfortTargetC ? 'Demo reference only' : Number.isFinite(reference) ? `${referenceSource === 'learned' ? 'Learned' : 'Configured'} normal temperature` : replica ? 'No recorded normal temperature' : 'Normal temperature not established';
+  $('reference-source').textContent = s.demoComfortTargetC ? 'Demo reference only' : replica && !Number.isFinite(reference) ? 'No recorded normal temperature' : homeReferenceSummary(s);
   renderHomePolicy(document, s);
   $('home-policy-current-title').textContent = `${replica ? 'Recorded plan' : manualHold ? 'Held request' : 'Current plan'} · ${label(manualHold?.phase ?? s.decision.phase ?? s.decision.action ?? 'Unavailable')}`;
   $('home-policy-current-detail').textContent = [controlMode, decisionReasons, recoveryDetail].filter(Boolean).join(' · ');
   $('drop').textContent = `${s.settings?.comfort?.maxDropC} °C`;
   $('drop-note').textContent = s.decision.comfort?.maxDropApplies === false ? 'Inactive while you are away' : 'When you are home';
   $('rise-note').textContent = $('drop-note').textContent;
-  renderHomeRoomReferences(document, s);
   renderLearning(s);
   const scope = settingsReloadScope(s);
   $('settings-reload-help').textContent = replica ? 'Applying configuration is disabled in this read-only view.' : scope.message;

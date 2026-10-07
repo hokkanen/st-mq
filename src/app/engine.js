@@ -1,9 +1,10 @@
+import { createHash } from 'node:crypto';
 import { weatherAcquisitionIdentity } from '../acquisition/weather-identity.js';
 import { createFloorOverride, floorOverrideObligation, floorOverrideStatus } from '../control/floor-override.js';
 import { HeatingAutomation } from './automation.js';
 import { dhwrEligible } from '../control/dhwr.js';
 import { restoreAdaptiveCheckpoint } from '../control/adaptive-learning.js';
-import { chooseCycle, evaluateCycle, economicAdmission, forecastIntervals, cycleForecastCovered, phaseAt, revalidatePlan, learningReadiness, recoveryPolicy, trialEnvelope, preheatRoomRequest } from '../control/planner.js';
+import { chooseCycle, evaluateCycle, economicAdmission, forecastIntervals, cycleForecastCovered, phaseAt, revalidatePlan, learningReadiness, recoveryPolicy, trialEnvelope, preheatRoomRequest, effectiveComfortDropC } from '../control/planner.js';
 import { CycleTracker } from './cycles.js';
 import { controlObservations } from './control-observations.js';
 import { heatingFeedback } from './heating-feedback.js';
@@ -24,7 +25,9 @@ import { temporaryUpdate } from './temporary.js';
 import { HEATING_COMMANDS, heatingErrorMessage } from '../control/mqtt.js';
 import { addSensorChange, revertSensorChange, sensorChangesView } from './sensor-changes.js';
 import { sensorBoundaries, affectsThermalLearning } from './sensor-inputs.js';
-import { indoorAverage, indoorWeights, INDOOR_SIGNALS, HELD_TEMPERATURE_SIGNALS, SENSOR_SETTLING_MS, TEMPERATURE_SENSORS } from '../domain/indoor-sensors.js';
+import { indoorAverage, indoorWeights, INDOOR_SIGNALS, HELD_TEMPERATURE_SIGNALS, SENSOR_SETTLING_MS } from '../domain/indoor-sensors.js';
+import { indoorControl } from '../domain/indoor-control.js';
+import { indoorControlState } from './indoor-control-state.js';
 import { lastIndoorReading, indoorReadingUsable, indoorReadingAttention, indoorReportStatus } from './indoor-readings.js';
 import { temperatureReportMaxAge } from '../domain/temperature-reports.js';
 import { OUTDOOR_MAX_AGE_MS } from '../domain/reading-freshness.js';
@@ -256,7 +259,7 @@ export class Engine {
     return { ...recovered.observation, sourceTime: recovered.reportSourceTime, receivedAt: recovered.reportReceivedAt,
       reportExpiresAt: recovered.reportSourceTime + temperatureReportMaxAge({ raw: policy }) };
   }
-  temperatureObservations(observations, now, checkpoint = this.checkpoint) {
+  temperatureObservations(observations, now, checkpoint = this.checkpoint, rememberAnchor = false) {
     const boundaries = sensorBoundaries(this.store, this.config.input, now);
     const names = { upstairs: 'indoor_temperature', downstairs: 'downstairs_temperature', bedroom: 'bedroom_temperature',
       garage: 'garage_temperature', garageFront: 'garage_temperature_2', outdoor: 'outdoor_temperature' };
@@ -297,6 +300,17 @@ export class Engine {
     observations.indoor = indoorAverage(Object.fromEntries(Object.entries(names)
       .map(([key, signal]) => [signal, observations[key]])), this.control);
     observations.indoor = temperatureBoundaryStatus(observations.indoor, checkpoint?.measurementEpochAt, now, { clearValue: true });
+    const readings = Object.fromEntries(INDOOR_SIGNALS.map(signal => [signal,
+      temperatureBoundaryStatus(observations[Object.keys(names).find(key => names[key] === signal)],
+        checkpoint?.measurementEpochAt, now, { clearValue: true })]));
+    const devices = this.config.connections?.equipment?.devices?.filter(device =>
+      INDOOR_SIGNALS.includes(device.temperatureSignal) || device.ownedSignals?.some(signal => INDOOR_SIGNALS.includes(signal))) ?? [];
+    const identity = createHash('sha256').update(JSON.stringify([devices, checkpoint?.measurementEpochAt ?? null,
+      INDOOR_SIGNALS.map(signal => boundaries[signal] ?? null)])).digest('hex');
+    const key = `indoor-control-anchor:${this.config.input}`, saved = this.store.getState(key);
+    const control = indoorControl(readings, this.control, now, saved, identity);
+    observations.indoorControl = control.observation;
+    if (rememberAnchor && JSON.stringify(saved) !== JSON.stringify(control.anchor)) this.store.setState(key, control.anchor);
     return observations;
   }
   replayLearning(checkpoint) {
@@ -686,20 +700,6 @@ export class Engine {
     lastResult: this.store.getState(`heating-test:${this.config.input}`),
     manualPreheatReport: this.executor.status().manualPreheatReport ?? null };
   }
-  comfortRooms(checkpoint = this.checkpoint) {
-    const comfort = this.settings.comfort;
-    const overall = comfort.targetC ?? checkpoint?.baselineC;
-    return Object.keys(indoorWeights(this.control)).map(id => {
-      const learned = checkpoint?.sensorComfortReferences?.[id]?.targetC;
-      const referenceC = learned ?? overall;
-      const known = Number.isFinite(referenceC);
-      return { id, label: TEMPERATURE_SENSORS[id], referenceC: known ? referenceC : null,
-        referenceSource: !known ? 'unavailable' : Number.isFinite(learned) ? 'room' : 'overall',
-        minC: known ? referenceC - comfort.maxDropC : null,
-        maxC: known ? referenceC + comfort.maxRiseC : null,
-        limitsApply: this.settings.occupancy.mode !== 'away' };
-    });
-  }
   preheatValveStatus(now = this.clock()) {
     return this.floorOverride?.status(now) ?? floorOverrideStatus(this.config.floorPreheat, floorOverrideObligation(this.store));
   }
@@ -1025,7 +1025,7 @@ export class Engine {
           phase: this.applied.phase, verified: false, source: 'mqtt-request', observedAt: this.applied.at } };
       outlook = assembleOutlook(this.store.getState('provider:market'), this.store.getState('provider:weather'), this.contract(), now);
     }
-    this.temperatureObservations(observations, now);
+    this.temperatureObservations(observations, now, this.checkpoint, true);
     try { this.garage.tick({ now }); }
     catch { this.garage.fail('garage-runtime-unavailable'); }
     this.charging.tick({ now, prices: outlook.prices, weather: outlook.forecast });
@@ -1043,33 +1043,33 @@ export class Engine {
       && !Object.keys(h66.obligations ?? {}).length && Number.isFinite(recordedRoom?.value)) {
       const key = `native-room-reference:${input}`, previous = this.store.getState(key);
       if (previous && Math.abs(previous.value-recordedRoom.value) > 0.005) {
-        this.store.setState(`learning:baseline-reset:${input}`, { at: now });
+        this.store.setState(`learning:equipment-response-reset:${input}`, { at: now });
         this.pendingPlan = null;
-        this.store.event('indoor-baseline-reset',{reason:'native-room-setting-changed'},now);
+        this.store.event('equipment-response-reset',{reason:'native-room-setting-changed'},now);
       }
       if (!previous || previous.value !== recordedRoom.value) this.store.setState(key,{value:recordedRoom.value,at:now});
     }
     // Reference changes are durable ordered context, applied immediately without
     // adding off-grid temperature samples or advancing the thermal cursor.
     const reference = { timestamp: now };
-    const reset = this.store.getState(`learning:baseline-reset:${input}`)?.at;
-    if (Number.isFinite(reset) && reset <= now && reset > (checkpoint.baselineResetAt ?? -Infinity))
-      Object.assign(reference, { resetBaselineAt: reset, roomObservationId: recordedRoom?.id ?? null });
-    if (input !== 'simulated' && !this.cycles.active() && !reference.resetBaselineAt) {
+    const reset = this.store.getState(`learning:equipment-response-reset:${input}`)?.at;
+    if (Number.isFinite(reset) && reset <= now && reset > (checkpoint.equipmentEpochAt ?? -Infinity))
+      Object.assign(reference, { resetEquipmentResponseAt: reset, roomObservationId: recordedRoom?.id ?? null });
+    if (input !== 'simulated' && !this.cycles.active() && !reference.resetEquipmentResponseAt) {
       let history;
       try { history = this.store.getState('adaptive:history'); } catch { /* Background reconstruction can retry. */ }
       const compatibleHistory=history?.algorithmVersion===LEARNING_ALGORITHM
         && !checkpoint.measurementEpochAt && !Object.keys(checkpoint.sensorEpochs ?? {}).length && indoorWeights(this.control).indoor_temperature === 1;
       const modelReady = compatibleHistory && history?.model?.validation && !checkpoint.model.validation;
       const baselineReady = compatibleHistory && Number.isFinite(history?.baselineC) && !Number.isFinite(checkpoint.baselineC)
-        && (!checkpoint.baselineResetAt || Date.parse(history.comfortReference?.windowStart) >= checkpoint.baselineResetAt);
+        && (!checkpoint.baselineResetAt || Date.parse(history.comfortReference?.establishedAt) >= checkpoint.baselineResetAt);
       if (modelReady || baselineReady) reference.historySeed = {
         ...(modelReady ? { model: history.model } : {}),
         ...(baselineReady ? { baselineC: history.baselineC, comfortReference: history.comfortReference } : {}),
         source: { input: 'history', algorithmVersion: history.algorithmVersion,
           journalCursor: history.journalCursor ?? null, trainedAt: history.model?.trainedAt ?? null } };
     }
-    if (reference.resetBaselineAt || reference.historySeed) {
+    if (reference.resetEquipmentResponseAt || reference.historySeed) {
       appendLearningRecord(this.store, input, 'context', reference, { config: this.control, seed: checkpoint });
       checkpoint = this.replayLearning(checkpoint);
       this.checkpoint = checkpoint;
@@ -1085,12 +1085,6 @@ export class Engine {
     equipment.floorOverrideMode = this.floorOverrideMode(now);
     equipment.preheatAvailable &&= (!floorStatus.enabled || floorStatus.available)
       && (preheatRoomRequest(equipment, this.control).roomBoostC > 0 || floorStatus.available);
-    equipment.rooms = Object.keys(indoorWeights(this.control)).map(signal => {
-      const reading = observations[{ indoor_temperature: 'upstairs', downstairs_temperature: 'downstairs', bedroom_temperature: 'bedroom' }[signal]];
-      return { id: signal, value: reading?.value, stale: !reading || reading.stale,
-        targetC: checkpoint.sensorComfortReferences?.[signal]?.targetC ?? this.settings.comfort.targetC ?? checkpoint.baselineC,
-        weight: indoorWeights(this.control)[signal] };
-    });
     const fireplaceContext = fireplaceLearningContext(this.store, input);
     equipment.fireplaceEvents = fireplaceContext.fireplaceEvents.filter(event => event.at <= now && event.at + FIREPLACE_HORIZON_MS > now);
     equipment.fireplaceActive = fireplaceActive(equipment.fireplaceEvents, now);
@@ -1117,7 +1111,7 @@ export class Engine {
       targetC: this.settings.comfort.targetC ?? checkpoint.baselineC, regime: sample.regime, episodeId: this.cycles.active()?.id ?? null };
     recordLearningContext(this.store,input,context,now,{config:this.control,seed:checkpoint});
     checkpoint=this.replayLearning(checkpoint);this.checkpoint=checkpoint;
-    this.temperatureObservations(observations, now, checkpoint);
+    this.temperatureObservations(observations, now, checkpoint, true);
     if (this.cycles.active() && Number.isFinite(checkpoint.measurementEpochAt)
       && this.cycles.active().startedAt <= checkpoint.measurementEpochAt) {
       this.cycles.cancel(now, 'sensor-measurement-changed'); this.pendingPlan = null; this.lastSample = null;
@@ -1138,18 +1132,35 @@ export class Engine {
       this.fireplaceReserveOverride = evaluateThermalModel(checkpoint.model, corrected,
         { rollout: false, observedOnly: false }).state?.reserveC ?? null;
     }
+    this.temperatureObservations(observations, now, checkpoint, true);
+    const currentControl = controlObservations({ latest: this.latest, now, observations, outlook,
+      checkpoint, phase: currentPhase, roomBoostC: this.applied.roomBoostC ?? 0, config: this.control, h66 });
+    for (const key of ['indoorC', 'indoorEstimated', 'indoorUncertaintyC', 'quality']) sample[key] = currentControl.sample[key];
+    for (const key of ['indoorEstimated', 'indoorUncertaintyC', 'indoorUncertaintyGrowthCPerHour', 'indoorEstimateValidUntil'])
+      equipment[key] = currentControl.equipment[key];
+    sample.indoorTrendCPerHour = Number.isFinite(sample.indoorC) && Number.isFinite(prev?.indoorC)
+      && now > prev.timestamp && now - prev.timestamp <= 1_800_000
+      ? (sample.indoorC - prev.indoorC) * 3_600_000 / (now - prev.timestamp) : null;
+    const controlStateKey = `indoor-control-state:${input}`, previousControlState = this.store.getState(controlStateKey);
     const cycleSample = withFireplaceInputs(committedLearningSample({ store: this.store, input, at: now, config: this.control, context,
       measurementEpochAt: checkpoint.measurementEpochAt,
-      windowMs: Math.min(LEARNING_WINDOW_MS, Math.max(60_000, now - (this.cycles.active()?.lastSample?.timestamp ?? now - 60_000))) }), fireplaceContext);
+      windowMs: Math.min(LEARNING_WINDOW_MS, Math.max(60_000,
+        now - (this.cycles.active()?.lastSample?.timestamp ?? now), now - (previousControlState?.at ?? now))) }), fireplaceContext);
     const price = outlook.prices.find(row => row.start <= now && row.end > now);
     Object.assign(cycleSample, { priceCents: price?.allInCentsPerKWh ?? null, priceStart: price?.start, priceEnd: price?.end });
     cycleSample.priceIntervals = outlook.prices.map(row => ({ start:row.start,end:row.end,price:row.allInCentsPerKWh }));
+    const runtimeThermal = indoorControlState({ previous: previousControlState, checkpoint,
+      sample: cycleSample, observation: observations.indoorControl, now,
+      identity: this.store.getState(`indoor-control-anchor:${input}`)?.signature ?? null });
+    this.store.setState(controlStateKey, runtimeThermal);
+    const planningState = observations.indoorControl.estimated ? runtimeThermal?.state ?? null : checkpoint.state;
     const priorCycleSample = this.cycles.active()?.lastSample;
-    if (Number.isFinite(priorCycleSample?.indoorC) && now > priorCycleSample.timestamp)
+    if (Number.isFinite(priorCycleSample?.indoorC) && Number.isFinite(cycleSample.indoorC) && now > priorCycleSample.timestamp)
       cycleSample.indoorTrendCPerHour = (cycleSample.indoorC - priorCycleSample.indoorC) * 3_600_000 / (now - priorCycleSample.timestamp);
+    else cycleSample.indoorTrendCPerHour = sample.indoorTrendCPerHour;
     const episode = this.cycles.record(cycleSample, now, { thermalState: this.fireplaceReserveOverride == null
       ? checkpoint.state : { ...checkpoint.state, reserveC: this.fireplaceReserveOverride },
-      equipment: { integral: cycleSample.integral } });
+      equipment: { ...equipment, integral: cycleSample.integral }, controlIndoor: observations.indoorControl });
     if (episode) {
       this.applied.phase = 'normal';
       if (this.plant) this.plant.state.phase = 'normal';
@@ -1157,6 +1168,7 @@ export class Engine {
       this.checkpoint = checkpoint;
     }
     this.lastSample = sample;
+    equipment.comfortReferenceProvisional = this.settings.comfort.targetC == null && checkpoint.comfortReference?.provisional === true;
     const targetC = this.settings.comfort.targetC ?? checkpoint.baselineC ?? (this.plant ? 21 : null);
     const baseSettings = { ...this.settings, comfort: { ...this.settings.comfort, targetC } };
     const scopedTrial = this.heatingExplorer.reconcile(now);
@@ -1168,25 +1180,30 @@ export class Engine {
       : { settings: baseSettings, config: this.control };
     const settings = scoped.settings, planningConfig = scoped.config;
     const normal = reason => ({ action: 'normal', phase: 'normal', reasons: [reason], plan: null,
-      comfort: { targetC, maxDropC: settings.comfort.maxDropC, maxDropApplies: settings.occupancy.mode !== 'away' } });
+      comfort: { targetC, maxDropC: effectiveComfortDropC(settings.comfort.maxDropC, equipment), maxDropApplies: settings.occupancy.mode !== 'away' } });
     // Pause ends the automatic cycle before accepting independent owner choices.
     // Keep the interrupted cycle incomplete rather than claiming its planned saving.
     if (override && this.cycles.active()) this.cycles.cancel(now, 'price-control-paused');
     let cycle = this.cycles.active(), decision;
-    const roomComfortLimited = this.settings.occupancy.mode === 'occupied' && Object.keys(indoorWeights(this.control)).some(signal => {
-      const reference = checkpoint.sensorComfortReferences?.[signal]?.targetC;
-      const reading = observations[{ indoor_temperature: 'upstairs', downstairs_temperature: 'downstairs', bedroom_temperature: 'bedroom' }[signal]];
-      return Number.isFinite(reference) && !reading?.stale && (reading.value <= reference - settings.comfort.maxDropC
-        || reading.value >= reference + settings.comfort.maxRiseC);
-    });
+    const controlView = { ...observations, indoor: observations.indoorControl };
+    const sourceUncertainty = equipment.indoorUncertaintyC;
+    const comfortDropC = effectiveComfortDropC(settings.comfort.maxDropC, equipment);
+    const coldComfortLimited = settings.occupancy.mode === 'occupied' && Number.isFinite(targetC)
+      && Number.isFinite(sample.indoorC) && sample.indoorC - sourceUncertainty <= targetC - comfortDropC;
+    const hotPreheatLimited = settings.occupancy.mode === 'occupied' && Number.isFinite(targetC)
+      && Number.isFinite(sample.indoorC) && sample.indoorC + sourceUncertainty >= targetC + settings.comfort.maxRiseC
+      && cycle && phaseAt(cycle.executionSchedule ?? cycle.plan.schedule, now) === 'preheat';
     const controlHold=!cycle?this.cycles.controlHold(now):null;
     const forceNormal = override ? 'heating-paused' : holdManualSettings ? 'manual-heating-override' : controlHold?'recent-cycle-incomplete'
       : cycle && equipment.fireplaceRelevant && !fireplaceEvidenceReady(checkpoint.model) ? 'awaiting-fireplace-response-evidence'
       : cycle && equipment.externalChangeRevision>(cycle.plan.equipment?.externalChangeRevision??0)
-      ? 'native-settings-changed' : observations.indoor.stale || observations.outdoor.stale ? 'missing-or-stale-observations'
-      : roomComfortLimited ? 'room-comfort-limit'
+      ? 'native-settings-changed' : observations.indoorControl.stale || observations.outdoor.stale ? 'missing-or-stale-observations'
+      : equipment.indoorEstimated && !planningState ? 'estimated-indoor-thermal-state-unavailable'
+      : equipment.indoorEstimated && cycle?.plan.trial ? 'trial-needs-measured-indoor-temperature'
+      : this.settings.occupancy.mode === 'occupied' && targetC !== null && sample.indoorC - sourceUncertainty <= targetC-2 ? 'hard-comfort-limit'
+      : coldComfortLimited || hotPreheatLimited ? 'indoor-comfort-limit'
       : equipment.alarmActive ? 'heat-pump-alarm' : equipment.operatingMode !== null && ![1,2].includes(equipment.operatingMode) ? 'native-mode-not-space-heating'
-        : this.settings.occupancy.mode === 'occupied' && targetC !== null && sample.indoorC <= targetC-2 ? 'hard-comfort-limit' : null;
+        : null;
     if (forceNormal) {
       if (cycle) this.cycles.shorten(now, forceNormal);
       if (scopedTrial) this.heatingExplorer.reject(forceNormal);
@@ -1201,7 +1218,7 @@ export class Engine {
       if (phase === 'reduction' || phase === 'preheat') {
         const intervals = forecastIntervals(outlook.prices, outlook.forecast, now);
         const args = { intervals, model: checkpoint.model, initialState: { indoorC: sample.indoorC,
-          reserveC: this.fireplaceReserveOverride ?? checkpoint.state?.reserveC ?? sample.indoorC, slabC: checkpoint.state?.slabC, integral: equipment.integral },
+          reserveC: this.fireplaceReserveOverride ?? planningState?.reserveC ?? sample.indoorC, slabC: planningState?.slabC, integral: equipment.integral },
           targetC, config: planningConfig, equipment, occupancy: settings.occupancy, maxDropC: settings.comfort.maxDropC, maxRiseC: settings.comfort.maxRiseC };
         if (!cycleForecastCovered(intervals, schedule, now) || schedule.reductionEnd <= now || !equipment.h66Available && schedule.reductionEnd-now > this.control.maxUnobservedReductionHours*3600000) {
           this.cycles.shorten(now, 'control-or-forecast-coverage-lost'); phase = 'recovery'; reasons = ['control-or-forecast-coverage-lost'];
@@ -1226,8 +1243,8 @@ export class Engine {
       decision = { ...normal(reasons[0]), phase, action: phase === 'reduction' ? 'reduction' : 'normal', reasons, plan: cycle.plan };
     } else {
       if (this.pendingPlan) {
-        const checked = revalidatePlan({plan:this.pendingPlan,now,observations,...outlook,checkpoint,settings,
-          config:planningConfig,thermalState:this.fireplaceReserveOverride == null ? checkpoint.state : { ...checkpoint.state, reserveC:this.fireplaceReserveOverride },equipment,
+        const checked = revalidatePlan({plan:this.pendingPlan,now,observations:controlView,...outlook,checkpoint,settings,
+          config:planningConfig,thermalState:this.fireplaceReserveOverride == null ? planningState : { ...planningState, reserveC:this.fireplaceReserveOverride },equipment,
           trialBudgetRemainingCents:this.cycles.budget(now)});
         this.pendingPlan = checked.valid ? checked.plan : null;
         if (!checked.valid && scopedTrial) this.heatingExplorer.reject(checked.reason);
@@ -1238,23 +1255,22 @@ export class Engine {
         decision = { ...normal('revalidated-scheduled-cycle'), plan: this.pendingPlan, phase: phaseAt(this.pendingPlan.schedule,now) };
         decision.action = decision.phase === 'reduction' ? 'reduction' : 'normal'; this.pendingPlan = null;
       } else if (!this.pendingPlan) {
-        decision = chooseCycle({ now, observations, ...outlook, checkpoint, settings: baseSettings, config: this.control,
-          thermalState: this.fireplaceReserveOverride == null ? checkpoint.state : { ...checkpoint.state, reserveC: this.fireplaceReserveOverride }, equipment: this.plant ? { ...equipment, h66Available:true, preheatAvailable:true } : equipment,
+        decision = chooseCycle({ now, observations: controlView, ...outlook, checkpoint, settings: baseSettings, config: this.control,
+          thermalState: this.fireplaceReserveOverride == null ? planningState : { ...planningState, reserveC: this.fireplaceReserveOverride }, equipment: this.plant ? { ...equipment, h66Available:true, preheatAvailable:true } : equipment,
           trialBudgetRemainingCents: checkpoint.health.usableSamples >= 4 ? this.cycles.budget(now) : 0 });
         if (decision.plan && decision.phase === 'normal') this.pendingPlan = decision.plan;
       } else decision = { ...normal('waiting-for-scheduled-cycle'), plan: this.pendingPlan };
     }
     if (!this.automationEnabled('home') && cycle) { this.cycles.cancel(now, 'automatic-control-disabled'); cycle = null; decision = normal('automatic-control-disabled'); }
-    if ((observations.indoor.stale || observations.outdoor.stale) && !decision.reasons.includes('missing-or-stale-observations'))
+    if ((observations.indoorControl.stale || observations.outdoor.stale) && !decision.reasons.includes('missing-or-stale-observations'))
       decision.reasons.push('missing-or-stale-observations');
-    if (roomComfortLimited && !decision.reasons.includes('room-comfort-limit')) decision.reasons.push('room-comfort-limit');
     const currentCycle = this.cycles.active();
     const actualPlan = currentCycle?.plan ?? decision.plan;
     const actualSchedule = currentCycle?.executionSchedule;
     const currentScopeActive = scopedTrial && ['pending', 'running'].includes(this.heatingExplorer.trial()?.status);
-    this.heatingExplorer.capture({ now, observations, ...outlook, checkpoint, settings: baseSettings, config: this.control,
+    this.heatingExplorer.capture({ now, observations: controlView, ...outlook, checkpoint, settings: baseSettings, config: this.control,
       currentSettings: currentScopeActive ? settings : baseSettings, currentConfig: currentScopeActive ? planningConfig : this.control,
-      thermalState: this.fireplaceReserveOverride == null ? checkpoint.state : { ...checkpoint.state, reserveC: this.fireplaceReserveOverride },
+      thermalState: this.fireplaceReserveOverride == null ? planningState : { ...planningState, reserveC: this.fireplaceReserveOverride },
       equipment: this.plant ? { ...equipment, h66Available: true, preheatAvailable: true } : equipment,
       trialBudgetRemainingCents: checkpoint.health.usableSamples >= 4 ? this.cycles.budget(now) : 0 },
     { ...decision, plan: actualPlan && actualSchedule ? { ...actualPlan, schedule: actualSchedule } : actualPlan }, forceNormal);
@@ -1340,7 +1356,7 @@ export class Engine {
           const effectiveAt=this.clock();
           const plan = structuredClone(decision.plan);
           plan.executionOwner = decision.owner;
-          plan.initialState = { indoorC: sample.indoorC, reserveC: this.fireplaceReserveOverride ?? checkpoint.state?.reserveC ?? sample.indoorC, slabC: checkpoint.state?.slabC, integral: equipment.integral };
+          plan.initialState = { indoorC: sample.indoorC, reserveC: this.fireplaceReserveOverride ?? planningState?.reserveC ?? sample.indoorC, slabC: planningState?.slabC, integral: equipment.integral };
           plan.intervals = forecastIntervals(outlook.prices,outlook.forecast,effectiveAt);
           plan.executionStartedAt=effectiveAt;plan.initialObservationAt=now;plan.equipment=equipment;
           this.store.transaction(() => {
@@ -1405,7 +1421,6 @@ export class Engine {
     this.latestStatus = { now,input,environment:this.environment(),automation:this.automationStatus(),
       runtimeTiming:this.runtimeTiming?.() ?? null, heatingScenario: this.heatingExplorer.publicTrial(),
       settings:this.settings,demoComfortTargetC:this.plant&&checkpoint.baselineC===null?21:null,observations,override,decision:{...decision,plan:visiblePlan},execution,
-      comfortRooms:this.comfortRooms(checkpoint),
       heatingTests:this.heatingTests(),preheatValves:this.preheatValveStatus(now),h66,prices:outlook.prices,forecast:outlook.forecast,spot:outlook.spot??[],
       priceStatus:this.plant?'simulated':outlook.priceStatus,weatherStatus:this.plant?'simulated':outlook.weatherStatus,
       providers:this.providerStatus(),

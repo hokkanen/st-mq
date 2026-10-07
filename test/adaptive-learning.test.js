@@ -66,10 +66,10 @@ test('actual compressor duty and auxiliary input affect the same prediction used
   assert.ok(running.indoorC > stopped.indoorC); assert.ok(assisted.indoorC > running.indoorC);
 });
 
-test('duplicates, future records and bad-quality gaps do not invent continuous training or a reference', () => {
+test('duplicates and future records earn no learning, while bad-quality gaps retain the reference', () => {
   let cp = null;
   for (let i = 0; i < 30; i++) cp = updateAdaptiveLearning(cp, sample(i, i === 20 ? { quality: ['bad'] } : {}), { now: start + i * HOUR });
-  assert.equal(cp.baselineC, null);
+  assert.equal(cp.baselineC, 21);
   assert.equal(cp.samples[20].valid, false);
   assert.deepEqual(updateAdaptiveLearning(cp, sample(29), { now: start + 29 * HOUR }), cp);
   assert.deepEqual(updateAdaptiveLearning(cp, sample(40), { now: start + 30 * HOUR }), cp);
@@ -86,38 +86,37 @@ test('coupled preheat and recovery do not redefine the achieved normal-temperatu
   assert.equal(cp.baselineC, 21);
 });
 
-test('ordered adaptive batches preserve gradual comfort adaptation and individual room references', () => {
+test('ordered adaptive batches preserve the single aggregate reference and missing rooms pause learning', () => {
   const samples = Array.from({ length: 174 }, (_, i) => {
     const dayHour = (i - 30) % 24;
     const phase = i < 30 || dayHour >= 6 ? 'normal' : dayHour < 2 ? 'preheat' : dayHour < 4 ? 'reduction' : 'recovery';
     const downstairs = i < 30 ? 22 : 20, bedroom = i < 30 ? 20 : 18;
     return sample(i, { phase, indoorC: (downstairs + bedroom) / 2, measurementEpochAt: start,
-      indoorSensors: { downstairs_temperature: { value: downstairs, weight: 0.5 },
-        bedroom_temperature: { value: bedroom, weight: 0.5 }, indoor_temperature: { value: 25, weight: 0 } } });
+      indoorSensors: { downstairs_temperature: { value: downstairs, weight: 0.5, observedAt: start + i * HOUR },
+        bedroom_temperature: { value: bedroom, weight: 0.5, observedAt: start + i * HOUR },
+        indoor_temperature: { value: 25, weight: 0 } } });
   });
   let single = null;
   for (const current of samples) single = updateAdaptiveLearning(single, current, { now: current.timestamp });
   let batched = updateAdaptiveLearningBatch(null, samples.slice(0, 78), { now: samples.at(-1).timestamp });
   batched = updateAdaptiveLearningBatch(JSON.stringify(batched), samples.slice(78), { now: samples.at(-1).timestamp });
+  assert.deepEqual(batched.comfortLearning, single.comfortLearning);
   assert.deepEqual(batched.comfortReference, single.comfortReference);
-  assert.deepEqual(batched.sensorComfortReferences, single.sensorComfortReferences);
-  assert.ok(single.baselineC < 20.6 && single.baselineC > 20);
-  assert.equal(single.sensorComfortReferences.downstairs_temperature.targetC - single.sensorComfortReferences.bedroom_temperature.targetC, 2);
-  assert.equal(single.sensorComfortReferences.indoor_temperature, undefined, 'Zero-weight sensors do not define occupied room limits');
+  assert.ok(single.baselineC < 20 && single.baselineC > 19);
+  assert.equal(Object.hasOwn(single, 'sensorComfortReferences'), false);
   assert.deepEqual(single.samples.at(-1).indoorSensors, samples.at(-1).indoorSensors);
   assert.equal(single.samples.at(-1).measurementEpochAt, start);
   const invalid = updateAdaptiveLearning(single, sample(174, { ...samples.at(-1), timestamp: start + 174 * HOUR, quality: ['missing'] }),
     { now: start + 174 * HOUR });
   assert.equal(invalid.samples.at(-1).valid, false);
   assert.equal(invalid.samples.at(-1).measurementEpochAt, start);
+  assert.deepEqual(invalid.comfortReference, single.comfortReference);
   assert.deepEqual(invalid.samples.at(-1).indoorSensors, samples.at(-1).indoorSensors);
-  assert.equal(invalid.sensorComfortReferences.bedroom_temperature.adaptation, null);
   const missingBedroom = updateAdaptiveLearning(single, { ...samples.at(-1), timestamp: start + 174 * HOUR,
     indoorSensors: { ...samples.at(-1).indoorSensors, bedroom_temperature: { value: null, weight: 0.5 } } },
   { now: start + 174 * HOUR });
-  assert.equal(missingBedroom.sensorComfortReferences.bedroom_temperature.targetC, single.sensorComfortReferences.bedroom_temperature.targetC);
-  assert.equal(missingBedroom.sensorComfortReferences.bedroom_temperature.adaptation, null);
-  assert.ok(missingBedroom.sensorComfortReferences.downstairs_temperature.adaptation);
+  assert.deepEqual(missingBedroom.comfortReference, single.comfortReference);
+  assert.equal(missingBedroom.comfortLearning.status, 'waiting-for-observations');
 });
 
 test('episode calibration retains attribution and does not turn estimated or incomplete cycles into measured evidence', () => {

@@ -20,7 +20,9 @@ const reasonLabels = {
   'unvalidated-heating-energy-model': 'Heating electricity estimates are not yet sufficiently validated.',
   'flat-prices-preserve-normal-warmth': 'The price difference does not justify changing normal heating.',
   'heating-paused': 'Automatic control is paused. Heating can continue. Exploring keeps that choice unchanged.',
-  'room-comfort-limit': 'A monitored room is outside its temperature allowance.',
+  'estimated-indoor-thermal-state-unavailable': 'The indoor estimate lacks continuous heating evidence for the heat-reserve forecast',
+  'trial-needs-measured-indoor-temperature': 'A learning trial requires measured indoor temperatures',
+  'indoor-comfort-limit': 'The indoor average is outside its temperature allowance.',
   'missing-or-stale-observations': 'Fresh temperature observations are needed.',
   'currently-selected-cycle': 'This is the cycle currently selected by the controller.',
   'normal-operation': 'Normal heating continues. No change is scheduled.',
@@ -110,8 +112,8 @@ export function heatingComparisonMetrics(result) {
   return [
     { label: 'Additional estimated saving', value: money(comparison.additionalBenefitCents),
       detail: 'Compared with the current plan, over the evaluated cycle.' },
-    { label: 'Largest room temperature drop', value: Number.isFinite(scenario.outcomes?.maxRoomDropC) ? `${decimal(scenario.outcomes.maxRoomDropC)} °C` : 'Unavailable',
-      detail: Number.isFinite(current.outcomes?.maxRoomDropC) ? `Current plan ${decimal(current.outcomes.maxRoomDropC)} °C · change ${signed(comparison.additionalRoomDropC, ' °C')}` : 'No supported room estimate for the current plan.' },
+    { label: 'Largest average temperature drop', value: Number.isFinite(scenario.outcomes?.maxIndoorDropC) ? `${decimal(scenario.outcomes.maxIndoorDropC)} °C` : 'Unavailable',
+      detail: Number.isFinite(current.outcomes?.maxIndoorDropC) ? `Current plan ${decimal(current.outcomes.maxIndoorDropC)} °C · change ${signed(comparison.additionalIndoorDropC, ' °C')}` : 'No supported average estimate for the current plan.' },
     { label: 'Chosen reduction duration', value: Number.isFinite(scenario.schedule?.reductionStart) && Number.isFinite(scenario.schedule?.reductionEnd)
       ? `${decimal((scenario.schedule.reductionEnd - scenario.schedule.reductionStart) / hour)} h` : 'No reduction',
       detail: scenario.trial ? 'Bounded learning trial; evidence gates still apply.' : 'A maximum is permission, not a requested duration.' },
@@ -143,7 +145,7 @@ export function createHeatingExplorerPanel({ document, request, afterMutation = 
       if (Number.isFinite(phase.start)) timing.dateTime = new Date(phase.start).toISOString();
       const description = phase.phase === 'recovery' ? 'Returns toward normal warmth. Completion time is an estimate.'
         : phase.phase === 'reduction' ? 'Reduced space-heating demand; protection and required services remain.'
-          : phase.phase === 'preheat' ? 'Builds warmth ahead of the reduction, within room limits.'
+          : phase.phase === 'preheat' ? 'Builds warmth ahead of the reduction, within average limits.'
             : 'Normal heating demand.';
       item.append(title, timing, element('small', description)); list.append(item);
     }
@@ -190,8 +192,8 @@ export function createHeatingExplorerPanel({ document, request, afterMutation = 
       head.append(element('strong', `${constraint.label}${value}`), element('span', labels[constraint.status] ?? 'Not assessable', 'heating-explorer-constraint-status'));
       item.append(head, element('p', constraint.detail));
       for (const diagnostic of constraint.diagnostics ?? []) {
-        if (!diagnostic.roomId) continue;
-        item.append(element('p', `${humanize(diagnostic.roomId)}${Number.isFinite(diagnostic.at) ? ` · ${atTime(diagnostic.at)}` : ''}${Number.isFinite(diagnostic.value) ? ` · ${decimal(diagnostic.value)} ${diagnostic.unit ?? ''}` : ''}${Number.isFinite(diagnostic.limit) ? ` / limit ${decimal(diagnostic.limit)} ${diagnostic.unit ?? ''}` : ''}`));
+        if (!Number.isFinite(diagnostic.value)) continue;
+        item.append(element('p', `Indoor average${Number.isFinite(diagnostic.at) ? ` · ${atTime(diagnostic.at)}` : ''}${Number.isFinite(diagnostic.value) ? ` · ${decimal(diagnostic.value)} ${diagnostic.unit ?? ''}` : ''}${Number.isFinite(diagnostic.limit) ? ` / limit ${decimal(diagnostic.limit)} ${diagnostic.unit ?? ''}` : ''}`));
       }
       list.append(item);
     }
@@ -230,7 +232,7 @@ export function createHeatingExplorerPanel({ document, request, afterMutation = 
     const y = c => 164 - (c - low) / Math.max(.5, high - low) * 144;
     const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
     svg.setAttribute('viewBox', `0 0 ${width} 196`); svg.setAttribute('role', 'img');
-    svg.setAttribute('aria-label', `Predicted indoor average for the current plan and your scenario, from ${decimal(low)} to ${decimal(high)} degrees. Individual room extremes are listed below.`);
+    svg.setAttribute('aria-label', `Predicted indoor average for the current plan and your scenario, from ${decimal(low)} to ${decimal(high)} degrees. The predicted indoor-average extremes are listed below.`);
     const part = (tag, attributes, text) => {
       const node = document.createElementNS(svg.namespaceURI, tag);
       for (const [key, value] of Object.entries(attributes)) node.setAttribute(key, value);
@@ -270,9 +272,9 @@ export function createHeatingExplorerPanel({ document, request, afterMutation = 
       ['Remaining thermal deficit', summary => unit(summary.outcomes?.terminalKwh, 'kWh')],
       ['Remaining deficit cost estimate', summary => money(summary.outcomes?.terminalCostCents)],
       ['Predicted recovery completion', summary => summary.outcomes?.completeRecoveryPredicted === false ? 'Beyond evaluated horizon' : atTime(summary.outcomes?.recoveredAt)],
-      ['Coldest monitored room', summary => room(summary.outcomes?.coldestRoom)],
-      ['Warmest monitored room', summary => room(summary.outcomes?.warmestRoom)],
-      ['Largest room temperature rise', summary => unit(summary.outcomes?.maxRoomRiseC, '°C')],
+      ['Lowest indoor average', summary => room(summary.outcomes?.coldestIndoor)],
+      ['Highest indoor average', summary => room(summary.outcomes?.warmestIndoor)],
+      ['Largest average temperature rise', summary => unit(summary.outcomes?.maxIndoorRiseC, '°C')],
       ['Temperature uncertainty allowance', summary => unit(summary.outcomes?.uncertaintyC, '°C')],
     ];
     for (const [label, value] of fields) {
@@ -292,7 +294,7 @@ export function createHeatingExplorerPanel({ document, request, afterMutation = 
     $('heating-explorer-comparison-section').hidden = !result.previewId;
     if (!result.previewId) return;
     $('heating-explorer-comparison-summary').textContent = result.comparison?.changed
-      ? 'The changed limits produce a different evaluated plan. Compare the benefit, room temperatures and recovery together.'
+      ? 'The changed limits produce a different evaluated plan. Compare the benefit, indoor average and recovery together.'
       : 'These limits do not change the selected plan in this comparison. Other constraints, evidence or the economic trade-off may still determine the choice.';
     $('heating-explorer-metrics').replaceChildren();
     for (const metric of heatingComparisonMetrics(result)) {
@@ -307,7 +309,7 @@ export function createHeatingExplorerPanel({ document, request, afterMutation = 
     renderChart(result); renderBreakdown(result);
     const illustrative = result.illustrative;
     $('heating-explorer-illustrative').hidden = !illustrative;
-    $('heating-explorer-illustrative').textContent = illustrative ? `Illustrative ${illustrative.schedule ? `${decimal((illustrative.schedule.reductionEnd - illustrative.schedule.reductionStart) / hour)} h reduction` : 'prediction'} only · ${illustrative.extrapolated ? 'Outside demonstrated coverage. ' : ''}${Number.isFinite(illustrative.outcomes?.maxRoomDropC) ? `Largest predicted room drop ${decimal(illustrative.outcomes.maxRoomDropC)} °C. ` : ''}${Number.isFinite(illustrative.estimatedBenefitCents) ? `Estimated saving vs normal heating ${money(illustrative.estimatedBenefitCents)}. ` : ''}${reasonsText(illustrative.reasons)}. This prediction cannot be applied as an automatic plan.` : '';
+    $('heating-explorer-illustrative').textContent = illustrative ? `Illustrative ${illustrative.schedule ? `${decimal((illustrative.schedule.reductionEnd - illustrative.schedule.reductionStart) / hour)} h reduction` : 'prediction'} only · ${illustrative.extrapolated ? 'Outside demonstrated coverage. ' : ''}${Number.isFinite(illustrative.outcomes?.maxIndoorDropC) ? `Largest predicted average drop ${decimal(illustrative.outcomes.maxIndoorDropC)} °C. ` : ''}${Number.isFinite(illustrative.estimatedBenefitCents) ? `Estimated saving vs normal heating ${money(illustrative.estimatedBenefitCents)}. ` : ''}${reasonsText(illustrative.reasons)}. This prediction cannot be applied as an automatic plan.` : '';
   }
   function render(state) {
     if (!dialog.open) return;
@@ -399,7 +401,7 @@ export function createHeatingExplorerPanel({ document, request, afterMutation = 
     const state = actions.snapshot();
     if (state.busy || state.dirty || state.stale || !state.result?.application?.allowed) return;
     const accepted = await confirm({ document, title: 'Use these limits for one cycle?',
-      message: `The reviewed limits apply only to this cycle${state.result.application.expiresAt ? ` and expire by ${atTime(state.result.application.expiresAt)}` : ''}. The controller rechecks evidence and room limits, and may shorten or cancel the cycle. Configured defaults remain unchanged.`, action: 'Approve one cycle' });
+      message: `The reviewed limits apply only to this cycle${state.result.application.expiresAt ? ` and expire by ${atTime(state.result.application.expiresAt)}` : ''}. The controller rechecks evidence and average limits, and may shorten or cancel the cycle. Configured defaults remain unchanged.`, action: 'Approve one cycle' });
     if (accepted && await actions.apply()) await afterMutation();
   });
   $('heating-explorer-cancel').addEventListener('click', async () => {

@@ -6,7 +6,7 @@ import { validateSettings } from '../src/app/config.js';
 import { addSensorChange, sensorChangesView } from '../src/app/sensor-changes.js';
 import { sensorChangeEvents, sensorBoundaries, affectsThermalLearning } from '../src/app/sensor-inputs.js';
 import { LEARNING_ALGORITHM} from '../src/app/committed-learning.js';
-import { appendLearningRecord } from './helpers/home-learning-fixture.js';
+import { appendLearningRecord, currentComfortReference } from './helpers/home-learning-fixture.js';
 import { restoreAdaptiveCheckpoint } from '../src/control/adaptive-learning.js';
 import { SENSOR_SETTLING_MS } from '../src/domain/indoor-sensors.js';
 
@@ -30,8 +30,7 @@ function fixture(t) {
   seed.cursor = new Date(now - HOUR / 2).toISOString();
   seed.state = { indoorC: 21.5, reserveC: 22, observedAt: now - HOUR / 2 };
   seed.baselineC = 21.5;
-  seed.comfortReference = { baselineC: 21.5, observedAt: now - HOUR / 2 };
-  seed.sensorComfortReferences = { indoor_temperature: { baselineC: 22 }, bedroom_temperature: { baselineC: 21 } };
+  seed.comfortReference = currentComfortReference(21.5, now - HOUR / 2);
   seed.episodeArchive = [{ id: 'invented-old-cycle', startedAt: now - 2 * HOUR, endedAt: now - HOUR, phases: [], samples: [] }];
   seed.sinceFit = 8;
   appendLearningRecord(store, config.input, 'context', { timestamp: now - HOUR / 2 }, { config: engine.control, seed });
@@ -154,7 +153,7 @@ test('a contributing sensor change preserves learned evidence and comfort while 
   const checkpoint = engine.checkpoint;
   assert.equal(ticks, 1);
   assert.deepEqual(checkpoint.model, initial.model);
-  for (const key of ['baselineC', 'comfortReference', 'sensorComfortReferences', 'samples', 'episodeArchive'])
+  for (const key of ['baselineC', 'comfortReference', 'comfortLearning', 'samples', 'episodeArchive'])
     assert.deepEqual(checkpoint[key], initial[key], key);
   assert.equal(checkpoint.state, null);
   assert.equal(checkpoint.measurementEpochAt, undefined); assert.equal(checkpoint.sensorEpochs.bedroom_temperature, now);

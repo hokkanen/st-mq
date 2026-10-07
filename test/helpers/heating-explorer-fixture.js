@@ -22,7 +22,6 @@ export function heatingExplorerFixture({ hours = 12, validatedHours = 8, price =
     config: { learningTrials: false, maxReductionHours, maxAwayReductionHours: 12, maxPreheatHours: 2 },
     settings: { savingsStrategy: 'balanced', comfort: { targetC: 21, maxDropC, maxRiseC: 2 }, occupancy: { mode: 'occupied' } },
     equipment: { supplyC: 35, brineC: 0, nativeAuxAllowed: false, h66Available: true,
-      compressorOn: 1, dhwRouting: 0, preheatAvailable: false,
-      rooms: [{ id: 'bedroom', label: 'Bedroom', value: 21, targetC: 21, weight: 1, stale: false }] },
+      compressorOn: 1, dhwRouting: 0, preheatAvailable: false },
     thermalState: { indoorC: 21, reserveC: 25.725 }, trialBudgetRemainingCents: 0 };
 }

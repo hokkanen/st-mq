@@ -180,7 +180,7 @@ test('Home explains retained intervals, held sensor readings and provisional nor
   const verified = learningDisplay({ adaptive: { baselineC: 21.2,
     comfortReference: { confidence: 'observed-heating-baseline' } } });
   assert.match(verified.metrics[3].evidence, /verified space-heating activity/);
-  assert.match(learningDisplay({}).metrics[3].evidence, /Waiting for a sustained occupied normal-temperature plateau/);
+  assert.match(learningDisplay({}).metrics[3].evidence, /Waiting for one supported hour of occupied Normal heating/);
 });
 
 test('cycle costs use bounded assessment windows and disclose uncovered periods', () => {
@@ -344,7 +344,7 @@ test('combined hydronic parameter explains the source conversion and separates f
   assert.match(sourceNotes, /cannot identify a brine correction/);
   assert.match(sourceNotes, /30–50 °C/);
   assert.match(sourceNotes, /Missing brine stays unknown/);
-  assert.match(display.evidence.join(' '), /no separately identified thermal model for each room/);
+  assert.doesNotMatch(display.evidence.join(' '), /Room comfort projection|room-offset proxy/);
   assert.match(display.evidence.join(' '), /assumes zero room heating from the hot-water tank/);
   assert.match(display.evidence.join(' '), /original treatment identity through reduction and recovery/);
   assert.match(display.coefficientEvidence.join(' '), /no annual savings guarantee/);
@@ -359,7 +359,7 @@ test('combined hydronic parameter explains the source conversion and separates f
   assert.match(display.coefficientEvidence.join(' '), /15-minute expiry renewed every 5 minutes/);
   assert.match(display.coefficientEvidence.join(' '), /H66 ROOM has no device-side lease/);
   assert.match(display.coefficientEvidence.join(' '), /increases the saved normal ROOM setting by 5\.0 °C/);
-  assert.match(display.coefficientEvidence.join(' '), /1\.5 °C below and 1\.5 °C above each room’s reference/);
+  assert.match(display.coefficientEvidence.join(' '), /1\.5 °C below and 1\.5 °C above the normal average reference/);
   assert.doesNotMatch(JSON.stringify(display), /absolute ROOM setting|Final DHW refill|older algorithms|archival gaps/);
   const recovery = display.policyRows.find(row => row.key === 'Recovery hold');
   assert.equal(recovery.value, '60 min shared deadline');

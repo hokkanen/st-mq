@@ -18,3 +18,11 @@ export function currentHomeSample(value) {
 export function appendLearningRecord(store, input, kind, value, options) {
   return appendRecord(store, input, kind, kind === 'sample' ? currentHomeSample(value) : value, options);
 }
+
+/** A supported, verified aggregate reference for tests unrelated to bootstrap. */
+export function currentComfortReference(targetC, at) {
+  const timestamp = new Date(at).toISOString();
+  return { version: 4, targetC, establishedAt: timestamp, updatedAt: timestamp, adjustedAt: timestamp,
+    source: 'occupied-normal-temperature-average', evidenceHours: 24, verifiedEvidenceHours: 24, provisional: false,
+    confidence: 'observed-heating-baseline', heatingEvidence: { kind: 'verified-space-heating-activity', lastSpaceHeatingAt: timestamp } };
+}

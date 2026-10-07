@@ -1,7 +1,7 @@
 /** Small empirical temperature model. Priors permit bounded operation before every
  * actuator is observed; validation never turns assumed electricity into a meter. */
 import { HEAT_PUMP_PERFORMANCE, estimateHeatPumpPerformance, estimateHydronicHeat } from '../domain/heat-pump-performance.js';
-import { inferComfortReference, goodQuality } from './learning.js';
+import { updateComfortLearning, validComfortLearning, validComfortReference, goodQuality } from './learning.js';
 import { fireplaceBurnGroups, fireplaceAffectsLearning, FIREPLACE_RELEVANCE } from '../domain/fireplace.js';
 
 const HOUR = 3_600_000;
@@ -260,7 +260,10 @@ function validSample(sample) {
 function checkpoint(input, config) {
   let copied;
   try { copied = typeof input === 'string' ? JSON.parse(input) : structuredClone(input); } catch { copied = null; }
-  if (copied && (copied.version !== 1 || copied.model?.version !== 4))
+  if (copied && (copied.version !== 1 || copied.model?.version !== 4
+    || Object.hasOwn(copied, 'sensorComfortReferences')
+    || copied.comfortReference != null && !validComfortReference(copied.comfortReference)
+    || copied.comfortLearning != null && !validComfortLearning(copied.comfortLearning)))
     throw new TypeError('Unsupported Home checkpoint; start with fresh current learning state.');
   if (!copied || !Array.isArray(copied.samples)) copied = {
     version: 1, cursor: null, samples: [], model: initialAdaptiveModel(config), baselineC: null,
@@ -877,7 +880,10 @@ function appendAdaptiveSample(cp, sample, { nowAt, config }, finish = true) {
     episodeId: sample.episodeId ?? null,
     ...(sample.electricalContext ? { electricalContext: structuredClone(sample.electricalContext) } : {}),
     ...(sample.inputSegments ? { inputSegments: structuredClone(sample.inputSegments), windowStart: sample.windowStart } : {}),
-  } : { timestamp: new Date(at).toISOString(), valid: false, quality: ['invalid-observation'] };
+  } : { timestamp: new Date(at).toISOString(), valid: false, quality: ['invalid-observation'],
+    phase: sample.phase ?? null, regime: sample.regime ?? null, roomBoostC: sample.roomBoostC ?? null,
+    preheat: sample.preheat === true, recovering: sample.recovering === true,
+    ...(sample.inputSegments ? { inputSegments: structuredClone(sample.inputSegments), windowStart: sample.windowStart } : {}) };
   if (sample.indoorSensors) normalized.indoorSensors = structuredClone(sample.indoorSensors);
   if (sample.measurementEpochAt !== undefined) normalized.measurementEpochAt = sample.measurementEpochAt;
   const previous = cp.samples.at(-1);
@@ -908,18 +914,9 @@ function appendAdaptiveSample(cp, sample, { nowAt, config }, finish = true) {
   // Reference adaptation consumes each committed sample in the same order in
   // live operation, replay and batched historical processing. A page boundary
   // cannot skip exclusions or earn a larger temperature adjustment.
-  const comfortSamples = cp.samples.map(row => ({ ...row,
-    action: row.phase === 'normal' ? 'normal' : 'reduction', regime: row.regime === 'occupied' ? 'occupied' : 'absence',
-  }));
-  cp.comfortReference = inferComfortReference(cp.comfortReference, comfortSamples, { now: at });
+  cp.comfortLearning = updateComfortLearning(cp.comfortLearning, normalized, { reference: cp.comfortReference });
+  cp.comfortReference = cp.comfortLearning.reference;
   cp.baselineC = cp.comfortReference?.targetC ?? cp.baselineC;
-  const participating = Object.entries(normalized.indoorSensors ?? {}).filter(([, sensor]) => sensor.weight > 0).map(([signal]) => signal);
-  const sensorSignals = new Set([...Object.keys(cp.sensorComfortReferences ?? {}), ...participating]);
-  if (sensorSignals.size) {
-    cp.sensorComfortReferences ??= {};
-    for (const signal of sensorSignals) cp.sensorComfortReferences[signal] = inferComfortReference(cp.sensorComfortReferences[signal],
-      comfortSamples.map(row => ({ ...row, indoorC: row.indoorSensors?.[signal]?.weight > 0 ? row.indoorSensors[signal].value : null })), { now: at });
-  }
   cp.sinceFit++;
   return finish ? finishAdaptiveUpdate(cp, { nowAt, config }) : cp;
 }

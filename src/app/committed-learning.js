@@ -10,8 +10,10 @@ import { sensorBoundaries, affectsThermalLearning, sensorLearningContext } from 
 import { withSensorMeasurements } from './sensor-samples.js';
 import { estimateHeatPumpPerformance } from '../domain/heat-pump-performance.js';
 import { recordedEnergyGroups } from '../storage/energy-history.js';
+import { validComfortReference } from '../control/learning.js';
 
-export const LEARNING_ALGORITHM = 'committed-house-v14-reversible-recovery';
+import { LEARNING_ALGORITHM } from '../domain/learning-contract.js';
+export { LEARNING_ALGORITHM } from '../domain/learning-contract.js';
 export const LEARNING_WINDOW_MS = 15 * 60_000;
 const HOUR = 3_600_000;
 const PHASES = ['normal', 'preheat', 'reduction', 'recovery'];
@@ -383,10 +385,28 @@ export function assertCurrentLearningSample(sample) {
     throw new TypeError('Unsupported Home sample payload; only the current segmented sensor-input contract is supported.');
 }
 
+function assertCurrentLearningContext(value) {
+  const history = value?.historySeed;
+  if (history && (history.source?.algorithmVersion !== undefined && history.source.algorithmVersion !== LEARNING_ALGORITHM
+    || history.model && history.model.version !== 4
+    || history.comfortReference != null && !validComfortReference(history.comfortReference)))
+    throw new TypeError('Unsupported Home historical seed; start with fresh current learning state.');
+  if (value && Object.hasOwn(value, 'resetBaselineAt'))
+    throw new TypeError('Unsupported Home context payload; native ROOM edits reset equipment response, not the comfort reference.');
+}
+
+function assertCurrentLearningSeed(seed) {
+  if (seed && (seed.model?.version !== 4
+    || seed.algorithmVersion !== undefined && seed.algorithmVersion !== LEARNING_ALGORITHM
+    || Object.hasOwn(seed, 'sensorComfortReferences')
+    || seed.comfortReference != null && !validComfortReference(seed.comfortReference)))
+    throw new TypeError('Unsupported Home seed; start with fresh current learning state.');
+}
+
 export function appendLearningRecord(store, input, kind, value, { config = {}, seed = null } = {}) {
   if (kind === 'sample') assertCurrentLearningSample(value);
-  if (seed && (seed.model?.version !== 4 || seed.algorithmVersion && seed.algorithmVersion !== LEARNING_ALGORITHM))
-    throw new TypeError('Unsupported Home seed; start with fresh current learning state.');
+  if (kind === 'context') assertCurrentLearningContext(value);
+  assertCurrentLearningSeed(seed);
   // Old CSV temp_in is the historical upstairs sensor, never a fabricated average.
   if (input === 'history') config = { ...config, indoorSensorWeights: { indoor_temperature: 1 } };
   const configuration = learningConfiguration(config);
@@ -400,8 +420,7 @@ export function appendLearningRecord(store, input, kind, value, { config = {}, s
     forecastVersion: value.provenance?.forecastVersion ?? null,
     payload: { value, configuration, ...(prior && Object.hasOwn(prior, 'seed') ? { seed: prior.seed,
       ...(prior.epoch ? { epoch: prior.epoch } : {}) }
-      : first ? { seed: seed?.model?.version === 4 && (!seed.algorithmVersion || seed.algorithmVersion === LEARNING_ALGORITHM)
-        ? structuredClone(seed) : null, epoch: { algorithm: LEARNING_ALGORITHM,
+      : first ? { seed: seed ? structuredClone(seed) : null, epoch: { algorithm: LEARNING_ALGORITHM,
           initialization: 'explicit current v4 seed or fresh passive thermal priors' } } : {}) } });
 }
 
@@ -409,7 +428,7 @@ function resetMeasurement(checkpoint, configuration, at) {
   const initial = restoreAdaptiveCheckpoint(checkpoint, configuration), fresh = initialAdaptiveModel(configuration);
   return { ...initial, model: { ...fresh, parameters: { ...initial.model.parameters },
       provenance: { ...fresh.provenance, measurementChangedAt: at, retainedParameters: true } },
-    samples: [], episodeArchive: [], sensorComfortReferences: {}, state: null,
+    samples: [], episodeArchive: [], comfortLearning: null, state: null,
     baselineC: null, comfortReference: null, sinceFit: 0,
     cursor: new Date(at).toISOString(), windowCursor: Math.floor(at / LEARNING_WINDOW_MS) * LEARNING_WINDOW_MS,
     baselineResetAt: at, measurementEpochAt: at, equipmentEpochAt: at,
@@ -418,7 +437,11 @@ function resetMeasurement(checkpoint, configuration, at) {
 
 export function applyLearningRecord(checkpoint, entry, fireplaceContext = {}) {
   if (entry.algorithmVersion !== LEARNING_ALGORITHM) throw new Error('Unsupported learning journal algorithm');
+  assertCurrentLearningSeed(entry.payload?.seed);
+  if (entry.payload?.epoch && entry.payload.epoch.algorithm !== LEARNING_ALGORITHM)
+    throw new TypeError('Unsupported Home learning epoch; start fresh.');
   if (entry.kind === 'sample') assertCurrentLearningSample(entry.payload?.value);
+  if (entry.kind === 'context') assertCurrentLearningContext(entry.payload?.value);
   if (entry.configVersion !== learningVersion(entry.payload.configuration)) throw new Error('Learning journal configuration version mismatch');
   if ((checkpoint?.journalCursor ?? 0) >= entry.id) return checkpoint;
   const configuration = entry.payload.configuration;
@@ -465,14 +488,16 @@ export function applyLearningRecord(checkpoint, entry, fireplaceContext = {}) {
     initial = { ...restoreAdaptiveCheckpoint(initial, configuration),
       ...(historySeed.model ? { model: structuredClone(historySeed.model) } : {}),
       ...(Number.isFinite(historySeed.baselineC) ? { baselineC: historySeed.baselineC,
-        comfortReference: structuredClone(historySeed.comfortReference) } : {}),
+        comfortReference: structuredClone(historySeed.comfortReference), comfortLearning: null } : {}),
       historicalSeed: structuredClone(historySeed.source) };
   }
-  if (Number.isFinite(entry.payload.value.resetBaselineAt)
-    && entry.payload.value.resetBaselineAt > (initial?.baselineResetAt ?? -Infinity)) {
-    initial = { ...restoreAdaptiveCheckpoint(initial, configuration), baselineC: null, comfortReference: null,
-      baselineResetAt: entry.payload.value.resetBaselineAt, equipmentEpochAt: entry.payload.value.resetBaselineAt,
-      sensorComfortReferences: {}, samples: [], sinceFit: 0 };
+  if (Number.isFinite(entry.payload.value.resetEquipmentResponseAt)
+    && entry.payload.value.resetEquipmentResponseAt > (initial?.equipmentEpochAt ?? -Infinity)) {
+    initial = { ...restoreAdaptiveCheckpoint(initial, configuration),
+      equipmentEpochAt: entry.payload.value.resetEquipmentResponseAt };
+    // A native ROOM edit changes equipment response, not measurement identity
+    // or the achieved household temperature. Retain the reference and its
+    // chronological learning state while new Normal evidence follows the edit.
     initial.model.equipmentResponse = { phases: {}, validation: null };
     initial.model.forecastValidation = null;
   }

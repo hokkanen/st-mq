@@ -20,32 +20,24 @@ function fixture(t, comfort = {}) {
   return engine;
 }
 
-test('room comfort presentation retains configured membership and separates learned and overall references', t => {
+test('comfort status exposes one configured aggregate reference and fixed membership', t => {
   const engine = fixture(t, { targetC: 21, maxDropC: 1, maxRiseC: 1.5 });
-  const checkpoint = { baselineC: 22, sensorComfortReferences: {
-    indoor_temperature: { targetC: 20 }, downstairs_temperature: { targetC: 23 },
-  } };
-  const before = structuredClone(checkpoint);
-  assert.deepEqual(engine.comfortRooms(checkpoint), [
-    { id: 'indoor_temperature', label: 'Upstairs', referenceC: 20, referenceSource: 'room', minC: 19, maxC: 21.5, limitsApply: true },
-    { id: 'bedroom_temperature', label: 'Bedroom', referenceC: 21, referenceSource: 'overall', minC: 20, maxC: 22.5, limitsApply: true },
-  ]);
-  assert.deepEqual(checkpoint, before);
-  engine.settings.comfort.targetC = null;
-  assert.equal(engine.comfortRooms(checkpoint)[1].referenceC, 22, 'Unlearned room falls back to learned overall reference');
-  engine.settings.occupancy = { mode: 'away', returnAt: '2026-09-25T10:00:00Z' };
-  assert(engine.comfortRooms(checkpoint).every(room => room.limitsApply === false));
-  assert.equal(engine.comfortRooms(checkpoint)[0].minC, 19, 'Occupied limits remain visible while inactive');
+  const status = engine.status();
+  assert.equal(status.settings.comfort.targetC, 21);
+  assert.equal(status.decision.comfort.targetC, 21);
+  assert.equal(Object.hasOwn(status, 'comfortRooms'), false);
+  assert.deepEqual(status.observations.indoor.weights, { indoor_temperature: 2 / 3, bedroom_temperature: 1 / 3 });
+  assert.equal(status.observations.indoorControl.stale, true);
+  assert.equal(status.observations.indoorControl.estimated, false);
 });
 
-test('status exposes unknown room references without inventing targets or dropping missing sensors', t => {
+test('missing observed indoor temperature never invents a reference or a fallback anchor', t => {
   const engine = fixture(t);
   const status = engine.status();
   assert.equal(status.observations.indoor.stale, true);
-  assert.deepEqual(status.comfortRooms.map(({ id, referenceC, referenceSource, minC, maxC }) =>
-    ({ id, referenceC, referenceSource, minC, maxC })), [
-    { id: 'indoor_temperature', referenceC: null, referenceSource: 'unavailable', minC: null, maxC: null },
-    { id: 'bedroom_temperature', referenceC: null, referenceSource: 'unavailable', minC: null, maxC: null },
-  ]);
-  assert.deepEqual(engine.status().comfortRooms, status.comfortRooms, 'Polling preserves the authoritative presentation');
+  assert.equal(status.learning.adaptive.comfortReference, null);
+  assert.equal(status.decision.comfort.targetC, null);
+  assert.equal(status.observations.indoorControl.value, null);
+  assert.equal(engine.store.getState('indoor-control-anchor:offline'), null);
+  assert.deepEqual(engine.status().observations.indoorControl, status.observations.indoorControl);
 });

@@ -12,7 +12,7 @@ import { installChartPopupProbe, checkChartPopupBrowser } from '../../scripts/li
 import { checkEquipmentBrowser } from '../../scripts/lib/equipment-browser-checks.js';
 import { EventEmitter } from 'node:events';
 import { Store } from '../../src/storage/store.js';
-import { appendLearningRecord } from '../../src/app/committed-learning.js';
+import { appendLearningRecord, LEARNING_ALGORITHM } from '../../src/app/committed-learning.js';
 import { initialAdaptiveModel } from '../../src/control/adaptive-learning.js';
 import { addFireplace } from '../../src/app/fireplace.js';
 import { recordChargingSessionCheck } from '../../src/app/charging-session-checks.js';
@@ -117,7 +117,7 @@ try {
   app.store.snapshot({kind:'weather',source:'browser-fixture',fetchedAt:now-4*86400000,
     payload:{forecast:[{start:now-4*86400000,end:now-4*86400000+3600000,outdoorC:5,solarRadiationWm2:100}]}});
   app.store.appendLearningJournal('browser-fixture',{kind:'context',at:now-86400000,
-    algorithmVersion:'browser-fixture',key:'overview-context',payload:{baselineResetAt:now-86400000}});
+    algorithmVersion:LEARNING_ALGORITHM,key:'overview-context',payload:{baselineResetAt:now-86400000}});
   app.store.setState('settings:browser-fixture',{input:'simulated'});
   ws = new WebSocket(process.argv[2] ?? 'ws://127.0.0.1:39124/session');
   await new Promise((resolve, reject) => { ws.onopen = resolve; ws.onerror = reject; });

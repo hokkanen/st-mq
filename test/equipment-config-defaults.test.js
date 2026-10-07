@@ -44,7 +44,7 @@ test('public equipment defaults work with broker-only private settings and prese
     ['caravan', 'dhwr', 'garage', 'heat_savings']);
   assert.equal(devices.some(row => row.id === 'garage_heat_pump' || row.id === 'garage_mqtt'), false);
   assert.deepEqual(config.control.indoorSensorWeights,
-    { indoor_temperature: 1 / 3, downstairs_temperature: 1 / 3, bedroom_temperature: 1 / 3 });
+    { indoor_temperature: .25, downstairs_temperature: .25, bedroom_temperature: .5 });
   assert.equal(devices.find(row => row.id === 'garage').readings.find(row => row.key === 'temperature_2').required, false);
   assert.equal(devices.find(row => row.id === 'garage').maxAgeMs, 120_000);
   assert.equal(devices.filter(row => ['upstairs', 'downstairs', 'bedroom'].includes(row.id)).every(row => row.maxAgeMs === 4_500_000), true);

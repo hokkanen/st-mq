@@ -4,7 +4,9 @@ import { FIREPLACE_HORIZON_MS, FIREPLACE_RESPONSE, fireplaceActive, fireplaceInt
   fireplaceInfluence, fireplaceAffectsLearning } from '../src/domain/fireplace.js';
 import { initialAdaptiveModel, predictThermalStep, restoreAdaptiveCheckpoint, evaluateThermalModel,
   fitAdaptiveModel, fireplaceEvidenceReady, thermalEvidenceReady, fireplaceGainUncertainty, actionEvidenceReady } from '../src/control/adaptive-learning.js';
-import { inferComfortReference } from '../src/control/learning.js';
+import { updateComfortLearning } from '../src/control/learning.js';
+const comfortReference = (reference, samples) => samples.reduce((state, sample) =>
+  updateComfortLearning(state, sample, { reference }), null)?.reference ?? null;
 import { evaluateCycle, chooseCycle, learningReadiness, revalidatePlan } from '../src/control/planner.js';
 
 const HOUR = 3_600_000, start = Date.parse('2026-01-01T00:00:00Z');
@@ -69,16 +71,16 @@ test('relevance aggregates small tails without shortening their response or eras
 
 test('a steady fireplace plateau cannot establish or raise the normal comfort reference', () => {
   const samples = Array.from({ length: 30 }, (_, i) => ({ timestamp: start + i * HOUR,
-    indoorC: 21, outdoorC: 5, action: 'normal', regime: 'occupied', quality: [] }));
-  const normal = inferComfortReference(null, samples, { now: samples.at(-1).timestamp });
+    indoorC: 21, outdoorC: 5, phase: 'normal', regime: 'occupied', quality: [] }));
+  const normal = comfortReference(null, samples);
   assert.equal(normal.targetC, 21);
   const heated = samples.map(row => ({ ...row, indoorC: 23, fireplaceActive: true }));
-  assert.equal(inferComfortReference(null, heated, { now: heated.at(-1).timestamp }), null);
-  assert.deepEqual(inferComfortReference(normal, heated, { now: heated.at(-1).timestamp }), normal);
+  assert.equal(comfortReference(null, heated), null);
+  assert.deepEqual(comfortReference(normal, heated), normal);
   const negligible = samples.map(row => ({ ...row, fireplaceActive: true, fireplaceKgPerHour: 0.005 }));
-  assert.equal(inferComfortReference(null, negligible, { now: negligible.at(-1).timestamp }).targetC, 21);
-  assert.equal(inferComfortReference(null, negligible.map(row => ({ ...row,
-    inputSegments: [{ fireplaceKgPerHour: 0.04 }] })), { now: negligible.at(-1).timestamp }), null);
+  assert.equal(comfortReference(null, negligible).targetC, 21);
+  assert.equal(comfortReference(null, negligible.map(row => ({ ...row,
+    inputSegments: [{ fireplaceKgPerHour: 0.04 }] }))), null);
 });
 
 test('planner includes the same fireplace release in both paths and unvalidated fires cannot authorize trials', () => {

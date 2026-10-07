@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { Worker } from 'node:worker_threads';
 import { exploreHeatingPlan, validateExplorerOverrides, applyExplorerOverrides } from '../src/control/heating-explorer.js';
-import { chooseCycle, evaluateCycle, forecastIntervals } from '../src/control/planner.js';
+import { chooseCycle, evaluateCycle, forecastIntervals, revalidatePlan } from '../src/control/planner.js';
 import { heatingExplorerFixture } from './helpers/heating-explorer-fixture.js';
 
 const HOUR = 3_600_000;
@@ -21,7 +21,7 @@ test('unchanged scenario uses the ordinary planner and leaves every frozen input
   assert.equal(result.scenario.outcomes.energyIncludesTail, false);
   assert.ok(result.scenario.outcomes.recoveryCostCents >= 0);
   assert.ok(result.scenario.outcomes.terminalCostCents >= 0);
-  assert.ok(result.scenario.outcomes.coldestRoom.at >= input.now);
+  assert.ok(result.scenario.outcomes.coldestIndoor.at >= input.now);
 });
 
 test('retained actual pending plan stays the main reference when fresh optimization differs', () => {
@@ -99,17 +99,16 @@ test('native observation ceiling cannot be relaxed and no opportunity is invente
   assert.equal(JSON.stringify(result).includes('equipmentResponse'), false);
 });
 
-test('shared evaluator reports the actual limiting room and conservative temperature at rejection', () => {
+test('shared evaluator reports the weighted indoor boundary and conservative temperature at rejection', () => {
   const input = heatingExplorerFixture();
   const schedule = { preheatStart: input.now, preheatEnd: input.now, reductionStart: input.now,
     reductionEnd: input.now + HOUR, roomBoostC: 0, treatmentKey: 'reduction-only-v1' };
   const args = { schedule, model: input.checkpoint.model,
     intervals: forecastIntervals(input.prices, input.forecast, input.now), initialState: input.thermalState,
-    targetC: 21, maxDropC: .1, maxRiseC: 2, equipment: { ...input.equipment,
-      rooms: [{ id: 'bedroom', value: 20, targetC: 21, stale: false }] } };
-  const result = evaluateCycle(args), violation = result.violations.find(row => row.code === 'room-drop-limit');
+    targetC: 21, maxDropC: .1, maxRiseC: 2, equipment: input.equipment };
+  const result = evaluateCycle(args), violation = result.violations.find(row => row.code === 'indoor-drop-limit');
   assert.equal(result.severe, true);
-  assert.equal(violation.roomId, 'bedroom');
+  assert.equal(Object.hasOwn(violation, 'roomId'), false);
   assert.ok(violation.at > input.now);
   assert.ok(violation.value < violation.limit);
   assert.equal(violation.limit, 20.9);
@@ -153,16 +152,14 @@ test('two interacting policy limits produce a combined opportunity only after in
   assert.ok(result.opportunities[0].additionalBenefitCents > 10);
 });
 
-test('room extrema refer to actual temperatures while drop and rise use each normal reference', () => {
+test('indoor extrema and deviations use the single weighted average reference', () => {
   const input = heatingExplorerFixture();
-  input.equipment.rooms = [
-    { id: 'cool-room', value: 19, targetC: 19, stale: false },
-    { id: 'warm-room', value: 23, targetC: 25, stale: false },
-  ];
   const result = exploreHeatingPlan(input, {}, options);
-  assert.equal(result.normal.outcomes.coldestRoom.id, 'cool-room');
-  assert.equal(result.normal.outcomes.warmestRoom.id, 'warm-room');
-  assert.ok(result.normal.outcomes.maxRoomDropC >= 2);
+  assert.equal(result.normal.outcomes.coldestIndoor.label, 'Weighted indoor average');
+  assert.equal(result.normal.outcomes.coldestIndoor.referenceC, 21);
+  assert.equal(result.normal.outcomes.warmestIndoor.referenceC, 21);
+  assert.equal(result.normal.outcomes.maxIndoorDropC, Math.max(0, 21 - result.normal.outcomes.coldestIndoor.valueC));
+  assert.equal(result.normal.outcomes.maxIndoorRiseC, Math.max(0, result.normal.outcomes.warmestIndoor.valueC - 21));
 });
 
 test('retained current economics are recomputed rather than mixing a previous frozen forecast', () => {
@@ -200,7 +197,6 @@ test('cancelled scenario recovery uses restored current limits without rewriting
   input.currentConfig = structuredClone(input.config);
   input.observations.indoor.value = 19.4;
   input.thermalState.indoorC = 19.4;
-  input.equipment.rooms[0].value = 19.4;
   const frozenPlan = structuredClone(input.currentPlan);
   const result = exploreHeatingPlan(input, {}, options);
   assert.equal(result.current.phase, 'recovery');
@@ -218,7 +214,7 @@ test('cancelled scenario recovery uses restored current limits without rewriting
   assert.equal(result.current.outcomes.comfortSafe, false, 'The restored 1.5 °C boundary must govern the evaluated recovery');
   assert.equal(result.current.outcomes.comfortSafe, !expected.severe);
   assert.deepEqual(result.current.outcomes.violations, expected.violations);
-  assert.ok(result.current.outcomes.violations.some(row => row.code === 'room-drop-limit' && row.limit === 19.5));
+  assert.ok(result.current.outcomes.violations.some(row => row.code === 'indoor-drop-limit' && row.limit === 19.5));
 });
 
 test('increasing the preheat ceiling above two hours expands the actual bounded planner search', () => {
@@ -245,4 +241,30 @@ test('explorer worker executes the pure API and reports strict validation errors
   assert.equal(response.id, 1); assert.ok(response.result.scenario);
   const rejected = await request({ id: 2, input: heatingExplorerFixture(), overrides: { learningTrials: true } });
   assert.equal(rejected.id, 2); assert.equal(rejected.error.name, 'TypeError');
+});
+
+test('a supported sensor estimate retains bounded economic operation and current uncertainty revalidates the plan', () => {
+  const input = heatingExplorerFixture();
+  Object.assign(input.equipment, { indoorEstimated: true, indoorUncertaintyC: .1,
+    indoorUncertaintyGrowthCPerHour: .005, indoorEstimateValidUntil: input.now + 72 * HOUR });
+  const decision = chooseCycle(input);
+  assert.ok(decision.plan, 'An incomplete measured average alone must not disable a supported control estimate');
+  assert.equal(revalidatePlan({ ...input, plan: decision.plan }).valid, true);
+  const rejected = revalidatePlan({ ...input, plan: decision.plan,
+    equipment: { ...input.equipment, indoorUncertaintyC: 3 } });
+  assert.equal(rejected.valid, false);
+  assert.equal(rejected.reason, 'scheduled-cycle-no-longer-admissible');
+  const expired = revalidatePlan({ ...input, plan: decision.plan,
+    equipment: { ...input.equipment, indoorEstimateValidUntil: input.now } });
+  assert.equal(expired.valid, false);
+});
+
+test('provisional reference exposes the smaller effective drop and blocks unsafe previously approved plans', () => {
+  const input = heatingExplorerFixture(), approved = chooseCycle(input).plan;
+  input.equipment.comfortReferenceProvisional = true;
+  const decision = chooseCycle(input), result = exploreHeatingPlan(input, {}, options);
+  assert.equal(decision.comfort.maxDropC, .5);
+  if (decision.plan) assert.equal(decision.plan.maxDropC, .5);
+  assert.equal(result.constraints.find(row => row.key === 'provisionalReference').value, .5);
+  assert.equal(revalidatePlan({ ...input, plan: approved }).valid, false);
 });

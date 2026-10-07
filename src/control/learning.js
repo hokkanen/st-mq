@@ -1,168 +1,174 @@
-/** Bounded, chronological empirical learning. These estimates are not metered savings. */
+/** Evidence-time learning of the achieved occupied Normal temperature. */
 import { fireplaceAffectsLearning } from '../domain/fireplace.js';
-export const MAX_SAMPLES = 768;
+
 const HOUR = 3_600_000;
 const finite = Number.isFinite;
 const instant = value => typeof value === 'number' ? value : Date.parse(value);
-const mean = values => values.reduce((sum, value) => sum + value, 0) / values.length;
+const clamp = (value, low, high) => Math.min(high, Math.max(low, value));
+export const COMFORT_REFERENCE_POLICY = Object.freeze({
+  initializationHours: 1, provisionalHours: 24, smoothingHours: 48,
+  innovationLimitC: 1, settlingHours: 2, heatingMemoryHours: 6, maximumObservationGapHours: 2,
+  proxyMaximumOutdoorC: 12, proxyMinimumGapC: 8,
+});
 
 export function goodQuality(quality) {
   const flags = Array.isArray(quality) ? quality : quality ? [quality] : [];
   return flags.every(flag => ['good', 'simulated', 'historical', 'corrected_price', 'converted_fahrenheit', 'requested_not_observed'].includes(flag));
 }
 
-function validReference(reference) {
-  return reference?.version === 3 && finite(reference.targetC) && reference.targetC >= 12 && reference.targetC <= 28
+export function validComfortReference(reference) {
+  return reference?.version === 4 && finite(reference.targetC) && reference.targetC >= 12 && reference.targetC <= 28
+    && reference.source === 'occupied-normal-temperature-average'
+    && !['adaptation', 'windowStart', 'windowEnd', 'samples'].some(key => Object.hasOwn(reference, key))
+    && ['observed-heating-baseline', 'provisional-heating-demand-baseline'].includes(reference.confidence)
     && ['sustained-cool-weather-proxy', 'verified-space-heating-activity'].includes(reference.heatingEvidence?.kind)
-    && finite(instant(reference.establishedAt)) && finite(instant(reference.updatedAt));
+    && finite(reference.evidenceHours) && reference.evidenceHours + 1e-9 >= COMFORT_REFERENCE_POLICY.initializationHours
+    && finite(reference.verifiedEvidenceHours) && reference.verifiedEvidenceHours >= 0
+    && reference.verifiedEvidenceHours <= reference.evidenceHours
+    && reference.provisional === (reference.verifiedEvidenceHours < COMFORT_REFERENCE_POLICY.provisionalHours)
+    && finite(instant(reference.establishedAt)) && finite(instant(reference.updatedAt))
+    && finite(instant(reference.adjustedAt)) && instant(reference.adjustedAt) <= instant(reference.updatedAt)
+    && instant(reference.establishedAt) <= instant(reference.updatedAt);
 }
 
-function heatingEvidence(samples) {
-  let totalHours = 0, outdoorDegreeHours = 0, gapDegreeHours = 0;
-  let verifiedHours = 0, activeHours = 0;
-  const activeTimes = [];
-  for (let i = 0; i < samples.length - 1; i++) {
-    const previous = samples[i], next = samples[i + 1];
-    // Completed windows describe the interval ending at their timestamp.
-    // Direct thermometer observations describe the interval starting there.
-    const sample = next.windowStart === instant(previous.timestamp) ? next : previous;
-    const hours = (instant(next.timestamp) - instant(previous.timestamp)) / HOUR;
-    totalHours += hours;
-    outdoorDegreeHours += sample.outdoorC * hours;
-    gapDegreeHours += (sample.indoorC - sample.outdoorC) * hours;
-    const heating = sample.heating;
-    if (heating?.verified === true && typeof heating.compressorActive === 'boolean'
-      && ['space-heating', 'dhw', 'idle'].includes(heating.route) && goodQuality(heating.quality)) {
-      verifiedHours += hours;
-      const measuredDuty = sample.thermalCompressorDuty ?? heating.compressorDuty
-        ?? sample.compressorDuty;
-      const duty = finite(measuredDuty) ? Math.min(1, Math.max(0, measuredDuty))
-        : sample.windowStart !== undefined || sample.inputSegments ? 0 : Number(heating.compressorActive);
-      if (duty > 0 && heating.route === 'space-heating') {
-        activeHours += hours * duty;
-        activeTimes.push(instant(sample.timestamp));
-      }
-    }
-  }
-  const summary = { hours: totalHours, meanOutdoorC: outdoorDegreeHours / totalHours,
-    meanIndoorOutdoorGapC: gapDegreeHours / totalHours, verifiedHours, spaceHeatingHours: activeHours };
-  if (verifiedHours >= 6) {
-    // Repeated space heating is useful evidence; compressor activity routed to DHW is not.
-    if (activeHours >= 2 && activeTimes.at(-1) - activeTimes[0] >= 6 * HOUR)
-      return { ...summary, kind: 'verified-space-heating-activity' };
-    return null;
-  }
-  // In the absence of plant telemetry this is only a provisional heating-demand proxy.
-  // Sustained cool weather excludes warm nights/daytime solar plateaus without requiring a meter.
-  if (samples.every(sample => sample.outdoorC <= 15 && sample.indoorC - sample.outdoorC >= 8)
-    && summary.meanOutdoorC <= 10 && summary.meanIndoorOutdoorGapC >= 10)
-    return { ...summary, kind: 'sustained-cool-weather-proxy' };
+export function validComfortLearning(state) {
+  return state?.version === 1 && (state.reference === null || validComfortReference(state.reference))
+    && (state.cursor === null || finite(instant(state.cursor)))
+    && finite(state.evidenceHours) && state.evidenceHours >= 0
+    && finite(state.verifiedEvidenceHours) && state.verifiedEvidenceHours >= 0
+    && state.verifiedEvidenceHours <= state.evidenceHours
+    && (state.bootstrapC === null || finite(state.bootstrapC) && state.bootstrapC >= 12 && state.bootstrapC <= 28)
+    && (state.lastSpaceHeatingAt === null || finite(state.lastSpaceHeatingAt))
+    && (state.settlingUntil === null || finite(state.settlingUntil))
+    && (state.lastSample === null || finite(instant(state.lastSample?.timestamp))
+      && finite(state.lastSample?.indoorC) && instant(state.lastSample.timestamp) <= instant(state.cursor))
+    && ['waiting-for-observations', 'excluded-operation', 'settling-after-intervention', 'heating-demand-unavailable', 'learning'].includes(state.status)
+    && (state.reference === null || state.reference.evidenceHours === state.evidenceHours
+      && state.reference.verifiedEvidenceHours === state.verifiedEvidenceHours);
+}
+
+function validObservation(sample) {
+  const sensors = Object.values(sample?.indoorSensors ?? {}).filter(sensor => sensor.weight > 0);
+  return finite(instant(sample?.timestamp)) && finite(sample.indoorC) && sample.indoorC >= 12 && sample.indoorC <= 28
+    && finite(sample.outdoorC) && sample.outdoorC >= -60 && sample.outdoorC <= 50
+    && sample.valid !== false && sample.estimated !== true && goodQuality(sample.quality)
+    && sensors.every(sensor => finite(sensor.value) && sensor.estimated !== true && sensor.reportCoverageComplete !== false);
+}
+
+function normalOperation(sample) {
+  return sample.phase === 'normal' && sample.regime === 'occupied'
+    && sample.preheat !== true && sample.recovering !== true && !(sample.roomBoostC > 0)
+    && !fireplaceAffectsLearning(sample)
+    && (!sample.inputSegments || sample.inputSegments.every(segment => segment.phase === 'normal'
+      && segment.regime === 'occupied' && !(segment.roomBoostC > 0)));
+}
+
+function ownIntervention(sample) {
+  return ['preheat', 'reduction', 'recovery'].includes(sample.phase)
+    || sample.preheat === true || sample.recovering === true || sample.roomBoostC > 0
+    || sample.inputSegments?.some(segment => ['preheat', 'reduction', 'recovery'].includes(segment.phase) || segment.roomBoostC > 0);
+}
+
+/** Full report coverage confirms an unchanged value. Without that contract,
+ * every contributing thermometer must have supplied a new actual observation.
+ * Reading an old application value again never earns another learning interval. */
+function supportedHours(previous, sample) {
+  const end = instant(sample.timestamp), previousAt = instant(previous?.timestamp);
+  const completedStart = instant(sample.windowStart);
+  const start = finite(completedStart) ? Math.max(completedStart, finite(previousAt) ? previousAt : completedStart) : previousAt;
+  if (!finite(start) || end <= start || end - start > COMFORT_REFERENCE_POLICY.maximumObservationGapHours * HOUR) return 0;
+  const members = Object.entries(sample.indoorSensors ?? {}).filter(([, sensor]) => sensor.weight > 0);
+  if (!previous && !members.length) return 0;
+  if (!members.every(([signal, sensor]) => sensor.reportCoverageComplete === true
+    || finite(instant(sensor.observedAt)) && finite(instant(previous?.indoorSensors?.[signal]?.observedAt))
+      && instant(sensor.observedAt) > instant(previous.indoorSensors[signal].observedAt)
+      && instant(sensor.observedAt) >= start && instant(sensor.observedAt) <= end)) return 0;
+  return (end - start) / HOUR;
+}
+
+function heatingEvidence(state, sample, at) {
+  const heating = sample.heating;
+  const verified = heating?.verified === true && typeof heating.compressorActive === 'boolean'
+    && ['space-heating', 'dhw', 'idle'].includes(heating.route) && goodQuality(heating.quality);
+  const duty = sample.thermalCompressorDuty ?? heating?.compressorDuty ?? sample.compressorDuty;
+  const active = verified && heating.route === 'space-heating'
+    && (finite(duty) ? duty > 0 : !sample.inputSegments && heating.compressorActive)
+    || finite(sample.thermalAuxKw) && sample.thermalAuxKw > 0;
+  if (active) state.lastSpaceHeatingAt = at;
+  if (state.lastSpaceHeatingAt !== null && at - state.lastSpaceHeatingAt <= COMFORT_REFERENCE_POLICY.heatingMemoryHours * HOUR)
+    return { kind: 'verified-space-heating-activity', lastSpaceHeatingAt: new Date(state.lastSpaceHeatingAt).toISOString(),
+      compressorDuty: finite(duty) ? duty : null, outdoorC: sample.outdoorC, indoorOutdoorGapC: sample.indoorC - sample.outdoorC };
+  if (!verified && sample.outdoorC <= COMFORT_REFERENCE_POLICY.proxyMaximumOutdoorC
+    && sample.indoorC - sample.outdoorC >= COMFORT_REFERENCE_POLICY.proxyMinimumGapC)
+    return { kind: 'sustained-cool-weather-proxy', outdoorC: sample.outdoorC,
+      indoorOutdoorGapC: sample.indoorC - sample.outdoorC };
   return null;
 }
 
-const normalReferenceSample = sample => validSample(sample) && sample.action === 'normal'
-  && sample.regime === 'occupied' && sample.preheat !== true && sample.recovering !== true
-  && !(sample.roomBoostC > 0) && !fireplaceAffectsLearning(sample)
-  && (!sample.inputSegments || sample.inputSegments.every(segment => segment.phase === 'normal'
-    && segment.regime === 'occupied' && !(segment.roomBoostC > 0)));
-
-function validAdaptation(value) {
-  return value && ['candidateC', 'minimumC', 'maximumC', 'evidenceHours', 'appliedHours'].every(key => finite(value[key]))
-    && value.minimumC >= 12 && value.maximumC <= 28 && value.maximumC - value.minimumC <= 0.300000001
-    && value.candidateC >= value.minimumC && value.candidateC <= value.maximumC
-    && value.evidenceHours >= 0 && value.appliedHours >= 0 && value.appliedHours <= value.evidenceHours
-    && finite(instant(value.firstWindowStart)) && finite(instant(value.lastWindowEnd))
-    && instant(value.lastWindowEnd) >= instant(value.firstWindowStart);
-}
-
-/** Learn achieved household temperature; normal controller cycles never redefine it.
- * Later knob changes require repeated clean plateaus across days in either direction.
- * Only newly covered plateau time earns adjustment, independently of polling frequency.
- */
-export function inferComfortReference(previous, samples, { now = Date.now() } = {}) {
-  const retained = validReference(previous) ? structuredClone(previous) : null;
-  const sorted = normalizedRecords(samples).filter(sample => instant(sample.timestamp) <= instant(now)).slice(-MAX_SAMPLES);
-  const last = sorted.at(-1);
-  if (!last || instant(now) - instant(last.timestamp) > 2 * HOUR) return retained;
-  if (retained?.adaptation && (!validAdaptation(retained.adaptation)
-    || sorted.some(sample => instant(sample.timestamp) > instant(retained.adaptation.lastWindowEnd)
-      && (!validSample(sample) || sample.regime !== 'occupied' || fireplaceAffectsLearning(sample)))))
-    retained.adaptation = null;
-  const normalHours = retained ? 8 : 24, plateauHours = retained ? 6 : 12;
-  const uninterrupted = [];
-  let nextTime = instant(last.timestamp);
-  for (let i = sorted.length - 1; i >= 0; i--) {
-    const sample = sorted[i], time = instant(sample.timestamp);
-    if (!normalReferenceSample(sample) || nextTime - time > 2 * HOUR) break;
-    uninterrupted.unshift(sample);
-    nextTime = time;
-    if (instant(last.timestamp) - time >= normalHours * HOUR) break;
+/** One ordered update, shared by live learning and replay. Gaps/exclusions pause
+ * earned evidence; only newly supported Normal intervals move the reference.
+ * The caller stores the pending state even before initialization. */
+export function updateComfortLearning(previous, sample, { reference = null } = {}) {
+  if (reference && !validComfortReference(reference)) throw new TypeError('Unsupported comfort reference; start fresh.');
+  if (previous && !validComfortLearning(previous)) throw new TypeError('Unsupported comfort learning state; start fresh.');
+  const state = previous ? structuredClone(previous) : { version: 1, reference: structuredClone(reference), cursor: reference?.updatedAt ?? null,
+    evidenceHours: reference?.evidenceHours ?? 0, verifiedEvidenceHours: reference?.verifiedEvidenceHours ?? 0, bootstrapC: reference?.targetC ?? null, lastSample: null, lastSpaceHeatingAt: null, settlingUntil: null,
+    status: 'waiting-for-observations', reason: 'No supported indoor observation interval yet.' };
+  const at = instant(sample?.timestamp);
+  if (!finite(at) || state.cursor !== null && at <= instant(state.cursor)) return state;
+  state.cursor = new Date(at).toISOString();
+  const preceding = state.lastSample;
+  state.lastSample = null;
+  if (ownIntervention(sample)) state.settlingUntil = at + COMFORT_REFERENCE_POLICY.settlingHours * HOUR;
+  if (!validObservation(sample)) {
+    state.status = 'waiting-for-observations'; state.reason = 'Learning paused: a contributing observation or its coverage is unavailable.';
+    return state;
   }
-  if (uninterrupted.length < normalHours / 2 + 1
-    || instant(last.timestamp) - instant(uninterrupted[0].timestamp) < normalHours * HOUR) return retained;
-  const plateau = uninterrupted.filter(sample => instant(last.timestamp) - instant(sample.timestamp) <= plateauHours * HOUR);
-  const values = plateau.map(sample => sample.indoorC).sort((a, b) => a - b);
-  if (plateau.length < plateauHours / 2 + 1 || values.at(-1) - values[0] > 0.4) return retained;
-  const midpoint = Math.floor(plateau.length / 2);
-  if (Math.abs(mean(plateau.slice(0, midpoint).map(sample => sample.indoorC))
-    - mean(plateau.slice(midpoint).map(sample => sample.indoorC))) > 0.15) return retained;
-  const evidence = heatingEvidence(uninterrupted);
-  if (!evidence) return retained;
-  const candidateC = Math.round(values[Math.floor((values.length - 1) * 0.75)] * 10) / 10;
-  if (candidateC < 12 || candidateC > 28) return retained;
-  let targetC = candidateC, adaptation = null;
-  if (retained) {
-    // Do not reuse evidence from initial establishment, duplicate windows, a
-    // long acquisition interruption, or a materially different new plateau.
-    const end = instant(last.timestamp), start = Math.max(instant(plateau[0].timestamp), instant(retained.establishedAt));
-    if (end <= start) return retained;
-    const old = validAdaptation(retained.adaptation) ? retained.adaptation : null;
-    if (old && end <= instant(old.lastWindowEnd)) return retained;
-    const minimumC = Math.min(old?.minimumC ?? candidateC, candidateC), maximumC = Math.max(old?.maximumC ?? candidateC, candidateC);
-    const continuing = old && end - instant(old.lastWindowEnd) <= 48 * HOUR && maximumC - minimumC <= 0.300000001;
-    const from = continuing ? Math.max(start, instant(old.lastWindowEnd)) : start;
-    adaptation = { candidateC, minimumC: continuing ? minimumC : candidateC, maximumC: continuing ? maximumC : candidateC,
-      firstWindowStart: continuing ? old.firstWindowStart : new Date(start).toISOString(), lastWindowEnd: last.timestamp,
-      evidenceHours: (continuing ? old.evidenceHours : 0) + Math.max(0, end - from) / HOUR,
-      appliedHours: continuing ? old.appliedHours : 0 };
-    targetC = retained.targetC;
-    if (adaptation.evidenceHours >= 24 && end - instant(adaptation.firstWindowStart) >= 48 * HOUR) {
-      const earnedHours = Math.min(24, adaptation.evidenceHours - adaptation.appliedHours);
-      const difference = candidateC - targetC;
-      targetC = Math.round((targetC + Math.sign(difference) * Math.min(Math.abs(difference), earnedHours * 0.2 / 24)) * 1e10) / 1e10;
-      // Consume all prior credit, including any first-qualification excess.
-      // Reprocessing these rows cannot turn a capped step into a sudden jump.
-      adaptation.appliedHours = adaptation.evidenceHours;
-    }
-    if (targetC === retained.targetC) return { ...retained, adaptation };
+  if (!normalOperation(sample)) {
+    state.status = 'excluded-operation'; state.reason = 'Learning requires occupied Normal operation without fireplace influence.';
+    return state;
   }
-  return { version: 3, targetC, establishedAt: retained?.establishedAt ?? last.timestamp,
-    updatedAt: last.timestamp, source: 'sustained-occupied-normal-temperature-plateau',
+  state.lastSample = { timestamp: sample.timestamp, indoorC: sample.indoorC,
+    indoorSensors: structuredClone(sample.indoorSensors ?? {}) };
+  const evidence = heatingEvidence(state, sample, at);
+  // End-of-window context cannot turn the interval before it into settled Normal.
+  const intervalStart = finite(instant(sample.windowStart)) ? instant(sample.windowStart) : instant(preceding?.timestamp);
+  if (state.settlingUntil !== null && (!finite(intervalStart) || intervalStart < state.settlingUntil)) {
+    state.status = 'settling-after-intervention'; state.reason = 'Learning pauses for two hours of Normal after a heating intervention.';
+    return state;
+  }
+  if (!evidence) {
+    state.status = 'heating-demand-unavailable'; state.reason = 'No recent verified space heating or cool-weather heating demand.';
+    return state;
+  }
+  const hours = supportedHours(preceding, sample);
+  if (!(hours > 0)) {
+    state.status = 'waiting-for-observations'; state.reason = 'Waiting for a new observation or genuine unchanged-report coverage.';
+    return state;
+  }
+  state.status = 'learning'; state.reason = null;
+  const beforeHours = state.evidenceHours;
+  state.evidenceHours += hours;
+  if (evidence.kind === 'verified-space-heating-activity') state.verifiedEvidenceHours += hours;
+  if (!state.reference) {
+    // Bounded influence prevents one unusual startup interval dominating the seed.
+    const candidate = state.bootstrapC === null ? sample.indoorC
+      : state.bootstrapC + clamp(sample.indoorC - state.bootstrapC, -1, 1);
+    state.bootstrapC = ((state.bootstrapC ?? 0) * beforeHours + candidate * hours) / state.evidenceHours;
+    if (state.evidenceHours + 1e-9 < COMFORT_REFERENCE_POLICY.initializationHours) return state;
+  }
+  const previousTarget = state.reference?.targetC;
+  const targetC = finite(previousTarget) ? previousTarget
+    + clamp(sample.indoorC - previousTarget, -COMFORT_REFERENCE_POLICY.innovationLimitC, COMFORT_REFERENCE_POLICY.innovationLimitC)
+      * -Math.expm1(-hours / COMFORT_REFERENCE_POLICY.smoothingHours) : state.bootstrapC;
+  const timestamp = new Date(at).toISOString();
+  state.reference = { version: 4, targetC, establishedAt: state.reference?.establishedAt ?? timestamp,
+    updatedAt: timestamp, adjustedAt: targetC === previousTarget ? state.reference.adjustedAt : timestamp,
+    source: 'occupied-normal-temperature-average', evidenceHours: state.evidenceHours,
+    verifiedEvidenceHours: state.verifiedEvidenceHours,
+    provisional: state.verifiedEvidenceHours < COMFORT_REFERENCE_POLICY.provisionalHours,
     confidence: evidence.kind === 'verified-space-heating-activity' ? 'observed-heating-baseline' : 'provisional-heating-demand-baseline',
-    heatingEvidence: evidence, windowStart: uninterrupted[0].timestamp,
-    windowEnd: last.timestamp, samples: uninterrupted.length, adaptation,
-    semantics: 'temperature achieved by native household settings; normal request does not prove continuous compressor runtime' };
-}
-
-function validSample(sample) {
-  return sample && finite(instant(sample.timestamp)) && finite(sample.indoorC)
-    && sample.indoorC > 2 && sample.indoorC < 40 && finite(sample.outdoorC)
-    && sample.outdoorC >= -60 && sample.outdoorC <= 50
-    && ['normal', 'reduction'].includes(sample.action)
-    && goodQuality(sample.quality);
-}
-
-function normalizedRecords(samples) {
-  const byTime = new Map();
-  for (const sample of samples) {
-    const time = instant(sample?.timestamp);
-    if (!finite(time)) continue;
-    const timestamp = new Date(time).toISOString();
-    // Preserve uncertainty as a timestamped barrier. Dropping it would invent uninterrupted history.
-    const normalized = validSample(sample) ? { ...sample, timestamp }
-      : { timestamp, kind: 'continuity-barrier', quality: ['invalid-observation'] };
-    const prior = byTime.get(time);
-    if (!prior || normalized.kind === 'continuity-barrier') byTime.set(time, normalized);
-  }
-  return [...byTime.values()].sort((a, b) => instant(a.timestamp) - instant(b.timestamp));
+    heatingEvidence: evidence,
+    semantics: 'achieved weighted indoor temperature during occupied Normal; not thermostat intent or continuous compressor runtime' };
+  return state;
 }

@@ -3,6 +3,7 @@ import { temperatureReadingStatus } from './temperature-status.js';
 export { temperatureReadingStatus, temperatureAttentionDetails } from './temperature-status.js';
 import { vehicleConnections, equipmentConnectionSummary } from './equipment.js';
 import { durationText } from './reading-status.js';
+import { homeIndoorEstimate } from './home-controls.js';
 import { PROVIDER_CURRENT_ATTENTION_MS, PROVIDER_TEMPERATURE_ATTENTION_MS } from '../src/domain/reading-freshness.js';
 
 const names = Object.freeze({ entsoe: 'ENTSO-E', elering: 'Elering', fmi: 'FMI',
@@ -178,6 +179,8 @@ function temperatureDisplay(status, entries, options) {
   const backup = observations.outdoor?.source === 'openmeteo';
   const state = attention ? 'Needs attention' : available ? backup ? 'Using backup' : 'Available' : 'Waiting for readings';
   const details = ['The indoor average and outdoor reading support home control. Individual indoor sensors are recorded separately. Garage rear and front air readings are recorded separately from the sender’s independent pipe estimates and protection status.'];
+  const estimate = homeIndoorEstimate(status, options);
+  if (estimate) details.push(`${estimate.note}. ${estimate.detail}`);
   const averageStatus = temperatureReadingStatus(observations.indoor, options);
   if (averageStatus.attention || !averageStatus.usable && observations.indoor?.missingMembers?.length) details.push(`Average indoor: ${averageStatus.detail}`);
   for (const [key, health] of entries) {

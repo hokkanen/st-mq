@@ -257,7 +257,9 @@ export function indoorSensorWeightsConfiguration(input, connections = {}) {
   // An empty object therefore selects automatic membership, like an absent map.
   const automatic = input === undefined || input !== null && typeof input === 'object'
     && !Array.isArray(input) && Object.keys(input).length === 0;
-  const weights = automatic ? Object.fromEntries([...configured].map(signal => [signal, 1])) : input;
+  // Bedroom has twice the default influence of either other configured room.
+  // Membership still comes from configuration, never current availability.
+  const weights = automatic ? Object.fromEntries([...configured].map(signal => [signal, signal === 'bedroom_temperature' ? 2 : 1])) : input;
   if (!weights || typeof weights !== 'object' || Array.isArray(weights)
     || Object.entries(weights).some(([signal, weight]) => !signals.includes(signal)
       || !Number.isFinite(weight) || weight < 0 || weight > 0 && !configured.has(signal)))

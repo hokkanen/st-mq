@@ -16,6 +16,15 @@ relay readback and power feedback remain distinct from that configured duration.
 The retired `mqtt.dhwr_topic` field and generic MQTT circulation route are rejected.
 See [circulation setup](dhwr-mqtt.md) for device configuration and restoration.
 
+Home indoor weights belong to `controller.indoor_sensor_weights`. The default
+empty map selects configured indoor membership with relative weights Upstairs 1,
+Downstairs 1 and Bedroom 2, giving 25% / 25% / 50% when all three are configured.
+An explicit nonempty map sets the selected sensors and their nonnegative relative
+weights; omitted or zero-weight sensors do not contribute. Membership never
+changes when a configured sensor goes offline. The one learned reference, thermal
+model and comfort limits use this same average. See the
+[temperature policy](temperature-sensors.md).
+
 ## Where a setting belongs
 
 | Location | Purpose |
@@ -501,12 +510,12 @@ Balanced is the default. The minimum benefit before other burdens is respectivel
 Home's Heating strategy & comfort panel explains the policy and independent limits.
 Garage has no savings strategy or economic temperature changes.
 
-Home's shared `controller.max_drop_c` and `controller.max_rise_c` apply around
-each participating room's learned reference, falling back to the overall comfort
-reference where needed. The strategy changes selection within these bounds;
-it never widens them. Room references are learned separately, but there are no
-separate configured drop/rise limits per room. The heat models provide predictions
-and evidence; these configured decision rules do not change how they learn.
+Home's shared `controller.max_drop_c` and `controller.max_rise_c` apply to the
+configured indoor average around its single learned normal-temperature reference.
+The strategy changes selection within these bounds; it never widens them.
+Individual rooms have no separate reference or comfort limit. The thermal model,
+reference learner and planner use the same fixed weights. These configured
+allowances determine control policy, independently of thermal-model learning.
 
 The retired numeric fields `controller.savings_aggressiveness` and
 `garage.aggressiveness`, and the ineffective `garage.frontRequired` flag, are

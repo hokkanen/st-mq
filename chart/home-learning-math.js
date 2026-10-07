@@ -105,7 +105,7 @@ export function preheatCalculation() {
       'The default configured increase is 5 °C. ROOM_baseline is the saved normal native setting; ROOM_max is the verified writable upper bound. Repeated preheat commands do not accumulate increases.'),
     equation('Forecast supply temperature', 'T_water,preheat = T_water,normal + 3 × b',
       'Temperatures are in °C. This fixed forecast prior changes the source-map operating point and predicted demand; it is not a measured heating curve or a direct heat input.'),
-  ], ['ROOM is a heating-demand setting. Room-air limits remain separate, with default maximum occupied drop and rise both 1.5 °C. Normal DHWR scheduling continues during preheat; the ROOM and valve deadlines do not depend on the circulation pulse timer.']);
+  ], ['ROOM is a heating-demand setting. Indoor-average limits remain separate, with default maximum occupied drop and rise both 1.5 °C. Normal DHWR scheduling continues during preheat; the ROOM and valve deadlines do not depend on the circulation pulse timer.']);
 }
 
 export function recoveryHoldCalculation() {
@@ -114,7 +114,7 @@ export function recoveryHoldCalculation() {
       'Use consistent time units. The default hold is 60 minutes after tariff reduction ends. The deadline remains fixed while the controller refreshes its decisions.'),
     equation('Reduced hot-water settings', 'start_hold = min(start_normal, 40 °C); stop_hold = 50 °C',
       'These native settings remain reduced during tariff reduction and the recovery hold. The stop register may govern AUX operation only; 50 °C is not an established compressor hot-water cutoff.'),
-  ], ['During the hold, normal ROOM and tariff operation allow compressor recovery and automatic DHWR starts are suppressed. The AUX restriction applies when enabled; cold-room protection can release AUX permission early while reduced DHW settings and DHWR suppression retain their original deadline.',
+  ], ['During the hold, normal ROOM and tariff operation allow compressor recovery and automatic DHWR starts are suppressed. The AUX restriction applies when enabled; cold-average protection can release AUX permission early while reduced DHW settings and DHWR suppression retain their original deadline.',
     'At the deadline, captured normal DHW and operating-mode settings are restored and normal DHWR eligibility resumes. This does not force an immediate circulation pulse or end the thermal recovery assessment. Native AUX permission applies to the heat pump as a whole; it is not a space-heating-only command.',
     'For hot water before the deadline, pause price control: this selects Normal heating and restores the captured native DHW settings. Start a timed circulation run if needed. A setting changed directly on the heat pump is respected; app parameter edits are available after pausing. The hold is an engineering setting, not a learned recovery time.']);
 }
@@ -155,7 +155,7 @@ export function economicCalculation(strategyId) {
     equation('Conservative benefit', 'B_low = B_nominal − max(5, B_nominal − min(B_nominal, B_stress−, B_stress+))',
       'Benefits are reference cost minus action cost in cents. The same two physical stress directions are applied to both paths; a residual 5-cent allowance remains.'),
     equation('Starting hurdle', 'hurdle = minimum_benefit + discomfort_weight × D + 2 × extra_hours + 2 × start',
-      `${strategy ? `${strategy.label}: minimum_benefit = ${strategy.minimumHomeBenefitCents} ct and discomfort_weight = ${strategy.homeDiscomfortCentsPerDegreeSquaredHour} ct/(°C²·h). ` : ''}D is the positive additional weighted hot/cold discomfort in °C²·h, summed separately by room and direction. start is 1 for a new intervention against normal operation. These are decision allowances, not actual electricity charges.`),
+      `${strategy ? `${strategy.label}: minimum_benefit = ${strategy.minimumHomeBenefitCents} ct and discomfort_weight = ${strategy.homeDiscomfortCentsPerDegreeSquaredHour} ct/(°C²·h). ` : ''}D is the positive additional hot/cold discomfort of the configured indoor average in °C²·h, summed separately by direction. start is 1 for a new intervention against normal operation. These are decision allowances, not actual electricity charges.`),
     equation('Admission and preference', 'admit if B_low > hurdle;  retain B_low ≥ best_B_low × retained_fraction',
       `Physical limits and evidence checks must also pass. From a bounded shortlist, prefer the mildest admitted plan retaining ${strategy ? `${strategy.retainedBenefitFraction * 100}%` : 'the strategy’s required share'} of the best positive conservative benefit. Temperature variation is compared first, then active duration.`),
   ], ['During continuation the starting minimum and start allowance are omitted; remaining discomfort and duration still count. Gentle is not an off switch. Pause and Home automation determine whether the heating plan is applied.',
@@ -164,12 +164,12 @@ export function economicCalculation(strategyId) {
 
 export function comfortReferenceCalculation() {
   return calculation([
-    equation('Stable-temperature candidate', 'T_candidate = round₀.₁(T_sorted[floor(0.75 × (n − 1))])',
-      'Sort the n qualifying plateau temperatures from lowest to highest, using zero-based indexing. The selected upper-quartile reading is rounded to 0.1 °C.'),
-    equation('Gradual later adjustment', 'ΔT_ref = sign(T_candidate − T_ref) × min(|T_candidate − T_ref|, 0.2 × min(24, h_new) / 24)',
-      'h_new is newly earned plateau evidence in hours. Each qualifying update can move the retained reference by at most 0.2 °C; reused observations earn no further movement.'),
-  ], ['The initial reference needs 24 hours of uninterrupted occupied normal heating, with a stable plateau over the latest 12 hours. Later candidates use 8 hours of normal operation and a 6-hour plateau. The plateau spans at most 0.4 °C, and its two halves differ in mean temperature by at most 0.15 °C.',
-    'Later adjustment requires at least 24 hours of newly covered plateau evidence spread over at least 48 hours, with candidate temperatures within 0.3 °C. Preheat, recovery and material logged fireplace influence are excluded. Verified space-heating activity supports the reference; sustained cool weather can provide a provisional substitute when telemetry is insufficient.']);
+    equation('Configured indoor average', 'T_indoor = Σ(wᵢ × Tᵢ);  Σwᵢ = 1',
+      'Default configured room weights are Bedroom 50%, Downstairs 25% and Upstairs 25%. The one normal-temperature reference and all comfort limits use this average.'),
+    equation('Continuous refinement', 'T_ref ← T_ref + (1 − exp(−h / 48)) × clamp(T_indoor − T_ref, −1, 1)',
+      'h is newly supported occupied Normal observation time in hours. The 48-hour smoothing timescale and 1 °C innovation bound prevent one unusual interval dominating the reference. Reused observations earn no new movement.'),
+  ], ['A provisional reference starts after one supported hour of occupied Normal heating. Until 24 hours are supported by verified heating, occupied reduction is limited to the smaller of the configured drop and 0.5 °C. Weather-inferred heating alone cannot end this restriction. Missing measurements pause progress and never erase an established reference.',
+    'Verified space-heating demand includes normal compressor-off periods for up to six hours after activity. When native evidence is unavailable, outdoor temperature at most 12 °C and an indoor–outdoor difference of at least 8 °C support a provisional estimate. Preheat, reduction, recovery, Away and material logged fireplace influence do not train it. Two hours of normal settling follow a controller intervention. Estimated missing-room temperatures never train the reference or thermal model.']);
 }
 
 export function inputCalculation(key) {

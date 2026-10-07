@@ -97,7 +97,7 @@ for (const input of ['providers', 'mqtt']) test(`${input} uses three local room 
     f.setTime(initial + MINUTE);
     m.publish('invented/smoke/2', 24);
     status = f.engine.status();
-    assert.equal(status.observations.indoor.value, 22);
+    assert.equal(status.observations.indoor.value, 22.5);
     assert.equal(status.observations.upstairs.value, 22);
     assert.equal(status.observations.downstairs.value, 20);
     f.setTime(initial + 5 * MINUTE);

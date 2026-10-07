@@ -40,9 +40,17 @@ configuration:
       max_drop_c:
         name: Preferred occupied temperature drop (°C)
         description: >-
-          Preferred drop below the learned normal-heating comfort reference.
+          Preferred drop of the configured indoor average below its learned normal-heating reference.
           Away periods have no comfort-drop limit. Away and Pause deadlines
           are dashboard controls, not configuration defaults.
+      indoor_sensor_weights:
+        name: Indoor average weights
+        description: >-
+          Empty selects configured rooms with Bedroom weighted twice as much as
+          Upstairs or Downstairs: 50%, 25%, 25% with all three configured. Set
+          nonnegative weights by temperature signal to override. The same average
+          is used for the model and all comfort limits; individual rooms have no
+          separate limit. Missing sensors never redistribute their weights.
       h66_device:
         name: Installed H66 device prefix
         description: >-

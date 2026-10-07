@@ -29,7 +29,7 @@ they do not prove optimal settings or savings for the actual house.
 | DHW compressor/AUX costs contaminated space-heating calibration and profit. | Keep attributed space-heating energy and recovery AUX separate; show covered total costs independently. Whole-cycle profit remains unavailable without a DHW service model. |
 | A newer model's reserve could make an older cycle appear recovered. | Maintain an observer with the frozen cycle model. Missing thermal input invalidates its reserve claim. |
 | Failed attempts disappeared from completed-only benefit means. | Show all-attempt outcomes, incomplete counts, covered costs and missing hours alongside the completed subset. |
-| Unbounded recovery restrictions can delay hot-water service; releasing all restrictions when rooms are cold can redirect capacity. | Use one 60-minute AUX/DHW/DHWR hold. A latched cold-room fallback releases AUX only; normal DHW settings and scheduled circulation resume at the original deadline, independently of thermal assessment completion. |
+| Unbounded recovery restrictions can delay hot-water service; releasing all restrictions when rooms are cold can redirect capacity. | Use one 60-minute AUX/DHW/DHWR hold. A latched cold-average fallback releases AUX only; normal DHW settings and scheduled circulation resume at the original deadline, independently of thermal assessment completion. |
 | Ending the valve override could prematurely reduce the floor uncertainty allowance. | Keep the explicit slab allowance at 0.15√h °C in every valve mode because stored heat and its uncertainty persist. |
 | A plausible but corrupted checkpoint could be trusted merely because its cursor existed. | Check a state/configuration digest and journal-prefix identity, otherwise replay. This detects accidental corruption, not malicious alteration. |
 
@@ -123,13 +123,18 @@ independent evidence of improved predictive performance.
 ## Remaining practical limits
 
 The slow-state topology and constants still need house-specific validation.
-Individual-room checks retain current offsets and at most one hour of recent
-trend around the aggregate forecast; they are conservative proxies, not fitted
-zonal heat-transfer models. Automatic preheat requires observed and projected
+Comfort checks use only the same fixed indoor average as the model, with one
+continuously learned normal reference. There are no fitted room models or individual
+room vetoes. A one-room control estimate follows remaining-room movement from a
+complete baseline with extra uncertainty; it cannot supply training or measured
+validation outcomes. A separate runtime heat-reserve state can advance during
+that estimate only through continuously covered actual equipment inputs; input
+gaps select Normal. A cycle with missing measured indoor outcomes remains
+unassessed even if its control recovery finishes. Automatic preheat requires observed and projected
 source-map supply inside the provisional 30–50 °C range; B0 reference data do not
 make a missing live brine reading known. The fixed future-supply assumption is
 3 °C per degree of ROOM increase. Named savings strategies select among
-admitted cycle choices; they do not predict or guarantee annual savings. Room-air
+admitted cycle choices; they do not predict or guarantee annual savings. Weighted indoor-average
 limits default to ±1.5 °C. The common 60-minute recovery hold is a provisional
 engineering setting, not a measured optimum. The model assigns zero room heat to
 DHW tank, use and recirculation losses; whole-home savings and matched tank service

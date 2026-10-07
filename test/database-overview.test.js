@@ -9,6 +9,7 @@ import { importCsv } from '../src/storage/history.js';
 import { getDatabaseOverview, OVERVIEW_REFRESH_MS } from '../src/app/database-overview.js';
 import { createChartService } from '../src/app/chart-service.js';
 import { createAppServer } from '../src/app/server.js';
+import { LEARNING_ALGORITHM } from '../src/app/committed-learning.js';
 
 const at = Date.parse('2026-01-10T10:00:00Z');
 const items = overview => new Map(overview.groups.flatMap(group => group.items.map(item => [item.id, item])));
@@ -76,7 +77,7 @@ test('overview distinguishes saved/null values, imports, shared forecasts, journ
       start: at - 1000, end: at, referenceKwh: 0.001, reason: 'unknown-phase-share' }, at);
     store.event(privateMarker, { personal: privateMarker }, at);
     for (const kind of ['sample', 'episode', 'context']) store.appendLearningJournal('providers', {
-      kind, at, algorithmVersion: 'fixture-algorithm', configVersion: { private: privateMarker },
+      kind, at, algorithmVersion: LEARNING_ALGORITHM, configVersion: { private: privateMarker },
       forecastVersion: { private: privateMarker }, key: kind, payload: { private: privateMarker },
     });
     store.db.prepare('INSERT INTO learning_cycles(id,input,started_at,ended_at,status,payload) VALUES(?,?,?,?,?,?)')
@@ -211,7 +212,7 @@ test('saved adaptive datasets remain individually discoverable without recorder 
 test('inactive journals, state families and individual event types have separate truthful counts', t => {
   const store = new Store(':memory:'); t.after(() => store.close());
   for (const input of ['providers', 'garage:providers']) for (const kind of ['sample', 'context'])
-    store.appendLearningJournal(input, { kind, at, algorithmVersion: 'fixture', key: kind, payload: {} });
+    store.appendLearningJournal(input, { kind, at, algorithmVersion: LEARNING_ALGORITHM, key: kind, payload: {} });
   for (const key of ['floor-override:v1', 'equipment-tests:v1', 'equipment:door:v1:private-door',
     'shelly:caravan-energy:v2', 'mqtt:equipment-energy:v1:private-meter', 'charging:providers',
     'charging:providers:charger1:private-association:ownership:ocpp', 'easee:ocpp', 'garage:mode:providers'])
@@ -358,9 +359,9 @@ test('overview separates retained source evidence, published exclusions and sele
   exclusion.run('unpublished', 'observations', String(ids[2]));
   const journal = store.db.prepare(`INSERT INTO learning_journal_entries
     (epoch,input,key,kind,at,algorithm_version,payload,source_entry_id) VALUES(?,?,?,?,?,?,?,?)`);
-  const first = Number(journal.run('original', 'providers', 'first', 'sample', at, 'fixture', '{}', null).lastInsertRowid);
-  const second = Number(journal.run('original', 'providers', 'second', 'sample', at + 1000, 'fixture', '{}', null).lastInsertRowid);
-  journal.run('selected', 'providers', 'kept', 'sample', at + 1000, 'fixture', null, second);
+  const first = Number(journal.run('original', 'providers', 'first', 'sample', at, LEARNING_ALGORITHM, '{}', null).lastInsertRowid);
+  const second = Number(journal.run('original', 'providers', 'second', 'sample', at + 1000, LEARNING_ALGORITHM, '{}', null).lastInsertRowid);
+  journal.run('selected', 'providers', 'kept', 'sample', at + 1000, LEARNING_ALGORITHM, null, second);
   store.db.prepare('INSERT INTO learning_epochs(input,epoch) VALUES(?,?)').run('providers', 'selected');
   exclusion.run('published', 'learning_journal', String(first));
   store.db.prepare("UPDATE history_selection SET generation='published' WHERE id=1").run();

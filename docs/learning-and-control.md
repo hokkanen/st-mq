@@ -66,7 +66,7 @@ and confirmation appear as secondary text; selecting a value explains its source
 and uncertainty. **Schedule & away** and **Manual heating override** follow as folds.
 **Heating strategy & comfort** holds
 the normal-temperature reference, occupied drop/rise limits, savings preference
-and ROOM increase; its closed summary shows the configured room limits. Permanent
+and ROOM increase; its closed summary shows the configured average limits. Permanent
 preferences still use configuration and **Apply reviewed configuration**. **Home heat model**
 follows these controls, with the reconstruction explanation under **Learning outcomes →
 Validation & evidence → Reconstructing the model**. Home reports
@@ -131,17 +131,15 @@ Observed thermal drivers are outdoor temperature, archived solar radiation,
 the estimated combined hydronic heat, derived from space-heating compressor duty
 and space-heating auxiliary power. The original source inputs remain visible. The configured
 average of Upstairs, Bedroom and Downstairs is the live indoor state and prediction
-target, with fixed membership and equal weights by default. Missing contributing
-readings leave gaps; imported CSV learning retains its original Upstairs input.
-The model also learns a comfort reference for each participating room and checks
-each room before permitting occupied heating reduction. The same configured
-maximum drop and rise apply to every room relative to its own learned normal
-temperature; a room without its own learned reference falls back to the overall
-reference. **Overall comfort reference** and expandable room references in
-Heating configuration expose this distinction. There are no separately configured
-room allowances. See
-[indoor temperatures](temperature-sensors.md) for averaging, room limits and sensor
-changes, recorded inside the **Average indoor** model-input details.
+target, with fixed configured membership and weights. Missing contributing
+readings leave measured gaps; imported CSV learning retains its original Upstairs input.
+The model learns one normal-temperature reference directly from the fixed weighted
+indoor average. Default weights are Bedroom 50%, Downstairs 25% and Upstairs 25%;
+`controller.indoor_sensor_weights` can override them. Occupied maximum drop and rise,
+forecast checks, discomfort costs and recovery use this same average. Individual
+rooms remain visible but have no separate learned reference or veto. See
+[indoor temperatures](temperature-sensors.md) for source evidence, the bounded
+one-room control estimate and sensor changes in **Average indoor** input details.
 Requested phase, ROOM boost and comfort target describe control context; they do
 not create a direct heat credit. The **Model inputs · Calculated** axes retain the
 indoor endpoint, original source inputs and control context exactly as saved in the
@@ -190,25 +188,21 @@ Economic dispatch requires all three checks, within a duration supported by at
 least three training/held-out response and advance forecast episodes. Counterfactual
 savings still remain estimates. See [model design and limits](learning-model-design.md).
 
-The normal indoor reference comes from occupied, normally heated periods. Actual
-fractional compressor runtime contributes evidence; a brief run cannot count as
-an entire quarter-hour of heating. The reference is held through preheat, reduction
-and recovery. Away removes the usual occupied drop constraint but retains a return
-requirement inside the known forecast horizon.
+The normal indoor reference starts after one supported hour of occupied Normal
+heating and refines continuously with a 48-hour smoothing timescale and a 1°C
+innovation bound. The reference remains provisional until 24 hours are supported by verified heating. Verified recent
+space heating includes normal compressor-off cycles; weather-inferred demand is
+provisional and used only when native evidence is unavailable. There is no rare
+plateau requirement. Small source outages pause progress rather than erase it.
 
-After initial establishment from 24 hours of normal heating, the reference can
-follow sustained household thermostat changes both down and up, including floor
-circulation settings that the heat pump cannot report. Each later qualifying
-normal period lasts at least eight hours with a stable final six-hour plateau.
-Only nonoverlapping plateau time counts: at least 24 hours of evidence spanning
-48 hours must support a consistent candidate temperature before adaptation starts.
-Normal periods may be separated by controller preheat, reduction or recovery;
-those phases hold the reference fixed and add no evidence. The reference moves
-at most 0.2°C per newly evidenced 24 hours, with the first catch-up adjustment
-capped at 0.2°C. Polling the same data again cannot move it. Missing or invalid
-observations, away periods and meaningful fireplace influence clear pending
-adaptation evidence; a 48-hour gap between qualifying periods also expires it.
-Passive summer warmth and ongoing cooling cannot establish a new reference.
+Controller preheat, reduction and recovery, Away and material logged fireplace
+influence do not update the reference. Two Normal hours after an intervention let
+its effects settle. Persistent household thermostat changes can move the reference
+both down and up. Original report support and last adjustment have separate clocks;
+repeated polling earns no learning. Missing-room estimates remain control-only and
+never train the model/reference or fill history. Initial provisional references
+cap automatic drop at 0.5°C, independently of equipment and model readiness.
+See the [reference policy](temperature-sensors.md#normal-temperature-reference).
 
 ## Model reconstruction
 
@@ -268,8 +262,8 @@ remain outside the space-heating benefit claim. The future
 supply estimate adds 3 °C per degree of ROOM increase to the current supply. This
 is a fixed planning assumption, not a learned heating curve or a native forecast;
 projected temperatures outside the provisional source-map range reject preheat.
-Occupied-room maximum drop and rise both default to **1.5 °C** around their normal
-references; savings preference never changes these hard limits.
+Occupied indoor-average maximum drop and rise both default to **1.5 °C** around
+the single normal reference; savings preference never changes these hard limits.
 An automatic cycle keeps its original treatment identity through reduction and
 recovery, separately from actual valve mode after the override closes.
 
@@ -295,18 +289,16 @@ Home's **Heating strategy & comfort** separates the decision policy from the
 **Home heat model**. **Savings strategy** offers **Gentle**, **Balanced** (default)
 and **More savings**. These choices change the economic hurdle and continuous
 comfort cost, including duration within an allowed band. They do not relax hard
-occupied-room upper/lower bounds. The planner checks each participating room
-conservatively; a warm floor downstairs does not prove that an occupied bedroom
-can coast safely. This is a conservative room-offset proxy, not an identified
-zonal model: each room follows the projected change in the house average while
-retaining its current offset, plus its recent trend for at most the first hour.
-The common temperature allowance applies to each room, and individual live
-readings also guard active control. Configuration changes use **Apply
+occupied-average upper/lower bounds. The planner uses the same weighted indoor
+average for prediction, limits and discomfort in every path, including bounded
+trials and recovery. Individual rooms have no automatic veto. An admitted
+one-room estimate adds its uncertainty to control and forecasts, and cannot start
+a new learning trial. Configuration changes use **Apply
 configuration**. No strategy promises an annual savings percentage.
 
 A new cycle's conservative benefit must exceed the strategy's minimum of 50,
-30 or 10 cents respectively, plus 30, 17.5 or 5 cents per weighted hot/cold
-°C²-hour, 2 cents per extra active hour and 2 cents to start. Continuation excludes
+30 or 10 cents respectively, plus 30, 17.5 or 5 cents per hot/cold
+°C²-hour of the weighted indoor average, 2 cents per extra active hour and 2 cents to start. Continuation excludes
 the already committed start hurdle. Among admitted choices, the mildest retaining
 at least 60%, 80% or 100% of the best positive conservative benefit is selected.
 Gentle can still start a sufficiently worthwhile cycle. Use **Paused** to suspend economic control. Garage uses permanent manual targets instead; see [Garage heating](garage.md).
@@ -345,7 +337,7 @@ treatment and one selected-slab state for learning.
 With little evidence, automatic action requires enabled learning trials, usable
 recorded temperature/equipment evidence and remaining allowance. Initial trials
 last at most half an hour. A no-heat cooling scenario and rated-power recovery
-scenario must fit comfort and cost allowances. Preheat trials also test full compressor and permitted rated AUX heat during charging, followed by native demand until the delayed room peak is covered. Individual warm-room limits and uncertain valve states can block a trial even when its cooling limit passes. These are stress estimates, not
+scenario must fit comfort and cost allowances. Preheat trials also test full compressor and permitted rated AUX heat during charging, followed by native demand until the delayed room peak is covered. Weighted-average upper limits and uncertain valve states can block a trial even when its cooling limit passes. These are stress estimates, not
 guarantees that fallback costs cannot exceed the allowance. Disabled trials cannot
 be bypassed by an unvalidated economic action. Trials pause for six hours after
 completion or 24 hours after an incomplete attempt; new automatic cycles also wait
@@ -361,9 +353,8 @@ The stop register may govern AUX operation only; this is not an established 50 �
 compressor cutoff. The hour is an initial engineering choice, not a learned
 recovery duration.
 
-Cold-room protection releases AUX permission early without restoring the DHW
-settings or restarting circulation. It considers the aggregate and individual
-participating rooms, using `recovery_comfort_margin_c` (default 0.5 °C) and a
+Cold-average protection releases AUX permission early without restoring the DHW
+settings or restarting circulation. It considers the weighted indoor average and its uncertainty, using `recovery_comfort_margin_c` (default 0.5 °C) and a
 30-minute falling-trend projection where available. The AUX fallback remains
 latched for the cycle. Native AUX permission applies to the pump as a whole,
 not exclusively to space heating. `recovery_compressor_only: false` disables

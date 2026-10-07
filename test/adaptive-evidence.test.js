@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { SimulatedPlant } from '../src/app/simulator.js';
-import { inferComfortReference } from '../src/control/learning.js';
+import { updateComfortLearning } from '../src/control/learning.js';
 import { initialAdaptiveModel, restoreAdaptiveCheckpoint, updateAdaptiveLearning, updateAdaptiveLearningBatch, updateAdaptiveEpisode,
   evaluateThermalModel, fitAdaptiveModel, predictThermalStep, predictEquipmentDuty,
   thermalEvidenceReady, actionEvidenceReady, thermalUncertaintyC, fitEquipmentResponse } from '../src/control/adaptive-learning.js';
@@ -247,14 +247,18 @@ test('known mixed input segments remain useful and are applied in order using at
   assert.ok(Math.abs(mixed.state.reserveC - expected.reserveC) < 1e-9);
 });
 
-test('fractional runtime cannot establish a warm-weather baseline by counting whole active windows', () => {
+test('low fractional routed runtime supports heating demand without inflating its runtime', () => {
   const samples = Array.from({ length: 97 }, (_, i) => row(i, { windowStart: start + (i - 1) * HOUR / 4,
     indoorC: 21.6, outdoorC: 18, thermalCompressorDuty: 0.02,
     heating: { verified: true, compressorActive: true, compressorDuty: 0.02, route: 'space-heating', quality: [] } }));
-  assert.equal(inferComfortReference(null, samples, { now: start + 24 * HOUR }), null);
-  const sufficient = samples.map(sample => ({ ...sample, thermalCompressorDuty: 0.2 }));
-  const result = inferComfortReference(null, sufficient, { now: start + 24 * HOUR });
-  assert.ok(Math.abs(result.heatingEvidence.spaceHeatingHours - 4.8) < 1e-9);
+  const state = samples.reduce((previous, sample) => updateComfortLearning(previous, sample), null);
+  assert.equal(state.reference.targetC, 21.6);
+  assert.equal(state.reference.heatingEvidence.compressorDuty, 0.02);
+  assert.equal(state.reference.evidenceHours, 24);
+  const unavailable = samples.map(sample => ({ ...sample, thermalCompressorDuty: null,
+    heating: { verified: false, compressorActive: true, route: 'unknown' } }))
+    .reduce((previous, sample) => updateComfortLearning(previous, sample), null);
+  assert.equal(unavailable.reference, null);
 });
 
 test('changed nominal power overrides saved values while unchanged configuration preserves measured calibration', () => {

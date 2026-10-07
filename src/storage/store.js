@@ -8,6 +8,7 @@ import { recordedEnergyGroups } from './energy-history.js';
 import { assertCurrentChargingSessionCheck } from '../app/charging-session-checks.js';
 import { createDatabaseBackup } from './backup.js';
 import { cycleAssessmentExcluded } from './cycle-assessment.js';
+import { LEARNING_ALGORITHM } from '../domain/learning-contract.js';
 export { SCHEMA_VERSION } from './schema.js';
 const MAX_LIMIT = 5000;
 
@@ -25,6 +26,8 @@ export function validateCurrentDatabase(db) {
     { code: 'database_schema_mismatch', actualSchema: version, requiredSchema: SCHEMA_VERSION });
   if (JSON.stringify(schemaObjects(db)) !== expectedStructure) throw Object.assign(new Error('Malformed current database schema; use an intact same-version backup or a new empty database. The existing database was not changed.'),
     { code: 'database_schema_invalid', actualSchema: version, requiredSchema: SCHEMA_VERSION });
+  if (db.prepare('SELECT 1 FROM learning_journal_entries WHERE algorithm_version<>? LIMIT 1').get(LEARNING_ALGORITHM))
+    throw new Error('Unsupported Home learning journal algorithm; use a new empty database or an intact current-version backup. The existing database was not changed.');
   if (db.prepare('PRAGMA foreign_key_check').get()) throw new Error('Database contains dangling references; restore an intact same-version backup.');
   // Removed charging-check formats are rejected before any writable setup;
   // opening a database never strips or translates its historical evidence.
@@ -160,7 +163,8 @@ export class Store {
 
   appendLearningJournal(input, { kind, at, algorithmVersion, configVersion = null, forecastVersion = null, payload, key }) {
     if (!['sample', 'episode', 'context'].includes(kind)) throw new TypeError('Invalid learning journal kind');
-    label(input, 'input'); instant(at, 'journal timestamp'); label(algorithmVersion, 'algorithm version');
+    label(input, 'input'); instant(at, 'journal timestamp');
+    if (algorithmVersion !== LEARNING_ALGORITHM) throw new TypeError('Unsupported Home learning journal algorithm; start fresh.');
     key ??= `${kind}:${kind === 'episode' ? payload.id ?? payload.episodeId ?? at : at}`;
     label(key, 'journal key');
     const encoded = json(payload), config = configVersion === null ? null : json(configVersion);
@@ -179,14 +183,18 @@ export class Store {
   }
 
   learningJournal({ input, after = 0, limit = 256, algorithmVersion } = {}) {
-    const values = [label(input,'input'),integer(after,'after')];
-    if (algorithmVersion !== undefined) values.push(label(algorithmVersion,'algorithm version'));
-    values.push(limitValue(limit));
-    return this.db.prepare(`SELECT * FROM learning_journal WHERE input=? AND id>?${algorithmVersion === undefined ? '' : ' AND algorithm_version=?'} ORDER BY id LIMIT ?`)
-      .all(...values).map(row => ({ id:row.id,key:row.key,
-        kind:row.kind,at:row.at,algorithmVersion:row.algorithm_version,
-        configVersion:row.config_version === null ? null : JSON.parse(row.config_version),
-        forecastVersion:row.forecast_version === null ? null : JSON.parse(row.forecast_version),payload:JSON.parse(row.payload) }));
+    if (algorithmVersion !== undefined && algorithmVersion !== LEARNING_ALGORITHM)
+      throw new TypeError('Unsupported Home learning journal algorithm; start fresh.');
+    // Do not filter unsupported rows out of replay. The database opener checks
+    // every stored epoch once; each bounded read also rejects unexpected rows.
+    const rows = this.db.prepare('SELECT * FROM learning_journal WHERE input=? AND id>? ORDER BY id LIMIT ?')
+      .all(label(input, 'input'), integer(after, 'after'), limitValue(limit));
+    if (rows.some(row => row.algorithm_version !== LEARNING_ALGORITHM))
+      throw new TypeError('Unsupported Home learning journal algorithm; start fresh.');
+    return rows.map(row => ({ id: row.id, key: row.key,
+      kind: row.kind, at: row.at, algorithmVersion: row.algorithm_version,
+      configVersion: row.config_version === null ? null : JSON.parse(row.config_version),
+      forecastVersion: row.forecast_version === null ? null : JSON.parse(row.forecast_version), payload: JSON.parse(row.payload) }));
   }
 
   energyAudit({ source = 'easee', device, signal, sourceTime, receivedAt, value, quality = [], comparison = null }) {

@@ -2,15 +2,15 @@ import { CONTROL_DEFAULTS } from '../app/config.js';
 import { HEATING_STRATEGIES } from '../domain/heating-strategy.js';
 import { initialAdaptiveModel } from './adaptive-learning.js';
 import { chooseCycle, evaluateCycle, economicAdmission, forecastIntervals, learningReadiness,
-  phaseAt, validatedReductionHours, cycleForecastCovered } from './planner.js';
+  phaseAt, validatedReductionHours, cycleForecastCovered, effectiveComfortDropC } from './planner.js';
 
 const HOUR = 3_600_000;
 const finite = Number.isFinite;
 const LIMITS = Object.freeze({
   maxReductionHours: { label: 'Maximum reduction', min: .25, max: 12, step: .25, unit: 'h' },
   maxAwayReductionHours: { label: 'Maximum reduction while away', min: .25, max: 24, step: .25, unit: 'h' },
-  maxDropC: { label: 'Allowed room temperature drop', min: 0, max: 2, step: .25, unit: '°C' },
-  maxRiseC: { label: 'Allowed room temperature rise', min: .25, max: 2, step: .25, unit: '°C' },
+  maxDropC: { label: 'Allowed average temperature drop', min: 0, max: 2, step: .25, unit: '°C' },
+  maxRiseC: { label: 'Allowed average temperature rise', min: .25, max: 2, step: .25, unit: '°C' },
   maxPreheatHours: { label: 'Maximum preheat', min: .25, max: 6, step: .25, unit: 'h' },
   preheatRoomBoostC: { label: 'Preheat ROOM increase', min: 1, max: 5, step: 1, unit: '°C', integer: true },
 });
@@ -75,21 +75,16 @@ function evaluationArgs(input) {
 function outcomes(prediction, args) {
   if (!prediction || !args) return null;
   const rows = prediction.trajectory;
-  const rooms = args.equipment.rooms?.length ? args.equipment.rooms
-    : [{ id: 'aggregate', label: 'Average indoor', value: args.initialState.indoorC, targetC: args.targetC }];
-  let coldestRoom = null, warmestRoom = null, maxRoomDropC = 0, maxRoomRiseC = 0;
-  for (const row of rows) for (const room of rooms) {
-    if (room.stale || !finite(room.value)) continue;
-    const valueC = room.value + row.indoorC - args.initialState.indoorC
-      + (room.trendCPerHour ?? 0) * Math.min((row.at - args.intervals[0].start) / HOUR, 1);
-    const referenceC = room.targetC ?? args.targetC;
-    const common = { id: room.id, label: room.label ?? room.id, at: row.at, valueC, referenceC };
-    if (!coldestRoom || valueC < coldestRoom.valueC)
-      coldestRoom = { ...common, conservativeC: valueC - row.uncertaintyC };
-    if (!warmestRoom || valueC > warmestRoom.valueC)
-      warmestRoom = { ...common, conservativeC: valueC + row.uncertaintyC };
-    maxRoomDropC = Math.max(maxRoomDropC, referenceC - valueC);
-    maxRoomRiseC = Math.max(maxRoomRiseC, valueC - referenceC);
+  let coldestIndoor = null, warmestIndoor = null, maxIndoorDropC = 0, maxIndoorRiseC = 0;
+  for (const row of rows) {
+    const valueC = row.indoorC, referenceC = args.targetC;
+    const common = { label: 'Weighted indoor average', at: row.at, valueC, referenceC };
+    if (!coldestIndoor || valueC < coldestIndoor.valueC)
+      coldestIndoor = { ...common, conservativeC: finite(row.uncertaintyC) ? valueC - row.uncertaintyC : null };
+    if (!warmestIndoor || valueC > warmestIndoor.valueC)
+      warmestIndoor = { ...common, conservativeC: finite(row.uncertaintyC) ? valueC + row.uncertaintyC : null };
+    maxIndoorDropC = Math.max(maxIndoorDropC, referenceC - valueC);
+    maxIndoorRiseC = Math.max(maxIndoorRiseC, valueC - referenceC);
   }
   return { costCents: prediction.costCents, electricityKwh: prediction.electricityKwh,
     auxiliaryKwh: prediction.auxiliaryKwh, recoveryCostCents: prediction.recoveryCostCents,
@@ -98,8 +93,9 @@ function outcomes(prediction, args) {
     recoveredAt: prediction.recoveredAt, completeRecoveryPredicted: prediction.completeRecoveryPredicted,
     minIndoorC: Math.min(args.initialState.indoorC, ...rows.map(row => row.indoorC)),
     maxIndoorC: Math.max(args.initialState.indoorC, ...rows.map(row => row.indoorC)),
-    maxRoomDropC: coldestRoom ? maxRoomDropC : null, maxRoomRiseC: warmestRoom ? maxRoomRiseC : null,
-    coldestRoom, warmestRoom, uncertaintyC: rows.length ? Math.max(...rows.map(row => row.uncertaintyC)) : null,
+    maxIndoorDropC: coldestIndoor ? maxIndoorDropC : null, maxIndoorRiseC: warmestIndoor ? maxIndoorRiseC : null,
+    coldestIndoor, warmestIndoor,
+    uncertaintyC: rows.length && rows.every(row => finite(row.uncertaintyC)) ? Math.max(...rows.map(row => row.uncertaintyC)) : null,
     comfortSafe: !prediction.severe, violations: prediction.violations ?? [],
     basis: prediction.basis, energyIncludesTail: false, costIncludesTail: true };
 }
@@ -133,8 +129,8 @@ function compare(current, alternative) {
   const left = current.outcomes, right = alternative.outcomes;
   return { additionalBenefitCents: left && right ? left.costCents - right.costCents : null,
     additionalElectricityKwh: left && right ? right.electricityKwh - left.electricityKwh : null,
-    additionalRoomDropC: finite(left?.maxRoomDropC) && finite(right?.maxRoomDropC) ? right.maxRoomDropC - left.maxRoomDropC : null,
-    additionalRoomRiseC: finite(left?.maxRoomRiseC) && finite(right?.maxRoomRiseC) ? right.maxRoomRiseC - left.maxRoomRiseC : null,
+    additionalIndoorDropC: finite(left?.maxIndoorDropC) && finite(right?.maxIndoorDropC) ? right.maxIndoorDropC - left.maxIndoorDropC : null,
+    additionalIndoorRiseC: finite(left?.maxIndoorRiseC) && finite(right?.maxIndoorRiseC) ? right.maxIndoorRiseC - left.maxIndoorRiseC : null,
     changed: JSON.stringify(current.schedule) !== JSON.stringify(alternative.schedule),
     basis: 'Estimated space-heating difference on identical inputs, including priced remaining heat debt; hot-water service is not modeled.' };
 }
@@ -149,14 +145,14 @@ function constraints(input, decision, evidence, selected) {
       status: duration >= p[durationKey] ? 'reached' : d ? 'available' : 'unknown',
       detail: 'A reached ceiling alone does not show that a longer reduction would be worthwhile.' },
     ...['maxDropC', 'maxRiseC'].map(key => ({ key, label: LIMITS[key].label, kind: 'policy', value: p[key], unit: '°C',
-      status: violations.some(row => row.code === (key === 'maxDropC' ? 'room-drop-limit' : 'room-rise-limit')) ? 'blocking' : d ? 'available' : 'unknown',
-      detail: away ? 'Occupied-room limits apply again at the scheduled return; away does not establish equal heating service.'
-        : 'Checked for each room against its normal reference, including forecast uncertainty. Rejections concern evaluated alternatives.',
-      diagnostics: violations.filter(row => row.code === (key === 'maxDropC' ? 'room-drop-limit' : 'room-rise-limit')) })),
+      status: violations.some(row => row.code === (key === 'maxDropC' ? 'indoor-drop-limit' : 'indoor-rise-limit')) ? 'blocking' : d ? 'available' : 'unknown',
+      detail: away ? 'Occupied average limits apply again at the scheduled return; away does not establish equal heating service.'
+        : 'Checked against the weighted indoor normal reference, including model and sensor-estimate uncertainty. Rejections concern evaluated alternatives.',
+      diagnostics: violations.filter(row => row.code === (key === 'maxDropC' ? 'indoor-drop-limit' : 'indoor-rise-limit')) })),
     { key: 'maxPreheatHours', label: 'Configured preheat ceiling', kind: 'policy', value: p.maxPreheatHours, unit: 'h',
       status: selected.schedule && (selected.schedule.preheatEnd - selected.schedule.preheatStart) / HOUR >= p.maxPreheatHours
         ? 'reached' : selected.search?.preheatExpansions > 0 ? 'available' : 'unknown',
-      detail: 'The bounded preheat search considers permitted durations through this ceiling; treatment evidence and conservative warm-room checks still apply.' },
+      detail: 'The bounded preheat search considers permitted durations through this ceiling; treatment evidence and conservative average-temperature checks still apply.' },
     { key: 'validatedReductionHours', label: 'Demonstrated reduction duration', kind: 'evidence', value: evidence.validatedReductionHours, unit: 'h',
       status: !evidence.actionValidated || evidence.validatedReductionHours < p[durationKey] ? 'blocking' : 'available',
       detail: 'Normal economic planning needs thermal, equipment-response and frozen advance-forecast evidence for the duration and treatment. Simulations add no evidence.' },
@@ -169,6 +165,10 @@ function constraints(input, decision, evidence, selected) {
       detail: d?.economicsAssessed ? `${d.economicsRejected} of ${d.economicsAssessed} shortlisted alternatives failed paired stress, benefit or comfort hurdles.`
         : 'No normally eligible shortlist was assessed. Lower electricity purchase cost alone is insufficient.' },
   ];
+  if (input.equipment?.comfortReferenceProvisional === true) result.push({ key: 'provisionalReference',
+    label: 'Provisional normal temperature', kind: 'safety', status: 'limiting',
+    value: effectiveComfortDropC(p.maxDropC, input.equipment), unit: '°C',
+    detail: 'Until enough normal heating evidence is available, the occupied average drop is capped at 0.5 °C.' });
   if (!input.equipment?.h66Available) result.push({ key: 'unobservedEquipment', label: 'Native equipment observation',
     kind: 'safety', status: 'blocking', value: input.config.maxUnobservedReductionHours, unit: 'h',
     detail: 'Without native readback the separate conservative duration ceiling remains in force; this explorer cannot relax it.' });
@@ -297,7 +297,7 @@ export function exploreHeatingPlan(input, overrides = {}, options = {}) {
       'All figures are estimates on a frozen snapshot. Simulations do not operate equipment, change configuration or teach the model.',
       'Space-heating cost includes preheat, reduction, recovery and priced remaining heat debt. Electricity totals exclude that unobserved tail. Hot-water service and whole-house savings are not established.',
       'Temperature bounds and adverse physical scenarios are engineering uncertainty allowances, not calibrated statistical confidence intervals.',
-      'Each room retains its observed offset and recent trend; this is not an independently learned room model.',
+      'Comfort uses the configured weighted indoor average; individual room temperatures do not impose separate limits.',
       'Bounded candidate search identifies evaluated alternatives, not a mathematical global optimum.',
     ],
   };

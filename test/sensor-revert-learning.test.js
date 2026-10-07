@@ -7,7 +7,7 @@ import { sensorBoundaries, sensorLearningContext } from '../src/app/sensor-input
 import { originalSensorSample } from '../src/app/sensor-samples.js';
 import { applyLearningRecord, committedLearningSample, recordLearningContext,
   replayLearningJournal, LEARNING_ALGORITHM} from '../src/app/committed-learning.js';
-import { appendLearningRecord } from './helpers/home-learning-fixture.js';
+import { appendLearningRecord, currentComfortReference } from './helpers/home-learning-fixture.js';
 
 const start = Date.parse('2026-09-13T00:00:00Z'), M = 60_000, W = 15 * M;
 const config = { indoorSensorWeights: { indoor_temperature: 1, bedroom_temperature: 1 } };
@@ -19,10 +19,7 @@ function setup(t) {
   seed.model.energy.recoveryMultiplier = 1.12;
   seed.model.energy.episodes = 9;
   seed.baselineC = 21;
-  const reference = targetC => ({ version: 3, targetC, establishedAt: new Date(start - W).toISOString(),
-    updatedAt: new Date(start - W).toISOString(), heatingEvidence: { kind: 'verified-space-heating-activity' } });
-  seed.comfortReference = reference(21);
-  seed.sensorComfortReferences = { indoor_temperature: reference(22), bedroom_temperature: reference(20) };
+  seed.comfortReference = currentComfortReference(21, start - W);
   seed.state = { indoorC: 21, reserveC: 22, observedAt: new Date(start - W).toISOString() };
   recordLearningContext(store, 'mqtt', { phase: 'normal', regime: 'occupied', roomBoostC: 0, targetC: 21 }, start, { config, seed });
   return store;
@@ -59,8 +56,8 @@ for (const signal of ['bedroom_temperature', 'outdoor_temperature']) test(`${sig
   assert.equal(resetModel.baselineC, 21);
   assert.equal(resetModel.model.energy.episodes, 9);
   assert.equal(resetModel.samples.length, 5);
-  assert.equal(resetModel.sensorComfortReferences.indoor_temperature.targetC, 22);
-  assert.equal(resetModel.sensorComfortReferences.bedroom_temperature.targetC, 20);
+  assert.equal(resetModel.comfortReference.targetC, 21);
+  assert.equal(Object.hasOwn(resetModel, 'sensorComfortReferences'), false);
   const before = structuredClone(store.learningJournal({ input: 'mqtt' }));
   const raw = structuredClone(store.observations());
   const excluded = before.filter(row => row.kind === 'sample' && [start + 2 * W, start + 3 * W].includes(row.at));
@@ -75,7 +72,7 @@ for (const signal of ['bedroom_temperature', 'outdoor_temperature']) test(`${sig
   for (const entry of before) if (!entry.payload.value.sensorChange)
     expected = applyLearningRecord(expected, { ...entry, payload: { ...entry.payload,
       value: entry.kind === 'sample' ? originalSensorSample(entry.payload.value) : entry.payload.value } });
-  for (const key of ['model', 'state', 'samples', 'baselineC', 'comfortReference', 'sensorComfortReferences', 'sinceFit'])
+  for (const key of ['model', 'state', 'samples', 'baselineC', 'comfortReference', 'comfortLearning', 'sinceFit'])
     assert.deepEqual(corrected[key], expected[key], key);
   assert.equal(corrected.samples.length, 5);
   assert.equal(corrected.baselineC, 21);
@@ -122,7 +119,7 @@ test('undo restores valid periodic reports but never fills a genuine reporting g
   assert.equal(cp.samples.at(-1).indoorSensors.bedroom_temperature.reportCoverageComplete, false);
 });
 
-test('correction retries are idempotent, source-scoped and cannot reinterpret an archived algorithm', t => {
+test('correction retries are idempotent and source-scoped, and unsupported algorithms cannot enter the journal', t => {
   const store = setup(t), reset = change(store, start + W);
   const first = revert(store, reset.id), same = revert(store, reset.id, start + 9 * W);
   const secondRequest = revert(store, reset.id, start + 9 * W, 'invented-another-request');
@@ -135,12 +132,13 @@ test('correction retries are idempotent, source-scoped and cannot reinterpret an
   assert.throws(() => revert(store, another.id), error => error.statusCode === 409);
   for (const payload of [{ id: reset.id, requestId: 'invented-private', notes: 'invented-note' }, { id: -1, requestId: 'invented-invalid' }])
     assert.throws(() => revertSensorChange(store, 'mqtt', payload, start + 10 * W), TypeError);
-  const archived = store.appendLearningJournal('mqtt', { kind: 'context', at: start - W, key: 'invented-archived-change',
-    algorithmVersion: 'committed-house-v8-report-coverage', payload: { configuration: config,
-      value: { sensorChange: { signal: 'bedroom_temperature', reason: 'replacement', requestId: 'invented-old-change' } } } });
-  assert.throws(() => revert(store, archived, start + 10 * W, 'invented-old-revert'), error => error.statusCode === 409);
+  const before = store.learningJournal({ input: 'mqtt' });
+  assert.throws(() => store.appendLearningJournal('mqtt', { kind: 'context', at: start - W, key: 'invented-foreign-change',
+    algorithmVersion: 'invented-unsupported-algorithm', payload: { configuration: config,
+      value: { sensorChange: { signal: 'bedroom_temperature', reason: 'replacement', requestId: 'invented-old-change' } } } }),
+  /Unsupported Home learning journal algorithm/);
+  assert.deepEqual(store.learningJournal({ input: 'mqtt' }), before);
   const view = sensorChangesView(store, 'mqtt', { now: start + 10 * W, config });
   assert.equal(view.events.find(row => row.id === reset.id).revertedAt, first.revertedAt);
-  assert.equal(view.events.find(row => row.id === archived).canRevert, false);
-  assert.equal(LEARNING_ALGORITHM, 'committed-house-v14-reversible-recovery');
+  assert.equal(LEARNING_ALGORITHM, 'committed-house-v15-continuous-comfort');
 });

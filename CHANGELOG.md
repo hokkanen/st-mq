@@ -6,6 +6,20 @@ Versions follow Semantic Versioning. `-dev.N` denotes a development prerelease.
 
 ## Unreleased
 
+- Home initializes an approximate normal-temperature reference after one supported
+  hour of heating demand, then refines it gradually through ordinary Normal
+  operation. Short reporting gaps pause learning without erasing progress.
+- Home comfort uses one configurable indoor average. Automatic membership uses
+  configured rooms with Bedroom weighted twice as much as Upstairs or Downstairs:
+  50% / 25% / 25% with all three configured. These weights stay fixed during sensor
+  outages. Individual room vetoes and rare stable-plateau qualification are removed;
+  model and equipment readiness remain independent.
+- A bounded, explicitly labelled estimate can bridge one unavailable room from
+  the movement of the other two. Extra uncertainty constrains control; estimated
+  temperatures never train the model or fill measured history. These changed
+  learning semantics use SQLite schema 23 and require a deliberate fresh development
+  database. Incompatible databases are rejected before mutation; supported v0.7.5
+  CSV files may be reimported. No installation database is reset automatically.
 - Charger 2 keeps recording available current while a device command awaits
   confirmation. Acknowledged current-setting changes can recover from a trailing
   device clock using ordered native readings and fresh readback, without retrying

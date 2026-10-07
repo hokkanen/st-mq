@@ -1752,11 +1752,6 @@ button.garage-door-action:disabled { opacity: 1; cursor: default; }
 @container (min-width: 680px) {
   .heating-strategy-options { grid-template-columns: repeat(3, minmax(0, 1fr)); }
 }
-.home-room-reference-list { margin: 8px 0 16px; }
-.home-room-reference-list > div { padding: 10px 0; border-top: 1px solid var(--border); font-size: 11px; line-height: 1.6; }
-.home-room-reference-list dt { font-weight: 550; }
-.home-room-reference-list dd { margin: 3px 0 0; color: var(--muted); }
-.home-room-reference-list strong { color: var(--text); font-weight: 500; font-variant-numeric: tabular-nums; }
 .zone-content .heating-mode-buttons { margin: 12px 0 0; }
 .heating-mode-buttons .heating-button-state { flex: none; color: currentColor; font-size: 12px; line-height: 1; }
 .heating-mode-buttons .heating-button-state:empty { display: none; }

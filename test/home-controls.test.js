@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { activeRates, finnishDateTime, homePolicyValues, homeRoomReferences, priceControlState, rateRows, temporaryValues } from '../chart/home-controls.js';
+import { activeRates, finnishDateTime, homePolicyValues, homeIndoorEstimate, homeReferenceSummary, priceControlState, rateRows, temporaryValues } from '../chart/home-controls.js';
 
 test('date controls display Finnish wall time across winter, summer and midnight', () => {
   const original = process.env.TZ;
@@ -99,18 +99,24 @@ test('Home decision summaries distinguish trial budgets, configured ceilings and
   assert.equal(homePolicyValues(trial).trialBudget, 'Learning trials are disabled in configuration.');
 });
 
-test('Room preferences distinguish learned and overall references, occupied bounds and unknown values', () => {
-  const status = { comfortRooms: [
-    { id: 'bedroom', label: 'Bedroom', referenceC: 20, referenceSource: 'room', minC: 18.5, maxC: 21.5, limitsApply: true },
-    { id: 'office', label: 'Office', referenceC: 21, referenceSource: 'overall', minC: 19.5, maxC: 22.5, limitsApply: false },
-    { id: 'living', label: 'Living room', referenceC: null, referenceSource: 'unavailable', minC: null, maxC: null, limitsApply: true },
-  ] };
-  const before = structuredClone(status), rows = homeRoomReferences(status);
-  assert.deepEqual(rows.map(row => [row.reference, row.basis, row.limits, row.inactive]), [
-    ['20 °C', 'Learned room reference', '18.5 °C – 21.5 °C', false],
-    ['21 °C', 'Overall reference', '19.5 °C – 22.5 °C', true],
-    ['Unavailable', 'Reference not established', 'Limits unavailable', false],
-  ]);
-  assert.deepEqual(homeRoomReferences({}), []);
+test('partly estimated indoor display never changes the measured average or room readings', () => {
+  const status = { observations: { indoor: { value: null, stale: true }, bedroom: { value: 19, observedAt: 100 },
+    indoorControl: { value: 20.4, estimated: true, stale: false, estimatedSensor: 'bedroom_temperature', uncertaintyC: 0.2, anchorAt: 100 } } };
+  const before = structuredClone(status);
+  const display = homeIndoorEstimate(status, { formatTime: () => '10:00' });
+  assert.equal(display.label, '20.4 °C');
+  assert.equal(display.note, 'Partly estimated · Bedroom');
+  assert.match(display.detail, /±0.20 °C.*10:00.*learning and recorded measured temperatures retain the gap/);
   assert.deepEqual(status, before);
+  assert.equal(homeIndoorEstimate({}), null);
+  assert.equal(homeIndoorEstimate({ observations: { indoorControl: { value: 20, estimated: false } } }), null);
+  assert.equal(homeIndoorEstimate({ observations: { indoorControl: { value: 20, estimated: true, stale: true } } }), null);
+});
+
+test('reference summary distinguishes bootstrap, weather-inferred evidence and verified references', () => {
+  const status = reference => ({ learning: { adaptive: { comfortReference: reference } } });
+  assert.equal(homeReferenceSummary(status({ provisional: true, confidence: 'observed-heating-baseline' })), 'Provisional normal temperature');
+  assert.equal(homeReferenceSummary(status({ provisional: false, confidence: 'provisional-heating-demand-baseline' })), 'Provisional normal temperature');
+  assert.equal(homeReferenceSummary(status({ provisional: false, confidence: 'observed-heating-baseline' })), 'Learned normal temperature');
+  assert.equal(homeReferenceSummary({ learning: { adaptive: { comfortLearning: { status: 'heating-demand-unavailable' } } } }), 'Waiting for heating demand');
 });

@@ -2,6 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { Store } from '../src/storage/store.js';
 import { Recorder } from '../src/storage/recorder.js';
+import { LEARNING_ALGORITHM } from '../src/app/committed-learning.js';
 
 const MINUTE=60_000,HOUR=60*MINUTE;
 const parameters=(recorder,now)=>{const status=recorder.status(now);return [...status.parameters,...status.exactParameters];};
@@ -437,10 +438,10 @@ test('property meter audit compares only complete matching intervals and never c
 
 test('learning journal replays samples and episodes in commit order with immutable versioned lineage',t=>{
   const {store}=fixture(t);
-  const event={kind:'sample',at:1000,algorithmVersion:'synthetic-v1',configVersion:'settings-a',forecastVersion:7,payload:{timestamp:1000,indoorC:20}};
+  const event={kind:'sample',at:1000,algorithmVersion:LEARNING_ALGORITHM,configVersion:'settings-a',forecastVersion:7,payload:{timestamp:1000,indoorC:20}};
   const id=store.appendLearningJournal('synthetic',event);
   assert.equal(store.appendLearningJournal('synthetic',event),id);
-  store.appendLearningJournal('synthetic',{kind:'episode',at:2000,algorithmVersion:'synthetic-v1',payload:{id:'synthetic-episode'}});
+  store.appendLearningJournal('synthetic',{kind:'episode',at:2000,algorithmVersion:LEARNING_ALGORITHM,payload:{id:'synthetic-episode'}});
   assert.deepEqual(store.learningJournal({input:'synthetic'}).map(e=>e.kind),['sample','episode']);
   assert.equal(store.learningJournal({input:'synthetic',after:id})[0].at,2000);
   assert.throws(()=>store.appendLearningJournal('synthetic',{...event,payload:{timestamp:1000,indoorC:21}}),/Conflicting/);

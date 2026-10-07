@@ -87,14 +87,12 @@ test('donor learning cannot bypass conflicting master source measurements', asyn
   assert.equal(f.master.learningJournal({ input: 'mqtt' }).length, 1);
 });
 
-test('malformed donor records are skipped and unsupported learning leaves an explicit gap', async t => {
+test('malformed donor observations are skipped without creating learning evidence', async t => {
   const f = fixture(t), donor = await f.donor();
   observation(donor, start);
   donor.db.prepare("UPDATE observations SET quality='broken-json' WHERE id=1").run();
-  donor.appendLearningJournal('mqtt', { key: 'unsupported', kind: 'sample', at: start + W,
-    algorithmVersion: 'invented-old-algorithm', configVersion: learningVersion({}), payload: { value: { indoorC: 20 }, configuration: {}, seed: null } });
   const result = await recover(f, await f.snapshot(donor));
-  assert.equal(result.report.counts.skipped, 2); assert.equal(result.report.model.unsupported, 1);
+  assert.equal(result.report.counts.skipped, 1); assert.equal(result.report.model.unsupported, 0);
   assert.equal(f.master.observations().length, 0);
   assert.equal(f.master.learningJournal({ input: 'mqtt' }).length, 0);
 });

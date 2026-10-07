@@ -1,4 +1,4 @@
-import { appendLearningRecord } from './helpers/home-learning-fixture.js';
+import { appendLearningRecord, currentComfortReference } from './helpers/home-learning-fixture.js';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { Store } from '../src/storage/store.js';
@@ -123,7 +123,7 @@ test('a restarted interrupted live cycle is incomplete while relay restoration r
 
 test('history baseline arriving after startup is adopted without replacing live temperature records',async t=>{
   const r=setup(t,{automationEnabled: false});r.engine.tick();const cursor=r.engine.checkpoint.cursor;
-  const history=restoreAdaptiveCheckpoint(null);history.algorithmVersion=LEARNING_ALGORITHM;history.baselineC=21.4;history.comfortReference={targetC:21.4};
+  const history=restoreAdaptiveCheckpoint(null);history.algorithmVersion=LEARNING_ALGORITHM;history.baselineC=21.4;history.comfortReference=currentComfortReference(21.4,r.now);
   r.store.setState('adaptive:history',history);r.engine.tick();
   assert.equal(r.engine.checkpoint.baselineC,21.4);assert.equal(r.engine.checkpoint.cursor,cursor);
   assert.equal(r.store.learningJournal({input:'mqtt'}).at(-1).kind,'context');
@@ -142,13 +142,17 @@ test('corrupt checkpoint replays persisted samples and corrupt background JSON c
   assert.equal(r.engine.checkpoint.cursor,valid.cursor);
 });
 
-test('manual ROOM change resets the indoor reference while preserving learned physics and excluding old history',async t=>{
+test('manual ROOM change preserves the aggregate reference and learned physics while invalidating action evidence',async t=>{
   const r=setup(t,{automationEnabled: false});const native=r.native();r.engine.tick();
-  r.engine.checkpoint.baselineC=21.4;r.engine.checkpoint.comfortReference={targetC:21.4};
-  r.store.setState('adaptive:history',structuredClone(r.engine.checkpoint));const parameters=structuredClone(r.engine.checkpoint.model.parameters);
+  const history=restoreAdaptiveCheckpoint(null);history.algorithmVersion=LEARNING_ALGORITHM;
+  history.baselineC=21.4;history.comfortReference=currentComfortReference(21.4,r.now);
+  r.store.setState('adaptive:history',history);r.engine.tick();
+  const reference=structuredClone(r.engine.checkpoint.comfortReference), parameters=structuredClone(r.engine.checkpoint.model.parameters);
   r.advance(60_000);native.receive('0203',18);r.engine.tick();
-  assert.equal(r.engine.checkpoint.baselineC,null);assert.deepEqual(r.engine.checkpoint.model.parameters,parameters);
-  r.engine.tick();assert.equal(r.engine.checkpoint.baselineC,null);
+  assert.equal(r.engine.checkpoint.baselineC,21.4);assert.deepEqual(r.engine.checkpoint.comfortReference,reference);
+  assert.deepEqual(r.engine.checkpoint.model.parameters,parameters);
+  assert.deepEqual(r.engine.checkpoint.model.equipmentResponse,{ phases: {}, validation: null });assert.equal(r.engine.checkpoint.model.forecastValidation,null);
+  r.engine.tick();assert.equal(r.engine.checkpoint.baselineC,21.4);
   assert.equal(r.store.learningJournal({input:'mqtt'}).at(-1).kind,'context');
   assert.deepEqual(replayLearningJournal(r.store,'mqtt',null,{rebuild:true}),r.engine.checkpoint);
 });

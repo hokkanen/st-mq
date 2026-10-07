@@ -211,10 +211,10 @@ export function getDatabaseOverview({ store, now = Date.now() }) {
   const learningItems = ['sample', 'episode', 'context'].map(kind => item(`journal-${kind}`, {
     sample: 'Reproducible learning samples', episode: 'Learning episodes', context: 'Learning context and configuration references',
   }[kind], { sample: 'Immutable causal samples constructed from committed history.', episode: 'Immutable completed episode inputs used for learning updates.',
-    context: 'Immutable reference contexts, saved configurations, seeds and baseline-reset information required to replay learning.' }[kind], journal.get(kind), {
+    context: 'Immutable reference contexts, saved configurations, seeds and equipment-response reset information required to replay learning.' }[kind], journal.get(kind), {
     writeBehavior: kind === 'sample' ? 'For eligible committed 15-minute learning windows.' : kind === 'episode' ? 'When a learning episode completes.' : 'When learning context or its reference configuration must be journalled.',
       fields: kind === 'sample' ? learningFields : kind === 'episode' ? episodeFields : fields(
-      ['Reference context', 'Reference timestamp, optional room observation and baseline-reset time, or adopted historical model/baseline seed and its source.'],
+      ['Reference context', 'Reference timestamp, optional room observation and equipment-response reset time, or adopted historical model/baseline seed and its source.'],
       ['Sensor and control transitions', 'Sensor replacement/calibration and correction, pooled floor override mode, requested phase, room boost and occupancy changes.'],
       ['Learning configuration', 'Saved control/thermal assumptions associated with this context.'],
       ['Replay versions', 'Algorithm and configuration versions, forecast reference when present, and initial model seed when required.']) }));
@@ -265,6 +265,8 @@ export function getDatabaseOverview({ store, now = Date.now() }) {
     ['acquisition', "key LIKE 'provider:%' OR key='providers:health' OR key='electricity:acquisition'", 'Provider and electricity acquisition state', 'Latest provider responses, source health/backoff and unfinished electrical integration and charging sessions needed to resume acquisition.'],
     ['session-checks', "key LIKE 'charging-session-check:%' OR key LIKE 'easee:session-check:%' OR key LIKE 'easee:session-check-head:%'", 'Charging comparison identities', 'Hashed session identities prevent duplicate finalized comparisons; raw provider identifiers are not copied into checks.'],
     ['learning', "key LIKE 'learning:%' OR key LIKE 'adaptive:%'", 'Learning checkpoints and progress', 'Current fitted model, replay cursor, baseline, metrics and history rebuild progress.'],
+    ['indoor-control', "key LIKE 'indoor-control-anchor:%' OR key LIKE 'indoor-control-state:%'", 'Indoor control estimates',
+      'Last complete observed room anchor and separately predicted thermal control state, with source clocks and identity. Bounded outage fallback only; never measured history or learning evidence.'],
     ['fireplace', "key LIKE 'fireplace:%'", 'Fireplace reconstruction progress', 'Current correction revision, background reconstruction status and progress. A replacement model is activated after reconstruction completes.'],
     ['recovery', "key LIKE 'recovery:%' OR key='history-recovery:coordinator'", 'History recovery progress', 'Current recovery progress, reviewed sources, bounded request receipts and accepted, conflicting or skipped counts. The complete reconstructed model is published after catching up live learning; private paths and source identities are omitted.'],
     ['settings', "key LIKE 'settings:%' OR key LIKE 'occupancy:%'", 'Settings and temporary overrides', 'Current operating settings, occupancy and timed away selections; credentials remain in external configuration.'],
@@ -321,7 +323,7 @@ export function getDatabaseOverview({ store, now = Date.now() }) {
     ['garage-feed', "type='garage-external-temperature-diagnostic'", 'Garage external-temperature problems', 'Local sensor, temperature-control or frost-feed faults and recovery. Fresh measurements remain separate from saved targets.'],
     ['garage-diagnostics', "type='garage-pump-diagnostic'", 'Garage native diagnostic bytes', 'Changes to raw native diagnostic bytes and their availability after genuine observation. These bytes are not interpreted as a diagnosed fault.'],
     ['garage', "type LIKE 'garage-%'", 'Garage control changes', 'Native-setting requests, Normal/Away selections, target changes and warm-up advisories.'],
-    ['sensors', "type LIKE 'sensor-%' OR type='indoor-baseline-reset'", 'Sensor and temperature-reference changes', 'Sensor replacement, movement, calibration, correction and baseline boundaries used during reconstruction.'],
+    ['sensors', "type LIKE 'sensor-%' OR type='equipment-response-reset'", 'Sensor and temperature-reference changes', 'Sensor replacement, movement, calibration, correction and baseline boundaries used during reconstruction.'],
     ['mqtt', "type LIKE 'mqtt-%'", 'MQTT connection and acquisition events', 'Connection, subscription and transport failures or recovery, separate from scalar sensor coverage.'],
     ['learning', "type LIKE 'learning-%' OR type LIKE 'checkpoint-%' OR type='scheduled-cycle-rejected'", 'Learning and planning diagnostics', 'Learning worker faults, checkpoint reconstruction and rejected scheduled cycles.'],
     ['history', "type LIKE 'history%'", 'History import and recovery events', 'Import completion and atomic recovery outcomes; source files and private paths are not displayed.'],

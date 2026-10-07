@@ -155,7 +155,7 @@ test('current equipment topics are exact, own each sensor and preserve the priva
   assert.deepEqual(config.connections.equipment.devices.map(device => device.topic), ['invented/indoor','invented/downstairs','invented/bedroom','invented/garage']);
   assert.equal(Object.hasOwn(config.connections.mqtt,'temperatureTopics'),false);
   assert.equal(Object.hasOwn(config.connections,'shelly'),false);
-  assert.deepEqual(config.control.indoorSensorWeights,{indoor_temperature:1/3,downstairs_temperature:1/3,bedroom_temperature:1/3});
+  assert.deepEqual(config.control.indoorSensorWeights,{indoor_temperature:0.25,downstairs_temperature:0.25,bedroom_temperature:0.5});
   assert.equal(readFileSync(path,'utf8'),original);
   options.equipment.devices[0].connection = 'mqtt:invented/#'; writeFileSync(path,JSON.stringify(options));
   assert.throws(() => loadConfig({STMQ_INPUT:'mqtt',STMQ_CONFIG:path},directory),/topic|wildcards/i);
@@ -176,7 +176,7 @@ test('indoor learning weights have stable configured membership, optional explic
   assert.deepEqual(indoorSensorWeightsConfiguration(), { indoor_temperature: 1 });
   const connections = { equipment: sensors(['downstairs','bedroom']) };
   const automatic = indoorSensorWeightsConfiguration(undefined, connections);
-  assert.deepEqual(automatic, { indoor_temperature: 1/3, downstairs_temperature: 1/3, bedroom_temperature: 1/3 });
+  assert.deepEqual(automatic, { indoor_temperature: 0.25, downstairs_temperature: 0.25, bedroom_temperature: 0.5 });
   assert.deepEqual(indoorSensorWeightsConfiguration({}, connections), automatic);
   assert.equal(JSON.stringify(automatic).includes('invented'), false);
   assert.deepEqual(indoorSensorWeightsConfiguration({ bedroom_temperature: 3, indoor_temperature: 0, downstairs_temperature: 1 }, connections),
@@ -212,7 +212,7 @@ test('add-on default indoor weights include the required nested object and retai
   assert.deepEqual(indoorSensorWeightsConfiguration(addon.options.controller.indoor_sensor_weights), { indoor_temperature: 1 });
   assert.deepEqual(indoorSensorWeightsConfiguration(addon.options.controller.indoor_sensor_weights,
     { equipment: sensors(['downstairs','bedroom']) }),
-  { indoor_temperature: 1/3, downstairs_temperature: 1/3, bedroom_temperature: 1/3 });
+  { indoor_temperature: 0.25, downstairs_temperature: 0.25, bedroom_temperature: 0.5 });
 });
 test('explicit indoor weights load through the public schema and survive disabled mirror slave acquisition', t => {
   const directory = mkdtempSync(join(tmpdir(), 'stmq-indoor-weight-config-'));
@@ -310,7 +310,7 @@ test('provider opt-in reuses optional connection fields without requiring H66 or
     const config = loadConfig({ STMQ_INPUT: input, STMQ_CONFIG: path, STMQ_DATA_DIR: directory });
     assert.equal(config.input, input);
     assert.equal(config.deviceId, undefined);
-    assert.deepEqual(config.control.indoorSensorWeights, { indoor_temperature: 1/3, downstairs_temperature: 1/3, bedroom_temperature: 1/3 });
+    assert.deepEqual(config.control.indoorSensorWeights, { indoor_temperature: 0.25, downstairs_temperature: 0.25, bedroom_temperature: 0.5 });
     assert.deepEqual(config.connections.equipment.devices.map(device => device.topic), sensors().devices.map(device => device.connection.slice(5)));
     assert.equal(config.dbPath, join(directory, 'st-mq.sqlite'));
     assert.equal(config.settings.comfort.targetC, null);

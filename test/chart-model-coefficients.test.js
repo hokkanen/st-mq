@@ -209,23 +209,20 @@ test('a missing first journal seed leaves a gap and blocks its dependent tail', 
   assert(continued.series.model_coefficient_heat_loss.some(point => point.y === null));
 });
 
-test('unsupported algorithm records break coefficient continuity and produce only generic browser warnings', t => {
+test('unsupported algorithms are rejected before they can alter coefficient history or expose payloads', t => {
   const store = new Store(':memory:'); t.after(() => store.close());
   context(store, start, { model: model(0.025) });
-  store.appendLearningJournal('providers', { kind: 'context', at: start + 20 * MINUTE,
+  const before = store.learningJournal({ input: 'providers' });
+  assert.throws(() => store.appendLearningJournal('providers', { kind: 'context', at: start + 20 * MINUTE,
     algorithmVersion: 'invented-unsupported-implementation',
     payload: { value: { timestamp: start + 20 * MINUTE },
-      privateFixture: 'invented-journal-marker-not-for-browser' } });
-  // Applying the current implementation after an unknown transition must not fill the gap.
-  context(store, start + 30 * MINUTE, { model: model(0.09) });
+      privateFixture: 'invented-journal-marker-not-for-browser' } }), /Unsupported Home learning journal algorithm/);
+  assert.deepEqual(store.learningJournal({ input: 'providers' }), before);
   const result = project(store);
-  assert.equal(result.meta.unsupportedRecords, 1);
-  assert(values(result).some(point => point.y === 0.025));
-  assert(values(result).every(point => point.x < start + 20 * MINUTE));
-  assert(result.series.model_coefficient_heat_loss.some(point => point.y === null && point.x >= start + 20 * MINUTE));
+  assert(values(result).length > 0);
+  assert(values(result).every(point => point.y === 0.025));
   const chart = getChartData({ store, input: 'providers', startDate: '2026-09-08',
     now: start + 60 * MINUTE, left: 'model_coefficient_heat_loss' });
-  assert(chart.meta.warnings.some(warning => /coefficient|replay/i.test(warning)));
   assert(!JSON.stringify(chart).includes('invented-'));
 });
 
@@ -269,11 +266,11 @@ test('a future journal entry stops replay before later ingested entries with old
   assert(points.length > 0 && points.every(point => point.y === 0.025));
 });
 
-test('an explicit recorded seed resumes a supported replay after an unsupported segment', t => {
+test('an explicit current seed resumes coefficient replay after a malformed current record', t => {
   const store = new Store(':memory:'); t.after(() => store.close());
   context(store, start, { model: model(0.025) });
   store.appendLearningJournal('providers', { kind: 'context', at: start + 10 * MINUTE,
-    algorithmVersion: 'invented-unsupported-implementation', payload: { value: { timestamp: start + 10 * MINUTE } } });
+    algorithmVersion: LEARNING_ALGORITHM, payload: { value: { timestamp: start + 10 * MINUTE } } });
   const configuration = learningConfiguration({});
   const seed = restoreAdaptiveCheckpoint(null);
   seed.model = model(0.06);
@@ -286,12 +283,12 @@ test('an explicit recorded seed resumes a supported replay after an unsupported 
   assert(points.every(point => point.x < start + 10 * MINUTE || point.x >= start + 30 * MINUTE));
 });
 
-test('an unsupported primary journal ends imported fallback at the source boundary', t => {
+test('a malformed current primary journal ends imported fallback at the source boundary', t => {
   const store = new Store(':memory:'); t.after(() => store.close());
   context(store, start, { input: 'history', model: model(0.025) });
   context(store, start + 30 * MINUTE, { input: 'history', model: model(0.09) });
   store.appendLearningJournal('providers', { kind: 'context', at: start + 20 * MINUTE,
-    algorithmVersion: 'invented-unsupported-implementation', payload: { value: { timestamp: start + 20 * MINUTE } } });
+    algorithmVersion: LEARNING_ALGORITHM, payload: { value: { timestamp: start + 20 * MINUTE } } });
   const result = project(store);
   assert(values(result).length > 0);
   assert(values(result).every(point => point.y === 0.025 && point.x < start + 20 * MINUTE));
@@ -475,12 +472,8 @@ test('sensor reversal rebuilds a cached earlier coefficient prefix and later rec
   assert.deepEqual(extended, project(store), 'Incremental correction replay matches a fresh chart cache');
 });
 
-test('sensor-corrected coefficient replay keeps the previous algorithm archived before the explicit current seed', t => {
+test('sensor-corrected coefficient replay retains its current seed without manufacturing earlier history', t => {
   const store = new Store(':memory:'); t.after(() => store.close());
-  const configuration = learningConfiguration({});
-  store.appendLearningJournal('providers', { kind: 'context', at: start - 15 * MINUTE,
-    algorithmVersion: 'committed-house-v8-report-coverage', configVersion: learningVersion(configuration),
-    payload: { value: { timestamp: start - 15 * MINUTE }, configuration, seed: restoreAdaptiveCheckpoint(null) } });
   const seed = restoreAdaptiveCheckpoint(null);
   seed.model.parameters.lossPerHour = 0.04;
   seed.model.trainedAt = new Date(start - 5 * MINUTE).toISOString();
@@ -491,8 +484,7 @@ test('sensor-corrected coefficient replay keeps the previous algorithm archived 
     requestId: 'archival-coefficient-reset' }, start + 20 * MINUTE);
   revertSensorChange(store, 'providers', { id: change.id, requestId: 'archival-coefficient-revert' }, start + 30 * MINUTE);
   const result = project(store, { from: start - 15 * MINUTE });
-  assert.equal(result.meta.unsupportedRecords, 1);
   assert.equal(result.meta.replayedRecords, 3);
   assert(values(result).every(point => point.x >= start && point.y === 0.04 && point.coefficientStatus === 'fitted'));
-  assert(result.series.model_coefficient_heat_loss.some(point => point.x < start && point.y === null));
+  assert(result.series.model_coefficient_heat_loss.filter(point => point.x < start).every(point => point.y === null));
 });

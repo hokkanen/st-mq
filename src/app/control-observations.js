@@ -15,7 +15,8 @@ export function controlObservations({ latest, now, observations, outlook, checkp
   const issuedAt = w?.issuedAt ?? w?.fetchedAt;
   const weatherFresh = finite(issuedAt) && issuedAt <= now && now - issuedAt <= 6 * HOUR;
   const radiation = weatherFresh && finite(w?.solarRadiationWm2) ? w.solarRadiationWm2 : null;
-  const indoorC = observations.indoor?.stale ? null : observations.indoor?.value ?? null;
+  const indoor = observations.indoorControl ?? observations.indoor;
+  const indoorC = indoor?.stale ? null : indoor?.value ?? null;
   const outdoorC = !observations.outdoor?.stale && finite(observations.outdoor?.value) ? observations.outdoor.value : null;
   const h = h66 ?? {}, connected = h.connected ?? h.brokerConnected;
   const compressor = connected ? value('compressor_active') : null, route = connected ? value('dhw_routing') : null;
@@ -25,6 +26,10 @@ export function controlObservations({ latest, now, observations, outlook, checkp
   const currentMode = connected ? value('operating_mode') : null;
   const nativeMode = connected ? h.baseline?.['2201'] ?? currentMode : null;
   const equipment = { observedPhase: phase,externalChangeRevision:h.externalChangeRevision??0,
+    indoorEstimated: indoor?.estimated === true, indoorUncertaintyC: indoor?.uncertaintyC ?? 0,
+    indoorUncertaintyGrowthCPerHour: indoor?.uncertaintyGrowthCPerHour ?? 0,
+    indoorEstimateValidUntil: indoor?.validUntil ?? null,
+    comfortReferenceProvisional: checkpoint.comfortReference?.provisional === true,
     h66Available: h.controlsReady === true && h.writesEnabled === true,
     preheatAvailable: h.controlsReady === true && h.writesEnabled === true,
     nativeAuxAllowed: nativeMode === 2 ? false : nativeMode === 1 ? true : null,
@@ -61,6 +66,7 @@ export function controlObservations({ latest, now, observations, outlook, checkp
   const priceRow = outlook.prices.find(row => row.start <= now && row.end > now);
   const price = priceRow?.allInCentsPerKWh ?? null;
   const sample = { timestamp: now, indoorC, outdoorC, supplyC: supply, brineC: equipment.brineC, solarRadiationWm2: radiation, phase, roomBoostC,
+    indoorEstimated: indoor?.estimated === true, indoorUncertaintyC: indoor?.uncertaintyC ?? 0,
     targetC: checkpoint.baselineC, quality: finite(indoorC) && finite(outdoorC) ? [] : ['missing'],
     powerKw: observations.actual?.source === 'simulation' ? observations.actual.powerKw : powerKw,
     powerBasis, powerSourceTime: simulation || powerBasis === 'modelled' ? now
