@@ -165,13 +165,23 @@ Zero/unknown timestamps are unavailable. A correlated read renews setting receip
 evidence without changing its original source clock. An unchanged current-limit,
 start-permission or work-state reply can have an older update timestamp than its
 matching notification; the adapter preserves both timestamps while confirming
-the current value from the new query. This cannot establish a new native
-instruction or confirm a command
-whose dispatch is in a later source-clock second. When a native timestamp has
-whole-second precision, a matching correlated read requested after the command
-acknowledgement can confirm an update in that same second. It preserves the
-original timestamp; an older second or an unsolicited observation cannot supply
-that confirmation. Same-clock unsolicited notifications do not renew freshness.
+the current value from the new query. This alone cannot establish a new native
+instruction or confirm a command whose dispatch is in a later source-clock second.
+When a native timestamp has whole-second precision, a matching correlated read
+requested after the command acknowledgement can confirm an update in that same
+second. It preserves the original timestamp; an older second or an unsolicited
+observation cannot supply that confirmation. Same-clock unsolicited notifications
+do not renew freshness.
+Ordinary numeric current commands have a separate ordered-observation recovery:
+an acknowledged write can be reconciled by a matching post-acknowledgement read
+whose native value and instruction clocks advance beyond the saved, different
+pre-write setting in the same equipment and physical session. This verifies the
+current setting when the device clock trails the controller, without a clock
+tolerance or rewriting either clock. Missing acknowledgements, unchanged native
+clocks, missing prior evidence and uncorrelated reads remain uncertain. A known
+later native instruction still takes priority, including a same-value selection.
+This recovery does not apply to Start/Stop ownership or identification-current
+restoration and proves neither physical draw nor who operated the charger.
 Post-write verification first settles any poll already in flight, then starts a
 new correlated refresh. A pre-acknowledgement query cannot become confirmation
 merely because its reply arrived later; this additional read never repeats the write.

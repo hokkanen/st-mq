@@ -748,15 +748,15 @@ const identificationKeys = ['purpose', 'identificationId', 'identificationConnec
 const time = value => Number.isSafeInteger(value) && value >= 0;
 const token = value => typeof value === 'string' && value.length > 0 && value.length <= 256;
 const currentInstructionAt = field => Math.max(field.measuredAt, field.instructionAt ?? 0);
+const acceptedReadback = (field, pending) => pending.stage === 'accepted' && time(pending.acceptedAt)
+  && field.readback?.measuredAt === field.measuredAt
+  && field.readback.requestedAt >= pending.acceptedAt
+  && field.readback.receivedAt >= field.readback.requestedAt;
 const commandReadback = (field, pending) => field.measuredAt >= pending.dispatchedAt
   // Integer native timestamps locate an update within a whole second. A
   // correlated read after acknowledgement can confirm that setting without
   // rounding the source clock forward or accepting an older second/cache.
-  || pending.stage === 'accepted' && time(pending.acceptedAt)
-    && field.measuredAt === Math.floor(pending.dispatchedAt / 1000) * 1000
-    && field.readback?.measuredAt === field.measuredAt
-    && field.readback.requestedAt >= pending.acceptedAt
-    && field.readback.receivedAt >= field.readback.requestedAt;
+  || field.measuredAt === Math.floor(pending.dispatchedAt / 1000) * 1000 && acceptedReadback(field, pending);
 
 // Attribution is shared with the runtime because individual adapter fields can
 // update before the controller finishes and persists its refresh result.
@@ -837,6 +837,22 @@ export function createShellyController({ adapter, initialState, saveState = () =
   const persist = async () => { await saveState(copy(state)); notifyStatus(); };
   const limitCurrent = context => shellyCurrentLimit({ config: adapter.config, ...context,
     nativeCurrentA: state.manualCurrentA, shelly: adapter.liveCurrents(), now: clock() });
+  const rememberLimiter = (limitation, context, snapshot) => {
+    state.limiter = { ...limitation,
+      sourceEpochs: [context.property?.evidence?.epoch ?? null, context.easee?.evidence?.epoch ?? null],
+      scope: { generation: snapshot.generation,
+        sessionId: snapshot.session?.sessionId, connectedAt: snapshot.session?.connectedAt } };
+  };
+  const settingReadback = (field, pending) => commandReadback(field, pending)
+    // Numeric current recovery can compare two observations on the device's
+    // own clock. A fresh post-ACK read of a changed setting verifies the result
+    // even when that clock trails ours. Do not apply this to Start/Stop ownership,
+    // unchanged cached settings, missing ACKs or identification restoration.
+    || pending.role === 'current_limit' && pending.association === state.association && pending.sessionId === state.sessionId
+      && Number.isSafeInteger(state.lastCurrent) && state.lastCurrent !== pending.value
+      && time(state.lastCurrentAtSource) && field.measuredAt > state.lastCurrentAtSource
+      && currentInstructionAt(field) > (state.lastCurrentInstructionAt ?? state.lastCurrentAtSource)
+      && acceptedReadback(field, pending);
   const scheduleToken = snapshot => snapshot.nativeScheduleFingerprint ?? (snapshot.nativeScheduleActive ? 'active' : null);
   const systemEcho = (field, value) => field?.commandSource === 'sys' && field.value === value;
   const rememberCurrent = field => {
@@ -1206,10 +1222,7 @@ export function createShellyController({ adapter, initialState, saveState = () =
             const context = typeof getAllocation === 'function' ? await getAllocation(copy(snapshot)) : input.allocation ?? {};
             const limitation = shellyCurrentLimit({ config: adapter.config, ...context,
               nativeCurrentA: null, vehicleCurrentA: null, shelly: adapter.liveCurrents(), now: clock() });
-            state.limiter = { ...limitation,
-              sourceEpochs: [context.property?.evidence?.epoch ?? null, context.easee?.evidence?.epoch ?? null],
-              scope: { generation: snapshot.generation,
-                sessionId: snapshot.session.sessionId, connectedAt: snapshot.session.connectedAt } };
+            rememberLimiter(limitation, context, snapshot);
           } else state.limiter = null;
           state.phase = 'off'; state.reason = 'disconnected';
           await persist(); return;
@@ -1218,11 +1231,22 @@ export function createShellyController({ adapter, initialState, saveState = () =
         let current = snapshot.fields.current_limit;
         const workState = snapshot.fields.work_state;
         const permittedState = [...adapter.config.connectedStates, ...adapter.config.chargingStates].includes(workState?.value);
-        if (!snapshot.online || !snapshot.controlReady || !fresh(start) || !fresh(current) || !fresh(workState) || !permittedState || !sessionId) {
+        const unavailable = !snapshot.online || !snapshot.controlReady || !fresh(start) || !fresh(current)
+          || !fresh(workState) || !permittedState || !sessionId;
+        const currentUnavailable = adapter.config.limiterEnabled && snapshot.currentControlReady === false;
+        // Capacity is an observation, not command permission. Refresh it before
+        // readiness/recovery returns early, including an unresolved write lasting
+        // hours. The normal path publishes its full limiter decision below.
+        if (adapter.config.limiterEnabled && snapshot.session?.connected === true
+          && (state.pending || unavailable || currentUnavailable)) {
+          const context = typeof getAllocation === 'function' ? await getAllocation(copy(snapshot)) : input.allocation ?? {};
+          rememberLimiter(limitCurrent(context), context, snapshot);
+        }
+        if (unavailable) {
           identification = null;
           state.phase = 'unavailable'; state.reason = snapshot.error ?? 'provider-offline'; await persist(); return;
         }
-        if (adapter.config.limiterEnabled && snapshot.currentControlReady === false) {
+        if (currentUnavailable) {
           identification = null;
           state.phase = 'unavailable'; state.reason = snapshot.currentControlError ?? 'evse-current-control-unavailable'; await persist(); return;
         }
@@ -1370,7 +1394,7 @@ export function createShellyController({ adapter, initialState, saveState = () =
             // otherwise a false result could cause a second application Start.
             state.phase = 'uncertain'; state.reason = 'evse-command-unconfirmed'; await persist(); return;
           }
-          else if (fresh(readback) && readback.value === pending.value && commandReadback(readback, pending)) {
+          else if (fresh(readback) && readback.value === pending.value && settingReadback(readback, pending)) {
             state.executionStage = 'read-back';
             if (pending.role === 'start_charging') {
               rememberPermissionCommand(pending);
@@ -1525,9 +1549,7 @@ export function createShellyController({ adapter, initialState, saveState = () =
         const limitation = adapter.config.limiterEnabled ? limitCurrent({ ...context, allocationA })
           : { currentA: nativeCap, pause: nativeCap < adapter.config.minimumCurrentA,
             reason: 'native-current-limit', fallback: false, modelAvailable: false, guaranteedProtection: false };
-        state.limiter = { ...limitation, sourceEpochs: [context.property?.evidence?.epoch ?? null, context.easee?.evidence?.epoch ?? null],
-          scope: { generation: snapshot.generation,
-          sessionId: snapshot.session?.sessionId, connectedAt: snapshot.session?.connectedAt } };
+        rememberLimiter(limitation, context, snapshot);
         const windows = chargeNow ? [{ startAt: clock(), endAt: null }] : plan?.periods ?? [];
         const economic = !identification && (input.enabled || chargeNow) && !state.manual && !snapshot.nativeScheduleActive && windows.length > 0;
         const inWindow = windows.some(period => period.startAt <= clock() && (period.endAt === null || period.endAt > clock()));
@@ -1564,6 +1586,9 @@ export function createShellyController({ adapter, initialState, saveState = () =
           if (!adapter.snapshot().controlReady || role === 'start_charging' && value === true
             && devicePermission(adapter.snapshot()).held) return false;
           const expiresAt = clock() + 10000;
+          // Save the exact baseline guarded at publication, including after a
+          // current test changed the setting earlier in this reconciliation.
+          if (role === 'current_limit') rememberCurrent(expectedCurrent);
           state.pending = { association: state.association, sessionId, revision: intentRevision, expiresAt, role, value, reason,
             stage: 'proposed', ...(owned ? { owned: copy(owned) } : {}) };
           await persist();
@@ -1614,7 +1639,7 @@ export function createShellyController({ adapter, initialState, saveState = () =
           const after = adapter.snapshot();
           if (await reconcilePermissionEvents(after, state.pending)) throw fail('evse-command-unconfirmed');
           const readback = after.fields[role];
-          if (!fresh(readback) || readback.value !== value || !commandReadback(readback, state.pending)) throw fail('evse-command-unconfirmed');
+          if (!fresh(readback) || readback.value !== value || !settingReadback(readback, state.pending)) throw fail('evse-command-unconfirmed');
           if (role === 'start_charging' && value === false && devicePermission(after).held) {
             rememberPermissionCommand(state.pending);
             state.pending = null; state.owned = null; state.ownedPause = false;

@@ -409,6 +409,12 @@ priority and configured maximum. Effective restrictions and confirmed native
 settings remain separate from that load allowance. Neither value grants Start
 permission or proves actual charging current.
 
+An unresolved charger command blocks replacement commands, not the independent
+load calculation. While that command awaits confirmation, healthy observations
+continue updating Charger 2's allowance and coverage; native application remains
+pending. Missing load evidence still selects explicit fallback or unknown, and
+recovery never fills earlier unobserved periods.
+
 A semantic change stores one exact observation with equipment identity, mode,
 allowance, applicable maximum, reason and source evidence. Unchanged valid
 observations extend compact coverage in place rather than append duplicate rows

@@ -6,6 +6,10 @@ Versions follow Semantic Versioning. `-dev.N` denotes a development prerelease.
 
 ## Unreleased
 
+- Charger 2 keeps recording available current while a device command awaits
+  confirmation. Acknowledged current-setting changes can recover from a trailing
+  device clock using ordered native readings and fresh readback, without retrying
+  the write, weakening Start/Stop checks or filling historical gaps.
 - Already configured Easee Direct OCPP charging no longer requires fresh Easee
   cloud replies for local approval, scheduling, Charge now or session recovery.
   Known later external instructions retain priority through outages; missing

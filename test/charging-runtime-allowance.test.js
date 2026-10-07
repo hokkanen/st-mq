@@ -5,6 +5,54 @@ import { getDatabaseOverview } from '../src/app/database-overview.js';
 import { getChartData } from '../src/app/chart-data.js';
 import { chargingAllowanceDisplay } from '../chart/charging-allowance.js';
 
+test('uncertain Charger 2 commands keep recording fresh capacity without replay or invented coverage', async t => {
+  const f = await fixture(t, { budgetA: 25 });
+  await f.connect('charger2');
+  f.rejectShellyWrites(true);
+  f.household.currentA = 11;
+  f.advance(5000); await f.settle();
+  const control = () => f.runtime.chargers.charger2.controller.status();
+  const pending = structuredClone(control().pending);
+  assert.equal(pending.role, 'current_limit');
+  assert.equal(pending.value, 14);
+  const commands = f.commands.length;
+  const rows = () => f.store.observations({ signal: 'charger2_current_allowance' });
+  for (const [load, expected] of [[11, 14], [16, 9], [20, 0], [0, 16]]) {
+    f.household.currentA = load;
+    f.advance(60_000); await f.settle(); f.runtime.recordLimiterHistory();
+    assert.deepEqual(control().pending, pending, 'Uncertain execution retains the original pending command');
+    assert.equal(control().reason, 'evse-command-unconfirmed');
+    assert.equal(f.view('charger2').limiter.applicationStatus, 'pending');
+    assert.equal(f.view('charger2').allowance.allowanceA, expected);
+    assert.equal(rows().at(-1).value, expected);
+  }
+  const count = rows().length;
+  f.advance(5000); await f.settle(); f.runtime.recordLimiterHistory();
+  assert.equal(rows().length, count, 'Unchanged capacity extends coverage without another observation');
+  const adapter = f.runtime.chargers.charger2.adapter, snapshot = adapter.snapshot;
+  adapter.snapshot = () => ({ ...snapshot(), controlReady: false, error: 'evse-control-unavailable' });
+  try {
+    f.household.currentA = 13;
+    f.advance(60_000); await f.settle(); f.runtime.recordLimiterHistory();
+    assert.equal(control().phase, 'unavailable');
+    assert.equal(rows().at(-1).value, 12, 'Healthy load evidence is independent of command readiness');
+    assert.deepEqual(control().pending, pending);
+  } finally { adapter.snapshot = snapshot; }
+  // A real acquisition gap stays unknown; new calculations cannot fill it.
+  f.advance(6 * 3600_000); f.runtime.recordLimiterHistory();
+  assert.equal(rows().at(-1).raw.allowance.mode, 'unknown');
+  await f.restart(); f.runtime.recordLimiterHistory();
+  assert.deepEqual(control().pending, pending, 'Restart retains the uncertain command');
+  assert.equal(rows().at(-1).value, 12);
+  assert(rows().some(row => row.raw.allowance.mode === 'unknown'), 'Restart does not backfill the gap');
+  f.household.feedsSynchronized = false;
+  f.advance(5000); await f.settle(); f.runtime.recordLimiterHistory();
+  assert.equal(rows().at(-1).raw.allowance.mode, 'fallback');
+  assert.equal(rows().at(-1).value, 12);
+  assert.equal(f.commands.length, commands, 'No uncertain write is retried and no Start is sent');
+  assert.equal(f.runtime.limiterHistoryError, null);
+});
+
 test('unplugged chargers record changing numeric allowances without creating sessions or sending commands', async t => {
   const f = await fixture(t, { budgetA: 25 });
   const rows = id => f.store.observations({ signal: `${id}_current_allowance` });

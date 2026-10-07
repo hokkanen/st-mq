@@ -1427,6 +1427,81 @@ test('Shelly post-write verification drains an older poll before requesting fres
   });
 });
 
+test('ordinary current recovery uses ordered native readings without shifting clocks or replaying a write', async t => {
+  for (const mode of ['confirmed', 'restart', 'missing-ack', 'unchanged-clock', 'uncorrelated', 'pre-ack-read',
+    'missing-baseline', 'unchanged-value', 'newer-current', 'newer-same-current', 'restart-newer-current', 'restart-newer-same-current'])
+    await t.test(mode, async t => {
+      const f = fixture(t, { limiterEnabled: true, dwellMs: 0, rampA: 16 });
+      await f.ready(); f.setNow(NOW + 2029);
+      let saved;
+      const options = { adapter: f.adapter, clock: f.now, canControl: () => true,
+        saveState: value => { saved = structuredClone(value); } };
+      let controller = createShellyController(options); t.after(() => controller.close());
+      const rpc = f.adapter.rpc;
+      f.adapter.rpc = async (...args) => {
+        const result = await rpc(...args);
+        if (args[0] === 'Number.Set') {
+          f.setSourceTime('current_limit', NOW + (mode === 'unchanged-clock' ? 0 : 1000));
+          if (mode !== 'unchanged-clock') f.delta('current_limit', { value: args[1].value, source: 'rpc' },
+            { eventAt: NOW + 1900, apply: false });
+          f.setNow(f.now() + 205);
+          if (mode === 'missing-ack') throw Object.assign(Error('lost reply'), { code: 'evse-rpc-timeout' });
+          if (mode.startsWith('restart') || ['missing-baseline', 'unchanged-value'].includes(mode)) controller.invalidate();
+        }
+        return result;
+      };
+      if (['uncorrelated', 'pre-ack-read'].includes(mode)) {
+        const snapshot = f.adapter.snapshot;
+        f.adapter.snapshot = () => {
+          const value = snapshot();
+          if (mode === 'uncorrelated') delete value.fields.current_limit.readback;
+          else if (value.fields.current_limit.readback) value.fields.current_limit.readback.requestedAt = NOW;
+          return value;
+        };
+      }
+      const input = () => ({ enabled: false, allocation: {
+        property: reading([25, 25, 25], f.now()), easee: reading([0, 0, 0], f.now()) } });
+      let result = await controller.update(input());
+      if (mode.startsWith('restart') || ['missing-baseline', 'unchanged-value'].includes(mode)) {
+        assert.equal(saved.pending.stage, 'accepted');
+        if (mode === 'missing-baseline') delete saved.lastCurrentAtSource;
+        if (mode === 'unchanged-value') saved.lastCurrent = saved.pending.value;
+        await controller.close(); controller = createShellyController({ ...options, initialState: saved });
+        f.setNow(NOW + 5000);
+        if (mode.startsWith('restart-newer')) {
+          f.delta('current_limit', { value: mode === 'restart-newer-current' ? 8 : 12, source: 'rpc' });
+          await f.adapter.refresh();
+        }
+        result = await controller.update(input());
+      }
+      if (['missing-ack', 'unchanged-clock', 'uncorrelated', 'pre-ack-read', 'missing-baseline', 'unchanged-value'].includes(mode)) {
+        assert.ok(result.pending);
+        assert.equal(result.reason, mode === 'missing-ack' ? 'evse-rpc-timeout' : 'evse-command-unconfirmed');
+        f.setNow(NOW + 65_000); result = await controller.update(input());
+        assert.ok(result.pending, 'Timeout alone never confirms the command');
+        assert.equal(result.limiter.loadCurrentA, 12, 'Capacity remains a separate fresh calculation');
+      } else if (mode.startsWith('restart-newer')) {
+        assert.equal(result.pending, null);
+        assert.equal(result.manualCurrentA, mode === 'restart-newer-current' ? 8 : 12,
+          'A newer external instruction wins over the pending write after restart');
+      } else {
+        assert.equal(result.pending, null);
+        assert.equal(result.manualCurrentA ?? null, null, 'A verified application write is not an external ceiling');
+        assert.equal(result.lastCurrentAtSource, NOW + 1000, 'Keep the actual native clock');
+        assert.equal(result.lastCurrentInstructionAt, NOW + 1900, 'Keep the original notification clock too');
+        if (mode.startsWith('newer-')) {
+          f.setNow(NOW + 5000);
+          f.delta('current_limit', { value: mode === 'newer-current' ? 8 : 12, source: 'rpc' });
+          await f.adapter.refresh();
+          result = await controller.update(input());
+          assert.equal(result.manualCurrentA, mode === 'newer-current' ? 8 : 12, 'A later native instruction retains priority');
+        }
+      }
+      assert.equal(f.writes.filter(row => row.method === 'Number.Set').length, 1, 'Never repeat the original command');
+      assert.equal(f.writes.some(row => row.method === 'Boolean.Set'), false, 'Current recovery does not grant Start permission');
+    });
+});
+
 test('Shelly confirms whole-second setting clocks only with post-acknowledgement correlated readback', async t => {
   for (const mode of ['rounded', 'takeover', 'older-second', 'uncorrelated', 'restart', 'newer-stop']) await t.test(mode, async t => {
     const f = fixture(t);
