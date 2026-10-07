@@ -11,6 +11,7 @@ import { controlObservations } from './control-observations.js';
 import { heatingFeedback } from './heating-feedback.js';
 import { recordHeatPumpConfiguration } from './chart-heat-pump.js';
 import { Recorder } from '../storage/recorder.js';
+import { createWriteScope } from '../storage/write-scope.js';
 import { VoltageEstimator, voltageTelemetryAt, validateVoltageState } from '../storage/voltage.js';
 import { LEARNING_ALGORITHM, LEARNING_WINDOW_MS, committedLearningSample, appendLearningRecord, replayLearningJournal as replayCommittedLearning, recordLearningContext, learningCheckpointDigest } from './committed-learning.js';
 import { addFireplace, removeFireplace, fireplaceView, fireplaceRevision, FireplaceRebuildManager } from './fireplace.js';
@@ -163,6 +164,10 @@ export class Engine {
       observedSignals: [...Object.keys(this.latest), ...configured] });
   }
   changeSensor(payload) {
+    this.commitSensorChange(payload);
+    return this.finishSensorChange();
+  }
+  commitSensorChange(payload) {
     const now = this.clock(), input = this.config.input;
     const checkpoint = this.readAdaptive(now);
     let result, next;
@@ -181,11 +186,17 @@ export class Engine {
     }
     // The source and complete checkpoint are durable before follow-up control.
     this.latestStatus = null;
+  }
+  finishSensorChange() {
     try { this.tick(); this.onTemporaryChange?.(); }
     catch { throw Object.assign(new Error('Sensor change save could not be confirmed. Retry the same request.'), { statusCode: 503 }); }
     return this.sensorChangesStatus();
   }
   revertSensor(payload) {
+    this.commitSensorReversal(payload);
+    return this.finishSensorReversal();
+  }
+  commitSensorReversal(payload) {
     const now = this.clock(), input = this.config.input;
     const checkpoint = this.readAdaptive(now);
     this.store.transaction(() => {
@@ -197,8 +208,10 @@ export class Engine {
     // Recorded cycle outcomes and frozen forecasts remain observations of what
     // actually happened, including any cycle cancelled by the original reset.
     this.pendingPlan = null; this.lastSample = null; this.latestStatus = null;
+  }
+  finishSensorReversal() {
     try {
-      const job = this.store.getState(`fireplace:rebuild:${input}`);
+      const job = this.store.getState(`fireplace:rebuild:${this.config.input}`);
       if (['pending', 'running', 'ready', 'failed'].includes(job?.status)) this.fireplaceManager().start();
       this.onTemporaryChange?.();
       return this.sensorChangesStatus();
@@ -348,7 +361,7 @@ export class Engine {
         });
         if (!published) { manager.takeReady(); return; }
         // Publish process state only after the durable transaction succeeds.
-        manager.complete(ready.checkpoint, { persist: false });
+        this.store.afterCommit(() => manager.complete(ready.checkpoint, { persist: false }));
         this.checkpoint = ready.checkpoint;
         this.fireplaceReserveOverride = null;
         this.pendingPlan = null; this.lastSample = null; this.latestStatus = null;
@@ -356,9 +369,16 @@ export class Engine {
     }
   }
   changeFireplace(payload, removing = false, removalAccess = {}) {
+    const { now, input, result } = this.commitFireplaceSource(payload, removing, removalAccess);
+    return this.finishFireplaceChange({ now, input, result, removing });
+  }
+  commitFireplaceSource(payload, removing, removalAccess) {
     const now = this.clock(), input = this.config.input;
     this.readAdaptive(now);
     const result = removing ? removeFireplace(this.store, input, payload, now, removalAccess) : addFireplace(this.store, input, payload, now);
+    return { now, input, result };
+  }
+  finishFireplaceChange({ now, input, result, removing }) {
     try {
       this.pendingPlan = null;
       this.store.setState(`pending-plan:${input}`, null);
@@ -391,6 +411,19 @@ export class Engine {
       throw error;
     }
   }
+  runWrite(operation, options = {}) {
+    return this.writes.run(operation, options);
+  }
+  beginShutdown({ restore = true } = {}) {
+    this.suspended = true;
+    // Revocation cancels obsolete publication immediately. Orderly shutdown
+    // still saves command outcomes, with bounded waiting if storage is blocked.
+    this.writes.beginShutdown({ restore });
+    this.executor.beginShutdown({ restore });
+    this.equipmentTests?.beginShutdown?.({ restore });
+    if (!restore) this.charging?.beginShutdown?.();
+    this.garage?.beginShutdown?.();
+  }
   async closeFireplace() { await Promise.all([this.fireplaceRebuild?.close(), this.heatingExplorer?.close(), this.heatingPlanning?.close()]); }
   constructor({ store, config, clock = Date.now, commandTransport = null, canControl = () => true }) {
     validateVoltageState(store, config.input);
@@ -410,6 +443,7 @@ export class Engine {
     }
     this.automation = new HeatingAutomation({ store, config, clock, targetIdentity: feature => this.automationTarget(feature) });
     this.store = store;
+    this.writes = createWriteScope({ runWrite: (operation, options) => store.runWrite(operation, options) });
     this.config = config;
     this.clock = clock;
     this.canControl = canControl;
@@ -646,15 +680,23 @@ export class Engine {
     if (current.enabled === enabled && (enabled || current.pause.expiresAt === null)) return this.status();
     this.automationChangePending = true;
     try {
-      this.automation.set(feature, enabled);
-      this.store.event('heating-automation-changed', { feature, enabled, identity: current.identity }, this.clock());
-      this.latestStatus = null;
+      await this.runWrite(() => {
+        if (!this.canControl() || this.automationStatus()[feature].identity !== current.identity)
+          throw new Error('Heating control authority or equipment changed.');
+        const previous = structuredClone(this.automation.features), previousStatus = this.latestStatus;
+        this.store.afterRollback(() => { this.automation.features = previous; this.latestStatus = previousStatus; });
+        this.automation.set(feature, enabled);
+        this.store.event('heating-automation-changed', { feature, enabled, identity: current.identity }, this.clock());
+        this.latestStatus = null;
+      }, { priority: 'control' });
       if (!enabled && feature === 'home') {
-        this.pendingPlan = null; this.store.setState(`pending-plan:${this.config.input}`, null);
-        if (this.cycles.active()) this.cycles.cancel(this.clock(), 'automatic-control-disabled');
+        await this.runWrite(() => {
+          this.pendingPlan = null; this.store.setState(`pending-plan:${this.config.input}`, null);
+          if (this.cycles.active()) this.cycles.cancel(this.clock(), 'automatic-control-disabled');
+        }, { priority: 'control' });
         await this.dispatchPending;
         // A dispatch admitted before this edit may have completed meanwhile.
-        if (this.cycles.active()) this.cycles.cancel(this.clock(), 'automatic-control-disabled');
+        await this.runWrite(() => { if (this.cycles.active()) this.cycles.cancel(this.clock(), 'automatic-control-disabled'); }, { priority: 'control' });
         const state = this.executor.status();
         // An existing manual choice remains owned by the current pause. Its
         // selected end can be removed without cancelling that choice.
@@ -664,13 +706,13 @@ export class Engine {
         // Manual choices and independently timed circulation retain their scope.
         if (!state.manualPause && !state.manualTemporary && !this.heatingTestBusy) {
           this.dispatchPending = this.executor.restore({ now: this.clock(), reason: 'automatic-control-disabled', preserveManualDhwr: true })
-            .catch(() => this.store.event('restoration-pending', { reason: 'automatic-control-disabled' }, this.clock()));
+            .catch(() => this.runWrite(() => this.store.event('restoration-pending', { reason: 'automatic-control-disabled' }, this.clock()), { priority: 'control' }));
           await this.dispatchPending;
           this.dispatchPending = null;
         }
       }
     } finally { this.automationChangePending = false; }
-    this.tick(); this.onTemporaryChange?.();
+    await this.runWrite(() => this.tick()); this.onTemporaryChange?.();
     return this.status();
   }
   contract() { return this.store.getState(`contract:${this.config.input}`); }
@@ -830,13 +872,19 @@ export class Engine {
     this.heatingTestBusy = true;
     const command = input.command, requestedAt = this.clock();
     try {
-      const now = requestedAt, override = this.expireTemporary(now);
-      const pause = override ? { id: pauseIdentity(override), expiresAt: override.expiresAt } : null;
-      if (command !== 'circulation') {
-        if (this.cycles.active()) this.cycles.cancel(now, 'manual-heating-override');
-        this.pendingPlan = null; this.store.setState(`pending-plan:${this.config.input}`, null);
-      }
-      this.store.event('heating-test-requested', { input: this.config.input, command }, this.clock());
+      const now = requestedAt;
+      const pause = await this.runWrite(() => {
+        if (!this.canControl()) throw new Error('Heating control authority changed.');
+        const override = this.expireTemporary(this.clock());
+        return override ? { id: pauseIdentity(override), expiresAt: override.expiresAt } : null;
+      }, { priority: 'control' });
+      await this.runWrite(() => {
+        if (command !== 'circulation') {
+          if (this.cycles.active()) this.cycles.cancel(now, 'manual-heating-override');
+          this.pendingPlan = null; this.store.setState(`pending-plan:${this.config.input}`, null);
+        }
+        this.store.event('heating-test-requested', { input: this.config.input, command }, now);
+      }, { priority: 'control' });
       // The automatic schedule stays Normal during a pause; the executor owns
       // any later manual choice until that pause ends. MQTT acknowledgement is
       // still not a physical readback.
@@ -847,13 +895,15 @@ export class Engine {
         && this.executor.status().manualRequested?.confirmed === true;
       const result = { command, ...execution,
         requestedAt: unchangedPreheat ? this.executor.status().manualRequested.at : requestedAt, at: this.clock() };
-      this.store.setState(`heating-test:${this.config.input}`, result);
-      this.store.event('heating-test-sent', { input: this.config.input, ...result }, result.at);
-      if (command === 'circulation') this.recordDhwr(this.executor.status().pulseUntil, result.at);
-      if (command !== 'circulation' && execution.status !== 'waiting' && !unchangedPreheat) {
-        this.recordManualHeating(command === 'preheat' ? 'preheat' : command === 'reduction' ? 'reduction' : 'normal',
-          result.at, command === 'preheat' ? capability.preheatRoomBoostC : 0);
-      }
+      await this.runWrite(() => {
+        this.store.setState(`heating-test:${this.config.input}`, result);
+        this.store.event('heating-test-sent', { input: this.config.input, ...result }, result.at);
+        if (command === 'circulation') this.recordDhwr(this.executor.status().pulseUntil, result.at);
+        if (command !== 'circulation' && execution.status !== 'waiting' && !unchangedPreheat) {
+          this.recordManualHeating(command === 'preheat' ? 'preheat' : command === 'reduction' ? 'reduction' : 'normal',
+            result.at, command === 'preheat' ? capability.preheatRoomBoostC : 0);
+        }
+      }, { priority: 'control' });
       return result;
     } catch (error) {
       const message = heatingErrorMessage(error?.code);
@@ -862,8 +912,10 @@ export class Engine {
         'MQTT_UNAVAILABLE', 'MQTT_CLOSED', 'EXECUTOR_UNCONFIRMED'].includes(code);
       const result = { command, status: unconfirmed ? 'unconfirmed' : 'failed', sent: unconfirmed ? null : false,
         code, actual: null, requestedAt, at: this.clock(), error: message };
-      this.store.setState(`heating-test:${this.config.input}`, result);
-      this.store.event('heating-test-failed', { input: this.config.input, ...result }, result.at);
+      await this.runWrite(() => {
+        this.store.setState(`heating-test:${this.config.input}`, result);
+        this.store.event('heating-test-failed', { input: this.config.input, ...result }, result.at);
+      }, { priority: 'control' });
       throw new Error(message);
     } finally { this.heatingTestBusy = false; this.onTemporaryChange?.(); }
   }
@@ -947,9 +999,10 @@ export class Engine {
     this.heatingTestBusy = true;
     try {
       await this.h66.setSetting({ register: input.register, value: input.value, now: this.clock() });
-      if (this.executor.reconcileManualPreheat(this.clock())) {
+      if (await this.executor.reconcileManualPreheat(this.clock())) {
         await this.floorOverride?.release({ reason: 'manual-room-supersession', now: this.clock() });
-        this.recordManualHeating('normal', this.clock());
+        const at = this.clock();
+        await this.runWrite(() => this.recordManualHeating('normal', at), { priority: 'control' });
       }
     } finally { this.heatingTestBusy = false; this.onTemporaryChange?.(); }
     return this.status();
@@ -981,8 +1034,35 @@ export class Engine {
       unit:'state',sourceTime:now,receivedAt:now,quality:this.plant?['simulated']:['requested'],
       raw:{expiresAt,verified:Boolean(this.plant),basis:'Controller timed circulation request; physical DHWR state is not observed'} });
   }
+  committedControl(operation) {
+    if (!this.store.transactionDepth) return operation();
+    return new Promise((resolve, reject) => {
+      this.store.afterCommit(() => { try { resolve(operation()); } catch (error) { reject(error); } });
+      this.store.afterRollback(() => reject(new Error('The controller update did not commit.')));
+    });
+  }
   tick() {
     if (this.suspended) return structuredClone(this.latestStatus);
+    if (this.store.transactionDepth) {
+      const fields = ['checkpoint', 'settings', 'pendingPlan', 'applied', 'lastSample',
+        'latestStatus', 'fireplaceReserveOverride', 'startupRestorationPending'];
+      const previous = structuredClone(Object.fromEntries(fields.map(key => [key, this[key]])));
+      const automation = structuredClone(this.automation.features);
+      const plant = this.plant ? structuredClone(this.plant.state) : null;
+      const ingestion = this.ingestionCheckpoint();
+      const cycleContext = structuredClone(this.cycles.fireplaceContext);
+      const explorerInput = structuredClone(this.heatingExplorer.input);
+      this.store.afterRollback(() => {
+        Object.assign(this, previous); this.automation.features = automation;
+        if (this.plant) this.plant.state = plant;
+        this.restoreIngestionCheckpoint(ingestion);
+        this.cycles.fireplaceContext = cycleContext;
+        this.heatingExplorer.input = explorerInput;
+        // A worker may have seen provisional model inputs. Its cache is
+        // replaceable; the next committed tick requests current evidence.
+        this.heatingPlanning.invalidate();
+      });
+    }
     const now = this.clock(), input = this.config.input;
     this.automation.reconcileTargets();
     recordHeatPumpConfiguration(this.store, input, this.control, now);
@@ -997,8 +1077,9 @@ export class Engine {
     }
     if (!this.dispatchPending && !this.automationEnabled('home') && this.startupRestorationPending) {
       this.startupRestorationPending = false;
-      this.dispatchPending = this.executor.restore({ now, reason: 'restart-with-automation-disabled' })
-        .catch(() => this.store.event('restoration-pending', { reason: 'restart-with-automation-disabled' }, this.clock()))
+      this.dispatchPending = this.committedControl(() => this.executor.restore({ now, reason: 'restart-with-automation-disabled' }))
+        .catch(() => this.runWrite(() => this.store.event('restoration-pending', { reason: 'restart-with-automation-disabled' }, this.clock())))
+        .catch(error => this.store.writeHealth.failure(error))
         .finally(() => { this.dispatchPending = null; });
     }
     const override = this.expireTemporary(now);
@@ -1326,8 +1407,10 @@ export class Engine {
         && priorExecutor.manualRequested.phase !== priorExecutor.manualBaseline.phase)
         || Object.keys(h66.obligations ?? {}).length > 0 };
     this.store.setState(`pending-plan:${input}`, this.pendingPlan);
-    const onExecution = execution => {
-      const executorStatus = this.executor.status?.();
+    const onExecution = (execution, receipt = null) => {
+      const at = receipt?.at ?? this.clock();
+      const executorStatus = receipt?.executorStatus ?? this.executor.status?.();
+      const floorMode = receipt?.floorMode ?? this.floorOverrideMode(at);
       if (execution.sent || execution.status === 'simulated'
         || ['mqtt', 'manual-hold'].includes(execution.status) && executorStatus?.acknowledgedAt != null
           && ['normal','preheat','reduction','recovery'].includes(execution.phase)) {
@@ -1336,7 +1419,7 @@ export class Engine {
         if (phase === 'recovery') {
           const active = this.cycles.active();
           if (active && active.recoveryStartedAt == null) {
-            active.recoveryStartedAt = execution.recoveryStartedAt ?? this.clock();
+            active.recoveryStartedAt = execution.recoveryStartedAt ?? at;
             active.recoveryHoldUntil = execution.recoveryHoldUntil ?? decision.recoveryHoldUntil;
             active.executionSchedule ??= { ...active.plan.schedule };
             active.executionSchedule.reductionEnd = active.recoveryStartedAt;
@@ -1344,7 +1427,7 @@ export class Engine {
             this.cycles.save(active);
           }
         }
-        this.applied = { phase, at: execution.sent || execution.status === 'simulated' ? this.clock() : this.applied.at,
+        this.applied = { phase, at: execution.sent || execution.status === 'simulated' ? at : this.applied.at,
           roomBoostC: phase === 'preheat' ? execution.roomBoostC ?? decision.roomBoostC : 0, verified: Boolean(execution.actual?.verified) };
         this.store.setState(`applied:${input}`, this.applied);
         if (this.plant && decision.dhwr.requested) {
@@ -1359,7 +1442,7 @@ export class Engine {
         if (decision.plan && ['preheat','reduction'].includes(phase) && !this.cycles.active()
           && (this.checkpoint?.measurementEpochAt ?? null) === (checkpoint.measurementEpochAt ?? null)
           && JSON.stringify(this.checkpoint?.sensorEpochs ?? {}) === JSON.stringify(checkpoint.sensorEpochs ?? {})) {
-          const effectiveAt=this.clock();
+          const effectiveAt=at;
           const plan = structuredClone(decision.plan);
           plan.executionOwner = decision.owner;
           plan.initialState = { indoorC: sample.indoorC, reserveC: this.fireplaceReserveOverride ?? planningState?.reserveC ?? sample.indoorC, slabC: planningState?.slabC, integral: equipment.integral };
@@ -1370,19 +1453,19 @@ export class Engine {
             this.heatingExplorer.started(started);
           });
         }
-        recordLearningContext(this.store,input,{phase,roomBoostC:this.applied.roomBoostC, floorOverrideMode: this.floorOverrideMode(this.clock()),
-          dhwrActive: this.executor.status().pulseUntil > this.clock(),
+        recordLearningContext(this.store,input,{phase,roomBoostC:this.applied.roomBoostC, floorOverrideMode: floorMode,
+          dhwrActive: executorStatus.pulseUntil > at,
           treatmentKey: this.cycles.active()?.plan.schedule.treatmentKey ?? (phase === 'preheat'
-            ? (this.floorOverrideMode(this.clock()) === 'on' ? 'room-boost-floor-v1' : 'room-boost-v1') : phase === 'reduction' ? 'reduction-only-v1' : 'normal'),
+            ? (floorMode === 'on' ? 'room-boost-floor-v1' : 'room-boost-v1') : phase === 'reduction' ? 'reduction-only-v1' : 'normal'),
           targetC:this.settings.comfort.targetC??this.checkpoint?.baselineC??null,
           regime:this.settings.occupancy.mode==='occupied'?'occupied':'away',
-          episodeId:this.cycles.active()?.id ?? null},this.clock(),{config:this.control,seed:checkpoint});
+          episodeId:this.cycles.active()?.id ?? null},at,{config:this.control,seed:checkpoint});
         checkpoint=this.replayLearning(checkpoint);this.checkpoint=checkpoint;
         const old = this.store.getState(`phase-snapshot:${input}`);
         const expiresAt = execution.expiresAt ?? decision.expiresAt;
         if ((old?.phase ?? old) !== phase || old?.expiresAt !== expiresAt) {
           this.store.observation({ source:'controller', device:input, signal:'controller_phase', value:['normal','preheat','reduction','recovery'].indexOf(phase),
-            unit:'state', sourceTime:this.clock(), receivedAt:this.clock(), quality:this.plant?['simulated']:['requested'], raw:{phase,expiresAt,verified:Boolean(execution.actual?.verified)} });
+            unit:'state', sourceTime:at, receivedAt:at, quality:this.plant?['simulated']:['requested'], raw:{phase,expiresAt,verified:Boolean(execution.actual?.verified)} });
           this.store.setState(`phase-snapshot:${input}`,{phase,expiresAt});
         }
       }
@@ -1390,7 +1473,8 @@ export class Engine {
       if (this.latestStatus?.now === now) { this.latestStatus.execution = execution; this.latestStatus.learning.episode = this.cycles.active(); }
       return execution;
     };
-    let execution = this.dispatchPending || this.automationChangePending ? { status:'pending', sent:false, actual:null } : this.heatingTestBusy || h66.phase === 'test' && h66.lastTest?.expiresAt > now
+    const alreadyPending = this.dispatchPending;
+    const dispatch = () => alreadyPending || this.automationChangePending ? { status:'pending', sent:false, actual:null } : this.heatingTestBusy || h66.phase === 'test' && h66.lastTest?.expiresAt > now
       ? { status:'manual-test-in-progress', sent:false, actual:null }
       : (ownsTemporarySettings || ownsPausedSettings) && !holdManualSettings
         ? this.executor.restoreManual({ now, reason: 'manual-settings-ended-or-reset', decision, automationEnabled: this.automationEnabled('home') })
@@ -1399,12 +1483,33 @@ export class Engine {
             || Object.keys(h66.obligations ?? {}).length || this.floorOverride?.status(now).outstanding)
             ? this.executor.restore({ now, reason: 'heating-paused', preserveManualDhwr: true })
             : this.executor.execute(decision,{automationEnabled:this.automationEnabled('home'),now});
+    let execution;
+    if (!alreadyPending && !this.plant && this.store.transactionDepth && (this.automationEnabled('home') || ownsTemporarySettings || ownsPausedSettings || holdManualSettings || override)) {
+      // A failed outer tick cannot leave a detached physical command behind.
+      execution = this.committedControl(dispatch);
+    } else execution = dispatch();
     if (execution?.then) {
-      this.dispatchPending = execution.then(onExecution).catch(() => {
+      this.dispatchPending = execution.then(result => {
+        const at = this.clock(), receipt = { at, executorStatus: this.executor.status(), floorMode: this.floorOverrideMode(at) };
+        return this.runWrite(() => {
+          const previous = structuredClone({ applied: this.applied, checkpoint: this.checkpoint,
+            latestStatus: this.latestStatus, explorer: this.heatingExplorer.input });
+          this.store.afterRollback(() => {
+            this.applied = previous.applied; this.checkpoint = previous.checkpoint;
+            this.latestStatus = previous.latestStatus; this.heatingExplorer.input = previous.explorer;
+          });
+          return onExecution(result, receipt);
+        }, { priority: 'control' });
+      }).catch(() => this.runWrite(() => {
         this.store.event('control-execution-failed',{input,phase:decision.phase,reason:'Command or native-setting readback failed; restoration remains pending'},this.clock());
         if (this.cycles.active()) this.cycles.cancel(this.clock(),'execution-not-established');
         if (this.latestStatus?.now === now) this.latestStatus.execution = { status:'failed', sent:false, actual:null, reason:'Command or readback failed; retrying restoration' };
-      }).finally(() => { this.dispatchPending = null; this.onTemporaryChange?.(); });
+      }, { priority: 'control' })).catch(error => {
+        this.store.writeHealth.failure(error);
+      }).finally(() => {
+        this.dispatchPending = null;
+        try { this.onTemporaryChange?.(); } catch { /* A failed reschedule cannot detach the completed command promise. */ }
+      });
       execution = { status:'pending', sent:false, actual:null };
     } else if (!this.dispatchPending) execution = onExecution(execution);
     // Heat-pump total power is reconstructed from committed equipment readings
@@ -1441,10 +1546,18 @@ export class Engine {
     return this.latestStatus;
   }
   status() {
-    if (!this.latestStatus) return this.tick();
     const checkTime = this.clock();
-    if (Number.isFinite(this.latestStatus.override?.expiresAt) && this.latestStatus.override.expiresAt <= checkTime
-      || this.settings.occupancy.mode === 'away' && Date.parse(this.settings.occupancy.returnAt) <= checkTime) return this.tick();
+    if (!this.latestStatus || Number.isFinite(this.latestStatus.override?.expiresAt) && this.latestStatus.override.expiresAt <= checkTime
+      || this.settings.occupancy.mode === 'away' && Date.parse(this.settings.occupancy.returnAt) <= checkTime) {
+      if (this.store.transactionDepth) return this.tick();
+      if (!this.statusRefreshPending) {
+        this.statusRefreshPending = true;
+        this.statusRefresh = this.runWrite(() => {
+          try { return this.tick(); } finally { this.statusRefreshPending = false; }
+        }).catch(error => { this.statusRefreshPending = false; this.store.writeHealth.failure(error); });
+      }
+      if (!this.latestStatus) throw Object.assign(new Error('Waiting for the first controller update to commit.'), { statusCode: 503 });
+    }
     const result = structuredClone(this.latestStatus);
     const now = this.clock();
     result.now = now;

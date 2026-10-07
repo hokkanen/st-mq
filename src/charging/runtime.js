@@ -175,6 +175,7 @@ const scheduleCeiling = snapshot => {
 export class ChargingRuntime {
   constructor({ engine, store, config, clock = Date.now, canControl = () => true, definitions = CHARGER_DEFINITIONS }) {
     Object.assign(this, { engine, store, config, clock, canControl, definitions });
+    this.writeAbort = new AbortController();
     this.key = `charging:${config.input}`;
     this.configuration = chargingConfiguration(config.charging);
     this.sessionDiagnostics = new ChargingSessionDiagnostics({ store, key: `${this.key}:session-diagnostics`, clock,
@@ -257,6 +258,30 @@ export class ChargingRuntime {
     this.settings = chargingSettingsFromConfiguration(this.configuration, { priority: this.controls.priority,
       chargers: Object.fromEntries(Object.entries(this.chargers).map(([id, item]) => [id, item.controls])) });
   }
+  write(operation, { priority = 'normal', isCurrent = () => true, bytes = 0 } = {}) {
+    return this.store.runWrite(() => {
+      this.preserveWriteState();
+      return operation();
+    }, { signal: this.writeAbort.signal, priority, bytes,
+      isCurrent: () => !this.closed && isCurrent() });
+  }
+  preserveWriteState() {
+    const fields = ['controls', 'replan', 'request', 'plan', 'progress', 'supplyEstimate', 'sessionCost', 'vehicleMatch',
+      'vehicleEvidence', 'vehicleConflict', 'identification', 'targetState', 'vehicleDisconnect', 'streamEvidence',
+      'forecast', 'newEpisode', 'wasPluggedIn', 'limiterPlanBasis', 'commandBasis', 'priceRecheckAt'];
+    const chargers = Object.fromEntries(Object.entries(this.chargers).map(([id, item]) => [id,
+      structuredClone(Object.fromEntries(fields.map(field => [field, item[field]])))]));
+    const feeds = Object.fromEntries(Object.entries(this.vehicleFeeds).map(([id, item]) => [id,
+      structuredClone({ reading: item.reading, mqtt: item.mqtt, consumedPlugId: item.consumedPlugId, consumedChargingId: item.consumedChargingId })]));
+    const saved = structuredClone({ controls: this.controls, revision: this.revision, coordination: this.coordination,
+      allocationScope: this.allocationScope, consumedTeslaPower: this.consumedTeslaPower, consumedTeslaCurrent: this.consumedTeslaCurrent });
+    this.store.afterRollback(() => {
+      Object.assign(this, saved);
+      for (const [id, state] of Object.entries(chargers)) Object.assign(this.chargers[id], state);
+      for (const [id, state] of Object.entries(feeds)) Object.assign(this.vehicleFeeds[id], state);
+      this.refreshSettings();
+    });
+  }
   charger(id) {
     const record = this.chargers[id];
     if (!record) throw new Error('Unknown charger');
@@ -274,6 +299,12 @@ export class ChargingRuntime {
       ? { ...this.coordination, priority: this.settings.priority } : this.coordination;
   }
   recordLimiterHistory(now = this.clock()) {
+    if (!this.store.transactionDepth) {
+      void this.write(() => this.recordLimiterHistory(this.clock())).catch(() => {
+        this.limiterHistory.suspend(); this.limiterHistoryError = 'Load balancing history could not be saved.';
+      });
+      return;
+    }
     try {
       if (!this.closed && this.canControl() && ['providers', 'mqtt'].includes(this.config.input)) {
         for (const [id, item] of Object.entries(this.chargers)) {
@@ -323,6 +354,7 @@ export class ChargingRuntime {
         ?? this.savedOwnership(id)?.currentTest?.phase));
   }
   receiveVehicleBoundary(id, event) {
+    this.preserveWriteState();
     for (const item of Object.values(this.chargers)) if (item.vehicleMatch?.id === id
       && event.at >= item.vehicleMatch.matchedAt && (teslamateDeparture(event) || event.field === 'geofence')) {
       item.vehicleMatch = null;
@@ -344,7 +376,10 @@ export class ChargingRuntime {
       item.adapter = adapter;
       const createController = adapter?.createController ?? createChargingController;
       item.controller = createController({ adapter, initialState: this.savedOwnership(id),
-        saveState: state => { this.store.setState(this.ownershipKey(id), state); item.ownershipAdmitted = true; }, clock: this.clock,
+        saveState: state => this.write(() => {
+          this.store.setState(this.ownershipKey(id), state);
+          this.store.afterCommit(() => { item.ownershipAdmitted = true; });
+        }, { priority: 'control', bytes: Buffer.byteLength(JSON.stringify(state)), isCurrent: () => item.adapter === adapter }), clock: this.clock,
         // Record publication before a command/readback await. A later ordinary
         // poll must not extend the preceding mode through this changed decision.
         onStatusChange: () => {
@@ -622,7 +657,12 @@ export class ChargingRuntime {
       && control.snapshot?.identificationCurrentReady !== true) return 'current-control-unavailable';
     return 'vehicle-charging-evidence-pending';
   }
-  identificationControl(item, snapshot) {
+  async identificationControl(item, snapshot) {
+    const controller = item.controller;
+    return this.write(() => this.identificationState(item, snapshot), { priority: 'control',
+      isCurrent: () => this.canControl() && item.controller === controller });
+  }
+  identificationState(item, snapshot) {
     const now = this.clock();
     // Read-only normalization advances the durable attempt from this freshly
     // observed session. Save it before allowing either release or pause writes.
@@ -701,14 +741,17 @@ export class ChargingRuntime {
       item.vehicleDisconnect = structuredClone(boundary);
     }
     this.streamPending.add('charger1');
-    this.flushStreamEvidence();
+    // The native event immediately fences commands. Its original source clock
+    // remains in the retained evidence while writer admission waits.
+    void this.write(() => this.flushStreamEvidence(), { priority: 'control' })
+      .catch(() => { this.error = 'charging-stream-save-unavailable'; });
     this.scheduleStreamReconcile();
     return true;
   }
   flushStreamEvidence() {
     if (!this.streamPersistencePending) return true;
     try {
-      this.persist(); this.streamPersistencePending = false;
+      this.persist(); this.store.afterCommit(() => { this.streamPersistencePending = false; });
       return true;
     } catch { this.error = 'charging-stream-save-unavailable'; return false; }
   }
@@ -717,13 +760,13 @@ export class ChargingRuntime {
     this.streamTimer = setTimeout(() => {
       this.streamTimer = null;
       this.streamFlight = (async () => {
-        if (!this.flushStreamEvidence()) return;
+        if (!await this.write(() => this.flushStreamEvidence(), { priority: 'control' })) return;
         const pending = [...this.streamPending]; this.streamPending.clear();
         for (const id of pending) {
           try { await this.reconcile(id); }
           catch { this.charger(id).error = 'charging-reconciliation-unavailable'; }
         }
-      })().finally(() => {
+      })().catch(() => { this.error = 'charging-stream-save-unavailable'; }).finally(() => {
         this.streamFlight = null;
         if (this.streamPersistencePending || this.streamPending.size)
           this.scheduleStreamReconcile(this.streamPersistencePending ? 1000 : 100);
@@ -743,6 +786,7 @@ export class ChargingRuntime {
   }
   receiveSoc(topic, payload, packet = {}, now = this.clock()) {
     if (this.closed) return false;
+    this.preserveWriteState();
     const route = this.mqttRoutes().find(item => item.topic === topic);
     if (!route) return false;
     const item = this.vehicleFeeds[route.id];
@@ -1454,7 +1498,11 @@ export class ChargingRuntime {
     if (this.closed) return Promise.resolve();
     // Accepted observations/progress must survive a restart even while an old
     // numerical search is still running. They are independent of plan adoption.
-    if (this.planningFlight) this.refreshPlanningState(now);
+    if (this.planningFlight && !this.stateRefreshFlight) {
+      this.stateRefreshFlight = this.write(() => this.refreshPlanningState(this.clock()))
+        .catch(() => { if (!this.closed) this.error = 'charging-planning-unavailable'; })
+        .finally(() => { this.stateRefreshFlight = null; });
+    }
     this.planningRequest = { sourceId, generation: ++this.planningGeneration };
     if (!this.planningFlight) {
       this.planningFlight = (async () => {
@@ -1512,7 +1560,9 @@ export class ChargingRuntime {
   }
   async calculatePlan(now, { sourceId, generation }) {
     const current = () => !this.closed && this.store.db.isOpen && generation === this.planningGeneration;
-    this.refreshPlanningState(now);
+    await this.write(() => { if (current()) this.refreshPlanningState(this.clock()); });
+    if (!current()) return;
+    now = this.clock();
     const views = this.views(now).map(view => {
       const attempt = this.charger(view.id).takeoverAttempt;
       if (!attempt || !this.takeoverCurrent(this.charger(view.id), attempt)) return view;
@@ -1664,6 +1714,8 @@ export class ChargingRuntime {
       result = await this.plannerService.request({ ...planning, chargers: planningViews, previousPeriods, fixedPeriods });
       if (!acceptResult(result)) return;
     }
+    await this.write(() => {
+    if (!acceptResult(result)) return;
     const environment = { supply: { budget: supply?.configuredBudgetCurrentA
         ?? (supply?.estimate?.available ? supply.estimate.budgetCurrentA : supply?.availableCurrentA),
         voltageV: planningVoltageV, allocationA: supply?.allocationA,
@@ -1820,7 +1872,8 @@ export class ChargingRuntime {
       item.newEpisode = false;
       item.limiterPlanBasis = this.currentPlanBasis(item);
     }
-    this.persist(); this.scheduleWakeup(this.clock());
+    this.persist(); this.store.afterCommit(() => this.scheduleWakeup(this.clock()));
+    });
   }
   invalidateCommands() {
     for (const item of Object.values(this.chargers)) {
@@ -1886,7 +1939,11 @@ export class ChargingRuntime {
   }
   tick({ now = this.clock(), prices, weather, force = false } = {}) {
     if (this.closed) return;
-    if (!this.flushStreamEvidence()) { this.scheduleStreamReconcile(1000); return; }
+    if (this.store.transactionDepth) {
+      this.store.afterCommit(() => this.tick({ prices, weather, force }));
+      return;
+    }
+    if (this.streamPersistencePending) { this.scheduleStreamReconcile(0); return; }
     if (Array.isArray(weather) && digest(weather) !== digest(this.weather)) { this.weather = weather; this.historyAt = null; }
     if (Array.isArray(prices)) { this.prices = prices; this.pricesInitialized = true; }
     let planning;
@@ -2022,7 +2079,8 @@ export class ChargingRuntime {
     if (takeover && (!item.takeoverAttempt || item.takeoverAttempt.token !== takeover
       || !this.takeoverCurrent(item, item.takeoverAttempt)))
       throw new Error('Charging controls or connection changed before takeover. Refresh and try again.');
-    if (!this.flushStreamEvidence()) { this.scheduleStreamReconcile(1000); return; }
+    if (!await this.write(() => this.flushStreamEvidence(), { priority: 'control' })) { this.scheduleStreamReconcile(1000); return; }
+    if (this.closed || !this.canControl()) return;
     const controller = item.controller, settings = this.views().find(view => view.id === id).settings;
     if (takeover && (!item.takeoverAttempt || item.takeoverAttempt.token !== takeover
       || !this.takeoverCurrent(item, item.takeoverAttempt)))
@@ -2040,6 +2098,7 @@ export class ChargingRuntime {
         reconnected: item.vehicleDisconnect.source === 'easee-stream' ? item.vehicleDisconnect.reconnected
           : bmwReconnectEvent(item.vehicleDisconnect, this.vehicleFeeds.bmw.reading, { now: this.clock() }) } : null });
     if (this.closed || controller !== item.controller) return;
+    await this.write(() => {
     const control = controller.status(), probe = this.probeReturn(item), execution = control.execution;
     if (probe?.endedAt != null && item.plan?.feasible === true && item.plan.provisional !== true
       && !control.pending && execution && execution.planId === item.plan.id
@@ -2055,6 +2114,7 @@ export class ChargingRuntime {
       try { this.persist(); } catch (error) { item.replan = true; throw error; }
     }
     item.error = null;
+    }, { priority: 'control', isCurrent: () => item.controller === controller });
     if (refreshPlan || !this.currentPlanReusable(item)) {
       try { await this.updatePlan(this.clock(), { sourceId: id }); this.error = null; } catch { this.error = 'charging-planning-unavailable'; }
     }
@@ -2064,6 +2124,7 @@ export class ChargingRuntime {
       throw new Error('Charging controls require live control authority.');
   }
   async setControl(id, input) {
+    await this.write(() => {
     const item = this.charger(id);
     this.checkControlAuthority();
     if (!object(input) || Object.keys(input).sort().join(',') !== 'association,enabled,revision'
@@ -2082,11 +2143,13 @@ export class ChargingRuntime {
         identification: previous.identification });
       this.revision = previous.revision; this.refreshSettings(); throw error;
     }
+    }, { priority: 'control', isCurrent: () => this.canControl() });
     this.invalidateCommands();
     try { await this.updatePlan(); } catch { this.error = 'charging-planning-unavailable'; }
     await this.reconcile();
   }
   async setSettings(input) {
+    await this.write(() => {
     this.checkControlAuthority();
     if (!object(input) || Object.keys(input).sort().join(',') !== 'associations,priority,revision'
       || !['balanced', 'charger1', 'charger2'].includes(input.priority) || !object(input.associations))
@@ -2104,6 +2167,7 @@ export class ChargingRuntime {
       for (const [id, state] of Object.entries(identification)) this.chargers[id].identification = state;
       this.refreshSettings(); throw error;
     }
+    }, { priority: 'control', isCurrent: () => this.canControl() });
     this.invalidateCommands();
     try { await this.updatePlan(); } catch { this.error = 'charging-planning-unavailable'; }
     await this.reconcile();
@@ -2122,6 +2186,7 @@ export class ChargingRuntime {
     return { item, view };
   }
   async chargeNow(id, input) {
+    await this.write(() => {
     if (!object(input) || Object.keys(input).sort().join(',') !== 'association,revision,sessionId')
       throw new Error('Charge Now requires the displayed charging connection.');
     const { item, view } = this.checkedSession(id, input);
@@ -2136,12 +2201,14 @@ export class ChargingRuntime {
     try { this.persist(); } catch (error) {
       item.request = previous; item.plan = previousPlan; item.identification = previousIdentification; this.revision = previousRevision; throw error;
     }
+    }, { priority: 'control', isCurrent: () => this.canControl() });
     this.invalidateCommands();
     try { await this.updatePlan(); } catch { this.error = 'charging-planning-unavailable'; }
     // Release scheduling immediately even when price/history work is unavailable.
     await this.reconcile();
   }
   async identifyVehicle(id, input) {
+    const item = await this.write(() => {
     this.checkControlAuthority();
     if (!object(input) || Object.keys(input).sort().join(',') !== 'association,revision,sessionId')
       throw new Error('Identify requires the displayed charging connection.');
@@ -2165,10 +2232,14 @@ export class ChargingRuntime {
       for (const [key, state] of Object.entries(consumed)) Object.assign(this.vehicleFeeds[key], state);
       this.consumedTeslaPower = previousTesla; this.revision = previousRevision; throw error;
     }
+    return item;
+    }, { priority: 'control', isCurrent: () => this.canControl() });
     item.controller.invalidate?.();
     await this.reconcile(id);
   }
   async setSessionRequest(id, input) {
+    await this.write(() => {
+    this.checkControlAuthority();
     if (Object.keys(input).some(key => !['scope', 'association', 'sessionId', 'revision', 'changes'].includes(key))
       || !object(input.changes)) throw new Error('Invalid session request');
     const { item } = this.checkedSession(id, input);
@@ -2187,9 +2258,12 @@ export class ChargingRuntime {
     try { this.persist(); } catch (error) {
       item.request = previous; item.plan = previousPlan; item.identification = previousIdentification; this.revision = previousRevision; throw error;
     }
+    }, { priority: 'control', isCurrent: () => this.canControl() });
     this.invalidateCommands(); await this.updatePlan(); await this.reconcile();
   }
   async resume(id, input) {
+    await this.write(() => {
+    this.checkControlAuthority();
     this.charger(id);
     if (!object(input) || Object.keys(input).length) throw new Error('Resume automatic charging with an empty object');
     const view = this.views().find(item => item.id === id);
@@ -2207,6 +2281,7 @@ export class ChargingRuntime {
     } else {
       try { this.persist(); } catch (error) { item.identification = previousIdentification; throw error; }
     }
+    }, { priority: 'control', isCurrent: () => this.canControl() });
     this.invalidateCommands();
     // Cancelling Charge now returns our session choice to planning. It does not
     // authorize clearing a native instruction; Use automatic owns that action.
@@ -2220,6 +2295,7 @@ export class ChargingRuntime {
       && item.request?.sessionId === attempt.sessionId && item.request.revision === attempt.revision;
   }
   async useAutomatic(id, input) {
+    const { item, attempt } = await this.write(() => {
     this.checkControlAuthority();
     if (!object(input) || Object.keys(input).sort().join(',') !== 'association,controlRevision,revision,sessionId,takeoverToken'
       || typeof input.takeoverToken !== 'string' || !input.takeoverToken.length || input.takeoverToken.length > 256)
@@ -2247,6 +2323,8 @@ export class ChargingRuntime {
     const attempt = { token: input.takeoverToken, controller: item.controller, association: item.association,
       sessionId: item.request.sessionId, revision: item.request.revision, controlRevision: item.controls.revision };
     item.takeoverAttempt = attempt;
+    return { item, attempt };
+    }, { priority: 'control', isCurrent: () => this.canControl() });
     this.invalidateCommands();
     try {
       await this.updatePlan();
@@ -2291,10 +2369,15 @@ export class ChargingRuntime {
       physicalTests: { ...this.physicalTests.status(), canManage: !this.closed && this.canControl() && ['mqtt', 'providers'].includes(this.config.input),
         ...(this.physicalTestsError ? { available: false, error: this.physicalTestsError } : {}) } };
   }
+  beginShutdown() {
+    this.closed = true; this.writeAbort.abort(); clearInterval(this.timer); clearTimeout(this.boundaryTimer); clearTimeout(this.streamTimer);
+  }
   async close() {
-    this.closed = true; clearInterval(this.timer); clearTimeout(this.boundaryTimer); clearTimeout(this.streamTimer);
+    this.beginShutdown();
     await this.plannerService.close();
     await this.planningFlight?.catch(() => {});
+    await this.stateRefreshFlight?.catch(() => {});
+    await this.streamFlight?.catch(() => {});
     await this.historyService?.close();
     await Promise.all(Object.values(this.chargers).map(async item => { await item.controller?.close(); await item.adapterFlight; }));
   }

@@ -159,6 +159,11 @@ function cacheWeather(previous, result, snapshotId, now) {
 export function startProviders({ engine, store, config, clock = Date.now, http,
   devices, market = fetchMarket, weather = fetchWeather, outdoor = fetchOutdoorTemperature,
   temperatureProvider, automatic = true, canControl = () => true, streamFactory, ocppFactory } = {}) {
+  let closed = false, timer;
+  const cancellation = new AbortController();
+  const write = (action, options = {}) => store.runWrite
+    ? store.runWrite(action, { signal: cancellation.signal, isCurrent: () => !closed && canControl(), ...options })
+    : Promise.resolve().then(action);
   const connections = config.connections ?? {};
   http ??= createHttp({ allowChargerScheduling: true, allowChargerTakeover: true, allowOcppSetup: true, canControl });
   const location = configuredLocation(connections);
@@ -172,8 +177,11 @@ export function startProviders({ engine, store, config, clock = Date.now, http,
   // uses only these weather sources for outdoor temperature.
   devices ??= createDeviceProviders({ connections, http, clock, canControl, streamFactory, ocppFactory,
     retryState: store.getState('providers:health')?.easee,
-    ocppState: { get: () => store.getState('easee:ocpp'), set: value => store.setState('easee:ocpp', value) },
-    ocppSetupState: { get: () => store.getState('easee:ocpp-setup'), set: value => store.setState('easee:ocpp-setup', value) },
+    ocppState: { get: () => store.getState('easee:ocpp'), set: value => store.setState('easee:ocpp', value),
+      runWrite: (action, options) => write(action, options), afterCommit: effect => store.afterCommit ? store.afterCommit(effect) : effect(),
+      afterRollback: effect => store.afterRollback?.(effect) },
+    ocppSetupState: { get: () => store.getState('easee:ocpp-setup'),
+      set: value => write(() => store.setState('easee:ocpp-setup', value), { priority: 'control' }) },
     ocppInstallation: localInstallation,
     onOcppControlTransition: async ({ phase, adapter }) => {
       const charging = engine.charging;
@@ -190,7 +198,7 @@ export function startProviders({ engine, store, config, clock = Date.now, http,
       } catch { throw Object.assign(new Error('Charging control transition remains pending'), { code: 'control-transition-pending' }); }
     },
     fallbackIntervalMs: config.acquisition?.easeeIntervalMs ?? 15_000,
-    onStreamDisconnect: (ids, options) => interruptElectricity(ids, options),
+    onStreamDisconnect: (ids, options) => { void interruptElectricity(ids, options); },
     onChargerObservation: observation => engine.charging?.receiveEaseeObservation(observation),
     tokenStore: fileTokenStore(join(config.dataDir, 'easee-tokens.json'), connections.easee ?? {}) });
   engine.ocppSetup = {
@@ -221,7 +229,7 @@ export function startProviders({ engine, store, config, clock = Date.now, http,
       period: cadence.weatherIntervalMs ?? 30 * MINUTE, run: args => weather({ ...args, connections, http }), snapshot: true, sources: ['fmi', 'openmeteo'] },
     outdoor: { enabled: location, period: cadence.outdoorIntervalMs ?? 5 * MINUTE, run: args => outdoor({ ...args, connections, http }), sources: ['fmi', 'openmeteo'] },
   };
-  const health = {}, pending = new Map(), cancellation = new AbortController();
+  const health = {}, pending = new Map();
   const saved = store.getState('providers:health') ?? {};
   const weatherIdentity = weatherAcquisitionIdentity(connections);
   const now = clock();
@@ -261,8 +269,8 @@ export function startProviders({ engine, store, config, clock = Date.now, http,
         Object.assign(health[name], { status: 'ok', failures: 0 });
     }
   }
-  store.setState('providers:health', health);
-  let closed = false, timer;
+  const initialized = write(() => store.setState('providers:health', health));
+  initialized.catch(() => {});
   const interruptedDevices = new Map();
 
   function streamHealth() {
@@ -275,21 +283,28 @@ export function startProviders({ engine, store, config, clock = Date.now, http,
     }
   }
 
-  function interruptElectricity(ids, { transport } = {}) {
+  async function interruptElectricity(ids, { transport } = {}) {
     if (closed || !canControl()) return false;
-    for (const id of ids) interruptedDevices.set(JSON.stringify([id, transport ?? null]), { id, transport });
+    const receivedAt = clock();
+    for (const id of ids) {
+      const key = JSON.stringify([id, transport ?? null]);
+      interruptedDevices.set(key, { id, transport, at: interruptedDevices.get(key)?.at ?? receivedAt });
+    }
     const interruptions = [...interruptedDevices.values()];
-    const affected = row => row && interruptions.some(item => item.id === row.device
-      && (item.transport === undefined || row.transport === item.transport));
+    const matches = (item, row) => row && item.id === row.device
+      && (item.transport === undefined || row.transport === item.transport);
+    const affected = row => interruptions.some(item => matches(item, row));
     // This RAM projection must become unavailable even if the durable gap write
     // fails. The pending boundary is retried before any subsequent integration.
     if (engine.electricitySnapshot) for (const group of ['charger', 'property'])
       if (affected(engine.electricitySnapshot[group])) engine.electricitySnapshot[group] = null;
-    const before = electricity.checkpoint(), checkpoint = structuredClone(before), at = clock();
-    try { store.transaction(() => {
-      for (const item of interruptions) engine.voltage?.interrupt?.({ source: 'easee', devices: [item.id], transport: item.transport, now: at });
+    try { await write(() => {
+      const before = electricity.checkpoint(), checkpoint = structuredClone(before);
+      try { store.transaction(() => {
+      for (const item of interruptions) engine.voltage?.interrupt?.({ source: 'easee', devices: [item.id], transport: item.transport, now: item.at });
       for (const [key, previous] of Object.entries(checkpoint.devices)) {
         if (!affected(previous)) continue;
+        const at = Math.min(...interruptions.filter(item => matches(item, previous)).map(item => item.at));
         engine.recorder?.energyGap?.({ source: 'easee', device: previous.device, prefix: previous.prefix,
           transport: previous.transport, start: Math.min(previous.at, at), end: Math.max(previous.at, at), quality: ['acquisition-failed'] });
         delete checkpoint.devices[key];
@@ -299,12 +314,20 @@ export function startProviders({ engine, store, config, clock = Date.now, http,
       store.setState('electricity:acquisition', checkpoint);
       streamHealth();
       store.setState('providers:health', health);
-    }); } catch {
-      electricity = new ElectricityAccumulator({ ...integrationOptions, checkpoint: before });
-      engine.recorder?.reload?.();
-      return false;
+      }); } catch (error) {
+        electricity = new ElectricityAccumulator({ ...integrationOptions, checkpoint: before });
+        engine.recorder?.reload?.();
+        throw error;
+      }
+      store.afterRollback?.(() => {
+        electricity = new ElectricityAccumulator({ ...integrationOptions, checkpoint: before });
+        engine.recorder?.reload?.();
+      });
+    }); } catch { return false; }
+    for (const item of interruptions) {
+      const key = JSON.stringify([item.id, item.transport ?? null]);
+      if (interruptedDevices.get(key) === item) interruptedDevices.delete(key);
     }
-    interruptedDevices.clear();
     return true;
   }
 
@@ -313,17 +336,18 @@ export function startProviders({ engine, store, config, clock = Date.now, http,
     if (devices.streamStatus?.()) {
       // A process restart interrupts an unobserved stream interval even when the
       // saved head is less than a minute old. Counter audit heads remain intact.
-      interruptElectricity([easee.charger_id, easee.equalizer_id].filter(present));
+      void interruptElectricity([easee.charger_id, easee.equalizer_id].filter(present));
     }
   }
 
   async function poll(name) {
+    if (closed || !canControl()) return;
     const job = definitions[name], state = health[name], at = clock();
     Object.assign(state, { status: 'running', lastAttemptAt: at });
-    store.setState('providers:health', health);
-    let failure = null, retryAfterMs = 0, issues = [], staleSourceTimes = {}, readings, missingTomorrow = false, electricityCommitted = false;
+    void write(() => store.setState('providers:health', health)).catch(() => {});
+    let failure = null, retryAfterMs = 0, issues = [], staleSourceTimes = {}, readings, missingTomorrow = false, electricityCommitted = false, completedAt = null;
     try {
-      if (name === 'easee' && interruptedDevices.size && !interruptElectricity([]))
+      if (name === 'easee' && interruptedDevices.size && !await interruptElectricity([]))
         throw new Error('Electrical interruption could not be saved');
       // Forecast and current weather share provider hosts. A server's rate
       // limit or access denial applies to both routes, while a missing station
@@ -335,6 +359,8 @@ export function startProviders({ engine, store, config, clock = Date.now, http,
       const skipSources = Object.entries(state.sourceBackoff).filter(([, value]) => value.nextAttemptAt > at).map(([source]) => source);
       const epoch = name === 'easee' ? devices.electricityEpoch?.() : undefined;
       const result = await job.run({ now: at, clock, signal: cancellation.signal, skipSources });
+      const acquiredAt = clock();
+      completedAt = acquiredAt;
       if (closed || !canControl()) return;
       if (name === 'easee' && epoch !== devices.electricityEpoch?.())
         throw Object.assign(new Error('Electrical acquisition was interrupted'), { code: 'provider-request-aborted' });
@@ -342,9 +368,18 @@ export function startProviders({ engine, store, config, clock = Date.now, http,
       if (name === 'outdoor') for (const row of result) row.raw = { ...row.raw, acquisitionIdentity: weatherIdentity };
       noteAcquisition(state, result?.acquisition, clock());
       state.source = result?.acquisition?.selected ?? result?.source ?? (Array.isArray(result) ? result.find(row => row.value !== null)?.source : null) ?? state.source;
+      await write(() => {
+      if (name === 'easee' && epoch !== devices.electricityEpoch?.())
+        throw Object.assign(new Error('Electrical acquisition was interrupted'), { code: 'provider-request-aborted' });
       // SQLite rollback must also restore the in-memory view used by decisions.
       const ingestionBefore = engine.ingestionCheckpoint();
       const electricityBefore = electricity.checkpoint();
+      const rewind = () => {
+        engine.restoreIngestionCheckpoint(ingestionBefore);
+        electricity = new ElectricityAccumulator({ ...integrationOptions, checkpoint: electricityBefore });
+        engine.recorder?.reload?.();
+      };
+      store.afterRollback?.(rewind);
       try { store.transaction(() => {
         if (job.snapshot) {
           const previous = store.getState(`provider:${name}`);
@@ -373,13 +408,13 @@ export function startProviders({ engine, store, config, clock = Date.now, http,
           if (!Array.isArray(result) || result.length > (name === 'easee' ? 32 : 20)) throw new Error('Invalid observation batch');
           if (name === 'easee') {
             for (const observation of result.filter(row => /_voltage_l[123]$/.test(row.signal)))
-              engine.voltage?.ingest(observation, { telemetryAt: voltageTelemetryAt(result, observation, clock()) });
-            const sampled = electricity.sample(result, clock());
+              engine.voltage?.ingest(observation, { telemetryAt: voltageTelemetryAt(result, observation, acquiredAt) });
+            const sampled = electricity.sample(result, acquiredAt);
             for (const interval of sampled.intervals) engine.ingestEnergy?.(interval);
             for (const audit of sampled.audits) store.energyAudit?.(audit);
             for (const gap of sampled.gaps) engine.recorder?.energyGap?.(gap);
-            recordEaseeSessionChecks({ store, rows: result, now: clock(),
-              flush: device => engine.recorder?.flush?.(clock(), { force: true, source: 'easee', device, prefix: 'ev1' }) });
+            recordEaseeSessionChecks({ store, rows: result, now: acquiredAt,
+              flush: device => engine.recorder?.flush?.(acquiredAt, { force: true, source: 'easee', device, prefix: 'ev1' }) });
             store.setState('electricity:acquisition', electricity.checkpoint());
           }
           for (const observation of result) {
@@ -396,16 +431,16 @@ export function startProviders({ engine, store, config, clock = Date.now, http,
           ({ issues, staleSourceTimes } = observationQuality(name, requiredRows, clock()));
           failure = observationFailure(requiredRows);
           if (name === 'easee') {
-            readings = currentReadings(result, configuredCurrents, state.currentReadings, clock());
+            readings = currentReadings(result, configuredCurrents, state.currentReadings, acquiredAt);
             failure ??= Object.values(readings).find(row => row.error)?.error ?? null;
           }
         }
       }); } catch (error) {
-        engine.restoreIngestionCheckpoint(ingestionBefore);
-        electricity = new ElectricityAccumulator({ ...integrationOptions, checkpoint: electricityBefore });
-        engine.recorder?.reload?.();
+        rewind();
         throw error;
       }
+      });
+      if (closed || !canControl() || name === 'easee' && epoch !== devices.electricityEpoch?.()) return;
       if (name === 'easee') {
         const snapshot = { property: null, charger: null };
         for (const row of Object.values(electricity.checkpoint().devices)) {
@@ -451,7 +486,7 @@ export function startProviders({ engine, store, config, clock = Date.now, http,
     if (closed || !canControl()) return;
     state.error = failure;
     state.failures = failure ? Math.min(10, state.failures + 1) : 0;
-    if (!failure) state.lastSuccessAt = clock();
+    if (!failure) state.lastSuccessAt = completedAt;
     // Only failed downloads back off. Successfully received older device state
     // stays on the normal cadence, including when an unused charger is stale.
     // A brief electrical download failure must not impose the five-minute
@@ -468,7 +503,7 @@ export function startProviders({ engine, store, config, clock = Date.now, http,
     if (failure && sourceDelays.length && sourceDelays.every(value => value > 0)) delay = Math.max(delay, Math.min(...sourceDelays));
     state.nextAttemptAt = clock() + delay;
     if (name === 'easee') streamHealth();
-    store.setState('providers:health', health);
+    await write(() => store.setState('providers:health', health));
     if (electricityCommitted) {
       engine.charging?.tick({now:clock(),force:true});
     }
@@ -497,6 +532,7 @@ export function startProviders({ engine, store, config, clock = Date.now, http,
 
   }
   return {
+    ready: initialized,
     runDue,
     async restoreOcpp() {
       if (closed || !ownsDevices) return;
@@ -506,7 +542,7 @@ export function startProviders({ engine, store, config, clock = Date.now, http,
     async close() {
       if (closed) return;
       if (ownsDevices && devices.streamStatus?.())
-        interruptElectricity([easee.charger_id, easee.equalizer_id].filter(present));
+        void interruptElectricity([easee.charger_id, easee.equalizer_id].filter(present));
       closed = true; clearInterval(timer);
       engine.ocppSetup = null;
       cancellation.abort(); http.close?.();

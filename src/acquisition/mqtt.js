@@ -42,6 +42,7 @@ export async function startMqtt({ engine, store, config, connect = mqtt.connect,
   const teslamate = teslaSettings.enabled ? createChargingTeslaCapture({ settings: teslaSettings,
     clock: () => engine.clock(), initialState: store.getState('charging:teslamate'),
     brokerIdentity: routing.identity('ha'), saveState: state => store.setState('charging:teslamate', state),
+    afterRollback: effect => store.afterRollback?.(effect),
     onBoundary: event => engine.charging?.receiveVehicleBoundary?.('tesla', event) }) : null;
   const chargingTesla = teslamate;
   if (chargingTesla && engine.charging) engine.charging.teslaCapture = chargingTesla;
@@ -63,6 +64,8 @@ export async function startMqtt({ engine, store, config, connect = mqtt.connect,
   // Every connect explicitly subscribes below. MQTT.js automatic resubscription
   // can otherwise report cached success before the broker acknowledges a route.
   const channels = new Map();
+  const cancellation = new AbortController();
+  const controlAllowed = () => canControl() && [...channels.values()].every(channel => !channel.pendingReceipts && !channel.receptionFailed);
   let stopping = false, stopped = false, disconnectedRecorded = false, lastSnapshotRequestedAt = null, lastGatewayStatusAt = null;
   for (const [id, connection] of [['primary', config.connections.mqtt], ...(routing.ha ? [['ha', routing.ha]] : [])]) {
     const client = connect(connection.address, { username: connection.user, password: connection.pw,
@@ -70,7 +73,7 @@ export async function startMqtt({ engine, store, config, connect = mqtt.connect,
     channels.set(id, { id, client, gate: gateMqttPublications(client, { canControl, timeoutMs: settings.readbackTimeoutMs ?? 10_000 }),
       connected: false, generation: 0, ready: false, readinessFailed: false, readinessWaiters: new Set(),
       vehicleSubscriptions: new Map(), equipmentSubscriptionBuffer: null, teslaSubscriptionBuffer: null, teslaSubscriptionOverflow: false,
-      pendingPublications: new Set(), pendingSubscriptions: new Set() });
+      pendingPublications: new Set(), pendingSubscriptions: new Set(), pendingReceipts: 0, receptionFailed: false });
   }
   const primary = channels.get('primary'), client = primary.client;
   const evseConfig = engine.charging?.configuration?.chargers?.charger2;
@@ -91,8 +94,11 @@ export async function startMqtt({ engine, store, config, connect = mqtt.connect,
         observations.push({ ...signal, value: null, sourceTime: null, receivedAt: at, quality, raw });
       }
     };
-    if (store.transaction) store.transaction(record); else record();
-    for (const observation of observations) engine.rememberObservation?.(observation, at);
+    write(() => {
+      if (store.transaction) store.transaction(record); else record();
+      const remember = () => { for (const observation of observations) engine.rememberObservation?.(observation, at); };
+      if (store.afterCommit) store.afterCommit(remember); else remember();
+    });
   };
   const subscriptionRejected = (topic, error, granted) => Boolean(error || Array.isArray(granted)
     && (!granted.length || !granted.some(row => row.topic === topic && [0, 1, 2].includes(row.qos))));
@@ -104,20 +110,35 @@ export async function startMqtt({ engine, store, config, connect = mqtt.connect,
       // Rate-limit failed attempts too; never recursively log into a busy DB.
       lastErrorAt.set(type, now);
       const errorCode = Number.isSafeInteger(cause?.errcode) ? cause.errcode : undefined;
-      try { store.event(type, { source, ...(errorCode === undefined ? {} : { errorCode }) }, now); }
-      catch (error) {
+      const rejected = error => {
         const busy = Number.isSafeInteger(error?.errcode) && [5, 6].includes(error.errcode & 255);
         try { reportStorageFailure({ event: 'mqtt-event-write-failed', source, attemptedEvent: type,
           reason: busy ? 'database-busy' : 'storage-write-failed',
           ...(errorCode === undefined ? {} : { captureErrorCode: errorCode }) }); }
         catch { /* A failed diagnostic sink cannot terminate acquisition either. */ }
-      }
+      };
+      try {
+        const action = () => store.event(type, { source, ...(errorCode === undefined ? {} : { errorCode }) }, now);
+        if (store.runWrite) store.runWrite(action, { signal: cancellation.signal }).catch(rejected); else action();
+      } catch (error) { rejected(error); }
     }
   };
-  const publish = (topic, payload, options, broker = 'primary') => new Promise((resolve, reject) => {
+  function write(action, { isCurrent = () => !stopped && !stopping && canControl(), bytes = 0, onFailure } = {}) {
+    try {
+      const result = store.runWrite && !store.transactionDepth ? store.runWrite(action, { signal: cancellation.signal, isCurrent, bytes }) : action();
+      return Promise.resolve(result).catch(error => {
+        onFailure?.(error);
+        if (!stopped && !stopping && canControl()) report('mqtt-observation-rejected', error);
+      });
+    } catch (error) { onFailure?.(error); report('mqtt-observation-rejected', error); return Promise.resolve(); }
+  }
+  const publishNow = (topic, payload, options, broker = 'primary') => new Promise((resolve, reject) => {
     const channel = channels.get(broker);
     if (!channel?.connected || stopped) { reject(new Error('MQTT unavailable')); return; }
     if (!canControl()) { reject(new Error('This instance no longer owns device control')); return; }
+    if (!controlAllowed() && !(decoder && topic === `${deviceId}/HP/CMD` && payload === 'GETALL')) {
+      reject(new Error('Device control is waiting for received observations to reach storage')); return;
+    }
     const { client, pendingPublications } = channel;
     const { noReplay = false, ...publicationOptions } = options ?? {};
     // MQTT.js can defer ID allocation while replaying its outgoing store. Do
@@ -160,6 +181,13 @@ export async function startMqtt({ engine, store, config, connect = mqtt.connect,
       removeOutgoing();
     }
   });
+  const publish = (...args) => {
+    if (!store.transactionDepth || !store.afterCommit) return publishNow(...args);
+    return new Promise((resolve, reject) => {
+      store.afterCommit(() => { publishNow(...args).then(resolve, reject); });
+      store.afterRollback?.(() => reject(new Error('Observation storage failed before device publication')));
+    });
+  };
   const refreshSubscriptions = (topics, broker = 'primary') => Promise.all([...new Set(topics)].map(topic => new Promise((resolve, reject) => {
     const channel = channels.get(broker);
     if (!channel?.connected || stopping || stopped) { reject(new Error('MQTT unavailable')); return; }
@@ -194,17 +222,17 @@ export async function startMqtt({ engine, store, config, connect = mqtt.connect,
     settings: config.garage?.adapter, clock: () => engine.clock(), canControl,
     productionTransport: createShellyCn105Transport({ settings: config.garage?.adapter, publish }),
     persisted: store.getState?.(`garage:adapter:${config.input}`),
-    onObservation: observation => engine.ingest(observation),
-    onEnergy: observation => engine.ingestEnergy?.(observation),
-    onDiagnostic: (diagnostic, at, snapshot) => store.transaction(() => {
+    onObservation: observation => write(() => engine.ingest(observation)),
+    onEnergy: observation => write(() => engine.ingestEnergy?.(observation)),
+    onDiagnostic: (diagnostic, at, snapshot) => write(() => store.transaction(() => {
       store.event('garage-external-temperature-diagnostic', diagnostic, at);
       store.setState(`garage:adapter:${config.input}`, snapshot);
-    }),
-    onEquipmentDiagnostic: (diagnostic, at, snapshot) => store.transaction(() => {
+    })),
+    onEquipmentDiagnostic: (diagnostic, at, snapshot) => write(() => store.transaction(() => {
       store.event('garage-pump-diagnostic', diagnostic, at);
       store.setState(`garage:adapter:${config.input}`, snapshot);
-    }),
-    onState: snapshot => engine.garage?.adapterChanged?.(snapshot),
+    })),
+    onState: snapshot => write(() => engine.garage?.adapterChanged?.(snapshot)),
   }) : null;
   if (garage) {
     engine.garage?.setAdapter?.(garage);
@@ -217,8 +245,8 @@ export async function startMqtt({ engine, store, config, connect = mqtt.connect,
     protection: config.garage.protection, enabled: config.garage.enabled === true,
     publish, clock: () => engine.clock(), canControl: () => config.input !== 'offline' && canControl(),
     persisted: store.getState?.(`garage:sender:${config.input}`),
-    onState: snapshot => engine.garage?.senderChanged?.(snapshot),
-    onObservation: observation => engine.ingest(observation) }) : null;
+    onState: snapshot => write(() => engine.garage?.senderChanged?.(snapshot)),
+    onObservation: observation => write(() => engine.ingest(observation)) }) : null;
   if (garageSender) {
     engine.garage?.setSender?.(garageSender);
     if (garageSender.topics.length) topicGroups.push({ id: 'garage-sender', label: 'Garage local frost protection', source: 'MQTT',
@@ -266,6 +294,7 @@ export async function startMqtt({ engine, store, config, connect = mqtt.connect,
     const connectedHandler = () => {
       if (channel.connected || stopped || stopping) return;
       const generation = ++channel.generation;
+      channel.receptionFailed = false;
       channel.connected = true; channel.ready = false; channel.readinessFailed = false;
       const currentSubscription = () => channel.connected && !stopped && !stopping && generation === channel.generation;
       let pending = 1;
@@ -276,8 +305,13 @@ export async function startMqtt({ engine, store, config, connect = mqtt.connect,
           if (acknowledged || !currentSubscription()) return;
           acknowledged = true;
           channel.readinessFailed ||= subscriptionRejected(topic, error, granted);
-          try { callback(error, granted); }
-          finally { if (--pending === 0) finishReadiness(channel); }
+          void write(() => {
+            try { callback(error, granted); }
+            finally {
+              const finish = () => { if (--pending === 0 && currentSubscription()) finishReadiness(channel); };
+              if (store.afterCommit) store.afterCommit(finish); else finish();
+            }
+          }, { isCurrent: currentSubscription });
         };
         try { client.subscribe(topic, options, done); }
         catch { done(new Error('MQTT subscription failed')); }
@@ -319,7 +353,7 @@ export async function startMqtt({ engine, store, config, connect = mqtt.connect,
           if (subscriptionRejected(topic, error, granted)) { garageSender.subscriptionFailed(); report('mqtt-garage-sender-subscribe-error'); }
         });
       }
-      store.event('mqtt-connected', { source, broker: channel.id, writesEnabled: Boolean(isPrimary && h66 && settings.writeEnabled === true) }, engine.clock());
+      write(() => store.event('mqtt-connected', { source, broker: channel.id, writesEnabled: Boolean(isPrimary && h66 && settings.writeEnabled === true) }, engine.clock()), { isCurrent: currentSubscription });
       if (shelly) {
         let subscriptions = equipmentTopics.length; const failedTopics = [], confirmedTopics = [];
         const buffered = { messages: [], bytes: 0, overflow: new Set() };
@@ -366,7 +400,8 @@ export async function startMqtt({ engine, store, config, connect = mqtt.connect,
       if (ownsTesla) chargingTesla?.setConnected(false);
       for (const route of engine.charging?.mqttRoutes() ?? []) if (routing.vehicleBroker(route) === channel.id)
         engine.charging.setMqttStatus({ connected: false, subscribed: false, reason: 'mqtt-disconnected', broker: channel.id }, route.id);
-      shelly?.setConnected(false, channel.id);
+      try { shelly?.setConnected(false, channel.id); }
+      catch { write(() => shelly?.setConnected(false, channel.id), { isCurrent: () => !channel.connected && !stopped }); }
       for (const finish of [...channel.pendingPublications]) finish(new Error('MQTT disconnected'));
       for (const finish of [...channel.pendingSubscriptions]) finish(new Error('MQTT disconnected'));
       if (isPrimary) {
@@ -378,7 +413,7 @@ export async function startMqtt({ engine, store, config, connect = mqtt.connect,
     client.on('connect', connectedHandler);
     client.on('error', () => report(isPrimary ? 'mqtt-error' : 'mqtt-ha-error'));
     client.on('offline', disconnected); client.on('close', disconnected);
-    client.on('message', (topic, payload, packet = {}) => {
+    const receive = (topic, payload, packet, receivedAt, snapshotRequestedAt) => {
       if (!channel.connected || stopped || stopping) return;
       try {
         const vehicleSubscription = vehicleSubscriptions.get(topic);
@@ -386,24 +421,24 @@ export async function startMqtt({ engine, store, config, connect = mqtt.connect,
           if (vehicleSubscription.messages) {
             if (vehicleSubscription.messages.length >= 32) vehicleSubscription.messages.shift();
             vehicleSubscription.messages.push({ payload: Buffer.from(payload.subarray(0, 4097)),
-              packet: { retain: packet.retain, dup: packet.dup, qos: packet.qos, messageId: packet.messageId }, at: engine.clock() });
-          } else if (vehicleSubscription.subscribed) engine.charging.receiveSoc(topic, payload, packet, engine.clock());
+              packet: { retain: packet.retain, dup: packet.dup, qos: packet.qos, messageId: packet.messageId }, at: receivedAt });
+          } else if (vehicleSubscription.subscribed) engine.charging.receiveSoc(topic, payload, packet, receivedAt);
           return;
         }
         if (ownsTesla && chargingTesla) {
           if (channel.teslaSubscriptionBuffer && matchesTopic(topic, teslamate.topic)) {
             if (!channel.teslaSubscriptionOverflow && Buffer.byteLength(payload) <= 4096 && channel.teslaSubscriptionBuffer.length < 128)
               channel.teslaSubscriptionBuffer.push({ topic, payload: Buffer.from(payload),
-                packet: { retain: packet.retain, dup: packet.dup, qos: packet.qos, messageId: packet.messageId }, at: engine.clock() });
+                packet: { retain: packet.retain, dup: packet.dup, qos: packet.qos, messageId: packet.messageId }, at: receivedAt });
             else { channel.teslaSubscriptionOverflow = true; channel.teslaSubscriptionBuffer = []; chargingTesla.setConnected(false, 'subscription-overflow'); }
             return;
           }
-          if (chargingTesla.receive(topic, payload, packet, engine.clock())) return;
+          if (chargingTesla.receive(topic, payload, packet, receivedAt)) return;
         }
         if (isPrimary) {
-          if (floorOverride.ingest(topic, payload, packet, engine.clock())) return;
-          if (garage?.receive(topic, payload, packet, engine.clock())) return;
-          if (garageSender?.receive(topic, payload, packet, engine.clock())) return;
+          if (floorOverride.ingest(topic, payload, packet, receivedAt)) return;
+          if (garage?.receive(topic, payload, packet, receivedAt)) return;
+          if (garageSender?.receive(topic, payload, packet, receivedAt)) return;
         }
         if (channel.equipmentSubscriptionBuffer) {
           const matched = equipmentTopics.filter(subscription => matchesTopic(topic, subscription));
@@ -412,18 +447,18 @@ export async function startMqtt({ engine, store, config, connect = mqtt.connect,
             if (buffered.messages.length >= 256 || bytes > 65_536 || buffered.bytes + bytes > 262_144)
               for (const subscription of matched) buffered.overflow.add(subscription);
             else { buffered.messages.push({ topic, payload: Buffer.from(payload),
-              packet: { retain: packet.retain, dup: packet.dup, qos: packet.qos, messageId: packet.messageId }, receivedAt: engine.clock() }); buffered.bytes += bytes; }
+                packet: { retain: packet.retain, dup: packet.dup, qos: packet.qos, messageId: packet.messageId }, receivedAt }); buffered.bytes += bytes; }
             return;
           }
         }
-        if (shelly?.receive(topic, payload, packet, engine.clock(), channel.id)) return;
+        if (shelly?.receive(topic, payload, packet, receivedAt, channel.id)) return;
         if (!isPrimary) return;
       if (!decoder) return;
-      if (topic.startsWith(`${deviceId}/HP/STATUS`) && !packet.retain) lastGatewayStatusAt = engine.clock();
+      if (topic.startsWith(`${deviceId}/HP/STATUS`) && !packet.retain) lastGatewayStatusAt = receivedAt;
       const decoderCheckpoint = decoder.checkpoint(), held = engine.ingestionCheckpoint?.();
       const controllerCheckpoint = h66.ingestionCheckpoint(), effects = [];
       const accept = () => {
-        const decoded = decoder.decode({ topic, payload, receivedAt: engine.clock(), retained: packet.retain,
+        const decoded = decoder.decode({ topic, payload, receivedAt, retained: packet.retain,
           dup: packet.dup, messageId: packet.messageId });
         if (!decoded || decoded.duplicate || decoded.signal === 'unknown') return;
         // A configured equipment or temperature source owns its logical signal.
@@ -436,18 +471,42 @@ export async function startMqtt({ engine, store, config, connect = mqtt.connect,
             usableForControl: decoded.usableForControl, timeBasis: decoded.timeBasis,
             sensorMeasuredAt: decoded.sensorMeasuredAt, cached: decoded.cached,
             retained: decoded.retained, publicationMayUseGatewayCache: decoded.sourceAt == null,
-            snapshotRequestedAt: lastSnapshotRequestedAt } });
+            snapshotRequestedAt } });
         h66.ingest(decoded, { afterCommit: effect => effects.push(effect) });
       };
-      try { if (store.transaction) store.transaction(accept); else accept(); }
-      catch (error) {
+      const rewind = () => {
         decoder.restore(decoderCheckpoint);
         if (held) engine.restoreIngestionCheckpoint(held);
         h66.restoreIngestionCheckpoint(controllerCheckpoint);
+      };
+      store.afterRollback?.(rewind);
+      try { if (store.transaction) store.transaction(accept); else accept(); }
+      catch (error) {
+        rewind();
         throw error;
       }
-      for (const effect of effects) effect();
+      for (const effect of effects) if (store.afterCommit) store.afterCommit(effect); else effect();
       } catch { report('mqtt-observation-rejected'); }
+    };
+    client.on('message', (topic, payload, packet = {}) => {
+      if (!channel.connected || stopped || stopping) return;
+      const receivedAt = engine.clock(), generation = channel.generation, bytes = Buffer.byteLength(payload);
+      const snapshotRequestedAt = lastSnapshotRequestedAt;
+      if (bytes > 65_536) { report('mqtt-observation-rejected'); return; }
+      const body = Buffer.from(payload), metadata = { retain: packet.retain, dup: packet.dup, qos: packet.qos, messageId: packet.messageId };
+      channel.pendingReceipts++;
+      let released = false;
+      const release = () => { if (!released) { released = true; channel.pendingReceipts--; } };
+      write(() => {
+        if (store.afterCommit) store.afterCommit(release);
+        receive(topic, body, metadata, receivedAt, snapshotRequestedAt);
+        if (!store.afterCommit) release();
+      }, { bytes: bytes + Buffer.byteLength(topic),
+        isCurrent: () => !stopped && !stopping && canControl() && channel.connected && channel.generation === generation,
+        onFailure: () => { if (channel.generation === generation && channel.connected && !stopping && !stopped) {
+          channel.receptionFailed = true; channel.ready = false;
+        } },
+      }).finally(release);
     });
     channel.startIfConnected = () => { if (client.connected) connectedHandler(); };
   }
@@ -459,7 +518,7 @@ export async function startMqtt({ engine, store, config, connect = mqtt.connect,
   maintenance?.unref?.();
   const shellyMaintenance = shelly ? setInterval(() => {
     if (stopped) return;
-    try { shelly.tick(engine.clock()); } catch (error) { report('mqtt-shelly-capture-failed', error); }
+    write(() => shelly.tick(engine.clock()));
   }, 5000) : null;
   shellyMaintenance?.unref?.();
   const floorMaintenance = setInterval(() => {
@@ -486,6 +545,7 @@ export async function startMqtt({ engine, store, config, connect = mqtt.connect,
       }
       if (restore && canControl()) await floorOverride.release({ reason: 'application-shutdown', now: engine.clock() }).catch(() => report('floor-shutdown-restoration-pending'));
       stopping = true;
+      cancellation.abort();
       for (const channel of channels.values()) {
         channel.generation++; channel.vehicleSubscriptions.clear(); channel.equipmentSubscriptionBuffer = null; channel.teslaSubscriptionBuffer = null;
         for (const finish of [...channel.pendingSubscriptions, ...channel.readinessWaiters]) finish(new Error('MQTT closed'));

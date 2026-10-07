@@ -16,8 +16,10 @@ Versions follow Semantic Versioning. `-dev.N` denotes a development prerelease.
   correcting a missed feasible schedule while preserving native restrictions,
   practical pauses and shared electrical limits.
 - Busy database locks no longer hold the main thread for a five-second wait.
-  A short failed write remains visible and cannot authorize a device command;
-  committed state and restoration duties remain protected.
+  Recording waits asynchronously in a bounded queue and retains original receipt
+  times. Commands wait for committed intent, then recheck their authority and
+  deadlines. Delayed or failed recording stays visible; restoration duties survive
+  interruption.
 - Recording and storage now share a compact dashboard summary with consistent
   spacing and separate, actionable problems. Healthy status appears briefly on
   opening the dashboard, then stays out of the way; startup, unknown health and

@@ -131,6 +131,23 @@ test('authority loss rejects publication and resumed recovery is idempotent', as
   assert.equal(f.master.learningJournal({ input: 'mqtt', limit: 1000 }).length, 99);
 });
 
+test('a stale recovery cannot publish over or mark a newer operation as failed', async t => {
+  const f = fixture(t), donor = await f.donor();
+  sample(donor, start + W);
+  const donorPath = await f.snapshot(donor);
+  const preview = await recoveryPreview({ signal: f.signal, masterPath: f.master.path, donorPath });
+  const replacement = { status: 'rebuilding', operationToken: 'fixture-newer-operation', startedAt: start + W };
+  let replaced = false;
+  await assert.rejects(recoverHistory({ signal: f.signal, store: f.master, donorPath, preview,
+    async onProgress(value) {
+      if (replaced || value.phase !== 'rebuilding') return;
+      await f.master.runWrite(() => f.master.setState('recovery:active:mqtt', replacement));
+      replaced = true;
+    } }), /active recovery operation changed/);
+  assert.deepEqual(f.master.getState('recovery:active:mqtt'), replacement);
+  assert.equal(f.master.learningEpoch('mqtt'), 'original');
+});
+
 test('a modified donor invalidates its preview before source import', async t => {
   const f = fixture(t), donor = await f.donor();
   observation(donor, start);

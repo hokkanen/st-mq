@@ -13,8 +13,9 @@ export function projectedSensorContext(store, input, epoch) {
 /** A failed import may have accepted old manual source events already. Let the
  * normal background correction worker reconcile those against the still-active
  * journal; a failed peer must not permanently suspend ordinary corrections. */
-export function markRecoveryFailed(store, input) {
+export function markRecoveryFailed(store, input, { operationToken } = {}) {
   store.transaction(() => {
+    if (operationToken !== undefined && store.getState(`recovery:active:${input}`)?.operationToken !== operationToken) return;
     store.db.prepare("UPDATE history_recoveries SET status='interrupted' WHERE input=? AND status IN ('importing','rebuilding')").run(input);
     const checkpoint = store.getState(`adaptive:${input}`);
     const revision = fireplaceLearningContext(store, input).fireplaceRevision;

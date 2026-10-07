@@ -157,6 +157,8 @@ export class VoltageEstimator {
       }
       this.store.setState(stateKey(this.input), state);
     });
+    const previous = this.sourcePolicy;
+    this.store.afterRollback(() => { this.sourcePolicy = previous; });
     this.sourcePolicy = policy;
   }
   ingest(observation, { telemetryAt = observation.raw?.deviceTelemetryAt } = {}) {

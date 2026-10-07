@@ -8,7 +8,11 @@ export function createMqttReception({ store, engine, admission, devices, meters,
     'observationOrder', 'writeOrder', 'online', 'bridgeOnline', 'liveSinceConnect', 'heartbeatAt', 'invalid',
     'subscriptionStatus', 'subscriptionRefresh', 'lastReceivedAt', 'lastLiveAt', 'lastRetainedAt', 'recordingLocation', 'dehumidifierHistoryAfter'];
   return {
-    afterCommit(effect) { if (effects) effects.push(effect); else effect(); },
+    afterCommit(effect) {
+      if (effects) effects.push(effect);
+      else if (store.afterCommit) store.afterCommit(effect);
+      else effect();
+    },
     run(receive) {
       if (effects) return receive();
       const delivery = admission.checkpoint(), held = engine.ingestionCheckpoint?.();
@@ -20,9 +24,7 @@ export function createMqttReception({ store, engine, admission, devices, meters,
       const savedMeters = new Map([...meters].map(([id, meter]) => [id, { meter, state: meter.checkpoint() }]));
       const savedRequests = requests && new Map(requests);
       const pending = effects = [];
-      let result;
-      try { result = store.transaction ? store.transaction(receive) : receive(); }
-      catch (error) {
+      const rewind = () => {
         admission.restore(delivery);
         if (held) engine.restoreIngestionCheckpoint(held);
         for (const snapshot of snapshots) {
@@ -35,9 +37,15 @@ export function createMqttReception({ store, engine, admission, devices, meters,
         meters.clear();
         for (const [id, { meter, state }] of savedMeters) { meter.restore(state); meters.set(id, meter); }
         if (requests) { requests.clear(); for (const [id, request] of savedRequests) requests.set(id, request); }
+      };
+      store.afterRollback?.(rewind);
+      let result;
+      try { result = store.transaction ? store.transaction(receive) : receive(); }
+      catch (error) {
+        rewind();
         throw error;
       } finally { effects = null; }
-      for (const effect of pending) effect();
+      for (const effect of pending) if (store.afterCommit) store.afterCommit(effect); else effect();
       return result;
     },
   };

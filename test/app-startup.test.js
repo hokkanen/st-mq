@@ -12,6 +12,7 @@ import { createServer } from 'node:http';
 import { Store } from '../src/storage/store.js';
 import { providerFixture } from '../scripts/lib/provider-fixture.js';
 import { identityConnection, idleIdentityClient } from './helpers/identity-mqtt.js';
+import { committedWrites } from './helpers/committed-status.js';
 
 
 
@@ -123,8 +124,9 @@ test('H66 observations coexist with weather and prices and acquisition only requ
     for (let i = 0; i < 100 && !app.engine.status().providers.outdoor?.lastSuccessAt; i++) await new Promise(resolve => setTimeout(resolve, 10));
     assert.deepEqual(subscriptions, ['stmq/vehicles/bmw', 'fixture-h66/HP/#']);
     fake.emit('message', 'fixture-h66/HP/8105', Buffer.from('-180'), { retain: true });
+    await committedWrites(app.store);
     assert.equal(app.store.latestObservation('heating_integral').source, 'husdata-h66');
-    const status = app.engine.tick();
+    const status = await app.store.runWrite(() => app.engine.tick());
     assert.equal(status.providers.market.source, 'elering');
     assert.equal(status.observations.outdoor.source, 'fmi');
     assert.ok(status.prices.length > 0);

@@ -13,9 +13,9 @@ test('recovery releases SQLite for progress persistence and concurrent controlle
   const busyTimeout = f.master.db.prepare('PRAGMA busy_timeout').get().timeout;
   let beats = 0, progressWrites = 0, maxWriteMs = 0;
   const timer = setInterval(() => {
-    const before = performance.now();
-    try { f.master.event('synthetic-control-tick', { tick: ++beats }, start + 10_000_000 + beats); }
-    catch (error) { failures.push(error.code); }
+    const before = performance.now(), tick = ++beats;
+    deferredWrites.push(f.master.runWrite(() => f.master.event('synthetic-control-tick', { tick }, start + 10_000_000 + tick))
+      .catch(error => failures.push(error.code)));
     maxWriteMs = Math.max(maxWriteMs, performance.now() - before);
   }, 10);
   let result;
@@ -32,8 +32,8 @@ test('recovery releases SQLite for progress persistence and concurrent controlle
         finally { f.master.db.exec(`PRAGMA busy_timeout=${busyTimeout}`); resolve(); }
       })));
     } });
-    await Promise.all(deferredWrites);
   } finally { clearInterval(timer); }
+  await Promise.all(deferredWrites);
   assert.deepEqual(failures, [], 'controller and progress writes never exhaust SQLite lock waiting');
   assert.ok(progressWrites > 0, 'progress persistence was exercised with no lock-wait allowance');
   assert.ok(beats > 0, 'the controller kept writing during recovery');

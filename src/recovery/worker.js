@@ -294,7 +294,7 @@ async function start() {
   originalFireplaceRevision = target.getState(`adaptive:${workerData.input}`)?.fireplaceRevision
     ?? fireplaceLearningContext(target, workerData.input).fireplaceRevision;
   const merge = new HistoryMerge({ target, donor, donorDigest, input: workerData.input, recoveryId, progress, yieldControl: yieldTurn });
-  target.setState(`recovery:active:${workerData.input}`, { status: 'importing', recoveryId, startedAt: Date.now() });
+  target.setState(`recovery:active:${workerData.input}`, { status: 'importing', recoveryId, operationToken: workerData.operationToken, startedAt: Date.now() });
   // A stopped worker can leave an unpublished projection. Remove only those
   // abandoned staging epochs, in bounded batches; successful prior epochs
   // remain the reconstruction archive for their original checkpoints.
@@ -320,7 +320,7 @@ async function start() {
   }
   if (recoveryId) target.db.prepare('UPDATE history_recoveries SET report=?,status=? WHERE id=?')
     .run(JSON.stringify(report), 'rebuilding', recoveryId);
-  target.setState(`recovery:active:${workerData.input}`, { status: 'rebuilding', startedAt: Date.now() });
+  target.setState(`recovery:active:${workerData.input}`, { status: 'rebuilding', recoveryId, operationToken: workerData.operationToken, startedAt: Date.now() });
   // Nothing affected learning: still return a guarded publication message so
   // permission to overwrite the donor follows successful source verification.
   if (report.model.status === 'unchanged') {
@@ -339,7 +339,7 @@ function cleanup() {
   parentPort.close();
 }
 function failed(error) {
-  try { if (target && workerData.mode !== 'preview') markRecoveryFailed(target, workerData.input); } catch {}
+  try { if (target && workerData.mode !== 'preview') markRecoveryFailed(target, workerData.input, { operationToken: workerData.operationToken }); } catch {}
   parentPort.postMessage({ type: 'failed', ...recoveryFailure(error) }); cleanup();
 }
 async function handleMessage(message) {

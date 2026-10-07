@@ -153,9 +153,18 @@ export class FireplaceRebuildManager {
         this.setStatus({ ...this.status(), status: 'failed', requiresRebuild: true,
           error: 'Model rebuild failed; the previous model remains active.' });
       };
-      worker.on('error', fail);
-      worker.on('exit', fail);
-      worker.on('message', result => {
+      const admit = operation => {
+        void this.store.runWrite(() => {
+          if (this.closed || generation !== this.generation) return;
+          const previousReady = this.ready;
+          this.store.afterRollback(() => { this.ready = previousReady; });
+          return operation();
+        }, { isCurrent: () => !this.closed && generation === this.generation })
+          .catch(error => this.store.writeHealth.failure(error));
+      };
+      worker.on('error', () => admit(fail));
+      worker.on('exit', () => admit(fail));
+      worker.on('message', result => admit(() => {
         if (this.closed || generation !== this.generation) return;
         if (!this.current(selection)) { this.start(); return; }
         if (result.revision !== revision || result.sensorRevision !== correctedSensors || result.epoch !== selection.epoch) return;
@@ -175,8 +184,8 @@ export class FireplaceRebuildManager {
           || result.head === 0 && result.checkpoint !== null) { fail(); return; }
         this.ready = { checkpoint: result.checkpoint, ...selection, head: result.head };
         this.setStatus({ ...this.status(), status: 'ready', journalCursor: result.head, processed: result.processed });
-      });
-      this.send({ type: 'rebuild', ...selection, head: this.head() });
+      }));
+      this.store.afterCommit(() => { if (!this.closed && generation === this.generation) this.send({ type: 'rebuild', ...selection, head: this.head() }); });
       return true;
     } catch {
       const worker = this.worker; this.worker = null; this.generation++;
@@ -227,8 +236,15 @@ export class FireplaceRebuildManager {
     this.closed = true; this.generation++; this.ready = null;
     const worker = this.worker; this.worker = null;
     if (worker) {
-      this.setStatus({ ...this.status(), status: 'pending', requiresRebuild: true });
-      await worker.terminate();
+      const closing = new AbortController();
+      try {
+        const save = this.store.runWrite(() => this.setStatus({ ...this.status(), status: 'pending', requiresRebuild: true }), { signal: closing.signal });
+        // Saved running/ready intent also resumes on restart. Teardown must not
+        // wait indefinitely merely to relabel that already durable obligation.
+        closing.abort();
+        await save;
+      } catch (error) { if (error.code !== 'STORAGE_WRITE_CANCELLED') throw error; }
+      finally { await worker.terminate(); }
     }
   }
 }

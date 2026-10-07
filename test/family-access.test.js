@@ -27,6 +27,10 @@ async function fixture(t, options = {}) {
     status: () => ({ sensorChanges: sensorView }),
     fireplaceStatus: () => ({ available: true, entries: [] }), sensorChangesStatus: () => sensorView,
     contract: () => ({ periods: [] }),
+    commitFireplaceSource: (...args) => { record('changeFireplace')(...args); return {}; },
+    finishFireplaceChange: () => ({ updated: true }),
+    commitSensorChange: record('changeSensor'), finishSensorChange: () => sensorView,
+    commitSensorReversal: record('revertSensor'), finishSensorReversal: () => sensorView,
     equipmentStatus: () => ({ devices: [
       { id: 'garage_door1', area: 'garage', kind: 'door', enabled: true, controls: { cover: { open: true, close: true, stop: true } } },
       { id: 'other_door', area: 'home', kind: 'door', enabled: true, controls: { cover: { open: true, close: true, stop: true } } },
@@ -46,7 +50,7 @@ async function fixture(t, options = {}) {
   };
   const config = configuration(options.config);
   const access = createWebAccess({ config, engine,
-    store: { events: () => [{ id: 1 }], observations: () => [], getState: () => null },
+    store: { runWrite: async operation => operation(), events: () => [{ id: 1 }], observations: () => [], getState: () => null },
     chartService: { overview: async () => ({ rows: [] }), query: async args => ({
       range: chartRequestRange(args).range, now: args.now, input: args.input, left: args.left ?? 'power',
       series: {}, shading: {}, operatingModes: [], meta: { warnings: [], elapsedMs: 0 },

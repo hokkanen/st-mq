@@ -29,7 +29,7 @@ export class GarageRuntime {
       broker: { address: source.address ?? null, user: source.username ?? null } })).digest('hex');
     const saved = validateGarageModeState(store.getState(this.keys.mode));
     this.selection = saved?.adapterKey === this.adapterKey ? saved : null;
-    this.closed = false; this.busy = false;
+    this.closed = false; this.busy = false; this.writeLifetime = new AbortController();
     store.setState(`garage:configuration:${this.input}`, this.settings);
   }
   setAdapter(adapter) { this.adapter = adapter; this.sync(); }
@@ -77,7 +77,8 @@ export class GarageRuntime {
       || !['normal', 'away'].includes(input.mode)
       || Object.hasOwn(input, 'targetC') && (input.mode !== 'normal' || !validGarageTarget(input.targetC)))
       throw new Error('Choose Normal or Away, with an optional Normal target between 0 and 31°C in half-degree steps.');
-    const now = this.clock(); this.sync(now);
+    await this.runWrite(() => this.sync(this.clock()), { priority: 'control' });
+    const now = this.clock();
     const reason = this.controlReason(now);
     if (reason) throw Object.assign(new Error(reason), { statusCode: 409 });
     const adapter = this.adapter.status(now), previous = this.identityChanged ? null : this.selection;
@@ -98,16 +99,22 @@ export class GarageRuntime {
       const next = { version: 1, adapterKey: this.adapterKey, targetIdentity: adapter.targetIdentity,
         mode: input.mode, normalTargetC, awayTargetC: this.settings.awayTargetC, changedAt: now,
         warmingWarning: previous?.warmingWarning ?? null };
-      this.store.transaction(() => {
+      await this.runWrite(() => {
+        const previousSelection = structuredClone(this.selection), previousIdentityChanged = this.identityChanged;
+        const observations = this.engine.ingestionCheckpoint();
+        this.store.afterRollback(() => {
+          this.selection = previousSelection; this.identityChanged = previousIdentityChanged;
+          this.engine.restoreIngestionCheckpoint(observations);
+        });
         this.store.setState(this.keys.mode, next);
         this.store.event('garage-mode-changed', { mode: input.mode, targetC, previousTargetC: fromC ?? null,
           commandId: result.commandId, status: result.status }, now);
-      });
-      this.selection = next; this.identityChanged = false;
-      this.engine.ingest({ source: 'stmq', device: adapter.targetIdentity, signal: 'garage_away_mode',
-        value: input.mode === 'away' ? 1 : 0, unit: 'state', sourceTime: now, receivedAt: now, quality: ['good'],
-        raw: { requested: true, commandId: result.commandId, usableForControl: false } });
-      this.warn(fromC, targetC, now);
+        this.selection = next; this.identityChanged = false;
+        this.engine.ingest({ source: 'stmq', device: adapter.targetIdentity, signal: 'garage_away_mode',
+          value: input.mode === 'away' ? 1 : 0, unit: 'state', sourceTime: now, receivedAt: now, quality: ['good'],
+          raw: { requested: true, commandId: result.commandId, usableForControl: false } });
+        this.warn(fromC, targetC, now);
+      }, { priority: 'control' });
 
       return this.status(now);
     } finally { this.busy = false; }
@@ -127,8 +134,10 @@ export class GarageRuntime {
     try {
       const prior = this.adapter.status(now).native;
       const result = await this.adapter.setNativeSetting(request, now);
-      this.store.event('garage-native-setting-requested', { ...request, commandId: result.commandId, status: result.status }, now);
-      if (request.setting === 'targetC') this.warn(prior.targetC, request.value, now);
+      await this.runWrite(() => {
+        this.store.event('garage-native-setting-requested', { ...request, commandId: result.commandId, status: result.status }, now);
+        if (request.setting === 'targetC') this.warn(prior.targetC, request.value, now);
+      }, { priority: 'control' });
 
       return result;
     } finally { this.busy = false; }
@@ -181,5 +190,9 @@ export class GarageRuntime {
           observedAt: observed?.sourceTime ?? null }]; })),
       adapter: adapter ?? { phase: 'unavailable', contractStatus: 'missing', connected: false, blockedReasons: ['Waiting for the heat-pump controller connection.'] } };
   }
-  async close() { this.closed = true; await this.sender?.close(); }
+  runWrite(operation, options = {}) {
+    return this.store.runWrite(operation, { ...options, signal: this.writeLifetime.signal });
+  }
+  beginShutdown() { this.closed = true; this.writeLifetime.abort(); }
+  async close() { this.beginShutdown(); await this.sender?.close(); }
 }

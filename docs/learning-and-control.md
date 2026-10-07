@@ -504,6 +504,30 @@ Available registers restore independently while unavailable registers retain
 their obligations. Disconnection or waiting for evidence never extends the
 original expiry or establishes successful restoration.
 
+Heating intent waits asynchronously for the database writer. Native commands
+follow the committed obligation and recheck connection, actual setting evidence
+and the original expiry after waiting. A queued setting edit cannot overwrite a
+newer panel setting or acquire permission from a replacement connection.
+Native restoration still requires admitted, current readback; unavailable storage
+or device evidence leaves that duty visibly pending.
+
+While the authorized runtime remains running, timed circulation has a narrower
+independent OFF path: an already committed,
+device-bound OFF obligation keeps its original deadline even when post-ON
+bookkeeping is waiting for storage. That path can only stop the original relay,
+still subject to live authority, identity and native readiness. It grants no ON
+permission and retains the durable duty until confirmed OFF and its clearing
+commit. Storage delay cannot extend the run or make restoration appear complete.
+
+Runtime teardown fences new activations immediately. Its own restorative saves
+may wait for storage for up to five seconds; a longer wait cancels that runtime's
+pending admissions, retaining the last committed physical obligations. Demotion
+cancels those admissions immediately. Neither path closes the shared database or
+confirms a device restoration that did not finish. The next authorized runtime
+must reconcile the retained duties with current equipment evidence.
+Before teardown starts, applying configuration still waits for the authorized
+runtime's restoration to commit; waiting does not apply the new settings.
+
 Unreadable or malformed saved executor or native-setting state stops
 initialization before any state replacement or command. Saved manual choices
 require valid equipment ownership, explicit confirmation and valid scope

@@ -73,11 +73,22 @@ export function createShellyEvseAdapter({ config, broker, client, store, engine,
   let notificationRefreshQueued = false;
   let subscriptionStatus = 'disconnected', lastLiveAt = null, readAt = null;
   let statusObserver = null;
+  const cancellation = new AbortController();
+  let storagePending = 0;
+  const afterCommit = effect => store.afterCommit ? store.afterCommit(effect) : effect();
+  const write = (action, { epoch = generation, bytes = 0 } = {}) => {
+    const current = () => !closed && connected && epoch === generation && canControl();
+    if (!store.runWrite) {
+      if (!current()) return Promise.reject(fail('evse-offline'));
+      try { return Promise.resolve(action()); } catch (cause) { return Promise.reject(cause); }
+    }
+    return store.runWrite(action, { signal: cancellation.signal, isCurrent: current, bytes });
+  };
   const publishStatus = () => {
     if (closed) return;
     // The observer reads an already published snapshot. Its storage failure
     // cannot reject a native reading or interfere with command/readback work.
-    try { statusObserver?.()?.catch?.(() => {}); } catch {}
+    afterCommit(() => { try { statusObserver?.()?.catch?.(() => {}); } catch {} });
   };
   const topics = [
     { role: 'RPC responses', topic: `${source}/rpc`, direction: 'subscribe' },
@@ -87,7 +98,7 @@ export function createShellyEvseAdapter({ config, broker, client, store, engine,
   ];
   const admission = createMqttAdmission();
   let overflow = false, eventOverflow = false;
-  const ready = () => controlReady && !eventOverflow && !state.permissionOverflow && finite(serviceAt) && clock() >= serviceAt && clock() - serviceAt <= config.maxAgeMs;
+  const ready = () => controlReady && storagePending === 0 && !eventOverflow && !state.permissionOverflow && finite(serviceAt) && clock() >= serviceAt && clock() - serviceAt <= config.maxAgeMs;
   const currentReady = () => ready() && currentControlReady;
   const identificationCurrentReady = () => currentReady()
     && Number.isSafeInteger(state.fields.current_limit?.value)
@@ -317,12 +328,12 @@ export function createShellyEvseAdapter({ config, broker, client, store, engine,
     if (!retained) { fieldGenerations.set(role, generation); readAt = receivedAt; }
     return true;
   }
-  function receive(topic, payload, packet = {}, receivedAt = clock()) {
+  function receiveAdmitted(topic, payload, packet = {}, receivedAt = clock()) {
     if (closed || !connected || Buffer.byteLength(payload) > 65536) return;
     if (!topic.startsWith(`${config.topicPrefix}/`) && topic !== `${source}/rpc`) return;
-    if (!admitted) { if (buffer.length < 128 && !overflow) buffer.push({ topic, payload: Buffer.from(payload), packet, at: clock() }); else { overflow = true; buffer = []; error = 'evse-subscription-overflow'; } return; }
+    if (!admitted) { if (buffer.length < 128 && !overflow) buffer.push({ topic, payload: Buffer.from(payload), packet, at: receivedAt }); else { overflow = true; buffer = []; error = 'evse-subscription-overflow'; } return; }
     if (topic === `${config.topicPrefix}/online`) {
-      if (!admission.admit(topic, payload, packet, clock())) return;
+      if (!admission.admit(topic, payload, packet, receivedAt)) return;
       if (!packet.retain && ['true', 'false'].includes(payload.toString())) lastLiveAt = receivedAt;
       online = payload.toString() === 'true'; if (!online) {
         discovered = controlReady = false; readinessRevision++; rejectPending('evse-offline');
@@ -335,7 +346,7 @@ export function createShellyEvseAdapter({ config, broker, client, store, engine,
       const item = pending.get(frame.id);
       if (!item || item.generation !== generation || frame.dst !== undefined && frame.dst !== source) return;
       if (!Object.hasOwn(frame, 'result') && !frame.error) return;
-      if (!admission.admit(topic, payload, packet, clock(), { correlated: true })) return;
+      if (!admission.admit(topic, payload, packet, receivedAt, { correlated: true })) return;
       lastLiveAt = receivedAt;
       pending.delete(frame.id); clearTimeout(item.timer);
       if (frame.error) item.reject(fail('evse-rpc-rejected'));
@@ -367,7 +378,7 @@ export function createShellyEvseAdapter({ config, broker, client, store, engine,
               }
             }
           }
-          item.resolve(frame.result);
+          afterCommit(() => item.resolve(frame.result));
         } catch (cause) {
           controlReady = false; readinessRevision++; error = cause.code ?? 'evse-read-unavailable';
           item.reject(cause);
@@ -382,7 +393,7 @@ export function createShellyEvseAdapter({ config, broker, client, store, engine,
     if (topic === `${config.topicPrefix}/events/rpc` && ['NotifyStatus', 'NotifyFullStatus'].includes(frame.method)) {
       const admissionCheckpoint = admission.checkpoint();
       const timestamped = finite(frame.params?.ts) && frame.params.ts > 0 || Object.values(frame.params ?? {}).some(value => finite(value?.last_update_ts) && value.last_update_ts > 0);
-      if (!admission.admit(topic, payload, packet, clock(), { timestamped })) return;
+      if (!admission.admit(topic, payload, packet, receivedAt, { timestamped })) return;
       if (!packet.retain) lastLiveAt = receivedAt;
       if (!discovered) {
         if (pendingEvents.length < 128) pendingEvents.push({ admissionCheckpoint, params: frame.params, method: frame.method, at: receivedAt, retained: packet.retain === true });
@@ -390,6 +401,44 @@ export function createShellyEvseAdapter({ config, broker, client, store, engine,
       } else if (!admitNotification(frame.params, receivedAt, packet.retain === true, frame.method)) admission.restore(admissionCheckpoint);
       publishStatus();
     }
+  }
+  function receive(topic, payload, packet = {}, receivedAt = clock()) {
+    if (closed || !connected || Buffer.byteLength(payload) > 65536
+      || !topic.startsWith(`${config.topicPrefix}/`) && topic !== `${source}/rpc`) return;
+    const epoch = generation, body = Buffer.from(payload);
+    const metadata = { retain: packet.retain, dup: packet.dup, qos: packet.qos, messageId: packet.messageId };
+    // Receipt stops a correlated reply's network timeout. Persistence still
+    // precedes its promise resolution, and command freshness is checked again.
+    let response, responseId;
+    if (topic === `${source}/rpc` && !packet.retain) {
+      try {
+        const frame = JSON.parse(body);
+        const item = pending.get(frame.id);
+        if (frame.src === config.deviceId && (frame.dst === undefined || frame.dst === source)
+          && item?.generation === epoch && (Object.hasOwn(frame, 'result') || frame.error)) {
+          response = item; responseId = frame.id; clearTimeout(item.timer);
+        }
+      } catch {}
+    }
+    storagePending++;
+    let released = false;
+    const release = () => { if (!released) { released = true; storagePending--; } };
+    void write(() => {
+      const before = copy(state), savedAdmission = admission.checkpoint();
+      const maps = [fieldRevisions, fieldGenerations, notificationBaselines, notificationPending]
+        .map(map => [map, new Map(map)]);
+      store.afterRollback?.(() => {
+        state = before; admission.restore(savedAdmission);
+        for (const [map, saved] of maps) { map.clear(); for (const [key, value] of saved) map.set(key, value); }
+        engine.recorder?.reload?.();
+      });
+      afterCommit(release);
+      receiveAdmitted(topic, body, metadata, receivedAt);
+    }, { epoch, bytes: body.length + Buffer.byteLength(topic) }).catch(cause => {
+      if (response && pending.get(responseId) === response) pending.delete(responseId);
+      response?.reject(cause);
+      if (epoch === generation && !closed) { controlReady = false; readinessRevision++; error = cause.code ?? 'evse-read-unavailable'; }
+    }).finally(() => { release(); publishStatus(); });
   }
   function requestNotificationReadback() {
     if (notificationRefreshQueued) return;
@@ -500,8 +549,10 @@ export function createShellyEvseAdapter({ config, broker, client, store, engine,
           componentRoles.set(`${type.toLowerCase()}:${component.id}`, role);
         }
         discovered = info?.id === config.deviceId && componentRoles.size === Object.keys(TYPES).length;
-        const events = pendingEvents; pendingEvents = [];
-        for (const event of events) if (!admitNotification(event.params, event.at, event.retained, event.method)) admission.restore(event.admissionCheckpoint);
+        await write(() => {
+          const events = pendingEvents; pendingEvents = [];
+          for (const event of events) if (!admitNotification(event.params, event.at, event.retained, event.method)) admission.restore(event.admissionCheckpoint);
+        }, { epoch });
       }
       let eligible = false;
       const checked = promise => promise.catch(cause => {
@@ -701,17 +752,20 @@ export function createShellyEvseAdapter({ config, broker, client, store, engine,
         powerKw: signal(phases?.total_power, 'phase_info'),
         phaseMeasurements: phases ?? null, commissioning: snapshot().commissioning };
     },
-    acknowledgePermissionEvents(sequence) {
+    async acknowledgePermissionEvents(sequence) {
       if (!Number.isSafeInteger(sequence) || sequence < 0 || sequence > (state.permissionSequence ?? 0)) throw fail('invalid-evse-event-cursor');
-      const before = copy(state);
-      state.permissionEvents = (state.permissionEvents ?? []).filter(event => event.sequence > sequence);
-      try { persist(); } catch (cause) { state = before; throw cause; }
+      await write(() => {
+        const before = copy(state);
+        store.afterRollback?.(() => { state = before; });
+        state.permissionEvents = (state.permissionEvents ?? []).filter(event => event.sequence > sequence);
+        try { persist(); } catch (cause) { state = before; throw cause; }
+      });
     },
     liveCurrents() { const field = state.fields.phase_info;
       return { healthy: online && Boolean(live('phase_info')), currents: field ? config.phaseMap.map(i => field.value[['phase_a', 'phase_b', 'phase_c'][i]].current) : null,
         times: [field?.measuredAt, field?.measuredAt, field?.measuredAt], confirmedAt: field?.receivedAt ?? null }; },
     createController: options => createShellyController({ ...options, adapter }),
-    close() { closed = true; clearInterval(timer); disconnect(); client.removeListener('connect', connect); client.removeListener('message', receive); client.removeListener('offline', disconnect); client.removeListener('close', disconnect); },
+    close() { closed = true; cancellation.abort(); clearInterval(timer); disconnect(); client.removeListener('connect', connect); client.removeListener('message', receive); client.removeListener('offline', disconnect); client.removeListener('close', disconnect); },
   };
   return adapter;
 }

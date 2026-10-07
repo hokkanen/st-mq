@@ -456,6 +456,7 @@ export class Recorder {
       s.lastPollAt = o.receivedAt;
       if (fresh) s.lastSourceTime = Math.max(s.lastSourceTime ?? o.sourceTime,o.sourceTime);
       this.store.setState(stateKey(s.key),s); this.store.setState(STORAGE_METRICS_KEY,g);
+      if (!this.observedStreams.has(s.key)) this.store.afterRollback(() => this.observedStreams.delete(s.key));
       this.observedStreams.add(s.key);
       return { saved:Boolean(reason),id:committed?.id ?? null,observation:committed,reason:reason ?? (freshUpdate ? 'within-threshold' : 'unchanged-source-time'),
         ...(o.quality.includes('out-of-order-source-time') ? { rejectedSourceTime: true } : {}) };
@@ -558,6 +559,7 @@ export class Recorder {
         s.scale = state.scales[i].scale; s.lastPollAt = receivedAt; s.recordingPolicy = 'adaptive-energy';
         this.count(s,receivedAt,{elapsed:end-start,error:previousPowers && s.scale>0 ? Math.abs(powers[i]-previousPowers[i])/s.scale : null});
         this.store.setState(stateKey(s.key),s);
+        if (!this.observedStreams.has(s.key)) this.store.afterRollback(() => this.observedStreams.delete(s.key));
         this.observedStreams.add(s.key);
       }
       g.energyRevision++;

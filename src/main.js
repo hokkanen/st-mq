@@ -86,6 +86,7 @@ export async function start({ config = loadConfig(), readConfig = configurationR
   function close({ restore = true } = {}) {
     if (closePending) return closePending;
     closed = true;
+    engine?.beginShutdown({ restore: restore && canControl() });
     runtimeUsable = false;
     if (engine) engine.suspended = true;
     clearTimeout(timer);
@@ -93,6 +94,14 @@ export async function start({ config = loadConfig(), readConfig = configurationR
     shutdownSignal?.removeEventListener('abort', abortStartup);
     closePending = (async () => {
       const errors = [];
+      // A permanently unavailable disk must not make shutdown wait forever.
+      // Rejected saves never permit commands; already committed restoration
+      // duties remain on disk for the next authorized runtime.
+      const storageDeadline = setInterval(() => {
+        const waitingSince = store.writeQueueStatus().waitingSince;
+        if (waitingSince !== null && Date.now() - waitingSince >= 5000) store.writeQueue.close();
+      }, 100);
+      storageDeadline.unref?.();
       const attempt = async fn => { try { return await fn(); } catch (error) { errors.push(error); } };
       // Startup continuations see closed before using any newly acquired resource.
       await startupSettled;
@@ -106,12 +115,14 @@ export async function start({ config = loadConfig(), readConfig = configurationR
       await attempt(() => chartService?.close());
       await attempt(() => webAccess?.close());
       await attempt(() => store.close());
+      clearInterval(storageDeadline);
       runtimeTiming.close();
       if (errors.length) throw new AggregateError(errors, 'Application cleanup completed with errors; required restoration may remain pending.');
     })();
     return closePending;
   }
   function stopRuntime({ restore = true, deactivateOcpp = false } = {}) {
+    engine?.beginShutdown({ restore: restore && canControl() });
     historyRecovery?.cancel();
     restore = restore && canControl();
     clearTimeout(timer);
@@ -224,13 +235,22 @@ export async function start({ config = loadConfig(), readConfig = configurationR
       canControl: () => canControl() && ['mqtt', 'providers'].includes(config.input) });
     engine.equipmentTests.tick();
   }
-  function startBackground() {
+  async function startBackground() {
     requireRunning();
-    engine.tick();
+    await store.runWrite(() => engine.tick());
     // Start UI and conservative control before bounded historical reconstruction.
     learning = config.input !== 'simulated' ? startHistoryLearning({ store, config: engine.control }) : null;
     engine.onTemporaryChange = schedule;
     schedule();
+  }
+  let tickPending = null;
+  function tick() {
+    if (tickPending) return tickPending;
+    const current = engine;
+    tickPending = store.runWrite(() => current.tick(), {
+      isCurrent: () => !closed && !reloadPending && runtimeUsable && current === engine && canControl(),
+    }).finally(() => { tickPending = null; });
+    return tickPending;
   }
   function schedule() {
     clearTimeout(timer);
@@ -239,16 +259,16 @@ export async function start({ config = loadConfig(), readConfig = configurationR
     const next = Math.min(now + 60_000 - (now % 60_000), engine.nextTemporaryDeadline());
     timer = setTimeout(() => {
       if (closed || reloadPending || !runtimeUsable || !canControl()) return;
-      try { engine.tick(); }
-      catch (error) { reportControllerError(error); }
-      schedule();
+      void tick().catch(reportControllerError).finally(schedule);
     }, Math.max(1, next - now));
   }
   async function startProviderRuntime() {
     if (['providers', 'mqtt'].includes(config.input)) {
       const { startProviders } = await import('./acquisition/providers.js');
       requireRunning();
-      acquisitions.push(startProviders({ ...providerOptions, engine, store, config, clock, canControl }));
+      const provider = startProviders({ ...providerOptions, engine, store, config, clock, canControl });
+      acquisitions.push(provider);
+      await provider.ready;
     }
   }
   const settingsReloadStatus = () => ({
@@ -351,7 +371,7 @@ export async function start({ config = loadConfig(), readConfig = configurationR
         requireRunning();
         // A changed provider account/location must not reuse old current caches.
         // Keep unaffected providers' retry state, including shared rate limits.
-        store.transaction(() => {
+        await store.runWrite(() => {
           const changed = key => !isDeepStrictEqual(next.connections?.[key], previous.connections?.[key]);
           const weatherChanged = weatherAcquisitionIdentity(previous.connections) !== weatherAcquisitionIdentity(next.connections);
           const marketChanged = changed('geoloc') || changed('entsoe') || changed('elering');
@@ -389,14 +409,14 @@ export async function start({ config = loadConfig(), readConfig = configurationR
         await startProviderRuntime();
         requireRunning();
         runtimeUsable = true;
-        startBackground();
+        await startBackground();
         await accessTransaction.commit();
         requireRunning();
         configurationResult = null;
         try { configurationResult = await transaction?.complete() ?? null; }
         catch { configurationResult = { cleanupPending: true }; }
         requireRunning();
-        store.event('settings-reloaded', { input: config.input }, clock());
+        await store.runWrite(() => store.event('settings-reloaded', { input: config.input }, clock()));
       } catch {
         await accessTransaction?.rollback();
         runtimeUsable = false;
@@ -405,10 +425,10 @@ export async function start({ config = loadConfig(), readConfig = configurationR
         catch { stopped = false; }
         requireRunning();
         if (!stopped) {
-          store.event('settings-reload-failed', { restored: false }, clock());
+          await store.runWrite(() => store.event('settings-reload-failed', { restored: false }, clock()));
           throw new Error('Settings teardown failed. Restart the application after checking options/config.');
         }
-        store.transaction(() => { for (const [key, value] of previousState) store.setState(key, value); });
+        await store.runWrite(() => { for (const [key, value] of previousState) store.setState(key, value); });
         config = previous;
         await webAccess.apply(previous);
         try {
@@ -418,16 +438,16 @@ export async function start({ config = loadConfig(), readConfig = configurationR
           await startProviderRuntime();
           requireRunning();
           runtimeUsable = true;
-          startBackground();
+          await startBackground();
         } catch {
           runtimeUsable = false;
           requireRunning();
           await stopRuntime().catch(() => {});
           requireRunning();
-          store.event('settings-reload-failed', { restored: false }, clock());
+          await store.runWrite(() => store.event('settings-reload-failed', { restored: false }, clock()));
           throw new Error('Settings update and runtime recovery failed. Restart the application after checking options/config.');
         }
-        store.event('settings-reload-failed', { restored: true }, clock());
+        await store.runWrite(() => store.event('settings-reload-failed', { restored: true }, clock()));
         throw new Error('Settings could not be applied. The previous configuration was restored. Any saved Supervisor settings remain saved; retry Apply configuration.');
       }
     };
@@ -485,10 +505,10 @@ export async function start({ config = loadConfig(), readConfig = configurationR
     await webAccess.start();
     requireRunning();
     await createRuntime();
-    historyRecovery.initialize();
+    await historyRecovery.initialize();
     engine.historyRecovery = historyRecovery;
     requireRunning();
-    if (canControl()) { engine.tick(); }
+    if (canControl()) { await tick(); }
     requireRunning();
     if (canControl()) await startProviderRuntime();
     requireRunning();

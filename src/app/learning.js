@@ -3,13 +3,16 @@ import { learningConfiguration } from './committed-learning.js';
 
 export function startHistoryLearning({ store, config = {}, WorkerClass = Worker, stderr = message => process.stderr.write(message) }) {
   let worker = null, stopped = false, fallbackReported = false;
+  const reports = new Set(), lifetime = new AbortController();
   const reportFailure = () => {
-    try { store.event('learning-error', { message: 'Historical learning worker failed; retry will use the committed journal.' }); }
-    catch {
+    const report = store.runWrite(() => store.event('learning-error', {
+      message: 'Historical learning worker failed; retry will use the committed journal.' }), { signal: lifetime.signal }).catch(() => {
       if (fallbackReported) return;
       fallbackReported = true;
       try { stderr('[st-mq] Historical learning failed; diagnostic storage is unavailable.\n'); } catch { /* Diagnostics must never crash control. */ }
-    }
+    });
+    reports.add(report);
+    void report.finally(() => reports.delete(report));
   };
   const run = () => {
     if (worker || stopped) return;
@@ -22,5 +25,5 @@ export function startHistoryLearning({ store, config = {}, WorkerClass = Worker,
   };
   run();
   const timer = setInterval(run, 15 * 60_000);
-  return { async close() { stopped = true; clearInterval(timer); if (worker) { const current = worker; current.postMessage('stop'); await new Promise(resolve => current.once('exit', resolve)); } } };
+  return { async close() { stopped = true; lifetime.abort(); clearInterval(timer); if (worker) { const current = worker; current.postMessage('stop'); await new Promise(resolve => current.once('exit', resolve)); } await Promise.allSettled([...reports]); } };
 }

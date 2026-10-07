@@ -15,7 +15,7 @@ const capacity = (free = 20 * GIB, total = 100 * GIB) => ({ blocks: total / 4096
 function fixture(options = {}) {
   let now = start;
   const state = new Map();
-  const store = { path: '/invented/storage/history.sqlite', readOnly: false,
+  const store = { path: '/invented/storage/history.sqlite', readOnly: false, runWrite: async operation => operation(),
     getState: key => state.get(key) ?? null, setState: (key, value) => state.set(key, structuredClone(value)),
     writeHealth: createWriteHealth(() => now) };
   const engine = { config: { input: 'mqtt' }, latestStatus: { now } };
@@ -352,4 +352,22 @@ test('direct and ingress exports share one slot and the same backup health', asy
   const pending = await fetch(`${ingress}/api/recording-health`);
   assert.equal((await pending.json()).backup.state, 'running');
   release(); const response = await first; assert.equal(response.status, 200); await response.arrayBuffer();
+});
+
+
+test('waiting for SQLite is visible independently of failed writes and clears when queued work commits', async () => {
+  const f = fixture();
+  const status = f.store.writeHealth.status;
+  let queue = { pending: 3, waitingSince: start };
+  f.store.writeHealth.status = () => ({ ...status(), queue });
+  const waiting = await f.status();
+  assert.equal(waiting.recording.state, 'write-waiting');
+  assert.equal(waiting.recording.pendingWrites, 3);
+  assert.equal(waiting.recording.errorCode, null);
+  assert.equal(waiting.attention.find(row => row.id === 'recording').title, 'Waiting for storage');
+  queue = { pending: 0, waitingSince: null };
+  assert.equal((await f.status()).recording.state, 'ok');
+  f.store.writeHealth.failure({ code: 'STORAGE_QUEUE_FULL' });
+  assert.equal((await f.status()).recording.state, 'write-failed');
+  assert.equal((await f.status()).recording.errorCode, 'write-queue-full');
 });

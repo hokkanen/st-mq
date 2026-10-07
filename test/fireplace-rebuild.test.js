@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { EventEmitter } from 'node:events';
+import { DatabaseSync } from 'node:sqlite';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -199,4 +200,32 @@ test('epoch switches and stale responses replace workers; failed joint jobs can 
   assert.equal(candidate.sensorRevision, 0);
   assert.equal(manager.complete(candidate.checkpoint), true);
   assert.equal(manager.status().status, 'current');
+});
+
+
+test('rebuild teardown preserves durable job intent without waiting for a foreign writer', async () => {
+  const directory = mkdtempSync(join(tmpdir(), 'stmq-rebuild-close-'));
+  const store = new Store(join(directory, 'history.sqlite')), writer = new DatabaseSync(store.path);
+  let terminated = false;
+  class WorkerFixture extends EventEmitter {
+    postMessage() {}
+    async terminate() { terminated = true; }
+  }
+  const manager = new FireplaceRebuildManager({ store, input: 'mqtt', workerFactory: () => new WorkerFixture() });
+  manager.start();
+  writer.exec('BEGIN IMMEDIATE');
+  let timeout;
+  try {
+    await Promise.race([manager.close(), new Promise((_, reject) => {
+      timeout = setTimeout(() => reject(new Error('Rebuild label blocked shutdown')), 1000);
+    })]);
+    assert.equal(writer.isTransaction, true);
+    assert.equal(terminated, true);
+    assert.equal(manager.status().status, 'running');
+    assert.equal(manager.status().requiresRebuild, true);
+    assert.equal(store.writeQueueStatus().pending, 0);
+  } finally {
+    clearTimeout(timeout); writer.exec('ROLLBACK'); writer.close(); await manager.close(); store.close();
+    rmSync(directory, { recursive: true, force: true });
+  }
 });

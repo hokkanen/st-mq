@@ -54,12 +54,14 @@ export async function learningCatchup(t, windows) {
   const donorPath = await f.snapshot(donor);
   let beats = 0, liveWritten = false, published = null;
   const timer = setInterval(() => { beats++; }, 5); t.after(() => clearInterval(timer));
-  const result = await recover(f, donorPath, { onProgress(progress) {
+  const result = await recover(f, donorPath, { async onProgress(progress) {
     if (progress.phase === 'rebuilding' && !liveWritten) {
-      liveWritten = true; sample(f.master, start + (8 + windows + 9) * W);
+      liveWritten = true;
+      await f.master.runWrite(() => { sample(f.master, start + (8 + windows + 9) * W);
       assert.equal(f.master.learningEpoch('mqtt'), 'original', 'old selected history remains active during rebuild');
       const continuing = replayLearningJournal(f.master, 'mqtt', old);
       assert.equal(continuing.windowCursor, start + (8 + windows + 9) * W);
+      });
     }
   }, onPublish(value) { published = value; } });
   assert.ok(beats >= 3, 'background replay leaves the main event loop responsive');

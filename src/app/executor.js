@@ -1,6 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import { HEATING_COMMANDS } from '../control/mqtt.js';
 import { validateExecutorState } from '../domain/heating-control-state.js';
+import { createWriteScope } from '../storage/write-scope.js';
 
 const REFRESH_MS = 600_000;
 const copy = value => structuredClone(value);
@@ -10,9 +11,10 @@ const failure = (code, message) => Object.assign(new Error(message), { code });
 // The tariff relay and H66 are separate transports. Broker acknowledgements
 // prove delivery to MQTT, not physical relay or compressor operation.
 export class Executor {
-  constructor({ input, store, plant, commandTransport = null, h66 = null, floorOverride = null, config = {}, clock = Date.now, monotonicClock = () => performance.now(), deliveryBoundMs = 10_000 }) {
+  constructor({ input, store, plant, commandTransport = null, h66 = null, floorOverride = null, config = {}, clock = Date.now, monotonicClock = () => performance.now(), deliveryBoundMs = 10_000, closeWriteTimeoutMs = 5000 }) {
     if (!Number.isFinite(deliveryBoundMs) || deliveryBoundMs <= 0) throw new Error('A positive command delivery bound is required');
     Object.assign(this, { input, store, plant, commandTransport, h66, floorOverride, clock, monotonicClock, deliveryBoundMs });
+    this.writes = createWriteScope({ runWrite: (operation, options) => store.runWrite(operation, options), closeTimeoutMs: closeWriteTimeoutMs });
     this.elapsedDeadlines = new Map();
     const minutes = config.dhwrPulseMinutes ?? 10;
     if (!Number.isFinite(minutes) || minutes < 1 || minutes > 60) throw new Error('DHWR duration must be 1–60 minutes');
@@ -30,7 +32,9 @@ export class Executor {
       && this.state.manualRequested.confirmed && (this.state.manualPause.expiresAt === null || this.state.manualPause.expiresAt > clock()));
     this.restartRestore = !this.restartManualPause && Boolean(this.state.legacyOutstanding || this.state.dhwrOutstanding || this.state.manualPause || this.state.manualTemporary || this.state.manualBaseline);
     this.manualRestorePending = false;
-    this.pending = null; this.timer = null; this.closed = false;
+    this.pending = null; this.timer = null; this.closed = false; this.closing = false;
+    this.durableState = saved == null ? null : copy(saved);
+    this.dhwrDeadlineTimer = null; this.expiryDhwr = null;
   }
   persist() {
     this.remaining('temporary', this.state.manualTemporary?.expiresAt);
@@ -38,7 +42,63 @@ export class Executor {
     this.remaining('manual-preheat', this.state.manualRequested?.phase === 'preheat' ? this.state.manualRequested.expiresAt : undefined);
     this.remaining('dhwr', this.state.dhwrOutstanding ? this.state.pulseUntil : undefined);
     this.remaining('tariff', this.state.legacyOutstanding ? time(this.state.expiresAt) : undefined);
-    this.store.setState(this.key, copy(this.state));
+    const saved = copy(this.state);
+    this.store.setState(this.key, saved);
+    const committed = () => { this.durableState = saved; this.armDhwrDeadline(); };
+    if (this.store.afterCommit) this.store.afterCommit(committed); else committed();
+  }
+  persistAsync() {
+    return this.writes.run(() => this.persist(), { priority: 'control' });
+  }
+  armDhwrDeadline() {
+    clearTimeout(this.dhwrDeadlineTimer);
+    const durable = this.durableState, binding = durable?.targetBindings?.dhwr;
+    if (this.closed || !durable?.dhwrOutstanding || !binding
+      || this.state.targetBindings.dhwr?.generation !== binding.generation) return;
+    // A confirmed delivery can shorten the conservative pre-delivery bound.
+    // An uncommitted extension cannot postpone the already committed OFF duty.
+    const end = Math.min(durable.pulseUntil, this.state.pulseUntil || Infinity);
+    const remaining = this.remaining('dhwr', end);
+    const check = () => {
+      if (this.closed) return;
+      // The normal executor owns ordinary expiry. This independent path exists
+      // only while its bookkeeping is waiting for the SQLite writer.
+      if (!this.pending || !(this.store.writeQueueStatus?.().pending > 0)) {
+        // The ordinary expiry callback may start after this timer and discover
+        // contention only then. Keep a bounded check until its clearing commit,
+        // rather than consuming the independent deadline before it can help.
+        if (this.store.writeQueueStatus) {
+          this.dhwrDeadlineTimer = setTimeout(check, 100);
+          this.dhwrDeadlineTimer.unref?.();
+        }
+        return;
+      }
+      if (!this.expired('dhwr', end)) { this.armDhwrDeadline(); return; }
+      if (this.durableState?.targetBindings?.dhwr?.generation !== binding.generation
+        || !this.durableState.dhwrOutstanding || this.state.targetBindings.dhwr?.generation !== binding.generation) return;
+      this.restartRestore = true;
+      if (this.expiryDhwr?.generation === binding.generation && this.expiryDhwr.end === end) return;
+      const duty = { generation: binding.generation, end, result: null, completedAt: null, promise: null };
+      this.expiryDhwr = duty;
+      duty.promise = (async () => {
+        // OFF is already authorized by the committed timed-run obligation.
+        // Preserve it until later admitted readback/clearing. The transport
+        // still enforces current authority, physical identity and readiness.
+        const result = await this.commandTransport.publishDhwr(false, { expectedTarget: binding.identity });
+        if (result?.sent !== true) throw failure('EXECUTOR_UNCONFIRMED', 'DHWR OFF delivery is unconfirmed.');
+        duty.result = result; duty.completedAt = this.clock();
+        return result;
+      })();
+      void duty.promise.catch(() => {
+        if (this.expiryDhwr === duty) this.expiryDhwr = null;
+        if (!this.closed) {
+          this.dhwrDeadlineTimer = setTimeout(() => this.armDhwrDeadline(), 1000);
+          this.dhwrDeadlineTimer.unref?.();
+        }
+      });
+    };
+    this.dhwrDeadlineTimer = setTimeout(check, Math.min(2_147_483_647, Math.max(1, remaining)));
+    this.dhwrDeadlineTimer.unref?.();
   }
   target(kind, { acquire = false } = {}) {
     const identity = this.commandTransport?.targetIdentity?.[kind];
@@ -59,7 +119,11 @@ export class Executor {
   }
   expired(name, wallEnd) { return this.remaining(name, wallEnd) <= 0; }
   status() { return { ...copy(this.state), restartManualPause: this.restartManualPause, manualPreheatReport: this.state.manualPreheatReport?.expiresAt > this.clock() ? copy(this.state.manualPreheatReport) : null, busy: Boolean(this.pending), restorationPending: this.restartRestore }; }
+  requireActivation() {
+    if (this.closed || this.closing) throw failure('EXECUTOR_CLOSED', 'Heating control is closing.');
+  }
   execute(decision, { automationEnabled = false, now = this.clock(), manualTest = false, pause = null }) {
+    this.requireActivation();
     if (typeof automationEnabled !== 'boolean') throw new Error('Invalid heating automation permission');
     if (manualTest) {
       if (!['mqtt', 'providers'].includes(this.input) || !this.commandTransport) throw new Error('Real MQTT tests require live input and a configured MQTT broker.');
@@ -85,15 +149,19 @@ export class Executor {
   async exclusive(operation) {
     if (this.closed) throw failure('EXECUTOR_CLOSED', 'Heating control is closed.');
     if (this.pending) throw failure('EXECUTOR_BUSY', 'A heating transition or test is already in progress.');
-    const promise = Promise.resolve().then(operation);
+    // Shutdown must wait for failure bookkeeping and finalization as well as
+    // the command body; otherwise it can race the still-owned control lane.
+    const promise = Promise.resolve().then(async () => {
+      try { return await operation(); }
+      catch (error) {
+        this.state.lastResult = { status: 'failed', code: error.code ?? 'EXECUTOR_UNCONFIRMED', at: this.clock(), actual: null };
+        this.restartRestore = Boolean(this.state.legacyOutstanding || this.state.dhwrOutstanding || this.state.manualBaseline);
+        this.manualRestorePending = false;
+        await this.persistAsync(); throw error;
+      } finally { this.pending = null; this.armExpiry(); }
+    });
     this.pending = promise;
-    try { return await promise; }
-    catch (error) {
-      this.state.lastResult = { status: 'failed', code: error.code ?? 'EXECUTOR_UNCONFIRMED', at: this.clock(), actual: null };
-      this.restartRestore = Boolean(this.state.legacyOutstanding || this.state.dhwrOutstanding || this.state.manualBaseline);
-      this.manualRestorePending = false;
-      this.persist(); throw error;
-    } finally { this.pending = null; this.armExpiry(); }
+    return await promise;
   }
   armExpiry() {
     clearTimeout(this.timer);
@@ -138,6 +206,7 @@ export class Executor {
   }
   async publish(commands, now, { manualCirculation = false, validUntil = Infinity } = {}) {
     this.validateCommands(commands);
+    if (commands.includes('circulation') || commands.includes('reduction')) this.requireActivation();
     if (commands.includes('reduction') && now < this.state.pulseUntil)
       throw failure('DHWR_ACTIVE', 'Reduction is waiting for the configured DHWR run to end.');
     const pulse = commands.includes('circulation');
@@ -158,16 +227,23 @@ export class Executor {
       this.state.manualDhwrUntil = manualCirculation ? this.state.pulseUntil : null;
       this.remaining('dhwr', this.state.pulseUntil);
     }
-    this.state.requested = { commands: [...commands], at: now }; this.persist();
-    let result;
+    this.state.requested = { commands: [...commands], at: now }; await this.persistAsync();
+    let result, acknowledgedAt;
     try {
       if (pulse) {
-        try { result = await this.commandTransport.publishDhwr(true, { expectedTarget: this.target('dhwr') }); }
+        this.requireActivation();
+        if (this.expired('dhwr', this.state.pulseUntil) || this.clock() >= validUntil)
+          throw failure('EXECUTOR_EXPIRED', 'Circulation expired while waiting for durable intent.');
+        try {
+          result = await this.commandTransport.publishDhwr(true, { expectedTarget: this.target('dhwr'), validUntil: Math.min(validUntil, this.state.pulseUntil), clock: this.clock });
+          acknowledgedAt = this.clock();
+        }
         finally {
           this.state.pulseUntil = this.clock() + this.pulseMs;
           this.state.manualDhwrUntil = manualCirculation ? this.state.pulseUntil : null;
           this.remaining('dhwr', this.state.pulseUntil);
-          this.persist();
+          this.armDhwrDeadline();
+          await this.persistAsync();
         }
         if (result?.sent !== true) throw failure('EXECUTOR_UNCONFIRMED', 'DHWR switch delivery is unconfirmed.');
       }
@@ -175,17 +251,19 @@ export class Executor {
       if (heating.length) {
         const identity = this.target('tariff', { acquire: heating.includes('reduction') });
         if (this.clock() >= validUntil) throw failure('EXECUTOR_EXPIRED', 'Heating action expired before tariff dispatch.');
-        this.state.tariffRequested = { mode: heating.at(-1), at: this.clock() }; this.persist();
+        this.state.tariffRequested = { mode: heating.at(-1), at: this.clock() }; await this.persistAsync();
+        if (heating.includes('reduction')) this.requireActivation();
         result = await this.commandTransport.publish(heating, { validUntil, clock: this.clock, expectedTarget: identity });
+        acknowledgedAt = this.clock();
         // Keep an outstanding episode bound through every durable transition.
         // Its caller releases the binding together with the restoration flag.
         if (result?.sent === true && heating.at(-1) === 'normal' && !this.state.legacyOutstanding)
           delete this.state.targetBindings.tariff;
       }
     }
-    finally { this.persist(); }
+    finally { await this.persistAsync(); }
     if (result?.sent !== true) throw failure('EXECUTOR_UNCONFIRMED', 'Heating-command delivery is unconfirmed.');
-    this.state.acknowledgedAt = this.clock(); this.persist();
+    this.state.acknowledgedAt = acknowledgedAt; await this.persistAsync();
     return result;
   }
   async stopDhwr(now = this.clock(), { force = false } = {}) {
@@ -195,21 +273,31 @@ export class Executor {
       // An explicit stop can also address a pump started outside ST-MQ. Save
       // its OFF obligation before attempting delivery, just like a timed run.
       this.state.dhwrOutstanding = true; this.state.pulseUntil = now;
-      this.persist();
+      await this.persistAsync();
     }
     if (typeof this.commandTransport?.publishDhwr !== 'function')
       throw failure('DHWR_UNAVAILABLE', 'DHWR OFF is pending until MQTT switch control is available.');
     this.state.dhwrRequested = { on: false, at: now };
-    this.persist();
-    const result = await this.commandTransport.publishDhwr(false, { expectedTarget: this.target('dhwr') });
+    await this.persistAsync();
+    // The independent deadline may have completed OFF during this admission.
+    const priorExpiry = this.expiryDhwr?.generation === this.state.targetBindings.dhwr?.generation
+      && this.state.pulseUntil <= this.expiryDhwr.end ? this.expiryDhwr : null;
+    let result = priorExpiry?.result;
+    if (!result && priorExpiry) { try { result = await priorExpiry.promise; } catch { /* Ordinary restoration can retry the retained duty. */ } }
+    let stoppedAt = result ? priorExpiry.completedAt : null;
+    if (!result) {
+      result = await this.commandTransport.publishDhwr(false, { expectedTarget: this.target('dhwr') });
+      stoppedAt = this.clock();
+    }
     if (result?.sent !== true) throw failure('EXECUTOR_UNCONFIRMED', 'DHWR OFF delivery is unconfirmed.');
     delete this.state.targetBindings.dhwr; this.elapsedDeadlines.delete('dhwr');
     this.state.dhwrOutstanding = false; this.state.pulseUntil = 0; this.state.manualDhwrUntil = null;
-    this.state.dhwrStoppedAt = this.clock(); this.persist();
-    this.store.observation?.({ source: 'controller', device: this.input, signal: 'dhwr_request', value: 0,
+    this.expiryDhwr = null;
+    this.state.dhwrStoppedAt = stoppedAt; await this.persistAsync();
+    await this.writes.run(() => this.store.observation?.({ source: 'controller', device: this.input, signal: 'dhwr_request', value: 0,
       unit: 'state', sourceTime: this.state.dhwrStoppedAt, receivedAt: this.state.dhwrStoppedAt,
       quality: ['requested'], raw: { verified: false, basis: result.confirmed === true ? 'Native relay OFF confirmed; pump operation is recorded separately'
-        : 'OFF delivery acknowledged; physical pump state is not observed' } });
+        : 'OFF delivery acknowledged; physical pump state is not observed' } }), { priority: 'control' });
     return true;
   }
   async beginManual(now, pause) {
@@ -234,7 +322,7 @@ export class Executor {
       this.state.manualPause = pause ? { id: pause.id, expiresAt: pause.expiresAt } : null;
       this.state.manualTemporary = pause ? null : { expiresAt: now + 60_000 };
     }
-    this.persist();
+    await this.persistAsync();
     return this.state.manualPause ? this.state.manualPause.expiresAt : this.state.manualTemporary.expiresAt;
   }
   async manual(commands, now, pause = null, decision = {}) {
@@ -257,7 +345,7 @@ export class Executor {
     this.state.manualRequested = { phase, at: now, expiresAt: end, confirmed: false,
       floorOwner: phase === 'preheat' ? `manual:${randomUUID()}` : null,
       roomBoostC: phase === 'preheat' ? decision.roomBoostC ?? this.preheatRoomBoostC : 0 };
-    this.state.expiresAt = end; this.persist();
+    this.state.expiresAt = end; await this.persistAsync();
     return this.applyManualChoice(now);
   }
   async applyManualChoice(now) {
@@ -290,7 +378,7 @@ export class Executor {
             nativeOptions.expiresAt = floor.leaseUntil;
             this.state.expiresAt = floor.leaseUntil;
             if (this.state.manualTemporary) this.state.manualTemporary.expiresAt = floor.leaseUntil;
-            this.persist();
+            await this.persistAsync();
           }
         }
         await this.publish(['normal'], now);
@@ -306,7 +394,7 @@ export class Executor {
       if (nativeStatus?.controlsReady && nativeStatus.writesEnabled === true)
         native = await this.h66.setPhase({ phase, ...nativeOptions });
       this.target('tariff', { acquire: true });
-      this.state.legacyOutstanding = true; this.persist();
+      this.state.legacyOutstanding = true; await this.persistAsync();
       await this.publish(['reduction'], this.clock(), { validUntil: end ?? Infinity });
     } else {
       native = this.h66 ? await this.h66.setPhase({ phase: 'normal', now }) : null;
@@ -316,7 +404,7 @@ export class Executor {
     this.state.phase = phase; choice.confirmed = true;
     this.state.legacyOutstanding = phase === 'reduction';
     if (!this.state.legacyOutstanding) delete this.state.targetBindings.tariff;
-    this.persist();
+    await this.persistAsync();
     return this.result(phase, true, { native, floor, holdUntil: choice.expiresAt,
       roomBoostC: choice.roomBoostC, ...(phase === 'reduction' && !native ? { nativeSettings: 'unavailable; base tariff reduction only' } : {}) });
   }
@@ -354,11 +442,11 @@ export class Executor {
     this.manualRestorePending = this.restartRestore;
     return this.result(this.state.phase, native?.changed?.length > 0, { native, floor, restorationPending: this.restartRestore });
   }
-  reconcileManualPreheat(now = this.clock()) {
+  async reconcileManualPreheat(now = this.clock()) {
     if (this.state.manualRequested?.phase !== 'preheat' || this.h66?.status(now).manualPreheat
       || this.expired('manual-preheat', this.state.manualRequested.expiresAt)) return false;
     this.state.manualRequested = { ...this.state.manualRequested, phase: 'normal', roomBoostC: 0 };
-    this.state.phase = 'normal'; this.persist();
+    this.state.phase = 'normal'; await this.persistAsync();
     return true;
   }
   maintainPause(now = this.clock(), pause = undefined) {
@@ -377,8 +465,8 @@ export class Executor {
           this.state.manualRequested.expiresAt = pause.expiresAt;
           this.state.expiresAt = pause.expiresAt;
         }
-        this.h66?.updatePause?.({ ...pause, now });
-        this.persist();
+        await this.h66?.updatePause?.({ ...pause, now });
+        await this.persistAsync();
       }
       if (this.restartRestore) return this.manualRestorePending ? this.restoreManualInternal({ now, reason: 'manual-restoration-pending' })
         : this.restoreInternal({ now, reason: 'manual-restoration-pending' });
@@ -387,7 +475,7 @@ export class Executor {
       if (this.expired('pause', this.state.manualPause?.expiresAt) || this.expired('temporary', this.state.manualTemporary?.expiresAt))
         return this.restoreManualInternal({ now, reason: 'pause-ended' });
       if (this.state.dhwrOutstanding && this.expired('dhwr', this.state.pulseUntil)) await this.stopDhwr(now);
-      this.reconcileManualPreheat(now);
+      await this.reconcileManualPreheat(now);
       // Never renew a manual preheat lease: its first local expiry is the test.
       if (this.state.manualRequested?.phase !== 'preheat') await this.floorOverride?.release({ reason: 'manual-preheat-ended', now });
       if (this.state.manualRequested && !this.state.manualRequested.confirmed) return this.applyManualChoice(now);
@@ -398,7 +486,7 @@ export class Executor {
         roomBoostC: this.state.manualRequested?.roomBoostC ?? 0 });
     });
   }
-  result(phase, sent, detail = {}) {
+  async result(phase, sent, detail = {}) {
     const report = this.state.manualPreheatReport;
     if (report?.roomOutcome === 'pending' && detail.native && detail.native.restorationPending !== true
       && !this.h66?.status(this.clock()).obligations?.['0203']) {
@@ -408,7 +496,7 @@ export class Executor {
     const result = { status: 'mqtt', sent: Boolean(sent), actual: null, phase, appliedPhase: phase,
       delivery: 'broker-acknowledged', physicalStateVerified: false,
       pulseUntil: this.state.pulseUntil, expiresAt: this.state.expiresAt, ...detail };
-    this.state.lastResult = { ...result, at: this.clock() }; this.persist();
+    this.state.lastResult = { ...result, at: this.clock() }; await this.persistAsync();
     return result;
   }
   async executePhysical(decision, now) {
@@ -446,7 +534,7 @@ export class Executor {
           : this.state.recoveryStartedAt + this.recoveryHoldMinutes * 60_000;
         this.state.recoveryAuxReleasedAt = null;
         this.state.recoveryFallbackReason = null;
-        this.persist();
+        await this.persistAsync();
       }
       const recoveryHoldUntil = this.state.recoveryHoldUntil;
       if (recoveryHoldUntil <= this.clock()) return this.normal(this.clock(), phase,
@@ -454,7 +542,7 @@ export class Executor {
       if (decision.recoveryCompressorOnly !== true && this.state.recoveryAuxReleasedAt == null) {
         this.state.recoveryAuxReleasedAt = this.clock();
         this.state.recoveryFallbackReason = decision.recoveryFallbackReason ?? 'native-recovery-permitted';
-        this.persist();
+        await this.persistAsync();
       }
       const recoveryCompressorOnly = this.state.recoveryAuxReleasedAt == null && decision.recoveryCompressorOnly === true;
       const native = await this.h66.setPhase({ phase, compressorOnly: recoveryCompressorOnly,
@@ -482,7 +570,7 @@ export class Executor {
       this.target('tariff', { acquire: true });
       this.state.legacyOutstanding = true;
       this.state.expiresAt = expiresAt;
-      this.persist();
+      await this.persistAsync();
       let sent = false;
       try {
         if (decision.floorOverride === true) {
@@ -494,7 +582,7 @@ export class Executor {
         }
         if (actionExpired()) return this.restoreInternal({ now: this.clock(), reason: 'expired-during-preheat' });
         const refresh = needsPulse || this.state.phase !== phase || this.state.acknowledgedAt == null || now - this.state.acknowledgedAt >= REFRESH_MS;
-        if (refresh) { await this.publish(needsPulse ? ['circulation', 'normal'] : ['normal'], now); sent = true; }
+        if (refresh) { await this.publish(needsPulse ? ['circulation', 'normal'] : ['normal'], now, { validUntil: expiresAt }); sent = true; }
         const native = await this.h66.setPhase({ phase, roomBoostC: decision.roomBoostC ?? this.preheatRoomBoostC,
           now: this.clock(), expiresAt });
         this.state.phase = phase; this.restartRestore = false;
@@ -534,7 +622,7 @@ export class Executor {
       compressorOnly: decision.recoveryAuxRestrictionAllowed ?? this.recoveryCompressorOnly,
       temperatureValidUntil: now + 300_000, externalChangeRevision: nativeStatus?.externalChangeRevision ?? 0 };
     this.target('tariff', { acquire: true });
-    this.state.legacyOutstanding = true; this.state.expiresAt = expiresAt; this.persist();
+    this.state.legacyOutstanding = true; this.state.expiresAt = expiresAt; await this.persistAsync();
     if (refresh) {
       try { await this.publish(['reduction'], this.clock(), { validUntil: expiresAt }); }
       catch (error) {
@@ -567,15 +655,15 @@ export class Executor {
     this.state.legacyOutstanding = false;
     delete this.state.targetBindings.tariff;
   }
-  beginManualRestoration() {
+  async beginManualRestoration() {
     if (this.state.manualRequested?.phase === 'reduction' && this.state.manualRequested.confirmed) {
       // An interrupted restore must not resume the choice it was releasing.
       this.state.manualRequested.confirmed = false;
-      this.persist();
+      await this.persistAsync();
     }
   }
   async restoreManualInternal({ now = this.clock(), reason = 'manual-ended' } = {}) {
-    this.beginManualRestoration();
+    await this.beginManualRestoration();
     if (this.state.manualRequested?.phase === 'preheat') {
       const finished = await this.finishManualPreheat(now, reason);
       if (finished.restorationPending) return finished;
@@ -618,7 +706,7 @@ export class Executor {
     });
   }
   async restoreInternal({ now = this.clock(), reason = 'restore-normal', phase = 'normal', detail = {}, preserveManualDhwr = false } = {}) {
-    this.beginManualRestoration();
+    await this.beginManualRestoration();
     if (this.state.manualRequested?.phase === 'preheat') {
       const finished = await this.finishManualPreheat(now, reason);
       if (finished.restorationPending) return finished;
@@ -646,10 +734,16 @@ export class Executor {
       ...(dhwrError ? { dhwrError } : {}), ...detail });
   }
   restore(options = {}) { return this.exclusive(() => this.restoreInternal(options)); }
+  beginShutdown({ restore = true } = {}) {
+    this.closing = true;
+    this.writes.beginShutdown({ restore });
+    this.h66?.beginShutdown?.({ restore });
+  }
   async close({ restore = true } = {}) {
     if (this.closed) return;
+    this.beginShutdown({ restore });
     if (!restore) {
-      this.closed = true; clearTimeout(this.timer);
+      this.closed = true; clearTimeout(this.timer); clearTimeout(this.dhwrDeadlineTimer);
       await this.commandTransport?.close();
       await this.pending?.catch(() => {});
       return;
@@ -661,13 +755,17 @@ export class Executor {
       // A durable paused Reduced choice survives an orderly application restart,
       // just as it survives an interruption. Stop separately timed circulation.
       try { if (this.state.dhwrOutstanding) await this.stopDhwr(this.clock()); }
-      finally { this.persist(); this.closed = true; clearTimeout(this.timer); }
+      finally {
+        try { await this.persistAsync(); }
+        finally { this.closed = true; this.writes.close(); clearTimeout(this.timer); clearTimeout(this.dhwrDeadlineTimer); }
+      }
       return;
     }
     try { await this.restore({ reason: 'application-shutdown' }); }
-    finally { this.closed = true; clearTimeout(this.timer); }
+    finally { this.closed = true; this.writes.close(); clearTimeout(this.timer); clearTimeout(this.dhwrDeadlineTimer); }
   }
   sendCommands(commands, { now, physical = false }) {
+    this.requireActivation();
     this.validateCommands(commands);
     if (physical) return this.exclusive(() => this.manual(commands, now));
     const actual = this.plant.apply(commands, now, this.pulseMs);

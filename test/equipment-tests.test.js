@@ -1,24 +1,30 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { DatabaseSync } from 'node:sqlite';
+import { mkdtempSync, rmSync } from 'node:fs';
+import { join } from 'node:path';
+import { tmpdir } from 'node:os';
+import { setTimeout as delay } from 'node:timers/promises';
 import { createEquipmentTests } from '../src/app/equipment-tests.js';
+import { Store } from '../src/storage/store.js';
 
 const KEY = 'equipment-tests:v1', INITIAL = Date.parse('2026-09-13T10:00:00Z');
 const digest = 'a'.repeat(64);
 const flush = () => new Promise(resolve => setImmediate(resolve));
-function fixture(t, { saved = new Map(), command, on = false } = {}) {
+function fixture(t, { saved = new Map(), command, on = false, storage } = {}) {
   let now = INITIAL, allowed = true, route = digest;
   const calls = [], reports = [];
   const device = { id: 'caravan', label: 'Caravan plug', area: 'Outside', kind: 'plug', available: true,
     controls: { switch: true, tariff: false }, readings: { active: { value: Number(on), unit: 'state', stale: false, observedAt: now } } };
-  const store = { getState: key => structuredClone(saved.get(key) ?? null),
-    setState: (key, value) => saved.set(key, structuredClone(value)) };
+  const store = storage ?? { getState: key => structuredClone(saved.get(key) ?? null),
+    setState: (key, value) => saved.set(key, structuredClone(value)), runWrite: async operation => operation() };
   const equipment = { status: () => ({ devices: [device] }), signature: id => id === device.id ? route : null,
     async setSwitch(id, nextOn) {
-      const active = saved.get(KEY).active;
+      const persisted = store.getState(KEY), active = persisted.active;
       if (active) {
         assert.equal(active.deviceId, id, 'The device route is saved before a command');
         assert.equal(active.signature, digest, 'Restoration stays bound to the original connection');
-      } else assert.equal(saved.get(KEY).lastManual.deviceId, id, 'The manual request is saved before a command');
+      } else assert.equal(persisted.lastManual.deviceId, id, 'The manual request is saved before a command');
       calls.push({ id, on: nextOn, at: now });
       if (command) return command({ id, on: nextOn, calls, device, now });
       device.readings.active = { value: Number(nextOn), unit: 'state', stale: false, observedAt: now };
@@ -34,6 +40,18 @@ function fixture(t, { saved = new Map(), command, on = false } = {}) {
     setAdapter(value) { availableAdapter = value; }, get now() { return now; } };
 }
 const request = (on = true, durationMinutes = 1) => ({ deviceId: 'caravan', on, durationMinutes });
+
+function storageFixture(t) {
+  const directory = mkdtempSync(join(tmpdir(), 'stmq-equipment-contention-'));
+  const storage = new Store(join(directory, 'fixture.sqlite')), writer = new DatabaseSync(storage.path);
+  const f = fixture(t, { storage });
+  t.after(async () => {
+    if (writer.isTransaction) writer.exec('ROLLBACK');
+    await f.manager.close({ restore: false });
+    writer.close(); storage.close(); rmSync(directory, { recursive: true, force: true });
+  });
+  return { ...f, writer };
+}
 
 test('direct manual switches have live confirmation and no timer, shutdown reversal or restart replay', async t => {
   const f = fixture(t);
@@ -249,7 +267,8 @@ test('the duration begins after confirmation and shutdown waits for an in-flight
     return { confirmed: true };
   } });
   const start = f.manager.start(request(true, 15));
-  await Promise.resolve(); f.advance(7000);
+  while (!confirm) await flush();
+  f.advance(7000);
   const closing = f.manager.close();
   await assert.rejects(f.manager.start(request()), { code: 'EQUIPMENT_TEST_CLOSED' });
   assert.equal(f.calls.length, 1);
@@ -266,7 +285,7 @@ test('authority or route changes during an in-flight command retain the original
     let confirm;
     const f = fixture(t, { command: () => new Promise(resolve => { confirm = resolve; }) });
     const start = f.manager.start(request());
-    await Promise.resolve();
+    while (!confirm) await new Promise(resolve => setImmediate(resolve));
     if (change === 'authority') f.setAuthority(false);
     else f.setRoute('b'.repeat(64));
     confirm({ confirmed: true });
@@ -296,6 +315,152 @@ test('a storage failure after dispatch preserves the pre-command obligation acro
   await restarted.tick();
   assert.deepEqual(f.calls.map(row => row.on), [true, false]);
   assert.equal(restarted.status().active, null);
+});
+
+test('queued tests recheck native state, authority and deadline before saving an obligation', async t => {
+  for (const changed of ['native-state', 'authority', 'deadline']) {
+    const f = storageFixture(t);
+    f.writer.exec('BEGIN IMMEDIATE');
+    const outcome = f.manager.start(request()).catch(error => error);
+    await delay(35);
+    assert.equal(f.store.writeQueueStatus().pending, 1);
+    assert.equal(f.store.getState(KEY), null);
+    if (changed === 'native-state') f.device.readings.active.value = 1;
+    if (changed === 'authority') f.setAuthority(false);
+    if (changed === 'deadline') f.advance(60_001);
+    f.writer.exec('ROLLBACK');
+    assert.equal((await outcome).code, changed === 'authority' ? 'EQUIPMENT_TEST_AUTHORITY' : 'EQUIPMENT_TEST_STATE');
+    assert.equal(f.store.getState(KEY), null);
+    assert.equal(f.manager.status().active, null);
+    f.setAuthority(true); await f.manager.tick();
+    assert.deepEqual(f.calls, []);
+  }
+});
+
+test('a native change after intent commit but before dispatch clears the unissued test without restoration', async t => {
+  const f = fixture(t), runWrite = f.store.runWrite;
+  let writes = 0;
+  f.store.runWrite = async operation => {
+    const result = await runWrite(operation);
+    if (++writes === 1) f.device.readings.active.value = 1;
+    return result;
+  };
+  await assert.rejects(f.manager.start(request()), { code: 'EQUIPMENT_TEST_NOT_STARTED' });
+  assert.deepEqual(f.calls, []);
+  assert.equal(f.saved.get(KEY).active, null);
+  assert.equal(f.manager.status().lastResult.sent, false);
+  assert.equal(f.manager.status().lastResult.status, 'not-started');
+  const restarted = createEquipmentTests(f.options);
+  t.after(() => restarted.close({ restore: false }));
+  await restarted.tick();
+  assert.equal(f.device.readings.active.value, 1);
+  assert.deepEqual(f.calls, []);
+});
+
+test('failed unissued-intent cleanup retries storage without overwriting the new native switch state', async t => {
+  const f = fixture(t), runWrite = f.store.runWrite;
+  let writes = 0;
+  f.store.runWrite = async operation => {
+    if (++writes === 2) throw new Error('synthetic cleanup failure');
+    const result = await runWrite(operation);
+    if (writes === 1) f.device.readings.active.value = 1;
+    return result;
+  };
+  await assert.rejects(f.manager.start(request()), { code: 'EQUIPMENT_TEST_STORAGE' });
+  assert.notEqual(f.saved.get(KEY).active, null);
+  assert.deepEqual(f.calls, []);
+  f.advance(5000); await f.manager.tick();
+  assert.equal(f.saved.get(KEY).active, null);
+  assert.equal(f.device.readings.active.value, 1);
+  assert.deepEqual(f.calls, []);
+});
+
+test('outer commit failure rolls back the in-memory equipment obligation and cannot dispatch restoration', async t => {
+  const f = storageFixture(t), exec = f.store.db.exec.bind(f.store.db);
+  f.store.db.exec = sql => {
+    if (sql === 'COMMIT') throw new Error('synthetic commit failure');
+    return exec(sql);
+  };
+  try { await assert.rejects(f.manager.start(request()), { code: 'EQUIPMENT_TEST_STORAGE' }); }
+  finally { f.store.db.exec = exec; }
+  assert.equal(f.store.getState(KEY), null);
+  assert.equal(f.manager.status().active, null);
+  await f.manager.tick();
+  assert.deepEqual(f.calls, []);
+  await f.manager.start(request());
+  assert.deepEqual(f.calls.map(row => row.on), [true]);
+});
+
+test('shutdown fences both queued temporary tests and direct switch commands before dispatch', async t => {
+  for (const operation of ['test', 'switch']) {
+    const f = storageFixture(t);
+    f.writer.exec('BEGIN IMMEDIATE');
+    const outcome = (operation === 'test' ? f.manager.start(request())
+      : f.manager.setSwitch({ deviceId: 'caravan', on: true })).catch(error => error);
+    await delay(35);
+    const closing = f.manager.close();
+    f.writer.exec('ROLLBACK');
+    assert.equal((await outcome).code, 'EQUIPMENT_TEST_CLOSED');
+    await closing;
+    assert.deepEqual(f.calls, []);
+    assert.equal(f.manager.status().active, null);
+  }
+});
+
+test('demotion cancels equipment writes under a permanent external lock without closing the shared Store', { timeout: 2000 }, async t => {
+  for (const operation of ['test', 'switch']) {
+    const f = storageFixture(t);
+    f.writer.exec('BEGIN IMMEDIATE');
+    const outcome = (operation === 'test' ? f.manager.start(request())
+      : f.manager.setSwitch({ deviceId: 'caravan', on: true })).catch(error => error);
+    await delay(35);
+    assert.equal(f.store.writeQueueStatus().pending, 1);
+    f.manager.beginShutdown({ restore: false });
+    await f.manager.close({ restore: false });
+    assert.equal((await outcome).code, 'EQUIPMENT_TEST_CLOSED');
+    assert.equal(f.writer.isTransaction, true);
+    assert.equal(f.store.writeQueueStatus().pending, 0);
+    assert.equal(f.store.getState(KEY), null);
+    assert.deepEqual(f.calls, []);
+    f.writer.exec('ROLLBACK');
+    await f.store.runWrite(() => f.store.setState('next-runtime', true));
+    assert.equal(f.store.getState('next-runtime'), true);
+  }
+});
+
+test('demotion cancels post-command bookkeeping while retaining its committed restoration obligation', { timeout: 2000 }, async t => {
+  const f = storageFixture(t), setSwitch = f.equipment.setSwitch;
+  f.equipment.setSwitch = async (...args) => {
+    const result = await setSwitch(...args);
+    f.writer.exec('BEGIN IMMEDIATE');
+    return result;
+  };
+  const outcome = f.manager.start(request()).catch(error => error);
+  await delay(35);
+  assert.equal(f.store.writeQueueStatus().pending, 1);
+  await f.manager.close({ restore: false });
+  assert.equal((await outcome).code, 'EQUIPMENT_TEST_UNCONFIRMED');
+  assert.equal(f.writer.isTransaction, true);
+  assert.equal(f.store.writeQueueStatus().pending, 0);
+  assert.equal(f.store.getState(KEY).active.status, 'starting');
+  assert.deepEqual(f.calls.map(row => row.on), [true]);
+});
+
+test('restorative shutdown bounds a held-lock save and preserves the duty without closing shared storage', { timeout: 8000 }, async t => {
+  const f = storageFixture(t);
+  await f.manager.start(request());
+  f.writer.exec('BEGIN IMMEDIATE');
+  const started = performance.now();
+  await assert.rejects(f.manager.close(), { code: 'EQUIPMENT_TEST_RESTORE' });
+  assert.ok(performance.now() - started < 6500);
+  assert.equal(f.writer.isTransaction, true);
+  assert.equal(f.store.writeQueueStatus().pending, 0);
+  assert.notEqual(f.store.getState(KEY).active, null);
+  assert.deepEqual(f.calls.map(row => row.on), [true, false]);
+  await f.manager.close({ restore: false });
+  f.writer.exec('ROLLBACK');
+  await f.store.runWrite(() => f.store.setState('next-runtime', true));
+  assert.equal(f.store.getState('next-runtime'), true);
 });
 
 test('shutdown restores and closes, while a failed close remains retryable for configuration reload', async t => {

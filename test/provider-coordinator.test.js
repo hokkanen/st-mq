@@ -1,3 +1,4 @@
+import { committedStatus } from './helpers/committed-status.js';
 import { weatherAcquisitionIdentity } from '../src/acquisition/weather-identity.js';
 import test from 'node:test';
 import assert from 'node:assert/strict';
@@ -61,6 +62,7 @@ test('live OCPP dashboard address is absent from persisted provider health', asy
     setup: { state: 'connecting', endpointSource: 'detected', ...(includeEndpoint ? { endpoint } : {}) },
   });
   const providers = startProviders(f.options);
+  await providers.ready;
   try {
     await providers.runDue();
     assert.equal(f.engine.providerStatus().easee.localOcpp.setup.endpoint, endpoint);
@@ -98,6 +100,7 @@ test('normal configuration acquires electricity every fifteen seconds with audit
   };
   delete f.options.devices.temperatures;
   const providers = startProviders(f.options);
+  await providers.ready;
   try {
     await providers.runDue();
     assert.equal(f.store.getState('providers:health').temperatures.status, 'not-configured');
@@ -126,6 +129,7 @@ test('provider electrical batches form voltage history before raw acquisition fi
       deviceConnection: { connected: true, observedAt: initial } },
   }));
   const providers = startProviders(f.options);
+  await providers.ready;
   try {
     for (let minute = 0; minute <= 60; minute++) {
       f.setTime(initial + minute * MINUTE); await providers.runDue();
@@ -146,10 +150,11 @@ test('an injected temperature provider remains usable without temperature connec
   f.options.devices.temperatures = () => { throw new Error('The injected temperature provider takes precedence'); };
   f.options.temperatureProvider = async () => f.temperature();
   const providers = startProviders(f.options);
+  await providers.ready;
   try {
     await providers.runDue();
     assert.equal(f.store.getState('providers:health').temperatures.status, 'ok');
-    assert.equal(f.engine.status().observations.indoor.value, 21.1);
+    assert.equal((await committedStatus(f.engine)).observations.indoor.value, 21.1);
   } finally { await providers.close(); }
 });
 
@@ -157,6 +162,7 @@ test('independent polls stay nonblocking, do not overlap and preserve snapshot p
   const f = fixture(t), held = deferred(); let calls = 0;
   f.options.devices.temperatures = async () => { calls++; await held.promise; return f.temperature(); };
   const providers = startProviders(f.options);
+  await providers.ready;
   try {
     const first = providers.runDue();
     await new Promise(resolve => setImmediate(resolve));
@@ -171,7 +177,7 @@ test('independent polls stay nonblocking, do not overlap and preserve snapshot p
     assert.ok(status.prices.length > 0);
     assert.equal(status.observations.indoor.value, null);
     held.resolve(); await first; await second;
-    assert.equal(f.engine.status().observations.indoor.value, 21.1);
+    assert.equal((await committedStatus(f.engine)).observations.indoor.value, 21.1);
     const snapshots = f.store.snapshots();
     assert.equal(snapshots.length, 2);
     assert.equal(snapshots.find(row => row.kind === 'weather').issuedAt, null);
@@ -187,6 +193,7 @@ test('outages retain dated cache, sanitize failures, back off and automatically 
   const good = f.options.market;
   f.options.market = async args => { marketCalls++; if (fail) throw Object.assign(new Error('secret URL and body'), { status: 429 }); return good(args); };
   let providers = startProviders(f.options);
+  await providers.ready;
   try {
     await providers.runDue();
     fail = true; f.setTime(initial + 60 * MINUTE);
@@ -201,6 +208,7 @@ test('outages retain dated cache, sanitize failures, back off and automatically 
     assert.equal(JSON.stringify(f.store.getState('providers:health')).includes('secret'), false);
     await providers.close();
     providers = startProviders(f.options);
+    await providers.ready;
     await providers.runDue();
     assert.equal(marketCalls, 2, 'restart must not defeat rate-limit backoff');
     f.setTime(initial + 65 * MINUTE); await providers.runDue();
@@ -216,12 +224,13 @@ test('outages retain dated cache, sanitize failures, back off and automatically 
 test('missing temperatures report outage separately from old readings and cancellation drains requests', async t => {
   const f = fixture(t);
   const providers = startProviders(f.options);
+  await providers.ready;
   await providers.runDue();
   f.options.devices.temperatures = async () => f.temperature().map(row => ({ ...row, value: null, sourceTime: null,
     quality: ['missing', 'provider_error', 'http_status_503', 'source_time_unknown'] }));
   f.setTime(initial + 5 * MINUTE); await providers.runDue();
-  assert.equal(f.engine.status().observations.indoor.value, 21.1);
-  assert.equal(f.engine.status().observations.indoor.observedAt, initial);
+  assert.equal((await committedStatus(f.engine)).observations.indoor.value, 21.1);
+  assert.equal((await committedStatus(f.engine)).observations.indoor.observedAt, initial);
   assert.equal(f.store.getState('providers:health').temperatures.status, 'degraded');
   assert.equal(f.store.getState('providers:health').temperatures.error, 'HTTP-503');
   let aborted = false;
@@ -241,6 +250,7 @@ test('unconfigured providers make no requests', async t => {
   delete f.options.temperatureProvider;
   delete f.options.devices.temperatures;
   const providers = startProviders(f.options);
+  await providers.ready;
   try {
     await providers.runDue();
     assert.deepEqual(f.store.observations(), []);
@@ -279,6 +289,7 @@ test('device retry backoff longer than poll cadence survives restart', async t =
   let calls = 0;
   f.options.devices.temperatures = async () => { calls++; return f.temperature(); };
   const providers = startProviders(f.options);
+  await providers.ready;
   try {
     await providers.runDue();
     assert.equal(calls, 0);
@@ -303,6 +314,7 @@ test('a failed observation-cache transaction restores both SQLite history and in
   f.setTime(initial + 5 * MINUTE);
   f.options.devices.temperatures = async () => f.temperature().map(row => ({ ...row, value: 22 }));
   const providers = startProviders(f.options);
+  await providers.ready;
   try {
     await providers.runDue();
     assert.deepEqual(structuredClone(f.engine.latest), before);
@@ -329,10 +341,11 @@ test('failed outdoor cache writes restore provider candidates while FMI remains 
   f.options.outdoor = async ({ now }) => [{ source, device: `fixture-${source}`, signal: 'outdoor_temperature',
     value: source === 'fmi' ? 10 : 7, unit: 'degC', sourceTime: now, receivedAt: now, quality: [] }];
   const providers = startProviders(f.options);
+  await providers.ready;
   const setState = f.store.setState.bind(f.store);
   try {
     await providers.runDue();
-    assert.equal(f.engine.status().observations.outdoor.source, 'fmi');
+    assert.equal((await committedStatus(f.engine)).observations.outdoor.source, 'fmi');
     f.setTime(initial + 10 * MINUTE); f.engine.ingest(h66(initial + 10 * MINUTE));
     const before = {
       latest: structuredClone(f.engine.latest), candidates: structuredClone(f.engine.outdoorCandidates),
@@ -351,12 +364,12 @@ test('failed outdoor cache writes restore provider candidates while FMI remains 
     assert.deepEqual(f.engine.providerObservations(), before.providers);
     assert.deepEqual(f.store.getState('provider:observations'), before.cached);
     assert.deepEqual(f.store.observations({ signal: 'outdoor_temperature' }), before.history);
-    assert.equal(f.engine.status().observations.outdoor.source, 'fmi');
+    assert.equal((await committedStatus(f.engine)).observations.outdoor.source, 'fmi');
     f.store.setState = setState;
     const nextAt = f.store.getState('providers:health').outdoor.nextAttemptAt;
     f.setTime(nextAt); f.engine.ingest(h66(nextAt)); await providers.runDue();
     assert.equal(f.store.getState('providers:health').outdoor.status, 'ok');
-    assert.equal(f.engine.status().observations.outdoor.source, 'fmi');
+    assert.equal((await committedStatus(f.engine)).observations.outdoor.source, 'fmi');
     assert.equal(f.engine.outdoorCandidates.openmeteo.value, 7);
     assert.deepEqual(f.store.getState('provider:observations').map(row => row.source).sort(), ['fmi', 'openmeteo']);
   } finally { f.store.setState = setState; await providers.close(); }
@@ -374,11 +387,12 @@ test('weather candidates survive polling and restart while live H66 publications
     value: 0, unit: 'degC', sourceTime: now, receivedAt: now, quality: [], raw: { usableForControl: true, retained: false } });
   f.engine.ingest(h66());
   const providers = startProviders(f.options);
+  await providers.ready;
   try {
     await providers.runDue();
     now = initial + 10 * MINUTE; f.setTime(now); source = 'openmeteo'; f.engine.ingest(h66());
     await providers.runDue();
-    assert.equal(f.engine.status().observations.outdoor.source, 'fmi');
+    assert.equal((await committedStatus(f.engine)).observations.outdoor.source, 'fmi');
     assert.deepEqual(Object.keys(f.engine.outdoorCandidates).sort(), ['fmi', 'openmeteo']);
     const cached = f.store.getState('provider:observations');
     assert.deepEqual(cached.map(row => row.source).sort(), ['fmi', 'openmeteo']);
@@ -389,13 +403,13 @@ test('weather candidates survive polling and restart while live H66 publications
     const restored = new Engine({ store: f.store, config: f.config, clock: () => now });
     f.engines.push(restored);
     assert.deepEqual(Object.keys(restored.outdoorCandidates).sort(), ['fmi', 'openmeteo']);
-    assert.equal(restored.status().observations.outdoor.source, 'fmi');
+    assert.equal((await committedStatus(restored)).observations.outdoor.source, 'fmi');
     assert.equal(f.store.observations({ signal: 'outdoor_temperature' }).length, count, 'Restoring provider cache must not duplicate history');
     restored.ingest(h66());
-    assert.equal(restored.status().observations.outdoor.source, 'fmi');
+    assert.equal((await committedStatus(restored)).observations.outdoor.source, 'fmi');
     now = initial + 31 * MINUTE;
-    assert.equal(restored.status().observations.outdoor.source, 'openmeteo', 'Persisted backup remains usable when FMI expires');
-    assert.equal(restored.status().observations.outdoor.stale, false);
+    assert.equal((await committedStatus(restored)).observations.outdoor.source, 'openmeteo', 'Persisted backup remains usable when FMI expires');
+    assert.equal((await committedStatus(restored)).observations.outdoor.stale, false);
   } finally { await providers.close(); }
 });
 
@@ -410,6 +424,7 @@ test('rolling weather keeps a still-fresh current block with its original proven
         issuedAtBasis: 'fetched-snapshot', fetchedAt: now }] };
   };
   const providers = startProviders(f.options);
+  await providers.ready;
   try {
     await providers.runDue();
     const first = f.store.snapshots({ kind: 'weather' })[0];
@@ -439,6 +454,7 @@ test('all-zero and impossible relative currents need attention, while different 
   f.options.devices.easee = async ({ now }) => [{ source: 'easee', device: 'fixture-ev', signal: 'property_current_l1',
     value: 0, unit: 'A', sourceTime: now, receivedAt: now, quality: ['current_snapshot_not_energy', issue] }];
   const providers = startProviders(f.options);
+  await providers.ready;
   try {
     for (const [i, flag] of ['all_zero_property_current', 'ev_exceeds_property_current', 'asynchronous_snapshot'].entries()) {
       issue = flag; f.setTime(initial + i * 30 * MINUTE); await providers.runDue();
@@ -479,6 +495,7 @@ test('old unchanged temperatures and idle EV currents do not slow downloads of c
     })));
   };
   let providers = startProviders(f.options);
+  await providers.ready;
   try {
     for (let i = 0; i < 8; i++) {
       const now = initial + i * 5 * MINUTE;
@@ -503,9 +520,9 @@ test('old unchanged temperatures and idle EV currents do not slow downloads of c
       }
       assert.equal(f.engine.latest.property_current_l1.value, 4 + i);
       assert.equal(f.store.observations({ signal: 'property_current_l1' }).length, 0);
-      assert.equal(f.engine.status().observations.indoor.stale, false);
-      assert.equal(f.engine.status().observations.indoor.needsAttention, true);
-      assert.equal(f.engine.status().observations.indoor.observedAt, sourceAt);
+      assert.equal((await committedStatus(f.engine)).observations.indoor.stale, false);
+      assert.equal((await committedStatus(f.engine)).observations.indoor.needsAttention, true);
+      assert.equal((await committedStatus(f.engine)).observations.indoor.observedAt, sourceAt);
       if (i === 3) {
         await providers.close(); providers = startProviders(f.options);
         assert.equal(f.store.getState('providers:health').easee.status, 'ok');
@@ -533,12 +550,13 @@ test('old Easee voltages do not need attention or contaminate current source age
         sourceTime: now - age, receivedAt: now, quality: age ? ['stale'] : [] };
     })));
   const providers = startProviders(f.options);
+  await providers.ready;
   try {
     for (const [i, stale] of [false, true, false].entries()) {
       oldPropertyCurrent = stale;
       const now = initial + i * 5 * MINUTE;
       f.setTime(now); await providers.runDue();
-      const health = f.engine.status().providers.easee;
+      const health = (await committedStatus(f.engine)).providers.easee;
       assert.equal(health.status, stale ? 'degraded' : 'ok');
       assert.deepEqual(health.qualityIssues, stale ? ['property_stale'] : []);
       assert.deepEqual(health.staleSourceTimes, stale ? { property_stale: now - 30 * MINUTE } : {});
@@ -565,6 +583,7 @@ test('Easee property staleness needs attention and clears when property timestam
       quality: ['current_snapshot_not_energy', ...(stale ? ['stale'] : [])] };
   }));
   let providers = startProviders(f.options);
+  await providers.ready;
   try {
     for (const [i, [charger, property, issues]] of [
       [false, true, ['property_stale']],
@@ -575,7 +594,7 @@ test('Easee property staleness needs attention and clears when property timestam
       oldCharger = charger; oldProperty = property;
       const now = initial + i * 5 * MINUTE;
       f.setTime(now); await providers.runDue();
-      const health = f.engine.status().providers.easee;
+      const health = (await committedStatus(f.engine)).providers.easee;
       assert.equal(health.status, property ? 'degraded' : 'ok');
       assert.deepEqual(health.qualityIssues, issues);
       assert.deepEqual(health.staleSourceTimes, Object.fromEntries(issues.map(flag => [flag, initial - 60 * MINUTE])));
@@ -606,15 +625,16 @@ test('Easee scopes partial errors and quality notes to the affected current read
       : ['asynchronous_snapshot', 'duplicate_observation', ...(prefix === 'property' ? ['negative_current'] : [])],
   })));
   let providers = startProviders(f.options);
+  await providers.ready;
   try {
     await providers.runDue();
-    let health = f.engine.status().providers.easee;
+    let health = (await committedStatus(f.engine)).providers.easee;
     assert.deepEqual(health.currentReadings, {
       charger: { qualityIssues: [], error: null, lastSuccessAt: initial },
       property: { qualityIssues: ['negative_current'], error: null, lastSuccessAt: initial },
     });
     failed = 'ev1'; f.setTime(initial + 5 * MINUTE); await providers.runDue();
-    health = f.engine.status().providers.easee;
+    health = (await committedStatus(f.engine)).providers.easee;
     assert.equal(health.error, 'HTTP-503');
     assert.equal(health.status, 'degraded');
     assert.deepEqual(health.currentReadings.charger, {
@@ -630,9 +650,9 @@ test('Easee scopes partial errors and quality notes to the affected current read
     assert.match(description.detail, /Charger 1 readings: Download failed \(HTTP 503\)/);
     assert.match(description.detail, /Property readings: Some current readings are negative/);
     await providers.close(); providers = startProviders(f.options);
-    assert.deepEqual(f.engine.status().providers.easee.currentReadings, health.currentReadings);
+    assert.deepEqual((await committedStatus(f.engine)).providers.easee.currentReadings, health.currentReadings);
     failed = 'property'; f.setTime(initial + 10 * MINUTE); await providers.runDue();
-    health = f.engine.status().providers.easee;
+    health = (await committedStatus(f.engine)).providers.easee;
     assert.equal(health.currentReadings.charger.error, null);
     assert.equal(health.currentReadings.charger.lastSuccessAt, initial + 10 * MINUTE);
     assert.equal(health.currentReadings.property.error, 'HTTP-503');
@@ -650,8 +670,9 @@ test('charger age and asynchronous snapshots never restore an attention state, e
       qualityIssues: flags, staleSourceTimes: { charger_stale: initial - 60 * MINUTE },
       currentReadings: { charger: { qualityIssues: flags, error: null, lastSuccessAt: initial - MINUTE } } } });
     const providers = startProviders(f.options);
+  await providers.ready;
     try {
-      const health = f.engine.status().providers.easee;
+      const health = (await committedStatus(f.engine)).providers.easee;
       assert.equal(health.status, 'ok');
       assert.equal(health.failures, 0);
       assert.equal(health.nextAttemptAt, initial + 20 * MINUTE);
@@ -675,8 +696,9 @@ test('Easee restores sanitized device health without hiding real errors or prope
       'synthetic-private-response': { error: 'synthetic-private-response' },
     } } });
   let providers = startProviders(f.options);
+  await providers.ready;
   try {
-    let health = f.engine.status().providers.easee;
+    let health = (await committedStatus(f.engine)).providers.easee;
     assert.equal(health.status, 'degraded');
     assert.deepEqual(health.qualityIssues, ['charger_stale', 'property_stale']);
     assert.deepEqual(health.currentReadings, {
@@ -689,7 +711,8 @@ test('Easee restores sanitized device health without hiding real errors or prope
     health.currentReadings.property.error = 'synthetic-private-response';
     f.store.setState('providers:health', { easee: health });
     providers = startProviders(f.options);
-    health = f.engine.status().providers.easee;
+    await providers.ready;
+    health = (await committedStatus(f.engine)).providers.easee;
     assert.equal(health.currentReadings.property.error, 'provider-request-failed');
     assert.equal(health.status, 'degraded');
     assert.equal(JSON.stringify(health).includes('synthetic-private-response'), false);
@@ -708,11 +731,12 @@ test('Easee invalid downloads and thrown errors retain separately dated successe
       quality: kind === 'ok' ? [] : ['invalid_unit', 'invalid_numeric', 'conflicting_duplicate', 'missing', 'duplicate_observation'] }];
   };
   const providers = startProviders(f.options);
+  await providers.ready;
   try {
     await providers.runDue();
     for (const [index, failure] of ['invalid', 'empty', 'throw'].entries()) {
       kind = failure; f.setTime(initial + (index + 1) * 30 * MINUTE); await providers.runDue();
-      const health = f.engine.status().providers.easee;
+      const health = (await committedStatus(f.engine)).providers.easee;
       assert.equal(health.status, failure === 'throw' ? 'error' : 'degraded');
       assert.equal(health.currentReadings.property.error, failure === 'throw' ? 'HTTP-429' : 'missing-or-invalid-observations');
       assert.equal(health.currentReadings.property.lastSuccessAt, initial);
@@ -731,8 +755,9 @@ test('malformed persisted Easee scopes cannot suppress a current quality problem
     f.store.setState('providers:health', { easee: { status: 'degraded', error: null,
       qualityIssues: ['negative_current'], nextAttemptAt: initial + 20 * MINUTE, currentReadings } });
     const providers = startProviders(f.options);
+  await providers.ready;
     try {
-      const health = f.engine.status().providers.easee;
+      const health = (await committedStatus(f.engine)).providers.easee;
       assert.equal(health.status, 'degraded');
       assert.deepEqual(health.qualityIssues, ['negative_current']);
       assert.equal(health.currentReadings, undefined);
@@ -745,9 +770,10 @@ test('a missing configured Easee device is scoped as a failure while returned re
   const f = fixture(t);
   f.config.connections = { easee: { charger_id: 'fixture-ev', equalizer_id: 'fixture-property' } };
   const providers = startProviders(f.options);
+  await providers.ready;
   try {
     await providers.runDue();
-    const health = f.engine.status().providers.easee;
+    const health = (await committedStatus(f.engine)).providers.easee;
     assert.equal(health.status, 'degraded');
     assert.equal(health.error, 'missing-or-invalid-observations');
     assert.deepEqual(health.currentReadings, {
@@ -778,12 +804,13 @@ test('old timestamp attention starts at 30 minutes for currents and two hours fo
     quality: ['current_snapshot_not_energy', 'stale'],
   })));
   const providers = startProviders(f.options);
+  await providers.ready;
   try {
     for (const [i, minutes] of [20, 30 - 1 / MINUTE, 30, 90, 120 - 1 / MINUTE, 120, 150, 20].entries()) {
       age = Math.round(minutes * MINUTE);
       const now = initial + i * 10 * MINUTE;
       f.setTime(now); await providers.runDue();
-      const health = f.engine.status().providers;
+      const health = (await committedStatus(f.engine)).providers;
       const currentsOld = age >= 30 * MINUTE, temperaturesOld = age >= 120 * MINUTE;
       assert.equal(health.easee.status, currentsOld ? 'degraded' : 'ok', `current age ${age}`);
       assert.deepEqual(health.easee.qualityIssues, currentsOld ? ['charger_stale', 'property_stale'] : []);
@@ -808,9 +835,10 @@ test('attention age uses oldest source timestamps independently of transport age
     sourceTime: now - phase * 35 * MINUTE, receivedAt: now, quality: ['current_snapshot_not_energy'],
   }));
   const providers = startProviders(f.options);
+  await providers.ready;
   try {
     await providers.runDue();
-    const health = f.engine.status().providers.easee;
+    const health = (await committedStatus(f.engine)).providers.easee;
     assert.equal(health.status, 'degraded');
     assert.equal(health.lastSuccessAt, initial);
     assert.deepEqual(health.qualityIssues, ['property_stale']);
@@ -837,6 +865,7 @@ test('restart preserves visible failures and fallback details during a scheduled
     market: { status: 'running', nextAttemptAt: initial + 20 * MINUTE },
   });
   const providers = startProviders(f.options);
+  await providers.ready;
   try {
     const health = f.store.getState('providers:health');
     assert.equal(health.temperatures.status, 'ok');
@@ -867,27 +896,28 @@ test('location enables keyless weather jobs and fresh primary survives backup po
     return rows;
   };
   const providers = startProviders(f.options);
+  await providers.ready;
   try {
     await providers.runDue();
     assert.equal(f.store.getState('providers:health').market.status, 'ok');
     assert.equal(f.store.getState('providers:health').weather.status, 'ok');
-    assert.equal(f.engine.status().observations.outdoor.source, 'fmi');
+    assert.equal((await committedStatus(f.engine)).observations.outdoor.source, 'fmi');
     source = 'openmeteo'; at = initial + 9 * MINUTE;
     f.setTime(initial + 10 * MINUTE); await providers.runDue();
     assert.equal(f.store.getState('providers:health').outdoor.status, 'fallback');
-    assert.equal(f.engine.status().observations.outdoor.source, 'fmi', 'Fresh cached FMI stays ahead of the newer backup');
+    assert.equal((await committedStatus(f.engine)).observations.outdoor.source, 'fmi', 'Fresh cached FMI stays ahead of the newer backup');
     at = initial + 20 * MINUTE;
     f.setTime(initial + 21 * MINUTE); await providers.runDue();
-    assert.equal(f.engine.status().observations.outdoor.source, 'openmeteo', 'Backup takes over once cached FMI exceeds 30 minutes');
+    assert.equal((await committedStatus(f.engine)).observations.outdoor.source, 'openmeteo', 'Backup takes over once cached FMI exceeds 30 minutes');
     source = 'fmi'; at = initial + 15 * MINUTE;
     f.setTime(initial + 31 * MINUTE); await providers.runDue();
-    assert.equal(f.engine.status().observations.outdoor.source, 'fmi', 'Fresh primary replaces a newer backup calculation');
-    assert.equal(f.engine.status().observations.outdoor.observedAt, at);
+    assert.equal((await committedStatus(f.engine)).observations.outdoor.source, 'fmi', 'Fresh primary replaces a newer backup calculation');
+    assert.equal((await committedStatus(f.engine)).observations.outdoor.observedAt, at);
     const count = f.store.observations().filter(row => row.source !== 'controller-estimate').length;
     const restored = new Engine({ store: f.store, config: f.config, clock: () => initial + 31 * MINUTE });
     f.engines.push(restored);
-    assert.equal(restored.status().observations.outdoor.source, 'fmi');
-    assert.equal(restored.status().observations.outdoor.observedAt, at);
+    assert.equal((await committedStatus(restored)).observations.outdoor.source, 'fmi');
+    assert.equal((await committedStatus(restored)).observations.outdoor.observedAt, at);
     assert.equal(f.store.observations().filter(row => row.source !== 'controller-estimate').length, count);
   } finally { await providers.close(); }
 });
@@ -905,6 +935,7 @@ test('healthy backup respects primary Retry-After across polls and restart', asy
     return result;
   };
   let providers = startProviders(f.options);
+  await providers.ready;
   try {
     await providers.runDue();
     assert.equal(f.store.getState('providers:health').weather.status, 'fallback');
@@ -913,7 +944,7 @@ test('healthy backup respects primary Retry-After across polls and restart', asy
     f.setTime(initial + 60 * MINUTE); providers = startProviders(f.options);
     await providers.runDue();
     assert.equal(calls, 2);
-    assert.equal(f.engine.status().weatherStatus, 'available');
+    assert.equal((await committedStatus(f.engine)).weatherStatus, 'available');
     assert.equal(f.store.getState('providers:health').weather.source, 'openmeteo');
   } finally { await providers.close(); }
 });
@@ -926,11 +957,12 @@ test('FMI outdoor selection cannot be overwritten by an optional injected outsid
   f.options.outdoor = async ({ now }) => [{ source: 'fmi', device: 'fixture-station', signal: 'outdoor_temperature',
     value: 12, unit: 'degC', sourceTime: now - 5 * MINUTE, receivedAt: now, quality: [] }];
   const providers = startProviders(f.options);
+  await providers.ready;
   try {
     await providers.runDue();
     f.setTime(initial + 5 * MINUTE); await providers.runDue();
-    assert.equal(f.engine.status().observations.outdoor.value, 12);
-    assert.equal(f.engine.status().observations.outdoor.source, 'fmi');
+    assert.equal((await committedStatus(f.engine)).observations.outdoor.value, 12);
+    assert.equal((await committedStatus(f.engine)).observations.outdoor.source, 'fmi');
     assert.equal(f.store.observations({ signal: 'outdoor_temperature' }).some(row => row.source === 'mqtt-temperature'), false);
   } finally { await providers.close(); }
 });
@@ -940,6 +972,7 @@ test('long device Retry-After and denied credentials survive restart without imm
   f.options.devices.temperatures = async () => f.temperature().map(row => ({ ...row, value: null, sourceTime: null,
     quality: ['provider_error', 'http_status_429', 'missing'], raw: { retryAfterMs: 2 * 60 * MINUTE } }));
   let providers = startProviders(f.options);
+  await providers.ready;
   try {
     await providers.runDue();
     assert.equal(f.store.getState('providers:health').temperatures.nextAttemptAt, initial + 2 * 60 * MINUTE);
@@ -970,6 +1003,7 @@ test('rate limits are shared between forecast and observation routes after resta
     return rows;
   };
   let providers = startProviders(f.options);
+  await providers.ready;
   try {
     await providers.runDue(); await providers.close();
     f.setTime(initial + 10 * MINUTE); providers = startProviders(f.options); await providers.runDue();
@@ -985,6 +1019,7 @@ test('cold starts bind weather and job cadence to normalized location identity w
   f.options.weather = async ({ now }) => ({ source: 'openmeteo', fetchedAt: now, issuedAt: null,
     forecast: [{ start: now, end: now + 24 * 60 * MINUTE, outdoorC: 5, issuedAt: null, fetchedAt: now, issuedAtBasis: 'fetched-snapshot' }] });
   let providers = startProviders(f.options);
+  await providers.ready;
   await providers.runDue(); await providers.close();
   const first = f.store.getState('provider:weather');
   assert.equal(first.acquisitionIdentity, weatherAcquisitionIdentity(f.config.connections));
@@ -1018,6 +1053,7 @@ test('failed alternative temperature batches restore held values and attempts wi
     { ...f.temperature()[0], device: 'garage_temperature_2', signal: 'garage_temperature_2', value: 8 },
   ];
   const providers = startProviders(f.options);
+  await providers.ready;
   try {
     await providers.runDue();
     assert.deepEqual(f.engine.ingestionCheckpoint(), before);

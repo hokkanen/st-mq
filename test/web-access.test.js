@@ -16,7 +16,7 @@ async function setup(t, config = configuration(), extra = {}) {
   const mutations = [];
   const engine = { status: () => ({ environment: 'history' }),
     setTemporary: input => { mutations.push(input); return { updated: true }; } };
-  const access = createWebAccess({ config, engine, store: {},
+  const access = createWebAccess({ config, engine, store: { runWrite: async operation => operation() },
     chartService: { overview: async () => ({ rows: [] }) }, ...extra });
   await access.start();
   t.after(() => access.close());

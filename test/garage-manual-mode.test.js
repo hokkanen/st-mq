@@ -1,5 +1,9 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { mkdtempSync, rmSync } from 'node:fs';
+import { join } from 'node:path';
+import { tmpdir } from 'node:os';
+import { DatabaseSync } from 'node:sqlite';
 import { Store } from '../src/storage/store.js';
 import { GarageRuntime } from '../src/garage/runtime.js';
 import { mitsubishiControl, mitsubishiResult } from '../chart/mitsubishi.js';
@@ -8,8 +12,10 @@ import { validateGarageModeState } from '../src/garage/room-temperature.js';
 import { garageV2Fixture, GARAGE_TEST_AT, GARAGE_TEST_ADAPTER } from './helpers/garage-v2.js';
 import { createShellyCn105Transport } from '../src/garage/shelly-cn105.js';
 function fixture(t, options = {}) {
-  const store = new Store(':memory:'); t.after(() => store.close());
+  const store = new Store(options.path ?? ':memory:'); t.after(() => store.close());
   const engine = { latest: {}, recorder: { recordEnergy: value => value }, ingest: row => { engine.latest[row.signal] = row; } };
+  engine.ingestionCheckpoint = () => structuredClone(engine.latest);
+  engine.restoreIngestionCheckpoint = snapshot => { engine.latest = snapshot; };
   const config = { input: 'mqtt', garage: { enabled: true, awayTargetC: 5, adapter: GARAGE_TEST_ADAPTER }, connections: {}, ...options.config };
   let runtime = null;
   const f = garageV2Fixture({ ...options.adapter, onState: value => runtime?.adapterChanged(value) });
@@ -46,6 +52,7 @@ test('negative controller receipts arriving before publication completion cannot
       publish: (_topic, payload) => new Promise(resolve => { command = JSON.parse(payload); finish = resolve; }) }) } });
     const previous = f.store.getState(f.runtime.keys.mode);
     const pending = f.runtime.setHeating(request);
+    while (!command) await new Promise(resolve => setImmediate(resolve));
     f.update({ result: { commandId: command.commandId, status, reason: 'fixture-controller-result' } });
     finish();
     await assert.rejects(pending, error => error.statusCode === (status === 'rejected' ? 409 : 503));
@@ -65,6 +72,7 @@ test('disconnect followed by a late publication failure leaves the previous mode
     publish: () => new Promise((_resolve, failed) => { reject = failed; }) }) } });
   const previous = f.store.getState(f.runtime.keys.mode);
   const pending = f.runtime.setHeating({ mode: 'away' });
+  while (!reject) await new Promise(resolve => setImmediate(resolve));
   f.adapter.setConnected(false);
   reject(new Error('fixture-delayed-publication-failure'));
   await assert.rejects(pending, /MQTT disconnected/);
@@ -81,6 +89,7 @@ test('durable controller confirmation still permits the mode edit after a late p
   const f = fixture(t, { adapter: { productionTransport: createShellyCn105Transport({ settings: GARAGE_TEST_ADAPTER,
     publish: () => new Promise((_resolve, failed) => { reject = failed; }) }) } });
   const pending = f.runtime.setHeating({ mode: 'away' });
+  while (!reject) await new Promise(resolve => setImmediate(resolve));
   f.update({ control: { targetC: 5, effectiveTargetC: 5 } });
   reject(new Error('fixture-delayed-publication-failure'));
   await pending;
@@ -160,4 +169,26 @@ test('changing Away preset or telemetry limits never changes a running target or
   assert.equal(f.publications.length, 1);
   await next.setHeating({ mode: 'away' });
   assert.equal(f.publications.at(-1).targetC, 3, 'Only the explicit selection applies the new preset.');
+});
+
+
+test('revoked Garage runtime cancels a queued mode request before sending it', async t => {
+  const directory = mkdtempSync(join(tmpdir(), 'stmq-garage-revoke-'));
+  const f = fixture(t, { path: join(directory, 'history.sqlite') });
+  t.after(() => rmSync(directory, { recursive: true, force: true }));
+  const writer = new DatabaseSync(f.store.path);
+  writer.exec('BEGIN IMMEDIATE');
+  let timeout;
+  try {
+    const pending = f.runtime.setHeating({ mode: 'away' });
+    const rejected = assert.rejects(pending, { code: 'STORAGE_WRITE_CANCELLED' });
+    assert.equal(f.store.writeQueueStatus().pending, 1);
+    f.runtime.beginShutdown();
+    await Promise.race([rejected, new Promise((_, reject) => {
+      timeout = setTimeout(() => reject(new Error('Revoked Garage request waited for storage')), 1000);
+    })]);
+    assert.equal(writer.isTransaction, true);
+    assert.equal(f.publications.length, 0);
+    assert.equal(f.store.writeQueueStatus().pending, 0);
+  } finally { clearTimeout(timeout); writer.exec('ROLLBACK'); writer.close(); await f.runtime.close(); }
 });

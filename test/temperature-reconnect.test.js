@@ -1,3 +1,4 @@
+import { committedStatus } from './helpers/committed-status.js';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { Store } from '../src/storage/store.js';
@@ -38,7 +39,7 @@ function fixture(t) {
 }
 const confirm = engine => engine.confirmTemperatureConnection(signal, { ...policy, routeSignature });
 
-test('confirmed reconnect restores a recent report prospectively and preserves outage windows and frozen replay', t => {
+test('confirmed reconnect restores a recent report prospectively and preserves outage windows and frozen replay', async t => {
   const f = fixture(t);
   f.engine.ingest(report(0));
   const before = f.sample(5);
@@ -50,13 +51,13 @@ test('confirmed reconnect restores a recent report prospectively and preserves o
   const spans = f.store.db.prepare('SELECT * FROM recorder_coverage WHERE signal=? ORDER BY id').all(signal);
   f.at(30);
   const restarted = f.restart();
-  assert.equal(restarted.status().observations.indoor.value, null);
+  assert.equal((await committedStatus(restarted)).observations.indoor.value, null);
   const recovered = confirm(restarted);
   assert.equal(recovered.sourceTime, START);
   assert.equal(recovered.receivedAt, START);
   assert.equal(recovered.reportExpiresAt, START + 75 * MINUTE);
-  assert.equal(restarted.status().observations.indoor.value, 21);
-  assert.equal(restarted.status().observations.upstairs.needsAttention, undefined);
+  assert.equal((await committedStatus(restarted)).observations.indoor.value, 21);
+  assert.equal((await committedStatus(restarted)).observations.upstairs.needsAttention, undefined);
   assert.deepEqual(f.sample(5), before);
   assert.deepEqual(f.sample(20), outage);
   assert.equal(f.sample(30).indoorC, null);
@@ -70,37 +71,37 @@ test('confirmed reconnect restores a recent report prospectively and preserves o
   const event = f.store.latestObservation(signal);
   assert.equal(event.raw.timeBasis, 'mqtt-transport-recovery');
   assert.equal(event.raw.originalReportTimeBasis, 'mqtt-received');
-  assert.equal(restarted.status().observations.upstairs.sourceTimeBasis, 'received-at');
+  assert.equal((await committedStatus(restarted)).observations.upstairs.sourceTimeBasis, 'received-at');
   assert.equal(event.raw.originalReportReceivedAt, START);
   assert.equal(event.receivedAt, START + 30 * MINUTE);
   const count = f.store.observations({ signal }).length;
   confirm(restarted);
   assert.equal(f.store.observations({ signal }).length, count, 'Duplicate confirmations do not create reports or events');
   f.at(75);
-  assert.equal(restarted.status().observations.indoor.value, null);
+  assert.equal((await committedStatus(restarted)).observations.indoor.value, null);
   assert.equal(confirm(restarted), null);
 });
 
-test('a changed reporting policy can recover a confirmed transport route without erasing its old deadline gap', t => {
+test('a changed reporting policy can recover a confirmed transport route without erasing its old deadline gap', async t => {
   const f = fixture(t);
   f.engine.ingest(report(0, { raw: { reportIntervalMs: 15 * MINUTE, reportGraceMs: 2 * MINUTE,
     temperatureRouteSignature: routeSignature } }));
   f.fail(10, ['mqtt-subscription-failed']);
   f.at(30); f.engine.configureTemperatureReports(signal, policy);
-  assert.equal(f.engine.status().observations.indoor.value, null);
+  assert.equal((await committedStatus(f.engine)).observations.indoor.value, null);
   f.at(32); assert.equal(confirm(f.engine).reportExpiresAt, START + 75 * MINUTE);
   assert.equal(f.sample(30).indoorC, null);
   assert.equal(f.sample(45).indoorC, null);
   assert.equal(f.sample(47).indoorC, 21);
 });
 
-test('transport confirmation cannot conceal invalid data, a changed route, unsigned history or an expired report', t => {
+test('transport confirmation cannot conceal invalid data, a changed route, unsigned history or an expired report', async t => {
   for (const invalid of [['invalid-temperature-message'], ['missing'], ['future_source_time'], ['out-of-order-source-time'], ['device-offline']]) {
     const f = fixture(t); f.engine.ingest(report(0));
     f.fail(5, invalid); f.fail(10);
     f.at(20);
     assert.equal(confirm(f.engine), null, invalid.join(','));
-    assert.equal(f.engine.status().observations.indoor.value, null);
+    assert.equal((await committedStatus(f.engine)).observations.indoor.value, null);
   }
   const f = fixture(t); f.engine.ingest(report(0)); f.fail(10); f.at(20);
   assert.equal(f.engine.confirmTemperatureConnection(signal, { ...policy, routeSignature: 'b'.repeat(64) }), null);
@@ -110,17 +111,17 @@ test('transport confirmation cannot conceal invalid data, a changed route, unsig
   f.at(75); assert.equal(confirm(f.engine), null);
 });
 
-test('reconnect does not relax sensor-change exclusions or grant garage and equipment recovery', t => {
+test('reconnect does not relax sensor-change exclusions or grant garage and equipment recovery', async t => {
   const f = fixture(t); f.engine.ingest(report(0)); f.fail(5);
   addSensorChange(f.store, 'providers', { signal, reason: 'replacement', requestId: 'invented-reconnect-replacement' }, START + 10 * MINUTE);
   f.at(30); assert.equal(confirm(f.engine), null);
-  assert.equal(f.engine.status().observations.indoor.value, null);
+  assert.equal((await committedStatus(f.engine)).observations.indoor.value, null);
   assert.equal(f.sample(45).indoorC, null);
   assert.equal(f.engine.confirmTemperatureConnection('garage_temperature', { ...policy, routeSignature }), null);
   assert.equal(f.engine.confirmTemperatureConnection('caravan_active', { ...policy, routeSignature }), null);
 });
 
-test('reconnect keeps the last compressed report time and an ensuing disconnect immediately invalidates it', t => {
+test('reconnect keeps the last compressed report time and an ensuing disconnect immediately invalidates it', async t => {
   const f = fixture(t); f.engine.ingest(report(0));
   f.at(15 + 1 / 60); f.engine.ingest(report(15, { receivedAt: START + 15 * MINUTE + 1000 }));
   f.fail(20); f.at(30);
@@ -130,14 +131,14 @@ test('reconnect keeps the last compressed report time and an ensuing disconnect 
   assert.equal(recovered.reportExpiresAt, START + 90 * MINUTE);
   f.at(31); f.engine.ingest(report(31, { quality: ['retained'], raw: { ...policy, retained: true,
     temperatureRouteSignature: routeSignature } }));
-  assert.equal(f.engine.status().observations.upstairs.reportExpiresAt, START + 90 * MINUTE);
+  assert.equal((await committedStatus(f.engine)).observations.upstairs.reportExpiresAt, START + 90 * MINUTE);
   f.fail(32);
-  assert.equal(f.engine.status().observations.indoor.value, null);
+  assert.equal((await committedStatus(f.engine)).observations.indoor.value, null);
   f.at(89 + 59 / 60); assert.equal(confirm(f.engine).sourceTime, START + 15 * MINUTE);
-  f.at(90); assert.equal(f.engine.status().observations.indoor.value, null);
+  f.at(90); assert.equal((await committedStatus(f.engine)).observations.indoor.value, null);
 });
 
-test('recovery storage failure rolls back the event and leaves runtime unavailable until retry', t => {
+test('recovery storage failure rolls back the event and leaves runtime unavailable until retry', async t => {
   const f = fixture(t); f.engine.ingest(report(0)); f.fail(10); f.at(20);
   const rows = f.store.observations({ signal }), state = f.engine.recorder.signalState(report(0), START + 20 * MINUTE);
   const write = f.store.setState.bind(f.store);
@@ -149,11 +150,11 @@ test('recovery storage failure rolls back the event and leaves runtime unavailab
   f.store.setState = write;
   assert.deepEqual(f.store.observations({ signal }), rows);
   assert.deepEqual(f.engine.recorder.signalState(report(0), START + 20 * MINUTE), state);
-  assert.equal(f.engine.status().observations.indoor.value, null);
+  assert.equal((await committedStatus(f.engine)).observations.indoor.value, null);
   assert.equal(confirm(f.engine).sourceTime, START);
 });
 
-test('a first signed unchanged report establishes route evidence and a later route change saves its own evidence', t => {
+test('a first signed unchanged report establishes route evidence and a later route change saves its own evidence', async t => {
   const f = fixture(t); f.engine.ingest(report(0, { raw: policy }));
   f.at(15);
   assert.equal(f.engine.ingest(report(15)).saved, true);

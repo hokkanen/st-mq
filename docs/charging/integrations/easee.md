@@ -705,6 +705,15 @@ ledger is protocol identity state, not a duplicate session-energy series. A rese
 meter counter can still end its known transaction; the raw nonnegative start and
 stop values are retained without treating their difference as energy.
 
+Socket frames and transaction changes wait asynchronously for the shared database
+writer in bounded receipt order. Replies that grant authorization leave only
+after COMMIT; rollback closes the affected connection without accepting the
+transaction. Queued frames retain their original receipt clocks and authenticated
+socket, so waiting cannot renew stale permission or transfer a message to a new
+connection. Native command guards run after admission. Setup also awaits its
+durable intent, then rechecks authority and remote configuration before any
+charger-side mutation.
+
 Some existing transactions reconnect without a `StartTransaction` exchange.
 The ledger can retain these separately as observed transactions after two
 distinct, advancing, fresh power `MeterValues` reports, at least one second apart,

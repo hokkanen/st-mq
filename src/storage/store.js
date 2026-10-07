@@ -12,6 +12,7 @@ import { cycleAssessmentExcluded } from './cycle-assessment.js';
 import { LEARNING_ALGORITHM } from '../domain/learning-contract.js';
 import { validateExecutorState, validateH66ControlState } from '../domain/heating-control-state.js';
 import { createWriteHealth } from './write-health.js';
+import { WriteQueue, sqliteContention } from './write-queue.js';
 import { readAdaptiveBudget } from './adaptive-recording-budget.js';
 import { readStorageMetrics } from './recording-metrics.js';
 export { SCHEMA_VERSION } from './schema.js';
@@ -128,16 +129,16 @@ export class Store {
     label(path, 'database path');
     this.path = path === ':memory:' ? path : resolve(path);
     this.readOnly = readOnly;
-    this.writeHealth = createWriteHealth();
+    this.writeQueue = new WriteQueue({ transaction: fn => this._transaction(fn, true),
+      onFailure: error => this.writeHealth.failure(error) });
+    this.writeHealth = createWriteHealth(Date.now, () => this.writeQueue.status());
     if (!readOnly && path !== ':memory:') mkdirSync(dirname(this.path), { recursive: true });
     this.db = new DatabaseSync(this.path, { readOnly });
     try {
       this.changeCount = this.db.prepare('SELECT total_changes() AS n');
-      // A lock wait here blocks timers, telemetry and authority callbacks too.
-      // Brief contention can settle, but longer contention must fail through
-      // the existing atomic write/error path instead of freezing live control.
-      // Background workers can wait longer without blocking the controller.
-      this.db.exec(`PRAGMA foreign_keys = ON; PRAGMA busy_timeout = ${isMainThread ? 100 : 5000};`);
+      // Startup has no active control callbacks. Runtime writer admission below
+      // retries asynchronously; background connections may block their own worker.
+      this.db.exec('PRAGMA foreign_keys = ON; PRAGMA busy_timeout = 5000;');
       const version = this.db.prepare('PRAGMA user_version').get().user_version;
       const empty = version === 0 && this.db.prepare("SELECT COUNT(*) AS n FROM sqlite_schema WHERE name NOT GLOB 'sqlite_*'").get().n === 0;
       if (!readOnly && empty) this.transaction(() => {
@@ -145,34 +146,70 @@ export class Store {
         this.db.exec(`PRAGMA user_version = ${SCHEMA_VERSION}`);
       });
       else validateCurrentDatabase(this.db);
-      if (readOnly) { this.db.exec('PRAGMA query_only = ON;'); return; }
+      if (readOnly) { this.db.exec(`PRAGMA query_only = ON; PRAGMA busy_timeout = ${isMainThread ? 0 : 5000};`); return; }
       this.db.exec('PRAGMA journal_mode = WAL; PRAGMA synchronous = FULL;');
       this.insertObservation = this.db.prepare(`INSERT INTO observations
         (source, device, signal, value, unit, source_time, received_at, quality, raw, import_id, row_number)
         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`);
       this.insertEvent = this.db.prepare('INSERT INTO events (type, payload, at) VALUES (?, ?, ?)');
+      if (isMainThread) this.db.exec('PRAGMA busy_timeout = 0;');
     } catch (error) { this.db.close(); throw error; }
   }
 
-  close() { this.db.close(); }
+  close() { this.writeQueue.close(); this.db.close(); }
+
+  runWrite(fn, options = {}) {
+    if (this.readOnly) return Promise.reject(Object.assign(new Error('This recording storage is read-only.'),
+      { code: 'ERR_SQLITE_ERROR', errcode: 8 }));
+    if (this.transactionDepth && !this.writeQueue.running) return new Promise((resolve, reject) => {
+      this.afterCommit(() => { this.writeQueue.run(fn, options).then(resolve, reject); });
+      this.afterRollback(() => reject(Object.assign(new Error('The preceding save was rolled back.'), { code: 'STORAGE_WRITE_ROLLED_BACK' })));
+    });
+    return this.writeQueue.run(fn, options);
+  }
+
+  writeQueueStatus() { return this.writeQueue.status(); }
+
+  afterCommit(effect) {
+    if (typeof effect !== 'function') throw new TypeError('A commit effect must be a function');
+    if (this.transactionDepth) this.commitEffects.push(effect);
+    else return effect();
+  }
+
+  afterRollback(effect) {
+    if (typeof effect !== 'function') throw new TypeError('A rollback effect must be a function');
+    if (this.transactionDepth) this.rollbackEffects.push(effect);
+  }
 
   databaseChanges() {
     try { return this.changeCount.get().n; } catch { return null; }
   }
 
   transaction(fn) {
+    return this._transaction(fn);
+  }
+
+  _transaction(fn, admission = false) {
     // Acquisition and recorder methods deliberately compose atomic operations.
     // SAVEPOINT keeps an inner failure from leaving half an interval behind.
     if (this.transactionDepth) {
       const savepoint = `nested_${++this.savepointSequence}`;
       const before = this.databaseChanges(), discardedBefore = this.discardedChanges;
+      const committedBefore = this.commitEffects.length, rollbackBefore = this.rollbackEffects.length;
       this.db.exec(`SAVEPOINT ${savepoint}`);
       try {
         const result = fn();
-        if (result && typeof result.then === 'function') throw new TypeError('SQLite transaction callback must be synchronous');
+        if (result && typeof result.then === 'function') {
+          Promise.resolve(result).catch(() => {});
+          throw new TypeError('SQLite transaction callback must be synchronous');
+        }
         this.db.exec(`RELEASE ${savepoint}`); return result;
       } catch (error) {
         try { this.db.exec(`ROLLBACK TO ${savepoint}; RELEASE ${savepoint}`); } catch (cleanupError) { if (error && typeof error === 'object') error.cleanupError = cleanupError; }
+        this.commitEffects.length = committedBefore;
+        for (const effect of this.rollbackEffects.splice(rollbackBefore).reverse()) {
+          try { effect(); } catch (cleanupError) { if (error && typeof error === 'object') error.cleanupError ??= cleanupError; }
+        }
         const after = this.databaseChanges();
         // total_changes also includes rolled-back savepoint writes. They cannot
         // prove that recording resumed when the caller catches the inner error.
@@ -185,23 +222,41 @@ export class Store {
     // leave an opened transaction behind if the database becomes unreadable.
     const changesBefore = this.databaseChanges();
     try { this.db.exec('BEGIN IMMEDIATE'); }
-    catch (error) { this.writeHealth.failure(error); throw error; }
+    catch (error) { if (!admission || !sqliteContention(error)) this.writeHealth.failure(error); throw error; }
     this.transactionDepth = 1; this.savepointSequence ??= 0;
+    this.commitEffects = []; this.rollbackEffects = [];
     this.discardedChanges = 0; this.writeEvidenceUnknown = changesBefore === null;
+    let result, committed = false;
     try {
-      const result = fn();
-      if (result && typeof result.then === 'function') throw new TypeError('SQLite transaction callback must be synchronous');
+      result = fn();
+      if (result && typeof result.then === 'function') {
+        Promise.resolve(result).catch(() => {});
+        throw new TypeError('SQLite transaction callback must be synchronous');
+      }
       const changesAfter = this.databaseChanges();
       const changed = !this.writeEvidenceUnknown && changesAfter !== null && changesAfter - changesBefore > this.discardedChanges;
       this.db.exec('COMMIT');
+      committed = true;
       if (changed) this.writeHealth.success();
-      return result;
     } catch (error) {
       try { this.db.exec('ROLLBACK'); } catch (cleanupError) { if (error && typeof error === 'object') error.cleanupError = cleanupError; }
+      for (const effect of this.rollbackEffects.splice(0).reverse()) {
+        try { effect(); } catch (cleanupError) { if (error && typeof error === 'object') error.cleanupError ??= cleanupError; }
+      }
       this.writeHealth.failure(error);
       throw error;
     }
-    finally { this.transactionDepth = 0; }
+    finally { this.transactionDepth = 0; if (!committed) this.commitEffects = []; this.rollbackEffects = []; }
+    const effects = this.commitEffects; this.commitEffects = [];
+    const failures = [];
+    for (const effect of effects) {
+      try { effect(); } catch (error) { failures.push(error); }
+    }
+    // Persistence succeeded. Never roll back, retry the body or strand a later
+    // callback merely because a consumer failed after that durable boundary.
+    if (failures.length) throw Object.assign(new AggregateError(failures, 'A saved operation could not finish its follow-up.'),
+      { code: 'STORAGE_COMMIT_EFFECT_FAILED', committed: true });
+    return result;
   }
 
   getState(key) {

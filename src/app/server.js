@@ -254,7 +254,12 @@ export function createAppServer({ engine, getEngine = () => engine, store, chart
           const current = getEngine();
           if (webAccess.role === 'family' && !familyActionAllowed(url.pathname, input, current))
             return json(403, { error: 'Admin access is required for this action.' });
-          return action(current, input);
+          const commit = operation => store.runWrite(operation, {
+            bytes: Buffer.byteLength(JSON.stringify(input)),
+            isCurrent: () => !res.destroyed && !unavailable() && !writesBlocked()
+              && current === getEngine() && stillAuthorized(),
+          });
+          return action(current, input, commit);
         };
         if (req.method === 'GET' && url.pathname === '/api/recording-health')
           return json(200, await recordingHealth.status({ store: readerStore, engine,
@@ -283,14 +288,14 @@ export function createAppServer({ engine, getEngine = () => engine, store, chart
             return json(200, result);
           });
         if (req.method === 'POST' && url.pathname === '/api/heating/explorer/apply')
-          return await mutate((current, input) => {
+          return await mutate(async (current, input, commit) => {
             if (!current.heatingExplorer) return json(503, { error: 'Heating plan exploration is unavailable on this instance.' });
-            return json(200, current.heatingExplorer.apply(input));
+            return json(200, await commit(() => current.heatingExplorer.apply(input)));
           });
         if (req.method === 'POST' && url.pathname === '/api/heating/explorer/cancel')
-          return await mutate((current, input) => {
+          return await mutate(async (current, input, commit) => {
             if (!current.heatingExplorer) return json(503, { error: 'Heating plan exploration is unavailable on this instance.' });
-            return json(200, current.heatingExplorer.cancel(input));
+            return json(200, await commit(() => current.heatingExplorer.cancel(input)));
           });
         if (req.method === 'GET' && url.pathname === '/api/database-export')
           return await exportDatabase({ store: readerStore, response: res, authorized: stillAuthorized });
@@ -329,16 +334,25 @@ export function createAppServer({ engine, getEngine = () => engine, store, chart
           return json(200, fireplaceStatus(engine.fireplaceStatus(), engine.clock()));
         if (req.method === 'GET' && url.pathname === '/api/sensor-changes') return json(200, sensorChangesStatus());
         if (req.method === 'POST' && url.pathname === '/api/sensor-changes')
-          return await mutate((current, input) => json(200, current.changeSensor(input)));
+          return await mutate(async (current, input, commit) => {
+            await commit(() => current.commitSensorChange(input));
+            return json(200, await commit(() => current.finishSensorChange()));
+          });
         if (req.method === 'POST' && url.pathname === '/api/sensor-changes/revert')
-          return await mutate((current, input) => json(200, current.revertSensor(input)));
+          return await mutate(async (current, input, commit) => {
+            await commit(() => current.commitSensorReversal(input));
+            return json(200, await commit(() => current.finishSensorReversal()));
+          });
         if (req.method === 'POST' && url.pathname === '/api/sensor-changes/retry-rebuild')
-          return await mutate((current, input) => json(200, current.retrySensorRebuild(input)));
-        if (req.method === 'POST' && url.pathname === '/api/fireplace')
-          return await mutate((current, input) => json(200, fireplaceAccess(current.changeFireplace(input), webAccess, current.clock())));
-        if (req.method === 'POST' && url.pathname === '/api/fireplace/remove')
-          return await mutate((current, input) => json(200, fireplaceAccess(current.changeFireplace(input, true,
-            webAccess.role === 'family' ? { maxAgeMs: FAMILY_FIREWOOD_REMOVAL_MS } : {}), webAccess, current.clock())));
+          return await mutate(async (current, input, commit) => json(200, await commit(() => current.retrySensorRebuild(input))));
+        if (req.method === 'POST' && ['/api/fireplace', '/api/fireplace/remove'].includes(url.pathname))
+          return await mutate(async (current, input, commit) => {
+            const removing = url.pathname.endsWith('/remove');
+            const removalAccess = webAccess.role === 'family' ? { maxAgeMs: FAMILY_FIREWOOD_REMOVAL_MS } : {};
+            const source = await commit(() => current.commitFireplaceSource(input, removing, removalAccess));
+            const result = await commit(() => current.finishFireplaceChange({ ...source, removing }));
+            return json(200, fireplaceAccess(result, webAccess, current.clock()));
+          });
         if (req.method === 'POST' && url.pathname === '/api/settings/preview') {
           return await mutate(async (_engine, input) => {
             if (!input || typeof input !== 'object' || Array.isArray(input) || Object.keys(input).length)
@@ -395,7 +409,7 @@ export function createAppServer({ engine, getEngine = () => engine, store, chart
             ? { ...reports.reportEvents({ ...query, reportId }), ...metadata } : annotate(report));
         }
         if (reportRoute && req.method === 'POST' && ['save', 'delete'].includes(reportRoute[2]))
-          return await mutate((current, input) => {
+          return await mutate(async (current, input, commit) => {
             if (current.config.input === 'offline' || recovering())
               return json(409, { error: 'Charging reports are read-only on this computer.' });
             const [, reportId, action] = reportRoute, query = { ...chargingReportQuery(url, 'report'), reportId };
@@ -404,16 +418,16 @@ export function createAppServer({ engine, getEngine = () => engine, store, chart
               throw new TypeError(action === 'save' ? 'Save a report with a boolean saved value.' : 'Delete a report with an empty JSON object.');
             const reports = current.charging.sessionDiagnostics;
             if (!reports.getReport(query)) return json(404, { error: 'This charging report is no longer available.' });
-            if (action === 'save') return json(200, reports.saveReport({ ...query, saved: input.saved }) ?? { deleted: true });
-            try { reports.deleteReport(query); }
+            if (action === 'save') return json(200, await commit(() => reports.saveReport({ ...query, saved: input.saved })) ?? { deleted: true });
+            try { await commit(() => reports.deleteReport(query)); }
             catch (error) { if (error.code === 'active-report') error.statusCode = 409; throw error; }
             return json(200, { deleted: true });
           });
         const chargingTestAction = url.pathname.match(/^\/api\/charging\/tests\/(preview|start|schedule|target|cancel)$/);
         if (req.method === 'POST' && chargingTestAction)
-          return await mutate((current, input) => {
+          return await mutate(async (current, input, commit) => {
             if (recovering()) return json(409, { error: 'Wait for recovery to finish before changing a charging assessment.' });
-            const result = current.charging.chargingTestAction(chargingTestAction[1], input);
+            const result = await commit(() => current.charging.chargingTestAction(chargingTestAction[1], input));
             return json(200, chargingTestAction[1] === 'preview' ? result : status());
           });
         const chargerAction = url.pathname.match(/^\/api\/charging\/chargers\/([^/]+)\/(settings|control|resume|use-automatic|charge-now|identify)$/);
@@ -536,8 +550,8 @@ export function createAppServer({ engine, getEngine = () => engine, store, chart
         }
         if (req.method === 'GET' && url.pathname === '/api/contract') return json(200, engine.contract());
         if (req.method === 'POST' && ['/api/contract', '/api/settings'].includes(url.pathname)) return json(405, { error: 'Permanent settings and electricity rates come from configuration. Use Apply configuration after editing them.' });
-        if (req.method === 'POST' && url.pathname === '/api/temporary') return await mutate((current, input) => {
-          const result = current.setTemporary(input);
+        if (req.method === 'POST' && url.pathname === '/api/temporary') return await mutate(async (current, input, commit) => {
+          const result = await commit(() => current.setTemporary(input));
           return json(200, { ...result, webAccess, ...(result.fireplace
             ? { fireplace: fireplaceAccess(result.fireplace, webAccess, current.clock()) } : {}) });
         });

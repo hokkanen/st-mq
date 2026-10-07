@@ -1,4 +1,5 @@
 import { Worker } from 'node:worker_threads';
+import { randomUUID } from 'node:crypto';
 import { rm } from 'node:fs/promises';
 import { learningVersion, validLearningCheckpoint, LEARNING_ALGORITHM } from '../app/committed-learning.js';
 import { fireplaceLearningContext } from '../app/fireplace-inputs.js';
@@ -15,6 +16,18 @@ const validInput = input => {
 };
 const unavailable = message => Object.assign(new Error(message), { statusCode: 409, code: 'recovery_invalid', public: true });
 const journalHead = (store, input) => store.db.prepare('SELECT COALESCE(MAX(id),0) id FROM learning_journal WHERE input=?').get(input).id;
+
+async function finishInterruptedRecovery(store, input, operationToken) {
+  // Recording an interrupted job grants no publication or control authority.
+  // Try only the immediately available writer turn: shutdown must not wait for
+  // this diagnostic, and a queued cleanup must never outlive its operation.
+  const cancellation = new AbortController();
+  try {
+    const saved = store.runWrite(() => markRecoveryFailed(store, input, { operationToken }), { signal: cancellation.signal });
+    cancellation.abort();
+    await saved;
+  } catch { /* Startup reconciles a retained in-progress record if storage could not be admitted. */ }
+}
 
 /** Read-only source validation and inventory. No master backup or trial merge
  * is created; recovery makes acceptance decisions against current master data. */
@@ -36,12 +49,16 @@ export async function recoverHistory({ store, donorPath, input = 'mqtt', preview
     || preview.counts !== undefined
     || typeof previewId !== 'string' || previewId !== learningVersion(signed)) throw unavailable('Check the other instance before recovering');
   if (!isCurrent()) throw unavailable('Recovery requires the current master');
+  const operationToken = randomUUID();
   running.add(store);
   try {
-    return await workerJob({ mode: 'recover', masterPath: store.path, donorPath, input, preview, source, operationId }, {
-      signal, onProgress, onReady(message, worker) {
+    return await workerJob({ mode: 'recover', masterPath: store.path, donorPath, input, preview, source, operationId, operationToken }, {
+      signal, onProgress, async onReady(message, worker) {
         if (!isCurrent()) throw unavailable('Master authority changed; recovery remains protected');
-        const result = store.transaction(() => {
+        const result = await store.runWrite(() => {
+          if (signal?.aborted || !isCurrent()) throw unavailable('Recovery authority changed while waiting for storage');
+          if (store.getState(`recovery:active:${input}`)?.operationToken !== operationToken)
+            throw unavailable('The active recovery operation changed; review again');
           if (selectedHistory(store) !== message.sourceSelection) throw unavailable('Selected recovery history changed; check again');
           if (store.learningEpoch(input) !== message.sourceEpoch)
             throw unavailable('The selected model history changed during recovery');
@@ -79,15 +96,16 @@ export async function recoverHistory({ store, donorPath, input = 'mqtt', preview
             .run(Date.now(), JSON.stringify(report), message.sourceHead, revision, message.runId);
           store.event('history-recovery-completed', { input, imported: report.imported, skipped: report.counts.skipped,
             conflicts: report.counts.conflicts, epoch: message.epoch });
-          return { report, checkpoint, epoch: message.epoch };
-        });
-        if (!result) { onProgress({ phase: 'catching-up', processed: 0 }); worker.postMessage({ type: 'catchup', report: message.report }); return null; }
-        onPublish(result);
+          const published = { report, checkpoint, epoch: message.epoch };
+          store.afterCommit(() => onPublish(published));
+          return published;
+        }, { signal, isCurrent });
+        if (!result) { await onProgress({ phase: 'catching-up', processed: 0 }); worker.postMessage({ type: 'catchup', report: message.report }); return null; }
         return result;
       },
     });
   } catch (error) {
-    try { markRecoveryFailed(store, input); } catch {}
+    await finishInterruptedRecovery(store, input, operationToken);
     throw error;
   } finally { running.delete(store); }
 }
@@ -95,7 +113,7 @@ export async function recoverHistory({ store, donorPath, input = 'mqtt', preview
 function workerJob(workerData, { onProgress, onReady, signal }) {
   return new Promise((resolve, reject) => {
     const worker = new Worker(new URL(workerData.mode.startsWith('revision') ? './revision-worker.js' : './worker.js', import.meta.url), { workerData });
-    let settled = false, temporary = null;
+    let settled = false, temporary = null, messages = Promise.resolve();
     const finish = (error, result) => {
       if (settled) return;
       settled = true; signal?.removeEventListener('abort', abort);
@@ -113,16 +131,21 @@ function workerJob(workerData, { onProgress, onReady, signal }) {
       finish(Object.assign(new Error(failure.error), { code: failure.code }));
     });
     worker.on('exit', () => {
-      if (!settled) {
-        const failure = recoveryFailure(null, 'recovery_worker_failed');
-        finish(Object.assign(new Error(failure.error), { code: failure.code }));
-      }
+      // The final message may already be received while earlier asynchronous
+      // progress persistence is still draining. Judge exit after those messages.
+      messages = messages.then(() => {
+        if (!settled) {
+          const failure = recoveryFailure(null, 'recovery_worker_failed');
+          finish(Object.assign(new Error(failure.error), { code: failure.code }));
+        }
+      });
     });
     worker.on('message', message => {
+      messages = messages.then(async () => {
       if (settled) return;
       try {
         if (message.type === 'temporary') temporary = message.path;
-        else if (message.type === 'progress') onProgress?.({ phase: message.phase, processed: message.processed });
+        else if (message.type === 'progress') await onProgress?.({ phase: message.phase, processed: message.processed });
         else if (message.type === 'yield') {
           // The worker has committed and will not acquire another write lock
           // until this controller has serviced queued callbacks and timers.
@@ -131,11 +154,12 @@ function workerJob(workerData, { onProgress, onReady, signal }) {
         else if (message.type === 'failed') finish(Object.assign(new Error(message.error),
           { code: RECOVERY_ERROR_CODES.includes(message.code) ? message.code : 'recovery_failed' }));
         else if (message.type === 'complete') finish(null, message.report);
-        else if (message.type === 'ready') { const result = onReady(message, worker); if (result) finish(null, result); }
+        else if (message.type === 'ready') { const result = await onReady(message, worker); if (result) finish(null, result); }
       } catch (error) {
         const failure = recoveryFailure(error);
         finish(Object.assign(new Error(failure.error), { code: failure.code, statusCode: error?.statusCode }));
       }
+      });
     });
   });
 }
@@ -159,13 +183,17 @@ export async function reviseRecovery({ store, input = 'mqtt', recoveryId, active
   const { previewId, ...checked } = preview ?? {};
   if (previewId !== learningVersion(checked) || checked.recoveryId !== recoveryId || checked.active !== active)
     throw unavailable('Review this recovery before changing it');
+  const operationToken = randomUUID();
   running.add(store);
-  store.setState(`recovery:active:${input}`, { status: 'rebuilding', recoveryId, revision: true, startedAt: Date.now() });
   try {
+    await store.runWrite(() => store.setState(`recovery:active:${input}`, { status: 'rebuilding', recoveryId, revision: true, operationToken, startedAt: Date.now() }), { signal, isCurrent });
     return await workerJob({ mode: 'revision', masterPath: store.path, input, recoveryId, active, preview }, {
-      signal, onProgress, onReady(message, worker) {
+      signal, onProgress, async onReady(message, worker) {
         if (!isCurrent()) throw unavailable('Control authority changed; the previous history remains selected');
-        const result = store.transaction(() => {
+        const result = await store.runWrite(() => {
+          if (signal?.aborted || !isCurrent()) throw unavailable('Recovery authority changed while waiting for storage');
+          if (store.getState(`recovery:active:${input}`)?.operationToken !== operationToken)
+            throw unavailable('The active recovery operation changed; review again');
           if (selectedHistory(store) !== message.sourceSelection || store.learningEpoch(input) !== message.sourceEpoch
             || fireplaceLearningContext(store, input).fireplaceRevision !== message.sourceFireplace
             || sensorRevision(store, input) !== message.sourceSensor)
@@ -192,14 +220,16 @@ export async function reviseRecovery({ store, input = 'mqtt', recoveryId, active
             sensorRevision: message.sensorRevision, epoch: message.epoch, requiresRebuild: false });
           store.setState(`recovery:active:${input}`, { status: 'complete', epoch: message.epoch, completedAt: Date.now(), report });
           store.event(active ? 'history-recovery-restored' : 'history-recovery-reverted', { recoveryId, input }, Date.now());
-          return { report, checkpoint: message.checkpoint, epoch: message.epoch };
-        });
-        if (!result) { onProgress({ phase: 'catching-up', processed: 0 }); worker.postMessage({ type: 'catchup' }); return null; }
-        onPublish(result); return result;
+          const published = { report, checkpoint: message.checkpoint, epoch: message.epoch };
+          store.afterCommit(() => onPublish(published));
+          return published;
+        }, { signal, isCurrent });
+        if (!result) { await onProgress({ phase: 'catching-up', processed: 0 }); worker.postMessage({ type: 'catchup' }); return null; }
+        return result;
       },
     });
   } catch (error) {
-    try { markRecoveryFailed(store, input); } catch {}
+    await finishInterruptedRecovery(store, input, operationToken);
     throw error;
   } finally { running.delete(store); }
 }

@@ -5,6 +5,7 @@ import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { randomUUID } from 'node:crypto';
 import { PassThrough } from 'node:stream';
+import { DatabaseSync } from 'node:sqlite';
 import { Store } from '../src/storage/store.js';
 import { createDatabaseBackup } from '../src/storage/backup.js';
 import { createHistoryRecovery } from '../src/app/history-recovery.js';
@@ -12,6 +13,19 @@ import { createAppServer } from '../src/app/server.js';
 
 const deferred = () => { let resolve; const promise = new Promise(done => { resolve = done; }); return { promise, resolve }; };
 const request = (action, extra = {}) => ({ action, requestId: randomUUID(), ...extra });
+async function within(promise, milliseconds = 1500) {
+  let timer;
+  try { return await Promise.race([promise, new Promise((_, reject) => {
+    timer = setTimeout(() => reject(new Error('Cancellation waited for the held SQLite lock')), milliseconds);
+  })]); } finally { clearTimeout(timer); }
+}
+async function waitingForWrite(store) {
+  const deadline = performance.now() + 1500;
+  while (store.writeQueueStatus().waitingSince === null) {
+    assert(performance.now() < deadline, 'The save reached SQLite admission');
+    await new Promise(resolve => setTimeout(resolve, 5));
+  }
+}
 async function fixture(t, options = {}) {
   const root = await mkdtemp(join(tmpdir(), 'stmq-history-recovery-api-'));
   const store = new Store(join(root, 'live.sqlite'));
@@ -34,7 +48,7 @@ async function fixture(t, options = {}) {
   const coordinatorOptions = { store, getEngine: () => currentEngine, canControl: () => control,
     getExportDirectory: () => join(root, 'exports'), recoveryModule: async () => module, ...options.coordinator };
   let coordinator = createHistoryRecovery(coordinatorOptions);
-  coordinator.initialize();
+  await coordinator.initialize();
   const server = createAppServer({ engine, store, chartService: { overview() {} }, historyRecovery: coordinator,
     controlAuthority: { canControl: () => control, status: () => ({}) }, ...options.server });
   await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
@@ -53,7 +67,7 @@ async function fixture(t, options = {}) {
     await createDatabaseBackup({ sourcePath: store.path, destination: path });
     return readFile(path);
   }
-  async function restartCoordinator() { await coordinator.close(); coordinator = createHistoryRecovery(coordinatorOptions); coordinator.initialize(); return coordinator; }
+  async function restartCoordinator() { await coordinator.close(); coordinator = createHistoryRecovery(coordinatorOptions); await coordinator.initialize(); return coordinator; }
   return { root, store, engine, calls, coordinator, backup, base, upload, post, restartCoordinator,
     loseAuthority: () => { control = false; coordinator.cancel(); }, replaceEngine: () => { currentEngine = { ...engine }; } };
 }
@@ -222,6 +236,62 @@ test('shutdown cancels an unfinished upload and removes the private partial file
   assert(await outcome instanceof Error);
   assert.deepEqual(await readdir(join(f.root, 'history-recovery', 'uploads')), []);
   assert.equal(f.store.getState('history-recovery:coordinator'), null);
+});
+
+test('cancelling queued recovery admission finishes before an external writer releases SQLite', async t => {
+  const f = await fixture(t), lock = new DatabaseSync(f.store.path);
+  lock.exec('BEGIN IMMEDIATE');
+  try {
+    const outcome = f.coordinator.checkPath({ donorPath: 'unused-synthetic-path', source: { kind: 'upload', label: 'Uploaded database' } }).catch(error => error);
+    await waitingForWrite(f.store);
+    await within(f.coordinator.close());
+    assert(await outcome instanceof Error);
+    assert.equal(f.calls.length, 0, 'The cancelled initial save cannot start the worker');
+    assert.equal(f.store.writeQueueStatus().pending, 0);
+    assert.equal(f.store.getState('history-recovery:coordinator'), null);
+  } finally { lock.exec('ROLLBACK'); lock.close(); }
+});
+
+test('cancelled progress preserves the durable running record for startup reconciliation without waiting on SQLite', async t => {
+  let lock;
+  const f = await fixture(t, { module: { recoveryPreview: async ({ onProgress }) => {
+    lock.exec('BEGIN IMMEDIATE');
+    await onProgress({ phase: 'checking', processed: 1 });
+    throw new Error('Cancelled progress must not continue');
+  } } });
+  lock = new DatabaseSync(f.store.path);
+  try {
+    const outcome = f.coordinator.checkPath({ donorPath: 'unused-synthetic-path', source: { kind: 'upload', label: 'Uploaded database' } }).catch(error => error);
+    await waitingForWrite(f.store);
+    await within(f.coordinator.close());
+    assert(await outcome instanceof Error);
+    assert.equal(f.coordinator.currentJob().status, 'interrupted');
+    assert.equal(f.store.getState('history-recovery:coordinator').job.status, 'running');
+    assert.equal(f.store.writeQueueStatus().pending, 0);
+  } finally { lock.exec('ROLLBACK'); lock.close(); }
+  const reopened = await f.restartCoordinator();
+  assert.equal(reopened.currentJob().status, 'interrupted');
+  assert.deepEqual(f.engine.checkpoint, { old: true });
+});
+
+test('shutdown cancels a completed upload waiting for registration and preserves earlier donor copies', async t => {
+  const f = await fixture(t), bytes = await f.backup();
+  const original = await (await f.upload(bytes)).json();
+  const before = f.store.getState('history-recovery:coordinator');
+  const lock = new DatabaseSync(f.store.path), stream = new PassThrough();
+  stream.headers = { 'content-type': 'application/vnd.sqlite3' };
+  lock.exec('BEGIN IMMEDIATE');
+  try {
+    const outcome = f.coordinator.upload(stream).catch(error => error);
+    stream.end(bytes);
+    await waitingForWrite(f.store);
+    await within(f.coordinator.close());
+    assert(await outcome instanceof Error);
+    assert.deepEqual(await readdir(join(f.root, 'history-recovery', 'uploads')), [`${original.sourceId}.sqlite`]);
+    assert.deepEqual(f.store.getState('history-recovery:coordinator'), before);
+    assert.deepEqual((await f.coordinator.view()).sources.map(source => source.id), [original.sourceId]);
+    assert.equal(f.store.writeQueueStatus().pending, 0);
+  } finally { lock.exec('ROLLBACK'); lock.close(); }
 });
 
 test('real backup upload recovers, reverts and restores an old contribution while newer local history survives', async t => {

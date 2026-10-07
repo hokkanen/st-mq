@@ -80,6 +80,10 @@ export function createEquipmentCapture({ engine, store, settings, publish, canCo
     maxGapMs: device.maxAgeMs || settings.maxAgeMs, source: 'mqtt-equipment',
     signal: `${device.id}_energy`, recordDevice: device.id, stateKey: `mqtt:equipment-energy:v1:${device.id}` })]));
   const reception = createMqttReception({ store, engine, admission, devices, meters: energy });
+  const write = (action, options = {}) => {
+    if (store.runWrite && !store.transactionDepth) return store.runWrite(action, options);
+    try { return Promise.resolve(action()); } catch (error) { return Promise.reject(error); }
+  };
   const definitions = device => [
     { signal: device.powerSignal ?? device.stateSignal ?? device.temperatureSignal,
       unit: device.kind === 'power' ? 'W' : device.kind === 'temperature' ? 'degC' : 'state',
@@ -143,6 +147,20 @@ export function createEquipmentCapture({ engine, store, settings, publish, canCo
     return true;
   }
   function unavailable(device, reason, receivedAt = engine.clock()) {
+    if (store.runWrite && !store.transactionDepth) {
+      // Withdraw authority immediately. The original outage boundary then joins
+      // the same ordered writer queue as later reports from this connection.
+      device.liveSinceConnect = false; device.invalid = true;
+      for (const definition of definitions(device)) if (definition.required || device.readings[definition.signal])
+        engine.rememberObservation?.({ ...identity(device), signal: definition.signal, value: null,
+          unit: definition.unit, sourceTime: null, receivedAt, quality: [reason],
+          raw: { usableForControl: false, timeBasis: 'availability-transition',
+            ...(device.roomRouteSignature ? { temperatureRouteSignature: device.roomRouteSignature } : {}) } }, receivedAt);
+      for (const waiter of [...device.waiters]) waiter.finish(fail('state confirmation unavailable'));
+      for (const check of [...device.checks]) check.finish('unavailable');
+      void write(() => reception.run(() => unavailable(device, reason, receivedAt))).catch(() => {});
+      return;
+    }
     device.liveSinceConnect = false; device.invalid = true;
     if (device.temperatureControl) {
       const guard = device.temperatureGuard;
@@ -708,9 +726,11 @@ export function createEquipmentCapture({ engine, store, settings, publish, canCo
     topicsForBroker(broker) { return [...new Set([...(broker === 'primary' ? native?.topics ?? [] : []),
       ...devices.filter(device => device.broker === broker).flatMap(readTopics)])]; },
     setConnected(value, broker = null) {
+      const affected = devices.filter(device => broker === null || device.broker === broker);
+      // Every device loses transport authority even if saving one outage fails.
+      for (const device of affected) device.brokerConnected = value;
       if (broker === null || broker === 'primary') { connected = value; native?.setConnected(value); }
-      for (const device of devices.filter(device => broker === null || device.broker === broker)) {
-        device.brokerConnected = value;
+      for (const device of affected) {
         device.subscriptionRefresh = null;
         device.subscriptionStatus = value ? 'unconfirmed' : 'disconnected';
         if (!value) unavailable(device, 'mqtt-disconnected'); else { device.online = null; device.bridgeOnline = null; device.liveSinceConnect = false; }
@@ -833,14 +853,18 @@ export function createEquipmentCapture({ engine, store, settings, publish, canCo
       const policy = { ...device.temperatureGuard.settings, ...patch };
       if (!validTemperatureControl(policy))
         throw fail('temperature thresholds must be between -10 and 30 °C in 0.1 °C steps, with ON at least 0.5 °C above OFF');
-      store.setState(temperatureControlKey(device), { signature: temperatureControlSignature(device),
-        identity: device.temperatureGuard.boundIdentity, settings: policy });
-      if (policy.enabled !== device.temperatureGuard.settings.enabled) {
-        device.temperatureGuard.managed = false; device.temperatureGuard.demand = false;
-        device.temperatureGuard.lastAttemptAt = null; device.temperatureGuard.lastAttemptPower = null;
-      }
-      device.temperatureGuard.settings = policy;
-      controlTemperature(device, engine.clock());
+      const identity = device.temperatureGuard.boundIdentity;
+      await write(() => reception.run(() => {
+        if (probeBusy(device) || caravanStopping || closed || !canControl()
+          || device.temperatureGuard.boundIdentity !== identity) throw fail('control authority or appliance identity changed');
+        store.setState(temperatureControlKey(device), { signature: temperatureControlSignature(device), identity, settings: policy });
+        if (policy.enabled !== device.temperatureGuard.settings.enabled) {
+          device.temperatureGuard.managed = false; device.temperatureGuard.demand = false;
+          device.temperatureGuard.lastAttemptAt = null; device.temperatureGuard.lastAttemptPower = null;
+        }
+        device.temperatureGuard.settings = policy;
+        controlTemperature(device, engine.clock());
+      }), { priority: 'control', isCurrent: () => !closed && canControl() });
       return { deviceId, temperatureControl: temperatureGuardStatus(device, engine.clock()) };
     },
     async setCover(input) {
@@ -990,23 +1014,25 @@ export function createEquipmentCapture({ engine, store, settings, publish, canCo
       if (!appliances.length) return { restorationPending: false };
       caravanStopping = true;
       const pending = () => appliances.some(row => row.temperatureGuard.restoration);
+      const deadline = Date.now() + Math.max(0, timeoutMs), cancellation = new AbortController();
+      const timeout = setTimeout(() => cancellation.abort(), Math.max(1, timeoutMs));
+      const admitted = action => write(action, { priority: 'control', signal: cancellation.signal, isCurrent: () => !closed && canControl() });
       try {
-        reception.run(() => {
+        await admitted(() => reception.run(() => {
           for (const device of appliances) {
             if (device.temperatureGuard.probe?.status === 'testing')
               abortCaravanProbe(device.temperatureGuard.probe, 'controller-stopping', engine.clock());
             confirmDehumidifier(device, engine.clock());
           }
-        });
-        const deadline = Date.now() + Math.max(0, timeoutMs);
+        }));
         while (pending() && appliances.some(device => device.brokerConnected) && !closed && canControl() && Date.now() < deadline) {
           await new Promise(resolve => setTimeout(resolve, Math.min(50, Math.max(1, deadline - Date.now()))));
-          reception.run(() => {
+          await admitted(() => reception.run(() => {
             for (const device of appliances) confirmDehumidifier(device, engine.clock());
-          });
+          }));
         }
         return { restorationPending: pending() };
-      } finally { if (resume) caravanStopping = false; }
+      } finally { clearTimeout(timeout); if (resume) caravanStopping = false; }
     },
     close() { if (closed) return; api.setConnected(false); native?.close(); closed = true; },
   };

@@ -1,3 +1,4 @@
+import { committedStatus } from './helpers/committed-status.js';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { EventEmitter } from 'node:events';
@@ -70,7 +71,7 @@ for (const input of ['providers', 'mqtt']) test(`${input} uses three local room 
     m.publish('invented/garage', 10, initial - MINUTE);
     m.client.emit('message', 'invented-h66/HP/0007', Buffer.from('5.2'));
     await providers.runDue();
-    let status = f.engine.status();
+    let status = (await committedStatus(f.engine));
     for (const [key, value, signal] of [['upstairs', 22, 'indoor_temperature'], ['bedroom', 21, 'bedroom_temperature'],
       ['downstairs', 20, 'downstairs_temperature'], ['garage', 10, 'garage_temperature']]) {
       assert.equal(status.observations[key].value, value);
@@ -96,7 +97,7 @@ for (const input of ['providers', 'mqtt']) test(`${input} uses three local room 
       ['downstairs_temperature', 20], ['garage_temperature', 10]]) assert(chart.series[signal].some(point => point.y === value));
     f.setTime(initial + MINUTE);
     m.publish('invented/smoke/2', 24);
-    status = f.engine.status();
+    status = (await committedStatus(f.engine));
     assert.equal(status.observations.indoor.value, 22.5);
     assert.equal(status.observations.upstairs.value, 22);
     assert.equal(status.observations.downstairs.value, 20);
@@ -113,10 +114,10 @@ test('repeated timestamped retained MQTT publications preserve sensor age and mi
       for (const [channel, value] of [[1, 22], [2, 21], [3, 20]]) m.publish(`invented/smoke/${channel}`, value, initial - MINUTE, true);
     };
     sendRooms();
-    assert.equal(f.engine.status().observations.indoor.value, null, 'Retained values cannot establish genuine report coverage');
+    assert.equal((await committedStatus(f.engine)).observations.indoor.value, null, 'Retained values cannot establish genuine report coverage');
     f.setTime(initial + 31 * MINUTE);
     sendRooms();
-    const status = f.engine.status();
+    const status = (await committedStatus(f.engine));
     for (const key of ['upstairs', 'bedroom', 'downstairs']) {
       assert.equal(status.observations[key].observedAt, initial - MINUTE);
       assert.equal(status.observations[key].stale, true);
@@ -124,10 +125,10 @@ test('repeated timestamped retained MQTT publications preserve sensor age and mi
     assert.equal(status.observations.indoor.stale, true);
     m.publish('invented/smoke/1', 22);
     m.publish('invented/smoke/3', 20);
-    assert.equal(f.engine.status().observations.indoor.stale, true, 'A stale bedroom cannot silently disappear from the configured average');
+    assert.equal((await committedStatus(f.engine)).observations.indoor.stale, true, 'A stale bedroom cannot silently disappear from the configured average');
     m.publish('invented/smoke/2', 21);
-    assert.equal(f.engine.status().observations.indoor.value, 21);
-    assert.equal(f.engine.status().observations.indoor.stale, false);
+    assert.equal((await committedStatus(f.engine)).observations.indoor.value, 21);
+    assert.equal((await committedStatus(f.engine)).observations.indoor.stale, false);
   } finally { await m.mqtt.close(); }
 });
 
@@ -136,14 +137,14 @@ test('untimestamped retained room values cannot become fresh model inputs after 
   try {
     for (const [channel, value] of [[1, 22], [2, 21], [3, 20]])
       m.client.emit('message', `invented/smoke/${channel}`, Buffer.from(String(value)), { retain: true });
-    let status = f.engine.status();
+    let status = (await committedStatus(f.engine));
     for (const key of ['upstairs', 'bedroom', 'downstairs']) {
       assert.equal(status.observations[key].observedAt, null);
       assert.equal(status.observations[key].stale, true);
     }
     assert.equal(status.observations.indoor.stale, true);
     for (const [channel, value] of [[1, 22], [2, 21], [3, 20]]) m.publish(`invented/smoke/${channel}`, value);
-    status = f.engine.status();
+    status = (await committedStatus(f.engine));
     assert.equal(status.observations.indoor.value, 21);
     assert.equal(status.observations.indoor.stale, false);
   } finally { await m.mqtt.close(); }
@@ -163,21 +164,21 @@ test('unchanged room reports survive compression and restart, then expire indepe
     }
     const restored = new Engine({ store: f.store, config: f.config, clock: f.clock });
     f.engines.push(restored);
-    const resumed = restored.status();
+    const resumed = (await committedStatus(restored));
     assert.equal(resumed.observations.indoor.value, 21);
     assert.equal(resumed.observations.indoor.stale, false);
     assert.equal(resumed.observations.upstairs.observedAt, initial, 'Restoring compressed coverage preserves original value time');
     f.setTime(initial + 180 * MINUTE + ROOM_MAX_AGE);
-    assert.equal(f.engine.status().observations.indoor.value, null);
-    assert.equal(restored.status().observations.indoor.value, null, 'Restart cannot extend a report deadline');
+    assert.equal((await committedStatus(f.engine)).observations.indoor.value, null);
+    assert.equal((await committedStatus(restored)).observations.indoor.value, null, 'Restart cannot extend a report deadline');
     m.publish('invented/smoke/1', 22); m.publish('invented/smoke/3', 20);
-    assert.equal(f.engine.status().observations.indoor.value, null, 'Bedroom remains a required contributor');
+    assert.equal((await committedStatus(f.engine)).observations.indoor.value, null, 'Bedroom remains a required contributor');
     m.publish('invented/smoke/2', 21);
-    assert.equal(f.engine.status().observations.indoor.value, 21);
+    assert.equal((await committedStatus(f.engine)).observations.indoor.value, 21);
     m.client.emit('message', 'invented/smoke/2', Buffer.from('invalid JSON'));
-    assert.equal(f.engine.status().observations.indoor.value, null, 'Malformed reports interrupt the affected source immediately');
+    assert.equal((await committedStatus(f.engine)).observations.indoor.value, null, 'Malformed reports interrupt the affected source immediately');
     f.setTime(f.clock() + MINUTE); m.publish('invented/smoke/2', 21);
-    assert.equal(f.engine.status().observations.indoor.stale, false);
+    assert.equal((await committedStatus(f.engine)).observations.indoor.stale, false);
   } finally { await m.mqtt.close(); }
 });
 
@@ -191,7 +192,7 @@ test('retransmissions and cached timestamps cannot renew a periodic report deadl
       m.publish(`invented/smoke/${channel}`, 21, initial);
     }
     f.setTime(initial + ROOM_MAX_AGE);
-    assert.equal(f.engine.status().observations.indoor.value, null);
+    assert.equal((await committedStatus(f.engine)).observations.indoor.value, null);
     for (const signal of ['indoor_temperature', 'bedroom_temperature', 'downstairs_temperature'])
       assert.equal(f.store.observations({ signal }).length, 1);
   } finally { await m.mqtt.close(); }

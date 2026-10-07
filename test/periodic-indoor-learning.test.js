@@ -10,6 +10,7 @@ import { lastIndoorReading } from '../src/app/indoor-readings.js';
 import { addSensorChange } from '../src/app/sensor-changes.js';
 import { committedLearningSample, recordLearningContext, replayLearningJournal} from '../src/app/committed-learning.js';
 import { appendLearningRecord } from './helpers/home-learning-fixture.js';
+import { committedStatus } from './helpers/committed-status.js';
 
 const MINUTE = 60_000, start = Date.parse('2026-01-01T00:00:00Z');
 const signal = 'indoor_temperature';
@@ -109,7 +110,7 @@ test('enabling periodic reporting keeps previously valid nonperiodic coverage be
   assert.equal(sample(120).indoorC, null);
 });
 
-test('enabling reporting without a new message records one availability boundary across runtime restarts', t => {
+test('enabling reporting without a new message records one availability boundary across runtime restarts', async t => {
   const { store, recorder, sample } = fixture(t);
   recorder.record(report(0, { device: signal, raw: { reportIntervalMs: 0, reportGraceMs: 0 } }));
   const before = sample(15);
@@ -117,7 +118,7 @@ test('enabling reporting without a new message records one availability boundary
   const configuration = { input: 'providers' }, policy = { reportIntervalMs: 15 * MINUTE, reportGraceMs: 2 * MINUTE };
   const engine = new Engine({ store, config: configuration, clock: () => now });
   engine.configureTemperatureReports(signal, policy);
-  assert.equal(engine.status().observations.indoor.value, null);
+  assert.equal((await committedStatus(engine)).observations.indoor.value, null);
   assert.equal(sample(30).indoorC, null);
   assert.deepEqual(sample(15), before, 'The new contract does not reinterpret the earlier nonperiodic period');
   const count = store.db.prepare('SELECT COUNT(*) n FROM observations WHERE signal=?').get(signal).n;
@@ -125,10 +126,10 @@ test('enabling reporting without a new message records one availability boundary
   const restarted = new Engine({ store, config: configuration, clock: () => now });
   restarted.configureTemperatureReports(signal, policy);
   assert.equal(store.db.prepare('SELECT COUNT(*) n FROM observations WHERE signal=?').get(signal).n, count);
-  assert.equal(restarted.status().observations.indoor.value, null);
+  assert.equal((await committedStatus(restarted)).observations.indoor.value, null);
   assert.equal(sample(45).indoorC, null);
   restarted.ingest(report(45, { device: signal }));
-  assert.equal(restarted.status().observations.indoor.value, 21);
+  assert.equal((await committedStatus(restarted)).observations.indoor.value, 21);
   assert.equal(sample(45).indoorC, null, 'A recovered endpoint retains the preceding policy-change gap');
   now = start + 60 * MINUTE; restarted.ingest(report(60, { device: signal }));
   assert.equal(sample(60).indoorC, 21);

@@ -359,7 +359,7 @@ test('passive identification cannot override economics while bounded tests retai
     identificationAvailable: () => available, identificationTurn: () => true,
     minimumCurrentIdentification: () => minimumCurrent });
   f.item.identification = { id: 'synthetic-attempt', connectedAt: NOW - 300_000, phase: 'charging', action: 'allow', probe: null };
-  const control = () => f.runtime.identificationControl(f.item, { transport: 'ocpp' });
+  const control = () => f.runtime.identificationState(f.item, { transport: 'ocpp' });
   assert.equal(control(), null, 'Ordinary charging observation has no charging permission override');
   minimumCurrent = true;
   assert.equal(control().minimumCurrent, true);

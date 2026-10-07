@@ -33,7 +33,7 @@ function rig(t, { native = true, saved = new Map(), publishLegacy, publishDhwr, 
     setState: (key, value) => {
       if (key === 'executor:home') { validateExecutorState(value); snapshots.push(structuredClone(value)); }
       saved.set(key, structuredClone(value));
-    }, event() {}, observation: row => observations.push(row) };
+    }, runWrite: async operation => operation(), event() {}, observation: row => observations.push(row) };
   const decoder = createH66Decoder({ deviceId: 'synthetic' });
   const receive = (index, value) => h66.ingest(decoder.decode({ topic: `synthetic/HP/${index}`, payload: String(value), receivedAt: now }));
   const h66 = native ? createH66Controller({ deviceId: 'synthetic', store, clock: () => now,
@@ -283,6 +283,7 @@ test('Pause is synchronous and manual tests cannot overlap an active write', asy
   assert.equal(r.log.length, 0);
   const pending = r.run('reduction');
   await assert.rejects(r.executor.execute({ commands: ['normal'] }, { automationEnabled: false, manualTest: true, now: r.now }), { code: 'EXECUTOR_BUSY' });
+  while (!acknowledge) await new Promise(resolve => setImmediate(resolve));
   acknowledge({ status: 'mqtt', sent: true, actual: null }); await pending;
 });
 

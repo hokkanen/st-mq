@@ -87,18 +87,44 @@ test('a publication transaction failure keeps its cause and the previous model s
   const preview = await recoveryPreview({ masterPath: master.path, donorPath, signal: t.signal });
   const failureDb = new DatabaseSync(':memory:');
   failureDb.exec('CREATE TABLE synthetic(id INTEGER PRIMARY KEY); INSERT INTO synthetic VALUES(1)');
-  const transaction = master.transaction;
-  master.transaction = function () {
-    this.transaction = transaction;
-    failureDb.exec('INSERT INTO synthetic VALUES(1)');
+  const setState = master.setState;
+  master.setState = function (key, value) {
+    if (key === 'recovery:active:mqtt' && value.status === 'complete') failureDb.exec('INSERT INTO synthetic VALUES(1)');
+    return setState.call(this, key, value);
   };
   try {
     await assert.rejects(recoverHistory({ store: master, donorPath, preview, signal: t.signal }),
       { code: 'recovery_database_constraint' });
-  } finally { master.transaction = transaction; failureDb.close(); }
+  } finally { master.setState = setState; failureDb.close(); }
   assert.deepEqual(master.getState('adaptive:mqtt'), { synthetic: 'previous-model' });
   assert.equal(master.learningEpoch('mqtt'), 'original');
   assert.equal(master.db.prepare('PRAGMA integrity_check').get().integrity_check, 'ok');
+});
+
+test('cancelled recovery skips failure bookkeeping behind an external SQLite writer', { timeout: 5000 }, async t => {
+  const { master, donorPath } = fixture(t), donor = new Store(donorPath);
+  donor.observation({ source: 'synthetic', device: 'cancellation-fixture', signal: 'indoor_temperature',
+    value: 21, unit: 'degC', sourceTime: 1000, receivedAt: 1000 });
+  donor.close();
+  const preview = await recoveryPreview({ masterPath: master.path, donorPath, signal: t.signal });
+  const lock = new DatabaseSync(master.path), cancellation = new AbortController();
+  let timer, locked = false;
+  try {
+    const outcome = recoverHistory({ store: master, donorPath, preview, signal: cancellation.signal,
+      onProgress(value) {
+        if (locked || value.phase !== 'importing') return;
+        assert.match(master.getState('recovery:active:mqtt').operationToken, /^[a-f0-9-]{36}$/);
+        lock.exec('BEGIN IMMEDIATE'); locked = true; cancellation.abort();
+      } }).catch(error => error);
+    const error = await Promise.race([outcome, new Promise((_, reject) => {
+      timer = setTimeout(() => reject(new Error('Cancelled recovery waited for SQLite diagnostics')), 1500);
+    })]);
+    assert.equal(error.code, 'recovery_invalid');
+    assert.equal(locked, true, 'Cancellation happens after a durable recovery operation exists');
+    assert.equal(master.observations().length, 1, 'Already committed source evidence survives cancellation');
+    assert.equal(master.writeQueueStatus().pending, 0);
+    assert.deepEqual(master.getState('adaptive:mqtt'), { synthetic: 'previous-model' });
+  } finally { clearTimeout(timer); if (locked) lock.exec('ROLLBACK'); lock.close(); }
 });
 
 test('paired transport and recovery UI preserve fixed causes while hiding arbitrary messages', async t => {
@@ -125,17 +151,18 @@ test('paired transport and recovery UI preserve fixed causes while hiding arbitr
 
 test('standalone recovery persists only the fixed diagnostic, including after reopening', async t => {
   const { directory, master, donorPath } = fixture(t);
-  const options = { store: master, getEngine: () => ({ config: { input: 'mqtt' } }),
+  const engine = { config: { input: 'mqtt' } };
+  const options = { store: master, getEngine: () => engine,
     recoveryModule: async () => ({ recoveryPreview: async () => {
       throw Object.assign(new Error(`${directory}/private-source.sqlite`), { code: 'ERR_SQLITE_ERROR', errcode: 13 });
     } }) };
-  const coordinator = createHistoryRecovery(options); coordinator.initialize();
+  const coordinator = createHistoryRecovery(options); await coordinator.initialize();
   await assert.rejects(coordinator.checkPath({ donorPath, source: { kind: 'upload', label: 'Uploaded database' } }));
   await coordinator.settled();
   assert.match(coordinator.currentJob().error, /ran out of storage space/);
   assert.doesNotMatch(coordinator.currentJob().error, /private-source|stmq-recovery-errors/);
   await coordinator.close();
-  const reopened = createHistoryRecovery(options); reopened.initialize();
+  const reopened = createHistoryRecovery(options); await reopened.initialize();
   assert.match(reopened.currentJob().error, /ran out of storage space/);
   await reopened.close();
 });

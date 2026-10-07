@@ -159,11 +159,11 @@ export function createOcppSetup({ installation, state, api, listener, clock = Da
       revision: next === 'blocked' && reason === 'foreign-configuration' ? digest([foreign, wanted]) : null };
   }
   function publish(next, reason = null) { status = describeStatus(next, reason); }
-  function persist(changes) {
+  async function persist(changes) {
     check();
     const next = { ...saved, ...changes };
-    try { state.set(structuredClone(next)); } catch { throw fail('storage-unavailable'); }
-    saved = next;
+    try { await state.set(structuredClone(next)); } catch { throw fail('storage-unavailable'); }
+    check(); saved = next;
   }
   async function call(method, ...args) {
     check(); const result = await api[method](...args, { signal: cancellation.signal }); check(); return result;
@@ -217,11 +217,11 @@ export function createOcppSetup({ installation, state, api, listener, clock = Da
     if (current === null) {
       await prepareControl('cloud'); check();
       await commitControl('cloud'); check();
-      persist({ ownedFingerprint: null, appliedFingerprint: null, adoptionFingerprint: null, intent: null, nextAttemptAt: null });
+      await persist({ ownedFingerprint: null, appliedFingerprint: null, adoptionFingerprint: null, intent: null, nextAttemptAt: null });
       publish('disabled'); return;
     }
     if (original !== saved.ownedFingerprint && original !== saved.intent?.fingerprint) {
-      foreign = original; persist({ nextAttemptAt: clock() + 300_000 }); publish('blocked', 'foreign-configuration'); return;
+      foreign = original; await persist({ nextAttemptAt: clock() + 300_000 }); publish('blocked', 'foreign-configuration'); return;
     }
     await prerequisites();
     await prepareControl('cloud'); check();
@@ -230,27 +230,32 @@ export function createOcppSetup({ installation, state, api, listener, clock = Da
       const beforeStore = await remote();
       if (connectionFingerprint(beforeStore) !== original || beforeStore?.version !== current.version) throw fail('foreign-configuration');
       if (!current.basicAuth) throw fail('invalid-cloud-response');
-      persist({ intent: { fingerprint, base: original, version: null } });
+      await persist({ intent: { fingerprint, base: original, version: null } });
+      const afterSave = await remote();
+      if (connectionFingerprint(afterSave) !== original || afterSave?.version !== current.version) throw fail('foreign-configuration');
       publish('applying');
       const result = await call('store', { connectivityMode: 'OcppOff', chargePointId: current.basicAuth.username,
         basicAuthPassword: current.basicAuth.password, websocketConnectionArgs: storeConnectionArgs(current) });
       if (!fields(result, ['version']) || !version(result.version)) throw fail('invalid-cloud-response');
-      persist({ intent: { ...saved.intent, version: result.version } });
+      await persist({ intent: { ...saved.intent, version: result.version } });
       current = await remote();
       if (connectionFingerprint(current) !== fingerprint || current?.version !== result.version) throw fail('foreign-configuration');
-    } else persist({ intent: { fingerprint, base: original, version: current.version } });
+    } else await persist({ intent: { fingerprint, base: original, version: current.version } });
     const verified = await remote();
     if (connectionFingerprint(verified) !== fingerprint || verified?.version !== saved.intent.version) throw fail('foreign-configuration');
     publish('applying');
     // A lost apply reply still needs a durable protocol boundary. This records
     // an intended mode change, never a physical transaction end or energy value.
     await beforeDisable(); check();
+    const afterDisableIntent = await remote();
+    if (connectionFingerprint(afterDisableIntent) !== fingerprint || afterDisableIntent?.version !== verified.version)
+      throw fail('foreign-configuration');
     await call('apply', { version: verified.version });
     await commitControl('cloud'); check();
     // Remember the settings we just disabled without retaining a restoration
     // duty. A later configuration reload can recognize this exact inactive
     // connection even when its newly detected address differs.
-    persist({ ownedFingerprint: null, appliedFingerprint: fingerprint, adoptionFingerprint: null, intent: null,
+    await persist({ ownedFingerprint: null, appliedFingerprint: fingerprint, adoptionFingerprint: null, intent: null,
       nextAttemptAt: null, lastAppliedAt: clock(), failures: 0 });
     publish('disabled');
   }
@@ -266,7 +271,7 @@ export function createOcppSetup({ installation, state, api, listener, clock = Da
       || current?.connectivityMode === 'OcppOff' && (fingerprint === saved.appliedFingerprint
         || connectionFingerprint({ ...current, connectivityMode: 'DualProtocol' }) === wanted);
     if (!ours) {
-      foreign = fingerprint; persist({ nextAttemptAt: clock() + 300_000 }); publish('blocked', 'foreign-configuration'); return;
+      foreign = fingerprint; await persist({ nextAttemptAt: clock() + 300_000 }); publish('blocked', 'foreign-configuration'); return;
     }
     foreign = null;
     // An already applied setup survives an application restart. With genuinely
@@ -278,7 +283,7 @@ export function createOcppSetup({ installation, state, api, listener, clock = Da
       if (saved.appliedFingerprint !== wanted) { await prepareControl('native'); check(); }
       await commitControl('native'); check();
       const available = listener.status().available;
-      persist({ ownedFingerprint: wanted, appliedFingerprint: wanted, adoptionFingerprint: null,
+      await persist({ ownedFingerprint: wanted, appliedFingerprint: wanted, adoptionFingerprint: null,
         failures: 0, nextAttemptAt: clock() + (available ? 3600_000 : 300_000),
         ...(available ? { lastSuccessAt: clock() } : {}) });
       publish(available ? 'ready' : 'connecting', available ? null : 'waiting-connection'); return;
@@ -291,16 +296,18 @@ export function createOcppSetup({ installation, state, api, listener, clock = Da
       const beforeStore = await remote();
       if (connectionFingerprint(beforeStore) !== fingerprint || beforeStore?.version !== current?.version)
         throw fail('foreign-configuration');
-      persist({ intent: { fingerprint: wanted, base: fingerprint, version: null } });
+      await persist({ intent: { fingerprint: wanted, base: fingerprint, version: null } });
+      const afterSave = await remote();
+      if (connectionFingerprint(afterSave) !== fingerprint || afterSave?.version !== current?.version) throw fail('foreign-configuration');
       publish('applying');
       const result = await call('store', { connectivityMode: 'DualProtocol', chargePointId: installation.identity,
         basicAuthPassword: installation.password, websocketConnectionArgs: storeConnectionArgs(desired) });
       if (!fields(result, ['version']) || !version(result.version)) throw fail('invalid-cloud-response');
-      persist({ intent: { ...saved.intent, version: result.version }, ownedFingerprint: wanted });
+      await persist({ intent: { ...saved.intent, version: result.version }, ownedFingerprint: wanted });
       current = await remote(); fingerprint = connectionFingerprint(current);
       if (fingerprint !== wanted || current.version !== result.version) throw fail('foreign-configuration');
     } else {
-      persist({ intent: { fingerprint: wanted, base: fingerprint, version: current.version }, ownedFingerprint: wanted });
+      await persist({ intent: { fingerprint: wanted, base: fingerprint, version: current.version }, ownedFingerprint: wanted });
     }
     // Recheck readback immediately before apply. A stored configuration is not
     // proof that the charger uses it; actual local readings establish readiness.
@@ -309,7 +316,7 @@ export function createOcppSetup({ installation, state, api, listener, clock = Da
     publish('applying');
     await call('apply', { version: verified.version });
     await commitControl('native'); check();
-    persist({ ownedFingerprint: wanted, appliedFingerprint: wanted, adoptionFingerprint: null, intent: null,
+    await persist({ ownedFingerprint: wanted, appliedFingerprint: wanted, adoptionFingerprint: null, intent: null,
       lastAppliedAt: clock(), nextAttemptAt: clock() + 30_000, failures: 0 });
     publish('connecting', 'waiting-connection');
   }
@@ -322,7 +329,7 @@ export function createOcppSetup({ installation, state, api, listener, clock = Da
       const reason = known.includes(error.code) ? error.code : [401, 403].includes(error.status) ? 'cloud-authentication'
         : error.status === 429 ? 'cloud-rate-limit' : 'cloud-unavailable';
       const failures = Math.min(10, saved.failures + 1);
-      try { persist({ failures, nextAttemptAt: clock() + Math.max(Math.min(3600_000, 30_000 * 2 ** (failures - 1)),
+      try { await persist({ failures, nextAttemptAt: clock() + Math.max(Math.min(3600_000, 30_000 * 2 ** (failures - 1)),
         Math.min(86400_000, Math.max(0, error.retryAfterMs ?? 0))) }); }
       catch { publish('blocked', 'storage-unavailable'); return; }
       publish('retrying', reason);
@@ -352,7 +359,7 @@ export function createOcppSetup({ installation, state, api, listener, clock = Da
       flight = (async () => {
         const current = await remote();
         if (digest([connectionFingerprint(current), wanted]) !== revision) throw fail('ocpp-setup-changed');
-        persist({ adoptionFingerprint: connectionFingerprint(current), nextAttemptAt: null });
+        await persist({ adoptionFingerprint: connectionFingerprint(current), nextAttemptAt: null });
         await attempt();
       })().finally(() => { flight = null; });
       await flight; return this.status();

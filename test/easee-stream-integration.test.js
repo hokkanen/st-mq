@@ -7,6 +7,7 @@ import { join } from 'node:path';
 import { createDeviceProviders } from '../src/acquisition/devices.js';
 import { startProviders } from '../src/acquisition/providers.js';
 import { Store } from '../src/storage/store.js';
+import { committedWrites } from './helpers/committed-status.js';
 
 const START = Date.parse('2026-09-22T12:00:00Z'), MINUTE = 60_000;
 const CHARGER = 'synthetic-stream-charger', EQUALIZER = 'synthetic-stream-equalizer';
@@ -258,6 +259,7 @@ test('cloud voltage stream loss leaves independent OCPP integration and voltage 
     }; },
   });
   const interruptions = [], voltages = [];
+  await committedWrites(f.store);
   f.engine.voltage = { ingest(row) { voltages.push(row); }, interrupt(row) { interruptions.push(row); } };
   await f.poll(START);
   for (const deviceId of [CHARGER, EQUALIZER]) f.stream.publish(deviceId);
@@ -265,6 +267,7 @@ test('cloud voltage stream loss leaves independent OCPP integration and voltage 
   assert(voltages.some(row => row.device === CHARGER && row.raw.transport === 'cloud' && row.raw.voltageOnly));
   assert(voltages.some(row => row.device === CHARGER && row.raw.transport === 'ocpp' && !row.raw.voltageOnly));
   f.now = START + 20_000; f.stream.disconnect();
+  await committedWrites(f.store);
   assert(f.gaps.every(row => row.device !== CHARGER), 'Cloud interruption cannot close an OCPP energy head');
   assert.equal(f.engine.electricitySnapshot.charger.transport, 'ocpp');
   assert(interruptions.every(row => row.transport === 'cloud'));
@@ -273,6 +276,7 @@ test('cloud voltage stream loss leaves independent OCPP integration and voltage 
   assert(!voltages.some(row => row.device === CHARGER && row.raw.transport === 'cloud'),
     'Disconnected cloud cache cannot silently regain voltage availability');
   localOptions.onDisconnect();
+  await committedWrites(f.store);
   assert(f.gaps.some(row => row.device === CHARGER && row.transport === 'ocpp'));
   assert.equal(interruptions.at(-1).transport, 'ocpp');
 });
@@ -387,6 +391,7 @@ test('failed disconnect persistence clears live state and retries the gap before
   failTransaction = false;
   await f.poll(START + 45_000);
   assert.equal(f.gaps.length, 2);
+  assert(f.gaps.every(row => row.end === START + 20_000), 'Retrying persistence preserves the original disconnect clock');
   assert.equal(f.intervals.length, 2, 'The recovered persistence path establishes a new baseline');
   await f.poll(START + 60_000);
   assert.equal(f.intervals.length, 4);

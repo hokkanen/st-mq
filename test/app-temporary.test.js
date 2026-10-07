@@ -23,7 +23,7 @@ test('temporary edit rejects unknown fields, ambiguous forms, past and excessive
   assert.deepEqual(temporaryUpdate({ awayUntil: null }, now), { awayUntil: null });
 });
 
-test('away and pause are atomic, persistent, independent and expire without restoring old permanent settings', t => {
+test('away and pause are atomic, persistent, independent and expire without restoring old permanent settings', async t => {
   const store = new Store(':memory:'); t.after(() => store.close());
   let now = Date.parse('2026-09-07T12:00Z');
   const config = { input: 'simulated', settings: validateSettings({ comfort: { maxDropC: 0.8 } }) };
@@ -40,11 +40,14 @@ test('away and pause are atomic, persistent, independent and expire without rest
   assert.equal(restarted.status().automation.home.enabled, false);
   assert.equal(restarted.status().settings.occupancy.mode, 'away');
   assert.equal(restarted.status().override.expiresAt, status.override.expiresAt);
+  await restarted.statusRefresh;
   now = status.override.expiresAt;
+  restarted.status(); await restarted.statusRefresh;
   assert.equal(restarted.status().override, null, 'Reading status at the deadline reconciles expiry');
   assert.equal(restarted.status().automation.home.enabled, true, 'The selected deadline resumes Automatic');
   assert.equal(restarted.status().settings.occupancy.mode, 'away');
   now = Date.parse(status.settings.occupancy.returnAt);
+  restarted.status(); await restarted.statusRefresh;
   assert.equal(restarted.status().settings.occupancy.mode, 'occupied');
   assert.equal(restarted.nextTemporaryDeadline(), Infinity);
   restarted.status();

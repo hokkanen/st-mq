@@ -32,13 +32,16 @@ test('a scheduled controller survives SQLite contention and resumes after the wr
   let ticks = 0;
   const tick = app.engine.tick.bind(app.engine);
   t.mock.method(app.engine, 'tick', () => { const result = tick(); ticks++; return result; });
-  const event = t.mock.method(app.store, 'event', app.store.event.bind(app.store));
+  let turns = 0;
+  const heartbeat = setInterval(() => turns++, 5);
+  t.after(() => clearInterval(heartbeat));
   writer.exec('BEGIN IMMEDIATE'); locked = true;
   now += 59_999; app.engine.onTemporaryChange();
-  await until(() => reports.length > 0);
-  assert.deepEqual(reports[0], { event: 'controller-error', reason: 'database-busy', eventStored: false });
-  assert(!event.mock.calls.some(call => call.arguments[0] === 'controller-error'),
-    'A busy database is not asked to record its own failed write');
+  await until(() => app.store.writeQueueStatus().waitingSince !== null);
+  await new Promise(resolve => setTimeout(resolve, 350));
+  assert(turns > 20, 'SQLite acquisition leaves the event loop responsive');
+  assert.equal(ticks, 0, 'The tick does not start before write admission');
+  assert.deepEqual(reports, [], 'Waiting for the lock is not a failed write');
   writer.exec('ROLLBACK'); locked = false;
   await until(() => ticks > 0);
   assert(app.server.listening);
@@ -69,4 +72,21 @@ test('failed error persistence cannot terminate the controller or expose the ori
   await until(() => reports.length > 0 && attempts > 1);
   assert.deepEqual(reports, [{ event: 'controller-error', reason: 'controller-tick-failed', eventStored: false }]);
   assert(app.server.listening);
+});
+
+
+test('application shutdown fences new heating before waiting for an existing dispatch', async t => {
+  const directory = mkdtempSync(join(tmpdir(), 'stmq-shutdown-fence-'));
+  const config = loadConfig({ XDG_CONFIG_HOME: directory, STMQ_DATA_DIR: directory, STMQ_PORT: '0', STMQ_INPUT: 'simulated' }, directory);
+  const app = await start({ config });
+  let finishDispatch, fenced = false;
+  const beginShutdown = app.engine.executor.beginShutdown.bind(app.engine.executor);
+  t.mock.method(app.engine.executor, 'beginShutdown', () => { fenced = true; beginShutdown(); });
+  app.engine.dispatchPending = new Promise(resolve => { finishDispatch = resolve; });
+  const closing = app.close();
+  try { assert.equal(fenced, true, 'waiting for old work cannot postpone the activation fence'); }
+  finally {
+    finishDispatch(); await closing;
+    rmSync(directory, { recursive: true, force: true });
+  }
 });

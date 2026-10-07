@@ -1,6 +1,7 @@
 // Runtime evidence must remain readable when the database cannot accept writes.
 // Never retain SQLite messages: they can contain private paths or input values.
 export function storageFailureCode(error) {
+  if (error?.code === 'STORAGE_QUEUE_FULL') return 'write-queue-full';
   if (error?.code === 'ENOSPC' || error?.code === 'EDQUOT') return 'disk-full';
   const code = Number.isInteger(error?.errcode) ? error.errcode & 0xff : null;
   return ({ 5: 'database-busy', 6: 'database-busy', 8: 'database-read-only',
@@ -8,7 +9,7 @@ export function storageFailureCode(error) {
     26: 'database-corrupt' })[code] ?? null;
 }
 
-export function createWriteHealth(clock = Date.now) {
+export function createWriteHealth(clock = Date.now, queueStatus = null) {
   const seen = new WeakSet();
   const state = { startedAt: clock(), lastWriteAt: null, lastFailureAt: null,
     errorCode: null, failures: 0, failing: false };
@@ -24,6 +25,6 @@ export function createWriteHealth(clock = Date.now) {
       state.lastFailureAt = clock(); state.errorCode = code;
       state.failures++; state.failing = true;
     },
-    status() { return { ...state }; },
+    status() { return { ...state, ...(queueStatus ? { queue: queueStatus() } : {}) }; },
   };
 }

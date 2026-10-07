@@ -173,7 +173,7 @@ test('visitor keeps manual defaults until positive BMW correlation, then each av
   assert.equal(identified.values.minimumSoc.source, 'manual-fallback');
   assert.equal(runtime.settings.chargers.charger1.manualSoc, 25); assert.equal(runtime.settings.chargers.charger1.capacityKwh, 50);
   assert.equal(runtime.status().vehicleFeeds.find(feed => feed.id === 'bmw').usedByChargerId, 'charger1');
-  f.setCharging(false); f.setNow(START + 2 * MINUTE); runtime.tick();
+  f.setCharging(false); f.setNow(START + 2 * MINUTE); await runtime.tick();
   assert.equal(view(runtime).vehicle.id, 'bmw');
   const restarted = f.create(); t.after(() => restarted.close());
   assert.equal(view(restarted).vehicle.id, 'bmw'); assert.equal(view(restarted).values.soc.value, 25);
@@ -196,11 +196,11 @@ test('identity-only BMW can match without imposing absent battery fields', async
 test('BMW bridge silence expires automatic fields while preserving same-session progress and manual control inputs', async t => {
   const f = fixture({ defaults: { manualSoc: 90, minimumSoc: 85 } }), runtime = f.create(); t.after(() => runtime.close());
   publish(runtime, facts(START, { usableCapacityKwh: 74, chargeLimitSoc: 85 })); pauseBmw(runtime, f);
-  runtime.readEnergy = () => ({ gridKwh: 4, coveredMs: MINUTE }); runtime.tick();
+  runtime.readEnergy = () => ({ gridKwh: 4, coveredMs: MINUTE }); await runtime.tick();
   const before = view(runtime);
   assert.equal(before.vehicle.id, 'bmw'); assert.ok(before.progress.estimatedSoc < 85);
   const original = structuredClone(runtime.vehicleFeeds.bmw.reading);
-  f.setNow(START + 12 * MINUTE); runtime.tick();
+  f.setNow(START + 12 * MINUTE); await runtime.tick();
   const silent = view(runtime);
   assert.equal(silent.vehicleMqtt.brokerConnected, true);
   assert.equal(silent.vehicleMqtt.available, false); assert.equal(silent.vehicleMqtt.reason, 'vehicle-feed-stale');

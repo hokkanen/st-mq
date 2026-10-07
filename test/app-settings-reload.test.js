@@ -9,6 +9,14 @@ import { loadConfig } from '../src/app/config.js';
 import { weatherAcquisitionIdentity } from '../src/acquisition/weather-identity.js';
 import { isolatedGarageAdapter } from './helpers/garage-mqtt.js';
 
+async function saved(store) {
+  const until = performance.now() + 3000;
+  while (store.writeQueueStatus().pending) {
+    assert.ok(performance.now() < until, 'Pending acquisition did not finish');
+    await new Promise(resolve => setTimeout(resolve, 5));
+  }
+}
+
 async function setup(t, options = {}, overrides = {}) {
   const directory = mkdtempSync(join(tmpdir(), 'stmq-settings-reload-'));
   const path = join(directory, 'options.json');
@@ -219,6 +227,7 @@ test('reload reconnects subscriptions and command transport, ignores late old pu
   const { app, write, post } = await setup(t, options, { mqttOptions: { connect: mqtt.connect } });
   const old = mqtt.clients[0];
   old.emit('message', 'invented/first', Buffer.from(JSON.stringify({value:21,timestamp:Date.now()})), { retain: false });
+  await saved(app.store);
   const oldEngine = app.engine;
   const restore = oldEngine.executor.restore;
   oldEngine.executor.restore = async () => ({ restorationPending: true });
@@ -241,6 +250,7 @@ test('reload reconnects subscriptions and command transport, ignores late old pu
   old.emit('message', 'invented/first', Buffer.from(JSON.stringify({value:29,timestamp:Date.now()})), { retain: false });
   assert.equal(app.engine.latest.indoor_temperature, undefined);
   replacement.emit('message', 'invented/second', Buffer.from(JSON.stringify({value:22,timestamp:Date.now()})), { retain: false });
+  await saved(app.store);
   assert.equal(app.engine.latest.indoor_temperature.value, 22);
   assert.notEqual(app.engine.executor.commandTransport, oldEngine.executor.commandTransport);
   const before = mqtt.packets.length;
@@ -302,6 +312,7 @@ test('changing the H66 device starts with empty live readings and uses only the 
   const first = mqtt.clients[0];
   first.emit('message', 'invented-first/HP/0001', Buffer.from('31'), { retain: false });
   first.emit('message', 'invented-first/HP/0007', Buffer.from('8'), { retain: false });
+  await saved(app.store);
   assert.equal(app.engine.latest.return_temperature.value, 31);
   assert.equal(app.engine.outdoorCandidates['husdata-h66'], undefined, 'H66 outdoor is excluded before and after reload');
   write({ ...options, controller: { input: 'mqtt', h66_device: 'invented-second' } });
@@ -315,6 +326,7 @@ test('changing the H66 device starts with empty live readings and uses only the 
   first.emit('message', 'invented-first/HP/0001', Buffer.from('39'), { retain: false });
   assert.equal(app.engine.latest.return_temperature, undefined);
   mqtt.clients[1].emit('message', 'invented-second/HP/0001', Buffer.from('32'), { retain: false });
+  await saved(app.store);
   assert.equal(app.engine.latest.return_temperature.value, 32);
 });
 

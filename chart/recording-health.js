@@ -21,12 +21,12 @@ export function recordingEvidenceTime(value, now = Date.now()) {
 }
 
 const recordingLabels = { ok: 'Monitoring active', starting: 'Starting recording', stalled: 'Recording needs attention',
-  'write-failed': 'Recording write failed', 'source-unavailable': 'Sources unavailable', 'read-only': 'Read-only history', unknown: 'Recording unknown' };
+  'write-waiting': 'Waiting for storage', 'write-failed': 'Recording write failed', 'source-unavailable': 'Sources unavailable', 'read-only': 'Read-only history', unknown: 'Recording unknown' };
 const backupLabels = { available: 'Copy available', 'none-known': 'No known copy', running: 'Creating a copy',
   failed: 'Last backup failed', interrupted: 'Backup interrupted', unknown: 'Backup status unknown' };
 const diskLabels = { ok: 'Space available', low: 'Low disk space', critical: 'Critically low space', unknown: 'Disk space unknown' };
 const tone = state => ['write-failed', 'critical', 'failed', 'stalled'].includes(state) ? 'critical'
-  : ['low', 'interrupted', 'source-unavailable'].includes(state) ? 'warning' : 'neutral';
+  : ['low', 'interrupted', 'source-unavailable', 'write-waiting'].includes(state) ? 'warning' : 'neutral';
 const issueTarget = id => ['disk-space', 'disk-check'].includes(id) ? 'recording-disk-card'
   : id === 'backup' ? 'recording-backup-card' : 'recording-recording-card';
 

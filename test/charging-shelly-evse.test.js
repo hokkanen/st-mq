@@ -1,6 +1,10 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { EventEmitter } from 'node:events';
+import { DatabaseSync } from 'node:sqlite';
+import { mkdtempSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { chargingConfiguration } from '../src/charging/config.js';
 import { createShellyEvseAdapter, createShellyController, shellyAssociation } from '../src/charging/shelly-evse.js';
 import { shellyProfile } from '../src/charging/shelly-profile.js';
@@ -48,7 +52,7 @@ test('positive vehicle demand below the pilot minimum preserves electrical and z
     'A known zero vehicle restriction is not rounded up');
   assert.equal(shellyCurrentLimit({ ...args, vehicleCurrentA: 8 }).currentA, 8);
 });
-function fixture(t, extra={}) {
+function fixture(t, extra={}, backingStore=null) {
   let now=NOW, authority=true, failSave=false;
   const deviceInfo = { id: 'synthetic-evse', model: 'synthetic-model', fw_id: 'synthetic-firmware' };
   const service={id:0,auto_balance:{enable:false},auto_charge:true,global_charge_limit:0,global_time_limit:0},serviceStatus={state:'running'},schedules={rev:1,jobs:[]};
@@ -80,7 +84,7 @@ function fixture(t, extra={}) {
     }
     cb?.();queueMicrotask(()=>client.emit('message',`${frame.src}/rpc`,Buffer.from(JSON.stringify({id:frame.id,src:'synthetic-evse',dst:frame.src,result})),{}));
   };
-  const store={getState:key=>structuredClone(values.get(key)),setState:(key,value)=>{if(failSave)throw Error('disk');values.set(key,structuredClone(value));},transaction:fn=>fn(),
+  const store=backingStore??{getState:key=>structuredClone(values.get(key)),setState:(key,value)=>{if(failSave)throw Error('disk');values.set(key,structuredClone(value));},transaction:fn=>fn(),
     event:(type,payload,at)=>events.push({type,payload,at})};
   const engine={recorder:{recordEnergy:value=>energy.push(value),energyGap:value=>gaps.push(value)},voltage:{ingest:value=>voltages.push(value)}};
   const createAdapter=()=>createShellyEvseAdapter({config:config(extra),broker:{address:'mqtt://synthetic'},client,store,engine,clock:()=>now,canControl:()=>authority});
@@ -103,6 +107,36 @@ function fixture(t, extra={}) {
     async ready(){client.emit('connect');client.emit('message','test/evse/online',Buffer.from('true'),{retain:true});await adapter.refresh();},
     notify(role,value,packet={}){if (['start_charging','current_limit'].includes(role) && !packet.retain) settingClock.set(role,{value,at:now});client.emit('message','test/evse/events/rpc',Buffer.from(JSON.stringify({src:'synthetic-evse',method:'NotifyStatus',params:{[`${roleTypes[role]}:${ids[role]}`]:{value,last_update_ts:now/1000}}})),packet);}};
 }
+test('contended Shelly notification closes command readiness until its original receipt is committed', async t => {
+  const directory = mkdtempSync(join(tmpdir(), 'stmq-evse-contention-'));
+  const store = new Store(join(directory, 'recording.sqlite')), writer = new DatabaseSync(store.path);
+  let locked = false;
+  const f = fixture(t, {}, store);
+  t.after(() => {
+    if (locked) writer.exec('ROLLBACK');
+    f.adapter.close(); writer.close(); store.close(); rmSync(directory, { recursive: true, force: true });
+  });
+  await f.ready(); assert.equal(f.adapter.snapshot().controlReady, true);
+  writer.exec('BEGIN IMMEDIATE'); locked = true;
+  f.setNow(NOW + 1000); f.notify('start_charging', false);
+  assert.equal(f.adapter.snapshot().controlReady, false, 'A queued native Stop cannot be overtaken by a control save');
+  const before = f.writes.filter(row => row.method.endsWith('.Set')).length;
+  await assert.rejects(f.adapter.rpc('Boolean.Set', { owner: 'service:0', role: 'start_charging', value: true },
+    { mutation: true }), { code: 'evse-control-unavailable' });
+  await new Promise(resolve => setTimeout(resolve, 150));
+  assert.equal(f.adapter.snapshot().fields.start_charging.value, true);
+  assert.equal(store.writeHealth.status().failing, false);
+  f.setNow(NOW + 2000); writer.exec('ROLLBACK'); locked = false;
+  const deadline = performance.now() + 2000;
+  while (store.writeQueueStatus().pending) {
+    assert.ok(performance.now() < deadline); await new Promise(resolve => setTimeout(resolve, 5));
+  }
+  assert.equal(f.adapter.snapshot().fields.start_charging.value, false);
+  assert.equal(f.adapter.snapshot().fields.start_charging.receivedAt, NOW + 1000);
+  assert.equal(f.writes.filter(row => row.method.endsWith('.Set')).length, before);
+  assert.equal(store.writeHealth.status().failing, false);
+});
+
 test('unplugged capacity keeps updating without current or charging commands', async t => {
   const f = fixture(t, { limiterEnabled: true });
   f.fields.work_state = 'charger_free'; f.fields.start_charging = false; f.fields.current_limit = 6;

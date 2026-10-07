@@ -1,6 +1,7 @@
 import { H66_DOCUMENTATION, H66_REGISTERS } from '../domain/telemetry.js';
 import { H66_MAX_AGE_MS } from '../domain/reading-freshness.js';
 import { H66_SETTING_LIMITS, validateH66ControlState } from '../domain/heating-control-state.js';
+import { createWriteScope } from '../storage/write-scope.js';
 
 const HOUR = 3_600_000;
 const MAX_PAUSE_MS = 366 * 24 * HOUR;
@@ -28,7 +29,7 @@ function validateValues(values) {
  * Persisted obligations are restored on expiry/restart/reconnect; this is not a device-side lease.
  */
 export function createH66Controller({ deviceId, publish, requestSnapshot = async () => {},
-  store, clock = Date.now, monotonicClock = () => performance.now(), config = {} } = {}) {
+  store, clock = Date.now, monotonicClock = () => performance.now(), config = {}, closeWriteTimeoutMs = 5000 } = {}) {
   if (typeof deviceId !== 'string' || !deviceId || /[\/# +\u0000]/.test(deviceId)) throw new TypeError('Exact MQTT device identifier required');
   if (typeof publish !== 'function' || !store?.getState || !store?.setState) throw new TypeError('H66 requires transport and persistent state storage');
   const configuredAge = config.maxAgeMs ?? H66_MAX_AGE_MS;
@@ -51,14 +52,29 @@ export function createH66Controller({ deviceId, publish, requestSnapshot = async
     && (state.expiresAt === null || timestamp(state.expiresAt) > clock());
   let restoreRequired = !pausedReduction && (Object.keys(state.obligations).length > 0 || Boolean(state.manualMode));
   for (const obligation of Object.values(state.obligations)) obligation.requestedRevision = -1;
-  let connected = false, closed = false, active = false, expiryTimer = null, reconcileQueued = false;
-  let reconcileAfterActive = false;
+  let connected = false, closed = false, closing = false, active = false, expiryTimer = null, reconcileQueued = false;
+  let reconcileAfterActive = false, activeGeneration = null;
   let revision = 0, connectionGeneration = 0, elapsedExpiry = null;
   let lastPublicationAt = null;
   let compressorState = null;
   const readings = new Map(), pending = new Map();
+  const writes = createWriteScope({ closeTimeoutMs: closeWriteTimeoutMs,
+    runWrite: (operation, options) => store.runWrite ? store.runWrite(operation, options) : Promise.resolve().then(operation) });
   const persist = () => store.setState(key, copy(state));
   const event = (type, detail = {}) => store.event?.(type, detail, clock());
+  // Admission waits asynchronously; the callback and durable state change stay
+  // synchronous. Never keep a SQLite transaction open across MQTT/readback.
+  const writeState = (operation = () => {}, options = {}) => {
+    const commit = () => {
+      const before = { ...state, baseline: { ...state.baseline }, obligations: { ...state.obligations }, requested: { ...state.requested } };
+      const restoringBefore = restoreRequired;
+      store.afterRollback?.(() => { state = before; restoreRequired = restoringBefore; });
+      try { const result = operation(); persist(); return result; }
+      catch (error) { state = before; restoreRequired = restoringBefore; throw error; }
+    };
+    return writes.run(commit, { priority: 'control', ...options });
+  };
+  const saveResult = result => writeState(() => { state.lastResult = { ...result, at: clock() }; });
   const current = (index, now = clock()) => {
     const reading = readings.get(index);
     const age = now - (reading?.observedAt ?? reading?.receivedAt);
@@ -123,6 +139,7 @@ export function createH66Controller({ deviceId, publish, requestSnapshot = async
     if (active) throw failure('H66_BUSY', 'An H66 setting transition is already in progress.');
     if (closed) throw failure('H66_CLOSED', 'The H66 connection is closed.');
     active = true;
+    activeGeneration = connectionGeneration;
     try { return await operation(); }
     catch (error) {
       // A write timeout does not cancel the user's selection: its delivery is
@@ -130,10 +147,11 @@ export function createH66Controller({ deviceId, publish, requestSnapshot = async
       if (Object.keys(state.obligations).length
         && !(Boolean(state.manualMode) && connected
           && (state.expiresAt === null || timestamp(state.expiresAt) > clock()))) restoreRequired = true;
-      noteResult({ status: 'failed', code: error.code ?? 'H66_WRITE_FAILED', restorationPending: restoreRequired });
+      await saveResult({ status: 'failed', code: error.code ?? 'H66_WRITE_FAILED', restorationPending: restoreRequired });
       throw error;
     } finally {
       active = false;
+      activeGeneration = null;
       const queuedDuringOperation = reconcileAfterActive;
       reconcileAfterActive = false;
       if (reconcileAfter || queuedDuringOperation) queueReconciliation();
@@ -141,6 +159,8 @@ export function createH66Controller({ deviceId, publish, requestSnapshot = async
   }
   function requireConnection(now) {
     if (!available(now)) throw failure('H66_UNAVAILABLE', 'H66 has no recent live publications.');
+    if (active && activeGeneration !== connectionGeneration)
+      throw failure('H66_DISCONNECTED', 'The H66 connection changed during the setting transition.');
     if (config.writeEnabled !== true) throw failure('H66_WRITES_DISABLED', 'H66 setting writes are disabled.');
   }
   function deadline(now, expiresAt, manualPause = false) {
@@ -189,92 +209,111 @@ export function createH66Controller({ deviceId, publish, requestSnapshot = async
   async function apply(values, { now, reason, expiresAt, activationExpiresAt = expiresAt, restoring = false, restoreTokens = null, manualPause = false }) {
     validateValues(values);
     const checkedAt=clock();
-    const activationElapsedEnd = Number.isFinite(activationExpiresAt)
-      ? monotonicClock() + Math.max(0, activationExpiresAt - checkedAt) : Infinity;
+    const generation = connectionGeneration;
     requireConnection(checkedAt);
     if (!restoring && restoreRequired) throw failure('H66_RESTORATION_PENDING', 'Previous H66 overrides are being restored.');
     const tokens = restoring ? restoreTokens ?? { ...state.obligations } : null;
-    // No-op requests never acquire a baseline. A later first write captures
-    // the current native value, regardless of manual/automatic origin.
-    if (!restoring) {
-      // An unchanged request owns nothing. Capture a fresh baseline only when
-      // the first actual edit is made, including after an external panel edit.
-      for (const index of Object.keys(values)) if (!state.obligations[index]) delete state.baseline[index];
-    }
-    if (!restoring) captureBaselines(Object.keys(values), checkedAt);
-    if (!restoring) state.expiresAt = deadline(checkedAt, expiresAt, manualPause);
+    const end = restoring ? null : deadline(checkedAt, expiresAt, manualPause);
+    const activationDeadline = Math.min(end ?? Infinity, activationExpiresAt ?? Infinity);
+    const activationElapsedEnd = Number.isFinite(activationDeadline)
+      ? monotonicClock() + Math.max(0, activationDeadline - checkedAt) : Infinity;
+    const expectedReadings = Object.fromEntries(Object.keys(values).map(index => [index, current(index, checkedAt)]));
+    const check = index => {
+      requireConnection(clock());
+      if (!restoring && closing) throw failure('H66_CLOSED', 'H66 is closing; no new setting changes are accepted.');
+      if (connectionGeneration !== generation) throw failure('H66_DISCONNECTED', 'The H66 connection changed while saving the setting.');
+      if (!restoring && restoreRequired) throw failure('H66_RESTORATION_PENDING', 'The H66 transition was interrupted.');
+      if (!restoring && (clock() >= Math.min(end ?? Infinity, activationExpiresAt ?? Infinity)
+        || monotonicClock() >= activationElapsedEnd)) throw failure('H66_EXPIRED', 'The H66 override expired before activation.');
+      const reading = current(index, clock());
+      if (!reading) throw failure('H66_BASELINE_UNAVAILABLE', 'A native-setting readback became stale during the transition.');
+      if (!expectedReadings[index] || !equal(reading.value, expectedReadings[index].value))
+        throw failure('H66_SETTING_CHANGED', 'The native setting changed while its command was waiting.');
+      return reading;
+    };
     const changes = [];
     for (const index of SETTINGS.filter(index => Object.hasOwn(values, index))) {
       const value = values[index];
-      if (!restoring && restoreRequired) throw failure('H66_RESTORATION_PENDING', 'The H66 transition was interrupted.');
-      if (!restoring && (clock() >= Math.min(state.expiresAt ?? Infinity, activationExpiresAt ?? Infinity) || monotonicClock() >= activationElapsedEnd)) throw failure('H66_EXPIRED', 'The H66 override expired before activation.');
-      if (restoring && (!tokens[index] || state.obligations[index] !== tokens[index])) continue;
-      const reading = current(index, clock());
-      if (!reading) throw failure('H66_BASELINE_UNAVAILABLE', 'A native-setting readback became stale during the transition.');
-      if (restoring && !equal(reading.value, tokens[index].baseline)
-        && !equal(reading.value, tokens[index].expected) && !equal(reading.value, tokens[index].previousValue)) {
-        delete state.obligations[index]; delete state.requested[index];
-        event('h66-external-setting-preserved', { register: index });
-        continue;
-      }
-      if (equal(reading.value, value)) {
-        if (restoring) delete state.obligations[index];
-        if (restoring && index === '0203') state.manualPreheat = null;
-        state.requested[index] = value;
-        continue;
-      }
-      const obligation = state.obligations[index] ?? { baseline: state.baseline[index], originalAt: now };
-      const writtenObligation = { ...obligation, expected: value, previousValue: reading.value,
-        requestedAt: clock(), requestedRevision: reading.revision, confirmed: false, restoring };
-      state.obligations[index] = writtenObligation;
-      state.requested[index] = value;
       // Baseline and restoration obligation must reach durable storage before MQTT.
-      persist();
+      const writtenObligation = await writeState(() => {
+        if (restoring && (!tokens[index] || state.obligations[index] !== tokens[index])) return null;
+        const reading = check(index);
+        if (restoring && !equal(reading.value, tokens[index].baseline)
+          && !equal(reading.value, tokens[index].expected) && !equal(reading.value, tokens[index].previousValue)) {
+          delete state.obligations[index]; delete state.requested[index];
+          event('h66-external-setting-preserved', { register: index });
+          return null;
+        }
+        if (!restoring) {
+          // The first actual edit takes its baseline from current native state.
+          if (!state.obligations[index]) state.baseline[index] = reading.value;
+          state.expiresAt = end;
+        }
+        if (equal(reading.value, value)) {
+          if (restoring) delete state.obligations[index];
+          if (restoring && index === '0203') state.manualPreheat = null;
+          state.requested[index] = value;
+          return null;
+        }
+        const obligation = state.obligations[index] ?? { baseline: state.baseline[index], originalAt: now };
+        const written = { ...obligation, expected: value, previousValue: reading.value,
+          requestedAt: clock(), requestedRevision: reading.revision, confirmed: false, restoring };
+        state.obligations[index] = written;
+        state.requested[index] = value;
+        return written;
+      });
       armExpiry();
+      if (!writtenObligation) continue;
+      // Admission can outlive evidence or permission. Committed intent alone
+      // does not authorize a command on a replaced connection or changed value.
+      check(index);
+      if (state.obligations[index] !== writtenObligation)
+        throw failure('H66_SETTING_CHANGED', 'The saved native-setting obligation was superseded.');
       const readback = await publishAndReadback(index, value, clock());
-      if (state.obligations[index] === writtenObligation) {
-        if (restoring) delete state.obligations[index];
-        else state.obligations[index] = { ...writtenObligation, confirmed: true, confirmedAt: readback.receivedAt };
-      }
-      if (restoring && index === '0203') state.manualPreheat = null;
-      persist();
+      await writeState(() => {
+        if (state.obligations[index] === writtenObligation) {
+          if (restoring) delete state.obligations[index];
+          else state.obligations[index] = { ...writtenObligation, confirmed: true, confirmedAt: readback.receivedAt };
+        }
+        if (restoring && index === '0203' && !state.obligations[index]) state.manualPreheat = null;
+      });
       changes.push(index);
       if (!restoring && (clock() >= Math.min(state.expiresAt ?? Infinity, activationExpiresAt ?? Infinity) || monotonicClock() >= activationElapsedEnd)) throw failure('H66_EXPIRED', 'The H66 override expired during activation.');
     }
-    persist();
+    await writeState(() => event('h66-settings-confirmed', { registers: changes, reason, phase: state.phase }));
     armExpiry();
-    event('h66-settings-confirmed', { registers: changes, reason, phase: state.phase });
     return changes;
   }
   async function restoreInternal({ now = clock(), reason = 'restore-normal', phase = 'normal' } = {}) {
-    const remaining = Object.keys(state.obligations);
-    if (!remaining.length) {
-      restoreRequired = false; state.phase = phase; state.expiresAt = null; state.pauseId = null;
-      state.manualPreheat = null; state.manualMode = null; state.baseline = {}; state.requested = {};
-      persist(); armExpiry(); return { status: 'confirmed', phase, changed: [] };
-    }
-    requireConnection(now);
     const values = {}, restoreTokens = {};
-    for (const index of SETTINGS.filter(index => remaining.includes(index))) {
-      const observed = current(index, now), obligation = state.obligations[index];
-      if (!observed) continue; // Restore independently available fields; retain the other obligations.
-      if (!obligation.confirmed && observed.revision <= obligation.requestedRevision) continue;
-      if (equal(observed.value, obligation.baseline)) { delete state.obligations[index]; continue; }
-      if (!equal(observed.value, obligation.expected) && !equal(observed.value, obligation.previousValue)) {
-        // An external/manual setting supersedes our ownership. Never overwrite it.
-        delete state.obligations[index];
-        event('h66-external-setting-preserved', { register: index });
-        continue;
+    await writeState(() => {
+      const remaining = Object.keys(state.obligations);
+      if (remaining.length) requireConnection(clock());
+      for (const index of SETTINGS.filter(index => remaining.includes(index))) {
+        const observed = current(index, clock()), obligation = state.obligations[index];
+        if (!observed) continue; // Restore independently available fields; retain the other obligations.
+        if (!obligation.confirmed && observed.revision <= obligation.requestedRevision) continue;
+        if (equal(observed.value, obligation.baseline)) { delete state.obligations[index]; continue; }
+        if (!equal(observed.value, obligation.expected) && !equal(observed.value, obligation.previousValue)) {
+          // An external/manual setting supersedes our ownership. Never overwrite it.
+          delete state.obligations[index];
+          event('h66-external-setting-preserved', { register: index });
+          continue;
+        }
+        values[index] = obligation.baseline; restoreTokens[index] = obligation;
       }
-      values[index] = obligation.baseline; restoreTokens[index] = obligation;
-    }
-    if (!state.obligations['0203']) state.manualPreheat = null;
+      if (!state.obligations['0203']) state.manualPreheat = null;
+    });
     const changed = Object.keys(values).length ? await apply(values, { now, reason, restoring: true, restoreTokens }) : [];
-    restoreRequired = Object.keys(state.obligations).length > 0;
-    state.phase = restoreRequired ? 'restoration-pending' : phase;
-    if (!restoreRequired) { state.baseline = {}; state.requested = {}; state.expiresAt = null; state.pauseId = null; state.manualPreheat = null; state.manualMode = null; }
-    const result = { status: restoreRequired ? 'pending' : 'confirmed', phase: state.phase, changed, restorationPending: restoreRequired };
-    noteResult(result); armExpiry();
+    const result = await writeState(() => {
+      restoreRequired = Object.keys(state.obligations).length > 0;
+      state.phase = restoreRequired ? 'restoration-pending' : phase;
+      if (!restoreRequired) { state.baseline = {}; state.requested = {}; state.expiresAt = null; state.pauseId = null; state.manualPreheat = null; state.manualMode = null; }
+      const result = { status: restoreRequired ? 'pending' : 'confirmed', phase: state.phase, changed, restorationPending: restoreRequired };
+      state.lastResult = { ...result, at: clock() };
+      return result;
+    });
+    armExpiry();
     return result;
   }
   async function restore(options = {}) {
@@ -293,7 +332,7 @@ export function createH66Controller({ deviceId, publish, requestSnapshot = async
       state.phase = 'test';
       const changed = await apply(values, { now, reason, expiresAt });
       const result = { status: 'confirmed', phase: state.phase, changed, expiresAt: state.expiresAt };
-      noteResult(result); return result;
+      await saveResult(result); return result;
     });
   }
   function manualConflict(pauseId, now = clock()) {
@@ -316,8 +355,15 @@ export function createH66Controller({ deviceId, publish, requestSnapshot = async
       requireConnection(clock());
       const previous = current(register, clock());
       if (!previous) throw failure('H66_BASELINE_UNAVAILABLE', 'A fresh native-setting reading is required.');
-      const before = { ...state, baseline: { ...state.baseline }, obligations: { ...state.obligations }, requested: { ...state.requested } };
       const changed = !equal(previous.value, value);
+      const check = () => {
+        requireConnection(clock());
+        if (closing) throw failure('H66_CLOSED', 'H66 is closing; no new setting changes are accepted.');
+        const latest = current(register, clock());
+        if (!latest) throw failure('H66_BASELINE_UNAVAILABLE', 'A fresh native-setting reading is required.');
+        if (!equal(latest.value, previous.value)) throw failure('H66_SETTING_CHANGED', 'The native setting changed while its command was waiting.');
+        if (manualConflict(state.pauseId ?? undefined)) throw failure('H66_MANUAL_CONFLICT', 'A native-setting restoration became necessary while saving the command.');
+      };
       const supersede = () => {
         delete state.obligations[register]; delete state.baseline[register]; delete state.requested[register];
         if (register === '0203') state.manualPreheat = null;
@@ -329,26 +375,29 @@ export function createH66Controller({ deviceId, publish, requestSnapshot = async
       // An existing temporary boost keeps its restoration duty until the new
       // native value is confirmed. Failed delivery must not strand that boost.
       // Reasserting the current value deliberately promotes it immediately.
-      if (!changed) supersede();
       const requested = { register, value, previousValue: previous.value, at: now, scope: 'native-setting',
         status: 'pending', confirmed: false, sent: changed ? null : false };
-      state.lastManual = requested;
-      try { persist(); }
-      catch (error) { state = before; throw error; }
+      await writeState(() => {
+        check();
+        if (!changed) supersede();
+        state.lastManual = requested;
+      });
       armExpiry();
       try {
+        check();
         const readback = changed ? await publishAndReadback(register, value, clock()) : previous;
-        supersede();
-        state.lastManual = { ...requested, status: 'confirmed', confirmed: true, sent: changed,
-          readback: readback.value, confirmedAt: clock() };
-        noteResult({ status: 'confirmed', reason: 'native-setting', register, value, confirmed: true, sent: changed });
-        event('h66-native-setting-confirmed', { register, value, previousValue: previous.value, sent: changed });
+        await writeState(() => {
+          supersede();
+          state.lastManual = { ...requested, status: 'confirmed', confirmed: true, sent: changed,
+            readback: readback.value, confirmedAt: clock() };
+          state.lastResult = { status: 'confirmed', reason: 'native-setting', register, value, confirmed: true, sent: changed, at: clock() };
+          event('h66-native-setting-confirmed', { register, value, previousValue: previous.value, sent: changed });
+        });
         return copy(state.lastManual);
       } catch (error) {
         const code = ['H66_READBACK_TIMEOUT', 'H66_WRITE_FAILED', 'H66_DISCONNECTED', 'H66_CLOSED'].includes(error?.code)
           ? error.code : 'H66_WRITE_FAILED';
-        state.lastManual = { ...state.lastManual, status: 'unconfirmed', confirmed: false, code };
-        persist();
+        await writeState(() => { state.lastManual = { ...state.lastManual, status: 'unconfirmed', confirmed: false, code }; });
         throw failure(code, 'The native setting change was not confirmed. Check its live value before trying again.');
       }
     });
@@ -370,7 +419,8 @@ export function createH66Controller({ deviceId, publish, requestSnapshot = async
           state.baseline = {};
           throw failure('H66_NATIVE_MODE', 'The pump is in a manually selected operating mode.');
         }
-        persist();
+        // The first command persists these baselines with its restoration
+        // obligation after write admission; a baseline alone grants no control.
       }
       let changed = [];
       if (phase === 'recovery') {
@@ -395,23 +445,29 @@ export function createH66Controller({ deviceId, publish, requestSnapshot = async
         changed.push(...await apply({ '0212': Math.min(40, state.baseline['0212']),
           '0208': 50, '2201': config.compressorOnlyMode ?? 2 }, { now, reason: 'reduction', expiresAt, activationExpiresAt, manualPause: manual && pauseId !== null }));
       }
-      state.phase = phase;
-      state.manualMode = manual ? phase : null;
-      state.pauseId = manual ? pauseId : null;
-      if (manual && phase === 'preheat') state.manualPreheat = { enabled: true, confirmed: true,
-        baseValue: state.baseline['0203'], roomSettingC: Math.min(LIMITS['0203'][1], state.baseline['0203'] + roomBoostC),
-        roomBoostC, expiresAt: state.expiresAt, pauseId, at: now };
-      const result = { status: 'confirmed', phase, changed, expiresAt: state.expiresAt,
-        ...(phase === 'preheat' ? { roomSettingC: Math.min(LIMITS['0203'][1], state.baseline['0203'] + roomBoostC),
-          roomBoostC: Math.min(LIMITS['0203'][1] - state.baseline['0203'], roomBoostC) } : {}),
-        limitation: phase === 'reduction' || holdDhwReduced ? 'DHW stop setting may apply only to auxiliary operation; compressor DHW cutoff is not established.' : undefined };
-      noteResult(result); return result;
+      return writeState(() => {
+        state.phase = phase;
+        state.manualMode = manual ? phase : null;
+        state.pauseId = manual ? pauseId : null;
+        if (manual && phase === 'preheat') state.manualPreheat = { enabled: true, confirmed: true,
+          baseValue: state.baseline['0203'], roomSettingC: Math.min(LIMITS['0203'][1], state.baseline['0203'] + roomBoostC),
+          roomBoostC, expiresAt: state.expiresAt, pauseId, at: now };
+        const result = { status: 'confirmed', phase, changed, expiresAt: state.expiresAt,
+          ...(phase === 'preheat' ? { roomSettingC: Math.min(LIMITS['0203'][1], state.baseline['0203'] + roomBoostC),
+            roomBoostC: Math.min(LIMITS['0203'][1] - state.baseline['0203'], roomBoostC) } : {}),
+          limitation: phase === 'reduction' || holdDhwReduced ? 'DHW stop setting may apply only to auxiliary operation; compressor DHW cutoff is not established.' : undefined };
+        state.lastResult = { ...result, at: clock() };
+        return result;
+      });
     });
   }
-  function updatePause({ id, expiresAt, now = clock() }) {
-    if (state.pauseId !== id || !state.manualMode || state.manualMode === 'preheat') return;
-    state.expiresAt = deadline(now, expiresAt, true);
-    persist(); armExpiry();
+  async function updatePause({ id, expiresAt, now = clock() }) {
+    const end = deadline(now, expiresAt, true);
+    await writeState(() => {
+      if (state.pauseId !== id || !state.manualMode || state.manualMode === 'preheat') return;
+      state.expiresAt = end;
+    });
+    armExpiry();
   }
   function ingestionCheckpoint() {
     // Preserve obligation object identity: an in-flight restoration holds these
@@ -487,14 +543,14 @@ export function createH66Controller({ deviceId, publish, requestSnapshot = async
       manualPreheat: copy(state.manualPreheat ?? null),
       compressorState: compressorState ? { value: compressorState.value, since: compressorState.since,
         transitionObserved: compressorState.transitionObserved } : null,
-      controlsReady: live && SETTINGS.every(index => current(index, now)) && !restoreRequired,
+      controlsReady: live && !closing && SETTINGS.every(index => current(index, now)) && !restoreRequired,
       readings: Object.fromEntries([...readings].map(([index, reading]) => [index, { ...copy(reading),
         stale: !current(index, now), available: live && Boolean(current(index, now)),
         unavailableReasons: reading.connectionGeneration !== connectionGeneration ? ['awaiting-live-report'] : [],
         requested: state.requested[index] ?? null, baseline: state.baseline[index] ?? null }])),
       controls: Object.fromEntries(SETTINGS.map(index => [index, { register: index, signal: H66_REGISTERS[index].signal,
-        available: live && config.writeEnabled === true && Boolean(current(index, now)) && !manualConflict(state.pauseId, now) && !active,
-        reason: !live ? 'No recent live H66 publications.' : config.writeEnabled !== true ? 'Native setting writes are disabled.'
+        available: live && !closing && config.writeEnabled === true && Boolean(current(index, now)) && !manualConflict(state.pauseId, now) && !active,
+        reason: closing ? 'H66 is closing.' : !live ? 'No recent live H66 publications.' : config.writeEnabled !== true ? 'Native setting writes are disabled.'
           : !current(index, now) ? 'A fresh setting baseline is not available.' : restoreRequired ? 'Restoration is pending.'
             : manualConflict(state.pauseId, now) ? 'A controller override is active.'
             : active ? 'A setting transition is in progress.' : null,
@@ -508,22 +564,24 @@ export function createH66Controller({ deviceId, publish, requestSnapshot = async
     validateValues({ [register]: value });
     const end = deadline(now, expiresAt ?? now + durationSeconds * 1000);
     if (end - now > 900_000) throw failure('H66_TEST_DURATION', 'H66 tests must last 1–900 seconds.');
-    state.lastTest = { register, value, durationSeconds, at: now, expiresAt: end, status: 'pending' }; persist();
+    await writeState(() => { state.lastTest = { register, value, durationSeconds, at: now, expiresAt: end, status: 'pending' }; });
     try {
       const result = await writeSettings({ [register]: value }, { now, reason: 'explicit-test', expiresAt: end });
-      state.lastTest = { ...state.lastTest, status: result.status, readback: current(register)?.value ?? null }; persist();
+      await writeState(() => { state.lastTest = { ...state.lastTest, status: result.status, readback: current(register)?.value ?? null }; });
       return { ...result, register, value, at: now };
     } catch (error) {
-      state.lastTest = { ...state.lastTest, status: 'failed', code: error.code ?? 'H66_WRITE_FAILED' }; persist();
+      await writeState(() => { state.lastTest = { ...state.lastTest, status: 'failed', code: error.code ?? 'H66_WRITE_FAILED' }; });
       throw error;
     }
   }
+  function beginShutdown({ restore = true } = {}) { closing = true; writes.beginShutdown({ restore }); }
   async function close() {
+    beginShutdown({ restore: false });
     closed = true; connected = false; clearTimeout(expiryTimer);
     for (const waiter of [...pending.values()]) waiter.finish(failure('H66_CLOSED', 'H66 closed before setting readback.'));
-    // Do not erase outstanding obligations or claim a disconnected device was restored.
-    persist();
+    // Every physical command already had a committed obligation. Closing a
+    // connection requires no new save and must not wait for another writer.
   }
   armExpiry();
-  return { ingest, ingestionCheckpoint, restoreIngestionCheckpoint, setConnected, status, setPhase, updatePause, writeSettings, setSetting, restore, reconcile, test, close };
+  return { ingest, ingestionCheckpoint, restoreIngestionCheckpoint, setConnected, status, setPhase, updatePause, writeSettings, setSetting, restore, reconcile, test, beginShutdown, close };
 }

@@ -71,9 +71,9 @@ export function createHeatingTransport({ canControl = () => true } = {}) {
         throw failure('MQTT_COMMAND_INVALID');
       return dispatch(heatingRelay, batch, { ...options, target: 'tariff' });
     },
-    async publishDhwr(on, { expectedTarget = transport.targetIdentity.dhwr } = {}) {
+    async publishDhwr(on, { expectedTarget = transport.targetIdentity.dhwr, validUntil = Infinity, clock = Date.now } = {}) {
       if (typeof on !== 'boolean') throw failure('MQTT_COMMAND_INVALID');
-      return dispatch(dhwrRelay, on, { target: 'dhwr', expectedTarget });
+      return dispatch(dhwrRelay, on, { target: 'dhwr', expectedTarget, validUntil, clock });
     },
     // Native requests have bounded readback deadlines. Drain their handler before
     // closing acquisition so a later step cannot outlive this dispatcher.

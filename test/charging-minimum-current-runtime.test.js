@@ -682,6 +682,7 @@ test('completed planning observes live identification at the post-search clock',
   f.runtime.prices = [{ start: START, end: START + 24 * 3600_000, price: 10 }];
   const requestedAt = f.now;
   const planning = f.runtime.calculatePlan(requestedAt, { generation: ++f.runtime.planningGeneration });
+  await new Promise(resolve => setImmediate(resolve));
   assert.ok(options, 'The real calculation is waiting for its asynchronous search');
   f.onPhaseReadback(() => f.advance(1)); await f.adapter.refresh(); f.observe();
   assert.equal(f.runtime.identificationAvailable(item, requestedAt), false);
@@ -987,7 +988,7 @@ test('ordinary identification observation preserves economic execution and emits
     f.advance(10_000); await f.update();
     const item = f.item('charger2'), control = item.controller.status();
     assert.equal(item.identification.phase, 'charging');
-    assert.equal(f.runtime.identificationControl(item, control.snapshot), null);
+    assert.equal(await f.runtime.identificationControl(item, control.snapshot), null);
     assert.equal(control.identification, null);
     assert.equal(control.execution.planId, 'synthetic-normal-plan');
     const view = f.runtime.status().chargers.find(row => row.id === 'charger2');
@@ -1439,8 +1440,8 @@ test('minimum-current runtime gives Charger 2 the identification turn before a C
   const f = await fixture(t); f.observe();
   assert.equal(f.runtime.identificationTurn(f.item('charger1')), false);
   assert.equal(f.runtime.identificationTurn(f.item('charger2')), true);
-  assert.equal(f.runtime.identificationControl(f.item('charger1'), f.item('charger1').controller.status().snapshot), null);
-  const request = f.runtime.identificationControl(f.item('charger2'), f.adapter.snapshot());
+  assert.equal(await f.runtime.identificationControl(f.item('charger1'), f.item('charger1').controller.status().snapshot), null);
+  const request = await f.runtime.identificationControl(f.item('charger2'), f.adapter.snapshot());
   assert.equal(request.minimumCurrent, true); assert.notEqual(request.phase, 'pausing');
   await f.update(); assert.equal(f.writes.some(row => row.role === 'start_charging'), false);
 });
@@ -1511,7 +1512,7 @@ test(`unready preparation yields the peer turn without bypassing the low-current
   assert.equal(f.runtime.minimumCurrentIdentification(second, f.now), true,
     'Capability still requires minimum-current preparation before any extra charging probe');
   assert.equal(f.runtime.identificationTurn(f.item('charger1')), true);
-  const request = f.runtime.identificationControl(second, f.adapter.snapshot());
+  const request = await f.runtime.identificationControl(second, f.adapter.snapshot());
   assert.equal(request.minimumCurrent, true);
   assert.equal(f.writes.length, 0);
 });

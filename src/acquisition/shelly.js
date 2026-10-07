@@ -49,6 +49,8 @@ export function createShellyCapture({ engine, store, settings, publish, canContr
   let sequence = 0, commandSequence = 0, connected = false, closed = false, heatingBusy = false;
   const energies = new Map();
   const reception = createMqttReception({ store, engine, admission, devices, meters: energies, requests });
+  let receptionAt = null;
+  const receivedNow = () => receptionAt ?? engine.clock();
   const energyFor = device => {
     if (!metered(device) || device.generation > 1 && !device.identity) return null;
     const lineage = equipmentMeterIdentity({ ...device, readings: device.customReadings }, { brokerIdentity, nativeIdentity: device.identity });
@@ -102,33 +104,50 @@ export function createShellyCapture({ engine, store, settings, publish, canContr
     if (signature) raw = { ...raw, temperatureRouteSignature: signature };
     const definition = definitions(device).find(row => row.signal === signal);
     const observation = { source: 'shelly-mqtt', device: device.role, signal, value, unit,
-      sourceTime: at, receivedAt: engine.clock(), quality,
+      sourceTime: at, receivedAt: receivedNow(), quality,
       raw: { timeBasis: value === null ? 'availability-transition' : 'mqtt-live-status',
         ...((unit === 'degC' || unit === '°C') ? { reportIntervalMs: pollInterval(device),
           reportGraceMs: Math.max(0, maxAge(device) - pollInterval(device)) } : {}), ...raw } };
     if (device.record !== false && definition?.record !== false) {
       if (device.role === 'caravan' || signal === 'garage_relay_active')
-        engine.rememberObservation?.(observation, engine.clock());
+        engine.rememberObservation?.(observation, receivedNow());
       else engine.ingest(observation);
     }
     const powerFeedback = device.customReadings.some(row => row.signal === 'dhwr_power');
     if (device.id === 'dhwr' && signal === (powerFeedback ? 'dhwr_power' : 'dhwr_active'))
       feedbackRecorder.record({ ...observation, signal: 'dhwr_active', unit: 'state',
-        value: value === null ? null : Number(value > 0), sourceTime: at ?? engine.clock(),
+        value: value === null ? null : Number(value > 0), sourceTime: at ?? receivedNow(),
         raw: { ...observation.raw, basis: powerFeedback ? 'measured-power' : 'reported-switch',
           reportIntervalMs: maxAge(device), reportGraceMs: 0, maxAgeMs: maxAge(device), verified: value !== null } });
     device.readings[signal] = { value, unit, label: definition?.label ?? signal, observedAt: at, quality, ...raw };
   };
-  const unavailable = (device, reason) => {
-    energies.get(device.id)?.unavailable?.(engine.clock(), reason);
+  const unavailable = (device, reason, receivedAt = receivedNow()) => {
+    if (store.runWrite && !store.transactionDepth) {
+      device.available = false; device.state = null;
+      for (const definition of definitions(device)) if (definition.required || device.readings[definition.signal]) {
+        const signature = temperatureSignature(device, definition.signal);
+        engine.rememberObservation?.({ source: 'shelly-mqtt', device: device.role, signal: definition.signal,
+          value: null, unit: definition.unit, sourceTime: null, receivedAt, quality: [reason],
+          raw: { usableForControl: false, timeBasis: 'availability-transition',
+            ...(signature ? { temperatureRouteSignature: signature } : {}) } }, receivedAt);
+      }
+      for (const waiter of [...device.waiters]) waiter.reject(error('relay readback unavailable'));
+      for (const check of [...device.checks]) check.finish('unavailable');
+      void store.runWrite(() => reception.run(() => unavailable(device, reason, receivedAt))).catch(() => {});
+      return;
+    }
+    energies.get(device.id)?.unavailable?.(receivedAt, reason);
     const previous = device.available;
     device.available = false; device.state = null;
     for (const waiter of [...device.waiters]) reception.afterCommit(() => waiter.reject(error('relay readback unavailable')));
     for (const check of [...device.checks]) reception.afterCommit(() => check.finish('unavailable'));
     // A sensor/identity fault must still supersede a prior transport-only gap.
     if (!previous && Object.values(device.readings).every(row => row.value === null && row.quality?.includes(reason))) return;
-    for (const definition of definitions(device)) if (definition.required || device.readings[definition.signal])
-      emit(device, definition.signal, null, definition.unit, null, [reason], { usableForControl: false });
+    const before = receptionAt; receptionAt = receivedAt;
+    try {
+      for (const definition of definitions(device)) if (definition.required || device.readings[definition.signal])
+        emit(device, definition.signal, null, definition.unit, null, [reason], { usableForControl: false });
+    } finally { receptionAt = before; }
   };
   const send = async (device, method, params = {}, { purpose = 'status', commandId = null, complete = null } = {}) => {
     if (!connected || closed || !canControl()) throw error('MQTT unavailable');
@@ -291,7 +310,8 @@ export function createShellyCapture({ engine, store, settings, publish, canContr
     signature(id) { const device = devices.find(row => row.id === id); return device && (!needsIdentity(device) || device.identity) ? createHash('sha256').update(JSON.stringify({ brokerIdentity, nativeIdentity: device.identity, target: equipmentSignature({ ...device, readings: device.customReadings, protocol: 'shelly', connection: `shelly:${device.prefix}` }) })).digest('hex') : null; },
     setConnected(value) {
       connected = value;
-      for (const device of devices) { device.connected = false; if (!value) unavailable(device, 'mqtt-disconnected'); clearIdentity(device); }
+      for (const device of devices) device.connected = false;
+      for (const device of devices) { if (!value) unavailable(device, 'mqtt-disconnected'); clearIdentity(device); }
       if (value) { for (const device of devices) { identify(device); device.lastPollAt = -Infinity; } api.tick(engine.clock()); }
       else { for (const request of requests.values()) request.complete?.('unavailable'); requests.clear(); }
     },
@@ -468,7 +488,11 @@ export function createShellyCapture({ engine, store, settings, publish, canContr
     close() { api.setConnected(false); closed = true; requests.clear(); },
   };
   const receive = api.receive;
-  api.receive = (topic, ...args) => topic !== replyTopic && !devices.some(device => topic.startsWith(`${device.prefix}/`))
-    ? false : reception.run(() => receive(topic, ...args));
+  api.receive = (topic, payload, packet = {}, receivedAt = engine.clock()) => {
+    if (topic !== replyTopic && !devices.some(device => topic.startsWith(`${device.prefix}/`))) return false;
+    const before = receptionAt; receptionAt = receivedAt;
+    try { return reception.run(() => receive(topic, payload, packet, receivedAt)); }
+    finally { receptionAt = before; }
+  };
   return api;
 }

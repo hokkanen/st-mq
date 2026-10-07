@@ -8,5 +8,9 @@ export function withReportDatabase(store, context) {
   (context ? context.after.bind(context) : after)(() => database.close());
   store.db = database.db;
   store.transaction = callback => database.transaction(callback);
+  store.runWrite = (callback, options) => database.runWrite(callback, options);
+  store.afterCommit = callback => database.afterCommit(callback);
+  store.afterRollback = callback => database.afterRollback(callback);
+  Object.defineProperty(store, 'transactionDepth', { get: () => database.transactionDepth });
   return store;
 }

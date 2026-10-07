@@ -1,6 +1,11 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { EventEmitter } from 'node:events';
+import { DatabaseSync } from 'node:sqlite';
+import { mkdtempSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { Store } from '../src/storage/store.js';
 import { createH66Controller } from '../src/control/h66.js';
 import { createH66Decoder } from '../src/domain/telemetry.js';
 import { startMqtt } from '../src/acquisition/mqtt.js';
@@ -46,7 +51,7 @@ function memoryStore(seed = {}) {
     setState: (key, value) => { writes++; states.set(key, structuredClone(value)); },
     event(type, detail, now) { this.events.push({ type, detail, now }); } };
 }
-function rig({ store = memoryStore(), values = baselines, settings = {}, behavior = null, startAt = initialTime } = {}) {
+function rig({ store = memoryStore(), values = baselines, settings = {}, behavior = null, startAt = initialTime, closeWriteTimeoutMs = 5000 } = {}) {
   let now = startAt, elapsed = 0;
   const decoder = createH66Decoder({ deviceId, mqttScaleByRegister: settings.mqttScaleByRegister, verifiedRegisters: settings.verification });
   const sent = [], native = { ...values };
@@ -54,7 +59,7 @@ function rig({ store = memoryStore(), values = baselines, settings = {}, behavio
   const feed = (index, value = native[index], extra = {}) => controller.ingest(decoder.decode({
     topic: `${deviceId}/HP/${index}`, payload: String(value), receivedAt: now, ...extra,
   }));
-  controller = createH66Controller({ deviceId, store, clock: () => now, monotonicClock: () => elapsed,
+  controller = createH66Controller({ deviceId, store, clock: () => now, monotonicClock: () => elapsed, closeWriteTimeoutMs,
     config: { writeEnabled: true, readbackTimeoutMs: 30, ...settings },
     publish: async (topic, payload, options) => {
       const index = topic.split('/').at(-1);
@@ -74,6 +79,103 @@ function rig({ store = memoryStore(), values = baselines, settings = {}, behavio
   for (const [index, value] of Object.entries(native)) feed(index, value);
   return { controller, sent, native, feed, store, setNow: value => { now = value; }, get now() { return now; }, elapse(ms) { elapsed += ms; } };
 }
+
+test('H66 queues intent and restoration behind a real SQLite writer without blocking timers or publishing early', async t => {
+  const directory = mkdtempSync(join(tmpdir(), 'stmq-h66-contention-'));
+  const path = join(directory, 'fixture.sqlite'), store = new Store(path), competitor = new DatabaseSync(path);
+  const r = rig({ store });
+  t.after(async () => { await r.controller.close(); competitor.close(); store.close(); rmSync(directory, { recursive: true, force: true }); });
+  for (const restoring of [false, true]) {
+    competitor.exec('BEGIN IMMEDIATE');
+    let beats = 0;
+    const heartbeat = setInterval(() => { beats++; }, 5);
+    const before = r.sent.length;
+    const operation = restoring ? r.controller.restore()
+      : r.controller.writeSettings({ '0212': 40 }, { expiresAt: r.now + 60_000 });
+    await new Promise(resolve => setTimeout(resolve, 220));
+    assert.equal(r.sent.length, before, 'No MQTT command precedes the durable admitted intent.');
+    assert.ok(beats >= 5, 'Timers continue during a lock longer than the removed 100 ms timeout.');
+    if (!restoring) assert.equal(store.getState(`h66:control:${deviceId}`), null);
+    else assert.equal(store.getState(`h66:control:${deviceId}`).obligations['0212'].baseline, 44);
+    competitor.exec('ROLLBACK'); clearInterval(heartbeat);
+    assert.equal((await operation).status, 'confirmed');
+  }
+  assert.deepEqual(r.sent.map(row => row.payload), ['40', '44']);
+  assert.deepEqual(store.getState(`h66:control:${deviceId}`).obligations, {});
+});
+
+test('H66 rechecks expiry, connection and native evidence after asynchronous writer admission', async t => {
+  for (const scenario of ['expiry', 'clock-rollback', 'reconnect', 'stale', 'panel-change', 'shutdown']) await t.test(scenario, async t => {
+    const store = memoryStore();
+    let release;
+    const held = new Promise(resolve => { release = resolve; });
+    store.runWrite = operation => held.then(operation);
+    const r = rig({ store }); t.after(() => r.controller.close());
+    const operation = r.controller.writeSettings({ '0212': 40 }, { expiresAt: r.now + 1000 });
+    const failed = assert.rejects(operation, { code: {
+      expiry: 'H66_EXPIRED', 'clock-rollback': 'H66_EXPIRED', reconnect: 'H66_DISCONNECTED',
+      stale: 'H66_UNAVAILABLE', 'panel-change': 'H66_SETTING_CHANGED', shutdown: 'H66_CLOSED',
+    }[scenario] });
+    await nextTurn();
+    assert.deepEqual(r.sent, []);
+    assert.equal(store.getState(`h66:control:${deviceId}`), null);
+    if (scenario === 'expiry') r.setNow(r.now + 1000);
+    if (scenario === 'clock-rollback') { r.setNow(r.now - 60_000); r.elapse(1000); }
+    if (scenario === 'reconnect') { r.controller.setConnected(false); r.controller.setConnected(true); r.feed('0212', 44); }
+    if (scenario === 'stale') r.setNow(r.now + 300_001);
+    if (scenario === 'panel-change') r.feed('0212', 46);
+    if (scenario === 'shutdown') r.controller.beginShutdown();
+    if (scenario === 'clock-rollback') for (const [index, value] of Object.entries(baselines)) r.feed(index, value);
+    release(); await failed;
+    assert.deepEqual(r.sent, [], 'A queued command cannot acquire permission from its old checks.');
+    assert.deepEqual(r.controller.status().obligations, {});
+  });
+});
+
+test('H66 shutdown fences queued native changes while allowing an existing override to restore', async t => {
+  const r = rig(); t.after(() => r.controller.close());
+  await r.controller.writeSettings({ '0212': 40 }, { expiresAt: r.now + 60_000 });
+  let release;
+  const held = new Promise(resolve => { release = resolve; });
+  r.store.runWrite = operation => held.then(operation);
+  const pending = r.controller.writeSettings({ '0203': 24 }, { expiresAt: r.now + 60_000 });
+  const rejected = assert.rejects(pending, { code: 'H66_CLOSED' });
+  await nextTurn(); r.controller.beginShutdown(); release(); await rejected;
+  await nextTurn(); // The retained duty may already be restoring through reconciliation.
+  await r.controller.restore();
+  assert.deepEqual(r.sent.map(row => [row.index, row.payload]), [['0212', '40'], ['0212', '44']]);
+  assert.deepEqual(r.controller.status().obligations, {});
+  await assert.rejects(r.controller.setSetting({ register: '0203', value: 23 }), { code: 'H66_CLOSED' });
+});
+
+test('H66 cancellation drains its own queued save under a held SQLite writer and preserves committed restoration', async t => {
+  for (const action of ['close', 'demote', 'restore-timeout']) await t.test(action, async t => {
+    const directory = mkdtempSync(join(tmpdir(), 'stmq-h66-close-'));
+    const path = join(directory, 'fixture.sqlite'), store = new Store(path), competitor = new DatabaseSync(path);
+    const r = rig({ store, closeWriteTimeoutMs: 50 });
+    let locked = false;
+    t.after(async () => {
+      if (locked) competitor.exec('ROLLBACK');
+      await r.controller.close(); competitor.close(); store.close(); rmSync(directory, { recursive: true, force: true });
+    });
+    await r.controller.writeSettings({ '0212': 40 }, { expiresAt: r.now + 60_000 });
+    const saved = store.getState(`h66:control:${deviceId}`);
+    competitor.exec('BEGIN IMMEDIATE'); locked = true;
+    const pending = r.controller.restore();
+    const rejected = assert.rejects(pending, { code: 'STORAGE_WRITE_CANCELLED' });
+    await new Promise(resolve => setTimeout(resolve, 20));
+    assert(store.writeQueueStatus().pending > 0);
+    if (action === 'close') await r.controller.close();
+    else r.controller.beginShutdown({ restore: action === 'restore-timeout' });
+    await rejected;
+    assert.equal(store.writeQueueStatus().pending, 0);
+    assert.deepEqual(store.getState(`h66:control:${deviceId}`), saved);
+    assert.deepEqual(r.sent.map(row => row.payload), ['40']);
+    competitor.exec('ROLLBACK'); locked = false;
+    await store.runWrite(() => store.setState('next-runtime', { ready: true }));
+    assert.equal(store.getState('next-runtime').ready, true);
+  });
+});
 
 test('H66 transport settings can tighten but cannot extend the shared five-minute source lifetime', t => {
   for (const [configured, effective] of [[600_000, 300_000], [60_000, 60_000]]) {

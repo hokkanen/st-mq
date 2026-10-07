@@ -105,7 +105,8 @@ export function createRecordingHealth({ getConfig = () => ({}), clock = Date.now
     // The health receipt must not turn a completed backup into a failed backup.
     // A full/unavailable database still leaves the in-memory result visible.
     if (store && !store.readOnly && !receiptInvalid) {
-      try { store.setState(RECEIPT_KEY, receipt); } catch { /* Runtime evidence remains available. */ }
+      const snapshot = structuredClone(receipt);
+      void store.runWrite(() => store.setState(RECEIPT_KEY, snapshot)).catch(() => { /* Runtime evidence remains available. */ });
     }
   }
 
@@ -146,7 +147,7 @@ export function createRecordingHealth({ getConfig = () => ({}), clock = Date.now
 
   function recordingStatus({ store, engine, current, readOnly, now }) {
     const writes = store?.writeHealth?.status();
-    const base = { lastSourceCheckAt: null, lastFailureAt: writes?.lastFailureAt ?? null, errorCode: writes?.errorCode ?? null };
+    const base = { pendingWrites: writes?.queue?.pending ?? 0, waitingSince: writes?.queue?.waitingSince ?? null, lastSourceCheckAt: null, lastFailureAt: writes?.lastFailureAt ?? null, errorCode: writes?.errorCode ?? null };
     if (readOnly || store?.readOnly || current?.input === 'offline' || engine?.config?.input === 'offline') {
       recordingRun = null; recordingScopeSeen = true;
       return { ...base, state: 'read-only', detail: 'This computer is showing recorded history. Live recording health must be checked on the active master.' };
@@ -169,6 +170,8 @@ export function createRecordingHealth({ getConfig = () => ({}), clock = Date.now
     });
     if (healthy) recordingRun.usableSourceSeen = true;
     if (writes?.failing) return { ...base, state: 'write-failed', detail: 'A database write failed. New history may be missing; check disk space and storage access.' };
+    if (writes?.queue?.waitingSince != null) return { ...base, state: 'write-waiting',
+      detail: 'Storage is busy. Received readings are waiting to be saved; control requests wait for durable intent before dispatch.' };
     if (engine && now - (Number.isFinite(tickAt) ? tickAt : recordingRun.startedAt) > 3 * MINUTE)
       return { ...base, state: 'stalled', detail: 'The recording and controller update loop has not completed for more than three minutes. History may have gaps.' };
     if (parameters === null) return { ...base, state: 'unknown', detail: 'Recording source status could not be read. Refresh to check again.' };
@@ -228,9 +231,9 @@ export function createRecordingHealth({ getConfig = () => ({}), clock = Date.now
         title: disk.state === 'critical' ? 'Disk space is critically low' : 'Disk space is running low', detail: disk.detail });
       else if (disk.state === 'unknown' && disk.checkedAt !== null)
         attention.push({ id: 'disk-check', severity: 'warning', title: 'Disk space could not be checked', detail: disk.detail });
-      if (['write-failed', 'stalled', 'source-unavailable'].includes(recording.state)) attention.push({ id: 'recording',
+      if (['write-failed', 'write-waiting', 'stalled', 'source-unavailable'].includes(recording.state)) attention.push({ id: 'recording',
         severity: recording.state === 'write-failed' ? 'critical' : 'warning', title: recording.state === 'write-failed'
-          ? 'Database writes are failing' : recording.state === 'stalled' ? 'Recording needs attention' : 'Recording sources are unavailable', detail: recording.detail });
+          ? 'Database writes are failing' : recording.state === 'write-waiting' ? 'Waiting for storage' : recording.state === 'stalled' ? 'Recording needs attention' : 'Recording sources are unavailable', detail: recording.detail });
       else if (recording.state !== 'read-only' && recording.lastFailureAt !== null && now - recording.lastFailureAt < DAY)
         attention.push({ id: 'recording-resumed', severity: 'warning', title: 'A database write failed earlier', detail: recording.detail });
       if (backup.state === 'failed') attention.push({ id: 'backup', severity: 'warning', title: 'The last backup failed', detail: backup.detail });

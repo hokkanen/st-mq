@@ -189,3 +189,17 @@ test('failed transaction boundary persistence blocks OcppOff apply and retains r
   await restarted.runDue();
   assert.equal(restarted.status().state, 'disabled'); assert.deepEqual(writes(f).map(call => call.action), ['store', 'apply']);
 });
+
+test('disable rechecks remote ownership after waiting for its durable transaction boundary', async () => {
+  const f = await ownedFixture();
+  let release, began;
+  const started = new Promise(resolve => { began = resolve; });
+  const held = new Promise(resolve => { release = resolve; });
+  const off = f.make(false, { beforeDisable: async () => { began(); await held; } });
+  const pending = off.runDue(); await started;
+  f.current = changedByOperator(f.current);
+  release(); await pending;
+  assert.equal(off.status().reason, 'foreign-configuration');
+  assert.deepEqual(writes(f).map(call => call.action), ['store']);
+  assert.equal(f.current.basicAuth.username, 'fixture-manual-charger');
+});

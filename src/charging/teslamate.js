@@ -78,7 +78,8 @@ export function decodeChargingTeslaField(field, payload) {
 }
 
 /** One durable vehicle projection. Vehicle data never produces EVSE electricity. */
-export function createChargingTeslaCapture({ settings = {}, clock = Date.now, initialState, saveState = () => {}, brokerIdentity = null, onBoundary = () => {} } = {}) {
+export function createChargingTeslaCapture({ settings = {}, clock = Date.now, initialState, saveState = () => {},
+  afterRollback = () => {}, brokerIdentity = null, onBoundary = () => {} } = {}) {
   settings = teslamateConfiguration(settings);
   const root = `teslamate/${settings.namespace ? `${settings.namespace}/` : ''}cars/${settings.carId}/`;
   const signature = createHash('sha256').update(JSON.stringify([brokerIdentity, root, settings.homeGeofence])).digest('hex');
@@ -118,6 +119,11 @@ export function createChargingTeslaCapture({ settings = {}, clock = Date.now, in
       if (packet.dup || packet.retain && liveFields.has(field)) return true;
       if (fields[field]?.receivedAt > now || !Number.isSafeInteger(now) || now < 0) return false;
       const before = { fields: structuredClone(fields), sequence, boundaries: structuredClone(boundaries), lastMessageAt, lastLiveAt, lastRetainedAt, live: new Set(liveFields) };
+      const rewind = () => {
+        ({ fields, sequence, boundaries, lastMessageAt, lastLiveAt, lastRetainedAt } = before);
+        liveFields.clear(); for (const key of before.live) liveFields.add(key);
+      };
+      afterRollback(rewind);
       let boundary;
       try {
         lastMessageAt = now;
@@ -143,8 +149,7 @@ export function createChargingTeslaCapture({ settings = {}, clock = Date.now, in
         }
         saveState({ version: 1, signature, fields: structuredClone(fields), sequence, boundaries, lastMessageAt });
       } catch (error) {
-        ({ fields, sequence, boundaries, lastMessageAt, lastLiveAt, lastRetainedAt } = before);
-        liveFields.clear(); for (const key of before.live) liveFields.add(key); throw error;
+        rewind(); throw error;
       }
       if (boundary) onBoundary(boundary);
       return true;

@@ -677,14 +677,24 @@ from software fixtures.
 
 Current limits to retain when reviewing results:
 
-- SQLite main-thread connections use a 100 ms busy-lock timeout before
-  reporting the failed operation; Store connections in background workers retain
-  a 5,000 ms wait. Failed intent persistence cannot authorize a device command,
-  and failed transactions retain their previous committed state. The contention
-  and controller-recovery tests use these production defaults. Synchronous disk
-  I/O and repeated operations can still delay timers; runtime maximum/p99
-  event-loop delay exposes stalls with a 1,000 ms warning threshold. A shorter
-  lock wait does not imply a hard real-time guarantee or retry lost observations.
+- SQLite writes on the controller thread use asynchronous admission. A zero-wait
+  `BEGIN IMMEDIATE` acquires the writer lock before invoking each synchronous
+  callback exactly once; timers retry only lock acquisition, never a partially
+  executed callback. Background connections retain a 5,000 ms lock timeout.
+  The queue bounds pending work to 2,048 entries and 8 MiB of declared payloads;
+  overflow rejects explicitly and marks recording failure. Queued telemetry keeps
+  its receipt/source clocks and connection scope. Control intent commits before
+  dispatch, with fresh authority, target, native-state and expiry checks after
+  waiting; transactions never span network waits. Control priority is bounded so
+  observations cannot starve. A pending native report blocks conflicting commands.
+  Closing storage rejects remaining work. Demotion cancels obsolete runtime
+  saves immediately; restorative teardown bounds pending actuator saves to five
+  seconds while preserving committed restoration obligations. An outage
+  cannot promise unlimited in-memory retention or persistence across process loss.
+  Synchronous disk I/O can still delay timers; runtime maximum/p99 event-loop
+  delay exposes stalls with a 1,000 ms warning threshold. This is not a hard
+  real-time guarantee. Offline contention fixtures exercise actual SQLite locks,
+  event-loop progress, ordered recording, cancellation and pre-command commits.
 - Joint charging planning runs its bounded search in a background worker. Earlier
   synthetic 24-hour two-charger measurements took approximately 0.47–1.24 seconds on the
   development machine; this is historical performance evidence, not a current

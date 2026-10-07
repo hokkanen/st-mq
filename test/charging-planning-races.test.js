@@ -79,6 +79,7 @@ async function fixture(t) {
 
 test('joint planning coalesces a burst into the running search and one latest request', async t => {
   const f = await fixture(t), first = f.runtime.updatePlan();
+  await waitForCalls(f.planner, 1);
   const rest = Array.from({ length: 8 }, () => f.runtime.updatePlan());
   assert.equal(f.planner.calls.length, 1);
   assert.ok(rest.every(flight => flight === first));
@@ -94,7 +95,9 @@ test('two controllers awaiting a shared calculation receive it without invalidat
   const f = await fixture(t);
   for (const item of Object.values(f.runtime.chargers)) item.commandBasis = 'earlier-program';
   const before = Object.fromEntries(Object.entries(f.controllers).map(([id, controller]) => [id, controller.invalidations]));
-  const first = f.controllers.charger1.getPlan(), second = f.controllers.charger2.getPlan();
+  const first = f.controllers.charger1.getPlan();
+  await waitForCalls(f.planner, 1);
+  const second = f.controllers.charger2.getPlan();
   assert.equal(f.runtime.chargers.charger1.awaitingPlan, true);
   assert.equal(f.runtime.chargers.charger2.awaitingPlan, true);
   f.planner.complete(0); await waitForCalls(f.planner, 2);
@@ -109,6 +112,7 @@ test('two controllers awaiting a shared calculation receive it without invalidat
 
 test('an unchanged native read receipt does not discard useful planning work', async t => {
   const f = await fixture(t), work = f.runtime.updatePlan();
+  await waitForCalls(f.planner, 1);
   f.controllers.charger1.control.session.observedAt = AT + 1000;
   f.setNow(AT + 1000);
   f.planner.complete(0); await work;
@@ -138,6 +142,7 @@ test('a changed joint program still revokes a controller that already reached na
   item.reconcileFlight = new Promise(() => {});
   t.after(() => { item.reconcileFlight = null; item.reconcileAgain = false; });
   const work = f.runtime.updatePlan(AT, { sourceId: 'charger1' });
+  await waitForCalls(f.planner, 1);
   f.planner.complete(0); await work;
   assert.equal(f.controllers.charger2.invalidations, before + 1);
   assert.equal(item.reconcileAgain, true);
@@ -145,6 +150,7 @@ test('a changed joint program still revokes a controller that already reached na
 
 test('close discards a running search and drains its waiting callers without publication', async t => {
   const f = await fixture(t), work = f.runtime.updatePlan();
+  await waitForCalls(f.planner, 1);
   assert.equal(f.planner.calls.length, 1);
   await f.runtime.close(); await work;
   assert.equal(f.runtime.coordination, null);
@@ -158,6 +164,7 @@ test('time spent calculating does not postpone the original charging boundary wa
   clearTimeout(f.runtime.boundaryTimer);
   t.mock.timers.enable({ apis: ['setTimeout'] });
   const work = f.runtime.updatePlan();
+  await waitForCalls(f.planner, 1);
   f.setNow(AT + 1000); t.mock.timers.tick(1000);
   f.planner.complete(0); await work;
   const boundary = f.runtime.boundaryAt;
@@ -173,6 +180,7 @@ test('time spent calculating does not postpone the original charging boundary wa
 for (const change of ['request', 'session', 'authority', 'native instruction']) {
   test(`changed ${change} during calculation prevents stale joint publication`, async t => {
     const f = await fixture(t), work = f.runtime.updatePlan();
+    await waitForCalls(f.planner, 1);
     const item = f.runtime.chargers.charger1, control = f.controllers.charger1.control;
     if (change === 'request') { item.request.revision++; item.request.overrides.minimumSoc = 90; }
     else if (change === 'session') { control.session.connectedAt = AT + 1000; control.snapshot.readAt = AT + 1000; f.setNow(AT + 1000); }
@@ -190,6 +198,7 @@ for (const change of ['request', 'session', 'authority', 'native instruction']) 
 for (const change of ['history selection', 'result age']) {
   test(`changed ${change} rejects the completed search and requests fresh planning`, async t => {
     const f = await fixture(t), work = f.runtime.updatePlan();
+    await waitForCalls(f.planner, 1);
     if (change === 'history selection') f.store.db.prepare('UPDATE history_selection SET generation=generation+1 WHERE id=1').run();
     else f.setNow(AT + 31_000);
     f.planner.complete(0); await waitForCalls(f.planner, 2);

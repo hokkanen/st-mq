@@ -120,6 +120,34 @@ export function createEaseeOcpp({ config: input, chargerId, clock = Date.now, ca
   const digest = value => createHash('sha256').update(JSON.stringify(value)).digest('hex');
   const scope = digest({ chargerId, identity });
   let ledger = null, stateReady = false;
+  let admitted = false;
+  const cancellation = new AbortController(), maintenance = new Set();
+  function storageFailed(connection) {
+    if (connection !== socket) return;
+    stateReady = false; error = 'transaction-state-unavailable';
+    socket?.terminate(); reset();
+  }
+  function runState(operation, { connection, bytes = 0 } = {}) {
+    const current = () => !closed && canControl() && (connection === undefined || socket === connection);
+    const execute = () => {
+      if (!current()) throw requestError('ocpp-request-revoked');
+      const prior = admitted;
+      admitted = true;
+      state?.afterRollback?.(() => storageFailed(connection ?? socket));
+      try { return operation(); } finally { admitted = prior; }
+    };
+    try { return state?.runWrite ? state.runWrite(execute, { signal: cancellation.signal, isCurrent: current, priority: 'control', bytes })
+      : Promise.resolve(execute()); }
+    catch (error) { return Promise.reject(error); }
+  }
+  function scheduleState(name, operation) {
+    if (maintenance.has(name)) return;
+    maintenance.add(name);
+    const connection = socket;
+    void runState(operation, { connection }).catch(error => {
+      if (!['STORAGE_WRITE_STALE', 'STORAGE_WRITE_CANCELLED', 'ocpp-request-revoked'].includes(error?.code)) storageFailed(connection);
+    }).finally(() => maintenance.delete(name));
+  }
   const configurationFailures = new Set();
   const validLedger = value => value && value.version === 4 && value.scope === scope
     && Object.keys(value).every(key => ['version', 'scope', 'nextId', 'latestStartAt', 'activeId', 'transactions', 'recovered'].includes(key))
@@ -245,8 +273,7 @@ export function createEaseeOcpp({ config: input, chargerId, clock = Date.now, ca
   const permittedBy = guard => { try { return guard() === true; } catch { return false; } };
   const transportFresh = () => !closed && canControl() && stateReady && socket?.readyState === 1
     && lastMessageAt !== null && clock() >= lastMessageAt && clock() - lastMessageAt <= MAX_AGE_MS;
-  function transportActivity() {
-    const now = clock();
+  function transportActivity(now = clock()) {
     // A heartbeat can keep held current evidence healthy, but cannot revive
     // measurements from before an actual feed outage on the same socket.
     if (lastMessageAt !== null && (now < lastMessageAt || now - lastMessageAt > MAX_AGE_MS))
@@ -266,7 +293,11 @@ export function createEaseeOcpp({ config: input, chargerId, clock = Date.now, ca
     preparingAttempted = false; remoteStartStatus = 'idle'; statusTransition++;
     onDisconnect();
   }
-  function send(value) { if (!closed && canControl() && socket?.readyState === 1) socket.send(JSON.stringify(value)); }
+  function send(value) {
+    const connection = socket;
+    const effect = () => { if (!closed && canControl() && socket === connection && connection?.readyState === 1) connection.send(JSON.stringify(value)); };
+    if (state?.afterCommit) state.afterCommit(effect); else effect();
+  }
   const activeTransaction = () => ledger?.transactions.find(row => row.id === ledger.activeId)
     ?? ledger?.recovered?.transactions.find(row => row.id === ledger.recovered.activeId);
   const isRecovered = row => row?.observedAt !== undefined;
@@ -293,6 +324,7 @@ export function createEaseeOcpp({ config: input, chargerId, clock = Date.now, ca
         && instant(pending.row.timestamp) >= intent.requestedAt);
   }
   function sendNextCall() {
+    if (state?.runWrite && !admitted) { scheduleState('send', sendNextCall); return; }
     if (pendingCalls.size || !callQueue.length || socket?.readyState !== 1 || !canControl()) return;
     const call = callQueue.shift(), { action, payload, transition } = call, id = `stmq-${++callId}`;
     if (call.resolve && (call.settled || call.connection !== socket || !transportFresh()
@@ -405,6 +437,7 @@ export function createEaseeOcpp({ config: input, chargerId, clock = Date.now, ca
       || connectorStatusAt > now || now - connectorStatusAt > MAX_AGE_MS
       || connectorStatusAt <= active.lastEvidenceAt
       || futureReadings.some(pending => pending.transactionId === active.id && instant(pending.row.timestamp) >= connectorStatusAt)) return;
+    if (state?.runWrite && !admitted) { scheduleState('transaction-status', reconcileTransactionStatus); return false; }
     // Available/Finishing explicitly report that no transaction is ongoing.
     // Easee native firmware can report Preparing just after StartTransaction,
     // so Preparing must never retire an accepted transaction despite its usual
@@ -419,6 +452,9 @@ export function createEaseeOcpp({ config: input, chargerId, clock = Date.now, ca
     recoveryCandidate = null; recoveryConflict = false;
   }
   function releaseFutureReadings() {
+    if (state?.runWrite && !admitted && futureReadings.some(pending => instant(pending.row.timestamp) <= clock())) {
+      scheduleState('future-readings', releaseFutureReadings); return false;
+    }
     // Only this authenticated connection owns this bounded buffer. Original
     // source and receipt times survive the short clock-skew wait unchanged.
     for (let index = 0; index < futureReadings.length;) {
@@ -430,6 +466,7 @@ export function createEaseeOcpp({ config: input, chargerId, clock = Date.now, ca
   }
   function prepareState() {
     if (!canControl() || closed) return false;
+    if (state?.runWrite && !admitted) { scheduleState('prepare', prepareState); return false; }
     if (!state?.get || !state?.set) { error = 'transaction-state-unavailable'; stateReady = false; return false; }
     try {
       const saved = state.get();
@@ -452,8 +489,8 @@ export function createEaseeOcpp({ config: input, chargerId, clock = Date.now, ca
   const authorizationInfo = tag => automaticTag(tag)
     // This tag represents a live controller permission, never a reusable RFID
     // enrollment. OCPP expiryDate removes it from the authorization cache.
-    ? { status: permittedBy(canStart) ? 'Accepted' : 'Blocked', expiryDate: currentTime() }
-    : { status: configuredTag(tag) ? 'Accepted' : 'Invalid' };
+    ? { status: transportFresh() && permittedBy(canStart) ? 'Accepted' : 'Blocked', expiryDate: currentTime() }
+    : { status: configuredTag(tag) ? transportFresh() ? 'Accepted' : 'Blocked' : 'Invalid' };
   function completeResponse(id, pending, frame, waited = false) {
     if (pendingCalls.get(id) !== pending) return;
     pendingCalls.delete(id);
@@ -473,7 +510,7 @@ export function createEaseeOcpp({ config: input, chargerId, clock = Date.now, ca
     }
     sendNextCall();
   }
-  function receive(data, binary, deferred = null) {
+  function receive(data, binary, deferred = null, arrival = clock()) {
     refreshAuthority();
     if (!canControl() || closed) { socket?.close(1008, 'Unavailable'); return; }
     if (binary) { socket.close(1008, 'Unavailable'); return; }
@@ -489,7 +526,7 @@ export function createEaseeOcpp({ config: input, chargerId, clock = Date.now, ca
       }
       const pending = pendingCalls.get(frame[1]);
       if (!pending || pending.replyId) return;
-      transportActivity();
+      transportActivity(arrival);
       const remaining = connectorStatusAt - clock();
       if (pending.resolve && !pending.settled && frame[0] === 3 && pending.connection === socket && transportFresh()
         && remaining > 0 && remaining <= MAX_FUTURE_MS) {
@@ -507,8 +544,8 @@ export function createEaseeOcpp({ config: input, chargerId, clock = Date.now, ca
     const [, id, action, payload] = frame;
     if (frame.length !== 4 || typeof id !== 'string' || !id.length || id.length > 36 || typeof action !== 'string'
       || !payload || typeof payload !== 'object' || Array.isArray(payload)) { socket.close(1002, 'Invalid OCPP call'); return; }
-    if (!deferred) transportActivity();
-    const receivedAt = deferred?.receivedAt ?? clock();
+    if (!deferred) transportActivity(arrival);
+    const receivedAt = deferred?.receivedAt ?? arrival;
     const requestHash = digest({ action, payload });
     const waiting = deferredTransactions.get(id);
     if (waiting) {
@@ -543,7 +580,8 @@ export function createEaseeOcpp({ config: input, chargerId, clock = Date.now, ca
         if (pending.connection !== socket || pending.connectionId !== connectionId || !refreshAuthority() || !transportFresh()) return;
         // One bounded wait only. Recheck payload, present authorization and
         // storage after the source time arrives, retaining the actual receipt.
-        receive(data, false, pending);
+        void runState(() => receive(data, false, pending), { connection: pending.connection, bytes: data.length })
+          .catch(() => storageFailed(pending.connection));
       }, sourceAt - clock() + 1);
       pending.timer.unref();
       return;
@@ -560,13 +598,13 @@ export function createEaseeOcpp({ config: input, chargerId, clock = Date.now, ca
       device = chargingDeviceInfo({ model: payload.chargePointModel, firmware: payload.firmwareVersion,
         source: 'ocpp-boot', receivedAt: lastMessageAt });
       connectorStatus = null; connectorStatusAt = null; connectorReceivedAt = null; connectorStatusExplicit = false; observedTransaction = null;
-      recoveryCandidate = null; recoveryConflict = false; evidenceBoundaryAt = clock();
-      currentSupplyBoundaryAt = clock();
+      recoveryCandidate = null; recoveryConflict = false; evidenceBoundaryAt = receivedAt;
+      currentSupplyBoundaryAt = receivedAt;
       preparingAttempted = false; remoteStartStatus = 'idle'; statusTransition++;
       response = { status: 'Accepted', currentTime: currentTime(), interval: 30 };
     } else if (action === 'Heartbeat') response = { currentTime: currentTime() };
     else if (action === 'MeterValues') {
-      const receivedAt = clock(), readings = ocppMeterReadings(payload, receivedAt + MAX_FUTURE_MS);
+      const readings = ocppMeterReadings(payload, receivedAt + MAX_FUTURE_MS);
       if (!applyReadings(readings.filter(row => instant(row.timestamp) <= receivedAt), payload.transactionId, receivedAt, id)) {
         send([4, id, 'InternalError', 'Transaction storage unavailable', {}]); return;
       }
@@ -654,12 +692,12 @@ export function createEaseeOcpp({ config: input, chargerId, clock = Date.now, ca
         || !validStatuses.includes(payload.status) || typeof payload.errorCode !== 'string') {
         send([4, id, 'FormationViolation', 'Invalid connector status', {}]); return;
       }
-      const at = payload.timestamp === undefined ? clock() : instant(payload.timestamp);
-      if (payload.connectorId === 1 && Number.isSafeInteger(at) && at >= 0 && at <= clock() + MAX_FUTURE_MS
+      const at = payload.timestamp === undefined ? receivedAt : instant(payload.timestamp);
+      if (payload.connectorId === 1 && Number.isSafeInteger(at) && at >= 0 && at <= receivedAt + MAX_FUTURE_MS
         && (connectorStatusAt === null || at >= connectorStatusAt)) {
         const status = payload.errorCode === 'NoError' ? payload.status : 'Faulted';
         if (connectorStatus !== status) { preparingAttempted = false; remoteStartStatus = 'idle'; statusTransition++; }
-        connectorStatus = status; connectorStatusAt = at; connectorReceivedAt = clock(); connectorStatusExplicit = payload.timestamp !== undefined;
+        connectorStatus = status; connectorStatusAt = at; connectorReceivedAt = receivedAt; connectorStatusExplicit = payload.timestamp !== undefined;
         if (['Available', 'Reserved', 'Unavailable'].includes(status)) observedTransaction = null;
         if (!activeTransaction() && NO_TRANSACTION_STATUSES.has(status) && connectorStatusExplicit
           && at <= clock() && clock() - at <= MAX_AGE_MS && at > (transactionEvidence?.at ?? Infinity)) {
@@ -682,22 +720,29 @@ export function createEaseeOcpp({ config: input, chargerId, clock = Date.now, ca
     async start() {
       if (!configured || closed) return;
       if (startPromise) return startPromise;
-      refreshAuthority();
-      if (canControl() && !stateReady && !prepareState()) return;
       if (server?.listening) return;
       startPromise = (async () => {
+        if (canControl()) {
+          try { await runState(() => { refreshAuthority(); if (!stateReady) prepareState(); }); }
+          catch { if (closed || !canControl()) return; throw requestError('ocpp-unavailable'); }
+          if (!stateReady) return;
+        } else refreshAuthority();
+        if (closed) return;
         server = createServer((_request, response) => { response.writeHead(404); response.end(); });
         sockets = new WebSocketServer({ noServer: true, maxPayload: 64 * 1024,
           handleProtocols: protocols => protocols.has('ocpp1.6') ? 'ocpp1.6' : false });
-        server.on('upgrade', (request, stream, head) => {
+        server.on('upgrade', async (request, stream, head) => {
           const expected = `Basic ${Buffer.from(`${identity}:${config.password}`).toString('base64')}`;
           if (closed || !canControl() || request.url !== `/ocpp/${encodeURIComponent(identity)}`
             || !equal(String(request.headers.authorization ?? ''), expected)
             || !String(request.headers['sec-websocket-protocol'] ?? '').split(',').some(value => value.trim() === 'ocpp1.6')) {
             stream.end('HTTP/1.1 403 Forbidden\r\nConnection: close\r\n\r\n'); return;
           }
-          refreshAuthority();
-          if (!prepareState()) { stream.end('HTTP/1.1 503 Service Unavailable\r\nConnection: close\r\n\r\n'); return; }
+          let ready = false;
+          try { ready = await runState(() => { refreshAuthority(); return prepareState(); }); } catch { /* Admission did not grant this connection. */ }
+          if (!ready || stream.destroyed || closed || !canControl()) {
+            if (!stream.destroyed) stream.end('HTTP/1.1 503 Service Unavailable\r\nConnection: close\r\n\r\n'); return;
+          }
           sockets.handleUpgrade(request, stream, head, connection => {
             // A freshly authenticated connection supersedes a half-open old
             // TCP connection. Its late events cannot clear the new socket.
@@ -705,7 +750,14 @@ export function createEaseeOcpp({ config: input, chargerId, clock = Date.now, ca
             reset(); socket = connection; connectionId = `${instanceId}:${++connectionSequence}`;
             authenticatedConnectionId = connectionId; connectedAt = clock(); evidenceBoundaryAt = connectedAt; error = null;
             currentSupplyBoundaryAt = connectedAt;
-            socket.on('message', (data, binary) => { if (socket === connection) receive(data, binary); });
+            socket.on('message', (data, binary) => {
+              if (socket !== connection) return;
+              const receivedAt = clock();
+              void runState(() => receive(data, binary, null, receivedAt), { connection, bytes: data.length })
+                .catch(failure => {
+                  if (!['STORAGE_WRITE_STALE', 'STORAGE_WRITE_CANCELLED', 'ocpp-request-revoked'].includes(failure?.code)) storageFailed(connection);
+                });
+            });
             socket.on('error', () => {});
             socket.on('close', () => { if (socket === connection) { socket = null; reset(); } });
           });
@@ -735,8 +787,7 @@ export function createEaseeOcpp({ config: input, chargerId, clock = Date.now, ca
                 callQueue.splice(index, 1); finishRequest(call, 'ocpp-request-timeout');
               }
             }
-            releaseFutureReadings(); requestRemoteStart();
-            sendNextCall();
+            scheduleState('maintenance', () => { releaseFutureReadings(); requestRemoteStart(); sendNextCall(); });
           }, 1000); timer.unref();
         } catch {
           error = 'listener-unavailable'; sockets.close(); sockets = null; server = null;
@@ -746,6 +797,7 @@ export function createEaseeOcpp({ config: input, chargerId, clock = Date.now, ca
     },
     refreshAuthority,
     noteModeDisableRequested() {
+      if (state?.runWrite && !admitted) return runState(() => this.noteModeDisableRequested());
       // Local credentials or a live socket are not needed to record intent for
       // cloud handback. Durable current state and ownership remain mandatory.
       if (!canControl() || closed || !stateReady && !prepareState()) throw requestError('ocpp-unavailable');
@@ -804,8 +856,7 @@ export function createEaseeOcpp({ config: input, chargerId, clock = Date.now, ca
     controlSnapshot() {
       if (!refreshAuthority() || !transportFresh() || connectorStatusAt === null
         || clock() < connectorStatusAt) return null;
-      releaseFutureReadings();
-      reconcileTransactionStatus();
+      if (releaseFutureReadings() === false || reconcileTransactionStatus() === false) return null;
       if (!stateReady) return null;
       const active = activeTransaction();
       const confirmed = !recoveryConflict && observedTransaction?.id === active?.id && clock() >= observedTransaction?.at
@@ -826,7 +877,7 @@ export function createEaseeOcpp({ config: input, chargerId, clock = Date.now, ca
       // This separate view does not loosen command, transaction, recording or
       // identification freshness, and never updates a measurement's clocks.
       if (!refreshAuthority() || !transportFresh() || currentSupplyBoundaryAt === null) return null;
-      releaseFutureReadings();
+      if (releaseFutureReadings() === false) return null;
       if (!stateReady) return null;
       return { connectionId, epoch: `${connectionId}:${currentSupplyBoundaryAt}`,
         readings: [...values.values()].filter(row => [183, 184, 185].includes(row.id)
@@ -836,7 +887,7 @@ export function createEaseeOcpp({ config: input, chargerId, clock = Date.now, ca
     snapshot() {
       if (!refreshAuthority() || socket?.readyState !== 1 || lastMessageAt === null
         || clock() < lastMessageAt || clock() - lastMessageAt > MAX_AGE_MS) return null;
-      releaseFutureReadings();
+      if (releaseFutureReadings() === false) return null;
       if (!stateReady) return null;
       const rows = [...values.values()].filter(row => row.value !== null && clock() - instant(row.timestamp) <= MAX_AGE_MS && instant(row.timestamp) <= clock());
       const power = rows.find(row => row.id === 120);
@@ -847,7 +898,7 @@ export function createEaseeOcpp({ config: input, chargerId, clock = Date.now, ca
       // Voltage forecasting needs only explicitly mapped fresh phase-neutral
       // values. It cannot grant current/power/control readiness to this socket.
       if (!refreshAuthority() || !transportFresh()) return null;
-      releaseFutureReadings();
+      if (releaseFutureReadings() === false) return null;
       if (!stateReady) return null;
       const rows = [...values.values()].filter(row => [194, 195, 196].includes(row.id)
         && row.value !== null && instant(row.timestamp) <= clock() && clock() - instant(row.timestamp) <= MAX_AGE_MS);
@@ -865,6 +916,7 @@ export function createEaseeOcpp({ config: input, chargerId, clock = Date.now, ca
     },
     async close() {
       closed = true;
+      cancellation.abort();
       await startPromise;
       clearInterval(timer); socket?.terminate();
       for (const client of sockets?.clients ?? []) client.terminate();

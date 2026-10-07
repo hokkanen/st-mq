@@ -12,7 +12,7 @@ const NOW = Date.parse('2026-09-20T12:00:00Z');
 const flush = () => new Promise(resolve => setImmediate(resolve));
 function memoryStore() {
   const memory = new Map();
-  return { getState: key => structuredClone(memory.get(key) ?? null),
+  return { runWrite: async operation => operation(), getState: key => structuredClone(memory.get(key) ?? null),
     setState: (key, value) => memory.set(key, structuredClone(value)), event() {}, observation() {} };
 }
 function executorFixture(t) {

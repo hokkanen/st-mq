@@ -34,7 +34,7 @@ test('A06-001 actual timer rearms after backward clock corrections and restores 
     status: () => ({ devices: [{ id: 'relay', available: true, controls: { switch: true },
       readings: { relay_active: { value: Number(on), unit: 'state', stale: false, observedAt: now } } }] }),
     setSwitch: async (_id, value) => { calls.push(value); on = value; return { confirmed: true }; } };
-  const manager = createEquipmentTests({ store: { getState: () => state, setState: (_key, value) => { state = value; } },
+  const manager = createEquipmentTests({ store: { runWrite: async operation => operation(), getState: () => state, setState: (_key, value) => { state = value; } },
     clock: () => now, getEquipment: () => equipment, canControl: () => true });
   t.after(() => manager.close({ restore: false }));
   await manager.start({ deviceId: 'relay', on: true, durationMinutes: 1 });

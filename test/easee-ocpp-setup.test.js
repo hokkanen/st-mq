@@ -42,6 +42,27 @@ const foreign = () => ({ version: 'fixture-foreign-version', connectivityMode: '
   websocketConnectionArgs: { url: 'ws://192.0.2.99:9001/ocpp', caCertificate: null, caCertificateDomain: null },
   basicAuth: { username: 'fixture-foreign-charger', password: 'fixture-foreign-password' } });
 
+test('setup waits for durable admission and rechecks authority and remote configuration before mutating the charger', async t => {
+  for (const change of ['none', 'authority', 'foreign']) await t.test(change, async () => {
+    const f = fixture(), set = f.state.set;
+    let release, started;
+    const began = new Promise(resolve => { started = resolve; });
+    const pending = new Promise(resolve => { release = resolve; });
+    let first = true;
+    f.state.set = async value => { if (first) { first = false; started(); await pending; } set(value); };
+    const running = f.setup.runDue();
+    await began;
+    assert.equal(f.saved, null);
+    assert.ok(!f.calls.includes('store') && !f.calls.includes('apply'));
+    if (change === 'authority') f.revoke();
+    if (change === 'foreign') f.current = foreign();
+    release(); await running;
+    if (change === 'none') assert.equal(f.setup.status().state, 'connecting');
+    else assert.ok(!f.calls.includes('store') && !f.calls.includes('apply'), 'Waiting cannot retain obsolete setup authority.');
+    await f.setup.close();
+  });
+});
+
 test('standalone omitted or empty URL detects a local address with the configured listener port', () => {
   for (const omitted of [false, true]) {
     const source = config({ server_url: '', port: 9012, host: '192.0.2.10' });

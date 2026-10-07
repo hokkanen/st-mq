@@ -13,6 +13,7 @@ import { createEquipmentCapture } from '../src/acquisition/equipment.js';
 import { equipmentConfiguration } from '../src/acquisition/equipment-config.js';
 import { chargingConfiguration } from '../src/charging/config.js';
 import { createShellyEvseAdapter } from '../src/charging/shelly-evse.js';
+import { committedWrites } from './helpers/committed-status.js';
 
 const HOUR = 3_600_000, START = Date.parse('2026-09-01T00:00:00Z');
 const near = (actual,expected) => assert(Math.abs(actual-expected)<1e-10,`${actual} != ${expected}`);
@@ -162,7 +163,7 @@ async function shellyFixture(t) {
     else result={value:structuredClone(fields[frame.params.role]),last_update_ts:now/1000};
     cb?.();queueMicrotask(()=>client.emit('message',`${frame.src}/rpc`,Buffer.from(JSON.stringify({id:frame.id,src:'synthetic-evse',dst:frame.src,result})),{}));
   };
-  const adapter=createShellyEvseAdapter({config,broker:{address:'mqtt://synthetic'},client,store,engine:{recorder},clock:()=>now});
+  const adapter=createShellyEvseAdapter({config,broker:{address:'mqtt://synthetic'},client,store,engine:{recorder},clock:()=>now,canControl:()=>true});
   t.after(()=>adapter.close());client.emit('connect');await adapter.refresh();
   return {store,recorder,notify(at){now=at;client.emit('message','test/evse/events/rpc',Buffer.from(JSON.stringify({src:'synthetic-evse',
     method:'NotifyStatus',params:{[`object:${ids.phase_info}`]:{value:phase,last_update_ts:now/1000}}})),{});}};
@@ -172,6 +173,7 @@ test('real paused Shelly adapter holds flat native counters to three history row
   for(const period of [5000,15000]) {
     const {store,recorder,notify}=await shellyFixture(t);
     for(let elapsed=period;elapsed<=HOUR;elapsed+=period)notify(START+elapsed);
+    await committedWrites(store);
     assert.equal(store.observations().length,3,`${period} ms reports`);
     const recorded=recordedChargingEnergy(store,{id:'charger2',start:START,end:START+HOUR});
     assert.equal(recorded.gridKwh,0);assert.equal(recorded.coveredMs,HOUR);

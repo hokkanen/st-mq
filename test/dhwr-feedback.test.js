@@ -38,8 +38,10 @@ test('manual DHWR Stop persists and delivers OFF for a fresh externally started 
   assert.equal(f.store.getState('executor:home').dhwrOutstanding, false);
   assert.equal(result.dhwr.actualOn, true, 'Broker acknowledgement cannot replace device feedback');
   assert.equal(result.dhwr.confirmed, false);
+  await f.engine.dispatchPending;
   f.state.stale = true;
   await f.engine.stopDhwr();
+  await f.engine.dispatchPending;
   f.state.stale = false; f.state.value = 0;
   await f.engine.stopDhwr();
   assert.deepEqual(calls, [false], 'No new OFF without an outstanding obligation or fresh reported ON');

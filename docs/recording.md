@@ -640,6 +640,23 @@ spans. Successful downloads of older timestamps do not renew source freshness.
 SQLite transactions group energy phases, pending sums and acquisition checkpoints
 so retries cannot count an interval twice.
 
+When another connection holds the SQLite writer lock, live recording waits in a
+bounded memory queue without blocking the event loop. Observations retain their
+original receipt and source times. A callback starts only after acquiring the
+writer lock; a partially executed operation is never replayed. The dashboard
+shows **Waiting for storage**, and reports a failed save if the queue fills.
+Pending observations are not durable until committed: a process interruption,
+cancelled connection or exhausted queue can leave a recording gap. Queued or
+replayed receipts do not establish new freshness or control authority.
+
+Physical commands wait for committed intent and recheck current authority,
+equipment and expiry after storage admission. An already committed circulation
+OFF obligation keeps its deadline while later bookkeeping waits. Native heat-pump
+restoration still requires current admitted device evidence; an unavailable
+database or device can leave that restoration visibly pending. Storage waiting
+does not provide a hard real-time guarantee or permit overwriting a later native
+instruction.
+
 Forecast and price payloads are content-deduplicated separately from their
 acquisition references. Original issuance/fetch provenance survives unchanged
 re-downloads. The historical **Solar estimate** selects the latest valid estimate

@@ -40,7 +40,7 @@ async function fixture(t, { runtimeFactory, recoveryModule, snapshotSource } = {
   const instances = [], gates = [], runtimeConfigurations = [], sourceActivations = [];
   const defaultRuntime = async () => {
     const server = createServer((req, res) => res.end('fixture')); server.listen(0, '127.0.0.1'); await once(server, 'listening');
-    const instance = { server, store: { path: dbPath }, engine: { config: { input: 'mqtt' }, closeFireplace: async () => {} },
+    const instance = { server, store: { path: dbPath, runWrite: async operation => operation() }, engine: { config: { input: 'mqtt' }, closeFireplace: async () => {} },
       close: async () => { if (server.listening) await new Promise(resolve => server.close(resolve)); } };
     return instance;
   };
