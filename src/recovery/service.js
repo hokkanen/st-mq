@@ -1,6 +1,8 @@
 import { Worker } from 'node:worker_threads';
 import { randomUUID } from 'node:crypto';
-import { rm } from 'node:fs/promises';
+import { mkdir, mkdtemp, rm } from 'node:fs/promises';
+import { createDatabaseBackup } from '../storage/backup.js';
+import { dirname, join } from 'node:path';
 import { learningVersion, validLearningCheckpoint, LEARNING_ALGORITHM } from '../app/committed-learning.js';
 import { fireplaceLearningContext } from '../app/fireplace-inputs.js';
 import { sensorRevision } from '../app/sensor-inputs.js';
@@ -110,18 +112,46 @@ export async function recoverHistory({ store, donorPath, input = 'mqtt', preview
   } finally { running.delete(store); }
 }
 
-function workerJob(workerData, { onProgress, onReady, signal }) {
-  return new Promise((resolve, reject) => {
-    const worker = new Worker(new URL(workerData.mode.startsWith('revision') ? './revision-worker.js' : './worker.js', import.meta.url), { workerData });
-    let settled = false, temporary = null, messages = Promise.resolve();
+async function workerJob(workerData, { onProgress, onReady, signal }) {
+  if (signal?.aborted) throw unavailable('Recovery was cancelled; the other instance remains protected');
+  let temporary = null;
+  // The parent owns scratch from allocation through worker termination, including
+  // cancellation before the worker can send its first message. Source checks
+  // never create a candidate; only revision reviews need disposable writes.
+  if (workerData.mode === 'revision-preview') {
+    const base = join(dirname(workerData.masterPath), 'recovery');
+    await mkdir(base, { recursive: true, mode: 0o700 });
+    temporary = await mkdtemp(join(base, 'revision-preview-'));
+    workerData = { ...workerData, temporaryDirectory: temporary };
+  }
+  try {
+  if (temporary) {
+    await onProgress?.({ phase: 'validating', processed: 0 });
+    signal?.throwIfAborted();
+    let progressMessages = Promise.resolve();
+    // The coordinator owns both workers in sequence. Cancelling a revision
+    // review first joins the backup worker, then removes its private files;
+    // no nested worker can publish into a directory whose owner has exited.
+    try {
+      await createDatabaseBackup({ sourcePath: workerData.masterPath, destination: join(temporary, 'candidate.sqlite'), signal,
+        onProgress(value) {
+          progressMessages = progressMessages.then(() => onProgress?.({ ...value, phase: 'snapshotting' }));
+          void progressMessages.catch(() => {});
+        } });
+    } finally { await progressMessages; }
+    signal?.throwIfAborted();
+  }
+  return await new Promise((resolve, reject) => {
+    const worker = new Worker(new URL(workerData.mode.startsWith('revision') ? './revision-worker.js' : './worker.js', import.meta.url), { workerData,
+      ...(process.execArgv.some(value => value.startsWith('--input-type')) ? { execArgv: [] } : {}) });
+    let settled = false, messages = Promise.resolve();
     const finish = (error, result) => {
       if (settled) return;
       settled = true; signal?.removeEventListener('abort', abort);
       // Termination releases SQLite writer locks and disposes private scan
       // memory even if a peer loses authority during a large recovery.
       worker.postMessage({ type: 'close' });
-      void worker.terminate().then(async () => { if (temporary) await rm(temporary, { recursive: true, force: true }); })
-        .then(() => error ? reject(error) : resolve(result), () => error ? reject(error) : resolve(result));
+      void worker.terminate().then(() => error ? reject(error) : resolve(result), () => error ? reject(error) : resolve(result));
     };
     const abort = () => finish(unavailable('Recovery was cancelled; the other instance remains protected'));
     if (signal?.aborted) { abort(); return; }
@@ -144,8 +174,9 @@ function workerJob(workerData, { onProgress, onReady, signal }) {
       messages = messages.then(async () => {
       if (settled) return;
       try {
-        if (message.type === 'temporary') temporary = message.path;
-        else if (message.type === 'progress') await onProgress?.({ phase: message.phase, processed: message.processed });
+        if (message.type === 'progress') {
+          const { type, ...progress } = message; await onProgress?.(progress);
+        }
         else if (message.type === 'yield') {
           // The worker has committed and will not acquire another write lock
           // until this controller has serviced queued callbacks and timers.
@@ -162,6 +193,10 @@ function workerJob(workerData, { onProgress, onReady, signal }) {
       });
     });
   });
+  } catch (error) {
+    if (signal?.aborted) throw unavailable('Recovery was cancelled; the other instance remains protected');
+    throw error;
+  } finally { if (temporary) await rm(temporary, { recursive: true, force: true }); }
 }
 
 export function previewRecoveryRevision({ store, input = 'mqtt', recoveryId, active, onProgress = () => {}, signal }) {

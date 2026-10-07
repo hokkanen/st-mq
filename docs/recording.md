@@ -649,6 +649,14 @@ Pending observations are not durable until committed: a process interruption,
 cancelled connection or exhausted queue can leave a recording gap. Queued or
 replayed receipts do not establish new freshness or control authority.
 
+A rejected MQTT observation save fences commands until a later current delivery
+from the affected configured input or device is successfully committed. Retained,
+duplicate, ignored or unrelated messages cannot clear that failure. Multiple
+failed inputs recover independently; older queued receipts and completions from a
+previous connection cannot clear newer failures. Read-only native status requests
+remain available to obtain current evidence. Clearing the storage failure neither
+renews old sensor clocks nor bypasses source validity, freshness or control authority.
+
 Physical commands wait for committed intent and recheck current authority,
 equipment and expiry after storage admission. An already committed circulation
 OFF obligation keeps its deadline while later bookkeeping waits. Native heat-pump
@@ -1750,6 +1758,16 @@ that request before another history change. Model reconstruction runs in the
 background while control remains available; a failed or stale rebuild does not
 publish a partial replacement model.
 
+Progress reports identify the current phase, measured work when available and
+elapsed time. A fraction applies only to that phase; unknown totals remain
+indeterminate. Progress is transient and does not write a database receipt for
+every update; job transitions and completed outcomes remain durable. The summary
+rediscovers an accepted job after a reload, and previous-recovery totals are read
+in a bounded background worker. Large accepted recovery jobs have no fixed
+one-hour cutoff; shutdown and authority loss still cancel them. Revert/restore
+reviews may temporarily copy the master database into a private workspace; this
+copy is removed after completion or cancellation and is not a retained backup.
+
 ## Single-file database export
 
 Open **Recording details → Export database** and choose:
@@ -1776,8 +1794,11 @@ pages, into one private file. Recording continues; the file represents a consist
 snapshot and does not promise to include later writes. Only the copy switches to
 DELETE journal mode, so it can be opened without WAL/SHM companion files. Downloads,
 server copies, CLI backups and reset-archive recovery backups use this same snapshot
-generator and current `.sqlite` format. Current-schema and integrity validation run
-in a worker before publication. There is no checkpoint or overwrite of the running
+generator and current `.sqlite` format. File-backed copying and current-schema,
+saved-state and integrity validation run in a worker before publication. A pinned
+reader fixes the copied boundary while later WAL writes continue. Diagnostic
+exporter metadata describes the software that made the copy; it neither replaces
+format validation nor proves household identity. There is no checkpoint or overwrite of the running
 database. Server copies use mode `0600`;
 new export directories use mode `0700`. Backup, offline restore and final server
 export share the sequence: flush the completed file, publish without replacing an

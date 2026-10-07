@@ -2,18 +2,21 @@
  * callbacks run only after durability, so failed readback cannot acknowledge a
  * physical command and a broker retransmission can retry the same delivery. */
 export function createMqttReception({ store, engine, admission, devices, meters, requests = null }) {
-  let effects = null;
+  let effects = null, accepted = null;
   const copiedFields = ['readings', 'coverOperation', 'dehumidifierState', 'dehumidifierReport', 'dehumidifierOperation', 'temperatureGuard'];
   const scalarFields = ['connected', 'available', 'lastAt', 'lastPollAt', 'state', 'identity', 'identityPending',
     'observationOrder', 'writeOrder', 'online', 'bridgeOnline', 'liveSinceConnect', 'heartbeatAt', 'invalid',
     'subscriptionStatus', 'subscriptionRefresh', 'lastReceivedAt', 'lastLiveAt', 'lastRetainedAt', 'recordingLocation', 'dehumidifierHistoryAfter'];
   return {
+    // Admission evidence belongs to the currently executing delivery only. The
+    // caller publishes success after its enclosing transaction commits.
+    accept() { accepted?.(); },
     afterCommit(effect) {
       if (effects) effects.push(effect);
       else if (store.afterCommit) store.afterCommit(effect);
       else effect();
     },
-    run(receive) {
+    run(receive, { onAccepted = null } = {}) {
       if (effects) return receive();
       const delivery = admission.checkpoint(), held = engine.ingestionCheckpoint?.();
       const snapshots = devices.map(device => ({ device,
@@ -24,6 +27,8 @@ export function createMqttReception({ store, engine, admission, devices, meters,
       const savedMeters = new Map([...meters].map(([id, meter]) => [id, { meter, state: meter.checkpoint() }]));
       const savedRequests = requests && new Map(requests);
       const pending = effects = [];
+      const previousAccepted = accepted;
+      accepted = onAccepted;
       const rewind = () => {
         admission.restore(delivery);
         if (held) engine.restoreIngestionCheckpoint(held);
@@ -44,7 +49,7 @@ export function createMqttReception({ store, engine, admission, devices, meters,
       catch (error) {
         rewind();
         throw error;
-      } finally { effects = null; }
+      } finally { effects = null; accepted = previousAccepted; }
       for (const effect of pending) if (store.afterCommit) store.afterCommit(effect); else effect();
       return result;
     },

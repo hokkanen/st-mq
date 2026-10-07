@@ -1,5 +1,5 @@
 import { DatabaseSync } from 'node:sqlite';
-import { mkdirSync } from 'node:fs';
+import { mkdirSync, statSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 import { createHash } from 'node:crypto';
 import { isMainThread } from 'node:worker_threads';
@@ -7,6 +7,7 @@ import { isMainThread } from 'node:worker_threads';
 import { CURRENT_SCHEMA, SCHEMA_VERSION } from './schema.js';
 import { previousEnergyAudit, checkEnergyAudit } from './energy-audit.js';
 import { assertCurrentChargingSessionCheck } from '../app/charging-session-checks.js';
+import { validateSavedChargingState } from '../charging/saved-state.js';
 import { createDatabaseBackup } from './backup.js';
 import { cycleAssessmentExcluded } from './cycle-assessment.js';
 import { LEARNING_ALGORITHM } from '../domain/learning-contract.js';
@@ -35,8 +36,10 @@ export function validateCurrentDatabaseFormat(db) {
   if (JSON.stringify(schemaObjects(db)) !== expectedStructure) throw Object.assign(new Error('Malformed current database schema; use an intact same-version backup or a new empty database. The existing database was not changed.'),
     { code: 'database_schema_invalid', actualSchema: version, requiredSchema: SCHEMA_VERSION });
   if (db.prepare('SELECT 1 FROM learning_journal_entries WHERE algorithm_version<>? LIMIT 1').get(LEARNING_ALGORITHM))
-    throw new Error('Unsupported Home learning journal algorithm; use a new empty database or an intact current-version backup. The existing database was not changed.');
-  if (db.prepare('PRAGMA foreign_key_check').get()) throw new Error('Database contains dangling references; restore an intact same-version backup.');
+    throw Object.assign(new Error('Unsupported Home learning journal algorithm; use a new empty database or an intact current-version backup. The existing database was not changed.'),
+      { code: 'database_algorithm_mismatch' });
+  if (db.prepare('PRAGMA foreign_key_check').get()) throw Object.assign(new Error('Database contains dangling references; restore an intact same-version backup.'),
+    { code: 'database_integrity_failed' });
 }
 
 export function validateCurrentDatabase(db) {
@@ -61,17 +64,35 @@ export function validateCurrentDatabase(db) {
   }
   // Removed charging-check formats are rejected before any writable setup;
   // opening a database never strips or translates its historical evidence.
-  for (const row of db.prepare("SELECT payload FROM events WHERE type='charging-session-check'").iterate())
-    assertCurrentChargingSessionCheck(JSON.parse(row.payload));
-  for (const row of db.prepare("SELECT value FROM state WHERE key GLOB 'charging:shelly:*'").iterate()) {
-    const state = JSON.parse(row.value);
-    if (!state || state.version !== 2)
-      throw new Error('Unsupported Shelly acquisition state; start a fresh development database or restore a compatible backup. The existing database was not changed.');
-    if (Object.hasOwn(state, 'checkSession') || Object.hasOwn(state, 'sessionCheck')
-      || state.counter && Object.hasOwn(state.counter, 'powerW')
-      || Object.keys(state.fields ?? {}).some(role => !['current_limit', 'start_charging', 'work_state', 'phase_info'].includes(role)))
-      throw new Error('Unsupported Shelly session-check state; start a fresh development database or restore a compatible backup. The existing database was not changed.');
+  for (const row of db.prepare("SELECT payload FROM events WHERE type='charging-session-check'").iterate()) {
+    try { assertCurrentChargingSessionCheck(JSON.parse(row.payload)); }
+    catch { throw Object.assign(new Error('Unsupported or unreadable charging-check history. Preserve this database and use an intact current-version backup.'),
+      { code: 'database_state_incompatible' }); }
   }
+  validateSavedChargingState(db);
+}
+
+const emptyDatabase = db => db.prepare('PRAGMA user_version').get().user_version === 0
+  && db.prepare("SELECT COUNT(*) AS n FROM sqlite_schema WHERE name NOT GLOB 'sqlite_*'").get().n === 0;
+const databaseFileIdentity = path => {
+  const stat = statSync(path, { bigint: true });
+  return `${stat.dev}:${stat.ino}`;
+};
+
+function preflightExistingDatabase(path) {
+  try { statSync(path); } catch (error) { if (error.code === 'ENOENT') return; throw error; }
+  const source = new DatabaseSync(path, { readOnly: true });
+  const identity = databaseFileIdentity(path);
+  try {
+    source.exec('PRAGMA busy_timeout=5000; BEGIN');
+    if (!emptyDatabase(source)) validateCurrentDatabase(source);
+  } finally { source.close(); }
+  // Workers also open the active master while recording advances. Content and
+  // WAL timestamps may legitimately change; the locked validation below checks
+  // the latest committed state. Only replacing the file breaks this identity.
+  if (identity !== databaseFileIdentity(path))
+    throw Object.assign(new Error('The database changed during startup validation. Stop other writers and retry.'),
+      { code: 'database_changed_during_startup' });
 }
 
 // Fetch timestamps describe acquisition, not forecast content. Keep them in a
@@ -133,19 +154,28 @@ export class Store {
       onFailure: error => this.writeHealth.failure(error) });
     this.writeHealth = createWriteHealth(Date.now, () => this.writeQueue.status());
     if (!readOnly && path !== ':memory:') mkdirSync(dirname(this.path), { recursive: true });
+    // Closing the last writable connection can checkpoint an existing WAL even
+    // when validation only read data. Reject unsupported files through a genuine
+    // read-only connection first, preserving both main bytes and WAL evidence.
+    if (!readOnly && path !== ':memory:') preflightExistingDatabase(this.path);
     this.db = new DatabaseSync(this.path, { readOnly });
     try {
       this.changeCount = this.db.prepare('SELECT total_changes() AS n');
       // Startup has no active control callbacks. Runtime writer admission below
       // retries asynchronously; background connections may block their own worker.
       this.db.exec('PRAGMA foreign_keys = ON; PRAGMA busy_timeout = 5000;');
-      const version = this.db.prepare('PRAGMA user_version').get().user_version;
-      const empty = version === 0 && this.db.prepare("SELECT COUNT(*) AS n FROM sqlite_schema WHERE name NOT GLOB 'sqlite_*'").get().n === 0;
+      const empty = emptyDatabase(this.db);
       if (!readOnly && empty) this.transaction(() => {
         this.db.exec(CURRENT_SCHEMA);
         this.db.exec(`PRAGMA user_version = ${SCHEMA_VERSION}`);
       });
-      else validateCurrentDatabase(this.db);
+      // Check again against this connection's locked boundary: a different
+      // process must not replace validated state between preflight and opening.
+      else if (!readOnly) {
+        this.db.exec('BEGIN IMMEDIATE');
+        try { validateCurrentDatabase(this.db); }
+        finally { this.db.exec('ROLLBACK'); }
+      } else validateCurrentDatabase(this.db);
       if (readOnly) { this.db.exec(`PRAGMA query_only = ON; PRAGMA busy_timeout = ${isMainThread ? 0 : 5000};`); return; }
       this.db.exec('PRAGMA journal_mode = WAL; PRAGMA synchronous = FULL;');
       this.insertObservation = this.db.prepare(`INSERT INTO observations
@@ -586,9 +616,11 @@ export class Store {
     };
   }
 
-  async backup(destination) {
+  async backup(destination, { signal, onProgress, exportedAt } = {}) {
     if (resolve(destination) === this.path) throw new Error('Backup destination must be a new file without SQLite companions');
-    return createDatabaseBackup({ database: this.db, destination });
+    if (!this.db.isOpen) throw new Error('Recording storage is closed.');
+    return createDatabaseBackup({ ...(this.path === ':memory:' ? { database: this.db } : { sourcePath: this.path }),
+      destination, signal, onProgress, exportedAt });
   }
 
   /** Restore to a new database while the application is stopped; never overwrite a live WAL. */

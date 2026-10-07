@@ -2,6 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { createHistoryRecoveryActions, createHistoryRecoveryPanel, recoveryConfirmation, recoveryJobText } from '../chart/history-recovery.js';
 import { renderRecoveryReport } from '../chart/history-recovery-report.js';
+import { backgroundProgress } from '../chart/background-progress.js';
 
 const id = '11111111-1111-4111-8111-111111111111', previewId = 'a'.repeat(64);
 const source = { id: 'saved-backup', kind: 'backup', label: 'Saved backup', available: true };
@@ -107,6 +108,7 @@ function fixture() {
     remove() { if (this.parentElement) this.parentElement.children = this.parentElement.children.filter(child => child !== this); }
     addEventListener(type, callback) { this.listeners.set(type, callback); }
     setAttribute(name, value) { this.attributes[name] = value; }
+    removeAttribute(name) { delete this.attributes[name]; if (name === 'value') this.value = ''; }
     focus() { document.activeElement = this; }
     contains(node) { return this === node || this.children.some(child => child.contains(node)); }
     matches(selector) { return selector === 'summary' ? this.tagName === 'SUMMARY'
@@ -266,8 +268,10 @@ test('normal peer comparison stays informational and both entry points use the s
   panel.update({ ...admin, topology: 'pair', pair: peer });
   await panel.open({ sourceId: 'peer', trigger: $('pairing-history-recovery') });
   assert.equal($('history-recovery-source').value, 'peer');
-  assert.match(text($('history-recovery-preview')), /History source checked/);
-  assert.match($('history-recovery-status').textContent, /Source check complete/);
+  assert.match(text($('history-recovery-preview')), /No recovery needed/);
+  assert.match($('history-recovery-status').textContent, /Valid slave snapshot/);
+  assert.equal($('history-recovery-state').textContent, 'No recovery needed');
+  assert.equal($('history-recovery-state-icon').textContent, '✓');
   assert.doesNotMatch($('history-recovery-status').textContent, /before recovering/);
   assert.match($('history-recovery-source-help').textContent, /Normal mirroring/);
   assert.equal($('history-recovery-apply').hidden, true);
@@ -285,9 +289,9 @@ test('paired check outcomes use current pair state when the coordinator retains 
       job: { kind: 'recover', status: 'complete', source } }) });
     panel.update({ ...admin, topology: 'pair', pair: peer });
     await panel.open({ sourceId: 'peer' });
-    assert.match($('history-recovery-status').textContent, state === 'ready' ? /Source check complete/ : /could not finish/);
+    assert.match($('history-recovery-status').textContent, state === 'ready' ? /Valid slave snapshot/ : /could not finish/);
     assert.doesNotMatch($('history-recovery-status').textContent, /History recovery complete/);
-    assert.equal($('history-recovery-notice').dataset.tone, state === 'error' ? 'attention' : 'neutral');
+    assert.equal($('history-recovery-notice').dataset.tone, state === 'error' ? 'attention' : 'success');
   }
 });
 
@@ -302,6 +306,70 @@ test('an unavailable paired source explains why checking is disabled', async () 
   assert.equal($('history-recovery-check').disabled, true);
   assert.match($('history-recovery-status').textContent, /other computer is unavailable.*Reconnect/);
   assert.equal($('history-recovery-notice').dataset.tone, 'attention');
+});
+
+test('failed checks hide an earlier successful preview and explain database incompatibility', async () => {
+  for (const sourceId of ['peer', source.id]) {
+    const { document, $ } = fixture();
+    const peer = { role: 'master', canControl: true, peer: { role: 'protected', reachable: true },
+      actions: { 'check-recovery': true, recover: false, rejoin: false },
+      recovery: { state: 'error', donorRole: 'protected', preview, error: 'database_algorithm_mismatch' } };
+    const panel = createHistoryRecoveryPanel({ document, request: async () => view({ peer,
+      sources: [source, { id: 'peer', kind: 'peer', label: 'Paired computer', available: true }],
+      job: { kind: 'check', status: 'error', errorCode: 'database_algorithm_mismatch', source: { id: sourceId } } }) });
+    panel.update({ ...admin, topology: 'pair', pair: peer });
+    await panel.open({ sourceId });
+    assert.equal($('history-recovery-preview').hidden, true, 'A retained old preview cannot look like a successful current check');
+    assert.equal($('history-recovery-apply').hidden, true);
+    assert.equal($('history-recovery-state').textContent, 'Database incompatible');
+    assert.equal($('history-recovery-notice').dataset.tone, 'attention');
+    assert.doesNotMatch($('history-recovery-status').textContent, /Local history could not be opened|No recovery needed/);
+  }
+});
+
+test('a checked normal slave that now reports protected cannot show the no-recovery success cue', async () => {
+  const { document, $ } = fixture();
+  const peer = { role: 'master', canControl: true, peer: { role: 'protected', reachable: true },
+    actions: { 'check-recovery': true, recover: false, rejoin: false },
+    recovery: { state: 'ready', donorRole: 'slave', preview } };
+  const panel = createHistoryRecoveryPanel({ document, request: async () => view({ peer,
+    sources: [{ id: 'peer', kind: 'peer', label: 'Paired computer', available: true }] }) });
+  panel.update({ ...admin, topology: 'pair', pair: peer }); await panel.open({ sourceId: 'peer' });
+  const output = text($('history-recovery-preview'));
+  assert.match(output, /Review the current pairing problem/);
+  assert.doesNotMatch(output, /No recovery needed/);
+  assert.equal($('history-recovery-preview').children[0].dataset.tone, 'attention');
+  assert.equal($('history-recovery-apply').hidden, true);
+});
+
+test('a current slave compatibility failure overrides an earlier normal source-check success', async () => {
+  const { document, $ } = fixture();
+  const peer = { role: 'master', canControl: true,
+    peer: { role: 'slave', reachable: true, sync: { state: 'error', error: 'database_algorithm_mismatch' } },
+    actions: { 'check-recovery': true, recover: false, rejoin: false }, recovery: { state: 'ready', donorRole: 'slave', preview } };
+  const panel = createHistoryRecoveryPanel({ document, request: async () => view({ peer,
+    sources: [{ id: 'peer', kind: 'peer', label: 'Paired computer', available: true }] }) });
+  panel.update({ ...admin, topology: 'pair', pair: peer }); await panel.open({ sourceId: 'peer' });
+  assert.equal($('history-recovery-notice').dataset.tone, 'attention');
+  assert.equal($('history-recovery-state').textContent, 'Database incompatible');
+  assert.equal($('history-recovery-state-icon').textContent, '!');
+  assert.match($('history-recovery-status').textContent, /different learning algorithm/);
+  assert.equal($('history-recovery-preview').children[0].dataset.tone, 'attention');
+  assert.match(text($('history-recovery-preview')), /earlier slave snapshot needed no recovery/);
+});
+
+test('backup provenance identifies the exporter without inventing original creation metadata', () => {
+  const { document, $ } = fixture();
+  const sourceSoftware = { format: 1, exportedAt: 1000, applicationVersion: '1.0.0', schemaVersion: 24, learningAlgorithm: 'fixture-v1' };
+  renderRecoveryReport(document, $('report'), { ...preview, sourceSoftware }, { formatTime: value => `time ${value}` });
+  assert.match(text($('report')), /Backup exported by application version 1.0.0 · time 1000/);
+  assert.match(text($('report')), /not the original recording version/);
+  for (const software of [undefined, {}, { ...sourceSoftware, applicationVersion: 'private invalid version' },
+    { ...sourceSoftware, exportedAt: 9e20 }, { ...sourceSoftware, format: 2 }]) {
+    renderRecoveryReport(document, $('report'), { ...preview, sourceSoftware: software });
+    assert.doesNotMatch(text($('report')), /Backup exported|private invalid/);
+    assert.match(text($('report')), /History source checked/);
+  }
 });
 
 test('skipping recovery never labels the missing time range as recovered', () => {
@@ -400,7 +468,7 @@ test('explicit paired entry opens its comparison instead of an unrelated saved r
   assert.equal($('history-recovery-history').hidden, true);
   assert.equal($('history-recovery-source').value, 'peer');
   assert.equal($('history-recovery-revision-apply').hidden, true);
-  assert.match(text($('history-recovery-preview')), /History source checked/);
+  assert.match(text($('history-recovery-preview')), /No recovery needed/);
   assert.doesNotMatch(text($('history-recovery-preview')), /Revert recovery|Affected records/);
   assert.doesNotMatch($('history-recovery-status').textContent, /Reverting|Restoring/);
   panel.close();
@@ -552,4 +620,128 @@ test('current paired work never presents an older completed recovery job as its 
     assert($('history-recovery-status').textContent.length > 0);
     assert.doesNotMatch($('history-recovery-status').textContent, /Check complete|Recovery reverted|Recovery restored|History recovery complete/);
   }
+});
+
+test('phase progress uses only genuine totals and reports elapsed time without inventing an ETA', () => {
+  assert.deepEqual(backgroundProgress({ processed: 12_345, total: 50_000, unit: 'entries', updatedAt: 91_000 },
+    { startedAt: 1_000, now: 100_000 }), {
+    processed: 12_345, total: 50_000, determinate: true, work: '12,345 of 50,000 entries',
+    timing: 'Elapsed 1m 39s · Last progress 9s ago',
+  });
+  for (const total of [undefined, 0, -1, 9, Infinity, '10']) {
+    const progress = backgroundProgress({ processed: 10, total });
+    assert.equal(progress.determinate, false);
+    assert.equal(progress.work, '10 records processed');
+  }
+  assert.equal(backgroundProgress({ processed: null, total: 100 }).work, '');
+  assert.equal(backgroundProgress({ phase: 'preparing', processed: 0 }).work, '', 'preparation has no measured record count');
+  assert.equal(backgroundProgress({ processed: 0, total: 100 }).work, '0 of 100 records');
+  assert.equal(backgroundProgress({ phase: 'checking', processed: 12 }).work, '12 source groups processed');
+});
+
+test('progress changes phase without retaining a misleading fraction and close remains usable', async () => {
+  const { document, $ } = fixture();
+  let state = view({ busy: true, job: { kind: 'recover', status: 'running', source, startedAt: 1000,
+    progress: { phase: 'importing', processed: 12345, total: 50000, unit: 'records', updatedAt: 90000 } } });
+  const panel = createHistoryRecoveryPanel({ document, request: async () => state, now: () => 100000 });
+  panel.update(admin); await panel.open();
+  assert.equal($('history-recovery-progress').value, 12345);
+  assert.equal($('history-recovery-progress').max, 50000);
+  assert.equal($('history-recovery-progress-detail').textContent, '12,345 of 50,000 records');
+  assert.equal($('history-recovery-timing').textContent, 'Elapsed 1m 39s · Last progress 10s ago');
+  assert.equal($('history-recovery-close').disabled, false);
+  state = { ...state, job: { ...state.job, progress: { phase: 'projecting', processed: 50, updatedAt: 99900 } } };
+  await panel.controller.refresh();
+  assert.equal($('history-recovery-progress').value, '');
+  assert.equal($('history-recovery-progress-detail').textContent, '50 records processed');
+  assert.match($('history-recovery-status').textContent, /Preparing corrected history/);
+  panel.close();
+  assert.match($('history-recovery-summary').textContent, /Preparing corrected history.*50 records processed/);
+});
+
+test('background polling discovers persisted work after reload and stops when work completes', async () => {
+  const { document, $ } = fixture(); let requests = 0;
+  let state = view({ busy: true, job: { kind: 'recover', status: 'running', source, progress: { phase: 'rebuilding' } } });
+  const panel = createHistoryRecoveryPanel({ document, request: async () => { requests++; return state; } });
+  panel.update(admin); panel.tick(); await new Promise(resolve => setImmediate(resolve));
+  assert.equal($('history-recovery-dialog').open, false);
+  assert.match($('history-recovery-summary').textContent, /Rebuilding/);
+  assert.equal($('history-recovery-open').textContent, 'View recovery progress');
+  state = { ...state, busy: false, job: { ...state.job, status: 'complete' } };
+  panel.tick(); await new Promise(resolve => setImmediate(resolve));
+  assert.equal($('history-recovery-summary').textContent, 'History recovery complete.');
+  const completedAt = requests; panel.tick(); await new Promise(resolve => setImmediate(resolve));
+  assert.equal(requests, completedAt);
+});
+
+test('polling retains review elements and distinguishes a pending history list from empty history', async () => {
+  const { document, $ } = fixture();
+  const panel = createHistoryRecoveryPanel({ document, request: async () => structuredClone(view({ operationsLoading: true })) });
+  panel.update(admin); await panel.open();
+  const heading = $('history-recovery-preview').children[0];
+  assert.match($('history-recovery-empty').textContent, /Loading previous recoveries/);
+  await panel.controller.refresh();
+  assert.equal($('history-recovery-preview').children[0], heading, 'Unchanged review text is not removed on each poll');
+});
+
+test('a delayed read cannot replace a newer accepted request or its progress', async () => {
+  let read;
+  const actions = createHistoryRecoveryActions({ request: async (_path, body) => body
+    ? view({ busy: true, job: { requestId: body.requestId, kind: 'check', status: 'running', progress: { phase: 'validating' } } })
+    : new Promise(resolve => { read = resolve; }) });
+  actions.update(view());
+  const oldRead = actions.refresh();
+  assert.equal(await actions.run('check', { sourceId: source.id, installationConfirmed: true }), true);
+  read(view()); await oldRead;
+  assert.equal(actions.snapshot().view.job.status, 'running');
+  assert.equal(actions.snapshot().view.job.progress.phase, 'validating');
+});
+
+test('completed receipts expire after a day while interrupted outcomes remain visible', () => {
+  assert.equal(recoveryJobText({ job: { kind: 'recover', status: 'complete', finishedAt: 1000 } }, 86401000), '');
+  assert.match(recoveryJobText({ job: { kind: 'recover', status: 'interrupted', finishedAt: 1000 } }, 86401000), /interrupted/);
+});
+
+test('a matching polled receipt resolves a lost POST response without reviving uncertainty', async () => {
+  let rejectResponse;
+  const actions = createHistoryRecoveryActions({ makeRequestId: () => id,
+    request: async () => new Promise((_resolve, reject) => { rejectResponse = reject; }) });
+  actions.update(view());
+  const sending = actions.run('check', { sourceId: source.id, installationConfirmed: true });
+  actions.update(view({ busy: true, job: { id, requestId: id, kind: 'check', status: 'running', source } }));
+  rejectResponse(new Error('Synthetic response lost'));
+  assert.equal(await sending, true);
+  assert.equal(actions.snapshot().pending, null);
+  assert.equal(actions.snapshot().message, '');
+  assert.equal(actions.snapshot().error, false);
+});
+
+test('a delayed POST acceptance cannot replace a terminal outcome already read from its durable receipt', async () => {
+  for (const status of ['complete', 'error']) {
+    let acceptResponse, mutations = 0;
+    const terminal = view({ job: { id, requestId: id, kind: 'check', status, source } });
+    const actions = createHistoryRecoveryActions({ makeRequestId: () => id, afterMutation: () => { mutations++; },
+      request: async (_path, body) => body ? new Promise(resolve => { acceptResponse = resolve; }) : terminal });
+    actions.update(view());
+    const sending = actions.run('check', { sourceId: source.id, installationConfirmed: true });
+    await actions.refresh();
+    assert.equal(actions.snapshot().pending, null);
+    acceptResponse(view({ busy: true, job: { id, requestId: id, kind: 'check', status: 'running', source } }));
+    assert.equal(await sending, true);
+    assert.deepEqual(actions.snapshot().view, terminal);
+    assert.equal(actions.snapshot().message, '');
+    assert.equal(mutations, 1);
+  }
+});
+
+test('list failures remain distinct from empty history and do not conceal running work', async () => {
+  const { document, $ } = fixture();
+  const panel = createHistoryRecoveryPanel({ document, request: async () => view({ operationsError: 'private raw error',
+    sourcesError: 'another private error', busy: true, job: { kind: 'recover', status: 'running', source, progress: { phase: 'catching-up' } } }) });
+  panel.update(admin); await panel.open();
+  assert.match($('history-recovery-status').textContent, /Catching up/);
+  assert.equal($('history-recovery-empty').hidden, true);
+  assert.equal($('history-recovery-list-status').textContent, 'Previous recoveries are unavailable. Refresh to retry.');
+  assert.equal($('history-recovery-source-help').textContent, 'Backup sources are unavailable. Refresh to retry.');
+  assert.doesNotMatch(text($('history-recovery-list-status')), /private/);
 });

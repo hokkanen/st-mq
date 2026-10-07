@@ -36,7 +36,7 @@ test('source check creates no trial database and the single merge preserves mast
   assert.equal(preview.status, 'checked'); assert.equal(preview.model.status, 'not-assessed');
   assert.equal(preview.counts, undefined, 'source counts are not missing or conflict counts');
   assert.equal(preview.tables.find(row => row.name === 'observations').count, 4);
-  assert(progress.length > 0 && progress.every(value => value.phase === 'checking'));
+  assert(progress.length > 0 && progress.every(value => ['validating', 'checking'].includes(value.phase)));
   assert.deepEqual(readdirSync(f.directory), files, 'check never creates a trial database');
   const result = await recoverHistory({ signal: f.signal, store: f.master, donorPath, preview });
   assert.equal(result.report.status, 'complete'); assert.equal(result.report.imported, 1);
@@ -153,7 +153,8 @@ test('a modified donor invalidates its preview before source import', async t =>
   observation(donor, start);
   const donorPath = await f.snapshot(donor);
   const preview = await recoveryPreview({ signal: f.signal, masterPath: f.master.path, donorPath });
-  const changed = new Store(donorPath); observation(changed, start + HOUR); changed.close();
+  const changed = new Store(donorPath); observation(changed, start + HOUR);
+  changed.db.exec('PRAGMA journal_mode=DELETE'); changed.close();
   await assert.rejects(recoverHistory({ signal: f.signal, store: f.master, donorPath, preview }), /preview is stale/);
   assert.equal(f.master.observations().length, 0);
 });

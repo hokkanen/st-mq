@@ -2,6 +2,7 @@ import { createServer } from 'node:http';
 import { createCipheriv, createDecipheriv, createHash, randomBytes, randomUUID } from 'node:crypto';
 import { pairError } from './state.js';
 import { RECOVERY_ERROR_CODES } from '../recovery/errors.js';
+import { databaseErrorDetails } from '../storage/database-errors.js';
 
 const MAX_BODY = 2 * 1024 * 1024;
 const WINDOW = 120000;
@@ -56,9 +57,13 @@ const PUBLIC_ERRORS = new Set(['peer_unavailable', 'peer_authentication_failed',
   'vip_interface_missing', 'vip_command_failed', 'vip_announce_failed', 'vip_release_failed',
   'mqtt_local_required', 'mqtt_resolution_failed', 'mqtt_frontend_unavailable', 'mqtt_upstream_unavailable',
   'runtime_failed', 'database_schema_mismatch', 'database_schema_invalid',
+  'database_algorithm_mismatch', 'database_state_incompatible', 'database_integrity_failed',
   'ocpp_handover_not_ready', 'mqtt_handover_not_ready', 'mqtt_source_context_invalid', 'mqtt_source_contract_mismatch', 'stopped', 'timed_out',
   ...RECOVERY_ERROR_CODES]);
-export function publicPairError(error) { return PUBLIC_ERRORS.has(error?.code) ? error.code : 'peer_protocol_failed'; }
+export function publicPairError(error) {
+  const code = databaseErrorDetails(error)?.code ?? error?.code;
+  return PUBLIC_ERRORS.has(code) ? code : 'peer_protocol_failed';
+}
 
 /** The LAN transport never sends the pairing secret or household data in plaintext. */
 export class PairPeer {

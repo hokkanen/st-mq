@@ -304,7 +304,7 @@ try {
     peer: { reachable: true, role: 'slave', lastSeenAt: now, syncReceivedAt: now,
       sync: { state: 'ready', sourceAt: now - 60_000, verifiedAt: now - 30_000, bytes: 2e6 } } });
   await evaluate(`${$('pairing-history-recovery')}.click(); true`);
-  await until(`${$('history-recovery-dialog')}.open && ${$('history-recovery-preview')}.textContent.includes('History source checked')`);
+  await until(`${$('history-recovery-dialog')}.open && ${$('history-recovery-preview')}.textContent.includes('No recovery needed')`);
   assert.equal(await evaluate(`${$('history-recovery-source')}.value`), 'peer');
   assert.equal(await evaluate(`${$('history-recovery-apply')}.hidden`), true, 'Normal comparisons cannot become recovery');
   assert.equal(await evaluate(`${$('pairing-rejoin')}.disabled`), true);

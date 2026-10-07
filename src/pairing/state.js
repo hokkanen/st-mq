@@ -16,6 +16,21 @@ const lineagePoint = value => record(value) && NODE_PATTERN.test(value.epoch) &&
 const acceptedSnapshot = value => lineagePoint(value) && NODE_PATTERN.test(value.generation) &&
   NODE_PATTERN.test(value.nodeId) && /^[a-f0-9]{64}$/.test(value.digest);
 const stamp = value => lineagePoint(value) && NODE_PATTERN.test(value.token);
+const releaseIdentity = value => record(value)
+  && ['requestId', 'donorEpoch', 'generation', 'targetEpoch', 'targetNodeId'].every(key => NODE_PATTERN.test(value[key]))
+  && ['donorDigest', 'digest'].every(key => /^[a-f0-9]{64}$/.test(value[key]))
+  && ['donorBytes', 'bytes'].every(key => Number.isSafeInteger(value[key]) && value[key] >= 512)
+  && Object.keys(value).every(key => ['requestId', 'donorEpoch', 'donorDigest', 'donorBytes',
+    'generation', 'digest', 'bytes', 'targetEpoch', 'targetNodeId'].includes(key));
+const releaseRecord = (value, owner) => record(value) && owner.role === 'protected'
+  && releaseIdentity(value.identity) && value.epoch === value.identity.targetEpoch && value.digest === value.identity.digest
+  && value.identity.donorEpoch === owner.epoch
+  && Object.keys(value).every(key => ['epoch', 'digest', 'identity', 'preservedSnapshot'].includes(key))
+  && (value.preservedSnapshot === undefined || record(value.preservedSnapshot)
+    && validClaim(value.preservedSnapshot.claim) && value.preservedSnapshot.claim.role === 'protected'
+    && value.preservedSnapshot.claim.nodeId === owner.nodeId && value.preservedSnapshot.claim.epoch === owner.epoch
+    && NODE_PATTERN.test(value.preservedSnapshot.generation) && sequence(value.preservedSnapshot.sequence)
+    && value.preservedSnapshot.digest === value.identity.donorDigest && value.preservedSnapshot.bytes === value.identity.donorBytes);
 const resetRecord = (value, receipt = false) => record(value) && ['keep', 'fresh'].includes(value.mode)
   && NODE_PATTERN.test(value.requestId) && typeof value.archiveDirectory === 'string' && isAbsolute(value.archiveDirectory)
   && Object.keys(value).every(key => (receipt
@@ -116,6 +131,10 @@ export class PairState {
     const raw = JSON.parse(await readFile(this.path, 'utf8'));
     if (!record(raw) || Object.keys(raw).some(key => !STATE_FIELDS.has(key)) ||
       raw.version !== 3 || raw.pairId !== this.options.pairId || !validClaim(raw) ||
+      (raw.release != null && !releaseRecord(raw.release, raw)) ||
+      (raw.releaseReceipt != null && (!record(raw.releaseReceipt) || !releaseIdentity(raw.releaseReceipt.identity)
+        || raw.releaseReceipt.requestId !== raw.releaseReceipt.identity.requestId
+        || Object.keys(raw.releaseReceipt).some(key => !['requestId', 'identity'].includes(key)))) ||
       (raw.reset != null && (!resetRecord(raw.reset) || raw.role !== 'protected' || raw.transition != null)) ||
       (raw.resetReceipt != null && !resetRecord(raw.resetReceipt, true)) ||
         !sequence(raw.sequence) || !Array.isArray(raw.ancestors) || !raw.ancestors.every(lineagePoint) ||

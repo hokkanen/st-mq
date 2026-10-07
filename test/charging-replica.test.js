@@ -61,7 +61,7 @@ test('read-only replica shows saved charging preferences, SoC and ownership at t
   view.chargers[0].progress = { creditedGridKwh: 2, remainingGridKwh: view.chargers[0].requiredGridKwh,
     basis: { source: 'integrated-measured-power', lastMeasuredAt: snapshotAt - 10_000 } };
   const { app, root, digest, originalDigest, advance } = await fixture(t, { version: 6, chargers: {
-    charger1: { association: 'synthetic-association', plan }, charger2: { automaticSoc: null, plan: null },
+    charger1: { association: 'synthetic-association', plan }, charger2: { association: 'synthetic-second-association', plan: null },
   }, view }, ownership);
   const status = await (await fetch(`${root}/api/status`)).json();
   assert.equal(status.role, 'slave');
@@ -117,7 +117,7 @@ test('replica preserves independent vehicle identification, selected values and 
   const feed = { id: 'bmw', label: 'BMW', provider: 'bmw-cardata', topic: 'stmq/vehicles/bmw',
     usedByChargerId: 'charger1', reception: charger.vehicleMqtt };
   const { app, root, digest, originalDigest, advance } = await fixture(t, { version: 6,
-    vehicleFeeds: { bmw: { reading: automaticSoc } }, chargers: { charger1: {}, charger2: {} },
+    vehicleFeeds: { bmw: { reading: automaticSoc } }, chargers: { charger1: { association: 'synthetic-association' }, charger2: { association: 'synthetic-second-association' } },
     view: { settings, chargers: [charger, buildCharger({definition:CHARGER_DEFINITIONS[1], settings:settings.chargers.charger2, now:snapshotAt})], vehicleFeeds: [feed] } });
   const charging = app.status().charging, actual = charging.chargers[0];
   for (const key of ['vehicle', 'values', 'automatic', 'automaticSoc', 'targetSelection', 'sessionCost', 'progress', 'configuration'])
@@ -141,14 +141,13 @@ test('replica preserves independent vehicle identification, selected values and 
 test('replica rejects unsupported development charging payloads', async t => {
   const { app, root, digest, originalDigest } = await fixture(t, { version: 5, settings: chargingSettings(), chargers: {} });
   const status = app.status();
-  assert.equal(status.charging.available, false);
-  assert.equal(status.charging.settings, null);
-  assert.deepEqual(status.charging.chargers, []);
-  assert.match(status.charging.error, /saved charging data is unavailable/);
+  assert.equal(status.charging, null);
+  assert.equal(status.sync.state, 'error');
+  assert.equal(status.sync.generation, null, 'unsupported state cannot admit a snapshot');
   assert.equal(status.readOnly, true);
   const response = await fetch(`${root}/api/status`);
   assert.equal(response.status, 200, 'Invalid charging preferences do not break the protected dashboard');
-  assert.deepEqual((await response.json()).charging.chargers, []);
+  assert.equal((await response.json()).charging, null);
   assert.equal(digest(), originalDigest);
 });
 
@@ -158,17 +157,16 @@ test('replica rejects retired BMW target state and selection shapes without alte
   for (const kind of ['state', 'selection']) await t.test(kind, async t => {
     const chargers = CHARGER_DEFINITIONS.map(definition => buildCharger({ definition,
       settings: settings.chargers[definition.id], now: snapshotAt }));
-    const state = { version: 6, chargers: { charger1: {} }, view: { settings, chargers } };
+    const state = { version: 6, chargers: { charger1: { association: 'synthetic-association' } }, view: { settings, chargers } };
     if (kind === 'state') state.chargers.charger1.targetState = {
       connectedAt: snapshotAt, history: [fact], conflict: false, lower: fact, last: fact, override: null };
     else chargers[0].targetSelection = { connectedAt: snapshotAt, conflict: false, lower: fact,
       raw: fact, selected: { ...fact, source: 'bmw-cardata' }, mode: 'automatic' };
     const { app, digest, originalDigest } = await fixture(t, state);
     const status = app.status();
-    assert.equal(status.charging.available, false);
-    assert.equal(status.charging.settings, null);
-    assert.deepEqual(status.charging.chargers, []);
-    assert.match(status.charging.error, /saved charging data is unavailable/);
+    assert.equal(status.charging, null);
+    assert.equal(status.sync.state, 'error');
+    assert.equal(status.sync.generation, null, 'retired state cannot admit a snapshot');
     assert.equal(status.readOnly, true);
     assert.equal(digest(), originalDigest);
   });

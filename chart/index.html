@@ -1028,6 +1028,8 @@ G_warming = G / 2</code>
                 </div>
               </div>
               <p id="database-export-message" class="muted" role="status" aria-live="polite"></p>
+              <progress id="database-export-progress" class="background-work-progress" aria-label="Database export progress" hidden></progress>
+              <p id="database-export-detail" class="muted background-work-detail" hidden></p>
             </div>
           </details>
           <details id="history-recovery-details" class="recording-section">
@@ -1036,6 +1038,7 @@ G_warming = G / 2</code>
               <div class="recording-recovery-action">
                 <p class="muted">Recover missing entries from a backup, or review and undo an earlier recovery.</p>
                 <button id="history-recovery-open" data-admin-only class="secondary-button" type="button" aria-haspopup="dialog" aria-expanded="false" aria-controls="history-recovery-dialog">Open recovery</button>
+                <p id="history-recovery-summary" class="muted background-work-detail" role="status" hidden></p>
               </div>
             </div>
           </details>
@@ -1057,6 +1060,16 @@ G_warming = G / 2</code>
             <div><h3>Database mirroring</h3><p id="pairing-sync"></p><p id="pairing-syncDetail" class="muted"></p></div>
           </div>
           <p class="muted pairing-snapshot-note">Mirroring copies the master’s changes and deletions. A verified snapshot matches that point in history; newer measurements may still be waiting to sync.</p>
+          <details id="pairing-upgrade-help" class="pairing-upgrade-help">
+            <summary>Updating paired computers</summary>
+            <p>Use the release’s supported upgrade instructions and keep a verified database backup before updating.</p>
+            <ol>
+              <li>Update the slave first. Start it and wait for a verified snapshot from the running master.</li>
+              <li>On the current master, use <strong>Hand over to the other computer</strong>. Wait until the new master is active and the former master confirms its slave role.</li>
+              <li>Update the former master. It returns as a slave and catches up from the new master.</li>
+            </ol>
+            <p>If compatibility or handover fails, stop the upgrade sequence and follow the reported next step. Do not promote another computer to bypass the failure. Before v1.0.0, incompatible development databases are blocked; no conversion is promised.</p>
+          </details>
           <p id="pairing-phase" class="pairing-progress" role="status" aria-live="polite"></p>
           <p id="pairing-recovery" class="pairing-progress" role="status" aria-live="polite"></p>
           <p class="family-access-note">Admin access is required to manage paired computers.</p>
@@ -1184,6 +1197,16 @@ G_warming = G / 2</code>
       </div>
     </div>
     <div class="history-recovery-body">
+    <div id="history-recovery-notice" class="history-recovery-notice" hidden>
+      <span id="history-recovery-state-icon" class="history-recovery-state-icon" aria-hidden="true" hidden></span>
+      <strong id="history-recovery-state" hidden></strong>
+      <p id="history-recovery-status" role="status" aria-live="polite"></p>
+      <progress id="history-recovery-progress" class="background-work-progress" aria-label="Current recovery phase progress" aria-describedby="history-recovery-progress-detail" hidden></progress>
+      <p id="history-recovery-progress-detail" class="background-work-detail" hidden></p>
+      <p id="history-recovery-timing" class="muted background-work-detail" hidden></p>
+      <p id="history-recovery-background" class="muted" hidden>You can close this window or leave this page. The operation continues on the server. Reopen recovery to see its progress.</p>
+      <button id="history-recovery-retry" data-admin-only data-write-control class="secondary-button" type="button" hidden>Recheck the same request</button>
+    </div>
     <section id="history-recovery-source-section" class="history-recovery-source-section" aria-labelledby="history-recovery-source-label">
       <label id="history-recovery-source-label" for="history-recovery-source">History source</label>
       <select id="history-recovery-source" aria-describedby="history-recovery-source-help"><option value="upload">Upload a database backup</option></select>
@@ -1199,14 +1222,9 @@ G_warming = G / 2</code>
       <p class="muted">Review a recovery before reverting or restoring its history. Later independent records and corrections stay in place.</p>
       <ul id="history-recovery-operations" aria-label="Previous history recoveries"></ul>
       <p id="history-recovery-empty" class="muted">No previous recoveries.</p>
+      <p id="history-recovery-list-status" class="muted" role="status" hidden></p>
       <div class="history-recovery-toolbar"><button id="history-recovery-earlier" class="secondary-button" type="button" hidden>Earlier recoveries</button><button id="history-recovery-newest" class="secondary-button" type="button" hidden>Most recent recoveries</button></div>
     </section>
-    <div id="history-recovery-notice" class="history-recovery-notice" hidden>
-    <p id="history-recovery-status" role="status" aria-live="polite"></p>
-    <progress id="history-recovery-progress" aria-label="History recovery progress" hidden></progress>
-    <p id="history-recovery-background" class="muted" hidden>You can close this window. The operation continues on the server.</p>
-    <button id="history-recovery-retry" data-admin-only data-write-control class="secondary-button" type="button" hidden>Recheck the same request</button>
-    </div>
     <section id="history-recovery-review" class="history-recovery-review" aria-label="Review history change" tabindex="-1" hidden>
       <p id="history-recovery-review-source" class="history-recovery-review-source"></p>
       <div id="history-recovery-preview" class="history-recovery-preview" hidden></div>
@@ -1217,6 +1235,7 @@ G_warming = G / 2</code>
     </section>
     <section id="history-recovery-peer" class="history-recovery-peer" hidden>
       <div id="pairing-rejoin-step" hidden><div><h3>Resume mirroring</h3><p>Mirror a verified copy of this master. The other computer’s previous database is retained inactive, including unmatched history, and is never reused automatically.</p></div><button id="pairing-rejoin" data-admin-only class="secondary-button" type="button" aria-describedby="pairing-rejoin-help" disabled>Resume mirroring</button><p id="pairing-rejoin-help" class="muted"></p></div>
+      <p id="pairing-rejoin-storage" class="muted"></p>
     </section>
     <div class="history-recovery-footer"><button id="history-recovery-refresh" class="secondary-button" type="button">Refresh status</button></div>
     </div>

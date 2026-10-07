@@ -10,7 +10,7 @@ try {
     db.exec('PRAGMA query_only=ON');
     validateCurrentDatabase(db);
     const rows = db.prepare('PRAGMA integrity_check').all();
-    if (rows.length !== 1 || rows[0].integrity_check !== 'ok') throw Error();
+    if (rows.length !== 1 || rows[0].integrity_check !== 'ok') throw Object.assign(Error(), { code: 'database_integrity_failed' });
   } finally { db.close(); }
   const actual = await snapshotDigest(workerData.path);
   if (actual.digest !== workerData.metadata.digest || actual.bytes !== workerData.metadata.bytes) throw Error();

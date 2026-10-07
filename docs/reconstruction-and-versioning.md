@@ -14,6 +14,15 @@ add a general archive for reproducing every historical control choice.
 
 ## What can be reconstructed
 
+The owner-approved [production convergence and upgrade policy](../AGENTS.md#f9)
+starts production data continuity at v1.0.0. Each subsequent release owns its
+specific conversion from the preceding production release; older backups may use
+documented intermediate releases. This does not add historical interpreters to
+the current runtime or relax pre-production format rejection. An algorithm change
+must explicitly describe retained evidence, any supported rebuild and any new
+learning epoch. Original observations, frozen forecasts, corrections and their
+provenance keep their historical meaning throughout an upgrade.
+
 Given an intact committed learning journal, its saved configuration and initial
 seed, the selected fireplace and sensor-correction revisions, and the matching
 learning algorithm and software, replay must produce the same model checkpoint

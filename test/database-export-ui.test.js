@@ -16,7 +16,8 @@ function fixture(request, windowOverrides = {}) {
     addEventListener(_event, handler) { this.click = handler; } });
   const saveButton = button(), downloadButton = button(), classes = new Set();
   const message = { textContent: '', classList: { add: value => classes.add(value), remove: value => classes.delete(value) } };
-  const links = [], blobs = [], timers = [], revoked = [];
+  const links = [], blobs = [], timers = [], revoked = [], intervals = new Map();
+  const progress = button(), detail = { textContent: '', hidden: true };
   const document = {
     querySelectorAll: selector => selector === '[data-write-control]' ? [saveButton] : [saveButton, downloadButton],
     getElementById: () => ({}), addEventListener() {}, removeEventListener() {},
@@ -29,10 +30,12 @@ function fixture(request, windowOverrides = {}) {
   const window = {
     URL: { createObjectURL: blob => { blobs.push(blob); return 'blob:database-copy'; }, revokeObjectURL: url => revoked.push(url) },
     setTimeout: (run, delay) => timers.push({ run, delay }),
+    setInterval: run => { const id = intervals.size + 1; intervals.set(id, run); return id; },
+    clearInterval: id => intervals.delete(id),
     ...windowOverrides,
   };
-  bindDatabaseExport({ saveButton, downloadButton, message, request, window, document });
-  return { document, saveButton, downloadButton, message, classes, links, blobs, timers, revoked };
+  bindDatabaseExport({ saveButton, downloadButton, message, progress, detail, request, window, document });
+  return { document, saveButton, downloadButton, message, progress, detail, classes, links, blobs, timers, revoked, intervals };
 }
 
 test('save local copy uses POST and reports the server path without initiating a browser download', async () => {
@@ -220,4 +223,55 @@ test('download rejects a missing or unsafe filename instead of silently losing t
     assert(view.classes.has('form-error'));
     assert.equal(view.links.length, 0);
   }
+});
+
+test('export preparation remains indeterminate with elapsed time and clears its progress timer', async () => {
+  let ready;
+  const view = fixture(() => new Promise(resolve => { ready = resolve; }));
+  const work = view.saveButton.click();
+  assert.equal(view.progress.hidden, false);
+  assert.equal(view.progress.hasAttribute('value'), false);
+  assert.match(view.detail.textContent, /Elapsed.*Keep this page open/);
+  assert.equal(view.intervals.size, 1);
+  ready(Response.json({ filename, path })); await work;
+  assert.equal(view.progress.hidden, true);
+  assert.equal(view.intervals.size, 0);
+});
+
+test('streaming bytes use the response length without buffering a second database copy', async () => {
+  let stream;
+  const bytes = new TextEncoder().encode('test');
+  const view = fixture(async () => new Response(new ReadableStream({ start(controller) { stream = controller; } }), {
+    headers: { 'content-length': '8', 'content-disposition': `attachment; filename="${filename}"` },
+  }));
+  const work = view.downloadButton.click();
+  await new Promise(resolve => setImmediate(resolve));
+  stream.enqueue(bytes);
+  await new Promise(resolve => setImmediate(resolve));
+  for (const update of view.intervals.values()) update();
+  assert.equal(view.progress.value, 4);
+  assert.equal(view.progress.max, 8);
+  assert.match(view.detail.textContent, /4 of 8 bytes/);
+  stream.enqueue(bytes); stream.close(); await work;
+  assert.equal(await view.blobs[0].text(), 'testtest');
+  assert.equal(view.intervals.size, 0);
+});
+
+test('a lost server-save response reports uncertainty without claiming the copy failed', async () => {
+  const view = fixture(async () => { throw new Error('Connection lost'); });
+  await view.saveButton.click();
+  assert.match(view.message.textContent, /not confirmed.*Check the export folder/);
+  assert.equal(view.progress.hidden, true);
+  assert.equal(view.intervals.size, 0);
+});
+
+test('a rejected download filename cancels the stream instead of leaving its transfer running', async () => {
+  let cancelled = false;
+  const view = fixture(async () => new Response(new ReadableStream({ cancel() { cancelled = true; } }), {
+    headers: { 'content-disposition': 'attachment; filename="../invalid.sqlite"' },
+  }));
+  await view.downloadButton.click();
+  assert.equal(cancelled, true);
+  assert.equal(view.links.length, 0);
+  assert.equal(view.intervals.size, 0);
 });

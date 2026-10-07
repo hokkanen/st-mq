@@ -84,6 +84,11 @@ export function createShellyCapture({ engine, store, settings, publish, canContr
       publishTopic('RPC requests', 'rpc'), { role: 'RPC replies', topic: replyTopic, direction: 'subscribe' },
     ])];
   };
+  const receiptDevices = new Map();
+  for (const device of devices) for (const detail of topicDetails(device)) {
+    if (detail.direction === 'subscribe' && !detail.topic.endsWith('/#') && !receiptDevices.has(detail.topic))
+      receiptDevices.set(detail.topic, device);
+  }
   const temperatureSignature = (device, signal) => {
     if (!['garage_temperature', 'garage_temperature_2'].includes(signal)) return null;
     if (device.generation > 1 && !device.identity) return device.readings[signal]?.temperatureRouteSignature ?? null;
@@ -120,6 +125,7 @@ export function createShellyCapture({ engine, store, settings, publish, canContr
         raw: { ...observation.raw, basis: powerFeedback ? 'measured-power' : 'reported-switch',
           reportIntervalMs: maxAge(device), reportGraceMs: 0, maxAgeMs: maxAge(device), verified: value !== null } });
     device.readings[signal] = { value, unit, label: definition?.label ?? signal, observedAt: at, quality, ...raw };
+    reception.accept();
   };
   const unavailable = (device, reason, receivedAt = receivedNow()) => {
     if (store.runWrite && !store.transactionDepth) {
@@ -298,6 +304,22 @@ export function createShellyCapture({ engine, store, settings, publish, canContr
       acknowledgement: device.generation > 1 ? 'shelly-live-relay-readback' : 'shelly-live-relay-state' };
   }
   const api = {
+    receptionKey(topic, payload) {
+      if (topic === replyTopic) {
+        let frame; try { frame = JSON.parse(String(payload)); } catch { return null; }
+        const request = requests.get(frame?.id);
+        return request && frame?.dst === source ? JSON.stringify(['equipment-shelly', request.device.id]) : null;
+      }
+      const device = receiptDevices.get(topic);
+      return device ? JSON.stringify(['equipment-shelly', device.id]) : null;
+    },
+    isReadRequest(topic, payload) {
+      const device = devices.find(row => topic === `${row.prefix}/${row.generation === 1 ? 'command' : 'rpc'}`);
+      if (!device) return false;
+      if (device.generation === 1) return String(payload) === 'update';
+      let frame; try { frame = JSON.parse(String(payload)); } catch { return false; }
+      return ['Shelly.GetDeviceInfo', 'Shelly.GetStatus', 'Switch.GetStatus'].includes(frame?.method);
+    },
     topics: [...devices.map(device => `${device.prefix}/#`), replyTopic],
     hasHeating: devices.some(device => device.controlsHeat),
     hasDhwr: devices.some(device => device.id === 'dhwr'),
@@ -488,10 +510,10 @@ export function createShellyCapture({ engine, store, settings, publish, canContr
     close() { api.setConnected(false); closed = true; requests.clear(); },
   };
   const receive = api.receive;
-  api.receive = (topic, payload, packet = {}, receivedAt = engine.clock()) => {
+  api.receive = (topic, payload, packet = {}, receivedAt = engine.clock(), onAccepted = null) => {
     if (topic !== replyTopic && !devices.some(device => topic.startsWith(`${device.prefix}/`))) return false;
     const before = receptionAt; receptionAt = receivedAt;
-    try { return reception.run(() => receive(topic, payload, packet, receivedAt)); }
+    try { return reception.run(() => receive(topic, payload, packet, receivedAt), { onAccepted }); }
     finally { receptionAt = before; }
   };
   return api;

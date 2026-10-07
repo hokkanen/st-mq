@@ -33,12 +33,8 @@ const validPermissionEvent = event => event && typeof event === 'object' && !Arr
   && (event.value === null || typeof event.value === 'boolean') && (event.commandSource === null || typeof event.commandSource === 'string')
   && (event.sessionId === null || token(event.sessionId)) && (event.connectedAt === null || time(event.connectedAt));
 
-/** EVSE RPC transport, deliberately separate from generic relay equipment. */
-export function createShellyEvseAdapter({ config, broker, client, store, engine, clock = Date.now, canControl = () => false } = {}) {
-  config = shellyProfile(config);
-  const association = shellyAssociation(config, broker), key = `charging:shelly:${association}`;
-  let state = store.getState(key) ?? { version: 2, association, fields: {}, connection: null, counter: null, sessionSequence: 0 };
-  if (state.version !== 2 || state.association !== association
+export function validateShellyAcquisitionState(state, association = state?.association) {
+  if (!state || typeof state !== 'object' || Array.isArray(state) || state.version !== 2 || state.association !== association
     || ['checkSession', 'sessionCheck'].some(key => Object.hasOwn(state, key))
     || state.counter && Object.hasOwn(state.counter, 'powerW')
     || Object.keys(state.fields ?? {}).some(role => !Object.hasOwn(TYPES, role))
@@ -61,6 +57,14 @@ export function createShellyEvseAdapter({ config, broker, client, store, engine,
           : role === 'current_limit' ? !finite(event.value) || event.value < 0 : typeof event.value !== 'string')))
     || state.notificationClocks !== undefined && (!state.notificationClocks || typeof state.notificationClocks !== 'object'
       || Array.isArray(state.notificationClocks) || Object.entries(state.notificationClocks).some(([role, at]) => !TYPES[role] || !time(at)))) throw fail('unsupported-shelly-state');
+}
+
+/** EVSE RPC transport, deliberately separate from generic relay equipment. */
+export function createShellyEvseAdapter({ config, broker, client, store, engine, clock = Date.now, canControl = () => false } = {}) {
+  config = shellyProfile(config);
+  const association = shellyAssociation(config, broker), key = `charging:shelly:${association}`;
+  let state = store.getState(key) ?? { version: 2, association, fields: {}, connection: null, counter: null, sessionSequence: 0 };
+  validateShellyAcquisitionState(state, association);
   state = copy(state);
   let connected = false, admitted = false, online = false, closed = false, generation = 0, discovered = false, controlReady = false,
     readinessRevision = 0;
@@ -852,11 +856,8 @@ function validShellyExecution(value) {
   return execution !== null && value.finalStartAt === execution.finalStartAt;
 }
 
-/** The single serialized writer owns current limits and scoped internal pauses.
- * Identification restoration is an application obligation, never a native timer. */
-export function createShellyController({ adapter, initialState, saveState = () => {}, clock = Date.now,
-  canControl = () => false, getIdentification, getPlan, getAllocation, onStatusChange = () => {} } = {}) {
-  if (initialState && (initialState.version !== 1 || initialState.association !== adapter.association
+export function validateShellyOwnershipState(initialState, association = initialState?.association) {
+  if (initialState != null && (typeof initialState !== 'object' || Array.isArray(initialState) || initialState.version !== 1 || initialState.association !== association
     || Object.hasOwn(initialState, 'startup')
     || !validShellyExecution(initialState.execution) || !validCurrentTest(initialState.currentTest) || !validShellyDeviceHold(initialState.deviceHold)
     || initialState.automaticPermission != null && (typeof initialState.automaticPermission !== 'object'
@@ -878,6 +879,13 @@ export function createShellyController({ adapter, initialState, saveState = () =
     || initialState.owned != null && !validIdentificationPause(initialState.owned)
     || initialState.pending?.owned != null && (!validIdentificationPause(initialState.pending.owned)
       || initialState.pending.role !== 'start_charging' || initialState.pending.value !== false))) throw fail('unsupported-shelly-ownership');
+}
+
+/** The single serialized writer owns current limits and scoped internal pauses.
+ * Identification restoration is an application obligation, never a native timer. */
+export function createShellyController({ adapter, initialState, saveState = () => {}, clock = Date.now,
+  canControl = () => false, getIdentification, getPlan, getAllocation, onStatusChange = () => {} } = {}) {
+  validateShellyOwnershipState(initialState, adapter.association);
   let state = initialState ? copy(initialState) : { version: 1, association: adapter.association, phase: 'off', manual: null, ownedPause: false, pending: null };
   // A saved diagnostic is not a decision made by this controller instance.
   // Native generation counters can repeat after a process restart.

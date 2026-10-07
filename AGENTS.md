@@ -28,6 +28,7 @@ feature request is not by itself an informed waiver of an earlier decision.
 | [F6](#f6) | Cost, comfort and service together | Assess complete consequences; do not substitute a convenient proxy for savings. |
 | [F7](#f7) | Responsive local operation | Raspberry Pi 5/Home Assistant and standalone Linux remain first-class targets. |
 | [F8](#f8) | Private data stays private | Keep installation secrets and household data outside Git and diagnostic output. |
+| [F9](#f9) | Converge toward production reliability | Prefer focused fixes and fewer failure paths; each production release owns its upgrade obligations. |
 
 <a id="conflicting-requests"></a>
 
@@ -136,10 +137,12 @@ pull request or commit body.
 Do not resolve a failing legacy-preservation test by restoring prohibited code.
 Do not overstate unrun tests or treat current guard tests as proof of completeness.
 
-This rule ends only with an explicitly approved production support policy at the
-first actual v1.0.0 release. A package-version edit, future-dated release plan or
-agent assumption does not authorize pre-release migrations. Production support
-requirements will be decided explicitly; do not build speculative machinery now.
+The development-only compatibility restriction ends at the first actual v1.0.0
+production release, when the release-owned upgrade policy in [F9](#f9) applies.
+The owner approved that future policy on 2026-10-07; it does not authorize
+pre-release migrations, a generic compatibility framework or support for every
+historical development format. A package-version edit alone is not a production
+release. Database preservation, evidence and authority safeguards remain in force.
 
 <a id="f2"></a>
 
@@ -593,6 +596,51 @@ person, revoke/rotate them with the provider. Do not rewrite unrelated refs or
 claim an exposure is removed from other clones/caches without evidence.
 
 See [docs/secret-handling.md](docs/secret-handling.md) for historical audit scope.
+
+<a id="f9"></a>
+
+## F9. Converge toward production reliability
+
+The owner approved this lasting policy on 2026-10-07. As production approaches,
+prioritize correctness, reliability and a smaller bug surface over architectural
+novelty or theoretical optimality. Preserve established behavior and ownership
+boundaries. Prefer the smallest coherent change that fixes a demonstrated problem.
+
+- Fix locally first. A defect does not by itself justify redesigning its subsystem.
+  Reuse established pairing, recovery, publication and authority paths instead of
+  adding parallel workflows, speculative fallbacks or generic frameworks.
+- Keep one implementation per responsibility and one current internal contract.
+  Remove redundant states and duplicate ownership when practical without turning
+  a focused fix into a broad rewrite. F1 still governs development compatibility.
+- Separate focused fixes from unrelated restructuring. Architectural changes need
+  a concrete failure or measured limitation, an explanation of why a smaller
+  change is insufficient, and validation of the affected behavior and boundaries.
+  Fewer lines or a cleaner abstraction alone do not establish lower regression risk.
+- Preserve tests for established behavior unless the owner deliberately changes
+  that behavior. Add regression coverage for demonstrated defects, including
+  interruption and uncertain outcomes when persistent state or authority changes.
+  Passing tests do not prove the absence of bugs; report validation limits.
+- Beginning with the v1.0.0 database and persisted application state, every later
+  production release must provide and test a safe upgrade from the preceding
+  production release. That release owns any specific conversion it needs; unchanged
+  formats need no conversion. Preserve source data until success and preserve
+  historical meaning, pairing roles, equipment identity and restoration duties.
+  Learning changes must explicitly retain/rebuild supported evidence or identify a
+  new learning epoch; they cannot silently reinterpret history or discard it.
+- Retain a documented, tested upgrade path for older production backups through
+  the necessary intermediate releases. A current runtime need not read every old
+  format. Do not guess unknown variants, maintain parallel internal schemas or
+  build migration machinery for hypothetical future releases. This commitment
+  does not include unsupported pre-v1.0.0 development databases.
+- Use the existing slave-first upgrade and normal handover sequence for release
+  pairs that support it: upgrade the slave, verify catch-up, complete handover,
+  upgrade the former master and verify it returns as a slave. Each release tests
+  that sequence or clearly identifies a required stopped upgrade before the
+  current master relinquishes control. Never infer cross-version control readiness
+  from a successful transfer or relax incompatibility checks to finish an upgrade.
+
+See [upgrade guidance](docs/pairing.md#software-upgrades). This policy is a release
+obligation and a review discipline, not a new compatibility subsystem.
 
 ## Working and review rules
 

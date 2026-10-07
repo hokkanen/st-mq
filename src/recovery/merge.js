@@ -12,6 +12,8 @@ import { assertCurrentChargingSessionCheck } from '../app/charging-session-check
 import { temperatureReportMaxAge } from '../domain/temperature-reports.js';
 import { rememberContribution, rejectedContribution, sourceFingerprint } from './ledger.js';
 
+import { ScratchMap, ScratchList, initializeScratch } from './scratch.js';
+
 export const RECOVERY_POLICY = 'current-wins-reversible-gaps-v2';
 const json = JSON.stringify;
 const finite = Number.isFinite;
@@ -72,8 +74,11 @@ export function emptyReport() {
 export class HistoryMerge {
   constructor({ target, donor, donorDigest, input, recoveryId, progress = () => {}, now = Date.now(), yieldControl = yieldTurn }) {
     this.target = target; this.donor = donor; this.digest = donorDigest; this.input = input;
-    this.progress = progress; this.report = emptyReport(); this.maps = Object.fromEntries(ID_TABLES.map(table => [table, new Map()]));
-    this.journal = []; this.processed = 0;
+    if (!target.readOnly) initializeScratch(target.db);
+    this.progress = progress; this.report = emptyReport();
+    this.maps = Object.fromEntries(ID_TABLES.map(table => [table, new ScratchMap(target.db, table)]));
+    if (!target.readOnly) for (const map of Object.values(this.maps)) map.initialize();
+    this.journal = new ScratchList(target.db, 'accepted-journal'); this.processed = 0;
     this.now = now; this.metrics = new Recorder(target);
     this.recoveryId = recoveryId;
     this.yieldControl = yieldControl;
@@ -126,7 +131,7 @@ export class HistoryMerge {
   }
   async rows(table, fn, { query = `SELECT * FROM active_${table} ORDER BY id`, map = true, group, prepare } = {}) {
     let batch = [], size = 0;
-    const grouped = new Set();
+    const grouped = new ScratchMap(this.target.db, 'phase-cohorts'); grouped.initialize();
     const flush = async () => {
       let next = 0;
       while (next < batch.length) {
@@ -186,9 +191,9 @@ export class HistoryMerge {
       batch = []; size = 0;
     };
     for (const row of this.donor.db.prepare(query).iterate()) {
-      if (grouped.delete(row.id)) continue;
+      if (group && grouped.delete(row.id)) continue;
       const cohort = group ? group(row) : [row];
-      if (cohort.length > 1) for (const member of cohort) if (member.id !== row.id) grouped.add(member.id);
+      if (cohort.length > 1) for (const member of cohort) if (member.id !== row.id) grouped.set(member.id, true);
       batch.push(cohort); size += cohort.length; if (size >= 64) await flush();
     }
     if (batch.length) await flush();
@@ -211,7 +216,7 @@ export class HistoryMerge {
       this.insert('import_rows', { ...row, import_id: mapped.id }); return { disposition: 'missing', at: row.source_time };
     }, { query: 'SELECT * FROM active_import_rows AS import_rows ORDER BY import_id,row_number', map: false });
   }
-  observationOverlap(row, raw) {
+  observationOverlap(row, raw, { pendingAt = Math.max(this.now, Date.now()) } = {}) {
     const db = this.target.db;
     if (reportBoundary(row, raw)) {
       // Master receipt decisions, intervening outages, contrary values and
@@ -259,7 +264,7 @@ export class HistoryMerge {
       if (recorded || hourly) return recorded;
       // Pending energy is already durable master history. Check it under the
       // same write transaction as the insert, including other source labels.
-      return pendingEnergyObservations(this.target, { now: Math.max(this.now, Date.now()),
+      return pendingEnergyObservations(this.target, { now: pendingAt,
         ...(physical ? { input: row.source === 'simulation' ? 'simulated' : 'providers' } : { device: row.device }) })
         .find(pending => pending.signal === row.signal && validEnergyQuality(decode(pending.quality))
           && decode(pending.raw).intervalStart < raw.intervalEnd && pending.source_time > raw.intervalStart) ?? null;
@@ -281,12 +286,19 @@ export class HistoryMerge {
     // new snapshot must not turn it into another gap on every comparison.
     // Prefer a shared row ID only after every evidence field matches. This
     // also preserves coverage pointers in snapshots containing repeated rows.
-    for (const old of this.target.db.prepare(`SELECT * FROM active_observations AS observations
-      WHERE source=? AND device=? AND signal=? AND unit=? AND source_time IS ?
-        AND received_at=? AND value IS ? AND import_id IS ? AND row_number IS ?
-      ORDER BY CASE WHEN id=? THEN 0 ELSE 1 END,id`)
-      .iterate(row.source, row.device, row.signal, row.unit, row.source_time,
-        row.received_at, row.value, importId, row.row_number, row.id)) {
+    // A stream index has the policy expression before its receipt clock. With
+    // no policy predicate SQLite otherwise scans that entire stream for each
+    // donor row. Resolve the small exact-receipt candidate set first, then keep
+    // the active view's selected-history interpretation (including previews).
+    for (const old of this.target.db.prepare(`SELECT observations.*
+      FROM observations AS candidate INDEXED BY observations_receipt
+      CROSS JOIN active_observations AS observations ON observations.id=candidate.id
+      WHERE candidate.received_at=? AND observations.source=? AND observations.device=? AND observations.signal=?
+        AND observations.unit=? AND observations.source_time IS ? AND observations.value IS ?
+        AND observations.import_id IS ? AND observations.row_number IS ?
+      ORDER BY CASE WHEN observations.id=? THEN 0 ELSE 1 END,observations.id`)
+      .iterate(row.received_at, row.source, row.device, row.signal, row.unit, row.source_time,
+        row.value, importId, row.row_number, row.id)) {
       if (same(decode(old.quality), decode(row.quality))
         && (same(decode(old.raw), raw) || same(decode(old.raw), mappedRaw))) return old;
     }
@@ -304,15 +316,23 @@ export class HistoryMerge {
       || !instant(raw?.intervalStart) || !instant(raw?.intervalEnd) || raw.intervalEnd !== row.source_time) return [row];
     try { quality = decode(row.quality); } catch { quality = null; }
     const availabilityGap = isRecordedEnergyGap(row, raw, quality);
-    return this.donor.db.prepare(`SELECT * FROM active_observations AS observations WHERE signal IN (?,?,?) AND source_time=?
+    const cohort = [];
+    for (const member of this.donor.db.prepare(`SELECT * FROM active_observations AS observations WHERE signal IN (?,?,?) AND source_time=?
       AND source=? AND device=? AND import_id IS NULL AND json_valid(raw)
       AND json_extract(raw,'$.intervalStart')=? AND json_extract(raw,'$.intervalEnd')=? ORDER BY id`)
-      .all(...signals, row.source_time, row.source, row.device, raw.intervalStart, raw.intervalEnd)
-      .filter(member => {
-        try { return isRecordedEnergyGap(member, decode(member.raw), decode(member.quality)) === availabilityGap; }
-        catch { return !availabilityGap; } // Malformed measured members still reject their complete cohort.
-      });
+      .iterate(...signals, row.source_time, row.source, row.device, raw.intervalStart, raw.intervalEnd)) {
+      let matches;
+      try { matches = isRecordedEnergyGap(member, decode(member.raw), decode(member.quality)) === availabilityGap; }
+      catch { matches = !availabilityGap; }
+      if (!matches) continue;
+      cohort.push(member);
+      // Measured energy and outage cohorts may share bounds. Filter their
+      // meanings first, retaining at most one valid three-phase cohort.
+      if (cohort.length > 3) return [row];
+    }
+    return cohort;
   }
+
   prepareObservationCohort(cohort) {
     const row = cohort[0], signals = phaseSignals(row);
     let raw; try { raw = decode(row.raw); } catch { return null; }

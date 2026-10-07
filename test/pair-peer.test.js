@@ -55,3 +55,25 @@ test('peer error output contains only fixed public codes', async t => {
   t.after(async () => { await client.close(); await server.close(); });
   await assert.rejects(client.request('status'), { message: 'peer_protocol_failed', code: 'peer_protocol_failed' });
 });
+
+test('database compatibility and integrity errors cross encrypted transport without private details', async t => {
+  let code;
+  const server = new PairPeer({ ...options, handler: () => {
+    throw Object.assign(Error('private synthetic database path and household record'), {
+      code, privatePath: '/private/synthetic.sqlite', actualAlgorithm: 'private synthetic payload',
+    });
+  } });
+  const address = await server.start();
+  const client = new PairPeer({ ...options, peerUrl: `http://127.0.0.1:${address.port}` });
+  t.after(async () => { await client.close(); await server.close(); });
+  for (code of ['database_schema_mismatch', 'database_schema_invalid', 'database_algorithm_mismatch',
+    'database_state_incompatible', 'database_integrity_failed']) {
+    await assert.rejects(client.request('snapshot'), error => {
+      assert.equal(error.code, code);
+      assert.equal(error.message, code);
+      assert.equal(error.privatePath, undefined);
+      assert.equal(error.actualAlgorithm, undefined);
+      return true;
+    });
+  }
+});

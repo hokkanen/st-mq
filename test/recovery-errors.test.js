@@ -35,6 +35,10 @@ test('recovery diagnostics classify native failures without publishing private e
     [native('ENOSPC'), 'recovery_storage_full'],
     [native('EACCES'), 'recovery_storage_failed'],
     [native('ENOENT'), 'recovery_storage_unavailable'],
+    [native('database_algorithm_mismatch'), 'database_algorithm_mismatch'],
+    [native('HEATING_CONTROL_STATE_UNREADABLE'), 'database_state_incompatible'],
+    [native('database_state_incompatible'), 'database_state_incompatible'],
+    [native('database_integrity_failed'), 'database_integrity_failed'],
     [native('unknown'), 'recovery_failed'],
     [native('__proto__'), 'recovery_failed'],
     [native('unrelated', 13), 'recovery_failed'],
@@ -83,7 +87,7 @@ test('a real database lock is distinguished from corruption and a later source c
 
 test('a publication transaction failure keeps its cause and the previous model selected', async t => {
   const { master, donorPath } = fixture(t);
-  const donor = new Store(donorPath); donor.close();
+  const donor = new Store(`${donorPath}.working`); await donor.backup(donorPath); donor.close();
   const preview = await recoveryPreview({ masterPath: master.path, donorPath, signal: t.signal });
   const failureDb = new DatabaseSync(':memory:');
   failureDb.exec('CREATE TABLE synthetic(id INTEGER PRIMARY KEY); INSERT INTO synthetic VALUES(1)');
@@ -102,10 +106,10 @@ test('a publication transaction failure keeps its cause and the previous model s
 });
 
 test('cancelled recovery skips failure bookkeeping behind an external SQLite writer', { timeout: 5000 }, async t => {
-  const { master, donorPath } = fixture(t), donor = new Store(donorPath);
+  const { master, donorPath } = fixture(t), donor = new Store(`${donorPath}.working`);
   donor.observation({ source: 'synthetic', device: 'cancellation-fixture', signal: 'indoor_temperature',
     value: 21, unit: 'degC', sourceTime: 1000, receivedAt: 1000 });
-  donor.close();
+  await donor.backup(donorPath); donor.close();
   const preview = await recoveryPreview({ masterPath: master.path, donorPath, signal: t.signal });
   const lock = new DatabaseSync(master.path), cancellation = new AbortController();
   let timer, locked = false;
@@ -160,9 +164,11 @@ test('standalone recovery persists only the fixed diagnostic, including after re
   await assert.rejects(coordinator.checkPath({ donorPath, source: { kind: 'upload', label: 'Uploaded database' } }));
   await coordinator.settled();
   assert.match(coordinator.currentJob().error, /ran out of storage space/);
+  assert.equal(coordinator.currentJob().errorCode, 'recovery_storage_full');
   assert.doesNotMatch(coordinator.currentJob().error, /private-source|stmq-recovery-errors/);
   await coordinator.close();
   const reopened = createHistoryRecovery(options); await reopened.initialize();
   assert.match(reopened.currentJob().error, /ran out of storage space/);
+  assert.equal(reopened.currentJob().errorCode, 'recovery_storage_full');
   await reopened.close();
 });

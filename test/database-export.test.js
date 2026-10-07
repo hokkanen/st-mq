@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { mkdtempSync, rmSync, writeFileSync, readdirSync, readFileSync, statSync, existsSync, mkdirSync, symlinkSync, lstatSync } from 'node:fs';
-import { once } from 'node:events';
+import { once, EventEmitter } from 'node:events';
 import fs from 'node:fs/promises';
 import { request } from 'node:http';
 import { join } from 'node:path';
@@ -296,7 +296,7 @@ test('backup health reports only completed outer saves and distinguishes failure
   const original = store.backup.bind(store);
   store.backup = async () => { throw Object.assign(new Error('synthetic private detail'), { code: 'ENOSPC' }); };
   events.length = 0;
-  await assert.rejects(exportDatabase({ store, response, authorized: () => true, save: true }), /export failed/);
+  await assert.rejects(exportDatabase({ store, response, authorized: () => true, save: true }), { code: 'backup_failed' });
   assert.deepEqual(events.map(event => event.phase), ['start', 'failed']);
   assert.equal(events[1].errorCode, 'ENOSPC');
   let authorized = true;
@@ -317,7 +317,7 @@ test('a failed final export directory flush never acknowledges a saved copy or r
     return file;
   });
   const exportDatabase = createDatabaseExport({ getDirectory: () => exportDirectory, onBackupEvent: event => events.push(event) });
-  await assert.rejects(exportDatabase({ store, response: { destroyed: false, headersSent: false }, authorized: () => true, save: true }), /export failed/);
+  await assert.rejects(exportDatabase({ store, response: { destroyed: false, headersSent: false }, authorized: () => true, save: true }), { code: 'backup_failed' });
   assert.deepEqual(events.map(event => event.phase), ['start', 'failed']);
   assert.equal(events[1].errorCode, 'database_publication_unconfirmed');
   assert.deepEqual(readdirSync(exportDirectory), [], 'The failed unacknowledged export and its staging are cleaned up');
@@ -352,10 +352,39 @@ test('an invalid server destination preserves existing files and a changed desti
   writeFileSync(destination, 'existing fixture content');
   const failed = await saveCopy(url);
   assert.equal(failed.status, 503);
-  assert.match((await failed.json()).error, /export folder is writable/);
+  assert.match((await failed.json()).error, /filesystem permissions/);
   assert.equal(readFileSync(destination, 'utf8'), 'existing fixture content');
   destination = exportDirectory;
   const retried = await saveCopy(url);
   assert.equal(retried.status, 200);
   assert.equal((await retried.json()).path.startsWith(`${exportDirectory}/`), true);
+});
+
+
+test('disconnect cancels backup work, cleans staging and releases the shared export slot', async t => {
+  const { store, exportDirectory } = await fixture(t), events = [];
+  const response = Object.assign(new EventEmitter(), { destroyed: false, headersSent: false,
+    destroy() { this.destroyed = true; } });
+  const original = store.backup.bind(store);
+  let started;
+  const copying = new Promise(resolve => { started = resolve; });
+  let aborted = false;
+  store.backup = async (path, { signal }) => {
+    started();
+    await new Promise((resolve, reject) => signal.addEventListener('abort', () => {
+      aborted = true; reject(signal.reason);
+    }, { once: true }));
+  };
+  const exportDatabase = createDatabaseExport({ getDirectory: () => exportDirectory, onBackupEvent: event => events.push(event) });
+  const running = exportDatabase({ store, response, authorized: () => true, save: true });
+  await copying;
+  response.destroyed = true; response.emit('close');
+  await running;
+  assert.equal(aborted, true);
+  assert.deepEqual(events.map(event => event.phase), ['start', 'cancelled']);
+  assert.deepEqual(readdirSync(exportDirectory), []);
+  assert.equal(response.listenerCount('close'), 0);
+  store.backup = original;
+  const saved = await exportDatabase({ store, response: { destroyed: false }, authorized: () => true, save: true });
+  assert(existsSync(saved.path), 'the cancelled request no longer occupies the export slot');
 });

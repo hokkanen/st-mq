@@ -131,7 +131,7 @@ export function normalizeSnapshot(path) {
     if (checkpoint?.busy) throw replicationError('snapshot_busy');
     if (db.prepare('PRAGMA journal_mode=DELETE').get().journal_mode !== 'delete') throw replicationError('snapshot_busy');
     const result = db.prepare('PRAGMA integrity_check').all();
-    if (result.length !== 1 || result[0].integrity_check !== 'ok') throw replicationError('integrity_failed');
+    if (result.length !== 1 || result[0].integrity_check !== 'ok') throw replicationError('database_integrity_failed');
   } finally { db.close(); }
 }
 
@@ -144,7 +144,7 @@ export async function verifyReplicaPublication(directory) {
     db.exec('PRAGMA query_only=ON');
     validateCurrentDatabase(db);
     const result = db.prepare('PRAGMA integrity_check').all();
-    if (result.length !== 1 || result[0].integrity_check !== 'ok') throw replicationError('integrity_failed');
+    if (result.length !== 1 || result[0].integrity_check !== 'ok') throw replicationError('database_integrity_failed');
   } finally { db.close(); }
   const actual = await snapshotDigest(publication.dbPath);
   if (actual.digest !== publication.digest || actual.bytes !== publication.bytes) throw replicationError('verification_failed');

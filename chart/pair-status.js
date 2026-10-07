@@ -24,11 +24,15 @@ const donorRoleChanged = view => view?.recovery?.donorRole === 'protected' && vi
 const ocppReadinessHelp = 'The other computer is not ready to accept the local charger connection. Check that both computers use the same charger endpoint, credentials and authorization tags, and that its OCPP port is available.';
 
 const startupProblem = view => view?.role === 'protected' && ['activation_failed', 'vip_release_failed'].includes(view.reason);
+const databaseIssues = new Set(['database_schema_mismatch', 'database_schema_invalid', 'database_algorithm_mismatch',
+  'database_state_incompatible', 'database_integrity_failed']);
+export const pairIssueCode = view => (view?.uiOperation?.state === 'error' ? view.uiOperation.errorCode : null)
+  ?? view?.error ?? view?.vip?.error ?? view?.mqttFrontend?.error ?? view?.sync?.error ?? view?.recovery?.error
+  ?? (view?.role === 'master' && view?.peer?.reachable === true ? view.peer.sync?.error : null);
 
 /** Only stable public error codes become instructions; raw exceptions stay private. */
 export function pairIssueHelp(view) {
-  const operationCode = view?.uiOperation?.state === 'error' ? view.uiOperation.errorCode : null;
-  const code = operationCode ?? view?.error ?? view?.vip?.error ?? view?.mqttFrontend?.error ?? view?.sync?.error ?? view?.recovery?.error;
+  const code = pairIssueCode(view);
   return {
     vip_helper_unavailable: 'The virtual-IP helper is unavailable. Check that the address-helper socket service is running on this computer and that its socket path matches the pair configuration.',
     vip_helper_permission: 'The controller cannot access the virtual-IP helper. Check the socket permissions and the group membership of the user running the controller; sign in again after changing groups.',
@@ -51,12 +55,16 @@ export function pairIssueHelp(view) {
     runtime_failed: 'The controller could not start. Check the application’s terminal or service log for the reported reason and source location.',
     database_schema_mismatch: 'The database schema does not match this application. Run the same current application on both computers. Use Reset pairing → Start fresh to archive the old database and pairing state. Earlier development databases cannot be migrated.',
     database_schema_invalid: 'The database structure does not match its declared schema. Restore an intact current-schema backup, or use Reset pairing → Start fresh to archive the old database and pairing state.',
+    database_algorithm_mismatch: 'The database uses a different learning algorithm. Run matching software on both computers; a matching SQLite schema alone is insufficient. Keep the original files. This development version cannot convert earlier learning formats.',
+    database_state_incompatible: 'Saved application state is incompatible with this software. Keep the original files and run the matching current build on both computers. Do not reset state to bypass equipment or pairing safeguards.',
+    database_integrity_failed: 'The database failed its integrity check. Keep the original files and restore an intact current-format backup. Any previously verified snapshot remains selected.',
     pair_reset_failed: 'The pairing reset could not finish. Existing files remain preserved. Review the reset status below and retry the same choice.',
     pair_reset_storage_failed: 'The pairing archive could not be completed. Existing files remain protected. Check available disk space and storage permissions, then retry the same reset choice.',
     pair_reset_unsafe_storage: 'The configured storage locations cannot be safely archived. Check for overlapping storage locations or symbolic links inside the files being archived before retrying.',
     pair_reset_history_unavailable: 'The local history database could not be identified. Keep local history cannot continue. Start fresh can archive existing files without opening the old database.',
     pair_reset_restoration_required: 'Resolve outstanding temporary equipment changes before starting fresh. Keep local history preserves their restoration records. Archiving records does not restore equipment.',
-    snapshot_failed: 'Local history could not be opened for viewing. Keep the database files intact and check the application log. Any last verified snapshot remains available.',
+    snapshot_failed: 'The history source could not be opened or copied. Keep its database files intact and check the application log on the source computer. Any last verified snapshot remains available.',
+    verification_failed: 'The copied snapshot could not be verified. Keep the source files intact and check the source and receiving computers’ logs. Any last verified snapshot remains selected.',
     ocpp_handover_not_ready: ocppReadinessHelp,
   }[code] ?? recoveryErrorMessage(code) ?? (startupProblem(view) ? 'The controller could not start. Check the application’s terminal or service log for the startup error, then correct the local setup.' : '');
 }
@@ -83,19 +91,22 @@ export function pairActionAllowed(view, action) {
   return ['check-recovery', 'handover'].includes(action);
 }
 
-export function pairConfirmation(action, { discardUnrecovered = false, bootstrapPending = false, mode } = {}) {
+export function pairConfirmation(action, { discardUnrecovered = false, bootstrapPending = false, mode, donorBytes } = {}) {
+  const retainedSize = Number.isSafeInteger(donorBytes) && donorBytes > 0
+    ? ` (the checked source is ${new Intl.NumberFormat('en-GB', { maximumFractionDigits: 1 }).format(donorBytes / 1024 ** 2)} MiB)` : '';
+  const retention = ` If the other computer holds only a slave snapshot, this keeps an additional full database-sized copy${retainedSize}. Retained copies have no automatic expiry; repeated protected rejoins can accumulate copies. They remain inactive until you deliberately archive or remove them.`;
   if (action === 'reset') return mode === 'fresh'
     ? 'Archive this computer’s database and pairing state, then start as an empty slave? Local recording and control stop. Current history, learning and saved dashboard choices leave the active database. Archives are kept until you manually delete them; configuration and credentials stay in place. The other computer is unchanged and may supply its database through mirroring. This computer will not become master automatically.'
     : 'Reset pairing and keep local history? Local recording and control stop. The database and saved settings remain intact. Old pairing state is archived. This computer stays in Protected recovery until you explicitly choose recovery or promotion. Configuration, credentials and the other computer are unchanged.';
   if (action === 'promote' && bootstrapPending) return 'Promote this computer to the pair’s first master? Confirm that the other computer is not already master or controlling equipment. Only one computer may be master. This starts local recording and enables control according to the saved equipment permissions. Leave the other computer as a read-only slave; it will synchronize from this master.';
   if (action === 'rejoin' && discardUnrecovered) {
-    return 'Skip recovery and resume mirroring from this master? The source check does not determine how much history is missing here. The other computer’s previous database is retained inactive, including unmatched and unsupported history. Mirroring uses a verified copy of this master’s database; the previous database is never reused automatically. This master’s history and learned model stay as they are.';
+    return 'Skip recovery and resume mirroring from this master? The source check does not determine how much history is missing here. The other computer’s previous database is retained inactive, including unmatched and unsupported history. Mirroring uses a verified copy of this master’s database; the previous database is never reused automatically. This master’s history and learned model stay as they are.' + retention;
   }
   return {
     promote: 'Promote this computer to master? Confirm that the previous master has failed or has been stopped or isolated from the home. If its host is still running, release its broker virtual IP or isolate the host first. An unreachable computer may still be controlling equipment. This uses the local history; data since its last snapshot may be missing.',
     handover: 'Hand control to the other computer? The current master will finish its handover and transfer a verified final snapshot before the other computer takes over. MQTT devices and a configured local charger will reconnect to the moved address.',
     recover: 'Recover missing history from the checked source? Recovery compares and imports history once. Existing master data wins overlaps; conflicting or unsupported entries are skipped. The model is rebuilt only if needed, while heating control remains available.',
-    rejoin: 'Resume mirroring to the other computer? Recovery must be complete. Mirroring uses an exact verified copy of the master database. The other computer’s previous database is retained inactive, including skipped history; it is never reused automatically.',
+    rejoin: 'Resume mirroring to the other computer? Recovery must be complete. Mirroring uses an exact verified copy of the master database. The other computer’s previous database is retained inactive, including skipped history; it is never reused automatically.' + retention,
   }[action] ?? null;
 }
 
@@ -118,11 +129,15 @@ export function pairDisplay(view, { now = Date.now(), formatTime = at => new Dat
   if (!view) return null;
   const state = view.transition ? 'transition' : ['master', 'slave', 'protected'].includes(view.role) ? view.role : 'unknown';
   const issue = pairIssueHelp(view);
-  const schemaFailure = ['database_schema_mismatch', 'database_schema_invalid'].includes(view.error ?? view.vip?.error ?? view.sync?.error);
+  // A peer check or snapshot failure must not replace the local master's role
+  // and readiness with a diagnosis of the other computer's database.
+  const localDatabaseCode = view.error ?? view.sync?.error ?? view.vip?.error;
+  const localDatabaseIssue = !(view.role === 'master' && view.canControl === true) && databaseIssues.has(localDatabaseCode)
+    ? pairIssueHelp({ error: localDatabaseCode }) : '';
   const resetFailed = view.uiOperation?.action === 'reset' && view.uiOperation.state === 'error';
   const resetInterrupted = ['pairing_reset_pending', 'pairing_reset_failed'].includes(view.reason);
-  const summary = (schemaFailure || resetFailed) && issue ? issue
-    : resetInterrupted ? 'The previous pairing reset did not finish. Existing files remain preserved and this computer cannot control equipment. Review Reset pairing below to complete recovery.'
+  const summary = resetFailed && issue ? issue : localDatabaseIssue || (resetInterrupted
+    ? 'The previous pairing reset did not finish. Existing files remain preserved and this computer cannot control equipment. Review Reset pairing below to complete recovery.'
     : startupProblem(view)
     ? `${issue} Local history is preserved. After correcting the setup, retry promotion below; the other computer can stay offline.`
     : state === 'protected' && view.error === 'snapshot_failed' ? issue
@@ -136,7 +151,7 @@ export function pairDisplay(view, { now = Date.now(), formatTime = at => new Dat
             ? 'The other computer reports that it is master. Waiting for the first verified snapshot. This computer remains read-only and never takes control automatically.'
             : 'Both computers start as read-only slaves. To set up the pair, explicitly promote one computer to master. Confirm that the other computer is not already master or controlling equipment. It never takes control automatically.'
           : 'This computer is a read-only slave. History, saved settings and device details are available for inspection. It never takes control automatically.'
-          : 'Waiting for a confirmed local role. Management actions are unavailable.';
+          : 'Waiting for a confirmed local role. Management actions are unavailable.');
   const peer = view.peer ?? {};
   const peerText = peer.reachable === true ? `Last reported ${roleName(peer.role).toLowerCase()} · connected.${stamp(peer.lastSeenAt) ? ` Status received ${formatTime(peer.lastSeenAt)}.` : ''}`
     : `${peer.reachable === false ? 'Other computer unavailable.' : 'Connection status unknown.'}${stamp(peer.lastSeenAt) ? ` Last seen ${formatTime(peer.lastSeenAt)}.` : ''}`;
@@ -180,7 +195,7 @@ export function pairDisplay(view, { now = Date.now(), formatTime = at => new Dat
     idle: '', checking: 'Validating the other computer’s history source. No history is changed by this check.',
     ready: mirrorComparison(view) ? view.peer?.reachable === true && view.peer.role === 'protected'
       ? 'This check used a normal slave snapshot. The other computer now reports protected history; run a new check before recovery.'
-      : 'Source check complete. The checked snapshot came from a normal slave. Normal mirroring is automatic. Gaps and conflicts were not assessed; this check does not authorize recovery.'
+      : 'No recovery needed for this slave snapshot. The source is valid; normal mirroring applies master changes automatically. This check does not establish that every master record is already mirrored.'
       : 'Source check complete. Recovery will compare history and import missing entries once. Gaps, conflicts and model changes have not yet been assessed.',
     recovering: 'Recovering gaps and rebuilding the model. Heating control remains available with the current model.',
     complete: 'Recovery is complete. Review the result, then resume mirroring to update the other computer from this master.',
@@ -239,7 +254,7 @@ export function pairDisplay(view, { now = Date.now(), formatTime = at => new Dat
       : state === 'master' && view.canControl !== true && !view.transition ? 'Master control is unavailable · waiting for local readiness.'
       : brokerTone === 'attention' ? 'Device MQTT connection needs attention · open details to check local readiness.' : '';
   const attention = currentIssue || phase || (recovery.state === 'ready' ? mirrorComparison(view) ? peerProtected
-        ? 'Other computer now reports protected history · check again before recovery.' : 'Source check complete · check connection status for current mirroring.'
+        ? 'Other computer now reports protected history · check again before recovery.' : 'No recovery needed for the checked slave snapshot.'
         : 'Source checked · recover to compare and import missing history.'
         : recovery.state === 'complete' ? 'Recovery complete · ready to resume mirroring.'
           : view.role === 'master' && peerProtected ? 'Other computer’s history is protected · open details to recover and resume mirroring.' : '');
@@ -279,7 +294,8 @@ export function pairActionHelp(view) {
       : 'This source check does not require resuming mirroring. Normal synchronization follows the connection status above.'
       : view?.peer?.reachable === true && view.peer.role === 'slave' && !view?.recovery?.pendingRelease ? 'Normal mirroring is already enabled; there is nothing to resume.'
       : ['ready', 'complete'].includes(recovery) && view?.peer?.reachable !== true ? 'Reconnect the other computer before replacing its database and resuming mirroring.'
-      : checked ? 'Optional: skip recovery and discard the other computer’s unmatched history. Missing history has not been assessed. A separate confirmation is required.'
+      : recovery === 'error' ? `Mirroring stays blocked because the history check or recovery failed. ${pairIssueHelp({ error: view?.recovery?.error }) || 'Resolve the reported problem and complete a new check.'}`
+      : checked ? 'Optional: skip recovery and leave the other computer’s unmatched history inactive. Missing history has not been assessed. A separate confirmation is required.'
       : recovery === 'complete' ? 'Recovery finished. Confirm replacement to resume mirroring.'
         : recovery === 'resolved' ? 'The previous replacement completed. Current mirroring status is shown above.'
           : 'Complete a check first. Then recover the gaps, or explicitly choose to discard them.'),
@@ -359,7 +375,8 @@ export function createPairActions({ request, storage, confirm = message => confi
     busy = true; notify();
     if (body) {
       const confirmation = body.action === 'rejoin' && view.recovery?.pendingRelease?.requestId === body.requestId ? null : pairConfirmation(body.action, { discardUnrecovered: body.discardUnrecovered,
-        mode: body.mode, bootstrapPending: view.bootstrapPending && !(view.peer?.reachable === true && view.peer.role === 'master') });
+        mode: body.mode, donorBytes: view.recovery?.donorBytes,
+        bootstrapPending: view.bootstrapPending && !(view.peer?.reachable === true && view.peer.role === 'master') });
       let accepted = !confirmation;
       try { if (confirmation) accepted = await confirm(confirmation); } catch { /* A blocked dialog is a cancelled action. */ }
       if (!accepted || !available || !pairActionAllowed(view, body.action)) { busy = false; notify(); return false; }
@@ -472,8 +489,8 @@ export function createPairPanel({ document, request, storage, confirm, afterMuta
       ? 'Complete the interrupted reset with the same choice below. Local control and incoming mirroring remain blocked while the archive is incomplete.'
       : state.view.reset?.keepBlockedReason === 'invalid_pair_state'
       ? 'Saved pairing state is unreadable. Use Reset pairing → Start fresh to archive the configured storage and start as a slave. No previous authority is restored.'
-      : ['database_schema_mismatch', 'database_schema_invalid'].includes(state.view.error ?? state.view.sync?.error)
-      ? 'The database cannot be used by this application. Use Reset pairing → Start fresh to archive it, or restore an intact current-schema backup. Keeping local history does not change its schema.'
+      : databaseIssues.has(pairIssueCode(state.view))
+      ? 'This database cannot be used by the running software. Preserve its files and resolve the reported compatibility or integrity problem before promotion. Reset pairing → Start fresh archives it; it does not convert or repair it.'
       : startupProblem(state.view)
       ? 'Startup stopped before this computer could become master. This does not mean that history has diverged. Fix the reported setup problem, then explicitly retry promotion. All database and settings edits remain disabled until it succeeds.'
       : state.view.bootstrapPending

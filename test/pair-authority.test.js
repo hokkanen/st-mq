@@ -7,7 +7,7 @@ import { randomBytes, randomUUID } from 'node:crypto';
 import { DatabaseSync } from 'node:sqlite';
 import { Store } from '../src/storage/store.js';
 import { PairManager } from '../src/pairing/manager.js';
-import { readReplicaPublication } from '../src/replication/publication.js';
+import { readReplicaPublication, snapshotDigest } from '../src/replication/publication.js';
 import { acceptsLineage, compareAuthority, PairState } from '../src/pairing/state.js';
 
 function createDatabase(path) {
@@ -135,6 +135,36 @@ test('graceful handover commits final snapshot, demotion survives restart and la
   assert.equal(db.prepare('SELECT value FROM observations').get().value, 20); db.close();
 });
 
+test('former preferred master restarts as slave and catches up after completed normal handover', async t => {
+  const root = await fixture(t), original = await manager(t, root, 'hassio', { platform: 'hassio' });
+  const successor = await manager(t, root, 'ubuntu', { role: 'slave' }); connect(original, successor);
+  await successor.synchronize(original.state.claim());
+  await original.action('handover', command());
+  const nodeId = original.state.value.nodeId, inactivePath = original.config.databasePath;
+  const inactiveBytes = await readFile(inactivePath);
+  await original.close();
+  const current = new Store(successor.state.value.activeDbPath);
+  current.db.exec("INSERT INTO observations(source,device,signal,value,unit,source_time,received_at,quality) VALUES('fixture','fixture','temperature',21,'degC',200,200,'[]')");
+  current.close();
+  const returning = await manager(t, root, 'hassio', { platform: 'hassio', role: 'slave', create: false });
+  connect(returning, successor);
+  assert.equal(returning.state.value.nodeId, nodeId);
+  assert.equal(returning.state.value.role, 'slave');
+  assert.equal(returning.calls.some(call => call[0] === 'master'), false);
+  await returning.poll();
+  await returning.syncTask;
+  assert.equal(returning.state.value.role, 'slave');
+  assert.equal(returning.sync.state, 'ready');
+  assert.equal(returning.canControl(), false);
+  assert.equal(returning.vip.status().owned, false);
+  assert.equal(successor.canControl(), true);
+  const publication = await readReplicaPublication(returning.config.snapshotDirectory);
+  const mirrored = new Store(publication.dbPath, { readOnly: true });
+  try { assert.deepEqual(mirrored.db.prepare('SELECT value FROM observations ORDER BY source_time').all().map(row => row.value), [20, 21]); }
+  finally { mirrored.close(); }
+  assert.deepEqual(await readFile(inactivePath), inactiveBytes, 'Former master history remains inactive and untouched');
+});
+
 test('OCPP readiness refusal leaves the current primary and its VIP running', async t => {
   const root = await fixture(t), requirements = { version: 1, fingerprint: 'a'.repeat(64) };
   const source = await manager(t, root, 'source', { hooks: { handoverRequirements: () => requirements } });
@@ -152,6 +182,57 @@ test('OCPP readiness refusal leaves the current primary and its VIP running', as
   assert.equal(source.state.value.transition, null); assert.equal(target.state.value.transition, null);
   assert.equal(source.status().error, 'ocpp_handover_not_ready');
   assert.doesNotMatch(JSON.stringify(source.status()), /private configuration/);
+});
+
+test('handover checks database compatibility before stopping the master, including an empty slave', async t => {
+  for (const existing of [false, true]) await t.test(existing ? 'incompatible retained snapshot' : 'incompatible incoming snapshot', async t => {
+    const root = await fixture(t), source = await manager(t, root, 'source');
+    const target = await manager(t, root, 'target', { role: 'slave' }); connect(source, target);
+    let originalPath;
+    if (existing) {
+      await target.synchronize(source.state.claim());
+      originalPath = (await readReplicaPublication(target.config.snapshotDirectory)).dbPath;
+      const db = new DatabaseSync(originalPath); db.exec('PRAGMA user_version=7'); db.close();
+    } else {
+      // An earlier release can export its own database. Only the receiver runs
+      // the current validator; the real transfer and handover paths stay intact.
+      source.snapshots.snapshot = async ({ dbPath, destination }) => {
+        await copyFile(dbPath, destination);
+        const db = new DatabaseSync(destination); db.exec('PRAGMA user_version=7'); db.close();
+        return { ...await snapshotDigest(destination), sourceStartedAt: 1, sourceAt: 1 };
+      };
+    }
+    const originalBytes = originalPath ? await readFile(originalPath) : null;
+    await assert.rejects(source.action('handover', command()), { code: 'database_schema_mismatch' });
+    assert.equal(source.canControl(), true);
+    assert.equal(source.vip.status().owned, true);
+    assert.equal(source.calls.some(call => call[0] === 'stop'), false);
+    assert.equal(source.state.value.transition, null);
+    assert.equal(target.state.value.transition, null);
+    assert.equal(target.canControl(), false);
+    assert.equal(target.vip.status().owned, false);
+    if (originalPath) assert.deepEqual(await readFile(originalPath), originalBytes);
+    else assert.equal(await readReplicaPublication(target.config.snapshotDirectory), null);
+  });
+});
+
+test('handover preflight rejects current incompatible state despite a cached or pending compatible snapshot', async t => {
+  for (const pending of [false, true]) await t.test(pending ? 'pending transfer' : 'cached export', async t => {
+    const root = await fixture(t), source = await manager(t, root, 'source');
+    const target = await manager(t, root, 'target', { role: 'slave' }); connect(source, target);
+    const cached = await source.exportSnapshot({ force: true });
+    if (pending) await target.state.update({ pendingSnapshot: cached });
+    const db = new DatabaseSync(source.state.value.activeDbPath);
+    db.prepare('INSERT INTO state(key,value,updated_at) VALUES(?,?,?)').run('charging:mqtt', '{"version":-1}', 1);
+    db.close();
+    await assert.rejects(source.action('handover', command()), { code: 'database_state_incompatible' });
+    assert.equal(source.canControl(), true);
+    assert.equal(source.vip.status().owned, true);
+    assert.equal(source.calls.some(call => call[0] === 'stop'), false);
+    assert.equal(source.state.value.transition, null);
+    assert.equal(target.state.value.transition, null);
+    assert.equal(target.canControl(), false);
+  });
 });
 
 test('handover requires current OCPP readiness acknowledgement before stopping', async t => {
@@ -820,6 +901,63 @@ test('rejoin retains the original dedicated database without restoring its exclu
   });
 });
 
+test('rejoin retains protected replica history through later mirroring and interrupted release', async t => {
+  for (const interrupted of [false, true]) await t.test(interrupted ? 'restart after publication' : 'completed release', async t => {
+    const root = await fixture(t);
+    const primary = await manager(t, root, 'master', { platform: 'hassio', hooks: {
+      recoveryPreview: async () => ({ previewId: randomBytes(32).toString('hex'), status: 'checked', model: { status: 'not-assessed' } }),
+    } });
+    let donor = await manager(t, root, 'donor', { role: 'slave' }); connect(primary, donor);
+    await donor.synchronize(primary.state.claim());
+    const publication = await readReplicaPublication(donor.config.snapshotDirectory);
+    const changed = new Store(publication.dbPath);
+    changed.setState('synthetic-unmatched-history', { value: 'preserve me' });
+    changed.close();
+    await donor.synchronize(primary.state.claim());
+    assert.equal(donor.state.value.role, 'protected');
+    assert.equal(donor.state.value.everWritten, false);
+    await primary.action('check-recovery', command());
+    const action = { ...command(), discardUnrecovered: true, previewId: primary.status().recovery.preview.previewId };
+    if (interrupted) {
+      const closeReplica = donor.hooks.closeReplica;
+      donor.hooks.closeReplica = async () => { throw Object.assign(Error(), { code: 'runtime_failed' }); };
+      await assert.rejects(primary.action('rejoin', action), { code: 'runtime_failed' });
+      assert.equal(donor.state.value.role, 'protected');
+      assert.equal(donor.state.value.reason, 'rejoining');
+      donor.hooks.closeReplica = closeReplica;
+      await donor.close();
+      donor = await manager(t, root, 'donor', { role: 'slave', create: false }); connect(primary, donor);
+      const source = await donor.exportSnapshot({ force: true });
+      const retained = new Store(join(donor.snapshots.directory, `export-${source.generation}.sqlite`), { readOnly: true });
+      try { assert.deepEqual(retained.getState('synthetic-unmatched-history'), { value: 'preserve me' }); }
+      finally { retained.close(); }
+    }
+    await primary.action('rejoin', action);
+    assert.equal(donor.state.value.role, 'slave');
+    for (let n = 0; n < 3; n++) {
+      await primary.exportSnapshot({ force: true });
+      await donor.synchronize(primary.state.claim());
+      await donor.exportSnapshot({ force: true });
+    }
+    const pins = (await readdir(donor.snapshots.directory)).filter(name => name.endsWith('.pin'));
+    assert.equal(pins.length, 1, 'The protected source remains pinned after ordinary export/publication pruning');
+    const retainedPath = join(donor.snapshots.directory, pins[0].replace(/\.pin$/, '.sqlite'));
+    const retained = new Store(retainedPath, { readOnly: true });
+    try { assert.deepEqual(retained.getState('synthetic-unmatched-history'), { value: 'preserve me' }); }
+    finally { retained.close(); }
+    await donor.close();
+    donor = await manager(t, root, 'donor', { role: 'slave', create: false }); connect(primary, donor);
+    await donor.synchronize(primary.state.claim());
+    assert.equal(donor.state.value.role, 'slave');
+    assert.equal(donor.canControl(), false);
+    await access(retainedPath);
+    await donor.action('promote', command());
+    const active = new Store(donor.state.value.activeDbPath, { readOnly: true });
+    try { assert.equal(active.getState('synthetic-unmatched-history'), null, 'Inactive retained history never reactivates'); }
+    finally { active.close(); }
+  });
+});
+
 test('a completed protected recovery survives rechecking unchanged history and rejects stale donor roles', async t => {
   const root = await fixture(t);
   const report = { status: 'complete', imported: 1, model: { status: 'rebuilt' } };
@@ -952,6 +1090,33 @@ test('peer snapshot status uses observed public fields and survives slave restar
   restarted.sync = { state: 'invalid', sourceAt: -1, verifiedAt: 'invalid', bytes: -1 };
   await primary.poll();
   assert.deepEqual(primary.status().peer.sync, { state: 'waiting', sourceAt: null, verifiedAt: null, bytes: null });
+  restarted.sync = { state: 'error', error: 'database_algorithm_mismatch', privateDiagnostic: 'private fixture details' };
+  await primary.poll();
+  assert.deepEqual(primary.status().peer.sync, { state: 'error', sourceAt: null, verifiedAt: null, bytes: null,
+    error: 'database_algorithm_mismatch' });
+  restarted.sync.error = 'private arbitrary exception';
+  await primary.poll();
+  assert.equal(primary.status().peer.sync.error, 'peer_protocol_failed');
+  assert.doesNotMatch(JSON.stringify(primary.status().peer.sync), /private/);
+});
+
+test('a preserved incompatible slave reports its database problem to the master after repeated restarts', async t => {
+  const root = await fixture(t), primary = await manager(t, root, 'master');
+  let slave = await manager(t, root, 'slave', { role: 'slave' }); connect(primary, slave);
+  await slave.synchronize(primary.state.claim());
+  const publication = await readReplicaPublication(slave.config.snapshotDirectory);
+  await slave.close();
+  const changed = new DatabaseSync(publication.dbPath); changed.exec('PRAGMA user_version=7'); changed.close();
+  const before = await readFile(publication.dbPath);
+  for (let n = 0; n < 2; n++) {
+    slave = await manager(t, root, 'slave', { role: 'slave', create: false }); connect(primary, slave);
+    await primary.poll();
+    assert.equal(primary.status().peer.role, 'protected');
+    assert.equal(primary.status().peer.sync.error, 'database_schema_mismatch');
+    assert.equal(slave.canControl(), false);
+    assert.deepEqual(await readFile(publication.dbPath), before);
+    await slave.close();
+  }
 });
 
 test('simultaneous polls preserve newer peer status and still schedule first mirroring', async t => {

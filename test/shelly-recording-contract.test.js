@@ -15,7 +15,7 @@ function fixture(t) {
 test('Shelly native meter recording reopens without session-check state or history', t => {
   const { path, store } = fixture(t);
   const key = 'charging:shelly:synthetic-association';
-  const state = { version: 2, fields: { phase_info: { measuredAt: 2000 } },
+  const state = { version: 2, association: 'synthetic-association', fields: { phase_info: { measuredAt: 2000 } },
     counter: { at: 2000, value: 10, phasePowers: [1, 1, 1] } };
   store.setState(key, state);
   for (let phase = 1; phase <= 3; phase++) store.observation({ source: 'shelly-evse', device: 'synthetic-association',
@@ -44,7 +44,7 @@ test('removed Shelly checks and accumulator state reject database open without c
     store.close();
     const before = readFileSync(path);
     for (const readOnly of [false, true]) {
-      assert.throws(() => new Store(path, { readOnly }), /Unsupported .*session-check.*fresh development database/);
+      assert.throws(() => new Store(path, { readOnly }), { code: 'database_state_incompatible' });
       assert.deepEqual(readFileSync(path), before);
     }
   }
@@ -58,7 +58,7 @@ test('Shelly acquisition state with the retired power interpretation rejects bef
   store.close();
   const before = readFileSync(path);
   for (const readOnly of [false, true]) {
-    assert.throws(() => new Store(path, { readOnly }), /Unsupported Shelly .*fresh development database/);
+    assert.throws(() => new Store(path, { readOnly }), { code: 'database_state_incompatible' });
     assert.deepEqual(readFileSync(path), before);
   }
 });

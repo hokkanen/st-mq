@@ -26,6 +26,15 @@ async function waitingForWrite(store) {
     await new Promise(resolve => setTimeout(resolve, 5));
   }
 }
+async function settledView(coordinator) {
+  const deadline = performance.now() + 5000;
+  for (;;) {
+    const view = await coordinator.view();
+    if (!view.operationsLoading && !view.sourcesLoading) return view;
+    assert(performance.now() < deadline, 'Background recovery lists complete');
+    await new Promise(resolve => setTimeout(resolve, 10));
+  }
+}
 async function fixture(t, options = {}) {
   const root = await mkdtemp(join(tmpdir(), 'stmq-history-recovery-api-'));
   const store = new Store(join(root, 'live.sqlite'));
@@ -205,7 +214,7 @@ test('saved source listing accepts only application export names and issues opaq
   await writeFile(join(exports, 'stmq-2026-10-03T12-00-00-000Z.sqlite'), bytes);
   await writeFile(join(exports, 'unrelated.sqlite'), bytes);
   await symlink(join(exports, 'unrelated.sqlite'), join(exports, 'stmq-2026-10-03T13-00-00-000Z.sqlite'));
-  const view = await f.coordinator.view();
+  const view = await settledView(f.coordinator);
   assert.equal(view.sources.length, 1); assert.equal(view.sources[0].kind, 'backup');
   assert.match(view.sources[0].id, /^[a-f0-9]{64}$/);
   assert.equal(JSON.stringify(view).includes(f.root), false);
@@ -252,17 +261,21 @@ test('cancelling queued recovery admission finishes before an external writer re
   } finally { lock.exec('ROLLBACK'); lock.close(); }
 });
 
-test('cancelled progress preserves the durable running record for startup reconciliation without waiting on SQLite', async t => {
-  let lock;
-  const f = await fixture(t, { module: { recoveryPreview: async ({ onProgress }) => {
+test('transient progress stays available under a writer lock and cancellation preserves the durable running record for startup reconciliation without waiting on SQLite', async t => {
+  let lock; const reported = deferred();
+  const f = await fixture(t, { module: { recoveryPreview: async ({ onProgress, signal }) => {
     lock.exec('BEGIN IMMEDIATE');
     await onProgress({ phase: 'checking', processed: 1 });
-    throw new Error('Cancelled progress must not continue');
+    reported.resolve();
+    await new Promise((resolve, reject) => signal.addEventListener('abort', () => reject(new Error('Cancelled synthetic worker')), { once: true }));
   } } });
   lock = new DatabaseSync(f.store.path);
   try {
     const outcome = f.coordinator.checkPath({ donorPath: 'unused-synthetic-path', source: { kind: 'upload', label: 'Uploaded database' } }).catch(error => error);
-    await waitingForWrite(f.store);
+    await within(reported.promise);
+    assert.equal(f.store.writeQueueStatus().pending, 0, 'Progress performs no persistent write');
+    assert.equal(f.coordinator.currentJob().progress.processed, 1);
+    assert.equal(f.store.getState('history-recovery:coordinator').job.progress, undefined);
     await within(f.coordinator.close());
     assert(await outcome instanceof Error);
     assert.equal(f.coordinator.currentJob().status, 'interrupted');
@@ -289,7 +302,7 @@ test('shutdown cancels a completed upload waiting for registration and preserves
     assert(await outcome instanceof Error);
     assert.deepEqual(await readdir(join(f.root, 'history-recovery', 'uploads')), [`${original.sourceId}.sqlite`]);
     assert.deepEqual(f.store.getState('history-recovery:coordinator'), before);
-    assert.deepEqual((await f.coordinator.view()).sources.map(source => source.id), [original.sourceId]);
+    assert.deepEqual(f.store.getState('history-recovery:coordinator').sources.map(source => source.id), [original.sourceId]);
     assert.equal(f.store.writeQueueStatus().pending, 0);
   } finally { lock.exec('ROLLBACK'); lock.close(); }
 });
@@ -328,6 +341,7 @@ test('real backup upload recovers, reverts and restores an old contribution whil
   assert.equal(view.job.status, 'complete', JSON.stringify(view.job));
   assert.equal(f.store.observations().length, 1);
   assert.deepEqual(f.store.getState('automation:mqtt'), permission, 'source confirmation grants no automatic control permission');
+  view = await settledView(f.coordinator);
   const operationId = view.operations[0].id;
   assert.equal(view.operations[0].source.kind, 'upload');
   assert.deepEqual(Object.keys(view.operations[0].source).sort(), ['kind', 'label']);

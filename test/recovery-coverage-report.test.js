@@ -225,7 +225,8 @@ test('worker check stays read only, uses a consistent master snapshot and leaves
   const donorPath = await f.snapshot(donor), donorBefore = await readFile(donorPath), files = await readdir(f.directory);
   const historyBefore = f.master.observations(), statesBefore = f.master.db.prepare('SELECT * FROM state').all();
   let writes = 0, maxWriteMs = 0, first = true;
-  const report = await recoveryPreview({ masterPath: f.master.path,donorPath,signal: t.signal,onProgress() {
+  const report = await recoveryPreview({ masterPath: f.master.path,donorPath,signal: t.signal,onProgress(value) {
+    if (value.phase !== 'checking') return;
     if (!first) return; first = false;
     const before = performance.now(); observation(f.master,start + 20 * HOUR);
     maxWriteMs = Math.max(maxWriteMs,performance.now() - before); writes++;

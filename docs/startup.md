@@ -67,6 +67,16 @@ current-schema backup, or follow the [coordinated paired fresh-start procedure](
 for Home Assistant and Ubuntu. Deleting only `st-mq.sqlite` is insufficient when
 saved pair authority points to a different active database.
 
+The database gate also validates the current learning algorithm and saved charging
+and heating state before runtime constructors can write configuration or recovery
+state. Existing files are checked read-only first, including committed WAL pages;
+an incompatible database keeps its original bytes and companions. The admitted
+writable connection rechecks the current state under a transaction before setup.
+Charging runtime and snapshot verification share the same validators, so handover
+can reject unsupported state before the current master stops. Diagnostics use
+`database_algorithm_mismatch`, `database_state_incompatible` and
+`database_integrity_failed` to distinguish those causes without exposing payloads.
+
 ## Environment and private configuration
 
 Public defaults are in `config.json.options`; the sparse private file overrides

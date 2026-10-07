@@ -69,12 +69,16 @@ const DIAGNOSTICS = {
   'start-out-of-range': 'Easee accepts only the next occurrence of a local start time. This proposed date is farther ahead; planning will retry closer to the start.',
 };
 
+export function validateChargingOwnershipState(initialState) {
+  if (initialState != null && (typeof initialState !== 'object' || Array.isArray(initialState) || initialState.version !== 5 || !validIdentificationOwnership(initialState.owned)
+    || !validIdentificationOwnership(initialState.pending) || !validTakeoverPending(initialState.takeoverPending)
+    || !validAutomaticTakeover(initialState.automaticTakeover) || !validSession(initialState.session))) throw new Error('Unsupported charging ownership; start a fresh development database');
+}
+
 /** Durable native instruction ownership and observed manual priority. */
 export function createChargingController({ adapter, initialState = null, saveState = () => {}, clock = Date.now,
   canControl = () => false, getPlan, getMaximumAmps, getIdentification } = {}) {
-  if (initialState && (initialState.version !== 5 || !validIdentificationOwnership(initialState.owned)
-    || !validIdentificationOwnership(initialState.pending) || !validTakeoverPending(initialState.takeoverPending)
-    || !validAutomaticTakeover(initialState.automaticTakeover) || !validSession(initialState.session))) throw new Error('Unsupported charging ownership; start a fresh development database');
+  validateChargingOwnershipState(initialState);
   const previous = initialState ? copy(initialState) : {};
   let state = { phase: 'off', owned: null, pending: null, manual: null, released: false,
     disconnected: false, execution: null, handoverConfirmed: true, reason: 'Automatic charging is off.',

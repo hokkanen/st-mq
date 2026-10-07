@@ -1,8 +1,10 @@
 import { parentPort, workerData } from 'node:worker_threads';
 import { createHash, randomUUID } from 'node:crypto';
 import { createReadStream } from 'node:fs';
+import { stat } from 'node:fs/promises';
 import { yieldToController as yieldTurn } from './scheduler.js';
 import { Store } from '../storage/store.js';
+import { readBackupMetadata } from '../storage/backup-metadata.js';
 import { HistoryMerge, RECOVERY_POLICY } from './merge.js';
 import { RECOVERABLE_TABLES } from '../storage/schema.js';
 import { markRecoveryFailed, projectedSensorContext } from './state.js';
@@ -12,6 +14,7 @@ import { sensorRevision } from '../app/sensor-inputs.js';
 import { beginRecovery, rememberContribution, selectedHistory } from './ledger.js';
 import { assessRecoverySource } from './source-scope.js';
 import { recoveryFailure } from './errors.js';
+import { ScratchMap } from './scratch.js';
 import { recoveryCoverageReport } from './coverage-report.js';
 
 const json = JSON.stringify;
@@ -24,24 +27,42 @@ const invalid = message => Object.assign(new Error(message), { code: 'RECOVERY_I
 let target, donor, running = false, projection = null;
 let originalFireplaceRevision = 0;
 let recoveryId = null, sourceSelection = null, sourceAssessment = null;
-let progressAt = 0;
+let progressAt = 0, progressPhase = null;
 const progress = value => {
-  if (Date.now() - progressAt > 100 || value.phase !== 'importing') { parentPort.postMessage({ type: 'progress', ...value }); progressAt = Date.now(); }
+  if (Date.now() - progressAt > 100 || value.phase !== progressPhase || value.total === value.processed) {
+    parentPort.postMessage({ type: 'progress', ...value }); progressAt = Date.now(); progressPhase = value.phase;
+  }
 };
 
 async function fileDigest(path) {
-  const hash = createHash('sha256'); for await (const chunk of createReadStream(path)) hash.update(chunk); return hash.digest('hex');
+  const hash = createHash('sha256'), total = (await stat(path)).size;
+  let processed = 0;
+  for await (const chunk of createReadStream(path)) {
+    hash.update(chunk); processed += chunk.length; progress({ phase: 'validating', processed, total, unit: 'bytes' });
+  }
+  return hash.digest('hex');
 }
 
 async function open() {
+  progress({ phase: 'validating', processed: 0 });
+  const sourceFile = await stat(workerData.donorPath);
   donor = new Store(workerData.donorPath, { readOnly: true });
   donor.db.exec('BEGIN'); donor.db.prepare('PRAGMA schema_version').get();
+  // The checked digest identifies one exported file. WAL pages are separate
+  // mutable evidence and cannot be authorized by hashing only that file.
+  // DELETE-mode readers also hold SQLite's shared lock until this source scan
+  // ends, so ordinary writers cannot change the snapshot beneath the digest.
+  if (donor.db.prepare('PRAGMA journal_mode').get().journal_mode !== 'delete')
+    throw Object.assign(new Error('Recovery requires a self-contained database snapshot'), { code: 'recovery_source_not_snapshot' });
   if (donor.db.prepare('PRAGMA integrity_check').get().integrity_check !== 'ok')
     throw Object.assign(new Error('Donor database integrity check failed'), { code: 'recovery_database_corrupt' });
   sourceAssessment = assessRecoverySource(donor, workerData.input);
   // Semantic rows with missing references are rejected individually by merge;
   // only physical database corruption prevents scanning the donor altogether.
   const donorDigest = await fileDigest(workerData.donorPath);
+  const checkedFile = await stat(workerData.donorPath);
+  if (['dev', 'ino', 'size', 'mtimeMs', 'ctimeMs'].some(field => sourceFile[field] !== checkedFile[field]))
+    throw invalid('The source database changed while checking it. Use a saved export and check again.');
   if (workerData.mode === 'preview') {
     target = new Store(workerData.masterPath, { readOnly: true });
     // One brief read snapshot makes the category dates and recorded outages
@@ -54,6 +75,7 @@ async function open() {
     target = new Store(workerData.masterPath);
     if (workerData.preview?.sourceSelection !== selectedHistory(target)) throw invalid('Selected history changed; check the source again');
   }
+  target.db.exec('PRAGMA temp_store=FILE; PRAGMA temp.cache_size=-8192;');
   return donorDigest;
 }
 
@@ -78,6 +100,8 @@ async function checkSource(donorDigest) {
     reason: 'Saved charging reports are not included in history recovery.' })).filter(row => row.count > 0);
   const report = { status: 'checked', policy: RECOVERY_POLICY, tables, model: { status: 'not-assessed' },
     donorDigest, input: workerData.input, sourceSelection, sourceAssessment, unsupported };
+  const sourceSoftware = readBackupMetadata(donor.db);
+  if (sourceSoftware) report.sourceSoftware = sourceSoftware;
   report.coverage = await recoveryCoverageReport({ master: target, donor, input: workerData.input,
     yieldControl: yieldTurn, progress });
   report.previewId = learningVersion(report);
@@ -118,7 +142,8 @@ async function createProjection(merge, runId) {
   target.db.prepare(`INSERT INTO recovery_runs(id,input,donor_digest,previous_epoch,epoch,status,started_at,report,previous_fireplace_revision,source_head)
     VALUES(?,?,?,?,?,'rebuilding',?,?,?,?)`).run(runId, input, merge.digest, sourceEpoch, epoch, Date.now(), json(merge.report), originalFireplaceRevision, sourceHead);
   const originals = snapshot.db.prepare('SELECT * FROM learning_journal WHERE input=? ORDER BY at,CASE kind WHEN \'context\' THEN 0 WHEN \'sample\' THEN 1 ELSE 2 END,id').iterate(input);
-  const recovered = [];
+  target.db.exec('CREATE TEMP TABLE recovery_accepted_journal(id INTEGER PRIMARY KEY,at INTEGER,rank INTEGER,entry TEXT,replaces_missing INTEGER)');
+  const accept = target.db.prepare('INSERT INTO recovery_accepted_journal(id,at,rank,entry,replaces_missing) VALUES(?,?,?,?,?)');
   for (const entry of merge.journal) {
     const old = snapshot.db.prepare('SELECT * FROM learning_journal WHERE input=? AND kind=? AND at=? ORDER BY id DESC LIMIT 1')
       .get(input, entry.row.kind, entry.row.at);
@@ -148,7 +173,7 @@ async function createProjection(merge, runId) {
       merge.report.counts.missing--; merge.report.tables.find(row => row.name === 'learning_journal').missing--;
       if (entry.row.kind === 'sample') merge.report.model.acceptedSamples--;
       if (old) merge.maps.learning_journal.set(entry.row.id, { id: old.id, disposition: 'conflicts' });
-    } else recovered.push(entry);
+    } else accept.run(entry.row.id, entry.row.at, rank(entry.row.kind), json(entry), entry.replacesMissing ?? null);
   }
   const rejectedContext = value => {
     if (!value || typeof value !== 'object') return false;
@@ -157,16 +182,40 @@ async function createProjection(merge, runId) {
       : key === 'sensorRevert' && item?.id < 0 && merge.maps.learning_journal.get(-item.id)?.disposition === 'conflicts'
         || rejectedContext(item));
   };
-  for (let index = recovered.length - 1; index >= 0; index--) if (rejectedContext(recovered[index].payload)) {
-    const [entry] = recovered.splice(index, 1);
-    merge.count('learning_journal', 'skipped');
-    merge.report.counts.missing--; merge.report.tables.find(row => row.name === 'learning_journal').missing--;
-    if (entry.row.kind === 'sample') merge.report.model.acceptedSamples--;
+  let acceptedAfter = 0;
+  for (;;) {
+    const rows = target.db.prepare('SELECT id,entry FROM recovery_accepted_journal WHERE id>? ORDER BY id LIMIT 64').all(acceptedAfter);
+    if (!rows.length) break;
+    for (const row of rows) {
+      const entry = JSON.parse(row.entry);
+      if (rejectedContext(entry.payload)) {
+        target.db.prepare('DELETE FROM recovery_accepted_journal WHERE id=?').run(row.id);
+        merge.count('learning_journal', 'skipped');
+        merge.report.counts.missing--; merge.report.tables.find(row => row.name === 'learning_journal').missing--;
+        if (entry.row.kind === 'sample') merge.report.model.acceptedSamples--;
+      }
+      acceptedAfter = row.id;
+    }
+    await yieldTurn();
   }
-  recovered.sort((a, b) => a.row.at - b.row.at || rank(a.row.kind) - rank(b.row.kind) || a.row.id - b.row.id);
-  const replaced = new Set(recovered.map(entry => entry.replacesMissing).filter(id => id != null));
-  let nextDonor = 0, batch = [], total = 0;
-  const masterIds = new Map(), donorIds = new Map(), sources = new Map();
+  target.db.exec('CREATE INDEX recovery_accepted_order ON recovery_accepted_journal(at,rank,id); CREATE INDEX recovery_accepted_replacement ON recovery_accepted_journal(replaces_missing)');
+  function* acceptedRows() {
+    let cursor = null;
+    for (;;) {
+      const rows = target.db.prepare(`SELECT id,at,rank,entry FROM recovery_accepted_journal
+        WHERE ? IS NULL OR (at,rank,id)>(?,?,?) ORDER BY at,rank,id LIMIT 64`)
+        .all(cursor?.id ?? null, cursor?.at ?? 0, cursor?.rank ?? 0, cursor?.id ?? 0);
+      if (!rows.length) return;
+      for (const row of rows) { cursor = row; yield row; }
+    }
+  }
+  // A TEMP iterator on the writer connection can keep later MAIN reads pinned
+  // across a yield. Finalize each bounded read before another commit begins.
+  const recovered = acceptedRows();
+  let nextDonor = recovered.next(), batch = [], total = 0;
+  const masterIds = new ScratchMap(target.db, 'projection-master'), donorIds = new ScratchMap(target.db, 'projection-donor'),
+    sources = new ScratchMap(target.db, 'projection-sources');
+  for (const map of [masterIds, donorIds, sources]) map.initialize();
   const insert = target.db.prepare(`INSERT INTO learning_journal_entries(epoch,input,key,kind,at,algorithm_version,config_version,forecast_version,payload,source_entry_id)
     VALUES(?,?,?,?,?,?,?,?,?,?)`);
   const stage = (row, payload, origin) => {
@@ -185,17 +234,20 @@ async function createProjection(merge, runId) {
   };
   const flush = async () => {
     target.transaction(() => { for (const row of batch) stage(...row); });
-    total += batch.length; batch = []; progress({ phase: 'rebuilding', processed: total }); await yieldTurn();
+    total += batch.length; batch = []; progress({ phase: 'projecting', processed: total, unit: 'entries' }); await yieldTurn();
   };
   const enqueue = async (row, payload, origin) => { batch.push([row, payload, origin]); if (batch.length === 64) await flush(); };
   try {
     for (const master of originals) {
-      while (nextDonor < recovered.length && before(recovered[nextDonor].row, master)) {
-        const row = recovered[nextDonor++]; await enqueue(row.row, row.payload, 'donor');
+      while (!nextDonor.done && before(JSON.parse(nextDonor.value.entry).row, master)) {
+        const row = JSON.parse(nextDonor.value.entry); await enqueue(row.row, row.payload, 'donor'); nextDonor = recovered.next();
       }
-      if (!replaced.has(master.id)) await enqueue(master, null, 'master');
+      if (!target.db.prepare('SELECT 1 FROM recovery_accepted_journal WHERE replaces_missing=? LIMIT 1').get(master.id))
+        await enqueue(master, null, 'master');
     }
-    while (nextDonor < recovered.length) { const row = recovered[nextDonor++]; await enqueue(row.row, row.payload, 'donor'); }
+    while (!nextDonor.done) {
+      const row = JSON.parse(nextDonor.value.entry); await enqueue(row.row, row.payload, 'donor'); nextDonor = recovered.next();
+    }
     if (batch.length) await flush();
   } finally { snapshot.close(); }
   // Remap journal provenance only after every projection ID is allocated.
@@ -245,6 +297,7 @@ function before(a, b) { return a.at < b.at || a.at === b.at && rank(a.kind) < ra
 
 async function replayProjection() {
   const p = projection;
+  const total = target.db.prepare('SELECT COUNT(*) total FROM learning_journal_entries WHERE epoch=? AND input=?').get(p.epoch, workerData.input).total;
   for (;;) {
     const rows = target.db.prepare('SELECT * FROM learning_journal_all WHERE epoch=? AND input=? AND id>? ORDER BY id LIMIT 64')
       .all(p.epoch, workerData.input, p.after);
@@ -254,7 +307,7 @@ async function replayProjection() {
       p.checkpoint = applyLearningRecord(p.checkpoint, decode(row), p.source);
       p.lastAt = Math.max(p.lastAt, row.at); p.after = row.id; p.processed++;
     }
-    progress({ phase: 'rebuilding', processed: p.processed }); await yieldTurn();
+    progress({ phase: 'rebuilding', processed: p.processed, total, unit: 'entries' }); await yieldTurn();
   }
 }
 
@@ -280,6 +333,7 @@ async function catchup() {
     progress({ phase: 'catching-up', processed: p.processed }); await yieldTurn();
   }
   await replayProjection();
+  progress({ phase: 'publishing', processed: 0 });
   parentPort.postMessage({ type: 'ready', epoch: p.epoch, sourceEpoch: p.sourceEpoch, sourceHead: p.sourceHead,
     sourceSensorRevision: p.sourceSensorRevision, sensorRevision: p.source.sensorRevision,
     fireplaceRevision: p.sourceRevision, checkpoint: p.checkpoint, runId: p.runId, recoveryId, sourceSelection, report: p.merge.report });

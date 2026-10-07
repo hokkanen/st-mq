@@ -128,7 +128,7 @@ function renderCoverage(document, root, data, { formatTime, source, expanded }) 
 }
 
 /** Render only whitelisted aggregates, never a donor record or serialized error. */
-export function renderRecoveryReport(document, root, data, { formatTime = at => new Date(at).toISOString(), report = false, comparison = false, source = 'peer' } = {}) {
+export function renderRecoveryReport(document, root, data, { formatTime = at => new Date(at).toISOString(), report = false, comparison = false, comparisonStale = false, source = 'peer' } = {}) {
   const reportKey = data?.previewId ?? '';
   const focused = root.dataset.recoveryReportId === reportKey && root.contains?.(document.activeElement)
     ? document.activeElement?.closest?.('details[data-recovery-section]')?.dataset.recoverySection : null;
@@ -139,7 +139,24 @@ export function renderRecoveryReport(document, root, data, { formatTime = at => 
   if (!data) return;
   const checked = data.status === 'checked';
   const heading = document.createElement('h3'); heading.textContent = data.recoverySkipped ? 'Mirroring resumed without recovery'
-    : checked ? 'History source checked' : report ? 'Recovery result' : 'Recovery preview'; root.append(heading);
+    : checked && comparison ? comparisonStale ? 'Review the current pairing problem' : 'No recovery needed'
+      : checked ? 'History source checked' : report ? 'Recovery result' : 'Recovery preview';
+  if (checked && comparison) {
+    const outcome = document.createElement('div'), icon = document.createElement('span'), detail = document.createElement('p');
+    outcome.className = 'history-recovery-outcome'; outcome.dataset.tone = comparisonStale ? 'attention' : 'success';
+    icon.className = 'history-recovery-outcome-icon'; icon.textContent = comparisonStale ? '!' : '✓'; icon.setAttribute('aria-hidden', 'true');
+    detail.textContent = comparisonStale ? 'This earlier slave snapshot needed no recovery. The current pairing problem requires attention; check again after resolving it.'
+      : 'Valid slave snapshot. Mirroring applies the master’s changes automatically. This does not prove that the latest changes have arrived.';
+    outcome.append(icon, heading, detail); root.append(outcome);
+  } else root.append(heading);
+  const software = data.sourceSoftware;
+  if (software?.format === 1 && typeof software.applicationVersion === 'string' && software.applicationVersion.length <= 80
+    && /^\d+\.\d+\.\d+(?:-[a-zA-Z0-9.-]+)?$/.test(software.applicationVersion)
+    && Number.isSafeInteger(software.exportedAt) && software.exportedAt > 0 && software.exportedAt <= 8640000000000000) {
+    const provenance = document.createElement('p'); provenance.className = 'muted history-recovery-provenance';
+    provenance.textContent = `Backup exported by application version ${software.applicationVersion}${stamp(software.exportedAt) ? ` · ${formatTime(software.exportedAt)}` : ''}. This identifies the export software, not the original recording version.`;
+    root.append(provenance);
+  }
   const fields = [...(!report || data.recoverySkipped ? [['missing', comparison ? 'Only in the other snapshot' : data.recoverySkipped ? 'Missing entries not recovered' : 'Missing entries']] : []), ['conflicts', comparison ? 'Different entries' : 'Conflicting entries'], ['duplicates', 'Already present'], ['skipped', 'Skipped entries']];
   const totals = data.counts ?? {};
   const counts = document.createElement('dl'); counts.className = 'history-recovery-counts';

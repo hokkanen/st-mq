@@ -30,6 +30,8 @@ test('malformed saved authority is rejected before changing state or acquiring a
     { supersededPeer: { nodeId: randomUUID(), epoch: null } },
     { actions: [null] }, { actions: [{ requestId: randomUUID(), name: 'promote', state: 'approved' }] },
     { retiredAuthority: true },
+    { release: {} }, { releaseReceipt: {} },
+    { release: { epoch: randomUUID(), digest: 'a'.repeat(64), identity: null } },
     { resetReceipt: { ...receipt, backupCount: undefined } },
     { resetReceipt: { ...receipt, unavailableCount: -1 } },
     { resetReceipt: { ...receipt, unavailableCount: 1, unavailableReasons: [] } },

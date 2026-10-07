@@ -1,12 +1,19 @@
 import { parentPort, workerData } from 'node:worker_threads';
 import { DatabaseSync, backup } from 'node:sqlite';
-import { open, rm } from 'node:fs/promises';
+import { lstat, open, rm } from 'node:fs/promises';
 import { normalizeSnapshot, snapshotDigest } from './publication.js';
 import { validateCurrentDatabase } from '../storage/store.js';
 import { databaseErrorDetails } from '../storage/database-errors.js';
 
+let created = false;
 try {
+  for (const suffix of ['-wal', '-shm', '-journal']) {
+    try { await lstat(`${workerData.destination}${suffix}`); }
+    catch (error) { if (error.code === 'ENOENT') continue; throw error; }
+    throw new Error('Snapshot destination has existing SQLite companions');
+  }
   const file = await open(workerData.destination, 'wx', 0o600);
+  created = true;
   await file.close();
   const db = new DatabaseSync(workerData.dbPath, { readOnly: true });
   let sourceStartedAt, sourceAt;
@@ -25,6 +32,7 @@ try {
   const digest = await snapshotDigest(workerData.destination);
   parentPort.postMessage({ ok: true, ...digest, sourceStartedAt, sourceAt });
 } catch (error) {
-  await rm(workerData.destination, { force: true }).catch(() => {});
+  if (created) for (const suffix of ['', '-wal', '-shm', '-journal'])
+    await rm(`${workerData.destination}${suffix}`, { force: true }).catch(() => {});
   parentPort.postMessage({ ok: false, code: 'snapshot_failed', ...databaseErrorDetails(error) });
 }

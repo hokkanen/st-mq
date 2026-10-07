@@ -19,7 +19,9 @@ const retainedSignals = ['return_temperature','supply_temperature','brine_in_tem
   'auxiliary_6kw_hours','dhw_hours','compressor_active','heating_pump_active','dhw_routing','heating_pump_speed',
   'brine_pump_speed','room_setting','dhw_stop_setting','dhw_start_setting','operating_mode','room_influence',
   'heating_curve','maximum_supply_setting','heat_stop_setting','tariff_reduction_setting','alarm_active','alarm_code'];
-const preview = { previewId, status: 'checked', tables: ['imports', 'import_rows', 'observations', 'recorder_coverage',
+const preview = { previewId, status: 'checked',
+  sourceSoftware: { format: 1, exportedAt: now - 1000, applicationVersion: '0.9.5-dev.4', schemaVersion: 24, learningAlgorithm: 'fixture-v1' },
+  tables: ['imports', 'import_rows', 'observations', 'recorder_coverage',
   'provider_snapshot_contents', 'provider_snapshot_fetches', 'annotations', 'counters', 'fireplace_events',
   'learning_cycles', 'events', 'energy_audits', 'learning_journal', 'recorder_pending_energy', 'charging_session_keys']
   .map(name => ({ name, count: name === 'observations' ? 57 : 0 })), model: { status: 'not-assessed' },
@@ -34,7 +36,7 @@ const preview = { previewId, status: 'checked', tables: ['imports', 'import_rows
       { signal: 'indoor_temperature',basis: 'receipt-coverage',reason: 'stale',status: 'stale',
         from: Math.floor(now / 1000) * 1000 - 100000,to: Math.floor(now / 1000) * 1000 - 99750,potentialCoverage: true },
     ] } } };
-let app, server, browser, socket, sequence = 0, admin = true, topology = 'standalone', peer = null;
+let app, server, browser, socket, sequence = 0, admin = true, topology = 'standalone', peer = null, finishExport, recoveryReads = 0;
 let recovery = { available: true, readOnly: false, busy: false, job: null, preview: null, sources: [source], nextBefore: '10:old-operation',
   operations: [{ id: 'old-operation', startedAt: 1, source: { label: 'Earlier backup' }, active: true, status: 'interrupted', canRevert: true }] };
 try {
@@ -47,10 +49,16 @@ try {
     try {
       if (request.url === '/favicon.ico') { response.writeHead(204).end(); return; }
       if (request.url === '/api/pair') return json(200, peer);
+      if (request.url === '/api/database-export' && request.method === 'POST') {
+        await new Promise(resolve => { finishExport = resolve; });
+        return json(200, { filename: 'stmq-2026-10-07T12-00-00-000Z.sqlite', path: '/synthetic/exports/stmq-2026-10-07T12-00-00-000Z.sqlite' });
+      }
       if (request.url.startsWith('/api/history-recovery')) {
         if (!admin) return json(403, { error: 'Admin required.' });
-        if (request.method === 'GET') return json(200, { ...recovery, peer,
-          ...(request.url.includes('before=') ? { nextBefore: null } : {}) });
+        if (request.method === 'GET') {
+          recoveryReads++;
+          return json(200, { ...recovery, peer, ...(request.url.includes('before=') ? { nextBefore: null } : {}) });
+        }
         const chunks = []; for await (const chunk of request) chunks.push(chunk);
         if (request.url.endsWith('/upload')) {
           assert.equal(request.headers['content-type'], 'application/vnd.sqlite3');
@@ -65,7 +73,8 @@ try {
         if (body.action === 'check') assert.equal(body.installationConfirmed, true);
         recovery = { ...recovery, busy: true, preview: null, job: { id: body.requestId, requestId: body.requestId,
           kind: body.action, status: 'running', source: selected, operationId: body.operationId,
-          progress: { phase: body.action === 'recover' ? 'rebuilding' : 'checking' } } };
+          startedAt: Date.now() - 120000,
+          progress: { phase: body.action === 'recover' ? 'rebuilding' : 'checking', processed: 250000, total: 1000000, unit: 'entries', updatedAt: Date.now() } } };
         if (body.action !== 'recover') setTimeout(() => {
           const revision = body.action.startsWith('review-');
           const correction = ['revert', 'restore'].includes(body.action);
@@ -114,7 +123,7 @@ try {
     await writeFile(join(screenshots, `${name}.png`), Buffer.from(shot.data, 'base64'), { mode: 0o600 });
   };
   const reviewLayouts = async name => {
-    for (const width of [1440, 320]) for (const theme of ['dark', 'light']) {
+    for (const width of [1440, 390, 320]) for (const theme of ['dark', 'light']) {
       await send('Emulation.setDeviceMetricsOverride', { width, height: width === 320 ? 568 : 900, deviceScaleFactor: 1, mobile: false });
       await evaluate(`document.documentElement.dataset.theme='${theme}';true`);
       if (name === 'revision-review') await evaluate(`${$('history-recovery-review')}.scrollIntoView({block:'end'});true`);
@@ -151,6 +160,7 @@ try {
   await until(`!${$('history-recovery-apply')}.hidden && !${$('history-recovery-apply')}.disabled`);
   assert.match(await evaluate(`${$('history-recovery-preview')}.textContent.replace(/\\s+/g, ' ')`), /Observations:\s*57/);
   assert.match(await evaluate(`${$('history-recovery-preview')}.innerText`), /History date ranges/);
+  assert.match(await evaluate(`${$('history-recovery-preview')}.innerText`), /Backup exported by application version 0.9.5-dev.4/);
   assert.equal(await evaluate("document.querySelector('.history-recovery-coverage details').open"), false);
   await evaluate("document.querySelector('.history-recovery-coverage details').open=true;true");
   assert.match(await evaluate(`${$('history-recovery-preview')}.innerText`), /Charger 2 energy/);
@@ -163,8 +173,11 @@ try {
   assert.equal(await evaluate("document.querySelectorAll('[data-recovery-section=diagnostic-0] .history-recovery-diagnostic-signals li').length"),28);
   assert.match(await evaluate("document.querySelector('[data-recovery-section=diagnostic-1]').innerText"),/250 ms apart/,'Same formatted endpoints preserve a known subsecond report span');
   assert.doesNotMatch(await evaluate("document.querySelector('[data-recovery-section=availability-diagnostics]').textContent"),/potential coverage|No relevant usable source records|master outages/);
+  const readsBeforeRefresh = recoveryReads;
   await click('history-recovery-refresh');
-  await until("!document.querySelector('[data-before-refresh]')");
+  for (let i = 0; i < 200 && recoveryReads === readsBeforeRefresh; i++) await pause(30);
+  assert(recoveryReads > readsBeforeRefresh, 'The report refresh reached the synthetic API');
+  assert.equal(await evaluate("!!document.querySelector('[data-before-refresh]')"), true, 'An unchanged report retains its existing DOM');
   assert.equal(await evaluate("document.querySelector('[data-recovery-section=energy-gaps]').open"), true, 'Refreshing the same report preserves expanded energy gaps');
   assert.equal(await evaluate("document.querySelector('[data-recovery-section=availability-diagnostics]').open"),true);
   assert.equal(await evaluate("document.querySelector('[data-recovery-section=diagnostic-0]').open"),true,'Refreshing preserves the nested signal disclosure');
@@ -202,8 +215,26 @@ try {
   await click('history-recovery-open'); await until(`${$('history-recovery-dialog')}.open && !${$('history-recovery-apply')}.disabled`);
   await click('history-recovery-apply'); await accept();
   await until(`${$('history-recovery-status')}.textContent.includes('Rebuilding')`);
+  assert.equal(await evaluate(`${$('history-recovery-progress')}.value`), 250000);
+  assert.equal(await evaluate(`${$('history-recovery-progress')}.max`), 1000000);
+  assert.match(await evaluate(`${$('history-recovery-progress-detail')}.textContent`), /250,000 of 1,000,000 entries/);
+  assert.match(await evaluate(`${$('history-recovery-timing')}.textContent`), /Elapsed 2m/);
+  await reviewLayouts('running-progress');
+  for (const [phase, label] of [['validating', 'Validating'], ['snapshotting', 'Preparing a consistent copy'],
+    ['importing', 'Recovering'], ['projecting', 'Preparing corrected history'], ['catching-up', 'Catching up'], ['publishing', 'Publishing']]) {
+    recovery.job.progress = { phase, processed: 500000, updatedAt: Date.now() };
+    await click('history-recovery-refresh'); await until(`${$('history-recovery-status')}.textContent.includes(${JSON.stringify(label)})`);
+    assert.equal(await evaluate(`${$('history-recovery-progress')}.hasAttribute('value')`), false, 'Unknown phase totals never reuse an earlier fraction');
+    await click('history-recovery-tab-history'); await click('history-recovery-tab-recover');
+    assert.equal(await evaluate(`${$('history-recovery-close')}.disabled`), false);
+  }
+  recovery.job.progress = { phase: 'rebuilding', processed: 750000, total: 1000000, unit: 'entries', updatedAt: Date.now() };
   await click('history-recovery-close');
   assert.equal(recovery.job.status, 'running');
+  await send('Page.reload'); await until("document.body.dataset.authenticated === 'true'");
+  await evaluate(`${$('recording-details')}.open=true;${$('history-recovery-details')}.open=true;true`);
+  await until(`${$('history-recovery-summary')}.textContent.includes('Rebuilding')`);
+  assert.equal(await evaluate(`${$('history-recovery-dialog')}.open`), false, 'Reload discovers progress without opening a modal');
   await click('history-recovery-open'); await until(`${$('history-recovery-status')}.textContent.includes('Rebuilding')`);
   assert.equal(requests.filter(item => item.action === 'recover').length, 1);
   recovery = { ...recovery, busy: false, job: { ...recovery.job, status: 'complete', result: { status: 'complete', counts: { missing: 12, conflicts: 2, duplicates: 42, skipped: 1 }, imported: 12, model: { status: 'rebuilt' } } } };
@@ -234,20 +265,65 @@ try {
   assert.equal(await evaluate(`${$('history-recovery-installation-confirm')}.checked`), false);
   assert.equal(await evaluate(`${$('history-recovery-check')}.disabled`), true);
   await click('history-recovery-close');
+  await evaluate(`${$('database-export-details')}.open=true;true`);
+  await click('database-export-save');
+  await until(`!${$('database-export-progress')}.hidden && ${$('database-export-detail')}.textContent.includes('Elapsed')`);
+  assert.equal(await evaluate(`${$('database-export-progress')}.hasAttribute('value')`), false);
+  await click('history-recovery-open'); await until(`${$('history-recovery-dialog')}.open`);
+  await click('history-recovery-close');
+  assert.equal(await evaluate(`${$('database-export-save')}.disabled`), true);
+  assert(finishExport); finishExport();
+  await until(`${$('database-export-message')}.textContent.includes('Database copy saved on the server')`);
+  assert.equal(await evaluate(`${$('database-export-progress')}.hidden`), true);
   topology = 'pair'; peer = { role: 'master', canControl: true, busy: false, peer: { reachable: true, role: 'slave' }, vip: { owned: true },
     actions: { 'check-recovery': true, recover: false, rejoin: false }, recovery: { state: 'ready', donorRole: 'slave', preview } };
   recovery.sources.unshift({ id: 'peer', kind: 'peer', label: 'Paired computer', available: true });
   await send('Page.reload'); await until(`${$('pairing-panel')} && !${$('pairing-panel')}.hidden`);
   await evaluate(`${$('pairing-details')}.open=true; ${$('pairing-history-recovery')}.click();true`);
   await until(`${$('history-recovery-dialog')}.open && ${$('history-recovery-source')}.value==='peer'`);
-  await until(`${$('history-recovery-preview')}.textContent.includes('History source checked')`);
-  assert.match(await evaluate(`${$('history-recovery-status')}.textContent`), /Source check complete/);
+  await until(`${$('history-recovery-preview')}.textContent.includes('No recovery needed')`);
+  assert.match(await evaluate(`${$('history-recovery-status')}.textContent`), /Valid slave snapshot/);
+  assert.equal(await evaluate(`${$('history-recovery-state')}.textContent`), 'No recovery needed');
   assert.doesNotMatch(await evaluate(`${$('history-recovery-status')}.textContent`), /before recovering|History recovery complete/);
   assert.equal(await evaluate("[...document.querySelectorAll('#history-recovery-details button, #history-recovery-dialog button, #pairing-panel button')].some(button => /(?:…|\\.\\.\\.)$/.test(button.textContent.trim()))"), false, 'Recovery and pairing actions use complete labels without ellipses');
   assert.equal(await evaluate(`${$('history-recovery-apply')}.hidden`), true);
   assert.equal(await evaluate(`${$('pairing-rejoin')}.disabled`), true);
+  assert.equal(await evaluate(`${$('history-recovery-peer')}.hidden`), true, 'Normal mirroring has no replacement decision');
+  assert.equal(await evaluate("document.querySelector('.history-recovery-outcome').dataset.tone"), 'success');
+  assert.equal(await evaluate("document.querySelector('.history-recovery-outcome-icon').getAttribute('aria-hidden')"), 'true', 'Visual cue has an accessible text equivalent');
+  await reviewLayouts('normal-slave-check');
   assert.equal(await evaluate("document.querySelectorAll('dialog#history-recovery-dialog').length"), 1);
   await click('history-recovery-close'); await until("document.activeElement.id === 'pairing-history-recovery'");
+  peer = { ...peer, peer: { reachable: true, role: 'slave', sync: { state: 'error', error: 'database_algorithm_mismatch' } } };
+  await send('Page.reload'); await until(`${$('pairing-panel')} && !${$('pairing-panel')}.hidden`);
+  await evaluate(`${$('pairing-details')}.open=true; ${$('pairing-history-recovery')}.click();true`);
+  await until(`${$('history-recovery-dialog')}.open && ${$('history-recovery-state')}.textContent==='Database incompatible'`);
+  assert.equal(await evaluate(`${$('history-recovery-notice')}.dataset.tone`), 'attention');
+  assert.equal(await evaluate(`${$('history-recovery-state-icon')}.textContent`), '!');
+  assert.match(await evaluate(`${$('history-recovery-status')}.textContent`), /different learning algorithm/);
+  assert.equal(await evaluate("document.querySelector('.history-recovery-outcome').dataset.tone"), 'attention', 'Current failure cannot look like a successful current check');
+  await capture('slave-error-after-normal-check-320-light');
+  await click('history-recovery-close');
+  peer = { ...peer, peer: { reachable: true, role: 'protected' },
+    recovery: { state: 'error', donorRole: 'protected', donorBytes: 134217728, preview, error: 'database_algorithm_mismatch' } };
+  await send('Page.reload'); await until(`${$('pairing-panel')} && !${$('pairing-panel')}.hidden`);
+  await evaluate(`${$('pairing-details')}.open=true; ${$('pairing-history-recovery')}.click();true`);
+  await until(`${$('history-recovery-dialog')}.open && ${$('history-recovery-state')}.textContent==='Database incompatible'`);
+  assert.equal(await evaluate(`${$('history-recovery-preview')}.hidden`), true, 'A failed recheck cannot retain a successful-looking review');
+  assert.match(await evaluate(`${$('history-recovery-status')}.textContent`), /different learning algorithm/);
+  assert.equal(await evaluate(`${$('pairing-rejoin')}.disabled`), true);
+  assert.match(await evaluate(`${$('pairing-rejoin-help')}.textContent`), /Mirroring stays blocked.*different learning algorithm/);
+  assert.match(await evaluate(`${$('pairing-rejoin-storage')}.textContent`), /full database copy.*128 MiB.*accumulate.*no automatic expiry/);
+  await reviewLayouts('incompatible-source');
+  await click('history-recovery-close');
+  await evaluate(`${$('pairing-upgrade-help')}.open=true;${$('pairing-upgrade-help')}.scrollIntoView({block:'start'});true`);
+  assert.match(await evaluate(`${$('pairing-upgrade-help')}.innerText`), /Update the slave first.*Hand over to the other computer.*returns as a slave/s);
+  for (const width of [1440, 320]) for (const theme of ['dark', 'light']) {
+    await send('Emulation.setDeviceMetricsOverride', { width, height: 900, deviceScaleFactor: 1, mobile: false });
+    await evaluate(`document.documentElement.dataset.theme='${theme}';${$('pairing-upgrade-help')}.scrollIntoView({block:'start'});true`);
+    assert.equal(await evaluate('document.documentElement.scrollWidth <= innerWidth'), true, 'Upgrade guidance fits narrow screens');
+    await capture(`upgrade-help-${width}-${theme}`);
+  }
   admin = false; await send('Page.reload'); await until("document.body.dataset.authenticated === 'true'");
   await evaluate(`${$('recording-details')}.open=true;${$('history-recovery-details')}.open=true;true`);
   assert.equal(await evaluate(`${$('history-recovery-open')}.disabled`), true);
@@ -256,7 +332,9 @@ try {
   console.log(JSON.stringify({ result: 'history-recovery-browser-passed', layouts, screenshots,
     checks: ['production standalone opener', 'peer same modal and preselection', 'normal comparison cannot recover', 'installation confirmation', 'preview', 'recover with confirmation',
       'nested recording fold', 'energy gaps separate from 28 retained-message diagnostics', 'point duration unknown', 'grouped signal disclosure and focus preserved on refresh',
-      'separate recovery/history views', 'close and reopen running job', 'complete result', 'whole operation revert and restore', 'old interrupted recovery', 'earlier pages', 'upload', 'keyboard focus and escape', '320/390/768/1440 both themes', 'short-screen header and scrolled review', 'family restriction'] }));
+      'separate recovery/history views', 'close and reopen running job', 'complete result', 'whole operation revert and restore', 'old interrupted recovery', 'earlier pages', 'upload', 'keyboard focus and escape', '320/390/768/1440 both themes', 'short-screen header and scrolled review', 'family restriction',
+      'normal slave no-recovery visual cue', 'failed recheck clears prior success', 'incompatible algorithm keeps mirroring blocked', 'exporter version provenance', 'slave-first upgrade guidance',
+      'phase counts and elapsed time without ETA', 'navigation during running phases', 'reload discovers server work', 'export preparation stays responsive', 'retained database size and no automatic expiry'] }));
   await send('Browser.close');
 } finally {
   socket?.close(); for (const task of pending.values()) clearTimeout(task.timer);

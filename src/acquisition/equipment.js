@@ -144,6 +144,7 @@ export function createEquipmentCapture({ engine, store, settings, publish, canCo
       ...(device.kind === 'dehumidifier' ? { stateLabels: CARAVAN_DEHUMIDIFIER_STATES } : {}), ...raw };
     if (device.kind === 'door' && value !== null) store.setState?.(`equipment:door:v1:${device.id}`, {
       signature: signature(device.id), reading: device.readings[definition.signal] });
+    if (!repeatedSource) reception.accept();
     return true;
   }
   function unavailable(device, reason, receivedAt = engine.clock()) {
@@ -505,6 +506,7 @@ export function createEquipmentCapture({ engine, store, settings, publish, canCo
     if (packet.retain) device.lastRetainedAt = receivedAt; else device.lastLiveAt = receivedAt;
     for (const check of device.checks) if (packet.retain) check.retainedReceived = true;
     if (topic === mapping.bridgeAvailabilityTopic) {
+      if (['online', 'offline'].includes(body)) reception.accept();
       if (body === 'offline') { device.bridgeOnline = false; device.online = null; unavailable(device, 'bridge-offline', receivedAt); }
       else if (body === 'online') {
         const needsReadback = device.bridgeOnline === false || !device.liveSinceConnect;
@@ -518,11 +520,13 @@ export function createEquipmentCapture({ engine, store, settings, publish, canCo
       return;
     }
     if (topic === mapping.availabilityTopic) {
+      if ([mapping.onlinePayload, mapping.offlinePayload].includes(body)) reception.accept();
       if (body === mapping.offlinePayload) { device.online = false; unavailable(device, 'device-offline', receivedAt); }
       else if (body === mapping.onlinePayload && !packet.retain) { device.online = true; completeChecks(device, receivedAt); }
       return;
     }
     if (topic === mapping.heartbeatTopic) {
+      if (!packet.retain) reception.accept();
       if (!packet.retain) { device.heartbeatAt = receivedAt; completeChecks(device, receivedAt); }
       return;
     }
@@ -720,6 +724,16 @@ export function createEquipmentCapture({ engine, store, settings, publish, canCo
     return { ...operation, deviceId: device.id, acknowledgement: 'mqtt-broker', confirmed: operation.status === 'observed' };
   }
   const api = {
+    receptionKey(topic, payload, broker) {
+      const nativeKey = broker === 'primary' ? native?.receptionKey(topic, payload) : null;
+      if (nativeKey) return nativeKey;
+      return devices.some(device => device.broker === broker && readTopics(device).includes(topic)) ? JSON.stringify(['equipment-mqtt', topic]) : null;
+    },
+    isReadRequest(topic, payload, broker) {
+      return broker === 'primary' && native?.isReadRequest(topic, payload)
+        || devices.some(device => device.broker === broker && topic === device.mqtt.requestTopic
+          && String(payload) === device.mqtt.requestPayload);
+    },
     topics: [...new Set([...(native?.topics ?? []), ...devices.flatMap(readTopics)])],
     ownsGarage: settings.ownsGarage === true, hasDhwr: Boolean(native?.hasDhwr),
     publishDhwr: on => native.publishDhwr(on), hasHeating: enabled.some(device => device.controlsHeat), signature,
@@ -778,8 +792,8 @@ export function createEquipmentCapture({ engine, store, settings, publish, canCo
         device.subscriptionStatus = 'failed'; unavailable(device, 'mqtt-subscription-failed');
       }
     },
-    receive(topic, payload, packet = {}, receivedAt = engine.clock(), broker = null) {
-      if ((broker === null || broker === 'primary') && native?.receive(topic, payload, packet, receivedAt)) {
+    receive(topic, payload, packet = {}, receivedAt = engine.clock(), broker = null, onAccepted = null) {
+      if ((broker === null || broker === 'primary') && native?.receive(topic, payload, packet, receivedAt, onAccepted)) {
         reception.run(() => {
           for (const device of devices.filter(row => row.temperatureControl)) {
             confirmDehumidifier(device, receivedAt); controlTemperature(device, receivedAt);
@@ -800,7 +814,7 @@ export function createEquipmentCapture({ engine, store, settings, publish, canCo
             { timestamped: scalar(at) && at >= 0 && at <= receivedAt })) receiveDevice(device, topic, body, packet, receivedAt);
         }
         return true;
-      });
+      }, { onAccepted });
     },
     tick(now = engine.clock()) {
       if (closed) return;

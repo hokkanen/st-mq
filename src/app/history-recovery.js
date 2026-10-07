@@ -3,8 +3,10 @@ import { constants } from 'node:fs';
 import { chmod, lstat, mkdir, open, opendir, rename, rm } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
 import { markRecoveryFailed } from '../recovery/state.js';
+import { createRecoveryHistoryReader } from './history-recovery-reader.js';
+import { validBackupMetadata } from '../storage/backup-metadata.js';
 import { RECOVERABLE_TABLES } from '../storage/schema.js';
-import { recoveryFailure } from '../recovery/errors.js';
+import { RECOVERY_ERROR_CODES, recoveryFailure } from '../recovery/errors.js';
 import { validRecoveryCoverageReport } from '../recovery/coverage-report.js';
 import { listSavedBackups } from '../storage/backup-catalog.js';
 
@@ -16,6 +18,12 @@ const sourceId = path => createHash('sha256').update(path).digest('hex');
 const fields = (value, allowed) => value !== null && typeof value === 'object' && !Array.isArray(value)
   && Object.keys(value).every(field => allowed.includes(field));
 const count = value => Number.isSafeInteger(value) && value >= 0;
+const progressPhases = new Set(['preparing', 'validating', 'snapshotting', 'importing', 'projecting', 'rebuilding', 'catching-up', 'publishing', 'checking']);
+const validProgress = value => fields(value, ['phase', 'processed', 'total', 'unit', 'updatedAt'])
+  && progressPhases.has(value.phase) && count(value.processed)
+  && (value.total === undefined || count(value.total) && value.total >= value.processed)
+  && (value.unit === undefined || ['records', 'entries', 'pages', 'bytes'].includes(value.unit))
+  && (value.updatedAt === undefined || Number.isFinite(value.updatedAt));
 const token = value => typeof value === 'string' && /^[a-zA-Z0-9:_-]{1,160}$/.test(value);
 const labels = { upload: /^Uploaded database$/, peer: /^Paired computer$/,
   backup: /^Saved backup · \d{4}-\d\d-\d\dT\d\d:\d\d:\d\d\.\d{3}Z$/,
@@ -29,8 +37,9 @@ function validSource(value) {
 function validReport(value) {
   const root = ['policy', 'counts', 'period', 'tables', 'model', 'donorDigest', 'input', 'sourceSelection', 'previewId',
     'sourceAssessment', 'status', 'imported', 'recoveryId', 'active', 'source', 'sourceEpoch', 'sourceHead',
-    'sourceFireplace', 'sourceSensor', 'decisionHead', 'contributionHead', 'conflictVersion', 'unsupported', 'coverage'];
+    'sourceFireplace', 'sourceSensor', 'decisionHead', 'contributionHead', 'conflictVersion', 'unsupported', 'coverage', 'sourceSoftware'];
   if (!fields(value, root)) return false;
+  if (value.sourceSoftware !== undefined && !validBackupMetadata(value.sourceSoftware)) return false;
   if (value.coverage !== undefined && !validRecoveryCoverageReport(value.coverage)) return false;
   if (value.conflictVersion !== undefined && value.conflictVersion !== null
     && !/^[a-f0-9]{64}$/.test(value.conflictVersion)) return false;
@@ -67,15 +76,15 @@ function validState(state) {
     || !state.sources.every(source => validSource(source) && source.kind === 'upload' && UUID.test(source.id))
     || !state.receipts.every(row => fields(row, ['id', 'signature']) && UUID.test(row.id) && typeof row.signature === 'string' && row.signature.length < 8192)) return false;
   const job = state.job;
-  if (job && (!fields(job, ['id', 'requestId', 'kind', 'status', 'startedAt', 'source', 'operationId', 'progress', 'finishedAt', 'error', 'result'])
+  if (job && (!fields(job, ['id', 'requestId', 'kind', 'status', 'startedAt', 'source', 'operationId', 'progress', 'finishedAt', 'error', 'errorCode', 'result'])
     || !UUID.test(job.id) || job.requestId !== job.id || !ACTIONS.has(job.kind)
     || !['running', 'complete', 'error', 'interrupted'].includes(job.status) || !Number.isFinite(job.startedAt)
     || job.source && !validSource(job.source) || job.result && !validReport(job.result)
     || job.operationId !== undefined && !token(job.operationId)
     || job.finishedAt !== undefined && !Number.isFinite(job.finishedAt)
     || job.error !== undefined && (typeof job.error !== 'string' || job.error.length > 300 || /[\r\n/\\]/.test(job.error))
-    || job.progress && (!fields(job.progress, ['phase', 'processed'])
-      || !['importing', 'rebuilding', 'catching-up', 'checking'].includes(job.progress.phase) || !count(job.progress.processed)))) return false;
+    || job.errorCode !== undefined && !RECOVERY_ERROR_CODES.includes(job.errorCode)
+    || job.progress && !validProgress(job.progress))) return false;
   const review = state.review;
   return !review || fields(review, ['kind', 'source', 'preview']) && ['recover', 'revert', 'restore'].includes(review.kind)
     && (!review.source || validSource(review.source)) && validReport(review.preview);
@@ -88,16 +97,19 @@ const safeError = error => recoveryFailure({ code: error?.code, errcode: error?.
 export function createHistoryRecovery({ store, getEngine, canControl = () => true, ready = () => true,
   getExportDirectory, getResetBackups = async () => [], pairContext, clock = Date.now,
   recoveryModule = () => import('../recovery/service.js'), directory = join(dirname(store.path), 'history-recovery'),
-  maxUploadBytes = 8 * 1024 ** 3, timeoutMs = 3_600_000 } = {}) {
+  maxUploadBytes = 8 * 1024 ** 3, timeoutMs, uploadTimeoutMs = 3_600_000 } = {}) {
   const key = 'history-recovery:coordinator';
   let state = store.getState(key) ?? { version: 1, sources: [], receipts: [], job: null, review: null };
   if (!validState(state))
     throw fail('Saved recovery state is invalid. Preserve this database and use a fresh current database.');
   let running = null, abort = null, operationSignal = null, closed = false, uploadRunning = false, uploadRequest = null, uploadSettled = null, uploadAbort = null, initialized = false;
   const lifetime = new AbortController();
-  const known = new Map();
+  let known = new Map(), sourceTask = null, sourceGeneration = 0;
+  let sourceCache = { rows: null, at: 0, error: null };
+  const history = createRecoveryHistoryReader(store);
   const persist = (options = {}) => {
     const snapshot = structuredClone(state);
+    if (snapshot.job) delete snapshot.job.progress;
     return store.runWrite(() => store.setState(key, snapshot), { signal: operationSignal ?? lifetime.signal, ...options });
   };
   const localBusy = () => Boolean(running || uploadRunning);
@@ -120,13 +132,13 @@ export function createHistoryRecovery({ store, getEngine, canControl = () => tru
       }
     }, { signal: lifetime.signal });
   }
-  async function sources() {
-    known.clear();
+  async function scanSources() {
+    const found = new Map();
     for (const source of state.sources) {
       if (!UUID.test(source.id) || source.kind !== 'upload') continue;
       const path = join(directory, 'uploads', `${source.id}.sqlite`);
       const info = await lstat(path).catch(() => null);
-      if (info?.isFile() && !info.isSymbolicLink()) known.set(source.id, { ...source, path });
+      if (info?.isFile() && !info.isSymbolicLink()) found.set(source.id, { ...source, path });
     }
     if (getExportDirectory) {
       let copies;
@@ -134,39 +146,74 @@ export function createHistoryRecovery({ store, getEngine, canControl = () => tru
       catch { throw fail('Saved backups could not be listed.'); }
       for (const { path, createdAt, bytes } of copies) {
         const id = sourceId(path);
-        known.set(id, { id, path, kind: 'backup', label: `Saved backup · ${new Date(createdAt).toISOString()}`,
+        found.set(id, { id, path, kind: 'backup', label: `Saved backup · ${new Date(createdAt).toISOString()}`,
           createdAt, bytes });
       }
     }
-    for (const source of await getResetBackups()) known.set(source.id, source);
-    const rows = [...known.values()].sort((a, b) => b.createdAt - a.createdAt).slice(0, 100).map(publicSource);
+    for (const source of await getResetBackups()) found.set(source.id, source);
+    return found;
+  }
+  async function refreshSources(force = false) {
+    if (sourceTask) {
+      if (!force) return sourceTask;
+      await sourceTask.catch(() => {});
+      if (sourceTask) return sourceTask;
+    }
+    if (closed) throw fail('Recovery storage is unavailable.');
+    const generation = sourceGeneration;
+    const task = scanSources().then(found => {
+      if (generation === sourceGeneration && !closed) {
+        known = found;
+        sourceCache = { rows: [...found.values()].sort((a, b) => b.createdAt - a.createdAt).slice(0, 100).map(publicSource), at: clock(), error: null };
+      }
+    }, error => {
+      if (generation === sourceGeneration && !closed) sourceCache = { ...sourceCache, at: clock(), error: 'Backup sources are unavailable. Refresh to retry.' };
+      throw error;
+    });
+    sourceTask = task;
+    try { await task; } finally { if (sourceTask === task) sourceTask = null; }
+  }
+  function sources() {
+    // Repeated progress requests use the same bounded source list. An action
+    // always scans afresh before resolving a source to its private path.
+    if (!sourceTask && !closed && (sourceCache.rows === null && !sourceCache.error
+      || !busy() && clock() - sourceCache.at >= 5000)) void refreshSources().catch(() => {});
+    const rows = [...(sourceCache.rows ?? [])];
     if (pairContext) rows.unshift({ id: 'peer', kind: 'peer', label: 'Paired computer', available: Boolean(pairContext.status()?.actions?.['check-recovery']) });
     return rows;
   }
   async function view({ before } = {}) {
-    const module = await recoveryModule();
     const engine = getEngine();
-    const operations = engine && module.listRecoveries ? module.listRecoveries(store, engine.config.input, { before, limit: 50 }) : [];
+    const options = { before, limit: 50 };
+    // This applies to terminal receipts too: a slow history count must not
+    // conceal completion or prevent the next status heartbeat from returning.
+    const page = engine ? history.snapshot(engine.config.input, options, { refresh: !busy() })
+      : { rows: [], loading: false, error: null };
+    const operations = page.rows;
     const last = operations.at(-1);
+    const listedSources = sources();
     return { available: available(), readOnly: !canControl() || store.readOnly, busy: busy(),
-      sources: await sources(), job: state.job, preview: state.review?.preview ?? null,
-      operations, nextBefore: operations.length === 50 ? `${last.startedAt}:${last.id}` : null,
+      sources: listedSources, sourcesLoading: sourceCache.rows === null && !sourceCache.error, sourcesError: sourceCache.error,
+      job: state.job, preview: state.review?.preview ?? null,
+      operations, operationsLoading: page.loading, operationsError: page.error, nextBefore: operations.length === 50 ? `${last.startedAt}:${last.id}` : null,
       peer: pairContext?.status() ?? null };
   }
   function begin(kind, requestId, source, operation) {
     assertIdle(source?.kind === 'peer');
     const engine = getEngine();
     abort = new AbortController();
-    const signal = AbortSignal.any([abort.signal, AbortSignal.timeout(timeoutMs)]);
+    const signal = timeoutMs === undefined ? abort.signal : AbortSignal.any([abort.signal, AbortSignal.timeout(timeoutMs)]);
     operationSignal = signal;
-    const job = { id: requestId, requestId, kind, status: 'running', startedAt: clock(), source };
-    state.job = job; state.review = null;
+    const job = { id: requestId, requestId, kind, status: 'running', startedAt: clock(), source,
+      progress: { phase: 'preparing', processed: 0, updatedAt: clock() } };
+    state.job = job; state.review = null; history.invalidate();
     const committed = persist();
     const isCurrent = () => !closed && !signal.aborted && canControl() && getEngine() === engine;
-    let lastProgress = 0;
-    const onProgress = async progress => {
-      job.progress = progress;
-      if (clock() - lastProgress >= 1000) { lastProgress = clock(); await persist(); }
+    const onProgress = progress => {
+      const value = { ...progress, updatedAt: clock() };
+      // Only transitions are durable. Progress must never compete for SQLite
+      // admission or confer permission to resume an interrupted operation.
+      if (validProgress(value) && isCurrent()) job.progress = value;
     };
     running = committed.then(() => {
       if (!isCurrent()) throw fail('Recovery authority changed.');
@@ -178,10 +225,10 @@ export function createHistoryRecovery({ store, getEngine, canControl = () => tru
         } });
     }).then(async result => {
       job.status = 'complete'; job.finishedAt = clock();
-      job.result = result?.report ?? result;
+      job.result = result?.report ?? result; history.invalidate();
       await persist(); return result;
     }, async error => {
-      job.status = signal.aborted ? 'interrupted' : 'error'; job.finishedAt = clock(); job.error = safeError(error);
+      job.status = signal.aborted ? 'interrupted' : 'error'; job.finishedAt = clock(); job.error = safeError(error); job.errorCode = recoveryFailure(error).code; history.invalidate();
       // A cancelled worker leaves the last committed job and source projection
       // for startup reconciliation. Diagnostic writes cannot hold revocation
       // open indefinitely while another connection owns SQLite.
@@ -241,7 +288,7 @@ export function createHistoryRecovery({ store, getEngine, canControl = () => tru
         ...(value.action === 'recover' ? { confirmed: value.confirmed, previewId: value.previewId } : {}) });
     } else if (value.action === 'check') {
       if (value.installationConfirmed !== true) throw fail('Confirm that this backup contains history from this household before checking it.');
-      await sources(); assertIdle();
+      await refreshSources(true); assertIdle();
       const source = known.get(value.sourceId);
       if (!source) throw fail('Choose an available saved or uploaded backup.');
       checkPath({ donorPath: source.path, source: publicSource(source), requestId: value.requestId });
@@ -250,7 +297,7 @@ export function createHistoryRecovery({ store, getEngine, canControl = () => tru
       if (value.confirmed !== true || review?.kind !== 'recover' || review.preview.previewId !== value.previewId)
         throw fail('Review this backup and confirm recovery first.');
       if (review.source?.kind === 'peer') throw fail('Use the paired source to retain its protection checks.');
-      await sources(); assertIdle();
+      await refreshSources(true); assertIdle();
       const source = known.get(review.source?.id);
       if (!source) throw fail('The checked backup is unavailable. Select an available source and check again.');
       if (state.review !== review) throw fail('The checked recovery changed. Review it again.');
@@ -293,7 +340,7 @@ export function createHistoryRecovery({ store, getEngine, canControl = () => tru
     uploadRunning = true;
     uploadRequest = request;
     uploadAbort = new AbortController();
-    const signal = AbortSignal.any([uploadAbort.signal, lifetime.signal, AbortSignal.timeout(timeoutMs)]);
+    const signal = AbortSignal.any([uploadAbort.signal, lifetime.signal, AbortSignal.timeout(uploadTimeoutMs)]);
     let finishUpload;
     uploadSettled = new Promise(resolve => { finishUpload = resolve; });
     const id = randomUUID(), path = join(directory, 'uploads', `${id}.partial`);
@@ -346,6 +393,7 @@ export function createHistoryRecovery({ store, getEngine, canControl = () => tru
       const expired = nextSources.splice(0, Math.max(0, nextSources.length - 16));
       state.sources = nextSources;
       await persist({ signal, isCurrent: () => !closed && authorized() && available() }); completed = true;
+      sourceGeneration++; sourceCache = { rows: null, at: 0, error: null };
       for (const row of expired) if (UUID.test(row.id)) await rm(join(directory, 'uploads', `${row.id}.sqlite`), { force: true }).catch(() => {});
       return { sourceId: id, source: publicSource(source) };
     } finally {
@@ -358,7 +406,7 @@ export function createHistoryRecovery({ store, getEngine, canControl = () => tru
     }
   }
   function cancel() { abort?.abort(); uploadAbort?.abort(); uploadRequest?.destroy?.(); }
-  async function close() { closed = true; lifetime.abort(); cancel(); await running?.catch(() => {}); await uploadSettled; }
+  async function close() { closed = true; lifetime.abort(); cancel(); await running?.catch(() => {}); await uploadSettled; await history.close(); await sourceTask?.catch(() => {}); }
   return { view, action, upload, initialize, busy, cancel, close, checkPath, applyPath,
     working: localBusy, currentJob: () => state.job, settled: async () => { await running?.catch(() => {}); await uploadSettled; } };
 }

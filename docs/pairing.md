@@ -599,6 +599,43 @@ by a network partition, they cannot negotiate authority until communication
 returns. Manual promotion cannot eliminate that interval of possible
 simultaneous control.
 
+## Software upgrades
+
+Use the existing handover; an upgrade does not introduce another authority path.
+Keep the installed runtime separate from development checkouts. Replacing source
+files under a running process can give newly created workers a different database
+or learning contract from the process that started them.
+
+For a release pair that explicitly supports a rolling upgrade:
+
+1. Preserve a verified database backup and the separate private configuration and
+   pairing state. Read the target release's upgrade requirements first.
+2. Upgrade the slave and start it without changing its saved role. Confirm that it
+   can synchronize and use the master's history; a connected peer alone is not
+   proof of compatibility or handover readiness.
+3. Use ordinary **Hand over to the other computer** and wait for completion: the receiving computer
+   is master and the former master is slave. Do not stop a computer merely because
+   the request was accepted. Interrupted or uncertain handovers remain protected.
+4. Upgrade the former master. Its saved slave role and history ancestry survive;
+   it returns as a slave and catches up without manual history recovery. Confirm
+   synchronization before considering the upgrade complete.
+
+The current pre-v1.0.0 runtime rejects incompatible development databases and
+learning journals. This sequence does not promise mixed-version operation today;
+follow each release's requirements, including a deliberate stopped upgrade or
+archived fresh development start when required. An incompatible format is not
+evidence of corruption or divergent history. Preserve originals and resolve the
+reported compatibility problem; repeated checks cannot translate old formats.
+
+Beginning with the v1.0.0 production baseline, [F9](../AGENTS.md#f9) requires each
+later production release to provide and test its specific upgrade from the
+preceding production release's database and persisted state. Older production
+backups retain a documented path through intermediate releases. This is a release
+obligation, not a universal old-database reader or speculative migration framework.
+Any unsupported rolling transition must be explained before the master stops.
+Restoration duties, recorded history and roles are part of the upgrade contract;
+copying a database alone does not transfer command permission.
+
 ## Reset pairing
 
 The admin-only **Reset pairing** action changes only this computer. It keeps
@@ -756,8 +793,11 @@ stays compact when closed and still shows important progress or attention messag
 the same layout, with recovery and handover performed from the master's UI.
 
 Checks are initiated on the master. When the other computer is a normal slave,
-the result is an informational **History source checked** result. It validates
-the donor database and reports category date ranges for both computers, recorded
+the result is an informational **No recovery needed** result with a checkmark.
+It validates that slave snapshot, not whether every current master record has
+already been mirrored. Current synchronization and compatibility problems remain
+visible separately and take precedence over an earlier successful source check.
+The check reports category date ranges for both computers, recorded
 energy gaps and potential source coverage, without a trial import or model
 rebuild. Normal mirroring remains enabled, so recovery and resume-mirroring actions
 are unavailable. A record
@@ -884,6 +924,17 @@ Conflicts and unsupported donor entries are counted, not silently rewritten
 into the master. Temporary transfer copies can be removed after verified rejoin,
 but the other computer retains its original former-master database and any SQLite
 sidecars. This also preserves excluded datasets such as saved charging reports.
+If the protected computer held only a slave snapshot, rejoin first retains a
+verified self-contained copy in its pairing exports directory. That copy is pinned
+against normal pruning and remains inactive after later synchronization. An
+additional full database-sized copy therefore consumes storage on that computer.
+The confirmation shows the checked source size when known. There is no automatic
+expiry: repeated protected rejoins can accumulate copies until the owner deliberately
+archives or removes them. Ordinary successful mirroring still prunes its routine
+snapshots and does not create this archive on each synchronization. An
+interrupted replacement continues to check that retained donor, not the replacement
+master snapshot. Missing or invalid retained history blocks completion and leaves
+the protected management UI available with the failure reason.
 A failed or interrupted recovery keeps protection in place for another explicit
 check. Independent self-contained database exports remain advisable before
 maintenance; an inactive database with sidecars is not a single-file backup.

@@ -56,6 +56,50 @@ test('schema failures explain deliberate recovery without suggesting broker fixe
     assert.doesNotMatch(text, /MQTT|credentials/);
 });
 
+test('incompatible algorithms, state and integrity errors remain distinct and block generic recovery advice', () => {
+  for (const [error, explanation] of [['database_algorithm_mismatch', /different learning algorithm/],
+    ['database_state_incompatible', /Saved application state is incompatible/], ['database_integrity_failed', /integrity check/]]) {
+    const view = standby({ role: 'protected', reason: 'activation_failed', error });
+    assert.match(pairDisplay(view).summary, explanation);
+    assert.doesNotMatch(pairDisplay(view).summary, /retry promotion|recover gaps/);
+    const { document, $ } = fixture();
+    createPairPanel({ document, request: async () => {} }).update(view);
+    assert.match($('pairing-standby-help').textContent, /does not convert or repair/);
+    const failed = primary({ peer: { reachable: true, role: 'protected' },
+      recovery: { state: 'error', donorRole: 'protected', error } });
+    assert.match(pairActionHelp(failed).rejoin, /Mirroring stays blocked.*failed/);
+    assert.match(pairActionHelp(failed).rejoin, explanation);
+  }
+});
+
+test('the master displays a connected slave synchronization failure without mislabeling it local history', () => {
+  const peer = { reachable: true, role: 'slave', sync: { state: 'error', error: 'database_algorithm_mismatch' } };
+  assert.match(pairIssueHelp(primary({ peer })), /different learning algorithm/);
+  assert.equal(pairIssueHelp(primary({ peer: { ...peer, reachable: false } })), '');
+  assert.doesNotMatch(pairIssueHelp({ error: 'snapshot_failed' }), /Local history/);
+  assert.match(pairIssueHelp({ error: 'snapshot_failed' }), /source computer/);
+  assert.doesNotMatch(pairIssueHelp(primary({ peer: { ...peer, sync: { state: 'error', error: '/private/path' } } })), /private/);
+});
+
+test('remote database failures keep the active master summary while their source and error remain visible', () => {
+  const error = 'database_algorithm_mismatch';
+  for (const view of [
+    primary({ peer: { reachable: true, role: 'slave', sync: { state: 'error', error } } }),
+    primary({ peer: { reachable: true, role: 'protected' }, recovery: { state: 'error', donorRole: 'protected', error } }),
+    primary({ error, peer: { reachable: true, role: 'protected' },
+      uiOperation: { action: 'check-recovery', state: 'error', errorCode: error },
+      recovery: { state: 'error', donorRole: 'protected', error } }),
+  ]) {
+    const { document, $ } = fixture();
+    createPairPanel({ document, request: async () => {} }).update(view);
+    assert.match($('pairing-summary').textContent, /This computer is the master.*Equipment control follows its current permissions/);
+    assert.doesNotMatch($('pairing-summary').textContent, /different learning algorithm|database|incompatible/i);
+    assert.match($('pairing-sync').textContent, /other computer/i);
+    assert.match($('pairing-message').textContent, /different learning algorithm/);
+    assert.equal($('pairing-panel').dataset.tone, 'attention');
+  }
+});
+
 test('MQTT listener status distinguishes socket connections from fresh device readiness', () => {
   const waiting = pairDisplay(primary({ mqttFrontend: { listening: false, ready: false, connections: 0, error: null } }));
   assert.match(waiting.broker, /listener is not ready/);
@@ -209,6 +253,13 @@ test('force promotion requires explicit confirmation and never becomes an automa
   assert.match(confirmations[0], /unreachable computer may still be controlling/i);
   assert.equal(actions.snapshot().pending, null);
   assert.match(pairConfirmation('rejoin'), /previous database is retained inactive/);
+  for (const discardUnrecovered of [false, true]) {
+    const warning = pairConfirmation('rejoin', { discardUnrecovered, donorBytes: 128 * 1024 ** 2 });
+    assert.match(warning, /additional full database-sized copy/);
+    assert.match(warning, /128 MiB/);
+    assert.match(warning, /no automatic expiry/);
+    assert.match(warning, /accumulate copies/);
+  }
 });
 
 test('first setup explains explicit master selection while both fresh computers remain read-only slaves', async () => {
@@ -706,11 +757,11 @@ test('normal slave comparisons never claim that differences require recovery or 
     const view = primary({ recovery: { state: 'ready', donorRole: 'slave', preview: { ...preview(), tables: [{ name: 'observations', count: records }] } },
       actions: { 'check-recovery': true, recover: false, rejoin: false } });
     panel.update(view);
-    assert.match($('pairing-recovery').textContent, /normal slave.*Normal mirroring is automatic/);
+    assert.match($('pairing-recovery').textContent, /No recovery needed.*normal mirroring applies master changes automatically/);
     assert.match($('pairing-rejoin-help').textContent, /does not require resuming mirroring/);
       assert.equal($('pairing-rejoin').disabled, true);
     renderRecoveryReport(document, $('shared-preview'), view.recovery.preview, { comparison: true });
-    assert.match(allText($('shared-preview')), /History source checked/);
+    assert.match(allText($('shared-preview')), /No recovery needed/);
     assert.match(allText($('shared-preview')), new RegExp(`Observations: ${records}`));
     assert.doesNotMatch(allText($('shared-preview')), /Recovery preview|Missing entries:|Recovery includes rebuilding/);
     assert.equal(pairActionAllowed({ ...view, actions: { recover: true, rejoin: true } }, 'recover'), false);

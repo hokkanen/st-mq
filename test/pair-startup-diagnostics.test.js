@@ -11,6 +11,7 @@ import { Store, SCHEMA_VERSION } from '../src/storage/store.js';
 import { startPaired } from '../src/pairing/runtime.js';
 import { startupFailureDiagnostic } from '../src/pairing/manager.js';
 import { databaseErrorDetails } from '../src/storage/database-errors.js';
+import { readReplicaPublication } from '../src/replication/publication.js';
 
 const now = Date.parse('2026-01-09T12:00Z');
 const failure = code => Object.assign(new Error('synthetic private diagnostic'), { code });
@@ -198,6 +199,62 @@ test('an incompatible master database reports its schema failure and stays prote
     assert.equal(restarted.app.pair.canControl(), false);
     assert.deepEqual(await readFile(path), bytes);
   });
+});
+
+test('unreadable control state retains its public compatibility diagnosis across protected restart', async t => {
+  const f = await fixture(t), initial = await f.open('controller');
+  const path = initial.app.pair.state.value.activeDbPath;
+  await f.close(initial.app);
+  const raw = new DatabaseSync(path);
+  raw.prepare('INSERT INTO state(key,value,updated_at) VALUES(?,?,?)').run('executor:home', 'synthetic unreadable state', now);
+  raw.close();
+  const before = await readFile(path);
+  const failed = await f.open('controller', { openStore: true });
+  assert.equal((await status(failed.app)).pair.error, 'database_state_incompatible');
+  assert.equal(failed.app.pair.state.value.activationError, 'database_state_incompatible');
+  assert.equal(failed.app.pair.canControl(), false);
+  assert.equal(failed.diagnostics[0].reason, 'database_state_incompatible');
+  assert.doesNotMatch(JSON.stringify(failed.diagnostics), /synthetic unreadable|executor:home/);
+  assert.deepEqual(await readFile(path), before);
+  await f.close(failed.app);
+  const restarted = await f.open('controller', { openStore: true });
+  assert.equal((await status(restarted.app)).pair.error, 'database_state_incompatible');
+  assert.equal(restarted.primaryStarts(), 0);
+  assert.deepEqual(await readFile(path), before);
+});
+
+test('a missing retained donor keeps protected management available and blocks release after restart', async t => {
+  const f = await fixture(t), master = await f.open('master'), donor = await f.open('donor', { role: 'slave' });
+  const connect = other => {
+    master.app.pair.peer.peerUrl = `http://127.0.0.1:${other.app.pair.peer.server.address().port}`;
+    other.app.pair.peer.peerUrl = `http://127.0.0.1:${master.app.pair.peer.server.address().port}`;
+  };
+  connect(donor);
+  const pair = donor.app.pair, primary = master.app.pair;
+  await pair.synchronize(primary.state.claim());
+  const publication = await readReplicaPublication(pair.config.snapshotDirectory);
+  const changed = new Store(publication.dbPath); changed.setState('synthetic-divergence', true); changed.close();
+  await pair.synchronize(primary.state.claim());
+  primary.hooks.recoveryPreview = async () => ({ previewId: 'a'.repeat(64), status: 'checked', model: { status: 'not-assessed' } });
+  await primary.action('check-recovery', { requestId: randomUUID() });
+  const request = { requestId: randomUUID(), confirmed: true, discardUnrecovered: true, previewId: 'a'.repeat(64) };
+  const closeReplica = pair.hooks.closeReplica;
+  pair.hooks.closeReplica = async () => { throw failure('runtime_failed'); };
+  await assert.rejects(primary.action('rejoin', request), { code: 'runtime_failed' });
+  pair.hooks.closeReplica = closeReplica;
+  const retained = join(pair.snapshots.directory, `export-${pair.state.value.release.preservedSnapshot.generation}.sqlite`);
+  await f.close(donor.app);
+  await rm(retained);
+  const restarted = await f.open('donor', { role: 'slave' }); connect(restarted);
+  const view = await status(restarted.app);
+  assert.equal(view.pair.role, 'protected');
+  assert.equal(view.pair.error, 'verification_failed');
+  assert.equal(view.readOnly, true);
+  assert.equal(restarted.primaryStarts(), 0);
+  await assert.rejects(restarted.app.pair.exportSnapshot({ force: true }), { code: 'verification_failed' });
+  await assert.rejects(primary.action('rejoin', request), { code: 'verification_failed' });
+  assert.equal(restarted.app.pair.state.value.role, 'protected');
+  assert.equal(primary.canControl(), true);
 });
 
 test('a generic saved failure is refined by current database validation without retrying control', async t => {

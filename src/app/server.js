@@ -7,7 +7,7 @@ import { getChartData, chartRequestRange } from './chart-data.js';
 import { prepareChartResponse, encodeChartResponse } from './chart-wire.js';
 import { simulatedOutlook } from './simulator.js';
 import { createChartService } from './chart-service.js';
-import { createDatabaseExport } from './database-export.js';
+import { createDatabaseExport, databaseExportErrorMessage } from './database-export.js';
 import { createRecordingHealth } from './recording-health.js';
 import { familyRouteAllowed, familyActionAllowed, fireplaceAccess, FAMILY_FIREWOOD_REMOVAL_MS } from './web-permissions.js';
 import { ChargingSessionDiagnostics } from '../charging/session-diagnostics.js';
@@ -310,7 +310,8 @@ export function createAppServer({ engine, getEngine = () => engine, store, chart
             if (result) return json(200, result);
           } catch (error) {
             if (error.statusCode === 409) throw error;
-            return json(503, { error: 'Could not save the database copy. Check that the configured export folder is writable and has enough free space.' });
+            return json(503, { error: databaseExportErrorMessage(error.code)
+              ?? 'Could not save the database copy. Check that the configured export folder is writable and has enough free space.' });
           }
           return;
         }
@@ -585,6 +586,9 @@ export function createAppServer({ engine, getEngine = () => engine, store, chart
       }
     } catch (error) {
       if (!res.destroyed) {
+        if (req.method === 'GET' && /^\/api\/database-export(?:\?|$)/.test(req.url)
+          && databaseExportErrorMessage(error.code))
+          return json(error.statusCode ?? 503, { error: databaseExportErrorMessage(error.code) });
         if (/^\/api\/history-recovery(?:\/(?:action|upload))?(?:\?|$)/.test(req.url)) {
           // Filesystem and SQLite failures can contain private paths or source
           // content. Only coordinator-authored explanations cross this boundary.

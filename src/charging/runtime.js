@@ -1,5 +1,5 @@
 import { chargingDefaults, mergeChargingSettings, chargingSettingsFromConfiguration, resolveChargingDeadline } from './settings.js';
-import { acceptVehicleReading, validateBmwChargingHistory, bmwConsumedChargingAt, bmwHomeContext, bmwIdentityContextValid, connectionEvidenceStart, matchTeslaSession, matchTeslaMinimumCurrent, measuredChargingCurrent, bmwSessionMatchDetails, matchBmwControlledPause, pendingBmwControlledPause, pendingBmwSession, bmwDisconnectEvent, bmwReconnectEvent } from './vehicle.js';
+import { acceptVehicleReading, bmwConsumedChargingAt, bmwHomeContext, bmwIdentityContextValid, connectionEvidenceStart, matchTeslaSession, matchTeslaMinimumCurrent, measuredChargingCurrent, bmwSessionMatchDetails, matchBmwControlledPause, pendingBmwControlledPause, pendingBmwSession, bmwDisconnectEvent, bmwReconnectEvent } from './vehicle.js';
 import { chargingConfiguration } from './config.js';
 import { TIME_ZONE } from '../domain/prices.js';
 import { CHARGER_DEFINITIONS, buildCharger } from './model.js';
@@ -17,10 +17,10 @@ import { recordedChargingEnergy } from './energy.js';
 import { updateSupplyEstimate } from './supply.js';
 import { restoreChargingProgress, updateChargingProgress } from './progress.js';
 import { updateSessionCost } from './session-cost.js';
-import { updateTargetState, targetSelection, validateTargetState, validateTargetSelection } from './target.js';
+import { updateTargetState, targetSelection } from './target.js';
 import { acceptEaseeTransition } from './stream-evidence.js';
 import { confirmedIdentityPause } from './identity-evidence.js';
-import { advanceIdentification, prepareActiveBmwCandidate, matchActiveBmwPause, validateIdentificationState, IDENTIFICATION_ENERGY_LIMIT_KWH, IDENTIFICATION_PAUSE_WAIT_MS } from './identification.js';
+import { advanceIdentification, prepareActiveBmwCandidate, matchActiveBmwPause, IDENTIFICATION_ENERGY_LIMIT_KWH, IDENTIFICATION_PAUSE_WAIT_MS } from './identification.js';
 import { shellyAssociation, shellyCurrentCommandReadback } from './shelly-evse.js';
 import { mqttSourceIdentity } from '../pairing/mqtt-source-context.js';
 import { ChargingSessionDiagnostics } from './session-diagnostics.js';
@@ -28,7 +28,8 @@ import { ChargingAllowanceHistory, shellyLimiterStatus, shellyAllowanceStatus, e
 import { ChargingPhysicalTests } from './physical-tests.js';
 import { bmwVehicleSetup, teslaVehicleSetup } from './setup.js';
 import { readPlanningVoltage } from '../storage/voltage.js';
-import { validateJointTeslaComparison, jointTeslaComparisonScope } from './joint-identification.js';
+import { jointTeslaComparisonScope } from './joint-identification.js';
+import { validateChargingRuntimeState } from './runtime-state.js';
 
 const MINUTE = 60_000;
 const CURRENT_RECONCILE_MS = 5000;
@@ -70,43 +71,6 @@ function currentSharingActive(control, now) {
 const copyRequest = value => structuredClone(value);
 const object = input => input && typeof input === 'object' && !Array.isArray(input);
 const sessionConnectedAt = request => Number(request.scope.split(':').at(-1));
-function validateSavedRequest(request, association) {
-  if (request == null) return;
-  try {
-    if (!object(request) || Object.keys(request).some(key => !['scope', 'sessionId', 'revision', 'deadlineAt', 'overrides', 'anchorAt', 'readyBy', 'chargeNow'].includes(key))
-      || typeof request.scope !== 'string' || request.scope !== `${association}:${sessionConnectedAt(request)}`
-      || !Number.isSafeInteger(sessionConnectedAt(request)) || sessionConnectedAt(request) < 0 || request.sessionId !== request.scope
-      || !Number.isSafeInteger(request.revision) || request.revision < 1
-      || !Number.isSafeInteger(request.deadlineAt) || !object(request.overrides)
-      || request.chargeNow !== undefined && request.chargeNow !== true
-      || request.anchorAt !== undefined && (!Number.isSafeInteger(request.anchorAt) || request.anchorAt < 0)) throw new Error();
-    chargingDefaults(request.overrides, { partial: true });
-    if (request.readyBy !== undefined) chargingDefaults({ readyBy: request.readyBy }, { partial: true });
-  } catch { throw new Error('Unsupported saved charging session; start a fresh development database'); }
-}
-function validateSavedControls(value, priority = false) {
-  if (value === undefined) return;
-  const keys = priority ? ['association', 'priority', 'revision'] : ['enabled', 'revision'];
-  if (!object(value) || Object.keys(value).sort().join(',') !== keys.sort().join(',')
-    || !Number.isSafeInteger(value.revision) || value.revision < 0
-    || (priority ? !/^[a-f0-9]{64}$/.test(value.association) || !['balanced', 'charger1', 'charger2'].includes(value.priority)
-      : typeof value.enabled !== 'boolean'))
-    throw new Error('Unsupported saved charging controls; start a fresh development database');
-}
-function validateCurrentIdentificationEvidence(evidence) {
-  validateJointTeslaComparison(evidence?.teslaCurrentMatch);
-  const candidate = evidence?.teslaCurrentCandidate;
-  const time = value => Number.isSafeInteger(value) && value >= 0;
-  const id = value => typeof value === 'string' && value.length > 0 && value.length <= 128;
-  if (candidate != null && (!object(candidate)
-    || Object.keys(candidate).sort().join(',') !== 'minimumPhysicalAt,observedAt,physicalAt,receivedAt,testId,vehicleAssociation'
-    || !id(candidate.testId) || !id(candidate.vehicleAssociation) || !time(candidate.observedAt)
-    || ['receivedAt', 'physicalAt', 'minimumPhysicalAt'].some(key => !time(candidate[key]) || candidate[key] > candidate.observedAt))
-    || ['teslaCurrentResolvedTestId', 'teslaCurrentMatchTestId'].some(key => evidence?.[key] != null && !id(evidence[key]))
-    || evidence?.bmwContestedPauseRequestedAt !== undefined && !time(evidence.bmwContestedPauseRequestedAt)
-    || evidence?.teslaCurrentMatch != null && evidence.teslaCurrentMatch.testId !== evidence.teslaCurrentMatchTestId)
-    throw new Error('Unsupported saved current identification evidence; start a fresh development database');
-}
 function consumeBmwEpisode(feed, readingId) {
   const nextAt = bmwConsumedChargingAt(feed.reading, readingId);
   const previousAt = bmwConsumedChargingAt(feed.reading, feed.consumedChargingId);
@@ -183,24 +147,11 @@ export class ChargingRuntime {
     this.limiterHistory = new ChargingAllowanceHistory({ store, input: config.input });
     this.physicalTests = new ChargingPhysicalTests({ store, key: `${this.key}:physical-tests`, clock });
     const saved = store.getState(this.key) ?? {};
-    if (Object.keys(saved).length && (saved.version !== 6 || Object.keys(saved).some(key => !['version', 'revision', 'controls', 'chargers', 'vehicleFeeds', 'consumedTeslaPower', 'consumedTeslaCurrent', 'view'].includes(key)))) throw new Error('Unsupported charging state; start a fresh development database');
-    for (const consumed of [saved.consumedTeslaPower, saved.consumedTeslaCurrent])
-      if (consumed != null && (!object(consumed) || Object.keys(consumed).sort().join(',') !== 'association,receivedAt'
-        || typeof consumed.association !== 'string' || !consumed.association.length
-        || !Number.isSafeInteger(consumed.receivedAt) || consumed.receivedAt < 0))
-        throw new Error('Unsupported consumed vehicle evidence; start a fresh development database');
+    validateChargingRuntimeState(saved);
     this.consumedTeslaPower = saved.consumedTeslaPower ?? null;
     this.consumedTeslaCurrent = saved.consumedTeslaCurrent ?? null;
     this.revision = saved.revision ?? 0;
     this.settings = chargingSettingsFromConfiguration(this.configuration);
-    validateSavedControls(saved.controls, true);
-    for (const previous of Object.values(saved.chargers ?? {})) {
-      validateSavedControls(previous.controls);
-      validateTargetState(previous.targetState);
-      if (previous.replan !== undefined && typeof previous.replan !== 'boolean')
-        throw new Error('Unsupported saved charging controls; start a fresh development database');
-    }
-    for (const previous of saved.view?.chargers ?? []) validateTargetSelection(previous.targetSelection);
     this.streamAssociation = digest(config.connections?.easee?.charger_id ?? null);
     this.streamPending = new Set(); this.streamPersistencePending = false;
     this.vehicleFeeds = Object.fromEntries(Object.entries(this.configuration.vehicles).filter(([, definition]) => definition.provider === 'bmw-cardata').map(([id, definition]) => {
@@ -208,7 +159,6 @@ export class ChargingRuntime {
       const broker = mqttSourceIdentity(config, 'ha');
       const association = digest([definition.provider, definition.mqttTopic, broker.address, broker.username]);
       const reading = previous?.reading?.association === association ? previous.reading : null;
-      validateBmwChargingHistory(reading);
       return [id, { ...definition, id, association, mqtt: initialMqtt(),
         reading, consumedPlugId: reading ? previous?.consumedPlugId ?? null : null,
         consumedChargingId: reading ? previous?.consumedChargingId ?? null : null }];
@@ -218,9 +168,6 @@ export class ChargingRuntime {
         : shellyAssociation(this.configuration.chargers.charger2, { address: mqttSourceIdentity(config, 'primary').address,
           user: mqttSourceIdentity(config, 'primary').username });
       const previous = saved.chargers?.[definition.id]?.association === association ? saved.chargers[definition.id] : {};
-      validateSavedRequest(previous.request, association);
-      validateCurrentIdentificationEvidence(previous.vehicleEvidence);
-      if (previous.identification != null) validateIdentificationState(previous.identification);
       const streamMatches = previous.streamAssociation === this.streamAssociation;
       return [definition.id, { definition, association, ownershipAdmitted: saved.chargers?.[definition.id]?.association === association,
         controls: previous.controls ?? { enabled: false, revision: 0 }, replan: previous.replan === true,

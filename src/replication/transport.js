@@ -13,7 +13,8 @@ const SAFE_PATH = /^[A-Za-z0-9_./-]+$/;
 const PUBLIC_ERRORS = new Set(['configuration_invalid', 'tool_unavailable', 'connection_failed', 'transfer_failed',
   'snapshot_failed', 'verification_failed', 'integrity_failed', 'receiver_busy', 'receiver_failed', 'snapshot_busy',
   'directory_not_empty', 'unsafe_directory', 'invalid_publication', 'timed_out', 'stopped', 'protocol_failed',
-  'database_schema_mismatch', 'database_schema_invalid']);
+  'database_schema_mismatch', 'database_schema_invalid', 'database_algorithm_mismatch',
+  'database_state_incompatible', 'database_integrity_failed']);
 
 export function publicReplicationError(error) {
   return PUBLIC_ERRORS.has(error?.code) ? error.code : 'transfer_failed';

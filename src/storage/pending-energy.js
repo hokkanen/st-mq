@@ -2,8 +2,18 @@
  * Historical queries may use it only after both measurement and receipt. */
 export function pendingEnergyObservations(store, { now, input, prefix, source, device } = {}) {
   if (!Number.isSafeInteger(now)) throw new TypeError('Pending energy requires an explicit receipt cutoff');
+  return pendingEnergyObservationsFromStates(
+    store.db.prepare("SELECT key,value FROM state WHERE key LIKE 'recorder:energy:%'").iterate(),
+    { now, input, prefix, source, device });
+}
+
+/** Normalize a captured set of recorder states with the same receipt and
+ * quality representation as current pending history. Recovery uses its saved
+ * cutoff so a formerly future tail cannot become evidence retroactively. */
+export function pendingEnergyObservationsFromStates(states, { now, input, prefix, source, device } = {}) {
+  if (!Number.isSafeInteger(now)) throw new TypeError('Pending energy requires an explicit receipt cutoff');
   const rows = [];
-  for (const row of store.db.prepare("SELECT key,value FROM state WHERE key LIKE 'recorder:energy:%'").iterate()) {
+  for (const row of states) {
     let identity, state;
     try { identity = JSON.parse(row.key.slice('recorder:energy:'.length)); state = JSON.parse(row.value); } catch { continue; }
     if (!Array.isArray(identity) || identity.length !== 3

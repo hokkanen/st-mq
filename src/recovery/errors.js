@@ -1,3 +1,5 @@
+import { databaseErrorDetails } from '../storage/database-errors.js';
+
 const messages = Object.freeze({
   recovery_database_busy: 'Recovery could not obtain a database lock. Wait for the current database work to finish, then check again before retrying.',
   recovery_storage_full: 'Recovery ran out of storage space. Free space on this computer, then check again before retrying.',
@@ -9,9 +11,13 @@ const messages = Object.freeze({
   recovery_worker_failed: 'The recovery worker stopped before completion. The previous model remains selected. Check again before retrying.',
   recovery_failed: 'Recovery could not finish. Keep both databases intact and check again before retrying.',
   recovery_scope_mismatch: 'This backup belongs to a different simulation or live environment. Choose history for the current environment.',
+  recovery_source_not_snapshot: 'This source is a working database, not a self-contained backup. Use Export database on its computer, then check the saved copy. Keep the original database and its companion files together.',
   recovery_other_input: 'This recovery affects saved learning in another input. Keep it active or use a separate database for that input.',
   database_schema_mismatch: 'The database schema does not match this application. Use an intact current-schema backup or deliberately start with a fresh database.',
   database_schema_invalid: 'The database structure does not match its declared schema. Use an intact current-schema backup or deliberately start with a fresh database.',
+  database_algorithm_mismatch: 'This database uses a different learning algorithm. Its history is preserved. Use matching software to inspect it; recovery requires a supported database for this version.',
+  database_state_incompatible: 'This database contains saved application state that this version cannot safely use. Its history is preserved. Use matching software to inspect it before choosing a supported recovery path.',
+  database_integrity_failed: 'This database failed its integrity checks and cannot be used safely. Keep its files intact and check storage or choose an intact verified backup.',
 });
 
 export const RECOVERY_ERROR_CODES = Object.freeze(Object.keys(messages));
@@ -36,6 +42,7 @@ export function recoveryFailure(error, fallback = 'recovery_failed') {
     code = sqliteCodes.get(error.errcode & 0xff);
   }
   if (!code) code = filesystemCodes.get(error?.code);
+  if (!code) code = databaseErrorDetails(error)?.code;
   code ??= Object.hasOwn(messages, fallback) ? fallback : 'recovery_failed';
   // These messages are authored by the recovery workers, never SQLite or the
   // filesystem. Keep their specific review instructions in the history API.

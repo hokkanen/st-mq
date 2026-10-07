@@ -1,4 +1,5 @@
 import { randomUUID } from 'node:crypto';
+import { pendingEnergyObservationsFromStates } from '../storage/pending-energy.js';
 import { learningVersion } from '../app/committed-learning.js';
 
 export const selectedHistory = store => store.db.prepare('SELECT generation FROM history_selection WHERE id=1').get().generation;
@@ -11,10 +12,28 @@ export function recoverySource(source) {
     throw new TypeError('Recovery source metadata is invalid');
   return { kind: source.kind, label: source.label };
 }
-export const recoveryEvidenceVersion = store => learningVersion({
-  observations: store.db.prepare('SELECT COALESCE(MAX(id),0) n FROM observations').get().n,
-  energy: store.db.prepare("SELECT key,value FROM state WHERE key LIKE 'recorder:energy:%' ORDER BY key").all(),
+export const recoveryCoverageEvidence = store => ({
+  head: store.db.prepare('SELECT COALESCE(MAX(id),0) n FROM recorder_coverage').get().n,
+  // Held readings can extend a coverage row without inserting an observation.
+  // Only current stream cursors can be extended by live recording; resolve
+  // those bounded IDs first rather than scanning retained coverage history.
+  rows: store.db.prepare(`WITH current_ids AS MATERIALIZED (
+    SELECT DISTINCT json_extract(value,'$.coverageId') id FROM state
+    WHERE key LIKE 'recorder:signal:%' AND json_valid(value) AND json_type(value,'$.coverageId')='integer')
+    SELECT c.id,c.source,c.device,c.signal,c.status,c.start_at,c.end_at,c.source_time,c.observation_id
+    FROM current_ids i JOIN recorder_coverage c ON c.id=i.id ORDER BY c.id`).all(),
 });
+export function recoveryEvidenceVersion(store, { now = Date.now() } = {}) {
+  const energy = store.db.prepare("SELECT key,value FROM state WHERE key LIKE 'recorder:energy:%' ORDER BY key").all();
+  return learningVersion({
+    observations: store.db.prepare('SELECT COALESCE(MAX(id),0) n FROM observations').get().n,
+    energy,
+    // A future receipt can become eligible without any SQLite write. Include
+    // normalized admitted evidence, so publication detects that clock boundary.
+    pending: pendingEnergyObservationsFromStates(energy, { now }),
+    coverage: recoveryCoverageEvidence(store),
+  });
+}
 
 // Local foreign keys and recovery receipts are not physical source identity.
 // Keep timestamps, values, units, quality and meaningful source context intact.
@@ -154,12 +173,12 @@ export function rememberContribution(store, recoveryId, table, row, original = r
     VALUES(?,?,?,?) ON CONFLICT DO NOTHING`).run(recoveryId, table, recordKey(table, row), fingerprint ?? sourceFingerprint(sourceStore, table, original));
 }
 
-export function rejectedContribution(store, table, row, sourceStore = store) {
+export function rejectedContribution(store, table, row, sourceStore = store, fingerprint) {
   if (!store.db.prepare('SELECT 1 FROM recovery_members WHERE table_name=? LIMIT 1').get(table)) return false;
   return Boolean(store.db.prepare(`SELECT 1 FROM recovery_members m JOIN history_recoveries r ON r.id=m.recovery_id
     WHERE m.table_name=? AND m.fingerprint=? AND (r.active=0 OR EXISTS(
       SELECT 1 FROM recovery_exclusions x WHERE x.generation=(SELECT generation FROM history_selection WHERE id=1)
-      AND x.table_name=m.table_name AND x.record_key=m.record_key)) LIMIT 1`).get(table, sourceFingerprint(sourceStore, table, row)));
+      AND x.table_name=m.table_name AND x.record_key=m.record_key)) LIMIT 1`).get(table, fingerprint ?? sourceFingerprint(sourceStore, table, row)));
 }
 
 export function listRecoveries(store, input, { limit = 50, before } = {}) {

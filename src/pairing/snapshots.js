@@ -113,7 +113,10 @@ export class SnapshotRepository {
     const names = new Set(await readdir(this.directory));
     for (const name of names) {
       const match = /^export-([a-f0-9-]+)\.sqlite(?:-wal|-shm|-journal)?$/.exec(name);
-      if (match && NODE_PATTERN.test(match[1]) && !names.has(`export-${match[1]}.json`)) await rm(join(this.directory, name), { force: true });
+      // Pins can retain the only copy of protected history after rejoin. Lost
+      // metadata makes that copy unavailable, never permission to delete it.
+      if (match && NODE_PATTERN.test(match[1]) && !names.has(`export-${match[1]}.json`)
+        && !names.has(`export-${match[1]}.pin`)) await rm(join(this.directory, name), { force: true });
       if (/^export-[a-f0-9-]+\.json\.tmp$/.test(name)) await rm(join(this.directory, name), { force: true });
     }
     await this.prune(null);

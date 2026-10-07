@@ -390,7 +390,7 @@ async function prepareRecoveryBackup(plan, item) {
       await chmod(`${sourcePath}${suffix}`, 0o600);
     }
     const generated = existing ? join(working, 'verified.sqlite') : target;
-    try { await createDatabaseBackup({ sourcePath, destination: generated }); }
+    try { await createDatabaseBackup({ sourcePath, destination: generated, exportedAt: plan.createdAt }); }
     catch (error) {
       if (!['backup_source_incompatible', 'backup_source_invalid'].includes(error?.code)) throw error;
       if (existing) throw failure();

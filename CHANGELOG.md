@@ -6,6 +6,21 @@ Versions follow Semantic Versioning. `-dev.N` denotes a development prerelease.
 
 ## Unreleased
 
+- Controls recover after a failed MQTT observation save when fresh evidence from
+  the affected input commits, without requiring a broker reconnect. Read-only
+  status requests remain available while commands wait for trustworthy evidence.
+- Handover verifies a newly exported database on the receiver before stopping
+  the master. Unsupported saved charging state is rejected before startup writes,
+  preserving the original database and interrupted WAL files. Pairing and recovery
+  distinguish incompatible state, learning versions and database corruption.
+- Protected snapshot-only history survives rejoin, restart and normal pruning as
+  an inactive full copy. Resume mirroring explains its size and indefinite storage
+  retention; ordinary mirroring continues to replace and prune routine snapshots.
+- Database exports and previous-recovery summaries run in background workers.
+  Recovery uses bounded scratch storage and preserves concurrent recordings;
+  measured progress and elapsed time remain visible across navigation and reload.
+  Cancelled exports release their worker and temporary files. Source checks retain
+  the current read-only inventory workflow, without a trial import.
 - H66 restoration waits for usable readback without repeatedly retrying an
   expired timer. Missing registers retain their restoration duties, and newly
   received evidence resumes recovery even during another register's restore.

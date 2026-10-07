@@ -1,26 +1,24 @@
 import { parentPort, workerData } from 'node:worker_threads';
 import { randomUUID } from 'node:crypto';
-import { mkdir, mkdtemp } from 'node:fs/promises';
-import { dirname, join } from 'node:path';
+import { join } from 'node:path';
 import { yieldToController as yieldTurn } from './scheduler.js';
 import { Store } from '../storage/store.js';
 import { RECOVERABLE_TABLES, recoveryRecordKey } from '../storage/schema.js';
-import { selectedHistory, recoverySource, recoveryEvidenceVersion } from './ledger.js';
+import { selectedHistory, recoverySource, recoveryEvidenceVersion, recoveryCoverageEvidence } from './ledger.js';
 import { applyLearningRecord, learningVersion, LEARNING_ALGORITHM } from '../app/committed-learning.js';
 import { fireplaceLearningContext } from '../app/fireplace-inputs.js';
 import { sensorRevision } from '../app/sensor-inputs.js';
 import { HistoryMerge } from './merge.js';
+import { pendingEnergyObservationsFromStates } from '../storage/pending-energy.js';
+import { validEnergyQuality } from '../storage/energy-history.js';
 import { recoveryFailure } from './errors.js';
 
-let path = workerData.masterPath;
-if (workerData.mode === 'revision-preview') {
-  const base = join(dirname(path), 'recovery'); await mkdir(base, { recursive: true, mode: 0o700 });
-  const temporary = await mkdtemp(join(base, 'revision-preview-'));
-  parentPort.postMessage({ type: 'temporary', path: temporary });
-  const original = new Store(path, { readOnly: true });
-  try { path = join(temporary, 'candidate.sqlite'); await original.backup(path); } finally { original.close(); }
-}
+const path = workerData.mode === 'revision-preview'
+  ? join(workerData.temporaryDirectory, 'candidate.sqlite') : workerData.masterPath;
+parentPort.postMessage({ type: 'progress', phase: 'validating', processed: 0 });
 const store = new Store(path);
+if (workerData.mode === 'revision-preview') store.db.exec('PRAGMA synchronous=OFF;');
+store.db.exec('PRAGMA temp_store=FILE; PRAGMA temp.cache_size=-8192;');
 const db = store.db, input = workerData.input;
 const generation = randomUUID(), epoch = `revision:${generation}`;
 const decode = row => ({ id: row.id, key: row.key, kind: row.kind, at: row.at,
@@ -31,13 +29,21 @@ const head = () => db.prepare('SELECT COALESCE(MAX(id),0) n FROM learning_journa
 const selection = selectedHistory(store), sourceEpoch = store.learningEpoch(input);
 const sourceFireplace = fireplaceLearningContext(store, input).fireplaceRevision, sourceSensor = sensorRevision(store, input);
 let sourceHead = head(), checkpoint = null, report, source, processed = 0, busy = false, closed = false;
-let restorationToken = null;
+let restorationToken = null, restorationVerified = null;
+const pendingStates = source => source.db.prepare("SELECT key,value FROM state WHERE key LIKE 'recorder:energy:%' ORDER BY key").all();
+const observationHead = source => source.db.prepare('SELECT COALESCE(MAX(id),0) n FROM observations').get().n;
 const excluded = db.prepare('SELECT 1 FROM recovery_exclusions WHERE generation=? AND table_name=? AND record_key=?');
 const exclude = db.prepare('INSERT OR IGNORE INTO recovery_exclusions(generation,table_name,record_key) VALUES(?,?,?)');
 const conflict = db.prepare("INSERT INTO recovery_exclusions(generation,table_name,record_key,reason) VALUES(?,?,?,'conflict') ON CONFLICT DO UPDATE SET reason='conflict'");
 const rootId = id => db.prepare('SELECT COALESCE(source_entry_id,id) id FROM learning_journal_entries WHERE id=?').get(id)?.id ?? id;
 const hidden = (table, id) => id != null && Boolean(excluded.get(generation, table, String(table === 'learning_journal' ? rootId(id) : id)));
-const progress = phase => parentPort.postMessage({ type: 'progress', phase, processed });
+let progressAt = 0, progressPhase = null;
+const progress = (phase, values = {}) => {
+  if (Date.now() - progressAt < 100 && phase === progressPhase && values.processed !== values.total) return;
+  parentPort.postMessage({ type: 'progress', phase, processed,
+    ...(phase === 'checking' ? { unit: 'records' } : {}), ...values });
+  progressAt = Date.now(); progressPhase = phase;
+};
 const publishedRoot = `(e.epoch='original' OR e.epoch=?
   OR EXISTS(SELECT 1 FROM recovery_runs r WHERE r.epoch=e.epoch AND r.status='complete')
   OR EXISTS(SELECT 1 FROM recovery_decisions d WHERE d.epoch=e.epoch)
@@ -84,18 +90,24 @@ async function prepareSelection() {
   const operation = db.prepare('SELECT * FROM history_recoveries WHERE id=? AND input=?').get(workerData.recoveryId, input);
   if (!operation || typeof workerData.active !== 'boolean') fail('Choose an existing recovery.');
   if (Boolean(operation.active) === workerData.active) fail('This recovery already has the selected state.');
-  for (const rejected of db.prepare('SELECT id FROM history_recoveries WHERE CASE WHEN id=? THEN ? ELSE active END=0')
-    .iterate(operation.id, Number(workerData.active))) {
-    let table = '', key = '';
-    for (;;) {
-      const rows = db.prepare(`SELECT table_name,record_key FROM recovery_members WHERE recovery_id=?
-        AND (table_name,record_key)>(?,?) ORDER BY table_name,record_key LIMIT 128`).all(rejected.id, table, key);
-      if (!rows.length) break;
-      store.transaction(() => { for (const row of rows) {
-        if (!['provider_snapshot_contents', 'imports'].includes(row.table_name)) exclude.run(generation, row.table_name, row.record_key);
-        table = row.table_name; key = row.record_key;
-      } });
-      await yieldTurn();
+  let rejectedAfter = '';
+  for (;;) {
+    const rejectedRows = db.prepare('SELECT id FROM history_recoveries WHERE CASE WHEN id=? THEN ? ELSE active END=0 AND id>? ORDER BY id LIMIT 64')
+      .all(operation.id, Number(workerData.active), rejectedAfter);
+    if (!rejectedRows.length) break;
+    for (const rejected of rejectedRows) {
+      let table = '', key = '';
+      for (;;) {
+        const rows = db.prepare(`SELECT table_name,record_key FROM recovery_members WHERE recovery_id=?
+          AND (table_name,record_key)>(?,?) ORDER BY table_name,record_key LIMIT 128`).all(rejected.id, table, key);
+        if (!rows.length) break;
+        store.transaction(() => { for (const row of rows) {
+          if (!['provider_snapshot_contents', 'imports'].includes(row.table_name)) exclude.run(generation, row.table_name, row.record_key);
+          table = row.table_name; key = row.record_key;
+        } });
+        await yieldTurn();
+      }
+      rejectedAfter = rejected.id;
     }
   }
   // Content-addressed blobs and CSV container metadata remain when another
@@ -117,7 +129,7 @@ async function prepareSelection() {
   // A reverted gap may since have acquired independent local evidence. Current
   // records keep precedence when restoring, including full phase-energy cohorts.
   if (workerData.active) {
-    restorationToken = await restorationConflicts({ apply: true });
+    restorationToken = restorationVerified = await restorationConflicts({ apply: true });
   }
   for (const [table, parent, field] of [['recorder_coverage', 'observations', 'observation_id'], ['fireplace_events', 'fireplace_events', 'target_id']]) {
     let after = 0;
@@ -215,34 +227,140 @@ async function restorationConflicts({ apply = false } = {}) {
   // the recorder continues to append independent observations.
   current.db.exec('BEGIN');
   try {
-    const merge = new HistoryMerge({ target: current, donor: current, donorDigest: '', input, yieldControl: yieldTurn });
-    let after = 0, token = null;
+    const merge = new HistoryMerge({ target: current, donor: current, donorDigest: '', input });
+    let after = 0, token = null, maximumAt = -Infinity;
     for (;;) {
       const rows = db.prepare(`SELECT o.* FROM observations o JOIN recovery_members m ON m.table_name='observations'
         AND m.record_key=CAST(o.id AS TEXT) WHERE m.recovery_id=? AND o.id>? ORDER BY o.id LIMIT 64`).all(workerData.recoveryId, after);
       if (!rows.length) break;
       for (const row of rows) {
+        // Every overlap predicate is bounded by a source or receipt clock in
+        // the recovered row. Future live evidence can be verified as a suffix
+        // without rescanning all these immutable contributions.
+        const raw = row.raw === null ? null : JSON.parse(row.raw);
+        maximumAt = Math.max(maximumAt, row.received_at, row.source_time ?? -Infinity,
+          Number.isFinite(raw?.intervalEnd) ? raw.intervalEnd : -Infinity);
         const own = current.db.prepare('SELECT 1 FROM active_observations WHERE id=?').get(row.id);
-        const old = own ? null : merge.observationOverlap(row, row.raw === null ? null : JSON.parse(row.raw));
-        if (apply && old) store.transaction(() => {
-          conflict.run(generation, 'observations', String(row.id));
+        const old = own ? null : merge.observationOverlap(row, raw, { pendingAt: merge.now });
+        if (apply && old) {
+          const rejected = [row.id];
           if (/^(property|ev1|ev2)_energy_l[123]$/.test(row.signal)) {
             for (const peer of db.prepare(`SELECT id FROM observations WHERE source=? AND device=?
               AND signal IN (?,?,?) AND source_time IS ? AND received_at=?`).iterate(row.source, row.device,
                 ...[1,2,3].map(n => row.signal.replace(/l[123]$/, `l${n}`)), row.source_time, row.received_at))
-              conflict.run(generation, 'observations', String(peer.id));
+              rejected.push(peer.id);
           }
-        });
+          store.transaction(() => { for (const id of rejected) conflict.run(generation, 'observations', String(id)); });
+        }
         token = learningVersion({ previous: token, id: row.id, conflicting: Boolean(old) });
         after = row.id;
       }
       await yieldTurn();
     }
-    return { token, version: recoveryEvidenceVersion(current) };
+    return { token, version: recoveryEvidenceVersion(current, { now: merge.now }), observationHead: observationHead(current),
+      pendingStates: pendingStates(current), pendingAt: merge.now, coverage: recoveryCoverageEvidence(current), maximumAt };
   } finally { current.close(); }
 }
 
+const laterObservation = (row, maximumAt) => {
+  if (!Number.isFinite(row.source_time) || row.source_time <= maximumAt || row.received_at <= maximumAt) return false;
+  let raw; try { raw = row.raw === null ? null : JSON.parse(row.raw); } catch { return false; }
+  return raw?.intervalStart === undefined || Number.isFinite(raw.intervalStart) && raw.intervalStart >= maximumAt;
+};
+function laterPending(value, maximumAt) {
+  if (value === undefined) return true;
+  let state; try { state = JSON.parse(value); } catch { return false; }
+  if (!state || typeof state !== 'object' || Array.isArray(state)) return false;
+  if (state.pending == null) return true;
+  const pending = state.pending;
+  return Number.isFinite(pending.start) && pending.start >= maximumAt && Number.isFinite(pending.end)
+    && pending.end > pending.start && Number.isFinite(pending.receivedAt) && pending.receivedAt > maximumAt;
+}
+
+function unchangedEarlierPending(key, before, after, previous, now) {
+  if (before === undefined || after === undefined) return false;
+  const oldRows = pendingEnergyObservationsFromStates([{ key, value: before }], { now: previous.pendingAt });
+  const newRows = pendingEnergyObservationsFromStates([{ key, value: after }], { now });
+  if (!oldRows.length || oldRows.length !== newRows.length) return false;
+  // An already overlapping tail may continue accumulating for days. Once its
+  // end is beyond all recovered intervals, extending that same valid stream
+  // cannot add or remove an older overlap. Values may change, but a changed
+  // scope, start or quality must still receive the complete conflict scan.
+  return oldRows.every((old, index) => {
+    const next = newRows[index];
+    return ['source', 'device', 'signal', 'unit', 'quality'].every(key => old[key] === next[key])
+      && validEnergyQuality(JSON.parse(old.quality))
+      && JSON.parse(old.raw).intervalStart === JSON.parse(next.raw).intervalStart
+      && old.source_time > previous.maximumAt && next.source_time >= old.source_time;
+  });
+}
+
+const coverageAfter = (row, maximumAt) => row.start_at > maximumAt && row.end_at >= row.start_at;
+function unchangedEarlierCoverage(before, after, maximumAt) {
+  if (!after) return false;
+  if (Object.keys(before).every(key => before[key] === after[key])) return true;
+  if (coverageAfter(before, maximumAt) && coverageAfter(after, maximumAt)) return true;
+  // Extending a span which already ended beyond every recovered point cannot
+  // add older coverage. The same referenced measurement and status must remain.
+  return ['id', 'source', 'device', 'signal', 'status', 'start_at', 'observation_id'].every(key => before[key] === after[key])
+    && before.end_at > maximumAt && after.end_at >= before.end_at;
+}
+
+async function laterCoverage(current, previous, next, maximumAt) {
+  const known = new Set(previous.rows.map(row => row.id));
+  if (next.rows.some(row => !known.has(row.id) && !coverageAfter(row, maximumAt))) return false;
+  for (const before of previous.rows) {
+    const after = current.db.prepare(`SELECT id,source,device,signal,status,start_at,end_at,source_time,observation_id
+      FROM recorder_coverage WHERE id=?`).get(before.id);
+    if (!unchangedEarlierCoverage(before, after, maximumAt)) return false;
+  }
+  let cursor = previous.head;
+  for (;;) {
+    const rows = current.db.prepare('SELECT id,start_at,end_at FROM recorder_coverage WHERE id>? AND id<=? ORDER BY id LIMIT 64')
+      .all(cursor, next.head);
+    if (!rows.length) return true;
+    if (!rows.every(row => coverageAfter(row, maximumAt))) return false;
+    cursor = rows.at(-1).id; await yieldTurn();
+  }
+}
+
+async function verifyRestoration() {
+  const previous = restorationVerified, current = new Store(workerData.masterPath, { readOnly: true });
+  current.db.exec('BEGIN');
+  let tail = null;
+  try {
+    const pendingAt = Date.now();
+    const version = recoveryEvidenceVersion(current, { now: pendingAt });
+    if (version === previous.version) return previous;
+    const states = pendingStates(current), before = new Map(previous.pendingStates.map(row => [row.key, row.value])),
+      after = new Map(states.map(row => [row.key, row.value]));
+    const samePending = key => before.get(key) === after.get(key)
+      && learningVersion(pendingEnergyObservationsFromStates([{ key, value: before.get(key) }], { now: previous.pendingAt }))
+        === learningVersion(pendingEnergyObservationsFromStates([{ key, value: after.get(key) }], { now: pendingAt }));
+    let later = [...new Set([...before.keys(), ...after.keys()])].every(key => samePending(key)
+      || laterPending(before.get(key), previous.maximumAt) && laterPending(after.get(key), previous.maximumAt)
+      || unchangedEarlierPending(key, before.get(key), after.get(key), previous, pendingAt));
+    const coverage = recoveryCoverageEvidence(current);
+    if (later) later = await laterCoverage(current, previous.coverage, coverage, previous.maximumAt);
+    let cursor = previous.observationHead, checked = 0;
+    while (later) {
+      const rows = current.db.prepare('SELECT id,source_time,received_at,raw FROM observations WHERE id>? ORDER BY id LIMIT 64').all(cursor);
+      if (!rows.length) break;
+      later = rows.every(row => laterObservation(row, previous.maximumAt)); cursor = rows.at(-1).id;
+      checked += rows.length;
+      progress('catching-up', { processed: checked, unit: 'records' }); await yieldTurn();
+    }
+    if (later) tail = { ...previous, version, observationHead: observationHead(current), pendingStates: states, pendingAt, coverage };
+  } finally { current.close(); }
+  // Backdated, overlapping or unknown evidence requires the full conservative
+  // check. Keep its exact verified snapshot boundary: a later retry then checks
+  // only what arrived during this scan, never guesses a newer version token.
+  restorationVerified = tail ?? await restorationConflicts();
+  return restorationVerified;
+}
+
 async function buildProjection() {
+  processed = 0; progress('projecting', { processed: 0, unit: 'entries' });
   db.exec('CREATE TEMP TABLE revision_map(original INTEGER PRIMARY KEY,projected INTEGER NOT NULL)');
   // Only original payloads participate, including new live records written in
   // later epochs. Compact copied ordering references never become new evidence.
@@ -256,7 +374,7 @@ async function buildProjection() {
       ORDER BY at,rank,id LIMIT 64`).all(input, sourceHead, generation, sourceEpoch, cursor?.at ?? null, cursor?.at ?? 0, cursor?.rank ?? 0, cursor?.id ?? 0);
     if (!rows.length) break;
     store.transaction(() => { for (const row of rows) { stage(row); cursor = row; } });
-    progress('rebuilding'); await yieldTurn();
+    progress('projecting', { unit: 'entries' }); await yieldTurn();
   }
   await remapAndReplay();
 }
@@ -327,22 +445,20 @@ async function remapAndReplay(after = 0) {
   // New corrections are fenced; catch-up only appends samples/contexts and
   // replays the appended suffix with the same selected source revision.
   after = checkpoint?.journalCursor ?? 0;
+  let replayed = 0;
+  const total = db.prepare('SELECT COUNT(*) total FROM learning_journal_entries WHERE epoch=? AND id>?').get(epoch, after).total;
+  progress('rebuilding', { processed: 0, total, unit: 'entries' });
   for (;;) {
     const rows = db.prepare('SELECT * FROM learning_journal_all WHERE epoch=? AND id>? ORDER BY id LIMIT 64').all(epoch, after);
     if (!rows.length) break;
-    for (const row of rows) { checkpoint = applyLearningRecord(checkpoint, decode(row), source); after = row.id; processed++; }
-    progress('rebuilding'); await yieldTurn();
+    for (const row of rows) { checkpoint = applyLearningRecord(checkpoint, decode(row), source); after = row.id; replayed++; }
+    progress('rebuilding', { processed: replayed, total, unit: 'entries' }); await yieldTurn();
   }
 }
 
 async function catchup() {
+  progress('catching-up', { processed: 0, unit: 'entries' });
   assertSource();
-  let evidenceVersion = null;
-  if (workerData.active) {
-    const current = await restorationConflicts();
-    if (current.token !== restorationToken.token) fail('New local evidence changes this restoration. Review its impact again.');
-    evidenceVersion = current.version;
-  }
   const through = head();
   const previousHead = sourceHead;
   await scanDependencies(sourceHead);
@@ -364,6 +480,17 @@ async function catchup() {
     progress('catching-up'); await yieldTurn();
   }
   if (sourceHead !== previousHead) await remapAndReplay(checkpoint?.journalCursor ?? 0);
+  // Verify after potentially lengthy dependency scans and replay so their
+  // execution cannot repeatedly age an otherwise unchanged evidence proof.
+  // Publication still checks this exact version and the caught-up journal head
+  // atomically on the live connection.
+  let evidenceVersion = null;
+  if (workerData.active) {
+    const current = await verifyRestoration();
+    if (current.token !== restorationToken.token) fail('New local evidence changes this restoration. Review its impact again.');
+    evidenceVersion = current.version;
+  }
+  progress('publishing', { processed: 0 });
   parentPort.postMessage({ type: 'ready', revision: true, generation, epoch, sourceEpoch, sourceHead,
     sourceSelection: selection, sourceFireplace, sourceSensor, fireplaceRevision: source.fireplaceRevision,
     sensorRevision: source.sensorRevision, checkpoint, evidenceVersion, report });

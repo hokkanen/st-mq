@@ -1127,7 +1127,8 @@ const refreshRecordingOverview=recordingOverviewRefresh({request:api,root:$('rec
   render: (overview, root) => { renderRecordingOverview(overview, root); recordingHealth.inventory(overview); },
   onState: state => recordingHealth.inventoryStatus(state) });
 bindDatabaseExport({ saveButton: $('database-export-save'), downloadButton: $('database-export-download'),
-  message: $('database-export-message'), window, document, onSettled: () => recordingHealth.refresh(),
+  message: $('database-export-message'), progress: $('database-export-progress'), detail: $('database-export-detail'),
+  window, document, onSettled: () => recordingHealth.refresh(),
   request: method => {
     assertWebRequest(webAccess, '/api/database-export', method === 'POST' ? {} : undefined, lastStatus);
     assertDashboardWrite('/api/database-export', method === 'POST' ? {} : undefined, lastStatus);

@@ -368,11 +368,16 @@ const REASONS = {
   'status-stale': 'Waiting for charger connection status newer than the saved session evidence.',
 };
 
+export function validateOcppChargingOwnershipState(state, scope = state?.scope) {
+  if (state != null && (!scopeValid(scope) || !validState(state, scope)))
+    throw Error('Unsupported native charging ownership; start a fresh development database');
+}
+
 /** Current transaction only; no cloud schedule is presented as native readback. */
 export function createOcppChargingController({ adapter, initialState = null, saveState = () => {}, clock = Date.now,
   canControl = () => false, getPlan, getIdentification } = {}) {
   if (!adapter || !scopeValid(adapter.scope)) throw fail('invalid-ocpp-adapter');
-  if (initialState !== null && !validState(initialState, adapter.scope)) throw Error('Unsupported native charging ownership; start a fresh development database');
+  validateOcppChargingOwnershipState(initialState, adapter.scope);
   let state = initialState ? clone(initialState) : initialOcppControllerState(adapter.scope);
   let snapshot = null, desired = { enabled: false, plan: null, readyBy: '06:00', timezone: TIME_ZONE }, closed = false, generation = 0, queue = Promise.resolve(), abort = null;
   let phase = 'off', reason = 'Automatic charging is off.', errorCode = null, reasonCode = null, ownsInstruction = false, pauseConfirmed = false, handoverConfirmed = true;

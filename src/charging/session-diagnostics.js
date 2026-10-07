@@ -571,6 +571,24 @@ function validateRecord(row, id) {
   return row;
 }
 
+export function readChargingDiagnosticState(db, key, saved) {
+  if (saved !== undefined && saved !== null && (saved.version !== VERSION || Object.keys(saved).sort().join(',') !== 'chargers,version'
+    || !saved.chargers || Array.isArray(saved.chargers))) throw unsupported();
+  const state = { version: VERSION, chargers: {} };
+  for (const [id, slot] of Object.entries(saved?.chargers ?? {})) {
+    if (!['charger1', 'charger2'].includes(id) || !slot || Object.keys(slot).sort().join(',') !== 'association,closedThrough,currentId'
+      || !/^[a-f0-9]{64}$/.test(slot.association) || slot.closedThrough !== null && !time(slot.closedThrough)
+      || slot.currentId !== null && !/^[a-f0-9]{64}$/.test(slot.currentId)) throw unsupported();
+    const row = slot.currentId === null ? null : db.prepare(
+      'SELECT checkpoint FROM charging_reports WHERE namespace=? AND charger_id=? AND report_id=?').get(key, id, slot.currentId);
+    if (slot.currentId !== null && !row) throw unsupported();
+    const current = row ? validateRecord(JSON.parse(row.checkpoint), id) : null;
+    if (current && (current.endedAt !== null || current.association !== slot.association)) throw unsupported();
+    state.chargers[id] = { association: slot.association, closedThrough: slot.closedThrough, current };
+  }
+  return state;
+}
+
 /** Observer only. Complete immutable event history is stored separately from
  * bounded current checkpoints and report summaries. Construction and queries
  * never write, so the same reader is safe for history viewers and replicas.
@@ -581,20 +599,7 @@ export class ChargingSessionDiagnostics {
       throw new TypeError('Charging report retention must be between 1 and 3650 days');
     this.store = store; this.key = key; this.clock = clock; this.retentionDays = retentionDays;
     const saved = store.getState(key);
-    if (saved !== undefined && saved !== null && (saved.version !== VERSION || Object.keys(saved).sort().join(',') !== 'chargers,version'
-      || !saved.chargers || Array.isArray(saved.chargers))) throw unsupported();
-    this.state = { version: VERSION, chargers: {} };
-    for (const [id, slot] of Object.entries(saved?.chargers ?? {})) {
-      if (!['charger1', 'charger2'].includes(id) || !slot || Object.keys(slot).sort().join(',') !== 'association,closedThrough,currentId'
-        || !/^[a-f0-9]{64}$/.test(slot.association) || slot.closedThrough !== null && !time(slot.closedThrough)
-        || slot.currentId !== null && !/^[a-f0-9]{64}$/.test(slot.currentId)) throw unsupported();
-      const row = slot.currentId === null ? null : store.db.prepare(
-        'SELECT checkpoint FROM charging_reports WHERE namespace=? AND charger_id=? AND report_id=?').get(key, id, slot.currentId);
-      if (slot.currentId !== null && !row) throw unsupported();
-      const current = row ? validateRecord(JSON.parse(row.checkpoint), id) : null;
-      if (current && (current.endedAt !== null || current.association !== slot.association)) throw unsupported();
-      this.state.chargers[id] = { association: slot.association, closedThrough: slot.closedThrough, current };
-    }
+    this.state = readChargingDiagnosticState(store.db, key, saved);
     this.lastSavedAt = 0; this.lastPrunedAt = 0;
   }
   writable() {

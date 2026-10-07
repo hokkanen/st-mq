@@ -17,18 +17,18 @@ async function until(predicate) {
   const end = performance.now() + 3000;
   while (!predicate()) { assert.ok(performance.now() < end, 'Condition did not settle'); await delay(5); }
 }
-async function fixture(t, input = 'mqtt') {
+async function fixture(t, input = 'mqtt', devices = []) {
   const directory = mkdtempSync(join(tmpdir(), 'stmq-acquisition-contention-'));
   const store = new Store(join(directory, 'recording.sqlite')), writer = new DatabaseSync(store.path);
-  let now = START, locked = false;
+  let now = START, locked = false, control = true;
   const config = { input, deviceId: DEVICE, h66: { writeEnabled: true, readbackTimeoutMs: 1000 },
-    garage: { enabled: false }, connections: { mqtt: { address: 'mqtt://fixture.invalid' }, equipment: equipmentConfiguration({ devices: [] }) } };
+    garage: { enabled: false }, connections: { mqtt: { address: 'mqtt://fixture.invalid' }, equipment: equipmentConfiguration({ devices }) } };
   const engine = new Engine({ store, config, clock: () => now });
   const client = new EventEmitter(), commands = [];
   client.subscribe = (_topic, _options, done) => done();
   client.publish = (topic, payload, _options, done) => { commands.push({ topic, payload }); done(); };
   client.end = (_force, _options, done) => done();
-  const reader = input === 'mqtt' ? await startMqtt({ engine, store, config, connect: () => client }) : null;
+  const reader = input === 'mqtt' ? await startMqtt({ engine, store, config, connect: () => client, canControl: () => control }) : null;
   client.emit('connect');
   t.after(async () => {
     if (locked) writer.exec('ROLLBACK');
@@ -37,10 +37,181 @@ async function fixture(t, input = 'mqtt') {
     writer.close(); store.close(); rmSync(directory, { recursive: true, force: true });
   });
   return { store, engine, config, client, reader, commands, clock: () => now, at: at => { now = at; },
+    authority: value => { control = value; },
     lock() { writer.exec('BEGIN IMMEDIATE'); locked = true; },
     unlock() { writer.exec('ROLLBACK'); locked = false; },
     send(register, value, packet = {}) { client.emit('message', `${DEVICE}/HP/${register}`, Buffer.from(String(value)), packet); } };
 }
+
+function failNextCommit(store) {
+  const transaction = store._transaction.bind(store); let armed = true;
+  store._transaction = (action, admission) => admission && armed ? transaction(() => {
+    armed = false; action(); throw new Error('synthetic observation commit failure');
+  }, admission) : transaction(action, admission);
+}
+
+test('MQTT control recovers after a newer matching observation commits without reconnecting', async t => {
+  const f = await fixture(t);
+  f.send('0203', 20); f.at(START + 1000);
+  failNextCommit(f.store); f.send('0203', 21); await delay(0);
+  assert.equal(f.reader.status().brokers.primary.ready, false);
+  assert.equal(f.reader.h66.status().readings['0203'].value, 20);
+  await assert.rejects(f.reader.h66.setSetting({ register: '0203', value: 22 }), /not confirmed/);
+  assert.equal(f.commands.some(row => row.topic.includes('/SET/')), false);
+
+  for (const [register, value, packet] of [
+    ['0007', 7, {}], ['0203', 21, { retain: true }],
+    ['0203', 21, { dup: true, messageId: 7 }], ['0203', 'invalid', {}],
+  ]) {
+    f.at(f.clock() + 1000); f.send(register, value, packet); await delay(0);
+    assert.equal(f.reader.status().brokers.primary.ready, false, 'Unrelated, replayed or invalid evidence cannot resolve the failed setting');
+  }
+  f.at(f.clock() + 1000); f.send('0203', 21); await delay(0);
+  assert.equal(f.reader.status().brokers.primary.ready, true);
+  const command = f.reader.h66.setSetting({ register: '0203', value: 22 });
+  await until(() => f.commands.some(row => row.topic.endsWith('/SET/0203')));
+  f.send('0203', 22); await command;
+  assert.equal(f.reader.h66.status().lastManual.status, 'confirmed');
+});
+
+test('each failed MQTT input recovers independently and late rejection cannot undo a newer commit', async t => {
+  const f = await fixture(t);
+  f.send('0203', 20); f.send('0208', 50);
+  f.at(START + 1000); failNextCommit(f.store); f.send('0203', 21);
+  // Do not yield between failure and success: the failure Promise is pending.
+  f.at(START + 2000); f.send('0203', 22); await delay(0);
+  assert.equal(f.reader.status().brokers.primary.ready, true);
+  failNextCommit(f.store); f.send('0203', 23); await delay(0);
+  failNextCommit(f.store); f.send('0208', 51); await delay(0);
+  f.at(START + 3000); f.send('0203', 23); await delay(0);
+  assert.equal(f.reader.status().brokers.primary.ready, false);
+  failNextCommit(f.store); f.send('0208', 51); await delay(0);
+  assert.equal(f.reader.status().brokers.primary.ready, false, 'Continued recording failures stay fenced');
+  f.at(START + 4000); f.send('0208', 51); await delay(0);
+  assert.equal(f.reader.status().brokers.primary.ready, true);
+});
+
+test('a queued older receipt cannot clear a newer overflow; fresh matching delivery resolves it', async t => {
+  const f = await fixture(t); f.send('0203', 20); f.lock();
+  f.at(START + 1000); f.send('0203', 21);
+  const fill = f.store.runWrite(() => {}, { bytes: f.store.writeQueueStatus().byteLimit - f.store.writeQueueStatus().bytes });
+  f.at(START + 2000); f.send('0203', 22); await delay(0);
+  assert.equal(f.reader.status().brokers.primary.ready, false);
+  f.unlock(); await fill; await until(() => f.store.writeQueueStatus().pending === 0);
+  assert.equal(f.reader.h66.status().readings['0203'].value, 21);
+  assert.equal(f.reader.status().brokers.primary.ready, false);
+  f.at(START + 3000); f.send('0203', 22); await delay(0);
+  assert.equal(f.reader.status().brokers.primary.ready, true);
+});
+
+test('recovered storage never renews queued observation freshness or revoked control authority', async t => {
+  const f = await fixture(t); f.send('0203', 20);
+  f.at(START + 1000); failNextCommit(f.store); f.send('0203', 21); await delay(0);
+  f.lock(); f.at(START + 2000); f.send('0203', 22);
+  f.at(START + 60 * 60_000); f.unlock(); await until(() => f.store.writeQueueStatus().pending === 0);
+  assert.equal(f.reader.status().brokers.primary.ready, true, 'Storage has recovered independently of native freshness');
+  assert.equal(f.reader.h66.status().readings['0203'].receivedAt, START + 2000);
+  await assert.rejects(f.reader.h66.setSetting({ register: '0203', value: 23 }), /live|fresh|unavailable/i);
+  assert.equal(f.commands.some(row => row.topic.includes('/SET/')), false);
+  f.send('0203', 22); f.lock(); f.at(f.clock() + 1000); f.send('0203', 23); f.authority(false);
+  f.unlock(); await until(() => f.store.writeQueueStatus().pending === 0);
+  assert.equal(f.reader.h66.status().readings['0203'].value, 22);
+  await assert.rejects(f.reader.h66.setSetting({ register: '0203', value: 24 }), /not confirmed/);
+  assert.equal(f.commands.some(row => row.topic.includes('/SET/')), false);
+});
+
+test('unrecognized MQTT routes cannot leave control fenced after a rejected save', async t => {
+  const f = await fixture(t); f.send('0203', 20);
+  failNextCommit(f.store); f.send('FFFF', 1); await delay(0);
+  assert.equal(f.reader.status().brokers.primary.ready, true);
+});
+
+test('MQTT equipment health pulses and runtime-only readings recover without inventing recorded measurements', async t => {
+  const f = await fixture(t, 'mqtt', [{ id: 'switch', kind: 'switch', connection: 'mqtt:fixture/state', record: false,
+    mqtt: { heartbeat_topic: 'fixture/pulse', heartbeat_seconds: 60, availability_topic: 'fixture/online' } }]);
+  const send = (topic, value, packet = {}) => f.client.emit('message', topic, Buffer.from(value), packet);
+  for (const [topic, value] of [['fixture/state', '1'], ['fixture/online', 'online'], ['fixture/pulse', 'pulse']]) {
+    f.at(f.clock() + 1000); failNextCommit(f.store); send(topic, value); await delay(0);
+    assert.equal(f.reader.status().brokers.primary.ready, false);
+    send(topic, value, { retain: true }); await delay(0);
+    assert.equal(f.reader.status().brokers.primary.ready, false);
+    f.at(f.clock() + 1000); send(topic, value); await delay(0);
+    assert.equal(f.reader.status().brokers.primary.ready, true);
+  }
+  assert.equal(f.store.observations().filter(row => row.device === 'switch').length, 0);
+});
+
+test('obsolete MQTT completion cannot alter a newer connection reception fence', async t => {
+  const f = await fixture(t); f.send('0203', 20);
+  failNextCommit(f.store); f.send('0203', 21);
+  f.client.emit('offline'); f.client.emit('connect');
+  f.at(START + 1000); f.send('0203', 22);
+  await delay(0);
+  assert.equal(f.reader.status().brokers.primary.ready, true, 'Prior connection rejection cannot block the new connection');
+  failNextCommit(f.store); f.send('0203', 23); await delay(0);
+  assert.equal(f.reader.status().brokers.primary.ready, false);
+  f.at(START + 2000); f.send('0203', 23); await delay(0);
+  assert.equal(f.reader.status().brokers.primary.ready, true);
+});
+
+test('native MQTT recovery permits status queries and correlates replies to the failed device', async t => {
+  const f = await fixture(t, 'mqtt', ['first', 'second'].map(id => ({ id, kind: 'switch',
+    connection: `shelly:fixture-${id}`, generation: 2, switch_control: true })));
+  const request = (device, method) => f.commands.filter(row => row.topic === `fixture-${device}/rpc`)
+    .map(row => JSON.parse(row.payload)).findLast(row => row.method === method);
+  const reply = (device, method, result) => {
+    const sent = request(device, method);
+    assert.ok(sent, `${method} was permitted for ${device}`);
+    f.client.emit('message', `${sent.src}/rpc`, Buffer.from(JSON.stringify({
+      id: sent.id, src: `fixture-${device}`, dst: sent.src, result,
+    })), {});
+  };
+  for (const device of ['first', 'second']) {
+    reply(device, 'Shelly.GetDeviceInfo', { id: `fixture-${device}`, gen: 2 });
+    reply(device, 'Shelly.GetStatus', { 'switch:0': { id: 0, output: false } });
+  }
+  f.at(START + 1000); failNextCommit(f.store);
+  f.client.emit('message', 'fixture-first/events/rpc', Buffer.from(JSON.stringify({
+    src: 'fixture-first', method: 'NotifyStatus', params: { ts: f.clock() / 1000, 'switch:0': { id: 0, output: true } },
+  })), {}); await delay(0);
+  assert.equal(f.reader.status().brokers.primary.ready, false);
+  await assert.rejects(f.reader.equipment.setSwitch('first', true), /failed|unconfirmed/);
+  assert.equal(f.commands.some(row => row.topic.endsWith('/rpc') && JSON.parse(row.payload).method === 'Switch.Set'), false);
+  f.at(START + 31_000); f.reader.equipment.tick(f.clock());
+  reply('second', 'Shelly.GetStatus', { 'switch:0': { id: 0, output: false } }); await delay(0);
+  assert.equal(f.reader.status().brokers.primary.ready, false, 'Another native device cannot clear the failed device fence');
+  reply('first', 'Shelly.GetStatus', { 'switch:0': { id: 0, output: true } }); await delay(0);
+  assert.equal(f.reader.status().brokers.primary.ready, true);
+
+  // The failure may itself be a correlated reply on the shared response topic.
+  f.at(START + 62_000); f.reader.equipment.tick(f.clock());
+  failNextCommit(f.store); reply('first', 'Shelly.GetStatus', { 'switch:0': { id: 0, output: false } }); await delay(0);
+  assert.equal(f.reader.status().brokers.primary.ready, false);
+  f.at(START + 93_000); f.reader.equipment.tick(f.clock());
+  reply('first', 'Shelly.GetStatus', { 'switch:0': { id: 0, output: false } }); await delay(0);
+  assert.equal(f.reader.status().brokers.primary.ready, true);
+
+  // A failure and ignored frame can share the last valid observation's clock.
+  // Neither that cached time nor another device's shared RPC topic is evidence.
+  failNextCommit(f.store);
+  f.client.emit('message', 'fixture-first/events/rpc', Buffer.from(JSON.stringify({
+    src: 'fixture-first', method: 'NotifyStatus', params: { 'switch:0': { id: 0, output: true } },
+  })), {}); await delay(0);
+  assert.equal(f.reader.status().brokers.primary.ready, false);
+  f.client.emit('message', 'fixture-first/events/rpc', Buffer.from(JSON.stringify({
+    src: 'fixture-first', method: 'NotifyStatus', params: { 'switch:0': { id: 99, output: true } },
+  })), {}); await delay(0);
+  assert.equal(f.reader.status().brokers.primary.ready, false, 'Ignored wrong-component frame cannot reuse cached same-clock state');
+  f.reader.equipment.tick(f.clock() + 31_000);
+  reply('second', 'Shelly.GetStatus', { 'switch:0': { id: 0, output: false } }); await delay(0);
+  assert.equal(f.reader.status().brokers.primary.ready, false);
+  reply('first', 'Shelly.GetStatus', { 'switch:0': { id: 0, output: false } }); await delay(0);
+  assert.equal(f.reader.status().brokers.primary.ready, true);
+
+  failNextCommit(f.store);
+  f.client.emit('message', 'fixture-first/ignored', Buffer.from('1'), {}); await delay(0);
+  assert.equal(f.reader.status().brokers.primary.ready, true, 'Unknown native wildcard topic never acquires a fence');
+});
 
 test('MQTT observations wait through contention in receipt order without renewing their clocks', async t => {
   const f = await fixture(t);

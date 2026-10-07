@@ -187,7 +187,7 @@ function recommendation(charger, estimate, now) {
       + 'It leaves estimated room for the vehicle target within the real plan. The controller may revise that plan after identification; coverage and finish time are not guaranteed.' };
 }
 
-function validateSaved(saved) {
+export function validateChargingPhysicalTestState(saved) {
   const keys = ['id', 'chargerId', 'vehicleId', 'program', 'association', 'backend', 'phase', 'createdAt', 'updatedAt',
     'expiresAt', 'endedAt', 'endReason', 'sessionId', 'connectedAt', 'expectations', 'headroom', 'recommendation', 'milestones',
     'findings', 'initialPlan', 'latestPlan', 'deadlineAt', 'schedule', 'target', 'restorationReminder', 'report', 'lastSeenAt', 'shared'];
@@ -266,7 +266,7 @@ export class ChargingPhysicalTests {
   constructor({ store, key = 'charging:physical-tests', clock = Date.now }) {
     Object.assign(this, { store, key, clock });
     const saved = store.getState(key);
-    if (saved !== undefined && saved !== null) validateSaved(saved);
+    if (saved !== undefined && saved !== null) validateChargingPhysicalTestState(saved);
     this.state = saved == null ? { version: 2, runs: [] } : copy(saved);
   }
 

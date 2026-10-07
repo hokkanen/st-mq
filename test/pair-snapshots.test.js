@@ -60,6 +60,19 @@ test('an atomically pinned export survives later exports and repository restart 
   await assert.rejects(restarted.load(pinned.generation), { code: 'snapshot_unavailable' });
 });
 
+test('missing export metadata never authorizes deleting pinned protected history during restart', async t => {
+  const f = await fixture(t), pinned = await f.create({ force: true, pin: true });
+  const bytes = await readFile(f.path(pinned.generation, 'sqlite'));
+  await rm(f.path(pinned.generation, 'json'));
+  const restarted = new SnapshotRepository({ directory: f.repository.directory });
+  await restarted.init();
+  assert.deepEqual(await readFile(f.path(pinned.generation, 'sqlite')), bytes);
+  await access(f.path(pinned.generation, 'pin'));
+  await assert.rejects(restarted.load(pinned.generation), { code: 'snapshot_unavailable' });
+  await restarted.prune(null);
+  assert.deepEqual(await readFile(f.path(pinned.generation, 'sqlite')), bytes);
+});
+
 test('requesting a pin on a cached export durably retains that exact generation', async t => {
   const f = await fixture(t), first = await f.create();
   assert.equal((await f.create({ pin: true })).generation, first.generation);

@@ -32,14 +32,15 @@ const checkedSource = preview => preview?.status === 'checked' && preview.model?
 const publicSync = sync => ({ state: ['waiting', 'syncing', 'ready', 'error'].includes(sync?.state) ? sync.state : 'waiting',
   sourceAt: Number.isFinite(sync?.sourceAt) && sync.sourceAt > 0 ? sync.sourceAt : null,
   verifiedAt: Number.isFinite(sync?.verifiedAt) && sync.verifiedAt > 0 ? sync.verifiedAt : null,
-  bytes: Number.isSafeInteger(sync?.bytes) && sync.bytes >= 0 ? sync.bytes : null });
+  bytes: Number.isSafeInteger(sync?.bytes) && sync.bytes >= 0 ? sync.bytes : null,
+  ...(sync?.state === 'error' && sync.error ? { error: publicPairError({ code: sync.error }) } : {}) });
 
 /** Exceptions may contain credentials or provider payloads. Report only the
  * closed public code, numeric schema details and a repository source location,
  * never raw error text. */
 export function startupFailureDiagnostic(error, code) {
   const database = databaseErrorDetails(error);
-  if (code === 'runtime_failed' && database) code = database.code;
+  if (database && (code === 'runtime_failed' || code === error?.code)) code = database.code;
   const location = typeof error?.stack === 'string' ? error.stack.split('\n').slice(1).flatMap(line => {
     if (!/^\s+at /.test(line)) return [];
     const path = line.match(/(?:\(|\s)(?:file:\/\/)?(\/[^()\n]+\.js:\d+:\d+)\)?$/)?.[1];
@@ -108,9 +109,11 @@ export class PairManager {
         await this.state.update({ pendingSnapshot: null, accepted: { generation: publication.generation,
           digest: publication.digest, epoch: pending.claim.epoch, sequence: pending.sequence, nodeId: pending.claim.nodeId } });
       } catch (error) {
-        if (databaseErrorDetails(error)) this.reportFailure(error, error.code);
+        const database = databaseErrorDetails(error);
+        if (database) this.reportFailure(error, database.code);
+        this.sync = { ...this.sync, state: 'error', error: publicPairError(error) };
         await this.state.update({ role: 'protected', reason: 'snapshot_verification_failed', bootstrapPending: false,
-          ...(databaseErrorDetails(error) ? { activationError: error.code } : {}) });
+          ...(database ? { activationError: database.code } : {}) });
       }
     }
     if (this.state.value.role === 'slave' && (publication === false || publication &&
@@ -126,9 +129,11 @@ export class PairManager {
         this.sync = { state: 'ready', sourceAt: publication.sourceAt, verifiedAt: publication.verifiedAt,
           bytes: publication.bytes, lastSuccessAt: null, error: null };
       } catch (error) {
-        if (databaseErrorDetails(error)) this.reportFailure(error, error.code);
+        const database = databaseErrorDetails(error);
+        if (database) this.reportFailure(error, database.code);
+        this.sync = { ...this.sync, state: 'error', error: publicPairError(error) };
         await this.state.update({ role: 'protected', reason: 'snapshot_verification_failed', bootstrapPending: false,
-          ...(databaseErrorDetails(error) ? { activationError: error.code } : {}) });
+          ...(database ? { activationError: database.code } : {}) });
       }
     }
     if (['checking', 'recovering'].includes(this.state.value.recovery?.state)) {
@@ -145,6 +150,8 @@ export class PairManager {
     const startingEpoch = this.state.value.epoch;
     const previousError = this.state.value.activationError;
     if (previousError) this.error = publicPairError({ code: previousError });
+    if (this.state.value.role === 'protected' && databaseErrorDetails({ code: previousError }))
+      this.sync = { ...this.sync, state: 'error', error: this.error };
     this.startupChecking = true;
     await this.peer.start();
     try {
@@ -280,7 +287,7 @@ export class PairManager {
       if (!ownsActivation()) throw pairError('authority_changed');
       this.activeAllowed = false;
       this.hooks.revokeControl?.();
-      if (code === 'runtime_failed' && databaseErrorDetails(error)) code = error.code;
+      if (code === 'runtime_failed') code = databaseErrorDetails(error)?.code ?? code;
       if (VIP_ERRORS.has(error?.code) || MQTT_FRONTEND_ERRORS.has(error?.code)
         || ['mqtt_local_required', 'mqtt_resolution_failed', 'mqtt_source_context_invalid'].includes(error?.code)) code = error.code;
       let stopped = true;
@@ -311,8 +318,22 @@ export class PairManager {
   async startReplica(publication) {
     if (this.stopping || this.closed) return;
     const local = this.state.value;
+    let preserved = null;
+    try { preserved = local.role === 'protected' ? await this.preservedReleaseSnapshot() : null; }
+    catch (error) {
+      // A damaged retained donor must not take the management UI down. Keep
+      // its failure visible while viewing only the last verified publication;
+      // source checks and release retries still reject the damaged donor.
+      const code = publicPairError(error);
+      if ([null, 'runtime_failed', 'snapshot_failed'].includes(this.error)) {
+        this.error = code;
+        await this.state.update({ activationError: code });
+      }
+      this.sync = { ...this.sync, state: 'error', error: code };
+      this.reportFailure(error, code);
+    }
     await this.hooks.startReplica?.({ role: local.role, publication,
-      dbPath: local.role === 'protected' && local.everWritten ? local.activeDbPath : undefined });
+      dbPath: preserved?.dbPath ?? (local.role === 'protected' && local.everWritten ? local.activeDbPath : undefined) });
   }
 
   publicRecovery() {
@@ -320,6 +341,7 @@ export class PairManager {
     if (!recovery) return { state: 'idle', preview: null, report: null, error: null };
     return { state: recovery.state, preview: recovery.preview ?? null, report: recovery.report ?? null,
       donorRole: recovery.metadata?.claim?.role ?? null,
+      donorBytes: Number.isSafeInteger(recovery.metadata?.bytes) && recovery.metadata.bytes >= 0 ? recovery.metadata.bytes : null,
       error: recovery.error ?? null,
       pendingRelease: recovery.releaseOperation ? { requestId: recovery.releaseOperation.requestId,
         discardUnrecovered: recovery.releaseOperation.skipRecovery, previewId: recovery.preview?.previewId } : null };
@@ -462,21 +484,25 @@ export class PairManager {
     }
   }
 
-  async synchronize(claim) {
+  async synchronize(claim, { force = false } = {}) {
     this.syncAbort = new AbortController();
     const signal = AbortSignal.any([this.abort.signal, this.syncAbort.signal, AbortSignal.timeout(this.config.timeoutMs ?? 3600000)]);
     this.sync = { ...this.sync, state: 'syncing', error: null };
     try {
       await this.assertReplica(claim);
-      let metadata = this.state.value.pendingSnapshot;
+      // Ordinary mirroring resumes interrupted immutable transfers. Handover
+      // must check a newly exported boundary, never a previously usable cache.
+      let metadata = force ? null : this.state.value.pendingSnapshot;
       if (!metadata || metadata.claim?.epoch !== claim.epoch) {
-        metadata = validateSnapshot(await this.peer.request('snapshot', {}, { signal, timeoutMs: this.config.timeoutMs }));
+        metadata = validateSnapshot(await this.peer.request('snapshot', force ? { force: true } : {}, { signal, timeoutMs: this.config.timeoutMs }));
         await this.state.update({ pendingSnapshot: metadata });
       } else validateSnapshot(metadata);
-      if (metadata.claim.role !== 'master' || metadata.claim.epoch !== claim.epoch) throw pairError('authority_changed');
+      if (metadata.claim.role !== 'master' || metadata.claim.epoch !== claim.epoch
+        || metadata.claim.nodeId !== claim.nodeId) throw pairError('authority_changed');
       const result = await this.installReplica(metadata, { signal });
       this.sync = { state: 'ready', sourceAt: result.sourceAt, verifiedAt: result.verifiedAt, bytes: result.bytes,
         lastSuccessAt: this.clock(), error: null, transferredBytes: result.transferredBytes };
+      return result;
     } catch (error) {
       this.sync = { ...this.sync, state: 'error', error: publicPairError(error) };
       if (['snapshot_unavailable', 'authority_changed'].includes(error?.code)) await this.state.update({ pendingSnapshot: null });
@@ -497,7 +523,8 @@ export class PairManager {
         await guard();
         // Check the sender is still authoritative just before publication.
         const remote = await this.peer.request('status', { claim: this.state.claim(), sync: publicSync(this.sync) }, { signal });
-        if (remote.claim?.role !== 'master' || remote.claim.epoch !== metadata.claim.epoch) throw pairError('authority_changed');
+        if (remote.claim?.role !== 'master' || remote.claim.epoch !== metadata.claim.epoch
+          || remote.claim.nodeId !== metadata.claim.nodeId) throw pairError('authority_changed');
         await guard();
         const result = await action();
         await this.state.update({ pendingSnapshot: null, accepted: { generation: result.generation, digest: result.digest,
@@ -510,9 +537,12 @@ export class PairManager {
     const protect = async operation => {
       try { return await operation(); }
       catch (error) {
-        if ((error?.code === 'verification_failed' || databaseErrorDetails(error)) && this.state.value.role === 'slave')
+        const database = databaseErrorDetails(error);
+        if ((error?.code === 'verification_failed' || database) && this.state.value.role === 'slave') {
+          this.sync = { ...this.sync, state: 'error', error: publicPairError(error) };
           await this.state.update({ role: 'protected', reason: 'snapshot_verification_failed', bootstrapPending: false,
-            ...(databaseErrorDetails(error) ? { activationError: error.code } : {}) });
+            ...(database ? { activationError: database.code } : {}) });
+        }
         throw error;
       }
     };
@@ -544,13 +574,29 @@ export class PairManager {
     const local = this.state.value;
     if (local.role !== role) throw pairError('authority_changed');
     const unchanged = role === 'slave' ? await this.replicaPublicationGuard() : null;
-    const publication = await readReplicaPublication(this.config.snapshotDirectory);
+    // During an interrupted release the selected publication may already be
+    // the replacement. The retained donor remains the history under review.
+    const publication = role === 'protected' && await this.preservedReleaseSnapshot()
+      || await readReplicaPublication(this.config.snapshotDirectory);
     if (!publication) throw pairError('snapshot_unavailable');
     return this.snapshots.create({ dbPath: publication.dbPath, claim: this.state.claim(), sequence: local.sequence,
       signal: this.abort.signal, force, pin, assertSource: async () => {
         if (this.closed || this.state.value.epoch !== local.epoch || this.state.value.role !== role) throw pairError('authority_changed');
         if (unchanged) await unchanged();
       } });
+  }
+
+  async preservedReleaseSnapshot() {
+    const local = this.state.value, metadata = local.release?.preservedSnapshot;
+    if (!metadata) return null;
+    validateSnapshot(metadata);
+    const identity = local.release.identity;
+    if (metadata.claim.role !== 'protected' || metadata.claim.nodeId !== local.nodeId
+      || metadata.claim.epoch !== local.epoch || metadata.digest !== identity?.donorDigest
+      || metadata.bytes !== identity?.donorBytes) throw pairError('invalid_pair_state');
+    const dbPath = join(this.snapshots.directory, `export-${metadata.generation}.sqlite`);
+    await verifySnapshot(dbPath, metadata, this.abort.signal);
+    return { ...metadata, dbPath };
   }
 
   async readLineage(dbPath) {
@@ -696,7 +742,7 @@ export class PairManager {
     const claim = this.state.claim(), token = randomUUID();
     const ocpp = await this.hooks.handoverRequirements?.() ?? null;
     const mqtt = await this.hooks.mqttHandoverRequirements?.() ?? null;
-    const remote = await this.peer.request('handover-prepare', { claim, token, ocpp, mqtt });
+    const remote = await this.peer.request('handover-prepare', { claim, token, ocpp, mqtt }, { timeoutMs: this.config.timeoutMs });
     if (remote.role !== 'slave') throw pairError('invalid_transition');
     if (!Object.hasOwn(remote, 'ocpp') || !isDeepStrictEqual(remote.ocpp, ocpp)) throw pairError('ocpp_handover_not_ready');
     if (!Object.hasOwn(remote, 'mqtt') || !isDeepStrictEqual(remote.mqtt, mqtt)) throw pairError('mqtt_handover_not_ready');
@@ -873,7 +919,13 @@ export class PairManager {
         await this.hooks.prepareMqttHandover?.({ requirements: body.mqtt, token: body.token });
         if (body.ocpp !== null && (!this.hooks.prepareHandover || !this.hooks.verifyHandover)) throw pairError('ocpp_handover_not_ready');
         await this.hooks.prepareHandover?.(body.ocpp);
-        await this.assertReplica(body.claim);
+        // Prove this receiver can use the master's current database while the
+        // master is still operating. Empty receivers need the same check;
+        // transport/equipment readiness alone says nothing about the database.
+        this.syncAbort?.abort(pairError('authority_changed')); await this.syncTask;
+        const publication = await this.synchronize(body.claim, { force: true });
+        if (!publication || this.sync.state !== 'ready') throw pairError(this.sync.error ?? 'verification_failed');
+        await this.assertReplica(publication.claim);
         await this.state.update({ transition: { kind: 'handover', phase: 'prepared', token: body.token,
           peerNodeId: body.claim.nodeId, epoch: body.claim.epoch, ocpp: body.ocpp, mqtt: body.mqtt } });
         return { ...this.state.claim(), ocpp: body.ocpp, mqtt: body.mqtt };
@@ -882,7 +934,8 @@ export class PairManager {
     if (operation === 'handover-stage') {
       if (this.busy || this.state.value.transition?.token !== body.token || this.state.value.role !== 'slave') throw pairError('invalid_transition');
       const metadata = validateSnapshot(body.metadata);
-      if (metadata.claim.epoch !== this.state.value.transition.epoch) throw pairError('authority_changed');
+      if (metadata.claim.epoch !== this.state.value.transition.epoch
+        || metadata.claim.nodeId !== this.state.value.transition.peerNodeId) throw pairError('authority_changed');
       this.busy = true;
       try {
         this.syncAbort?.abort(pairError('authority_changed')); await this.syncTask;
@@ -899,6 +952,8 @@ export class PairManager {
       if (this.busy) throw pairError('peer_busy');
       const remote = await this.peer.request('status', { claim: this.state.claim(), sync: publicSync(this.sync) });
       if (remote.claim?.role !== 'protected' || remote.claim.transition?.phase !== 'released'
+        || remote.claim.nodeId !== this.state.value.transition.peerNodeId
+        || remote.claim.epoch !== this.state.value.transition.epoch
         || remote.controlReleased !== true) throw pairError('invalid_transition');
       this.busy = true;
       try {
@@ -937,9 +992,21 @@ export class PairManager {
       this.busy = true;
       try {
         this.syncAbort?.abort(pairError('authority_changed')); await this.syncTask;
-        const currentDonor = await this.exportSnapshot({ force: true });
-        if (currentDonor.digest !== donor.digest || currentDonor.bytes !== donor.bytes) throw pairError('recovery_required');
-        await this.state.update({ role: 'protected', release: { epoch: metadata.claim.epoch, digest: metadata.digest, identity }, reason: 'rejoining' });
+        if (this.state.value.release && !isDeepStrictEqual(this.state.value.release.identity, identity))
+          throw pairError('invalid_transition');
+        const preserved = await this.preservedReleaseSnapshot();
+        const retainReplica = !this.state.value.everWritten || !this.state.value.activeDbPath;
+        const currentDonor = preserved ?? await this.exportSnapshot({ force: true, pin: retainReplica });
+        if (currentDonor.digest !== donor.digest || currentDonor.bytes !== donor.bytes) {
+          if (retainReplica && !preserved) await this.snapshots.unpin(currentDonor.generation);
+          throw pairError('recovery_required');
+        }
+        // Former-master databases remain at their original paths. A protected
+        // replica instead needs a pinned, self-contained copy: publication
+        // retention otherwise deletes its unmatched history on the next sync.
+        const { dbPath: retainedPath, ...preservedSnapshot } = currentDonor;
+        await this.state.update({ role: 'protected', release: { epoch: metadata.claim.epoch, digest: metadata.digest, identity,
+          ...(retainReplica ? { preservedSnapshot } : {}) }, reason: 'rejoining' });
         const result = await this.installReplica(metadata, { signal: this.abort.signal, allowRelease: true });
         await this.hooks.closeReplica?.();
         await this.state.update({ role: 'slave', reason: null, release: null, transition: null, everWritten: false,

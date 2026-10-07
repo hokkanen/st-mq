@@ -18,6 +18,38 @@ scheduling during journal reconstruction. Keep phase cohorts atomic when boundin
 transaction work; an event-loop yield in the worker alone does not prevent it
 from repeatedly taking the lock before the controller can write.
 
+`test/acquisition-contention.test.js` injects rejected saves, full queues and
+out-of-order completions. Recovery must use a later committed delivery from the
+affected input/device without reconnecting; retained, duplicate, ignored and
+unrelated receipts cannot clear it. Native read-only status requests can refresh
+evidence while mutations stay fenced. Tests distinguish an admitted packet from
+a cached reading with the same timestamp.
+
+Startup rejection tests exercise the real application constructor and snapshot
+workers with unsupported charging state. Compare original database bytes, state
+and interrupted WAL companions, not only the thrown error. Current saved state
+uses shared validators; constructor ordering must not create an earlier Garage
+configuration write. Writable worker opening must still permit ongoing live WAL
+recording after read-only validation.
+
+Handover preflight tests include an empty receiver, an incompatible retained
+snapshot and cached/pending compatible transfers followed by incompatible current
+state. Preflight always requests a new export before stopping the master.
+`test/extended/pair-handover-scale.test.js` runs real encrypted loopback HTTP,
+snapshot workers and concurrent recording with larger synthetic databases. VIP
+and equipment hooks are simulated. It verifies one owner, final retained records,
+integrity and failure before service interruption, while reporting total,
+preflight and simulated control-gap timings separately. To run a larger case:
+
+```sh
+STMQ_PAIR_SCALE_MIB=512 node --test --test-timeout=180000 test/extended/pair-handover-scale.test.js
+node scripts/benchmarks/recovery.js --records=1000,10000,50000 --windows=96 --payload-bytes=128
+```
+
+Neither benchmark qualifies physical Raspberry Pi storage, HA scheduling or
+device reconnect time. Keep the production source-only check contract during
+benchmark adaptation: checking creates no candidate master or trial merge.
+
 Pair recovery validation also covers explicit outage intervals beside valid
 energy, whole phase cohorts, retry idempotency and unchanged original journal
 inputs. Recovery-report tests compare both category date ranges and explicitly
@@ -718,11 +750,13 @@ Current limits to retain when reviewing results:
 
 ## Runtime and fixture constraints
 
-Recovery workers finish their initial SQLite backup before attaching the
-catch-up message listener. This ordering avoids a reproduced Node runtime stall;
-replies arriving after `ready` remain queued until the listener attaches. Keep
-small recovery-preview and cancellation regressions alongside the larger
-extended replay fixtures instead of increasing timeouts to conceal a stall.
+The recovery service prepares a revision preview's private SQLite backup before
+launching its revision worker. It owns and awaits both stages, including worker
+exit on cancellation, before deleting temporary files. Source-only checks need
+no candidate copy. This ordering avoids a reproduced Node runtime stall and
+prevents cleanup racing an abandoned backup worker. Keep small recovery-preview
+and cancellation regressions alongside the larger extended replay fixtures
+instead of increasing timeouts to conceal a stall.
 
 The full-week replay and larger phase-energy import belong in extended tests.
 Routine tests still cross batch boundaries and verify authority, restart,
