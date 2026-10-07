@@ -20,7 +20,9 @@ import { createHistoryChart } from './history-chart.js';
 import { dashboardProviders, outdoorSourceLabel, providerName, providerSeries, temperatureReadingStatus } from './provider-status.js';
 import { activeRates, rateRows, temporaryValues, priceControlState, renderHomePolicy, homeIndoorEstimate, homeReferenceSummary } from './home-controls.js';
 import { learningDisplay, h66Control, h66HomeSummary, h66EquipmentSummary, h66ReadingStatus, h66ReadingValue, h66Registers, h66ReadingGroups, renderModelInputs } from './learning-status.js';
-import { renderRecording, renderEnergyAudits, recordingOverviewRefresh } from './recording.js';
+import { renderRecording, renderRecordingOverview, renderEnergyAudits, recordingOverviewRefresh } from './recording.js';
+import { createRecordingHealth } from './recording-health.js';
+import './recording-health.css';
 import { bindDatabaseExport } from './database-export.js';
 import { learningOverview, settingsReloadScope } from './dashboard-status.js';
 import { createFireplacePanel } from './fireplace.js';
@@ -133,6 +135,7 @@ const reasons = {
 };
 function lockScreen({ authenticationFailed = false } = {}) {
   heatingExplorer.clear();
+  recordingHealth.clear();
   selectPickers.dismiss();
   for (const picker of temporaryDatePickers) picker.dismiss();
   const hadPassword = Boolean(session.token), hadStatus = Boolean(lastStatus);
@@ -172,6 +175,7 @@ async function api(path, data, options = {}) {
   return result;
 }
 function showError(error) { $('error').textContent = error.message; $('error').hidden = false; $('connection').textContent = 'Connection needs attention'; }
+const recordingHealth = createRecordingHealth({ document, request: api });
 const fireplacePanel = createFireplacePanel({ document, request: api, storage: sessionStorage,
   beforeMutation: () => { ++refreshSequence; }, afterMutation: () => refresh() });
 const heatingExplorer = createHeatingExplorerPanel({ document, request: api,
@@ -771,6 +775,7 @@ function render(s) {
   $('auth').hidden = true;
   $('fireplace-family-help').hidden = webAccess?.role !== 'family';
   lastStatus = s;
+  recordingHealth.update(s);
   readOnlyControls.update(s);
   garageControls.update(s);
   automationControls.update(s);
@@ -926,6 +931,7 @@ async function refresh({ forceChart = false, background = false } = {}) {
       // this older status request was pending.
       if (pairRevision === pairStatusRevision) pairPanel.unavailable();
       showError(error);
+      void recordingHealth.refresh();
     }
     return;
   }
@@ -937,7 +943,7 @@ async function refresh({ forceChart = false, background = false } = {}) {
     const replaced = snapshot !== lastReplicaSnapshot;
     if (replaced) {
       eventStream.reset(snapshot); auditFetchedAt = 0;
-      void refreshRecordingOverview({ force: true });
+      void refreshRecordingOverview({ force: true, summary: true });
     }
     lastReplicaSnapshot = snapshot;
     if (replica && !replica.available) return;
@@ -1115,9 +1121,11 @@ $('h66-test-form').addEventListener('submit', async event => {
   await refresh();
 });
 const refreshRecordingOverview=recordingOverviewRefresh({request:api,root:$('recording-overview-content'),
-  details:$('recording-overview-details'),parent:$('recording-details'),message:$('recording-overview-message'),button:$('recording-overview-refresh')});
+  details:$('recording-overview-details'),parent:$('recording-details'),message:$('recording-overview-message'),button:$('recording-overview-refresh'),
+  render: (overview, root) => { renderRecordingOverview(overview, root); recordingHealth.inventory(overview); },
+  onState: state => recordingHealth.inventoryStatus(state) });
 bindDatabaseExport({ saveButton: $('database-export-save'), downloadButton: $('database-export-download'),
-  message: $('database-export-message'), window, document,
+  message: $('database-export-message'), window, document, onSettled: () => recordingHealth.refresh(),
   request: method => {
     assertWebRequest(webAccess, '/api/database-export', method === 'POST' ? {} : undefined, lastStatus);
     assertDashboardWrite('/api/database-export', method === 'POST' ? {} : undefined, lastStatus);
@@ -1167,7 +1175,7 @@ async function refreshAudits() {
   finally { auditBusy=false; }
 }
 $('recording-details').addEventListener('toggle',()=>{
-  if ($('recording-details').open) { renderRecording(lastStatus,$('recording-content')); void refreshRecordingOverview(); void refreshAudits(); }
+  if ($('recording-details').open) { renderRecording(lastStatus,$('recording-content')); void refreshRecordingOverview({ summary: true }); void refreshAudits(); }
 });
 $('energy-audit-details').addEventListener('toggle',refreshAudits);
 setInterval(refreshAudits,60_000);
@@ -1178,6 +1186,9 @@ setInterval(refreshPairing, 3_000);
 setInterval(() => { checkCommunication(); if (!session.locked) { fireplacePanel.tick(); heatingExplorer.tick(); } }, 1000);
 setInterval(() => { if (!session.locked) historyRecovery.tick(); }, 2000);
 window.addEventListener('online', () => void refresh());
-document.addEventListener('visibilitychange', () => { checkCommunication(); if (!document.hidden) void refresh(); });
+document.addEventListener('visibilitychange', () => {
+  checkCommunication();
+  if (!document.hidden) { void refresh(); void refreshRecordingOverview({ summary: true }); }
+});
 if (session.locked) { $('auth').hidden = ingress; $('connection').textContent = 'Signed out'; if (!ingress) $('token').focus(); }
 else void refresh();

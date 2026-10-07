@@ -7,11 +7,17 @@ import { validEnergyQuality } from './energy-history.js';
 import { recordingPolicy, recordingStreamKey as keyOf } from '../domain/recording-policy.js';
 import { VOLTAGE_RECORDING_FLOOR_V, VOLTAGE_SIGNALS, voltageRecordingStatus } from './voltage.js';
 import { recordedTransport } from '../domain/recording-source.js';
+import { ADAPTIVE_BUDGET_KEY, initialAdaptiveBudget as initialBudget, readAdaptiveBudget } from './adaptive-recording-budget.js';
+import { STORAGE_METRICS_KEY, initialStorageMetrics, readStorageMetrics } from './recording-metrics.js';
 
 const MINUTE = 60_000, HOUR = 60 * MINUTE, DAY = 24 * HOUR, YEAR = 365.25 * DAY;
 export const RECORDING_VERSION = 'recording-contract-v2';
 const VERSION = RECORDING_VERSION;
-const GLOBAL_KEY = 'recorder:global:v2';
+// Logical row estimate, including source/quality/provenance metadata and JSON
+// structure. Local SQL IDs and unrelated table/index allocation never affect it.
+const observationBytes = o => Buffer.byteLength(JSON.stringify({ source: o.source, device: o.device,
+  signal: o.signal, value: o.value, unit: o.unit, sourceTime: o.sourceTime,
+  receivedAt: o.receivedAt, quality: o.quality, raw: o.raw }));
 const DISABLED_H66 = new Set(['discharge_temperature', 'brine_pump_active']);
 const clamp = (n, low, high) => Math.max(low, Math.min(high, n));
 const flags = quality => [...new Set(quality ?? [])].sort();
@@ -119,6 +125,8 @@ export class Recorder {
     // made by this runtime, and this marker grants no device authority.
     this.observedStreams = new Set();
     this.configure(config);
+    this.adaptiveBudgetState();
+    readStorageMetrics(store.db);
   }
 
   configure(config = {}) {
@@ -131,26 +139,40 @@ export class Recorder {
       throw new TypeError('Recorder annual budget must be positive');
   }
 
-  global(now) {
-    let g = this.store.getState(GLOBAL_KEY);
-    if (!g) g = { version: VERSION, startedAt: now, measuredAt: now, measuredBytes: this.store.databaseBytes(),
-      tolerance: 0.02, bytesPerDay: 0, bytesPerDay7d: 0, measuredHours: 0 };
+  storageMetrics(now) {
+    const g = readStorageMetrics(this.store.db) ?? initialStorageMetrics(now,this.store.databaseBytes());
     const elapsed = now - g.measuredAt;
     if (elapsed >= HOUR) {
       const bytes = this.store.databaseBytes(), daily = Math.max(0, bytes - g.measuredBytes) * DAY / elapsed;
       const alpha = 1 - Math.exp(-elapsed / DAY), weeklyAlpha = 1 - Math.exp(-elapsed / (7 * DAY));
       g.bytesPerDay = g.measuredHours ? g.bytesPerDay + alpha * (daily - g.bytesPerDay) : daily;
       g.bytesPerDay7d = g.measuredHours ? g.bytesPerDay7d + weeklyAlpha * (daily - g.bytesPerDay7d) : daily;
-      // This is a rolling price of accuracy, not a calendar quota. Hourly changes
-      // are deliberately small; a burst cannot trigger a December-like squeeze.
-      const ratio = g.bytesPerDay / (this.config.annualBudgetBytes * DAY / YEAR);
-      const step = clamp(Math.log(Math.max(ratio, 0.05)) * Math.min(elapsed / DAY, 0.125), -0.12, 0.12);
-      g.tolerance = clamp(g.tolerance * Math.exp(step), 1e-6, 10);
       g.measuredHours += elapsed / HOUR; g.measuredAt = now; g.measuredBytes = bytes;
       g.metricsPrunedBefore = Math.floor(now/HOUR)*HOUR-7*DAY;
       this.store.db.prepare('DELETE FROM recorder_metrics WHERE bucket<?').run(g.metricsPrunedBefore);
     }
     return g;
+  }
+
+  adaptiveBudgetState() {
+    return readAdaptiveBudget(this.store.db);
+  }
+
+  adaptiveBudget(now) {
+    const budget = this.adaptiveBudgetState() ?? initialBudget(now), elapsed = now - budget.measuredAt;
+    if (elapsed >= HOUR) {
+      const daily = (budget.estimatedBytes - budget.measuredBytes) * DAY / elapsed;
+      const alpha = 1 - Math.exp(-elapsed / DAY), weeklyAlpha = 1 - Math.exp(-elapsed / (7 * DAY));
+      budget.bytesPerDay = budget.measuredHours ? budget.bytesPerDay + alpha * (daily - budget.bytesPerDay) : daily;
+      budget.bytesPerDay7d = budget.measuredHours ? budget.bytesPerDay7d + weeklyAlpha * (daily - budget.bytesPerDay7d) : daily;
+      // Only prospective adaptive observations price future precision. Exact
+      // records, recovery, imports and SQLite allocation remain separate costs.
+      const ratio = budget.bytesPerDay / (this.config.annualBudgetBytes * DAY / YEAR);
+      const step = clamp(Math.log(Math.max(ratio, 0.05)) * Math.min(elapsed / DAY, 0.125), -0.12, 0.12);
+      budget.tolerance = clamp(budget.tolerance * Math.exp(step), 1e-6, 10);
+      budget.measuredHours += elapsed / HOUR; budget.measuredAt = now; budget.measuredBytes = budget.estimatedBytes;
+    }
+    return budget;
   }
 
   signalState(observation, now) {
@@ -358,7 +380,9 @@ export class Recorder {
       // A recorded disconnect remains in force until a genuine newer report.
       return { saved:false,reason:'retained-periodic-report',observation:null };
     return this.store.transaction(() => {
-      const s = this.signalState(o,o.receivedAt), g = this.global(o.receivedAt);
+      const policy = recordingPolicy(o, { kind });
+      const budget = policy.adaptive ? this.adaptiveBudget(o.receivedAt) : null;
+      const s = this.signalState(o,o.receivedAt), g = this.storageMetrics(o.receivedAt);
       if (o.source === 'mqtt-equipment' && o.unit === 'state' && typeof o.raw?.eventOnly === 'boolean') s.eventOnly = o.raw.eventOnly;
       if (o.raw?.reportIntervalMs === 0) {
         delete s.reportPolicy;
@@ -381,14 +405,13 @@ export class Recorder {
       const freshUpdate = fresh && (hostContactReport(o) || s.lastSourceTime === null || o.sourceTime > s.lastSourceTime
         || o.sourceTime === s.lastSourceTime && s.previousValue !== o.value);
       if (freshUpdate) this.scale(s,o.value,o.sourceTime);
-      const policy = recordingPolicy(o, { kind });
       const exact = !policy.adaptive;
       s.recordingPolicy = policy.id;
       const changed = s.last === null || o.value !== s.last.value;
       const transition = s.last && (status !== s.status || !same(o.quality,s.last.quality)
         || o.unit!==s.unit || !same(semanticQuality(o.raw),s.last.semanticQuality??{}));
       const crossingZero = /pump_speed$/.test(o.signal) && s.last && (o.value === 0) !== (s.last.value === 0);
-      const threshold = Math.max(valueFloor(o),s.scale * g.tolerance,numericalFloor(o.value,s.last?.value));
+      const threshold = Math.max(valueFloor(o),s.scale * (budget?.tolerance ?? 0),numericalFloor(o.value,s.last?.value));
       let reason = !s.last ? 'initial' : transition ? 'quality-or-availability' : force ? 'forced'
         : freshUpdate && (crossingZero || exact && changed) ? 'state-change'
         : freshUpdate && changed && Math.abs(o.value - s.last.value) > threshold ? 'learned-change' : null;
@@ -426,9 +449,13 @@ export class Recorder {
       // bursts of readings do not count as extra independent accuracy evidence.
       const error = policy.adaptive && fresh && prior && s.scale > 0 ? Math.abs(o.value-prior.value)/s.scale : null;
       this.count(s,o.receivedAt,{saved:Boolean(reason),error,elapsed,bytes:committed ? Buffer.byteLength(JSON.stringify(committed)) : 0});
+      if (budget) {
+        if (committed) budget.estimatedBytes += observationBytes(committed);
+        this.store.setState(ADAPTIVE_BUDGET_KEY,budget);
+      }
       s.lastPollAt = o.receivedAt;
       if (fresh) s.lastSourceTime = Math.max(s.lastSourceTime ?? o.sourceTime,o.sourceTime);
-      this.store.setState(stateKey(s.key),s); this.store.setState(GLOBAL_KEY,g);
+      this.store.setState(stateKey(s.key),s); this.store.setState(STORAGE_METRICS_KEY,g);
       this.observedStreams.add(s.key);
       return { saved:Boolean(reason),id:committed?.id ?? null,observation:committed,reason:reason ?? (freshUpdate ? 'within-threshold' : 'unchanged-source-time'),
         ...(o.quality.includes('out-of-order-source-time') ? { rejectedSourceTime: true } : {}) };
@@ -457,7 +484,8 @@ export class Recorder {
       if (state.lastEnd !== null && start < state.lastEnd) throw new Error('Overlapping energy integration intervals');
       if (state.lastReceivedAt != null && receivedAt < state.lastReceivedAt)
         throw new TypeError('Out-of-order energy receipt');
-      const q = flags(quality), g = this.global(receivedAt), observations = [];
+      const budget = this.adaptiveBudget(receivedAt);
+      const q = flags(quality), g = this.storageMetrics(receivedAt), observations = [];
       const native = nativeChargerEnergy(prefix), powerFloor = chargerEnergy(prefix) ? CHARGER_POWER_FLOOR_KW : 0;
       const previousPowers = native ? state.lastSelectionPowers ?? null : state.lastPowers;
       const zero = powers.every(value=>value===0) && energies.every(value=>value===0);
@@ -483,11 +511,12 @@ export class Recorder {
         recoveredEnd = Math.max(recoveredEnd ?? -Infinity,raw.intervalEnd);
       }
       if (recoveredEnd !== null) {
-        observations.push(...this.commitEnergy(state,source,device,prefix,receivedAt,'recovery-boundary'));
+        observations.push(...this.commitEnergy(state,source,device,prefix,receivedAt,'recovery-boundary',budget));
         state.lastEnd=end; state.lastReceivedAt=receivedAt; state.lastPowers=null; state.lastQuality=null;
         state.lastSelectionPowers=null;
         this.store.setState(checkpointKey,state);
-        g.energyRevision=(g.energyRevision ?? 0)+1; this.store.setState(GLOBAL_KEY,g);
+        g.energyRevision++; this.store.setState(STORAGE_METRICS_KEY,g);
+        this.store.setState(ADAPTIVE_BUDGET_KEY,budget);
         if (recoveredEnd<end) observations.push(...this.energyGap({source,device,prefix,start:Math.max(start,recoveredEnd),end,
           receivedAt,quality:['recovery-overlap','missing']}));
         return {saved:observations.length>0,reason:'recovered-interval-overlap',observations};
@@ -496,7 +525,7 @@ export class Recorder {
       // do not spread its energy over missing time or blend measurement bases.
       if (state.pending && (state.pending.end !== start || (state.pending.transport ?? null) !== transport || !sameEnergyQuality(state.pending.quality,q,
         {zeroA:state.pending.energies.every(value=>value===0),zeroB:zero})))
-        observations.push(...this.commitEnergy(state,source,device,prefix,receivedAt,'boundary'));
+        observations.push(...this.commitEnergy(state,source,device,prefix,receivedAt,'boundary',budget));
       // A native counter may hold its value between quantized increments while
       // reporting positive instantaneous power. Compare like with like for
       // selection; reconstructible interval power still describes its energy.
@@ -507,7 +536,7 @@ export class Recorder {
         this.scale(s,powers[i],end); state.scales[i] = s;
         if (selectionPowers && (((powers[i] === 0) !== (selectionPowers[i] === 0)
             && Math.max(powers[i],selectionPowers[i]) > powerFloor)
-          || Math.abs(powers[i]-selectionPowers[i]) > Math.max(powerFloor,s.scale*g.tolerance,numericalFloor(powers[i],selectionPowers[i])))) changed = true;
+          || Math.abs(powers[i]-selectionPowers[i]) > Math.max(powerFloor,s.scale*budget.tolerance,numericalFloor(powers[i],selectionPowers[i])))) changed = true;
       }
       const reason = selectionPowers === null ? 'initial' : !sameEnergyQuality(state.lastQuality,q,
         {zeroA:state.lastPowers?.every(value=>value===0),zeroB:zero}) ? 'quality-or-availability'
@@ -515,7 +544,7 @@ export class Recorder {
       // Keep a newly detected transition out of the preceding steady span. With
       // no maximum duration, blending it backwards could distort days of history.
       if (reason && state.pending)
-        observations.push(...this.commitEnergy(state,source,device,prefix,receivedAt,'power-boundary'));
+        observations.push(...this.commitEnergy(state,source,device,prefix,receivedAt,'power-boundary',budget));
       if (!state.pending) state.pending = {start,end,receivedAt,energies:signals.map(()=>0),quality:q,
         ...(transport ? {transport} : {})};
       for (let i=0;i<signals.length;i++) state.pending.energies[i] += energies[i];
@@ -523,7 +552,7 @@ export class Recorder {
       if (native) state.pending.selectionPowers = [...powers];
       state.pending.end = end; state.pending.receivedAt = receivedAt;
       state.lastEnd = end; state.lastReceivedAt = receivedAt;
-      if (reason) observations.push(...this.commitEnergy(state,source,device,prefix,receivedAt,reason));
+      if (reason) observations.push(...this.commitEnergy(state,source,device,prefix,receivedAt,reason,budget));
       for (let i=0;i<signals.length;i++) {
         const s = this.signalState({source,device,signal:signals[i],unit:'kWh'},receivedAt);
         s.scale = state.scales[i].scale; s.lastPollAt = receivedAt; s.recordingPolicy = 'adaptive-energy';
@@ -531,13 +560,14 @@ export class Recorder {
         this.store.setState(stateKey(s.key),s);
         this.observedStreams.add(s.key);
       }
-      g.energyRevision = (g.energyRevision ?? 0) + 1;
-      this.store.setState(checkpointKey,state); this.store.setState(GLOBAL_KEY,g);
+      g.energyRevision++;
+      this.store.setState(checkpointKey,state); this.store.setState(STORAGE_METRICS_KEY,g);
+      this.store.setState(ADAPTIVE_BUDGET_KEY,budget);
       return {saved:observations.length>0,reason:reason ?? 'within-threshold',observations};
     });
   }
 
-  commitEnergy(state,source,device,prefix,receivedAt,reason) {
+  commitEnergy(state,source,device,prefix,receivedAt,reason,budget) {
     const p = state.pending;
     if (!p) return [];
     const signals = energySignals(prefix);
@@ -548,6 +578,7 @@ export class Recorder {
           basis:prefix==='caravan'?'meter-counter-delta':prefix==='ev2'?'native-meter-counter-phase-allocation':'integrated-power-phase-allocation',
           ...(prefix==='caravan'?{learningRole:'history-only'}:{}),recorder:{version:VERSION,policy:'adaptive-energy',reason,group:prefix}}};
       o.id = this.store.observation(o);
+      budget.estimatedBytes += observationBytes(o);
       const s = this.signalState(o,receivedAt);
       const previous = s.last;
       s.last = {id:o.id,value,sourceTime:p.end,receivedAt,quality:p.quality,semanticQuality:semanticQuality(o.raw)};
@@ -575,7 +606,9 @@ export class Recorder {
       const key = `recorder:energy:${JSON.stringify([source,device,prefix])}`, state = this.store.getState(key);
       if (state?.lastReceivedAt != null && receivedAt < state.lastReceivedAt)
         throw new TypeError('Out-of-order energy gap receipt');
-      const observations = state ? this.commitEnergy(state,source,device,prefix,receivedAt,'availability-boundary') : [];
+      const budget = state?.pending ? this.adaptiveBudget(receivedAt) : null;
+      const observations = budget ? this.commitEnergy(state,source,device,prefix,receivedAt,'availability-boundary',budget) : [];
+      if (budget) this.store.setState(ADAPTIVE_BUDGET_KEY,budget);
       if (state) {
         state.lastPowers = null; state.lastSelectionPowers = null; state.lastQuality = null;
         state.lastReceivedAt = receivedAt; this.store.setState(key,state);
@@ -601,6 +634,7 @@ export class Recorder {
     if (selected?.some(value=>!energySignals(value))) throw new TypeError('Invalid energy flush group');
     return this.store.transaction(() => {
       const observations = [];
+      let budget = this.adaptiveBudgetState() ? this.adaptiveBudget(now) : null;
       for (const row of this.store.db.prepare("SELECT key,value FROM state WHERE key LIKE 'recorder:energy:%'").all()) {
         const s = JSON.parse(row.value), p = s.pending;
         if (!p || !force) continue;
@@ -608,10 +642,12 @@ export class Recorder {
         if (source !== undefined && source !== recordSource || device !== undefined && device !== recordDevice
           || selected && !selected.includes(recordPrefix)) continue;
         if (p.end > now || p.receivedAt > now) throw new TypeError('Cannot finalize energy before it was received');
-        observations.push(...this.commitEnergy(s,recordSource,recordDevice,recordPrefix,now,'flush'));
+        budget ??= this.adaptiveBudget(now);
+        observations.push(...this.commitEnergy(s,recordSource,recordDevice,recordPrefix,now,'flush',budget));
         this.store.setState(row.key,s);
       }
-      this.store.setState(GLOBAL_KEY,this.global(now));
+      this.store.setState(STORAGE_METRICS_KEY,this.storageMetrics(now));
+      if (budget) this.store.setState(ADAPTIVE_BUDGET_KEY,budget);
       return observations;
     });
   }
@@ -648,7 +684,8 @@ export class Recorder {
   latestCommitted(signal) { return this.committedAt(signal,this.clock()); }
 
   status(now = this.clock()) {
-    const g = this.store.getState(GLOBAL_KEY) ?? this.global(now);
+    const g = readStorageMetrics(this.store.db) ?? this.storageMetrics(now);
+    const recordedBudget = this.adaptiveBudgetState(), budget = recordedBudget ?? initialBudget(now);
     const historySelection = this.store.db.prepare('SELECT generation FROM history_selection WHERE id=1').get().generation;
     const revision = this.store.db.prepare(`SELECT (SELECT MAX(id) FROM observations) observations,
       (SELECT MAX(id) FROM provider_snapshot_fetches) snapshots,(SELECT MAX(id) FROM recorder_coverage) coverage`).get();
@@ -698,7 +735,7 @@ export class Recorder {
       const current = savedEdge.get(...stream,currentHour,now+1);
       const history = metrics.all(s.key,now-7*DAY-HOUR,currentHour);
       for (const [label,span] of [['hour',HOUR],['day',DAY],['week',7*DAY]]) {
-        const from = now-span, completeFrom = Math.max(Math.ceil(from/HOUR)*HOUR,g.metricsPrunedBefore ?? -Infinity);
+        const from = now-span, completeFrom = Math.max(Math.ceil(from/HOUR)*HOUR,g.metricsPrunedBefore);
         const buckets = history.filter(b => b.bucket+HOUR > from);
         const complete = buckets.filter(b => b.bucket>=completeFrom && b.bucket<currentHour);
         // An explicitly historical request can predate retained metric hours.
@@ -727,12 +764,16 @@ export class Recorder {
         policy:policy.id,openInterval:openEnergy.get(s.key) ?? null,
         lastSourceTime:s.lastSourceTime,lastPollAt:s.lastPollAt,scale:s.scale,
         freshness:recordingFreshness(s,s.coverageId ? latestCoverage.get(s.coverageId) : null,now),
-        threshold:exact ? null : Math.max(powerFloor,valueFloor(s),s.scale*g.tolerance),thresholdUnit:grouped || totalEnergy ? 'kW' : s.unit,
+        threshold:exact ? null : Math.max(powerFloor,valueFloor(s),s.scale*budget.tolerance),thresholdUnit:grouped || totalEnergy ? 'kW' : s.unit,
         optimizedQuantity:grouped ? 'phase-power' : totalEnergy ? 'total-power' : 'value',grouped,...stats};
     }).sort((a,b)=>a.signal.localeCompare(b.signal));
-    return {version:VERSION,...this.config,historySelection,historyRevision:JSON.stringify({...revision,selection:historySelection,energy:g.energyRevision ?? 0}),temperatureReportRevision,sourceReportRevision,normalizedTolerance:g.tolerance,measuredDatabaseBytes:this.store.databaseBytes(),
-      bytesPerDay:g.bytesPerDay,bytesPerDay7d:g.bytesPerDay7d,projectedAnnualBytes:g.bytesPerDay7d*YEAR/DAY,
-      measurementHours:g.measuredHours,budgetBasis:'soft-rolling-growth',
+    return {version:VERSION,...this.config,historySelection,historyRevision:JSON.stringify({...revision,selection:historySelection,energy:g.energyRevision}),temperatureReportRevision,sourceReportRevision,normalizedTolerance:budget.tolerance,measuredDatabaseBytes:this.store.databaseBytes(),
+      adaptiveAccountingStartedAt:recordedBudget?.startedAt ?? null,
+      adaptiveEstimatedBytes:budget.estimatedBytes,adaptiveEstimatedBytesPerDay:budget.bytesPerDay,
+      adaptiveEstimatedBytesPerDay7d:budget.bytesPerDay7d,adaptiveProjectedAnnualBytes:budget.bytesPerDay7d*YEAR/DAY,
+      adaptiveMeasurementHours:budget.measuredHours,budgetBasis:'adaptive-observation-payload',
+      totalDatabaseBytesPerDay:g.bytesPerDay,totalDatabaseBytesPerDay7d:g.bytesPerDay7d,
+      totalDatabaseProjectedAnnualBytes:g.bytesPerDay7d*YEAR/DAY,totalDatabaseMeasurementHours:g.measuredHours,
       parameters:parameters.filter(row=>row.policy.startsWith('adaptive-')),
       exactParameters:parameters.filter(row=>!row.policy.startsWith('adaptive-'))};
   }

@@ -3,6 +3,10 @@ import assert from 'node:assert/strict';
 import { Store } from '../src/storage/store.js';
 import { Recorder } from '../src/storage/recorder.js';
 import { LEARNING_ALGORITHM } from '../src/app/committed-learning.js';
+import { importCsv } from '../src/storage/history.js';
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 
 const MINUTE=60_000,HOUR=60*MINUTE;
 const parameters=(recorder,now)=>{const status=recorder.status(now);return [...status.parameters,...status.exactParameters];};
@@ -370,21 +374,140 @@ test('availability gaps close pending energy without extrapolation and recovery 
   assert.equal(last.raw.intervalStart,61000);assert.equal(last.sourceTime,76000);
 });
 
-test('budget feedback is rolling and gradual across year boundaries, never deletes or forces precision by month',t=>{
+test('adaptive payload budget feedback is gradual across year boundaries and never removes history',t=>{
   const {store,recorder,put}=fixture(t,{annualBudgetBytes:10_000});
   const start=Date.UTC(2026,11,31,23,30);
-  put(20,start);
+  put(20,start,{signal:'supply_temperature'});
   const original=recorder.status().normalizedTolerance;
-  // Grow unrelated actual database pages: the budget accounts for the whole
-  // file rather than a guessed fixed bytes-per-observation or yearly counter.
-  store.setState('synthetic-growth','x'.repeat(50000));
-  put(21,start+HOUR);
+  put(21,start+HOUR,{signal:'supply_temperature'});
   const status=recorder.status(start+HOUR);
   assert.ok(status.normalizedTolerance>original);
   assert.ok(status.normalizedTolerance/original<1.13);
-  assert.equal(status.budgetBasis,'soft-rolling-growth');
-  assert.ok(status.projectedAnnualBytes>10000);
+  assert.equal(status.budgetBasis,'adaptive-observation-payload');
+  assert.ok(status.adaptiveProjectedAnnualBytes>10000);
+  assert.equal(status.adaptiveAccountingStartedAt,start);
+  assert.ok(status.adaptiveEstimatedBytes>500,'payload estimate includes observation metadata');
   assert.equal(store.observations().length,2);
+});
+
+test('unused adaptive allowance gradually restores precision even while exact history grows',t=>{
+  const {store,recorder,put}=fixture(t),start=Date.UTC(2026,0,1);
+  put(35,start,{signal:'supply_temperature'});
+  const original=recorder.status(start).normalizedTolerance;
+  store.setState('synthetic-growth','x'.repeat(500_000));
+  put(21,start+HOUR);
+  assert.equal(recorder.status(start+HOUR).normalizedTolerance,original,'Exact writes do not advance adaptive feedback');
+  put(35,start+HOUR,{signal:'supply_temperature'});
+  const status=recorder.status(start+HOUR);
+  assert(status.normalizedTolerance<original);
+  assert(status.normalizedTolerance/original>0.88,'Restoring precision is gradual as well');
+  assert.equal(store.observations().filter(o=>o.signal==='supply_temperature').length,1,'No heartbeat is invented');
+});
+
+test('exact writes, imports, journals and indexes cannot change adaptive precision or byte accounting',async t=>{
+  const baseline=fixture(t,{annualBudgetBytes:100_000}), loaded=fixture(t,{annualBudgetBytes:100_000});
+  const directory=mkdtempSync(join(tmpdir(),'stmq-budget-isolation-'));
+  t.after(()=>rmSync(directory,{recursive:true,force:true}));
+  const path=join(directory,'st-mq.csv'), start=Date.UTC(2026,0,1);
+  writeFileSync(path,'unix_time,price,heat_on,temp_in,temp_ga,temp_out\n'
+    +Array.from({length:120},(_,i)=>`${start/1000+i},3,15,20,10,-1`).join('\n')+'\n');
+  const sequence=f=>{
+    for(let i=0;i<120;i++) {
+      const at=start+i*MINUTE;
+      f.put(35+Math.sin(i/9),at,{signal:'supply_temperature'});
+      f.recorder.recordEnergy(energy(at,at+MINUTE,3+Math.sin(i/12),{prefix:'property'}));
+    }
+  };
+  for(const f of [baseline,loaded]) f.put(35,start-MINUTE,{signal:'supply_temperature'});
+  await importCsv(loaded.store,path,{kind:'stmq'});
+  for(let i=0;i<250;i++) {
+    loaded.put(20+i/1000,start-MINUTE+i);
+    loaded.store.appendLearningJournal('synthetic',{kind:'sample',at:start+i,algorithmVersion:LEARNING_ALGORITHM,
+      key:`sample-${i}`,payload:{timestamp:start+i,indoorC:20+i/1000}});
+  }
+  loaded.store.setState('synthetic-unrelated-growth','x'.repeat(200_000));
+  loaded.store.db.exec('CREATE INDEX synthetic_budget_index ON observations(raw,source,signal)');
+  sequence(baseline);sequence(loaded);
+  for(const f of [baseline,loaded]) f.recorder.flush(start+2*HOUR,{force:true});
+  const left=baseline.recorder.status(start+2*HOUR),right=loaded.recorder.status(start+2*HOUR);
+  assert.deepEqual(loaded.store.getState('recorder:adaptive-budget:v1'),baseline.store.getState('recorder:adaptive-budget:v1'));
+  const adaptiveRows=store=>store.observations({limit:10_000}).filter(o=>o.raw?.recorder?.policy.startsWith('adaptive-'))
+    .map(({id,...row})=>row);
+  assert.deepEqual(adaptiveRows(loaded.store),adaptiveRows(baseline.store));
+  assert.equal(right.normalizedTolerance,left.normalizedTolerance);
+  assert.ok(right.measuredDatabaseBytes>left.measuredDatabaseBytes+200_000);
+  assert.ok(right.totalDatabaseProjectedAnnualBytes>left.totalDatabaseProjectedAnnualBytes);
+  assert.ok(right.adaptiveEstimatedBytes>0);
+  assert(!Object.hasOwn(right,'projectedAnnualBytes'),'ambiguous total-growth API is removed');
+});
+
+test('prospective budget starts only on adaptive recording and never reads historical growth or old tolerance',t=>{
+  const {store,recorder,put}=fixture(t);
+  put(20,1000);
+  const oldCache={version:'recording-contract-v2',tolerance:9,bytesPerDay:1e12,energyRevision:987654321};
+  store.setState('recorder:global:v2',oldCache);
+  store.observation({source:'synthetic',device:'old-history',signal:'supply_temperature',value:20,
+    unit:'degC',sourceTime:1000,receivedAt:1000,raw:{recorder:{policy:'adaptive-value'}}});
+  recorder.flush(1000+HOUR);
+  assert.deepEqual(store.getState('recorder:global:v2'),oldCache,'Unconsumed retired cache bytes remain untouched');
+  const metrics=store.getState('recorder:storage-metrics:v1');
+  assert.equal(metrics.energyRevision,0);assert(metrics.bytesPerDay<1e12);
+  const before=store.db.prepare('SELECT key,value FROM state ORDER BY key').all();
+  const restarted=new Recorder(store),empty=restarted.status(1000+2*HOUR);
+  assert.equal(empty.adaptiveAccountingStartedAt,null);
+  assert.equal(empty.adaptiveEstimatedBytes,0);
+  assert.equal(empty.normalizedTolerance,0.02);
+  assert.deepEqual(store.db.prepare('SELECT key,value FROM state ORDER BY key').all(),before,'diagnostics initialize no state');
+  put(30,1000+2*HOUR,{signal:'supply_temperature'});
+  const status=restarted.status(1000+2*HOUR);
+  assert.equal(status.adaptiveAccountingStartedAt,1000+2*HOUR);
+  assert.equal(status.adaptiveMeasurementHours,0);
+  assert.equal(status.normalizedTolerance,0.02);
+  assert.ok(status.adaptiveEstimatedBytes>0&&status.adaptiveEstimatedBytes<1000);
+  assert.equal(store.observations().length,3,'existing history is retained without a backfill');
+});
+
+test('adaptive budget counters and energy boundaries roll back with the observations and survive restart',t=>{
+  const {store,recorder,put}=fixture(t);
+  put(20,1000,{signal:'supply_temperature'});
+  recorder.recordEnergy(energy(1000,16000));
+  recorder.recordEnergy(energy(16000,31000));
+  const snapshot=()=>({budget:store.getState('recorder:adaptive-budget:v1'),rows:store.observations(),
+    states:store.db.prepare('SELECT key,value FROM state ORDER BY key').all(),metrics:store.db.prepare('SELECT * FROM recorder_metrics').all()});
+  const before=snapshot();
+  assert.throws(()=>store.transaction(()=>{
+    put(30,32000,{signal:'supply_temperature'});
+    recorder.energyGap({device:'fixture-charger',prefix:'ev1',start:31000,end:46000,quality:['provider-error']});
+    throw new Error('synthetic outer abort');
+  }),/outer abort/);
+  assert.deepEqual(snapshot(),before);
+  const setState=store.setState.bind(store);
+  store.setState=(key,value)=>{if(key==='recorder:adaptive-budget:v1')throw new Error('synthetic budget failure');return setState(key,value);};
+  assert.throws(()=>recorder.flush(46000,{force:true}),/budget failure/);
+  assert.deepEqual(snapshot(),before);
+  store.setState=setState;
+  const restarted=new Recorder(store);
+  restarted.energyGap({device:'fixture-charger',prefix:'ev1',start:31000,end:46000,quality:['provider-error']});
+  assert.ok(store.getState('recorder:adaptive-budget:v1').estimatedBytes>before.budget.estimatedBytes);
+  const rows=store.observations().filter(o=>o.signal==='ev1_energy_l1');
+  assert.equal(rows.at(-1).value,null,'mandatory gap survives any budget pressure');
+  assert.ok(Math.abs(rows.reduce((sum,o)=>sum+(o.value??0),0)-3*30000/HOUR)<1e-12);
+  const saved=store.getState('recorder:adaptive-budget:v1');
+  assert.equal(new Recorder(store).status(46000).adaptiveEstimatedBytes,saved.estimatedBytes);
+  assert.deepEqual(store.getState('recorder:adaptive-budget:v1'),saved);
+});
+
+test('malformed or unsupported prospective adaptive budget is rejected without rewriting state',t=>{
+  const {store,put}=fixture(t);
+  put(20,1000,{signal:'supply_temperature'});
+  const valid=store.getState('recorder:adaptive-budget:v1');
+  for(const state of [null,{...valid,version:2},{...valid,estimatedBytes:-1},{...valid,tolerance:NaN},
+    {...valid,unknown:1},{...valid,measuredBytes:valid.estimatedBytes+1}]) {
+    store.setState('recorder:adaptive-budget:v1',state);
+    const before=store.db.prepare("SELECT value FROM state WHERE key='recorder:adaptive-budget:v1'").get().value;
+    assert.throws(()=>new Recorder(store),/Unsupported adaptive recording budget/);
+    assert.equal(store.db.prepare("SELECT value FROM state WHERE key='recorder:adaptive-budget:v1'").get().value,before);
+  }
 });
 
 test('forecast content is shared across fetches without losing causal availability or per-source age',t=>{

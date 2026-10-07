@@ -29,6 +29,14 @@
     </div>
   </header>
   <main>
+    <aside id="recording-health-attention" class="recording-health-attention" aria-label="Recording and storage attention" role="status" hidden>
+      <div class="recording-attention-copy"><strong id="recording-attention-title"></strong><p id="recording-attention-detail"></p></div>
+      <div id="recording-attention-disk" class="recording-attention-disk" hidden>
+        <span id="recording-attention-free"></span>
+        <div id="recording-attention-meter" class="storage-meter" role="meter" aria-label="Disk space available" aria-valuemin="0" aria-valuemax="100"><span></span></div>
+      </div>
+      <a href="#recording-details" data-recording-open="recording-details">View recording details <span aria-hidden="true">↓</span></a>
+    </aside>
     <section id="primary-replication-notice" class="notice replica-notice" aria-labelledby="primary-replication-title" role="status" hidden>
       <h2 id="primary-replication-title">Database mirroring</h2>
       <p id="primary-replication-summary"></p>
@@ -897,7 +905,44 @@ G_warming = G / 2</code>
         </div>
       </section>
       <details id="recording-details" class="recording-details">
-        <summary><span>Recording details</span></summary>
+        <summary><span>Recording details</span><span id="recording-health-badge" class="recording-health-badge" hidden></span></summary>
+        <section id="recording-health" class="recording-health" aria-labelledby="recording-health-title">
+          <div class="recording-health-heading">
+            <div><h3 id="recording-health-title">History &amp; storage</h3><p id="recording-health-scope">This computer</p></div>
+            <button id="recording-health-refresh" type="button" class="secondary-button">Refresh health</button>
+          </div>
+          <div class="recording-health-cards">
+            <article id="recording-disk-card" class="recording-health-card">
+              <h4>Disk space</h4><p id="recording-disk-state" class="recording-health-state">Disk space unknown</p>
+              <div class="recording-disk-amount"><strong id="recording-disk-free">Unknown</strong><span>available</span></div>
+              <div id="recording-disk-meter" class="storage-meter" role="meter" aria-label="Disk space available" aria-valuemin="0" aria-valuemax="100" hidden><span></span></div>
+              <p id="recording-disk-capacity" class="recording-health-evidence"></p>
+              <p id="recording-disk-detail" class="recording-health-detail"></p>
+            </article>
+            <article id="recording-recording-card" class="recording-health-card">
+              <h4>Recording</h4><p id="recording-recording-state" class="recording-health-state">Recording unknown</p>
+              <p id="recording-recording-detail" class="recording-health-detail"></p>
+              <p id="recording-recording-evidence" class="recording-health-evidence"></p>
+            </article>
+            <article id="recording-backup-card" class="recording-health-card">
+              <h4>Backups</h4><p id="recording-backup-state" class="recording-health-state">Backup status unknown</p>
+              <p id="recording-backup-detail" class="recording-health-detail"></p>
+              <p id="recording-backup-activity" class="recording-health-evidence" hidden></p>
+              <p id="recording-backup-evidence" class="recording-health-evidence"></p>
+              <p id="recording-backup-verification" class="recording-health-evidence"></p>
+              <a href="#database-export-details" data-recording-open="database-export-details" class="recording-backup-link">Export database <span aria-hidden="true">→</span></a>
+            </article>
+          </div>
+          <p id="recording-health-checked" class="recording-health-checked" role="status"></p>
+          <div class="recording-growth" aria-labelledby="recording-growth-title">
+            <div class="recording-growth-heading"><h4 id="recording-growth-title">Database size &amp; growth</h4><span>Current database size <strong id="recording-growth-database">Unknown</strong><small>SQLite allocation</small></span></div>
+            <div class="recording-growth-columns">
+              <div class="recording-growth-item"><h5>Projected adaptive growth</h5><strong id="recording-growth-adaptive" class="recording-growth-value">Collecting evidence</strong><p id="recording-growth-adaptiveWindow" class="recording-health-evidence"></p><p class="recording-growth-stored"><strong id="recording-growth-retained">Not checked</strong><span id="recording-growth-inventoryAt">Retained adaptive size has not been measured.</span></p><p class="recording-growth-stored"><strong id="recording-growth-adaptiveStored">Not measured yet</strong><span id="recording-growth-adaptiveSince"></span></p><p class="recording-growth-target">Soft target <strong id="recording-growth-target">Not available</strong></p></div>
+              <div class="recording-growth-item"><h5>Projected total growth</h5><strong id="recording-growth-total" class="recording-growth-value">Collecting evidence</strong><p id="recording-growth-totalWindow" class="recording-health-evidence"></p><p class="recording-growth-target">Includes exact records, history and overhead</p></div>
+            </div>
+            <p class="recording-growth-note">The adaptive target guides measurement detail. Exact states, learning journals, imported history and database overhead add storage beyond it. Total growth can exceed the target; this is not a storage cap or a reason to delete history. <a href="#recording-overview-details" data-recording-open="recording-overview-details">Inspect retained sizes and other data →</a></p>
+          </div>
+        </section>
         <details id="recording-adaptive-details">
           <summary>Adaptive measurements</summary>
           <div id="recording-content"></div>
@@ -1088,7 +1133,7 @@ G_warming = G / 2</code>
       <div id="history-recovery-upload"><label for="history-recovery-file">Database backup (.sqlite)</label><input id="history-recovery-file" data-admin-only data-write-control type="file" accept=".sqlite,.sqlite3,.db,application/vnd.sqlite3"></div>
       <p id="history-recovery-source-help" class="muted"></p>
       <div class="history-recovery-source-actions">
-        <label id="history-recovery-installation" class="history-recovery-checkbox"><input id="history-recovery-installation-confirm" type="checkbox"><span>This backup belongs to this installation.</span></label>
+        <label id="history-recovery-installation" class="history-recovery-checkbox"><input id="history-recovery-installation-confirm" type="checkbox"><span>This backup contains this household’s history.</span></label>
         <button id="history-recovery-check" data-admin-only data-write-control class="secondary-button" type="button" disabled>Check backup</button>
       </div>
     </section>

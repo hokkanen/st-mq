@@ -1,7 +1,7 @@
 import { lockControl, unlockControl } from './control-locks.js';
 
 /** Both actions share one pending request; downloads stream when a picker is available. */
-export function bindDatabaseExport({ saveButton, downloadButton, message, request, window, document }) {
+export function bindDatabaseExport({ saveButton, downloadButton, message, request, window, document, onSettled }) {
   let pending = false;
   const owner = Symbol('database-export');
   async function run(method) {
@@ -54,6 +54,7 @@ export function bindDatabaseExport({ saveButton, downloadButton, message, reques
     } finally {
       pending = false;
       unlockControl(saveButton, owner); unlockControl(downloadButton, owner);
+      void onSettled?.();
     }
   }
   saveButton.addEventListener('click', () => run('POST'));

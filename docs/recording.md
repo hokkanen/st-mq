@@ -567,12 +567,20 @@ gigabytes. There is no maximum recording interval, and the retired
 `max_interval_minutes` configuration is rejected. Source reporting deadlines and
 acquisition schedules remain independent. No elapsed recording time can create a
 new value or extend an expired source. Equal reports extend compact coverage.
-The ten-GB value is a soft rolling annual growth target, not a quota that expires
-in December. It never causes historical deletion or an end-of-year squeeze.
+The ten-GB value is a soft rolling annual target for **estimated adaptive
+measurement additions**, not a quota that expires in December or a limit on the
+whole database. Exact records, learning history, imports and SQLite overhead
+are additional. It never causes historical deletion or an end-of-year squeeze.
 
 The recorder learns each continuous signal's scale from its observed variation
 and uses a shared normalized change threshold. That tolerance changes gradually
-in response to measured SQLite growth, using smoothed daily and weekly estimates.
+in response only to the estimated serialized bytes of newly retained adaptive
+observations, using smoothed daily and weekly estimates. This includes their
+provenance and mandatory quality/gap boundaries; those boundaries are never
+suppressed to meet a budget. Exact changes, imports, recovered observations,
+learning journals, coverage/state maintenance and index growth cannot increase
+this tolerance. Whole-database allocation growth is measured separately and has
+no authority over adaptive precision.
 Signals are compared with their last saved value. Charger energy has a 10 W
 per-channel selection floor to avoid saving idle noise on every acquisition;
 this selects interval boundaries, never rounds or discards accepted energy.
@@ -588,6 +596,28 @@ compares incoming values with the previous saved value, weighted by elapsed time
 It describes variation in adaptive inputs, not reconstruction loss or a
 continuous-time accuracy bound. Exact channels have no learned threshold or
 normalized variation statistic.
+
+Adaptive accounting starts prospectively when its independent checkpoint is
+first written. Existing history is preserved, with no historical backfill or
+reinterpretation of a former whole-database tolerance. Total-growth diagnostics
+also start an independent current measurement baseline; the earlier combined
+budget checkpoint is left unused. Unsupported current accounting state is
+rejected before writable database setup, rather than translated or reset.
+The byte counter commits
+in the same transaction as its observations. It survives restart and does not
+advance for rolled-back writes. It estimates logical serialized data, not SQLite
+page allocation or physical flash writes. A 10 GB adaptive target therefore
+does not imply 10 GB of total filesystem growth, even when other histories are
+quiet. Projections extrapolate a rolling seven-day rate, begin after an hour of
+measurement, and are estimates rather than guaranteed annual usage.
+
+For a repeatable offline comparison, run
+`node scripts/benchmarks/recorder-budget.js`. It exercises invented scalar and
+three-phase energy streams at the default target and a smaller stress target,
+reporting retained rows, logical bytes, total allocation growth and scalar
+reconstruction error. It asserts conserved accepted energy and retained outage
+boundaries. This short workload is not proof of annual convergence or physical
+flash endurance.
 
 Exact states, settings, alarms, runtime counters and availability transitions have
 semantic recording rules. They are not blurred into fractional states to meet a
@@ -1212,7 +1242,19 @@ heating, hot-water, ground-loop, settings, equipment, runtime, electricity, weat
 and learning groups.
 Recorded and calculated roles are separate from model roles.
 
-**Recording details describes stored database contents.** The first fold,
+**Recording details describes stored database contents.** Its **History & storage**
+overview separates local disk availability, recording health and known backups.
+**Database size & growth** shows current whole-database allocation and separate
+adaptive and total annual growth projections. The adaptive target remains next
+to adaptive growth, never beside total growth as if it were a total cap.
+The prospective adaptive byte counter names its start date. Opening Recording
+details requests the existing cached, read-only inventory in a worker;
+its dated estimate covers all retained adaptive observations, including imported
+or recovered rows and currently excluded recovery evidence. It excludes shared
+indexes, page slack and other tables, so it cannot be subtracted from physical
+database bytes to calculate an exact fixed-data size. The overview also shows
+database-file and WAL sizes separately. No full-history scan runs on each status
+refresh. The first fold,
 **Adaptive measurements**, contains achieved intervals, learned thresholds,
 freshness and growth. Its explanation distinguishes fast acquisition from
 recording changes against the last saved value, and describes the shared rolling
@@ -1228,6 +1270,54 @@ snapshot views explicitly label their latest recorded source; they do not claim
 that this computer is acquiring measurements. Source details retain saved receipt
 periods and the separate accepted source timestamp. Grouping changes presentation,
 not physical identity, provenance, control permission or energy accounting.
+
+### Recording and backup health
+
+Low or critically low disk space, failed database writes, a stalled update loop
+and unavailable recording sources appear in a compact attention strip at the top
+of the dashboard, with a link to Recording details. Healthy operation stays quiet.
+The disk meter uses space available to the application's account, excluding
+filesystem-reserved blocks. It describes this computer's database filesystem,
+including on a replica; it does not imply that another export filesystem has the
+same free space. The disk is checked at most once per minute. Low-space attention
+starts below the larger of 1 GiB and 5% of capacity, with that percentage allowance
+capped at 5 GiB. Critical attention starts below the larger of 256 MiB and 1% of
+capacity, with that percentage allowance capped at 1 GiB. These indicators neither
+delete history nor change recording precision or control authority.
+
+Write failures remain in memory when the database cannot store an error. Runtime
+transaction, state and event writes report sanitized failure categories; successful
+no-op updates do not prove that writes resumed. A recovered failure remains visible
+for 24 hours within the same application run because a recording gap may remain.
+The update loop is considered stalled after three minutes without a completed tick.
+Unchanged readings, held/event-only values and durable open energy intervals are
+not evidence of a stalled recorder. Source unavailability is distinguished from a
+database write failure. Read-only replicas do not expect local recording to advance.
+This summary is an early warning, not an integrity check or proof that every
+measurement was physically correct or that every expected source was recorded.
+
+Backup status lists known saved exports and completed reset-archive backups using
+bounded metadata discovery, cached for five minutes. Listing a file does not verify
+its current contents. Manual export progress and failures are reported separately;
+completion receipts persist when the writable database permits, while an in-memory
+receipt remains available if persistence fails. Download completion proves transfer
+to the browser, not durable saving or continued availability on the receiving device.
+Copies elsewhere and separately invoked CLI backups may be unknown to this panel.
+There is no scheduled backup, age-based overdue rule or automatic retry. Backup age
+is shown so the owner can assess the history since that copy.
+
+Ordinary history recovery does **not** create a retained full backup of the master
+first. Recovery preserves imported evidence and reversal provenance. Pairing uses
+rolling snapshots and protects divergent history; neither is an independent dated
+backup. Reset archives and explicit manual exports retain portable copies under
+their existing workflows. Keep an independent copy on separate storage to protect
+against failure of the database disk.
+
+`GET /api/recording-health` is an authenticated read-only endpoint independent of
+the normal controller status. The dashboard can still display storage health when
+controller status fails. Filesystem checks time out from the request's perspective
+without claiming zero free bytes or blocking ordinary control. A stopped process,
+unreachable dashboard or complete host failure cannot report its own condition.
 
 The **Other recorded data** fold appears immediately after **Adaptive measurements**,
 followed by **Recorded energy checks** and **Export database**. It
@@ -1375,9 +1465,9 @@ Population uses bulk inserts of original observations, so its duration does not
 measure live recorder write throughput. The workload has no price data;
 tariff correctness is tested separately. These are host measurements, not Raspberry
 Pi 5 timings. Full-year cold queries remain substantial; the worker and slower
-long-view refresh keep them outside the control loop. The live optimizer measures
-actual database growth, including those additional tables, against the configured
-soft target.
+long-view refresh keep them outside the control loop. Whole-database growth,
+including those additional tables, is displayed separately; the configured
+adaptive target responds only to prospective adaptive observation estimates.
 
 ### Reversible sensor changes
 
@@ -1514,11 +1604,14 @@ schema and learning contract are supported; recovery does not migrate older
 development databases. Keep the original backup. Uploaded copies are temporary
 working sources and do not replace an independent backup.
 
-For a backup, confirm **This backup belongs to this installation**, then select
+For a backup, confirm **This backup contains this household’s history**, then select
 **Check backup**. The check validates the database's current format, integrity
 and input scope and reports source record counts, category date ranges on both
 sides, recorded energy gaps and potential source coverage during those intervals
-or outside the master's date range. Availability reports have a separate collapsed
+or outside the master's date range. The confirmation asserts household identity;
+it is not an assertion about software versions and cannot bypass automatic format
+validation. Matching format alone cannot establish household identity.
+Availability reports have a separate collapsed
 diagnostics fold: a point event has one timestamp and unknown duration, while a
 report period ends at the last saved evidence, not a confirmed recovery time.
 Neither is labeled a computer outage. Diagnostics group only records with the
@@ -1591,14 +1684,18 @@ server copies, CLI backups and reset-archive recovery backups use this same snap
 generator and current `.sqlite` format. Current-schema and integrity validation run
 in a worker before publication. There is no checkpoint or overwrite of the running
 database. Server copies use mode `0600`;
-new export directories use mode `0700`. A verified copy is flushed before publication;
-an existing destination or SQLite companion file is never overwritten.
+new export directories use mode `0700`. Backup, offline restore and final server
+export share the sequence: flush the completed file, publish without replacing an
+existing destination or SQLite companion, then flush the final parent directory.
+A publication whose directory flush failed is never acknowledged as successful.
+Backup/restore may leave a complete but unconfirmed copy for inspection; an
+unacknowledged web export is removed. No caller overwrites the live database.
 
 The web API accepts no destination path: authenticated `POST /api/database-export`
 with an empty JSON object saves in the configured server folder, and authenticated
 `GET /api/database-export` downloads a temporary snapshot. Temporary files are removed
-on completion, failure or disconnection. Only one export runs at a time per web
-server. Normal web/ingress authentication applies and is checked again before the
+on completion, failure or disconnection. Only one export runs at a time across
+the application's direct and ingress listeners. Normal web/ingress authentication applies and is checked again before the
 copy is saved or sent. Slave exports hold the verified snapshot they began with
 until the operation completes.
 
@@ -1610,9 +1707,9 @@ or external token files.
 
 ## Retained storage costs
 
-The annual recording budget is a soft growth objective, not a hard storage cap.
-Exact changes, imports, learning journals, source revisions and diagnostics can
-exceed it. Compaction reduces unnecessary future observations; it does not
+The annual recording budget is a soft objective for estimated adaptive additions,
+not a hard storage cap. Exact changes, imports, learning journals, source revisions,
+diagnostics and SQLite overhead add growth on top of it. Compaction reduces unnecessary future observations; it does not
 rewrite history, reclaim existing database pages or establish physical flash-write
 savings.
 

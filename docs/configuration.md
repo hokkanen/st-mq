@@ -317,7 +317,19 @@ browser keeps its entered password in session storage for that tab. **Log out**
 returns to the password prompt without stopping previously requested operations.
 For ingress, use Home Assistant to log out.
 
-## Database export destination
+## Recording budget and database exports
+
+`recording.annual_budget_gb` defaults to 10 decimal GB per year for estimated
+adaptive measurement additions. Exact records, learning history, imports and
+SQLite overhead are additional; this is neither a whole-database cap nor a
+retention limit. **Recording details → History & storage** separates current
+size, adaptive and total growth projections, available disk space and known
+backup evidence. Its adaptive accounting is prospective; the on-demand inventory
+also estimates the full retained adaptive history. See
+[recording and storage](recording.md#recording-optimizer-and-storage) for the
+measurement basis and limits. Low disk space never authorizes automatic deletion.
+
+### Database export destination
 
 In **Export database**, **Save local copy** writes to the server directory in
 `recording.export_directory`. Its shared default, `"~"`, means the home folder
@@ -337,6 +349,9 @@ rejected. The server account needs write permission to the destination.
 **Download database** saves a copy through the browser. Both actions create a
 complete SQLite snapshot with the same timestamped filename format. See
 [database exports](recording.md#single-file-database-export) for details.
+Neither setting schedules backups. Health reports actual copy age and known
+failures; a listed file or successful browser transfer is not proof of a tested
+independent backup.
 
 ## Heating automation and manual controls
 

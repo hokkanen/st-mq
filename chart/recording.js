@@ -128,9 +128,9 @@ export function renderRecording(status, root) {
   const recording=status?.recording ?? {}, rows=recordingRows(recording), summary=document.createElement('dl');
   summary.className='recording-metrics';
   for (const [label,value] of [['Adaptive measurements',rows.length],
-    ['Projected growth',recording.measurementHours?`${number(recording.projectedAnnualBytes/1e9)} GB/year`:'Collecting'],
-    ['Rolling target',`${number((recording.annualBudgetBytes??1e10)/1e9)} GB/year`],
-    ['Database',`${number((recording.measuredDatabaseBytes??0)/1e6)} MB`]]) {
+    ['Adaptive estimate',recording.adaptiveMeasurementHours>0&&Number.isFinite(recording.adaptiveProjectedAnnualBytes)?`${number(recording.adaptiveProjectedAnnualBytes/1e9)} GB/year`:'Collecting'],
+    ['Adaptive target',`${number((recording.annualBudgetBytes??1e10)/1e9)} GB/year`],
+    ['Whole database',Number.isFinite(recording.measuredDatabaseBytes)?`${number(recording.measuredDatabaseBytes/1e6)} MB`:'Unknown']]) {
     const group=document.createElement('div'),term=document.createElement('dt'),detail=document.createElement('dd');
     term.textContent=label;detail.textContent=String(value);group.append(term,detail);summary.append(group);
   }
@@ -141,7 +141,7 @@ export function renderRecording(status, root) {
   const help=document.createElement('details'),helpTitle=document.createElement('summary'),helpText=document.createElement('p');
   help.className='recording-reading-details';help.dataset.streamId='recording-table-help';help.open=expanded.has(help.dataset.streamId);
   helpTitle.textContent='How recording is counted';
-  helpText.textContent='Mean spacing uses actual saved receipt timestamps within each window. Source history uses Finnish time. Unchanged readings extend availability coverage. Energy keeps accumulating in a saved open interval until power or quality changes close it. The rolling target covers database growth; only adaptive measurements use learned thresholds. Saved datasets without a recorder checkpoint are under Other recorded data → Recording and storage support.';
+  helpText.textContent='Mean spacing uses actual saved receipt timestamps within each window. Source history uses Finnish time. Unchanged readings extend availability coverage. Energy keeps accumulating in a saved open interval until power or quality changes close it. The soft annual target covers estimated adaptive measurement additions. Exact records, imported history, journals and database overhead are additional; whole-database growth is shown above. Saved datasets without a recorder checkpoint are under Other recorded data → Recording and storage support.';
   help.append(helpTitle,helpText);
   const table=document.createElement('table');table.className='recording-table recording-measurements';
   const head=document.createElement('thead'),headers=document.createElement('tr');
@@ -257,6 +257,11 @@ export function renderRecordingOverview(overview,root) {
     nodes.push(usage);
     if(overview.database.description){const description=document.createElement('p');description.className='muted';description.textContent=overview.database.description;nodes.push(description);}
   }
+  if(Number.isFinite(overview.database?.adaptiveEstimatedBytes)) {
+    const adaptive=document.createElement('p');adaptive.className='recording-overview-size muted';
+    adaptive.textContent=`Retained adaptive payload: approximately ${number(overview.database.adaptiveEstimatedBytes/1e6)} MB across ${integerLabel(overview.database.adaptiveObservationCount)} observations. Includes retained source history, including excluded recovery evidence; excludes SQLite allocation and index overhead.`;
+    nodes.push(adaptive);
+  }
   const accounting=document.createElement('p');accounting.className='muted';accounting.textContent='Dataset counts describe different kinds of records and may overlap; they should not be added together.';nodes.push(accounting);
   for(const group of overview.groups??[]) {
     const details=document.createElement('details');details.className='recording-data-group';details.dataset.overviewKey=`group:${group.id}`;
@@ -339,21 +344,23 @@ export function renderRecordingOverview(overview,root) {
   if(focusedKey) [...root.querySelectorAll('[data-overview-key]')].find(node=>node.dataset.overviewKey===focusedKey)?.querySelector('summary')?.focus({preventScroll:true});
 }
 
-export function recordingOverviewRefresh({request,root,details,parent,message,button,clock=Date.now,isVisible=()=>document.visibilityState!=='hidden',render=renderRecordingOverview}) {
+export function recordingOverviewRefresh({request,root,details,parent,message,button,clock=Date.now,isVisible=()=>document.visibilityState!=='hidden',render=renderRecordingOverview,onState=()=>{}}) {
   let fetchedAt=null,busy=false,loaded=false,refreshAfterMs=300000;
-  const refresh=async({force=false}={})=>{
-    if(busy||!details.open||!parent.open||!isVisible()||!force&&fetchedAt!==null&&clock()-fetchedAt<refreshAfterMs)return;
+  const refresh=async({force=false,summary=false}={})=>{
+    if(busy||(!summary&&!details.open)||!parent.open||!isVisible()||!force&&fetchedAt!==null&&clock()-fetchedAt<refreshAfterMs)return;
     busy=true;button.disabled=true;root.setAttribute('aria-busy','true');
     message.classList.remove('form-error');message.textContent=loaded?'Refreshing recorded-data overview…':'Loading recorded-data overview…';
+    onState('loading');
     try {
       const result=await request('/api/recording-overview');
       if(!result||!Array.isArray(result.groups))throw new Error('Invalid recorded-data overview');
-      render(result,root);loaded=true;fetchedAt=clock();
+      render(result,root);loaded=true;fetchedAt=clock();onState('ready');
       refreshAfterMs=Number.isFinite(result.refreshAfterMs)&&result.refreshAfterMs>0?result.refreshAfterMs:300000;
       message.textContent=`Database snapshot: ${dateLabel(result.generatedAt)??dateLabel(fetchedAt)} · Finnish time${result.cache?.hit?' · cached':''}. Refreshes while this section is open.`;
     } catch {
       message.classList.add('form-error');
       message.textContent=loaded?'Could not refresh the overview. The last successful overview is still shown.':'The recorded-data overview could not be loaded. Use Refresh overview to try again.';
+      onState('failed');
     } finally {busy=false;button.disabled=false;root.removeAttribute('aria-busy');}
   };
   return refresh;

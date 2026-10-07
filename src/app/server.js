@@ -9,6 +9,7 @@ import { createChartService } from './chart-service.js';
 import { chargingSessionCheckSummaries } from './charging-session-checks.js';
 import { propertyEnergyCheckSummary } from './property-energy-checks.js';
 import { createDatabaseExport } from './database-export.js';
+import { createRecordingHealth } from './recording-health.js';
 import { familyRouteAllowed, familyActionAllowed, fireplaceAccess, FAMILY_FIREWOOD_REMOVAL_MS } from './web-permissions.js';
 import { ChargingSessionDiagnostics } from '../charging/session-diagnostics.js';
 
@@ -88,7 +89,7 @@ function chargingReportQuery(url, kind) {
 
 export function createAppServer({ engine, getEngine = () => engine, store, chartService, token = '', familyToken = '',
   getAccess, ingress = false, role = 'master', topology = 'standalone', getReadContext, syncStatus,
-  pairContext, controlAuthority, historyRecovery, getDatabaseExportDirectory = homedir,
+  pairContext, controlAuthority, historyRecovery, recordingHealth, databaseExport, getDatabaseExportDirectory = homedir,
   reloadSettings, previewSettings, settingsReloadStatus = () => ({ available: false, busy: false,
     reason: 'This instance has no reloadable configuration source.' }), staticDir = resolve('dist') }) {
   const overviewService = getReadContext ? null : chartService?.overview ? chartService : createChartService({ store });
@@ -96,7 +97,10 @@ export function createAppServer({ engine, getEngine = () => engine, store, chart
     throw new Error('Family access requires a separate admin web token.');
   const fixedAccess = { enabled: true, token, familyToken, tokenRequired: false };
   const access = getAccess ?? (() => fixedAccess);
-  const exportDatabase = createDatabaseExport({ getDirectory: getDatabaseExportDirectory });
+  recordingHealth ??= createRecordingHealth({ getConfig: () => ({ dbPath: store?.path,
+    recording: getEngine()?.config?.recording }) });
+  const exportDatabase = databaseExport ?? createDatabaseExport({ getDirectory: getDatabaseExportDirectory,
+    onBackupEvent: (event, sourceStore) => recordingHealth.backupEvent(event, sourceStore ?? store) });
   const writesBlocked = () => role === 'slave' || Boolean(pairContext && !pairContext.canControl())
     || Boolean(controlAuthority && !controlAuthority.canControl());
   const recovering = () => Boolean(historyRecovery?.busy() || pairContext?.recovering?.());
@@ -173,7 +177,7 @@ export function createAppServer({ engine, getEngine = () => engine, store, chart
           if (state.unavailable) return state.reason;
           return state.busy ? 'Settings are being updated. Retry shortly.' : null;
         };
-        if (unavailable()) return json(503, { error: unavailable() });
+        if (unavailable() && url.pathname !== '/api/recording-health') return json(503, { error: unavailable() });
         if (url.pathname === '/api/history-recovery' && req.method === 'GET') {
           if ([...url.searchParams.keys()].some(key => key !== 'before') || url.searchParams.getAll('before').length > 1)
             return json(400, { error: 'Unsupported recovery history query.' });
@@ -253,7 +257,14 @@ export function createAppServer({ engine, getEngine = () => engine, store, chart
             return json(403, { error: 'Admin access is required for this action.' });
           return action(current, input);
         };
-        if (req.method === 'GET' && url.pathname === '/api/status') return json(200, status());
+        if (req.method === 'GET' && url.pathname === '/api/recording-health')
+          return json(200, await recordingHealth.status({ store: readerStore, engine,
+            current: engine?.latestStatus, readOnly: writesBlocked() }));
+        if (req.method === 'GET' && url.pathname === '/api/status') {
+          const current = status();
+          return json(200, { ...current, recordingHealth: await recordingHealth.status({ store: readerStore, engine,
+            current, readOnly: writesBlocked() }) });
+        }
         if (readContext && !readContext.store) return json(503, { error: 'Waiting for a verified master snapshot.' });
         if (req.method === 'GET' && url.pathname === '/api/heating/explorer') {
           if (!engine.heatingExplorer) return json(503, { error: 'Heating plan exploration is unavailable on this instance.' });

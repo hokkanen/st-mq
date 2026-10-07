@@ -281,7 +281,7 @@ export async function startReplica({ config, clock = Date.now,
       } };
   }
 
-  const webAccess = createWebAccess({ config, topology: config.topology, role: 'slave', getReadContext, pairContext, controlAuthority,
+  const webAccess = createWebAccess({ config, clock, topology: config.topology, role: 'slave', getReadContext, pairContext, controlAuthority,
     getDatabaseExportDirectory: () => config.recording?.exportDirectory ?? homedir(),
     settingsReloadStatus: () => ({ available: false, busy: false, reason: unavailable }),
     staticDir: resolve(dirname(fileURLToPath(import.meta.url)), '../../dist') });

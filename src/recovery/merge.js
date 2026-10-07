@@ -5,6 +5,7 @@ import { originalSensorSample } from '../app/sensor-samples.js';
 import { pendingEnergyObservations } from '../storage/pending-energy.js';
 import { isRecordedEnergyGap, recordedEnergyGroups, validEnergyQuality } from '../storage/energy-history.js';
 import { Recorder, RECORDING_VERSION } from '../storage/recorder.js';
+import { readStorageMetrics } from '../storage/recording-metrics.js';
 import { recordingPolicy, recordingStreamKey, RECORDING_POLICIES } from '../domain/recording-policy.js';
 import { ENERGY_SIGNALS } from '../domain/history-series.js';
 import { assertCurrentChargingSessionCheck } from '../app/charging-session-checks.js';
@@ -116,7 +117,7 @@ export class HistoryMerge {
       || !RECORDING_POLICIES[policy].recorded) return;
     const observation = { ...row, raw, recordingPolicy: policy };
     if (recordingPolicy(observation).id !== policy) return;
-    const boundary = this.target.getState('recorder:global:v2')?.metricsPrunedBefore;
+    const boundary = readStorageMetrics(this.target.db)?.metricsPrunedBefore;
     // Older history is read from raw records by status(). Do not recreate
     // pruned metric buckets, donor poll counts, or donor adaptive state.
     if (Number.isFinite(boundary) && Math.floor(row.received_at / HOUR) * HOUR < boundary) return;

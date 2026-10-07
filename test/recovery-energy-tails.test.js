@@ -214,11 +214,11 @@ test('recovered archival energy before metric pruning stays readable without rec
   const recorder = new Recorder(f.target);
   recorder.recordEnergy({ source: 'easee', device: 'invented-meter', prefix: 'property', start: END + HOUR, end: END + 2 * HOUR,
     energies: [1, 2, 3], powers: [1, 2, 3] });
-  const global = f.target.getState('recorder:global:v2'); global.metricsPrunedBefore = END + HOUR;
-  f.target.setState('recorder:global:v2', global);
+  const metrics = f.target.getState('recorder:storage-metrics:v1'); metrics.metricsPrunedBefore = END + HOUR;
+  f.target.setState('recorder:storage-metrics:v1', metrics);
   pending(f.donor);
   assert.equal((await f.merge().run()).counts.missing, 3);
-  assert.equal(f.target.db.prepare('SELECT COUNT(*) n FROM recorder_metrics WHERE bucket<?').get(global.metricsPrunedBefore).n, 0);
+  assert.equal(f.target.db.prepare('SELECT COUNT(*) n FROM recorder_metrics WHERE bucket<?').get(metrics.metricsPrunedBefore).n, 0);
   assert.ok(recorder.status(END + 2 * HOUR).parameters.every(row => row.week.records === 2),
     'historical fallback counts the recovered raw records exactly');
 });

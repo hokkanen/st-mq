@@ -198,7 +198,7 @@ export function createHistoryRecoveryPanel({ document, request, upload, storage,
     $('history-recovery-source-help').textContent = peer
       ? currentPair?.peer?.role === 'slave' ? 'Validate the slave snapshot. Normal mirroring applies the master’s changes automatically.'
         : 'Check preserved history before recovery. Resuming mirroring is a separate decision.'
-      : 'Use a backup from this installation and software version. Checking does not change recorded history.';
+      : 'Confirm that this backup contains this household’s history. Database format and integrity are checked automatically; checking does not change recorded history.';
     const comparison = peer && peerRecovery?.donorRole === 'slave';
     const checked = revisionView ? state.view?.preview : peer ? peerRecovery?.preview : state.view?.preview;
     const result = peer ? peerRecovery?.report : state.view?.job?.result?.report ?? state.view?.job?.result;

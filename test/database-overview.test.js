@@ -26,6 +26,8 @@ test('empty overview explains all physical tables without inventing historical p
     assert.equal(overview.refreshAfterMs, OVERVIEW_REFRESH_MS);
     assert.equal(overview.database.fileBytes, null);
     assert(overview.database.allocatedBytes > 0);
+    assert.equal(overview.database.adaptiveEstimatedBytes, 0);
+    assert.equal(overview.database.adaptiveObservationCount, 0);
     const actual = store.db.prepare("SELECT name FROM sqlite_schema WHERE type='table' AND name NOT LIKE 'sqlite_%' ORDER BY name").all();
     assert.deepEqual(overview.accounting.tables.map(table => table.name), actual.map(table => table.name));
     for (const table of overview.accounting.tables) assert.equal(table.rows,
@@ -199,6 +201,9 @@ test('saved adaptive datasets remain individually discoverable without recorder 
   const saved = items(overview).get('adaptive-observations');
   assert.equal(overview.catalogueComplete, true);
   assert.equal(saved.count, 3);
+  assert.equal(overview.database.adaptiveObservationCount, 3);
+  assert(overview.database.adaptiveEstimatedBytes > 300);
+  assert.equal(recorder.status(at).adaptiveEstimatedBytes, 0, 'Retained size is separate from prospective budget accounting');
   assert.equal(saved.breakdown.length, 3);
   assert.deepEqual(saved.breakdown.filter(row => row.signal === 'workshop_temperature').map(row => row.unit).sort(), ['%', 'degC']);
   for (const entry of saved.breakdown) {
@@ -207,6 +212,33 @@ test('saved adaptive datasets remain individually discoverable without recorder 
     assert.match(entry.recordingPolicy, /^adaptive-/);
     assert(entry.label.includes(entry.signal) && entry.label.includes(entry.unit));
   }
+});
+
+test('retained adaptive payload size includes metadata and excluded history but never unrelated records or indexes', t => {
+  const store = new Store(':memory:'); t.after(() => store.close());
+  const recorder = new Recorder(store, { clock: () => at });
+  recorder.record({ source:'synthetic', device:'private-device-ä', signal:'supply_temperature', value:21.25,
+    unit:'degC', sourceTime:at, receivedAt:at, quality:[], raw:{basis:'fixture'} });
+  const first=getDatabaseOverview({store,now:at});
+  assert.equal(first.database.adaptiveObservationCount,1);
+  assert(first.database.adaptiveEstimatedBytes>300,'Includes timestamps, quality and source metadata, not just numeric values');
+  assert(Math.abs(first.database.adaptiveEstimatedBytes-recorder.status(at).adaptiveEstimatedBytes)<10,
+    'Full-history SQL and prospective JavaScript estimates describe the same logical payload');
+  put(store,'controller_phase',1,at,{raw:{padding:'x'.repeat(50_000)}});
+  put(store,'supply_temperature',22,at,{source:'csv:stmq',unit:'degC',raw:{recorder:{policy:'adaptive-value'}}});
+  put(store,'unregistered_fixture',22,at,{unit:'degC',raw:{padding:'x'.repeat(50_000)}});
+  store.setState('synthetic-extra-state',{padding:'x'.repeat(50_000)});
+  store.db.exec('CREATE INDEX synthetic_overview_index ON observations(raw,signal)');
+  store.db.prepare("INSERT INTO recovery_exclusions(generation,table_name,record_key) VALUES('original',?,?)").run('observations','1');
+  const states=store.db.prepare('SELECT * FROM state ORDER BY key').all();
+  store.db.exec('PRAGMA query_only=ON');
+  const expanded=getDatabaseOverview({store,now:at+1000});
+  assert.equal(expanded.database.adaptiveEstimatedBytes,first.database.adaptiveEstimatedBytes);
+  assert.equal(expanded.database.adaptiveObservationCount,1);
+  assert(expanded.database.allocatedBytes>first.database.allocatedBytes+100_000);
+  assert.equal(expanded.accounting.selection.excludedSourceRows,1,'Excluded source still occupies retained history');
+  assert.deepEqual(store.db.prepare('SELECT * FROM state ORDER BY key').all(),states);
+  assert(!JSON.stringify(expanded).includes('private-device'));
 });
 
 test('inactive journals, state families and individual event types have separate truthful counts', t => {

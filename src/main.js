@@ -72,6 +72,7 @@ export async function start({ config = loadConfig(), readConfig = configurationR
   const startupSettled = new Promise(resolve => { finishStartup = resolve; });
   const abortStartup = () => { void close().catch(() => { process.exitCode = 1; }); };
   function reportControllerError(error) {
+    store.writeHealth.failure(error);
     const databaseBusy = error?.code === 'ERR_SQLITE_ERROR' && [5, 6].includes(error.errcode & 0xff);
     if (!databaseBusy) {
       try { store.event('controller-error', { message: error.message }, clock()); return; }
@@ -472,7 +473,7 @@ export async function start({ config = loadConfig(), readConfig = configurationR
         const { listResetBackups } = await import('./pairing/reset-storage.js');
         return listResetBackups(config);
       }, ...historyRecoveryOptions });
-    webAccess = createWebAccess({ config, topology: config.topology, role: config.role, getEngine: () => engine, store, chartService,
+    webAccess = createWebAccess({ config, clock, topology: config.topology, role: config.role, getEngine: () => engine, store, chartService,
       getDatabaseExportDirectory: () => config.recording?.exportDirectory ?? homedir(),
       syncStatus: () => replication?.status() ?? null,
       pairContext,

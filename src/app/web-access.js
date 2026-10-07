@@ -1,4 +1,7 @@
 import { createAppServer } from './server.js';
+import { createRecordingHealth } from './recording-health.js';
+import { createDatabaseExport } from './database-export.js';
+import { homedir } from 'node:os';
 
 const loopback = host => ['127.0.0.1', '::1', 'localhost'].includes(host);
 const directEnabled = config => !config.addon || config.token.length >= 24;
@@ -47,6 +50,21 @@ async function listen(server, port, host, setting = 'STMQ_PORT') {
 export function createWebAccess({ config: initialConfig, ...serverOptions }) {
   validate(initialConfig);
   let config = initialConfig, ingressServer, direct, started = false, closed = false, pending;
+  // Both ingress and direct access report the same local backup/runtime evidence.
+  serverOptions.recordingHealth ??= createRecordingHealth({
+    clock: serverOptions.clock ?? Date.now,
+    getConfig: () => ({ ...config, recording: { ...config.recording,
+      exportDirectory: serverOptions.getDatabaseExportDirectory?.() ?? config.recording?.exportDirectory } }),
+    resetBackups: async candidate => {
+      if (!(candidate.addon ? candidate.databaseDir : candidate.dataDir)) return [];
+      const { listResetBackups } = await import('../pairing/reset-storage.js');
+      return listResetBackups(candidate);
+    },
+  });
+  serverOptions.databaseExport ??= createDatabaseExport({
+    getDirectory: () => serverOptions.getDatabaseExportDirectory?.() ?? config.recording?.exportDirectory ?? homedir(),
+    onBackupEvent: (event, store) => serverOptions.recordingHealth.backupEvent(event, store),
+  });
   const draining = new Map();
   const ingressAccess = { enabled: true, token: '', tokenRequired: false };
   const binding = candidate => [candidate.addon, candidate.host, candidate.port,

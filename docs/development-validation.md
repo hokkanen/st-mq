@@ -100,6 +100,22 @@ For sensor bookkeeping performance as recorded history grows, run:
 node scripts/benchmarks/sensor-queries.js
 ```
 
+Storage health and durability changes have focused offline checks in
+`test/recording-health.test.js`, `test/storage-publication.test.js`,
+`test/database-export.test.js` and `test/recorder.test.js`. They cover actual
+SQLite full/busy failures, unchanged readings, read-only replicas, authenticated
+health fallback, flush failures and adaptive-budget isolation from unrelated
+writes. `node test/browser/recording-health-smoke.js` checks the real dashboard
+health elements at narrow and wide widths in both themes, including focus,
+stale status, sign-out fencing and the health-only failure view.
+
+`node scripts/benchmarks/recorder-budget.js` compares synthetic adaptive scalar
+and phase-energy traces under the default annual target and a smaller stress
+target. It measures retained observations, logical adaptive payload, total SQLite
+growth and scalar reconstruction error while asserting conserved accepted energy
+and explicit gap records. It uses no installation configuration or data, and its
+short duration does not establish annual convergence or device flash endurance.
+
 This uses synthetic history and reports timings without machine-specific pass
 thresholds. Sensor-boundary queries must read the selected input's contexts once,
 not rescan the full learning journal for every correction. Periodic report

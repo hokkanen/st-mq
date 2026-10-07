@@ -138,7 +138,13 @@ test('transactions roll back and WAL backups restore complete state to a new des
   const backup = join(dir, 'backup.sqlite'); await store.backup(backup);
   await assert.rejects(store.backup(backup), /new file/);
   await assert.rejects(Store.restore(backup, path), /new database/);
-  const restored = join(dir, 'restored.sqlite'); await Store.restore(backup, restored);
+  const restored = join(dir, 'restore-directory', 'restored.sqlite'); await Store.restore(backup, restored);
+  assert.equal(statSync(join(dir, 'restore-directory')).mode & 0o777, 0o700);
+  assert.equal(statSync(restored).mode & 0o777, 0o600);
+  const portable = new DatabaseSync(restored, { readOnly: true });
+  try { assert.equal(portable.prepare('PRAGMA journal_mode').get().journal_mode, 'delete'); }
+  finally { portable.close(); }
+  for (const suffix of ['-wal', '-shm', '-journal']) assert.equal(existsSync(`${restored}${suffix}`), false);
   const copy = new Store(restored);
   try { assert.deepEqual(copy.getState('checkpoint'), { cursor: 42 }); assert.equal(copy.events().length, 1); }
   finally { copy.close(); }
@@ -161,7 +167,7 @@ test('restore rejects every existing SQLite companion, including dangling symlin
     assert(lstatSync(companion).isSymbolicLink());
   }
   assert.deepEqual(readFileSync(source), sourceBytes);
-  assert.equal(readdirSync(dir).some(name => name.includes('.restore-')), false);
+  assert.equal(readdirSync(dir).some(name => name.includes('.sqlite-backup-')), false);
 });
 
 test('restore rechecks destination companions after copying before publication', async t => {
@@ -175,7 +181,7 @@ test('restore rechecks destination companions after copying before publication',
     assert.equal(existsSync(destination), false);
     assert.equal(readFileSync(companion, 'utf8'), 'concurrent owner');
   }
-  assert.equal(readdirSync(dir).some(name => name.includes('.restore-')), false);
+  assert.equal(readdirSync(dir).some(name => name.includes('.sqlite-backup-')), false);
 });
 
 test('backups publish complete private files and clean failed staging', async t => {

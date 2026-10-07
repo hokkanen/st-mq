@@ -273,9 +273,11 @@ try {
     return true;
   })()`);
   await evaluate("document.getElementById('recording-details').open=true; true");
+  await until("document.getElementById('recording-growth-inventoryAt').textContent.includes('Retained adaptive payload estimate')");
+  assert.equal(await evaluate("document.getElementById('recording-overview-details').open"),false,'opening recording details measures retained adaptive size without opening the complete inventory');
   await evaluate("document.getElementById('recording-adaptive-details').open=true; true");
   await until("document.querySelectorAll('#recording-content tr[data-stream-id]').length>0");
-  assert.match(await evaluate("document.getElementById('recording-content').textContent"),/Rolling target/);
+  assert.match(await evaluate("document.getElementById('recording-content').textContent"),/Adaptive target/);
   for(const label of ['Garage rear temperature','Garage front temperature','maximum interval'])
     assert(!await evaluate(`document.getElementById('recording-content').textContent.includes(${JSON.stringify(label)})`));
   const expectedStreams=recordingRows(app.engine.recorder.status(now)).map(row=>row.rowId).sort();
@@ -298,7 +300,7 @@ try {
   assert.equal(await evaluate("document.activeElement.closest('details').dataset.streamId"),focusedReading);
   assert.equal(await evaluate(`document.querySelector('#recording-content details[data-stream-id="${focusedReading}"]').open`),true,
     'fresh status rendering preserves source disclosure and keyboard focus');
-  assert.equal(await evaluate("window.recordingFixture.requests"),0,'opening the adaptive table does not fetch the separate inventory');
+  assert.equal(await evaluate("window.recordingFixture.requests"),1,'the recording summary measures inventory once; opening the adaptive table and rerendering reuse it');
   assert.equal(await evaluate("[...document.querySelectorAll('#recording-details > details')].map(node=>node.id).join(',')"),'recording-adaptive-details,recording-overview-details,energy-audit-details,database-export-details,history-recovery-details');
   await until("!document.getElementById('database-export-download').disabled && !document.getElementById('database-export-save').disabled");
   await evaluate(`(() => {

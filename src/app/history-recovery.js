@@ -1,14 +1,14 @@
 import { createHash, randomUUID } from 'node:crypto';
 import { constants } from 'node:fs';
 import { chmod, lstat, mkdir, open, opendir, rename, rm } from 'node:fs/promises';
-import { dirname, join, resolve } from 'node:path';
+import { dirname, join } from 'node:path';
 import { markRecoveryFailed } from '../recovery/state.js';
 import { RECOVERABLE_TABLES } from '../storage/schema.js';
 import { recoveryFailure } from '../recovery/errors.js';
 import { validRecoveryCoverageReport } from '../recovery/coverage-report.js';
+import { listSavedBackups } from '../storage/backup-catalog.js';
 
 const UUID = /^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/;
-const EXPORT = /^stmq-\d{4}-\d{2}-\d{2}T\d{2}-\d{2}-\d{2}-\d{3}Z(?:-\d+)?\.sqlite$/;
 const ACTIONS = new Set(['check', 'recover', 'review-revert', 'revert', 'review-restore', 'restore']);
 const fail = (message, statusCode = 409) => Object.assign(new Error(message), { statusCode, publicMessage: message });
 const publicSource = ({ id, kind, label, createdAt, bytes, available = true }) => ({ id, kind, label, createdAt, bytes, available });
@@ -123,20 +123,13 @@ export function createHistoryRecovery({ store, getEngine, canControl = () => tru
       if (info?.isFile() && !info.isSymbolicLink()) known.set(source.id, { ...source, path });
     }
     if (getExportDirectory) {
-      const base = resolve(getExportDirectory());
-      let entries;
-      try { entries = await opendir(base); } catch (error) { if (error.code !== 'ENOENT') throw fail('Saved backups could not be listed.'); }
-      if (entries) {
-        let examined = 0;
-        for await (const entry of entries) {
-          if (++examined > 4096) break;
-          if (!entry.isFile() || !EXPORT.test(entry.name)) continue;
-          const path = join(base, entry.name), info = await lstat(path).catch(() => null);
-          if (!info?.isFile() || info.isSymbolicLink()) continue;
-          const id = sourceId(path);
-          known.set(id, { id, path, kind: 'backup', label: `Saved backup · ${new Date(info.mtimeMs).toISOString()}`,
-            createdAt: info.mtimeMs, bytes: info.size });
-        }
+      let copies;
+      try { copies = await listSavedBackups(getExportDirectory()); }
+      catch { throw fail('Saved backups could not be listed.'); }
+      for (const { path, createdAt, bytes } of copies) {
+        const id = sourceId(path);
+        known.set(id, { id, path, kind: 'backup', label: `Saved backup · ${new Date(createdAt).toISOString()}`,
+          createdAt, bytes });
       }
     }
     for (const source of await getResetBackups()) known.set(source.id, source);
@@ -230,7 +223,7 @@ export function createHistoryRecovery({ store, getEngine, canControl = () => tru
       pairContext.requestAction({ action: value.action === 'check' ? 'check-recovery' : 'recover', requestId: value.requestId,
         ...(value.action === 'recover' ? { confirmed: value.confirmed, previewId: value.previewId } : {}) });
     } else if (value.action === 'check') {
-      if (value.installationConfirmed !== true) throw fail('Confirm that this backup belongs to this installation before checking it.');
+      if (value.installationConfirmed !== true) throw fail('Confirm that this backup contains history from this household before checking it.');
       await sources(); assertIdle();
       const source = known.get(value.sourceId);
       if (!source) throw fail('Choose an available saved or uploaded backup.');

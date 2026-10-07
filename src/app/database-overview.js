@@ -84,9 +84,19 @@ export function getDatabaseOverview({ store, now = Date.now() }) {
     json_extract(${raw},'$.recorder.policy') policyId,
     json_extract(${raw},'$.timeBasis') timeBasis,
     COUNT(*) count,MIN(COALESCE(source_time,received_at)) firstAt,
-    MAX(COALESCE(source_time,received_at)) lastAt,SUM(value IS NULL) missingCount
+    MAX(COALESCE(source_time,received_at)) lastAt,SUM(value IS NULL) missingCount,
+    SUM(CASE WHEN import_id IS NULL AND substr(source,1,4)!='csv:'
+      AND json_extract(${raw},'$.recorder.policy') IN ('adaptive-value','adaptive-energy')
+      THEN length(CAST(json_object('source',source,'device',device,'signal',signal,'value',value,
+        'unit',unit,'sourceTime',source_time,'receivedAt',received_at,
+        'quality',json(CASE WHEN json_valid(quality) THEN quality ELSE '[]' END),'raw',json(${raw})) AS BLOB))
+      ELSE 0 END) adaptiveEstimatedBytes
     FROM observations GROUP BY source,signal,unit,imported,policyId,timeBasis`).all();
   const observations = new Map(), observedDatasets = new Map(), inventoryIssues = [];
+  // Retained logical observation payload, including excluded recovery evidence.
+  // This requested worker scan is separate from the prospective budget counter;
+  // neither estimate claims SQLite table, index or free-page allocation.
+  const adaptiveEstimatedBytes = streams.reduce((total,row)=>total+Number(row.adaptiveEstimatedBytes),0);
   const addCount = (map, key, row) => map.set(key, sum([map.get(key) ?? empty(), stats(row)]));
   for (const row of streams) {
     const imported = row.imported || row.source.startsWith('csv:');
@@ -535,7 +545,8 @@ export function getDatabaseOverview({ store, now = Date.now() }) {
   return { generatedAt: now, refreshAfterMs: OVERVIEW_REFRESH_MS,
     catalogueComplete: inventoryIssues.length === 0, inventoryIssues: [...new Set(inventoryIssues)],
     database: { allocatedBytes, reusableBytes, fileBytes, walBytes, totalFileBytes: fileBytes === null ? null : fileBytes + walBytes,
-      description: 'Stored source counts include evidence excluded by recovery corrections; selected chart history can contain fewer records. Learning journal counts identify the selected model history separately from other retained epochs. SQLite allocated pages include records, indexes and reusable pages. Main-file plus WAL bytes include temporary journal overhead; dataset sizes are not estimated. Chart responses and point reduction use memory.' },
+      adaptiveEstimatedBytes,adaptiveObservationCount:observations.get('adaptive')?.count ?? 0,
+      description: 'Stored source counts include evidence excluded by recovery corrections; selected chart history can contain fewer records. Learning journal counts identify the selected model history separately from other retained epochs. SQLite allocated pages include records, indexes and reusable pages. Main-file plus WAL bytes include temporary journal overhead. Adaptive size estimates retained observation payload and metadata; it excludes SQLite indexes, page overhead and recorder support tables. Chart responses and point reduction use memory.' },
     groups, accounting: { tables, totalRows: tables.reduce((total, table) => total + table.rows, 0),
       views, selection: { tables: selectionTables, retainedSourceRows,
         selectedSourceRows: retainedSourceRows - selectedExclusions, excludedSourceRows: selectedExclusions,

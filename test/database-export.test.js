@@ -1,13 +1,15 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, rmSync, writeFileSync, readdirSync, readFileSync, statSync, existsSync } from 'node:fs';
+import { mkdtempSync, rmSync, writeFileSync, readdirSync, readFileSync, statSync, existsSync, mkdirSync, symlinkSync, lstatSync } from 'node:fs';
 import { once } from 'node:events';
+import fs from 'node:fs/promises';
 import { request } from 'node:http';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { DatabaseSync } from 'node:sqlite';
 import { Store } from '../src/storage/store.js';
 import { createAppServer } from '../src/app/server.js';
+import { createDatabaseExport } from '../src/app/database-export.js';
 
 const filenamePattern = /^stmq-\d{4}-\d{2}-\d{2}T\d{2}-\d{2}-\d{2}-\d{3}Z(?:-\d+)?\.sqlite$/;
 const saveCopy = (url, options = {}) => fetch(url, {
@@ -264,6 +266,61 @@ test('saved copies never overwrite earlier exports even when the timestamp is id
   const copy = new DatabaseSync(later.path, { readOnly: true });
   try { assert.equal(JSON.parse(copy.prepare("SELECT value FROM state WHERE key='copy-sequence'").get().value), 2); }
   finally { copy.close(); }
+});
+
+test('saved copies skip names with SQLite companions, including dangling links', async t => {
+  const { url, exportDirectory } = await fixture(t);
+  const now = Date.parse('2026-09-25T15:04:32.123Z');
+  t.mock.timers.enable({ apis: ['Date'], now });
+  mkdirSync(exportDirectory, { mode: 0o700 });
+  const stem = 'stmq-2026-09-25T15-04-32-123Z';
+  const companions = [`${stem}.sqlite-wal`, `${stem}-2.sqlite-shm`, `${stem}-3.sqlite-journal`];
+  for (const name of companions) writeFileSync(join(exportDirectory, name), 'preserve companion');
+  const dangling = join(exportDirectory, `${stem}-4.sqlite-wal`);
+  symlinkSync(join(exportDirectory, 'missing'), dangling);
+  const response = await saveCopy(url);
+  assert.equal(response.status, 200);
+  assert.equal((await response.json()).filename, `${stem}-5.sqlite`);
+  for (const name of companions) assert.equal(readFileSync(join(exportDirectory, name), 'utf8'), 'preserve companion');
+  assert(lstatSync(dangling).isSymbolicLink());
+});
+
+test('backup health reports only completed outer saves and distinguishes failure from cancellation', async t => {
+  const { store, exportDirectory } = await fixture(t);
+  const events = [], response = { destroyed: false, headersSent: false };
+  const exportDatabase = createDatabaseExport({ getDirectory: () => exportDirectory, onBackupEvent: event => events.push(event) });
+  const saved = await exportDatabase({ store, response, authorized: () => true, save: true });
+  assert.deepEqual(events.map(event => event.phase), ['start', 'complete']);
+  assert(events.every(event => event.kind === 'saved-copy' && Number.isSafeInteger(event.at)));
+  assert.equal(events[1].bytes, statSync(saved.path).size);
+  const original = store.backup.bind(store);
+  store.backup = async () => { throw Object.assign(new Error('synthetic private detail'), { code: 'ENOSPC' }); };
+  events.length = 0;
+  await assert.rejects(exportDatabase({ store, response, authorized: () => true, save: true }), /export failed/);
+  assert.deepEqual(events.map(event => event.phase), ['start', 'failed']);
+  assert.equal(events[1].errorCode, 'ENOSPC');
+  let authorized = true;
+  store.backup = async path => { await original(path); authorized = false; };
+  events.length = 0;
+  assert.equal(await exportDatabase({ store, response, authorized: () => authorized, save: true }), undefined);
+  assert.deepEqual(events.map(event => event.phase), ['start', 'cancelled']);
+  assert.deepEqual(readdirSync(exportDirectory), [saved.filename]);
+});
+
+test('a failed final export directory flush never acknowledges a saved copy or reports backup success', async t => {
+  const { store, exportDirectory } = await fixture(t), events = [];
+  const original = fs.open;
+  t.mock.method(fs, 'open', async (...args) => {
+    const file = await original(...args);
+    if (args[0] === exportDirectory)
+      t.mock.method(file, 'sync', async () => { throw Object.assign(new Error('synthetic disk error'), { code: 'EIO' }); });
+    return file;
+  });
+  const exportDatabase = createDatabaseExport({ getDirectory: () => exportDirectory, onBackupEvent: event => events.push(event) });
+  await assert.rejects(exportDatabase({ store, response: { destroyed: false, headersSent: false }, authorized: () => true, save: true }), /export failed/);
+  assert.deepEqual(events.map(event => event.phase), ['start', 'failed']);
+  assert.equal(events[1].errorCode, 'database_publication_unconfirmed');
+  assert.deepEqual(readdirSync(exportDirectory), [], 'The failed unacknowledged export and its staging are cleaned up');
 });
 
 for (const send of [fetch, saveCopy]) {

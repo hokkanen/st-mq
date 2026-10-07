@@ -1,17 +1,8 @@
-import { constants } from 'node:fs';
-import { chmod, link, lstat, mkdir, mkdtemp, open, rm } from 'node:fs/promises';
+import { chmod, mkdir, mkdtemp, open, rm } from 'node:fs/promises';
 import { dirname, join, resolve } from 'node:path';
 import { backup as sqliteBackup } from 'node:sqlite';
 import { Worker } from 'node:worker_threads';
-
-const companions = ['', '-wal', '-shm', '-journal'];
-const occupied = async path => {
-  for (const suffix of companions) {
-    try { await lstat(`${path}${suffix}`); return true; }
-    catch (error) { if (error.code !== 'ENOENT') throw error; }
-  }
-  return false;
-};
+import { assertNewDatabaseDestination, publishDatabaseFile } from './publication.js';
 
 function finishSnapshot(path, sourcePath) {
   return new Promise((resolve, reject) => {
@@ -33,11 +24,10 @@ function finishSnapshot(path, sourcePath) {
 export async function createDatabaseBackup({ database, sourcePath, destination }) {
   if (Boolean(database) === Boolean(sourcePath)) throw new TypeError('Specify one database backup source');
   const path = resolve(destination);
-  const refuseOccupied = async () => {
-    if (sourcePath && path === resolve(sourcePath) || await occupied(path))
-      throw new Error('Backup destination must be a new file without SQLite companions');
-  };
-  await refuseOccupied();
+  if (sourcePath && path === resolve(sourcePath))
+    throw Object.assign(new Error('Backup destination must be a new file without SQLite companions'),
+      { code: 'database_destination_occupied' });
+  await assertNewDatabaseDestination(path);
   await mkdir(dirname(path), { recursive: true, mode: 0o700 });
   const directory = await mkdtemp(join(dirname(path), '.sqlite-backup-'));
   try {
@@ -47,13 +37,7 @@ export async function createDatabaseBackup({ database, sourcePath, destination }
     await file.close();
     if (database) await sqliteBackup(database, staging, { rate: 256 });
     await finishSnapshot(staging, sourcePath && resolve(sourcePath));
-    const completed = await open(staging, constants.O_RDONLY | constants.O_NOFOLLOW);
-    try { await completed.sync(); } finally { await completed.close(); }
-    await refuseOccupied();
-    // A final-name collision never replaces an earlier backup.
-    await link(staging, path);
-    const parent = await open(dirname(path), constants.O_RDONLY);
-    try { await parent.sync(); } finally { await parent.close(); }
+    await publishDatabaseFile(staging, path);
   } finally { await rm(directory, { recursive: true, force: true }); }
   return path;
 }

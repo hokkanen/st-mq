@@ -6,6 +6,17 @@ Versions follow Semantic Versioning. `-dev.N` denotes a development prerelease.
 
 ## Unreleased
 
+- Recording details separates the adaptive annual target from total database size
+  and growth, with dated adaptive size estimates, local disk capacity and backup
+  evidence. Low space, failed writes and stalled recording receive a dashboard
+  attention notice. Backup triggers remain unchanged; no schedule is added.
+- Adaptive recording precision responds only to new adaptive data, so imports,
+  exact records, learning history and index growth cannot make it less precise.
+  Existing history stays intact; shared database overhead is additional storage.
+- Backups, offline restores and saved exports share durable file publication.
+  Saved exports now also guard SQLite companion files and flush their destination
+  directory before reporting success. Recovery confirmation explicitly means
+  history from this household; format checks remain automatic.
 - Database restore refuses existing SQLite journal files and dangling companion
   links, and rechecks the destination after copying so concurrent files are preserved.
 - Caravan dehumidifier feedback requires each field's native timestamp. An

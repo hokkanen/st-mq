@@ -1,7 +1,7 @@
-import { DatabaseSync, backup as sqliteBackup } from 'node:sqlite';
-import { mkdirSync, lstatSync, openSync, closeSync, linkSync, rmSync } from 'node:fs';
+import { DatabaseSync } from 'node:sqlite';
+import { mkdirSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
-import { createHash, randomUUID } from 'node:crypto';
+import { createHash } from 'node:crypto';
 
 import { CURRENT_SCHEMA, SCHEMA_VERSION } from './schema.js';
 import { recordedEnergyGroups } from './energy-history.js';
@@ -10,6 +10,9 @@ import { createDatabaseBackup } from './backup.js';
 import { cycleAssessmentExcluded } from './cycle-assessment.js';
 import { LEARNING_ALGORITHM } from '../domain/learning-contract.js';
 import { validateExecutorState, validateH66ControlState } from '../domain/heating-control-state.js';
+import { createWriteHealth } from './write-health.js';
+import { readAdaptiveBudget } from './adaptive-recording-budget.js';
+import { readStorageMetrics } from './recording-metrics.js';
 export { SCHEMA_VERSION } from './schema.js';
 const MAX_LIMIT = 5000;
 
@@ -36,6 +39,10 @@ export function validateCurrentDatabaseFormat(db) {
 
 export function validateCurrentDatabase(db) {
   validateCurrentDatabaseFormat(db);
+  // Reject an unsupported recorder before writable setup or paired source-state
+  // initialization. A genuinely absent prospective budget needs no backfill.
+  readAdaptiveBudget(db);
+  readStorageMetrics(db);
   // Control-state rejection must precede writable setup and Engine construction,
   // whose unrelated initialization may otherwise mutate a rejected database.
   for (const row of db.prepare("SELECT key,value FROM state WHERE key IN ('executor:home','executor:simulated') OR key GLOB 'h66:control:*'").iterate()) {
@@ -120,9 +127,11 @@ export class Store {
     label(path, 'database path');
     this.path = path === ':memory:' ? path : resolve(path);
     this.readOnly = readOnly;
+    this.writeHealth = createWriteHealth();
     if (!readOnly && path !== ':memory:') mkdirSync(dirname(this.path), { recursive: true });
     this.db = new DatabaseSync(this.path, { readOnly });
     try {
+      this.changeCount = this.db.prepare('SELECT total_changes() AS n');
       this.db.exec('PRAGMA foreign_keys = ON; PRAGMA busy_timeout = 5000;');
       const version = this.db.prepare('PRAGMA user_version').get().user_version;
       const empty = version === 0 && this.db.prepare("SELECT COUNT(*) AS n FROM sqlite_schema WHERE name NOT GLOB 'sqlite_*'").get().n === 0;
@@ -142,11 +151,16 @@ export class Store {
 
   close() { this.db.close(); }
 
+  databaseChanges() {
+    try { return this.changeCount.get().n; } catch { return null; }
+  }
+
   transaction(fn) {
     // Acquisition and recorder methods deliberately compose atomic operations.
     // SAVEPOINT keeps an inner failure from leaving half an interval behind.
     if (this.transactionDepth) {
       const savepoint = `nested_${++this.savepointSequence}`;
+      const before = this.databaseChanges(), discardedBefore = this.discardedChanges;
       this.db.exec(`SAVEPOINT ${savepoint}`);
       try {
         const result = fn();
@@ -154,18 +168,32 @@ export class Store {
         this.db.exec(`RELEASE ${savepoint}`); return result;
       } catch (error) {
         try { this.db.exec(`ROLLBACK TO ${savepoint}; RELEASE ${savepoint}`); } catch (cleanupError) { if (error && typeof error === 'object') error.cleanupError = cleanupError; }
+        const after = this.databaseChanges();
+        // total_changes also includes rolled-back savepoint writes. They cannot
+        // prove that recording resumed when the caller catches the inner error.
+        if (before === null || after === null) this.writeEvidenceUnknown = true;
+        else this.discardedChanges = discardedBefore + after - before;
         throw error;
       }
     }
-    this.db.exec('BEGIN IMMEDIATE');
+    // Diagnostic counters cannot introduce a new failure after a commit or
+    // leave an opened transaction behind if the database becomes unreadable.
+    const changesBefore = this.databaseChanges();
+    try { this.db.exec('BEGIN IMMEDIATE'); }
+    catch (error) { this.writeHealth.failure(error); throw error; }
     this.transactionDepth = 1; this.savepointSequence ??= 0;
+    this.discardedChanges = 0; this.writeEvidenceUnknown = changesBefore === null;
     try {
       const result = fn();
       if (result && typeof result.then === 'function') throw new TypeError('SQLite transaction callback must be synchronous');
+      const changesAfter = this.databaseChanges();
+      const changed = !this.writeEvidenceUnknown && changesAfter !== null && changesAfter - changesBefore > this.discardedChanges;
       this.db.exec('COMMIT');
+      if (changed) this.writeHealth.success();
       return result;
     } catch (error) {
       try { this.db.exec('ROLLBACK'); } catch (cleanupError) { if (error && typeof error === 'object') error.cleanupError = cleanupError; }
+      this.writeHealth.failure(error);
       throw error;
     }
     finally { this.transactionDepth = 0; }
@@ -177,9 +205,21 @@ export class Store {
   }
 
   setState(key, value) {
-    this.db.prepare(`INSERT INTO state (key, value, updated_at) VALUES (?, ?, ?)
+    return this.write(() => this.db.prepare(`INSERT INTO state (key, value, updated_at) VALUES (?, ?, ?)
       ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at WHERE state.value <> excluded.value`)
-      .run(label(key, 'key'), json(value), Date.now());
+      .run(label(key, 'key'), json(value), Date.now()));
+  }
+
+  write(operation) {
+    try {
+      const result = operation();
+      // A nested successful statement is not evidence of an outer commit.
+      if (!this.transactionDepth && (typeof result !== 'object' || result?.changes > 0)) this.writeHealth.success();
+      return result;
+    } catch (error) {
+      if (!this.transactionDepth) this.writeHealth.failure(error);
+      throw error;
+    }
   }
 
   appendLearningJournal(input, { kind, at, algorithmVersion, configVersion = null, forecastVersion = null, payload, key }) {
@@ -383,7 +423,7 @@ export class Store {
   }
 
   event(type, payload, at = Date.now()) {
-    return Number(this.insertEvent.run(label(type, 'event type'), json(payload), instant(at, 'at')).lastInsertRowid);
+    return this.write(() => Number(this.insertEvent.run(label(type, 'event type'), json(payload), instant(at, 'at')).lastInsertRowid));
   }
 
   /** No cursor gives the newest page in chronological insertion order. A cursor follows it. */
@@ -526,34 +566,18 @@ export class Store {
 
   /** Restore to a new database while the application is stopped; never overwrite a live WAL. */
   static async restore(source, destination) {
-    const path = resolve(destination);
-    const refuseOccupied = () => {
-      for (const suffix of ['', '-wal', '-shm', '-journal']) {
-        try { lstatSync(`${path}${suffix}`); }
-        catch (error) { if (error.code === 'ENOENT') continue; throw error; }
-        throw new Error('Restore destination must be a new database path without SQLite companions');
-      }
-    };
-    refuseOccupied();
-    const check = new DatabaseSync(resolve(source), { readOnly: true });
+    // Restores need the same validated, self-contained snapshot and durable,
+    // no-overwrite publication as backups; keep one implementation of both.
     try {
-      if (check.prepare('PRAGMA quick_check').get().quick_check !== 'ok') throw new Error('Backup database failed integrity check');
-      validateCurrentDatabase(check);
-      mkdirSync(dirname(path), { recursive: true });
-      const staging = `${path}.restore-${randomUUID()}`;
-      try {
-        closeSync(openSync(staging, 'wx', 0o600));
-        await sqliteBackup(check, staging);
-        const copied = new DatabaseSync(staging, { readOnly: true });
-        try { validateCurrentDatabase(copied); }
-        finally { copied.close(); }
-        // Atomic no-overwrite publication. A failed copy never becomes the destination.
-        refuseOccupied();
-        linkSync(staging, path);
-      } finally {
-        for (const suffix of ['', '-wal', '-shm', '-journal']) rmSync(`${staging}${suffix}`, { force: true });
-      }
-    } finally { check.close(); }
-    return path;
+      return await createDatabaseBackup({ sourcePath: resolve(source), destination });
+    } catch (error) {
+      if (['database_destination_occupied', 'EEXIST'].includes(error.code))
+        error.message = 'Restore destination must be a new database path without SQLite companions';
+      else if (error.code === 'backup_source_incompatible')
+        error.message = 'Unsupported database schema or structure in backup; use an intact current-version backup or a new empty database. The source was not changed.';
+      else if (error.code === 'backup_source_invalid')
+        error.message = 'Malformed backup database or saved state; use an intact current-version backup. The source was not changed.';
+      throw error;
+    }
   }
 }

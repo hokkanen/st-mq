@@ -127,6 +127,8 @@ try {
   await until("document.body.dataset.authenticated === 'true'");
   assert.equal(await evaluate(`${$('history-recovery-open')}.checkVisibility()`), false, 'Recovery does not escape the closed recording fold');
   await evaluate(`${$('recording-details')}.open = true; true`);
+  await until(`${$('recording-growth-inventoryAt')}.textContent.includes('Retained adaptive payload estimate')`);
+  assert.equal(await evaluate(`${$('recording-overview-details')}.open`), false, 'Recording summary measures retained adaptive size without unfolding other recorded data');
   assert.equal(await evaluate(`${$('history-recovery-open')}.checkVisibility()`), false, 'Opening recording details leaves recovery inside its own closed fold');
   assert.equal(await evaluate(`${$('history-recovery-open')}.closest('details').id`), 'history-recovery-details');
   for (const width of [1440, 320]) {
