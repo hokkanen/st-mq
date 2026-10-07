@@ -555,7 +555,9 @@ export function createEquipmentCapture({ engine, store, settings, publish, canCo
       const reportedSnapshot = mapping.statePath ? property(input, mapping.statePath) : input;
       const capabilities = dehumidifierCapabilities(reportedSnapshot?.capabilities);
       const fieldTimestamps = Object.fromEntries([...Object.keys(DEHUMIDIFIER_SETTINGS), 'temperature', 'humidity'].map(field => {
-        const clock = reportedSnapshot?.fieldTimestamps === undefined ? at : sourceTime(reportedSnapshot.fieldTimestamps?.[field]);
+        // The aggregate snapshot clock only orders messages. It cannot establish
+        // received native evidence for a field whose own clock is missing.
+        const clock = sourceTime(reportedSnapshot?.fieldTimestamps?.[field]);
         return [field, scalar(clock) && clock >= 0 && clock <= at ? clock : null];
       }));
       const prior = device.dehumidifierReport;

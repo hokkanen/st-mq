@@ -57,6 +57,8 @@ function fixture(t, options = {}) {
     },
     dryer: (power, extra = {}, retain = false) => capture.receive('fixture/dryer/state',
       JSON.stringify({ identity: 'a'.repeat(64), power, temperature: null, humidity: null,
+        fieldTimestamps: Object.fromEntries(['power', 'fanSpeed', 'targetHumidity', 'humidity', 'temperature']
+          .map(field => [field, extra.timestamp ?? now])),
         fanSpeed: 'low', targetHumidity: 55, capabilities, timestamp: now, ...extra }), { retain }),
     state: () => capture.status().devices.find(row => row.id === 'caravan_dehumidifier').dehumidifier,
     guard: () => f.state().temperatureControl,

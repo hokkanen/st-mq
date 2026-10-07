@@ -26,6 +26,7 @@ async function fixture(t) {
   ] });
   const report = (topic, value) => client.emit('message', topic, Buffer.from(JSON.stringify(value)), { retain: false });
   const appliance = power => report('invented/appliance', { identity: IDENTITY, power, timestamp: now, fanSpeed: 'low',
+    fieldTimestamps: { power: now, fanSpeed: now },
     capabilities: { power: ['off', 'on'], fanSpeed: ['low'] } });
   client.connected = true;
   client.subscribe = (topic, options, done) => done(null, [{ topic, qos: 1 }]);

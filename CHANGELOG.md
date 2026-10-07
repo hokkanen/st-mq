@@ -6,6 +6,12 @@ Versions follow Semantic Versioning. `-dev.N` denotes a development prerelease.
 
 ## Unreleased
 
+- Database restore refuses existing SQLite journal files and dangling companion
+  links, and rechecks the destination after copying so concurrent files are preserved.
+- Caravan dehumidifier feedback requires each field's native timestamp. An
+  aggregate-only snapshot cannot enable controls, confirm a command or create
+  measured state history.
+- Web requests preserve non-ASCII text when a character spans network chunks.
 - Charger 2 can identify Tesla when it draws less than the offered 6 A, provided
   fresh, settled charger and Tesla current/power readings match uniquely.
   Joint BMW assignment still requires BMW's own positive charging episode.

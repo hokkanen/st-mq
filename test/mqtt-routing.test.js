@@ -138,6 +138,7 @@ test('Tuya temperature dependency remains on primary while its native commands u
   f.send('primary', 'fixture/air/state', { temperature: 8, timestamp: initial });
   f.send('ha', 'fixture/dryer/online', 'online');
   f.send('ha', 'fixture/dryer/state', { identity: 'a'.repeat(64), power: 'off', fanSpeed: 'low', timestamp: initial,
+    fieldTimestamps: { power: initial, fanSpeed: initial },
     capabilities: { power: ['off', 'on'], fanSpeed: ['low', 'high'] } });
   assert.equal(f.view('caravan_dehumidifier').dehumidifier.temperatureControl.temperatureC, 8);
   await f.reader.equipment.setDehumidifier({ deviceId: 'caravan_dehumidifier', setting: 'fanSpeed', value: 'high' });

@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, rmSync, readFileSync, writeFileSync, existsSync, readdirSync, statSync } from 'node:fs';
+import { mkdtempSync, rmSync, readFileSync, writeFileSync, existsSync, readdirSync, statSync, symlinkSync, lstatSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
@@ -142,6 +142,40 @@ test('transactions roll back and WAL backups restore complete state to a new des
   const copy = new Store(restored);
   try { assert.deepEqual(copy.getState('checkpoint'), { cursor: 42 }); assert.equal(copy.events().length, 1); }
   finally { copy.close(); }
+});
+
+test('restore rejects every existing SQLite companion, including dangling symlinks', async t => {
+  const { store, dir, path: source } = fixture(t);
+  store.close();
+  const sourceBytes = readFileSync(source);
+  for (const suffix of ['-journal', '-wal', '-shm']) {
+    const destination = join(dir, `restore${suffix}.sqlite`), companion = `${destination}${suffix}`;
+    writeFileSync(companion, 'preserve synthetic SQLite companion');
+    await assert.rejects(Store.restore(source, destination), /new database/);
+    assert.equal(existsSync(destination), false);
+    assert.equal(readFileSync(companion, 'utf8'), 'preserve synthetic SQLite companion');
+    rmSync(companion);
+    symlinkSync(join(dir, 'absent-companion'), companion);
+    await assert.rejects(Store.restore(source, destination), /new database/);
+    assert.equal(existsSync(destination), false);
+    assert(lstatSync(companion).isSymbolicLink());
+  }
+  assert.deepEqual(readFileSync(source), sourceBytes);
+  assert.equal(readdirSync(dir).some(name => name.includes('.restore-')), false);
+});
+
+test('restore rechecks destination companions after copying before publication', async t => {
+  const { store, dir, path: source } = fixture(t);
+  store.close();
+  for (const suffix of ['-journal', '-wal', '-shm']) {
+    const destination = join(dir, `concurrent${suffix}.sqlite`), companion = `${destination}${suffix}`;
+    const restoring = Store.restore(source, destination);
+    writeFileSync(companion, 'concurrent owner');
+    await assert.rejects(restoring, /new database/);
+    assert.equal(existsSync(destination), false);
+    assert.equal(readFileSync(companion, 'utf8'), 'concurrent owner');
+  }
+  assert.equal(readdirSync(dir).some(name => name.includes('.restore-')), false);
 });
 
 test('backups publish complete private files and clean failed staging', async t => {

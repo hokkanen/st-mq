@@ -22,15 +22,16 @@ jobs:
         run: |
           node scripts/build-sqlite-rsync.js --output "$RUNNER_TEMP/sqlite-tools/sqlite3_rsync"
           echo "$RUNNER_TEMP/sqlite-tools" >> "$GITHUB_PATH"
-      - name: Prepare isolated SSH tests
+      - name: Prepare isolated SSH and MQTT tests
         run: |
           sudo apt-get update -qq
-          sudo apt-get install -y --no-install-recommends openssh-server
+          sudo apt-get install -y --no-install-recommends openssh-server mosquitto
           sudo install -d -m 0755 /run/sshd
       - run: npm run test:extended
         env:
           STMQ_REQUIRE_RSYNC_TESTS: '1'
           STMQ_REQUIRE_SSH_TESTS: '1'
+          STMQ_REQUIRE_MQTT_TESTS: '1'
   containers:
     runs-on: ubuntu-latest
     timeout-minutes: 30

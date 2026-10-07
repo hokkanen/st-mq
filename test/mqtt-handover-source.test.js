@@ -62,6 +62,7 @@ test('verified HA to Ubuntu to HA handover preserves current controls, native ho
     capture.setConnected(true); capture.confirmSubscriptions(capture.topics);
     capture.receive('fixture/dryer/online', 'online');
     capture.receive('fixture/dryer', JSON.stringify({ identity: 'a'.repeat(64), timestamp: now, power: 'off', fanSpeed: 'low',
+      fieldTimestamps: { power: now, fanSpeed: now },
       capabilities: { power: ['off', 'on'], fanSpeed: ['low', 'high'] } }));
   };
   const before = makeRuntime(sourceConfig), tesla = makeTesla(sourceConfig), appliances = makeEquipment(sourceConfig);

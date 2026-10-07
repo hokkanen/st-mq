@@ -22,7 +22,9 @@ function fixture(t, options = {}) {
     publish: async (topic, payload, options) => { publications.push({ topic, payload, options }); }, ...options });
   t.after(() => { capture.close(); store.close(); });
   const rawReport = (state, at = now, retain = false) => capture.receive('invented/dehumidifier/state',
-    JSON.stringify({ identity: 'a'.repeat(64), capabilities, ...state, timestamp: new Date(at).toISOString() }), { retain });
+    JSON.stringify({ identity: 'a'.repeat(64), capabilities,
+      fieldTimestamps: Object.fromEntries(Object.keys(state).filter(key => key !== 'fieldTimestamps').map(key => [key, at])),
+      ...state, timestamp: new Date(at).toISOString() }), { retain });
   capture.setConnected(true); capture.confirmSubscriptions(capture.topics);
   return { capture, observations, publications, rawReport,
     report: (state = {}, at = now, retain = false) => rawReport({ ...defaults, ...state }, at, retain),
@@ -58,6 +60,27 @@ test('future equipment and retained reports cannot enable controls or invent his
   f.report(); assert.equal(f.status().available, false); assert.equal(f.observations.length, 0);
   f.online(); assert.equal(f.status().available, true); assert.equal(f.status().dehumidifier.available, true);
   assert.deepEqual(f.publications, []);
+});
+
+test('aggregate-only snapshots cannot establish field freshness, confirm commands or record actual state', async t => {
+  const f = fixture(t); f.online();
+  f.report({ fieldTimestamps: undefined });
+  assert.equal(f.status().dehumidifier.available, false);
+  assert.equal(f.observations.filter(row => row.value !== null).length, 0);
+  await assert.rejects(f.command('power', 'on'), /unavailable/);
+
+  f.advance(1000); f.report();
+  assert.equal(f.status().dehumidifier.available, true);
+  await f.command('power', 'on');
+  f.advance(1000); f.report({ power: 'on', fieldTimestamps: undefined });
+  assert.notEqual(f.status().dehumidifier.operation.status, 'observed');
+  assert.equal(f.status().dehumidifier.available, false);
+  assert.equal(f.observations.filter(row => row.value !== null).at(-1).value, 0);
+
+  f.advance(1000); f.report({ power: 'on' });
+  assert.equal(f.status().dehumidifier.operation.status, 'observed');
+  assert.equal(f.status().dehumidifier.available, true);
+  assert.equal(f.observations.at(-1).value, 1);
 });
 
 test('one Off/Low/Medium/High series is recorded; unknown speed remains unknown and snapshots never merge', t => {

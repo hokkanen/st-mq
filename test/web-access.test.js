@@ -97,6 +97,29 @@ test('token changes reject a slow mutation authorized with the previous token', 
   assert.deepEqual(mutations, []);
 });
 
+test('JSON mutations preserve UTF-8 characters split across request chunks', async t => {
+  const { access, mutations } = await setup(t, configuration({ token: firstToken }));
+  const input = { label: 'Lämpö 🏠' };
+  const payload = Buffer.from(JSON.stringify(input));
+  const split = payload.indexOf(Buffer.from('ä')) + 1;
+  const received = once(access.server, 'request');
+  const outgoing = request(`${endpoint(access.server)}/api/temporary`, { method: 'POST',
+    headers: { ...authorization(firstToken), 'Content-Type': 'application/json', 'Content-Length': payload.length } });
+  t.after(() => outgoing.destroy());
+  const response = new Promise((resolve, reject) => {
+    outgoing.on('response', response => { response.resume(); response.on('end', () => resolve(response.statusCode)); });
+    outgoing.on('error', reject);
+  });
+  outgoing.flushHeaders();
+  const [incoming] = await received;
+  const firstChunk = once(incoming, 'data');
+  outgoing.write(payload.subarray(0, split));
+  await firstChunk;
+  outgoing.end(payload.subarray(split));
+  assert.equal(await response, 200);
+  assert.deepEqual(mutations, [input]);
+});
+
 test('a delayed read cannot return data after its token is revoked', async t => {
   let finish, began;
   const started = new Promise(resolve => { began = resolve; });

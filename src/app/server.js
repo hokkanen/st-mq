@@ -37,12 +37,14 @@ function requestHost(req, ingress) {
 }
 async function body(req) {
   if (!req.headers['content-type']?.startsWith('application/json')) throw Object.assign(new Error('JSON content type required'), { statusCode: 400 });
-  let data = '';
+  let size = 0;
+  const chunks = [];
   for await (const chunk of req) {
-    data += chunk;
-    if (Buffer.byteLength(data) > 8192) throw Object.assign(new Error('Request too large'), { statusCode: 400 });
+    size += chunk.length;
+    if (size > 8192) throw Object.assign(new Error('Request too large'), { statusCode: 400 });
+    chunks.push(chunk);
   }
-  return JSON.parse(data);
+  return JSON.parse(Buffer.concat(chunks).toString('utf8'));
 }
 function numberParam(url, key, fallback, max) {
   const n = Number(url.searchParams.get(key) ?? fallback);

@@ -1,5 +1,5 @@
 import { DatabaseSync, backup as sqliteBackup } from 'node:sqlite';
-import { mkdirSync, existsSync, openSync, closeSync, linkSync, rmSync } from 'node:fs';
+import { mkdirSync, lstatSync, openSync, closeSync, linkSync, rmSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 import { createHash, randomUUID } from 'node:crypto';
 
@@ -527,7 +527,14 @@ export class Store {
   /** Restore to a new database while the application is stopped; never overwrite a live WAL. */
   static async restore(source, destination) {
     const path = resolve(destination);
-    if (existsSync(path) || existsSync(`${path}-wal`) || existsSync(`${path}-shm`)) throw new Error('Restore destination must be a new database path');
+    const refuseOccupied = () => {
+      for (const suffix of ['', '-wal', '-shm', '-journal']) {
+        try { lstatSync(`${path}${suffix}`); }
+        catch (error) { if (error.code === 'ENOENT') continue; throw error; }
+        throw new Error('Restore destination must be a new database path without SQLite companions');
+      }
+    };
+    refuseOccupied();
     const check = new DatabaseSync(resolve(source), { readOnly: true });
     try {
       if (check.prepare('PRAGMA quick_check').get().quick_check !== 'ok') throw new Error('Backup database failed integrity check');
@@ -541,8 +548,11 @@ export class Store {
         try { validateCurrentDatabase(copied); }
         finally { copied.close(); }
         // Atomic no-overwrite publication. A failed copy never becomes the destination.
+        refuseOccupied();
         linkSync(staging, path);
-      } finally { rmSync(staging, { force: true }); }
+      } finally {
+        for (const suffix of ['', '-wal', '-shm', '-journal']) rmSync(`${staging}${suffix}`, { force: true });
+      }
     } finally { check.close(); }
     return path;
   }

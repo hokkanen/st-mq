@@ -339,6 +339,7 @@ test('dehumidifier HTTP controls wait for live MQTT feedback and expose confirme
   assert.equal((await f.post('/api/equipment/dehumidifier', command)).status, 400);
   const report = (targetHumidity, timestamp) => client.emit('message', 'invented-dehumidifier/state', Buffer.from(JSON.stringify({
     identity: 'a'.repeat(64),
+    fieldTimestamps: { power: timestamp, targetHumidity: timestamp, fanSpeed: timestamp },
     power: 'off', mode: 'auto', targetHumidity, fanSpeed: 'low', swing: 'fixed_90', timestamp: new Date(timestamp).toISOString(),
     capabilities: { power: ['off', 'on'], targetHumidity: [55, 60], fanSpeed: ['low'] },
   })), { retain: false });
@@ -373,6 +374,7 @@ test('dehumidifier automatic power choices are editable without device feedback 
     assert.equal((await f.post(route, invalid)).status, 400);
   const client = f.mqtt.clients[0];
   client.emit('message', 'invented-dehumidifier/state', Buffer.from(JSON.stringify({ identity: 'a'.repeat(64),
+    fieldTimestamps: { power: INITIAL, fanSpeed: INITIAL, humidity: INITIAL },
     power: 'off', fanSpeed: 'low', humidity: 50, timestamp: INITIAL,
     capabilities: { power: ['off', 'on'], fanSpeed: ['low'] },
   })), { retain: false });
