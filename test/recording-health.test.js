@@ -63,6 +63,146 @@ test('a live loop that never completed warns, while an intentional replica never
   assert.deepEqual(replica.attention.map(row => row.id), ['disk-space']);
 });
 
+test('initial unavailable reports wait for sources, but losing usable evidence warns immediately', async () => {
+  const f = fixture();
+  f.parameter.freshness = { status: 'unavailable', sourceObservedAt: null, maxAgeMs: MINUTE };
+  let result = await f.status();
+  assert.equal(result.recording.state, 'starting');
+  assert.deepEqual(result.attention, []);
+  f.advance(3 * MINUTE); f.engine.latestStatus.now = f.now();
+  result = await f.status();
+  assert.equal(result.recording.state, 'source-unavailable');
+  assert.equal(result.recording.detail, 'No usable source readings. Check source connections.');
+  assert.deepEqual(result.attention.map(row => row.id), ['recording']);
+
+  const previouslyUsable = fixture();
+  assert.equal((await previouslyUsable.status()).recording.state, 'ok');
+  previouslyUsable.advance(1);
+  previouslyUsable.parameter.freshness = { status: 'unavailable' };
+  assert.equal((await previouslyUsable.status()).recording.state, 'source-unavailable', 'loss does not restart the initial grace');
+});
+
+test('startup grace never hides write failures or a stalled loop', async () => {
+  const f = fixture();
+  f.parameter.freshness = { status: 'unavailable' };
+  f.store.writeHealth.failure({ code: 'ENOSPC' });
+  assert.equal((await f.status()).recording.state, 'write-failed');
+  f.store.writeHealth.success();
+  f.advance(3 * MINUTE + 1);
+  assert.equal((await f.status()).recording.state, 'stalled');
+
+  const previouslyUsable = fixture();
+  previouslyUsable.store.writeHealth.failure({ code: 'ENOSPC' });
+  assert.equal((await previouslyUsable.status()).recording.state, 'write-failed');
+  previouslyUsable.store.writeHealth.success();
+  previouslyUsable.parameter.freshness = { status: 'unavailable' };
+  assert.equal((await previouslyUsable.status()).recording.state, 'source-unavailable', 'usable evidence seen during a write fault still ends initial grace');
+});
+
+test('source checks do not imply saved observations or complete source coverage', async () => {
+  const f = fixture();
+  f.parameter.lastSavedAt = start - 86_400_000;
+  f.current.recording.parameters = [{ observedThisRun: true, lastPollAt: start,
+    freshness: { status: 'unavailable' } }, { observedThisRun: false, lastPollAt: start + MINUTE,
+    freshness: { status: 'held' } }];
+  let result = await f.status();
+  assert.equal(result.recording.state, 'ok', 'one usable recorded source is enough for the summary');
+  assert.equal(result.recording.lastSourceCheckAt, start);
+  assert(!Object.hasOwn(result.recording, 'lastRecordedAt'));
+  f.parameter.freshness = { status: 'unavailable' };
+  result = await f.status();
+  assert.equal(result.recording.state, 'source-unavailable', 'historical-only evidence cannot keep live recording healthy');
+  assert.equal(result.recording.lastSourceCheckAt, start, 'a source check can report unavailable evidence');
+});
+
+test('replacement engines and resumed local recording receive their own initial source wait', async () => {
+  const f = fixture();
+  assert.equal((await f.status()).recording.state, 'ok');
+  f.advance(10 * MINUTE);
+  f.parameter.freshness = { status: 'unavailable' };
+  const replacement = { config: { input: 'mqtt' }, latestStatus: { now: f.now() } };
+  assert.equal((await f.status({ engine: replacement })).recording.state, 'starting');
+  f.advance(3 * MINUTE); replacement.latestStatus.now = f.now();
+  assert.equal((await f.status({ engine: replacement })).recording.state, 'source-unavailable');
+  assert.equal((await f.status({ engine: replacement, readOnly: true })).recording.state, 'read-only');
+  f.advance(10 * MINUTE); replacement.latestStatus.now = f.now();
+  assert.equal((await f.status({ engine: replacement })).recording.state, 'starting');
+});
+
+test('read-only storage and offline history never warn about earlier local write failures', async () => {
+  for (const mode of ['argument', 'store', 'current', 'engine']) {
+    const f = fixture();
+    f.store.writeHealth.failure({ code: 'ENOSPC' });
+    f.store.writeHealth.success();
+    if (mode === 'store') f.store.readOnly = true;
+    if (mode === 'current') f.current.input = 'offline';
+    if (mode === 'engine') f.engine.config.input = 'offline';
+    const result = await f.status({ readOnly: mode === 'argument' });
+    assert.equal(result.recording.state, 'read-only', mode);
+    assert.deepEqual(result.attention, [], mode);
+    assert.equal(result.recording.lastSourceCheckAt, null, mode);
+  }
+});
+
+test('malformed recording evidence remains unknown without preventing disk health', async () => {
+  const malformed = [
+    current => { current.recording = null; },
+    current => { current.recording.parameters = {}; },
+    current => { current.recording.exactParameters = null; },
+    current => { current.recording.parameters = [null]; },
+    current => { current.recording.parameters = [{}]; },
+    current => { current.recording.exactParameters[0].lastPollAt = 'invalid'; },
+    current => { current.recording.exactParameters[0].lastPollAt = start + 1; },
+    current => { current.recording.exactParameters[0].freshness = []; },
+    current => { current.recording.exactParameters[0].freshness.status = 'unsupported'; },
+    ...['invalid', -1, 0, Infinity, NaN].map(value => current => {
+      current.recording.exactParameters[0].freshness = { status: 'fresh', sourceObservedAt: start, maxAgeMs: value };
+    }),
+    ...['invalid', Infinity, NaN, start + 1].map(value => current => {
+      current.recording.exactParameters[0].freshness.sourceObservedAt = value;
+    }),
+    current => { current.recording.exactParameters[0].freshness = { status: 'fresh', sourceObservedAt: start }; },
+  ];
+  for (const change of malformed) {
+    const f = fixture(); change(f.current);
+    const result = await f.status();
+    assert.equal(result.recording.state, 'unknown');
+    assert.equal(result.recording.lastSourceCheckAt, null);
+    assert.equal(result.disk.state, 'ok');
+    assert.equal(result.disk.freeBytes, 20 * GIB);
+  }
+});
+
+test('malformed source metadata cannot hide a known write failure or stalled loop', async () => {
+  const f = fixture();
+  f.current.recording.parameters = [null];
+  f.store.writeHealth.failure({ code: 'ENOSPC' });
+  assert.equal((await f.status()).recording.state, 'write-failed');
+  f.store.writeHealth.success(); f.advance(3 * MINUTE + 1);
+  assert.equal((await f.status()).recording.state, 'stalled');
+  f.engine.latestStatus.now = f.now();
+  assert.equal((await f.status()).recording.state, 'unknown');
+});
+
+test('nullable source clocks, unavailable diagnostics and supported freshness policies retain their meaning', async () => {
+  for (const status of ['waiting', 'unavailable', 'stale', 'failed']) {
+    const f = fixture();
+    f.parameter.lastPollAt = null;
+    f.parameter.freshness = { status, sourceObservedAt: null, maxAgeMs: null };
+    assert.equal((await f.status()).recording.state, 'starting');
+    f.advance(3 * MINUTE); f.engine.latestStatus.now = f.now();
+    assert.equal((await f.status()).recording.state, 'source-unavailable');
+  }
+  for (const status of ['fresh', 'held', 'held-attention', 'last-reported', 'recorded-interval']) {
+    const f = fixture();
+    f.parameter.freshness = { status, sourceObservedAt: start - .5, maxAgeMs: status === 'fresh' ? MINUTE : null };
+    assert.equal((await f.status()).recording.state, 'ok', `${status} retains the source clock's precision`);
+  }
+  const unlimited = fixture();
+  unlimited.parameter.freshness = { status: 'fresh', sourceObservedAt: start, maxAgeMs: null };
+  assert.equal((await unlimited.status()).recording.state, 'ok', 'the producer uses null for an unbounded freshness policy');
+});
+
 test('disk and catalog refreshes are coalesced and failed filesystem checks do not become zero bytes', async () => {
   let diskCalls = 0, catalogCalls = 0;
   const f = fixture({ filesystem: async () => { diskCalls++; throw new Error('/private/path'); },
@@ -186,7 +326,7 @@ test('health API remains authenticated and available when controller status and 
   const base = `http://127.0.0.1:${server.address().port}`;
   assert.equal((await fetch(`${base}/api/recording-health`)).status, 401);
   const result = await fetch(`${base}/api/recording-health`, { headers: { Authorization: 'Bearer synthetic-family-token' } });
-  assert.equal(result.status, 200); assert.equal((await result.json()).version, 1);
+  assert.equal(result.status, 200); assert.equal((await result.json()).version, 2);
   assert.equal((await fetch(`${base}/api/status`, { headers: { Authorization: 'Bearer synthetic-admin-token' } })).status, 503);
 });
 

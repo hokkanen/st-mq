@@ -10,6 +10,36 @@ const backupKinds = ['saved-copy', 'download'];
 const failureCodes = new Set(['disk-full', 'database-busy', 'database-read-only', 'database-io',
   'database-corrupt', 'database-unavailable', 'backup-failed', 'backup_failed', 'export_failed',
   'publication_failed', 'database_publication_unconfirmed', 'backup_cleanup_failed']);
+const usableFreshness = new Set(['fresh', 'last-reported', 'held', 'held-attention', 'recorded-interval']);
+const freshnessStates = new Set([...usableFreshness, 'waiting', 'unavailable', 'stale', 'failed']);
+const object = value => value !== null && typeof value === 'object' && !Array.isArray(value);
+const sourceTime = value => Number.isFinite(value) && Math.abs(value) <= 8640000000000000;
+const receiptTime = value => Number.isSafeInteger(value) && sourceTime(value);
+
+/** Validate only the recorder evidence used by this presentation boundary. An
+ * unavailable row may lack measurement clocks; a usable row must have them.
+ * Bad source metadata must not prevent independent disk/write health reporting. */
+function recordingParameters(recording, now) {
+  if (recording === undefined) return [];
+  if (!object(recording)) return null;
+  const lists = [recording.parameters, recording.exactParameters];
+  if (lists.some(list => list !== undefined && !Array.isArray(list))) return null;
+  const rows = lists.flatMap(list => list ?? []);
+  if (rows.some(row => !object(row) || typeof row.observedThisRun !== 'boolean')) return null;
+  const active = rows.filter(row => row.observedThisRun);
+  for (const row of active) {
+    const freshness = row.freshness;
+    if (row.lastPollAt != null && (!receiptTime(row.lastPollAt) || row.lastPollAt > now)) return null;
+    if (freshness == null) continue;
+    if (!object(freshness) || !freshnessStates.has(freshness.status)
+      || freshness.sourceObservedAt != null && !sourceTime(freshness.sourceObservedAt)
+      || freshness.maxAgeMs != null && (!Number.isSafeInteger(freshness.maxAgeMs) || freshness.maxAgeMs <= 0)) return null;
+    if (usableFreshness.has(freshness.status) && (!receiptTime(row.lastPollAt)
+      || !sourceTime(freshness.sourceObservedAt) || freshness.sourceObservedAt > now
+      || freshness.status === 'fresh' && freshness.maxAgeMs === undefined)) return null;
+  }
+  return active;
+}
 
 export function diskSpaceStatus(stats, checkedAt) {
   const totalBytes = Number(stats.blocks) * Number(stats.bsize);
@@ -46,6 +76,7 @@ export function createRecordingHealth({ getConfig = () => ({}), clock = Date.now
   let catalog = { copies: [], error: false, checkedAt: null }, catalogKey, catalogPending;
   let receipt = { version: 1, complete: null, failure: null }, receiptStore, receiptInvalid = false;
   let pendingBackup = null, backupRevision = 0;
+  let recordingRun = null, recordingScopeSeen = false;
 
   function loadReceipt(store) {
     if (!store || store.readOnly || receiptStore === store) return;
@@ -115,28 +146,41 @@ export function createRecordingHealth({ getConfig = () => ({}), clock = Date.now
 
   function recordingStatus({ store, engine, current, readOnly, now }) {
     const writes = store?.writeHealth?.status();
-    const base = { lastRecordedAt: null, lastFailureAt: writes?.lastFailureAt ?? null, errorCode: writes?.errorCode ?? null };
-    if (readOnly || store?.readOnly || current?.input === 'offline' || engine?.config?.input === 'offline')
+    const base = { lastSourceCheckAt: null, lastFailureAt: writes?.lastFailureAt ?? null, errorCode: writes?.errorCode ?? null };
+    if (readOnly || store?.readOnly || current?.input === 'offline' || engine?.config?.input === 'offline') {
+      recordingRun = null; recordingScopeSeen = true;
       return { ...base, state: 'read-only', detail: 'This computer is showing recorded history. Live recording health must be checked on the active master.' };
+    }
+    if (!recordingRun || recordingRun.engine !== engine || recordingRun.store !== store) {
+      recordingRun = { engine, store, startedAt: recordingScopeSeen ? now : startedAt, usableSourceSeen: false };
+      recordingScopeSeen = true;
+    }
     const tickAt = engine?.latestStatus?.now;
-    const parameters = [...(current?.recording?.parameters ?? []), ...(current?.recording?.exactParameters ?? [])]
-      .filter(row => row.observedThisRun === true);
-    base.lastRecordedAt = parameters.reduce((latest, row) => Number.isFinite(row.lastPollAt) && row.lastPollAt <= now
-      ? Math.max(latest ?? 0, row.lastPollAt) : latest, null);
-    if (writes?.failing) return { ...base, state: 'write-failed', detail: 'A database write failed. New history may be missing; check disk space and storage access.' };
-    if (engine && now - (Number.isFinite(tickAt) ? tickAt : startedAt) > 3 * MINUTE)
-      return { ...base, state: 'stalled', detail: 'The recording and controller update loop has not completed for more than three minutes. History may have gaps.' };
-    if (!parameters.length) return { ...base, state: now - startedAt < 3 * MINUTE ? 'starting' : engine ? 'source-unavailable' : 'unknown',
-      detail: 'Waiting for source recording to be confirmed in this application run.' };
-    const healthy = parameters.some(row => {
+    const parameters = recordingParameters(current?.recording, now);
+    base.lastSourceCheckAt = parameters?.reduce((latest, row) => receiptTime(row.lastPollAt) && row.lastPollAt <= now
+      ? Math.max(latest ?? 0, row.lastPollAt) : latest, null) ?? null;
+    const healthy = parameters?.some(row => {
       const freshness = row.freshness;
       if (!freshness) return false;
       if (['last-reported', 'held', 'held-attention'].includes(freshness.status)) return true;
       if (freshness.status === 'recorded-interval') return Number.isFinite(row.lastPollAt) && now - row.lastPollAt <= 5 * MINUTE;
-      return freshness.status === 'fresh' && (!Number.isFinite(freshness.maxAgeMs)
+      return freshness.status === 'fresh' && (freshness.maxAgeMs === null
         || Number.isFinite(freshness.sourceObservedAt) && now - freshness.sourceObservedAt < freshness.maxAgeMs);
     });
-    if (!healthy) return { ...base, state: 'source-unavailable', detail: 'None of the active recorded sources currently has usable evidence. Check source connections; this does not prove a database fault.' };
+    if (healthy) recordingRun.usableSourceSeen = true;
+    if (writes?.failing) return { ...base, state: 'write-failed', detail: 'A database write failed. New history may be missing; check disk space and storage access.' };
+    if (engine && now - (Number.isFinite(tickAt) ? tickAt : recordingRun.startedAt) > 3 * MINUTE)
+      return { ...base, state: 'stalled', detail: 'The recording and controller update loop has not completed for more than three minutes. History may have gaps.' };
+    if (parameters === null) return { ...base, state: 'unknown', detail: 'Recording source status could not be read. Refresh to check again.' };
+    // Initial unavailable diagnostic rows are still startup, not proof that a
+    // working feed was lost. Once usable evidence arrives, a later loss is
+    // visible immediately. This presentation grace grants no control authority.
+    if (!healthy) {
+      if (!recordingRun.usableSourceSeen && now - recordingRun.startedAt < 3 * MINUTE)
+        return { ...base, state: 'starting', detail: 'Waiting for usable source readings.' };
+      return { ...base, state: engine ? 'source-unavailable' : 'unknown',
+        detail: engine ? 'No usable source readings. Check source connections.' : 'Recording health is not available.' };
+    }
     return { ...base, state: 'ok', detail: writes?.lastFailureAt !== null && writes?.lastFailureAt !== undefined
       && now - writes.lastFailureAt < DAY
       ? `Writes have resumed after ${writes.failures} failed write${writes.failures === 1 ? '' : 's'} in this run. Earlier gaps may remain.`
@@ -187,10 +231,10 @@ export function createRecordingHealth({ getConfig = () => ({}), clock = Date.now
       if (['write-failed', 'stalled', 'source-unavailable'].includes(recording.state)) attention.push({ id: 'recording',
         severity: recording.state === 'write-failed' ? 'critical' : 'warning', title: recording.state === 'write-failed'
           ? 'Database writes are failing' : recording.state === 'stalled' ? 'Recording needs attention' : 'Recording sources are unavailable', detail: recording.detail });
-      else if (!readOnly && recording.lastFailureAt !== null && now - recording.lastFailureAt < DAY)
+      else if (recording.state !== 'read-only' && recording.lastFailureAt !== null && now - recording.lastFailureAt < DAY)
         attention.push({ id: 'recording-resumed', severity: 'warning', title: 'A database write failed earlier', detail: recording.detail });
       if (backup.state === 'failed') attention.push({ id: 'backup', severity: 'warning', title: 'The last backup failed', detail: backup.detail });
-      return { version: 1, checkedAt: now, scope: readOnly || store?.readOnly ? 'snapshot'
+      return { version: 2, checkedAt: now, scope: readOnly || store?.readOnly ? 'snapshot'
         : (current?.input ?? engine?.config?.input) === 'offline' ? 'history' : 'live',
         disk: diskView, recording, backup, attention };
     },

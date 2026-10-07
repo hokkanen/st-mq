@@ -1320,9 +1320,21 @@ not physical identity, provenance, control permission or energy accounting.
 
 ### Recording and backup health
 
-Low or critically low disk space, failed database writes, a stalled update loop
-and unavailable recording sources appear in a compact attention strip at the top
-of the dashboard, with a link to Recording details. Healthy operation stays quiet.
+The dashboard shows a compact **Recording and storage** summary below its context
+line for 15 seconds after the first successful health response. It then disappears
+when health is settled; ordinary polling does not make it reappear. Recording
+details remains available in the history panel. The summary stays visible while
+recording is starting, evidence is unknown, a health refresh fails or the last
+health check is more than three minutes old. It also appears for low disk space,
+failed database writes, a stalled update loop, unavailable recording sources or a
+failed backup. Recovery hides it again once the startup introduction has elapsed.
+Keyboard focus inside the summary defers hiding until focus leaves it.
+
+Recording and local free space have separate labels and links to their evidence.
+Each problem has its own explanation and link, with critical failures first;
+source loss does not label the database as faulty. Failed or stale health checks
+mark retained readings as **Last known** rather than current. A recorded snapshot
+or history viewer is explicitly labelled and is not expected to record locally.
 The disk meter uses space available to the application's account, excluding
 filesystem-reserved blocks. It describes this computer's database filesystem,
 including on a replica; it does not imply that another export filesystem has the
@@ -1338,8 +1350,14 @@ no-op updates do not prove that writes resumed. A recovered failure remains visi
 for 24 hours within the same application run because a recording gap may remain.
 The update loop is considered stalled after three minutes without a completed tick.
 Unchanged readings, held/event-only values and durable open energy intervals are
-not evidence of a stalled recorder. Source unavailability is distinguished from a
-database write failure. Read-only replicas do not expect local recording to advance.
+not evidence of a stalled recorder. Before any usable source evidence has arrived,
+the first three minutes of a recording run show **Starting recording**, including
+when unavailable diagnostic rows have already been recorded. After usable evidence
+has arrived, a subsequent source loss warns immediately. This initial wait never
+hides write failures or a stalled loop. **Monitoring active** means some observed
+recording evidence is usable; individual missing sources remain visible in the
+recording details. **Last source check** dates a source polling attempt, including
+an unavailable result, and does not claim a saved measurement or successful write.
 This summary is an early warning, not an integrity check or proof that every
 measurement was physically correct or that every expected source was recorded.
 

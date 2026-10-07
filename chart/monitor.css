@@ -2060,7 +2060,7 @@ small.charging-reading-line { margin-top: 3px; color: var(--muted); font-size: 1
 
 /* Keep all installation data off the password screen, including open dialogs. */
 body[data-authenticated="false"]:not([data-recording-health="true"]) main > :not(#auth):not(#error),
-body[data-authenticated="false"][data-recording-health="true"] main > :not(#auth):not(#error):not(#recording-health-attention):not(.history-panel),
+body[data-authenticated="false"][data-recording-health="true"] main > :not(#auth):not(#error):not(#recording-status):not(.history-panel),
 body[data-authenticated="false"] > dialog,
 body[data-authenticated="false"] .date-picker,
 body[data-authenticated="false"] .app-select-popup,

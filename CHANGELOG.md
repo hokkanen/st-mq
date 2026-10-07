@@ -6,6 +6,11 @@ Versions follow Semantic Versioning. `-dev.N` denotes a development prerelease.
 
 ## Unreleased
 
+- Recording and storage now share a compact dashboard summary with consistent
+  spacing and separate, actionable problems. Healthy status appears briefly on
+  opening the dashboard, then stays out of the way; startup, unknown health and
+  problems keep it visible. Initial source checks no longer flash an outage before
+  readings arrive, and stale health is explicitly labelled as last known.
 - Recent charts load faster by seeking the selected energy history and reusing
   reconstruction work. Chart parsing and preparation run in workers, unchanged
   refreshes avoid full-data comparisons, and short Electricity/Garage selections

@@ -29,14 +29,6 @@
     </div>
   </header>
   <main>
-    <aside id="recording-health-attention" class="recording-health-attention" aria-label="Recording and storage attention" role="status" hidden>
-      <div class="recording-attention-copy"><strong id="recording-attention-title"></strong><p id="recording-attention-detail"></p></div>
-      <div id="recording-attention-disk" class="recording-attention-disk" hidden>
-        <span id="recording-attention-free"></span>
-        <div id="recording-attention-meter" class="storage-meter" role="meter" aria-label="Disk space available" aria-valuemin="0" aria-valuemax="100"><span></span></div>
-      </div>
-      <a href="#recording-details" data-recording-open="recording-details">View recording details <span aria-hidden="true">↓</span></a>
-    </aside>
     <section id="primary-replication-notice" class="notice replica-notice" aria-labelledby="primary-replication-title" role="status" hidden>
       <h2 id="primary-replication-title">Database mirroring</h2>
       <p id="primary-replication-summary"></p>
@@ -67,6 +59,25 @@
       <p id="auth-help" class="muted">Your password stays in this browser tab.</p>
     </form>
     <p id="error" role="alert" hidden></p>
+    <aside id="recording-status" class="recording-status" aria-label="Recording and storage" hidden>
+      <div class="recording-status-overview">
+        <a id="recording-status-recording" class="recording-status-reading" href="#recording-recording-card" data-recording-open="recording-recording-card">
+          <span id="recording-status-label" class="recording-status-label">Recording</span>
+          <strong id="recording-status-state">Checking recording…</strong>
+        </a>
+        <a id="recording-status-disk" class="recording-status-reading" href="#recording-disk-card" data-recording-open="recording-disk-card">
+          <span class="recording-status-label">Storage · this computer</span>
+          <strong id="recording-status-free">Checking disk space…</strong>
+          <span id="recording-status-capacity" class="recording-status-capacity"></span>
+          <span id="recording-status-meter" class="storage-meter" role="meter" aria-label="Disk space available" aria-valuemin="0" aria-valuemax="100" hidden><span></span></span>
+        </a>
+        <a id="recording-status-details" class="recording-status-details" href="#recording-details" data-recording-open="recording-details">Recording details <span aria-hidden="true">↗</span></a>
+      </div>
+      <div class="recording-status-notices" role="status" aria-live="polite">
+        <ul id="recording-status-issues" class="recording-status-issues" hidden></ul>
+        <p id="recording-status-freshness" class="recording-status-freshness" hidden></p>
+      </div>
+    </aside>
     <section class="controller-panels" aria-label="Home and garage controller" data-snapshot-content>
       <div class="controller-column">
       <article id="home-control" class="panel home-control" aria-labelledby="control-title">

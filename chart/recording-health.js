@@ -21,17 +21,20 @@ export function recordingEvidenceTime(value, now = Date.now()) {
 }
 
 const recordingLabels = { ok: 'Monitoring active', starting: 'Starting recording', stalled: 'Recording needs attention',
-  'write-failed': 'Recording write failed', 'source-unavailable': 'Source unavailable', 'read-only': 'Read-only history', unknown: 'Recording unknown' };
+  'write-failed': 'Recording write failed', 'source-unavailable': 'Sources unavailable', 'read-only': 'Read-only history', unknown: 'Recording unknown' };
 const backupLabels = { available: 'Copy available', 'none-known': 'No known copy', running: 'Creating a copy',
   failed: 'Last backup failed', interrupted: 'Backup interrupted', unknown: 'Backup status unknown' };
 const diskLabels = { ok: 'Space available', low: 'Low disk space', critical: 'Critically low space', unknown: 'Disk space unknown' };
 const tone = state => ['write-failed', 'critical', 'failed', 'stalled'].includes(state) ? 'critical'
   : ['low', 'interrupted', 'source-unavailable'].includes(state) ? 'warning' : 'neutral';
+const issueTarget = id => ['disk-space', 'disk-check'].includes(id) ? 'recording-disk-card'
+  : id === 'backup' ? 'recording-backup-card' : 'recording-recording-card';
 
 export function recordingHealthView(health, recording, now = Date.now()) {
-  const current = health?.version === 1 ? health : {};
+  const current = health?.version === 2 ? health : {};
   const disk = current.disk ?? {}, recorder = current.recording ?? {}, backup = current.backup ?? {};
-  const hasSpace = finite(disk.freeBytes) && finite(disk.totalBytes) && disk.totalBytes > 0 && disk.freeBytes <= disk.totalBytes;
+  const hasSpace = ['ok', 'low', 'critical'].includes(disk.state)
+    && finite(disk.freeBytes) && finite(disk.totalBytes) && disk.totalBytes > 0 && disk.freeBytes <= disk.totalBytes;
   const diskFraction = hasSpace ? disk.freeBytes / disk.totalBytes : null;
   const kind = { 'saved-copy': 'Saved copy', 'reset-archive': 'Reset archive', download: 'Download completed' }[backup.latestKind];
   const backupEvidence = validTime(backup.latestAt) ? `${kind ?? 'Latest known copy'} · ${recordingEvidenceTime(backup.latestAt, now)}` : 'No completed copy is known to this computer.';
@@ -42,17 +45,23 @@ export function recordingHealthView(health, recording, now = Date.now()) {
   const adaptiveMeasured = budget.adaptiveMeasurementHours > 0 && finite(budget.adaptiveProjectedAnnualBytes);
   const totalMeasured = budget.totalDatabaseMeasurementHours > 0 && finite(budget.totalDatabaseProjectedAnnualBytes);
   return {
+    known: health?.version === 2,
+    outdated: !validTime(current.checkedAt) || current.checkedAt > now || now - current.checkedAt > 3 * 60_000,
+    settled: ['ok', 'read-only'].includes(recorder.state) && hasSpace && disk.state === 'ok',
+    recordingScope: current.scope === 'snapshot' ? 'Recorded snapshot' : current.scope === 'history' ? 'History viewer' : 'Recording',
     scope: current.scope === 'snapshot' ? 'Recorded snapshot · disk space belongs to this computer'
       : current.scope === 'history' ? 'History viewer · disk space belongs to this computer' : 'This computer',
     checked: validTime(current.checkedAt) ? `Checked ${recordingEvidenceTime(current.checkedAt, now)}` : 'Health has not been checked yet.',
-    attention: Array.isArray(current.attention) ? current.attention.filter(item => ['warning', 'critical'].includes(item?.severity)) : [],
+    attention: Array.isArray(current.attention) ? current.attention.filter(item => ['warning', 'critical'].includes(item?.severity))
+      .sort((a, b) => Number(b.severity === 'critical') - Number(a.severity === 'critical')) : [],
     disk: { label: diskLabels[disk.state] ?? diskLabels.unknown, tone: tone(disk.state), fraction: diskFraction,
       free: hasSpace ? storageBytes(disk.freeBytes) : 'Unknown',
+      total: hasSpace ? storageBytes(disk.totalBytes) : 'Unknown',
       capacity: hasSpace ? `${decimal(diskFraction * 100)}% free of ${storageBytes(disk.totalBytes)}` : 'Capacity is not available',
       detail: disk.detail || 'Free space on the filesystem that holds this computer’s database.' },
     recording: { label: recordingLabels[recorder.state] ?? recordingLabels.unknown, tone: tone(recorder.state),
       detail: recorder.detail || 'Waiting for recording health information.',
-      evidence: validTime(recorder.lastRecordedAt) ? `Last recording update · ${recordingEvidenceTime(recorder.lastRecordedAt, now)}` : 'Last recording update is not known.' },
+      evidence: validTime(recorder.lastSourceCheckAt) ? `Last source check · ${recordingEvidenceTime(recorder.lastSourceCheckAt, now)}` : 'Last source check is not known.' },
     backup: { label: backupLabels[backup.state] ?? backupLabels.unknown, tone: tone(backup.state),
       detail: backup.detail || 'Only copies known to this computer can be listed here.', evidence: backupEvidence,
       verification: backupVerification,
@@ -71,9 +80,11 @@ export function recordingHealthView(health, recording, now = Date.now()) {
   };
 }
 
-export function createRecordingHealth({ document, request, now = () => Date.now() }) {
+export function createRecordingHealth({ document, request, now = () => Date.now(), setTimer = setTimeout, clearTimer = clearTimeout }) {
   const $ = id => document.getElementById(id);
   let health, recording, inventory, inventoryPhase = 'idle', revision = 0, pending = false, unavailable = false;
+  let introStarted = false, introVisible = false, introTimer;
+  const issueNodes = new Map();
   const set = (id, value) => { const element = $(id); if (element && element.textContent !== String(value)) element.textContent = value; };
   const open = id => {
     const target = $(id);
@@ -81,22 +92,67 @@ export function createRecordingHealth({ document, request, now = () => Date.now(
     target?.querySelector(':scope > summary')?.focus({ preventScroll: true });
     target?.scrollIntoView({ block: 'start', behavior: 'auto' });
   };
-  for (const link of document.querySelectorAll('[data-recording-open]')) {
+  function bindLink(link) {
     link.addEventListener('click', event => {
       if (event.button !== 0 || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return;
       event.preventDefault(); open(link.dataset.recordingOpen);
     });
   }
+  for (const link of document.querySelectorAll('[data-recording-open]')) bindLink(link);
+  function renderIssues(items) {
+    const list = $('recording-status-issues');
+    const ids = new Set(items.map(item => item.id));
+    const retainFocus = (id, node) => {
+      if (node.contains(document.activeElement)) {
+        const target = issueTarget(id);
+        $(target === 'recording-disk-card' ? 'recording-status-disk'
+          : target === 'recording-backup-card' ? 'recording-status-details' : 'recording-status-recording').focus({ preventScroll: true });
+      }
+    };
+    for (const [id, node] of issueNodes) if (!ids.has(id)) {
+      retainFocus(id, node); node.remove(); issueNodes.delete(id);
+    }
+    items.forEach((item, index) => {
+      let node = issueNodes.get(item.id);
+      if (!node) {
+        node = document.createElement('li'); node.className = 'recording-status-issue';
+        const link = document.createElement('a');
+        link.dataset.recordingOpen = issueTarget(item.id); link.href = `#${link.dataset.recordingOpen}`;
+        link.append(document.createElement('strong'), document.createElement('span'));
+        bindLink(link); node.append(link); issueNodes.set(item.id, node);
+      }
+      node.dataset.tone = item.severity;
+      const [title, detail] = node.firstElementChild.children;
+      // The recording state is already the summary heading. Keep its guidance
+      // below without repeating the same fault a second time.
+      const heading = item.id === 'recording' && item.detail ? '' : item.title;
+      if (title.textContent !== heading) title.textContent = heading;
+      const copy = item.detail ? `${heading ? ' · ' : ''}${item.detail}` : '';
+      if (detail.textContent !== copy) detail.textContent = copy;
+      if (list.children[index] !== node) {
+        retainFocus(item.id, node); list.insertBefore(node, list.children[index] ?? null);
+      }
+    });
+    list.hidden = items.length === 0;
+  }
   function draw() {
     const view = recordingHealthView(health, recording, now());
-    const banner = $('recording-health-attention');
-    banner.hidden = view.attention.length === 0;
-    banner.dataset.tone = view.attention.some(item => item.severity === 'critical') ? 'critical' : 'warning';
-    set('recording-attention-title', view.attention.length === 1 ? view.attention[0].title : `${view.attention.length} recording & storage issues`);
-    set('recording-attention-detail', view.attention.map(item => item.detail).filter(Boolean).join(' '));
-    $('recording-attention-disk').hidden = view.disk.fraction === null;
-    set('recording-attention-free', `${view.disk.free} free · ${view.disk.capacity}`);
-    for (const id of ['recording-disk-meter', 'recording-attention-meter']) {
+    const strip = $('recording-status'), dated = view.known && (view.outdated || unavailable);
+    const needsAttention = view.attention.length > 0 || dated;
+    strip.hidden = !view.known || !(introVisible || needsAttention || !view.settled || strip.contains(document.activeElement));
+    strip.dataset.tone = view.attention.some(item => item.severity === 'critical') ? 'critical' : needsAttention ? 'warning' : 'neutral';
+    set('recording-status-label', view.recordingScope);
+    set('recording-status-state', `${dated ? 'Last known: ' : ''}${view.recording.label}`);
+    $('recording-status-recording').dataset.tone = view.recording.tone;
+    set('recording-status-free', `${dated ? 'Last known: ' : ''}${view.disk.fraction === null ? 'Space unknown' : `${view.disk.free} free`}`);
+    set('recording-status-capacity', view.disk.fraction === null ? 'Open details to check storage' : `of ${view.disk.total}${view.disk.tone === 'neutral' ? '' : ` · ${view.disk.label}`}`);
+    $('recording-status-disk').dataset.tone = view.disk.tone;
+    renderIssues(view.attention);
+    const freshness = unavailable ? `Refresh failed. ${view.checked} The last known status may be out of date.`
+      : view.outdated ? `Status is out of date. ${view.checked}` : '';
+    set('recording-status-freshness', freshness);
+    $('recording-status-freshness').hidden = !dated;
+    for (const id of ['recording-disk-meter', 'recording-status-meter']) {
       const meter = $(id); meter.hidden = view.disk.fraction === null;
       meter.setAttribute('aria-valuenow', String(Math.round((view.disk.fraction ?? 0) * 100)));
       meter.setAttribute('aria-valuetext', `${view.disk.free} free · ${view.disk.capacity}`);
@@ -149,7 +205,12 @@ export function createRecordingHealth({ document, request, now = () => Date.now(
   function acceptHealth(result) {
     if (health?.scope !== result?.scope) { inventory = undefined; inventoryPhase = 'idle'; }
     health = result; unavailable = false;
-    document.body.dataset.recordingHealth = health?.version === 1 ? 'true' : 'false';
+    document.body.dataset.recordingHealth = health?.version === 2 ? 'true' : 'false';
+    if (health?.version === 2 && !introStarted) {
+      introStarted = introVisible = true;
+      introTimer = setTimer(() => { introVisible = false; introTimer = undefined; draw(); }, 15_000);
+      introTimer?.unref?.();
+    }
   }
   async function refresh() {
     if (pending) return;
@@ -157,7 +218,7 @@ export function createRecordingHealth({ document, request, now = () => Date.now(
     try {
       const result = await request('/api/recording-health');
       if (version !== revision) return;
-      if (result?.version !== 1) throw new Error('Recording health is unavailable.');
+      if (result?.version !== 2) throw new Error('Recording health is unavailable.');
       acceptHealth(result);
     } catch {
       if (version !== revision) return;
@@ -167,6 +228,9 @@ export function createRecordingHealth({ document, request, now = () => Date.now(
     }
   }
   $('recording-health-refresh').addEventListener('click', () => { void refresh(); });
+  // Let keyboard users finish with the summary before it disappears. No polling
+  // update or warning recovery should remove a focused navigation target.
+  $('recording-status').addEventListener('focusout', () => { queueMicrotask(draw); });
   draw();
   return {
     refresh,
@@ -177,11 +241,17 @@ export function createRecordingHealth({ document, request, now = () => Date.now(
       // separate health check. They cannot renew or erase its dated evidence,
       // dismiss a refresh failure, or supersede an in-flight health request.
       if (Object.hasOwn(status ?? {}, 'recordingHealth')) {
-        ++revision; pending = false; acceptHealth(status.recordingHealth);
+        ++revision; pending = false;
+        if (status.recordingHealth?.version === 2) acceptHealth(status.recordingHealth);
+        else unavailable = true;
       }
       if (Object.hasOwn(status ?? {}, 'recording')) recording = status.recording;
       draw();
     },
-    clear() { ++revision; pending = false; unavailable = false; health = recording = inventory = undefined; inventoryPhase = 'idle'; document.body.dataset.recordingHealth = 'false'; draw(); },
+    clear() {
+      ++revision; pending = false; unavailable = false; health = recording = inventory = undefined; inventoryPhase = 'idle';
+      clearTimer(introTimer); introTimer = undefined; introStarted = introVisible = false;
+      document.body.dataset.recordingHealth = 'false'; draw();
+    },
   };
 }

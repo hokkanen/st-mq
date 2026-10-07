@@ -1,17 +1,44 @@
-.recording-health-attention {
-  display: flex; align-items: center; gap: 22px; padding: 16px 20px;
-  border: 1px solid var(--stale); border-left-width: 4px; border-radius: 12px;
-  background: var(--notice); font-size: 13px;
+.recording-status {
+  margin: 0 0 24px; border: 1px solid var(--border); border-radius: 10px;
+  background: var(--surface); font-size: 12px; overflow: hidden;
 }
-.recording-health-attention[hidden], .recording-health [hidden], .recording-attention-disk[hidden],
+.recording-status[hidden], .recording-status [hidden], .recording-health [hidden],
 .recording-health-badge[hidden] { display: none; }
-.recording-health-attention[data-tone="critical"] { border-color: var(--error-text); background: var(--error-bg); }
-.recording-attention-copy { flex: 1 1 300px; min-width: 0; }
-.recording-attention-copy strong { display: block; font-size: 15px; }
-.recording-attention-copy p { margin: 5px 0 0; line-height: 1.5; }
-.recording-attention-disk { flex: 0 1 230px; min-width: 160px; }
-.recording-attention-disk > span { display: block; margin-bottom: 8px; font-variant-numeric: tabular-nums; }
-.recording-health-attention a { flex-shrink: 0; font-weight: 650; color: var(--text); text-underline-offset: 3px; }
+.recording-status[data-tone="warning"] { border-color: var(--stale); }
+.recording-status[data-tone="critical"] { border-color: var(--error-text); }
+.recording-status-overview { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) auto; align-items: center; gap: 16px 24px; padding: 14px 20px; }
+.recording-status-reading { display: grid; grid-template-columns: minmax(0, 1fr); gap: 4px; min-width: 0; color: var(--text); text-decoration: none; }
+.recording-status-label { color: var(--muted); font-size: 11px; line-height: 1.5; }
+.recording-status-reading strong { font-size: 14px; font-weight: 550; line-height: 1.5; overflow-wrap: anywhere; }
+.recording-status-reading[data-tone="warning"] strong { color: var(--stale); }
+.recording-status-reading[data-tone="critical"] strong { color: var(--error-text); }
+.recording-status-capacity { color: var(--muted); font-size: 11px; line-height: 1.5; }
+.recording-status-reading .storage-meter { width: 100%; max-width: 240px; height: 4px; margin-top: 3px; }
+.recording-status-details { color: var(--muted); font-size: 11px; line-height: 1.5; padding: 10px 0; text-underline-offset: 3px; }
+.recording-status-reading:hover strong, .recording-status-details:hover { color: var(--accent); text-decoration: underline; text-underline-offset: 3px; }
+.recording-status a:focus-visible { outline: 2px solid var(--focus); outline-offset: 4px; border-radius: 3px; }
+.recording-status-notices:has(> :not([hidden])) { padding: 12px 20px; border-top: 1px solid var(--border); background: var(--surface-soft); }
+.recording-status-issues { display: grid; gap: 8px; list-style: none; padding: 0; margin: 0; }
+.recording-status-issue { display: flex; align-items: baseline; gap: 8px; line-height: 1.6; }
+.recording-status-issue::before { content: '!'; flex: 0 0 16px; text-align: center; font-weight: 650; color: var(--stale); }
+.recording-status-issue[data-tone="critical"]::before { color: var(--error-text); }
+.recording-status-issue a { color: var(--text); text-decoration: none; overflow-wrap: anywhere; }
+.recording-status-issue a:hover { text-decoration: underline; text-underline-offset: 3px; }
+.recording-status-issue strong { font-weight: 550; }
+.recording-status-issue span { color: var(--muted); }
+.recording-status-freshness { margin: 0; color: var(--muted); font-size: 11px; line-height: 1.6; }
+.recording-status-issues:not([hidden]) + .recording-status-freshness:not([hidden]) { margin-top: 10px; }
+@media (max-width: 800px) {
+  .recording-status { margin-bottom: 16px; }
+  .recording-status-overview { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 12px 20px; padding: 14px 16px; align-items: start; }
+  .recording-status-details { grid-column: 1 / -1; justify-self: start; padding: 2px 0; }
+  .recording-status-notices:has(> :not([hidden])) { padding: 12px 16px; }
+}
+@media (max-width: 480px) {
+  .recording-status-overview { gap: 12px 16px; padding: 12px 14px; }
+  .recording-status-reading strong { font-size: 13px; }
+  .recording-status-notices:has(> :not([hidden])) { padding: 10px 14px; }
+}
 /* Recording details uses one hierarchy: status, retained data, history tools. */
 .recording-health { margin: 0 0 24px; }
 .recording-health-heading { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin: 4px 0 12px; }
@@ -77,12 +104,6 @@
 .recording-storage-facts dt { color: var(--muted); }
 .recording-storage-facts dd { margin: 0; font-variant-numeric: tabular-nums; }
 .recording-storage-note { margin: 12px 0 0; font-size: 11px; line-height: 1.6; color: var(--muted); }
-.recording-health-attention { margin-bottom: 20px; }
-@media (max-width: 1000px) {
-  .recording-health-attention { flex-wrap: wrap; gap: 14px 20px; }
-  .recording-attention-copy { flex-basis: 100%; }
-  .recording-attention-disk { flex: 1 1 230px; }
-}
 @media (max-width: 640px) {
   .recording-health-cards { grid-template-columns: 1fr; gap: 8px; }
   .recording-health-card > summary { min-height: 0; padding: 12px 32px 12px 12px; }
@@ -101,13 +122,11 @@
   .recording-storage-table th:first-child { grid-column: 1 / -1; width: auto; }
   .recording-storage-table td[data-label]::before { display: block; content: attr(data-label); font-size: 10px; color: var(--muted); margin-bottom: 8px; }
   .recording-storage-value { font-size: 18px; }
-  .recording-health-attention { padding: 14px; }
-  .recording-health-attention a { font-size: 12px; }
   .recording-health-badge { font-size: 10px; }
 }
 /* A separately authenticated health response remains useful when database status
    cannot load. Expose only health, never an uninitialized control dashboard. */
-body[data-authenticated="false"][data-recording-health="true"] main > #recording-health-attention:not([hidden]) { display: flex; }
+body[data-authenticated="false"][data-recording-health="true"] #recording-status { margin-top: 24px; }
 body[data-authenticated="false"][data-recording-health="true"] .history-panel > :not(#recording-details),
 body[data-authenticated="false"][data-recording-health="true"] #recording-details > :not(summary):not(#recording-health),
 body[data-authenticated="false"][data-recording-health="true"] #recording-health a { display: none !important; }
