@@ -496,6 +496,14 @@ broker acknowledgement alone is not device confirmation. Restarts retain restore
 obligations. An independently changed panel value is preserved instead of being
 silently overwritten with an old baseline.
 
+The native-setting expiry timer starts restoration once. Missing setting
+readback or an unconfirmed restore leaves the durable obligation pending;
+the expired deadline does not repeatedly retry or rewrite that pending state.
+Fresh telemetry, reconnect and ordinary reconciliation can resume restoration.
+Available registers restore independently while unavailable registers retain
+their obligations. Disconnection or waiting for evidence never extends the
+original expiry or establishes successful restoration.
+
 Unreadable or malformed saved executor or native-setting state stops
 initialization before any state replacement or command. Saved manual choices
 require valid equipment ownership, explicit confirmation and valid scope

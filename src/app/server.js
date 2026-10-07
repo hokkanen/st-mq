@@ -7,8 +7,6 @@ import { getChartData, chartRequestRange } from './chart-data.js';
 import { prepareChartResponse, encodeChartResponse } from './chart-wire.js';
 import { simulatedOutlook } from './simulator.js';
 import { createChartService } from './chart-service.js';
-import { chargingSessionCheckSummaries } from './charging-session-checks.js';
-import { propertyEnergyCheckSummary } from './property-energy-checks.js';
 import { createDatabaseExport } from './database-export.js';
 import { createRecordingHealth } from './recording-health.js';
 import { familyRouteAllowed, familyActionAllowed, fireplaceAccess, FAMILY_FIREWOOD_REMOVAL_MS } from './web-permissions.js';
@@ -458,8 +456,20 @@ export function createAppServer({ engine, getEngine = () => engine, store, chart
           return;
         }
         if (req.method === 'GET' && url.pathname === '/api/energy-audits') {
-          const checks = chargingSessionCheckSummaries(readerStore);
-          return json(200, [propertyEnergyCheckSummary(readerStore,{now:engine.clock()}), ...checks]);
+          const cancellation = new AbortController();
+          const cancel = () => cancellation.abort();
+          res.once('close', cancel);
+          let service, ownsService = false;
+          try {
+            service = readerCharts?.energyChecks ? readerCharts : overviewService?.energyChecks ? overviewService : null;
+            if (!service) { service = createChartService({ store: readerStore }); ownsService = true; }
+            const result = await service.energyChecks({ now: engine.clock() }, { signal: cancellation.signal });
+            if (!res.destroyed) return json(200, result);
+          } finally {
+            res.removeListener('close', cancel);
+            if (ownsService) await service.close();
+          }
+          return;
         }
         if (req.method === 'GET' && url.pathname === '/api/chart') {
           const now = engine.clock();

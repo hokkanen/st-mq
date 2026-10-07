@@ -2,6 +2,7 @@ import { parentPort, workerData } from 'node:worker_threads';
 import { DatabaseSync } from 'node:sqlite';
 import { getChartData, chartRequestRange } from './chart-data.js';
 import { getDatabaseOverview, OVERVIEW_REFRESH_MS } from './database-overview.js';
+import { energyCheckSummaries } from './energy-checks.js';
 import { getHeatingBenefit } from './chart-heating-benefit.js';
 import { pendingEnergyObservations } from '../storage/pending-energy.js';
 import { H66_MAX_AGE_MS } from '../domain/reading-freshness.js';
@@ -64,6 +65,15 @@ const readOverviewRevision = db.prepare(`SELECT generation,
 parentPort.on('message', ({ id, args, operation, wire }) => {
   const onProgress = progress => parentPort.postMessage({ id, progress });
   try {
+    if (operation === 'energy-checks') {
+      db.exec('BEGIN');
+      onProgress({ stage: 'reading-energy-checks' });
+      let result;
+      try { result = energyCheckSummaries(store, args); db.exec('COMMIT'); }
+      catch (error) { db.exec('ROLLBACK'); throw error; }
+      parentPort.postMessage({ id, result });
+      return;
+    }
     if (operation === 'overview') {
       const at = Date.now();
       const currentOverviewRevision = JSON.stringify(readOverviewRevision.get());

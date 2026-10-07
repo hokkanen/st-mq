@@ -41,8 +41,9 @@ test('malformed native restoration fields reject before initialization, persiste
 
 function memoryStore(seed = {}) {
   const states = new Map(Object.entries(seed));
-  return { events: [], getState: key => structuredClone(states.get(key) ?? null),
-    setState: (key, value) => states.set(key, structuredClone(value)),
+  let writes = 0;
+  return { events: [], get writes() { return writes; }, getState: key => structuredClone(states.get(key) ?? null),
+    setState: (key, value) => { writes++; states.set(key, structuredClone(value)); },
     event(type, detail, now) { this.events.push({ type, detail, now }); } };
 }
 function rig({ store = memoryStore(), values = baselines, settings = {}, behavior = null, startAt = initialTime } = {}) {
@@ -322,6 +323,121 @@ test('expiry restores original settings with live readback', async t => {
   assert.equal(result.status, 'confirmed');
   assert.equal(r.native['0203'], 20);
   assert.equal(r.controller.status().phase, 'normal');
+});
+
+test('expired restoration waits without repeated persistence until its fresh readback arrives', async t => {
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  const r = rig(); t.after(() => r.controller.close());
+  await r.controller.writeSettings({ '0212': 40 }, { expiresAt: r.now + 1000 });
+  r.setNow(initialTime + 300_001); r.elapse(300_001);
+  r.feed('0001', 5); // Transport is live, but none of the native settings are fresh.
+  t.mock.timers.tick(1000); await nextTurn();
+  const waiting = r.controller.status(), writes = r.store.writes, commands = r.sent.length;
+  assert.equal(waiting.phase, 'restoration-pending');
+  assert.equal(waiting.restorationPending, true);
+  assert.equal(waiting.obligations['0212'].baseline, 44);
+  for (let step = 0; step < 10; step++) {
+    t.mock.timers.tick(25); await nextTurn();
+  }
+  assert.equal(r.store.writes, writes, 'An expired deadline must not repeatedly persist the same pending result.');
+  assert.equal(r.sent.length, commands);
+  assert.equal(r.store.getState(`h66:control:${deviceId}`).obligations['0212'].expected, 40);
+
+  r.feed('0212', 40, { retained: true }); await nextTurn();
+  assert.equal(r.sent.length, commands, 'A retained register value cannot authorize restoration.');
+  assert.equal(r.controller.status().restorationPending, true);
+  r.feed('0212', 40); await nextTurn();
+  assert.equal(r.native['0212'], 44, 'Fresh relevant telemetry restores immediately, without waiting for a retry timer.');
+  assert.deepEqual(r.controller.status().obligations, {});
+  assert.equal(r.controller.status().restorationPending, false);
+});
+
+test('expiry restores independently available settings and retains missing settings without a retry timer', async t => {
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  const r = rig(); t.after(() => r.controller.close());
+  await r.controller.setPhase({ phase: 'reduction', expiresAt: r.now + 1000 });
+  r.controller.setConnected(false); r.controller.setConnected(true);
+  r.setNow(initialTime + 1000); r.elapse(1000);
+  r.feed('0212', 40);
+  t.mock.timers.tick(1000); await nextTurn();
+  assert.equal(r.native['0212'], 44);
+  assert.deepEqual(Object.keys(r.controller.status().obligations).sort(), ['0208', '2201']);
+  const writes = r.store.writes, commands = r.sent.length;
+  for (let step = 0; step < 10; step++) {
+    t.mock.timers.tick(25); await nextTurn();
+  }
+  assert.equal(r.store.writes, writes);
+  assert.equal(r.sent.length, commands);
+  r.feed('0208', 50); await nextTurn();
+  assert.equal(r.native['0208'], 60);
+  assert.deepEqual(Object.keys(r.controller.status().obligations), ['2201']);
+  r.feed('2201', 2); await nextTurn();
+  assert.deepEqual(r.native, baselines);
+  assert.deepEqual(r.controller.status().obligations, {});
+});
+
+test('disconnected expiry survives restart and waits for fresh native evidence before restoration', async t => {
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  const first = rig(); t.after(() => first.controller.close());
+  await first.controller.writeSettings({ '0212': 40 }, { expiresAt: first.now + 1000 });
+  first.controller.setConnected(false);
+  first.setNow(initialTime + 1000); first.elapse(1000);
+  const writes = first.store.writes, commands = first.sent.length;
+  t.mock.timers.tick(1000); await nextTurn();
+  assert.equal(first.controller.status().restorationPending, true);
+  assert.equal(first.store.writes, writes);
+  assert.equal(first.sent.length, commands);
+  await first.controller.close();
+
+  const restarted = rig({ store: first.store, values: { '0001': 5 }, startAt: first.now });
+  t.after(() => restarted.controller.close());
+  await nextTurn();
+  const restartWrites = restarted.store.writes;
+  for (let step = 0; step < 10; step++) {
+    t.mock.timers.tick(25); await nextTurn();
+  }
+  assert.equal(restarted.store.writes, restartWrites);
+  assert.deepEqual(restarted.sent, []);
+  assert.equal(restarted.controller.status().restorationPending, true);
+  restarted.feed('0212', 40); await nextTurn();
+  assert.equal(restarted.native['0212'], 44);
+  assert.deepEqual(restarted.controller.status().obligations, {});
+});
+
+test('expiry during a pending native write restores after that operation finishes', async t => {
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  const r = rig({ settings: { readbackTimeoutMs: 2000 },
+    behavior: ({ sent }) => sent.length === 1 ? 'silent' : undefined });
+  t.after(() => r.controller.close());
+  const transition = r.controller.writeSettings({ '0212': 40 }, { expiresAt: r.now + 1000 });
+  await nextTurn();
+  r.setNow(initialTime + 1000); r.elapse(1000);
+  t.mock.timers.tick(1000); await nextTurn();
+  assert.equal(r.controller.status().restorationPending, true);
+  assert.equal(r.sent.length, 1);
+  r.feed('0212', 40);
+  await assert.rejects(transition, { code: 'H66_EXPIRED' });
+  await nextTurn();
+  assert.deepEqual(r.sent.map(row => row.payload), ['40', '44']);
+  assert.deepEqual(r.controller.status().obligations, {});
+  assert.equal(r.controller.status().restorationPending, false);
+});
+
+test('fresh missing-setting telemetry received during restoration is reconciled after the active write', async t => {
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  const r = rig({ behavior: ({ index, payload, feed }) => {
+    if (index === '0212' && payload === '44') feed('0208', 50);
+  } });
+  t.after(() => r.controller.close());
+  await r.controller.writeSettings({ '0212': 40, '0208': 50 }, { expiresAt: r.now + 1000 });
+  r.controller.setConnected(false); r.controller.setConnected(true);
+  r.setNow(initialTime + 1000); r.elapse(1000);
+  r.feed('0212', 40);
+  t.mock.timers.tick(1000); await nextTurn();
+  assert.equal(r.native['0212'], 44);
+  assert.equal(r.native['0208'], 60, 'Fresh evidence during the first write must not wait for another report.');
+  assert.deepEqual(r.controller.status().obligations, {});
+  assert.equal(r.controller.status().restorationPending, false);
 });
 
 test('restart restores outstanding overrides instead of resuming preheat', async t => {

@@ -6,6 +6,18 @@ Versions follow Semantic Versioning. `-dev.N` denotes a development prerelease.
 
 ## Unreleased
 
+- H66 restoration waits for usable readback without repeatedly retrying an
+  expired timer. Missing registers retain their restoration duties, and newly
+  received evidence resumes recovery even during another register's restore.
+- Energy checks run in the history worker, keeping large meter histories off
+  the control thread. Successful latest comparisons avoid loading all counters;
+  older comparisons stream through bounded memory without discarding history.
+- Joint charging search can move both chargers into shared cheaper periods,
+  correcting a missed feasible schedule while preserving native restrictions,
+  practical pauses and shared electrical limits.
+- Busy database locks no longer hold the main thread for a five-second wait.
+  A short failed write remains visible and cannot authorize a device command;
+  committed state and restoration duties remain protected.
 - Recording and storage now share a compact dashboard summary with consistent
   spacing and separate, actionable problems. Healthy status appears briefly on
   opening the dashboard, then stays out of the way; startup, unknown health and

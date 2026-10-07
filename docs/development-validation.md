@@ -193,6 +193,13 @@ worker leaves the main thread responsive, coalesces queued requests and expires
 cached results at relevant boundaries. These offline checks do not establish
 native Raspberry Pi 5 timing or physical charger behavior.
 
+`test/energy-checks-worker.test.js` exercises 100,000 synthetic property counters
+through the actual HTTP route and history worker while independent timers,
+committed writes and unrelated HTTP requests continue. It also covers bounded
+queuing, cancellation, selected-history changes, clock rollback, replica read
+lifetime and access revocation. Property-summary tests preserve counter resets,
+late reports, gaps and the last complete comparison without an all-history array.
+
 For Home heating, `test/home-planner-service.test.js` checks the real search
 worker against synchronous planner output while the main thread remains able
 to run timers, plus bounded queuing, timeout and shutdown. The adoption tests in
@@ -670,12 +677,16 @@ from software fixtures.
 
 Current limits to retain when reviewing results:
 
-- SQLite main-thread writes have a 5,000 ms busy timeout. Contention can block
-  control timers for that duration; runtime maximum/p99 event-loop delay exposes
-  the stall with a 1,000 ms warning threshold. Atomic failed-write recovery does
-  not imply a hard real-time guarantee.
-- Joint charging planning uses a bounded synchronous search. Earlier synthetic
-  24-hour two-charger measurements took approximately 0.47–1.24 seconds on the
+- SQLite main-thread connections use a 100 ms busy-lock timeout before
+  reporting the failed operation; Store connections in background workers retain
+  a 5,000 ms wait. Failed intent persistence cannot authorize a device command,
+  and failed transactions retain their previous committed state. The contention
+  and controller-recovery tests use these production defaults. Synchronous disk
+  I/O and repeated operations can still delay timers; runtime maximum/p99
+  event-loop delay exposes stalls with a 1,000 ms warning threshold. A shorter
+  lock wait does not imply a hard real-time guarantee or retry lost observations.
+- Joint charging planning runs its bounded search in a background worker. Earlier
+  synthetic 24-hour two-charger measurements took approximately 0.47–1.24 seconds on the
   development machine; this is historical performance evidence, not a current
   hardware deadline or proof of exact optimization. Rebenchmark material changes.
 - Vite reports a large-main-bundle advisory. A successful build does not resolve

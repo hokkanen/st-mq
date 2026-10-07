@@ -470,6 +470,14 @@ its own dates when the latest reading cannot be compared. Reading counts and
 comparisons belong to the latest reading's source and physical meter; another
 meter's history cannot supply a baseline or a successful result.
 
+Property and charger summaries run together in the existing read-only history
+worker, against one committed selected-history snapshot. They share the bounded
+foreground queue, cancellation and idle shutdown used by charts. A successful
+latest property period reads its baseline and count without materializing older
+counter rows. Finding an earlier success streams counter pairs and energy once
+with bounded memory; there is no history-page cutoff. Long histories may still
+take time to inspect, while control, recording and other HTTP requests continue.
+
 Each check names its measurement method. **Property** compares the sum of its
 stored, power-integrated phase energies with the Equalizer import-counter
 increase over the same window. **Charger 1** compares its stored, power-integrated

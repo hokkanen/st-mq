@@ -11,7 +11,7 @@ export const DEFAULT_CHARGING_CONFIGURATION = Object.freeze({
   chargers: { charger1: {}, charger2: {
     enabled: false, profile: 'top-ac-portable', deviceId: '', topicPrefix: '',
     associationVersion: 1, serviceId: 0, maximumCurrentA: 16,
-    limiterEnabled: true, fallbackCurrentA: 12, mainFuseA: [25, 25, 25], marginA: [1, 1, 1],
+    limiterEnabled: true, fallbackCurrentA: 12, mainFuseA: [25, 25, 25], marginA: [0, 0, 0],
     phaseMap: [0, 1, 2], maxAgeMs: 15000,
     dwellMs: 30000, rampA: 2,
   } },

@@ -2,9 +2,10 @@ import { DatabaseSync } from 'node:sqlite';
 import { mkdirSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 import { createHash } from 'node:crypto';
+import { isMainThread } from 'node:worker_threads';
 
 import { CURRENT_SCHEMA, SCHEMA_VERSION } from './schema.js';
-import { recordedEnergyGroups } from './energy-history.js';
+import { previousEnergyAudit, checkEnergyAudit } from './energy-audit.js';
 import { assertCurrentChargingSessionCheck } from '../app/charging-session-checks.js';
 import { createDatabaseBackup } from './backup.js';
 import { cycleAssessmentExcluded } from './cycle-assessment.js';
@@ -132,7 +133,11 @@ export class Store {
     this.db = new DatabaseSync(this.path, { readOnly });
     try {
       this.changeCount = this.db.prepare('SELECT total_changes() AS n');
-      this.db.exec('PRAGMA foreign_keys = ON; PRAGMA busy_timeout = 5000;');
+      // A lock wait here blocks timers, telemetry and authority callbacks too.
+      // Brief contention can settle, but longer contention must fail through
+      // the existing atomic write/error path instead of freezing live control.
+      // Background workers can wait longer without blocking the controller.
+      this.db.exec(`PRAGMA foreign_keys = ON; PRAGMA busy_timeout = ${isMainThread ? 100 : 5000};`);
       const version = this.db.prepare('PRAGMA user_version').get().user_version;
       const empty = version === 0 && this.db.prepare("SELECT COUNT(*) AS n FROM sqlite_schema WHERE name NOT GLOB 'sqlite_*'").get().n === 0;
       if (!readOnly && empty) this.transaction(() => {
@@ -297,44 +302,11 @@ export class Store {
   }
 
   previousEnergyAudit(row, now = Date.now()) {
-    // Receipt order makes a delayed older meter timestamp observable. Use the
-    // highest prior meter timestamp so it cannot become a new counter baseline.
-    return this.db.prepare(`SELECT * FROM active_energy_audits AS energy_audits WHERE source=? AND device=? AND signal=?
-      AND (received_at<? OR received_at=? AND id<?) AND source_time<=? AND received_at<=?
-      ORDER BY source_time DESC,received_at,id LIMIT 1`)
-      .get(row.source,row.device,row.signal,row.received_at,row.received_at,row.id,now,now) ?? null;
+    return previousEnergyAudit(this, row, now);
   }
 
   checkEnergyAudit(row, previous, now = Date.now(), groups) {
-    instant(now, 'audit receipt cutoff');
-    if (row.signal !== 'property_import_energy_counter') throw new TypeError('Invalid property counter signal');
-    if (!previous) return { status:'waiting-for-second-reading', coverage:null, comparison:null };
-    if (row.source_time <= previous.source_time) return { status:'out-of-order-counter', coverage:null, comparison:null };
-    if (row.value < previous.value) return { status:'counter-reset', coverage:null, comparison:null };
-    const start = previous.source_time, end = row.source_time;
-    const coverage = { start, end, coveredMs:0, durationMs:end-start, conflictingMs:0 };
-    let estimatedKwh = 0, edgeEstimated = false, includesOpenInterval = false;
-    for (const group of groups ?? recordedEnergyGroups(this,{from:start,to:end,now,input:'providers',prefix:'property',source:row.source,device:row.device})) {
-      if (group.source !== row.source || group.device !== row.device) continue;
-      const from = Math.max(group.start,start), until = Math.min(group.end,end);
-      if (until <= from) continue;
-      // The shared history reader merges overlapping cohorts into unusable
-      // conflict spans. Count usable duration across the whole period, including
-      // valid intervals after a gap, without filling any of the missing energy.
-      if (group.conflict) { coverage.conflictingMs += until-from; continue; }
-      if (group.values.length !== 3 || !group.values.every(Number.isFinite)) continue;
-      coverage.coveredMs += until-from;
-      edgeEstimated ||= from !== group.start || until !== group.end;
-      includesOpenInterval ||= group.pending;
-      estimatedKwh += group.values.reduce((sum,value)=>sum+value,0)*(until-from)/(group.end-group.start);
-    }
-    if (coverage.conflictingMs) return { status:'conflicting-coverage', coverage, comparison:null };
-    if (coverage.coveredMs !== coverage.durationMs) return { status:'incomplete-coverage', coverage, comparison:null };
-    const meteredKwh = row.value-previous.value;
-    return { status:'compared', coverage, comparison:{start,end,estimatedKwh,meteredKwh,differenceKwh:estimatedKwh-meteredKwh,
-      differencePercent:meteredKwh>0 ? (estimatedKwh-meteredKwh)/meteredKwh*100 : null,
-      edgeEstimated,includesOpenInterval,basis:edgeEstimated ? 'diagnostic-only-complete-coverage-with-average-power-at-edges'
-        : 'diagnostic-only-matching-complete-intervals'} };
+    return checkEnergyAudit(this, row, previous, now, groups);
   }
 
   databaseBytes() {

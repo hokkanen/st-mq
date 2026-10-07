@@ -52,6 +52,7 @@ export function createH66Controller({ deviceId, publish, requestSnapshot = async
   let restoreRequired = !pausedReduction && (Object.keys(state.obligations).length > 0 || Boolean(state.manualMode));
   for (const obligation of Object.values(state.obligations)) obligation.requestedRevision = -1;
   let connected = false, closed = false, active = false, expiryTimer = null, reconcileQueued = false;
+  let reconcileAfterActive = false;
   let revision = 0, connectionGeneration = 0, elapsedExpiry = null;
   let lastPublicationAt = null;
   let compressorState = null;
@@ -86,6 +87,11 @@ export function createH66Controller({ deviceId, publish, requestSnapshot = async
   function noteResult(result) { state.lastResult = { ...result, at: clock() }; persist(); }
   function armExpiry() {
     clearTimeout(expiryTimer);
+    expiryTimer = null;
+    // Expiry starts restoration once. The original deadline must not become a
+    // retry timer while readback is missing or a restoration write is uncertain.
+    // Keep the obligation and retry on telemetry, reconnect or reconciliation.
+    if (closed || restoreRequired) return;
     const wallEnd = timestamp(state.expiresAt);
     if (!Number.isFinite(wallEnd)) elapsedExpiry = null;
     else if (elapsedExpiry?.wallEnd !== wallEnd)
@@ -100,7 +106,11 @@ export function createH66Controller({ deviceId, publish, requestSnapshot = async
     }
   }
   function queueReconciliation() {
-    if (reconcileQueued || closed || !connected || active || !restoreRequired) return;
+    if (closed || !connected || !restoreRequired) return;
+    // A missing register can report while another restoration is awaiting its
+    // readback. Revisit that new evidence once the active operation releases.
+    if (active) { reconcileAfterActive = true; return; }
+    if (reconcileQueued) return;
     reconcileQueued = true;
     queueMicrotask(async () => {
       reconcileQueued = false;
@@ -122,7 +132,12 @@ export function createH66Controller({ deviceId, publish, requestSnapshot = async
           && (state.expiresAt === null || timestamp(state.expiresAt) > clock()))) restoreRequired = true;
       noteResult({ status: 'failed', code: error.code ?? 'H66_WRITE_FAILED', restorationPending: restoreRequired });
       throw error;
-    } finally { active = false; if (reconcileAfter) queueReconciliation(); }
+    } finally {
+      active = false;
+      const queuedDuringOperation = reconcileAfterActive;
+      reconcileAfterActive = false;
+      if (reconcileAfter || queuedDuringOperation) queueReconciliation();
+    }
   }
   function requireConnection(now) {
     if (!available(now)) throw failure('H66_UNAVAILABLE', 'H66 has no recent live publications.');

@@ -84,6 +84,17 @@ readback and command fencing remain authoritative.
 
 The implementation is a bounded search over a declared slot/current model, **not a globally exact continuous-time optimizer**. Results expose the search kind, relaxed cost lower bound, feasible candidate cost and upper bound on the cost gap where available. Search pruning can miss a better joint candidate; reported feasibility is conditional on the recorded assumptions. Synthetic exhaustive small-horizon comparisons validate representative cases. There is no one-cent pause penalty or mandatory one-cent saving hurdle. Practical minimum economic runs/gaps remain 15 minutes; equal-cost choices prefer stability.
 
+Alongside continuous starts and individual period improvements, freely scheduled
+requests receive one shared-period candidate. It selects cheaper windows using
+their combined modeled capacity so both chargers can move together when an
+incumbent peer allocation would block an individual improvement. The same
+chronological joint simulator and bounded individual refinement validate service,
+priority, per-phase/scenario limits and cost. Native timers and period-count
+limits constrain this candidate; fixed permissions are never moved. The existing
+best candidate remains available, and pooled capacity is not proof that every
+individual deadline can be met. Positive and negative prices use the same cash
+objective; this additional seed does not establish global optimality.
+
 If the ordinary search finds no feasible schedule, one additional candidate uses
 the separate windows in which a fixed native current fits every forecast phase
 and scenario. This recovers earlier charging opportunities that a later household

@@ -163,15 +163,40 @@ test('the last complete comparison remains available beyond the ordinary audit p
   assert.equal(summary.lastSuccessfulComparison.end,start+MINUTE);
 });
 
-test('fallback streams long partial history once per batch without per-counter predecessor lookups',t=>{
+test('a successful latest comparison never materializes the older counter history',t=>{
+  const {store,audit,energy,read}=fixture(t);
+  for(let minute=0;minute<=105;minute++)audit(minute,100+minute);
+  energy(104,105,1);
+  const prepare=store.db.prepare.bind(store.db);
+  t.mock.method(store.db,'prepare',sql=>{
+    const statement=prepare(sql);
+    if(sql.includes('active_energy_audits')) {
+      statement.iterate=()=>{throw new Error('successful latest period must not traverse counter rows in JavaScript');};
+      statement.all=()=>{throw new Error('successful latest period must not materialize counter rows');};
+    }
+    return statement;
+  });
+  const summary=read();
+  assert.equal(summary.status,'compared');
+  assert.equal(summary.readingCount,106);
+  assert.equal(summary.comparison.start,start+104*MINUTE);
+});
+
+test('fallback streams long partial history once without per-counter predecessor lookups',t=>{
   const {store,audit,energy,read}=fixture(t);
   audit(0,100);audit(1,101);energy(0,1,1);
   for(let minute=2;minute<=105;minute++) {
     audit(minute,100+minute);
     energy(minute-.5,minute,.5);
   }
-  store.previousEnergyAudit=()=>{throw new Error('fallback must not perform per-counter predecessor queries');};
+  const prepare=store.db.prepare.bind(store.db);
+  let predecessorQueries=0;
+  t.mock.method(store.db,'prepare',sql=>{
+    if(sql.includes('active_energy_audits')&&sql.includes('ORDER BY source_time DESC')) predecessorQueries++;
+    return prepare(sql);
+  });
   const summary=read();
+  assert.equal(predecessorQueries,1,'only the latest reading looks up its predecessor');
   assert.equal(summary.status,'incomplete-coverage');
   assert.equal(summary.coverage.coveredMs,MINUTE/2);
   assert.equal(summary.lastSuccessfulComparison.end,start+MINUTE);

@@ -698,6 +698,56 @@ function availablePeriodCandidate(jobs, intervals) {
   return { ...simulate({ starts, periods, jobs, intervals }), starts, periods };
 }
 
+function periodCandidate(periods, jobs, intervals) {
+  const starts = Object.fromEntries(Object.entries(periods).map(([id, rows]) => [id, rows[0].startAt]));
+  let simulation = simulate({ starts, periods, jobs, intervals });
+  let trimmed = false;
+  for (const item of simulation.states) if (!item.fixedPeriods && finite(item.finishAt)) {
+    const rows = periods[item.charger.id];
+    const needed = rows.filter((row, index) => index === 0 || row.startAt < item.finishAt);
+    if (needed.length < rows.length) {
+      periods[item.charger.id] = needed.map((row, index) => ({ ...row,
+        endAt: index === needed.length - 1 ? null : row.endAt }));
+      trimmed = true;
+    }
+  }
+  if (trimmed) simulation = simulate({ starts, periods, jobs, intervals });
+  return { ...simulation, starts, periods };
+}
+
+function sharedPeriodCandidate(jobs, intervals) {
+  if (jobs.length < 2 || jobs.some(job => job.fixedPeriods)) return null;
+  // Coordinate improvements reserve the incumbent peer's draw. One pooled
+  // candidate can move both permissions together into cheaper windows instead.
+  // Pool only modeled useful capacity; each job's deadline, native timer and
+  // all phase/scenario limits still govern the final chronological simulation.
+  const pooled = intervals.map(row => {
+    const active = jobs.filter(job => row.start < job.targetAt
+      && row.start >= (value(job.charger, 'vehicleNotBefore') ?? 0))
+      .map(job => ({ ...job, remaining: job.charger.requiredGridKwh }));
+    const distribution = active.length ? allocate(active, row, row.start) : null;
+    const powerKw = distribution?.admissible ? active.reduce((sum, job) => sum
+      + distribution.currents[job.charger.id] * job.electric.voltageV * 3 / 1000, 0) : 0;
+    return { ...row, powerKw };
+  });
+  const maxPeriods = Math.min(...jobs.map(job => {
+    const limit = job.charger.capabilities.maxSchedulePeriods;
+    return Number.isInteger(limit) && limit > 0 ? limit : Infinity;
+  }));
+  const shared = cheapestPeriods({ targetAt: Math.max(...jobs.map(job => job.targetAt)),
+    charger: { requiredGridKwh: jobs.reduce((sum, job) => sum + job.charger.requiredGridKwh, 0) } }, pooled, maxPeriods);
+  if (!shared) return null;
+  const periods = {};
+  for (const job of jobs) {
+    const earliest = Math.max(intervals[0].start, value(job.charger, 'vehicleNotBefore') ?? intervals[0].start);
+    // Removing a clipped short run preserves practical durations and increases
+    // the gap. Never move the native timer earlier to preserve pooled capacity.
+    periods[job.charger.id] = shared.map(row => ({ ...row, startAt: Math.max(row.startAt, earliest) }))
+      .filter(row => row.endAt === null || row.endAt - row.startAt >= MIN_PERIOD_MS);
+  }
+  return periodCandidate(periods, jobs, intervals);
+}
+
 function splitCandidate(best, jobs, intervals) {
   let selected = { ...best, periods: Object.fromEntries(jobs.map(job => [job.charger.id,
     job.fixedPeriods ?? best.periods[job.charger.id]])) };
@@ -713,21 +763,7 @@ function splitCandidate(best, jobs, intervals) {
       const proposed = cheapestPeriods(job, availableIntervals(job, intervals, jobs.length > 1 ? selected : null), limit);
       if (!proposed) continue;
       const periods = { ...selected.periods, [job.charger.id]: proposed };
-      const starts = Object.fromEntries(Object.entries(periods).map(([id, rows]) => [id, rows[0].startAt]));
-      let simulation = simulate({ starts, periods, jobs, intervals });
-      let trimmed = false;
-      for (const item of simulation.states) if (finite(item.finishAt)) {
-        if (item.fixedPeriods) continue;
-        const rows = periods[item.charger.id];
-        const needed = rows.filter((row, index) => index === 0 || row.startAt < item.finishAt);
-        if (needed.length < rows.length) {
-          periods[item.charger.id] = needed.map((row, index) => ({ ...row,
-            endAt: index === needed.length - 1 ? null : row.endAt }));
-          trimmed = true;
-        }
-      }
-      if (trimmed) simulation = simulate({ starts, periods, jobs, intervals });
-      const candidate = { ...simulation, starts, periods, zeroEnergyPrice: selected.zeroEnergyPrice };
+      const candidate = { ...periodCandidate(periods, jobs, intervals), zeroEnergyPrice: selected.zeroEnergyPrice };
       if (compare(candidate, selected, jobs) < 0) { selected = candidate; improved = true; }
     }
     if (!improved) break;
@@ -942,6 +978,11 @@ export function planChargers({ now, chargers = [], prices = [], household = [], 
     best = { ...best, ...simulate({ starts: best.starts, periods: best.periods, jobs, intervals }) };
     continuous = best;
     best = splitCandidate(best, jobs, intervals);
+    const shared = sharedPeriodCandidate(jobs, intervals);
+    if (shared) {
+      const candidate = splitCandidate(shared, jobs, intervals);
+      if (compare(candidate, best, jobs) < 0) best = candidate;
+    }
     if (!best.feasible) {
       // One additional seed, only after the usual bounded search fails. Its
       // native constraints and practical windows use the same simulator and

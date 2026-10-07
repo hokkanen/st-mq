@@ -27,7 +27,6 @@ test('a scheduled controller survives SQLite contention and resumes after the wr
     writer.close(); await app.close();
     rmSync(directory, { recursive: true, force: true });
   });
-  app.store.db.exec('PRAGMA busy_timeout=5');
   const reports = [];
   t.mock.method(console, 'error', message => reports.push(JSON.parse(message)));
   let ticks = 0;

@@ -10,6 +10,7 @@ test('recovery releases SQLite for progress persistence and concurrent controlle
   const donorPath = await f.snapshot(donor);
   const preview = await recoveryPreview({ masterPath: f.master.path, donorPath, signal: t.signal });
   const failures = [], deferredWrites = [];
+  const busyTimeout = f.master.db.prepare('PRAGMA busy_timeout').get().timeout;
   let beats = 0, progressWrites = 0, maxWriteMs = 0;
   const timer = setInterval(() => {
     const before = performance.now();
@@ -28,7 +29,7 @@ test('recovery releases SQLite for progress persistence and concurrent controlle
         f.master.db.exec('PRAGMA busy_timeout=0');
         try { f.master.setState('synthetic:recovery-progress', { processed: value.processed }); progressWrites++; }
         catch (error) { failures.push(error.code); }
-        finally { f.master.db.exec('PRAGMA busy_timeout=5000'); resolve(); }
+        finally { f.master.db.exec(`PRAGMA busy_timeout=${busyTimeout}`); resolve(); }
       })));
     } });
     await Promise.all(deferredWrites);
@@ -36,7 +37,7 @@ test('recovery releases SQLite for progress persistence and concurrent controlle
   assert.deepEqual(failures, [], 'controller and progress writes never exhaust SQLite lock waiting');
   assert.ok(progressWrites > 0, 'progress persistence was exercised with no lock-wait allowance');
   assert.ok(beats > 0, 'the controller kept writing during recovery');
-  assert.ok(maxWriteMs < 1500, 'bounded recovery batches do not make control wait for the five-second SQLite timeout');
+  assert.ok(maxWriteMs < 1000, 'bounded recovery batches keep controller write waits below the event-loop warning threshold');
   assert.equal(result.report.imported, rows);
   assert.equal(f.master.db.prepare('SELECT COUNT(*) n FROM observations').get().n, rows);
   assert.equal(f.master.db.prepare('PRAGMA integrity_check').get().integrity_check, 'ok');

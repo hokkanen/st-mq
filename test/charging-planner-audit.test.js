@@ -12,6 +12,73 @@ const prices = numbers => numbers.map((priceCtPerKwh,i) => ({ start: now + i * Q
 const run = (chargers, extra = {}) => planChargers({ now, chargers, prices: prices([10,10,10,10]),
   supply: { configuredBudgetCurrentA: [16,16,16] }, ...extra });
 
+test('joint economic periods move both chargers to a cheaper feasible allocation under every priority', async t => {
+  const shared = [{ startAt: now, endAt: now + 3 * QUARTER },
+    { startAt: now + 4 * QUARTER, endAt: now + 5 * QUARTER },
+    { startAt: now + 7 * QUARTER, endAt: null }];
+  for (const fixture of [
+    { name: 'audit witness', raw: [4, 4, 3, 40, 33, 38, 36, 4], energy: [6.9, 6.9] },
+    { name: 'negative prices', raw: [-4, -4, -3, 40, 33, 38, 36, -4], energy: [6.9, 6.9] },
+    { name: 'unequal requests and prices', raw: [9, 7, -2, 36, 20, 32, 25, 4], energy: [4.14, 9.66] },
+  ]) for (const priority of ['balanced', 'charger1', 'charger2']) await t.test(`${fixture.name}, ${priority}`, () => {
+    const chargers = ['charger1', 'charger2'].map((id, index) => job(id, fixture.energy[index], { deadlineAt: now + 2 * HOUR }));
+    const options = { prices: prices(fixture.raw), priority };
+    // Independently specified witness: five slots at 11.04 kW total, buying
+    // 2.76 kWh per slot. For the original audit prices this is 132.48 cents.
+    const witnessCost = 2.76 * [0, 1, 2, 4, 7].reduce((sum, index) => sum + fixture.raw[index], 0);
+    const witness = run(chargers, { ...options, fixedPeriods: { charger1: shared, charger2: shared } });
+    assert.equal(witness.feasible, true);
+    assert.ok(Math.abs(witness.solver.cashCostCandidateCents - witnessCost) < 1e-6);
+    const result = run(chargers, options);
+    assert.equal(result.feasible, true);
+    assert.ok(result.solver.cashCostCandidateCents <= witnessCost + 1e-6,
+      `Selected ${result.solver.cashCostCandidateCents} cents versus feasible witness ${witnessCost}`);
+    for (const plan of Object.values(result.plans)) {
+      assert.ok(Math.abs(plan.deliveredGridKwh - plan.requiredGridKwh) < 1e-6);
+      assert.ok(plan.finishAt <= now + 2 * HOUR);
+      assertPracticalPeriods(plan);
+    }
+    assert.ok(result.allocations.every(row => row.phaseCurrentA.every(current => current <= 16 + 1e-8)));
+    assert.equal(result.solver.globalOptimalityProven, false);
+    const replay = run(chargers, { ...options, fixedPeriods: Object.fromEntries(
+      Object.entries(result.plans).map(([id, plan]) => [id, plan.periods])) });
+    assert.equal(replay.feasible, true);
+    assert.ok(Math.abs(replay.solver.cashCostCandidateCents - result.solver.cashCostCandidateCents) < 1e-6);
+  });
+});
+
+function assertPracticalPeriods(plan) {
+  assert.equal(plan.periods.at(-1).endAt, null);
+  for (let index = 0; index < plan.periods.length - 1; index++) {
+    const period = plan.periods[index];
+    assert.ok(period.endAt - period.startAt >= QUARTER, 'Intermediate runs last at least 15 minutes');
+    assert.ok(plan.periods[index + 1].startAt - period.endAt >= QUARTER, 'Pauses last at least 15 minutes');
+  }
+}
+
+test('joint economic seeds preserve native period limits and individual timer/deadline restrictions', async t => {
+  for (const mode of ['period-limit', 'late-timer', 'early-deadline', 'fixed-peer']) await t.test(mode, () => {
+    const chargers = ['charger1', 'charger2'].map(id => job(id, 6.9, { deadlineAt: now + 2 * HOUR }));
+    const options = { prices: prices([4, 4, 3, 40, 33, 38, 36, 4]) };
+    if (mode === 'period-limit') chargers[0].capabilities.maxSchedulePeriods = 2;
+    if (mode === 'late-timer') chargers[0].values.vehicleNotBefore = v(now + 40 * 60_000);
+    if (mode === 'early-deadline') chargers[0].deadlineAt = now + HOUR;
+    const fixed = [{ startAt: now + 20 * 60_000, endAt: null }];
+    if (mode === 'fixed-peer') options.fixedPeriods = { charger1: fixed };
+    const before = structuredClone({ chargers, options }), result = run(chargers, options);
+    assert.deepEqual({ chargers, options }, before);
+    assert.equal(result.feasible, true);
+    if (mode === 'period-limit') assert.ok(result.plans.charger1.periods.length <= 2);
+    if (mode === 'late-timer') assert.ok(result.plans.charger1.periods.every(period => period.startAt >= now + 40 * 60_000));
+    if (mode === 'fixed-peer') assert.deepEqual(result.plans.charger1.periods, fixed);
+    for (const plan of Object.values(result.plans)) {
+      assert.ok(plan.finishAt <= plan.deadlineAt);
+      assertPracticalPeriods(plan);
+    }
+    assert.ok(result.allocations.every(row => row.phaseCurrentA.every(current => current <= 16 + 1e-8)));
+  });
+});
+
 test('current commanded limits bound C2 delivery in every household scenario', () => {
   const result = run([job('charger2', 8)], { household: [{ start: now, end: now + HOUR, phaseCurrentA: [4,4,4],
     scenarios: [{ phaseCurrentA: [8,8,8], weight: 1 }, { phaseCurrentA: [0,0,0], weight: 1 }] }] });

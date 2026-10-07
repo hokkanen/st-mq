@@ -1,6 +1,7 @@
 import { Worker } from 'node:worker_threads';
 import { getChartData, chartRequestRange } from './chart-data.js';
 import { getDatabaseOverview } from './database-overview.js';
+import { energyCheckSummaries } from './energy-checks.js';
 import { prepareChartResponse, encodeChartResponse } from './chart-wire.js';
 
 const aborted = () => Object.assign(new Error('Chart request aborted'), { name: 'AbortError' });
@@ -77,7 +78,8 @@ export function createChartService({ store, maxQueue = 8, idleMs = 60_000 } = {}
     args = { ...args, now: args?.now ?? Date.now() };
     try {
       if (!Object.hasOwn(lanes, priority)) throw new TypeError('Invalid chart priority');
-      if (operation !== 'overview') {
+      if (!['chart', 'overview', 'energy-checks'].includes(operation)) throw new TypeError('Invalid history operation');
+      if (operation === 'chart') {
         const { selection } = chartRequestRange(args);
         if (priority === 'prefetch' && Date.parse(selection.endDate) - Date.parse(selection.startDate) >= 7 * 86_400_000)
           throw new RangeError('Chart prefetch is limited to seven calendar days');
@@ -86,8 +88,9 @@ export function createChartService({ store, maxQueue = 8, idleMs = 60_000 } = {}
     } catch (error) { return Promise.reject(error); }
     if (store.path === ':memory:') {
       try {
-        const result = operation === 'overview' ? getDatabaseOverview({ ...args, store }) : getChartData({ ...args, store, onProgress });
-        const prepared = operation === 'overview' ? null : prepareChartResponse(result);
+        const result = operation === 'overview' ? getDatabaseOverview({ ...args, store })
+          : operation === 'energy-checks' ? energyCheckSummaries(store, args) : getChartData({ ...args, store, onProgress });
+        const prepared = operation === 'chart' ? prepareChartResponse(result) : null;
         return Promise.resolve(wire ? encodeChartResponse(result, prepared, wire) : result);
       } catch (error) { return Promise.reject(error); }
     }
@@ -108,6 +111,7 @@ export function createChartService({ store, maxQueue = 8, idleMs = 60_000 } = {}
   }
   return {
     overview(options = {}) { return query({}, { ...options, operation: 'overview' }); },
+    energyChecks(args = {}, options = {}) { return query(args, { ...options, operation: 'energy-checks', priority: 'foreground' }); },
     query,
     queryWire(args, options = {}) { return query(args, { ...options, wire: options.format ?? 'json' }); },
     async close() {
