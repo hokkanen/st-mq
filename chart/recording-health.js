@@ -128,8 +128,23 @@ export function createRecordingHealth({ document, request, now = () => Date.now(
     set('recording-growth-retained', retained ? storageBytes(inventory.database.adaptiveEstimatedBytes)
       : inventoryPhase === 'loading' ? 'Measuring…' : inventoryPhase === 'failed' ? 'Unavailable' : 'Not checked');
     set('recording-growth-inventoryAt', inventoryPhase === 'loading' ? `Measuring retained adaptive data… ${checked}`.trim()
-      : inventoryPhase === 'failed' ? `Could not measure retained adaptive data. ${checked || 'Open Other recorded data and use Refresh overview to retry.'}`
+      : inventoryPhase === 'failed' ? `Could not measure retained adaptive data. ${checked || 'Use Refresh inventory to retry.'}`
         : checked || 'Retained adaptive size has not been measured.');
+    for (const [field, key] of [['file', 'fileBytes'], ['wal', 'walBytes'], ['files', 'totalFileBytes']]) {
+      set(`recording-growth-${field}`, inventory ? storageBytes(inventory.database?.[key])
+        : inventoryPhase === 'loading' ? 'Measuring…' : inventoryPhase === 'failed' ? 'Unavailable' : 'Not checked');
+    }
+    const inventoryTime = validTime(inventory?.generatedAt) ? `Inventory checked ${recordingEvidenceTime(inventory.generatedAt, now())}.` : 'Inventory has not been checked yet.';
+    set('recording-growth-fileEvidence', `${inventoryPhase === 'failed' ? 'Refresh failed; previous sizes may be out of date. ' : ''}${inventoryTime}`);
+    set('recording-growth-observations', Number.isSafeInteger(inventory?.database?.adaptiveObservationCount)
+      && inventory.database.adaptiveObservationCount >= 0
+      ? `${new Intl.NumberFormat('en-GB').format(inventory.database.adaptiveObservationCount)} retained observations.` : 'Retained observation count is unknown.');
+    const notice = $('recording-overview-notice');
+    notice.hidden = inventoryPhase === 'ready';
+    notice.classList?.toggle('form-error', inventoryPhase === 'failed');
+    set('recording-overview-notice', inventoryPhase === 'failed'
+      ? `The inventory could not be refreshed.${inventory ? ' The last successful inventory is still shown.' : ''} Open Storage & growth and use Refresh inventory to retry.`
+      : inventoryPhase === 'loading' ? 'Refreshing the recorded-data inventory…' : 'The recorded-data inventory has not been checked yet.');
   }
   function acceptHealth(result) {
     if (health?.scope !== result?.scope) { inventory = undefined; inventoryPhase = 'idle'; }

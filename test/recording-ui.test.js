@@ -45,11 +45,11 @@ function fixture(request) {
   let now=Date.parse('2026-09-08T10:00:00Z'),visible=true;
   const classes=new Set(),attributes=new Map(),renders=[],states=[];
   const root={setAttribute:(key,value)=>attributes.set(key,value),removeAttribute:key=>attributes.delete(key)};
-  const details={open:false},parent={open:false},button={disabled:false};
+  const details={open:false},storage={open:false},parent={open:false},button={disabled:false};
   const message={textContent:'',classList:{add:value=>classes.add(value),remove:value=>classes.delete(value)}};
-  const refresh=recordingOverviewRefresh({request,root,details,parent,message,button,clock:()=>now,
+  const refresh=recordingOverviewRefresh({request,root,details:[details,storage],parent,message,button,clock:()=>now,
     isVisible:()=>visible,render:overview=>renders.push(overview),onState:state=>states.push(state)});
-  return {refresh,details,parent,button,message,attributes,classes,renders,states,
+  return {refresh,details,storage,parent,button,message,attributes,classes,renders,states,
     advance:ms=>{now+=ms;},visibility:value=>{visible=value;}};
 }
 
@@ -71,6 +71,19 @@ test('overview requests only while both folds are open and visible, with one in-
   view.advance(300000);view.parent.open=false;await view.refresh();assert.equal(calls,1);
   view.parent.open=true;const expired=view.refresh();assert.equal(calls,2);
   resolve({generatedAt,groups:[]});await expired;
+});
+
+test('storage and dataset folds share one bounded inventory request and refresh while either is open', async () => {
+  let calls=0;
+  const view=fixture(async()=>{calls++;return {generatedAt:0,groups:[]};});
+  view.parent.open=true;view.storage.open=true;
+  await view.refresh();assert.equal(calls,1);
+  view.details.open=true;await view.refresh();assert.equal(calls,1);
+  view.advance(300000);view.storage.open=false;
+  await view.refresh();assert.equal(calls,2);
+  view.advance(300000);view.details.open=false;
+  await view.refresh();assert.equal(calls,2);
+  view.storage.open=true;await view.refresh();assert.equal(calls,3);
 });
 
 test('failed overview refresh preserves the previous inventory and a retry recovers',async()=>{

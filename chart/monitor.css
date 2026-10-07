@@ -1127,11 +1127,6 @@ details details { margin-inline-start: 24px; }
   .plot { height: 350px; }
 }
 
-.recording-section-title { font-size: 14px; font-weight: 550; margin: 10px 0; }
-.recording-metrics { display: grid; grid-template-columns: repeat(4,minmax(0,1fr)); gap: 12px; margin: 8px 0 18px; }
-.recording-metrics > div { padding: 12px; background: var(--surface-soft); border: 1px solid var(--border); border-radius: 8px; }
-.recording-metrics dt { color: var(--muted); font-size: 11px; }
-.recording-metrics dd { margin: 5px 0 0; font-size: 16px; font-variant-numeric: tabular-nums; }
 .recording-stream-qualifier { font-family: ui-monospace, monospace; }
 .recording-table .recording-reading-details { margin: 0; padding: 0; border: 0; }
 .recording-reading-details > summary { padding: 0; min-height: 24px; font-size: 12px; color: var(--text); }
@@ -1149,7 +1144,6 @@ details details { margin-inline-start: 24px; }
 .database-export-actions { display: flex; flex-wrap: wrap; gap: 12px 24px; }
 .database-export-actions > div { flex: 1 1 240px; }
 #database-export-message { overflow-wrap: anywhere; }
-.recording-overview-size { font-size: 12px; }
 .recording-data-group { margin-top: 12px; }
 .recording-data-group > summary { font-weight: 550; }
 .recording-data-group > p { margin: 0 0 14px; }
@@ -1193,8 +1187,6 @@ details.energy-check-details { margin: 8px 0 0; border: 0; font-size: 12px; line
   details details { margin-inline-start: 16px; }
   #comparison-content, .timing-detail-content, .timing-explanations-content { margin-inline-start: 16px; }
   .recording-table { min-width: 720px; }
-  .recording-metrics { grid-template-columns: repeat(2,minmax(0,1fr)); gap: 8px; }
-  .recording-metrics dd { font-size: 14px; }
   .recording-measurements { display: block; min-width: 0; }
   .recording-measurements thead { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); }
   .recording-measurements tbody { display: block; }

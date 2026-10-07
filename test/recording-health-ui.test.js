@@ -160,11 +160,38 @@ test('retained adaptive size reports loading and failure without inventing size 
   assert.match(view.element('recording-growth-inventoryAt').textContent,/Measuring retained adaptive data/);
   view.panel.inventoryStatus('failed');
   assert.equal(view.element('recording-growth-retained').textContent,'Unavailable');
-  assert.match(view.element('recording-growth-inventoryAt').textContent,/Refresh overview to retry/);
+  assert.match(view.element('recording-growth-inventoryAt').textContent,/Refresh inventory to retry/);
   view.panel.inventory({generatedAt:0,database:{adaptiveEstimatedBytes:0}});
   assert.equal(view.element('recording-growth-retained').textContent,'0 B');
   assert.match(view.element('recording-growth-inventoryAt').textContent,/1 Jan 1970/);
   view.panel.inventoryStatus('failed');
   assert.equal(view.element('recording-growth-retained').textContent,'0 B');
   assert.match(view.element('recording-growth-inventoryAt').textContent,/Could not measure.*checked.*1 Jan 1970/);
+});
+
+test('storage inventory keeps file sizes and dated retained evidence through failures and clears them on a scope change', () => {
+  const view = panelFixture();
+  view.panel.update({ recordingHealth: health(), recording: { measuredDatabaseBytes: 83e9 } });
+  view.panel.inventoryStatus('loading');
+  assert.equal(view.element('recording-growth-file').textContent, 'Measuring…');
+  view.panel.inventory({ generatedAt: now, database: { fileBytes: 80e9, walBytes: 0,
+    totalFileBytes: 80e9, adaptiveEstimatedBytes: 6e9, adaptiveObservationCount: 0 } });
+  assert.equal(view.element('recording-growth-database').textContent, '83 GB');
+  assert.equal(view.element('recording-growth-file').textContent, '80 GB');
+  assert.equal(view.element('recording-growth-wal').textContent, '0 B');
+  assert.equal(view.element('recording-growth-files').textContent, '80 GB');
+  assert.equal(view.element('recording-growth-observations').textContent, '0 retained observations.');
+  assert.equal(view.element('recording-overview-notice').hidden, true);
+  view.advance(3600_000);
+  view.panel.inventoryStatus('failed');
+  assert.equal(view.element('recording-growth-file').textContent, '80 GB');
+  assert.match(view.element('recording-growth-fileEvidence').textContent, /Refresh failed.*1 h ago/);
+  assert.equal(view.element('recording-overview-notice').hidden, false);
+  assert.match(view.element('recording-overview-notice').textContent, /last successful inventory.*Storage & growth/);
+  view.panel.update({ recordingHealth: health({ scope: 'snapshot' }) });
+  assert.equal(view.element('recording-growth-file').textContent, 'Not checked');
+  assert.equal(view.element('recording-growth-wal').textContent, 'Not checked');
+  assert.match(view.element('recording-growth-observations').textContent, /unknown/);
+  view.panel.inventory({ generatedAt: now, database: { walBytes: null } });
+  assert.equal(view.element('recording-growth-wal').textContent, 'Unknown');
 });

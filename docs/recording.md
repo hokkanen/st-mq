@@ -1242,23 +1242,33 @@ heating, hot-water, ground-loop, settings, equipment, runtime, electricity, weat
 and learning groups.
 Recorded and calculated roles are separate from model roles.
 
-**Recording details describes stored database contents.** Its **History & storage**
-overview separates local disk availability, recording health and known backups.
-**Database size & growth** shows current whole-database allocation and separate
-adaptive and total annual growth projections. The adaptive target remains next
-to adaptive growth, never beside total growth as if it were a total cap.
+**Recording details describes stored database contents.** A compact status row
+shows **Recording**, **Disk space** and **Backups**. Each opens its own evidence
+and explanation; status labels, attention states and the live or recorded-snapshot
+scope remain visible without expanding those details. Opening one status does not
+open the others. Refreshes preserve expanded sections and keyboard focus.
+
+**Storage & growth** owns the size and growth figures for the section. It separates
+current whole-database allocation, database-file and WAL sizes, retained adaptive
+payload and prospective adaptive additions. Separate adaptive and total annual
+growth projections show their measurement windows. The adaptive target remains
+next to adaptive growth, never beside total growth as if it were a total cap.
 The prospective adaptive byte counter names its start date. Opening Recording
 details requests the existing cached, read-only inventory in a worker;
 its dated estimate covers all retained adaptive observations, including imported
 or recovered rows and currently excluded recovery evidence. It excludes shared
 indexes, page slack and other tables, so it cannot be subtracted from physical
-database bytes to calculate an exact fixed-data size. The overview also shows
-database-file and WAL sizes separately. No full-history scan runs on each status
-refresh. The first fold,
-**Adaptive measurements**, contains achieved intervals, learned thresholds,
-freshness and growth. Its explanation distinguishes fast acquisition from
-recording changes against the last saved value, and describes the shared rolling
-storage objective. An average recording interval is not a fixed poll schedule.
+database bytes to calculate an exact fixed-data size. No full-history scan runs on
+each status refresh. Inventory refresh failures retain the last successful figures
+with their original date and an explicit failure message.
+
+The **Adaptive measurements** fold contains achieved intervals, learned thresholds,
+freshness and per-measurement recording counts and payload estimates. Its existing
+table keeps source explanations and individual source histories folded within
+each row. It does not repeat the section's database totals or annual projections.
+Its explanation distinguishes fast acquisition from recording changes against the
+last saved value, and describes the shared rolling storage objective. An average
+recording interval is not a fixed poll schedule.
 
 Known installation measurements retain one flat row per source, signal, unit
 and recording policy, with individual source identities under **Source history**.
@@ -1320,9 +1330,11 @@ without claiming zero free bytes or blocking ordinary control. A stopped process
 unreachable dashboard or complete host failure cannot report its own condition.
 
 The **Other recorded data** fold appears immediately after **Adaptive measurements**,
-followed by **Recorded energy checks** and **Export database**. It
-describes the remaining datasets using field lists, counts, available dates and
-the way each dataset is updated. Groups cover:
+followed by **Recorded energy checks**. **Export database** and **Recover history**
+are grouped separately as history tools. Each tool retains its own fold, with
+its explanation and actions inside. The data inventory describes the remaining
+datasets using field lists, counts, available dates and the way each dataset is
+updated; database size figures stay in **Storage & growth**. Groups cover:
 
 - Forecast temperature and radiation versions, shared content and fetch references.
 - Spot prices and dated contract components.
@@ -1355,8 +1367,9 @@ to the selected complete model epoch; other retained epochs have their own count
 No recovery names, private source paths, fingerprints or record payloads are exposed
 by this inventory.
 
-Database inventory queries are read-only and requested when the other-data fold
-is open. A bounded worker query and cache keep large inventories out of the live
+Database inventory queries are read-only. Opening Recording details requests the
+cached inventory; it refreshes while **Storage & growth** or **Other recorded data**
+is open. Both folds share one request and cache. A bounded worker query keeps large inventories out of the live
 control loop. Expand/collapse state survives updates. Meter-accuracy details
 show the property cumulative-meter check and the Charger 1 session summary
 without changing the learner.

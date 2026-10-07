@@ -6,6 +6,11 @@ Versions follow Semantic Versioning. `-dev.N` denotes a development prerelease.
 
 ## Unreleased
 
+- Recording details now has compact, expandable recording, disk and backup
+  statuses, one Storage & growth section for size estimates and projections,
+  and separate data inspections and history tools. Adaptive measurements retain
+  their source folds without repeated storage totals; refreshes preserve open
+  details and keyboard focus.
 - Recording details separates the adaptive annual target from total database size
   and growth, with dated adaptive size estimates, local disk capacity and backup
   evidence. Low space, failed writes and stalled recording receive a dashboard

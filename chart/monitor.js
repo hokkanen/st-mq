@@ -1121,7 +1121,7 @@ $('h66-test-form').addEventListener('submit', async event => {
   await refresh();
 });
 const refreshRecordingOverview=recordingOverviewRefresh({request:api,root:$('recording-overview-content'),
-  details:$('recording-overview-details'),parent:$('recording-details'),message:$('recording-overview-message'),button:$('recording-overview-refresh'),
+  details:[$('recording-overview-details'),$('recording-storage-details')],parent:$('recording-details'),message:$('recording-overview-message'),button:$('recording-overview-refresh'),
   render: (overview, root) => { renderRecordingOverview(overview, root); recordingHealth.inventory(overview); },
   onState: state => recordingHealth.inventoryStatus(state) });
 bindDatabaseExport({ saveButton: $('database-export-save'), downloadButton: $('database-export-download'),
@@ -1155,7 +1155,7 @@ for (const [id, path, filename] of [
     $('floor-download-message').textContent = 'Download ready.';
   } catch (error) { $('floor-download-message').textContent = error.message; }
 });
-$('recording-overview-details').addEventListener('toggle',()=>void refreshRecordingOverview());
+for (const id of ['recording-overview-details','recording-storage-details']) $(id).addEventListener('toggle',()=>void refreshRecordingOverview());
 $('recording-overview-refresh').addEventListener('click',()=>void refreshRecordingOverview({force:true}));
 setInterval(refreshRecordingOverview,60_000);
 let auditFetchedAt = 0, auditBusy = false, auditLoaded = false;

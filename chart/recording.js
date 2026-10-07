@@ -125,24 +125,16 @@ export function renderRecording(status, root) {
   if (!root) return;
   const expanded=new Set([...root.querySelectorAll('details[data-stream-id][open]')].map(node=>node.dataset.streamId));
   const focusedStream=root.contains(document.activeElement)?document.activeElement.closest('details[data-stream-id]')?.dataset.streamId:null;
-  const recording=status?.recording ?? {}, rows=recordingRows(recording), summary=document.createElement('dl');
-  summary.className='recording-metrics';
-  for (const [label,value] of [['Adaptive measurements',rows.length],
-    ['Adaptive estimate',recording.adaptiveMeasurementHours>0&&Number.isFinite(recording.adaptiveProjectedAnnualBytes)?`${number(recording.adaptiveProjectedAnnualBytes/1e9)} GB/year`:'Collecting'],
-    ['Adaptive target',`${number((recording.annualBudgetBytes??1e10)/1e9)} GB/year`],
-    ['Whole database',Number.isFinite(recording.measuredDatabaseBytes)?`${number(recording.measuredDatabaseBytes/1e6)} MB`:'Unknown']]) {
-    const group=document.createElement('div'),term=document.createElement('dt'),detail=document.createElement('dd');
-    term.textContent=label;detail.textContent=String(value);group.append(term,detail);summary.append(group);
-  }
+  const recording=status?.recording ?? {}, rows=recordingRows(recording);
   const description=document.createElement('p');description.className='muted';
-  description.textContent='One row per installation measurement. Expand Source history to inspect its recording identities. Exact states, settings and counters are under Other recorded data.';
+  description.textContent=`${rows.length} ${rows.length===1?'measurement':'measurements'}. Expand a source to inspect its status or recording history. Exact states, settings and counters are under Other recorded data.`;
   const note=document.createElement('p');note.className='muted';
   note.textContent='Counts and approximate storage include all listed identities within 24 hours. Spacing, threshold and open interval use the current source, or the latest recorded source in a read-only snapshot.';
   const help=document.createElement('details'),helpTitle=document.createElement('summary'),helpText=document.createElement('p');
   help.className='recording-reading-details';help.dataset.streamId='recording-table-help';help.open=expanded.has(help.dataset.streamId);
   helpTitle.textContent='How recording is counted';
-  helpText.textContent='Mean spacing uses actual saved receipt timestamps within each window. Source history uses Finnish time. Unchanged readings extend availability coverage. Energy keeps accumulating in a saved open interval until power or quality changes close it. The soft annual target covers estimated adaptive measurement additions. Exact records, imported history, journals and database overhead are additional; whole-database growth is shown above. Saved datasets without a recorder checkpoint are under Other recorded data → Recording and storage support.';
-  help.append(helpTitle,helpText);
+  helpText.textContent='Mean spacing uses actual saved receipt timestamps within each window. Source history uses Finnish time. Unchanged readings extend availability coverage. Energy keeps accumulating in a saved open interval until power or quality changes close it. The soft annual target covers estimated adaptive measurement additions. Exact records, imported history, journals and database overhead are additional; whole-database growth is under Storage & growth. Saved datasets without a recorder checkpoint are under Other recorded data → Recording and storage support.';
+  help.append(helpTitle,note,helpText);
   const table=document.createElement('table');table.className='recording-table recording-measurements';
   const head=document.createElement('thead'),headers=document.createElement('tr');
   for(const name of ['Measurement / source','Saved · 24 h','Mean spacing · 1 h / 24 h / 7 d','Change threshold','Source / open interval']) {
@@ -201,7 +193,7 @@ export function renderRecording(status, root) {
   }
   table.append(body);
   const wrap=document.createElement('div');wrap.className='table-scroll';wrap.append(table);
-  root.replaceChildren(summary,description,note,help,wrap);
+  root.replaceChildren(description,help,wrap);
   if(focusedStream) [...root.querySelectorAll('details[data-stream-id]')].find(node=>node.dataset.streamId===focusedStream)?.querySelector('summary')?.focus({preventScroll:true});
 }
 
@@ -250,19 +242,7 @@ export function renderRecordingOverview(overview,root) {
     const notice=document.createElement('p');notice.className='recording-inventory-notice';
     notice.textContent=`Inventory needs attention: ${overview.inventoryIssues.join(' ')}`;nodes.push(notice);
   }
-  const size=overview.database?.allocatedBytes??overview.database?.bytes;
-  if(Number.isFinite(size)) {
-    const usage=document.createElement('p');usage.className='recording-overview-size muted';
-    usage.textContent=`Allocated database: ${number(size/1e6)} MB${Number.isFinite(overview.database?.totalFileBytes)?` · files on disk: ${number(overview.database.totalFileBytes/1e6)} MB`:''}${Number.isFinite(overview.database?.walBytes)?` · transaction log: ${number(overview.database.walBytes/1e6)} MB`:''}.`;
-    nodes.push(usage);
-    if(overview.database.description){const description=document.createElement('p');description.className='muted';description.textContent=overview.database.description;nodes.push(description);}
-  }
-  if(Number.isFinite(overview.database?.adaptiveEstimatedBytes)) {
-    const adaptive=document.createElement('p');adaptive.className='recording-overview-size muted';
-    adaptive.textContent=`Retained adaptive payload: approximately ${number(overview.database.adaptiveEstimatedBytes/1e6)} MB across ${integerLabel(overview.database.adaptiveObservationCount)} observations. Includes retained source history, including excluded recovery evidence; excludes SQLite allocation and index overhead.`;
-    nodes.push(adaptive);
-  }
-  const accounting=document.createElement('p');accounting.className='muted';accounting.textContent='Dataset counts describe different kinds of records and may overlap; they should not be added together.';nodes.push(accounting);
+  const accounting=document.createElement('p');accounting.className='muted';accounting.textContent='Stored source counts include retained evidence excluded by recovery corrections. Selected chart history can contain fewer records. Learning journal counts describe the selected model history. Dataset counts may overlap and should not be added together.';nodes.push(accounting);
   for(const group of overview.groups??[]) {
     const details=document.createElement('details');details.className='recording-data-group';details.dataset.overviewKey=`group:${group.id}`;
     const summary=document.createElement('summary');summary.textContent=group.label;details.append(summary);
@@ -319,7 +299,9 @@ export function renderRecordingOverview(overview,root) {
     const details=document.createElement('details');details.className='recording-storage-accounting';details.dataset.overviewKey='accounting';
     const summary=document.createElement('summary');summary.textContent='Storage accounting';details.append(summary);
     const description=document.createElement('p');description.className='muted';
-    description.textContent=overview.accounting.description??'Each physical table is counted once below. Charts read original committed records. Point reduction and cached chart responses stay in memory. Database indexes store lookup structures for finding records; they do not store another history series.';details.append(description);
+    description.textContent=overview.accounting.description??'Each physical table is counted once below.';details.append(description);
+    const queries=document.createElement('p');queries.className='muted';
+    queries.textContent='Charts read original committed records. Point reduction and cached chart responses stay in memory. Database indexes support lookups; they do not store another history series.';details.append(queries);
     const table=document.createElement('table'),head=document.createElement('thead'),titles=document.createElement('tr');
     for(const title of ['Database table','Rows']){const cell=document.createElement('th');cell.scope='col';cell.textContent=title;titles.append(cell);}head.append(titles);table.append(head);
     const body=document.createElement('tbody');
@@ -347,7 +329,7 @@ export function renderRecordingOverview(overview,root) {
 export function recordingOverviewRefresh({request,root,details,parent,message,button,clock=Date.now,isVisible=()=>document.visibilityState!=='hidden',render=renderRecordingOverview,onState=()=>{}}) {
   let fetchedAt=null,busy=false,loaded=false,refreshAfterMs=300000;
   const refresh=async({force=false,summary=false}={})=>{
-    if(busy||(!summary&&!details.open)||!parent.open||!isVisible()||!force&&fetchedAt!==null&&clock()-fetchedAt<refreshAfterMs)return;
+    if(busy||(!summary&&!details.some(fold=>fold.open))||!parent.open||!isVisible()||!force&&fetchedAt!==null&&clock()-fetchedAt<refreshAfterMs)return;
     busy=true;button.disabled=true;root.setAttribute('aria-busy','true');
     message.classList.remove('form-error');message.textContent=loaded?'Refreshing recorded-data overview…':'Loading recorded-data overview…';
     onState('loading');
@@ -356,10 +338,10 @@ export function recordingOverviewRefresh({request,root,details,parent,message,bu
       if(!result||!Array.isArray(result.groups))throw new Error('Invalid recorded-data overview');
       render(result,root);loaded=true;fetchedAt=clock();onState('ready');
       refreshAfterMs=Number.isFinite(result.refreshAfterMs)&&result.refreshAfterMs>0?result.refreshAfterMs:300000;
-      message.textContent=`Database snapshot: ${dateLabel(result.generatedAt)??dateLabel(fetchedAt)} · Finnish time${result.cache?.hit?' · cached':''}. Refreshes while this section is open.`;
+      message.textContent=`Inventory: ${dateLabel(result.generatedAt)??dateLabel(fetchedAt)} · Finnish time${result.cache?.hit?' · cached':''}. Refreshes while Storage & growth or Other recorded data is open.`;
     } catch {
       message.classList.add('form-error');
-      message.textContent=loaded?'Could not refresh the overview. The last successful overview is still shown.':'The recorded-data overview could not be loaded. Use Refresh overview to try again.';
+      message.textContent=loaded?'Could not refresh the overview. The last successful overview is still shown.':'The recorded-data overview could not be loaded. Use Refresh inventory to try again.';
       onState('failed');
     } finally {busy=false;button.disabled=false;root.removeAttribute('aria-busy');}
   };

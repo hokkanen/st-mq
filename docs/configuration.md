@@ -322,10 +322,11 @@ For ingress, use Home Assistant to log out.
 `recording.annual_budget_gb` defaults to 10 decimal GB per year for estimated
 adaptive measurement additions. Exact records, learning history, imports and
 SQLite overhead are additional; this is neither a whole-database cap nor a
-retention limit. **Recording details → History & storage** separates current
-size, adaptive and total growth projections, available disk space and known
-backup evidence. Its adaptive accounting is prospective; the on-demand inventory
-also estimates the full retained adaptive history. See
+retention limit. **Recording details → Storage & growth** separates current
+size, adaptive and total growth projections, retained adaptive history and
+prospective adaptive additions. The compact Recording, Disk space and Backups
+statuses open their own dated evidence. The on-demand inventory supplies the
+retained adaptive estimate without repeating storage figures in the data folds. See
 [recording and storage](recording.md#recording-optimizer-and-storage) for the
 measurement basis and limits. Low disk space never authorizes automatic deletion.
 

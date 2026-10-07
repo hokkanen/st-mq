@@ -1,4 +1,5 @@
-// Production health markup/styles in a disposable browser, with synthetic data only.
+// Production recording markup, tables and styles in a disposable browser,
+// with synthetic data only. No application or household connections are made.
 import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
 import { createServer } from 'node:http';
@@ -15,6 +16,13 @@ const recordingStart = dashboard.indexOf('<details id="recording-details"');
 const recording = dashboard.slice(recordingStart, dashboard.indexOf('</section>\n\n    <section id="pairing-panel"', recordingStart));
 assert(attentionStart >= 0 && recordingStart >= 0 && recording.endsWith('    '));
 const now = Date.parse('2026-10-07T12:00:00Z');
+const measurement = (signal, streamId, extra = {}) => ({ signal, streamId, source: 'simulation',
+  unit: 'degC', policy: 'adaptive-value', observedThisRun: true, lastPollAt: now - 10000,
+  lastSourceTime: now - 12000, lastSavedAt: now - 60000, threshold: .15,
+  recordedPeriod: { firstSavedAt: now - 7 * 86400_000, lastSavedAt: now - 60000 },
+  hour: { records: 12, averageIntervalMs: 300000 }, day: { records: 248, estimatedBytes: 16000, averageIntervalMs: 348000 },
+  week: { records: 1800, averageIntervalMs: 336000 },
+  freshness: { status: 'fresh', sourceObservedAt: now - 12000, maxAgeMs: 120000, reasons: [] }, ...extra });
 const status = { recordingHealth: { version: 1, checkedAt: now, scope: 'live',
   disk: { state: 'critical', totalBytes: 128e9, freeBytes: 2.1e9, checkedAt: now,
     detail: 'Free space is critically low. Recordings and backup copies share this filesystem.' },
@@ -24,17 +32,42 @@ const status = { recordingHealth: { version: 1, checkedAt: now, scope: 'live',
     detail: 'A saved copy is listed on this computer. Keep an independent copy on separate storage.' },
   attention: [{ id: 'disk', severity: 'critical', title: 'Disk space is critically low', detail: 'Only 2.1 GB is available on this computer.' },
     { id: 'recording', severity: 'critical', title: 'Recording write failed', detail: 'New observations may not have been recorded.' }],
-}, recording: { annualBudgetBytes: 10e9, measuredDatabaseBytes: 83e9, adaptiveEstimatedBytes: 40e6,
+}, now, recording: { annualBudgetBytes: 10e9, measuredDatabaseBytes: 83e9, adaptiveEstimatedBytes: 40e6,
   adaptiveAccountingStartedAt: now - 2 * 86400_000,
   adaptiveMeasurementHours: 48, adaptiveProjectedAnnualBytes: 8e9,
   totalDatabaseMeasurementHours: 240, totalDatabaseProjectedAnnualBytes: 32e9,
+  parameters: [measurement('outdoor_temperature', 'aabbccddeeff'),
+    measurement('outdoor_temperature', '112233445566', { observedThisRun: false, lastPollAt: now - 86400_000,
+      lastSourceTime: now - 86400_000, recordedPeriod: { firstSavedAt: now - 30 * 86400_000, lastSavedAt: now - 86400_000 } }),
+    measurement('garage_native_indoor_temperature', '223344556677'),
+    measurement('ev2_energy_l3', '334455667788', { source: 'shelly-evse', unit: 'kWh', policy: 'adaptive-energy',
+      threshold: .08, thresholdUnit: 'kW', grouped: true, openInterval: { start: now - 3600000, end: now, kwh: 1.28 } })],
 } };
+const inventory = { generatedAt: now, database: { adaptiveEstimatedBytes: 6e9, adaptiveObservationCount: 281672,
+  fileBytes: 82e9, walBytes: 1e9, totalFileBytes: 83e9 }, groups: [
+  { id: 'states', label: 'Equipment states and settings', description: 'Exact reported changes and their original dates.',
+    items: [{ id: 'dhwr_active', label: 'Hot-water circulation feedback', count: 312, countLabel: 'records',
+      status: 'present', policyLabel: 'Every change', retention: 'history',
+      description: 'Reported circulation feedback is distinct from the controller request.',
+      writeBehavior: 'Every state, quality or availability change.', firstAt: now - 14 * 86400_000, lastAt: now - 30000,
+      fields: [{ name: 'Reported state', description: 'Original on, off or unavailable value; this is not proof of water flow.' }] }] },
+  { id: 'weather', label: 'Weather and market inputs', items: [{ id: 'weather-snapshots', label: 'Weather forecasts',
+      count: 168, countLabel: 'fetches', status: 'present', retention: 'history',
+      writeBehavior: 'Each successful weather acquisition.', firstAt: now - 7 * 86400_000, lastAt: now,
+      fields: [{ name: 'Forecast periods', description: 'Forecast temperature and solar radiation with issue time and provider.' }],
+      breakdown: [{ label: 'Synthetic weather provider', count: 168, firstAt: now - 7 * 86400_000, lastAt: now }] }] },
+  { id: 'learning', label: 'Learning and saved state', items: [{ id: 'state-settings', label: 'Current controller settings',
+      count: 2, countLabel: 'current entries', status: 'present', retention: 'current', firstAt: now - 86400_000, lastAt: now,
+      writeBehavior: 'When the current application state changes.', fields: [{ name: 'Current state', description: 'Current choices with their equipment and session ownership.' }] }] },
+], accounting: { totalRows: 281842, tables: [{ name: 'observations', rows: 281672 }, { name: 'snapshots', rows: 168 }, { name: 'state', rows: 2 }],
+  views: [{ name: 'recorded_measurements', description: 'A query of original observations; no second stored history.' }] } };
 const fixture = `<!doctype html><html lang="en" data-theme="dark"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <link rel="stylesheet" href="/chart/monitor.css"><link rel="stylesheet" href="/chart/recording-health.css"></head>
 <body data-authenticated="true"><header><h1>Home Energy</h1></header><main>${attention}<section class="panel history-panel"><div id="fixture-control">Other dashboard content</div>${recording}</section></main>
 <script type="module">import { createRecordingHealth } from '/chart/recording-health.js';
-import { recordingOverviewRefresh } from '/chart/recording.js';
-window.payload = ${JSON.stringify(status)}; window.failRefresh = false; window.requestCount = 0;
+import { recordingOverviewRefresh, renderRecording, renderRecordingOverview, renderEnergyAudits } from '/chart/recording.js';
+window.payload = ${JSON.stringify(status)}; window.inventory = ${JSON.stringify(inventory)};
+window.failRefresh = false; window.failInventory = false; window.requestCount = 0;
 window.panel = createRecordingHealth({document, now: () => ${now}, request: async path => {
   if(path !== '/api/recording-health') throw Error('Unexpected request'); window.requestCount++;
   if(window.deferred) return new Promise(resolve => window.resolveHealth = resolve);
@@ -43,16 +76,27 @@ window.panel = createRecordingHealth({document, now: () => ${now}, request: asyn
 panel.update(payload);
 window.inventoryRequests = 0;
 const element = id => document.getElementById(id);
-const inventoryRefresh = recordingOverviewRefresh({
+window.renderMeasurements = () => renderRecording(payload, element('recording-content'));
+renderMeasurements();
+renderEnergyAudits([{ kind:'property-meter-summary', signal:'property_import_energy_counter',
+  summary:{status:'waiting-for-second-reading',readingCount:1,latestReading:{valueKwh:1250,sourceTime:${now},receivedAt:${now}}} },
+  {kind:'charging-session-summary',source:'easee',signal:'ev1_session_energy_check',
+    summary:{comparedSessions:5,recordedSessions:6,excludedSessions:1,estimatedKwh:49.5,referenceKwh:50,differencePercent:-1,
+      start:${now - 7 * 86400_000},end:${now},lastSessionEnd:${now},exclusionReasons:{'incomplete-coverage':1}}}],element('energy-audit-content'));
+element('energy-audit-message').textContent='Recorded energy comparisons · synthetic fixture';
+window.inventoryRefresh = recordingOverviewRefresh({
   request: async path => {
     if(path !== '/api/recording-overview') throw Error('Unexpected inventory request');
     window.inventoryRequests++;
-    return {generatedAt:${now}, groups:[], database:{adaptiveEstimatedBytes:6e9}};
-  }, root:element('recording-overview-content'), details:element('recording-overview-details'),
+    if(window.failInventory) throw Error('Private inventory failure');
+    return window.inventory;
+  }, root:element('recording-overview-content'), details:[element('recording-overview-details'), element('recording-storage-details')],
   parent:element('recording-details'), message:element('recording-overview-message'), button:element('recording-overview-refresh'),
-  render:overview => panel.inventory(overview), onState:state => panel.inventoryStatus(state),
+  render:(overview, root) => { renderRecordingOverview(overview, root); panel.inventory(overview); }, onState:state => panel.inventoryStatus(state),
 });
 element('recording-details').addEventListener('toggle', () => { if(element('recording-details').open) void inventoryRefresh({summary:true}); });
+for(const id of ['recording-overview-details','recording-storage-details']) element(id).addEventListener('toggle', () => void inventoryRefresh());
+element('recording-overview-refresh').addEventListener('click', () => void inventoryRefresh({force:true}));
 window.ready = true;</script></body></html>`;
 const assets = new Map(['monitor.css', 'recording-health.css', 'recording-health.js'].map(name => [`/chart/${name}`,
   [name.endsWith('.css') ? 'text/css' : 'text/javascript', readFileSync(new URL(`../../chart/${name}`, import.meta.url))]]));
@@ -111,6 +155,20 @@ try {
       clip:{x:0, y:0, width:dimensions.width, height:dimensions.height, scale:1} });
     writeFileSync(join(artifacts, `${name}.png`), Buffer.from(result.data, 'base64'));
   };
+  const checkLayout = async label => {
+    assert.equal(await evaluate('document.documentElement.scrollWidth <= innerWidth'), true, `${label}: page fits`);
+    const clipped = await evaluate(`Array.from(document.querySelectorAll('.recording-health-card, .recording-section-group, .recording-section, .recording-section-body, .recording-health-attention, .recording-measurements, .recording-dataset')).filter(node => {
+      if(!node.checkVisibility()) return false;
+      const b = node.getBoundingClientRect(); return b.width <= 0 || b.left < 0 || b.right > innerWidth + 1 || node.scrollWidth > node.clientWidth + 1;
+    }).map(node => ({id: node.id || node.className, left:node.getBoundingClientRect().left, right:node.getBoundingClientRect().right,
+      width:node.clientWidth, content:node.scrollWidth}))`);
+    if(clipped.length) await capture(`clipping-${label.replaceAll('/', '-')}`);
+    assert.deepEqual(clipped, [], `${label}: recording content fits without clipping`);
+    assert.deepEqual(await evaluate(`Array.from(document.querySelectorAll('.recording-section-group')).flatMap(group => {
+      const folds = Array.from(group.querySelectorAll(':scope > details'));
+      return folds.slice(1).filter((fold, index) => fold.getBoundingClientRect().top < folds[index].getBoundingClientRect().bottom - 1).map(fold => fold.id);
+    })`), [], `${label}: sibling folds do not overlap`);
+  };
   await send('Runtime.enable'); await send('Page.enable');
   await send('Page.navigate', {url: `http://127.0.0.1:${server.address().port}/`});
   for(let attempt = 0; attempt < 100 && !await evaluate('window.ready === true'); attempt++) await pause(30);
@@ -122,27 +180,57 @@ try {
   await settle();
   assert.equal(await evaluate('inventoryRequests'),1,'Opening recording details requests the cached inventory once');
   assert.equal(await evaluate("document.getElementById('recording-overview-details').open"),false);
+  assert.equal(await evaluate("document.getElementById('recording-storage-details').open"),false);
+  assert.equal(await evaluate("document.querySelectorAll('.recording-health-card[open]').length"),0,'Health explanations start folded');
   assert.equal(await evaluate("document.getElementById('recording-growth-retained').textContent"),'6 GB');
+  assert.equal(await evaluate("document.getElementById('recording-growth-file').textContent"),'82 GB');
+  assert.equal(await evaluate("document.getElementById('recording-growth-wal').textContent"),'1 GB');
+  assert.equal(await evaluate("document.getElementById('recording-growth-files').textContent"),'83 GB');
+  assert.equal(await evaluate("document.querySelectorAll('#recording-content tr[data-stream-id]').length"),3,'Adaptive measurements use real production rendering');
+  assert.equal(await evaluate("document.querySelector('[data-signal=outdoor_temperature] .recording-source-history > summary').textContent"),'Source history · 2 identities');
+  assert.equal(await evaluate("document.querySelectorAll('#recording-overview-content .recording-dataset').length"),3,'Inventory uses real production rendering');
   assert.equal(await evaluate("document.getElementById('recording-disk-meter').getAttribute('aria-valuetext')"), '2.1 GB free · 1.6% free of 128 GB');
   for(const width of [320,390,768,1440]) {
     await send('Emulation.setDeviceMetricsOverride', {width, height:1000, deviceScaleFactor:1, mobile:false});
     for(const theme of ['light','dark']) {
-      await evaluate(`document.documentElement.dataset.theme = '${theme}'; scrollTo(0,0)`); await settle();
-      assert.equal(await evaluate('document.documentElement.scrollWidth <= innerWidth'), true, `${width}/${theme}: page fits`);
-      assert.deepEqual(await evaluate(`Array.from(document.querySelectorAll('.recording-health-card, .recording-growth, .recording-health-attention')).filter(node => {
-        const b = node.getBoundingClientRect(); return b.width <= 0 || b.left < 0 || b.right > innerWidth || node.scrollWidth > node.clientWidth + 1;
-      }).map(node => node.id || node.className)`), [], `${width}/${theme}: health content fits without clipping`);
+      await evaluate(`document.documentElement.dataset.theme = '${theme}'; document.querySelectorAll('#recording-details details').forEach(node => node.open = false); scrollTo(0,0)`); await settle();
+      await checkLayout(`${width}/${theme}/baseline`);
       assert.equal(await evaluate("document.getElementById('recording-growth-adaptive').textContent"), '8 GB/year');
       assert.equal(await evaluate("document.getElementById('recording-growth-total').textContent"), '32 GB/year');
       assert.equal(await evaluate("document.getElementById('recording-growth-adaptiveStored').textContent"), '40 MB');
-      await capture(`critical-${width}-${theme}`);
+      await capture(`baseline-${width}-${theme}`);
+      await evaluate("document.getElementById('recording-storage-details').open=true; document.querySelectorAll('.recording-storage-evidence').forEach(node => node.open=true)");
+      await settle(); await checkLayout(`${width}/${theme}/storage`); await capture(`storage-${width}-${theme}`);
+      await evaluate("document.getElementById('recording-storage-details').open=false; document.getElementById('recording-adaptive-details').open=true; document.querySelector('[data-signal=outdoor_temperature] .recording-source-history').open=true");
+      await settle(); await checkLayout(`${width}/${theme}/adaptive`); await capture(`adaptive-${width}-${theme}`);
+      await evaluate("document.querySelectorAll('#recording-details details').forEach(node=>node.open=true)");
+      await settle(); await checkLayout(`${width}/${theme}/expanded`); await capture(`expanded-${width}-${theme}`);
     }
   }
-  await evaluate('panel.inventory({generatedAt:payload.recordingHealth.checkedAt, database:{adaptiveEstimatedBytes:6e9}})');
+  await evaluate("document.querySelector('[data-signal=outdoor_temperature] .recording-source-history > summary').focus(); renderMeasurements()");
+  assert.equal(await evaluate("document.activeElement.closest('details').classList.contains('recording-source-history') && document.activeElement.closest('details').open"),true,
+    'Adaptive source history preserves disclosure and keyboard focus through polling');
+  await evaluate("document.querySelector('[data-dataset-id=weather-snapshots] > summary').focus(); inventoryRefresh({force:true})");
+  assert.equal(await evaluate("document.querySelector('[data-dataset-id=weather-snapshots]').open && document.querySelector('[data-dataset-id=weather-snapshots]').closest('.recording-data-group').open"),true,
+    'Inventory refresh preserves nested disclosure states');
+  assert.equal(await evaluate("document.activeElement.closest('[data-dataset-id]')?.dataset.datasetId"),'weather-snapshots',
+    'Inventory refresh preserves keyboard focus');
+  await evaluate("window.previousInventory=document.getElementById('recording-overview-content').innerHTML; failInventory=true; inventoryRefresh({force:true})");
+  assert.equal(await evaluate("document.getElementById('recording-overview-content').innerHTML === previousInventory"),true,'Inventory failure preserves the complete last inventory');
+  assert.equal(await evaluate("document.getElementById('recording-overview-notice').hidden"),false,'Inventory errors remain visible inside Other recorded data');
+  assert.match(await evaluate("document.getElementById('recording-overview-notice').textContent"),/last successful inventory.*Storage & growth/);
+  assert.doesNotMatch(await evaluate('document.body.innerText'),/Private inventory failure/);
+  await evaluate("failInventory=false; inventoryRefresh({force:true})");
+  assert.equal(await evaluate("document.getElementById('recording-overview-notice').hidden"),true,'A successful retry clears inventory attention');
+  await evaluate("document.getElementById('recording-storage-details').open=false; document.querySelector('[data-recording-open=recording-storage-details]').click()");
+  assert.equal(await evaluate("document.getElementById('recording-storage-details').open && document.activeElement === document.querySelector('#recording-storage-details > summary')"),true,
+    'Other recorded data links to the shared storage and refresh disclosure');
+  await evaluate('panel.inventory(inventory)');
   assert.equal(await evaluate("document.getElementById('recording-growth-retained').textContent"), '6 GB');
   assert.match(await evaluate("document.getElementById('recording-growth-inventoryAt').textContent"), /Retained adaptive payload estimate.*checked/);
-  await evaluate("document.getElementById('recording-health-refresh').focus(); payload.recordingHealth.backup.state = 'running'; payload.recordingHealth.backup.startedAt = payload.recordingHealth.checkedAt; panel.update(payload)");
-  assert.equal(await evaluate('document.activeElement.id'), 'recording-health-refresh', 'Updates preserve keyboard focus');
+  await evaluate("document.querySelector('#recording-backup-card > summary').focus(); payload.recordingHealth.backup.state = 'running'; payload.recordingHealth.backup.startedAt = payload.recordingHealth.checkedAt; panel.update(payload)");
+  assert.equal(await evaluate("document.activeElement === document.querySelector('#recording-backup-card > summary') && document.getElementById('recording-backup-card').open"),true,
+    'Health updates preserve disclosure state and keyboard focus');
   assert.equal(await evaluate("document.getElementById('recording-backup-state').textContent"), 'Creating a copy');
   await evaluate("document.querySelector('[data-recording-open=database-export-details]').click()");
   assert.equal(await evaluate("document.getElementById('database-export-details').open && document.activeElement === document.querySelector('#database-export-details > summary')"), true);
@@ -154,20 +242,22 @@ try {
   assert.equal(await evaluate("document.getElementById('recording-health-attention').hidden"), true);
   assert.equal(await evaluate("document.getElementById('recording-recording-state').textContent"), 'Read-only history');
   assert.match(await evaluate("document.getElementById('recording-health-scope').textContent"), /Recorded snapshot/);
-  await capture('snapshot-1440-dark');
+  await evaluate("document.querySelectorAll('#recording-details details').forEach(node=>node.open=false); scrollTo(0,0)");
+  await settle(); await capture('snapshot-1440-dark');
   // Authenticated fallback can expose just health when the first status read fails.
   await evaluate("panel.clear(); document.body.dataset.authenticated = 'false'; document.getElementById('recording-details').open = true; window.fallback = panel.refresh()");
   await evaluate('fallback');
   assert.equal(await evaluate("getComputedStyle(document.querySelector('.history-panel')).display !== 'none' && document.getElementById('recording-health').getBoundingClientRect().height > 0"), true);
   assert.equal(await evaluate("getComputedStyle(document.getElementById('fixture-control')).display"), 'none');
-  assert.equal(await evaluate("getComputedStyle(document.getElementById('database-export-details')).display"), 'none');
+  assert.equal(await evaluate("document.getElementById('database-export-details').checkVisibility()"),false);
+  assert.equal(await evaluate("document.querySelector('.recording-section-group').checkVisibility()"),false,'Health fallback hides the complete data and tools groups');
   // Clear fences a response that arrives after logout.
   await evaluate('deferred = true; window.pendingRefresh = panel.refresh(); panel.clear(); resolveHealth(payload.recordingHealth)');
   await evaluate('pendingRefresh');
   assert.equal(await evaluate('document.body.dataset.recordingHealth'), 'false');
   assert.equal(await evaluate("getComputedStyle(document.querySelector('.history-panel')).display"), 'none');
   assert.deepEqual(errors, []);
-  console.log(`Recording health browser smoke passed: 320/390/768/1440, light/dark, attention navigation, unknown/snapshot, refresh failure, auth fallback and logout fencing. Screenshots: ${artifacts}`);
+  console.log(`Recording details browser smoke passed: 320/390/768/1440, light/dark, collapsed/storage/adaptive/all-open layouts, production tables, disclosure and focus preservation, attention navigation, inventory and health failures, snapshot, auth fallback and logout fencing. Screenshots: ${artifacts}`);
 } finally {
   socket?.close(); browser?.kill('SIGTERM');
   await new Promise(resolve => server.close(resolve));

@@ -215,13 +215,13 @@ try {
     ), fold => {
       const summary = fold.querySelector(':scope > summary');
       const parent = fold.parentElement.closest('details')?.querySelector(':scope > summary');
-      return { label: summary.textContent.trim(), visible: summary.checkVisibility(),
+      return { label: summary.textContent.trim(), visible: summary.checkVisibility(), dataset: fold.matches('.recording-dataset'),
         indent: parent ? summary.getBoundingClientRect().left - parent.getBoundingClientRect().left : 0 };
     }))`));
     assert.ok(folds.length >= 13, 'Recording hierarchy covers the overview, groups, datasets and storage accounting');
     for (const fold of folds) {
       assert.equal(fold.visible, true, `${fold.label} is visible inside its expanded parent`);
-      assert.ok(fold.indent >= 16, `${fold.label} is visibly indented from its parent (${fold.indent}px)`);
+      assert.ok(fold.indent >= (fold.dataset ? 16 : 0), `${fold.label} keeps its place in the recording hierarchy (${fold.indent}px)`);
     }
   };
   await command('browsingContext.navigate', { context, url: base, wait: 'complete' });
@@ -277,7 +277,10 @@ try {
   assert.equal(await evaluate("document.getElementById('recording-overview-details').open"),false,'opening recording details measures retained adaptive size without opening the complete inventory');
   await evaluate("document.getElementById('recording-adaptive-details').open=true; true");
   await until("document.querySelectorAll('#recording-content tr[data-stream-id]').length>0");
-  assert.match(await evaluate("document.getElementById('recording-content').textContent"),/Adaptive target/);
+  assert.match(await evaluate("document.getElementById('recording-content').textContent"),/How recording is counted/);
+  assert.match(await evaluate("document.getElementById('recording-storage-details').textContent"),/Soft target/);
+  assert.equal(await evaluate("document.getElementById('recording-storage-details').open"),false,
+    'storage detail remains folded when viewing adaptive measurements');
   for(const label of ['Garage rear temperature','Garage front temperature','maximum interval'])
     assert(!await evaluate(`document.getElementById('recording-content').textContent.includes(${JSON.stringify(label)})`));
   const expectedStreams=recordingRows(app.engine.recorder.status(now)).map(row=>row.rowId).sort();
@@ -301,7 +304,10 @@ try {
   assert.equal(await evaluate(`document.querySelector('#recording-content details[data-stream-id="${focusedReading}"]').open`),true,
     'fresh status rendering preserves source disclosure and keyboard focus');
   assert.equal(await evaluate("window.recordingFixture.requests"),1,'the recording summary measures inventory once; opening the adaptive table and rerendering reuse it');
-  assert.equal(await evaluate("[...document.querySelectorAll('#recording-details > details')].map(node=>node.id).join(',')"),'recording-adaptive-details,recording-overview-details,energy-audit-details,database-export-details,history-recovery-details');
+  assert.deepEqual(await evaluate("[...document.querySelectorAll('#recording-details > .recording-section-group')].map(group=>({title:group.querySelector('h3').textContent,folds:[...group.querySelectorAll(':scope > details')].map(node=>node.id)}))"),[
+    {title:'Recorded data',folds:['recording-storage-details','recording-adaptive-details','recording-overview-details','energy-audit-details']},
+    {title:'History tools',folds:['database-export-details','history-recovery-details']},
+  ],'recorded data and history actions have distinct, consistent sections');
   await until("!document.getElementById('database-export-download').disabled && !document.getElementById('database-export-save').disabled");
   await evaluate(`(() => {
     window.exportFixture = { create: URL.createObjectURL, click: HTMLAnchorElement.prototype.click, picker: window.showSaveFilePicker };
@@ -341,7 +347,7 @@ try {
   assert.match(chargingInventory,/Charging choices, sessions and device state/);
   assert.match(chargingInventory,/Automatic charging and shared priority.*survive restart and unplugging/);
   assert.match(chargingInventory,/Session edits.*do not replace configured defaults/);
-  assert.match(await evaluate("document.getElementById('recording-overview-message').textContent"),/Database snapshot:/);
+  assert.match(await evaluate("document.getElementById('recording-overview-message').textContent"),/Inventory:/);
   assert.equal(await evaluate("Boolean(document.querySelector('[data-dataset-id=heat_pump_power]'))"),false,'calculated heat-pump power is not a separate stored series');
   assert(await evaluate("document.querySelectorAll('.recording-storage-accounting tbody tr').length")>10,'physical table accounting is available separately');
   assert.equal(await evaluate("[...document.querySelectorAll('.recording-storage-accounting tbody th')].some(node=>/^chart_rollup/.test(node.textContent))"),false,'plot reduction does not create stored chart-summary tables');
@@ -354,6 +360,9 @@ try {
   await checkRecordingHierarchy();
   assert.match(await evaluate("document.querySelector('[data-dataset-id=state-settings] > summary').textContent"),/Current state · overwritten/);
   assert.match(await evaluate("document.querySelector('[data-dataset-id=csv-easee] > summary').textContent"),/No records yet/);
+  await evaluate("document.querySelector('[data-recording-open=recording-storage-details]').click(); true");
+  assert.equal(await evaluate("document.getElementById('recording-storage-details').open && document.activeElement===document.querySelector('#recording-storage-details > summary')"),true,
+    'inventory links to the single storage and refresh location');
   await evaluate("window.recordingFixture.hold=true; document.getElementById('recording-overview-refresh').click(); document.querySelector('[data-dataset-id=weather-snapshots] > summary').focus(); true");
   await until("Boolean(window.recordingFixture.release)");
   await evaluate("window.recordingFixture.release(); true");
@@ -383,7 +392,7 @@ try {
   await evaluate("document.getElementById('recording-details').open=true; true");
   await evaluate("document.getElementById('energy-audit-details').open=true; true");
   await until("document.querySelectorAll('#energy-audit-content .energy-check').length===2");
-  assert.equal(await evaluate("document.querySelector('#energy-audit-details > summary').textContent.trim()"),'Recorded energy checks');
+  assert.equal(await evaluate("document.querySelector('#energy-audit-details > summary > span').firstChild.textContent.trim()"),'Recorded energy checks');
   assert.match(await evaluate("document.getElementById('energy-audit-content').textContent"),/Property and Charger 1 compare stored phase-energy totals, estimated by integrating power, with meter references over matching periods\./);
   const energyCheck = signal => `#energy-audit-content .energy-check[data-check-key="${signal}"]`;
   const propertyCheck = energyCheck('property_import_energy_counter');
