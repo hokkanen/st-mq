@@ -96,16 +96,19 @@ test('a stale stored promise cannot bypass current evidence at dispatch',()=>{
   assert.equal(result.valid,false);assert.equal(result.reason,'scheduled-cycle-response-evidence-unavailable');
 });
 
-test('an admitted trial retains its bounded safety rule on the following engine tick',t=>{
+test('an admitted trial retains its bounded safety rule on the following engine tick',async t=>{
   const store=new Store(':memory:');let clock=now;
   const engine=new Engine({store,clock:()=>clock,config:{input:'simulated',
     settings:{comfort:{targetC:21,maxDropC:2,maxRiseC:2}},control:{trialBudgetCentsPerDay:100,maxTrialCostCents:100}}});
   engine.automation.set('home', true);
-  t.after(()=>{clearTimeout(engine.executor.timer);engine.executor.closed=true;store.close();});
+  t.after(async()=>{clearTimeout(engine.executor.timer);engine.executor.closed=true;await engine.closeFireplace();store.close();});
   const cp=restoreAdaptiveCheckpoint(null);cp.baselineC=21;
   cp.samples=Array.from({length:4},(_,i)=>({...sample(now-(5-i)*H/4,now-(4-i)*H/4,1.5),
     timestamp:new Date(now-(4-i)*H/4).toISOString(),phase:'normal',regime:'occupied',quality:[]}));
   cp.cursor=cp.samples.at(-1).timestamp;cp.health.usableSamples=4;engine.checkpoint=cp;
+  const pending=engine.tick();
+  assert.equal(pending.decision.phase,'normal');
+  await engine.heatingPlanning.pending.promise;
   const first=engine.tick();
   assert.equal(first.decision.plan?.trial,true);
   assert.equal(first.decision.phase,'reduction');

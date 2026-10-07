@@ -1,4 +1,4 @@
-// Run after npm run build. Uses only a disposable simulated app and browser.
+// Uses only a disposable simulated app, UI build and browser.
 import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
@@ -6,13 +6,14 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { start } from '../../src/main.js';
 import { loadConfig } from '../../src/app/config.js';
+import { build, preview } from 'vite';
 
 const directory = mkdtempSync(join(tmpdir(), 'stmq-heating-explorer-browser-'));
 const artifacts = mkdtempSync(join(tmpdir(), 'stmq-heating-explorer-screenshots-'));
 const now = Date.parse('2026-09-30T12:00:00Z');
 const pause = ms => new Promise(resolve => setTimeout(resolve, ms));
 const pending = new Map(), errors = [];
-let app, browser, socket, sequence = 0;
+let app, browser, socket, ui, sequence = 0;
 
 try {
   const configuration = join(directory, 'fixture-config.json');
@@ -20,6 +21,11 @@ try {
   const config = loadConfig({ STMQ_CONFIG: configuration, STMQ_DATA_DIR: directory,
     STMQ_PORT: '0', STMQ_INPUT: 'simulated' }, directory);
   app = await start({ config, clock: () => now, installSignalHandlers: false });
+  const uiDirectory = process.env.STMQ_UI_DIST ?? join(directory, 'dist');
+  if (!process.env.STMQ_UI_DIST) await build({ build: { outDir: uiDirectory }, logLevel: 'warn' });
+  ui = await preview({ configFile: false, build: { outDir: uiDirectory }, preview: {
+    host: '127.0.0.1', port: 0, proxy: { '/api': `http://127.0.0.1:${app.server.address().port}` },
+  } });
   browser = spawn(process.env.STMQ_CHROME_BIN ?? '/opt/google/chrome/chrome', [
     '--headless', '--no-sandbox', '--disable-gpu', '--no-first-run', '--disable-background-networking',
     '--remote-debugging-address=127.0.0.1', '--remote-debugging-port=0',
@@ -96,6 +102,7 @@ try {
     estimatedBenefitCents: 300 - cost, lowerBenefitCents: 280 - cost,
     trajectory: Array.from({ length: 21 }, (_, i) => ({ at: now + i * hour / 2, indoorC: 21 + .4 * Math.sin(i / 2) - drop * Math.sin(i / 7), uncertaintyC: .25 })) });
   const fixture = { version: 1, snapshotId: 'synthetic-browser-snapshot', snapshotAt: now, expiresAt: now + 5 * 60_000,
+    indoorInput: { valueC: 21, estimated: true, available: true, observedAt: now, uncertaintyC: .2 },
     current: summary(4, .7, 180), scenario: summary(6, 1.1, 125),
     controls: [{ key: 'maxReductionHours', label: 'Maximum reduction', value: 4, min: .25, max: 12, step: .25, unit: 'h' },
       { key: 'maxDropC', label: 'Allowed average temperature drop', value: 1.5, min: 0, max: 2, step: .25, unit: '°C' },
@@ -172,7 +179,7 @@ try {
     };
   ` });
   await send('Emulation.setDeviceMetricsOverride', { width: 1280, height: 1000, deviceScaleFactor: 1, mobile: false });
-  await send('Page.navigate', { url: `http://127.0.0.1:${app.server.address().port}/` });
+  await send('Page.navigate', { url: `http://127.0.0.1:${ui.httpServer.address().port}/` });
   await until(`globalThis.explorerFixture?.poll && document.body.dataset.authenticated === 'true'`);
   const planCases = [
     { name: 'paused', patch: { enabled: false, decision: { plan: null } }, label: 'Planned actions', value: 'No actions scheduled' },
@@ -229,6 +236,7 @@ try {
   assert.equal(await evaluate(`document.getElementById('home-planned-change').getAttribute('aria-expanded')`), 'true');
   assert.match(await evaluate(`document.getElementById('heating-explorer-constraints').textContent`), /4 h/);
   assert.match(await evaluate(`document.getElementById('heating-explorer-opportunities').textContent`), /€0.55.*6 h/);
+  assert.match(await evaluate(`document.getElementById('heating-explorer-context').textContent`), /estimate for one unavailable room.*±0.2 °C.*no learning evidence/);
   await keyPress('Escape');
   await until(`!document.getElementById('heating-explorer-dialog').open`);
   assert.equal(await evaluate(`document.activeElement.id`), 'home-planned-change');
@@ -298,6 +306,23 @@ try {
   assert.match(await evaluate(`document.getElementById('heating-explorer-metrics').textContent`), /€0.55/);
   assert.match(await evaluate(`document.getElementById('heating-explorer-illustrative').textContent`), /Illustrative 8 h reduction.*cannot be applied/);
   assert.equal(await evaluate(`document.querySelectorAll('#heating-explorer-chart path').length`), 2);
+  await evaluate(`globalThis.originalHeatingTrajectory = structuredClone(explorerFixture.value.scenario.trajectory);
+    explorerFixture.value.scenario.trajectory = originalHeatingTrajectory.map(point => ({...point, uncertaintyC:null}));
+    document.getElementById('heating-explorer-form').requestSubmit()`);
+  await until(`document.getElementById('heating-explorer-chart-uncertainty').textContent.includes('unavailable')`);
+  assert.equal(await evaluate(`document.querySelectorAll('#heating-explorer-chart polygon').length`), 0,
+    'Unknown model uncertainty never creates a zero-width confidence band');
+  assert.match(await evaluate(`document.querySelector('#heating-explorer-chart svg').getAttribute('aria-label')`), /allowance unavailable/);
+  await evaluate(`explorerFixture.value.scenario.trajectory = originalHeatingTrajectory.map((point,index) => ({...point,uncertaintyC:index===10?null:point.uncertaintyC}));
+    explorerFixture.value.constraints.push({key:'provisionalReference',label:'Provisional normal temperature',status:'limiting',value:.5,unit:'°C',detail:'The provisional reference limits the allowed drop.'});
+    document.getElementById('heating-explorer-form').requestSubmit()`);
+  await until(`document.getElementById('heating-explorer-chart-uncertainty').textContent.includes('gaps are unknown')`);
+  assert.equal(await evaluate(`document.querySelectorAll('#heating-explorer-chart polygon').length`), 2,
+    'The allowance preserves an unsupported interval between independently supported segments');
+  assert.match(await evaluate(`document.querySelector('#heating-explorer-constraints [data-status="limiting"]').textContent`), /Limits this search/);
+  await evaluate(`explorerFixture.value.scenario.trajectory = originalHeatingTrajectory;
+    document.getElementById('heating-explorer-form').requestSubmit()`);
+  await until(`document.getElementById('heating-explorer-chart-uncertainty').textContent === 'Shaded: model uncertainty allowance'`);
   for (const [width,height,theme] of [[320,740,'dark'],[390,844,'light'],[1280,1000,'dark']]) {
     await send('Emulation.setDeviceMetricsOverride',{width,height,deviceScaleFactor:1,mobile:false});
     await evaluate(`await new Promise(requestAnimationFrame); await new Promise(requestAnimationFrame)`);
@@ -355,5 +380,6 @@ try {
     await new Promise(resolve => { browser.once('exit', resolve); setTimeout(resolve, 3000).unref(); });
   }
   await app?.close();
+  if (ui) await new Promise(resolve => ui.httpServer.close(resolve));
   rmSync(directory, { recursive: true, force: true });
 }

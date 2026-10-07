@@ -20,6 +20,8 @@ const reasonLabels = {
   'unvalidated-heating-energy-model': 'Heating electricity estimates are not yet sufficiently validated.',
   'flat-prices-preserve-normal-warmth': 'The price difference does not justify changing normal heating.',
   'heating-paused': 'Automatic control is paused. Heating can continue. Exploring keeps that choice unchanged.',
+  'heating-planning-in-progress': 'The next heating plan is being calculated. Normal heating continues.',
+  'heating-planning-unavailable': 'The next heating plan is unavailable. Normal heating continues while the controller retries.',
   'estimated-indoor-thermal-state-unavailable': 'The indoor estimate lacks continuous heating evidence for the heat-reserve forecast',
   'trial-needs-measured-indoor-temperature': 'A learning trial requires measured indoor temperatures',
   'indoor-comfort-limit': 'The indoor average is outside its temperature allowance.',
@@ -111,13 +113,25 @@ export function heatingComparisonMetrics(result) {
   const current = result.current ?? {}, scenario = result.scenario ?? {}, comparison = result.comparison ?? {};
   return [
     { label: 'Additional estimated saving', value: money(comparison.additionalBenefitCents),
-      detail: 'Compared with the current plan, over the evaluated cycle.' },
+      detail: 'Compared with the current plan, from the captured time onward.' },
     { label: 'Largest average temperature drop', value: Number.isFinite(scenario.outcomes?.maxIndoorDropC) ? `${decimal(scenario.outcomes.maxIndoorDropC)} °C` : 'Unavailable',
       detail: Number.isFinite(current.outcomes?.maxIndoorDropC) ? `Current plan ${decimal(current.outcomes.maxIndoorDropC)} °C · change ${signed(comparison.additionalIndoorDropC, ' °C')}` : 'No supported average estimate for the current plan.' },
     { label: 'Chosen reduction duration', value: Number.isFinite(scenario.schedule?.reductionStart) && Number.isFinite(scenario.schedule?.reductionEnd)
       ? `${decimal((scenario.schedule.reductionEnd - scenario.schedule.reductionStart) / hour)} h` : 'No reduction',
       detail: scenario.trial ? 'Bounded learning trial; evidence gates still apply.' : 'A maximum is permission, not a requested duration.' },
   ];
+}
+
+/** Unknown uncertainty interrupts the allowance; it is never a zero-width band. */
+export function heatingUncertaintyBands(points = []) {
+  const bands = []; let current = [];
+  const finish = () => { if (current.length > 1) bands.push(current); current = []; };
+  for (const point of points) {
+    if (!Number.isFinite(point.at) || !Number.isFinite(point.indoorC)
+      || !Number.isFinite(point.uncertaintyC) || point.uncertaintyC < 0) finish();
+    else current.push(point);
+  }
+  finish(); return bands;
 }
 
 export function createHeatingExplorerPanel({ document, request, afterMutation = () => {}, confirm = confirmAction }) {
@@ -184,7 +198,7 @@ export function createHeatingExplorerPanel({ document, request, afterMutation = 
   }
   function renderConstraints(result) {
     const list = $('heating-explorer-constraints'); list.replaceChildren();
-    const labels = { blocking: 'Limits this search', reached: 'Reached', available: 'Within limit', unknown: 'Not assessable' };
+    const labels = { blocking: 'Limits this search', limiting: 'Limits this search', reached: 'Reached', available: 'Within limit', unknown: 'Not assessable' };
     for (const constraint of result.constraints ?? []) {
       const item = element('li', null, 'heating-explorer-constraint'); item.dataset.status = constraint.status;
       const head = element('div', null, 'heating-explorer-constraint-head');
@@ -221,18 +235,25 @@ export function createHeatingExplorerPanel({ document, request, afterMutation = 
   }
   function renderChart(result) {
     const series = [result.current?.trajectory ?? [], result.scenario?.trajectory ?? []].map(points => points.filter(point => Number.isFinite(point.at) && Number.isFinite(point.indoorC)));
+    const bands = heatingUncertaintyBands(result.scenario?.trajectory);
+    const allowanceAvailable = point => Number.isFinite(point.uncertaintyC) && point.uncertaintyC >= 0;
+    const uncertaintyMissing = series[1].some(point => !allowanceAvailable(point));
+    const allowanceLabel = !bands.length ? 'Model uncertainty allowance unavailable'
+      : uncertaintyMissing ? 'Shaded: available model uncertainty allowance; gaps are unknown'
+        : 'Shaded: model uncertainty allowance';
+    $('heating-explorer-chart-uncertainty').textContent = allowanceLabel;
     const figure = $('heating-explorer-chart'); figure.hidden = series.some(points => points.length < 2);
     $('heating-explorer-chart-plot').replaceChildren();
     if (figure.hidden) return;
     const all = series.flat(), start = Math.min(...all.map(point => point.at)), end = Math.max(...all.map(point => point.at));
     const width = Math.max(250, $('heating-explorer-chart-plot').clientWidth || 748), plotEnd = width - 18;
-    const low = Math.floor((Math.min(...all.map(point => point.indoorC - (point.uncertaintyC ?? 0))) - .2) * 2) / 2;
-    const high = Math.ceil((Math.max(...all.map(point => point.indoorC + (point.uncertaintyC ?? 0))) + .2) * 2) / 2;
+    const low = Math.floor((Math.min(...all.map(point => allowanceAvailable(point) ? point.indoorC - point.uncertaintyC : point.indoorC)) - .2) * 2) / 2;
+    const high = Math.ceil((Math.max(...all.map(point => allowanceAvailable(point) ? point.indoorC + point.uncertaintyC : point.indoorC)) + .2) * 2) / 2;
     const x = at => 40 + (at - start) / Math.max(1, end - start) * (plotEnd - 40);
     const y = c => 164 - (c - low) / Math.max(.5, high - low) * 144;
     const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
     svg.setAttribute('viewBox', `0 0 ${width} 196`); svg.setAttribute('role', 'img');
-    svg.setAttribute('aria-label', `Predicted indoor average for the current plan and your scenario, from ${decimal(low)} to ${decimal(high)} degrees. The predicted indoor-average extremes are listed below.`);
+    svg.setAttribute('aria-label', `Predicted indoor average for the current plan and your scenario, from ${decimal(low)} to ${decimal(high)} degrees. ${allowanceLabel}. The predicted indoor-average extremes are listed below.`);
     const part = (tag, attributes, text) => {
       const node = document.createElementNS(svg.namespaceURI, tag);
       for (const [key, value] of Object.entries(attributes)) node.setAttribute(key, value);
@@ -243,9 +264,11 @@ export function createHeatingExplorerPanel({ document, request, afterMutation = 
       part('line', { x1: 40, x2: plotEnd, y1: y(value), y2: y(value), stroke: 'var(--grid)', 'stroke-width': 1 });
       part('text', { x: 32, y: y(value) + 4, fill: 'var(--muted)', 'text-anchor': 'end', 'font-size': 10 }, `${value.toFixed(1)}°`);
     }
-    const band = [...series[1].map(point => `${x(point.at)},${y(point.indoorC + (point.uncertaintyC ?? 0))}`),
-      ...[...series[1]].reverse().map(point => `${x(point.at)},${y(point.indoorC - (point.uncertaintyC ?? 0))}`)];
-    part('polygon', { points: band.join(' '), fill: 'var(--chart-indoor)', opacity: '.12' });
+    for (const points of bands) {
+      const band = [...points.map(point => `${x(point.at)},${y(point.indoorC + point.uncertaintyC)}`),
+        ...[...points].reverse().map(point => `${x(point.at)},${y(point.indoorC - point.uncertaintyC)}`)];
+      part('polygon', { points: band.join(' '), fill: 'var(--chart-indoor)', opacity: '.12' });
+    }
     series.forEach((points, index) => part('path', { d: points.map((point, i) => `${i ? 'L' : 'M'}${x(point.at).toFixed(1)},${y(point.indoorC).toFixed(1)}`).join(' '), fill: 'none', stroke: index ? 'var(--chart-indoor)' : 'var(--muted)', 'stroke-width': index ? 2.5 : 2, 'stroke-dasharray': index ? 'none' : '5 4', 'vector-effect': 'non-scaling-stroke' }));
     for (let tick = 0; tick <= 4; tick++) {
       const at = start + (end - start) * tick / 4;
@@ -337,6 +360,7 @@ export function createHeatingExplorerPanel({ document, request, afterMutation = 
     $('heating-explorer-dirty').hidden = !state.dirty || !result.previewId;
     const context = [status?.input === 'simulated' ? 'Simulated installation: all conditions and outcomes are synthetic.' : '',
       status?.automation?.home?.enabled === false ? 'Automatic control is paused. Heating can continue. Exploring does not enable automatic control.' : '',
+      result.indoorInput?.estimated ? `The captured indoor average includes an estimate for one unavailable room, retaining its configured weight.${Number.isFinite(result.indoorInput.uncertaintyC) ? ` Its starting uncertainty allowance is ±${decimal(result.indoorInput.uncertaintyC)} °C.` : ' Its uncertainty allowance is unavailable.'} This estimate adds no learning evidence.` : '',
       result.currentDiffersFromRecalculation ? 'The currently selected plan has been retained. A fresh calculation with the same limits can differ; comparisons use the selected plan.' : '',
       state.stale ? 'Conditions may have changed. Refresh before comparing or applying; this preview keeps its original inputs.' : ''].filter(Boolean).join(' ');
     $('heating-explorer-context').textContent = context; $('heating-explorer-context').hidden = !context;

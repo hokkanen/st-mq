@@ -43,6 +43,31 @@ test('hypothetical comparison caches identical frozen inputs without changing st
   assert.equal(r.store.learningJournal({ input: 'simulated' }).length, 0);
   await assert.rejects(r.service.simulate({ ...payload, surprise: true }), /Unsupported/);
   await assert.rejects(r.service.simulate({ ...payload, limits: { severeDropC: 9 } }), /Unsupported/);
+  await assert.rejects(r.service.simulate({ ...payload, limits: null }), /must be an object/);
+});
+
+test('invalid planning clocks cannot provide fresh comparison snapshots', async t => {
+  const r = fixture(t);
+  for (const clock of [undefined, null, NaN, Infinity, r.now + 1]) {
+    r.service.input.now = clock;
+    await assert.rejects(r.service.view(), /fresh heating planning snapshot/);
+  }
+});
+
+test('failure of an evicted comparison cannot remove its newer in-flight replacement', async t => {
+  const r = fixture(t), view = await r.service.view(), jobs = [];
+  r.worker.run = () => new Promise((resolve, reject) => jobs.push({ resolve, reject }));
+  const simulate = value => r.service.simulate({ snapshotId: view.snapshotId, limits: { maxReductionHours: value } });
+  const first = simulate(12), rejected = assert.rejects(first, /first comparison failed/);
+  const pending = Array.from({ length: 8 }, (_, index) => simulate(index + 1));
+  pending.push(simulate(12));
+  assert.equal(jobs.length, 10);
+  jobs[0].reject(new Error('first comparison failed'));
+  await rejected;
+  pending.push(simulate(12));
+  assert.equal(jobs.length, 10, 'the repeated request shares the newer calculation');
+  for (const job of jobs.slice(1)) job.resolve({ version: 1, executablePlan: null });
+  await Promise.all(pending);
 });
 
 for (const change of ['model', 'forecast', 'observation', 'settings', 'authority', 'expired']) test(`approval rejects ${change} changes after a reviewed preview`, async t => {
@@ -149,6 +174,27 @@ test('starting command acknowledgement after cancellation records exposure but i
   assert.equal(cycle.executionSchedule.reductionEnd, r.now);
   assert.equal(r.service.publicTrial().status, 'cancelled');
 });
+
+for (const change of ['start expiry', 'outer expiry', 'configuration', 'authority', 'automation', 'suspension']) {
+  test(`a delayed command acknowledgement cannot renew scenario consent after ${change}`, async t => {
+    const r = fixture(t), preview = await r.preview();
+    r.service.apply({ previewId: preview.previewId });
+    const cycle = { id: `delayed-${change}`, plan: r.engine.pendingPlan, startedAt: r.now };
+    r.setActive(cycle);
+    r.store.setState('executor:home', { restorationPending: true });
+    if (change === 'start expiry') r.advance(6 * 60_000);
+    if (change === 'outer expiry') r.advance(r.service.trial().expiresAt - r.now + 1);
+    if (change === 'configuration') r.engine.config.controller = { max_drop_c: 1 };
+    if (change === 'authority') r.engine.canControl = () => false;
+    if (change === 'automation') r.engine.automationEnabled = () => false;
+    if (change === 'suspension') r.engine.suspended = true;
+    r.store.transaction(() => r.service.started(cycle));
+    assert.equal(cycle.executionSchedule.reductionEnd, r.now);
+    assert.equal(r.service.publicTrial().status, change.includes('expiry') ? 'expired' : 'interrupted');
+    assert.equal(r.engine.cycles.active(), cycle, 'the exposure remains recorded for recovery');
+    assert.deepEqual(r.store.getState('executor:home'), { restorationPending: true });
+  });
+}
 
 test('approved state can end from an actual completed cycle and exposes its recorded assessment', async t => {
   const r = fixture(t), preview = await r.preview(); r.service.apply({ previewId: preview.previewId });

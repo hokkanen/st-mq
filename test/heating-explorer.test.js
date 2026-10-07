@@ -84,6 +84,8 @@ test('missing or stale observations remain unknown and never produce numerical p
     assert.equal(result.scenario.outcomes, null);
     assert.equal(result.illustrative, null);
     assert.equal(result.comparison.additionalBenefitCents, null);
+    assert.equal(result.indoorInput.available, false);
+    assert.equal(result.indoorInput.uncertaintyC, null);
     assert.deepEqual(result.opportunities, []);
   }
 });
@@ -162,6 +164,33 @@ test('indoor extrema and deviations use the single weighted average reference', 
   assert.equal(result.normal.outcomes.maxIndoorRiseC, Math.max(0, result.normal.outcomes.warmestIndoor.valueC - 21));
 });
 
+test('comparison extremes include the captured starting temperature before normal recovery', () => {
+  for (const initial of [18, 25]) {
+    const input = heatingExplorerFixture();
+    input.observations.indoor.value = initial;
+    input.thermalState.indoorC = initial;
+    const result = exploreHeatingPlan(input, {}, options), normal = result.normal;
+    const extreme = initial < 21 ? normal.outcomes.coldestIndoor : normal.outcomes.warmestIndoor;
+    assert.equal(extreme.valueC, initial);
+    assert.equal(extreme.at, input.now);
+    assert.equal(normal.outcomes[initial < 21 ? 'maxIndoorDropC' : 'maxIndoorRiseC'], Math.abs(initial - 21));
+    assert.equal(normal.trajectory[0].at, input.now);
+    assert.equal(normal.trajectory[0].indoorC, initial);
+    assert.equal(normal.evaluationStartAt, input.now);
+    assert.equal(normal.evaluationEndAt, input.prices.at(-1).end);
+  }
+});
+
+test('an earlier missing-temperature gate cannot claim that absent forecast coverage is available', () => {
+  const input = heatingExplorerFixture();
+  input.observations.indoor.value = null;
+  input.prices = [];
+  input.forecast = [];
+  const result = exploreHeatingPlan(input, {}, options);
+  assert.equal(result.constraints.find(row => row.key === 'forecastCoverage').status, 'blocking');
+  assert.equal(result.current.outcomes, null);
+});
+
 test('retained current economics are recomputed rather than mixing a previous frozen forecast', () => {
   const input = heatingExplorerFixture();
   input.currentPlan = chooseCycle(input).plan;
@@ -231,6 +260,22 @@ test('increasing the preheat ceiling above two hours expands the actual bounded 
   assert.ok(search(three).evaluatedCandidates > search(two).evaluatedCandidates);
 });
 
+test('exploration exposes ROOM-increase evidence separately from permitted duration and native headroom', () => {
+  const input = heatingExplorerFixture();
+  Object.assign(input.equipment, { preheatAvailable: true, roomSettingC: 20, roomSettingMaximumC: 35 });
+  input.checkpoint.model.equipmentResponse.validation.phases.preheat = {
+    accepted: true, episodes: 3, maxDurationHours: 6, maxRoomBoostC: 1, treatmentKey: 'room-boost-v1' };
+  const boundary = result => result.constraints.find(row => row.key === 'validatedPreheatBoostC');
+  const blocked = exploreHeatingPlan(input, { preheatRoomBoostC: 5 }, options);
+  assert.equal(boundary(blocked).value, 1);
+  assert.equal(boundary(blocked).status, 'blocking');
+  const supported = exploreHeatingPlan(input, { preheatRoomBoostC: 1 }, options);
+  assert.equal(boundary(supported).status, 'available');
+  input.equipment.roomSettingC = 34;
+  const clamped = exploreHeatingPlan(input, { preheatRoomBoostC: 5 }, options);
+  assert.equal(boundary(clamped).status, 'available', 'native headroom reduces the actual request to the demonstrated increase');
+});
+
 test('explorer worker executes the pure API and reports strict validation errors', async t => {
   const worker = new Worker(new URL('../src/control/heating-explorer-worker.js', import.meta.url));
   t.after(() => worker.terminate());
@@ -249,6 +294,14 @@ test('a supported sensor estimate retains bounded economic operation and current
     indoorUncertaintyGrowthCPerHour: .005, indoorEstimateValidUntil: input.now + 72 * HOUR });
   const decision = chooseCycle(input);
   assert.ok(decision.plan, 'An incomplete measured average alone must not disable a supported control estimate');
+  const result = exploreHeatingPlan(input, {}, options);
+  assert.equal(result.indoorInput.estimated, true);
+  assert.equal(result.indoorInput.available, true);
+  assert.equal(result.indoorInput.valueC, input.observations.indoor.value);
+  assert.equal(result.indoorInput.uncertaintyC, .1);
+  assert.equal(result.indoorInput.observedAt, input.observations.indoor.observedAt);
+  assert.equal(result.indoorInput.estimateValidUntil, input.equipment.indoorEstimateValidUntil);
+  assert.equal(result.current.trajectory[0].uncertaintyC, .1);
   assert.equal(revalidatePlan({ ...input, plan: decision.plan }).valid, true);
   const rejected = revalidatePlan({ ...input, plan: decision.plan,
     equipment: { ...input.equipment, indoorUncertaintyC: 3 } });

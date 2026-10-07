@@ -129,7 +129,7 @@ export class HeatingExplorer {
   }
   snapshot() {
     const now = this.engine.clock();
-    if (!this.input || now - this.input.now > INPUT_MAX_AGE_MS || this.input.now > now)
+    if (!this.input || !Number.isFinite(this.input.now) || now - this.input.now > INPUT_MAX_AGE_MS || this.input.now > now)
       throw failure('Waiting for a fresh heating planning snapshot.', 503);
     for (const [id, value] of this.snapshots) if (value.expiresAt <= now) this.snapshots.delete(id);
     for (const [id, value] of this.previews) if (value.expiresAt <= now) this.previews.delete(id);
@@ -144,8 +144,9 @@ export class HeatingExplorer {
     if (typeof payload.snapshotId !== 'string') throw failure('A snapshotId is required.', 400);
     const snapshot = this.snapshots.get(payload.snapshotId);
     if (!snapshot || snapshot.expiresAt <= this.engine.clock()) throw failure('This snapshot expired. Refresh the plan before comparing again.', 410);
-    validateExplorerOverrides(payload.limits ?? {});
-    return this.calculate(snapshot, payload.limits ?? {}, true);
+    const limits = Object.hasOwn(payload, 'limits') ? payload.limits : {};
+    validateExplorerOverrides(limits);
+    return this.calculate(snapshot, limits, true);
   }
   async calculate(snapshot, limits, preview) {
     const normalized = validateExplorerOverrides(limits);
@@ -155,7 +156,7 @@ export class HeatingExplorer {
       if (snapshot.cache.size >= 8) snapshot.cache.delete(snapshot.cache.keys().next().value);
       task = this.worker.run(snapshot.input, normalized);
       snapshot.cache.set(key, task);
-      task.catch(() => snapshot.cache.delete(key));
+      task.catch(() => { if (snapshot.cache.get(key) === task) snapshot.cache.delete(key); });
     }
     const result = await task;
     const { executablePlan, ...visible } = result;
@@ -248,7 +249,8 @@ export class HeatingExplorer {
     const reason = now >= trial.expiresAt ? 'One-cycle scenario expired.'
       : trial.status === 'pending' && now > trial.latestStartAt ? 'The approved start window expired.'
         : this.scopeBinding() !== trial.scopeBinding ? 'Configuration or source evidence changed.'
-          : !this.engine.automationEnabled('home') ? 'Home automation or control authority is unavailable.' : null;
+          : !this.engine.canControl() || this.engine.suspended || this.engine.config.input === 'offline'
+            || !this.engine.automationEnabled('home') ? 'Home automation or control authority is unavailable.' : null;
     if (reason) {
       if (active?.plan.userTrial?.id === trial.id) this.engine.cycles.shorten(now, 'scenario-scope-ended');
       this.finish(reason.includes('expired') ? 'expired' : 'interrupted', reason); return null;
@@ -265,10 +267,13 @@ export class HeatingExplorer {
       rebuild: e.store.getState(`fireplace:rebuild:${e.config.input}`)?.status });
   }
   started(cycle) {
-    const trial = this.trial();
     if (!cycle.plan.userTrial) return;
+    // A native acknowledgement may arrive after the last controller tick. It
+    // records physical exposure, but cannot renew expired or revoked consent.
+    const trial = this.reconcile(this.engine.clock());
     if (trial?.status !== 'pending' || cycle.plan.userTrial.id !== trial.id) {
-      this.engine.cycles.shorten(this.engine.clock(), 'scenario-approval-ended-before-confirmation');
+      if (!(cycle.executionSchedule?.reductionEnd <= this.engine.clock()))
+        this.engine.cycles.shorten(this.engine.clock(), 'scenario-approval-ended-before-confirmation');
       return;
     }
     this.engine.store.setState(this.key, { ...trial, status: 'running', cycleId: cycle.id, startedAt: cycle.startedAt });

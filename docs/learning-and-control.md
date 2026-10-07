@@ -187,6 +187,9 @@ Three kinds of evidence remain distinct:
 Economic dispatch requires all three checks, within a duration supported by at
 least three training/held-out response and advance forecast episodes. Counterfactual
 savings still remain estimates. See [model design and limits](learning-model-design.md).
+Preheat evidence also bounds the native ROOM increase: evidence from a smaller
+increase cannot authorize a larger economic preheat. A pending plan is checked
+against the currently configured preheat duration before dispatch.
 
 The normal indoor reference starts after one supported hour of occupied Normal
 heating and refines continuously with a 48-hour smoothing timescale and a 1°C
@@ -307,6 +310,21 @@ These decision rules consume the heat model's thermal predictions, uncertainty
 and action evidence. They are not fitted model coefficients: choosing another
 strategy does not alter the learning process or create missing evidence.
 
+During Home **Away**, native heat-pump protection supplies temperature protection.
+The application adds no absolute indoor minimum, for either economic plans or
+learning trials. Occupied average-temperature limits resume at the configured
+return time; trial screening includes the recovery period around that return.
+Equipment readiness, bounded trial costs and restoration remain required.
+Lower service during Away is not counted as evidence of occupied-operation savings.
+
+The complete schedule search runs in one background worker with one running
+request and only the newest waiting snapshot. Until a result is ready, heating
+stays Normal. Results older than two minutes or from changed model, configuration,
+source corrections, native settings or control ownership are discarded. The
+controller rechecks current temperatures, prices, weather, evidence and trial
+allowance before adopting a plan. Active cycles keep their existing continuation
+and restoration checks independently of the search worker.
+
 Selection, dispatch and continuation share paired stress scenarios for action and
 reference: heat response and loss ±15%, initial reserve/slab ±0.5 °C, compressor
 duty ±0.08, source electrical input within its operating-point allowance, and AUX
@@ -344,6 +362,10 @@ completion or 24 hours after an incomplete attempt; new automatic cycles also wa
 24 hours after an incomplete attempt. Occasional bounded trials can
 extend a tested duration; small preheat trials require thermal and reduction-response
 evidence. Unexecuted promises are not counted as learning episodes.
+
+Trial cost screening also includes the income that may be lost by reducing
+consumption during negative all-in prices. Negative prices cannot make that
+exposure disappear from the trial allowance.
 
 Recovery restores normal ROOM and tariff operation while applying one shared
 **60-minute hold** (`controller.recovery_hold_minutes`). Until its fixed deadline,
@@ -473,6 +495,15 @@ the baseline after expiry. Failed readback and pending restoration are visible;
 broker acknowledgement alone is not device confirmation. Restarts retain restore
 obligations. An independently changed panel value is preserved instead of being
 silently overwritten with an old baseline.
+
+Unreadable or malformed saved executor or native-setting state stops
+initialization before any state replacement or command. Saved manual choices
+require valid equipment ownership, explicit confirmation and valid scope
+deadlines. Native-setting obligations retain their original baseline, requested
+value and previous readback; incomplete state cannot establish an external edit.
+A failed read is not evidence that there are no outstanding circulation-OFF or
+native-setting restoration duties. Read-only reset inspection still reports
+independent known duties when another current record is unreadable.
 
 Plain H66 MQTT register publications do not contain a source measurement time.
 For non-retained publications, receipt time is retained as an explicitly named

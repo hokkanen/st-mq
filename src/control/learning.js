@@ -16,6 +16,13 @@ export function goodQuality(quality) {
   return flags.every(flag => ['good', 'simulated', 'historical', 'corrected_price', 'converted_fahrenheit', 'requested_not_observed'].includes(flag));
 }
 
+/** Control estimates retain separate provenance even when another caller has
+ * not copied the quality flag. They can never become observed learning input. */
+export function hasEstimatedIndoor(sample) {
+  return sample?.estimated === true || sample?.indoorEstimated === true
+    || Object.values(sample?.indoorSensors ?? {}).some(sensor => sensor.weight > 0 && sensor.estimated === true);
+}
+
 export function validComfortReference(reference) {
   return reference?.version === 4 && finite(reference.targetC) && reference.targetC >= 12 && reference.targetC <= 28
     && reference.source === 'occupied-normal-temperature-average'
@@ -51,7 +58,7 @@ function validObservation(sample) {
   const sensors = Object.values(sample?.indoorSensors ?? {}).filter(sensor => sensor.weight > 0);
   return finite(instant(sample?.timestamp)) && finite(sample.indoorC) && sample.indoorC >= 12 && sample.indoorC <= 28
     && finite(sample.outdoorC) && sample.outdoorC >= -60 && sample.outdoorC <= 50
-    && sample.valid !== false && sample.estimated !== true && goodQuality(sample.quality)
+    && sample.valid !== false && !hasEstimatedIndoor(sample) && goodQuality(sample.quality)
     && sensors.every(sensor => finite(sensor.value) && sensor.estimated !== true && sensor.reportCoverageComplete !== false);
 }
 

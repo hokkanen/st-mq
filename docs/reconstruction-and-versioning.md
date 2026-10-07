@@ -128,7 +128,7 @@ They correct the retained interpretation, not the physical actions already taken
 
 ## Version discipline
 
-The Home learning algorithm is `committed-house-v15-continuous-comfort`, with
+The Home learning algorithm is `committed-house-v16-observed-input-admission`, with
 thermal model version 4. Production starts from a fresh database and an explicit
 initial seed. There is no compatibility migration for development databases.
 
@@ -168,6 +168,9 @@ matches; it never creates a new temperature observation. Configuration and
 reporting-policy changes are recorded at their effective time. One-room estimates
 are control-only: no inferred temperature enters the learning journal as an observed
 endpoint, trains the thermal/reference learner or supplies validation outcomes.
+Journal admission and both learners check explicit estimate provenance as well
+as quality flags. An incomplete contributing-room report remains a thermal
+barrier even when a numeric endpoint survives beside that coverage failure.
 The comfort checkpoint contains one aggregate reference and its bounded continuous
 learning state, including supported duration, latest evidence and intervention
 settling. Ordered updates preserve the same result across restart and replay.

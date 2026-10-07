@@ -38,7 +38,8 @@ button.home-planned-change:focus-visible { outline: 2px solid var(--focus); outl
 .heating-explorer-constraint-head { display: flex; flex-wrap: wrap; justify-content: space-between; align-items: baseline; gap: 6px 12px; }
 .heating-explorer-constraint strong { font-weight: 550; font-size: 12px; }
 .heating-explorer-constraint-status { color: var(--muted); font-size: 10px; }
-.heating-explorer-constraint[data-status="blocking"] .heating-explorer-constraint-status { color: var(--stale); }
+.heating-explorer-constraint[data-status="blocking"] .heating-explorer-constraint-status,
+.heating-explorer-constraint[data-status="limiting"] .heating-explorer-constraint-status { color: var(--stale); }
 .heating-explorer-constraint p { font-size: 11px; color: var(--muted); margin-bottom: 0; overflow-wrap: anywhere; }
 .heating-explorer-opportunity { margin-top: 12px; padding: 14px 16px; border: 1px solid var(--notice-border); background: var(--notice); border-radius: 8px; }
 .heating-explorer-opportunity button { margin-top: 7px; font-size: 11px; }

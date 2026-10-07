@@ -310,7 +310,14 @@ test('one expired room uses a separate weighted control estimate through restart
   const reference = structuredClone(engine.checkpoint.comfortReference);
   assert(reference, 'Ordinary occupied Normal heating establishes an aggregate reference');
   const bedroomReports = store.observations({ signal: 'bedroom_temperature' }).length;
-  for (let minute = 65; minute <= 90; minute += 5) report(minute, { bedroom: false, warming: minute > 70 ? .4 : 0 });
+  report(65, { bedroom: false });
+  const measuredRuntime = store.getState('indoor-control-state:providers');
+  assert.equal(measuredRuntime.estimated, false);
+  assert.ok(measuredRuntime.state.reserveC > engine.checkpoint.state.reserveC,
+    'Actual heating since the latest committed window advances the runtime reserve');
+  assert.deepEqual(engine.heatingExplorer.input.thermalState, measuredRuntime.state,
+    'The planner and explorer receive the caught-up reserve while the indoor average remains measured');
+  for (let minute = 70; minute <= 90; minute += 5) report(minute, { bedroom: false, warming: minute > 70 ? .4 : 0 });
   let status = engine.status();
   assert.equal(status.observations.indoor.value, null);
   assert.equal(status.observations.indoor.stale, true);

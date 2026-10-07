@@ -517,8 +517,15 @@ of eligible normal heating conditions, refine gradually, and pause rather than
 erase learning across reporting gaps. Native ROOM changes invalidate applicable
 equipment-response evidence without erasing the comfort reference.
 
-The same approval permits a bounded, explicitly labelled control estimate when
-exactly one of the three contributing indoor sensors is unavailable. Preserve
+During Home Away, temperature protection remains native to the heat pump; the
+application does not impose a separate absolute indoor minimum, including for
+bounded learning trials. Occupied average-temperature limits resume at the
+configured return time. The owner explicitly approved this clarification on
+2026-10-07. Away does not relax equipment readiness, restoration, trial cost
+allowances or the distinction between reduced service and occupied savings.
+
+The occupied-comfort approval also permits a bounded, explicitly labelled control
+estimate when exactly one of the three contributing indoor sensors is unavailable. Preserve
 its weight and estimate its change from two fresh rooms relative to a common
 observed anchor. Increase uncertainty with missing weight, age and disagreement;
 use it in planning and recovery and return to normal heating when margins or

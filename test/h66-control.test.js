@@ -9,6 +9,36 @@ const initialTime = Date.parse('2026-09-07T12:00:00Z');
 const deviceId = 'fixture-h66';
 const baselines = { '0203': 20, '0212': 44, '0208': 60, '2201': 1 };
 const nextTurn = () => new Promise(resolve => setImmediate(resolve));
+
+test('unreadable native-setting state cannot erase restoration duties or publish commands', () => {
+  const unreadable = new SyntaxError('Synthetic unreadable persisted state');
+  let mutations = 0;
+  assert.throws(() => createH66Controller({ deviceId,
+    store: { getState() { throw unreadable; }, setState() { mutations++; } },
+    publish() { mutations++; },
+  }), error => error === unreadable);
+  assert.equal(mutations, 0);
+});
+
+test('malformed native restoration fields reject before initialization, persistence or commands', () => {
+  const valid = { version: 1, phase: 'preheat', baseline: { '0203': 20 }, requested: { '0203': 25 },
+    obligations: { '0203': { baseline: 20, expected: 25, previousValue: 23,
+      originalAt: initialTime - 60_000, requestedAt: initialTime, requestedRevision: 1,
+      confirmed: false, restoring: false } }, expiresAt: initialTime + 60_000 };
+  for (const patch of [{ obligations: { '0203': null } }, { obligations: { '0203': {} } },
+    { obligations: { '0203': { ...valid.obligations['0203'], previousValue: null } } },
+    { requested: null }, { requested: {} }, { baseline: {} }]) {
+    const saved = structuredClone({ ...valid, ...patch }), original = structuredClone(saved);
+    let mutations = 0;
+    assert.throws(() => createH66Controller({ deviceId, clock: () => initialTime,
+      store: { getState: () => saved, setState() { mutations++; } },
+      publish() { mutations++; }, requestSnapshot() { mutations++; },
+    }), { code: 'H66_STATE_UNSUPPORTED' });
+    assert.equal(mutations, 0);
+    assert.deepEqual(saved, original);
+  }
+});
+
 function memoryStore(seed = {}) {
   const states = new Map(Object.entries(seed));
   return { events: [], getState: key => structuredClone(states.get(key) ?? null),
@@ -303,6 +333,30 @@ test('restart restores outstanding overrides instead of resuming preheat', async
   assert.equal(second.native['0203'], 20);
   assert.deepEqual(second.controller.status().obligations, {});
   assert.equal(second.controller.status().phase, 'normal');
+});
+
+test('restart preserves the preceding override value after an uncertain second native write', async t => {
+  let first;
+  first = rig({ behavior: ({ index, payload }) => {
+    if (index === '0203' && payload === '24') {
+      first.controller.setConnected(false);
+      return 'silent';
+    }
+  } });
+  await first.controller.setPhase({ phase: 'preheat', roomBoostC: 5 });
+  assert.equal(first.native['0203'], 25);
+  await assert.rejects(first.controller.setPhase({ phase: 'preheat', roomBoostC: 4 }), { code: 'H66_DISCONNECTED' });
+  const obligation = first.store.getState(`h66:control:${deviceId}`).obligations['0203'];
+  assert.equal(obligation.baseline, 20);
+  assert.equal(obligation.expected, 24);
+  assert.equal(obligation.previousValue, 25);
+  assert.equal(obligation.confirmed, false);
+  await first.controller.close();
+  const second = rig({ store: first.store, values: first.native });
+  t.after(() => second.controller.close());
+  await nextTurn(); await nextTurn();
+  assert.equal(second.native['0203'], 20, 'The preceding controller override is restored, not mistaken for an external edit');
+  assert.deepEqual(second.controller.status().obligations, {});
 });
 
 test('manual changes supersede saved overrides and cancel the cycle', async t => {

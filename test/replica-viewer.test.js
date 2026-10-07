@@ -40,8 +40,12 @@ function snapshot(directory, generation, value = 21, sourceAt = at) {
   store.event('decision', { input: 'mqtt', phase: 'reduction', commands: ['reduction'] }, sourceAt);
   // Copied settings and outstanding obligations must never activate on a viewer.
   store.setState('settings:mqtt', { comfort: { maxDropC: 0.5 } });
-  store.setState('executor:home', { version: 1, legacyOutstanding: true, phase: 'reduction' });
-  store.setState('h66:control:synthetic-device', { version: 1, baseline: { '0203': 20 }, obligations: { '0203': { value: 20 } } });
+  store.setState('executor:home', { version: 2, targetBindings: { tariff: { identity: 'a'.repeat(64), generation: 'synthetic-generation' } },
+    legacyOutstanding: true, phase: 'reduction', pulseUntil: 0, expiresAt: sourceAt + 60_000 });
+  store.setState('h66:control:synthetic-device', { version: 1, phase: 'preheat', baseline: { '0203': 20 },
+    obligations: { '0203': { baseline: 20, expected: 25, previousValue: 20, requestedAt: sourceAt,
+      originalAt: sourceAt, requestedRevision: 1, confirmed: true, confirmedAt: sourceAt, restoring: false } },
+    requested: { '0203': 25 }, expiresAt: sourceAt + 60_000 });
   store.db.prepare(`INSERT INTO energy_audits(source,device,signal,source_time,received_at,value,quality)
     VALUES('easee','synthetic-device','ev1_lifetime_energy_counter',?,?,10,'[]')`).run(sourceAt, sourceAt);
   store.close();

@@ -1,7 +1,7 @@
 /** Small empirical temperature model. Priors permit bounded operation before every
  * actuator is observed; validation never turns assumed electricity into a meter. */
 import { HEAT_PUMP_PERFORMANCE, estimateHeatPumpPerformance, estimateHydronicHeat } from '../domain/heat-pump-performance.js';
-import { updateComfortLearning, validComfortLearning, validComfortReference, goodQuality } from './learning.js';
+import { updateComfortLearning, validComfortLearning, validComfortReference, goodQuality, hasEstimatedIndoor } from './learning.js';
 import { fireplaceBurnGroups, fireplaceAffectsLearning, FIREPLACE_RELEVANCE } from '../domain/fireplace.js';
 
 const HOUR = 3_600_000;
@@ -249,6 +249,8 @@ export function predictThermalStep(model, state, inputs, dtHours) {
 
 function validSample(sample) {
   return finite(time(sample?.timestamp)) && finite(sample.indoorC) && sample.indoorC > 2 && sample.indoorC < 40
+    && !hasEstimatedIndoor(sample)
+    && Object.values(sample.indoorSensors ?? {}).every(sensor => !(sensor.weight > 0) || sensor.reportCoverageComplete !== false)
     && finite(sample.outdoorC) && sample.outdoorC >= -60 && sample.outdoorC <= 50
     && (PHASES.includes(sample.phase) || sample.phase === 'mixed' && Array.isArray(sample.inputSegments)
       && sample.inputSegments.length > 0 && sample.inputSegments.every(segment => PHASES.includes(segment.phase)))

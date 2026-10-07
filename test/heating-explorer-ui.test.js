@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { createHeatingExplorerState, heatingComparisonMetrics } from '../chart/heating-explorer.js';
+import { createHeatingExplorerState, heatingComparisonMetrics, heatingUncertaintyBands } from '../chart/heating-explorer.js';
 
 const now = Date.parse('2026-09-30T09:00:00Z');
 const makeResult = (extra = {}) => ({ snapshotId: 'synthetic-snapshot', snapshotAt: now, expiresAt: now + 60_000,
@@ -154,4 +154,13 @@ test('actual cycle updates leave pinned forecasts and hypothetical edits intact'
   state.updateTrial({ id: 'one', status: 'completed', outcome: { profitCents: 12 } });
   assert.equal(state.snapshot().result.activeTrial.outcome.profitCents, 12);
   assert.equal(state.snapshot().dirty, true);
+});
+
+test('unknown uncertainty breaks the chart allowance without becoming zero certainty', () => {
+  const points = [0, 0, null, .3, .4, -1, .5, NaN, .6, .7]
+    .map((uncertaintyC, index) => ({ at: now + index * 900_000, indoorC: 21, uncertaintyC }));
+  const bands = heatingUncertaintyBands(points);
+  assert.deepEqual(bands.map(band => band.map(point => point.uncertaintyC)), [[0, 0], [.3, .4], [.6, .7]]);
+  assert.deepEqual(heatingUncertaintyBands(points.map(point => ({ ...point, uncertaintyC: null }))), []);
+  assert.deepEqual(heatingUncertaintyBands([{ ...points[0], indoorC: null }, points[1]]), []);
 });

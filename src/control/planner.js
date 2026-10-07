@@ -364,6 +364,13 @@ function validatedRoomBoost(model) {
     ? model.equipmentResponse.validation.phases.preheat.maxRoomBoostC??0 : 0;
 }
 
+function preheatEvidenceReady(model, schedule) {
+  const durationHours = (schedule.preheatEnd - schedule.preheatStart) / HOUR;
+  return actionEvidenceReady(model, 'preheat', durationHours, schedule.treatmentKey)
+    && number(schedule.roomBoostC) && schedule.roomBoostC >= 0
+    && schedule.roomBoostC <= validatedRoomBoost(model);
+}
+
 function preheatTrialHours(model,config) {
   const demonstrated=actionEvidenceReady(model,'preheat')?model.equipmentResponse.validation.phases.preheat.maxDurationHours:0;
   // Duration expands independently of circulation pulses; fixed ROOM is not swept.
@@ -388,13 +395,20 @@ export function trialEnvelope({ schedule, initialState, targetC, intervals, mode
   const sourceUncertaintyC = indoorUncertaintyAt(equipment,(schedule.reductionEnd-intervals[0].start)/HOUR,schedule.reductionEnd);
   const floorC = sourceUncertaintyC === null ? null : initialState.indoorC-coolingRate*duration-0.15-sourceUncertaintyC;
   const occupied = occupancy.mode !== 'away' || number(at(occupancy.returnAt)) && at(occupancy.returnAt) <= schedule.reductionEnd + 2*HOUR;
-  const coldSafe = number(floorC) && weather.length > 0 && (occupied ? floorC >= targetC-Math.min(1,maxDropC) : floorC >= 16);
+  // Away leaves the minimum temperature to native pump protection. Occupied
+  // comfort returns at the declared return time, including the recovery window.
+  const coldSafe = number(floorC) && weather.length > 0 && (!occupied || floorC >= targetC-Math.min(1,maxDropC));
   const recoveryPrices = intervals.filter(i => i.end > schedule.reductionEnd && i.start < schedule.reductionEnd + 4*HOUR);
   const replacementPrice = Math.max(0, ...recoveryPrices.map(i => i.price));
   const preheatHours=Math.max(0,(schedule.preheatEnd-schedule.preheatStart)/HOUR);
   const preheatPrice=Math.max(0,...intervals.filter(i=>i.end>schedule.preheatStart&&i.start<schedule.preheatEnd).map(i=>i.price));
+  const ratedKw = config.heatPumpCompressorKw + config.circulationKw + config.auxRatedKw;
+  // A no-heat trial can also lose income from negative all-in electricity
+  // prices. The unknown tariff response cannot establish that this loss is zero.
+  const foregoneIncomeCents = weather.reduce((sum, interval) => sum + Math.max(0, -interval.price)
+    * Math.max(0, Math.min(interval.end, schedule.reductionEnd) - Math.max(interval.start, schedule.reductionStart)) / HOUR, 0) * ratedKw;
   const costExposureCents = Math.max(5, (duration * replacementPrice * 1.5 + preheatHours*preheatPrice)
-    * (config.heatPumpCompressorKw + config.circulationKw + config.auxRatedKw));
+    * ratedKw + foregoneIncomeCents);
   let hotSafe = true, hotPeakC = initialState.indoorC, hotPeakAt = intervals[0]?.start ?? null,
     hotStressHours = 0, hotStressReason = null;
   const hasPreheat = preheatHours > 0 || schedule.floorOverride === true || schedule.roomBoostC > 0;
@@ -467,7 +481,7 @@ export function trialEnvelope({ schedule, initialState, targetC, intervals, mode
       }
     }
   }
-  return { available: true, comfortSafe: coldSafe && hotSafe, coldSafe, hotSafe, floorC, costExposureCents,
+  return { available: true, comfortSafe: coldSafe && hotSafe, coldSafe, hotSafe, floorC, costExposureCents, foregoneIncomeCents,
     hotPeakC, hotPeakAt, hotStressHours, hotStressReason,
     basis: 'No-heat cold stress plus full compressor/rated permitted AUX during preheat and native demand afterward; weighted indoor limits include source uncertainty, and delayed peaks and fixed slab routing remain estimated.' };
 }
@@ -493,13 +507,14 @@ export function revalidatePlan({ plan, now, observations, prices, forecast, chec
   const readiness = learningReadiness(checkpoint,c,equipment), duration = (plan.schedule.reductionEnd-plan.schedule.reductionStart)/HOUR;
   const configuredMaximum = equipment.h66Available ? settings.occupancy.mode === 'away' ? c.maxAwayReductionHours : c.maxReductionHours : c.maxUnobservedReductionHours;
   const requestedRoom = preheatRoomRequest(equipment, c);
-  if (duration > configuredMaximum || plan.schedule.roomSettingC != null
+  if (duration > configuredMaximum || plan.schedule.preheatEnd - plan.schedule.preheatStart > c.maxPreheatHours * HOUR
+    || plan.schedule.roomSettingC != null
     && (plan.schedule.roomSettingC !== requestedRoom.roomSettingC || plan.schedule.roomBoostC !== requestedRoom.roomBoostC))
     return rejected('scheduled-cycle-outside-current-limits');
   const preheatTrial = plan.trial && readiness.thermalValidated && actionEvidenceReady(model,'reduction')
     && plan.schedule.preheatEnd-plan.schedule.preheatStart<=preheatTrialHours(model,c)*HOUR;
   if (plan.schedule.preheatEnd > plan.schedule.preheatStart && (!equipment.preheatAvailable || plan.schedule.floorOverride && !equipment.floorOverrideAvailable || !preheatTrial
-    && (!actionEvidenceReady(model,'preheat',(plan.schedule.preheatEnd-plan.schedule.preheatStart)/HOUR,plan.schedule.treatmentKey))))
+    && !preheatEvidenceReady(model, plan.schedule)))
     return rejected('scheduled-preheat-evidence-unavailable');
   if (!plan.trial && (!readiness.actionValidated || duration > validatedReductionHours(model)
     || !actionEvidenceReady(model, 'reduction', duration, plan.schedule.treatmentKey)))
@@ -624,8 +639,7 @@ export function chooseCycle({ now, observations, prices, forecast, checkpoint, s
   }
   const qualified = candidates.filter(o => o.duration <= economicMaximum && !o.result.severe
     && actionEvidenceReady(model, 'reduction', o.duration, o.schedule.treatmentKey)
-    && (o.schedule.preheatEnd === o.schedule.preheatStart || actionEvidenceReady(model, 'preheat',
-      (o.schedule.preheatEnd - o.schedule.preheatStart) / HOUR, o.schedule.treatmentKey)))
+    && (o.schedule.preheatEnd === o.schedule.preheatStart || preheatEvidenceReady(model, o.schedule)))
     .sort((a,b) => b.benefit - a.benefit);
   // The same bounded shortlist is used for every savings strategy.
   const assessed = qualified.slice(0, 16).map(option => {

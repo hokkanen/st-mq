@@ -9,6 +9,7 @@ import { assertCurrentChargingSessionCheck } from '../app/charging-session-check
 import { createDatabaseBackup } from './backup.js';
 import { cycleAssessmentExcluded } from './cycle-assessment.js';
 import { LEARNING_ALGORITHM } from '../domain/learning-contract.js';
+import { validateExecutorState, validateH66ControlState } from '../domain/heating-control-state.js';
 export { SCHEMA_VERSION } from './schema.js';
 const MAX_LIMIT = 5000;
 
@@ -20,7 +21,9 @@ const reference = new DatabaseSync(':memory:');
 reference.exec(CURRENT_SCHEMA);
 const expectedStructure = JSON.stringify(schemaObjects(reference));
 reference.close();
-export function validateCurrentDatabase(db) {
+/** Format/integrity gate for runtime and explicit read-only diagnostics. This
+ * does not grant runtime readiness; Store additionally validates saved state. */
+export function validateCurrentDatabaseFormat(db) {
   const version = db.prepare('PRAGMA user_version').get().user_version;
   if (version !== SCHEMA_VERSION) throw Object.assign(new Error(`Unsupported database schema ${version}; this application requires schema ${SCHEMA_VERSION}. Use a new empty database; optionally import supported v0.7.5 CSV files. The existing database was not changed.`),
     { code: 'database_schema_mismatch', actualSchema: version, requiredSchema: SCHEMA_VERSION });
@@ -29,6 +32,24 @@ export function validateCurrentDatabase(db) {
   if (db.prepare('SELECT 1 FROM learning_journal_entries WHERE algorithm_version<>? LIMIT 1').get(LEARNING_ALGORITHM))
     throw new Error('Unsupported Home learning journal algorithm; use a new empty database or an intact current-version backup. The existing database was not changed.');
   if (db.prepare('PRAGMA foreign_key_check').get()) throw new Error('Database contains dangling references; restore an intact same-version backup.');
+}
+
+export function validateCurrentDatabase(db) {
+  validateCurrentDatabaseFormat(db);
+  // Control-state rejection must precede writable setup and Engine construction,
+  // whose unrelated initialization may otherwise mutate a rejected database.
+  for (const row of db.prepare("SELECT key,value FROM state WHERE key IN ('executor:home','executor:simulated') OR key GLOB 'h66:control:*'").iterate()) {
+    let saved;
+    try { saved = JSON.parse(row.value); }
+    catch {
+      throw Object.assign(new Error('Unreadable heating control state. Safely restore equipment, then use an intact current-version backup or a new empty database. The existing database was not changed.'),
+        { code: 'HEATING_CONTROL_STATE_UNREADABLE' });
+    }
+    try { (row.key.startsWith('h66:control:') ? validateH66ControlState : validateExecutorState)(saved); }
+    catch (error) {
+      throw Object.assign(new Error(`${error.message} The existing database was not changed.`), { code: error.code });
+    }
+  }
   // Removed charging-check formats are rejected before any writable setup;
   // opening a database never strips or translates its historical evidence.
   for (const row of db.prepare("SELECT payload FROM events WHERE type='charging-session-check'").iterate())

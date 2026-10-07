@@ -3,12 +3,37 @@ import assert from 'node:assert/strict';
 import { Executor } from '../src/app/executor.js';
 import { createH66Controller } from '../src/control/h66.js';
 import { createH66Decoder } from '../src/domain/telemetry.js';
+import { validateExecutorState } from '../src/domain/heating-control-state.js';
+
+test('retired automatic-reduction manual baselines cannot reacquire tariff authority', () => {
+  const saved = { version: 2, targetBindings: {},
+    manualBaseline: { phase: 'reduction', expiresAt: Date.now() + 60_000, legacyOutstanding: true } };
+  let mutations = 0;
+  assert.throws(() => new Executor({ input: 'mqtt',
+    store: { getState: () => saved, setState() { mutations++; } },
+    commandTransport: { publish() { mutations++; } },
+  }), /Unsupported heating state/);
+  assert.equal(mutations, 0);
+});
+
+test('unreadable executor state cannot erase outstanding tariff or circulation restoration', () => {
+  const unreadable = new SyntaxError('Synthetic unreadable persisted state');
+  let mutations = 0;
+  assert.throws(() => new Executor({ input: 'mqtt',
+    store: { getState() { throw unreadable; }, setState() { mutations++; } },
+    commandTransport: { publish() { mutations++; }, publishDhwr() { mutations++; } },
+  }), error => error === unreadable);
+  assert.equal(mutations, 0);
+});
 
 function rig(t, { native = true, saved = new Map(), publishLegacy, publishDhwr, floorOverride = null, config = {} } = {}) {
   let now = Date.parse('2026-09-07T12:00Z'), elapsed = 0;
-  const log = [], observations = [], values = { '0203': 19, '0212': 47, '0208': 62, '2201': 1 };
+  const log = [], observations = [], snapshots = [], values = { '0203': 19, '0212': 47, '0208': 62, '2201': 1 };
   const store = { getState: key => structuredClone(saved.get(key) ?? null),
-    setState: (key, value) => saved.set(key, structuredClone(value)), event() {}, observation: row => observations.push(row) };
+    setState: (key, value) => {
+      if (key === 'executor:home') { validateExecutorState(value); snapshots.push(structuredClone(value)); }
+      saved.set(key, structuredClone(value));
+    }, event() {}, observation: row => observations.push(row) };
   const decoder = createH66Decoder({ deviceId: 'synthetic' });
   const receive = (index, value) => h66.ingest(decoder.decode({ topic: `synthetic/HP/${index}`, payload: String(value), receivedAt: now }));
   const h66 = native ? createH66Controller({ deviceId: 'synthetic', store, clock: () => now,
@@ -33,7 +58,7 @@ function rig(t, { native = true, saved = new Map(), publishLegacy, publishDhwr, 
   }, async close() {} };
   const executor = new Executor({ input: 'mqtt', store, h66, floorOverride, config, commandTransport: transport, clock: () => now, monotonicClock: () => elapsed });
   t.after(async () => { clearTimeout(executor.timer); executor.closed = true; await h66?.close(); });
-  return { executor, h66, log, observations, values, saved, store, transport, get now() { return now; },
+  return { executor, h66, log, observations, snapshots, values, saved, store, transport, get now() { return now; },
     elapse(ms) { elapsed += ms; },
     advance(ms) { now += ms; if (h66) for (const [index, value] of Object.entries(values)) receive(index, value); },
     run(phase, duration = 1_800_000, extra = {}) { return executor.execute({ phase, action: phase === 'reduction' ? 'reduction' : 'normal',
@@ -646,4 +671,61 @@ test('starting circulation at an expired-run boundary saves a new bound OFF obli
   const restarted = rig(t, { native: false, saved: r.saved });
   assert.equal(restarted.executor.status().dhwrOutstanding, true);
   assert.deepEqual(restarted.executor.status().targetBindings.dhwr, saved.targetBindings.dhwr);
+});
+
+test('malformed saved manual authority and deadlines reject before writes or command publication', async t => {
+  const r = rig(t, { native: false }), pause = { id: 'validation-pause', expiresAt: null };
+  await r.executor.execute({ commands: ['reduction'] }, { manualTest: true, now: r.now, pause });
+  const original = r.saved.get('executor:home');
+  const cases = [
+    { manualRequested: { ...original.manualRequested, confirmed: 'false' } },
+    { manualRequested: { ...original.manualRequested, expiresAt: String(r.now + 1000) } },
+    { manualRequested: { ...original.manualRequested, phase: 'retired' } },
+    { manualRequested: { ...original.manualRequested, at: null } },
+    { manualRequested: { ...original.manualRequested, roomBoostC: '5' } },
+    { manualRequested: { ...original.manualRequested, phase: 'preheat', expiresAt: null, floorOwner: 'synthetic-floor' } },
+    { manualRequested: { ...original.manualRequested, phase: 'preheat', expiresAt: r.now + 1000 } },
+    { manualPause: { id: pause.id, expiresAt: String(r.now + 1000) } },
+    { manualPause: { id: pause.id } },
+    { manualPause: { id: 123, expiresAt: null } },
+    { manualPause: null, manualTemporary: { expiresAt: null } },
+    { manualTemporary: { expiresAt: r.now + 1000 } },
+    { manualBaseline: null },
+    { manualPause: null },
+    { legacyOutstanding: false, targetBindings: {} },
+    { legacyOutstanding: 'false' },
+    { dhwrOutstanding: 'false' },
+    { dhwrOutstanding: true, pulseUntil: 'soon' },
+    { targetBindings: { tariff: { identity: 'not-an-equipment-identity', generation: 'synthetic' } } },
+    { targetBindings: { tariff: { identity: 'a'.repeat(64) } } },
+    ...['manualBaseline', 'manualPause', 'manualTemporary', 'manualRequested'].flatMap(key =>
+      [false, 1, 'invalid', []].map(value => ({ [key]: value }))),
+  ];
+  for (const patch of cases) {
+    let effects = 0;
+    assert.throws(() => new Executor({ input: 'mqtt', clock: () => r.now,
+      store: { getState: () => ({ ...structuredClone(original), ...patch }), setState() { effects++; } },
+      commandTransport: { targetIdentity: r.transport.targetIdentity, publish() { effects++; }, publishDhwr() { effects++; } },
+    }), { code: 'EXECUTOR_STATE_UNSUPPORTED' }, JSON.stringify(patch));
+    assert.equal(effects, 0);
+  }
+});
+
+test('every saved manual-restoration boundary stays restorable and cannot resume Released Reduced', async t => {
+  const r = rig(t, { native: false }), pause = { id: 'restore-boundary-pause', expiresAt: null };
+  await r.executor.execute({ commands: ['reduction'] }, { manualTest: true, now: r.now, pause });
+  const from = r.snapshots.length;
+  await r.executor.restoreManual({ now: r.now });
+  assert.deepEqual(r.log.at(-1).commands, ['normal']);
+  for (const snapshot of r.snapshots.slice(from)) {
+    const restarted = new Executor({ input: 'mqtt', clock: () => r.now,
+      store: { getState: () => snapshot, setState() { assert.fail('Construction must not mutate state'); } },
+      commandTransport: r.transport });
+    assert.equal(restarted.status().restartManualPause, false, 'Interrupted restoration cannot reacquire a paused Reduction');
+    if (snapshot.legacyOutstanding) assert.equal(snapshot.targetBindings.tariff.identity, 'a'.repeat(64));
+    if (snapshot.manualBaseline) assert.equal(restarted.status().restorationPending, true);
+    await restarted.close({ restore: false });
+  }
+  assert.equal(r.executor.status().legacyOutstanding, false);
+  assert.equal(r.executor.status().targetBindings.tariff, undefined);
 });

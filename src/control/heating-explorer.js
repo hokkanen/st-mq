@@ -2,7 +2,7 @@ import { CONTROL_DEFAULTS } from '../app/config.js';
 import { HEATING_STRATEGIES } from '../domain/heating-strategy.js';
 import { initialAdaptiveModel } from './adaptive-learning.js';
 import { chooseCycle, evaluateCycle, economicAdmission, forecastIntervals, learningReadiness,
-  phaseAt, validatedReductionHours, cycleForecastCovered, effectiveComfortDropC } from './planner.js';
+  phaseAt, validatedReductionHours, cycleForecastCovered, effectiveComfortDropC, indoorUncertaintyAt, preheatRoomRequest } from './planner.js';
 
 const HOUR = 3_600_000;
 const finite = Number.isFinite;
@@ -72,9 +72,20 @@ function evaluationArgs(input) {
     config: input.config, equipment: input.equipment ?? {} };
 }
 
+function trajectory(prediction, args, schedule = null) {
+  if (!prediction || !args) return [];
+  const at = args.intervals[0]?.start;
+  return [...(finite(at) ? [{ at, indoorC: args.initialState.indoorC,
+    uncertaintyC: indoorUncertaintyAt(args.equipment, 0, at), phase: phaseAt(schedule, at) }] : []),
+  ...prediction.trajectory.map(row => ({ at: row.at, indoorC: row.indoorC,
+    uncertaintyC: row.uncertaintyC, phase: row.phase }))];
+}
+
 function outcomes(prediction, args) {
   if (!prediction || !args) return null;
-  const rows = prediction.trajectory;
+  // The captured starting temperature is part of the evaluated horizon. A
+  // recovering first step must not hide the initial cold or warm extreme.
+  const rows = trajectory(prediction, args);
   let coldestIndoor = null, warmestIndoor = null, maxIndoorDropC = 0, maxIndoorRiseC = 0;
   for (const row of rows) {
     const valueC = row.indoorC, referenceC = args.targetC;
@@ -117,8 +128,9 @@ function summary(decision, args, baseline, { origin = 'recalculated', plan = dec
     outcomes: outcomes(prediction, args),
     estimatedBenefitCents: prediction && baseline ? baseline.costCents - prediction.costCents : null,
     lowerBenefitCents: economics?.lowerBenefitCents ?? null, uncertaintyCents: economics?.uncertaintyCents ?? plan?.uncertaintyCents ?? null,
-    trajectory: prediction?.trajectory.map(row => ({ at: row.at, indoorC: row.indoorC,
-      uncertaintyC: row.uncertaintyC, phase: row.phase })) ?? [],
+    trajectory: trajectory(prediction, args, schedule),
+    evaluationStartAt: args?.intervals[0]?.start ?? null,
+    evaluationEndAt: args?.intervals.at(-1)?.end ?? null,
     search: plan?.search ?? decision?.evaluation?.search ?? null,
     diagnostics: decision?.diagnostics ?? plan?.diagnostics ?? null,
     economics: economics ? structuredClone(economics) : null,
@@ -140,6 +152,8 @@ function constraints(input, decision, evidence, selected) {
   const durationKey = away ? 'maxAwayReductionHours' : 'maxReductionHours';
   const duration = selected.schedule ? (selected.schedule.reductionEnd - selected.schedule.reductionStart) / HOUR : 0;
   const d = decision.diagnostics, violations = d?.violations ?? [];
+  const intervals = forecastIntervals(input.prices, input.forecast, input.now);
+  const forecastCovered = intervals.length > 0 && intervals.at(-1).end - input.now >= 4 * HOUR;
   const result = [
     { key: durationKey, label: 'Configured reduction ceiling', kind: 'policy', value: p[durationKey], unit: 'h',
       status: duration >= p[durationKey] ? 'reached' : d ? 'available' : 'unknown',
@@ -157,8 +171,9 @@ function constraints(input, decision, evidence, selected) {
       status: !evidence.actionValidated || evidence.validatedReductionHours < p[durationKey] ? 'blocking' : 'available',
       detail: 'Normal economic planning needs thermal, equipment-response and frozen advance-forecast evidence for the duration and treatment. Simulations add no evidence.' },
     { key: 'forecastCoverage', label: 'Price and weather coverage', kind: 'forecast', value: null, unit: null,
-      status: decision.reasons.includes('missing-or-incomplete-price-weather-horizon') ? 'blocking' : d?.forecastRejected ? 'blocking' : 'available',
-      detail: d?.forecastRejected ? `${d.forecastRejected} candidates lacked coverage through at least two recovery hours.`
+      status: !forecastCovered || d?.forecastRejected ? 'blocking' : 'available',
+      detail: !forecastCovered ? 'Fewer than four contiguous hours of fresh price and weather evidence are available.'
+        : d?.forecastRejected ? `${d.forecastRejected} candidates lacked coverage through at least two recovery hours.`
         : 'A candidate needs contiguous fresh forecasts through reduction and at least two recovery hours.' },
     { key: 'economicAdmission', label: 'Benefit, comfort and recovery', kind: 'economic', value: null, unit: null,
       status: d?.economicsRejected ? 'blocking' : d?.economicsAssessed ? 'available' : 'unknown',
@@ -175,6 +190,15 @@ function constraints(input, decision, evidence, selected) {
   if (!input.equipment?.preheatAvailable || violations.some(row => row.code === 'preheat-source-range'))
     result.push({ key: 'preheatAvailability', label: 'Preheat readiness', kind: 'safety', status: 'blocking', value: null, unit: null,
       detail: 'Preheat requires equipment authority, native ROOM headroom, supported supply temperatures and applicable treatment evidence.' });
+  if (input.equipment?.preheatAvailable) {
+    const validated = input.checkpoint?.model?.equipmentResponse?.validation?.phases?.preheat;
+    const maxBoost = validated?.accepted === true && finite(validated.maxRoomBoostC) ? validated.maxRoomBoostC : null;
+    const requestedBoost = preheatRoomRequest(input.equipment, input.config).roomBoostC;
+    result.push({ key: 'validatedPreheatBoostC', label: 'Demonstrated preheat ROOM increase', kind: 'evidence',
+      status: !finite(requestedBoost) ? 'unknown' : maxBoost !== null && requestedBoost <= maxBoost ? 'available' : 'blocking',
+      value: maxBoost, unit: '°C',
+      detail: 'Economic preheat needs response evidence for both its duration and actual ROOM increase. Only independently eligible bounded learning trials may explore an unsupported increase; simulations add no evidence.' });
+  }
   if (!evidence.trialReady || !(input.trialBudgetRemainingCents > 0)) result.push({ key: 'trialReadiness',
     label: 'Learning trial allowance', kind: 'evidence', status: 'blocking', value: input.trialBudgetRemainingCents ?? 0, unit: 'cents',
     detail: 'A trial needs existing permission, observed equipment, usable evidence, remaining budget and the ordinary cold/hot stress checks.' });
@@ -287,7 +311,15 @@ export function exploreHeatingPlan(input, overrides = {}, options = {}) {
   controls.push({ key: 'savingsStrategy', label: 'Savings strategy', value: currentPolicy.savingsStrategy,
     effectiveValue: effectivePolicy.savingsStrategy, scenarioValue: scenarioPolicy.savingsStrategy,
     options: HEATING_STRATEGIES.map(item => ({ value: item.id, label: item.label })) });
+  const indoor = frozen.observations?.indoor;
+  const indoorAvailable = finite(indoor?.value) && indoor.stale !== true
+    && finite(indoor.observedAt) && indoor.observedAt <= frozen.now;
   const result = { version: 1, snapshotAt: frozen.now, snapshotId: frozen.snapshotId ?? null,
+    indoorInput: { valueC: finite(indoor?.value) ? indoor.value : null,
+      observedAt: finite(indoor?.observedAt) ? indoor.observedAt : null, available: indoorAvailable,
+      estimated: frozen.equipment?.indoorEstimated === true,
+      uncertaintyC: indoorAvailable ? indoorUncertaintyAt(frozen.equipment, 0, frozen.now) : null,
+      estimateValidUntil: finite(frozen.equipment?.indoorEstimateValidUntil) ? frozen.equipment.indoorEstimateValidUntil : null },
     controls, limits: scenarioPolicy, changedKeys, current, refreshedCurrent,
     currentDiffersFromRecalculation: compare(current, refreshedCurrent).changed,
     scenario, normal, comparison: compare(current, scenario), constraints: boundaries, opportunities, evidence,
@@ -295,6 +327,7 @@ export function exploreHeatingPlan(input, overrides = {}, options = {}) {
     computation: { plannerRuns, maxAutomaticProbeRuns: 3 },
     limitations: [
       'All figures are estimates on a frozen snapshot. Simulations do not operate equipment, change configuration or teach the model.',
+      'Comparisons start at the captured time. Already elapsed portions of an active cycle and their recorded costs are excluded from these forward estimates.',
       'Space-heating cost includes preheat, reduction, recovery and priced remaining heat debt. Electricity totals exclude that unobserved tail. Hot-water service and whole-house savings are not established.',
       'Temperature bounds and adverse physical scenarios are engineering uncertainty allowances, not calibrated statistical confidence intervals.',
       'Comfort uses the configured weighted indoor average; individual room temperatures do not impose separate limits.',

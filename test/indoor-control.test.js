@@ -191,7 +191,9 @@ test('runtime thermal prediction uses covered actual inputs without changing lea
 test('runtime prediction rejects gaps, malformed or unphysical segments and uncertain floor state', () => {
   const args = stateFixture();
   for (const patch of [{ start: now + MINUTE }, { start: NaN }, { end: now }, { outdoorC: null },
+    { outdoorC: -61 }, { outdoorC: 51 }, { quality: ['missing'] }, { quality: ['heat-pump-alarm'] },
     { thermalCompressorDuty: 1.1 }, { thermalCompressorDuty: -1 }, { thermalAuxKw: -1 },
+    { thermalAuxKw: 21 },
     { floorOverrideMode: 'partial' }, { floorOverrideMode: 'unknown' }]) {
     assert.equal(indoorControlState({ ...args, sample: { inputSegments: [{ ...args.segment, ...patch }] } }), null);
   }
@@ -209,7 +211,29 @@ test('runtime prediction is fenced by current model, equipment identity and a bo
   const restored = indoorControlState({ ...args, observation: { value: 20, stale: false, estimated: false }, sample });
   assert.equal(restored.estimated, false);
   assert.equal(restored.state.indoorC, 20);
-  assert.equal(restored.state.reserveC, args.checkpoint.state.reserveC);
+  assert.ok(restored.state.reserveC < args.checkpoint.state.reserveC, 'The committed reserve advances through the elapsed unheated interval');
+});
+
+test('a measured checkpoint catches up actual heat before a missing-room interval inherits its reserve', () => {
+  const args = stateFixture(), original = structuredClone(args.checkpoint), half = now + 7.5 * MINUTE;
+  const heating = { ...args.segment, thermalCompressorDuty: 1, outdoorC: 21 };
+  const measured = indoorControlState({ ...args, observation: { value: 21, stale: false, estimated: false },
+    now: half, sample: { inputSegments: [{ ...heating, end: half }] } });
+  assert.ok(measured.state.reserveC > args.checkpoint.state.reserveC, 'Heat after the journal boundary is not discarded');
+  assert.equal(measured.at, half);
+  assert.equal(measured.measuredStateAt, now);
+  const continued = indoorControlState({ ...args, previous: measured, sample: { inputSegments: [{ ...heating, start: half }] } });
+  const missingFromStart = indoorControlState({ ...args, sample: { inputSegments: [heating] } });
+  assert.ok(Math.abs(continued.state.reserveC - missingFromStart.state.reserveC) < 0.001,
+    'The same covered heat remains in reserve when the room disappears between committed boundaries');
+  assert.deepEqual(args.checkpoint, original);
+});
+
+test('a current room reading cannot stamp a stale reserve as current across an uncovered heat interval', () => {
+  const args = stateFixture(), observation = { value: 21, stale: false, estimated: false };
+  for (const inputSegments of [[], [{ ...args.segment, start: now + MINUTE }],
+    [{ ...args.segment, thermalCompressorDuty: null }]])
+    assert.equal(indoorControlState({ ...args, observation, sample: { inputSegments } }), null);
 });
 
 test('anchor and runtime estimate survive an ordinary storage restart without becoming learned observations', t => {

@@ -6,6 +6,27 @@ Versions follow Semantic Versioning. `-dev.N` denotes a development prerelease.
 
 ## Unreleased
 
+- Home schedule searches run in a bounded background worker. Results are checked
+  against current evidence and control ownership before adoption, keeping local
+  timers and requests responsive during larger searches.
+- Home learning rejects control-only temperature estimates at the journal and
+  learner boundaries. Heat-reserve estimates include covered heating before a
+  room goes missing and cannot advance through source gaps. The updated learning
+  algorithm requires a deliberate fresh development database; previous journals
+  are rejected before mutation, with no automatic reset or migration.
+- Economic preheat requires evidence for its requested ROOM increase and respects
+  the current duration limit. Trial budgets include lost income during negative
+  prices. Away consistently relies on native heat-pump protection, with occupied
+  comfort limits resuming for the configured return.
+- Plan & possibilities includes the starting indoor temperature in extrema,
+  shows missing uncertainty explicitly, explains provisional comfort limits and
+  retains control-estimate provenance. Delayed device acknowledgements cannot
+  renew expired or revoked one-cycle approval.
+- Unreadable or malformed heating-control state stops initialization without
+  discarding restoration duties. Saved manual choices retain valid equipment
+  ownership and expiry; incomplete native-setting obligations cannot be mistaken
+  for external edits. Retired manual baselines cannot reactivate an earlier
+  automatic reduction after a manual override ends.
 - Home initializes an approximate normal-temperature reference after one supported
   hour of heating demand, then refines it gradually through ordinary Normal
   operation. Short reporting gaps pause learning without erasing progress.

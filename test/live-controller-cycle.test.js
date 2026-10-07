@@ -28,7 +28,7 @@ function setup(t, { automationEnabled = true, delayed = false, store = new Store
   store.setState('provider:weather',{issuedAt:now,fetchedAt:now,forecast:[{start:now,end:now+6*HOUR,outdoorC:10,solarRadiationWm2:0,issuedAt:now,fetchedAt:now,source:'fixture'}]});
   store.setState('contract:mqtt',{mode:'billing',periods:[{from:0,to:null,marginCtPerKwh:0,taxCtPerKwh:0,vatRate:0,tariff:'day-night',transferRates:{vatIncluded:false,dayCtPerKwh:0,nightCtPerKwh:0,winterDayCtPerKwh:0,otherCtPerKwh:0}}]});
   ingest('indoor_temperature',21.2); ingest('outdoor_temperature',10);
-  t.after(async()=>{ clearTimeout(engine.executor.timer); engine.executor.closed=true; await engine.h66?.close(); if(!store.closed) store.close(); });
+  t.after(async()=>{ clearTimeout(engine.executor.timer); engine.executor.closed=true; await engine.h66?.close(); await engine.closeFireplace(); if(!store.closed) store.close(); });
   return {engine,store,config,transport,commands,intervals,ingest,get now(){return now;},
     advance(ms){now+=ms;ingest('indoor_temperature',21.2);ingest('outdoor_temperature',10);},
     acknowledge(){acknowledge();},async settle(){await engine.dispatchPending;},
@@ -52,6 +52,29 @@ function setup(t, { automationEnabled = true, delayed = false, store = new Store
       return {values,receive,h66}; }
   };
 }
+
+test('a background heating search is adopted only by a later current controller update', async t => {
+  const r = setup(t), plan = r.plan();
+  r.engine.pendingPlan = null;
+  let finishSearch;
+  r.engine.heatingPlanning.service = {
+    request: () => new Promise(resolve => { finishSearch = resolve; }),
+    async close() {},
+  };
+  const initial = r.engine.tick();
+  assert.equal(initial.decision.phase, 'normal');
+  assert.ok(initial.decision.reasons.includes('heating-planning-in-progress'));
+  await r.settle();
+  const before = r.commands.length;
+  finishSearch({ action: 'reduction', phase: 'reduction', reasons: ['synthetic-background-search'], plan });
+  await r.engine.heatingPlanning.pending.promise;
+  assert.equal(r.commands.length, before, 'Worker completion has no command authority');
+  assert.equal(r.engine.cycles.active(), null);
+  const adopted = r.engine.tick();
+  assert.equal(adopted.decision.phase, 'reduction');
+  await r.settle();
+  assert.equal(r.engine.cycles.active().plan.initialState.indoorC, 21.2);
+});
 
 test('a due base cycle remains intent until broker acknowledgement, then pause restores normal', async t=>{
   const r=setup(t,{delayed:true});r.plan();

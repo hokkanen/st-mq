@@ -203,13 +203,15 @@ test('equipment and frozen forecast checks disclose different inputs and support
   const display = learningDisplay({ readiness: { thermalValidated: true, responseValidated: true,
     advanceValidated: true, actionValidated: true, trialReady: true }, adaptive: { model: {
       equipmentResponse: { validation: { phases: { reduction: { accepted: true, episodes: 3,
-        maeDuty: 0.05, maxDurationHours: 4, fitStatus: 'retained-unchanged' } } } },
+        maeDuty: 0.05, maxDurationHours: 4, fitStatus: 'retained-unchanged' },
+      preheat: { accepted: true, episodes: 3, maxDurationHours: 2, maxRoomBoostC: 1 } } } },
       forecastValidation: { accepted: true, episodes: 3, maxReductionHours: 2 } } } });
   const text = display.evidence.join(' ');
   assert.match(text, /retained earlier validation over 3 held-out completed episodes/);
   assert.match(text, /error in mean episode compressor duty 5.0 percentage points; supported phase duration up to 4.0 hours/);
   assert.match(text, /uses recorded indoor and outdoor temperatures and requested control context/);
   assert.match(text, /supported reduction duration up to 2.0 hours/);
+  assert.match(text, /supported phase duration up to 2.0 hours; supported ROOM increase up to 1.0 °C/);
   assert.match(text, /Electricity can still use source-map and nominal AUX estimates unless the episode was metered/);
   assert.match(text, /validation requirements met within demonstrated durations/);
   assert.match(text, /basic evidence and budget requirements met/);

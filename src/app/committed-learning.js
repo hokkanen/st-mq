@@ -10,7 +10,7 @@ import { sensorBoundaries, affectsThermalLearning, sensorLearningContext } from 
 import { withSensorMeasurements } from './sensor-samples.js';
 import { estimateHeatPumpPerformance } from '../domain/heat-pump-performance.js';
 import { recordedEnergyGroups } from '../storage/energy-history.js';
-import { validComfortReference } from '../control/learning.js';
+import { validComfortReference, hasEstimatedIndoor } from '../control/learning.js';
 
 import { LEARNING_ALGORITHM } from '../domain/learning-contract.js';
 export { LEARNING_ALGORITHM } from '../domain/learning-contract.js';
@@ -383,6 +383,8 @@ export function assertCurrentLearningSample(sample) {
   if (!sample || sample.sensorInputVersion !== 1 || !Array.isArray(sample.inputSegments)
     || !sample.indoorSensors || Object.hasOwn(sample, 'intervalInputs') || Object.hasOwn(sample, 'thermal'))
     throw new TypeError('Unsupported Home sample payload; only the current segmented sensor-input contract is supported.');
+  if (hasEstimatedIndoor(sample))
+    throw new TypeError('Estimated indoor temperatures are control-only and cannot enter the Home learning journal.');
 }
 
 function assertCurrentLearningContext(value) {

@@ -1047,7 +1047,7 @@ explicit initial seed when adopting an existing model; original discarded source
 polls are not required to reproduce subsequent learning. Older imported history is
 resampled causally with bounded holds, retaining unknown heating/solar information.
 
-The current algorithm is `committed-house-v15-continuous-comfort`. Saved configuration retains
+The current algorithm is `committed-house-v16-observed-input-admission`. Saved configuration retains
 source-output assumptions, selected-slab priors, the relative ROOM increase and the
 bounded recovery policy. Changed equipment assumptions invalidate affected
 equipment/cost calibration. Checkpoint digests and journal-prefix identity detect

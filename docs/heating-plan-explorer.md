@@ -28,6 +28,9 @@ Configured policy limits, learning evidence, forecast coverage and equipment
 readiness have different effects. For example, raising the configured four-hour
 reduction ceiling cannot manufacture evidence for eight-hour reductions. The
 planner retains its existing validated-duration and bounded-trial checks.
+Preheat also requires evidence for its actual native ROOM increase. A longer
+demonstrated duration does not establish support for a larger ROOM increase;
+the explorer and Learning details show the separate demonstrated limit.
 
 A limit being reached does not establish that it prevents a better choice.
 An opportunity to review is supported by a tested alternative, with its estimated
@@ -71,15 +74,23 @@ a priced allowance for remaining thermal deficit; electricity totals exclude
 that unobserved tail and show its estimate separately. Hot-water demand and
 recovery are not counterfactually modeled;
 the figures are not measured whole-house or bill savings.
+All comparisons begin at the captured time. For a cycle already running, its
+earlier actions and recorded costs are outside this forward comparison; the
+recorded cycle assessment retains them. Indoor extremes include the captured
+starting temperature, so an initially cold or warm room average is not hidden
+by its first modeled recovery step.
 
 Temperature checks use the same configured indoor average and single normal
 reference as the Home model. Individual room limits and offset forecasts are not
 part of this policy. A bounded estimate for one unavailable room retains its
-weight and adds uncertainty; it cannot start a learning trial. Temperature
-allowances and adverse physical scenarios are engineering uncertainty estimates,
+weight and adds uncertainty; it cannot start a learning trial. The comparison
+identifies that estimated starting point and its initial uncertainty allowance.
+Temperature allowances and adverse physical scenarios are engineering uncertainty estimates,
 not statistical confidence levels. A prediction outside
 demonstrated operating coverage does not become an executable plan merely because
 its nominal temperature looks acceptable.
+Unknown uncertainty interrupts the chart's shaded allowance and is labelled
+unavailable; it never appears as a zero-width certainty band.
 
 When the selected ceiling is longer than the eligible plan and forecast coverage
 permits it, an additional fixed-duration illustration shows the requested longer
@@ -107,6 +118,9 @@ The approval uses server-held comparison data. It is bound to the current
 equipment and configuration, expires, and is checked again before the cycle
 starts. Changed or missing evidence can reject it. During execution the existing
 comfort, forecast, equipment and economic checks can shorten the cycle.
+If a device acknowledgement arrives after the start window or approval scope has
+ended, the exposure remains recorded, and recovery ends the approved action
+without renewing permission or discarding restoration duties.
 
 Admin-selected temperature allowances are explicit temporary preferences within
 the supported settings ranges. Absolute comfort protection, native protections,

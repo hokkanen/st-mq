@@ -1,5 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import { HEATING_COMMANDS } from '../control/mqtt.js';
+import { validateExecutorState } from '../domain/heating-control-state.js';
 
 const REFRESH_MS = 600_000;
 const copy = value => structuredClone(value);
@@ -20,12 +21,9 @@ export class Executor {
     this.recoveryHoldMinutes = config.recoveryHoldMinutes ?? 60;
     this.recoveryCompressorOnly = config.recoveryCompressorOnly ?? true;
     this.key = input === 'simulated' ? 'executor:simulated' : 'executor:home';
-    let saved;
-    try { saved = store.getState(this.key); } catch { saved = null; }
-    if (saved != null && (saved.version !== 2 || !saved.targetBindings
-      || saved.dhwrOutstanding && !saved.targetBindings.dhwr?.identity
-      || saved.legacyOutstanding && !saved.targetBindings.tariff?.identity))
-      throw failure('EXECUTOR_STATE_UNSUPPORTED', 'Unsupported heating state. Safely stop existing equipment, then start with a fresh development database.');
+    // Read failures must not turn durable OFF/restore obligations into absence.
+    const saved = store.getState(this.key);
+    validateExecutorState(saved);
     this.state = saved != null ? copy(saved) : { version: 2, targetBindings: {}, phase: 'normal',
       pulseUntil: 0, expiresAt: null, legacyOutstanding: false, requested: null, acknowledgedAt: null, lastResult: null };
     this.restartManualPause = Boolean(this.state.manualPause?.id && this.state.manualRequested?.phase === 'reduction'
@@ -138,9 +136,9 @@ export class Executor {
       this.timer.unref?.();
     }
   }
-  async publish(commands, now, { allowReductionWithCirculation = false, manualCirculation = false, validUntil = Infinity } = {}) {
+  async publish(commands, now, { manualCirculation = false, validUntil = Infinity } = {}) {
     this.validateCommands(commands);
-    if (commands.includes('reduction') && now < this.state.pulseUntil && !allowReductionWithCirculation)
+    if (commands.includes('reduction') && now < this.state.pulseUntil)
       throw failure('DHWR_ACTIVE', 'Reduction is waiting for the configured DHWR run to end.');
     const pulse = commands.includes('circulation');
     if (commands.includes('reduction')) this.target('tariff', { acquire: true });
@@ -179,7 +177,10 @@ export class Executor {
         if (this.clock() >= validUntil) throw failure('EXECUTOR_EXPIRED', 'Heating action expired before tariff dispatch.');
         this.state.tariffRequested = { mode: heating.at(-1), at: this.clock() }; this.persist();
         result = await this.commandTransport.publish(heating, { validUntil, clock: this.clock, expectedTarget: identity });
-        if (result?.sent === true && heating.at(-1) === 'normal') delete this.state.targetBindings.tariff;
+        // Keep an outstanding episode bound through every durable transition.
+        // Its caller releases the binding together with the restoration flag.
+        if (result?.sent === true && heating.at(-1) === 'normal' && !this.state.legacyOutstanding)
+          delete this.state.targetBindings.tariff;
       }
     }
     finally { this.persist(); }
@@ -314,6 +315,7 @@ export class Executor {
     }
     this.state.phase = phase; choice.confirmed = true;
     this.state.legacyOutstanding = phase === 'reduction';
+    if (!this.state.legacyOutstanding) delete this.state.targetBindings.tariff;
     this.persist();
     return this.result(phase, true, { native, floor, holdUntil: choice.expiresAt,
       roomBoostC: choice.roomBoostC, ...(phase === 'reduction' && !native ? { nativeSettings: 'unavailable; base tariff reduction only' } : {}) });
@@ -457,7 +459,7 @@ export class Executor {
       const recoveryCompressorOnly = this.state.recoveryAuxReleasedAt == null && decision.recoveryCompressorOnly === true;
       const native = await this.h66.setPhase({ phase, compressorOnly: recoveryCompressorOnly,
         holdDhwReduced: true, now: this.clock(), expiresAt: recoveryHoldUntil });
-      this.state.phase = phase; this.state.legacyOutstanding = false; this.state.expiresAt = recoveryHoldUntil;
+      this.state.phase = phase; this.releaseTariff(); this.state.expiresAt = recoveryHoldUntil;
       this.restartRestore = false;
       return this.result(phase, refresh || native.changed?.length > 0, { native,
         recoveryStartedAt: this.state.recoveryStartedAt, recoveryHoldActive: true, recoveryHoldUntil,
@@ -561,7 +563,19 @@ export class Executor {
     this.state.manualPause = null; this.state.manualTemporary = null;
     this.state.manualBaseline = null; this.state.manualRequested = null;
   }
+  releaseTariff() {
+    this.state.legacyOutstanding = false;
+    delete this.state.targetBindings.tariff;
+  }
+  beginManualRestoration() {
+    if (this.state.manualRequested?.phase === 'reduction' && this.state.manualRequested.confirmed) {
+      // An interrupted restore must not resume the choice it was releasing.
+      this.state.manualRequested.confirmed = false;
+      this.persist();
+    }
+  }
   async restoreManualInternal({ now = this.clock(), reason = 'manual-ended' } = {}) {
+    this.beginManualRestoration();
     if (this.state.manualRequested?.phase === 'preheat') {
       const finished = await this.finishManualPreheat(now, reason);
       if (finished.restorationPending) return finished;
@@ -577,14 +591,13 @@ export class Executor {
     catch (error) { dhwrError = error.code ?? 'DHWR_OFF_FAILED'; }
     try { if (this.h66) native = await this.h66.restore({ now, reason, phase: 'normal' }); }
     catch (error) { nativeError = error.code ?? 'H66_RESTORATION_FAILED'; }
-    const originalReduction = baseline?.phase === 'reduction' && time(baseline.expiresAt) > this.clock();
-    const phase = baseline ? originalReduction ? 'reduction' : 'normal'
+    const phase = baseline ? 'normal'
       : ['normal', 'recovery', 'reduction', 'preheat'].includes(this.state.phase) ? this.state.phase : 'normal';
     if (baseline && this.state.manualRequested) {
-      await this.publish([originalReduction ? 'reduction' : 'normal'], this.clock(), { allowReductionWithCirculation: true });
+      await this.publish(['normal'], this.clock());
       sent = true;
-      this.state.legacyOutstanding = originalReduction;
-      this.state.expiresAt = originalReduction ? baseline.expiresAt : null;
+      this.releaseTariff();
+      this.state.expiresAt = null;
     }
     const restorationPending = Boolean(floor?.restorationPending || nativeError || native?.restorationPending || dhwrError);
     if (!restorationPending) this.clearManual();
@@ -605,6 +618,7 @@ export class Executor {
     });
   }
   async restoreInternal({ now = this.clock(), reason = 'restore-normal', phase = 'normal', detail = {}, preserveManualDhwr = false } = {}) {
+    this.beginManualRestoration();
     if (this.state.manualRequested?.phase === 'preheat') {
       const finished = await this.finishManualPreheat(now, reason);
       if (finished.restorationPending) return finished;
@@ -620,7 +634,7 @@ export class Executor {
     catch (error) { nativeError = error.code ?? 'H66_RESTORATION_FAILED'; }
     // Restore the tariff relay even if native-setting restoration is temporarily offline.
     if (this.state.legacyOutstanding || this.state.phase === 'reduction' || this.state.phase === 'preheat') {
-      try { await this.publish(['normal'], now); sent = true; this.state.legacyOutstanding = false; }
+      try { await this.publish(['normal'], now); sent = true; this.releaseTariff(); }
       catch (error) { nativeError ??= error.code ?? 'TARIFF_RESTORATION_FAILED'; }
     }
     const restorationPending = Boolean(floor?.restorationPending || dhwrError || this.state.dhwrOutstanding && !keepCirculation || nativeError || native?.restorationPending);

@@ -155,3 +155,10 @@ The regression suite checks trajectory fitting, evidence gates, configuration
 resets and deterministic replay using synthetic plants. These establish software
 behavior; no synthetic error score establishes accuracy or economic savings for
 the installed house after its hydraulic configuration changes.
+
+Complete schedule search runs in a bounded worker and fresh control inputs are
+checked again before adoption. Routine live coefficient fitting still runs
+synchronously every twelve committed input windows. A synthetic fourteen-day
+fit took roughly 0.4–0.5 seconds on the development computer; this is not a
+Raspberry Pi timing claim. Prospective device response, native Pi latency and
+the unobserved storage topology still need installation-specific validation.

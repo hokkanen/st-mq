@@ -4,7 +4,8 @@ import { createFloorOverride, floorOverrideObligation, floorOverrideStatus } fro
 import { HeatingAutomation } from './automation.js';
 import { dhwrEligible } from '../control/dhwr.js';
 import { restoreAdaptiveCheckpoint } from '../control/adaptive-learning.js';
-import { chooseCycle, evaluateCycle, economicAdmission, forecastIntervals, cycleForecastCovered, phaseAt, revalidatePlan, learningReadiness, recoveryPolicy, trialEnvelope, preheatRoomRequest, effectiveComfortDropC } from '../control/planner.js';
+import { evaluateCycle, economicAdmission, forecastIntervals, cycleForecastCovered, phaseAt, revalidatePlan, learningReadiness, recoveryPolicy, trialEnvelope, preheatRoomRequest, effectiveComfortDropC } from '../control/planner.js';
+import { HeatingPlanning } from './heating-planning.js';
 import { CycleTracker } from './cycles.js';
 import { controlObservations } from './control-observations.js';
 import { heatingFeedback } from './heating-feedback.js';
@@ -390,7 +391,7 @@ export class Engine {
       throw error;
     }
   }
-  async closeFireplace() { await Promise.all([this.fireplaceRebuild?.close(), this.heatingExplorer?.close()]); }
+  async closeFireplace() { await Promise.all([this.fireplaceRebuild?.close(), this.heatingExplorer?.close(), this.heatingPlanning?.close()]); }
   constructor({ store, config, clock = Date.now, commandTransport = null, canControl = () => true }) {
     validateVoltageState(store, config.input);
     validateHeatingTrialState(store.getState(`heating-explorer:trial:${config.input}`));
@@ -505,6 +506,7 @@ export class Engine {
     this.garage = new GarageRuntime({ engine: this, store, config, clock, canControl });
     this.charging = new ChargingRuntime({ engine: this, store, config, clock, canControl });
     this.heatingExplorer = new HeatingExplorer(this);
+    this.heatingPlanning = new HeatingPlanning(this);
     this.automation.save();
   }
   ingest(observation) {
@@ -1142,10 +1144,12 @@ export class Engine {
       && now > prev.timestamp && now - prev.timestamp <= 1_800_000
       ? (sample.indoorC - prev.indoorC) * 3_600_000 / (now - prev.timestamp) : null;
     const controlStateKey = `indoor-control-state:${input}`, previousControlState = this.store.getState(controlStateKey);
+    const observedStateAt = Date.parse(checkpoint.state?.observedAt);
     const cycleSample = withFireplaceInputs(committedLearningSample({ store: this.store, input, at: now, config: this.control, context,
       measurementEpochAt: checkpoint.measurementEpochAt,
       windowMs: Math.min(LEARNING_WINDOW_MS, Math.max(60_000,
-        now - (this.cycles.active()?.lastSample?.timestamp ?? now), now - (previousControlState?.at ?? now))) }), fireplaceContext);
+        now - (this.cycles.active()?.lastSample?.timestamp ?? now), now - (previousControlState?.at ?? now),
+        Number.isFinite(observedStateAt) ? now - observedStateAt : 0)) }), fireplaceContext);
     const price = outlook.prices.find(row => row.start <= now && row.end > now);
     Object.assign(cycleSample, { priceCents: price?.allInCentsPerKWh ?? null, priceStart: price?.start, priceEnd: price?.end });
     cycleSample.priceIntervals = outlook.prices.map(row => ({ start:row.start,end:row.end,price:row.allInCentsPerKWh }));
@@ -1153,7 +1157,7 @@ export class Engine {
       sample: cycleSample, observation: observations.indoorControl, now,
       identity: this.store.getState(`indoor-control-anchor:${input}`)?.signature ?? null });
     this.store.setState(controlStateKey, runtimeThermal);
-    const planningState = observations.indoorControl.estimated ? runtimeThermal?.state ?? null : checkpoint.state;
+    const planningState = runtimeThermal?.state ?? (observations.indoorControl.estimated ? null : checkpoint.state);
     const priorCycleSample = this.cycles.active()?.lastSample;
     if (Number.isFinite(priorCycleSample?.indoorC) && Number.isFinite(cycleSample.indoorC) && now > priorCycleSample.timestamp)
       cycleSample.indoorTrendCPerHour = (cycleSample.indoorC - priorCycleSample.indoorC) * 3_600_000 / (now - priorCycleSample.timestamp);
@@ -1205,11 +1209,13 @@ export class Engine {
       : equipment.alarmActive ? 'heat-pump-alarm' : equipment.operatingMode !== null && ![1,2].includes(equipment.operatingMode) ? 'native-mode-not-space-heating'
         : null;
     if (forceNormal) {
+      this.heatingPlanning.invalidate();
       if (cycle) this.cycles.shorten(now, forceNormal);
       if (scopedTrial) this.heatingExplorer.reject(forceNormal);
       this.pendingPlan = null; decision = normal(forceNormal);
       if (cycle) decision.phase = 'recovery';
     } else if (cycle) {
+      this.heatingPlanning.invalidate();
       const schedule = cycle.executionSchedule ?? cycle.plan.schedule;
       let phase = phaseAt(schedule, now), reasons = ['complete-cycle-in-progress'];
       if (phase === 'preheat' && !equipment.preheatAvailable && !this.plant) {
@@ -1255,7 +1261,7 @@ export class Engine {
         decision = { ...normal('revalidated-scheduled-cycle'), plan: this.pendingPlan, phase: phaseAt(this.pendingPlan.schedule,now) };
         decision.action = decision.phase === 'reduction' ? 'reduction' : 'normal'; this.pendingPlan = null;
       } else if (!this.pendingPlan) {
-        decision = chooseCycle({ now, observations: controlView, ...outlook, checkpoint, settings: baseSettings, config: this.control,
+        decision = this.heatingPlanning.choose({ now, observations: controlView, ...outlook, checkpoint, settings: baseSettings, config: this.control,
           thermalState: this.fireplaceReserveOverride == null ? planningState : { ...planningState, reserveC: this.fireplaceReserveOverride }, equipment: this.plant ? { ...equipment, h66Available:true, preheatAvailable:true } : equipment,
           trialBudgetRemainingCents: checkpoint.health.usableSamples >= 4 ? this.cycles.budget(now) : 0 });
         if (decision.plan && decision.phase === 'normal') this.pendingPlan = decision.plan;

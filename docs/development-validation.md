@@ -114,6 +114,28 @@ worker leaves the main thread responsive, coalesces queued requests and expires
 cached results at relevant boundaries. These offline checks do not establish
 native Raspberry Pi 5 timing or physical charger behavior.
 
+For Home heating, `test/home-planner-service.test.js` checks the real search
+worker against synchronous planner output while the main thread remains able
+to run timers, plus bounded queuing, timeout and shutdown. The adoption tests in
+`test/app-heating-planning.test.js` and `test/live-controller-cycle.test.js`
+check current evidence, authority, configuration, model and correction fences
+before any result becomes an executed cycle. A worker result itself cannot send
+commands. Synthetic cold/hot, negative-price, ROOM-response and Away-return
+cases exercise the planner's limits without contacting installed equipment.
+
+`test/home-learning-admission.test.js` verifies that estimated indoor values
+cannot become observed journal inputs, thermal fits or comfort references, and
+checks deterministic replay. `test/indoor-control.test.js` checks that the
+runtime heat reserve includes covered heating before a room goes missing and
+cannot advance across a source gap. These tests establish software behavior;
+they do not validate the installed heat pump, house dynamics or measured savings.
+
+`test/heating-control-state-storage.test.js` checks rejection before writable
+database setup and byte-for-byte preservation of unreadable or retired heating
+state. Current-format replica and reset-safety fixtures keep restoration duties
+separate from actuation permission; an unreadable record must not hide an
+independent known duty in the read-only reset inventory.
+
 ### Heat-pump controller and sender contracts
 
 Run the Garage adapter, sender and configuration tests from this repository:
@@ -252,7 +274,10 @@ household backups.
 The heating-explorer suite checks the Home preview opener without toggling its
 parent card, Escape and focus restoration, pinned comparisons and draft retention,
 family simulation, explicit admin approval, stale-input rejection and narrow
-layouts in both themes. It uses synthetic response fixtures and captures a
+layouts in both themes. It also checks absent and partial uncertainty bands,
+provisional comfort limits and the provenance of a captured indoor estimate.
+It builds an isolated temporary UI unless `STMQ_UI_DIST` selects an existing
+build. It uses synthetic response fixtures and captures a
 temporary screenshot gallery; it never commands household equipment. The Node
 explorer and live-controller-cycle tests separately exercise the production
 worker, access policy, real planner and one-cycle lifecycle against offline data.

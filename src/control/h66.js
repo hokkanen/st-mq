@@ -1,11 +1,12 @@
 import { H66_DOCUMENTATION, H66_REGISTERS } from '../domain/telemetry.js';
 import { H66_MAX_AGE_MS } from '../domain/reading-freshness.js';
+import { H66_SETTING_LIMITS, validateH66ControlState } from '../domain/heating-control-state.js';
 
 const HOUR = 3_600_000;
 const MAX_PAUSE_MS = 366 * 24 * HOUR;
 const MAX_TIMER_MS = 2_147_483_647;
 const SETTINGS = ['0203', '0212', '0208', '2201'];
-const LIMITS = { '0203': [5, 35], '0212': [30, 55], '0208': [50, 65], '2201': [0, 4] };
+const LIMITS = H66_SETTING_LIMITS;
 export const H66_WRITABLE_REGISTERS = Object.freeze([...SETTINGS]);
 const timestamp = value => typeof value === 'number' ? value : Date.parse(value);
 const copy = value => structuredClone(value);
@@ -36,11 +37,10 @@ export function createH66Controller({ deviceId, publish, requestSnapshot = async
   const maxOverrideMs = config.maxOverrideMs ?? 24 * HOUR;
   if ([configuredAge, timeoutMs, maxOverrideMs].some(value => !Number.isFinite(value) || value <= 0)) throw new RangeError('H66 time limits must be positive');
   const key = `h66:control:${deviceId}`;
-  let saved;
-  try { saved = store.getState(key); } catch { saved = null; }
-  if (saved != null && (saved.version !== 1 || !saved.baseline || !saved.obligations
-    || ['manual-pause', 'manual-temporary'].includes(saved.phase)))
-    throw failure('H66_STATE_UNSUPPORTED', 'Unsupported native-setting state. Start with a fresh development database after safely restoring equipment.');
+  // A failed read may hide an outstanding physical restoration obligation.
+  // Only a genuinely absent record permits initialization of empty state.
+  const saved = store.getState(key);
+  validateH66ControlState(saved);
   let state = saved != null ? copy(saved) : { version: 1, phase: 'normal', baseline: {}, obligations: {}, requested: {}, expiresAt: null, lastResult: null };
   if (state.lastManual?.status === 'pending') state.lastManual = { ...state.lastManual,
     status: 'unconfirmed', confirmed: false, code: 'H66_MANUAL_INTERRUPTED' };
