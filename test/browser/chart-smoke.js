@@ -9,6 +9,7 @@ import { providerFixture } from '../../scripts/lib/provider-fixture.js';
 import { seedTimingBrowserFixture, checkTimingBrowser } from '../../scripts/lib/timing-browser-checks.js';
 import { checkChartZoomBrowser } from '../../scripts/lib/chart-zoom-browser-checks.js';
 import { installChartPopupProbe, checkChartPopupBrowser } from '../../scripts/lib/chart-popup-browser-checks.js';
+import { installChartRequestProbe } from '../../scripts/lib/chart-request-browser-probe.js';
 import { checkEquipmentBrowser } from '../../scripts/lib/equipment-browser-checks.js';
 import { EventEmitter } from 'node:events';
 import { Store } from '../../src/storage/store.js';
@@ -139,6 +140,7 @@ try {
   await command('session.subscribe', { events: ['log.entryAdded'] });
   const { context } = await command('browsingContext.create', { type: 'tab' });
   await installChartPopupProbe({ command, context });
+  await installChartRequestProbe({ command, context });
   await command('browsingContext.activate',{context});
   await command('browsingContext.setViewport', { context, viewport: { width: 1440, height: 1100 }, devicePixelRatio: 1 });
   const evaluate = async expression => {
@@ -556,7 +558,7 @@ try {
         const canvas = document.getElementById('history');
         const context = canvas.getContext('2d');
         const button = document.querySelector('[data-chart-key="${key}"]');
-        const settled = () => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+        const settled = () => window.chartRequestProbe.settled();
         await settled();
         const before = context.getImageData(0, 0, canvas.width, canvas.height).data;
         button.click();
@@ -567,7 +569,7 @@ try {
           if (before[i] !== after[i] || before[i + 1] !== after[i + 1]
             || before[i + 2] !== after[i + 2] || before[i + 3] !== after[i + 3]) changed++;
         }
-        button.click();
+        document.querySelector('[data-chart-key="${key}"]').click();
         await settled();
         return changed;
       })()`);
@@ -593,12 +595,14 @@ try {
   // Exercise an actual response with both lower loads absent, independently of
   // legend hiding. The fixture remains in browser memory and touches no history.
   await evaluate(`(() => {
+    window.chartRequestProbe.active=true;
     window.onlyCharger2Fixture={fetch:window.fetch.bind(window),requests:0};
     window.fetch=async (...args)=>{
       const response=await window.onlyCharger2Fixture.fetch(...args);
       if(!String(args[0]).includes('/api/chart?'))return response;
       const payload=await response.json();
       payload.series.auxiliary_power=[];payload.series.charger_power=[];
+      delete payload.meta?.contentRevision;
       delete payload.meta?.lastReadings?.auxiliary_power;delete payload.meta?.lastReadings?.charger_power;
       window.onlyCharger2Fixture.requests++;
       return new Response(JSON.stringify(payload),{status:200,headers:{'content-type':'application/json'}});
@@ -609,7 +613,7 @@ try {
   })()`);
   await until("window.onlyCharger2Fixture.requests>0 && document.getElementById('history').dataset.ready==='true' && document.getElementById('history').dataset.rangeEnd==='2026-09-08'");
   await checkSeriesDrawn(['charger2_power'],'power');
-  await evaluate("window.fetch=window.onlyCharger2Fixture.fetch; document.getElementById('range-today').click(); true");
+  await evaluate("window.fetch=window.onlyCharger2Fixture.fetch; window.chartRequestProbe.active=false; document.getElementById('range-today').click(); true");
   await until("document.getElementById('history').dataset.ready==='true' && document.getElementById('history').dataset.rangeEnd==='2026-09-07'");
   assert.equal(await legendState('all-in'), 'true');
   assert.equal(await legendState('spot'), 'true');
@@ -621,7 +625,7 @@ try {
       const canvas = document.getElementById('history'), ctx = canvas.getContext('2d');
       const before = ctx.getImageData(0, 0, canvas.width, canvas.height).data;
       document.querySelector('[data-chart-key="${key}"]').click();
-      await new Promise(resolve => requestAnimationFrame(resolve));
+      await window.chartRequestProbe.settled();
       const after = ctx.getImageData(0, 0, canvas.width, canvas.height).data;
       const hidden = document.getElementById('${key}-history').hidden;
       document.querySelector('[data-chart-key="${key}"]').click();
@@ -650,6 +654,7 @@ try {
   };
   await checkRange('2026-09-07');
   await evaluate(`(() => {
+    window.chartRequestProbe.active=true;
     window.dateFixture = { fetch: window.fetch.bind(window), requests: 0 };
     window.fetch = (...args) => {
       if (String(args[0]).includes('/api/chart?')) window.dateFixture.requests++;
@@ -705,7 +710,7 @@ try {
     await evaluate("document.getElementById('range-forward').click(); true");
     await checkRange(start);
   }
-  await evaluate("window.fetch=window.dateFixture.fetch; true");
+  await evaluate("window.fetch=window.dateFixture.fetch; window.chartRequestProbe.active=false; true");
   await evaluate("document.getElementById('range-today').click(); true");
   await until("document.getElementById('history').dataset.ready === 'true' && document.getElementById('history').dataset.rangeStart === '2026-09-07' && document.getElementById('history').dataset.rangeEnd === '2026-09-07'");
   assert.equal(await evaluate("document.getElementById('date-end').disabled"), false);

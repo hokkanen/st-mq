@@ -124,6 +124,67 @@ measurement-existence check must not reconstruct report availability. These
 paths run on the server's main thread: regressions can delay HTTP responses and
 provider downloads even when chart calculations run in a worker.
 
+For chart query and navigation performance, use isolated synthetic fixtures:
+
+```sh
+node scripts/benchmarks/chart-interaction.js --days 90 --runs 3
+# Optional comparison with an unchanged checkout of the same schema:
+node scripts/benchmarks/chart-interaction.js --baseline /tmp/chart-baseline --days 90 --runs 3
+node test/browser/chart-performance-smoke.js
+```
+
+The query benchmark creates and deletes its own database. It reports repeated
+first-worker and cached-request timings, process memory and main-loop delay for
+today, yesterday, tomorrow, week and month views. When a baseline is supplied it
+compares complete response hashes excluding only declared performance metadata.
+The fixture contains changing phase energy, temperatures, Garage activity,
+prices and acquisition gaps. It is a dense synthetic workload, not a forecast
+of adaptive recording growth or coverage of every learned/imported dataset.
+
+The browser check launches a disposable local Chromium (override its executable
+with `STMQ_CHROME_BIN`), serves actual chart modules through Vite, and uses the
+production chart HTTP endpoint against synthetic history. It measures load,
+unchanged refresh, theme changes and frame gaps; verifies companion-cache reuse,
+loading progress and aborting a stalled request by selecting Today; and checks
+320/390-pixel layouts and both themes. Screenshots remain in its printed temporary
+artifact directory. `--source /path/to/checkout --baseline` runs its comparable
+pre-optimization workload without requiring the new prefetch/progress behavior.
+These checks make no household connections and do not measure Raspberry Pi or
+phone hardware. The stalled browser stream is injected; the real-worker tests
+below separately cancel an active history scan.
+
+`test/chart-query-performance.test.js` validates recent-index versus historical
+streaming equality, arbitrarily long overlapping energy intervals, receipt and
+source scope, bounded request-local replay and measured stage progress.
+`test/chart-worker-transport.test.js` covers active cancellation, independent
+speculation, worker retirement/failure, concurrent recording, response equality
+and authentication revocation during streaming. `test/chart-browser-performance.test.js`
+covers cache bounds, late responses, prefetch policy, stream parsing and geometry
+reuse. Keep the existing chart provenance, gap, extrema, recovery, voltage,
+temperature-geometry and accounting tests alongside these checks.
+
+On Ubuntu x86-64 with an AMD Ryzen 5 1600 and Node 26.8.2, a 90-day,
+596,403-observation fixture produced these median first-worker results over three
+repetitions, comparing the same fixture with revision `d60f4be`:
+
+| Selection | Before | After | Reduction |
+| --- | ---: | ---: | ---: |
+| Today, power | 1,175 ms | 304 ms | 74% |
+| Yesterday, power | 1,245 ms | 368 ms | 70% |
+| Week, power | 2,311 ms | 1,085 ms | 53% |
+| Yesterday, phase loading | 626 ms | 365 ms | 42% |
+| Week, phase loading | 1,857 ms | 1,130 ms | 39% |
+| Yesterday, Garage | 568 ms | 328 ms | 42% |
+| Week, Garage | 1,155 ms | 949 ms | 18% |
+| Month, power | 6,162 ms | 5,738 ms | 7% |
+
+All eleven tested selections retained equal response content across the three
+repetitions. These service numbers include worker startup and object transfer;
+they exclude browser/network work and are not device-specific guarantees. The
+HTTP path separately uses worker-prepared bytes to avoid main-thread response
+serialization. Compare distributions on the same host rather than imposing
+these absolute timings on other machines.
+
 For charging search throughput, run `node scripts/benchmarks/charging-planner.js`.
 The synthetic 24-hour workload includes two chargers, 96 price intervals and six
 household scenarios, and reports full searches and fixed forecasts for each

@@ -19,9 +19,13 @@ function* intervalPoints(intervals, range, now) {
 }
 
 function* energyIntervals(store, options, prefix) {
-  const cutoff = recordedEnergyStart(store,prefix,options.input,options.now);
-  if (prefix === 'ev1') yield* currentIntervals(store,{ ...options,to:Math.min(options.to,cutoff) });
-  for (const row of recordedEnergyGroups(store,{ ...options, prefix })) {
+  if (prefix === 'ev1') {
+    const cutoff = options.queryContext?.energyStart(prefix) ?? recordedEnergyStart(store,prefix,options.input,options.now);
+    yield* currentIntervals(store,{ ...options,to:Math.min(options.to,cutoff) });
+  }
+  const groups = options.queryContext ? options.queryContext.energyGroups(undefined, prefix)
+    : recordedEnergyGroups(store,{ ...options, prefix });
+  for (const row of groups) {
     yield { start: row.start, end: row.end, value: !row.conflict && row.values.every(Number.isFinite)
       ? row.values.reduce((a,b) => a+b,0) * HOUR / (row.end-row.start) : null };
   }
@@ -88,9 +92,9 @@ function* auxiliaryIntervals(store, { from, to, now, input, readValue }) {
  * envelopes already retain their own extrema. The four multi-component subsets
  * add only their finite min/max times; gap topology belongs to the original
  * component projection. Memory is bounded by display buckets and three heads. */
-export function powerExtremaTimes({ store, range, now, input, points, readValue, voltageReader }) {
+export function powerExtremaTimes({ store, range, now, input, points, readValue, voltageReader, queryContext }) {
   voltageReader ??= createVoltageReader(store, { input, from: range.from - 30*60000, to: Math.min(range.to, now), now });
-  const options = { from: range.from, to: range.to, now, input, readValue, voltageReader };
+  const options = { from: range.from, to: range.to, now, input, readValue, voltageReader, queryContext };
   const streams = [auxiliaryIntervals(store,options), energyIntervals(store,options,'ev1'), energyIntervals(store,options,'ev2')]
     .map(rows => intervalPoints(rows,range,now)[Symbol.iterator]());
   const values = [null,null,null], width = (range.to-range.from)/points;

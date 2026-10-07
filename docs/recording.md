@@ -1004,12 +1004,49 @@ side, marked `displayContext`, so fetched detail uses real source knots for cubi
 tangents. The visible viewport remains fixed; these neighbours do not become
 extra observations or extend the selected dates. Other series remain clipped.
 
-Initial multi-year loading is unchanged. Fine detail can arrive later than the
-gesture, and some reconstructed series still require an earlier journal prefix.
-The current view stays available during loading or failure. No chart summary
-tables, model snapshots or additional recorded history are introduced. Browser
-checks use synthetic data in desktop, portrait and landscape viewports; they do
-not establish a frame-rate guarantee for physical phones or slower servers.
+Fine detail can arrive later than the gesture, and some reconstructed series
+still require an earlier journal prefix. The current view stays available during
+loading or failure. Date and view controls remain available: selecting different
+dates cancels the obsolete request and its worker calculation, and late results
+cannot replace the new selection. Loading reports the current stage. A percentage
+beside reading history or energy describes traversal of that stage's date range,
+not elapsed time, estimated time remaining, or completion of the whole chart.
+Preparation, transfer and drawing can follow a completed reading stage.
+
+Recent energy requests seek the selected interval ends instead of repeatedly
+scanning all earlier retained energy. Long intervals overlapping the selection
+remain included. One request reuses energy boundaries, voltage interpretation and
+a bounded set of reconstructed energy groups across related chart passes; dense
+requests fall back to streaming. These are temporary read caches, not retained
+chart summaries, model snapshots or additional recording. Original observations,
+gaps, extrema, provenance and exact accounting remain unchanged.
+
+After a short selection of at most seven calendar days finishes drawing, the
+browser may prepare one fixed companion view: Electrical power → Phase loading
+→ Charging currents → Electrical power, or either Garage view → the other Garage
+view. This uses no learned preferences and does not multiply views by adjacent
+dates. A selected in-flight companion is reused; obsolete speculation is canceled.
+Hidden pages stop speculation, and unused views are not polled repeatedly.
+The browser keeps a bounded response cache with the existing freshness and
+source/correction invalidation rules.
+
+Requested and speculative queries have separate lazy read-only workers, at most
+two per chart service. Speculation starts only when requested work is idle and
+cannot occupy its queue. Workers retire after an idle minute. Result encoding
+runs on the server worker; browser request parsing and geometry preparation also
+run in workers. Unchanged content uses a semantic revision instead of serializing
+all chart points again. Theme and ordinary legend changes reuse prepared geometry;
+stack visibility and interpolation changes rebuild the affected geometry.
+No extra zoom reduction discards loaded vertices. Canvas drawing remains on the
+browser thread; measured responsiveness is not a guarantee of zero frame delays
+on every history or device.
+
+`/api/chart` supports the same current chart data as JSON or, with
+`Accept: application/x-ndjson`, progress envelopes followed by one result envelope.
+Authentication and source selection apply to both representations. Speculative
+requests use `X-Chart-Prefetch: 1` and are limited to seven calendar days. A chart
+read has a separate fifteen-minute upper deadline and can be canceled immediately;
+ordinary monitoring reads retain their short timeout.
 
 ## H66 dataset and model roles
 
@@ -1384,8 +1421,10 @@ temperature reports and availability changes refresh any view containing today
 promptly, including unchanged reports, so a cached deadline cannot create a false
 gap. Ordinary raw polls and recorder checkpoints do not force a long history
 download. Short views react to new committed data, including the durable open
-energy interval. The chart query runs in a separate worker with bounded memory
-and a cancellable queue, so a large query does not block the control event loop.
+energy interval. Chart queries use bounded worker queues and temporary caches;
+history reconstruction and response serialization run outside the control event
+loop. A separate speculative lane keeps companion fetching out of the requested
+chart's queue.
 The **Energy cost comparisons** fold starts closed beneath the chart, alongside
 **Recording details**. Its **Comparison period** has independent start/end
 calendars with the same single-day and explicit end-selection behavior as the

@@ -7,6 +7,7 @@ import { createWebAccess } from '../src/app/web-access.js';
 import { Engine } from '../src/app/engine.js';
 import { Store } from '../src/storage/store.js';
 import { validateSettings } from '../src/app/config.js';
+import { chartRequestRange } from '../src/app/chart-data.js';
 
 const ADMIN = 'synthetic-admin-web-access-password';
 const FAMILY = 'synthetic-family-web-access-password';
@@ -46,7 +47,10 @@ async function fixture(t, options = {}) {
   const config = configuration(options.config);
   const access = createWebAccess({ config, engine,
     store: { events: () => [{ id: 1 }], observations: () => [], getState: () => null },
-    chartService: { overview: async () => ({ rows: [] }), query: async () => ({ series: [] }) },
+    chartService: { overview: async () => ({ rows: [] }), query: async args => ({
+      range: chartRequestRange(args).range, now: args.now, input: args.input, left: args.left ?? 'power',
+      series: {}, shading: {}, operatingModes: [], meta: { warnings: [], elapsedMs: 0 },
+    }) },
     reloadSettings: record('reloadSettings'),
     pairContext: { status: () => ({ enabled: true }), canControl: () => true,
       recovering: () => false, requestAction: record('pairing.requestAction') },

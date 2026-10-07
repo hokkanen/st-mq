@@ -472,10 +472,10 @@ test('partial selected edges clip drawing and cost while retaining the original 
   } finally { store.close(); }
 });
 
-test('energy geometry index streams cohorts without a full-range SQL sort or mixing incomplete devices', () => {
+for (const recent of [true, false]) test(`${recent ? 'recent energy seeks by end time' : 'historical energy streams by geometry'} without mixing incomplete devices`, () => {
   const store = voltageStore();
   try {
-    const start = day.from + HOUR, now = start + 5 * MINUTE;
+    const start = day.from + HOUR, now = start + 5 * MINUTE + (recent ? 0 : 60 * 24 * HOUR);
     // Insertion order differs from observation time and alternates the property
     // and charger cohorts. Index cursors must retain time/ID order together.
     for (const minute of [2, 0, 1]) {
@@ -492,7 +492,8 @@ test('energy geometry index streams cohorts without a full-range SQL sort or mix
     const plans = [];
     const facade = { db: { prepare(sql) {
       const statement = store.db.prepare(sql);
-      if (!sql.includes('INDEXED BY observations_energy_geometry')) return statement;
+      if (!sql.includes('SELECT id,source,device,signal,value,unit,source_time,received_at,quality,raw')
+        || !sql.includes('FROM observations INDEXED BY')) return statement;
       return { iterate(...parameters) {
         plans.push(store.db.prepare(`EXPLAIN QUERY PLAN ${sql}`).all(...parameters));
         return statement.iterate(...parameters);
@@ -504,8 +505,10 @@ test('energy geometry index streams cohorts without a full-range SQL sort or mix
     assert.equal(result.meta.rows, 21, 'Simulation and future receipt rows stay outside the physical query');
     assert(result.series.charger_power.some(row => row.x === start + 3 * MINUTE && row.y === null));
     assert(result.series.property_power.some(row => Math.abs(row.y - 36) < 1e-10));
-    assert.equal(plans.length, 1, 'A bounded geometry index orders all original energy cohorts');
-    assert(plans.every(plan => plan.some(row => /SEARCH observations USING INDEX observations_energy_geometry/.test(row.detail))));
-    assert(plans.every(plan => plan.every(row => !/TEMP B-TREE/.test(row.detail))), 'The default original-energy path must not sort all selected rows');
+    assert.equal(plans.length, 1, 'One query orders all original energy cohorts');
+    const index = recent ? 'observations_signal_time' : 'observations_energy_geometry';
+    assert(plans.every(plan => plan.some(row => row.detail.includes(`SEARCH observations USING INDEX ${index}`))));
+    if (!recent) assert(plans.every(plan => plan.every(row => !/TEMP B-TREE/.test(row.detail))),
+      'Long historical energy selections stream without sorting their complete source range');
   } finally { store.close(); }
 });

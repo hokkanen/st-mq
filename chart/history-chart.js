@@ -1,7 +1,7 @@
 import Chart from 'chart.js/auto';
 import { Interaction } from 'chart.js';
 import { color } from 'chart.js/helpers';
-import { calendarTicks, chartQuery, createChartLoader, defaultPalette, finnishDate, historyDatasets, historySeriesAt, selectedRange, shiftDate, dateSelection, visible } from './history-model.js';
+import { calendarTicks, chartQuery, createChartLoader, defaultPalette, finnishDate, historySeriesAt, selectedRange, shiftDate, dateSelection, visible } from './history-model.js';
 import { createDatePicker } from './date-picker.js';
 import { historyTooltipCallbacks, historyTooltipsEnabled, historyTooltipInteraction } from './history-tooltips.js';
 export { historyTooltipLabel, historyTooltipTitle } from './history-tooltips.js';
@@ -13,8 +13,11 @@ import { createChartOverlays, activityTracks } from './chart-overlays.js';
 import { chartObservationTime, replicaSnapshotKey } from './replica-status.js';
 import { createChartNavigation } from './chart-navigation.js';
 import { createDetailLoader, viewportTicks } from './chart-viewport.js';
-import { chartBucketWidth, chartDetailRequest, clipChartSeries, selectChartResolution } from './chart-resolution.js';
-import { preparePowerFills, powerFillPlugin } from './power-fill.js';
+import { chartBucketWidth, chartDetailRequest, selectChartResolution } from './chart-resolution.js';
+import { powerFillPlugin } from './power-fill.js';
+import { createChartGeometryCache } from './chart-geometry-cache.js';
+import { styleChartGeometry } from './chart-geometry.js';
+import { chartLoadingLabel } from './chart-stream.js';
 import { ENERGY_SIGNALS } from '../src/domain/history-series.js';
 
 const clock = new Intl.DateTimeFormat('en-GB', { timeZone: 'Europe/Helsinki', hour: '2-digit', minute: '2-digit', hourCycle: 'h23' });
@@ -31,9 +34,13 @@ const paletteVariables = {
   garagePipeRear: '--chart-garage-pipe-rear', garagePipeFront: '--chart-garage-pipe-front',
 };
 export function historyRenderFingerprint(overview, selection) {
-  return JSON.stringify({ range: overview.range, input: overview.input, series: overview.series,
-    shading: overview.shading, meta: overview.meta, selection: chartSelectionKey(selection),
-    now: overview.now >= overview.range.from && overview.now < overview.range.to ? overview.now : null });
+  const { elapsedMs, cacheHit, workerElapsedMs, serializedBytes, ...meaning } = overview.meta ?? {};
+  // Production responses have a worker-computed digest. The fallback serves
+  // direct current-format data callers without treating diagnostics as history.
+  const content = overview.meta?.contentRevision ?? JSON.stringify({ range: overview.range, input: overview.input,
+    series: overview.series, shading: overview.shading, operatingModes: overview.operatingModes, meta: meaning });
+  return JSON.stringify([content, chartSelectionKey(selection),
+    overview.now >= overview.range.from && overview.now < overview.range.to ? overview.now : null]);
 }
 export function historyLegendLabel(axis, view, datasets) {
   if (axis === 'activity') return 'Activity rows';
@@ -76,17 +83,18 @@ export function createHistoryChart({ api, getTheme = () => document.documentElem
   const canvas = $('history');
   const mobilePointer = window.matchMedia('(pointer: coarse)');
   const loader = createChartLoader({ api });
+  const geometry = createChartGeometryCache();
   const comparisons = createComparisonRange({ api });
   let storage; try { storage = localStorage; } catch { /* Optional browser persistence. */ }
   const preferences = readChartPreferences(storage);
   const listeners = [];
-  let graph, payload, overview, detail, plottedSelection, fingerprint, status, initialized = false, closed = false;
+  let graph, payload, overview, detail, plottedSelection, displayedSelection, fingerprint, status, initialized = false, closed = false;
   let palette = { ...defaultPalette }, lastContract, lastRecording, lastFirewoodRevision, lastReplicaSnapshot, selectionGeneration = 0;
   let selection = { ...selectedRange('today', Date.now()), points: 800, ...selectionForView(preferences.view) };
   let suggestedEndDate = selection.endDate, rangeActive = false;
   let activePreset = 'today';
   let detailState = 'idle', pendingFullRender = false, refreshQueued = false, queuedForce = false, lastInput;
-  let overlays;
+  let overlays, renderGeneration = 0, lastLegendKey, lastNotesKey, loadingProgress;
   const navigation = createChartNavigation({ canvas, getChart: () => graph, onMove: () => overlays?.clear(), onSettle: () => {
     if (!overview || closed) return;
     renderChart({ viewOnly: navigation.fullscreen && !pendingFullRender }); requestDetail();
@@ -104,8 +112,8 @@ export function createHistoryChart({ api, getTheme = () => document.documentElem
   });
   overlays = createChartOverlays({ canvas, getChart: () => graph, getPayload: () => payload,
     getView: () => navigation.view ?? payload?.range, getPalette: () => palette,
-    getTracks: () => tracksForView(selectedChartView(plottedSelection ?? selection)),
-    isVisible: key => visible(key, chartViewPreferences(selectedChartView(plottedSelection ?? selection), preferences)),
+    getTracks: () => tracksForView(selectedChartView(displayedSelection ?? selection)),
+    isVisible: key => visible(key, chartViewPreferences(selectedChartView(displayedSelection ?? selection), preferences)),
     isMoving: () => navigation.moving,
   });
   const seriesPicker = createSeriesPicker({ getSelected: () => preferences, onOpen: () => overlays.clear(),
@@ -127,7 +135,7 @@ export function createHistoryChart({ api, getTheme = () => document.documentElem
   }
   function sameSelection(a, b) { return a && b && a.startDate === b.startDate && a.endDate === b.endDate && chartSelectionKey(a) === chartSelectionKey(b); }
   function invalidateDetail() { detail = undefined; detailLoader.invalidate(); }
-  function invalidate() { loader.invalidate(); invalidateDetail(); }
+  function invalidate() { loader.invalidate(); invalidateDetail(); geometry.clear(); ++renderGeneration; }
   function cachedDetails() {
     return detailLoader.entries().filter(entry => sameSelection(entry.selection, plottedSelection))
       .map(entry => ({ ...entry.data, points: entry.selection.points }));
@@ -199,8 +207,7 @@ export function createHistoryChart({ api, getTheme = () => document.documentElem
       button.addEventListener('click', () => {
         setChartVisibility(preferences, view, key, !visible(key, visibility)); savePreferences();
         const focused = document.activeElement === button;
-        renderChart();
-        if (focused) $('chart-legend').querySelector(`[data-chart-key="${key}"]`)?.focus({ preventScroll: true });
+        void renderChart().then(() => { if (focused) $('chart-legend').querySelector(`[data-chart-key="${key}"]`)?.focus({ preventScroll: true }); });
       });
       group.append(button);
     }
@@ -209,7 +216,7 @@ export function createHistoryChart({ api, getTheme = () => document.documentElem
     for (const track of tracksForView(view)) add(groups[2], track.key, track.label, track.detail, palette[track.color ?? track.key], 'strip');
     const reset = document.createElement('button'); reset.type = 'button'; reset.className = 'chart-legend-reset'; reset.textContent = 'Reset view';
     reset.title = 'Restore this view’s default series and activity rows; keep your price and interpolation choices';
-    reset.addEventListener('click', () => { delete preferences.views[view.key]; savePreferences(); renderChart(); $('chart-legend-actions').querySelector('.chart-legend-reset')?.focus({ preventScroll: true }); });
+    reset.addEventListener('click', () => { delete preferences.views[view.key]; savePreferences(); void renderChart().then(() => $('chart-legend-actions').querySelector('.chart-legend-reset')?.focus({ preventScroll: true })); });
     const save = document.createElement('button'); save.type = 'button'; save.className = 'chart-legend-save'; save.textContent = 'Save view';
     save.title = 'Save the selected view, series visibility, price and interpolation choices in this browser';
     save.addEventListener('click', () => { save.textContent = savePreferences() ? 'View saved' : 'Save failed'; });
@@ -224,8 +231,9 @@ export function createHistoryChart({ api, getTheme = () => document.documentElem
     interpolation.addEventListener('click', () => {
       preferences.interpolation = !preferences.interpolation; savePreferences();
       const focused = document.activeElement === interpolation;
-      overlays.clear(); renderChart();
-      if (focused) $('chart-legend-actions').querySelector('.chart-legend-interpolation')?.focus({ preventScroll: true });
+      overlays.clear(); void renderChart().then(() => {
+        if (focused) $('chart-legend-actions').querySelector('.chart-legend-interpolation')?.focus({ preventScroll: true });
+      });
     });
     legend.replaceChildren(...groups.filter(group => group.children.length > 1));
     $('chart-legend-actions').replaceChildren(interpolation, reset, save);
@@ -240,9 +248,17 @@ export function createHistoryChart({ api, getTheme = () => document.documentElem
     const view = selectedChartView(plot);
     const availability = chartSubjectAvailability(view, datasets, payload, chartViewPreferences(view, preferences));
     const simulated = payload.input === 'simulated' ? ' · simulated data' : '';
-    $('chart-status').textContent = loading ? 'Loading selected dates…' : `${plot.startDate === plot.endDate ? plot.startDate : `${plot.startDate} – ${plot.endDate}`} · Finnish time${simulated}${availability ? ` · ${availability}` : ''}`;
+    $('chart-status').textContent = loading ? chartLoadingLabel(loadingProgress) : `${plot.startDate === plot.endDate ? plot.startDate : `${plot.startDate} – ${plot.endDate}`} · Finnish time${simulated}${availability ? ` · ${availability}` : ''}`;
   }
-  function renderChart({ viewOnly = false } = {}) {
+  async function renderChart({ viewOnly = false } = {}) {
+    const render = ++renderGeneration;
+    try { await drawChart({ viewOnly, render }); }
+    catch (error) {
+      if (closed || error.name === 'AbortError' || render !== renderGeneration) return;
+      $('chart-status').textContent = `Unable to draw chart: ${error.message}`; canvas.dataset.ready = 'false';
+    }
+  }
+  async function drawChart({ viewOnly, render }) {
     if (!overview) return;
     if (navigation.moving) { if (!viewOnly) pendingFullRender = true; return; }
     viewOnly = viewOnly && !pendingFullRender; pendingFullRender = false;
@@ -251,17 +267,27 @@ export function createHistoryChart({ api, getTheme = () => document.documentElem
     const source = exploring ? selectChartResolution(overview, [detail, ...cachedDetails()], view) : overview;
     if (source !== overview) detail = source;
     const plotNow = chartObservationTime(status, source.now);
-    payload = source === overview ? overview : { ...source, now: plotNow, series: historySeriesAt(source, plotNow) };
+    const nextPayload = source === overview ? overview : { ...source, now: plotNow, series: historySeriesAt(source, plotNow) };
     const started = performance.now();
     // A theme or legend change can occur during a request. Keep the previous
     // graph's labels and axes attached to its own data until the new data arrives.
     const plot = plottedSelection;
     // The server has already bounded the envelope. Zoom must retain all loaded
     // detail until finer buckets arrive, including the first small wheel step.
-    const display = { interpolation: preferences.interpolation };
-    const series = exploring ? clipChartSeries(payload.series, view, display) : payload.series;
     const chartView = selectedChartView(plot), visibility = chartViewPreferences(chartView, preferences);
-    const datasets = preparePowerFills(historyDatasets(series, chartView, visibility, palette, display));
+    const prepared = await geometry.prepare({ series: nextPayload.series, descriptor: chartView, visibility,
+      interpolation: preferences.interpolation, ...(exploring ? { view } : {}) });
+    if (closed || render !== renderGeneration || !sameSelection(plot, plottedSelection)) return;
+    if (navigation.moving) { pendingFullRender = true; return; }
+    const datasets = styleChartGeometry(prepared, chartView, visibility, palette, preferences.interpolation);
+    canvas.dataset.prepareMs = String(Math.round(performance.now() - started));
+    // A paint/task boundary presents progress and lets a new date selection
+    // cancel this preparation before Chart.js begins its bounded canvas update.
+    if (canvas.dataset.ready !== 'true') $('chart-status').textContent = chartLoadingLabel({ stage: 'drawing' });
+    await new Promise(resolve => setTimeout(resolve, 0));
+    if (closed || render !== renderGeneration || !sameSelection(plot, plottedSelection)) return;
+    payload = nextPayload; displayedSelection = plot;
+    const drawingStarted = performance.now();
     for (const dataset of datasets) if (dataset.kind === 'fill') dataset.backgroundColor = color(dataset.backgroundColor).alpha(0.25).rgbString();
     const span = view.to - view.from;
     // Reserve space for both value axes and for the widest date format. A
@@ -289,7 +315,10 @@ export function createHistoryChart({ api, getTheme = () => document.documentElem
       if (!tooltipsEnabled) graph.tooltip?.setActiveElements([], { x: 0, y: 0 });
       graph.options.plugins.tooltip.backgroundColor = getTheme() === 'light' ? '#f4faf6' : '#142b20';
       graph.options.plugins.tooltip.titleColor = palette.text; graph.options.plugins.tooltip.bodyColor = palette.text;
-      graph.update('none');
+      // animation:false already makes this immediate. Chart.js' 'none' mode
+      // skips updating shared point options, leaving compact marker colours
+      // stale after a theme change when the same dataset objects are reused.
+      graph.update();
     } else {
       graph = new Chart(canvas, {
         type: 'line', data: { datasets }, plugins: [powerFillPlugin, overlays.plugin],
@@ -309,17 +338,25 @@ export function createHistoryChart({ api, getTheme = () => document.documentElem
         },
       });
     }
-    const drawMs = performance.now() - started;
+    const drawMs = performance.now() - drawingStarted;
     canvas.dataset.drawMs = String(Math.round(drawMs)); canvas.dataset.resolutionMs = String(chartBucketWidth(source));
     canvas.dataset.dataFrom = String(payload.range.from); canvas.dataset.dataTo = String(payload.range.to);
     overlays.render(); renderDetailStatus();
     if (viewOnly) return;
-    renderLegend(datasets, chartView, visibility);
+    const legendKey = JSON.stringify([chartView.key, visibility, preferences.interpolation, palette]);
+    if (legendKey !== lastLegendKey) { lastLegendKey = legendKey; renderLegend(datasets, chartView, visibility); }
     $('chart-view-description').textContent = chartView.description;
     canvas.setAttribute('aria-label', `${chartView.label} for ${plot.startDate} to ${plot.endDate}. ${chartView.description}`);
     const loading = !sameSelection(selection, plot);
     canvas.dataset.rangeStart = plot.startDate; canvas.dataset.rangeEnd = plot.endDate; canvas.dataset.view = plot.view ?? 'explorer'; canvas.dataset.series = plot.series ?? ''; canvas.dataset.left = plot.left ?? plot.view; canvas.dataset.ready = String(!loading);
     renderStatus(datasets);
+    const noteFlags = datasets.map(dataset => [dataset.kind, dataset.chartEvidence?.carriedForward,
+      !dataset.hidden && dataset.chartEvidence?.needsAttention]);
+    const aggregated = Object.values(payload.shading ?? {}).some(intervals => intervals.some(interval => interval.aggregated));
+    const notesKey = JSON.stringify([chartView.key, preferences.interpolation, noteFlags, aggregated,
+      replicaSnapshotKey(status) !== null, payload.meta?.warnings]);
+    if (notesKey === lastNotesKey) return;
+    lastNotesKey = notesKey;
     const keys = [...chartView.leftSignals, ...chartView.rightSignals];
     const notes = ['Left-axis lines are solid; right-axis temperatures are dashed. Future forecasts and charging fallback use dash-dot lines; electricity prices are dotted. Toggle any legend item to tailor this view; price choices apply to every view.',
       (preferences.interpolation
@@ -337,12 +374,12 @@ export function createHistoryChart({ api, getTheme = () => document.documentElem
     if (keys.includes('caravan_power')) notes.push('Caravan power is measured meter energy divided by its original interval duration. It shows average electrical load, not instantaneous peaks; original energy readings remain in Series explorer.');
     if (datasets.some(dataset => ['audit', 'session', 'interval-energy'].includes(dataset.kind))) notes.push('Hollow circles mark individual recorded readings or interval totals. Hover or tap a point in fullscreen to inspect its value and original time; gaps do not imply a zero reading.');
     if (keys.some(key => key.includes('_current_'))) notes.push('Reconstructed currents use historical per-phase voltage estimates and assume unity power factor; they are interval averages, not instantaneous RMS peaks. Imported current observations retain their original basis.');
-    if (datasets.some(dataset => dataset.data.some(point => point.carriedForward))) notes.push(replicaSnapshotKey(status) !== null
+    if (datasets.some(dataset => dataset.chartEvidence?.carriedForward)) notes.push(replicaSnapshotKey(status) !== null
       ? 'Display tails carry the last reading to the saved snapshot time; these extensions are not new measurements.'
       : 'Display tails carry the last reading to now; these extensions are not new measurements.');
-    if (datasets.some(dataset => !dataset.hidden && dataset.data.some(point => point.needsAttention))) notes.push('Some saved temperatures include last known readings. Inspect the point for source times and excluded learning evidence.');
+    if (datasets.some(dataset => !dataset.hidden && dataset.chartEvidence?.needsAttention)) notes.push('Some saved temperatures include last known readings. Inspect the point for source times and excluded learning evidence.');
     if (replicaSnapshotKey(status) !== null) notes.push('Read-only slave: the vertical time marker is the master snapshot time.');
-    if (Object.values(payload.shading ?? {}).some(intervals => intervals.some(interval => interval.aggregated))) notes.push('At long ranges, lighter activity segments indicate the occupied fraction of a display interval, not an exact continuous state.');
+    if (aggregated) notes.push('At long ranges, lighter activity segments indicate the occupied fraction of a display interval, not an exact continuous state.');
     for (const warning of payload.meta?.warnings ?? []) if (typeof warning === 'string') notes.push(warning.replaceAll('_', ' '));
     $('chart-notes').textContent = [...new Set(notes)].join(' ');
   }
@@ -395,21 +432,31 @@ export function createHistoryChart({ api, getTheme = () => document.documentElem
     const generation = ++selectionGeneration;
     if (!payload || payload.range.startDate !== selection.startDate || payload.range.endDate !== selection.endDate || chartSelectionKey(plottedSelection ?? {}) !== chartSelectionKey(selection)) {
       invalidateDetail();
-      $('chart-status').textContent = 'Loading selected dates…'; canvas.dataset.ready = 'false';
+      ++renderGeneration; geometry.cancel(); loadingProgress = { stage: 'queued' };
+      $('chart-status').textContent = chartLoadingLabel(loadingProgress); canvas.dataset.ready = 'false';
     }
     try {
-      const result = await loader.load(requestedSelection, { force, today });
+      const result = await loader.load(requestedSelection, { force, today, onProgress(progress) {
+        if (generation !== selectionGeneration || closed || !sameSelection(requestedSelection, selection)) return;
+        loadingProgress = progress;
+        $('chart-status').textContent = chartLoadingLabel(progress);
+      } });
       if (generation !== selectionGeneration || closed || !sameSelection(requestedSelection, selection)) return;
       // The response cache may contain unchanged measurements. Advance their
       // display tails and the now marker using each fresh server-status clock.
       const plotNow = chartObservationTime(status, result.now);
-      overview = { ...result, points: requestedSelection.points, now: plotNow, series: historySeriesAt(result, plotNow) };
-      const nextFingerprint = historyRenderFingerprint(overview, selection);
+      const nextFingerprint = historyRenderFingerprint({ ...result, now: plotNow }, selection);
       plottedSelection = requestedSelection;
-      navigation.setRange(overview.range);
-      if (nextFingerprint !== fingerprint) { fingerprint = nextFingerprint; renderChart(); }
-      else if (canvas.dataset.ready !== 'true') renderChart();
+      if (nextFingerprint !== fingerprint) {
+        overview = { ...result, points: requestedSelection.points, now: plotNow, series: historySeriesAt(result, plotNow) };
+        fingerprint = nextFingerprint;
+        navigation.setRange(overview.range);
+        await renderChart();
+      } else if (canvas.dataset.ready !== 'true') await renderChart();
+      else renderStatus(graph?.data.datasets ?? []);
+      if (generation !== selectionGeneration || closed || !sameSelection(requestedSelection, selection)) return;
       if (!navigation.moving) requestDetail();
+      loader.prefetch(requestedSelection, { today });
     } catch (error) {
       if (error.name === 'AbortError' || generation !== selectionGeneration || closed) return;
       $('chart-status').textContent = `Unable to load selected dates: ${error.message}`; canvas.dataset.ready = 'false';
@@ -455,9 +502,10 @@ export function createHistoryChart({ api, getTheme = () => document.documentElem
   listen($('range-back'), 'click', () => shiftRange(-1));
   listen($('range-forward'), 'click', () => shiftRange(1));
   listen(mobilePointer, 'change', () => renderChart());
+  listen(document, 'visibilitychange', () => { if (document.hidden) loader.cancelPrefetch(); });
   function updateTheme() { readPalette(); renderChart(); }
   readPalette(); updateControls();
   return { refresh(nextStatus, options) {
     return Promise.all([refresh(nextStatus, options), comparisons.refresh(nextStatus, options)]);
-  }, updateTheme, close() { closed = true; startDatePicker.close(); endDatePicker.close(); seriesPicker.close(); overlays.close(); navigation.close(); detailLoader.close(); loader.close(); comparisons.close(); listeners.forEach(remove => remove()); graph?.destroy(); } };
+  }, updateTheme, close() { closed = true; startDatePicker.close(); endDatePicker.close(); seriesPicker.close(); overlays.close(); navigation.close(); detailLoader.close(); loader.close(); geometry.close(); comparisons.close(); listeners.forEach(remove => remove()); graph?.destroy(); } };
 }

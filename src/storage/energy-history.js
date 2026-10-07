@@ -31,12 +31,23 @@ const totalOnly = prefix => prefix === 'caravan';
 
 export function recordedEnergyStart(store, prefix, input, now) {
   if (!Number.isFinite(now)) throw new TypeError('Energy selection requires an explicit receipt cutoff');
-  const row = store.db.prepare(`SELECT MIN(json_extract(raw,'$.intervalStart')) AS at FROM active_observations AS observations
-    WHERE signal=? AND ${scope(input)} AND ${physicalWriter} AND import_id IS NULL AND received_at<=? AND source_time<=?
+  const signal = totalOnly(prefix) ? `${prefix}_energy` : `${prefix}_energy_l1`;
+  // The earliest start is already ordered by the geometry index. MIN() on the
+  // signal index used to parse every retained interval on each chart pass. A
+  // cheap existence check prevents scanning all other devices for an absent
+  // prefix (the selected-history predicate remains on the actual lookup).
+  const present = store.db.prepare(`SELECT 1 FROM observations INDEXED BY observations_signal_time
+    WHERE signal=? AND import_id IS NULL AND ${scope(input)} AND received_at<=? AND source_time<=? LIMIT 1`)
+    .get(signal, now, now);
+  const geometry = "json_extract(CASE WHEN json_valid(raw) THEN raw ELSE '{}' END,'$.intervalStart')";
+  const row = present && store.db.prepare(`SELECT ${geometry} AS at FROM observations INDEXED BY observations_energy_geometry
+    WHERE signal IN (${ENERGY_SIGNALS.map(name => `'${name}'`).join(',')}) AND import_id IS NULL
+    AND ${selectedHistoryPredicate('observations', 'observations')}
+    AND signal=? AND ${scope(input)} AND ${physicalWriter} AND received_at<=? AND source_time<=?
     AND json_valid(raw) AND json_type(raw,'$.intervalStart')='integer'
     AND json_extract(raw,'$.intervalEnd')=source_time
-    AND source_time>json_extract(raw,'$.intervalStart') AND source_time<=received_at`)
-    .get(totalOnly(prefix)?`${prefix}_energy`:`${prefix}_energy_l1`, now, now);
+    AND source_time>json_extract(raw,'$.intervalStart') AND source_time<=received_at
+    ORDER BY ${geometry} LIMIT 1`).get(signal, now, now);
   return Math.min(Number.isFinite(row?.at) ? row.at : Infinity,
     ...pendingEnergyObservations(store, { now, input: input ?? 'providers', prefix }).map(row => JSON.parse(row.raw).intervalStart));
 }
@@ -45,11 +56,19 @@ export function recordedEnergyStart(store, prefix, input, now) {
 function* rawRows(store, { from, to, now, input, prefix, source, device }) {
   const signals = prefix ? ENERGY_SIGNALS.filter(signal => prefixOf(signal) === prefix) : ENERGY_SIGNALS;
   const geometry = "json_extract(CASE WHEN json_valid(raw) THEN raw ELSE '{}' END,'$.intervalStart')";
+  // Recent views should seek directly to recent interval ends instead of
+  // traversing every earlier interval start in the installation. This retains
+  // arbitrarily long intervals crossing the left boundary; no assumed maximum
+  // duration or guessed lookback is introduced. Older/long selections use the
+  // geometry index to stream without a potentially large temporary sort.
+  const day = 86_400_000;
+  const recent = now - from <= 31 * day;
+  const index = recent ? 'observations_signal_time' : 'observations_energy_geometry';
   // The geometry index streams complete cohorts in start order. JavaScript
   // retains one cohort, one overlap cluster and one gap per logical scope; no full-range
   // sort or source-row array is needed, including multi-year selections.
   const iterator = store.db.prepare(`SELECT id,source,device,signal,value,unit,source_time,received_at,quality,raw
-    FROM observations INDEXED BY observations_energy_geometry
+    FROM observations INDEXED BY ${index}
     WHERE signal IN (${ENERGY_SIGNALS.map(signal => `'${signal}'`).join(',')}) AND import_id IS NULL
     AND ${selectedHistoryPredicate('observations', 'observations')}
     AND signal IN (${signals.map(() => '?').join(',')}) AND ${geometry}<?

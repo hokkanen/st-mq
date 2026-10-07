@@ -8,7 +8,7 @@ const totalOnly = prefix => prefix === 'caravan';
 
 /** Original phase or total-energy intervals supply every history range. Drawing points
  * may be reduced in memory, but never determine energy or tariff comparisons. */
-export function addRecordedEnergy({store,range,now,input,envelopes,timing,voltageReader}) {
+export function addRecordedEnergy({store,range,now,input,envelopes,timing,voltageReader,queryContext,onProgress}) {
   voltageReader ??= createVoltageReader(store, { input, from: range.from, to: Math.min(range.to, now), now });
   const stats = {rows:0,intervals:0};
   const lastEnd = new Map();
@@ -72,7 +72,9 @@ export function addRecordedEnergy({store,range,now,input,envelopes,timing,voltag
     if (['ev1','ev2'].includes(prefix) && complete) timing.addEnergy(prefix === 'ev1' ? 'charger1' : 'charger2',start,end,total,
       { key: input === 'simulated' ? 'simulated' : 'recorded', energyBasis: 'recorded-intervals' });
   };
-  for (const group of recordedEnergyGroups(store,{from:range.from,to:range.to,now,input},stats)) accept(group);
+  const groups = queryContext ? queryContext.energyGroups(stats)
+    : recordedEnergyGroups(store,{from:range.from,to:range.to,now,input},stats);
+  for (const group of groups) { accept(group); onProgress?.(group.start); }
   // Finish only after all adjacent intervals are projected, so a shared edge
   // does not acquire a spurious missing marker.
   for (const [name,end] of lastEnd) envelopes[name]?.add(end,null);

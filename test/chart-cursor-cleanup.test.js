@@ -47,7 +47,7 @@ function trackedDatabase(db, accepts, failure, originalError, cleanupFailure = t
   return { facade, pending, counts: () => ({ prepared, opened, closed }) };
 }
 
-for (const failure of ['prepare', 'prime', 'projection']) test(`energy cursors close after ${failure} failure without masking it`, t => {
+for (const recent of [true, false]) for (const failure of ['prepare', 'prime', 'projection']) test(`${recent ? 'recent' : 'historical'} energy cursors close after ${failure} failure without masking it`, t => {
   const store = new Store(':memory:'); t.after(() => store.close());
   for (const prefix of ['ev1', 'ev2', 'property']) for (const phase of [1, 2, 3]) for (const minute of [1, 2])
     store.observation({ source: 'easee', device: `invented-${prefix}`, signal: `${prefix}_energy_l${phase}`,
@@ -58,8 +58,9 @@ for (const failure of ['prepare', 'prime', 'projection']) test(`energy cursors c
     value: 0.1, unit: 'kWh', sourceTime: day.from + minute * MINUTE, receivedAt: day.from + minute * MINUTE,
     quality: ['estimated'], raw: { intervalStart: day.from + (minute - 1) * MINUTE, intervalEnd: day.from + minute * MINUTE } });
   const originalError = new Error(`Synthetic energy ${failure} failure`);
-  const tracker = trackedDatabase(store.db, sql => sql.includes('FROM observations INDEXED BY observations_energy_geometry'), failure, originalError, true, 1);
-  assert.throws(() => addRecordedEnergy({ store: { db: tracker.facade }, range: day, now: day.to,
+  const tracker = trackedDatabase(store.db, sql => sql.includes('SELECT id,source,device,signal,value,unit,source_time,received_at,quality,raw')
+    && sql.includes('FROM observations INDEXED BY'), failure, originalError, true, 1);
+  assert.throws(() => addRecordedEnergy({ store: { db: tracker.facade }, range: day, now: day.to + (recent ? 0 : 60 * 24 * 60 * MINUTE),
     input: 'providers', envelopes: { charger_power: { add() { throw originalError; } } }, timing: { addEnergy() {} } }),
   error => error === originalError);
   assert.equal(tracker.pending.size, 0);

@@ -27,7 +27,7 @@ export async function installChartPopupProbe({ command, context }) {
 }
 
 export async function checkChartPopupBrowser({ command, evaluate, context, until }) {
-  const settle = () => evaluate('new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(() => resolve(true))))');
+  const settle = () => evaluate('window.chartRequestProbe.settled()');
   const fullscreen = () => evaluate("document.getElementById('chart-fullscreen').click(); true");
   const inspect = async enabled => {
     await evaluate(`(() => {

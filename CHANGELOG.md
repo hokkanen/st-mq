@@ -6,6 +6,12 @@ Versions follow Semantic Versioning. `-dev.N` denotes a development prerelease.
 
 ## Unreleased
 
+- Recent charts load faster by seeking the selected energy history and reusing
+  reconstruction work. Chart parsing and preparation run in workers, unchanged
+  refreshes avoid full-data comparisons, and short Electricity/Garage selections
+  prepare one related view in the background. Loading shows stages and measured
+  reading progress; selecting new dates cancels obsolete work while preserving
+  the current chart. Caches and background work remain bounded.
 - Recording details now has compact, expandable recording, disk and backup
   statuses, one Storage & growth section for size estimates and projections,
   and separate data inspections and history tools. Adaptive measurements retain

@@ -6,7 +6,7 @@ import { mkdirSync, writeFileSync } from 'node:fs';
 export async function checkChartZoomBrowser({ evaluate, command, context, until }) {
   const canvas = "document.getElementById('history')";
   const fullscreen = "document.querySelector('.history-panel').dataset.fullscreen === 'true'";
-  const settle = () => evaluate('new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(() => resolve(true))))');
+  const settle = () => evaluate('window.chartRequestProbe.settled()');
   const click = id => evaluate(`document.getElementById(${JSON.stringify(id)}).click(); true`);
   const selectView = view => evaluate(`document.getElementById('chart-series-toggle').click();
     document.getElementById('chart-series-mode-views').click();
@@ -123,6 +123,7 @@ export async function checkChartZoomBrowser({ evaluate, command, context, until 
       .every(selector => [...document.querySelectorAll(selector)].every(node => !node.checkVisibility() && node.getClientRects().length === 0))`), true,
     `${description}: zoom controls, navigator and help add no visible normal-chart layout`);
     await evaluate(`(() => {
+      window.chartRequestProbe.active = true;
       window.chartNormalFixture = { fetch: window.fetch.bind(window), detailRequests: 0 };
       window.fetch = (...args) => {
         const url = new URL(args[0], location.href);
@@ -159,7 +160,7 @@ export async function checkChartZoomBrowser({ evaluate, command, context, until 
       `${description}: normal chart does not create a gesture preview`);
     assert.equal(await evaluate('window.chartNormalFixture.detailRequests'), 0,
       `${description}: normal chart never starts refinement requests`);
-    await evaluate('window.fetch=window.chartNormalFixture.fetch; delete window.chartNormalFixture; true');
+    await evaluate('window.fetch=window.chartNormalFixture.fetch; window.chartRequestProbe.active=false; delete window.chartNormalFixture; true');
   };
   await until(`${canvas}.dataset.ready === 'true' && Number.isFinite(Number(${canvas}.dataset.viewFrom))`);
   const initial = await state();
@@ -181,6 +182,7 @@ export async function checkChartZoomBrowser({ evaluate, command, context, until 
   // while the response is pending, and an obsolete response must never replace
   // the complete overview while a newer viewport request is still loading.
   await evaluate(`(() => {
+    window.chartRequestProbe.active = true;
     window.chartZoomFixture = { fetch: window.fetch.bind(window), requests: [], release: [] };
     window.fetch = (...args) => {
       const url = new URL(args[0], location.href), fixture = window.chartZoomFixture;
@@ -225,7 +227,7 @@ export async function checkChartZoomBrowser({ evaluate, command, context, until 
   assert.equal(loadedDetail.start, initial.rangeStart, 'Refinement retains the selected start date');
   assert.equal(loadedDetail.end, initial.rangeEnd, 'Refinement retains the selected end date');
   checkSameView(await state(), movedWhileLoading, 'Publishing finer detail');
-  await evaluate('window.fetch=window.chartZoomFixture.fetch; delete window.chartZoomFixture; true');
+  await evaluate('window.fetch=window.chartZoomFixture.fetch; window.chartRequestProbe.active=false; delete window.chartZoomFixture; true');
   await key('Home');
   await settle();
   checkWholeSelection(await state(), 'Reset after asynchronous refinement');
@@ -248,11 +250,12 @@ export async function checkChartZoomBrowser({ evaluate, command, context, until 
   // The plotted axis, legend and data must always belong to the same response.
   await until("document.querySelector('.chart-gesture-preview') === null");
   await evaluate(`(() => {
+    window.chartRequestProbe.active = true;
     window.chartAxisFixture = { fetch: window.fetch.bind(window), integralDone: false };
     window.fetch = (...args) => {
       const url = new URL(args[0], location.href), fixture = window.chartAxisFixture;
       if (url.pathname.endsWith('/api/chart') && !url.searchParams.has('viewFrom')) {
-        if (url.searchParams.get('view') === 'phases') return new Promise((resolve, reject) => {
+        if (url.searchParams.get('view') === 'voltage_estimates') return new Promise((resolve, reject) => {
           fixture.release = () => fixture.fetch(args[0], { ...args[1], signal: undefined }).then(resolve, reject);
         });
         if (url.searchParams.get('view') === 'heating_water') return fixture.fetch(...args).then(response => {
@@ -267,7 +270,9 @@ export async function checkChartZoomBrowser({ evaluate, command, context, until 
     actions: [{ type: 'pointerMove', x: axisPoint.x, y: axisPoint.y, duration: 0 }, { type: 'pointerDown', button: 0 },
       { type: 'pointerMove', x: axisPoint.x + 25, y: axisPoint.y, duration: 16 }] }] });
   const axisView = await state();
-  await selectView('phases');
+  // Phase loading may already be prefetched; use an uncached electricity view
+  // to establish a genuinely pending response for this stale-result race.
+  await selectView('voltage_estimates');
   await until('Boolean(window.chartAxisFixture.release)');
   await selectView('heating_water');
   await until('window.chartAxisFixture.integralDone');
@@ -280,9 +285,9 @@ export async function checkChartZoomBrowser({ evaluate, command, context, until 
   await evaluate('window.chartAxisFixture.release().then(() => true)');
   await settle();
   assert.equal(await evaluate(`${canvas}.dataset.view`), 'heating_water', 'An older axis response cannot relabel the latest plotted data');
-  assert.equal(await evaluate("Boolean(document.querySelector('[data-chart-key=property_current_l1]'))"), false,
-    'The discarded phase response cannot replace the latest legend');
-  await evaluate("window.fetch=window.chartAxisFixture.fetch; delete window.chartAxisFixture; true");
+  assert.equal(await evaluate("Boolean(document.querySelector('[data-chart-key=voltage_estimate_l1]'))"), false,
+    'The discarded voltage response cannot replace the latest legend');
+  await evaluate("window.fetch=window.chartAxisFixture.fetch; window.chartRequestProbe.active=false; delete window.chartAxisFixture; true");
   await selectView('power');
   await until(`${canvas}.dataset.ready === 'true' && ${canvas}.dataset.left === 'power'
     && Boolean(document.querySelector('[data-chart-key=property_power]'))`);

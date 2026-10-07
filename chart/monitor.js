@@ -17,6 +17,7 @@ import './charging-diagnostics.css';
 import './charging-tests.css';
 import './charging-setup.css';
 import { createHistoryChart } from './history-chart.js';
+import { fetchChartResponse } from './chart-request.js';
 import { dashboardProviders, outdoorSourceLabel, providerName, providerSeries, temperatureReadingStatus } from './provider-status.js';
 import { activeRates, rateRows, temporaryValues, priceControlState, renderHomePolicy, homeIndoorEstimate, homeReferenceSummary } from './home-controls.js';
 import { learningDisplay, h66Control, h66HomeSummary, h66EquipmentSummary, h66ReadingStatus, h66ReadingValue, h66Registers, h66ReadingGroups, renderModelInputs } from './learning-status.js';
@@ -162,11 +163,12 @@ async function api(path, data, options = {}) {
   if (session.locked) throw Object.assign(new Error(authenticationMessage(ingress)), { status: 401 });
   assertWebRequest(webAccess, path, data, lastStatus);
   assertDashboardWrite(path, data, lastStatus);
-  const { response,result } = await session.run(({ headers, signal }) => fetchJsonResponse(applicationUrl(path), {
+  const chartRead = data === undefined && path.startsWith('/api/chart?');
+  const { response,result } = await session.run(({ headers, signal }) => (chartRead ? fetchChartResponse : fetchJsonResponse)(applicationUrl(path), {
     signal, method: data === undefined ? 'GET' : 'POST',
     headers: { ...headers, ...(data === undefined ? {} : { 'Content-Type': options.binary ? 'application/vnd.sqlite3' : 'application/json' }) },
     ...(data === undefined ? {} : { body: options.binary ? data : JSON.stringify(data) }),
-  }), options);
+  }, chartRead ? { onProgress: options.onProgress, prefetch: options.prefetch } : undefined), options);
   if (response.status === 401) {
     lockScreen({ authenticationFailed: true });
     const error = new Error(authenticationMessage(ingress)); error.status = response.status; throw error;

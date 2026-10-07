@@ -3,7 +3,8 @@ import { timingSafeEqual } from 'node:crypto';
 import { readFile } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { resolve, extname } from 'node:path';
-import { getChartData } from './chart-data.js';
+import { getChartData, chartRequestRange } from './chart-data.js';
+import { prepareChartResponse, encodeChartResponse } from './chart-wire.js';
 import { simulatedOutlook } from './simulator.js';
 import { createChartService } from './chart-service.js';
 import { chargingSessionCheckSummaries } from './charging-session-checks.js';
@@ -470,12 +471,56 @@ export function createAppServer({ engine, getEngine = () => engine, store, chart
             left: url.searchParams.get('left') ?? undefined, view: url.searchParams.get('view') ?? undefined,
             points: numberParam(url, 'points', 800, 4096),
             viewFrom: optionalTimestampParam(url, 'viewFrom'), viewTo: optionalTimestampParam(url, 'viewTo') };
+          const stream = req.headers.accept?.split(',').some(value => value.trim().split(';')[0] === 'application/x-ndjson');
+          const prefetch = req.headers['x-chart-prefetch'];
+          if (prefetch !== undefined && prefetch !== '1') throw new TypeError('Invalid chart prefetch header');
+          const { selection } = chartRequestRange(args);
+          if (prefetch && Date.parse(selection.endDate) - Date.parse(selection.startDate) >= 7 * 86_400_000)
+            throw new RangeError('Chart prefetch is limited to seven calendar days');
           const cancellation = new AbortController();
           const cancel = () => cancellation.abort();
           res.once('close', cancel);
+          // Recheck access after every asynchronous boundary, including streamed
+          // progress. Revoked requests never receive a prepared history payload.
+          const chartAuthorized = () => {
+            if (res.destroyed || res.writableEnded) return false;
+            const current = access();
+            if (current.enabled && (ingress || current === acceptedAccess)) return true;
+            const message = current.enabled ? 'Authentication required' : 'Direct web access is disabled';
+            if (res.headersSent) res.end(JSON.stringify({ type: 'error', message, status: current.enabled ? 401 : 503 }) + '\n');
+            else json(current.enabled ? 401 : 503, { error: message });
+            cancellation.abort();
+            return false;
+          };
+          const startStream = () => {
+            if (!res.headersSent) res.writeHead(200, { 'content-type': 'application/x-ndjson',
+              'cache-control': 'no-store', 'x-accel-buffering': 'no' });
+          };
+          const onProgress = stream ? progress => {
+            if (!chartAuthorized() || res.writableNeedDrain) return;
+            startStream();
+            res.write(JSON.stringify({ type: 'progress', ...progress }) + '\n');
+          } : undefined;
           try {
-            const result = readerCharts ? await readerCharts.query(args, { signal: cancellation.signal }) : getChartData({ store: readerStore, ...args });
-            if (!res.destroyed) return json(200, result);
+            const service = readerCharts ?? overviewService;
+            const options = { signal: cancellation.signal, onProgress,
+              priority: prefetch ? 'prefetch' : 'foreground', format: stream ? 'ndjson' : 'json' };
+            let bytes;
+            if (service?.queryWire) bytes = await service.queryWire(args, options);
+            else {
+              const result = service ? await service.query(args, options) : getChartData({ store: readerStore, ...args, onProgress });
+              bytes = encodeChartResponse(result, prepareChartResponse(result), options.format);
+            }
+            if (chartAuthorized()) {
+              if (stream) startStream();
+              else res.writeHead(200, { 'content-type': 'application/json', 'cache-control': 'no-store' });
+              res.end(bytes);
+            }
+          } catch (error) {
+            if (!res.destroyed && !res.writableEnded) {
+              if (res.headersSent) res.end(JSON.stringify({ type: 'error', message: error.message }) + '\n');
+              else throw error;
+            }
           } finally { res.removeListener('close', cancel); }
           return;
         }

@@ -9,13 +9,16 @@ import { temperatureReportMaxAge } from '../domain/temperature-reports.js';
 import { CHART_VIEW_BY_KEY } from '../domain/chart-views.js';
 import { CHARGING_ALLOWANCE_SIGNALS } from '../charging/allowance-history.js';
 import { CHARGING_ALLOWANCE_SERIES } from './chart-charging-allowances.js';
+import { prepareChartResponse, encodeChartResponse } from './chart-wire.js';
 
-// The chart worker owns a separate read-only SQLite connection. A large history
-// view cannot block control decisions or the application's HTTP event loop.
+// A separate read-only SQLite connection keeps reconstruction off the control
+// loop. HTTP callers also transfer worker-encoded bytes instead of cloning and
+// serializing the chart object on the main thread.
 const db = new DatabaseSync(workerData.dbPath, { readOnly: true });
 db.exec('PRAGMA query_only=ON; PRAGMA busy_timeout=1000; PRAGMA cache_size=-8192; PRAGMA temp_store=FILE;');
 const store = { db, path: workerData.dbPath };
 const cache = new Map(); let cacheBytes = 0, version = null;
+const cacheLimitBytes = workerData.cacheLimitBytes ?? 24 * 1024 * 1024;
 const heatingFingerprint = ({ generatedAt, ...summary }) => JSON.stringify(summary);
 const pendingEnergyFingerprint = (args,range) => JSON.stringify(pendingEnergyObservations(store,args)
   .filter(row=>row.source_time>range.from&&JSON.parse(row.raw).intervalStart<range.to));
@@ -58,7 +61,8 @@ let overview = null, overviewRevision = null;
 const readOverviewRevision = db.prepare(`SELECT generation,
   (SELECT COUNT(*) FROM history_recoveries WHERE completed_at IS NOT NULL) completedRecoveries
   FROM history_selection WHERE id=1`);
-parentPort.on('message', ({ id, args, operation }) => {
+parentPort.on('message', ({ id, args, operation, wire }) => {
+  const onProgress = progress => parentPort.postMessage({ id, progress });
   try {
     if (operation === 'overview') {
       const at = Date.now();
@@ -108,7 +112,7 @@ parentPort.on('message', ({ id, args, operation }) => {
     const {range}=chartRequestRange(args);
     const bucket = range.to <= args.now ? 0 : Math.floor(args.now / 15_000);
     const key = JSON.stringify({ ...args, now: bucket });
-    let entry = cache.get(key), result;
+    let entry = cache.get(key), result, prepared;
     // Constant readings extend bounded energy tails and confirmation spans.
     // Renew only affected plots, preserving unrelated historical caches and the
     // live clock bucket when source evidence itself has not changed.
@@ -126,20 +130,27 @@ parentPort.on('message', ({ id, args, operation }) => {
     if (entry) {
       cache.delete(key); cache.set(key, entry);
       result = { ...entry.result, now: args.now, meta: { ...entry.result.meta, cacheHit: true } };
+      prepared = entry.prepared;
     } else {
       // Replay and source handovers must see one committed journal prefix.
       let pendingFingerprint,sourceFingerprint;
       db.exec('BEGIN');
-      try { result = getChartData({ ...args, store }); pendingFingerprint=pendingEnergyFingerprint(args,range);
+      try { result = getChartData({ ...args, store, onProgress }); pendingFingerprint=pendingEnergyFingerprint(args,range);
         sourceFingerprint=sourceCoverageFingerprint(args,range); db.exec('COMMIT'); }
       catch (error) { db.exec('ROLLBACK'); throw error; }
-      const bytes = Buffer.byteLength(JSON.stringify(result));
-      while (cache.size && (cache.size >= 16 || cacheBytes + bytes > 32 * 1024 * 1024)) {
+      onProgress({ stage: 'preparing-response' });
+      prepared = prepareChartResponse(result);
+      // Account for the cached JS objects as well as their encoded strings.
+      const bytes = prepared.bytes * 3;
+      while (cache.size && (cache.size >= 16 || cacheBytes + bytes > cacheLimitBytes)) {
         const first = cache.keys().next().value; cacheBytes -= cache.get(first).bytes; cache.delete(first);
       }
-      if (bytes <= 32 * 1024 * 1024) { entry = { result, bytes, pendingEnergyFingerprint:pendingFingerprint,
+      if (bytes <= cacheLimitBytes) { entry = { result, prepared, bytes, pendingEnergyFingerprint:pendingFingerprint,
         sourceCoverageFingerprint:sourceFingerprint }; cache.set(key, entry); cacheBytes += bytes; }
     }
-    parentPort.postMessage({ id, result });
+    if (wire) {
+      const bytes = encodeChartResponse(result, prepared, wire);
+      parentPort.postMessage({ id, result: bytes }, [bytes.buffer]);
+    } else parentPort.postMessage({ id, result });
   } catch (error) { parentPort.postMessage({ id, error: { name: error.name, message: error.message } }); }
 });
