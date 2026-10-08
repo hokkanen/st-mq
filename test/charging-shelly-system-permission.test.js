@@ -14,9 +14,9 @@ const COMPONENTS = { current_limit: ['Number', 200], start_charging: ['Boolean',
 // Only the EVSE/broker and economic result are synthetic. Permission events pass
 // through the real MQTT parser, persistent queue, controller and runtime matcher.
 async function fixture(t, { initiallyPermitted = false, autoCharge = false, startOutcome = 'confirmed', startEcho = null,
-  automatic = true, vehicleFeed = true } = {}) {
+  automatic = true, vehicleFeed = true, limiterEnabled = false } = {}) {
   let now = START, measuredCurrentA = 0, runtime, newerStartInjected = false, pendingStartEcho = null,
-    planStartAt = START, ownershipSaveFailure = false;
+    planStartAt = START, ownershipSaveFailure = false, delayedStart = false;
   const data = new Map(), writes = [], echoTrace = [], client = new EventEmitter();
   const schedules = { rev: 1, jobs: [] }, serviceStatus = { state: 'running' };
   const service = { id: 0, auto_balance: { enable: false }, auto_charge: autoCharge };
@@ -27,7 +27,8 @@ async function fixture(t, { initiallyPermitted = false, autoCharge = false, star
   const config = { input: 'mqtt', connections: {
     mqtt: { address: 'mqtt://synthetic-system.invalid', user: 'synthetic' },
     teslamate: { enabled: vehicleFeed, carId: '1', namespace: 'synthetic-system', homeGeofence: 'Home' },
-  }, charging: { chargers: { charger2: { enabled: true, deviceId: DEVICE, topicPrefix: PREFIX, limiterEnabled: false } } } };
+  }, charging: { chargers: { charger2: { enabled: true, deviceId: DEVICE, topicPrefix: PREFIX, limiterEnabled,
+    mainFuseA: [25, 25, 25], marginA: [1, 1, 1], fallbackCurrentA: 12 } } } };
   const store = { getState: key => structuredClone(data.get(key)),
     setState: (key, value) => {
       if (ownershipSaveFailure && key === runtime.ownershipKey('charger2')) throw Error('synthetic-ownership-save-failure');
@@ -58,6 +59,10 @@ async function fixture(t, { initiallyPermitted = false, autoCharge = false, star
       now += 100;
       fields[role] = { value: frame.params.value, at: Math.floor(now / 1000) * 1000, source: 'rpc' };
       if (role === 'start_charging') fields.work_state = { value: frame.params.value ? 'charger_wait' : 'charger_pause', at: fields[role].at };
+      if (role === 'start_charging' && frame.params.value === true && startOutcome === 'delayed system readback') {
+        delayedStart = true;
+        fields.start_charging = { value: false, at: START, source: 'rpc' };
+      }
       if (role === 'start_charging' && frame.params.value === true && startOutcome === 'no acknowledgement') {
         // Publication failed after the synthetic device applied the command;
         // the application cannot infer whether delivery or execution occurred.
@@ -132,6 +137,7 @@ async function fixture(t, { initiallyPermitted = false, autoCharge = false, star
   await create();
   return { get now() { return now; }, get runtime() { return runtime; }, adapter, fields, writes, schedules, echoTrace,
     service, serviceStatus, currentCapability, publishTesla,
+    get delayedStart() { return delayedStart; },
     setPlanStartAt(at) { planStartAt = at; },
     failOwnershipSave(value) { ownershipSaveFailure = value; },
     item: () => runtime.chargers.charger2,
@@ -479,7 +485,7 @@ test(`a native ${source} current instruction of ${value} A supersedes restoratio
 });
 
 for (const outcome of ['unknown readback', 'no acknowledgement'])
-test(`SYS recovery cannot confirm or retry a Start with ${outcome}`, async t => {
+test(`SYS recovery never retries a Start with ${outcome}`, async t => {
   const f = await fixture(t, { startOutcome: outcome });
   await f.update(); await f.reconnect(); await f.update();
   assert.equal(starts(f).length, 1);
@@ -487,7 +493,76 @@ test(`SYS recovery cannot confirm or retry a Start with ${outcome}`, async t => 
   f.advance(1100); f.permission(true); await f.update();
   assert.equal(starts(f).length, 1);
   assert.equal(f.item().vehicleMatch, null);
-  assert.notEqual(f.item().controller.status().pending, null, 'A SYS value is not the missing command acknowledgement');
+  if (outcome === 'no acknowledgement')
+    assert.notEqual(f.item().controller.status().pending, null, 'A SYS value is not the missing command acknowledgement');
+  else assert.equal(f.item().controller.status().pending, null,
+    'The acknowledged Start was superseded by confirmed SYS Stop, without confirming or retrying Start');
+});
+
+for (const evidence of ['older native setting', 'missing query', 'query before acknowledgement'])
+test(`an acknowledged Start stays pending with ${evidence}`, async t => {
+  const f = await fixture(t, { startOutcome: 'delayed system readback' });
+  f.setPlanStartAt(START + 3600_000);
+  await f.update(); await f.reconnect(); await f.update();
+  const pending = f.item().controller.status().pending;
+  assert.equal(pending.stage, 'accepted');
+  f.advance(3000); f.permission(true); f.measure(6);
+  const snapshot = f.adapter.snapshot.bind(f.adapter);
+  f.adapter.snapshot = () => {
+    const value = snapshot(), permission = value.fields.start_charging;
+    if (evidence === 'older native setting') permission.measuredAt = START;
+    else if (evidence === 'missing query') delete permission.readback;
+    else permission.readback = { ...permission.readback, requestedAt: pending.acceptedAt - 1 };
+    return value;
+  };
+  const control = await f.update();
+  assert.notEqual(control.pending, null);
+  assert.equal(starts(f).length, 1);
+  assert.equal(f.fields.current_limit.value, 6);
+});
+
+for (const restart of [false, true]) for (const permitted of [true, false]) for (const limiterEnabled of [false, true])
+test(`an acknowledged delayed Start reconciles fresh SYS ${permitted} and ends the expired probe${restart ? ' after restart' : ''}${limiterEnabled ? ' with 12 A fallback' : ''}`, async t => {
+  const f = await fixture(t, { startOutcome: 'delayed system readback', limiterEnabled });
+  f.setPlanStartAt(START + 3600_000);
+  await f.update(); await f.reconnect(); await f.update();
+  let control = f.item().controller.status();
+  assert.equal(f.delayedStart, true);
+  assert.equal(control.pending?.role, 'start_charging');
+  assert.equal(control.pending?.stage, 'accepted');
+  assert.equal(control.currentTest.phase, 'active');
+  assert.equal(f.fields.current_limit.value, 6, 'Fallback permits the minimum-current comparison');
+  if (limiterEnabled) {
+    assert.equal(control.limiter.fallback, true);
+    assert.equal(control.limiter.currentA, 12);
+  }
+  const expiresAt = control.currentTest.expiresAt;
+  f.advance(3000); f.permission(permitted); f.measure(permitted ? 6 : 0);
+  f.advance(expiresAt - f.now + 1000);
+  if (restart) await f.restart();
+  control = await f.update();
+  assert.equal(control.pending, null, 'Fresh post-ACK native permission resolves the old command without replay');
+  assert.equal(starts(f).length, 1);
+  assert.equal(f.fields.start_charging.value, false, 'The expired probe returns to its accepted economic wait');
+  assert.equal(control.currentTest.expiresAt, expiresAt, 'Recovery never renews the probe');
+  assert.equal(f.item().vehicleMatch, null, 'Readback does not identify the vehicle');
+  f.advance(1000); f.measure(0); control = await f.update();
+  assert.equal(control.currentTest.phase, 'restored');
+  assert.equal(f.fields.current_limit.value, limiterEnabled ? 12 : 16);
+  assert.equal(starts(f).length, 1);
+  assert.equal(control.devicePermissionHeld, !permitted, 'A later native SYS Stop keeps its independent hold');
+  if (limiterEnabled) {
+    const phases = current => ({ healthy: true, currents: [current, current, current], times: Array(3).fill(f.now),
+      evidence: { connected: true, online: true, synchronized: true, epoch: 'synthetic-recovered-feed' } });
+    f.runtime.allocationContext = () => ({ property: phases(3), easee: phases(0), priority: 'balanced' });
+    f.advance(1000); control = await f.update();
+    assert.equal(control.limiter.fallback, false);
+    assert.equal(control.currentTest.phase, 'restored');
+    assert.equal(f.fields.current_limit.value, 14, 'Ordinary current adjustment retains its bounded ramp');
+    f.advance(f.adapter.config.dwellMs + 1000); await f.update();
+    assert.equal(f.fields.current_limit.value, 16, 'Ordinary current adjustment resumes when fallback clears');
+    assert.equal(starts(f).length, 1);
+  }
 });
 
 test('failure to persist a SYS cursor and hold leaves the event queued and cannot issue a replacement Start', async t => {

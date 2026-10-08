@@ -21,6 +21,7 @@ function fixture(t, input) {
   const path = join(directory, 'fixture.json');
   writeFileSync(path, JSON.stringify({
     geoloc: { country_code: '' }, teslamate: { enabled: false },
+    electricity: { forecast_enabled: false },
     controller: { input, h66_device: 'invented-h66' },
     equipment: { devices: [
       { id: 'upstairs', kind: 'temperature', signal: 'indoor_temperature', connection: 'mqtt:invented/smoke/1' },

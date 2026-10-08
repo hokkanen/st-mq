@@ -76,7 +76,9 @@ function identificationPresentation(charger, { now = Date.now(), timezone = 'Eur
   if (currentTestOutstanding(charger) && (currentTest.phase === 'restoring'
     || identification.active !== true || charger.values?.connected?.value === false)) return {
     label: 'Current recovery pending', state: 'Recovery pending', activity: 'Restoring charging current', recovery: true,
-    detail: `The temporary identification current limit is awaiting restoration${finite(currentTest.restoreCurrentA ?? currentTest.originalCurrentA) ? ` to ${number(currentTest.restoreCurrentA ?? currentTest.originalCurrentA, 'A')}` : ''}. Fresh charger confirmation is still required. The controller retries when the charger is reachable; newer external current instructions keep priority.`,
+    detail: charger.control?.pending?.role === 'start_charging'
+      ? `A charging permission command is awaiting fresh charger confirmation. The temporary${finite(currentTest.appliedCurrentA) ? ` ${number(currentTest.appliedCurrentA, 'A')}` : ''} identification limit remains until that command is reconciled. Recovery preserves the charging schedule and newer external instructions.`
+      : `The temporary identification current limit is awaiting restoration${finite(currentTest.restoreCurrentA) ? ` to ${number(currentTest.restoreCurrentA, 'A')}` : ''}. Recovery respects currently available capacity and confirms stopping before increasing the limit when required. Fresh charger confirmation is still required; newer external current instructions keep priority.`,
   };
   if (charger.values?.connected?.value === false) return null;
   if (identification.pauseOutstanding && charger.control?.reason === 'identification-resume-required') return {

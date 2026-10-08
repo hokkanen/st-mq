@@ -34,13 +34,15 @@ test('default startup has no global mode with simulated devices, no provider con
   assert.equal(cfg.settings.comfort.targetC, null);
   assert.deepEqual(cfg.connections, {});
   assert.equal(cfg.dbPath, '/missing-repository/var/simulation.sqlite');
-  assert.deepEqual(cfg.electricityForecast, { enabled: false });
+  assert.deepEqual(cfg.electricityForecast, { enabled: true });
 });
-test('Finnish price predictions require an explicit valid integration switch', t => {
+test('Finnish price predictions support explicit opt-out and reject invalid integration settings', t => {
   const directory = mkdtempSync(join(tmpdir(), 'stmq-price-forecast-config-'));
   t.after(() => rmSync(directory, { recursive: true, force: true }));
   const path = join(directory, 'fixture.json');
   const write = options => writeFileSync(path, JSON.stringify(options), { mode: 0o600 });
+  write({ electricity: { forecast_enabled: false } });
+  assert.deepEqual(loadConfig({ STMQ_CONFIG: path }, directory).electricityForecast, { enabled: false });
   write({ electricity: { forecast_enabled: true } });
   assert.deepEqual(loadConfig({ STMQ_CONFIG: path }, directory).electricityForecast, { enabled: true });
   for (const forecast_enabled of ['true', 1, null]) {

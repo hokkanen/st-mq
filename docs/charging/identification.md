@@ -119,6 +119,10 @@ limiter restrictions. Restart never renews the test. A newer external current
 instruction supersedes restoration; uncertain dispatch/readback remains visible
 instead of triggering a blind retry. Shelly has no native expiry for this setting:
 an application or MQTT outage can prolong the reduction until safe recovery.
+The recovery display distinguishes an unresolved start/stop command from a
+current-setting restoration. It shows a numeric restoration target only after
+that target has been selected under the current limits; the original saved
+setting is not a requirement to exceed fallback capacity.
 After native Stop, the reduced setting remains until confirmed stop permission
 and fresh physical zero measured after that permission, including during ordinary
 charging, Charge now or Automatic OFF. Expiry and restart preserve this obligation.

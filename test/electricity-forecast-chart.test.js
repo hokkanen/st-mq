@@ -98,7 +98,15 @@ test('Electricity prices lists the independent feed without confusing official a
   assert.equal(group.display.state, 'Available');
   assert.equal(group.datasets.at(-1).label, '48-hour price forecast');
   assert.equal(group.datasets.at(-1).state, 'Available');
-  assert.equal(group.datasets.at(-1).sourceUrl, 'https://energypriceforecast.eu/');
+  assert.equal(group.datasets.at(-1).source, 'Energy Price Forecast EU');
+  assert.equal(group.datasets.at(-1).sourceUrl, undefined);
+  assert.deepEqual(group.sections.map(section => section.title), ['Prices', 'Price forecast']);
+  assert.deepEqual(group.sections[0].datasets.map(row => row.signals[0]), ['spot_price', 'all_in_price']);
+  assert.deepEqual(group.sections[1].datasets, [group.datasets.at(-1)]);
+  assert.match(group.sections[1].description, /Hourly estimates.*charging flexibility.*Recorded costs and heating use published prices/);
+  assert.equal(group.datasets.at(-1).description, undefined, 'Description belongs to the section heading');
+  assert.equal(group.datasets.at(-1).reported,
+    `Fetched ${options.formatTime(now)} (just now) · Model updated ${options.formatTime(now - HOUR)} (1 h ago)`);
   status.providers.electricityForecast.available = false;
   group = dashboardProviders(status, options).find(row => row.key === 'market');
   assert.equal(group.display.state, 'Available');
@@ -106,6 +114,7 @@ test('Electricity prices lists the independent feed without confusing official a
   status.readOnly = true;
   group = dashboardProviders(status, options).find(row => row.key === 'market');
   assert.equal(group.datasets.at(-1).state, 'Unavailable on this replica');
+  assert.equal(group.datasets.at(-1).reported, null, 'Transient forecast clocks are not evidence on a replica');
 });
 
 test('disabled forecast fences late responses even when transport ignores cancellation', async () => {

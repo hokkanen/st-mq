@@ -1,8 +1,9 @@
 # Finnish electricity-price predictions
 
 `electricity.forecast_enabled` enables the free Energy Price Forecast EU feed.
-It defaults to `false`. Enable it in the existing configuration source and apply
-the reviewed configuration, or restart. It requires the Finnish market, including
+It defaults to `true`. To disable it, set it to `false` in the existing
+configuration source and apply the reviewed configuration, or restart. It requires
+the Finnish market, including
 any explicit ENTSO-E bidding zone. The setting owns acquisition and display; it
 does not grant a charger control permission or change configured ready-by times.
 
@@ -97,17 +98,26 @@ vehicle connected. Gaps remain blank. Tooltips identify Forecast, the provider,
 native hourly resolution and original download/model clocks. An optional feed
 failure cannot delay loading recorded history.
 
-**Electricity prices** lists the separate **48-hour price forecast** feed with
-its own availability, download time and provider attribution. Its outage does
-not change the availability of official electricity prices.
+**Electricity prices** separates **Prices** from **Price forecast**, with each
+section's explanation below its heading. The **48-hour price forecast** has its
+own availability and plain-text provider attribution. Forecast metadata shows
+**Fetched** with the original acquisition time and age, plus **Model updated**
+when supplied. Weather forecasts use the same clock presentation, retaining
+separate issue times and backup solar provenance. A status refresh never renews
+these clocks. A forecast outage does not change published-price availability.
 
 Each eligible connected charger shares its existing footer with a compact
-**One extra day** comparison button. A green estimated saving appears only when
-the joint comparison supports a positive household saving after the uncertainty
-premium; otherwise it stays neutral. The ordinary total-session cost remains
-unchanged. Opening the dialog changes no charging permission. The comparison
-shows remaining cost for the current and next-day deadline, both chargers'
-combined estimated impact and a separate forecast risk allowance. Already
+**One extra day** comparison button. Its two-line label shows the available
+estimated saving immediately, including zero or an estimated extra cost, without
+repeating the deadline. Missing or expired evidence explicitly shows an unavailable
+estimate. Green emphasis appears only when the joint comparison supports a
+positive household saving after the uncertainty premium; other results stay
+neutral. The ordinary total-session cost remains unchanged. Opening the dialog
+changes no charging permission. The comparison
+shows remaining cost, estimated completion and modeled charging duration for
+the current and next-day deadline. Charging duration includes only modeled
+energy delivery, excluding pauses and waits for available capacity. The dialog
+also shows both chargers' combined estimated impact and a separate forecast risk allowance. Already
 delivered energy is common to both choices. Unavailable comparison data never
 becomes a zero cost or promised saving.
 

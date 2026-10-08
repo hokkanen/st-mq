@@ -144,6 +144,34 @@ const outdoorSources = ['fmi', 'openmeteo'];
 // Source labels describe the configured transport.
 const temperatureSourceLabel = providerName;
 
+function forecastAge(at, now) {
+  const age = now - at;
+  return age < 60_000 ? 'just now' : `${durationText(Math.floor(age / 60_000) * 60_000)} ago`;
+}
+
+function forecastClock(label, values, { now, knownThrough = now, formatTime }) {
+  const times = values.filter(value => Number.isFinite(value) && value > 0 && value <= knownThrough);
+  if (!times.length) return null;
+  const first = Math.min(...times), last = Math.max(...times);
+  const range = first === last ? formatTime(first) : `${formatTime(first)} – ${formatTime(last)}`;
+  return `${label} ${range} (${first === last ? '' : 'oldest '}${forecastAge(first, now)})${times.length < values.length ? '; some times unavailable' : ''}`;
+}
+
+/** Use the publications supplying the displayed values, never the time of a
+ * health check. Supplemental solar forecasts retain their own source clocks. */
+function weatherForecastClocks(intervals, solar, options) {
+  const publications = intervals.map(interval => !solar || !interval.solar ? interval
+    : interval.solar.source && interval.solar.source !== interval.source ? interval.solar : { ...interval, ...interval.solar });
+  const sources = [...new Set(publications.map(row => providerName(row.source)))];
+  return sources.map(source => {
+    const rows = publications.filter(row => providerName(row.source) === source);
+    const fetched = forecastClock('Fetched', rows.map(row => row.fetchedAt), options) ?? 'Fetch time unavailable';
+    const issued = forecastClock('Issued', rows.map(row => row.issuedAtBasis === 'fetched-snapshot' ? null : row.issuedAt), options)
+      ?? 'Issue time unavailable';
+    return `${sources.length > 1 ? `${source ?? 'Forecast'}: ` : ''}${fetched} · ${issued}`;
+  }).join('; ') || null;
+}
+
 function temperatureDisplay(status, entries, options) {
   const observations = status.observations ?? {}, outdoorHealth = entries.find(([key]) => key === 'outdoor')?.[1];
   const indoorKeys = [Object.hasOwn(observations, 'upstairs') ? 'upstairs' : 'indoor',
@@ -295,12 +323,13 @@ function detailedDatasets(group, status, options) {
       const field = solar ? 'solarRadiationWm2' : 'outdoorC';
       const subject = solar ? 'solar radiation' : 'outdoor temperature';
       const present = forecast?.filter(interval => Number.isFinite(interval[field]));
-      const observedSources = [...new Set((present ?? []).map(interval => solar ? interval.solar?.source : interval.source)
+      const observedSources = [...new Set((present ?? []).map(interval => solar ? interval.solar?.source ?? interval.source : interval.source)
         .filter(source => ['fmi', 'openmeteo'].includes(source)))];
       const selected = solar ? health.acquisition?.solarSource : health.source ?? health.acquisition?.selected;
       const source = observedSources.length > 1 ? 'mixed' : observedSources[0] ?? selected;
       const dataset = { ...row, source: source === 'mixed' ? 'FMI + Open-Meteo'
-        : ['fmi', 'openmeteo'].includes(source) ? providerName(source) : row.source };
+        : ['fmi', 'openmeteo'].includes(source) ? providerName(source) : row.source,
+        reported: weatherForecastClocks(present ?? [], solar, { ...options, now: options?.now ?? status.now ?? Date.now() }) };
       if (status.weatherStatus === 'stale-forecast')
         return datasetStatus(dataset, 'Needs attention', 'The downloaded forecast is out of date.', true);
       if (status.weatherStatus === 'missing-forecast' || forecast?.length === 0)
@@ -375,7 +404,7 @@ function recordedProviderGroup(group, status, options) {
       const allIn = first === 'all_in_price';
       evidence = (allIn ? status.prices : status.spot) ?? [];
       const success = status.providers?.market?.lastSuccessAt;
-      if (knownTime(success)) reported = `Downloaded ${time(success)}`;
+      if (knownTime(success)) reported = `Fetched ${time(success)}`;
       if (!evidence.length && allIn && !status.contract) note = 'No recorded electricity contract covers these prices.';
     } else if (Object.hasOwn(temperatures, first)) {
       const reading = temperatures[first];
@@ -388,14 +417,7 @@ function recordedProviderGroup(group, status, options) {
     } else if (group.key === 'main-temperatures') {
       const solar = row.signals.includes('solar_forecast'), field = solar ? 'solarRadiationWm2' : 'outdoorC';
       evidence = (status.forecast ?? []).filter(interval => Number.isFinite(interval[field]));
-      const publications = evidence.map(interval => solar && interval.solar
-        && ['issuedAt', 'fetchedAt'].some(key => Object.hasOwn(interval.solar, key)) ? interval.solar : interval);
-      const knownIssued = interval => interval.issuedAtBasis !== 'fetched-snapshot' && knownTime(interval.issuedAt);
-      const issued = publications.filter(knownIssued).map(interval => interval.issuedAt);
-      const downloaded = publications.filter(interval => !knownIssued(interval))
-        .map(interval => interval.fetchedAt).filter(knownTime);
-      reported = [issued.length ? `Forecast issued ${time(Math.max(...issued))}` : '',
-        downloaded.length ? `Downloaded ${time(Math.max(...downloaded))} (issue time unavailable)` : ''].filter(Boolean).join('; ') || null;
+      reported = weatherForecastClocks(evidence, solar, { ...options, now: options?.now ?? status.now ?? Date.now(), knownThrough: at });
     } else if (group.key === 'vehicle-telemetry') {
       const feed = status.charging?.vehicleFeeds?.find(feed => feed.label === row.label
         && ({ 'bmw-cardata': 'BMW CarData', teslamate: 'TeslaMate' })[feed.provider] === row.source);
@@ -500,21 +522,26 @@ function temperatureWeatherDisplay(status, temperatures, weather, options) {
 
 function withPriceForecast(group, status, options) {
   const forecast = status.providers?.electricityForecast;
-  if (group.key !== 'market' || !forecast) return group;
+  if (group.key !== 'market') return group;
+  const sections = [{ key: 'prices', title: 'Prices', description: providerIntroductions.market, datasets: group.datasets }];
+  if (!forecast) return { ...group, sections };
   const now = options?.now ?? status.now ?? Date.now();
   const available = forecast.enabled && forecast.available && now < forecast.expiresAt && !recordedView(status);
   const state = !forecast.enabled ? 'Not enabled' : recordedView(status) ? 'Unavailable on this replica'
     : available ? 'Available' : forecast.status === 'stale' ? 'Out of date' : forecast.status === 'running' ? 'Updating' : 'Unavailable';
-  const description = 'Hourly predictions extend the existing price chart, up to 48 hours from download. Optional one-day charging flexibility uses these estimates; recorded costs and heating use published prices.';
+  const description = 'Hourly estimates extend the price chart up to 48 hours and support optional one-day charging flexibility. Recorded costs and heating use published prices.';
   const detail = !forecast.enabled ? 'Enable Electricity price forecast in configuration for private, non-commercial use.'
     : recordedView(status) ? 'Forecasts are temporary and are not copied into recorded history. A new master downloads a fresh forecast.'
       : available ? 'Published prices always take precedence. Predictions are uncertain and are not billed rates.'
         : 'Published prices remain available independently. Existing charging deadlines still apply.';
   const row = { signals: ['electricity_price_forecast'], label: '48-hour price forecast', unit: 'c/kWh',
-    source: 'Energy Price Forecast EU', sourceUrl: 'https://energypriceforecast.eu/',
-    state, tone: available ? 'available' : 'pending', description, detail,
-    reported: Number.isFinite(forecast.fetchedAt) ? `Downloaded ${options.formatTime(forecast.fetchedAt)}` : null };
+    source: 'Energy Price Forecast EU', state, tone: available ? 'available' : 'pending', detail,
+    reported: recordedView(status) || !forecast.enabled ? null : [
+      forecastClock('Fetched', [forecast.fetchedAt], { ...options, now }) ?? 'Fetch time unavailable',
+      forecastClock('Model updated', [forecast.modelUpdatedAt], { ...options, now }),
+    ].filter(Boolean).join(' · ') };
   return { ...group, datasets: [...group.datasets, row],
+    sections: [...sections, { key: 'forecast', title: 'Price forecast', description, datasets: [row] }],
     sourceStates: [...group.sourceStates, ...(forecast.enabled ? [{ label: row.source, state, tone: row.tone }] : [])] };
 }
 
@@ -550,7 +577,7 @@ export function dashboardProviders(status, options) {
     status.charging?.vehicleFeeds?.length || entries.some(([key]) => key === 'teslamate') ? vehicleDisplay(status) : null,
     currentTemperatures || weather ? temperatureWeatherDisplay(status, currentTemperatures, weather ? describe(weather) : null, options) : null,
   ].filter(Boolean).map(group => ({ ...withPriceForecast(recordedView(status) ? recordedProviderGroup(group, status, options) : group, status, options),
-    introduction: providerIntroductions[group.key] }));
+    introduction: group.key === 'market' ? 'Published electricity prices and optional forecasts have separate availability and uses.' : providerIntroductions[group.key] }));
 }
 
 function failureLabel(value) {

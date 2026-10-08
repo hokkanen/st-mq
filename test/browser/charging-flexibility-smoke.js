@@ -80,7 +80,7 @@ try {
  const {createChargingPanel}=await import('/chart/charging.js');
  const now=Date.parse('2026-10-08T14:00:00Z'),baseline=Date.parse('2026-10-09T03:00:00Z');
  const reading=value=>({value,available:true,source:'manual-fallback'});
- const comp={at:now,available:true,recommended:true,normalReadyByAt:baseline,deferredReadyByAt:baseline+86400000,normalCostCents:470,deferredCostCents:310,savingsCents:160,householdSavingsCents:145,uncertaintyPremiumCents:60,householdUncertaintyPremiumCents:60,riskAdjustedSavingsCents:85,usesForecast:true};
+ const comp={at:now,available:true,recommended:true,normalReadyByAt:baseline,deferredReadyByAt:baseline+86400000,normalCostCents:470,deferredCostCents:310,savingsCents:160,normalFinishAt:baseline-3600000,deferredFinishAt:baseline+86400000-7200000,normalChargingDurationMs:10800000,deferredChargingDurationMs:9000000,householdSavingsCents:145,uncertaintyPremiumCents:60,householdUncertaintyPremiumCents:60,riskAdjustedSavingsCents:85,usesForecast:true};
  const charger=id=>({id,label:id==='charger1'?'Charger 1':'Charger 2',provider:id==='charger1'?'easee':'shelly-evse',association:'synthetic:'+id,request:{sessionId:'synthetic-'+id,revision:1,overrides:{}},settings:{enabled:true,readyBy:'06:00',manualSoc:20,minimumSoc:80,capacityKwh:74},controls:{revision:1},capabilities:{scheduling:true},values:{connected:reading(true),charging:reading(false),soc:reading(34),minimumSoc:reading(80),capacityKwh:reading(74)},requiredGridKwh:32,sessionCost:{totalCents:470,recordedGridKwh:12.3},plan:{state:'waiting',startAt:now+3600000,finishAt:baseline-3600000,deadlineAt:baseline,feasible:true,periods:[{startAt:now+3600000,endAt:null}]},control:{phase:'waiting',confirmed:true},flexibility:{enabled:true,active:false,eligible:true,revision:1,normalReadyByAt:baseline,effectiveReadyByAt:baseline,deferredReadyByAt:baseline+86400000,preview:comp}});
  window.fixture={role:'master',now,charging:{timezone:'Europe/Helsinki',settings:{priority:'balanced'},controls:{revision:1},chargers:[charger('charger1'),charger('charger2')]}};
  window.calls=[];window.panel=createChargingPanel({document,request:async(path,payload)=>{window.calls.push({path,payload});if(path.endsWith('preview'))return{comparison:comp,flexibility:window.fixture.charging.chargers[0].flexibility};return window.fixture;}});window.panel.update(window.fixture);
@@ -97,11 +97,33 @@ try {
     assert.equal(before, absent, `No resting card height increase at ${width}/${theme}`);
     assert.equal(await evaluate('document.documentElement.scrollWidth <= innerWidth'), true);
     assert.equal(await evaluate("document.getElementById('charger1-flexibility').getBoundingClientRect().height >= 44"), true);
+    assert.equal(await evaluate("document.getElementById('charger1-flexibility').textContent"), 'One extra day€1.60 est. saving');
+    const comparisonStates = await evaluate(() => {
+      const charger = window.fixture.charging.chargers[0], original = charger.flexibility.preview;
+      const results = [];
+      for (const [savingsCents, expected] of [[4, '€0.04 est. saving'], [0, '€0.00 est. saving'], [-35, '+€0.35 est. cost'], [null, 'No estimate']]) {
+        charger.flexibility.preview = { ...original, savingsCents, recommended: false };
+        window.panel.update(window.fixture);
+        const button = document.getElementById('charger1-flexibility'), label = button.querySelector('.charging-flexibility-entry-value');
+        const buttonRect = button.getBoundingClientRect(), valueRect = label.getBoundingClientRect();
+        results.push({ expected, label: label.textContent, tone: button.dataset.tone, height: buttonRect.height,
+          overflow: valueRect.right > buttonRect.right || valueRect.bottom > buttonRect.bottom, valueHeight: valueRect.height });
+      }
+      charger.flexibility.preview = original; window.panel.update(window.fixture);
+      return results;
+    });
+    for (const state of comparisonStates) {
+      assert.equal(state.label, state.expected); assert.equal(state.tone, 'neutral');
+      assert.equal(state.height, 44, `Compact comparison state at ${width}/${theme}: ${state.label}`);
+      assert.equal(state.valueHeight, 15, `The estimate stays on one line at ${width}/${theme}: ${state.label}`);
+      assert.equal(state.overflow, false);
+    }
     await screenshot(`${width}-${theme}-cards`);
     await evaluate("document.getElementById('charger1-flexibility').focus()"); await key('Enter');
     await until("document.getElementById('charging-flexibility-apply').disabled === false");
     assert.equal(await evaluate("document.getElementById('charger1-device').open"), false);
     assert.equal(await evaluate('document.activeElement.id'), 'charging-flexibility-close');
+    assert.match(await evaluate("document.querySelectorAll('.charging-flexibility-plan')[1].textContent"), /Est\. finish 10 Oct 04:00.*Est\. charging 2 h 30 min/);
     const dialog = await evaluate("(() => {const r=document.getElementById('charging-flexibility-dialog').getBoundingClientRect();return {width:r.width,height:r.height};})()");
     assert(dialog.width <= width && dialog.height <= 800);
     await screenshot(`${width}-${theme}-dialog`); await key('Escape');

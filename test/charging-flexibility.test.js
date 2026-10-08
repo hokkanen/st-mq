@@ -201,6 +201,25 @@ test('missing future coverage is unavailable, never a fabricated zero-price savi
     normalReadyByAt: options.now + 2 * HOUR, deferredReadyByAt: options.now + 4 * HOUR });
   assert.equal(comparison.available, false); assert.equal(comparison.reason, 'price-coverage-unavailable');
   assert.equal(comparison.savingsCents, null);
+  assert.equal(comparison.normalFinishAt, null); assert.equal(comparison.deferredFinishAt, null);
+  assert.equal(comparison.normalChargingDurationMs, null); assert.equal(comparison.deferredChargingDurationMs, null);
+});
+
+test('comparison completion and charging duration describe the selected schedule without counting pauses', () => {
+  const options = planning();
+  options.chargers[0].requiredGridKwh = 16;
+  options.prices.forEach((row, index) => { row.priceCtPerKwh = index === 0 || index === 2 ? 1 : 20; });
+  const comparison = compareChargingFlexibility(options, { chargerId: 'charger1',
+    normalReadyByAt: options.now + 2 * HOUR, deferredReadyByAt: options.now + 4 * HOUR });
+  assert.equal(comparison.available, true);
+  // 16 kWh at the fixture's 11.04 kW needs about 86 min 57 s of delivery.
+  assert.ok(Math.abs(comparison.normalChargingDurationMs - 5_217_391) < 1);
+  assert.ok(Math.abs(comparison.deferredChargingDurationMs - 5_217_391) < 1);
+  assert.ok(comparison.normalFinishAt <= options.now + 2 * HOUR);
+  assert.ok(comparison.deferredFinishAt > options.now + 2 * HOUR);
+  assert.ok(comparison.deferredFinishAt <= options.now + 3 * HOUR);
+  assert.ok(comparison.deferredFinishAt - options.now > comparison.deferredChargingDurationMs + HOUR * .9,
+    'The later schedule includes a costly gap which is not charging time');
 });
 
 test('comparison runs in the shared bounded worker while command calculations retain queue priority', async t => {

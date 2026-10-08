@@ -633,10 +633,10 @@ contract.
 
 ### Optional electricity-price forecast
 
-`electricity.forecast_enabled` defaults to `false`. Enable it for the Finnish
-market in a private, non-commercial installation to fetch hourly predictions
-for up to 48 hours from the current request. Apply the reviewed configuration
-or restart. It adds the forward price-chart feed and enables forecast-aware
+`electricity.forecast_enabled` defaults to `true` and fetches hourly predictions
+for the Finnish market in a private, non-commercial installation, for up to
+48 hours from the current request. Set it to `false` to disable the feed; apply
+the reviewed configuration or restart. It adds the forward price-chart feed and enables forecast-aware
 charging comparisons independently of plugged-in vehicles. It does not change
 heating inputs, historical prices, recorded costs or charging permissions.
 See [forecast acquisition, provider conditions and storage boundaries](electricity-forecast.md).

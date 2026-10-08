@@ -93,11 +93,11 @@ test('recorded forecasts distinguish unknown issuance from download time and ret
     providers: { weather: { status: 'snapshot', source: 'openmeteo' } } };
   let group = dashboardProviders(status, { now: at, formatTime })[0];
   assert(group.datasets.every(row => row.state === 'Recorded snapshot'));
-  assert(group.datasets.every(row => row.reported === `Downloaded ${formatTime(receivedAt)} (issue time unavailable)`));
-  assert.doesNotMatch(JSON.stringify(group.datasets), /Forecast issued/);
+  assert(group.datasets.every(row => row.reported === `Fetched ${formatTime(receivedAt)} (just now) · Issue time unavailable`));
+  assert.doesNotMatch(JSON.stringify(group.datasets), /Issued /);
   forecast.issuedAt = sourceAt;
   group = dashboardProviders(status, { now: at, formatTime })[0];
-  assert(group.datasets.every(row => row.reported === `Downloaded ${formatTime(receivedAt)} (issue time unavailable)`),
+  assert(group.datasets.every(row => row.reported === `Fetched ${formatTime(receivedAt)} (just now) · Issue time unavailable`),
     'An explicitly fetched-snapshot basis cannot establish provider issuance');
   forecast.source = 'fmi';
   forecast.issuedAt = sourceAt;
@@ -105,7 +105,8 @@ test('recorded forecasts distinguish unknown issuance from download time and ret
   forecast.solar = { source: 'openmeteo', issuedAt: null, issuedAtBasis: 'fetched-snapshot', fetchedAt: receivedAt };
   status.providers.weather = { status: 'snapshot', source: 'fmi', acquisition: { solarSource: 'openmeteo' } };
   group = dashboardProviders(status, { now: at, formatTime })[0];
-  assert.equal(group.datasets.find(row => row.signals.includes('outdoor_forecast')).reported, `Forecast issued ${formatTime(sourceAt)}`);
+  assert.equal(group.datasets.find(row => row.signals.includes('outdoor_forecast')).reported,
+    `Fetched ${formatTime(receivedAt)} (just now) · Issued ${formatTime(sourceAt)} (1 min ago)`);
   assert.equal(group.datasets.find(row => row.signals.includes('solar_forecast')).reported,
-    `Downloaded ${formatTime(receivedAt)} (issue time unavailable)`);
+    `Fetched ${formatTime(receivedAt)} (just now) · Issue time unavailable`);
 });

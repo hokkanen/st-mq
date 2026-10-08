@@ -9,7 +9,7 @@ const nativeForecast = forecast => ['forecast', 'uncertain'].includes(forecast?.
 export const CHARGING_FLEXIBILITY_PREVIEW_LIFETIME_MS = 5 * 60_000;
 
 /** A price opportunity is an estimate; only an unconsumed grant marks the deadline. */
-export function chargingFlexibility(charger, { now = Date.now(), comparison = charger.flexibility?.preview } = {}) {
+export function chargingFlexibility(charger, { now = Date.now(), comparison = charger.flexibility?.preview, loading = false } = {}) {
   const state = charger.flexibility;
   const connected = charger.values?.connected?.value === true && Boolean(charger.request);
   const checkpoint = timestamp(state?.checkpointAt);
@@ -22,10 +22,21 @@ export function chargingFlexibility(charger, { now = Date.now(), comparison = ch
     && now - comparison.at < CHARGING_FLEXIBILITY_PREVIEW_LIFETIME_MS;
   const savings = available && finite(comparison.savingsCents) ? comparison.savingsCents : null;
   const recommended = !active && !awaitingCheckpoint && state?.eligible === true && comparison?.recommended === true && savings > 0;
+  // Recommendation controls emphasis, never whether a valid comparison is shown.
+  // Round before choosing the label so sub-cent differences do not show +€0.00.
+  const cents = savings === null ? null : Math.round(Math.abs(savings));
+  const amount = cents === null ? null : `€${(cents / 100).toFixed(2)}`;
+  const extraCost = savings < 0 && cents > 0;
+  const label = active ? 'Review flexibility' : awaitingCheckpoint ? 'Updating…'
+    : amount !== null ? extraCost ? `+${amount} est. cost` : `${amount} est. saving`
+      : loading ? 'Calculating…' : 'No estimate';
+  const detail = active ? 'Review the approved one-day allowance.' : awaitingCheckpoint ? 'Waiting for the updated charging request.'
+    : amount !== null ? extraCost ? `${amount} estimated extra cost.` : `${amount} estimated saving.`
+      : loading ? 'Calculating estimated savings.' : 'A current savings estimate is unavailable.';
   return { visible, active, awaitingCheckpoint, complete, eligible: state?.eligible === true && !active && !awaitingCheckpoint && !complete,
     effectiveReadyByAt: timestamp(state?.effectiveReadyByAt ?? (state?.active ? state.deferredReadyByAt : state?.normalReadyByAt)),
     title: active ? 'One day allowed' : 'One extra day',
-    label: active ? 'Review flexibility' : awaitingCheckpoint ? 'Compare again' : recommended ? `Est. €${(savings / 100).toFixed(2)} less` : available ? 'Compare costs' : 'Check savings',
+    label, detail,
     tone: active ? 'deferred' : recommended ? 'saving' : 'neutral' };
 }
 

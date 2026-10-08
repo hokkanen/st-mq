@@ -1450,10 +1450,13 @@ export function createShellyController({ adapter, initialState, saveState = () =
             state.pending = null; state.owned = null; state.ownedPause = false;
             state.lastStart = false; state.lastStartAt = readback.measuredAt;
           }
-          else if (pending.role === 'start_charging' && pending.value === true && fresh(readback) && readback.commandSource === 'sys') {
-            // A device permission cycle is neither the missing Start readback
-            // nor its missing acknowledgement. Preserve the uncertain write;
-            // otherwise a false result could cause a second application Start.
+          else if (pending.role === 'start_charging' && pending.value === true && fresh(readback) && readback.commandSource === 'sys'
+            && !(acceptedReadback(readback, pending) && commandReadback(readback, pending)
+              && (readback.value === true || devicePermission(snapshot).held && readback.measuredAt > pending.dispatchedAt))) {
+            // SYS alone cannot replace a missing ACK or command readback. An
+            // acknowledged Start can, however, finish reconciliation through a
+            // fresh correlated native query. A later SYS Stop supersedes it
+            // while retaining the device hold; neither case replays Start.
             state.phase = 'uncertain'; state.reason = 'evse-command-unconfirmed'; await persist(); return;
           }
           else if (fresh(readback) && readback.value === pending.value && settingReadback(readback, pending)) {

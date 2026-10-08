@@ -3,6 +3,12 @@ import { chargingFlexibility, CHARGING_FLEXIBILITY_PREVIEW_LIFETIME_MS } from '.
 const finite = Number.isFinite;
 const scope = charger => charger?.request ? `${charger.association}:${charger.request.sessionId}:${charger.request.revision}` : null;
 const money = cents => finite(cents) ? `€${(cents / 100).toFixed(2)}` : 'Unavailable';
+const duration = milliseconds => {
+  if (!finite(milliseconds) || milliseconds < 0) return 'Unavailable';
+  if (milliseconds > 0 && milliseconds < 60_000) return '<1 min';
+  const minutes = Math.round(milliseconds / 60_000), hours = Math.floor(minutes / 60);
+  return hours ? `${hours} h${minutes % 60 ? ` ${minutes % 60} min` : ''}` : `${minutes} min`;
+};
 const PREVIEW_LIFETIME_MS = CHARGING_FLEXIBILITY_PREVIEW_LIFETIME_MS;
 const comparisonKey = comparison => comparison ? JSON.stringify(comparison) : null;
 // Idempotency identity also works on household HTTP origins where randomUUID is absent.
@@ -54,14 +60,15 @@ export function createChargingFlexibility({ document, request, save, formatTime 
     const currentNow = now();
     let nextCheckpoint = Infinity;
     for (const [id, entry] of entries) {
-      const charger = chargerFor(id), view = charger ? chargingFlexibility(charger, { now: currentNow }) : { visible: false };
+      const charger = chargerFor(id), view = charger ? chargingFlexibility(charger, { now: currentNow,
+        loading: selected === id && loading }) : { visible: false };
       entry.button.hidden = !view.visible;
       entry.button.disabled = busy || saving;
       entry.button.parentElement?.classList.toggle('charging-footer-flexible', Boolean(view.visible));
       entry.title.textContent = view.title ?? '';
       entry.value.textContent = view.label ?? '';
       entry.button.dataset.tone = view.tone ?? 'neutral';
-      entry.button.setAttribute('aria-label', `${charger?.label ?? 'Charger'}: ${view.title}. ${view.label}. Open cost comparison`);
+      entry.button.setAttribute('aria-label', `${charger?.label ?? 'Charger'}: ${view.title}. ${view.detail} Open cost comparison`);
       const highlighted = view.active && !entry.deadlineGroup.hidden;
       entry.deadlineGroup.classList.toggle('charging-ready-by-deferred', highlighted);
       entry.badge.hidden = !highlighted;
@@ -104,7 +111,7 @@ export function createChargingFlexibility({ document, request, save, formatTime 
       generation++; selected = null; loading = false; preview = null;
       invoker?.setAttribute('aria-expanded', 'false');
       if (invoker?.isConnected && !invoker.hidden && !invoker.disabled) invoker.focus({ preventScroll: true });
-      invoker = null;
+      invoker = null; if (!disposed) refreshEntries();
     });
     bind(apply, 'click', async () => {
       const charger = chargerFor(selected), view = charger && viewFor(charger);
@@ -124,10 +131,12 @@ export function createChargingFlexibility({ document, request, save, formatTime 
     });
   }
 
-  function plan(label, at, cents, active) {
+  function plan(label, at, cents, finishAt, chargingDurationMs, active) {
     const row = make('div', '', 'charging-flexibility-plan'); row.dataset.selected = String(active);
     row.append(make('span', label), make('strong', finite(at) ? formatTime(at, status?.charging?.timezone, now()) : 'Time unavailable'),
-      make('small', `Remaining cost ${money(cents)}`));
+      make('small', `Remaining cost ${money(cents)}`),
+      make('small', `Est. finish ${finite(finishAt) ? formatTime(finishAt, status?.charging?.timezone, now()) : 'Unavailable'}`),
+      make('small', `Est. charging ${duration(chargingDurationMs)}`));
     return row;
   }
 
@@ -143,8 +152,10 @@ export function createChargingFlexibility({ document, request, save, formatTime 
     description.textContent = active
       ? 'Charging can use any time before the approved deadline. Another day needs a new approval after the earlier deadline.'
       : 'Give this connection one more local day. Charging can still happen sooner when it costs less.';
-    comparisonRows.replaceChildren(plan(active ? 'Earlier ready-by' : 'Current ready-by', state?.normalReadyByAt, available ? comparison.normalCostCents : null, false),
-      plan(active ? 'Approved ready-by' : 'With one extra day', state?.deferredReadyByAt ?? comparison?.deferredReadyByAt, available ? comparison.deferredCostCents : null, active));
+    comparisonRows.replaceChildren(plan(active ? 'Earlier ready-by' : 'Current ready-by', state?.normalReadyByAt,
+      available ? comparison.normalCostCents : null, available ? comparison.normalFinishAt : null, available ? comparison.normalChargingDurationMs : null, false),
+    plan(active ? 'Approved ready-by' : 'With one extra day', state?.deferredReadyByAt ?? comparison?.deferredReadyByAt,
+      available ? comparison.deferredCostCents : null, available ? comparison.deferredFinishAt : null, available ? comparison.deferredChargingDurationMs : null, active));
     savingValue.textContent = available && finite(comparison.savingsCents)
       ? comparison.savingsCents > 0 ? `Estimated saving ${money(comparison.savingsCents)}`
         : comparison.savingsCents < 0 ? `Estimated extra cost ${money(-comparison.savingsCents)}` : 'No estimated saving'
@@ -162,8 +173,8 @@ export function createChargingFlexibility({ document, request, save, formatTime 
       : active ? `The +1 day marker ends at ${formatTime(state.checkpointAt, status?.charging?.timezone, now())}; the approved deadline then remains binding. Cancel restores the earlier deadline, with best-effort charging if it can no longer be met.`
       : !state?.eligible ? reasonText(state?.reason)
       : !available && !loading ? reasonText(comparison?.reason)
-      : comparison?.usesForecast ? 'Already delivered energy is unchanged. Predicted prices and estimated savings may change when published prices arrive.'
-      : 'Estimates compare the remaining energy for both chargers. Energy already delivered is the same in both plans.';
+      : comparison?.usesForecast ? 'Charging time excludes pauses. Already delivered energy is unchanged. Predicted prices, savings and completion times may change.'
+      : 'Estimates compare the remaining energy for both chargers. Charging time excludes pauses. Energy already delivered is the same in both plans.';
     refresh.hidden = active || loading || saving || fresh && available;
     refresh.disabled = busy || saving || loading || !charger?.request || !view.visible || readonly;
     apply.hidden = !view.visible || readonly || !active && !state?.eligible;
@@ -180,9 +191,9 @@ export function createChargingFlexibility({ document, request, save, formatTime 
     if (!charger?.request || loading || saving) return;
     const requestScope = scope(charger), requestGeneration = ++generation;
     openedScope = requestScope; preview = null; previewScope = null; loading = true;
-    message.textContent = ''; message.classList.remove('form-error'); refreshDialog();
+    message.textContent = ''; message.classList.remove('form-error'); refreshEntries(); refreshDialog();
     if (!writable || charger.readOnly) {
-      preview = charger.flexibility?.preview ?? null; previewScope = requestScope; loading = false; refreshDialog(); return;
+      preview = charger.flexibility?.preview ?? null; previewScope = requestScope; loading = false; refreshEntries(); refreshDialog(); return;
     }
     try {
       const result = await request(`/api/charging/chargers/${encodeURIComponent(charger.id)}/flexibility-preview`, {

@@ -1,6 +1,10 @@
 import { planChargers } from './planner.js';
 
 const priced = row => Number.isFinite(row.priceCtPerKwh ?? row.allInCentsPerKWh ?? row.totalCtPerKwh ?? row.price);
+// Only modeled energy-delivery spans count as charging time. An allowed period
+// can also contain waiting for household headroom or the other charger.
+const chargingDuration = plan => Array.isArray(plan.accounting)
+  ? plan.accounting.reduce((duration, row) => duration + row.end - row.start, 0) : null;
 function covered(prices, start, end) {
   let at = start;
   for (const row of [...prices].filter(priced).sort((a, b) => a.start - b.start)) {
@@ -17,6 +21,7 @@ function covered(prices, start, end) {
 export function compareChargingFlexibility(options, { chargerId, normalReadyByAt, deferredReadyByAt }) {
   const base = { at: options.now, normalReadyByAt, deferredReadyByAt, estimated: true, available: false,
     recommended: false, normalCostCents: null, deferredCostCents: null, savingsCents: null,
+    normalFinishAt: null, deferredFinishAt: null, normalChargingDurationMs: null, deferredChargingDurationMs: null,
     householdSavingsCents: null, uncertaintyPremiumCents: null, riskAdjustedSavingsCents: null, usesForecast: false };
   const selected = options.chargers.find(charger => charger.id === chargerId);
   if (!selected || !(normalReadyByAt > options.now) || !(deferredReadyByAt > normalReadyByAt))
@@ -46,6 +51,8 @@ export function compareChargingFlexibility(options, { chargerId, normalReadyByAt
   const riskAdjustedSavingsCents = householdSavingsCents + sum(normal, 'uncertaintyPremiumCents') - sum(deferred, 'uncertaintyPremiumCents');
   return { ...base, available: true, reason: null,
     normalCostCents: before.costCents, deferredCostCents: after.costCents,
+    normalFinishAt: before.finishAt, deferredFinishAt: after.finishAt,
+    normalChargingDurationMs: chargingDuration(before), deferredChargingDurationMs: chargingDuration(after),
     savingsCents: before.costCents - after.costCents, householdSavingsCents,
     normalUncertaintyPremiumCents: before.uncertaintyPremiumCents ?? 0,
     uncertaintyPremiumCents: after.uncertaintyPremiumCents ?? 0,

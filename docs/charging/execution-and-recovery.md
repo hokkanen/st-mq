@@ -155,6 +155,14 @@ vehicle restrictions and electrical limits retain their existing authority.
 Unknown command outcomes remain fenced; a system event cannot retroactively
 acknowledge an uncertain application write. Queue and persistence failures retain
 their conservative command gates.
+An already acknowledged Start can be reconciled by fresh, matching native
+permission from a correlated query after acknowledgement, with the existing
+native timestamp checks, even when the device now reports `sys`. A later
+confirmed SYS Stop supersedes that acknowledged Start and retains its device
+hold, including when an earlier application-owned pause has not yet been cleared.
+Neither case repeats Start or renews identification. Resolving the command lets
+the original probe stop and current-restoration duties proceed; restoration
+remains bounded by available capacity, including the configured fallback.
 
 The exposed source is not a reliable actor identity. An independent native action
 reported as `sys` can receive the same classification; the owner accepted this

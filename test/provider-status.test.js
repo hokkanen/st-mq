@@ -134,6 +134,40 @@ test('inactive weather sources do not reduce healthy temperature availability or
   }
 });
 
+test('forecast age follows the contributing publications, including separately fetched solar backup', () => {
+  const status = completeDashboard(), hour = 3_600_000;
+  status.providers.weather = { status: 'fallback', source: 'fmi', lastSuccessAt: now,
+    acquisition: { selected: 'fmi', solarSource: 'mixed' } };
+  status.forecast = [0, 1].map(index => ({ start: now + index * hour, end: now + (index + 1) * hour,
+    source: 'fmi', outdoorC: 5, solarRadiationWm2: 0, issuedAt: now - 2 * hour,
+    issuedAtBasis: 'provider-result-time', fetchedAt: now - hour, solar: { basis: 'forecast' } }));
+  status.forecast[1].solar = { source: 'openmeteo', issuedAt: null, issuedAtBasis: 'fetched-snapshot', fetchedAt: now - 15 * 60_000 };
+  const forecasts = () => dashboardProviders(status, options).find(row => row.key === 'main-temperatures')
+    .sections.find(section => section.key === 'forecast').datasets;
+  let [outdoor, solar] = forecasts();
+  assert.equal(outdoor.reported, 'Fetched 09:00 (1 h ago) · Issued 08:00 (2 h ago)');
+  assert.equal(solar.source, 'FMI + Open-Meteo', 'Primary rows without duplicate solar source fields still retain FMI provenance');
+  assert.equal(solar.reported, 'FMI: Fetched 09:00 (1 h ago) · Issued 08:00 (2 h ago); Open-Meteo: Fetched 09:45 (15 min ago) · Issue time unavailable');
+  status.providers.weather.lastSuccessAt += 10 * 60_000;
+  assert.equal(forecasts()[0].reported, outdoor.reported, 'Reading health again cannot refresh the forecast publication');
+  delete status.forecast[1].solar.fetchedAt;
+  [outdoor, solar] = forecasts();
+  assert.match(solar.reported, /Open-Meteo: Fetch time unavailable · Issue time unavailable$/,
+    'Missing backup clocks cannot borrow the primary forecast clocks');
+  status.forecast[1].solar.fetchedAt = now + 1;
+  assert.match(forecasts()[1].reported, /Open-Meteo: Fetch time unavailable/);
+});
+
+test('a forecast containing multiple publication times shows their range and oldest age', () => {
+  const status = completeDashboard(), hour = 3_600_000;
+  status.forecast = [0, 1].map(index => ({ start: now + index * hour, end: now + (index + 1) * hour,
+    source: 'openmeteo', outdoorC: 0, solarRadiationWm2: 0, issuedAt: null,
+    issuedAtBasis: 'fetched-snapshot', fetchedAt: now - (index + 1) * hour }));
+  const group = dashboardProviders(status, options).find(row => row.key === 'main-temperatures');
+  const rows = group.sections.find(section => section.key === 'forecast').datasets;
+  assert.ok(rows.every(row => row.reported === 'Fetched 08:00 – 09:00 (oldest 2 h ago) · Issue time unavailable'));
+});
+
 test('a Shelly garage front sensor appears before forecast sources without duplicating sources', () => {
   const status = completeDashboard();
   status.observations.garage.source = 'mqtt-temperature';

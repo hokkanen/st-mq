@@ -6,6 +6,18 @@ Versions follow Semantic Versioning. `-dev.N` denotes a development prerelease.
 
 ## Unreleased
 
+- Shelly identification recovery now reconciles acknowledged Starts with fresh
+  system permission readback instead of leaving an expired probe stuck at its
+  temporary current. Later device Stops keep priority, missing acknowledgements
+  remain unresolved, and recovery respects fallback capacity. Recovery messages
+  identify pending permission and no longer imply the original current must be
+  restored above the available limit.
+- Electricity source details separate Prices and Price forecast with consistent
+  descriptions and plain provider attribution. Price and weather forecasts show
+  original fetch times and ages. The compact One extra day control shows available
+  estimated savings directly, including zero or extra cost, without adding a date;
+  its comparison includes estimated charging duration and completion for both
+  deadlines. Existing charging-control eligibility remains unchanged.
 - Optional Finnish electricity-price predictions extend the existing price
   chart with sparse dots, independently of connected cars. Electricity prices
   lists the new forecast feed. Connected charger cards offer a compact estimated
@@ -13,8 +25,8 @@ Versions follow Semantic Versioning. `-dev.N` denotes a development prerelease.
   marked **+1 day** until the earlier deadline passes, then becomes the normal
   deadline. Each further day needs a new approval. Forecasts expire in memory,
   use a separate planning risk allowance, and never enter recorded bills or
-  heating inputs. Enable `electricity.forecast_enabled` for private,
-  non-commercial use; it defaults to off.
+  heating inputs. `electricity.forecast_enabled` defaults to on for private,
+  non-commercial use and can be disabled in configuration.
 - History recovery now shows recorded dates for incremental source checks and
   clearer per-category results. Previous recoveries identify their accepted
   records and original dates; revert/restore reviews show affected dates,

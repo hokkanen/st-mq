@@ -31,7 +31,7 @@ export function shellyDevicePermission({ hold, sessionId, ownedPause, pending, l
     // acknowledgement or a lost reply cannot authorize replacing that Stop.
     const afterStart = pending?.role === 'start_charging' && pending.value === true
       && time(pending.dispatchedAt) && observation.eventAt >= pending.dispatchedAt;
-    if (!paused && (previous === true || next || pauseBroken || afterStart) && (!next || observation.eventAt >= next.eventAt))
+    if ((!paused || afterStart) && (previous === true || next || pauseBroken || afterStart) && (!next || observation.eventAt >= next.eventAt))
       next = { sessionId: session.sessionId, connectedAt: session.connectedAt,
         eventAt: observation.eventAt, receivedAt: observation.receivedAt };
   };

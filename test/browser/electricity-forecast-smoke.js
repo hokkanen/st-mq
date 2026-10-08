@@ -23,7 +23,13 @@ try {
   const row = (at, value) => ({ start: at, end: at + hour, spotCtPerKwh: value, unit: 'c/kWh', vatIncluded: false });
   app.store.setState('provider:market', { source: 'elering', fetchedAt: now,
     intervals: Array.from({ length: 14 }, (_, i) => ({ ...row(startAt + (i - 12) * hour, 8 + i % 3), source: 'elering' })) });
-  app.store.setState('providers:health', { market: { source: 'elering', status: 'ok', lastSuccessAt: now } });
+  app.store.setState('provider:weather', { source: 'fmi', fetchedAt: now - 30 * 60_000,
+    forecast: Array.from({ length: 6 }, (_, index) => ({ start: startAt + index * hour, end: startAt + (index + 1) * hour,
+      source: 'fmi', outdoorC: 4, solarRadiationWm2: 0, issuedAt: now - 2 * hour,
+      issuedAtBasis: 'provider-result-time', fetchedAt: now - 30 * 60_000,
+      solar: index % 2 ? { source: 'openmeteo', issuedAt: null, issuedAtBasis: 'fetched-snapshot', fetchedAt: now - 15 * 60_000 } : { basis: 'forecast' } })) });
+  app.store.setState('providers:health', { market: { source: 'elering', status: 'ok', lastSuccessAt: now },
+    weather: { source: 'fmi', status: 'fallback', lastSuccessAt: now, acquisition: { selected: 'fmi', solarSource: 'mixed' } } });
   app.store.setState('contract:offline', { periods: [{ from: '2026-01-01T00:00:00Z', marginCtPerKwh: 1, taxCtPerKwh: 2,
     vatRate: .2, tariff: 'day-night', transferRates: { vatIncluded: true, dayCtPerKwh: 3, nightCtPerKwh: 1,
       winterDayCtPerKwh: 4, otherCtPerKwh: 2 } }] });
@@ -94,7 +100,15 @@ try {
   assert(!initialPresets.some(id => /48|forecast/.test(id)));
   assert.equal(await evaluate("document.querySelectorAll('.charging-flexibility-entry:not([hidden])').length"), 0);
   assert.equal(await evaluate("document.querySelector('[data-provider=market] [data-series=electricity_price_forecast]')?.textContent.includes('Energy Price Forecast EU')"), true);
-  for (const theme of ['dark', 'light']) for (const width of [320, 390, 1280]) {
+  assert.deepEqual(await evaluate("[...document.querySelectorAll('[data-provider=market] .provider-source-title')].map(node=>node.textContent)"), ['Prices', 'Price forecast']);
+  assert.equal(await evaluate("document.querySelector('[data-provider=market] [data-source-section=forecast] .provider-source-description').textContent.includes('Hourly estimates')"), true);
+  assert.equal(await evaluate("document.querySelector('[data-series=electricity_price_forecast] .provider-series-description').hidden"), true);
+  assert.equal(await evaluate("document.querySelectorAll('[data-provider=market] .provider-series-source a').length"), 0);
+  assert.equal(await evaluate("document.querySelector('[data-series=electricity_price_forecast] .provider-series-source').textContent.includes('Fetched')"), true);
+  assert.equal(await evaluate("document.querySelector('[data-series=electricity_price_forecast] .provider-series-source').textContent.includes('Model updated')"), true);
+  assert.equal(await evaluate("document.querySelector('[data-series=outdoor_forecast] .provider-series-source').textContent.includes('30 min ago')"), true);
+  assert.equal(await evaluate("document.querySelector('[data-series=\"solar_radiation,solar_forecast\"] .provider-series-source').textContent.includes('Open-Meteo: Fetched')"), true);
+  for (const theme of ['dark', 'light']) for (const width of [280, 320, 390, 1280]) {
     await send('Emulation.setDeviceMetricsOverride', { width, height: 900, deviceScaleFactor: 1, mobile: false });
     await evaluate(`window.priceStrokes=[]; window.homeEnergyTheme.setTheme('${theme}'); document.querySelector('.history-panel').scrollIntoView({block:'center'}); true`);
     await until("window.priceStrokes.some(row=>JSON.stringify(row.dash)==='[1,8]')");
@@ -107,6 +121,19 @@ try {
     assert.equal(await evaluate('document.documentElement.scrollWidth<=innerWidth'), true);
     const image = await send('Page.captureScreenshot', { format: 'png' });
     writeFileSync(join(artifacts, `forecast-${theme}-${width}.png`), Buffer.from(image.data, 'base64'));
+    for (const provider of ['market', 'main-temperatures']) {
+      await evaluate(`document.querySelector('[data-provider=${provider}] .provider-fold').open=true;
+        document.querySelector('[data-provider=${provider}]').scrollIntoView({block:'start'});
+        new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve)))`);
+      const providerImage = await send('Page.captureScreenshot', { format: 'png' });
+      writeFileSync(join(artifacts, `${provider}-${theme}-${width}.png`), Buffer.from(providerImage.data, 'base64'));
+      assert.equal(await evaluate(`document.querySelector('[data-provider=${provider}] .provider-source-title').getBoundingClientRect().height>0`), true);
+      assert.equal(await evaluate(`(()=>{const node=document.querySelector('[data-provider=${provider}] .provider-body');
+        return node.scrollWidth<=node.clientWidth;})()`), true,
+        `${theme}/${width}: ${provider} forecast metadata fits the fold; screenshot ${artifacts}`);
+      assert.equal(await evaluate('document.documentElement.scrollWidth<=innerWidth'), true);
+      await evaluate(`document.querySelector('[data-provider=${provider}] .provider-fold').open=false; true`);
+    }
   }
   await evaluate("document.getElementById('range-tomorrow').click(); true");
   await until("document.getElementById('history').dataset.ready==='true' && document.getElementById('range-tomorrow').getAttribute('aria-pressed')==='true'");
@@ -123,7 +150,7 @@ try {
   assert.equal(await evaluate("window.priceStrokes.some(row=>JSON.stringify(row.dash)==='[1,8]')"), false,
     'Background return expires forecast without a successful status refresh');
   assert.deepEqual(errors, []);
-  console.log(`Forecast browser checks passed: no cars, existing date controls, real sparse canvas strokes and shared price colors/toggles, feed attribution, offline/background expiry, 320/390/1280px in both themes. Screenshots: ${artifacts}`);
+  console.log(`Forecast browser checks passed: no cars, existing date controls, real sparse canvas strokes and shared price colors/toggles, price sections and plain attribution, original weather/solar acquisition ages, offline/background expiry, 280/320/390/1280px in both themes. Screenshots: ${artifacts}`);
 } finally {
   socket?.close(); for (const task of pending.values()) clearTimeout(task.timer);
   await app?.close();
