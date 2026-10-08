@@ -967,9 +967,12 @@ G_warming = G / 2</code>
                   </tr>
                   <tr class="recording-storage-detail-row"><td colspan="3" headers="recording-storage-database-label">
                     <details class="recording-storage-evidence"><summary>Files on disk</summary>
-                      <dl class="recording-storage-facts"><dt>Database file</dt><dd id="recording-growth-file">Not checked</dd><dt>Transaction log (WAL)</dt><dd id="recording-growth-wal">Not checked</dd><dt>Combined files</dt><dd id="recording-growth-files">Not checked</dd></dl>
+                      <dl class="recording-storage-facts"><dt>Database file</dt><dd id="recording-growth-file">Not checked</dd><dt>Transaction log (WAL)</dt><dd id="recording-growth-wal">Not checked</dd><dt>Combined files</dt><dd id="recording-growth-files">Not checked</dd><dt>Reusable inside database</dt><dd id="recording-growth-reusable">Not checked</dd></dl>
                       <p id="recording-growth-fileEvidence"></p>
-                      <p>SQLite allocation includes records, indexes and reusable pages. File sizes include the transaction log, which can change while recording continues.</p>
+                      <p>SQLite allocation includes records, indexes, retained transaction history and reusable pages. Cleanup makes pages reusable without shrinking the file. The WAL can change while recording continues. Backups, transfer staging and other temporary files are additional disk use.</p>
+                      <dl class="recording-storage-facts"><dt>Observation pages</dt><dd id="recording-growth-observationPages">Not checked</dd><dt>Other historical records</dt><dd id="recording-growth-historyPages">Not checked</dd><dt>Current and derived state</dt><dd id="recording-growth-currentPages">Not checked</dd><dt>Disposable transaction history</dt><dd id="recording-growth-journalPages">Not checked</dd><dt>Pending peer catch-up</dt><dd id="recording-growth-peerBacklogPages">Not checked</dd><dt>Archived divergent branches</dt><dd id="recording-growth-branchPages">Not checked</dd><dt>Indexes</dt><dd id="recording-growth-indexPages">Not checked</dd><dt>SQLite bookkeeping</dt><dd id="recording-growth-internalPages">Not checked</dd></dl>
+                      <p>Page categories include unused space within allocated pages. Indexes are counted separately. These sizes are measured only when the inventory refreshes; they do not set adaptive precision.</p>
+                      <p id="recording-growth-journalRetention">Transaction retention has not been checked.</p>
                     </details>
                   </td></tr>
                   <tr>
@@ -1048,6 +1051,7 @@ G_warming = G / 2</code>
               <p class="muted">Read the complete database at one fixed transaction checkpoint. This can take time and disk I/O; recording and normal mirroring continue.</p>
               <button id="database-verification-start" data-admin-only type="button" class="secondary-button">Verify with full snapshot</button>
               <p id="database-verification-status" class="muted" role="status" aria-live="polite"></p>
+              <p id="database-verification-activity" class="muted" role="status" aria-live="polite"></p>
               <p id="database-verification-schedule" class="muted"></p>
             </div>
           </details>

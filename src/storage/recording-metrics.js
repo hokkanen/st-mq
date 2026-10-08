@@ -28,3 +28,38 @@ export function readStorageMetrics(db) {
   catch { throw unsupported(); }
   return validateStorageMetrics(saved);
 }
+
+const currentTables = new Set(['state', 'learning_epochs', 'history_selection', 'recovery_exclusions',
+  'recorder_metrics', 'recovery_dependencies', 'learning_checkpoints']);
+
+/** Explicit inventory only: dbstat visits allocated b-tree pages, so this must
+ * stay in the cached read-only overview worker, never on recording/control ticks.
+ * Categories partition allocation and include page slack; they are not payload
+ * estimates and never feed the adaptive precision controller. */
+export function inspectPhysicalAllocation(db, { allocatedBytes, reusableBytes }) {
+  let objects;
+  try {
+    objects = db.prepare(`SELECT d.name,s.type,SUM(d.pgsize) bytes FROM dbstat d
+      LEFT JOIN sqlite_schema s ON s.name=d.name GROUP BY d.name,s.type`).all();
+  } catch (error) {
+    if (/no such (?:table|module): dbstat/.test(error?.message ?? ''))
+      return { available: false, reason: 'sqlite-page-statistics-unavailable' };
+    throw error;
+  }
+  const sizes = { observationBytes: 0, historyBytes: 0, currentBytes: 0, journalBytes: 0, peerBacklogBytes: 0,
+    branchBytes: 0, indexBytes: 0, internalBytes: 0, reusableBytes };
+  for (const { name, type, bytes } of objects) {
+    const category = type === 'index' ? 'indexBytes' : name.startsWith('sqlite_') ? 'internalBytes'
+      : name === 'observations' ? 'observationBytes'
+      : name === 'journal_peer_branches' || name.startsWith('journal_peer_branch_') ? 'branchBytes'
+      : ['journal_peer', 'journal_peer_changes', 'journal_peer_before'].includes(name) ? 'peerBacklogBytes'
+      : name.startsWith('journal_') ? 'journalBytes'
+      : currentTables.has(name) ? 'currentBytes' : 'historyBytes';
+    sizes[category] += bytes;
+  }
+  // Header, pointer-map and other non-b-tree allocation is neither historical
+  // payload nor reusable pages. Keep it in SQLite's own overhead category.
+  const accounted = Object.values(sizes).reduce((sum, value) => sum + value, 0);
+  sizes.internalBytes += Math.max(0, allocatedBytes - accounted);
+  return { available: true, ...sizes };
+}

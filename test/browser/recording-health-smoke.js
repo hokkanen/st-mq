@@ -49,7 +49,10 @@ const status = { recordingHealth: { version: 2, checkedAt: now, scope: 'live',
       threshold: .08, thresholdUnit: 'kW', grouped: true, openInterval: { start: now - 3600000, end: now, kwh: 1.28 } })],
 } };
 const inventory = { generatedAt: now, database: { adaptiveEstimatedBytes: 6e9, adaptiveObservationCount: 281672,
-  fileBytes: 82e9, walBytes: 1e9, totalFileBytes: 83e9 }, groups: [
+  fileBytes: 82e9, walBytes: 1e9, totalFileBytes: 83e9, reusableBytes: 2e9,
+  physical: { available:true, observationBytes:6e9, historyBytes:60e9,currentBytes:1e9,
+    journalBytes:8e6,peerBacklogBytes:16e6,branchBytes:4e9,indexBytes:8e9,internalBytes:1e6 },
+  journalRetention: {commits:1800,payloadBytes:6e6,baseSequence:8000,maxCommits:2048,maxBytes:8*1024*1024} }, groups: [
   { id: 'states', label: 'Equipment states and settings', description: 'Exact reported changes and their original dates.',
     items: [{ id: 'dhwr_active', label: 'Hot-water circulation feedback', count: 312, countLabel: 'records',
       status: 'present', policyLabel: 'Every change', retention: 'history',
@@ -234,6 +237,9 @@ try {
   assert.equal(await evaluate("document.getElementById('recording-growth-file').textContent"),'82 GB');
   assert.equal(await evaluate("document.getElementById('recording-growth-wal').textContent"),'1 GB');
   assert.equal(await evaluate("document.getElementById('recording-growth-files').textContent"),'83 GB');
+  assert.equal(await evaluate("document.getElementById('recording-growth-peerBacklogPages').textContent"),'16 MB');
+  assert.equal(await evaluate("document.getElementById('recording-growth-reusable').textContent"),'2 GB');
+  assert.match(await evaluate("document.getElementById('recording-growth-journalRetention').textContent"),/including deletions, until acknowledged/);
   assert.equal(await evaluate("document.querySelectorAll('#recording-content tr[data-stream-id]').length"),3,'Adaptive measurements use real production rendering');
   assert.equal(await evaluate("document.querySelector('[data-signal=outdoor_temperature] .recording-source-history > summary').textContent"),'Source history · 2 identities');
   assert.equal(await evaluate("document.querySelectorAll('#recording-overview-content .recording-dataset').length"),3,'Inventory uses real production rendering');

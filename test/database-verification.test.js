@@ -6,8 +6,10 @@ import { join } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import { Store, SCHEMA_VERSION } from '../src/storage/store.js';
 import { createDatabaseBackup } from '../src/storage/backup.js';
-import { verifyDatabase, verifyCheckpointPair } from '../src/storage/full-verifier.js';
+import { fullVerificationActivity, verifyDatabase, verifyCheckpointPair } from '../src/storage/full-verifier.js';
 import { createDatabaseVerification } from '../src/app/database-verification.js';
+import { verificationActivityText } from '../chart/database-verification.js';
+import { registerJournalFunctions } from '../src/storage/journal-codec.js';
 
 async function fixture(t) {
   const directory = await mkdtemp(join(tmpdir(), 'stmq-full-verification-'));
@@ -39,6 +41,7 @@ test('full snapshot verification compares canonical content at matching transact
   assert.equal(result.comparison, true);
   assert.match(result.digest, /^[a-f0-9]{64}$/);
   assert(result.rows > 0);
+  assert.deepEqual(result.journal, { baseSequence: 0, transactions: 1, archivedBranches: 0, archivedPeerRows: 0 });
   assert.equal((await verifyDatabase({ dbPath: copy })).digest, result.digest, 'export-only metadata does not change content identity');
 });
 
@@ -54,19 +57,20 @@ test('advancing heads refuse full comparison before they can become a false cont
 test('same checkpoint with altered content fails independently of the journal hash audit', async t => {
   const { store, copy } = await fixture(t);
   const raw = new DatabaseSync(copy);
+  registerJournalFunctions(raw);
   try {
     raw.exec('BEGIN');
     raw.prepare('INSERT INTO events(id,type,payload,at) VALUES(2,?,?,2)').run('fixture', '{"example":900}');
     raw.exec('DELETE FROM journal_pending; COMMIT');
   } finally { raw.close(); }
-  await assert.rejects(verifyCheckpointPair({ leftPath: store.path, rightPath: copy }), { code: 'full_verification_content_mismatch' });
+  await assert.rejects(verifyCheckpointPair({ leftPath: store.path, rightPath: copy }), { code: 'database_journal_invalid' });
   assert.deepEqual(store.events()[0].payload, { example: 1 });
 });
 
 test('full verification detects an altered historical commit without exposing source values', async t => {
   const { copy } = await fixture(t);
   const raw = new DatabaseSync(copy);
-  try { raw.prepare('UPDATE journal_changes SET after_row=? WHERE sequence=1').run('{"secret":"do not expose"}'); }
+  try { raw.prepare('UPDATE journal_changes SET payload=? WHERE sequence=1').run('{"secret":"do not expose"}'); }
   finally { raw.close(); }
   await assert.rejects(verifyDatabase({ dbPath: copy }), error => {
     assert.equal(error.code, 'database_journal_invalid');
@@ -120,4 +124,72 @@ test('verifier failures and shutdown release the pinned source without affecting
   service.start(); await new Promise(resolve => setImmediate(resolve)); await service.close();
   assert(released); assert.equal(service.status().state, 'interrupted');
   assert.equal(service.status().error, 'full_verification_failed');
+});
+
+test('operation and maintenance checks share admission and queued cancellation starts no scan', async t => {
+  const { store } = await fixture(t);
+  const first = verifyDatabase({ dbPath: store.path, origin: 'recovery' });
+  const controller = new AbortController(), phases = [];
+  const second = verifyDatabase({ dbPath: store.path, origin: 'pairing', signal: controller.signal,
+    onProgress: value => phases.push(value.phase) });
+  const activity = fullVerificationActivity();
+  assert.equal(activity.active.origin, 'recovery');
+  assert.equal(activity.queued.length, 1);
+  assert.equal(activity.queued[0].origin, 'pairing');
+  assert.deepEqual(phases, ['queued']);
+  assert(!JSON.stringify(activity).includes(store.path), 'maintenance activity never exposes source paths');
+  controller.abort();
+  await assert.rejects(second, { name: 'AbortError' });
+  assert.deepEqual(phases, ['queued']);
+  assert.equal(fullVerificationActivity().queued.length, 0);
+  await first;
+  assert.equal(fullVerificationActivity().active, null);
+});
+
+test('queued checks pin their checkpoint only after admission and preserve mismatch meaning', async t => {
+  const { store } = await fixture(t), checkpoint = store.checkpoint();
+  let changed = false;
+  const first = verifyDatabase({ dbPath: store.path, origin: 'scheduled', onProgress: value => {
+    if (value.phase === 'validating' && !changed) {
+      changed = true; store.event('during-full-check', { evidence: true }, 2);
+    }
+  } });
+  const second = verifyDatabase({ dbPath: store.path, checkpoint, origin: 'pairing' });
+  const rejected = assert.rejects(second, { code: 'full_verification_checkpoint_mismatch' });
+  const verified = await first;
+  await rejected;
+  assert(changed);
+  assert.deepEqual(verified.checkpoint, checkpoint);
+  assert.equal(fullVerificationActivity().lastRun.state, 'error');
+  assert.equal(fullVerificationActivity().lastRun.error, 'full_verification_checkpoint_mismatch');
+  assert.equal(store.events().length, 2);
+});
+
+test('manual service exposes other operation activity and shutdown cancels its queued job only', async t => {
+  const { store } = await fixture(t);
+  const operation = verifyDatabase({ dbPath: store.path, origin: 'recovery' });
+  let released = false;
+  const service = createDatabaseVerification({ acquire: async () => ({ dbPath: store.path,
+    release: () => { released = true; } }) });
+  service.start();
+  await Promise.resolve();
+  assert.equal(service.status().state, 'queued');
+  assert.equal(service.status().activity.active.origin, 'recovery');
+  assert.equal(service.status().activity.queued[0].origin, 'manual');
+  await service.close();
+  assert(released);
+  assert.equal(service.status().state, 'interrupted');
+  await operation;
+  assert.equal(fullVerificationActivity().lastRun.state, 'complete');
+  assert.equal(fullVerificationActivity().lastRun.origin, 'recovery');
+});
+
+test('verification activity identifies queued work and transfer checking without displaying private values', () => {
+  assert.match(verificationActivityText({ active: { origin: 'recovery', startedAt: 1,
+    progress: { phase: 'checking', processed: 2048 } }, queued: [{}, {}] }, value => `time ${value}`),
+  /Recovery.*2,048 records checked.*Started time 1.*2 further checks waiting/);
+  assert.match(verificationActivityText({ active: { origin: 'pairing', startedAt: 1,
+    progress: { phase: 'checking-transfer' } } }, String), /Pairing.*Checking snapshot transfer bytes/);
+  assert.match(verificationActivityText({ lastRun: { origin: 'scheduled', state: 'error', finishedAt: 2 } }, String),
+    /Scheduled.*failed 2/);
 });

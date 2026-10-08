@@ -799,7 +799,7 @@ byte and variation metrics remain labeled as such. Current open energy is shown
 separately from finalized observation counts. The annual target measures overall
 SQLite growth; mandatory exact/history records are never dropped to meet it.
 
-This recording contract uses database schema 24. An incompatible development
+This recording contract uses database schema 25. An incompatible development
 schema is rejected before mutation with fresh-database guidance; no migration,
 backfill or automatic reset is provided. Supported read-only v0.7.5 CSV import,
 current-version restart, backup/restore and deterministic journal replay remain.
@@ -1719,9 +1719,11 @@ For a backup, confirm **This backup contains this household’s history**, then 
 at its exact hash-linked checkpoint. The check inventories changed source rows
 since the shared checkpoint, including the referenced evidence needed by those
 rows; it does not recount unchanged history. A paired divergent source can be
-reviewed directly from its journal transfer, using a private overlay of changed
-rows without copying either database. An unrelated backup has no shared
-checkpoint and requires an exceptional full inventory: format, integrity, input
+reviewed directly from its consolidated configured-peer transfer, using a private
+overlay of changed rows without copying either database. The shared peer anchor
+survives short transaction retention; offline duration never forces a full copy.
+An unrelated backup, or an independent backup whose shared checkpoint is older
+than the retained transaction window, requires an exceptional full inventory: format, integrity, input
 scope, source counts, category date ranges and potential coverage are assessed
 from its self-contained file. The confirmation asserts household identity;
 it is not an assertion about software versions and cannot bypass automatic format
@@ -1784,16 +1786,35 @@ affected evidence. A history-only correction keeps the existing model epoch and
 checkpoint. A learned correction reuses the last matching durable model checkpoint
 before the affected input. Compact epoch ranges retain the unchanged journal
 prefix with its original row identities, and the same reconstruction function
-replays only the affected suffix. Saved checkpoints come from the transactional
-journal's existing state images; they are validated against their selected
-input prefix and source revisions. If the correction reaches before an available
-matching checkpoint, or changes retrospective source corrections, replay from
-the retained seed remains necessary. This work stays separate from scanning
-unrelated observations or copying the database.
+replays only the affected suffix. Recent saved checkpoints are reconstructed
+from the retained reversible transaction changes; they are validated against
+their selected input prefix and source revisions. Independent sparse checkpoint
+caches preserve supported committed model boundaries every 256 learning entries
+or six hours of learning-input time, and at a new source revision or epoch.
+These are replaceable caches alongside the complete learning inputs, never a
+replacement for them and never per-minute snapshots. Recovery publication also
+preserves its verified unaffected prefix under the newly selected source
+revisions. A later revert or restore can reuse that prefix after transaction
+compaction. A sensor reversal begins at the original sensor change; a fireplace
+removal begins at the original load, rather than the correction's later report
+time. Reuse of a checkpoint with different source revisions additionally proves
+that every changed interpretation begins at or after the affected boundary,
+including the saved history selection and original sensor-change identities.
+Only a correction reaching before an available matching checkpoint needs
+replay from the retained seed. The permanent learning inputs, seed, source
+revisions and recovery decisions remain available, so transaction expiry does
+not impose a time limit on recovery revert or model reconstruction. This work
+stays separate from scanning unrelated observations or copying the database.
 
 **Verify with full snapshot** adds the independent full verifier to a manual
 operation. Manual verification and scheduled background checks use the same
-verifier. It compares data only at matching transaction checkpoints: continuing
+verifier and admission queue as pairing and recovery operation checks. At most
+one full verifier runs in an application process; waiting checks hold no pinned
+database reader, and cancelling one removes its pending request or joins its
+active worker before source files are released. Separate application or CLI
+processes have separate queues. Recording details show the active operation,
+phase and pending count without disclosing database paths. It compares data only
+at matching transaction checkpoints: continuing
 recording cannot turn different source times into a false mismatch. Verification
 results do not grant device authority or replace an independent dated backup.
 
@@ -1858,6 +1879,16 @@ diagnostics and SQLite overhead add growth on top of it. Compaction reduces unne
 rewrite history, reclaim existing database pages or establish physical flash-write
 savings.
 
+The explicit storage inventory separates observation pages, other retained
+history, current state and derived caches, disposable transaction history, pending peer catch-up storage,
+protected branches, indexes, SQLite overhead and reusable pages. Page statistics
+run in the inventory worker, never on recorder or control ticks. Reusable pages
+remain inside the allocated SQLite file; they do not mean the file has shrunk.
+The live WAL, backups and private transfer staging add separate disk use. The
+bounded recent transaction suffix is not a total storage cap: peer catch-up
+retains one entry and original value per changed record, including deletions,
+until the peer acknowledges it; protected divergence remains preserved.
+
 Every accepted electrical interval durably updates its pending sum and acquisition
 cursor. Deferring these writes would risk loss or double counting after a crash.
 SQLite WAL/FULL synchronization and atomic publication remain part of that
@@ -1866,8 +1897,9 @@ meaning even when another record has the same configuration digest.
 
 Decision events retain each controller decision. Their current use also supplies
 replica status freshness, so deduplicating repeated summaries requires a separate
-heartbeat design. State checkpoints and hourly recording statistics have their
-own bounded retention; they are not a reason to delete reconstruction inputs.
+heartbeat design. Disposable state versions and hourly recording statistics have
+their own bounded retention. Sparse supported learning checkpoints remain
+available independently; neither retention policy deletes reconstruction inputs.
 Recovery indexes also consume space on scalar observations. Any index or journal
 representation change needs current-schema validation and an intentional fresh
 development database when incompatible; no cleanup should add a migration or

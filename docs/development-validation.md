@@ -83,6 +83,14 @@ full checks are measured separately from routine operation; cache-dependent timi
 alone is not proof of bounded I/O. These are controlled Linux fixtures, not
 qualification of physical Raspberry Pi storage or household failover.
 
+`test/extended/adaptive-journal-scale.test.js` checks sustained constant recording,
+SQL no-ops, compact edits to large state, concurrent full verification and an
+enrolled peer returning after several transaction-retention cycles. The
+[SQLite storage benchmark](sqlite-storage-benchmarks.md) gives reproducible
+commands, measured before/after allocations, full learning replay checks and the
+remaining synchronous filesystem limits. Keep useful history, journal payload,
+indexes, reusable pages, WAL, transfer files and serialized network bytes separate.
+
 `test/recovery-learning-prefix.test.js` grows retained learning history from 256
 to 4096 entries while recovering, reverting and restoring the same recent change.
 It checks exact agreement with full reconstruction, constant staged suffix size,
@@ -757,6 +765,15 @@ Current limits to retain when reviewing results:
   delay exposes stalls with a 1,000 ms warning threshold. This is not a hard
   real-time guarantee. Offline contention fixtures exercise actual SQLite locks,
   event-loop progress, ordered recording, cancellation and pre-command commits.
+  Journal capture also bounds each main-thread row to 2 MiB and each transaction
+  to 4 MiB of cumulative raw before/after input or compact payload. The raw limit
+  applies before parsing and hashing, including repeated tiny edits to a large
+  document. Large supported imports run in storage workers. The admission tests
+  retain the same 48 MiB document and verify worker completion, exact durable
+  content, responsive timers and atomic main-thread rejection. They do not bound
+  the operating system's latency for a `synchronous=FULL` WAL commit: under shared
+  write pressure the pre-refactor and current code both exhibited over one second
+  inside `fsync`, including with automatic WAL checkpoints disabled.
 - Joint charging planning runs its bounded search in a background worker. Earlier
   synthetic 24-hour two-charger measurements took approximately 0.47–1.24 seconds on the
   development machine; this is historical performance evidence, not a current
@@ -780,13 +797,13 @@ Current limits to retain when reviewing results:
 
 ## Runtime and fixture constraints
 
-The recovery service prepares a revision preview's private SQLite backup before
-launching its revision worker. It owns and awaits both stages, including worker
-exit on cancellation, before deleting temporary files. Source-only checks need
-no candidate copy. This ordering avoids a reproduced Node runtime stall and
-prevents cleanup racing an abandoned backup worker. Keep small recovery-preview
-and cancellation regressions alongside the larger extended replay fixtures
-instead of increasing timeouts to conceal a stall.
+The recovery service gives a revision preview a bounded projection of affected
+source rows and the required learning suffix. Late corrections and reversals do
+not copy the complete installed database. The service owns worker lifetimes and
+temporary files and awaits worker exit on cancellation before cleanup.
+Source-only checks need no candidate copy. Keep small recovery-preview and
+cancellation regressions alongside the larger extended replay fixtures instead
+of increasing timeouts to conceal a stall.
 
 The full-week replay and larger phase-energy import belong in extended tests.
 Routine tests still cross batch boundaries and verify authority, restart,

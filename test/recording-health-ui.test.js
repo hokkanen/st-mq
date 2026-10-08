@@ -317,23 +317,36 @@ test('storage inventory keeps file sizes and dated retained evidence through fai
   view.panel.inventoryStatus('loading');
   assert.equal(view.element('recording-growth-file').textContent, 'Measuring…');
   view.panel.inventory({ generatedAt: now, database: { fileBytes: 80e9, walBytes: 0,
-    totalFileBytes: 80e9, adaptiveEstimatedBytes: 6e9, adaptiveObservationCount: 0 } });
+    totalFileBytes: 80e9, reusableBytes: 12e9, adaptiveEstimatedBytes: 6e9, adaptiveObservationCount: 0,
+    physical: { available: true, observationBytes: 20e9, historyBytes: 30e9, currentBytes: 1e9,
+      journalBytes: 10e6, peerBacklogBytes: 5e6, branchBytes: 0, indexBytes: 10e9, internalBytes: 4096 },
+    journalRetention: { commits: 1024, payloadBytes: 7e6, maxCommits: 2048, maxBytes: 8e6, baseSequence: 500 } } });
   assert.equal(view.element('recording-growth-database').textContent, '83 GB');
   assert.equal(view.element('recording-growth-file').textContent, '80 GB');
   assert.equal(view.element('recording-growth-wal').textContent, '0 B');
   assert.equal(view.element('recording-growth-files').textContent, '80 GB');
+  assert.equal(view.element('recording-growth-reusable').textContent, '12 GB');
+  assert.equal(view.element('recording-growth-journalPages').textContent, '10 MB');
+  assert.equal(view.element('recording-growth-peerBacklogPages').textContent, '5 MB');
+  assert.equal(view.element('recording-growth-branchPages').textContent, '0 B');
+  assert.match(view.element('recording-growth-journalRetention').textContent, /1,024 transactions.*7 MB.*transaction 500/);
   assert.equal(view.element('recording-growth-observations').textContent, '0 retained observations.');
   assert.equal(view.element('recording-overview-notice').hidden, true);
   view.advance(3600_000);
   view.panel.inventoryStatus('failed');
   assert.equal(view.element('recording-growth-file').textContent, '80 GB');
+  assert.equal(view.element('recording-growth-reusable').textContent, '12 GB');
   assert.match(view.element('recording-growth-fileEvidence').textContent, /Refresh failed.*1 h ago/);
   assert.equal(view.element('recording-overview-notice').hidden, false);
   assert.match(view.element('recording-overview-notice').textContent, /last successful inventory.*Storage & growth/);
   view.panel.update({ recordingHealth: health({ scope: 'snapshot' }) });
   assert.equal(view.element('recording-growth-file').textContent, 'Not checked');
   assert.equal(view.element('recording-growth-wal').textContent, 'Not checked');
+  assert.equal(view.element('recording-growth-reusable').textContent, 'Not checked');
+  assert.equal(view.element('recording-growth-journalPages').textContent, 'Not checked');
+  assert.equal(view.element('recording-growth-peerBacklogPages').textContent, 'Not checked');
   assert.match(view.element('recording-growth-observations').textContent, /unknown/);
   view.panel.inventory({ generatedAt: now, database: { walBytes: null } });
   assert.equal(view.element('recording-growth-wal').textContent, 'Unknown');
+  assert.equal(view.element('recording-growth-reusable').textContent, 'Unknown');
 });

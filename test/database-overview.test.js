@@ -10,6 +10,7 @@ import { getDatabaseOverview, OVERVIEW_REFRESH_MS } from '../src/app/database-ov
 import { createChartService } from '../src/app/chart-service.js';
 import { createAppServer } from '../src/app/server.js';
 import { LEARNING_ALGORITHM } from '../src/app/committed-learning.js';
+import { enrollJournalPeer } from '../src/storage/journal-peer.js';
 
 const at = Date.parse('2026-01-10T10:00:00Z');
 const items = overview => new Map(overview.groups.flatMap(group => group.items.map(item => [item.id, item])));
@@ -28,6 +29,11 @@ test('empty overview explains all physical tables without inventing historical p
     assert(overview.database.allocatedBytes > 0);
     assert.equal(overview.database.adaptiveEstimatedBytes, 0);
     assert.equal(overview.database.adaptiveObservationCount, 0);
+    const { available, ...physical } = overview.database.physical;
+    assert(available);
+    assert.equal(Object.values(physical).reduce((sum, value) => sum + value, 0), overview.database.allocatedBytes);
+    assert(physical.journalBytes > 0);
+    assert(physical.indexBytes > 0);
     const actual = store.db.prepare("SELECT name FROM sqlite_schema WHERE type='table' AND name NOT LIKE 'sqlite_%' ORDER BY name").all();
     assert.deepEqual(overview.accounting.tables.map(table => table.name), actual.map(table => table.name));
     for (const table of overview.accounting.tables) assert.equal(table.rows,
@@ -48,6 +54,52 @@ test('empty overview explains all physical tables without inventing historical p
       assert(item.description && item.retentionDescription, id);
       assert.equal(item.status, ['history-selection','journal_meta'].includes(id) ? 'present' : 'empty', id);
     }
+  } finally { store.close(); }
+});
+
+test('physical inventory distinguishes retained observations, disposable journal pages and reusable allocation', t => {
+  const directory = mkdtempSync(join(tmpdir(), 'stmq-storage-allocation-'));
+  const store = new Store(join(directory, 'synthetic.sqlite'));
+  t.after(() => { store.close(); rmSync(directory, { recursive: true, force: true }); });
+  const recorder = new Recorder(store);
+  recorder.record({ source: 'synthetic', device: 'synthetic', signal: 'supply_temperature', value: 20,
+    unit: 'degC', sourceTime: at, receivedAt: at, quality: [] });
+  store.setState('synthetic-large-current-state', { value: 'x'.repeat(128 * 1024) });
+  store.setState('synthetic-large-current-state', { value: 'small' });
+  store.event('synthetic', {}, at + 1);
+  store.db.exec('PRAGMA wal_checkpoint(TRUNCATE)');
+  const before = getDatabaseOverview({ store, now: at + 1 }).database;
+  const adaptive = store.getState('recorder:adaptive-budget:v1');
+  store.compactJournal({ maxBytes: 1, maxCommits: 1 });
+  store.db.exec('PRAGMA wal_checkpoint(TRUNCATE)');
+  const after = getDatabaseOverview({ store, now: at + 1 }).database;
+  assert(after.physical.journalBytes < before.physical.journalBytes);
+  assert(after.reusableBytes > before.reusableBytes);
+  assert.equal(after.allocatedBytes, before.allocatedBytes);
+  assert.equal(after.fileBytes, before.fileBytes, 'compaction reuses space without claiming file shrinkage');
+  assert.equal(after.adaptiveEstimatedBytes, before.adaptiveEstimatedBytes);
+  assert.equal(after.adaptiveObservationCount, before.adaptiveObservationCount);
+  assert.deepEqual(store.getState('recorder:adaptive-budget:v1'), adaptive);
+  assert.equal(after.journalRetention.commits, 1);
+  assert(after.journalRetention.baseSequence > before.journalRetention.baseSequence);
+});
+
+test('peer catch-up retains its original value separately when disposable transaction history expires', () => {
+  const store = new Store(':memory:');
+  try {
+    store.setState('synthetic-peer-record', { value: 'x'.repeat(128 * 1024) });
+    const initial = getDatabaseOverview({ store, now: at }).database;
+    enrollJournalPeer(store.db);
+    store.setState('synthetic-peer-record', { value: 'changed' });
+    store.event('synthetic-after-change', {}, at);
+    store.compactJournal({ maxBytes: 1, maxCommits: 1 });
+    const result = getDatabaseOverview({ store, now: at }).database;
+    assert(result.physical.peerBacklogBytes >= initial.physical.peerBacklogBytes + 128 * 1024,
+      'unacknowledged original values remain outside the bounded disposable suffix');
+    assert(result.physical.journalBytes < initial.physical.journalBytes);
+    const { available, ...categories } = result.physical;
+    assert(available);
+    assert.equal(Object.values(categories).reduce((sum, value) => sum + value, 0), result.allocatedBytes);
   } finally { store.close(); }
 });
 

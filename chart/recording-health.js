@@ -192,10 +192,20 @@ export function createRecordingHealth({ document, request, now = () => Date.now(
     set('recording-growth-inventoryAt', inventoryPhase === 'loading' ? `Measuring retained adaptive data… ${checked}`.trim()
       : inventoryPhase === 'failed' ? `Could not measure retained adaptive data. ${checked || 'Use Refresh inventory to retry.'}`
         : checked || 'Retained adaptive size has not been measured.');
-    for (const [field, key] of [['file', 'fileBytes'], ['wal', 'walBytes'], ['files', 'totalFileBytes']]) {
+    for (const [field, key] of [['file', 'fileBytes'], ['wal', 'walBytes'], ['files', 'totalFileBytes'], ['reusable', 'reusableBytes']]) {
       set(`recording-growth-${field}`, inventory ? storageBytes(inventory.database?.[key])
         : inventoryPhase === 'loading' ? 'Measuring…' : inventoryPhase === 'failed' ? 'Unavailable' : 'Not checked');
     }
+    for (const [field, key] of [['observationPages', 'observationBytes'], ['historyPages', 'historyBytes'],
+      ['currentPages', 'currentBytes'], ['journalPages', 'journalBytes'], ['peerBacklogPages', 'peerBacklogBytes'], ['branchPages', 'branchBytes'],
+      ['indexPages', 'indexBytes'], ['internalPages', 'internalBytes']]) {
+      set(`recording-growth-${field}`, inventory ? storageBytes(inventory.database?.physical?.available ? inventory.database.physical[key] : null)
+        : inventoryPhase === 'loading' ? 'Measuring…' : inventoryPhase === 'failed' ? 'Unavailable' : 'Not checked');
+    }
+    const journal = inventory?.database?.journalRetention;
+    set('recording-growth-journalRetention', journal
+      ? `Recent suffix: ${decimal(journal.commits)} transactions · ${storageBytes(journal.payloadBytes)} of change payload after transaction ${journal.baseSequence}. Retention targets ${decimal(journal.maxCommits)} transactions or ${storageBytes(journal.maxBytes)}; one complete transaction can exceed the byte target. Peer catch-up adds one entry per changed record and its original value, including deletions, until acknowledged. The suffix target does not cap this backlog or protected branches.`
+      : 'Transaction retention has not been checked.');
     const inventoryTime = validTime(inventory?.generatedAt) ? `Inventory checked ${recordingEvidenceTime(inventory.generatedAt, now())}.` : 'Inventory has not been checked yet.';
     set('recording-growth-fileEvidence', `${inventoryPhase === 'failed' ? 'Refresh failed; previous sizes may be out of date. ' : ''}${inventoryTime}`);
     set('recording-growth-observations', Number.isSafeInteger(inventory?.database?.adaptiveObservationCount)

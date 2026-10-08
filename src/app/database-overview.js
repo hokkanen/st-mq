@@ -3,6 +3,8 @@ import { createHash } from 'node:crypto';
 import { SIGNAL_INFO } from '../domain/history-series.js';
 import { recordingPolicy, recordedSignalInfo, RECORDING_POLICIES } from '../domain/recording-policy.js';
 import { RECOVERABLE_TABLES, recoveryRecordKey } from '../storage/schema.js';
+import { inspectPhysicalAllocation } from '../storage/recording-metrics.js';
+import { JOURNAL_RETENTION } from '../storage/journal.js';
 
 export const OVERVIEW_REFRESH_MS = 5 * 60_000;
 const fields = (...pairs) => pairs.map(([name, description]) => ({ name, description }));
@@ -502,21 +504,26 @@ export function getDatabaseOverview({ store, now = Date.now() }) {
 
   const journalTables = [
     ['journal_meta', 'Current transaction checkpoint', 'The durable database identity, sequence and linked commit hash.', 'current', 'NULL'],
-    ['journal_commits', 'Committed transactions', 'Ordered commit hashes used to verify continuity when transferring changes.', 'history', 'at'],
-    ['journal_changes', 'Recorded row changes', 'Before and after values support incremental transfer and reversal of divergent history.', 'history', 'NULL'],
+    ['journal_commits', 'Committed transactions', 'The retained suffix of ordered commit hashes verifies continuity at recent checkpoints.', 'mixed', 'at'],
+    ['journal_changes', 'Recorded row changes', 'Reversible row patches reconstruct recent learning checkpoints and identify changed source records in related backups.', 'mixed', 'NULL'],
     ['journal_pending', 'Uncommitted capture', 'Transaction-local staging; a successfully committed database has no pending rows.', 'current', 'NULL'],
-    ['journal_branches', 'Retained inactive branches', 'Divergent history retained during rejoin. It is never automatic control input.', 'history', 'created_at'],
-    ['journal_branch_commits', 'Inactive branch transactions', 'Archived changes preserve the losing branch without copying shared historical data.', 'history', 'NULL'],
+    ['journal_peer', 'Paired catch-up checkpoint', 'The last jointly accepted peer boundary and any interrupted reconciliation progress.', 'current', 'NULL'],
+    ['journal_peer_changes', 'Consolidated peer changes', 'One retained base per changed record since the peer checkpoint, including deletions; repeated updates share that record.', 'current', 'NULL'],
+    ['journal_peer_before', 'Peer base records', 'One immutable base value for each changed peer record, including deleted records, until acknowledgement.', 'current', 'NULL'],
+    ['journal_peer_branches', 'Preserved peer branches', 'Protected divergence preserved by consolidated peer reconciliation.', 'history', 'created_at'],
+    ['journal_peer_branch_rows', 'Preserved peer records', 'The affected base and divergent values needed to review a preserved peer branch.', 'history', 'NULL'],
     ['recovery_dependencies', 'Recovery source references', 'Derived references locate learning and assessments affected by a correction.', 'derived', 'NULL'],
     ['learning_epoch_segments', 'Preserved learning prefixes', 'Compact ranges reuse unaffected learning history before the checkpoint used for a correction.', 'history', 'NULL'],
+    ['learning_checkpoints', 'Sparse learning checkpoints', 'Validated replay caches preserve efficient recovery after transaction patches expire. Immutable learning inputs remain the reconstruction source.', 'derived', 'at'],
   ];
   const journalCounts = Object.fromEntries(journalTables.map(([table,,, ,time])=>[table,aggregate(table,time)]));
   add('transactions', 'Transaction history and retained branches',
-    'Stored changes add space proportional to writes, including updated current state. Transaction and inactive branch history currently has no automatic expiry. These are transfer and recovery evidence, not additional measured observations.',
+    'Transaction patches have bounded retention. Durable checkpoint advancement releases older entries while required application history remains intact. Archived divergent evidence remains available for explicit recovery. These records are not additional measured observations.',
     journalTables.map(([table,label,description,retention,time])=>item(table,label,description,journalCounts[table], {
       retention, dateBasis: time==='NULL' ? 'no independent timestamps stored' : 'transaction time',
       writeBehavior: retention==='derived' ? 'Maintained with the owning source record.' : 'Saved atomically with the transaction or explicit rejoin.',
-      retentionDescription: retention==='history' ? 'Retained without automatic expiry; includes original values needed for incremental recovery.' : 'Replaced with the current committed value.' })));
+      retentionDescription: retention==='mixed' ? 'Bounded transaction suffix; cleanup preserves the durable checkpoint and required application history.'
+        : retention==='history' ? 'Retained evidence; no automatic expiry.' : 'Replaced with the current committed value.' })));
 
   // Physical table accounting is separate from logical dataset counts above:
   // contract periods live inside state documents and snapshot content is shared.
@@ -559,11 +566,15 @@ export function getDatabaseOverview({ store, now = Date.now() }) {
   const pageSize = db.prepare('PRAGMA page_size').get().page_size;
   const allocatedBytes = db.prepare('PRAGMA page_count').get().page_count * pageSize;
   const reusableBytes = db.prepare('PRAGMA freelist_count').get().freelist_count * pageSize;
+  const physical = inspectPhysicalAllocation(db, { allocatedBytes, reusableBytes });
+  const journalAllocation = db.prepare('SELECT base_sequence,sequence,retained_bytes,retained_commits FROM journal_meta WHERE id=1').get();
+  const journalRetention = { baseSequence: journalAllocation.base_sequence, headSequence: journalAllocation.sequence,
+    payloadBytes: journalAllocation.retained_bytes, commits: journalAllocation.retained_commits, ...JOURNAL_RETENTION };
   const fileBytes = store.path && store.path !== ':memory:' ? fileSize(store.path) : null;
   const walBytes = store.path && store.path !== ':memory:' ? fileSize(`${store.path}-wal`) : 0;
   return { generatedAt: now, refreshAfterMs: OVERVIEW_REFRESH_MS,
     catalogueComplete: inventoryIssues.length === 0, inventoryIssues: [...new Set(inventoryIssues)],
-    database: { allocatedBytes, reusableBytes, fileBytes, walBytes, totalFileBytes: fileBytes === null ? null : fileBytes + walBytes,
+    database: { allocatedBytes, reusableBytes, physical, journalRetention, fileBytes, walBytes, totalFileBytes: fileBytes === null ? null : fileBytes + walBytes,
       adaptiveEstimatedBytes,adaptiveObservationCount:observations.get('adaptive')?.count ?? 0,
       description: 'Stored source counts include evidence excluded by recovery corrections; selected chart history can contain fewer records. Learning journal counts identify the selected model history separately from other retained epochs. SQLite allocated pages include records, indexes and reusable pages. Main-file plus WAL bytes include temporary journal overhead. Adaptive size estimates retained observation payload and metadata; it excludes SQLite indexes, page overhead and recorder support tables. Chart responses and point reduction use memory.' },
     groups, accounting: { tables, totalRows: tables.reduce((total, table) => total + table.rows, 0),

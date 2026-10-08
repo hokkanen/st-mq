@@ -12,19 +12,23 @@ Versions follow Semantic Versioning. `-dev.N` denotes a development prerelease.
 - Controls recover after a failed MQTT observation save when fresh evidence from
   the affected input commits, without requiring a broker reconnect. Read-only
   status requests remain available while commands wait for trustworthy evidence.
-- SQLite now commits row changes and hash-linked transaction checkpoints together.
-  Startup and routine mirroring use bounded checkpoint checks and transfer only
-  missing transactions. Handover reuses the existing database, and shared-history
-  recovery and rejoin retain divergent changes without copying the full archive.
-  Interrupted transfers preserve the last committed checkpoint and authority.
-  This changes the development database schema; incompatible files remain intact
-  and require a deliberate fresh development start.
-- Full verification is available separately in Recording details, through an
-  optional manual-operation checkbox, and on a configurable background schedule
-  that defaults to disabled. Comparisons require matching transaction checkpoints.
-  Full backups remain available; initial replication and exceptional repair may
-  still require a complete copy. Transaction history adds storage and currently
-  has no automatic expiry; Recording details explains this retention.
+- Adaptive recording no longer retains every intermediate recorder update in an
+  unlimited transaction log. Compact reversible changes and bounded recent
+  transactions preserve observation selection, report coverage and real gaps.
+  Recording details separates observation budgets, physical allocation, reusable
+  pages, peer catch-up state and protected branch storage.
+- Paired and mirrored peers retain a consolidated change set until acknowledgement.
+  Long outages transfer changed rows and deletions without copying unchanged
+  database history. Interrupted transfers, rejoin and lost acknowledgements keep
+  durable checkpoints and protected divergent evidence.
+- Sparse learning checkpoints keep late history recovery and reversal proportional
+  to the affected suffix after transaction compaction. Required original learning
+  inputs and correction records remain retained. These changes require schema 25;
+  incompatible development databases remain intact and need a deliberate fresh start.
+- Full verification remains available manually, during manual operations, and on
+  an optional schedule. Application checks now share one visible queue and compare
+  only matching committed checkpoints. Oversized controller-thread database writes
+  roll back with worker/batching guidance; supported CSV CLI imports use a worker.
 - Database exports and previous-recovery summaries run in background workers.
   Recovery uses bounded scratch storage and preserves concurrent recordings;
   measured progress and elapsed time remain visible across navigation and reload.
