@@ -835,7 +835,11 @@ visible separately and take precedence over an earlier successful source check.
 For a shared configured-peer anchor, the check examines only consolidated
 changes since that checkpoint and their referenced evidence. Its counts and ranges describe that
 changed scope, not a full historical inventory. Category counts and first/last recorded dates in
-**History in this check** identify the checked changes and referenced evidence.
+**Changes since the shared checkpoint** identify the checked changes and referenced evidence.
+No changed records can be the correct result for a populated slave: unchanged
+shared history is not counted again. The empty result explains this scope and
+omits the redundant all-zero inventory. Counts shown for a nonempty change set
+are labeled **Changed source record counts**, not complete database totals.
 They do not imply continuous coverage or known recoverable gaps. No trial import
 or model rebuild runs during a source check. Normal mirroring remains enabled,
 so recovery and resume-mirroring actions

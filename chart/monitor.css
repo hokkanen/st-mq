@@ -862,12 +862,6 @@ details details { margin-inline-start: 24px; }
 .control-dialog::backdrop { background: #0007; }
 .control-dialog h2 { margin: 0 0 10px; font-size: 19px; font-weight: 550; letter-spacing: -.2px; }
 /* Recovery opens from ordinary recording/pairing tools and owns one shared dialog. */
-.recording-recovery-action { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: center; gap: 10px 24px; padding: 2px 0 8px; }
-.recording-recovery-action strong { font-size: 12px; font-weight: 550; }
-.recording-recovery-action > div p { margin-top: 4px; }
-.recording-recovery-action > [role="status"] { grid-column: 1 / -1; }
-.recording-recovery-action p { margin: 0; max-width: 72ch; }
-.recording-recovery-action > button { flex: none; margin: 0; }
 .pairing-history-action { margin-top: 0; padding-top: 0; border-top: 0; }
 .pairing-role-action h3[data-tone="neutral"] { color: var(--text); }
 .control-dialog.history-recovery-dialog { width: min(760px, calc(100vw - 32px)); max-width: calc(100vw - 24px); box-sizing: border-box; padding: 0; overflow: hidden; }
@@ -987,7 +981,6 @@ details details { margin-inline-start: 24px; }
 .history-recovery-footer #history-recovery-refreshed-at { margin-top: 4px; font-variant-numeric: tabular-nums; }
 .history-recovery-footer > button { flex: none; margin: 0; min-height: 36px; padding: 6px 10px; font-size: 11px; }
 @media (max-width: 540px) {
-  .recording-recovery-action { grid-template-columns: minmax(0, 1fr); gap: 10px; }
   .history-recovery-source-fields, .history-recovery-revision-options { grid-template-columns: minmax(0, 1fr); }
   .history-recovery-footer { align-items: stretch; flex-direction: column; gap: 10px; }
   .history-recovery-header { padding: 16px; }
@@ -1173,8 +1166,9 @@ details details { margin-inline-start: 24px; }
 .recording-overview-toolbar { display: flex; align-items: center; justify-content: space-between; gap: 14px; margin: 2px 0 14px; }
 .recording-overview-toolbar p { margin: 0; }
 .recording-overview-toolbar button { flex-shrink: 0; }
-.database-export-actions { display: flex; flex-wrap: wrap; gap: 12px 24px; }
-.database-export-actions > div { flex: 1 1 240px; }
+.recording-tool-actions { display: flex; flex-wrap: wrap; gap: 12px 24px; }
+.recording-tool-actions > div { flex: 1 1 240px; min-width: 0; }
+.recording-tool-actions p { max-width: 72ch; }
 #database-export-message { overflow-wrap: anywhere; }
 .recording-data-group { margin-top: 12px; }
 .recording-data-group > summary { font-weight: 550; }

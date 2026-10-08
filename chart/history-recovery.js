@@ -147,7 +147,7 @@ export function createHistoryRecoveryPanel({ document, request, upload, storage,
   const verificationOption = () => $(mode === 'history' ? 'history-recovery-revision-verification' : 'history-recovery-full-verification')?.value === 'full'
     ? { verifyWithFullSnapshot: true } : {};
   const rows = new Map();
-  let dashboard, opener, selected = 'upload', uploaded = null, uploadBusy = false, refreshing = false, rendered, sourceKey, reportKey, inspected = false;
+  let dashboard, opener, selected = 'upload', uploaded = null, uploadBusy = false, refreshing = null, manualRefreshing = false, rendered, sourceKey, reportKey, inspected = false;
   let revision = null, sourceDirty = false, uploadError = '', pageCursor = null, mode = 'recover', focusReview = false, refreshedAt = null;
   const controller = createHistoryRecoveryActions({ request, storage, confirm: confirm ?? (message =>
     confirmAction({ document, title: 'Confirm history change', message,
@@ -249,11 +249,13 @@ export function createHistoryRecoveryPanel({ document, request, upload, storage,
           : recoveryJobText(state.view, now()) : '';
     $('history-recovery-summary').hidden = !$('history-recovery-summary').textContent;
     $('history-recovery-open').textContent = running || state.pending ? 'View recovery progress' : 'Review history';
-    $('history-recovery-refresh').disabled = state.busy || uploadBusy || refreshing;
-    $('history-recovery-refresh').textContent = refreshing ? 'Reloading results…' : 'Reload results';
-    $('history-recovery-refresh-help').textContent = mode === 'history'
-      ? 'Results update automatically while this window is open. Reload fetches saved progress and the recovery list. Use Review revert or Review restore for a new assessment.'
-      : `Results update automatically while this window is open. Reload fetches saved results and progress. Use ${peer ? 'Check other computer' : 'Check backup'} to run a new source check.`;
+    $('history-recovery-refresh').disabled = state.busy || uploadBusy || manualRefreshing;
+    $('history-recovery-refresh').textContent = 'Reload results';
+    $('history-recovery-refresh').setAttribute('aria-busy', String(manualRefreshing));
+    $('history-recovery-refresh-help').textContent = manualRefreshing ? 'Reloading saved results…'
+      : !state.connected ? 'Automatic updates are unavailable. Reload results to retry.'
+        : mode === 'history' ? 'Updates automatically. Review revert or Review restore runs a new assessment.'
+          : `Updates automatically. ${peer ? 'Check other computer' : 'Check backup'} runs a new source check.`;
     $('history-recovery-refreshed-at').textContent = refreshedAt === null ? '' : `Results last received ${formatTime(refreshedAt)}`;
     $('history-recovery-refreshed-at').hidden = refreshedAt === null;
     $('history-recovery-retry').hidden = !state.pending;
@@ -370,12 +372,17 @@ export function createHistoryRecoveryPanel({ document, request, upload, storage,
       if (list.children[index] !== row.item) list.insertBefore(row.item, list.children[index] ?? null);
     }
   }
-  async function refresh() {
-    if (refreshing || !admin()) return;
-    refreshing = true;
-    if (rendered) render(controller.snapshot());
-    try { inspected = await controller.refresh(pageCursor); if (inspected) refreshedAt = now(); }
-    finally { refreshing = false; render(controller.snapshot()); }
+  function refresh({ manual = false } = {}) {
+    if (!admin()) return Promise.resolve();
+    if (manual) { manualRefreshing = true; render(controller.snapshot()); }
+    // Background reads do not animate or disable controls. An explicit reload
+    // can join the current read without starting a competing request.
+    if (refreshing) return refreshing;
+    refreshing = controller.refresh(pageCursor).then(received => {
+      inspected = received;
+      if (received) refreshedAt = now();
+    }).finally(() => { refreshing = null; manualRefreshing = false; render(controller.snapshot()); });
+    return refreshing;
   }
   async function open({ sourceId, trigger } = {}) {
     if (!admin() || dialog.open) return;
@@ -434,7 +441,7 @@ export function createHistoryRecoveryPanel({ document, request, upload, storage,
     pageCursor = controller.snapshot().view.nextBefore; void refresh();
   });
   $('history-recovery-newest').addEventListener('click', () => { pageCursor = null; void refresh(); });
-  $('history-recovery-refresh').addEventListener('click', () => { void refresh(); });
+  $('history-recovery-refresh').addEventListener('click', () => { void refresh({ manual: true }); });
   $('history-recovery-open').addEventListener('click', () => { void open(); });
   $('history-recovery-close').addEventListener('click', () => dialog.close());
   dialog.addEventListener('close', () => {

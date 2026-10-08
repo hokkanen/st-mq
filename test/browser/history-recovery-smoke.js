@@ -36,7 +36,7 @@ const preview = { previewId, status: 'checked',
       { signal: 'indoor_temperature',basis: 'receipt-coverage',reason: 'stale',status: 'stale',
         from: Math.floor(now / 1000) * 1000 - 100000,to: Math.floor(now / 1000) * 1000 - 99750,potentialCoverage: true },
     ] } } };
-let app, server, browser, socket, sequence = 0, admin = true, topology = 'standalone', peer = null, finishExport, recoveryReads = 0;
+let app, server, browser, socket, sequence = 0, admin = true, topology = 'standalone', peer = null, finishExport, recoveryReads = 0, verificationReads = 0;
 let recovery = { available: true, readOnly: false, busy: false, job: null, preview: null, sources: [source], nextBefore: '10:old-operation',
   operations: [{ id: 'old-operation', startedAt: now - 86400000, source: { label: 'Earlier backup' }, active: true, status: 'interrupted', canRevert: true,
     contributions: 9, period: { from: now - 259200000, to: now - 172800000 } }] };
@@ -50,6 +50,7 @@ try {
     try {
       if (request.url === '/favicon.ico') { response.writeHead(204).end(); return; }
       if (request.url === '/api/pair') return json(200, peer);
+      if (request.url === '/api/database-verification' && request.method === 'GET') verificationReads++;
       if (request.url === '/api/database-export' && request.method === 'POST') {
         await new Promise(resolve => { finishExport = resolve; });
         return json(200, { filename: 'stmq-2026-10-07T12-00-00-000Z.sqlite', path: '/synthetic/exports/stmq-2026-10-07T12-00-00-000Z.sqlite' });
@@ -150,15 +151,23 @@ try {
     assert.equal(await evaluate('document.documentElement.scrollWidth <= innerWidth'), true, 'Folded recording tools fit the viewport');
     await capture(`recording-folded-${width}`);
   }
-  await evaluate(`${$('history-recovery-details')}.open = true; ${$('history-recovery-open')}.focus(); true`);
-  for (const width of [1440, 320]) {
+  await evaluate(`${$('database-export-details')}.open = true; ${$('database-verification-details')}.open = true; ${$('history-recovery-details')}.open = true; ${$('history-recovery-open')}.focus(); true`);
+  for (const width of [1440, 768, 390, 320]) for (const theme of ['dark', 'light']) {
     await send('Emulation.setDeviceMetricsOverride', { width, height: 900, deviceScaleFactor: 1, mobile: false });
+    await evaluate(`document.documentElement.dataset.theme='${theme}';true`);
     await evaluate(`${$('history-recovery-details')}.scrollIntoView({block:'center'});true`);
     assert.equal(await evaluate('document.documentElement.scrollWidth <= innerWidth'), true, 'Expanded recovery launcher fits');
-    if (width === 1440) assert.equal(await evaluate("(() => { const row=document.querySelector('.recording-recovery-action'), text=row.firstElementChild.getBoundingClientRect(), button=row.querySelector('button').getBoundingClientRect(); return button.left >= text.right && Math.abs((button.top+button.bottom-text.top-text.bottom)/2)<2; })()"), true, 'Desktop launcher aligns its action beside the description');
-    await capture(`recording-recovery-expanded-${width}`);
+    assert.equal(await evaluate("(() => { const body=document.querySelector('#history-recovery-details .recording-section-body'), description=body.firstElementChild.getBoundingClientRect(), button=body.querySelector('button').getBoundingClientRect(); return Math.abs(button.left-description.left)<2 && button.top>=description.bottom; })()"), true, 'Recovery uses the same left-aligned action placement as the export tools');
+    assert.equal(await evaluate("(() => { const buttons=['database-export-save','history-recovery-open','database-verification-start'].map(id=>document.getElementById(id).getBoundingClientRect()); return buttons.every(b=>Math.abs(b.left-buttons[0].left)<2 && Math.abs(b.height-buttons[0].height)<2); })()"), true, 'Export, recovery and verification share button alignment and height');
+    await capture(`recording-recovery-expanded-${width}-${theme}`);
   }
   assert.equal(await evaluate('document.activeElement.id'), 'history-recovery-open', 'Recording opener receives keyboard focus');
+  await until(`!${$('database-verification-start')}.disabled`);
+  await evaluate(`window.verificationFlashes=[];window.verificationWatcher=new MutationObserver(records=>window.verificationFlashes.push(...records.map(r=>r.attributeName)));window.verificationWatcher.observe(${$('database-verification-start')},{attributes:true,attributeFilter:['disabled']});true`);
+  const verificationBeforePolling = verificationReads;
+  await pause(4300);
+  assert(verificationReads >= verificationBeforePolling + 2, 'Verification has polled repeatedly');
+  assert.deepEqual(await evaluate('window.verificationWatcher.disconnect();window.verificationFlashes'), [], 'Background verification reads never flash the button disabled');
   await key('Enter', 13);
   await until(`${$('history-recovery-dialog')}.open`);
   assert.equal(await evaluate('document.activeElement.id'), 'history-recovery-close');
@@ -186,6 +195,14 @@ try {
   assert.equal(await evaluate("document.querySelectorAll('[data-recovery-section=diagnostic-0] .history-recovery-diagnostic-signals li').length"),28);
   assert.match(await evaluate("document.querySelector('[data-recovery-section=diagnostic-1]').innerText"),/250 ms apart/,'Same formatted endpoints preserve a known subsecond report span');
   assert.doesNotMatch(await evaluate("document.querySelector('[data-recovery-section=availability-diagnostics]').textContent"),/potential coverage|No relevant usable source records|master outages/);
+  await evaluate(`window.reloadPollFrames=[];window.reloadPollActive=true;requestAnimationFrame(function sample(){const b=${$('history-recovery-refresh')},r=b.getBoundingClientRect();window.reloadPollFrames.push([b.textContent,b.disabled,r.width,r.height]);if(window.reloadPollActive)requestAnimationFrame(sample);});true`);
+  const readsBeforePolling = recoveryReads;
+  await pause(4300);
+  assert(recoveryReads >= readsBeforePolling + 2, 'The recovery dialog has polled repeatedly');
+  const reloadFrames = await evaluate('window.reloadPollActive=false;window.reloadPollFrames');
+  assert(reloadFrames.length > 2);
+  assert(reloadFrames.every(frame => frame[0] === 'Reload results' && frame[1] === false
+    && frame[2] === reloadFrames[0][2] && frame[3] === reloadFrames[0][3]), 'Automatic refresh preserves the reload label, enabled state and dimensions in every frame');
   const readsBeforeRefresh = recoveryReads;
   const checksBeforeRefresh = requests.filter(item => item.action === 'check').length;
   assert.equal(await evaluate(`${$('history-recovery-refresh')}.textContent`), 'Reload results');
@@ -321,10 +338,19 @@ try {
         { name: 'energy', count: 15, from: now - 7200000, to: now - 1000, undated: 0 }] } } } };
   await send('Page.reload'); await until(`${$('pairing-panel')} && !${$('pairing-panel')}.hidden`);
   await evaluate(`${$('pairing-details')}.open=true;${$('pairing-history-recovery')}.click();true`);
-  await until(`${$('history-recovery-preview')}.textContent.includes('History in this check')`);
-  assert.match(await evaluate(`${$('history-recovery-preview')}.textContent`), /History in this check.*Changed source records.*Temperatures.*42.*Recorded energy.*15/s);
+  await until(`${$('history-recovery-preview')}.textContent.includes('Changes since the shared checkpoint')`);
+  assert.match(await evaluate(`${$('history-recovery-preview')}.textContent`), /Changes since the shared checkpoint.*Changed source records.*Temperatures.*42.*Recorded energy.*15/s);
   assert.doesNotMatch(await evaluate(`${$('history-recovery-preview')}.textContent`), /History date ranges|Recorded energy gaps/);
   await reviewLayouts('incremental-source-check');
+  peer = { ...peer, recovery: { ...peer.recovery, preview: { ...peer.recovery.preview,
+    tables: preview.tables.map(row => ({ ...row, count: 0 })),
+    incremental: { records: 0, base: checkpoint(15), checkpoint: checkpoint(15) },
+    sourceSummary: { checkedAt: now, categories: [{ name: 'temperatures', count: 0 }, { name: 'energy', count: 0 }] } } } };
+  await click('history-recovery-refresh');
+  await until(`${$('history-recovery-preview')}.textContent.includes('This result does not mean the database is empty')`);
+  assert.match(await evaluate(`${$('history-recovery-preview')}.textContent`), /No recovery needed.*Changes since the shared checkpoint.*No changed history records to review/s);
+  assert.equal(await evaluate("document.querySelector('[data-recovery-section=inventory]') === null"), true, 'An empty incremental check does not show a misleading zero database inventory');
+  await reviewLayouts('unchanged-slave-check');
   await click('history-recovery-close');
   peer = { ...peer, peer: { reachable: true, role: 'slave', sync: { state: 'error', error: 'database_algorithm_mismatch' } } };
   await send('Page.reload'); await until(`${$('pairing-panel')} && !${$('pairing-panel')}.hidden`);
@@ -363,7 +389,7 @@ try {
   assert.deepEqual(errors, []);
   console.log(JSON.stringify({ result: 'history-recovery-browser-passed', layouts, screenshots,
     checks: ['production standalone opener', 'peer same modal and preselection', 'normal comparison cannot recover', 'installation confirmation', 'preview', 'recover with confirmation',
-      'nested recording fold', 'energy gaps separate from 28 retained-message diagnostics', 'point duration unknown', 'grouped signal disclosure and focus preserved on refresh',
+      'nested recording fold', 'aligned export/recovery/verification actions', 'quiet verification polls', 'stable reload dimensions during automatic refresh', 'energy gaps separate from 28 retained-message diagnostics', 'point duration unknown', 'grouped signal disclosure and focus preserved on refresh',
       'separate recovery/history views', 'close and reopen running job', 'complete result', 'whole operation revert and restore', 'old interrupted recovery', 'earlier pages', 'upload', 'keyboard focus and escape', '320/390/768/1440 both themes', 'short-screen header and scrolled review', 'family restriction',
       'normal slave no-recovery visual cue', 'failed recheck clears prior success', 'incompatible algorithm keeps mirroring blocked', 'exporter version provenance', 'slave-first upgrade guidance',
       'phase counts and elapsed time without ETA', 'navigation during running phases', 'reload discovers server work', 'export preparation stays responsive', 'retained database size and no automatic expiry'] }));

@@ -26,7 +26,7 @@ test('incremental recovery inventory labels only records since the shared checkp
   const { document, $ } = fixture();
   renderRecoveryReport(document, $('report'), { ...preview, incremental: { records: 19 } });
   assert.match(text($('report')), /Changed source records since the shared checkpoint/);
-  assert.match(text($('report')), /do not include unchanged earlier history/);
+  assert.match(text($('report')), /Unchanged shared history is not counted again/);
 });
 test('recovery errors expose only known actionable source rejections', () => {
   for (const error of [
@@ -363,8 +363,36 @@ test('reload results fetches saved state without issuing a new source check', as
   assert.equal(requests.length, 2);
   assert(requests.every(item => item.path === '/api/history-recovery' && item.body === undefined));
   assert.equal($('history-recovery-refresh').textContent, 'Reload results');
-  assert.match($('history-recovery-refresh-help').textContent, /saved results.*Check backup.*new source check/);
+  assert.match($('history-recovery-refresh-help').textContent, /Updates automatically.*Check backup.*new source check/);
   assert.equal($('history-recovery-refreshed-at').textContent, 'Results last received time 5000');
+});
+
+test('automatic recovery refresh leaves reload stable and an explicit reload joins its pending read', async () => {
+  const { document, $ } = fixture();
+  let receive, reads = 0;
+  const panel = createHistoryRecoveryPanel({ document, request: () => {
+    reads++;
+    return reads === 1 ? Promise.resolve(view()) : new Promise(resolve => { receive = resolve; });
+  } });
+  panel.update(admin); await panel.open({ sourceId: source.id });
+  const button = $('history-recovery-refresh');
+  button.focus(); panel.tick();
+  assert.equal(reads, 2);
+  assert.equal(button.textContent, 'Reload results');
+  assert.equal(button.disabled, false);
+  assert.equal(button.attributes['aria-busy'], 'false');
+  assert.equal(document.activeElement, button);
+  button.click();
+  assert.equal(reads, 2, 'Explicit reload reuses the pending read');
+  assert.equal(button.textContent, 'Reload results');
+  assert.equal(button.disabled, true);
+  assert.equal(button.attributes['aria-busy'], 'true');
+  assert.equal($('history-recovery-refresh-help').textContent, 'Reloading saved results…');
+  receive(view()); await new Promise(resolve => setImmediate(resolve));
+  assert.equal(button.textContent, 'Reload results');
+  assert.equal(button.disabled, false);
+  assert.equal(button.attributes['aria-busy'], 'false');
+  assert.equal(document.activeElement, button);
 });
 
 test('failed checks hide an earlier successful preview and explain database incompatibility', async () => {

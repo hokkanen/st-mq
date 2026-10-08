@@ -1021,7 +1021,7 @@ G_warming = G / 2</code>
             <div class="recording-section-body">
               <p class="muted">Export a complete copy of the recorded history and saved state. Recording continues during export. Filenames include the export date and time in UTC.</p>
               <p class="family-access-note">Admin access is required to save or download a database copy.</p>
-              <div class="database-export-actions">
+              <div class="recording-tool-actions">
                 <div>
                   <button id="database-export-save" data-write-control data-admin-only type="button" class="secondary-button" aria-describedby="database-export-save-help">Save local copy</button>
                   <p id="database-export-save-help" class="muted">Save on the server in its configured export folder, which defaults to the server account’s home folder.</p>
@@ -1039,18 +1039,26 @@ G_warming = G / 2</code>
           <details id="history-recovery-details" class="recording-section">
             <summary><span>History recovery<small>Recover missing entries or undo an earlier recovery</small></span></summary>
             <div class="recording-section-body">
-              <div class="recording-recovery-action">
-                <div><strong>Check a source before making changes</strong><p class="muted">Review a backup or paired computer, and see what previous recoveries added.</p></div>
-                <button id="history-recovery-open" data-admin-only class="secondary-button" type="button" aria-haspopup="dialog" aria-expanded="false" aria-controls="history-recovery-dialog">Review history</button>
-                <p id="history-recovery-summary" class="muted background-work-detail" role="status" hidden></p>
+              <p class="muted">Review a backup or paired computer, and see what previous recoveries added.</p>
+              <div class="recording-tool-actions">
+                <div>
+                  <button id="history-recovery-open" data-admin-only class="secondary-button" type="button" aria-haspopup="dialog" aria-expanded="false" aria-controls="history-recovery-dialog" aria-describedby="history-recovery-open-help">Review history</button>
+                  <p id="history-recovery-open-help" class="muted">Check a source before making changes. Review, recover or undo an earlier recovery in the same window.</p>
+                </div>
               </div>
+              <p id="history-recovery-summary" class="muted background-work-detail" role="status" hidden></p>
             </div>
           </details>
           <details id="database-verification-details" class="recording-section">
             <summary><span>Verify database<small>Optional full integrity and content check</small></span></summary>
             <div class="recording-section-body">
-              <p class="muted">Read the complete database at one fixed transaction checkpoint. This can take time and disk I/O; recording and normal mirroring continue.</p>
-              <button id="database-verification-start" data-admin-only type="button" class="secondary-button">Verify with full snapshot</button>
+              <p class="muted">Read the complete database at one fixed transaction checkpoint to check its integrity and content.</p>
+              <div class="recording-tool-actions">
+                <div>
+                  <button id="database-verification-start" data-admin-only type="button" class="secondary-button" aria-describedby="database-verification-start-help">Verify with full snapshot</button>
+                  <p id="database-verification-start-help" class="muted">This can take time and disk I/O. Recording and normal mirroring continue.</p>
+                </div>
+              </div>
               <p id="database-verification-status" class="muted" role="status" aria-live="polite"></p>
               <p id="database-verification-activity" class="muted" role="status" aria-live="polite"></p>
               <p id="database-verification-schedule" class="muted"></p>
@@ -1289,7 +1297,7 @@ G_warming = G / 2</code>
       <div id="pairing-rejoin-step" hidden><div><h3>Resume mirroring</h3><p>Catch up to this master’s confirmed checkpoint. The other computer’s unmatched history is retained inactive and is never reused automatically.</p></div><button id="pairing-rejoin" data-admin-only class="secondary-button" type="button" aria-describedby="pairing-rejoin-help" disabled>Resume mirroring</button><p id="pairing-rejoin-help" class="muted"></p></div>
       <p id="pairing-rejoin-storage" class="muted"></p>
     </section>
-    <div class="history-recovery-footer"><div><p id="history-recovery-refresh-help" class="muted">Results update automatically while this window is open. Reload fetches saved checks, progress and previous recoveries; use Check above to run a new source check.</p><p id="history-recovery-refreshed-at" class="muted" hidden></p></div><button id="history-recovery-refresh" class="secondary-button" type="button" aria-describedby="history-recovery-refresh-help">Reload results</button></div>
+    <div class="history-recovery-footer"><div><p id="history-recovery-refresh-help" class="muted">Updates automatically. Check backup runs a new source check.</p><p id="history-recovery-refreshed-at" class="muted" hidden></p></div><button id="history-recovery-refresh" class="secondary-button" type="button" aria-describedby="history-recovery-refresh-help">Reload results</button></div>
     </div>
   </dialog>
 

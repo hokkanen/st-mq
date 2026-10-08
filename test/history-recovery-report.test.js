@@ -26,14 +26,15 @@ test('changed source report restores category dates without claiming full histor
     ] }, unsupported: [{ name: 'charging_reports', count: 2 }, { name: '/private/path', count: 4 }] }, options);
   const output = text(root);
   assert.match(output, /Checked time 9000/);
-  assert.match(output, /History in this check.*Temperatures.*3.*time 1000 – time 4000.*1 without dates.*Recorded energy/);
+  assert.match(output, /Changes since the shared checkpoint.*Temperatures.*3.*time 1000 – time 4000.*1 without dates.*Recorded energy/);
   assert.match(output, /Dates mark the first and last records, not continuous coverage/);
-  assert.equal((output.match(/Changed source records since the shared checkpoint/g) ?? []).length, 1);
+  assert.equal((output.match(/Unchanged shared history is not counted again/g) ?? []).length, 1);
   assert.match(output, /Missing entries, conflicts and model changes have not yet been assessed/);
   assert.match(output, /Kept only in the source: 2 saved charging reports/);
   assert.doesNotMatch(output, /private/);
   const inventory = root.children.find(node => node.tagName === 'DETAILS');
   assert.equal(inventory.open, false);
+  assert.match(text(inventory), /Changed source record counts.*not database totals/);
   assert.match(text(inventory), /Observations: 4.*Events: 0/);
 });
 
@@ -47,12 +48,51 @@ test('normal slave report keeps mirroring guidance in its outcome without recove
   assert.match(output, /does not prove that the latest changes have arrived/);
 });
 
-test('empty changed history is stated explicitly without manufacturing a date range', () => {
+test('empty changed history does not imply an empty database or list redundant zero totals', () => {
   const { document, root } = fixture();
   renderRecoveryReport(document, root, { status: 'checked', incremental: { records: 0 },
-    sourceSummary: { checkedAt: 9000, categories: [] }, tables: [] }, options);
-  assert.match(text(root), /No supported history records in the checked changes/);
-  assert.doesNotMatch(text(root), /Dates unavailable|undefined|Invalid Date/);
+    sourceSummary: { checkedAt: 9000, categories: [] },
+    tables: [{ name: 'observations', count: 0 }, { name: 'events', count: 0 }] }, options);
+  assert.match(text(root), /No changed history records to review/);
+  assert.match(text(root), /Unchanged shared history is not counted again.*does not mean the database is empty/);
+  assert.doesNotMatch(text(root), /record counts|record inventory|Observations: 0|Events: 0|Dates unavailable|undefined|Invalid Date/);
+});
+
+test('known zero summary counts establish an empty change set without an inventory', () => {
+  const { document, root } = fixture();
+  renderRecoveryReport(document, root, { status: 'checked', incremental: { records: 0 },
+    sourceSummary: { checkedAt: 9000, categories: [{ name: 'temperatures', count: 0 }, { name: 'events', count: 0 }] } }, options);
+  assert.match(text(root), /No changed history records to review/);
+  assert.doesNotMatch(text(root), /counts are unavailable/);
+});
+
+test('missing, invalid and unsupported summary counts remain unknown rather than an empty change set', () => {
+  for (const categories of [undefined, null, [], [null], [{ name: 'temperatures', count: null }],
+    [{ name: 'temperatures', count: -1 }], [{ name: 'temperatures', count: '0' }],
+    [{ name: '/private/unsupported', count: 0 }], [{ name: 'temperatures', count: 0 }, { name: 'events' }]]) {
+    const { document, root } = fixture();
+    renderRecoveryReport(document, root, { status: 'checked', incremental: { records: 0 },
+      sourceSummary: { checkedAt: 9000, categories }, tables: [] }, options);
+    assert.match(text(root), /Changed history counts are unavailable. Check the source again/);
+    assert.doesNotMatch(text(root), /No changed history records|database is empty|private|undefined|Invalid Date/);
+  }
+});
+
+test('changed reference records outside date categories cannot produce an empty result', () => {
+  const { document, root } = fixture();
+  renderRecoveryReport(document, root, { status: 'checked', incremental: { records: 1 },
+    sourceSummary: { checkedAt: 9000, categories: [{ name: 'temperatures', count: 0 }, { name: 'events', count: 0 }] },
+    tables: [{ name: 'charging_session_keys', count: 1 }] }, options);
+  assert.match(text(root), /Changed source records are listed in the counts below.*Charging session references: 1/);
+  assert.doesNotMatch(text(root), /No changed history records|counts are unavailable/);
+});
+
+test('full source inventory retains meaningful zero counts for a complete empty source', () => {
+  const { document, root } = fixture();
+  renderRecoveryReport(document, root, { status: 'checked', coverage: { checkedAt: 9000, categories: [] },
+    tables: [{ name: 'observations', count: 0 }, { name: 'events', count: 0 }] }, options);
+  assert.match(text(root), /Complete source inventory.*Source record inventory.*Observations: 0.*Events: 0/);
+  assert.doesNotMatch(text(root), /Changed source record counts|does not mean the database is empty/);
 });
 
 test('revision review distinguishes original import dates from exact affected dates and dependent records', () => {

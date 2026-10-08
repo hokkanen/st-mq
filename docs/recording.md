@@ -1728,11 +1728,16 @@ scope, source counts, category date ranges and potential coverage are assessed
 from its self-contained file. The confirmation asserts household identity;
 it is not an assertion about software versions and cannot bypass automatic format
 validation. Matching format alone cannot establish household identity.
-For an incremental check, **History in this check** shows category counts and
+For an incremental check, **Changes since the shared checkpoint** shows category counts and
 first/last dates for those changed records and their required references. This
 restores useful source identification without scanning unchanged history. The
-checked time and scope remain visible; the source inventory includes known zero
-counts. These dates do not establish continuous coverage or missing entries.
+checked time and scope remain visible. **Changed source record counts** includes
+known zero categories when other checked history is present; these are never
+database totals. When no supported history changed, a concise message explains
+that unchanged shared history is not counted, instead of listing all-zero totals.
+A populated source can therefore report no changed history, and the result does
+not establish whether the slave has received newer master records. These dates
+do not establish continuous coverage or missing entries.
 Availability reports have a separate collapsed
 diagnostics fold: a point event has one timestamp and unknown duration, while a
 report period ends at the last saved evidence, not a confirmed recovery time.
@@ -1784,8 +1789,12 @@ review. **Standard checks** use the normal checkpoint and source validation;
 **Also verify full snapshot** adds an independent full database read and may take
 longer. It does not turn a source check into a trial import or establish how far
 mirroring has caught up. **Reload results** only fetches saved checks, progress,
-available sources and the recovery list. The window also updates automatically;
-use **Check backup**, **Check other computer** or a revision review to run new work.
+available sources and the recovery list. The window updates automatically without
+changing button labels or availability during background reads. **Reload results**
+remains available for an immediate retry, with progress shown only for that explicit
+request. Use **Check backup**, **Check other computer** or a revision review to run
+new work. The received time describes the last results response, not a new source
+check or confirmation that mirroring has caught up.
 
 Interrupted recovery can retain valid accepted entries. Reopen the window to
 review its saved outcome, revert its contribution or check the source again to

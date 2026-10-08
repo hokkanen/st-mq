@@ -25,6 +25,25 @@ async function journalSource(f,donor,{truncate=false,corrupt=false,retired=false
   return path;
 }
 
+test('populated shared history reports zero changed records even when the master has newer history',async t=>{
+  const f=fixture(t);
+  observation(f.master,start,20);
+  f.master.event('synthetic-shared-history',{},start);
+  const donor=await peerDonor(f),donorCheckpoint=donor.checkpoint();
+  observation(f.master,start+1000,21);
+  const masterCheckpoint=f.master.checkpoint();
+  const preview=await recoveryPreview({masterPath:f.master.path,donorPath:donor.path,signal:t.signal});
+  assert.equal(preview.status,'checked');
+  assert.equal(preview.incremental.records,0);
+  assert(preview.tables.length>0 && preview.tables.every(row=>row.count===0));
+  assert(preview.sourceSummary.categories.length>0 && preview.sourceSummary.categories.every(row=>row.count===0));
+  assert.equal(preview.coverage,undefined,'ordinary shared-history checks do not perform a full inventory');
+  assert.equal(donor.observations().length,1,'zero changed records does not mean an empty source');
+  assert.equal(f.master.observations().length,2,'the source check does not establish mirror catch-up');
+  assert.deepEqual(donor.checkpoint(),donorCheckpoint);
+  assert.deepEqual(f.master.checkpoint(),masterCheckpoint);
+});
+
 test('shared checkpoint review scans only changed records and keeps a pinned WAL source',async t=>{
   const f=fixture(t);
   for(let batch=0;batch<2000;batch+=128)f.master.transaction(()=>{for(let i=batch;i<Math.min(batch+128,2000);i++) f.master.event('synthetic-old-history',{padding:'x'.repeat(4096)},start+i);});

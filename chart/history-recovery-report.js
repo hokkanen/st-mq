@@ -32,13 +32,13 @@ function reportTable(document, parent, labels) {
   return body;
 }
 
-function renderSourceSummary(document, root, data, { formatTime }) {
-  if (!Array.isArray(data?.categories)) return;
+function renderSourceSummary(document, root, data, { formatTime, tables }) {
+  const categories = Array.isArray(data?.categories) ? data.categories : [];
   const section = document.createElement('section'); section.className = 'history-recovery-coverage';
-  const heading = document.createElement('h4'); heading.textContent = 'History in this check'; section.append(heading);
-  paragraph(document, section, 'Changed source records since the shared checkpoint, including required references. These counts do not include unchanged earlier history. Dates mark the first and last records, not continuous coverage.', 'muted');
-  const rows = data.categories.filter(row => Object.hasOwn(coverageCategories, row.name) && count(row.count) > 0);
+  const heading = document.createElement('h4'); heading.textContent = 'Changes since the shared checkpoint'; section.append(heading);
+  const rows = categories.filter(row => Object.hasOwn(coverageCategories, row?.name) && count(row?.count) > 0);
   if (rows.length) {
+    paragraph(document, section, 'Changed source records and their required references only. Unchanged shared history is not counted again. Dates mark the first and last records, not continuous coverage.', 'muted');
     const body = reportTable(document, section, ['History', 'Records', 'Recorded dates']);
     for (const row of rows) {
       const tr = document.createElement('tr'), label = document.createElement('th'), number = document.createElement('td'), dates = document.createElement('td');
@@ -47,7 +47,15 @@ function renderSourceSummary(document, root, data, { formatTime }) {
       if (count(row.undated) > 0) { const note = document.createElement('small'); note.textContent = `${row.undated} without dates`; dates.append(note); }
       tr.append(label, number, dates); body.append(tr);
     }
-  } else paragraph(document, section, 'No supported history records in the checked changes.');
+  } else {
+    const inventory = (Array.isArray(tables) ? tables : []).filter(row => Object.hasOwn(sourceTables, row?.name));
+    const hasInventoryRecords = inventory.some(row => count(row.count) > 0);
+    const knownEmpty = !hasInventoryRecords && (categories.length > 0 && categories.every(row => Object.hasOwn(coverageCategories, row?.name) && count(row?.count) === 0)
+      || inventory.length > 0 && inventory.every(row => count(row.count) === 0));
+    paragraph(document, section, hasInventoryRecords ? 'Changed source records are listed in the counts below.'
+      : knownEmpty ? 'No changed history records to review.' : 'Changed history counts are unavailable. Check the source again.');
+    paragraph(document, section, `Unchanged shared history is not counted again.${knownEmpty ? ' This result does not mean the database is empty.' : ''}`, 'muted');
+  }
   root.append(section);
 }
 
@@ -252,21 +260,26 @@ export function renderRecoveryReport(document, root, data, { formatTime = at => 
   appendCount('Recovered entries', data.imported);
   if (data.incremental && !data.sourceSummary) {
     const scope = document.createElement('p'); scope.className = 'muted';
-    scope.textContent = 'Changed source records since the shared checkpoint, including required references. These counts do not include unchanged earlier history.';
+    scope.textContent = 'Changed source records since the shared checkpoint and their required references only. Unchanged shared history is not counted again.';
     root.append(scope);
   }
   const checkedAt = stamp(data.sourceSummary?.checkedAt ?? data.coverage?.checkedAt);
   if (checkedAt) paragraph(document, root, `Checked ${formatTime(checkedAt)}${data.incremental ? '' : ' · Complete source inventory'}`, 'history-recovery-provenance');
-  if (checked && data.sourceSummary) renderSourceSummary(document, root, data.sourceSummary, { formatTime });
+  if (checked && data.sourceSummary) renderSourceSummary(document, root, data.sourceSummary, { formatTime, tables: data.tables });
   if (checked) renderCoverage(document, root, data.coverage, { formatTime, source, expanded });
   if (checked) {
-    for (const row of data.tables ?? []) if (Object.hasOwn(sourceTables, row.name)) appendCount(sourceTables[row.name], row.count);
+    const rows = (data.tables ?? []).filter(row => Object.hasOwn(sourceTables, row.name));
+    const emptyChanges = data.incremental && rows.length > 0 && rows.every(row => count(row.count) === 0);
+    if (!emptyChanges) for (const row of rows) appendCount(sourceTables[row.name], row.count);
   } else for (const [key, title] of fields) appendCount(title, totals[key], !comparison && key !== 'duplicates' && totals[key] > 0);
   if (counts.children.length) {
     if (checked && (data.coverage || data.sourceSummary)) {
       const details = document.createElement('details'), summary = document.createElement('summary');
       details.dataset.recoverySection = 'inventory'; details.open = expanded.has('inventory');
-      summary.textContent = 'Source record inventory'; details.append(summary,counts); root.append(details);
+      summary.textContent = data.incremental ? 'Changed source record counts' : 'Source record inventory';
+      details.append(summary);
+      if (data.incremental) paragraph(document, details, 'Changed records and required references only; these are not database totals.', 'muted');
+      details.append(counts); root.append(details);
     } else root.append(counts);
   }
   if (checked && !comparison) {
