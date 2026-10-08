@@ -47,6 +47,7 @@ physical read blocks. To run a larger case:
 
 ```sh
 STMQ_PAIR_SCALE_MIB=512 node --test --test-timeout=180000 test/extended/pair-handover-scale.test.js
+STMQ_JOURNAL_SCALE_MIB=4,512 node --test --test-timeout=180000 test/extended/incremental-storage-scale.test.js
 node scripts/benchmarks/recovery.js --records=1000,10000,50000 --windows=96 --payload-bytes=128
 ```
 
