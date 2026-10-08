@@ -1,11 +1,11 @@
 import { createInterface } from 'node:readline';
-import { lstat, open, readFile, readdir, rm } from 'node:fs/promises';
+import { lstat, open, readdir, rm } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import { createHash, randomUUID } from 'node:crypto';
-import { applyJournalPublication, recoverJournalPublication } from './journal-publication.js';
-import { sameCheckpoint, validCheckpoint } from './incremental.js';
-import { CHANGE_CHUNK_BYTES, MAX_CHANGE_BYTES } from './change-transfer.js';
+import { acceptPeerPublication, applyPeerPublication, recoverJournalPublication } from './journal-publication.js';
+import { CHANGE_CHUNK_BYTES, validPeerTransfer } from './coalesced.js';
+import { sameCheckpoint } from './incremental.js';
 import { GENERATION_PATTERN, normalizeSnapshot, ownedDirectory, privateFile,
   pruneReplicaSnapshots, publishSnapshot, replicationError, snapshotDigest } from './publication.js';
 
@@ -83,15 +83,12 @@ export async function runReceiver({ directory, input = process.stdin, output = p
         send({ type: 'ready', version: 2, publication });
         continue;
       }
-      if (message.type === 'apply-begin') {
-        if (!publication || staged || !validCheckpoint(message.from) || !validCheckpoint(message.to)
-          || !sameCheckpoint(message.from, publication.checkpoint) || !Number.isSafeInteger(message.bytes)
-          || message.bytes < 1 || message.bytes > MAX_CHANGE_BYTES || !/^[a-f0-9]{64}$/.test(message.digest ?? ''))
+      if(message.type==='peer-apply-begin') {
+        if(!publication||staged||!validPeerTransfer(message.transfer)||!sameCheckpoint(message.transfer.base,publication.checkpoint))
           throw replicationError('invalid_protocol');
-        const path = join(directory, `incoming-${randomUUID()}.changes`);
-        staged = { ...message, path, file: await open(path, 'wx', 0o600), offset: 0, hash: createHash('sha256') };
-        send({ type: 'apply-ready' });
-        continue;
+        const path=join(directory,`incoming-${randomUUID()}.changes`);
+        staged={...message.transfer,mode:'peer',metadata:message.transfer,path,file:await open(path,'wx',0o600),offset:0,hash:createHash('sha256')};
+        send({type:'apply-ready'});continue;
       }
       if (message.type === 'apply-chunk') {
         if (!staged || message.offset !== staged.offset || typeof message.data !== 'string'
@@ -106,12 +103,9 @@ export async function runReceiver({ directory, input = process.stdin, output = p
         if (!staged || staged.offset !== staged.bytes || staged.hash.digest('hex') !== staged.digest)
           throw replicationError('verification_failed');
         await staged.file.sync(); await staged.file.close(); staged.file = null;
-        const batch = JSON.parse(await readFile(staged.path, 'utf8'));
-        if (!sameCheckpoint(batch.from, staged.from) || !sameCheckpoint(batch.to, staged.to))
-          throw replicationError('verification_failed');
         await assertUnpairedDirectory(directory);
-        publication = await applyJournalPublication({ directory, batch, metadata: message.metadata,
-          guard: () => assertUnpairedDirectory(directory) });
+        publication=await applyPeerPublication({directory,transfer:{metadata:staged.metadata,path:staged.path},
+          metadata:message.metadata,guard:()=>assertUnpairedDirectory(directory)});
         await rm(staged.path); staged = null;
         send({ type: 'applied', checkpoint: publication.checkpoint });
         continue;
@@ -146,7 +140,8 @@ export async function runReceiver({ directory, input = process.stdin, output = p
       publication = await publishSnapshot(directory, incoming, { generation, ...actual,
         checkpoint: message.checkpoint, sourceStartedAt: message.sourceStartedAt, sourceAt: message.sourceAt, verifiedAt: Date.now() });
       incoming = null;
-      send({ type: 'published', ...publication });
+      publication=await acceptPeerPublication({directory,guard:()=>assertUnpairedDirectory(directory)});
+      send({ type: 'published', ...publication,receivedDigest:actual.digest });
       return publication;
     }
     throw replicationError('transfer_interrupted');

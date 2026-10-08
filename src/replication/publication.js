@@ -158,13 +158,12 @@ export async function verifyReplicaPublication(directory) {
   const publication = await readReplicaPublication(directory);
   if (!publication) throw replicationError('publication_unavailable');
   const { verifyDatabase } = await import('../storage/full-verifier.js');
-  const fullVerification = await verifyDatabase({ dbPath: publication.dbPath, checkpoint: publication.checkpoint });
+  const fullVerification = await verifyDatabase({ dbPath: publication.dbPath, checkpoint: publication.checkpoint, origin: 'replication',
+    ...(publication.digestAlgorithm === JOURNAL_DIGEST ? {} : { snapshot: { digest: publication.digest, bytes: publication.bytes } }) });
   if (publication.digestAlgorithm === JOURNAL_DIGEST) {
     const actual = await databaseCheckpoint({ dbPath: publication.dbPath });
-    if (!sameCheckpoint(actual, publication.checkpoint)) throw replicationError('verification_failed');
-  } else {
-    const actual = await snapshotDigest(publication.dbPath);
-    if (actual.digest !== publication.digest || actual.bytes !== publication.bytes) throw replicationError('verification_failed');
+    if (!sameCheckpoint(actual, publication.checkpoint) || publication.digest !== publication.checkpoint.hash)
+      throw replicationError('verification_failed');
   }
   return { ...publication, fullVerification };
 }

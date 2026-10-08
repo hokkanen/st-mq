@@ -6,6 +6,7 @@ import { sensorRevision } from '../app/sensor-inputs.js';
 import { markRecoveryFailed, projectedSensorContext } from './state.js';
 import { selectedHistory, recoveryEvidenceVersion } from './ledger.js';
 import { RECOVERY_ERROR_CODES, recoveryFailure } from './errors.js';
+import { saveLearningCheckpoint } from '../storage/learning-checkpoints.js';
 export { listRecoveries } from './ledger.js';
 
 const running = new WeakSet();
@@ -84,6 +85,7 @@ export async function recoverHistory({ store, donorPath, donorJournalPath, input
               || !last && checkpoint !== null) throw unavailable('Reconstructed model verification failed');
             store.db.prepare('INSERT INTO learning_epochs(input,epoch) VALUES(?,?) ON CONFLICT(input) DO UPDATE SET epoch=excluded.epoch')
               .run(input, message.epoch);
+            saveLearningCheckpoint(store.db, { input, epoch:message.epoch, checkpoint:message.prefixCheckpoint });
             if (checkpoint) store.setState(`adaptive:${input}`, checkpoint);
           }
           const report = { ...message.report, previewId, status: 'complete', imported: message.report.counts.missing,
@@ -230,6 +232,8 @@ export async function reviseRecovery({ store, input = 'mqtt', recoveryId, active
           store.db.prepare('UPDATE history_selection SET generation=? WHERE id=1').run(message.generation);
           store.db.prepare('INSERT INTO learning_epochs(input,epoch) VALUES(?,?) ON CONFLICT(input) DO UPDATE SET epoch=excluded.epoch')
             .run(input, message.epoch);
+          if (message.modelChanged !== false)
+            saveLearningCheckpoint(store.db, { input, epoch:message.epoch, checkpoint:message.prefixCheckpoint });
           store.db.prepare('UPDATE history_recoveries SET active=? WHERE id=? AND input=?').run(Number(active), recoveryId, input);
           store.db.prepare('INSERT INTO recovery_decisions(recovery_id,active,at,generation,epoch,report) VALUES(?,?,?,?,?,?)')
             .run(recoveryId, Number(active), Date.now(), message.generation, message.epoch, JSON.stringify(report));

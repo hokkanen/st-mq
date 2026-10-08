@@ -34,6 +34,7 @@ export const pairIssueCode = view => (view?.uiOperation?.state === 'error' ? vie
 export function pairIssueHelp(view) {
   const code = pairIssueCode(view);
   return {
+    journal_history_expired: 'This operation requires recent transaction history that is no longer retained. Configured-peer catch-up uses its durable shared anchor; review the reported operation before retrying.',
     vip_helper_unavailable: 'The virtual-IP helper is unavailable. Check that the address-helper socket service is running on this computer and that its socket path matches the pair configuration.',
     vip_helper_permission: 'The controller cannot access the virtual-IP helper. Check the socket permissions and the group membership of the user running the controller; sign in again after changing groups.',
     vip_policy_invalid: 'The virtual-IP helper policy could not be read safely. Check its JSON, root ownership and permissions, then restart the helper service.',

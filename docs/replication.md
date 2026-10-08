@@ -119,28 +119,38 @@ supported by that unit.
 The master attempts synchronization automatically while it runs, with one
 attempt at a time. An unavailable receiver or failed transfer is reported without
 stopping home control. Once the first full seed exists, synchronization transfers
-only the journal suffix after the receiver's durable checkpoint. Inserts, updates
-and deletions use the same atomic commit format. Normal catch-up does not run
-`sqlite3_rsync`, create a full backup, clone the receiver or hash historical pages.
+consolidated changed rows after the configured receiver's durable anchor.
+Repeated updates retain one baseline and the current value; deletions retain a
+tombstone. This map survives short transaction-journal compaction. Offline duration
+alone never requires a full copy, including for a 500 GB retained database.
+Normal catch-up does not run `sqlite3_rsync`, create a full backup, clone the
+receiver or hash historical pages.
 
-The receiver stages bounded 256 KiB transport frames and verifies the complete
-commit before applying it. SQLite publishes the rows and checkpoint in one
-transaction. A durable pending receipt distinguishes a crash before that commit
-from a crash after it but before acknowledgement. Partial transfers leave the last
-complete checkpoint readable and retry from committed progress. Read-only viewers
-pin coherent read snapshots; they cannot control equipment or write application
-state. Receiver ownership remains an operating-system-backed SQLite lock.
+The receiver stages bounded 256 KiB transport frames, checks expected prior rows
+and the complete target content fingerprint, then publishes the changed rows and
+checkpoint in one SQLite transaction. A durable pending receipt distinguishes a
+crash before that commit from one after it but before acknowledgement. The source
+keeps an immutable pending delivery, so a lost reply retries the same target even
+while recording continues. Acknowledgement rebases bounded batches, yielding to
+admitted controller writes. Partial transfers leave the last complete checkpoint
+readable. Read-only viewers pin coherent snapshots; they cannot control equipment
+or write application state. Receiver ownership remains an operating-system-backed
+SQLite lock.
 
-The retained transaction journal supports long outages without a volatile MQTT
-queue. A missing base needs one fully verified initial snapshot; an unrelated or
-damaged base requires explicit exceptional repair. Corruption never silently
-causes replacement of a database with unreviewed local history. The existing
-full backup transport remains available for those exceptional cases.
+A missing base needs one fully verified initial snapshot; an unrelated or damaged
+base requires explicit exceptional repair. Preserve the old receiver directory,
+deliberately configure a new empty dedicated receiver directory on both computers,
+and restart the receiver/viewer with that directory to receive a new verified
+seed. The original directory remains inactive evidence. Never delete the only
+copy of unmatched history to clear an error. Corruption never silently authorizes
+replacement of unreviewed local history.
 
-Routine disk and network work depends on newly committed changes, including
+Routine disk and network work depends on distinct changed records, including
 SQLite's WAL/index work, rather than total retained history. Keep capacity for the
-journal, transaction staging and WAL. A full initial seed, independent backup or
-optional full verification still performs work proportional to database size.
+peer baselines, transaction tail, private changed-row staging and WAL. Source
+staging uses a pinned read snapshot without holding its writer lock. A full initial
+seed, independent backup or optional full verification still performs work
+proportional to database size.
 The configured timeout covers the entire attempt, and failed attempts back off.
 See [the transaction journal contract](sqlite-journal.md).
 
@@ -152,13 +162,14 @@ intentional deletions and application mistakes.
 
 ## What identity verification means
 
-A normal publication proves transaction continuity: matching database identity,
-sequence, predecessor hash, commit hash and expected old row values. The accepted
-checkpoint is durable with the applied changes. This is distinct from a full scan
-for unrelated dormant corruption.
+A normal publication verifies the acknowledged base and target checkpoints,
+matching database identity, each expected old row and the resulting committed
+content fingerprint. The target checkpoint is durable with the applied changes.
+It does not reconstruct discarded intermediate transactions or scan unrelated
+history for dormant corruption.
 
 The optional reusable verifier performs SQLite integrity checks, verifies the
-complete journal and canonically hashes current application contents in a pinned
+retained transaction journal and canonically hashes current application contents in a pinned
 read transaction. Peer comparisons require equal transaction checkpoints; a
 source that has advanced is not falsely compared against an older receiver.
 Manual checks are available under **Recording details → Verify database** and

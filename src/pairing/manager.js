@@ -13,11 +13,11 @@ import { MQTT_FRONTEND_ERRORS } from './mqtt-frontend.js';
 import { createControllerAnnouncements } from './announcements.js';
 import { configurePublicationRoots, ownedDirectory, readReplicaPublication, syncDirectory } from '../replication/publication.js';
 import { databaseErrorDetails, databaseErrorGuidance } from '../storage/database-errors.js';
-import { databaseCheckpoint, journalOperation, JOURNAL_DIGEST, sameCheckpoint } from '../replication/incremental.js';
-import { ChangeTransfers, receiveChanges } from '../replication/change-transfer.js';
-import { adoptJournalDatabase, applyJournalPublication, checkpointMetadata, recoverJournalPublication } from '../replication/journal-publication.js';
+import { databaseCheckpoint, JOURNAL_DIGEST, sameCheckpoint, validCheckpoint } from '../replication/incremental.js';
+import { PeerTransfers, peerOperation, receivePeerTransfer } from '../replication/coalesced.js';
+import { adoptJournalDatabase, acceptPeerPublication, applyPeerPublication, checkpointMetadata, publishCheckpointMetadata, recoverJournalPublication } from '../replication/journal-publication.js';
 import { acquireReceiverLock } from '../replication/receiver.js';
-import { checkpointAt, installJournal } from '../storage/journal.js';
+import { installJournal } from '../storage/journal.js';
 
 const ACTIONS = new Set(['handover', 'promote', 'check-recovery', 'recover', 'rejoin']);
 const sourceRoot = fileURLToPath(new URL('../', import.meta.url));
@@ -75,7 +75,7 @@ export class PairManager {
     this.peer = peer ?? new PairPeer({ ...config, clock, timeoutMs: Math.min(config.timeoutMs ?? 10000, 10000),
       handler: (operation, body) => this.handlePeer(operation, body) });
     this.snapshots = snapshots ?? new SnapshotRepository({ directory: join(config.directory, 'exports'), clock });
-    this.changes = new ChangeTransfers(join(config.directory, 'change-exports'));
+    this.peerTransfers = new PeerTransfers(join(config.directory, 'peer-exports'));
     this.announcementsFactory = announcements ?? createControllerAnnouncements;
     this.activeAllowed = false;
     this.closed = false;
@@ -108,7 +108,7 @@ export class PairManager {
     const pending = this.state.value.pendingSnapshot;
     let publicationVerified = false;
     if (this.state.value.role === 'slave' && publication && pending && publication.generation === pending.generation &&
-        publication.digest === pending.digest && acceptsLineage(this.state.value.accepted, pending.claim)) {
+        (publication.digest === pending.digest || publication.digestAlgorithm === JOURNAL_DIGEST && sameCheckpoint(publication.checkpoint,pending.checkpoint)) && acceptsLineage(this.state.value.accepted, pending.claim)) {
       // The checkpoint publication may have committed immediately before a
       // crash, while the separate node-state acknowledgement had not.
       try {
@@ -514,9 +514,10 @@ export class PairManager {
         const pending = this.state.value.pendingSnapshot;
         metadata = pending?.digestAlgorithm !== JOURNAL_DIGEST && pending?.claim?.epoch === claim.epoch
           ? validateSnapshot(pending)
-          : validateSnapshot(await this.peer.request('snapshot', { force: true }, { signal, timeoutMs: this.config.timeoutMs }));
+          : validateSnapshot(await this.peer.request('snapshot', { force: true, forPeer: true }, { signal, timeoutMs: this.config.timeoutMs }));
         await this.state.update({ pendingSnapshot: metadata });
         result = await this.installReplica(metadata, { signal });
+        await this.peer.request('peer-ack',{checkpoint:result.checkpoint},{signal});
       } else result = await this.installCheckpoint(metadata, { signal });
       this.sync = { state: 'ready', sourceAt: result.sourceAt, verifiedAt: result.verifiedAt, bytes: result.bytes,
         lastSuccessAt: this.clock(), error: null, transferredBytes: result.transferredBytes };
@@ -524,15 +525,15 @@ export class PairManager {
     } catch (error) {
       this.sync = { ...this.sync, state: 'error', error: publicPairError(error) };
       if (this.state.value.role === 'slave' && ['verification_failed', 'database_journal_invalid',
-        'journal_checkpoint_mismatch', 'journal_hash_mismatch'].includes(error?.code))
-        await this.state.update({ role: 'protected', reason: 'snapshot_verification_failed', bootstrapPending: false });
+        'journal_checkpoint_mismatch', 'journal_hash_mismatch', 'journal_history_expired'].includes(error?.code))
+        await this.state.update({ role: 'protected', reason: error.code==='journal_history_expired' ? 'journal_history_expired' : 'snapshot_verification_failed', bootstrapPending: false });
       if (['snapshot_unavailable', 'authority_changed'].includes(error?.code)) await this.state.update({ pendingSnapshot: null });
     }
     finally { this.nextSyncAt = this.clock() + (this.config.intervalMs ?? 60000); this.syncAbort = null; }
   }
 
-  async installReplica(metadata, { signal, allowRelease = false } = {}) {
-    if (metadata.digestAlgorithm === JOURNAL_DIGEST) return this.installCheckpoint(metadata, { signal, allowRelease });
+  async installReplica(metadata, { signal, allowRelease = false, adoptMetadata=false } = {}) {
+    if (metadata.digestAlgorithm === JOURNAL_DIGEST) return this.installCheckpoint(metadata, { signal, allowRelease,adoptMetadata });
     await this.assertReplica(metadata.claim, { allowRelease });
     const unchanged = allowRelease ? null : await this.replicaPublicationGuard(signal);
     const guard = async () => {
@@ -548,51 +549,69 @@ export class PairManager {
         if (remote.claim?.role !== 'master' || remote.claim.epoch !== metadata.claim.epoch
           || remote.claim.nodeId !== metadata.claim.nodeId) throw pairError('authority_changed');
         await guard();
-        const result = await action();
+        await action();
+        const result = await acceptPeerPublication({directory:this.config.snapshotDirectory,signal,guard:()=>this.assertReplica(metadata.claim,{allowRelease})});
         await this.state.update({ pendingSnapshot: null, accepted: { generation: result.generation, digest: result.digest, checkpoint: result.checkpoint,
           epoch: metadata.claim.epoch, sequence: metadata.sequence, nodeId: metadata.claim.nodeId } });
         return result;
       }) });
   }
 
-  async installCheckpoint(metadata, { signal, allowRelease = false } = {}) {
+  async installCheckpoint(metadata, { signal, allowRelease = false,adoptMetadata=false } = {}) {
     await this.assertReplica(metadata.claim, { allowRelease });
     const unlock = await acquireReceiverLock(this.config.snapshotDirectory);
     try {
       let publication = await recoverJournalPublication(this.config.snapshotDirectory, { signal });
       if (!publication) throw pairError('snapshot_unavailable');
       if (publication.checkpoint.databaseId !== metadata.checkpoint.databaseId) throw pairError('lineage_mismatch');
-      const actual = await databaseCheckpoint({ dbPath: publication.dbPath, signal });
-      if (!sameCheckpoint(actual, publication.checkpoint)) throw pairError('verification_failed');
       const guard = () => this.assertReplica(metadata.claim, { allowRelease });
+      if(sameCheckpoint(publication.checkpoint,metadata.checkpoint)) {
+        const actual=await databaseCheckpoint({dbPath:publication.dbPath,signal});
+        if(!sameCheckpoint(actual,publication.checkpoint))throw pairError('verification_failed');
+        await this.peer.request('peer-ack',{checkpoint:publication.checkpoint},{signal});
+        if(adoptMetadata) {
+          await this.state.update({pendingSnapshot:metadata});
+          publication=await this.serialized(async()=>{
+            const result=await publishCheckpointMetadata({directory:this.config.snapshotDirectory,
+              checkpoint:metadata.checkpoint,metadata,signal,guard});
+            await this.state.update({pendingSnapshot:null,accepted:{generation:result.generation,digest:result.digest,
+              checkpoint:result.checkpoint,epoch:metadata.claim.epoch,sequence:metadata.sequence,nodeId:metadata.claim.nodeId}});
+            return result;
+          });
+        }
+        return {...publication,transferredBytes:0};
+      }
       let transferredBytes = 0;
       do {
         await guard();
-        const batch = sameCheckpoint(publication.checkpoint, metadata.checkpoint)
-          ? { version: 1, from: publication.checkpoint, to: publication.checkpoint, commits: [], hasMore: false }
-          : await receiveChanges({ directory: join(this.config.directory, 'change-incoming'), peer: this.peer,
-            after: publication.checkpoint, through: metadata.checkpoint, signal, guard });
-        if ((!sameCheckpoint(publication.checkpoint, metadata.checkpoint)
-          && batch.to.sequence <= publication.checkpoint.sequence)
-          || (!sameCheckpoint(batch.from, batch.to) && !batch.commits.length)) throw pairError('verification_failed');
-        transferredBytes += Buffer.byteLength(JSON.stringify(batch));
-        const boundary = { ...metadata, generation: batch.hasMore ? randomUUID() : metadata.generation,
-          checkpoint: batch.to, digest: batch.to.hash };
-        await this.state.update({ pendingSnapshot: boundary });
-        publication = await this.serialized(async () => {
-          const result = await applyJournalPublication({ directory: this.config.snapshotDirectory, batch,
-            metadata: boundary, signal, guard, beforeCommit: async () => {
-              const remote = await this.peer.request('status', { claim: this.state.claim(), sync: publicSync(this.sync) }, { signal });
-              if (remote.claim?.role !== 'master' || remote.claim.epoch !== metadata.claim.epoch
-                || remote.claim.nodeId !== metadata.claim.nodeId) throw pairError('authority_changed');
-              await guard();
-            } });
-          await this.state.update({ pendingSnapshot: null, accepted: { generation: result.generation,
-            digest: result.digest, checkpoint: result.checkpoint, epoch: metadata.claim.epoch,
-            sequence: metadata.sequence, nodeId: metadata.claim.nodeId } });
-          return result;
-        });
-      } while (!sameCheckpoint(publication.checkpoint, metadata.checkpoint));
+        const transfer=await receivePeerTransfer({directory:join(this.config.directory,'peer-incoming'),peer:this.peer,
+          after:publication.checkpoint,signal,guard});
+        const target=transfer.metadata.target;
+        if(target.sequence<publication.checkpoint.sequence) throw pairError('verification_failed');
+        const caughtUp=target.sequence>=metadata.checkpoint.sequence;
+        const boundary={...metadata,...(!caughtUp?{sequence:publication.sequence,sourceAt:publication.sourceAt,
+          sourceStartedAt:publication.sourceStartedAt}:{}),
+          generation:sameCheckpoint(target,metadata.checkpoint)?metadata.generation:randomUUID(),checkpoint:target,digest:target.hash};
+        transferredBytes+=transfer.metadata.bytes;
+        await this.state.update({pendingSnapshot:boundary});
+        try {
+          publication=await this.serialized(async()=>{
+            const result=await applyPeerPublication({directory:this.config.snapshotDirectory,transfer,metadata:boundary,signal,guard,
+              beforeCommit:async()=>{
+                const remote=await this.peer.request('status',{claim:this.state.claim(),sync:publicSync(this.sync)},{signal});
+                if(remote.claim?.role!=='master'||remote.claim.epoch!==metadata.claim.epoch||remote.claim.nodeId!==metadata.claim.nodeId)
+                  throw pairError('authority_changed');
+                await guard();
+              }});
+            await this.state.update({pendingSnapshot:null,accepted:{generation:result.generation,digest:result.digest,
+              checkpoint:result.checkpoint,epoch:metadata.claim.epoch,sequence:boundary.sequence,nodeId:metadata.claim.nodeId}});
+            return result;
+          });
+        } finally {await rm(transfer.path,{force:true});}
+        await this.peer.request('peer-ack',{checkpoint:publication.checkpoint},{signal});
+      } while(publication.checkpoint.sequence<metadata.checkpoint.sequence);
+      if(publication.checkpoint.sequence===metadata.checkpoint.sequence && !sameCheckpoint(publication.checkpoint,metadata.checkpoint))
+        throw pairError('verification_failed');
       return { ...publication, transferredBytes };
     } finally { await unlock(); }
   }
@@ -648,54 +667,74 @@ export class PairManager {
   async exportCheckpoint() {
     if (this.state.value.role === 'master') await this.prepareExportStamp();
     const claim = this.state.claim(), dbPath = await this.journalSource();
-    const checkpoint = await databaseCheckpoint({ dbPath, signal: this.abort.signal });
+    const checkpoint = await this.peerOperation('checkpoint',{dbPath,enroll:claim.role==='master',signal:this.abort.signal});
     if (this.state.value.epoch !== claim.epoch || this.state.value.role !== claim.role) throw pairError('authority_changed');
     return checkpointMetadata({ dbPath, checkpoint, claim, sequence: this.state.value.sequence, clock: this.clock });
   }
 
+  peerOperation(operation,options) {
+    return peerOperation(operation,{...options,onYield:()=>this.hooks.admitStorageWrite?.()});
+  }
+
+  async exportPeerSeed() {
+    const dbPath=await this.journalSource();
+    const anchor=await this.peerOperation('enroll',{dbPath,signal:this.abort.signal});
+    if(anchor.pending?.sourcePath) {
+      const generation=/export-([a-f0-9-]{36})\.sqlite$/.exec(anchor.pending.sourcePath)?.[1];
+      if(!generation) throw pairError('verification_failed');
+      const {hashes,...metadata}=await this.snapshots.load(generation);
+      return metadata;
+    }
+    const metadata=await this.exportSnapshot({force:true,pin:true});
+    await this.peerTransfers.export({dbPath,onYield:()=>this.hooks.admitStorageWrite?.(),after:anchor.checkpoint,refresh:true,sourcePath:join(this.snapshots.directory,`export-${metadata.generation}.sqlite`),signal:this.abort.signal});
+    return metadata;
+  }
+
+  async acknowledgePeerTransfer(checkpoint) {
+    const dbPath=await this.journalSource();
+    const {sourcePath,...result}=await this.peerOperation('acknowledge',{dbPath,checkpoint,signal:this.abort.signal});
+    if(result.complete && sourcePath) {
+      const generation=/export-([a-f0-9-]{36})\.sqlite$/.exec(sourcePath)?.[1];
+      if(generation && this.state.value.recovery?.releaseOperation?.metadata?.generation!==generation)
+        await this.snapshots.unpin(generation);
+    }
+    return result;
+  }
+
   async fullVerification(dbPath, checkpoint) {
     const { verifyDatabase } = await import('../storage/full-verifier.js');
-    return verifyDatabase({ dbPath, checkpoint, signal: this.abort.signal });
+    return verifyDatabase({ dbPath, checkpoint, signal: this.abort.signal, origin: 'pairing' });
   }
 
   async commonPeerCheckpoint(metadata, dbPath = this.state.value.activeDbPath) {
-    const local = await databaseCheckpoint({ dbPath, signal: this.abort.signal });
-    if (local.databaseId !== metadata.checkpoint.databaseId) return null;
-    let low = 0, high = Math.min(local.sequence, metadata.checkpoint.sequence);
-    const db = new DatabaseSync(dbPath, { readOnly: true });
-    try {
-      while (low < high) {
-        const middle = Math.ceil((low + high) / 2);
-        const remote = await this.peer.request('checkpoint-at', { sequence: middle }, { signal: this.abort.signal });
-        if (sameCheckpoint(checkpointAt(db, middle), remote)) low = middle; else high = middle - 1;
-      }
-      const common = checkpointAt(db, low);
-      const remote = await this.peer.request('checkpoint-at', { sequence: low }, { signal: this.abort.signal });
-      return sameCheckpoint(common, remote) ? common : null;
-    } finally { db.close(); }
+    const current=await databaseCheckpoint({dbPath,signal:this.abort.signal});
+    if(current.databaseId!==metadata.checkpoint.databaseId) return null;
+    let local=await this.peerOperation('anchor',{dbPath,signal:this.abort.signal});
+    let remote=await this.peer.request('peer-anchor',{}, {signal:this.abort.signal});
+    if(!local || !remote) return null;
+    if(!validCheckpoint(remote.checkpoint)) throw pairError('peer_protocol_failed');
+    // An acknowledgement may have been lost before either side diverged. The
+    // peer's durable accepted anchor is sufficient to finish that same rebase.
+    if(local.pending && sameCheckpoint(local.pending.target,remote.checkpoint)) {
+      await this.peerOperation('acknowledge',{dbPath,checkpoint:remote.checkpoint,signal:this.abort.signal});
+      local=await this.peerOperation('anchor',{dbPath,signal:this.abort.signal});
+    }
+    if(remote.pendingTarget && sameCheckpoint(remote.pendingTarget,local.checkpoint)) {
+      await this.peer.request('peer-ack',{checkpoint:local.checkpoint},{signal:this.abort.signal});
+      remote=await this.peer.request('peer-anchor',{}, {signal:this.abort.signal});
+    }
+    if(!sameCheckpoint(local.checkpoint,remote.checkpoint)) return null;
+    if(local.contentHash!==remote.contentHash) throw pairError('verification_failed');
+    return local.checkpoint;
   }
 
-  async stageRecoveryJournal(metadata, base) {
-    const directory = join(this.config.directory, 'recovery-journals');
-    await ownedDirectory(directory, '.st-mq-recovery-journals');
-    const path = join(directory, `donor-${randomUUID()}.ndjson`);
-    const file = await open(path, 'wx', 0o600);
-    try {
-      await file.writeFile(`${JSON.stringify({ version: 1, base, checkpoint: metadata.checkpoint })}\n`);
-      let after = base;
-      while (!sameCheckpoint(after, metadata.checkpoint)) {
-        const batch = await receiveChanges({ directory: join(this.config.directory, 'change-incoming'), peer: this.peer,
-          after, through: metadata.checkpoint, signal: this.abort.signal,
-          guard: async () => { if (!this.canControl()) throw pairError('not_master'); } });
-        if (!batch.commits.length) throw pairError('verification_failed');
-        for (const commit of batch.commits) await file.writeFile(`${JSON.stringify(commit)}\n`);
-        after = batch.to;
-      }
-      await file.sync();
-      await syncDirectory(directory);
-      return path;
-    } catch (error) { await rm(path, { force: true }); throw error; }
-    finally { await file.close(); }
+  async stageRecoveryJournal(metadata,base) {
+    const transfer=await receivePeerTransfer({directory:join(this.config.directory,'peer-recovery'),peer:this.peer,after:base,
+      refresh:true,signal:this.abort.signal,guard:async()=>{if(!this.canControl())throw pairError('not_master');}});
+    if(!sameCheckpoint(transfer.metadata.target,metadata.checkpoint)) {
+      await rm(transfer.path,{force:true});throw pairError('recovery_required');
+    }
+    return transfer.path;
   }
 
   async exportReplicaSnapshot({ force, pin, role }) {
@@ -1009,16 +1048,23 @@ export class PairManager {
     if (!operation) {
       await this.assertRecoveryDonor(recovery);
       let metadata = await this.exportCheckpoint();
-      const incremental = metadata.checkpoint.databaseId === recovery.metadata.checkpoint.databaseId;
+      const base=await this.commonPeerCheckpoint(recovery.metadata);
+      const incremental=Boolean(base);
       let verification;
-      if (body.verifyWithFullSnapshot === true) {
-        verification = await this.fullVerification(await this.journalSource());
-        metadata = { ...metadata, checkpoint: verification.checkpoint, digest: verification.checkpoint.hash };
-      }
-      if (!incremental) {
-        metadata = await this.exportSnapshot({ force: true, pin: true });
-        if (body.verifyWithFullSnapshot === true) verification = await this.fullVerification(
-          join(this.snapshots.directory, `export-${metadata.generation}.sqlite`), metadata.checkpoint);
+      if(incremental) {
+        let sourcePath;
+        if(body.verifyWithFullSnapshot===true) {
+          const snapshot=await this.exportSnapshot({force:true,pin:true});
+          sourcePath=join(this.snapshots.directory,`export-${snapshot.generation}.sqlite`);
+          verification=await this.fullVerification(sourcePath,snapshot.checkpoint);
+        }
+        const delivery=await this.peerTransfers.export({dbPath:await this.journalSource(),after:base,refresh:true,sourcePath,
+          signal:this.abort.signal,onYield:()=>this.hooks.admitStorageWrite?.()});
+        metadata={...metadata,checkpoint:delivery.target,digest:delivery.target.hash};
+      } else {
+        metadata=await this.exportPeerSeed();
+        if(body.verifyWithFullSnapshot===true) verification=await this.fullVerification(
+          join(this.snapshots.directory,`export-${metadata.generation}.sqlite`),metadata.checkpoint);
       }
       operation = { requestId: body.requestId, donor: recovery.metadata, metadata, skipRecovery,
         verifyWithFullSnapshot: body.verifyWithFullSnapshot === true, ...(verification ? { verification } : {}) };
@@ -1056,14 +1102,23 @@ export class PairManager {
       if (!sameCheckpoint(current, donor.checkpoint)) throw pairError('recovery_required');
       const base = await this.commonPeerCheckpoint(metadata, dbPath);
       if (!base) throw pairError('lineage_mismatch');
-      rejoin = { base, donor: donor.checkpoint, retainedStorage: 'journal-branch' };
+      // Freeze and fully receive the selected target before changing the donor.
+      // A later source checkpoint or lost reply cannot invalidate this replay.
+      const transfer=await receivePeerTransfer({directory:join(this.config.directory,'peer-rejoin'),peer:this.peer,
+        after:base,signal:this.abort.signal,guard:async()=>{
+          if(this.state.value.role!=='protected')throw pairError('authority_changed');
+        }});
+      if(!sameCheckpoint(transfer.metadata.target,metadata.checkpoint)) {
+        await rm(transfer.path,{force:true});throw pairError('recovery_required');
+      }
+      rejoin = { base, donor: donor.checkpoint, retainedStorage: 'journal-branch',transfer };
       await this.state.update({ role: 'protected', reason: 'rejoining', release: {
         epoch: metadata.claim.epoch, digest: metadata.digest, identity, journalRejoin: rejoin } });
     }
     await this.hooks.closeReplica?.();
     let current = await databaseCheckpoint({ dbPath, signal: this.abort.signal });
     if (sameCheckpoint(current, rejoin.donor) && !sameCheckpoint(current, rejoin.base)) {
-      const branchId = await journalOperation('rewind', { dbPath, checkpoint: rejoin.base, signal: this.abort.signal });
+      const branchId = await this.peerOperation('rewind', { dbPath, checkpoint: rejoin.base, signal: this.abort.signal });
       rejoin = { ...rejoin, branchId };
       await this.state.update({ release: { ...this.state.value.release, journalRejoin: rejoin } });
       current = rejoin.base;
@@ -1072,7 +1127,14 @@ export class PairManager {
       await adoptJournalDatabase({ directory: this.config.snapshotDirectory, dbPath,
         metadata: { ...metadata, checkpoint: rejoin.base, digest: rejoin.base.hash, generation: randomUUID() }, signal: this.abort.signal });
     }
-    const result = await this.installCheckpoint(metadata, { signal: this.abort.signal, allowRelease: true });
+    if(!rejoin.transfer || !resolve(rejoin.transfer.path).startsWith(`${resolve(join(this.config.directory,'peer-rejoin'))}/`))
+      throw pairError('verification_failed');
+    const guard=()=>this.assertReplica(metadata.claim,{allowRelease:true});
+    const result=await applyPeerPublication({directory:this.config.snapshotDirectory,transfer:rejoin.transfer,metadata,
+      signal:this.abort.signal,guard,beforeCommit:guard});
+    await this.state.update({pendingSnapshot:null,accepted:{generation:result.generation,digest:result.digest,
+      checkpoint:result.checkpoint,epoch:metadata.claim.epoch,sequence:metadata.sequence,nodeId:metadata.claim.nodeId}});
+    await this.peer.request('peer-ack',{checkpoint:result.checkpoint},{signal:this.abort.signal});
     if (verifyWithFullSnapshot) {
       if (!verification || !sameCheckpoint(verification.checkpoint, metadata.checkpoint)) throw pairError('verification_failed');
       const actual = await this.fullVerification(result.dbPath, metadata.checkpoint);
@@ -1084,6 +1146,7 @@ export class PairManager {
     this.sync = { state: 'ready', sourceAt: result.sourceAt, verifiedAt: result.verifiedAt, bytes: result.bytes,
       lastSuccessAt: this.clock(), error: null, transferredBytes: result.transferredBytes };
     this.error = null;
+    await rm(rejoin.transfer.path,{force:true});
     await this.startReplica(result);
     return { ...this.state.claim(), accepted: this.state.value.accepted, releaseReceipt: identity,
       retainedStorage: 'journal-branch', sync: publicSync(this.sync) };
@@ -1100,13 +1163,28 @@ export class PairManager {
       return { claim: this.state.claim(), sync: publicSync(this.sync),
         controlReleased: this.controlReleased && !this.canControl() && !this.demoting && this.state.value.role !== 'master' };
     }
-    if (operation === 'snapshot') return this.exportSnapshot({ force: body.force === true });
+    if (operation === 'snapshot') return body.forPeer===true ? this.exportPeerSeed() : this.exportSnapshot({ force: body.force === true });
     if (operation === 'checkpoint') return this.exportCheckpoint();
     if (operation === 'verify-checkpoint') return this.fullVerification(await this.journalSource(), body.checkpoint);
-    if (operation === 'checkpoint-at') return journalOperation('checkpoint-at', { dbPath: await this.journalSource(), sequence: body.sequence, signal: this.abort.signal });
-    if (operation === 'changes') return this.changes.export({ dbPath: await this.journalSource(),
-      after: body.after, through: body.through, signal: this.abort.signal });
-    if (operation === 'changes-chunk') return this.changes.chunk(body);
+    if (operation === 'peer-anchor') {
+      if(Object.keys(body).length)throw pairError('peer_protocol_failed');
+      const anchor=await this.peerOperation('anchor',{dbPath:await this.journalSource(),signal:this.abort.signal});
+      return anchor && {checkpoint:anchor.checkpoint,contentHash:anchor.contentHash,pendingTarget:anchor.pending?.target ?? null};
+    }
+    if (operation === 'peer-transfer') {
+      if(!Object.keys(body).every(key=>['after','refresh'].includes(key)) || !validCheckpoint(body.after)
+        || body.refresh!==undefined && typeof body.refresh!=='boolean')throw pairError('peer_protocol_failed');
+      return this.peerTransfers.export({dbPath:await this.journalSource(),onYield:()=>this.hooks.admitStorageWrite?.(),after:body.after,
+        refresh:body.refresh===true && (this.state.value.role==='protected'||Boolean(this.state.value.recovery?.releaseOperation)),signal:this.abort.signal});
+    }
+    if (operation === 'peer-transfer-chunk') {
+      if(!Object.keys(body).every(key=>['id','offset'].includes(key)))throw pairError('peer_protocol_failed');
+      return this.peerTransfers.chunk(body);
+    }
+    if (operation === 'peer-ack') {
+      if(Object.keys(body).some(key=>key!=='checkpoint') || !validCheckpoint(body.checkpoint))throw pairError('peer_protocol_failed');
+      return this.acknowledgePeerTransfer(body.checkpoint);
+    }
     if (operation === 'snapshot-hashes') return this.snapshots.hashes(body);
     if (operation === 'snapshot-chunk') return this.snapshots.chunk(body);
     if (operation === 'handover-prepare') {
@@ -1143,7 +1221,7 @@ export class PairManager {
       this.busy = true;
       try {
         this.syncAbort?.abort(pairError('authority_changed')); await this.syncTask;
-        const publication = await this.installReplica(metadata, { signal: this.abort.signal });
+        const publication = await this.installReplica(metadata, { signal: this.abort.signal,adoptMetadata:true });
         if (body.verification) {
           const actual = await this.fullVerification(publication.dbPath, metadata.checkpoint);
           if (!sameCheckpoint(actual.checkpoint, body.verification.checkpoint)) throw pairError('full_verification_checkpoint_mismatch');
@@ -1227,6 +1305,7 @@ export class PairManager {
           const actual = await this.fullVerification(result.dbPath, metadata.checkpoint);
           if (actual.digest !== body.verification.digest) throw pairError('full_verification_content_mismatch');
         }
+        await this.peer.request('peer-ack',{checkpoint:result.checkpoint},{signal:this.abort.signal});
         await this.hooks.closeReplica?.();
         await this.state.update({ role: 'slave', reason: null, release: null, transition: null, everWritten: false,
           activeDbPath: null, recovery: null, activationError: null, releaseReceipt: { requestId: body.requestId, identity } });

@@ -2,10 +2,9 @@ import { Worker } from 'node:worker_threads';
 import { replicationError } from './publication.js';
 export { matchingCheckpoint as sameCheckpoint, validCheckpoint } from '../storage/journal.js';
 
-export const JOURNAL_DIGEST = 'sha256-transaction-journal-v1';
+export const JOURNAL_DIGEST = 'sha256-transaction-journal-v2';
 
-/** All database work uses the same storage contract in a worker. Batches are
- * bounded independently of retained history; one worker never loads the journal. */
+/** Checkpoint reads validate the current storage contract off the event loop. */
 export function journalOperation(operation, { dbPath, signal, ...args }) {
   if (signal?.aborted) return Promise.reject(signal.reason ?? replicationError('stopped'));
   const worker = new Worker(new URL('./incremental-worker.js', import.meta.url), {
@@ -30,5 +29,3 @@ export function journalOperation(operation, { dbPath, signal, ...args }) {
 }
 
 export const databaseCheckpoint = options => journalOperation('checkpoint', options);
-export const exportDatabaseChanges = options => journalOperation('export', options);
-export const applyDatabaseChanges = options => journalOperation('apply', options);

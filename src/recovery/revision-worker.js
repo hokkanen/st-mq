@@ -12,7 +12,7 @@ import { pendingEnergyObservationsFromStates } from '../storage/pending-energy.j
 import { validEnergyQuality } from '../storage/energy-history.js';
 import { recoveryFailure } from './errors.js';
 import { RECOVERY_MODEL_TIME } from './dependencies.js';
-import { findLearningPrefix, retainLearningPrefix, prefixSourceId } from './learning-prefix.js';
+import { findLearningPrefix, retainLearningPrefix, prefixSourceId, withPrefixRevisions } from './learning-prefix.js';
 import { projectedSensorContext } from './state.js';
 
 const previewOnly = workerData.mode === 'revision-preview';
@@ -40,7 +40,7 @@ const fail = (message, code) => { throw Object.assign(new Error(message), { publ
 const head = () => store.learningJournalHead(input);
 const selection = selectedHistory(store), sourceEpoch = store.learningEpoch(input);
 const sourceFireplace = fireplaceLearningContext(store, input).fireplaceRevision, sourceSensor = sensorRevision(store, input);
-let sourceHead = head(), checkpoint = null, prefix = null, report, source, processed = 0, busy = false, closed = false;
+let sourceHead = head(), checkpoint = null, prefix = null, prefixCheckpoint = null, report, source, processed = 0, busy = false, closed = false;
 let restorationToken = null, restorationVerified = null;
 const pendingStates = source => source.db.prepare("SELECT key,value FROM state WHERE key LIKE 'recorder:energy:%' ORDER BY key").all();
 const observationHead = source => source.db.prepare('SELECT COALESCE(MAX(id),0) n FROM observations').get().n;
@@ -353,14 +353,22 @@ async function verifyRestoration() {
 async function buildProjection() {
   processed = 0; progress('projecting', { processed: 0, unit: 'entries' });
   db.exec('CREATE TEMP TABLE revision_map(original INTEGER PRIMARY KEY,projected INTEGER NOT NULL)');
-  const changed=db.prepare(`SELECT MIN(e.at) earliest,MAX(json_type(e.payload,'$.value.sensorRevert')='object') retrospective
+  const changed=db.prepare(`SELECT MIN(CASE WHEN json_type(e.payload,'$.value.sensorRevert')='object'
+      THEN MIN(e.at,COALESCE(target.at,${Number.MIN_SAFE_INTEGER})) ELSE e.at END) earliest
     FROM recovery_exclusions x JOIN learning_journal_entries e ON e.id=CAST(x.record_key AS INTEGER)
+    LEFT JOIN learning_journal_entries target ON target.id=json_extract(e.payload,'$.value.sensorRevert.id')
     WHERE x.generation IN (?,?) AND x.table_name='learning_journal' AND e.input=?
       AND NOT EXISTS(SELECT 1 FROM recovery_exclusions other WHERE other.generation=CASE WHEN x.generation=? THEN ? ELSE ? END
         AND other.table_name=x.table_name AND other.record_key=x.record_key)`).get(selection,generation,input,selection,generation,selection);
-  if(!changed.retrospective && !report.tables.some(row=>row.name==='fireplace_events'))
-    prefix=await findLearningPrefix(store,{input,epoch:sourceEpoch,earliest:changed.earliest,
-      fireplaceRevision:sourceFireplace,sensorRevision:sourceSensor});
+  const fireplace=db.prepare(`SELECT MIN(CASE WHEN e.kind='remove' THEN p.at ELSE e.at END) earliest
+    FROM recovery_exclusions x JOIN fireplace_events e ON e.id=CAST(x.record_key AS INTEGER)
+    LEFT JOIN fireplace_events p ON p.id=e.target_id
+    WHERE x.generation IN (?,?) AND x.table_name='fireplace_events' AND e.input=?
+      AND NOT EXISTS(SELECT 1 FROM recovery_exclusions other WHERE other.generation=CASE WHEN x.generation=? THEN ? ELSE ? END
+        AND other.table_name=x.table_name AND other.record_key=x.record_key)`).get(selection,generation,input,selection,generation,selection);
+  prefix=await findLearningPrefix(store,{input,epoch:sourceEpoch,
+    earliest:Math.min(changed.earliest??Infinity,fireplace.earliest??Infinity),
+    fireplaceRevision:sourceFireplace,sensorRevision:sourceSensor});
   retainLearningPrefix(store,{input,epoch,prefix}); checkpoint=prefix?.checkpoint??null;
 
   // Only original payloads participate, including new live records written in
@@ -443,6 +451,8 @@ async function remapAndReplay(after = prefix?.cursor??0) {
     await yieldTurn();
   }
   source = { ...fireplaceLearningContext(store, input), ...projectedSensorContext(store, input, epoch) };
+  checkpoint=withPrefixRevisions(checkpoint,source);
+  if (prefix && checkpoint?.journalCursor === prefix.cursor) prefixCheckpoint = checkpoint;
   // New corrections are fenced; catch-up only appends samples/contexts and
   // replays the appended suffix with the same selected source revision.
   after = checkpoint?.journalCursor ?? 0;
@@ -495,7 +505,7 @@ async function catchup() {
   progress('publishing', { processed: 0 });
   parentPort.postMessage({ type: 'ready', revision: true, generation, epoch, sourceEpoch, sourceHead,
     sourceSelection: selection, sourceFireplace, sourceSensor, fireplaceRevision: source.fireplaceRevision,
-    sensorRevision: source.sensorRevision, checkpoint, evidenceVersion, report, modelChanged });
+    sensorRevision: source.sensorRevision, checkpoint, prefixCheckpoint, evidenceVersion, report, modelChanged });
 }
 
 async function catchupUnchanged() {

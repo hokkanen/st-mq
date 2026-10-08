@@ -255,7 +255,7 @@ export function createHistoryRecovery({ store, getEngine, canControl = () => tru
   }
   async function fullCheck(enabled, paths, context) {
     if (!enabled) return;
-    for (const dbPath of new Set(paths.filter(Boolean))) await fullVerifier({ dbPath, signal: context.signal,
+    for (const dbPath of new Set(paths.filter(Boolean))) await fullVerifier({ dbPath, signal: context.signal, origin: 'recovery',
       onProgress: ({ checkpoint, ...progress }) => context.onProgress(progress) });
   }
   function checkPath({ donorPath, donorJournalPath, source, requestId = randomUUID(), verifyWithFullSnapshot = false }) {

@@ -221,8 +221,10 @@ test('a slave gap-check export and normal catchup serialize without falsely prot
   await bounded(publicationQueued.promise, 5000);
   resume.resolve();
   const exported = await donor; await syncing;
-  assert.equal(exported.digest, original.digest);
-  assert.equal((await snapshotDigest(join(slave.snapshots.directory, `export-${exported.generation}.sqlite`))).digest, original.digest);
+  assert.deepEqual(exported.checkpoint, original.checkpoint,
+    'the export retains the original application checkpoint while publication waits');
+  assert.equal((await snapshotDigest(join(slave.snapshots.directory, `export-${exported.generation}.sqlite`))).digest, exported.digest,
+    'the independent physical export retains its own page digest');
   assert.equal(slave.state.value.role, 'slave');
   assert.equal(slave.sync.state, 'ready');
   assert((await readReplicaPublication(slave.config.snapshotDirectory)).checkpoint.sequence >= updated.checkpoint.sequence);

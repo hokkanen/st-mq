@@ -4,13 +4,17 @@ import { readFileSync } from 'node:fs';
 import { performance } from 'node:perf_hooks';
 import { fixture,sample,recover,start,W } from './helpers/recovery-fixture.js';
 import { replayLearningJournal,appendLearningRecord } from '../src/app/committed-learning.js';
+import { Store } from '../src/storage/store.js';
+import { findLearningPrefix } from '../src/recovery/learning-prefix.js';
 import { previewRecoveryRevision,reviseRecovery } from '../src/recovery/service.js';
+import { addFireplace, removeFireplace } from '../src/app/fireplace.js';
+import { addSensorChange, revertSensorChange } from '../src/app/sensor-changes.js';
 
 const measurements=[];
 const io=()=>Object.fromEntries(readFileSync('/proc/self/io','utf8').trim().split('\n').map(line=>{const [key,value]=line.split(':');return [key,Number(value)];}));
 for(const history of [256,4096]) test(`recent learned recovery and reversal retain ${history} entries without copying or replaying the prefix`,async t=>{
   const f=fixture(t);
-  f.master.transaction(()=>{for(let i=1;i<=history;i++) {
+  for(let first=1;first<=history;first+=128) f.master.transaction(()=>{for(let i=first;i<=Math.min(history,first+127);i++) {
     if(i<=16) sample(f.master,start+i*W);
     else appendLearningRecord(f.master,'mqtt','context',{timestamp:start+i*W,phase:'normal',regime:'occupied',targetC:21,roomBoostC:0},{config:{}});
   }});
@@ -92,5 +96,118 @@ test('learned-operation I/O stays bounded when retained history grows sixteen-fo
     const before=operation?small[operation]:small,after=operation?large[operation]:large;
     assert(after.readBytes<before.readBytes*3+1024*1024,`${operation??'recover'} reads must not grow with retained history`);
     assert(after.writeBytes<before.writeBytes*3+1024*1024,`${operation??'recover'} writes must not copy retained history`);
+  }
+});
+
+test('recovery and timeless revert reuse sparse checkpoints after transaction patches expire',async t=>{
+  const f=fixture(t);
+  f.master.transaction(()=>{for(let i=1;i<=16;i++) sample(f.master,start+i*W);});
+  const baseline=replayLearningJournal(f.master,'mqtt');
+  const donor=await f.donor();
+  sample(donor,start+17*W,{indoorC:21.1});
+  f.master.transaction(()=>{sample(f.master,start+18*W);sample(f.master,start+19*W);});
+  replayLearningJournal(f.master,'mqtt',baseline);
+  const expire=()=>{
+    for(let i=0;i<4;i++) f.master.setState('synthetic-current-bookkeeping',{iteration:i});
+    f.master.compactJournal({maxBytes:1024*1024,maxCommits:1});
+  };
+  expire();
+  assert(f.master.journalBase().sequence>donor.checkpoint().sequence);
+  const progress=[];
+  const recovered=await recover(f,await f.snapshot(donor),{onProgress:value=>progress.push(value)});
+  assert.equal(recovered.report.model.acceptedSamples,1);
+  assert.deepEqual(replayLearningJournal(f.master,'mqtt',null,{rebuild:true,persistCheckpoint:false}),recovered.checkpoint);
+  assert(progress.filter(value=>value.phase==='rebuilding').every(value=>value.total===3),
+    'expired transaction patches do not force the unchanged prefix to replay');
+  assert.equal(f.master.db.prepare('SELECT through_id FROM learning_epoch_segments WHERE epoch=?')
+    .get(f.master.learningEpoch('mqtt')).through_id,baseline.journalCursor);
+  const sourceEntries=f.master.db.prepare('SELECT COUNT(*) n FROM learning_journal_entries WHERE source_entry_id IS NULL').get().n;
+  for(const active of [false,true]) {
+    expire();
+    const args={store:f.master,input:'mqtt',recoveryId:recovered.report.recoveryId,active,signal:f.signal};
+    const preview=await previewRecoveryRevision(args);
+    const steps=[];
+    const revised=await reviseRecovery({...args,preview,onProgress:value=>steps.push(value)});
+    assert.deepEqual(replayLearningJournal(f.master,'mqtt',null,{rebuild:true,persistCheckpoint:false}),revised.checkpoint);
+    assert.equal(f.master.db.prepare('SELECT COUNT(*) n FROM learning_journal_entries WHERE source_entry_id IS NULL').get().n,sourceEntries,
+      'compaction and selection preserve immutable source inputs');
+    assert.equal(f.master.getState('synthetic-current-bookkeeping').iteration,3);
+    assert(steps.filter(value=>value.phase==='rebuilding').every(value=>value.total<4));
+  }
+});
+
+
+test('prefix lookup pins cached states and patches while the controller commits a new state',async t=>{
+  const f=fixture(t);
+  sample(f.master,start+W);
+  const prior=replayLearningJournal(f.master,'mqtt');
+  sample(f.master,start+3*W);
+  replayLearningJournal(f.master,'mqtt',prior);
+  const writer=new Store(f.master.path);t.after(()=>writer.close());
+  const prepare=f.master.db.prepare.bind(f.master.db);let wrote=false;
+  t.mock.method(f.master.db,'prepare',sql=>{
+    const statement=prepare(sql);
+    if(sql==='SELECT * FROM state WHERE key=?') {
+      const get=statement.get.bind(statement);
+      statement.get=(...args)=>{
+        const row=get(...args);
+        if(!wrote) {
+          wrote=true;
+          writer.db.prepare('UPDATE state SET updated_at=updated_at+1 WHERE key=?').run('adaptive:mqtt');
+        }
+        return row;
+      };
+    }
+    return statement;
+  });
+  const prefix=await findLearningPrefix(f.master,{input:'mqtt',epoch:'original',earliest:start+2*W,yieldControl:async()=>{}});
+  assert(wrote);assert.equal(prefix.cursor,prior.journalCursor);
+  f.master.setState('synthetic-after-prefix',{recording:true});
+  assert.deepEqual(f.master.getState('synthetic-after-prefix'),{recording:true},'lookup releases its own pinned snapshot');
+});
+
+for(const correction of ['fireplace','sensor','fireplace-removal']) test(`late ${correction} corrections and timeless reversal replay only their affected suffix`,async t=>{
+  const f=fixture(t),history=128;
+  f.master.transaction(()=>{for(let i=1;i<=history;i++) {
+    if(i<=16) sample(f.master,start+i*W);
+    else appendLearningRecord(f.master,'mqtt','context',{timestamp:start+i*W,phase:'normal',regime:'occupied',targetC:21,roomBoostC:0},{config:{}});
+  }});
+  const baseline=replayLearningJournal(f.master,'mqtt');
+  if(correction==='sensor') addSensorChange(f.master,'mqtt',
+    {signal:'indoor_temperature',reason:'replacement',requestId:'synthetic-late-sensor'},start+(history+1)*W,{config:{}});
+  const load=correction==='fireplace-removal' ? addFireplace(f.master,'mqtt',
+    {requestId:'synthetic-existing-late-load',kg:2},start+(history+1)*W) : null;
+  const donor=await f.donor();
+  if(correction==='fireplace') addFireplace(donor,'mqtt',
+    {requestId:'synthetic-late-load',kg:2},start+(history+1)*W);
+  else if(correction==='fireplace-removal') removeFireplace(donor,'mqtt',
+    {requestId:'synthetic-recovered-late-removal',id:load.id},start+(history+4)*W);
+  else {
+    const id=donor.db.prepare("SELECT id FROM learning_journal WHERE json_type(payload,'$.value.sensorChange')='object'").get().id;
+    revertSensorChange(donor,'mqtt',{id,requestId:'synthetic-late-reversal'},start+(history+4)*W,{config:{}});
+  }
+  for(const i of [2,3,5]) sample(f.master,start+(history+i)*W,{indoorC:21.1});
+  replayLearningJournal(f.master,'mqtt',baseline);
+  const expire=()=>{
+    for(let i=0;i<4;i++) f.master.setState('synthetic-current-bookkeeping',{iteration:i});
+    f.master.compactJournal({maxBytes:1024*1024,maxCommits:1});
+  };
+  const check=(result,steps)=>{
+    const rebuilt=steps.filter(value=>value.phase==='rebuilding');
+    assert(rebuilt.length>0);
+    assert(rebuilt.every(value=>value.total<=5),'only records from the original affected time replay');
+    assert.deepEqual(replayLearningJournal(f.master,'mqtt',null,{rebuild:true,persistCheckpoint:false}),result.checkpoint);
+    assert.equal(f.master.db.prepare('SELECT through_id FROM learning_epoch_segments WHERE epoch=?')
+      .get(f.master.learningEpoch('mqtt')).through_id,baseline.journalCursor);
+  };
+  expire();
+  const steps=[],recovered=await recover(f,await f.snapshot(donor),{onProgress:value=>steps.push(value)});
+  check(recovered,steps);
+  for(const active of [false,true]) {
+    expire();
+    const args={store:f.master,input:'mqtt',recoveryId:recovered.report.recoveryId,active,signal:f.signal};
+    const preview=await previewRecoveryRevision(args),progress=[];
+    const revised=await reviseRecovery({...args,preview,onProgress:value=>progress.push(value)});
+    check(revised,progress);
   }
 });

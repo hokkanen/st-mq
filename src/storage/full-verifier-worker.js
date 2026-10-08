@@ -5,6 +5,7 @@ import { validateCurrentDatabase, validateCurrentDatabaseFormat, validateWalHead
 import { readCheckpoint, verifyJournal } from './journal.js';
 import { databaseErrorDetails } from './database-errors.js';
 import { FULL_VERIFICATION_ALGORITHM } from './full-verifier.js';
+import { snapshotDigest } from '../replication/publication.js';
 
 const fail = code => Object.assign(new Error(code), { code });
 const identifier = value => `"${value.replaceAll('"', '""')}"`;
@@ -36,8 +37,11 @@ function canonicalValue(value) {
   return ['blob', Buffer.from(value).toString('base64')];
 }
 function verify({ db, checkpoint }) {
+  progress({ phase: 'checking-contracts', processed: 0, checkpoint }, true);
   validateCurrentDatabase(db, { full: true });
-  verifyJournal(db);
+  progress({ phase: 'checking-journal', processed: 0, checkpoint }, true);
+  const journal = verifyJournal(db);
+  progress({ phase: 'checking-integrity', processed: 0, checkpoint }, true);
   const integrity = db.prepare('PRAGMA integrity_check').all();
   if (integrity.length !== 1 || integrity[0].integrity_check !== 'ok' || db.prepare('PRAGMA foreign_key_check').get())
     throw fail('database_integrity_failed');
@@ -69,7 +73,10 @@ function verify({ db, checkpoint }) {
       if (rows % 256 === 0) progress({ phase: 'checking', processed: rows, unit: 'records', checkpoint });
     }
   }
-  return { checkpoint, digest: hash.digest('hex'), algorithm: FULL_VERIFICATION_ALGORITHM, rows, verifiedAt: Date.now() };
+  return { checkpoint, digest: hash.digest('hex'), algorithm: FULL_VERIFICATION_ALGORITHM, rows,
+    journal: { baseSequence: journal.base.sequence, transactions: journal.commits,
+      archivedBranches: journal.branches,
+      archivedPeerRows: journal.archivedPeerRows }, verifiedAt: Date.now() };
 }
 
 let left, right;
@@ -83,12 +90,18 @@ try {
   progress({ phase: 'validating', processed: 0, checkpoint: left.checkpoint }, true);
   const result = verify(left);
   if (right && verify(right).digest !== result.digest) throw fail('full_verification_content_mismatch');
+  if (workerData.snapshot) {
+    progress({ phase: 'checking-transfer', processed: 0, checkpoint: result.checkpoint }, true);
+    const actual = await snapshotDigest(workerData.dbPath);
+    if (actual.digest !== workerData.snapshot.digest || actual.bytes !== workerData.snapshot.bytes)
+      throw fail('full_verification_transport_mismatch');
+  }
   progress({ phase: 'checking', processed: result.rows, total: result.rows, unit: 'records', checkpoint: result.checkpoint }, true);
   parentPort.postMessage({ ok: true, result: { ...result, comparison: Boolean(right) } });
 } catch (error) {
   const details = databaseErrorDetails(error);
   const code = details?.code ?? (/^(?:journal_|database_journal_)/.test(String(error?.code ?? '')) ? 'database_integrity_failed'
-    : ['full_verification_checkpoint_mismatch', 'full_verification_content_mismatch'].includes(error?.code)
+    : ['full_verification_checkpoint_mismatch', 'full_verification_content_mismatch', 'full_verification_transport_mismatch'].includes(error?.code)
     ? error.code : 'full_verification_failed');
   parentPort.postMessage({ ok: false, code, ...(details ? { details } : {}) });
 } finally {

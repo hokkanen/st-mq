@@ -114,8 +114,15 @@ conflicts. Rejected fingerprints prevent a different snapshot from silently
 reintroducing the same source. Logical provenance remains stable across local
 record IDs and compact journal projections.
 
-A worker stages exclusions and a complete journal projection, replays the current
-algorithm from its supported seed, and catches up new learning. Publication checks
+A worker stages exclusions and the affected journal suffix. It reuses a validated
+sparse checkpoint and immutable prefix before the earliest affected input, then
+replays the current algorithm over the suffix and catches up new learning. These
+caches survive transaction compaction; recovery and reversal do not copy the
+database or revisit unrelated older measurements. Cache reuse proves that source
+selection and corrections leave the prefix unchanged. An early correction or a
+missing usable cache can require replay from the supported seed; all required
+inputs remain retained. See [SQLite learning recovery](sqlite-journal.md#learning-recovery-and-reversal).
+Publication checks
 the source selection, fireplace and sensor revisions, authority and journal head,
 then atomically selects the new history, epoch, checkpoint and immutable decision.
 A concurrent local observation that changes restoration conflicts requires a new

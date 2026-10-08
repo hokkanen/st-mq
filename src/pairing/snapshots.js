@@ -3,23 +3,22 @@ import { createReadStream } from 'node:fs';
 import { lstat, open, readFile, readdir, rm } from 'node:fs/promises';
 import { join } from 'node:path';
 import { isDeepStrictEqual } from 'node:util';
-import { Worker } from 'node:worker_threads';
 import { createSourceSnapshot } from '../replication/transport.js';
 import { acquireReceiverLock } from '../replication/receiver.js';
 import { DIGEST_ALGORITHM, durableJson, ownedDirectory, privateFile,
   publishSnapshot, readReplicaPublication, syncDirectory } from '../replication/publication.js';
 import { NODE_PATTERN, pairError, validClaim } from './state.js';
 import { databaseErrorDetails } from '../storage/database-errors.js';
+import { verifyDatabase } from '../storage/full-verifier.js';
 import { databaseCheckpoint, JOURNAL_DIGEST, sameCheckpoint, validCheckpoint } from '../replication/incremental.js';
 
 export const CHUNK_BYTES = 1024 * 1024;
-const MAX_DATABASE_BYTES = 64 * 1024 ** 3;
 const hash = data => createHash('sha256').update(data).digest('hex');
 
 export function validateSnapshot(value) {
   if (!value || !NODE_PATTERN.test(value.generation) || !/^[a-f0-9]{64}$/.test(value.digest) ||
       ![DIGEST_ALGORITHM, JOURNAL_DIGEST].includes(value.digestAlgorithm) || !validCheckpoint(value.checkpoint) || value.chunkBytes !== CHUNK_BYTES ||
-      !Number.isSafeInteger(value.bytes) || value.bytes < 512 || value.bytes > MAX_DATABASE_BYTES ||
+      !Number.isSafeInteger(value.bytes) || value.bytes < 512 ||
       !Number.isSafeInteger(value.sourceStartedAt) || !Number.isSafeInteger(value.sourceAt) ||
       value.sourceStartedAt <= 0 || value.sourceAt < value.sourceStartedAt ||
       !Number.isSafeInteger(value.sequence) || value.sequence < 0 || !validClaim(value.claim)) throw pairError('peer_protocol_failed');
@@ -34,32 +33,23 @@ async function chunkHashes(path) {
 
 export async function verifySnapshot(path, metadata, signal, { full = false } = {}) {
   if (signal?.aborted) throw pairError('stopped');
+  if (metadata.digestAlgorithm === JOURNAL_DIGEST && metadata.digest !== metadata.checkpoint?.hash)
+    throw pairError('verification_failed');
   if (!full) {
     const actual = await databaseCheckpoint({ dbPath: path, signal });
     if (!sameCheckpoint(actual, metadata.checkpoint)) throw pairError('verification_failed');
     return;
   }
-  // Default inheritance filters process-only flags; --input-type belongs to an
-  // inline launcher and must not be forwarded to this file-based worker.
-  const worker = new Worker(new URL('./verify-worker.js', import.meta.url), { workerData: { path, metadata },
-    ...(process.execArgv.some(value => value.startsWith('--input-type')) ? { execArgv: [] } : {}) });
-  await new Promise((accept, reject) => {
-    let done = false;
-    const finish = error => {
-      if (done) return;
-      done = true;
-      signal?.removeEventListener('abort', abort);
-      error ? reject(error) : accept();
-    };
-    const abort = () => { void worker.terminate().then(() => finish(pairError('stopped'))); };
-    signal?.addEventListener('abort', abort, { once: true });
-    worker.once('message', result => {
-      const details = databaseErrorDetails(result);
-      finish(result.ok ? null : Object.assign(pairError(details?.code ?? 'verification_failed'), details));
-    });
-    worker.once('error', () => finish(pairError('verification_failed')));
-    worker.once('exit', () => { if (!done) finish(pairError('verification_failed')); });
-  });
+  // Use the same admission as manual, scheduled and recovery checks. Starting a
+  // nested verifier in the digest worker would bypass that application-wide gate.
+  try { await verifyDatabase({ dbPath: path, checkpoint: metadata.checkpoint,
+    ...(metadata.digestAlgorithm === JOURNAL_DIGEST ? {} : { snapshot: { digest: metadata.digest, bytes: metadata.bytes } }),
+    signal, origin: 'pairing' }); }
+  catch (error) {
+    if (signal?.aborted) throw pairError('stopped');
+    const details = databaseErrorDetails(error);
+    throw Object.assign(pairError(details?.code ?? 'verification_failed'), details);
+  }
 }
 
 /** Verify once off-thread; cheaply fence local changes throughout a transfer. */

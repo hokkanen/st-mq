@@ -1,7 +1,8 @@
 import { randomUUID } from 'node:crypto';
 import { lstat, readFile, rm } from 'node:fs/promises';
 import { basename, dirname, join, resolve } from 'node:path';
-import { applyDatabaseChanges, databaseCheckpoint, JOURNAL_DIGEST, sameCheckpoint, validCheckpoint } from './incremental.js';
+import { peerOperation } from './coalesced.js';
+import { databaseCheckpoint, JOURNAL_DIGEST, sameCheckpoint, validCheckpoint } from './incremental.js';
 import { durableJson, GENERATION_PATTERN, PUBLICATION_FORMAT, readReplicaPublication, replicationError, syncDirectory, validatePublicationDatabasePath } from './publication.js';
 
 const pendingPath = directory => join(directory, 'journal-publication.json');
@@ -26,9 +27,11 @@ export async function recoverJournalPublication(directory, { signal } = {}) {
     || !validCheckpoint(pending.from) || !validCheckpoint(pending.next.checkpoint)
     || pending.next.checkpoint.databaseId !== pending.from.databaseId
     || pending.next.checkpoint.sequence < pending.from.sequence || pending.next.digest !== pending.next.checkpoint.hash
-    || pending.next.digestAlgorithm !== JOURNAL_DIGEST) throw replicationError('invalid_publication');
+    || pending.next.digestAlgorithm !== JOURNAL_DIGEST
+    || ![undefined,'peer-seed'].includes(pending.kind)) throw replicationError('invalid_publication');
   const actual = await databaseCheckpoint({ dbPath: current.dbPath, signal });
   if (sameCheckpoint(actual, pending.next.checkpoint)) {
+    if(pending.kind==='peer-seed') await peerOperation('accept',{dbPath:current.dbPath,checkpoint:actual,signal});
     await durableJson(join(directory, 'publication.json'), pending.next);
   } else if (!sameCheckpoint(actual, pending.from)) throw replicationError('verification_failed');
   await removePending(directory);
@@ -37,22 +40,41 @@ export async function recoverJournalPublication(directory, { signal } = {}) {
 
 /** Caller owns the receiver lock and has checked pair authority. Publication
  * never clones the database; WAL readers keep their already pinned transaction. */
-export async function applyJournalPublication({ directory, batch, metadata, signal,
-  guard = async () => {}, beforeCommit = async () => {} }) {
+export function applyPeerPublication({transfer,...options}) {
+  return applyPublication({...options,from:transfer.metadata.base,to:transfer.metadata.target,
+    apply:dbPath=>peerOperation('apply',{dbPath,path:transfer.path,metadata:transfer.metadata,signal:options.signal})});
+}
+export function publishCheckpointMetadata({checkpoint,...options}) {
+  return applyPublication({...options,from:checkpoint,to:checkpoint,apply:async()=>{}});
+}
+/** A verified seed carries the source's old peer anchor. Reset that internal
+ * bookkeeping under the same durable publication receipt as ordinary updates.
+ * Its SQLite pages change, so subsequent proof names the application checkpoint. */
+export async function acceptPeerPublication({directory,signal,guard=async()=>{}}) {
+  const previous=await recoverJournalPublication(directory,{signal});
+  if(!previous)throw replicationError('invalid_publication');
+  const anchor=await peerOperation('anchor',{dbPath:previous.dbPath,signal});
+  if(!anchor)return previous;
+  return applyPublication({directory,signal,guard,from:previous.checkpoint,to:previous.checkpoint,
+    metadata:previous,kind:'peer-seed',apply:dbPath=>peerOperation('accept',{dbPath,checkpoint:previous.checkpoint,signal})});
+}
+async function applyPublication({ directory, from, to, apply, metadata, signal,
+  kind,guard = async () => {}, beforeCommit = async () => {} }) {
   const previous = await recoverJournalPublication(directory, { signal });
-  if (!previous || !sameCheckpoint(previous.checkpoint, batch.from)) throw replicationError('verification_failed');
+  if(previous && !sameCheckpoint(from,to) && sameCheckpoint(previous.checkpoint,to)) {await guard();return previous;}
+  if (!previous || !sameCheckpoint(previous.checkpoint, from)) throw replicationError('verification_failed');
   await guard();
   const actual = await databaseCheckpoint({ dbPath: previous.dbPath, signal });
-  if (!sameCheckpoint(actual, batch.from)) throw replicationError('verification_failed');
+  if (!sameCheckpoint(actual, from)) throw replicationError('verification_failed');
   const { databasePath: ignoredPath, dbPath: ignoredDbPath, fileGeneration: ignoredGeneration, ...remoteMetadata } = metadata;
   const next = { ...withoutPath(previous), ...remoteMetadata, format: PUBLICATION_FORMAT,
     generation: metadata.generation ?? randomUUID(), fileGeneration: previous.fileGeneration,
-    checkpoint: batch.to, digest: batch.to.hash, digestAlgorithm: JOURNAL_DIGEST,
+    checkpoint: to, digest: to.hash, digestAlgorithm: JOURNAL_DIGEST,
     verifiedAt: Date.now(), previousGeneration: null };
-  await durableJson(pendingPath(directory), { version: 1, from: batch.from, next });
+  await durableJson(pendingPath(directory), { version: 1, from: from, next,...(kind?{kind}:{}) });
   await guard();
   await beforeCommit();
-  await applyDatabaseChanges({ dbPath: previous.dbPath, batch, signal });
+  await apply(previous.dbPath);
   // A failed acknowledgement leaves the durable receipt for restart/retry.
   await durableJson(join(directory, 'publication.json'), next);
   await removePending(directory);

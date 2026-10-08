@@ -3,13 +3,13 @@ import { Worker } from 'node:worker_threads';
 import { createHash, randomUUID } from 'node:crypto';
 import { fileURLToPath } from 'node:url';
 import { join, isAbsolute, resolve } from 'node:path';
-import { rm, readdir } from 'node:fs/promises';
+import { rm, readdir, open } from 'node:fs/promises';
 import { ownedDirectory, replicationError } from './publication.js';
 import { sshOptions } from './ssh-options.js';
 import { databaseErrorDetails } from '../storage/database-errors.js';
-import { databaseCheckpoint, exportDatabaseChanges, sameCheckpoint } from './incremental.js';
+import { databaseCheckpoint, JOURNAL_DIGEST, sameCheckpoint } from './incremental.js';
 import { checkpointMetadata } from './journal-publication.js';
-import { CHANGE_CHUNK_BYTES } from './change-transfer.js';
+import { CHANGE_CHUNK_BYTES, PeerTransfers, peerOperation } from './coalesced.js';
 
 const wrapper = fileURLToPath(new URL('../../scripts/replica-ssh.js', import.meta.url));
 const SAFE_PATH = /^[A-Za-z0-9_./-]+$/;
@@ -18,7 +18,12 @@ const PUBLIC_ERRORS = new Set(['configuration_invalid', 'tool_unavailable', 'con
   'directory_not_empty', 'unsafe_directory', 'invalid_publication', 'timed_out', 'stopped', 'protocol_failed',
   'database_schema_mismatch', 'database_schema_invalid', 'database_algorithm_mismatch',
   'database_state_incompatible', 'database_integrity_failed', 'database_journal_invalid',
-  'lineage_mismatch', 'journal_checkpoint_mismatch', 'journal_hash_mismatch', 'journal_transaction_too_large']);
+  'lineage_mismatch', 'journal_history_expired', 'journal_checkpoint_mismatch', 'journal_hash_mismatch', 'journal_transaction_too_large', 'journal_peer_conflict', 'journal_peer_invalid', 'journal_peer_unregistered', 'journal_peer_pending']);
+
+function publicationResult(publication,transferredBytes) {
+  const {generation,digest,digestAlgorithm,checkpoint,bytes,sourceStartedAt,sourceAt,verifiedAt}=publication;
+  return {generation,digest,digestAlgorithm,checkpoint,bytes,sourceStartedAt,sourceAt,verifiedAt,transferredBytes};
+}
 
 export function publicReplicationError(error) {
   const code = databaseErrorDetails(error)?.code ?? error?.code;
@@ -139,7 +144,7 @@ export async function createSourceSnapshot({ dbPath, destination, signal }) {
 
 /** One attempt: peer preflight, bounded journal catch-up, and durable publication.
  * A receiver without a baseline first needs one complete seed. */
-export async function synchronizeReplica({ dbPath, config, signal, onPhase = () => {},
+export async function synchronizeReplica({ dbPath, config, signal, onPhase = () => {}, onYield,
   spawnProcess = spawn, snapshot = createSourceSnapshot }) {
   validateTransportConfig(config);
   const sourceDirectory = resolve(config.sourceDirectory ?? join(resolve(dbPath), '..', 'replication'));
@@ -160,38 +165,41 @@ export async function synchronizeReplica({ dbPath, config, signal, onPhase = () 
     channel.send({ type: 'prepare', version: 2, generation });
     const ready = await channel.next();
     if (ready.type !== 'ready' || ready.version !== 2) throw replicationError('protocol_failed');
+    await peerOperation('enroll',{dbPath,signal:abort.signal,onYield});
+    const peerTransfers=new PeerTransfers(join(sourceDirectory,'peer-exports'));
     if (ready.publication) {
-      const checkpoint = await databaseCheckpoint({ dbPath, signal: abort.signal });
-      const metadata = await checkpointMetadata({ dbPath, checkpoint });
-      if (ready.publication.checkpoint?.databaseId !== checkpoint.databaseId) throw replicationError('lineage_mismatch');
-      let after = ready.publication.checkpoint, transferredBytes = 0;
-      onPhase('transferring');
-      do {
-        const batch = sameCheckpoint(after, checkpoint)
-          ? { version: 1, from: after, to: after, commits: [], hasMore: false }
-          : await exportDatabaseChanges({ dbPath, after, through: checkpoint, signal: abort.signal });
-        const bytes = Buffer.from(JSON.stringify(batch));
-        channel.send({ type: 'apply-begin', from: batch.from, to: batch.to, bytes: bytes.length,
-          digest: createHash('sha256').update(bytes).digest('hex') });
-        if ((await channel.next()).type !== 'apply-ready') throw replicationError('protocol_failed');
-        for (let offset = 0; offset < bytes.length; offset += CHANGE_CHUNK_BYTES) {
-          const part = bytes.subarray(offset, offset + CHANGE_CHUNK_BYTES);
-          channel.send({ type: 'apply-chunk', offset, data: part.toString('base64') });
-          const acknowledged = await channel.next();
-          if (acknowledged.type !== 'apply-chunk' || acknowledged.offset !== offset + part.length) throw replicationError('protocol_failed');
+      const checkpoint=await databaseCheckpoint({dbPath,signal:abort.signal});
+      if(ready.publication.checkpoint?.databaseId!==checkpoint.databaseId)throw replicationError('lineage_mismatch');
+      let after=ready.publication.checkpoint,transferredBytes=0,metadata=await checkpointMetadata({dbPath,checkpoint});
+      const currentMetadata=metadata;
+      if(sameCheckpoint(after,checkpoint)) {
+        await peerOperation('acknowledge',{dbPath,checkpoint:after,signal:abort.signal,onYield});
+      } else do {
+        onPhase('transferring');
+        const transfer=await peerTransfers.export({dbPath,after,signal:abort.signal,onYield});
+        metadata={...currentMetadata,...(transfer.target.sequence<checkpoint.sequence?{
+          sourceAt:ready.publication.sourceAt,sourceStartedAt:ready.publication.sourceStartedAt}:{}),
+          checkpoint:transfer.target,digest:transfer.target.hash};
+        channel.send({type:'peer-apply-begin',transfer});
+        if((await channel.next()).type!=='apply-ready')throw replicationError('protocol_failed');
+        for(let offset=0;offset<transfer.bytes;offset+=CHANGE_CHUNK_BYTES) {
+          const value=await peerTransfers.chunk({id:transfer.id,offset});
+          channel.send({type:'apply-chunk',offset,data:value.data});
+          const acknowledged=await channel.next(),end=Math.min(offset+CHANGE_CHUNK_BYTES,transfer.bytes);
+          if(acknowledged.type!=='apply-chunk'||acknowledged.offset!==end)throw replicationError('protocol_failed');
         }
-        channel.send({ type: 'apply-commit', metadata: { ...metadata,
-          generation: batch.hasMore ? randomUUID() : metadata.generation, checkpoint: batch.to, digest: batch.to.hash } });
-        const applied = await channel.next();
-        if (applied.type !== 'applied' || !sameCheckpoint(applied.checkpoint, batch.to)) throw replicationError('verification_failed');
-        transferredBytes += bytes.length;
-        after = batch.to;
-      } while (!sameCheckpoint(after, checkpoint));
-      channel.send({ type: 'complete', checkpoint });
-      const published = await channel.next();
-      if (published.type !== 'published' || !sameCheckpoint(published.checkpoint, checkpoint)) throw replicationError('verification_failed');
-      channel.child.stdin.end(); await channel.done;
-      return { ...metadata, verifiedAt: published.verifiedAt, transferredBytes };
+        channel.send({type:'apply-commit',metadata});
+        const applied=await channel.next();
+        if(applied.type!=='applied'||!sameCheckpoint(applied.checkpoint,transfer.target))throw replicationError('verification_failed');
+        await peerOperation('acknowledge',{dbPath,checkpoint:transfer.target,signal:abort.signal,onYield});
+        transferredBytes+=transfer.bytes;after=transfer.target;
+      }while(after.sequence<checkpoint.sequence);
+      channel.send({type:'complete',checkpoint:after});
+      const published=await channel.next();
+      if(published.type!=='published'||!sameCheckpoint(published.checkpoint,after)
+        ||published.digestAlgorithm!==JOURNAL_DIGEST||published.digest!==after.hash)throw replicationError('verification_failed');
+      channel.child.stdin.end();await channel.done;
+      return publicationResult(published,transferredBytes);
     }
     // A full snapshot is an exceptional initial seed. Subsequent attempts use
     // only committed changes, with no dependence on sqlite3_rsync availability.
@@ -204,6 +212,8 @@ export async function synchronizeReplica({ dbPath, config, signal, onPhase = () 
     destination = join(sourceDirectory, `source-${generation}.sqlite`);
     onPhase('snapshotting');
     const result = await snapshot({ dbPath, destination, signal: abort.signal });
+    const anchor=await peerOperation('anchor',{dbPath,signal:abort.signal});
+    await peerTransfers.export({dbPath,after:anchor.checkpoint,sourcePath:destination,refresh:true,signal:abort.signal,onYield});
     onPhase('transferring');
     for (let attempt = 0; attempt < 2; attempt++) {
       const remote = `${config.sshHost}:${config.remoteDirectory}/incoming-${generation}.sqlite`;
@@ -223,12 +233,14 @@ export async function synchronizeReplica({ dbPath, config, signal, onPhase = () 
     channel.send({ type: 'publish', generation, digest: result.digest, bytes: result.bytes,
       checkpoint: result.checkpoint, sourceStartedAt: result.sourceStartedAt, sourceAt: result.sourceAt });
     const published = await channel.next();
-    if (published.type !== 'published' || published.generation !== generation || published.digest !== result.digest ||
+    if (published.type !== 'published' || published.generation !== generation || published.receivedDigest !== result.digest ||
+        !sameCheckpoint(published.checkpoint,result.checkpoint) ||
+        published.digestAlgorithm !== JOURNAL_DIGEST || published.digest !== result.checkpoint.hash ||
         published.bytes !== result.bytes || !Number.isSafeInteger(published.verifiedAt)) throw replicationError('verification_failed');
     channel.child.stdin.end();
     await channel.done;
-    return { generation, digest: result.digest, checkpoint: result.checkpoint, bytes: result.bytes, sourceStartedAt: result.sourceStartedAt,
-      sourceAt: result.sourceAt, verifiedAt: published.verifiedAt };
+    await peerOperation('acknowledge',{dbPath,checkpoint:result.checkpoint,signal:abort.signal,onYield});
+    return publicationResult(published,result.bytes);
   } catch (error) {
     const reason = abort.signal.aborted ? abort.signal.reason : error;
     throw Object.assign(replicationError(publicReplicationError(reason)), databaseErrorDetails(reason));

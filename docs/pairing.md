@@ -413,24 +413,27 @@ not proof that it includes writes made after that snapshot. An unreachable peer
 has unknown current synchronization status. During transfers or role changes,
 the panels show progress rather than claim that both databases are current.
 
-The master retries synchronization after a slave outage. Routine transfer uses
-[hash-linked SQLite transaction commits](sqlite-journal.md), starting at the
-slave's durable checkpoint. Each received transaction checks its predecessor,
-content hash and expected previous row values. Its changes and new checkpoint
-commit atomically. Incomplete frames and disconnected transfers never expose a
-partial transaction; restart reconciles the durable publication receipt with the
-actual database checkpoint. A receiver retains one writable SQLite database,
-while read-only viewers pin coherent read transactions.
+The master retries synchronization after a slave outage. Routine transfer uses a
+configured-peer checkpoint and a consolidated map of changed rows; see
+[SQLite transaction checkpoints](sqlite-journal.md). Repeated updates to one row
+retain one original baseline and its current value, while deletions retain a
+tombstone until acknowledgement. The map survives short transaction-journal
+compaction, so offline duration alone never requires a full database copy.
+Each transfer checks the shared checkpoint, expected previous row values and the
+complete target content fingerprint. Its rows and target checkpoint commit
+atomically. Incomplete frames and disconnected transfers leave the previous
+checkpoint readable; restart reconciles the durable publication receipt and
+retries the same saved delivery after a lost acknowledgement. A receiver keeps
+one writable SQLite database while read-only viewers pin coherent transactions.
 
-Only a receiver with no base needs a full initial snapshot. Independent histories
-without a common journal ancestor and explicit exceptional repairs can also need
-a full snapshot. Those exports retain full integrity and byte-content validation.
-Normal synchronization, startup and handover neither copy the complete database
-nor hash all its pages. Transport frames are bounded at 256 KiB; source commits
-retain their atomic boundary even when they require several frames. Journal
-history is retained, so a long outage can resume from the last accepted commit.
-Unexpected local writes or a mismatched accepted checkpoint protect the slave
-instead of silently overwriting its history.
+A receiver with no base needs a full initial snapshot. Independent histories and
+explicit exceptional repairs can also need a full snapshot; these exports retain
+full integrity and byte-content validation. Normal synchronization, startup and
+handover neither copy the complete database nor hash all its pages. Transport
+frames are bounded at 256 KiB, and private transfer staging streams the changed
+records without loading the complete backlog into memory. Source acknowledgement
+rebases bounded batches between admitted controller writes. Unexpected local
+writes or a mismatched accepted checkpoint protect the slave for history review.
 
 **Verify with full snapshot** adds the independent full verifier to a manual
 operation. Handover and incremental rejoin compare the source and receiver only
@@ -809,8 +812,8 @@ the result is an informational **No recovery needed** result with a checkmark.
 It validates that slave snapshot, not whether every current master record has
 already been mirrored. Current synchronization and compatibility problems remain
 visible separately and take precedence over an earlier successful source check.
-For a shared journal, the check examines only changes since the common
-checkpoint and their referenced evidence. Its counts and ranges describe that
+For a shared configured-peer anchor, the check examines only consolidated
+changes since that checkpoint and their referenced evidence. Its counts and ranges describe that
 changed scope, not a full historical inventory. No trial import or model rebuild
 runs during a source check. Normal mirroring remains enabled, so recovery and resume-mirroring actions
 are unavailable. A record
@@ -838,7 +841,7 @@ required confirmations.
 For a computer in **Protected recovery**:
 
 1. In **Review history**, **Check other computer** identifies the donor checkpoint
-   and transfers the bounded journal suffix since the common ancestor. It assesses
+   and transfers consolidated changed rows since the shared peer anchor. It assesses
    the changed records and their dependencies using the existing recovery rules.
    Independent databases without shared ancestry require a full donor snapshot
    and inventory as an exceptional repair. These are potential coverage, never a
@@ -934,15 +937,18 @@ inputs and 18 ordering references in a 1.86 MB database including its indexes
 and state. Actual storage depends on the retained history and its provenance.
 
 Conflicts and unsupported donor entries are counted, not silently rewritten
-into the master. Shared-lineage rejoin retains the divergent journal suffix,
-including excluded datasets and before/after row values, inside the same database.
+into the master. With a shared configured-peer anchor,
+rejoin retains the divergent changed rows, including excluded datasets and
+before/after row values, inside the same database. Short transaction retention
+and offline duration do not limit this branch evidence.
 The retained branch is inactive evidence and cannot restore control permissions.
 Only changed records consume additional retained storage; rejoin does not create
-another full database copy. The branch archive and rollback commit atomically,
-while the saved release request makes retries use the originally reviewed donor
-and target checkpoints. Lost replies never authorize a different replacement.
+another full database copy. The complete immutable target transfer is staged before the branch archive and
+rollback commit atomically. The saved release request makes retries use the
+originally reviewed donor and target checkpoints even if the source keeps writing. Lost replies never authorize a different replacement.
 
-Independent donor histories require exceptional full replacement. That path
+Independent donor histories without a shared configured-peer anchor require
+exceptional full replacement. That path
 retains the original former-master database and its SQLite sidecars; a protected
 snapshot-only donor retains a pinned self-contained export. These exceptional
 copies can each be database-sized and have no automatic expiry. The confirmation

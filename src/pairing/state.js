@@ -30,7 +30,10 @@ const releaseRecord = (value, owner) => record(value) && owner.role === 'protect
   && Object.keys(value).every(key => ['epoch', 'digest', 'identity', 'preservedSnapshot', 'journalRejoin'].includes(key))
   && (value.journalRejoin === undefined || record(value.journalRejoin) && validCheckpoint(value.journalRejoin.base)
     && validCheckpoint(value.journalRejoin.donor) && value.journalRejoin.retainedStorage === 'journal-branch'
-    && (value.journalRejoin.branchId === undefined || NODE_PATTERN.test(value.journalRejoin.branchId)))
+    && (value.journalRejoin.branchId === undefined || NODE_PATTERN.test(value.journalRejoin.branchId))
+    && (value.journalRejoin.transfer === undefined || record(value.journalRejoin.transfer)
+      && isAbsolute(value.journalRejoin.transfer.path ?? '') && record(value.journalRejoin.transfer.metadata)
+      && validCheckpoint(value.journalRejoin.transfer.metadata.base) && validCheckpoint(value.journalRejoin.transfer.metadata.target)))
   && (value.preservedSnapshot === undefined || record(value.preservedSnapshot)
     && validClaim(value.preservedSnapshot.claim) && value.preservedSnapshot.claim.role === 'protected'
     && value.preservedSnapshot.claim.nodeId === owner.nodeId && value.preservedSnapshot.claim.epoch === owner.epoch

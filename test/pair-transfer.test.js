@@ -5,11 +5,13 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import { Store, SCHEMA_VERSION } from '../src/storage/store.js';
+import { registerJournalFunctions } from '../src/storage/journal-codec.js';
 import { randomUUID } from 'node:crypto';
 import { createReplicaPublicationGuard, receiveSnapshot, SnapshotRepository, verifySnapshot } from '../src/pairing/snapshots.js';
 import { readReplicaPublication, snapshotDigest } from '../src/replication/publication.js';
 import { runReceiver } from '../src/replication/receiver.js';
 import { Readable, Writable } from 'node:stream';
+import { JOURNAL_DIGEST } from '../src/replication/incremental.js';
 
 async function fixture(t) {
   const root = await mkdtemp(join(tmpdir(), 'stmq-pair-transfer-'));
@@ -31,6 +33,18 @@ async function fixture(t) {
 
 const acceptedSnapshot = metadata => ({ generation: metadata.generation, digest: metadata.digest,
   epoch: metadata.claim.epoch, nodeId: metadata.claim.nodeId, sequence: metadata.sequence });
+
+test('full verification of a journal publication verifies current content without comparing a checkpoint hash to file bytes', async t => {
+  const root = await mkdtemp(join(tmpdir(), 'stmq-journal-verification-'));
+  const store = new Store(join(root, 'source.sqlite'));
+  t.after(async () => { store.close(); await rm(root, { recursive: true, force: true }); });
+  store.setState('synthetic-model', { current: true });
+  const checkpoint = store.checkpoint();
+  const metadata = { checkpoint, digest: checkpoint.hash, digestAlgorithm: JOURNAL_DIGEST, bytes: 512 };
+  await verifySnapshot(store.path, metadata, undefined, { full: true });
+  await assert.rejects(verifySnapshot(store.path, { ...metadata, digest: '0'.repeat(64) }, undefined, { full: true }),
+    { code: 'verification_failed' });
+});
 
 for (const scenario of [
   { label: 'obsolete schema', version: 7, code: 'database_schema_mismatch' },
@@ -127,6 +141,7 @@ test('a changed local publication is preserved before another master snapshot ca
   const metadata = await f.repository.create({ dbPath: f.dbPath, claim: f.claim, sequence: 1 });
   const publication = await receiveSnapshot({ directory, metadata, peer: f.peer });
   const changed = new DatabaseSync(publication.dbPath);
+  registerJournalFunctions(changed);
   changed.prepare("UPDATE events SET payload=? WHERE id=1").run('{"local":"unrecovered history"}');
   changed.close();
   const preserved = await readFile(publication.dbPath), manifest = await readFile(join(directory, 'publication.json'));
@@ -150,6 +165,7 @@ test('a local change during catchup fences publication and keeps the original da
     if (!changed) {
       changed = true;
       const local = new DatabaseSync(publication.dbPath);
+      registerJournalFunctions(local);
       local.prepare("UPDATE events SET payload=? WHERE id=1").run('{"local":"during transfer"}');
       local.close();
     }

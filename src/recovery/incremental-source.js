@@ -1,7 +1,9 @@
 import { createReadStream } from 'node:fs';
 import { JOURNALED_TABLES, RECOVERABLE_TABLES } from '../storage/schema.js';
 import { quoteIdentifier as q } from '../storage/journal-schema.js';
-import { checkpointAt, changedRecordKeys, matchingCheckpoint, validCheckpoint, MAX_COMMIT_BYTES } from '../storage/journal.js';
+import { matchingCheckpoint, validCheckpoint, MAX_COMMIT_BYTES, resolveChange } from '../storage/journal.js';
+import { peerAnchor, reversePeerChanges } from '../storage/journal-peer.js';
+import { changeContentHash } from '../storage/journal-codec.js';
 import { Store } from '../storage/store.js';
 import { yieldToController } from './scheduler.js';
 
@@ -78,7 +80,10 @@ export async function scopeIncrementalSource(donor,{base,checkpoint,changes,yiel
   initializeKeys(donor);
   let seen=0;
   for(const change of changes) {
-    include(donor,change.table,change.after);
+    // Updates contain changed columns only. Stable keys identify the final
+    // source row even when its identity columns are absent from the patch.
+    if (change.after !== null) include(donor,change.table,Object.fromEntries(
+      tables.get(change.table).keys.map((column,index)=>[column,change.key[index]])));
     if(++seen%128===0) await yieldControl();
   }
   // A changed row may refer to common-prefix evidence. Resolve that compact
@@ -147,28 +152,35 @@ export async function scopeIncrementalSource(donor,{base,checkpoint,changes,yiel
 
 /** A read-only MAIN connection plus private TEMP overlays represents the donor
  * at a shared transaction boundary. Only divergent rows occupy scratch storage. */
-export async function openJournalSource({masterPath,journalPath,validateCommit,yieldControl=yieldToController}) {
+export async function openJournalSource({masterPath,journalPath,yieldControl=yieldToController}) {
   const donor=new Store(masterPath,{readOnly:true});
   try {
     donor.db.exec('PRAGMA query_only=OFF; PRAGMA temp_store=FILE; PRAGMA temp.cache_size=-8192; BEGIN;');
     const lines=journalLines(journalPath);
-    let header=null,head=null,records=0;
+    let header=null,records=0,peerHash=null,peerRows=0;
     initializeKeys(donor);
     for await(const line of lines) {
       if(Buffer.byteLength(line)>MAX_COMMIT_BYTES) invalid();
       let value;try{value=JSON.parse(line);}catch{invalid();}
       if(!header) {
-        if(value.version!==1 || !validCheckpoint(value.base) || !validCheckpoint(value.checkpoint)
-          || !matchingCheckpoint(checkpointAt(donor.db,value.base.sequence),value.base)
-          || value.base.databaseId!==value.checkpoint.databaseId || value.base.sequence>value.checkpoint.sequence) invalid();
-        header=value;head=value.base;
+        const anchor=peerAnchor(donor.db);
+        if(!value || value.version!==1 || value.mode!=='peer' || !validCheckpoint(value.base) || !validCheckpoint(value.target)
+          || !Object.keys(value).every(key=>['version','mode','id','base','target','contentHash','rows'].includes(key))
+          || !matchingCheckpoint(anchor?.checkpoint,value.base)
+          || value.base.databaseId!==value.target.databaseId || value.base.sequence>value.target.sequence
+          || !Number.isSafeInteger(value.rows)||value.rows<0||!/^[a-f0-9]{64}$/.test(value.contentHash)) invalid();
+        header=value;peerHash=anchor.contentHash;
         donor.db.exec('CREATE TEMP TABLE recovery_overlay_changes(table_name TEXT NOT NULL,record_key TEXT NOT NULL,row TEXT,PRIMARY KEY(table_name,record_key)) WITHOUT ROWID;');
-        for (const ignored of changedRecordKeys(donor.db,{after:value.base})) { if(++records%128===0) await yieldControl(); }
         const put=donor.db.prepare('INSERT INTO recovery_overlay_changes VALUES(?,?,?) ON CONFLICT(table_name,record_key) DO UPDATE SET row=excluded.row');
-        // Reverse only the local suffix. The oldest before-image of each key
-        // restores the shared boundary without reading unchanged historical rows.
-        for(const row of donor.db.prepare('SELECT table_name,record_key,before_row FROM journal_changes WHERE sequence>? ORDER BY sequence DESC,ordinal DESC').iterate(value.base.sequence)) {
-          put.run(row.table_name,row.record_key,row.before_row);
+        // Restore only keys changed since the shared peer anchor. Unchanged
+        // historical rows remain in the pinned main database.
+        for(const change of reversePeerChanges(donor.db)) {
+          const table=tables.get(change.table),key=JSON.stringify(change.key);
+          const previous=donor.db.prepare('SELECT row FROM recovery_overlay_changes WHERE table_name=? AND record_key=?').get(change.table,key);
+          const actual=previous ? previous.row===null ? null : JSON.parse(previous.row)
+            : donor.db.prepare(`SELECT * FROM main.${q(change.table)} WHERE ${table.keys.map(column=>`${q(column)} IS ?`).join(' AND ')}`).get(...change.key) ?? null;
+          const before=resolveChange(change,actual,{reverse:true});
+          put.run(change.table,key,before===null?null:JSON.stringify(before));
           if(++records%128===0) await yieldControl();
         }
         for(const table of tables.values()) {
@@ -181,20 +193,20 @@ export async function openJournalSource({masterPath,journalPath,validateCommit,y
         for(const view of donor.db.prepare("SELECT name,sql FROM main.sqlite_schema WHERE type='view'").all())
           donor.db.exec(view.sql.replace(/^CREATE VIEW/i,'CREATE TEMP VIEW'));
       } else {
-        head=validateCommit(value,head);
         const put=donor.db.prepare('INSERT INTO recovery_overlay_changes VALUES(?,?,?) ON CONFLICT(table_name,record_key) DO UPDATE SET row=excluded.row');
-        for(const change of value.changes) {
+        for(const change of [value]) {
           const table=tables.get(change.table);
           const actual=donor.db.prepare(`SELECT * FROM ${q(change.table)} WHERE ${table.keys.map(column=>`${q(column)} IS ?`).join(' AND ')}`).get(...change.key) ?? null;
-          if(change.before===null ? actual!==null : actual===null || table.columns.some(column=>actual[column]!==change.before[column])) invalid();
-          put.run(change.table,JSON.stringify(change.key),change.after===null?null:JSON.stringify(change.after));
-          include(donor,change.table,change.after);
+          const after=resolveChange(change,actual);
+          put.run(change.table,JSON.stringify(change.key),after===null?null:JSON.stringify(after));
+          include(donor,change.table,after);
+          peerHash=changeContentHash(peerHash,[change]);peerRows++;
         }
         await yieldControl();
       }
     }
-    if(!header || !matchingCheckpoint(head,header.checkpoint)) invalid();
-    await scopeIncrementalSource(donor,{base:header.base,checkpoint:header.checkpoint,changes:[],yieldControl});
+    if(!header || peerRows!==header.rows || peerHash!==header.contentHash) invalid();
+    await scopeIncrementalSource(donor,{base:header.base,checkpoint:header.target,changes:[],yieldControl});
     donor.journalSource=true;
     return donor;
   } catch(error) {donor.close();throw error;}

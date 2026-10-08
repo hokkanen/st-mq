@@ -1,3 +1,4 @@
+import { registerJournalFunctions } from '../src/storage/journal-codec.js';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { DatabaseSync } from 'node:sqlite';
@@ -53,9 +54,11 @@ async function transferFixture(source, replica, scratch) {
 test('source backup pins a consistent live WAL snapshot while the writer keeps recording', async t => {
   const { directory, source, db } = await fixture(t);
   const insert = db.prepare("INSERT INTO events(type,payload,at) VALUES ('fixture',json_object('value',?),0)");
-  db.exec('BEGIN');
-  for (let i = 0; i < 16000; i++) insert.run('synthetic snapshot fixture '.repeat(40));
-  db.exec('COMMIT');
+  for (let start = 0; start < 16000; start += 256) {
+    db.exec('BEGIN');
+    for (let i = start; i < Math.min(start + 256,16000); i++) insert.run('synthetic snapshot fixture '.repeat(40));
+    db.exec('COMMIT');
+  }
   const destination = join(directory, 'pinned.sqlite');
   let writes = 0;
   const timer = setInterval(() => { insert.run(`synthetic live row ${++writes}`); }, 1);
@@ -193,7 +196,7 @@ test('verification is read-only and catches changed data, while damaged replica 
   await verifyReplicaPublication(replica);
   assert.deepEqual(await readFile(first.dbPath), original);
   assert.deepEqual(await readFile(join(replica, 'publication.json')), manifest);
-  const corrupted = new DatabaseSync(first.dbPath);
+  const corrupted = new DatabaseSync(first.dbPath); registerJournalFunctions(corrupted);
   corrupted.exec("UPDATE events SET payload=json_object('value','unexpected replica data')"); corrupted.close();
   await assert.rejects(verifyReplicaPublication(replica), error => ['database_journal_invalid', 'database_integrity_failed'].includes(error.code));
   const receiver = session(replica);
@@ -270,6 +273,42 @@ test('SSH receiver errors retain only allowlisted database diagnostics through t
       return true;
     });
   }
+});
+
+test('standalone mirror catches up after journal expiry using changed rows without another seed',async t=>{
+  const {directory,source,replica,db}=await fixture(t);
+  const config={sshHost:'synthetic-peer',remoteDirectory:replica,receiverPath:resolve('scripts/replica-receiver.js'),
+    sourceDirectory:join(directory,'mirror-work')};
+  let seeds=0;
+  const spawnProcess=(command,args,options)=>{
+    if(command==='ssh')return spawn(process.execPath,[config.receiverPath,replica],options);
+    if(args[0]==='--version')return spawn(process.execPath,['--eval','process.exit(0)'],options);
+    seeds++;
+    return spawn(process.execPath,['--eval',"require('node:fs').copyFileSync(process.argv[1],process.argv[2])",
+      args[0],args[1].slice(args[1].indexOf(':')+1)],options);
+  };
+  const initial=await synchronizeReplica({dbPath:source,config,spawnProcess});
+  const before=await readReplicaPublication(replica);
+  assert.equal(initial.digest,before.digest,'initial result names the normalized published checkpoint');
+  assert.equal(initial.generation,before.generation);
+  const unchanged=await synchronizeReplica({dbPath:source,config,spawnProcess});
+  assert.equal(unchanged.generation,before.generation,'a no-change sync reports the existing publication');
+  assert.equal(unchanged.digest,before.digest);
+  assert.equal(unchanged.transferredBytes,0);
+  for(let value=0;value<30;value++)db.prepare('UPDATE events SET payload=? WHERE id=1').run(JSON.stringify({value}));
+  const sourceStore=new Store(source);
+  sourceStore.compactJournal({maxBytes:1,maxCommits:1});
+  assert(sourceStore.journalBase().sequence>before.checkpoint.sequence);
+  const target=sourceStore.checkpoint();sourceStore.close();
+  const result=await synchronizeReplica({dbPath:source,config,spawnProcess});
+  assert.equal(seeds,1,'offline duration never requests a second complete seed');
+  assert(result.transferredBytes<10000,'wire contains consolidated changes only');
+  const after=await verifyReplicaPublication(replica);
+  assert.equal(after.dbPath,before.dbPath);
+  assert.deepEqual(after.checkpoint,target);
+  const reader=new Store(after.dbPath,{readOnly:true});
+  try{assert.equal(JSON.parse(reader.db.prepare('SELECT payload FROM events WHERE id=1').get().payload).value,29);}
+  finally{reader.close();}
 });
 
 test('page digest excludes only documented volatile SQLite header fields', async t => {

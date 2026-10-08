@@ -610,7 +610,8 @@ test('a stale recovery completion cannot erase changes made to the protected don
 test('large catchup retains its immutable source and completed chunks across receiver restart', async t => {
   const root = await fixture(t), source = await manager(t, root, 'source');
   const original = new Store(source.state.value.activeDbPath).db;
-  original.prepare("INSERT INTO events(type,payload,at) VALUES('bulk',json_object('value',?),0)").run('x'.repeat(3500000)); original.close();
+  for(let row=0;row<4;row++) original.prepare("INSERT INTO events(type,payload,at) VALUES('bulk',json_object('value',?),0)").run('x'.repeat(875000));
+  original.close();
   const replica = await manager(t, root, 'slave', { role: 'slave' }); connect(source, replica);
   const request = replica.peer.request.bind(replica.peer);
   let chunks = 0;
@@ -890,7 +891,7 @@ test('rejoin retains the divergent journal branch without restoring its excluded
     assert.equal((await readReplicaPublication(donor.config.snapshotDirectory)).dbPath, before);
     const retained = new Store(originalPath, { readOnly: true });
     assert.equal(retained.db.prepare('SELECT COUNT(*) n FROM charging_reports').get().n, 0);
-    const archive = retained.db.prepare('SELECT payload FROM journal_branch_commits').all();
+    const archive = retained.db.prepare('SELECT after_row AS payload FROM journal_peer_branch_rows WHERE after_row IS NOT NULL').all();
     assert(archive.some(row => row.payload.includes('synthetic-saved-report')), 'excluded records remain in the inactive branch');
     assert.equal(retained.db.prepare('PRAGMA integrity_check').get().integrity_check, 'ok');
     retained.close();
@@ -948,7 +949,7 @@ test('rejoin retains protected replica history through later mirroring and inter
     const retained = new Store(retainedPath, { readOnly: true });
     try {
       assert.equal(retained.getState('synthetic-unmatched-history'), null);
-      assert(retained.db.prepare('SELECT payload FROM journal_branch_commits').all()
+      assert(retained.db.prepare('SELECT after_row AS payload FROM journal_peer_branch_rows WHERE after_row IS NOT NULL').all()
         .some(row => row.payload.includes('preserve me')), 'divergent history survives later mirroring');
     } finally { retained.close(); }
     await donor.close();
@@ -1162,4 +1163,64 @@ test('delayed poll success or failure cannot replace newer role and synchronizat
     assert.equal(primary.status().peer.role, 'protected');
     assert.equal(primary.status().peer.sync.state, 'error');
   });
+});
+
+test('an offline peer catches up changed rows after transaction expiry without a full snapshot',async t=>{
+  const root=await fixture(t),primary=await manager(t,root,'master',{platform:'hassio'});
+  const slave=await manager(t,root,'slave',{role:'slave'});connect(primary,slave);
+  await slave.synchronize(primary.state.claim());
+  const original=await readReplicaPublication(slave.config.snapshotDirectory),before=slave.state.value.accepted;
+  primary.snapshots.create=async()=>{throw new Error('Long offline time must not request a whole database snapshot');};
+  const writable=new Store(primary.state.value.activeDbPath);
+  for(let i=0;i<6;i++) writable.setState('synthetic-retention',{iteration:i});
+  writable.compactJournal({maxBytes:1024*1024,maxCommits:1});writable.close();
+  await slave.synchronize(primary.state.claim());
+  assert.equal(slave.state.value.role,'slave');assert.equal(slave.sync.state,'ready');
+  assert.equal(slave.canControl(),false);
+  assert.notDeepEqual(slave.state.value.accepted,before);
+  const publication=await readReplicaPublication(slave.config.snapshotDirectory);
+  assert.equal(publication.dbPath,original.dbPath,'catch-up reuses the existing receiver database');
+  const current=new Store(publication.dbPath,{readOnly:true});
+  assert.deepEqual(current.getState('synthetic-retention'),{iteration:5});current.close();
+  assert(slave.sync.transferredBytes<20000,'repeated state updates transfer one consolidated result');
+});
+
+test('rejoin after both branches compact preserves unique excluded history and retries a lost acknowledgement',async t=>{
+  const root=await fixture(t);
+  const primary=await manager(t,root,'master',{platform:'hassio',hooks:{
+    recoveryPreview:async()=>({previewId:randomBytes(32).toString('hex'),status:'checked',model:{status:'not-assessed'}}),
+  }});
+  const donor=await manager(t,root,'donor',{role:'slave'});connect(primary,donor);
+  await donor.synchronize(primary.state.claim());await donor.action('promote',command());
+  const originalPath=donor.state.value.activeDbPath;
+  const history=new Store(originalPath);
+  history.event('synthetic-unique-after-divergence',{evidence:'retained'},111);
+  history.setState('synthetic-excluded-control',{enabled:true});
+  for(let i=0;i<6;i++) history.setState('synthetic-donor-counter',{iteration:i});
+  history.compactJournal({maxBytes:1024*1024,maxCommits:1});history.close();
+  const master=new Store(primary.state.value.activeDbPath);
+  for(let i=0;i<6;i++) master.setState('synthetic-master-counter',{iteration:i});
+  master.compactJournal({maxBytes:1024*1024,maxCommits:1});master.close();
+  await donor.observeClaim(primary.state.claim());
+  await primary.action('check-recovery',command());
+  const action={...command(),discardUnrecovered:true,previewId:primary.status().recovery.preview.previewId};
+  const request=primary.peer.request.bind(primary.peer);let lose=true;
+  primary.peer.request=async(operation,...args)=>{
+    const result=await request(operation,...args);
+    if(operation==='release' && lose){lose=false;throw Object.assign(new Error('lost synthetic response'),{code:'peer_unavailable'});}
+    return result;
+  };
+  await assert.rejects(primary.action('rejoin',action),{code:'peer_unavailable'});
+  await primary.action('rejoin',action);
+  assert.equal(donor.state.value.role,'slave');assert.equal(donor.canControl(),false);
+  const retained=new Store(originalPath,{readOnly:true});
+  const archive=retained.db.prepare('SELECT table_name,record_key,after_row FROM journal_peer_branch_rows WHERE after_row IS NOT NULL').all();
+  assert(archive.some(row=>row.table_name==='events'&&row.after_row.includes('synthetic-unique-after-divergence')));
+  const control=archive.find(row=>row.table_name==='state'&&row.record_key==='["synthetic-excluded-control"]');
+  assert.deepEqual(JSON.parse(JSON.parse(control.after_row).value),{enabled:true});retained.close();
+  assert.equal((await readdir(donor.snapshots.directory)).filter(name=>name.endsWith('.pin')).length,0,
+    'a compacted common peer anchor does not require an entire retained copy');
+  const publication=await readReplicaPublication(donor.config.snapshotDirectory),selected=new Store(publication.dbPath,{readOnly:true});
+  assert.equal(selected.getState('synthetic-excluded-control'),null);
+  assert.equal(selected.events({type:'synthetic-unique-after-divergence'}).length,0);selected.close();
 });

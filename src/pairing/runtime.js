@@ -143,6 +143,7 @@ export async function startPaired({ config, readConfig, clock = Date.now, provid
   };
   const hooks = {
     dbPath: () => runtime?.store?.path ?? primaryPath,
+    admitStorageWrite: () => runtime?.store && !runtime.store.readOnly ? runtime.store.runWrite(() => {}) : undefined,
     ...ocppHandoverHooks({ configuration: () => context.canControl() && runtime?.engine?.config?.connections
       ? runtime.engine.config : config, store: () => runtime?.store }),
     revokeControl() {

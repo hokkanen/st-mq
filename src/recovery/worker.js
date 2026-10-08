@@ -16,9 +16,9 @@ import { assessRecoverySource } from './source-scope.js';
 import { recoveryFailure } from './errors.js';
 import { ScratchMap } from './scratch.js';
 import { recoveryCoverageReport } from './coverage-report.js';
-import { commonCheckpoint, changedRecordKeys, validateJournalCommit } from '../storage/journal.js';
+import { commonCheckpoint, changedRecordKeys } from '../storage/journal.js';
 import { scopeIncrementalSource, openJournalSource } from './incremental-source.js';
-import { findLearningPrefix, retainLearningPrefix, prefixSourceId } from './learning-prefix.js';
+import { findLearningPrefix, retainLearningPrefix, prefixSourceId, withPrefixRevisions } from './learning-prefix.js';
 
 const json = JSON.stringify;
 const decode = row => ({ id: row.id, key: row.key, kind: row.kind, at: row.at,
@@ -52,7 +52,7 @@ async function open() {
   if(workerData.mode==='preview') { target.db.exec('BEGIN'); target.db.prepare('PRAGMA schema_version').get(); }
   let donorDigest;
   if(workerData.donorJournalPath) {
-    donor=await openJournalSource({masterPath:workerData.masterPath,journalPath:workerData.donorJournalPath,validateCommit:validateJournalCommit});
+    donor=await openJournalSource({masterPath:workerData.masterPath,journalPath:workerData.donorJournalPath});
     donorDigest=donor.incremental.checkpoint.hash;
   } else {
     const sourceFile=await stat(workerData.donorPath);
@@ -210,12 +210,23 @@ async function createProjection(merge, runId) {
     await yieldTurn();
   }
   target.db.exec('CREATE INDEX recovery_accepted_order ON recovery_accepted_journal(at,rank,id); CREATE INDEX recovery_accepted_replacement ON recovery_accepted_journal(replaces_missing)');
-  const earliest=target.db.prepare('SELECT MIN(at) at FROM recovery_accepted_journal').get().at;
-  const retrospective=target.db.prepare(`SELECT 1 FROM recovery_accepted_journal
-    WHERE json_type(entry,'$.payload.value.sensorRevert')='object' LIMIT 1`).get();
-  const prefix=!retrospective && fireplaceLearningContext(target,input).fireplaceRevision===originalFireplaceRevision
-    ? await findLearningPrefix(snapshot,{input,epoch:sourceEpoch,earliest,
-      fireplaceRevision:originalFireplaceRevision,sensorRevision:sourceSensorRevision}) : null;
+  let earliest=target.db.prepare('SELECT MIN(at) at FROM recovery_accepted_journal').get().at ?? Infinity;
+  for(const row of target.db.prepare(`SELECT entry FROM recovery_accepted_journal
+    WHERE json_type(entry,'$.payload.value.sensorRevert')='object'`).iterate()) {
+    const targetId=JSON.parse(row.entry).payload.value.sensorRevert.id;
+    const affected=targetId<0 ? target.db.prepare('SELECT at FROM recovery_accepted_journal WHERE id=?').get(-targetId)
+      : snapshot.db.prepare('SELECT at FROM learning_journal_entries WHERE id=? AND input=?').get(targetId,input);
+    earliest=Math.min(earliest,affected?.at??-Infinity);
+  }
+  // Removing a load changes heat from the load's original time. Its later
+  // correction/report time cannot license reuse of an already affected model.
+  const fireplace=target.db.prepare(`SELECT MIN(CASE WHEN e.kind='remove' THEN p.at ELSE e.at END) at
+    FROM active_fireplace_events e
+    LEFT JOIN fireplace_events p ON p.id=e.target_id
+    WHERE e.id>? AND e.input=?`).get(originalFireplaceRevision,input);
+  if(fireplace.at!==null) earliest=Math.min(earliest,fireplace.at);
+  const prefix=await findLearningPrefix(snapshot,{input,epoch:sourceEpoch,earliest,
+    fireplaceRevision:originalFireplaceRevision,sensorRevision:sourceSensorRevision});
   retainLearningPrefix(target,{input,epoch,prefix});
   const originals=snapshot.db.prepare(`SELECT * FROM learning_journal WHERE input=? AND id>?
     ORDER BY at,CASE kind WHEN 'context' THEN 0 WHEN 'sample' THEN 1 ELSE 2 END,id`).iterate(input,prefix?.cursor??0);
@@ -310,8 +321,9 @@ async function createProjection(merge, runId) {
     await yieldTurn();
   }
   const source = { ...fireplaceLearningContext(target, input), ...projectedSensorContext(target, input, epoch) };
+  const prefixCheckpoint = withPrefixRevisions(prefix?.checkpoint,source);
   projection = { runId, epoch, sourceEpoch, sourceHead, sourceSensorRevision, source, sourceRevision: source.fireplaceRevision,
-    masterIds, donorIds, checkpoint: prefix?.checkpoint??null, after: prefix?.cursor??0, processed: 0, lastAt: prefix?.at??-Infinity, merge };
+    masterIds, donorIds, prefixCheckpoint, checkpoint: prefixCheckpoint, after: prefix?.cursor??0, processed: 0, lastAt: prefix?.at??-Infinity, merge };
   await replayProjection();
   return projection;
 }
@@ -359,7 +371,8 @@ async function catchup() {
   progress({ phase: 'publishing', processed: 0 });
   parentPort.postMessage({ type: 'ready', epoch: p.epoch, sourceEpoch: p.sourceEpoch, sourceHead: p.sourceHead,
     sourceSensorRevision: p.sourceSensorRevision, sensorRevision: p.source.sensorRevision,
-    fireplaceRevision: p.sourceRevision, checkpoint: p.checkpoint, runId: p.runId, recoveryId, sourceSelection, report: p.merge.report });
+    fireplaceRevision: p.sourceRevision, checkpoint: p.checkpoint, prefixCheckpoint:p.prefixCheckpoint,
+    runId: p.runId, recoveryId, sourceSelection, report: p.merge.report });
 }
 
 async function start() {

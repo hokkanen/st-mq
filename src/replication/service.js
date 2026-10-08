@@ -3,9 +3,10 @@ import { replicationError } from './publication.js';
 
 /** Completion-based scheduling never overlaps attempts or queues missed intervals. */
 export class ReplicationService {
-  constructor({ dbPath, config, clock = Date.now, synchronize = synchronizeReplica }) {
+  constructor({ dbPath, config, onYield, clock = Date.now, synchronize = synchronizeReplica }) {
     this.dbPath = dbPath;
     this.config = config;
+    this.onYield = onYield;
     this.clock = clock;
     this.synchronize = synchronize;
     this.running = false;
@@ -31,7 +32,7 @@ export class ReplicationService {
     this.abort = new AbortController();
     this.state = { ...this.state, state: 'syncing', phase: 'connecting', lastAttemptAt: this.clock(), nextAttemptAt: null };
     try {
-      const result = await this.synchronize({ dbPath: this.dbPath, config: this.config, signal: this.abort.signal,
+      const result = await this.synchronize({ dbPath: this.dbPath, config: this.config, signal: this.abort.signal, onYield: this.onYield,
         onPhase: phase => { this.state.phase = phase; } });
       const { generation, digest, bytes, sourceStartedAt, sourceAt, verifiedAt } = result;
       this.state = { ...this.state, generation, digest, bytes, sourceStartedAt, sourceAt, verifiedAt,
@@ -42,8 +43,8 @@ export class ReplicationService {
         consecutiveFailures: this.state.consecutiveFailures + (this.running ? 1 : 0), error: publicReplicationError(error) };
     } finally {
       this.abort = null;
-      // Retry promptly at first, then cap backoff at five minutes. An outage of
-      // any length needs no retained log; each attempt compares complete states.
+      // Retry promptly at first, then cap backoff at five minutes. A checkpoint
+      // with a mismatched configured-peer anchor needs explicit history review.
       const interval = this.config.intervalMs ?? 60000;
       const delay = Math.max(interval, Math.min(300000, interval * 2 ** Math.min(this.state.consecutiveFailures, 4)));
       this.schedule(delay);

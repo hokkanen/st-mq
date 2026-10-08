@@ -5,21 +5,28 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { Store } from '../../src/storage/store.js';
+import { enrollJournalPeer } from '../../src/storage/journal-peer.js';
 
 const storeURL=new URL('../../src/storage/store.js',import.meta.url).href;
+const peerURL=new URL('../../src/storage/journal-peer.js',import.meta.url).href;
 const measure=`import {Store} from ${JSON.stringify(storeURL)};
+import {preparePeerTransfer,peerTransferRows,applyPeerTransfer,acknowledgePeer} from ${JSON.stringify(peerURL)};
 import {readFileSync} from 'node:fs';
 const io=()=>Object.fromEntries(readFileSync('/proc/self/io','utf8').trim().split('\\n').map(line=>{const [key,value]=line.split(':');return [key,Number(value.trim())];}));
 const before=io(),start=performance.now(),source=new Store(process.argv[1]),replica=new Store(process.argv[2]);
 const startupMs=performance.now()-start,base=replica.checkpoint();
 const begun=performance.now();source.setState('small-tail',{value:2});
-const batch=source.exportChanges({after:base});replica.applyChanges(batch);
-const applyMs=performance.now()-begun,bytes=Buffer.byteLength(JSON.stringify(batch));
+const {path,...metadata}=preparePeerTransfer(source.db,{after:base});
+const rows=peerTransferRows(source.db,{id:metadata.id});
+applyPeerTransfer(replica.db,{...metadata,changes:rows.map(row=>row.change)});
+while(!acknowledgePeer(source.db,{checkpoint:metadata.target}).complete){}
+const applyMs=performance.now()-begun,bytes=Buffer.byteLength(JSON.stringify(metadata))+rows.reduce((sum,row)=>sum+Buffer.byteLength(JSON.stringify(row.change)),0);
 if(source.checkpoint().hash!==replica.checkpoint().hash)throw Error('Different checkpoints');
+if(replica.getState('small-tail').value!==2)throw Error('Missing changed row');
 source.close();replica.close();const after=io();
 console.log(JSON.stringify({startupMs,applyMs,bytes,rchar:after.rchar-before.rchar,wchar:after.wchar-before.wchar}));`;
 
-test('startup and fixed transaction replication use bounded I/O across large historical databases',{skip:process.platform!=='linux'},t=>{
+test('startup and consolidated replication use bounded I/O across large historical databases',{skip:process.platform!=='linux'},t=>{
   const root=mkdtempSync(join(tmpdir(),'stmq-incremental-scale-'));
   t.after(()=>rmSync(root,{recursive:true,force:true}));
   const requested=process.env.STMQ_JOURNAL_SCALE_MIB ?? '4,128';
@@ -34,7 +41,7 @@ test('startup and fixed transaction replication use bounded I/O across large his
     for(let offset=0;offset<rows;offset+=256)store.transaction(()=>{
       for(let i=offset;i<Math.min(rows,offset+256);i++)insert.run('scale',payload,i);
     });
-    store.setState('small-tail',{value:1});store.close();
+    store.setState('small-tail',{value:1});enrollJournalPeer(store.db);store.close();
     // One deliberately seeded fixture, outside measured routine work. The last
     // connection is closed; there is no live WAL or installation data here.
     copyFileSync(path,replica);
