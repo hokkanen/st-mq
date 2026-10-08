@@ -3,8 +3,8 @@ import { parentPort } from 'node:worker_threads';
 let sequence = 0;
 
 /** Call only after releasing a write transaction. The controller acknowledges
- * after servicing its pending progress/storage callbacks and an event-loop turn,
- * so this worker cannot repeatedly reacquire SQLite while control waits to write.
+ * after an event-loop turn and admitting the controller's pending writes, so
+ * delayed contention retries cannot lose every free writer slot to this worker.
  * Install the listener lazily: an idle port can stall native SQLite backup. */
 export function yieldToController() {
   const id = ++sequence;

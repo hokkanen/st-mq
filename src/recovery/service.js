@@ -52,7 +52,11 @@ export async function recoverHistory({ store, donorPath, donorJournalPath, input
   running.add(store);
   try {
     return await workerJob({ mode: 'recover', masterPath: store.path, donorPath, donorJournalPath, input, preview, source, operationId, operationToken }, {
-      signal, onProgress, async onReady(message, worker) {
+      signal, onProgress,
+      onYield: () => store.runWrite(() => {
+        if (!isCurrent()) throw unavailable('Recovery authority changed; the previous model remains selected');
+      }, { signal }),
+      async onReady(message, worker) {
         if (!isCurrent()) throw unavailable('Master authority changed; recovery remains protected');
         const result = await store.runWrite(() => {
           if (signal?.aborted || !isCurrent()) throw unavailable('Recovery authority changed while waiting for storage');
@@ -109,7 +113,7 @@ export async function recoverHistory({ store, donorPath, donorJournalPath, input
   } finally { running.delete(store); }
 }
 
-async function workerJob(workerData, { onProgress, onReady, signal }) {
+async function workerJob(workerData, { onProgress, onReady, onYield, signal }) {
   if (signal?.aborted) throw unavailable('Recovery was cancelled; the other instance remains protected');
   try {
   return await new Promise((resolve, reject) => {
@@ -149,9 +153,14 @@ async function workerJob(workerData, { onProgress, onReady, signal }) {
           const { type, ...progress } = message; await onProgress?.(progress);
         }
         else if (message.type === 'yield') {
-          // The worker has committed and will not acquire another write lock
-          // until this controller has serviced queued callbacks and timers.
-          setImmediate(() => { if (!settled) worker.postMessage({ type: 'continue', id: message.id }); });
+          // A turn alone can precede WriteQueue's delayed contention retry,
+          // letting the worker repeatedly take its next lock first. A no-op
+          // admitted behind pending controller writes is a durable ordering
+          // barrier; it creates no journal commit of its own.
+          await new Promise(resolve => setImmediate(resolve));
+          if (settled) return;
+          await onYield?.();
+          if (!settled) worker.postMessage({ type: 'continue', id: message.id });
         }
         else if (message.type === 'failed') finish(Object.assign(new Error(message.error),
           { code: RECOVERY_ERROR_CODES.includes(message.code) ? message.code : 'recovery_failed' }));
@@ -194,7 +203,11 @@ export async function reviseRecovery({ store, input = 'mqtt', recoveryId, active
   try {
     await store.runWrite(() => store.setState(`recovery:active:${input}`, { status: 'rebuilding', recoveryId, revision: true, operationToken, startedAt: Date.now() }), { signal, isCurrent });
     return await workerJob({ mode: 'revision', masterPath: store.path, input, recoveryId, active, preview }, {
-      signal, onProgress, async onReady(message, worker) {
+      signal, onProgress,
+      onYield: () => store.runWrite(() => {
+        if (!isCurrent()) throw unavailable('Recovery authority changed; the previous model remains selected');
+      }, { signal }),
+      async onReady(message, worker) {
         if (!isCurrent()) throw unavailable('Control authority changed; the previous history remains selected');
         const result = await store.runWrite(() => {
           if (signal?.aborted || !isCurrent()) throw unavailable('Recovery authority changed while waiting for storage');
