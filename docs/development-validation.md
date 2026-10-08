@@ -116,8 +116,12 @@ npm run test:extended
 npm run test:all        # routine followed by extended
 ```
 
-Extended tests live in `test/extended/`, with at most two files in parallel and
-a three-minute test deadline. They cover recovery at larger history volumes,
+Extended tests live in `test/extended/`, run one file at a time, and retain
+a three-minute test deadline. Serial files keep unrelated bulk fixture writes
+from contaminating another benchmark's latency measurements. Each workload still
+exercises its concurrent recording, HTTP requests, transfers and failure cases;
+the latency guards are unchanged. These measurements do not establish latency
+under arbitrary competing host I/O. They cover recovery at larger history volumes,
 full persisted-learning replay across a restart, and real SQLite mirroring
 through SSH. Sensor duplicate delivery, independent broker routing and paired
 MQTT handover regressions run the installed MQTT.js client against isolated
