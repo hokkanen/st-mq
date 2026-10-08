@@ -49,9 +49,10 @@ export function peerAnchor(db) {
   return {checkpoint,contentHash:row.content_hash,pending:pending&&{...pending,status:row.rebase_cursor===null?'ready':'rebasing',cursor:row.rebase_cursor},
     ...(row.completed_source ? {completedSourcePath:row.completed_source} : {})};
 }
-export function enrollJournalPeer(db,{checkpoint=readCheckpoint(db)}={}) {
+export function enrollJournalPeer(db,{checkpoint}={}) {
   return journalExclusive(db,()=>{
     const current=meta(db);if(current) return peerAnchor(db);
+    if(checkpoint===undefined)checkpoint=readCheckpoint(db);
     const hash=checkpointContent(db,checkpoint);
     journalConnection(db).prepare('INSERT INTO journal_peer VALUES(1,?,?,NULL,NULL,NULL)').run(JSON.stringify(checkpoint),hash);
     return peerAnchor(db);
@@ -59,8 +60,9 @@ export function enrollJournalPeer(db,{checkpoint=readCheckpoint(db)}={}) {
 }
 /** The receiver has durably accepted this exact source state. No command or
  * machine-local authority is inferred from this storage acknowledgement. */
-export function acceptPeerCheckpoint(db,{checkpoint=readCheckpoint(db)}={}) {
+export function acceptPeerCheckpoint(db,{checkpoint}={}) {
   return journalExclusive(db,()=>{
+    if(checkpoint===undefined)checkpoint=readCheckpoint(db);
     const hash=checkpointContent(db,checkpoint),state=journalConnection(db);
     state.exec('DELETE FROM journal_peer_changes');
     state.prepare('INSERT INTO journal_peer VALUES(1,?,?,NULL,NULL,NULL) ON CONFLICT(id) DO UPDATE SET anchor=excluded.anchor,content_hash=excluded.content_hash,pending=NULL,rebase_cursor=NULL,completed_source=NULL')

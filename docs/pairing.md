@@ -688,7 +688,9 @@ Archives use private permissions and are named by time and operation ID:
 
 Pending replication spools, partial spools and their SQLite lock/sidecars beside
 the selected or configured database are archived with their original bytes.
-They are preserved evidence, not independent application backups.
+They are preserved evidence, not independent application backups. Keep history
+clears the previous peer enrollment in the validated current-format kept copy;
+the archived original and its pending transfer remain unchanged.
 
 The result displays the specific archive path for 24 hours. Archives include the
 original `state.json`, the configured database when present, the actual promoted

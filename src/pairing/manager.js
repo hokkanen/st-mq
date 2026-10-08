@@ -20,6 +20,9 @@ import { acquireReceiverLock } from '../replication/receiver.js';
 import { installJournal } from '../storage/journal.js';
 
 const ACTIONS = new Set(['handover', 'promote', 'check-recovery', 'recover', 'rejoin']);
+const PEER_OPERATIONS = new Set(['status', 'snapshot', 'checkpoint', 'verify-checkpoint', 'peer-anchor',
+  'peer-transfer', 'peer-transfer-chunk', 'peer-ack', 'snapshot-hashes', 'snapshot-chunk',
+  'handover-prepare', 'handover-stage', 'handover-activate', 'release']);
 const sourceRoot = fileURLToPath(new URL('../', import.meta.url));
 // A setup failure before the first write may retry bootstrap. Protection of
 // received history must never authorize replacing that history with an empty DB.
@@ -60,10 +63,19 @@ export function startupFailureDiagnostic(error, code) {
     ...(location ? { location: `src/${location}` } : {}) };
 }
 
+export function peerFailureDiagnostic(error, operation) {
+  const { reason, location } = startupFailureDiagnostic(error, error?.code ?? 'runtime_failed');
+  return { event: 'paired-peer-request-failed', operation: PEER_OPERATIONS.has(operation) ? operation : 'unknown',
+    reason, ...(location ? { location } : {}),
+    ...(error?.code === 'ERR_SQLITE_ERROR' && Number.isSafeInteger(error.errcode) && error.errcode >= 0 && error.errcode <= 65535
+      ? { sqliteCode: error.errcode } : {}) };
+}
+
 /** Node-local authority is deliberately never part of the mirrored application DB. */
 export class PairManager {
   constructor({ config, hooks = {}, clock = Date.now, vip, peer, state, snapshots, announcements,
-    reportStartupFailure = diagnostic => console.error(JSON.stringify(diagnostic)) }) {
+    reportStartupFailure = diagnostic => console.error(JSON.stringify(diagnostic)),
+    reportPeerFailure = diagnostic => console.error(JSON.stringify(diagnostic)) }) {
     this.config = config;
     configurePublicationRoots(config.snapshotDirectory, [config.directory,
       config.databasePath ? dirname(config.databasePath) : null]);
@@ -73,6 +85,7 @@ export class PairManager {
     this.state = state ?? new PairState({ ...config, clock });
     this.vip = vip ?? new VirtualIP(config.vip);
     this.peer = peer ?? new PairPeer({ ...config, clock, timeoutMs: Math.min(config.timeoutMs ?? 10000, 10000),
+      reportHandlerFailure: (error, operation) => reportPeerFailure(peerFailureDiagnostic(error, operation)),
       handler: (operation, body) => this.handlePeer(operation, body) });
     this.snapshots = snapshots ?? new SnapshotRepository({ directory: join(config.directory, 'exports'), clock });
     this.peerTransfers = new PeerTransfers(join(config.directory, 'peer-exports'));
@@ -85,6 +98,7 @@ export class PairManager {
     this.error = null;
     this.peerState = { reachable: false, lastSeenAt: null };
     this.peerObservation = 0;
+    this.peerPollError = null;
     this.sync = { state: 'waiting', sourceAt: null, verifiedAt: null, lastSuccessAt: null, error: null };
     this.lock = Promise.resolve();
     this.abort = new AbortController();
@@ -371,7 +385,8 @@ export class PairManager {
     const protectedDonor = recovery.donorRole === 'protected' && (!this.peerState.reachable
       || this.peerState.role === 'protected' && this.peerState.nodeId === checked?.nodeId && this.peerState.epoch === checked?.epoch);
     return { ...this.state.claim(), canControl: this.canControl(), busy: this.busy, bootstrapPending,
-      phase: this.phase, error: this.error, vip: this.vip.status(), peer: { ...this.peerState }, sync: { ...this.sync },
+      phase: this.phase, error: this.error, vip: this.vip.status(), peer: { ...this.peerState },
+      sync: { ...this.sync, error: this.sync.error ?? this.peerPollError },
       recovery, recentActions: local.actions.map(({ requestId, name, state, error, startedAt, finishedAt }) =>
         ({ requestId, name, state, error, startedAt, finishedAt })),
       actions: { handover: free && primary && !recovery.pendingRelease && this.peerState.reachable && this.peerState.role === 'slave',
@@ -406,7 +421,9 @@ export class PairManager {
       if (observation !== this.observationGeneration() || peerObservation !== this.peerObservation || this.closed || this.stopping) return;
       this.peerObservation++;
       this.peerState = { ...this.peerState, reachable: false };
-      this.sync.error = publicPairError(error);
+      // Status connectivity is independent of the last transfer's result.
+      // A fresh peer status clears this without clearing a real sync failure.
+      this.peerPollError = publicPairError(error);
     } finally {
       // Both computers may poll together. A newer incoming status supersedes
       // the outgoing reply but must still let a slave schedule synchronization.
@@ -420,6 +437,7 @@ export class PairManager {
   recordPeerStatus(claim, sync) {
     const sameIdentity = this.peerState.nodeId === claim.nodeId && this.peerState.epoch === claim.epoch && this.peerState.role === claim.role;
     this.peerObservation++;
+    this.peerPollError = null;
     this.peerState = { reachable: true, lastSeenAt: this.clock(), ...claim,
       sync: sync === undefined && sameIdentity ? this.peerState.sync : publicSync(sync),
       syncReceivedAt: sync === undefined ? sameIdentity ? this.peerState.syncReceivedAt : null : this.clock() };

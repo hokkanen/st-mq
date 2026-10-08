@@ -92,7 +92,7 @@ export function publicPairError(error) {
 /** The LAN transport never sends the pairing secret or household data in plaintext. */
 export class PairPeer {
   constructor({ token, pairId, peerUrl, listenHost = '0.0.0.0', port = 8091, timeoutMs = 10000,
-    clock = Date.now, fetchImpl, handler }) {
+    clock = Date.now, fetchImpl, handler, reportHandlerFailure = () => {} }) {
     this.key = keyFor(token);
     this.pairId = pairId;
     this.peerUrl = peerUrl;
@@ -106,6 +106,7 @@ export class PairPeer {
     };
     this.fetchImpl = fetchImpl ?? ((url, options) => requestPeer(url, options, this.agents));
     this.handler = handler;
+    this.reportHandlerFailure = reportHandlerFailure;
     this.nonces = new Map();
     this.closed = false;
     this.abort = new AbortController();
@@ -159,7 +160,13 @@ export class PairPeer {
     } catch { res.writeHead(401); res.end(); return; }
     let reply;
     try { reply = { ok: true, value: await this.handler(request.operation, request.body ?? {}) }; }
-    catch (error) { reply = { ok: false, error: publicPairError(error) }; }
+    catch (error) {
+      reply = { ok: false, error: publicPairError(error) };
+      if (reply.error === 'peer_protocol_failed' && error?.code !== 'peer_protocol_failed') {
+        try { void Promise.resolve(this.reportHandlerFailure(error, request.operation)).catch(() => {}); }
+        catch { /* Diagnostics cannot replace the bounded public error reply. */ }
+      }
+    }
     if (res.destroyed) return;
     const body = sealEnvelope({ id: request.id, pairId: this.pairId, ...reply }, this.key, `${CONTEXT}:response:${request.id}`);
     if (Buffer.byteLength(body) > MAX_BODY) { res.writeHead(500); res.end(); return; }

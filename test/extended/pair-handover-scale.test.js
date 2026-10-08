@@ -85,7 +85,10 @@ const requestedScale = process.env.STMQ_PAIR_SCALE_MIB;
 const scales = requestedScale === undefined ? [32, 128] : requestedScale.split(',').map(Number);
 if (!scales.length || scales.some(size => !Number.isSafeInteger(size) || size < 1 || size > 1024))
   throw new Error('Synthetic handover payload sizes must be integers between 1 and 1024 MiB');
-for (const payloadMiB of scales) {
+// Every run includes the small baseline, including an explicitly selected large
+// scale. Aggregate process reads include worker modules and schema validation.
+let baselineWarmReadBytes;
+for (const payloadMiB of [1, ...scales.filter(size => size !== 1)]) {
   test(`cold handover of ${payloadMiB} MiB synthetic payload retains concurrent records and one owner`, async t => {
     const f = await fixture(t, payloadMiB), started = performance.now();
     await f.source.action('handover', { requestId: randomUUID(), confirmed: true });
@@ -112,7 +115,16 @@ for (const payloadMiB of scales) {
     const warmReadBytes = syscallAfter && syscallAfter.rchar - syscallBefore.rchar;
     const warmWriteBytes = syscallAfter && syscallAfter.wchar - syscallBefore.wchar;
     if (syscallAfter) {
-      assert(warmReadBytes < 32 * 1024 ** 2, `Warm handover must not read historical database contents (${warmReadBytes} bytes)`);
+      // A syscall trace attributes ~30 MiB to repeated worker module loading;
+      // the complete 1 MiB fixture reads ~36 MiB. Bound that fixed work as well
+      // as growth with retained history, including cached SQLite reads.
+      if (payloadMiB === 1) baselineWarmReadBytes = warmReadBytes;
+      else {
+        assert(Number.isSafeInteger(baselineWarmReadBytes), 'Warm handover requires the 1 MiB baseline case');
+        assert(warmReadBytes - baselineWarmReadBytes < 4 * 1024 ** 2,
+          `Warm read I/O must not grow with historical contents (${warmReadBytes} bytes; baseline ${baselineWarmReadBytes})`);
+      }
+      assert(warmReadBytes < 48 * 1024 ** 2, `Warm handover fixed read work must stay bounded (${warmReadBytes} bytes)`);
       assert(warmWriteBytes < 8 * 1024 ** 2, `Warm handover must not copy historical database contents (${warmWriteBytes} bytes)`);
     }
     assert.equal(f.source.canControl(), true);

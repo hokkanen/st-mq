@@ -18,6 +18,11 @@ Versions follow Semantic Versioning. `-dev.N` denotes a development prerelease.
   reply or restart cannot leave a full snapshot permanently pinned.
 - Pairing reset archives pending replication files beside the database and reports
   bounded, private-safe failure diagnostics when a shutdown or archive fails.
+  Keeping history clears the kept copy's previous peer enrollment after archival,
+  so an interrupted initial seed cannot block the newly reset pair.
+- Peer enrollment captures its default checkpoint after acquiring the write lock.
+  Fresh peer status clears a past connection error while retaining actual transfer
+  or verification failures; unexpected peer failures have private-safe diagnostics.
 - Recording health no longer shows an out-of-date warning for a small server
   clock lead. Larger clock differences have an explicit explanation, while stale
   checks and failed refreshes retain their warnings.

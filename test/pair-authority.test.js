@@ -1079,6 +1079,44 @@ test('running replica mutations are preserved before synchronization or ordinary
   });
 });
 
+test('fresh peer status clears an outage poll error without requiring another transfer', async t => {
+  for (const incoming of [false, true]) await t.test(incoming ? 'incoming status' : 'poll reply', async t => {
+    const root = await fixture(t), primary = await manager(t, root, 'master');
+    const slave = await manager(t, root, 'slave', { role: 'slave' }); connect(primary, slave);
+    slave.sync = { state: 'ready', sourceAt: 100, verifiedAt: 101, bytes: 1024, error: null };
+    const request = primary.peer.request.bind(primary.peer);
+    primary.peer.request = async () => { throw Object.assign(Error(), { code: 'peer_unavailable' }); };
+    await primary.poll();
+    assert.equal(primary.status().peer.reachable, false);
+    assert.equal(primary.status().sync.error, 'peer_unavailable');
+    assert.equal(primary.canControl(), true);
+    if (incoming) await primary.handlePeer('status', { claim: slave.state.claim(), sync: slave.sync });
+    else { primary.peer.request = request; await primary.poll(); }
+    assert.equal(primary.status().peer.reachable, true);
+    assert.equal(primary.status().peer.sync.state, 'ready');
+    assert.equal(primary.status().sync.error, null);
+    assert.equal(primary.canControl(), true);
+  });
+});
+
+test('peer status recovery never overwrites or clears an actual synchronization error', async t => {
+  const root = await fixture(t), primary = await manager(t, root, 'master');
+  const slave = await manager(t, root, 'slave', { role: 'slave' }); connect(primary, slave);
+  const request = primary.peer.request.bind(primary.peer);
+  for (const error of ['database_journal_invalid', 'peer_unavailable']) {
+    primary.sync = { state: 'error', sourceAt: 100, verifiedAt: 101, lastSuccessAt: 102, error };
+    const failedSync = { ...primary.sync };
+    primary.peer.request = async () => { throw Object.assign(Error(), { code: 'timed_out' }); };
+    await primary.poll();
+    assert.deepEqual(primary.sync, failedSync);
+    assert.equal(primary.status().sync.error, error);
+    primary.peer.request = request;
+    await primary.poll();
+    assert.equal(primary.status().peer.reachable, true);
+    assert.deepEqual(primary.status().sync, failedSync);
+  }
+});
+
 test('peer snapshot status uses observed public fields and survives slave restart without granting authority', async t => {
   const root = await fixture(t), primary = await manager(t, root, 'master');
   const slave = await manager(t, root, 'slave', { role: 'slave' }); connect(primary, slave);

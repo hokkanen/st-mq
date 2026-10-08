@@ -43,7 +43,12 @@ preflight and simulated control-gap timings separately. Its warm return handover
 rejects any attempt to create a full snapshot, retains the same database inode and
 reports incremental handover latency and filesystem I/O. On Linux it also bounds
 `/proc/self/io` read/write bytes, so cached full-file scans cannot hide behind zero
-physical read blocks. To run a larger case:
+physical read blocks. These process-wide counters also include repeated worker
+module loading and schema validation: a syscall trace attributed about 30 MiB of
+the roughly 36 MiB warm read total to application/dependency files. Every run
+therefore includes a 1 MiB payload baseline, limits read growth to 4 MiB above it,
+and retains a 48 MiB absolute read cap and 8 MiB write cap. The default larger
+payloads are 32 and 128 MiB; custom scales also run the baseline. To run a larger case:
 
 ```sh
 STMQ_PAIR_SCALE_MIB=512 node --test --test-timeout=180000 test/extended/pair-handover-scale.test.js
@@ -132,7 +137,8 @@ with at most four test files in parallel and a 60-second deadline per test case.
 handover, outage promotion, recovery correctness and rejoin regressions remain
 in this suite. New top-level `test/*.test.js` files are included automatically.
 The offline runner gives every file its own Node process and applies the deadline
-inside it. This preserves process isolation and the same case budget on Node 22
+through the public `node:test.run()` API, preserving application signal ownership.
+This preserves process isolation and the same case budget on Node 22
 and newer versions; Node 22's default isolated runner also applies the command-line
 timeout to the entire file, which can cancel a long file of successful short tests.
 Use `npm test -- --test-name-pattern=...` to select matching cases.

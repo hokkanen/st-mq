@@ -3,9 +3,60 @@ import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
 import { createServer } from 'node:http';
 import { setTimeout as delay } from 'node:timers/promises';
+import { mkdtemp, rm } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { PairPeer, openEnvelope, sealEnvelope } from '../src/pairing/peer.js';
+import { PairManager, peerFailureDiagnostic } from '../src/pairing/manager.js';
+import { Store } from '../src/storage/store.js';
 
 const options = { token: 'synthetic-pair-test-token-0123456789abcdef', pairId: 'test-pair', listenHost: '127.0.0.1', port: 0 };
+
+test('peer handler diagnostics restrict operation, error details and source locations', () => {
+  const source = new URL('../src/pairing/manager.js', import.meta.url).href;
+  const error = { code: 'ERR_SQLITE_ERROR', errcode: 5, message: 'private database and household values',
+    stack: `Error: private database and household values\n    at writeLineage (${source}:791:12)` };
+  assert.deepEqual(peerFailureDiagnostic(error, 'checkpoint'), { event: 'paired-peer-request-failed',
+    operation: 'checkpoint', reason: 'peer_protocol_failed', location: 'src/pairing/manager.js:791:12', sqliteCode: 5 });
+  for (const errcode of [-1, 65536, 1.5, 'private account']) {
+    const result = peerFailureDiagnostic({ ...error, errcode,
+      stack: 'Error: private token\n    at caller (/private/installation/account.js:12:3)' }, 'private operation');
+    assert.deepEqual(result, { event: 'paired-peer-request-failed', operation: 'unknown', reason: 'peer_protocol_failed' });
+  }
+  assert.doesNotMatch(JSON.stringify(peerFailureDiagnostic({ ...error, code: 'private account' }, 'private operation')),
+    /private|household|database and|ERR_SQLITE_ERROR/);
+});
+
+for (const asyncSink of [false, true]) test(`actual SQLite contention keeps its public peer error and safe diagnostics when reporting ${asyncSink ? 'rejects' : 'throws'}`, async t => {
+  const root = await mkdtemp(join(tmpdir(), 'stmq-peer-diagnostic-'));
+  const path = join(root, 'synthetic.sqlite'), store = new Store(path), diagnostics = [];
+  t.after(async () => { store.close(); await rm(root, { recursive: true, force: true }); });
+  const manager = new PairManager({ config: { ...options, directory: join(root, 'pairing'),
+    snapshotDirectory: join(root, 'snapshots'), databasePath: path, platform: 'ubuntu', vip: {} },
+  vip: { status: () => ({ owned: false }) },
+  reportPeerFailure: diagnostic => {
+    diagnostics.push(diagnostic);
+    if (asyncSink) return Promise.reject(new Error('private diagnostic sink'));
+    throw new Error('private diagnostic sink');
+  } });
+  manager.handlePeer = () => manager.writeLineage(path, { synthetic: 'never committed' });
+  const address = await manager.peer.start();
+  const client = new PairPeer({ ...options, peerUrl: `http://127.0.0.1:${address.port}` });
+  t.after(async () => { await client.close(); await manager.peer.close(); });
+  store.db.exec('BEGIN IMMEDIATE');
+  try {
+    await assert.rejects(client.request('checkpoint', { synthetic: 'private request body' }),
+      { code: 'peer_protocol_failed', message: 'peer_protocol_failed' });
+  } finally { store.db.exec('ROLLBACK'); }
+  assert.equal(diagnostics.length, 1);
+  assert.equal(diagnostics[0].operation, 'checkpoint'); assert.equal(diagnostics[0].sqliteCode, 5);
+  assert.match(diagnostics[0].location, /^src\/(?:storage\/journal|pairing\/manager)\.js:\d+:\d+$/);
+  assert.doesNotMatch(JSON.stringify(diagnostics), /private|never committed|synthetic|token|request body/);
+  assert.equal(store.getState('pairing-lineage'), null);
+  manager.handlePeer = () => { throw Object.assign(new Error('private expected error'), { code: 'peer_busy' }); };
+  await assert.rejects(client.request('checkpoint'), { code: 'peer_busy' });
+  assert.equal(diagnostics.length, 1, 'Expected public failures do not become unexpected handler diagnostics');
+});
 
 test('paired transport encrypts household values and authenticates request-bound responses', async t => {
   const server = new PairPeer({ ...options, handler: (operation, body) => ({ operation, reading: body.reading }) });

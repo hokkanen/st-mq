@@ -49,6 +49,34 @@ test('offline runner fails an over-budget case and still runs remaining files', 
   });
 });
 
+test('offline runner preserves synthetic signals owned by the test application', async t => {
+  const f = await fixture(t, {
+    signals: `import test from 'node:test'; import assert from 'node:assert/strict';
+      test('application signal ownership', () => { let calls=0;
+        const listener=()=>{calls++;}; process.on('SIGTERM',listener);
+        try { process.emit('SIGTERM'); assert.equal(calls,1); }
+        finally { process.removeListener('SIGTERM',listener); }
+      });
+      test('continued after synthetic signal', () => {});`,
+  });
+  const output = await execute(process.execPath, command({ files: f.paths, timeout: 1000 }), { timeout: 10000 });
+  assert.match(output.stdout, /application signal ownership/);
+  assert.match(output.stdout, /continued after synthetic signal/);
+});
+
+test('offline runner preserves name filters, skip filters and the selected reporter', async t => {
+  const f = await fixture(t, {
+    filtered: `import test from 'node:test';
+      test('included synthetic case', () => {});
+      test('skipped synthetic case', () => { throw Error('skip filter ignored'); });
+      test('unmatched synthetic case', () => { throw Error('name filter ignored'); });`,
+  });
+  const output = await execute(process.execPath, command({ files: f.paths, timeout: 1000,
+    args: ['--test-name-pattern=included|skipped', '--test-skip-pattern=skipped', '--test-reporter=tap'] }), { timeout: 10000 });
+  assert.match(output.stdout, /TAP version 13/);
+  assert.match(output.stdout, /included synthetic case/);
+});
+
 test('offline runner termination also stops its active test process', async t => {
   const f = await fixture(t, {}), marker = join(f.directory, 'child.pid'), path = join(f.directory, 'waiting.mjs');
   await writeFile(path, `import test from 'node:test'; import {writeFileSync} from 'node:fs';
@@ -68,4 +96,34 @@ test('offline runner termination also stops its active test process', async t =>
   const [code] = await closed;
   assert.equal(code, 143);
   assert.throws(() => process.kill(pid, 0), { code: 'ESRCH' });
+});
+
+test('offline runner escalates termination when a blocked test cannot handle SIGTERM', async t => {
+  const f = await fixture(t, {}), marker = join(f.directory, 'blocked.pid'), path = join(f.directory, 'blocked.mjs');
+  await writeFile(path, `import test from 'node:test'; import {writeFileSync} from 'node:fs';
+    test('blocked synthetic case', () => { process.on('SIGTERM',()=>{});
+      writeFileSync(${JSON.stringify(marker)}, String(process.pid));
+      Atomics.wait(new Int32Array(new SharedArrayBuffer(4)),0,0); });`);
+  const child = spawn(process.execPath, command({ files: [path], timeout: 100 }), { stdio: 'ignore' });
+  const closed = once(child, 'close');
+  let pid, timer;
+  t.after(() => {
+    clearTimeout(timer);
+    if (pid) { try { process.kill(pid, 'SIGKILL'); } catch {} }
+    if (child.exitCode === null && child.signalCode === null) child.kill('SIGKILL');
+  });
+  for (let i = 0; i < 500; i++) {
+    pid = await readFile(marker, 'utf8').then(Number, () => null);
+    if (pid) break;
+    await new Promise(resolve => setTimeout(resolve, 10));
+  }
+  assert(pid, 'the test child reached its blocking operation');
+  child.kill('SIGTERM');
+  const [code] = await Promise.race([closed, new Promise((_, reject) => {
+    timer = setTimeout(() => reject(new Error('Runner did not reap its blocked test child')), 5000);
+  })]);
+  clearTimeout(timer);
+  assert.equal(code, 143);
+  assert.throws(() => process.kill(pid, 0), { code: 'ESRCH' });
+  pid = null;
 });

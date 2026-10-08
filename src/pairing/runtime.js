@@ -8,6 +8,7 @@ import { inheritConfigurationSnapshot } from '../app/configuration-preview.js';
 import { startReplica } from '../app/replica.js';
 import { configurePublicationRoots, durableJson, ownedDirectory } from '../replication/publication.js';
 import { databaseCheckpoint } from '../replication/incremental.js';
+import { peerOperation } from '../replication/coalesced.js';
 import { adoptJournalDatabase, checkpointMetadata } from '../replication/journal-publication.js';
 import { databaseErrorDetails } from '../storage/database-errors.js';
 import { requireLocalBroker } from './config.js';
@@ -24,7 +25,7 @@ const RESET_ERRORS = new Set(['pair_reset_storage_failed', 'pair_reset_unsafe_st
   'pair_reset_history_unavailable', 'pair_reset_restoration_required', 'pair_reset_failed']);
 const requestError = message => Object.assign(new Error(message), { statusCode: 409, publicMessage: message });
 const RESET_STAGES = new Set(['stop-control', 'release-address', 'close-manager', 'check-restoration',
-  'prepare-archive', 'archive', 'reset-state', 'start-manager']);
+  'prepare-archive', 'archive', 'reset-peer', 'reset-state', 'start-manager']);
 
 /** Shutdown aggregates can hide the failing subsystem. Keep their bounded leaf
  * diagnostics under the same privacy rules as activation failures. */
@@ -374,6 +375,17 @@ export async function startPaired({ config, readConfig, clock = Date.now, provid
       stage = 'archive';
       result = await resetStorage.resumeResetArchive(journal.archiveDirectory,
         { config, requestId: journal.requestId, mode: journal.mode });
+      if (result.keptDbPath) {
+        stage = 'reset-peer';
+        let checkpoint;
+        try { checkpoint = await databaseCheckpoint({ dbPath: result.keptDbPath }); }
+        catch (error) {
+          // Opaque unsupported history can remain protected after Keep; it is
+          // never converted or edited to make old pairing state readable.
+          if (!databaseErrorDetails(error)) throw error;
+        }
+        if (checkpoint) await peerOperation('accept', { dbPath: result.keptDbPath, checkpoint });
+      }
       const unavailable = (result.recoveryBackups ?? []).filter(item => item.status === 'unavailable');
       const receipt = { ...journal, requestId: input.requestId, completedAt: clock(),
         backupCount: (result.recoveryBackups ?? []).filter(item => item.status === 'complete').length,
