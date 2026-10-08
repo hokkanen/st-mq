@@ -157,6 +157,9 @@ test('full application handover switches controller/viewer, preserves durable ro
   await f.close(a); const restarted = await f.open('a', 'master', 'hassio'); connect(restarted, b);
   assert.equal(restarted.pair.state.value.role, 'slave'); assert.equal(restarted.engine, undefined);
   await restarted.pair.synchronize(b.pair.state.claim()); assert.equal(restarted.pair.sync.state, 'ready');
+  await apiAction(b, command('handover', { verifyWithFullSnapshot: true }));
+  assert.equal(restarted.pair.canControl(), true); assert.equal(b.pair.canControl(), false);
+  assert.equal(b.engine, undefined); assert.equal(restarted.store.latestObservation('indoor_temperature').value, 20);
 });
 
 test('outage promotion, returning Hassio, manual gap recovery and exact rejoin run through real app lifecycle', async t => {

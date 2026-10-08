@@ -23,6 +23,8 @@ Versions follow Semantic Versioning. `-dev.N` denotes a development prerelease.
 - Peer enrollment captures its default checkpoint after acquiring the write lock.
   Fresh peer status clears a past connection error while retaining actual transfer
   or verification failures; unexpected peer failures have private-safe diagnostics.
+  Pairing metadata waits through normal asynchronous write admission, with the
+  final handover stamp written off-thread after control has stopped.
 - Recording health no longer shows an out-of-date warning for a small server
   clock lead. Larger clock differences have an explicit explanation, while stale
   checks and failed refreshes retain their warnings.

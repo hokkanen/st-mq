@@ -167,6 +167,36 @@ export async function startPaired({ config, readConfig, clock = Date.now, provid
   const hooks = {
     dbPath: () => runtime?.store?.path ?? primaryPath,
     admitStorageWrite: () => runtime?.store && !runtime.store.readOnly ? runtime.store.runWrite(() => {}) : undefined,
+    async writeLineage({ dbPath, value }) {
+      const owner = manager, active = runtime, token = controllerToken;
+      const current = () => manager === owner && !closed && !closing && !owner.closed && !owner.stopping
+        && owner.state.value.role === 'master' && owner.state.value.epoch === value.epoch
+        && owner.state.value.activeDbPath === dbPath;
+      if (!current()) throw pairError('authority_changed');
+      if (active?.store && !active.store.readOnly && active.store.path === dbPath) {
+        const isCurrent = () => current() && runtime === active && controllerToken === token
+          && !token?.revoked && owner.canControl();
+        if (!isCurrent()) throw pairError('authority_changed');
+        return active.store.runWrite(() => active.store.db.prepare(`INSERT INTO state(key,value,updated_at)
+          VALUES('pairing-lineage',?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value,updated_at=excluded.updated_at`)
+          .run(JSON.stringify(value), clock()), { signal: owner.abort?.signal ?? startupAbort.signal, isCurrent });
+      }
+      // Handover needs one final stamp after closing its controller and releasing
+      // command transport. Its retained master claim still owns that database.
+      const handoverToken = owner.state.value.transition?.token;
+      const released = () => current() && runtime === null && owner.controlReleased === true
+        && owner.state.value.transition?.kind === 'handover' && owner.state.value.transition.phase === 'stopping'
+        && owner.state.value.transition.token === handoverToken;
+      if (!released()) throw pairError('peer_busy');
+      const cancellation = new AbortController();
+      const guard = setInterval(() => { if (!released()) cancellation.abort(pairError('authority_changed')); }, 10);
+      try {
+        const result = await peerOperation('lineage', { dbPath, value, at: clock(),
+          signal: AbortSignal.any([owner.abort.signal, cancellation.signal]) });
+        if (!released()) throw pairError('authority_changed');
+        return result;
+      } finally { clearInterval(guard); }
+    },
     ...ocppHandoverHooks({ configuration: () => context.canControl() && runtime?.engine?.config?.connections
       ? runtime.engine.config : config, store: () => runtime?.store }),
     revokeControl() {

@@ -11,6 +11,7 @@ import { enrollJournalPeer, peerAnchor, preparePeerTransfer, peerTransferRows, a
 import { databaseErrorDetails } from '../storage/database-errors.js';
 
 const invalid=()=>{throw Object.assign(new Error('Invalid consolidated transfer'),{code:'journal_peer_invalid'});};
+const UUID=/^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/;
 const headerFields=['id','base','target','contentHash','rows'];
 const publicMetadata=value=>Object.fromEntries(headerFields.map(key=>[key,value[key]]));
 function writeAll(fd,bytes) { let offset=0;while(offset<bytes.length) offset+=writeSync(fd,bytes,offset,bytes.length-offset); }
@@ -50,6 +51,13 @@ function fileRows(path,expected) {
 let store;
 try {
   const {operation,dbPath}=workerData;
+  if(operation==='lineage') {
+    const stamp=workerData.value;
+    if(!stamp || typeof stamp!=='object' || Array.isArray(stamp) || Object.keys(stamp).sort().join(',')!=='epoch,sequence,token'
+      || typeof stamp.epoch!=='string' || typeof stamp.token!=='string' || !UUID.test(stamp.epoch) || !UUID.test(stamp.token)
+      || !Number.isSafeInteger(stamp.sequence) || stamp.sequence<0
+      || !Number.isSafeInteger(workerData.at) || workerData.at<0) invalid();
+  }
   store=new Store(dbPath,{readOnly:operation==='anchor'||operation==='checkpoint'&&!workerData.enroll});
   let value;
   if(operation==='anchor') value=peerAnchor(store.db);
@@ -59,6 +67,13 @@ try {
   }
   else if(operation==='enroll') value=enrollJournalPeer(store.db,{checkpoint:workerData.checkpoint});
   else if(operation==='accept') value=acceptPeerCheckpoint(store.db,{checkpoint:workerData.checkpoint});
+  else if(operation==='lineage') {
+    const stamp=workerData.value;
+    await store.runWrite(()=>store.db.prepare(`INSERT INTO state(key,value,updated_at) VALUES('pairing-lineage',?,?)
+      ON CONFLICT(key) DO UPDATE SET value=excluded.value,updated_at=excluded.updated_at`)
+      .run(JSON.stringify(stamp),workerData.at));
+    value=true;
+  }
   else if(operation==='release-source') value=releasePeerSource(store.db,{sourcePath:workerData.sourcePath});
   else if(operation==='rewind') value=rewindPeer(store.db,{checkpoint:workerData.checkpoint});
   else if(operation==='acknowledge') {
