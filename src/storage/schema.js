@@ -1,5 +1,7 @@
+import { RECOVERY_DEPENDENCY_SCHEMA } from '../recovery/dependencies.js';
+import { journalSchema } from './journal-schema.js';
 // One current schema. Pre-production databases are never migrated.
-export const SCHEMA_VERSION = 23;
+export const SCHEMA_VERSION = 24;
 // Original source rows remain immutable evidence. The active views select the
 // current recovery interpretation without erasing history or changing local IDs.
 export const RECOVERABLE_TABLES = ['annotations', 'counters', 'energy_audits', 'events',
@@ -11,7 +13,7 @@ export const recoveryRecordKey = (table, alias = 'r') => table === 'import_rows'
 export const selectedHistoryPredicate = (table, alias = 'r') => `NOT EXISTS(SELECT 1 FROM recovery_exclusions x
  WHERE x.generation=(SELECT generation FROM history_selection WHERE id=1)
  AND x.table_name='${table}' AND x.record_key=${recoveryRecordKey(table, alias)})`;
-export const CURRENT_SCHEMA = `
+const DATA_SCHEMA = `
 CREATE TABLE annotations (
   id INTEGER PRIMARY KEY, kind TEXT NOT NULL, start_at INTEGER NOT NULL, end_at INTEGER,
   note TEXT NOT NULL, boundary_confidence TEXT NOT NULL, exclude_training INTEGER NOT NULL,
@@ -174,4 +176,9 @@ ${RECOVERABLE_TABLES.map(table => `CREATE VIEW active_${table} AS SELECT r.* FRO
 CREATE VIEW active_provider_snapshots AS SELECT f.id,f.kind,f.source,f.issued_at,f.fetched_at,
  c.payload AS payload,f.digest FROM active_provider_snapshot_fetches f
  JOIN active_provider_snapshot_contents c ON c.id=f.content_id;
+${RECOVERY_DEPENDENCY_SCHEMA}
 `;
+
+const journal = journalSchema(DATA_SCHEMA);
+export const JOURNALED_TABLES = journal.tables;
+export const CURRENT_SCHEMA = DATA_SCHEMA + journal.sql;

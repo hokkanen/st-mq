@@ -16,6 +16,8 @@ import { createWriteHealth } from './write-health.js';
 import { WriteQueue, sqliteContention } from './write-queue.js';
 import { readAdaptiveBudget } from './adaptive-recording-budget.js';
 import { readStorageMetrics } from './recording-metrics.js';
+import { initializeJournal, installJournal, validateCheckpoint, readCheckpoint, checkpointAt,
+  commonCheckpoint, exportChanges, applyChanges, rewindTo, changedRecordKeys } from './journal.js';
 export { SCHEMA_VERSION } from './schema.js';
 const MAX_LIMIT = 5000;
 
@@ -29,21 +31,22 @@ const expectedStructure = JSON.stringify(schemaObjects(reference));
 reference.close();
 /** Format/integrity gate for runtime and explicit read-only diagnostics. This
  * does not grant runtime readiness; Store additionally validates saved state. */
-export function validateCurrentDatabaseFormat(db) {
+export function validateCurrentDatabaseFormat(db, { full = false } = {}) {
   const version = db.prepare('PRAGMA user_version').get().user_version;
   if (version !== SCHEMA_VERSION) throw Object.assign(new Error(`Unsupported database schema ${version}; this application requires schema ${SCHEMA_VERSION}. Use a new empty database; optionally import supported v0.7.5 CSV files. The existing database was not changed.`),
     { code: 'database_schema_mismatch', actualSchema: version, requiredSchema: SCHEMA_VERSION });
   if (JSON.stringify(schemaObjects(db)) !== expectedStructure) throw Object.assign(new Error('Malformed current database schema; use an intact same-version backup or a new empty database. The existing database was not changed.'),
     { code: 'database_schema_invalid', actualSchema: version, requiredSchema: SCHEMA_VERSION });
-  if (db.prepare('SELECT 1 FROM learning_journal_entries WHERE algorithm_version<>? LIMIT 1').get(LEARNING_ALGORITHM))
+  validateCheckpoint(db);
+  if (full && db.prepare('SELECT 1 FROM learning_journal_entries WHERE algorithm_version<>? LIMIT 1').get(LEARNING_ALGORITHM))
     throw Object.assign(new Error('Unsupported Home learning journal algorithm; use a new empty database or an intact current-version backup. The existing database was not changed.'),
       { code: 'database_algorithm_mismatch' });
-  if (db.prepare('PRAGMA foreign_key_check').get()) throw Object.assign(new Error('Database contains dangling references; restore an intact same-version backup.'),
+  if (full && db.prepare('PRAGMA foreign_key_check').get()) throw Object.assign(new Error('Database contains dangling references; restore an intact same-version backup.'),
     { code: 'database_integrity_failed' });
 }
 
-export function validateCurrentDatabase(db) {
-  validateCurrentDatabaseFormat(db);
+export function validateCurrentDatabase(db, { full = false } = {}) {
+  validateCurrentDatabaseFormat(db, { full });
   // Reject an unsupported recorder before writable setup or paired source-state
   // initialization. A genuinely absent prospective budget needs no backfill.
   readAdaptiveBudget(db);
@@ -64,7 +67,7 @@ export function validateCurrentDatabase(db) {
   }
   // Removed charging-check formats are rejected before any writable setup;
   // opening a database never strips or translates its historical evidence.
-  for (const row of db.prepare("SELECT payload FROM events WHERE type='charging-session-check'").iterate()) {
+  if (full) for (const row of db.prepare("SELECT payload FROM events WHERE type='charging-session-check'").iterate()) {
     try { assertCurrentChargingSessionCheck(JSON.parse(row.payload)); }
     catch { throw Object.assign(new Error('Unsupported or unreadable charging-check history. Preserve this database and use an intact current-version backup.'),
       { code: 'database_state_incompatible' }); }
@@ -168,6 +171,7 @@ export class Store {
       if (!readOnly && empty) this.transaction(() => {
         this.db.exec(CURRENT_SCHEMA);
         this.db.exec(`PRAGMA user_version = ${SCHEMA_VERSION}`);
+        initializeJournal(this.db);
       });
       // Check again against this connection's locked boundary: a different
       // process must not replace validated state between preflight and opening.
@@ -178,6 +182,7 @@ export class Store {
       } else validateCurrentDatabase(this.db);
       if (readOnly) { this.db.exec(`PRAGMA query_only = ON; PRAGMA busy_timeout = ${isMainThread ? 0 : 5000};`); return; }
       this.db.exec('PRAGMA journal_mode = WAL; PRAGMA synchronous = FULL;');
+      installJournal(this.db);
       this.insertObservation = this.db.prepare(`INSERT INTO observations
         (source, device, signal, value, unit, source_time, received_at, quality, raw, import_id, row_number)
         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`);
@@ -187,6 +192,14 @@ export class Store {
   }
 
   close() { this.writeQueue.close(); this.db.close(); }
+
+  checkpoint() { return readCheckpoint(this.db); }
+  checkpointAt(sequence) { return checkpointAt(this.db, sequence); }
+  commonCheckpoint(other) { return commonCheckpoint(this.db, other.db ?? other); }
+  exportChanges(options) { return exportChanges(this.db, options); }
+  applyChanges(batch) { return applyChanges(this.db, batch); }
+  rewindTo(checkpoint, options) { return rewindTo(this.db, checkpoint, options); }
+  changedRecordKeys(options) { return changedRecordKeys(this.db, options); }
 
   runWrite(fn, options = {}) {
     if (this.readOnly) return Promise.reject(Object.assign(new Error('This recording storage is read-only.'),
