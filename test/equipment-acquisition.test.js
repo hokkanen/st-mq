@@ -425,8 +425,12 @@ test('one equipment subscription rejection leaves successfully subscribed equipm
     mqtt: { address: 'mqtt://example.invalid' } } }, connect: () => client });
   f.cleanups.push(() => acquisition.close()); client.emit('connect');
   client.emit('message', 'invented/upstairs', Buffer.from('21.5'));
+  // Subscription diagnostics can yield the bounded write queue before receipt
+  // admission. Availability is published only after those writes commit.
+  await f.store.runWrite(() => {});
   const status = acquisition.equipment.status(); assert.equal(status.connected, true);
   assert.equal(status.devices.find(row => row.id === 'upstairs').available, true);
+  assert.equal(status.devices.find(row => row.id === 'upstairs').observedAt, initial);
   assert.equal(status.devices.find(row => row.id === 'garage_door1').available, false);
 });
 
@@ -629,7 +633,9 @@ test('runtime MQTT recheck verifies broker grants and recovers a denied subscrip
   assert.equal(device.check.status, 'listening');
   assert.equal(device.check.subscriptionStatus, 'subscribed');
   client.emit('message', 'invented/upstairs', Buffer.from('21.5'));
+  await f.store.runWrite(() => {});
   assert.equal(acquisition.equipment.status().devices[0].available, true);
+  assert.equal(acquisition.equipment.status().devices[0].observedAt, initial);
   assert.deepEqual(subscriptions, ['invented/upstairs', 'invented/upstairs', 'invented/upstairs']);
   assert.equal(connections, 1);
 });

@@ -60,6 +60,9 @@ test('direct circulation dispatch stays idle until a POST and shutdown saves unc
     app.engine.setTemporary({ pauseUntil: null });
     app.engine.tick();
   });
+  // A committed tick publishes its execution receipt through asynchronous
+  // write admission. Finish that transition before testing a new manual POST.
+  await app.engine.dispatchPending;
   assert.equal(clients.length, 0, 'Startup, status, temporary controls and automatic ticks never connect the publisher');
   const post = command => fetch(`${endpoint}/api/heating-test`, {
     method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ command }),
@@ -71,8 +74,9 @@ test('direct circulation dispatch stays idle until a POST and shutdown saves unc
     relayCommands.push(commands); return { sent: true, confirmed: true };
   }, 'invented-tariff-route');
   const success = await post('reduction');
-  assert.equal(success.status, 200);
-  assert.equal((await success.json()).sent, true);
+  const successBody = await success.json();
+  assert.equal(success.status, 200, JSON.stringify(successBody));
+  assert.equal(successBody.sent, true);
   assert.deepEqual(relayCommands, [['reduction']]);
   assert.equal(clients.length, 0, 'Direct tariff relay uses its configured adapter');
 
