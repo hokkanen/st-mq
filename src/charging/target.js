@@ -4,8 +4,10 @@ const target = value => Number.isFinite(value) && value >= 0 && value <= 100;
 const exactKeys = (value, keys) => value && typeof value === 'object' && !Array.isArray(value)
   && Object.keys(value).sort().join(',') === [...keys].sort().join(',');
 const factKeys = ['value', 'measuredAt', 'receivedAt', 'readingId'];
-const validFact = (value, selected = false) => exactKeys(value, selected ? [...factKeys, 'source'] : factKeys)
+const validFact = (value, selected = false) => exactKeys(value, [...factKeys, ...(selected ? ['source'] : []), ...(value?.admittedAt === undefined ? [] : ['admittedAt'])])
   && target(value.value) && ['measuredAt', 'receivedAt'].every(key => value[key] === null || time(value[key]))
+  && (value.admittedAt === undefined && !(time(value.measuredAt) && time(value.receivedAt) && value.measuredAt > value.receivedAt)
+    || validateAdmittedSourceTime({ sourceTime: value.measuredAt, receivedAt: value.receivedAt, admittedAt: value.admittedAt }))
   && (value.readingId === null || typeof value.readingId === 'string' && value.readingId.length > 0);
 
 /** Only source evidence belongs here; explicit targets use the ordinary session request. */
@@ -39,7 +41,8 @@ function targetFact(reading) {
   return { value: reading.chargeLimitSoc,
     measuredAt: time(metadata.measuredAt) ? metadata.measuredAt : null,
     receivedAt: time(metadata.receivedAt) ? metadata.receivedAt : null,
-    readingId: typeof metadata.readingId === 'string' && metadata.readingId.length ? metadata.readingId : null };
+    readingId: typeof metadata.readingId === 'string' && metadata.readingId.length ? metadata.readingId : null,
+    ...(metadata.admittedAt === undefined ? {} : { admittedAt: metadata.admittedAt }) };
 }
 
 function newer(fact, previous) {
@@ -62,12 +65,18 @@ export function updateTargetState(previous, { connectedAt, reading, now = Date.n
     : { connectedAt, history: [], conflict: false, lower: null, last: null };
   const fact = targetFact(reading);
   if (!fact || !newer(fact, state.last)) return state;
+  // Admission waits before this update. A view or saved raw report that is
+  // still in the future must not consume its ID or erase earlier evidence.
+  if (fact.measuredAt > now || fact.receivedAt > now || fact.admittedAt > now) return state;
+  if (time(fact.measuredAt) && time(fact.receivedAt)
+    && !validateAdmittedSourceTime({ sourceTime: fact.measuredAt, receivedAt: fact.receivedAt, admittedAt: fact.admittedAt, now })) return state;
   const next = { ...state, last: fact, history: [...state.history] };
   const eligible = live && reading.fields?.chargeLimitSoc?.retained !== true
     && fact.readingId !== null && time(evidenceStart) && time(now)
     && time(fact.measuredAt) && time(fact.receivedAt)
     && fact.measuredAt >= evidenceStart && fact.receivedAt >= evidenceStart
-    && fact.measuredAt <= now && fact.receivedAt <= now && now - fact.measuredAt <= MAX_OBSERVATION_AGE;
+    && validateAdmittedSourceTime({ sourceTime: fact.measuredAt, receivedAt: fact.receivedAt, admittedAt: fact.admittedAt, now })
+    && now - Math.min(fact.measuredAt, fact.receivedAt) <= MAX_OBSERVATION_AGE;
   if (!eligible) {
     // An unverified change cannot bridge otherwise valid observations. Keep the
     // watermark so repeating the same retained/cached fact live adds no evidence.
@@ -83,12 +92,18 @@ export function updateTargetState(previous, { connectedAt, reading, now = Date.n
 
 /** Keep the raw report and selected planning value separately visible, including
  * their original field clocks. A held lower value never borrows a newer clock. */
-export function targetSelection(state, { reading } = {}) {
+export function targetSelection(state, { reading, now = Date.now() } = {}) {
   validateTargetState(state);
   const raw = targetFact(reading);
   if (!raw) return null;
+  if (raw.measuredAt > now || raw.receivedAt > now) return null;
+  if (time(raw.measuredAt) && time(raw.receivedAt)
+    && !validateAdmittedSourceTime({ sourceTime: raw.measuredAt, receivedAt: raw.receivedAt, admittedAt: raw.admittedAt, now })) return null;
   const lower = target(state?.lower?.value) && state.lower.value < 100 ? state.lower : null;
+  if (lower && time(lower.measuredAt) && time(lower.receivedAt)
+    && !validateAdmittedSourceTime({ sourceTime: lower.measuredAt, receivedAt: lower.receivedAt, admittedAt: lower.admittedAt, now })) return null;
   const conflict = state?.conflict === true;
   const selected = conflict && lower ? { ...lower, source: 'bmw-target-filter' } : { ...raw, source: 'bmw-cardata' };
   return { connectedAt: state?.connectedAt ?? null, conflict, raw, selected, lower };
 }
+import { validateAdmittedSourceTime } from '../domain/time-evidence.js';

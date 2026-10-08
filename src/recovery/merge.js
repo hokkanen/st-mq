@@ -10,6 +10,7 @@ import { recordingPolicy, recordingStreamKey, RECORDING_POLICIES } from '../doma
 import { ENERGY_SIGNALS } from '../domain/history-series.js';
 import { assertCurrentChargingSessionCheck } from '../app/charging-session-checks.js';
 import { temperatureReportMaxAge } from '../domain/temperature-reports.js';
+import { observationTimeAdmitted, validateAdmittedSourceTime } from '../domain/time-evidence.js';
 import { rememberContribution, rejectedContribution, sourceFingerprint } from './ledger.js';
 
 import { ScratchMap, ScratchList, initializeScratch } from './scratch.js';
@@ -46,7 +47,8 @@ const reportBoundary = (row, raw) => raw?.recorder?.version === RECORDING_VERSIO
     && raw.timeBasis === 'mqtt-transport-recovery' && raw.transportRecoveredAt === row.received_at)
   && temperatureReportMaxAge({ raw }) !== null
   && instant(raw.originalReportSourceTime) && instant(raw.originalReportReceivedAt)
-  && raw.originalReportSourceTime <= raw.originalReportReceivedAt && raw.originalReportReceivedAt <= row.received_at
+  && observationTimeAdmitted({ sourceTime: raw.originalReportSourceTime, receivedAt: raw.originalReportReceivedAt,
+    raw: { timeAdmission: raw.originalReportTimeAdmission } }, row.received_at)
   && (row.source_time === raw.originalReportSourceTime || row.source_time === null && row.value === null);
 const phaseSignals = row => /^(property|ev1|ev2)_energy_l[123]$/.test(row.signal)
   ? [1, 2, 3].map(phase => row.signal.replace(/l[123]$/, `l${phase}`)) : null;
@@ -374,7 +376,8 @@ export class HistoryMerge {
       && (raw === null || object(raw)));
     if (row.unit === 'kWh' && raw && ('intervalStart' in raw || 'intervalEnd' in raw))
       this.require(instant(raw.intervalStart) && instant(raw.intervalEnd) && raw.intervalEnd > raw.intervalStart
-        && raw.intervalEnd === row.source_time && raw.intervalEnd <= row.received_at && row.received_at <= this.now
+        && raw.intervalEnd === row.source_time
+        && observationTimeAdmitted({ sourceTime: row.source_time, receivedAt: row.received_at, raw }, this.now)
         && (row.value === null || row.value >= 0));
   }
   async observations() {
@@ -466,7 +469,8 @@ export class HistoryMerge {
         const [source, device, prefix] = identity, pending = state.pending;
         this.require(instant(pending.start) && instant(pending.end) && instant(pending.receivedAt)
           && pending.end === state.lastEnd && pending.receivedAt === state.lastReceivedAt
-          && pending.end <= pending.receivedAt && pending.receivedAt <= this.now && flags(pending.quality));
+          && validateAdmittedSourceTime({ sourceTime: pending.end, receivedAt: pending.receivedAt,
+            admittedAt: pending.admittedAt, now: this.now }) && flags(pending.quality));
         rows = pendingEnergyObservations(this.donor, { now: this.now, source, device, prefix });
         this.require(rows.length > 0);
         const groups = [...recordedEnergyGroups(this.donor, { from: pending.start, to: pending.end,

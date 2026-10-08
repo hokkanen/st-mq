@@ -5,6 +5,8 @@ import { shellyProfile, supportedShellyStates } from './shelly-profile.js';
 import { chargingPlanInputsUnavailable } from './plan-inputs.js';
 import { validShellyDeviceHold, shellyDevicePermission } from './shelly-system-permission.js';
 import { chargingDeviceInfo } from './device-info.js';
+import { classifySourceTime, validateAdmittedSourceTime, sourceTimeAdmission } from '../domain/time-evidence.js';
+import { createSourceTimePending } from '../acquisition/source-time-pending.js';
 const finite = Number.isFinite;
 const copy = value => structuredClone(value);
 const TYPES = { current_limit: 'Number', start_charging: 'Boolean', work_state: 'Enum', phase_info: 'Object' };
@@ -25,11 +27,11 @@ const phaseReadingError = value => !value || !PHASE_KEYS.every(key => ['voltage'
   : value.total_power > 90 || PHASE_KEYS.some(key => value[key].voltage > 300 || value[key].current > 100 || value[key].power > 30)
     ? 'invalid-evse-electrical-range' : null;
 const validPermissionEvent = event => event && typeof event === 'object' && !Array.isArray(event)
-  && Object.keys(event).length === 8
-  && Object.keys(event).every(key => ['sequence', 'eventAt', 'receivedAt', 'valueUpdatedAt', 'value', 'commandSource', 'sessionId', 'connectedAt'].includes(key))
+  && Object.keys(event).filter(key => key !== 'admittedAt').length === 8
+  && Object.keys(event).every(key => ['sequence', 'eventAt', 'receivedAt', 'valueUpdatedAt', 'value', 'commandSource', 'sessionId', 'connectedAt', 'admittedAt'].includes(key))
   && Number.isSafeInteger(event.sequence) && event.sequence > 0
-  && time(event.eventAt) && event.eventAt > 0 && time(event.receivedAt) && event.receivedAt >= event.eventAt
-  && (event.valueUpdatedAt === null || time(event.valueUpdatedAt) && event.valueUpdatedAt <= event.receivedAt)
+  && event.eventAt > 0 && validateAdmittedSourceTime({ sourceTime: event.eventAt, receivedAt: event.receivedAt, admittedAt: event.admittedAt })
+  && (event.valueUpdatedAt === null || validateAdmittedSourceTime({ sourceTime: event.valueUpdatedAt, receivedAt: event.receivedAt, admittedAt: event.admittedAt }))
   && (event.value === null || typeof event.value === 'boolean') && (event.commandSource === null || typeof event.commandSource === 'string')
   && (event.sessionId === null || token(event.sessionId)) && (event.connectedAt === null || time(event.connectedAt));
 
@@ -39,7 +41,10 @@ export function validateShellyAcquisitionState(state, association = state?.assoc
     || state.counter && Object.hasOwn(state.counter, 'powerW')
     || Object.keys(state.fields ?? {}).some(role => !Object.hasOwn(TYPES, role))
     || state.fields?.current_limit?.instructionAt !== undefined
-      && (!time(state.fields.current_limit.instructionAt) || state.fields.current_limit.instructionAt > state.fields.current_limit.receivedAt)
+      && !validateAdmittedSourceTime({ sourceTime: state.fields.current_limit.instructionAt,
+        receivedAt: state.fields.current_limit.receivedAt, admittedAt: state.fields.current_limit.admittedAt })
+    || Object.values(state.fields ?? {}).some(field => field?.admittedAt !== undefined
+      && !validateAdmittedSourceTime({ sourceTime: field.measuredAt, receivedAt: field.receivedAt, admittedAt: field.admittedAt }))
     || state.notificationRevision !== undefined && (!Number.isSafeInteger(state.notificationRevision) || state.notificationRevision < 0)
     || state.permissionSequence !== undefined && (!Number.isSafeInteger(state.permissionSequence) || state.permissionSequence < 0)
     || state.permissionEvents !== undefined && (!Array.isArray(state.permissionEvents) || state.permissionEvents.length > PERMISSION_EVENT_LIMIT
@@ -49,9 +54,9 @@ export function validateShellyAcquisitionState(state, association = state?.assoc
     || state.notificationPending !== undefined && (!state.notificationPending || typeof state.notificationPending !== 'object'
       || Array.isArray(state.notificationPending) || Object.entries(state.notificationPending).some(([role, event]) =>
         !['start_charging', 'current_limit', 'work_state'].includes(role) || !event || typeof event !== 'object'
-        || Object.keys(event).filter(key => key !== 'instructionAt').sort().join(',') !== 'commandSource,eventAt,receivedAt,value,valueKnown'
+        || Object.keys(event).filter(key => !['instructionAt', 'admittedAt'].includes(key)).sort().join(',') !== 'commandSource,eventAt,receivedAt,value,valueKnown'
         || event.instructionAt !== undefined && (role !== 'current_limit' || event.instructionAt !== event.eventAt)
-        || !time(event.eventAt) || !time(event.receivedAt) || event.receivedAt < event.eventAt || typeof event.valueKnown !== 'boolean'
+        || !validateAdmittedSourceTime({ sourceTime: event.eventAt, receivedAt: event.receivedAt, admittedAt: event.admittedAt }) || typeof event.valueKnown !== 'boolean'
         || event.commandSource !== null && typeof event.commandSource !== 'string'
         || event.value !== null && (role === 'start_charging' ? typeof event.value !== 'boolean'
           : role === 'current_limit' ? !finite(event.value) || event.value < 0 : typeof event.value !== 'string')))
@@ -79,6 +84,38 @@ export function createShellyEvseAdapter({ config, broker, client, store, engine,
   let statusObserver = null;
   const cancellation = new AbortController();
   let storagePending = 0;
+  let sourcePacketSequence = 0;
+  const sourcePending = createSourceTimePending({ clock, ordered: true, limit: 128,
+    dispatch(action) {
+      const epoch = generation;
+      storagePending++;
+      return write(() => {
+        preserveAdmissionState(true);
+        const checkpoint = sourcePending.checkpoint();
+        store.afterRollback?.(() => sourcePending.restore(checkpoint));
+        action();
+      }, { epoch }).catch(cause => {
+        if (epoch === generation && !closed) { controlReady = false; readinessRevision++; error = cause.code ?? 'evse-recording-unavailable'; }
+        throw cause;
+      }).finally(() => { storagePending--; publishStatus(); });
+    },
+    onReady(packet, receivedAt, evaluatedAt) {
+      if (packet.epoch !== generation || closed || !connected) return;
+      if (receiveAdmitted(packet.topic, packet.body, packet.metadata, receivedAt, evaluatedAt) === false)
+        throw fail('evse-recording-unavailable');
+    },
+    onReject(packet, reason) {
+      if (packet.response && pending.get(packet.responseId) === packet.response) {
+        pending.delete(packet.responseId);
+        packet.response.reject(fail(reason === 'cleared' ? 'evse-offline' : 'evse-source-clock-unavailable'));
+      }
+      if (reason !== 'cleared' && packet.epoch === generation && !closed) {
+        controlReady = false; readinessRevision++; error = 'evse-source-clock-unavailable';
+        if (reason === 'overflow') eventOverflow = true;
+        publishStatus();
+      }
+    },
+  });
   const afterCommit = effect => store.afterCommit ? store.afterCommit(effect) : effect();
   const write = (action, { epoch = generation, bytes = 0 } = {}) => {
     const current = () => !closed && connected && epoch === generation && canControl();
@@ -104,7 +141,7 @@ export function createShellyEvseAdapter({ config, broker, client, store, engine,
   let overflow = false, eventOverflow = false;
   const observationServiceReady = () => controlReady && !eventOverflow && !state.permissionOverflow
     && finite(serviceAt) && clock() >= serviceAt && clock() - serviceAt <= config.maxAgeMs;
-  const ready = () => observationServiceReady() && storagePending === 0;
+  const ready = () => observationServiceReady() && storagePending === 0 && sourcePending.size === 0;
   const currentReady = () => ready() && currentControlReady;
   const identificationCurrentReady = () => observationServiceReady() && currentControlReady
     && Number.isSafeInteger(state.fields.current_limit?.value)
@@ -144,7 +181,8 @@ export function createShellyEvseAdapter({ config, broker, client, store, engine,
     const field = state.fields[role];
     return connected && admitted && online && fieldGenerations.get(role) === generation
       && field && !field.retained && (field.invalidatedAt === undefined || role === 'phase_info' && heldPhaseConfirmed(field)) && field.measuredAt > 0
-      && field.measuredAt <= now && field.receivedAt <= now && now - field.receivedAt <= config.maxAgeMs;
+      && validateAdmittedSourceTime({ sourceTime: field.measuredAt, receivedAt: field.receivedAt, admittedAt: field.admittedAt, now })
+      && now - field.receivedAt <= config.maxAgeMs;
   };
   function rejectPending(reason) { for (const item of pending.values()) { clearTimeout(item.timer); item.reject(fail(reason)); } pending.clear(); }
   async function rpc(method, params = {}, { mutation = false, guard = () => true, beforePublish = () => {}, statusReadback = false, identificationCurrent = null } = {}) {
@@ -202,7 +240,7 @@ export function createShellyEvseAdapter({ config, broker, client, store, engine,
       sessionId: connectedValue ? `${association}:${measuredAt}:${state.sessionSequence}` : null,
       ...(eventClock ? { boundaryClock: 'notification-event', valueUpdatedAt } : {}) };
   }
-  function accept(role, result, receivedAt = clock(), retained = false, readback = null) {
+  function accept(role, result, receivedAt = clock(), retained = false, readback = null, admittedAt) {
     if (!TYPES[role] || !result || !Object.hasOwn(result, 'value')) {
       if (readback) throw fail('evse-read-unavailable');
       return false;
@@ -215,7 +253,7 @@ export function createShellyEvseAdapter({ config, broker, client, store, engine,
       result = { ...result, source: delta.commandSource };
     if (readback && (readback.generation !== generation || readback.revision !== (fieldRevisions.get(role) ?? 0))) return false;
     const setting = ['start_charging', 'current_limit', 'work_state'].includes(role);
-    if (measuredAt === null || measuredAt > receivedAt) {
+    if (measuredAt === null || !validateAdmittedSourceTime({ sourceTime: measuredAt, receivedAt, admittedAt, now: clock() })) {
       if (readback) throw fail('evse-read-unavailable');
       return false;
     }
@@ -229,7 +267,9 @@ export function createShellyEvseAdapter({ config, broker, client, store, engine,
       const before = copy(state);
       previous.receivedAt = receivedAt; previous.retained = false;
       if (delta && readback.requestedAt >= delta.receivedAt) delete previous.invalidatedAt;
-      previous.readback = { requestedAt: readback.requestedAt, measuredAt, receivedAt };
+      if (admittedAt !== undefined) previous.admittedAt = admittedAt;
+      else delete previous.admittedAt;
+      previous.readback = { requestedAt: readback.requestedAt, measuredAt, receivedAt, ...(admittedAt === undefined ? {} : { admittedAt }) };
       // Missing optional origin in a readback does not erase provenance of
       // this exact source event. A newer source clock still starts with unknown
       // origin when the device omits it.
@@ -285,9 +325,9 @@ export function createShellyEvseAdapter({ config, broker, client, store, engine,
     const prior = copy(state), priorMeterError = meterError;
     try {
       const record = () => {
-        state.fields[role] = { value: copy(value), measuredAt, receivedAt, retained, source: 'shelly-evse',
+        state.fields[role] = { value: copy(value), measuredAt, receivedAt, retained, source: 'shelly-evse', ...(admittedAt === undefined ? {} : { admittedAt }),
           commandSource: typeof result.source === 'string' ? result.source : null };
-        if (readback) state.fields[role].readback = { requestedAt: readback.requestedAt, measuredAt, receivedAt };
+        if (readback) state.fields[role].readback = { requestedAt: readback.requestedAt, measuredAt, receivedAt, ...(admittedAt === undefined ? {} : { admittedAt }) };
         if (role === 'work_state' && !retained) reconcileConnection(value, measuredAt, receivedAt);
         if (role === 'phase_info' && !retained) {
           const before = state.counter, total = value.total_act_energy;
@@ -312,17 +352,17 @@ export function createShellyEvseAdapter({ config, broker, client, store, engine,
                 energies[2] = Math.max(0, energy - (energies[0] + energies[1]));
                 engine.recorder.recordEnergy({ source: 'shelly-evse', device: association, prefix: 'ev2',
                   start: before.at, end: measuredAt, energies, powers: phasePowers,
-                  quality: ['native_counter', 'estimated', 'phase_allocation_estimated', 'reported_phase_power'], receivedAt });
+                  quality: ['native_counter', 'estimated', 'phase_allocation_estimated', 'reported_phase_power'], receivedAt, admittedAt });
               } else {
                 engine.recorder.energyGap?.({ source: 'shelly-evse', device: association, prefix: 'ev2',
-                  start: before.at, end: measuredAt, receivedAt, quality: ['unknown-phase-share'] });
+                  start: before.at, end: measuredAt, receivedAt, admittedAt, quality: ['unknown-phase-share'] });
                 store.event('charging-energy-unallocated', { source: 'shelly-evse', device: association,
                   start: before.at, end: measuredAt, referenceKwh: energy, reason: 'unknown-phase-share' }, receivedAt);
               }
             } else { meterError = 'evse-counter-jump'; }
           } else if (before && total < before.value) { meterError = 'evse-counter-reset'; }
           if (before && !acceptedEnergy) engine.recorder.energyGap?.({
-            source: 'shelly-evse', device: association, prefix: 'ev2', start: before.at, end: measuredAt, receivedAt,
+            source: 'shelly-evse', device: association, prefix: 'ev2', start: before.at, end: measuredAt, receivedAt, admittedAt,
             quality: [total < before.value ? 'meter-counter-reset' : measuredAt - before.at > config.maxAgeMs * 2 ? 'meter-report-gap' : 'invalid-meter-delta'] });
           state.counter = { at: measuredAt, value: total, phasePowers };
         }
@@ -334,14 +374,15 @@ export function createShellyEvseAdapter({ config, broker, client, store, engine,
     if (!retained) { fieldGenerations.set(role, generation); readAt = receivedAt; }
     return true;
   }
-  function receiveAdmitted(topic, payload, packet = {}, receivedAt = clock()) {
+  function receiveAdmitted(topic, payload, packet = {}, receivedAt = clock(), admittedAt) {
     if (closed || !connected || Buffer.byteLength(payload) > 65536) return;
     if (!topic.startsWith(`${config.topicPrefix}/`) && topic !== `${source}/rpc`) return;
-    if (!admitted) { if (buffer.length < 128 && !overflow) buffer.push({ topic, payload: Buffer.from(payload), packet, at: receivedAt }); else { overflow = true; buffer = []; error = 'evse-subscription-overflow'; } return; }
+    if (!admitted) { if (buffer.length < 128 && !overflow) buffer.push({ topic, payload: Buffer.from(payload), packet, at: receivedAt, admittedAt }); else { overflow = true; buffer = []; error = 'evse-subscription-overflow'; } return; }
     if (topic === `${config.topicPrefix}/online`) {
       if (!admission.admit(topic, payload, packet, receivedAt)) return;
       if (!packet.retain && ['true', 'false'].includes(payload.toString())) lastLiveAt = receivedAt;
       online = payload.toString() === 'true'; if (!online) {
+        sourcePending.clear();
         discovered = controlReady = false; readinessRevision++; rejectPending('evse-offline');
       } publishStatus(); return;
     }
@@ -361,7 +402,7 @@ export function createShellyEvseAdapter({ config, broker, client, store, engine,
           if (item.readback) {
             const role = item.readback.role;
             const eligible = item.readback.generation === generation && item.readback.revision === (fieldRevisions.get(role) ?? 0);
-            accept(role, frame.result, receivedAt, false, item.readback);
+            accept(role, frame.result, receivedAt, false, item.readback, admittedAt);
             if (eligible && state.fields[role] && frame.result && Object.hasOwn(frame.result, 'value')) {
               const previous = notificationBaselines.get(role), awaiting = notificationPending.get(role);
               notificationBaselines.set(role, { value: copy(frame.result.value), measuredAt: state.fields[role].measuredAt,
@@ -402,13 +443,25 @@ export function createShellyEvseAdapter({ config, broker, client, store, engine,
       if (!admission.admit(topic, payload, packet, receivedAt, { timestamped })) return;
       if (!packet.retain) lastLiveAt = receivedAt;
       if (!discovered) {
-        if (pendingEvents.length < 128) pendingEvents.push({ admissionCheckpoint, params: frame.params, method: frame.method, at: receivedAt, retained: packet.retain === true });
+        if (pendingEvents.length < 128) pendingEvents.push({ admissionCheckpoint, params: frame.params, method: frame.method, at: receivedAt, retained: packet.retain === true, admittedAt });
         else { eventOverflow = true; controlReady = false; readinessRevision++; error = 'evse-event-overflow'; }
-      } else if (!admitNotification(frame.params, receivedAt, packet.retain === true, frame.method)) admission.restore(admissionCheckpoint);
+      } else if (!admitNotification(frame.params, receivedAt, packet.retain === true, frame.method, admittedAt)) {
+        admission.restore(admissionCheckpoint); publishStatus(); return false;
+      }
       publishStatus();
     }
   }
-  function receive(topic, payload, packet = {}, receivedAt = clock()) {
+  function preserveAdmissionState(requests = false) {
+    const before = copy(state), savedAdmission = admission.checkpoint(), savedReadAt = readAt, savedLiveAt = lastLiveAt;
+    const maps = [fieldRevisions, fieldGenerations, notificationBaselines, notificationPending, ...(requests ? [pending] : [])]
+      .map(map => [map, new Map(map)]);
+    store.afterRollback?.(() => {
+      state = before; readAt = savedReadAt; lastLiveAt = savedLiveAt; admission.restore(savedAdmission);
+      for (const [map, saved] of maps) { map.clear(); for (const [key, value] of saved) map.set(key, value); }
+      engine.recorder?.reload?.();
+    });
+  }
+  function receive(topic, payload, packet = {}, receivedAt = clock(), timeAdmission = null) {
     if (closed || !connected || Buffer.byteLength(payload) > 65536
       || !topic.startsWith(`${config.topicPrefix}/`) && topic !== `${source}/rpc`) return;
     const epoch = generation, body = Buffer.from(payload);
@@ -426,20 +479,39 @@ export function createShellyEvseAdapter({ config, broker, client, store, engine,
         }
       } catch {}
     }
+    if (!timeAdmission && !packet.retain && topic !== `${config.topicPrefix}/online`) {
+      let frame;
+      try { frame = JSON.parse(body); } catch {}
+      if (frame?.src === config.deviceId) {
+        const sourceClocks = topic === `${source}/rpc`
+          ? response?.readback && finite(frame.result?.last_update_ts) && frame.result.last_update_ts > 0
+            ? [Math.round(frame.result.last_update_ts * 1000)] : []
+          : ['NotifyStatus', 'NotifyFullStatus'].includes(frame.method)
+            ? [frame.params?.ts, ...Object.values(frame.params ?? {}).map(value => value?.last_update_ts)]
+              .filter(value => finite(value) && value > 0).map(value => Math.round(value * 1000)) : [];
+        const sourceTime = sourceClocks.length ? Math.max(...sourceClocks) : receivedAt;
+        const temporal = classifySourceTime({ sourceTime, receivedAt, now: clock() });
+        if (sourceTime > receivedAt && temporal.status === 'invalid') {
+          if (response && pending.get(responseId) === response) pending.delete(responseId);
+          response?.reject(fail('evse-source-clock-unavailable'));
+          controlReady = false; readinessRevision++; error = 'evse-source-clock-unavailable'; publishStatus();
+          return;
+        }
+        if (sourcePending.defer(++sourcePacketSequence, { topic, body, metadata, epoch, sourceTime, response, responseId }, { sourceTime, receivedAt })) {
+          publishStatus();
+          return;
+        }
+        timeAdmission = { admittedAt: sourceTimeAdmission({ sourceTime, receivedAt, now: clock() })?.admittedAt };
+      }
+    }
+    const admittedAt = timeAdmission?.admittedAt;
     storagePending++;
     let released = false;
     const release = () => { if (!released) { released = true; storagePending--; } };
     void write(() => {
-      const before = copy(state), savedAdmission = admission.checkpoint();
-      const maps = [fieldRevisions, fieldGenerations, notificationBaselines, notificationPending]
-        .map(map => [map, new Map(map)]);
-      store.afterRollback?.(() => {
-        state = before; admission.restore(savedAdmission);
-        for (const [map, saved] of maps) { map.clear(); for (const [key, value] of saved) map.set(key, value); }
-        engine.recorder?.reload?.();
-      });
+      preserveAdmissionState();
       afterCommit(release);
-      receiveAdmitted(topic, body, metadata, receivedAt);
+      receiveAdmitted(topic, body, metadata, receivedAt, admittedAt);
     }, { epoch, bytes: body.length + Buffer.byteLength(topic) }).catch(cause => {
       if (response && pending.get(responseId) === response) pending.delete(responseId);
       response?.reject(cause);
@@ -456,7 +528,7 @@ export function createShellyEvseAdapter({ config, broker, client, store, engine,
       });
     });
   }
-  function admitNotification(params, at, retained, method = 'NotifyStatus') {
+  function admitNotification(params, at, retained, method = 'NotifyStatus', admittedAt) {
     let accepted = true;
     const eventAt = finite(params?.ts) && params.ts > 0 ? Math.round(params.ts * 1000) : null;
     for (const [key, delta] of Object.entries(params ?? {})) {
@@ -465,8 +537,9 @@ export function createShellyEvseAdapter({ config, broker, client, store, engine,
       try {
         // Full component readings retain their native value clock. A partial
         // notification is a separate event, never a fabricated last_update_ts.
-        if (eventAt === null) { accept(role, delta, at, retained); continue; }
-        if (retained || eventAt > at || at - eventAt > config.maxAgeMs || !delta || typeof delta !== 'object' || Array.isArray(delta)) continue;
+        if (eventAt === null) { accept(role, delta, at, retained, null, admittedAt); continue; }
+        if (retained || !validateAdmittedSourceTime({ sourceTime: eventAt, receivedAt: at, admittedAt, now: clock() })
+          || clock() - Math.min(at, eventAt) > config.maxAgeMs || !delta || typeof delta !== 'object' || Array.isArray(delta)) continue;
         const field = state.fields[role];
         if (eventAt <= (state.notificationClocks?.[role] ?? 0) || eventAt < (field?.measuredAt ?? 0)) continue;
         const baseline = notificationBaselines.get(role)
@@ -479,7 +552,7 @@ export function createShellyEvseAdapter({ config, broker, client, store, engine,
         const valueChanged = Object.hasOwn(delta, 'value') && (!baseline || JSON.stringify(value) !== JSON.stringify(baseline.value));
         const sourceChanged = Object.hasOwn(delta, 'source') && (!baseline || commandSource !== baseline.commandSource);
         const nativeClock = finite(delta.last_update_ts) && delta.last_update_ts > 0 ? Math.round(delta.last_update_ts * 1000) : null;
-        if (nativeClock !== null && nativeClock > at) continue;
+        if (nativeClock !== null && !validateAdmittedSourceTime({ sourceTime: nativeClock, receivedAt: at, admittedAt, now: clock() })) continue;
         const nativeChanged = nativeClock !== null && nativeClock > (field?.measuredAt ?? 0);
         const changed = valueChanged || sourceChanged || nativeChanged;
         const before = copy(state);
@@ -491,14 +564,15 @@ export function createShellyEvseAdapter({ config, broker, client, store, engine,
             if (state.permissionEvents.length >= PERMISSION_EVENT_LIMIT) state.permissionOverflow = true;
             else {
               state.permissionSequence = (state.permissionSequence ?? 0) + 1;
-              state.permissionEvents.push({ sequence: state.permissionSequence, eventAt, receivedAt: at,
+              state.permissionEvents.push({ sequence: state.permissionSequence, eventAt, receivedAt: at, ...(admittedAt === undefined ? {} : { admittedAt }),
                 valueUpdatedAt: nativeClock, value: value === undefined ? null : value, commandSource,
                 sessionId: state.connection?.sessionId ?? null, connectedAt: state.connection?.connectedAt ?? null });
             }
           }
           if (changed && role !== 'phase_info') {
             state.notificationPending ??= {};
-            state.notificationPending[role] = { value: value === undefined ? null : copy(value), valueKnown: value !== undefined, eventAt, receivedAt: at, commandSource };
+            state.notificationPending[role] = { value: value === undefined ? null : copy(value), valueKnown: value !== undefined, eventAt, receivedAt: at, commandSource,
+              ...(admittedAt === undefined ? {} : { admittedAt }) };
             if (role === 'current_limit' && (method !== 'NotifyFullStatus' || baseline))
               state.notificationPending[role].instructionAt = eventAt;
           }
@@ -517,9 +591,9 @@ export function createShellyEvseAdapter({ config, broker, client, store, engine,
         if (role !== 'phase_info') {
           notificationPending.set(role, copy(state.notificationPending[role]));
         }
-        if (nativeClock !== null && Object.hasOwn(delta, 'value')) accept(role, { ...delta, source: commandSource }, at, false);
+        if (nativeClock !== null && Object.hasOwn(delta, 'value')) accept(role, { ...delta, source: commandSource }, at, false, null, admittedAt);
         // A partial phase object is not merged into fresh three-phase evidence.
-        requestNotificationReadback();
+        afterCommit(requestNotificationReadback);
       } catch (cause) { accepted = false; controlReady = false; readinessRevision++;
         error = cause.code ?? 'evse-recording-unavailable'; }
     }
@@ -557,7 +631,7 @@ export function createShellyEvseAdapter({ config, broker, client, store, engine,
         discovered = info?.id === config.deviceId && componentRoles.size === Object.keys(TYPES).length;
         await write(() => {
           const events = pendingEvents; pendingEvents = [];
-          for (const event of events) if (!admitNotification(event.params, event.at, event.retained, event.method)) admission.restore(event.admissionCheckpoint);
+          for (const event of events) if (!admitNotification(event.params, event.at, event.retained, event.method, event.admittedAt)) admission.restore(event.admissionCheckpoint);
         }, { epoch });
       }
       let eligible = false;
@@ -616,6 +690,7 @@ export function createShellyEvseAdapter({ config, broker, client, store, engine,
     return polling;
   }
   function connect() {
+    sourcePending.clear();
     notificationBaselines.clear();
     connected = true; admitted = false; generation++; buffer = []; pendingEvents = []; overflow = eventOverflow = false; admission.reset(); discovered = controlReady = false;
     subscriptionStatus = 'pending';
@@ -625,11 +700,12 @@ export function createShellyEvseAdapter({ config, broker, client, store, engine,
       admitted = !overflow && !error && Array.isArray(grants) && subscriptions.every(topic => grants.some(g => g.topic === topic && [0, 1, 2].includes(g.qos)));
       subscriptionStatus = admitted ? 'subscribed' : 'failed';
       if (!admitted) { buffer = []; return; }
-      const messages = buffer; buffer = []; for (const item of messages) receive(item.topic, item.payload, item.packet, item.at);
+      const messages = buffer; buffer = []; for (const item of messages) receive(item.topic, item.payload, item.packet, item.at, { admittedAt: item.admittedAt });
       void refresh();
     });
   }
   function disconnect() {
+    sourcePending.clear();
     connected = admitted = online = discovered = controlReady = false; subscriptionStatus = 'disconnected'; generation++; buffer = []; rejectPending('evse-offline');
     publishStatus();
   }
@@ -639,8 +715,9 @@ export function createShellyEvseAdapter({ config, broker, client, store, engine,
   }, 5000); timer.unref?.();
   const settingFresh = (role, now = clock()) => {
     const field = state.fields[role];
-    return field && fieldGenerations.get(role) === generation && !field.retained && field.invalidatedAt === undefined && field.measuredAt > 0 && field.measuredAt <= now
-      && field.receivedAt <= now && now - field.receivedAt <= config.maxAgeMs;
+    return field && fieldGenerations.get(role) === generation && !field.retained && field.invalidatedAt === undefined && field.measuredAt > 0
+      && validateAdmittedSourceTime({ sourceTime: field.measuredAt, receivedAt: field.receivedAt, admittedAt: field.admittedAt, now })
+      && now - field.receivedAt <= config.maxAgeMs;
   };
   const knownWorkState = (now = clock()) => discovered && profileSupported && settingFresh('work_state', now)
     && [...config.connectedStates, ...config.chargingStates, ...config.disconnectedStates].includes(state.fields.work_state.value);
@@ -649,7 +726,7 @@ export function createShellyEvseAdapter({ config, broker, client, store, engine,
   // preparation cannot become an unrestricted probe while readback is pending.
   const observationReady = () => Boolean(connected && admitted && online && observationServiceReady() && knownWorkState()
     && settingFresh('start_charging') && settingFresh('current_limit'));
-  const basicReady = () => observationReady() && storagePending === 0 && !notificationPending.size;
+  const basicReady = () => observationReady() && storagePending === 0 && sourcePending.size === 0 && !notificationPending.size;
   const snapshot = () => ({ association, transport: 'shelly-evse', online: connected && admitted && online, controlReady: basicReady(), currentControlReady: basicReady() && currentReady(),
     identificationCurrentReady: observationReady() && identificationCurrentReady(),
     identificationReady: observationReady(),
@@ -686,12 +763,14 @@ export function createShellyEvseAdapter({ config, broker, client, store, engine,
       if (field?.invalidatedAt !== undefined && !heldPhaseConfirmed(field)) quality.push('invalidated');
       if (field && (!finite(field.measuredAt) || field.measuredAt <= 0)) quality.push('source_time_unknown');
       else if (field?.measuredAt > now) quality.push('future_source_time');
-      else if (field && (field.receivedAt > now || now - field.receivedAt > config.maxAgeMs)) quality.push('stale');
+      else if (field && (field.receivedAt > now || field.admittedAt > now || now - field.receivedAt > config.maxAgeMs)) quality.push('stale');
       if (connected && admitted && field && fieldGenerations.get('phase_info') !== generation) quality.push('unconfirmed-connection');
       if (!connected || !admitted) quality.push('mqtt-disconnected');
       else if (!online) quality.push('device-offline');
       return { value: finite(value) ? value : null, unit, source: 'shelly-evse',
         sourceTime: field?.measuredAt ?? null, receivedAt: field?.receivedAt ?? null,
+        ...(field?.admittedAt === undefined ? {} : { raw: { timeAdmission: {
+          sourceTime: field.measuredAt, receivedAt: field.receivedAt, admittedAt: field.admittedAt } } }),
         available: quality.length === 0, quality, acquisitionOnly: true };
     };
     const physical = state.fields.phase_info?.value;

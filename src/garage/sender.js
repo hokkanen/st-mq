@@ -1,6 +1,8 @@
 import { randomUUID } from 'node:crypto';
 import { garageSettings } from './settings.js';
 import { decodeGarageEnvelope } from './contract.js';
+import { createSourceTimePending } from '../acquisition/source-time-pending.js';
+import { classifySourceTime, sourceTimeAdmission, validateAdmittedSourceTime } from '../domain/time-evidence.js';
 
 export const GARAGE_SENDER_CONTRACT = 'stmq-garage-sender/v1';
 const CONFIGURATION_TIMEOUT_MS = 30_000;
@@ -49,10 +51,11 @@ export function validateGarageSenderSnapshot(value) {
     || value.version !== 1 || value.schema !== GARAGE_SENDER_CONTRACT) invalid();
   let state = value.state;
   if (state !== null) {
-    if (!object(state) || Object.keys(state).sort().join(',') !== 'bootId,challenge,config,deviceId,observedAt,protection,receivedAt,retained,sequence'
+    if (!object(state) || Object.keys(state).filter(key => key !== 'admittedAt').sort().join(',') !== 'bootId,challenge,config,deviceId,observedAt,protection,receivedAt,retained,sequence'
       || !identity(state.deviceId) || !identity(state.bootId) || !identity(state.challenge)
       || !time(state.sequence) || !time(state.observedAt) || !time(state.receivedAt)
-      || state.observedAt > state.receivedAt || typeof state.retained !== 'boolean') invalid();
+      || !validateAdmittedSourceTime({ sourceTime: state.observedAt, receivedAt: state.receivedAt, admittedAt: state.admittedAt })
+      || typeof state.retained !== 'boolean') invalid();
     let config;
     try { config = validateSenderProtectionSettings(state.config); } catch { invalid(); }
     const protection = protectionState(state.protection);
@@ -72,17 +75,24 @@ export function validateGarageSenderSnapshot(value) {
  * BLE protection and the pipe estimate continue independently of ST-MQ. */
 export function createGarageSender({ settings: input = {}, protection = garageSettings().protection,
   enabled = false, publish, clock = Date.now, canControl = () => true,
-  onState = () => {}, onObservation = () => {}, persisted = null } = {}) {
+  onState = () => {}, onObservation = () => {}, persisted = null, defer = action => action(),
+  monotonicClock = () => performance.now() } = {}) {
   const settings = garageSenderSettings(input);
   const configuredSettings = validateSenderProtectionSettings(protection);
   validateGarageSenderSnapshot(persisted);
   let connected = false, closed = false, state = null, usedChallenge = null, lastCommand = null;
   let pending = null, attempts = 0, stoppedReason = null, matched = false;
+  let stateDeadline = -Infinity;
+  let pendingSequence = 0;
+  const pendingTime = createSourceTimePending({ clock, monotonicClock, dispatch: defer, ordered: true,
+    onReject(_packet, reason) { if (reason !== 'cleared') { stateDeadline = -Infinity; onState(snapshot()); } },
+    onReady({ topicName, payload, packet }, receivedAt, admittedAt) { receive(topicName, payload, packet, receivedAt, admittedAt); } });
   const retiredBoots = new Set();
   function snapshot() { return { version: 1, schema: GARAGE_SENDER_CONTRACT, state: state ? structuredClone(state) : null,
     lastCommand: lastCommand ? structuredClone(lastCommand) : null }; }
   const fresh = now => Boolean(connected && state && !state.retained && state.observedAt <= now
-    && state.receivedAt <= now && now - state.observedAt < settings.maxAgeMs);
+    && state.receivedAt <= now && now - Math.min(state.observedAt, state.receivedAt) < settings.maxAgeMs
+    && monotonicClock() < stateDeadline);
   const matching = () => Object.keys(configuredSettings).every(key => state?.config[key] === configuredSettings[key]);
   function expire(now) {
     if (!pending || now - pending.requestedAt < CONFIGURATION_TIMEOUT_MS) return;
@@ -111,7 +121,7 @@ export function createGarageSender({ settings: input = {}, protection = garageSe
   }
   async function reconcile(now = clock()) {
     expire(now);
-    if (!fresh(now) || matching() || writeReason() || pending || stoppedReason
+    if (!fresh(now) || pendingTime.size || matching() || writeReason() || pending || stoppedReason
       || attempts >= CONFIGURATION_ATTEMPTS || usedChallenge === state.challenge) return;
     const command = { schema: GARAGE_SENDER_CONTRACT, bootId: state.bootId, challenge: state.challenge,
       commandId: randomUUID(), action: 'configure', config: structuredClone(configuredSettings) };
@@ -127,10 +137,17 @@ export function createGarageSender({ settings: input = {}, protection = garageSe
       onState(snapshot());
     }
   }
-  function receive(topicName, payload, packet = {}, receivedAt = clock()) {
+  function receive(topicName, payload, packet = {}, receivedAt = clock(), admittedAt) {
     if (!connected || topicName !== settings.stateTopic) return false;
     const value = decodeGarageEnvelope(payload, { receivedAt, schema: GARAGE_SENDER_CONTRACT });
-    if (!value || value.observedAt > receivedAt || receivedAt - value.observedAt >= settings.maxAgeMs
+    if (!value) return false;
+    if (!packet.retain && admittedAt === undefined
+      && (classifySourceTime({ sourceTime: value.observedAt, receivedAt, now: receivedAt }).status === 'pending' || pendingTime.size)) {
+      if (pendingTime.defer(++pendingSequence, { topicName, payload, packet }, { sourceTime: value.observedAt, receivedAt })) return false;
+    }
+    const evaluatedAt = admittedAt ?? receivedAt;
+    if (!validateAdmittedSourceTime({ sourceTime: value.observedAt, receivedAt, admittedAt, now: evaluatedAt })
+      || evaluatedAt - Math.min(value.observedAt, receivedAt) >= settings.maxAgeMs
       || typeof value.challenge !== 'string' || !value.challenge || value.challenge.length > 128) return false;
     let config;
     try { config = validateSenderProtectionSettings(value.config); } catch { return false; }
@@ -148,7 +165,9 @@ export function createGarageSender({ settings: input = {}, protection = garageSe
       }
     }
     state = { deviceId: value.deviceId, bootId: value.bootId, sequence: value.sequence,
-      observedAt: value.observedAt, receivedAt, retained: packet.retain === true, challenge: value.challenge, config, protection };
+      observedAt: value.observedAt, receivedAt, ...(admittedAt !== undefined ? { admittedAt } : {}),
+      retained: packet.retain === true, challenge: value.challenge, config, protection };
+    stateDeadline = monotonicClock() + settings.maxAgeMs - (evaluatedAt - Math.min(value.observedAt, receivedAt));
     if (!packet.retain && pending && pending.deviceId === state.deviceId && pending.bootId === state.bootId
       && value.result?.commandId === pending.commandId && ['applied', 'rejected', 'failed'].includes(value.result.status)) {
       lastCommand = { ...lastCommand, status: value.result.status, reason: value.result.reason ?? null };
@@ -168,14 +187,16 @@ export function createGarageSender({ settings: input = {}, protection = garageSe
         value: row.uncertain ? null : row.estimatedC, unit: 'degC', sourceTime: value.observedAt, receivedAt,
         quality: row.uncertain || row.estimatedC === null ? ['unknown'] : ['estimated'],
         raw: { usableForControl: false, estimated: true, schema: GARAGE_SENDER_CONTRACT,
+          ...(sourceTimeAdmission({ sourceTime: value.observedAt, receivedAt, now: evaluatedAt, deferred: admittedAt !== undefined }) ? {
+            timeAdmission: sourceTimeAdmission({ sourceTime: value.observedAt, receivedAt, now: evaluatedAt, deferred: admittedAt !== undefined }) } : {}),
           reportIntervalMs: 30_000, reportGraceMs: settings.maxAgeMs - 30_000 } });
     }
-    void reconcile(receivedAt).catch(() => {});
+    void reconcile(evaluatedAt).catch(() => {});
     return true;
   }
-  return { topics: settings.stateTopic ? [settings.stateTopic] : [], receive, snapshot, status, reconcile,
-    setConnected(value) { connected = !closed && Boolean(value); state = null; usedChallenge = null; },
-    subscriptionFailed() { connected = false; },
-    async close() { closed = true; connected = false; pending = null; },
+  return { topics: settings.stateTopic ? [settings.stateTopic] : [], receive, snapshot, status, reconcile, tick: now => pendingTime.drain(now),
+    setConnected(value) { pendingTime.clear(); connected = !closed && Boolean(value); state = null; usedChallenge = null; },
+    subscriptionFailed() { pendingTime.clear(); connected = false; },
+    async close() { pendingTime.clear(); closed = true; connected = false; pending = null; },
   };
 }

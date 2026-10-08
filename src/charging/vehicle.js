@@ -1,5 +1,6 @@
 import { acceptSocReading, socMeasurementTime } from './soc.js';
 import { teslamateConnectionContext, teslamateDeparture } from './teslamate.js';
+import { MAX_SOURCE_AHEAD_MS, sourceTimeAdmission, validateAdmittedSourceTime } from '../domain/time-evidence.js';
 
 const facts = ['pluggedIn', 'charging', 'atHome'];
 const MINUTE = 60_000;
@@ -9,7 +10,8 @@ const BMW_CHARGING_HISTORY_LIMIT = 4096;
 
 const currentContext = (field, now, maxAge) => time(field?.measuredAt) && field.measuredAt <= now
   && now - field.measuredAt <= maxAge
-  && (field.receivedAt == null || time(field.receivedAt) && field.receivedAt <= now);
+  && (field.receivedAt == null || validateAdmittedSourceTime({ sourceTime: field.measuredAt,
+    receivedAt: field.receivedAt, admittedAt: field.admittedAt, now }));
 
 /** The last valid location remains context until another valid location replaces
  * it. GPS loss and reconnecting in a garage do not imply a departure. Preserve
@@ -146,7 +148,7 @@ export function matchTeslaMinimumCurrent(tesla, { physical, peers = [], minimumP
 
 /** Independent vehicle facts keep their source clocks and original MQTT delivery
  * provenance. Repeating a retained sample live cannot create a connection event. */
-export function acceptVehicleReading(previous, payload, { now = Date.now(), association = 'vehicle-mqtt', retained = false, provider, evidenceSince = null } = {}) {
+export function acceptVehicleReading(previous, payload, { now = Date.now(), receivedAt = now, deferred = false, association = 'vehicle-mqtt', retained = false, provider, evidenceSince = null } = {}) {
   if (previous?.association !== association) previous = null;
   const reject = reason => ({ accepted: false, reading: previous ?? null, reason });
   let value;
@@ -168,7 +170,7 @@ export function acceptVehicleReading(previous, payload, { now = Date.now(), asso
       const knownSoc = Number.isFinite(previous?.soc);
       const anchor = knownSoc ? previous : { soc: 0, measuredAt: null, readingId: 'vehicle-fields-only', sequence: null };
       battery = acceptSocReading(previous, { ...value, soc: anchor.soc, measuredAt: anchor.measuredAt,
-        readingId: anchor.readingId, sequence: anchor.sequence }, { now, association });
+        readingId: anchor.readingId, sequence: anchor.sequence }, { now, receivedAt, deferred, association });
       if (battery.accepted && !knownSoc) {
         const reading = { ...battery.reading };
         for (const key of ['soc', 'measuredAt', 'receivedAt', 'readingId', 'sequence']) delete reading[key];
@@ -177,7 +179,7 @@ export function acceptVehicleReading(previous, payload, { now = Date.now(), asso
         battery = { accepted: changed, reading, reason: changed ? null : 'duplicate-reading' };
       }
     }
-  } else battery = acceptSocReading(previous, value, { now, association });
+  } else battery = acceptSocReading(previous, value, { now, receivedAt, deferred, association });
   if (!battery.accepted && !['duplicate-reading', 'older-reading', 'unordered-reading'].includes(battery.reason)) return battery;
   const same = previous?.association === association;
   const reading = { ...(battery.reading ?? {}), association,
@@ -189,13 +191,14 @@ export function acceptVehicleReading(previous, payload, { now = Date.now(), asso
     const lastKnown = prior && (typeof previous[key] === 'boolean'
       ? { value: previous[key], measuredAt: prior.measuredAt, readingId: prior.readingId,
         receivedAt: prior.receivedAt, retained: prior.retained,
+        ...(prior.admittedAt === undefined ? {} : { admittedAt: prior.admittedAt }),
         positiveEvent: prior.positiveEvent ?? null, negativeEvent: prior.negativeEvent ?? null }
       : prior.lastKnown ?? null);
     if (same && previous[key] !== undefined) { reading[key] = previous[key]; if (prior) reading.fields[key] = prior; }
     if (!Object.hasOwn(value, key)) continue;
     if (value[key] !== null && typeof value[key] !== 'boolean') return reject('invalid-vehicle-fact');
     const meta = value.fields?.[key], at = socMeasurementTime(meta?.measuredAt);
-    if (!meta || (value[key] === null ? at !== null && !time(at) : !time(at)) || at > now + 5 * MINUTE || typeof meta.readingId !== 'string'
+    if (!meta || (value[key] === null ? at !== null && !time(at) : !time(at)) || at > receivedAt + MAX_SOURCE_AHEAD_MS || typeof meta.readingId !== 'string'
       || !meta.readingId.length || meta.readingId.length > 128) return reject('invalid-field-metadata');
     // Historical charging facts use their source clock. A late transition may
     // complete an older episode while the current value already describes a
@@ -215,7 +218,8 @@ export function acceptVehicleReading(previous, payload, { now = Date.now(), asso
         if (!duplicate && !(value[key] === true && lastKnown?.value === false && at === lastKnown.measuredAt)
           && !history.some(entry => entry.measuredAt === at && entry.value === value[key])) {
           if (history.length < BMW_CHARGING_HISTORY_LIMIT) {
-            history.push({ value: value[key], measuredAt: at, readingId: meta.readingId, receivedAt: now, retained });
+            history.push({ value: value[key], measuredAt: at, readingId: meta.readingId, receivedAt, retained,
+              ...(sourceTimeAdmission({ sourceTime: at, receivedAt, now, deferred }) ? { admittedAt: now } : {}) });
             history.sort((a, b) => a.measuredAt - b.measuredAt || a.receivedAt - b.receivedAt);
           } else historyOverflowAt = Math.max(historyOverflowAt ?? 0, at);
         }
@@ -243,7 +247,8 @@ export function acceptVehicleReading(previous, payload, { now = Date.now(), asso
       && (at < lastKnown.measuredAt || at === lastKnown.measuredAt
         && value[key] !== false && !rederivedHome && (value[key] !== lastKnown.value || meta.readingId !== lastKnown.readingId))) continue;
     reading[key] = value[key];
-    const observed = { measuredAt: at, readingId: meta.readingId, receivedAt: now, retained };
+    const observed = { measuredAt: at, readingId: meta.readingId, receivedAt, retained,
+      ...(sourceTimeAdmission({ sourceTime: at, receivedAt, now, deferred }) ? { admittedAt: now } : {}) };
     const positiveEvent = value[key] === true && lastKnown?.value !== true ? observed : lastKnown?.positiveEvent ?? null;
     const negativeEvent = value[key] === false && lastKnown?.value === true ? observed : lastKnown?.negativeEvent ?? null;
     reading.fields[key] = { ...observed, positiveEvent, negativeEvent,
@@ -256,7 +261,7 @@ export function acceptVehicleReading(previous, payload, { now = Date.now(), asso
 
 function freshBoundaryEvent(event, now) {
   return time(now) && eventId(event?.readingId) && time(event.measuredAt) && event.measuredAt >= 0
-    && time(event.receivedAt) && event.receivedAt >= 0 && event.measuredAt <= now && event.receivedAt <= now
+    && validateAdmittedSourceTime({ sourceTime: event.measuredAt, receivedAt: event.receivedAt, admittedAt: event.admittedAt, now })
     && now - event.measuredAt <= 15 * MINUTE && now - event.receivedAt <= 15 * MINUTE;
 }
 
@@ -276,7 +281,8 @@ export function bmwDisconnectEvent(previousReading, reading, { match, connectedA
     || !time(previous?.measuredAt) || event.measuredAt <= previous.measuredAt
     || !time(previous?.receivedAt) || event.receivedAt < previous.receivedAt || event.receivedAt < match.matchedAt) return null;
   return { source: 'bmw-cardata', readingId: event.readingId, measuredAt: event.measuredAt,
-    receivedAt: event.receivedAt, endedConnectedAt: connectedAt };
+    receivedAt: event.receivedAt, endedConnectedAt: connectedAt,
+    ...(event.admittedAt === undefined ? {} : { admittedAt: event.admittedAt }) };
 }
 
 /** Reconnection only dates the next charger connection after a known departure;
@@ -288,7 +294,8 @@ export function bmwReconnectEvent(boundary, reading, { now = Date.now() } = {}) 
     || event?.retained !== false || !freshBoundaryEvent(event, now)
     || event.readingId === boundary.readingId || event.measuredAt <= boundary.measuredAt
     || event.receivedAt <= boundary.receivedAt) return null;
-  return { readingId: event.readingId, measuredAt: event.measuredAt, receivedAt: event.receivedAt, retained: false };
+  return { readingId: event.readingId, measuredAt: event.measuredAt, receivedAt: event.receivedAt, retained: false,
+    ...(event.admittedAt === undefined ? {} : { admittedAt: event.admittedAt }) };
 }
 
 /** Present history uses one current persisted shape. An absent history is
@@ -304,8 +311,9 @@ export function validateBmwChargingHistory(reading) {
     throw new Error('Unsupported saved BMW charging history; start a fresh development database');
   for (const entry of history) {
     if (!entry || Array.isArray(entry)
-      || Object.keys(entry).sort().join(',') !== 'measuredAt,readingId,receivedAt,retained,value'
+      || Object.keys(entry).filter(key => key !== 'admittedAt').sort().join(',') !== 'measuredAt,readingId,receivedAt,retained,value'
       || typeof entry.value !== 'boolean' || !time(entry.measuredAt) || !time(entry.receivedAt)
+      || !validateAdmittedSourceTime({ sourceTime: entry.measuredAt, receivedAt: entry.receivedAt, admittedAt: entry.admittedAt })
       || !eventId(entry.readingId) || typeof entry.retained !== 'boolean' || ids.has(entry.readingId)
       || previous && entry.measuredAt < previous.measuredAt)
       throw new Error('Unsupported saved BMW charging history; start a fresh development database');

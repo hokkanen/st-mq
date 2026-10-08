@@ -1,5 +1,6 @@
 import { HELD_TEMPERATURE_SIGNALS, INDOOR_ATTENTION_MS } from '../domain/indoor-sensors.js';
 import { temperatureReportMaxAge } from '../domain/temperature-reports.js';
+import { observationTimeAdmitted, observationAvailableAt } from '../domain/time-evidence.js';
 
 const ALLOWED = new Set(['good', 'simulated', 'historical', 'converted_fahrenheit', 'stale']);
 
@@ -11,7 +12,7 @@ export function indoorReadingUsable(observation, at) {
     || observation.signal === 'indoor_temperature' && observation.source?.startsWith('husdata')
     || !Number.isFinite(observation.value) || !Number.isFinite(observation.sourceTime)
     || !Number.isFinite(observation.receivedAt) || observation.sourceTime > at
-    || observation.receivedAt > at || observation.sourceTime > observation.receivedAt
+    || !observationTimeAdmitted(observation, at)
     || !['degC', '°C'].includes(observation.unit) || observation.source === 'controller-estimate'
     || observation.raw?.auditOnly || observation.raw?.retained === true
     || observation.raw?.timeBasis === 'availability-transition'
@@ -105,7 +106,7 @@ export function indoorReportCoverage(store, { reading, from, at, notBefore = -In
     ORDER BY o.received_at,o.id`).all(reading.source, reading.device, reading.signal, at, from - age)) {
     const observation = decode(row);
     if (observation.raw?.retained || observation.quality.includes('retained') || observation.raw?.acquisitionOnly) continue;
-    events.push({ start: observation.receivedAt, end: observation.sourceTime + (temperatureReportMaxAge(observation) ?? Infinity),
+    events.push({ start: observationAvailableAt(observation) ?? observation.receivedAt, end: observation.sourceTime + (temperatureReportMaxAge(observation) ?? Infinity),
       receivedAt: observation.receivedAt, observation, coverageId: null, status: 'fresh' });
   }
   events.sort((a, b) => a.start - b.start || (a.coverageId ?? a.observation.id) - (b.coverageId ?? b.observation.id));

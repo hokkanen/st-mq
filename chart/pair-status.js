@@ -6,6 +6,8 @@ const resetModes = ['keep', 'fresh'];
 const pendingKey = 'stmq-pair-pending-v1';
 const uuid = /^[a-f0-9]{8}-[a-f0-9]{4}-[1-5][a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/i;
 const validPreviewId = value => typeof value === 'string' && /^[a-f0-9]{64}$/.test(value);
+const presentationClockAhead = (time, now) => time > now + 60_000;
+const ageMinutes = (time, now) => Math.max(0, Math.floor((now - time) / 60_000));
 const stamp = value => Number.isFinite(value) && value > 0 ? value : null;
 const count = value => Number.isSafeInteger(value) && value >= 0 ? value : null;
 const roleName = role => ({ master: 'Master', slave: 'Slave', protected: 'Protected recovery' })[role] ?? 'Checking role';
@@ -190,11 +192,11 @@ export function pairDisplay(view, { now = Date.now(), formatTime = at => new Dat
       : 'This master supplies the database for one-way mirroring.'
     : sync.state === 'syncing' ? phaseText[sync.phase] ?? 'Synchronizing the database.'
       : sync.state === 'error' ? `Synchronization needs attention. ${sourceAt && verifiedAt ? 'The last verified snapshot is kept.' : 'No verified snapshot is available yet.'}`
-        : sourceAt && verifiedAt ? `Last snapshot: ${formatTime(sourceAt)} · ${sourceAt > now ? 'snapshot clock ahead' : `${Math.floor((now - sourceAt) / 60_000)} minutes old`}.`
+        : sourceAt && verifiedAt ? `Last snapshot: ${formatTime(sourceAt)} · ${presentationClockAhead(sourceAt, now) ? 'snapshot clock ahead' : `${ageMinutes(sourceAt, now)} minutes old`}.`
           : 'No verified snapshot has been reported yet.';
   const syncDetail = state === 'protected' ? 'Incoming snapshots cannot replace this history while protection is active.' : view.role === 'master'
     ? peer.role === 'protected' && peer.reachable === true ? 'Check the preserved history before explicitly replacing the other database.'
-      : peerSourceAt && peerVerifiedAt ? `The slave reports a verified snapshot from ${formatTime(peerSourceAt)} · ${peerSourceAt > now ? 'snapshot clock ahead' : `${Math.floor((now - peerSourceAt) / 60_000)} minutes old`}. Identity verified ${formatTime(peerVerifiedAt)}.${stamp(peer.syncReceivedAt) ? ` Status received ${formatTime(peer.syncReceivedAt)}.` : ''} Newer master data can still be waiting to sync.`
+      : peerSourceAt && peerVerifiedAt ? `The slave reports a verified snapshot from ${formatTime(peerSourceAt)} · ${presentationClockAhead(peerSourceAt, now) ? 'snapshot clock ahead' : `${ageMinutes(peerSourceAt, now)} minutes old`}. Identity verified ${formatTime(peerVerifiedAt)}.${stamp(peer.syncReceivedAt) ? ` Status received ${formatTime(peer.syncReceivedAt)}.` : ''} Newer master data can still be waiting to sync.`
       : 'A connection alone does not confirm that the slave database is current. Waiting for its verified snapshot status.'
     : [verifiedAt ? `Last snapshot identity verified ${formatTime(verifiedAt)}.` : '',
     count(sync.bytes) !== null ? `${new Intl.NumberFormat('en-GB', { maximumFractionDigits: 1 }).format(sync.bytes / 1e6)} MB.` : '',
@@ -206,7 +208,7 @@ export function pairDisplay(view, { now = Date.now(), formatTime = at => new Dat
   const recovery = view.recovery ?? {};
   const recoveryHistorical = mirrorComparison(view) && recovery.state === 'ready'
     && (peer.reachable !== true || peer.role !== 'slave' || ['error', 'stale'].includes(peerSync?.state)
-      || peerSourceAt > now || peerVerifiedAt > now || Boolean(view.error || peerSync?.error));
+      || presentationClockAhead(peerSourceAt, now) || presentationClockAhead(peerVerifiedAt, now) || Boolean(view.error || peerSync?.error));
   const recoveryText = recovery.pendingRelease ? 'Mirroring completion is uncertain. Retry to verify the same saved release with the other computer.'
     : donorRoleChanged(view) ? 'The other computer’s role changed after this check. Review its current status and run a new check before any recovery or replacement.' : {
     idle: '', checking: 'Validating the other computer’s history source. No history is changed by this check.',
@@ -226,7 +228,9 @@ export function pairDisplay(view, { now = Date.now(), formatTime = at => new Dat
   const reportedSync = view.role === 'master' ? peerSync : sync;
   const reportedSourceAt = view.role === 'master' ? peerSourceAt : sourceAt;
   const reportedVerifiedAt = view.role === 'master' ? peerVerifiedAt : verifiedAt;
-  const clockAhead = reportedSourceAt > now || reportedVerifiedAt > now;
+  // Presentation spans different computers and is not an authority check.
+  // Match replica presentation; a subsecond lead is ordinary clock uncertainty.
+  const clockAhead = presentationClockAhead(reportedSourceAt, now) || presentationClockAhead(reportedVerifiedAt, now);
   const syncFailed = reportedSync?.state === 'error';
   const peerStat = peerProtected ? 'Other history protected' : peerAlsoMaster ? 'Other computer reports master'
     : peer.reachable === true ? 'Other computer connected'
@@ -238,7 +242,7 @@ export function pairDisplay(view, { now = Date.now(), formatTime = at => new Dat
     : syncFailed ? 'Sync needs attention'
     : reportedSync?.state === 'syncing' ? 'Syncing snapshot'
     : clockAhead ? 'Snapshot clock ahead'
-    : reportedSourceAt && reportedVerifiedAt ? `${view.role === 'master' ? 'Slave snapshot' : 'Snapshot'} ${Math.floor((now - reportedSourceAt) / 60_000)} min old`
+    : reportedSourceAt && reportedVerifiedAt ? `${view.role === 'master' ? 'Slave snapshot' : 'Snapshot'} ${ageMinutes(reportedSourceAt, now)} min old`
     : view.role === 'master' ? 'Waiting for snapshot status' : 'Waiting for first snapshot';
   const operationFailed = view.uiOperation?.state === 'error';
   const error = Boolean(operationFailed || resetInterrupted || view.error || recovery.error || recovery.state === 'error' || vip.error || frontend?.error || syncFailed);

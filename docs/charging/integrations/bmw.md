@@ -117,7 +117,12 @@ arrive independently. When the current `atHome` fact is explicitly unknown, its
 latest valid home observation supplies identification context indefinitely,
 including across restart and unplug/replug. The current fact stays unknown;
 the charger details show that distinction and the original home-observation time.
-Repeated publications and restart do not renew the source timestamp. This needs no
+Repeated publications and restart do not renew the source timestamp. Live reports
+whose source clocks lead receipt by at most one second wait under the shared
+[time-evidence policy](../../time-evidence.md), preserving their original clocks
+and arrival order. They cannot replace current telemetry, consume a target-change
+watermark or identify a connection before admission. Excessive leads are rejected;
+pending reports cannot cross an MQTT disconnect. This needs no
 publisher change and does not claim to diagnose GPS reception.
 
 An explicit valid away report or replacement of the configured vehicle feed

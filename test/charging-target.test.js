@@ -19,6 +19,20 @@ test('a single target change to 100 remains a valid automatic target', () => {
   assert.equal(selected.selected.source, 'bmw-cardata');
   assert.equal(first.history.length, 1, 'Updating never mutates prior state');
 });
+test('future targets cannot consume the transition watermark or become selected before their source time', () => {
+  for (const lead of [1, 400]) {
+    const first = update(null, 100), sourceAt = START + MINUTE + lead;
+    const lower = reading(85, sourceAt, { receivedAt: START + MINUTE, admittedAt: sourceAt });
+    const waiting = updateTargetState(first, { connectedAt: START, reading: lower, now: START + MINUTE });
+    assert.equal(waiting, first); assert.equal(waiting.last.value, 100);
+    assert.equal(targetSelection(waiting, { reading: lower, now: START + MINUTE }), null);
+    const accepted = updateTargetState(waiting, { connectedAt: START, reading: lower, now: sourceAt });
+    assert.equal(accepted.conflict, true); assert.equal(accepted.lower.value, 85);
+    const final = update(accepted, 100, 2);
+    assert.equal(targetSelection(final, { reading: reading(100, START + 2 * MINUTE) }).selected.value, 85);
+    assert.equal(accepted.lower.measuredAt, sourceAt); assert.equal(accepted.lower.receivedAt, START + MINUTE);
+  }
+});
 
 test('one live 100 to X transition holds X with its original clocks', () => {
   let state = hold();
@@ -117,7 +131,9 @@ test('stale, future, missing-ID or unavailable receipt clocks cannot provide tra
     const state = update(null, 100, 0, options);
     assert.equal(state.history.length, 0);
     assert.equal(update(state, 80, 20).conflict, false);
-    assert.equal(targetSelection(state, { reading: options.reading ?? reading(100) }).selected.value, 100);
+    const selected = targetSelection(state, { reading: options.reading ?? reading(100) });
+    if (options.reading?.fields?.chargeLimitSoc?.receivedAt === START - 1) assert.equal(selected, null);
+    else assert.equal(selected.selected.value, 100);
   }
 });
 

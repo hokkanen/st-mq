@@ -1,3 +1,6 @@
+import { createSourceTimePending } from './source-time-pending.js';
+import { classifySourceTime, validateAdmittedSourceTime } from '../domain/time-evidence.js';
+
 const HUB_URL = 'https://streams.easee.com/hubs/chargers';
 const SESSION_KEYS = ['Id', 'Start', 'Stop', 'EnergyKwh', 'MeterValueStart', 'MeterValueStop'];
 const failure = code => Object.assign(new Error(code), { code });
@@ -110,6 +113,16 @@ export function createEaseeStream({ products = [], getAccessToken, clock = Date.
   let state = 'idle', current = null, loop = null, closed = false, closePromise = null;
   let attempts = 0, failures = 0, reconnects = 0, authenticationFailures = 0, rejectedToken, retryAt = null;
   const lifetime = new AbortController();
+  let pendingSequence = 0;
+  const pendingTime = createSourceTimePending({ clock, setTimeoutFn, clearTimeoutFn, ordered: true,
+    onReject({ context, observation, fromStream }, reason) {
+      if (reason === 'cleared' || !fromStream || current !== context || !context.active) return;
+      const key = `${observation.mid}:${observation.id}`;
+      context.rejected.set(key, Math.max(context.rejected.get(key) ?? -Infinity, observationTime(observation.timestamp)));
+    },
+    onReady({ context, observation, fromStream }, receivedAt, admittedAt) {
+      accept(context, observation, fromStream, receivedAt, admittedAt);
+    } });
 
   function bounded(promise, ms, signal) {
     return new Promise((resolve, reject) => {
@@ -156,13 +169,17 @@ export function createEaseeStream({ products = [], getAccessToken, clock = Date.
     }
   }
 
-  function accept(context, observation, fromStream = true) {
+  function accept(context, observation, fromStream = true, originalReceivedAt, admittedAt) {
     if (closed || current !== context || !context.active || !observation || typeof observation !== 'object') return;
     const { mid, id, timestamp, unit } = observation;
     if (!configured.get(mid)?.has(id)) return;
     if (!fromStream && !context.seen.get(mid)?.has(id)) return;
-    const at = observationTime(timestamp), receivedAt = clock();
-    if (!Number.isFinite(at) || at < 0 || at > receivedAt) return;
+    const at = observationTime(timestamp), receivedAt = originalReceivedAt ?? clock();
+    const timing = classifySourceTime({ sourceTime: at, receivedAt, now: admittedAt ?? receivedAt });
+    if (admittedAt === undefined && (timing.status === 'pending' || pendingTime.size && timing.status === 'ready')) {
+      pendingTime.defer(++pendingSequence, { context, observation, fromStream }, { sourceTime: at, receivedAt }); return;
+    }
+    if (!validateAdmittedSourceTime({ sourceTime: at, receivedAt, admittedAt, now: admittedAt ?? receivedAt })) return;
     const value = observationValue(id, observation.value, observation.dataType);
     if (value === undefined || unit != null && (typeof unit !== 'string' || unit.length > 16)) return;
     if (fromStream) {
@@ -185,6 +202,9 @@ export function createEaseeStream({ products = [], getAccessToken, clock = Date.
       || previousLive.row.unit != null && unit != null && previousLive.row.unit !== unit)) previousLive.conflict = true;
     const live = liveDevice.get(id), shared = device.get(id);
     if (live?.at === at && shared?.at === at && shared.conflict) live.conflict = true;
+    const rejectedKey = `${mid}:${id}`;
+    if (fromStream && live?.at === at && !live.conflict && at > (context.rejected.get(rejectedKey) ?? Infinity))
+      context.rejected.delete(rejectedKey);
     if (fromStream) {
       const evidence = context.evidence.get(mid) ?? { epoch: 0, online: null, synchronizing: false,
         seen: new Map(), activityAt: null, sourceAt: null };
@@ -234,6 +254,7 @@ export function createEaseeStream({ products = [], getAccessToken, clock = Date.
       && live?.at === at && !live.conflict && at > context.readyAt && receivedAt - at <= 15 * 60_000
       && !sameValue(previousLive.row.value, value)) {
       try { Promise.resolve(onObservation(mid, { id, value, measuredAt: at, receivedAt,
+        ...(admittedAt !== undefined ? { admittedAt } : {}),
         previousValue: previousLive.row.value, previousMeasuredAt: previousLive.at })).catch(() => {}); } catch {}
     }
   }
@@ -245,6 +266,7 @@ export function createEaseeStream({ products = [], getAccessToken, clock = Date.
 
   async function run() {
     while (!closed) {
+      pendingTime.clear();
       cache.clear();
       retryAt = null;
       state = 'connecting';
@@ -255,7 +277,7 @@ export function createEaseeStream({ products = [], getAccessToken, clock = Date.
       let resolveLoss, minimumDelay = 0, tokenFailureStatus = null;
       const loss = new Promise(resolve => { resolveLoss = resolve; });
       const context = { active: true, usable: false, readyAt: null, controller, connection: null, lastToken: null,
-        seen: new Map(), live: new Map(), evidence: new Map() };
+        seen: new Map(), live: new Map(), evidence: new Map(), rejected: new Map() };
       current = context;
       const lost = error => {
         invalidate(context);
@@ -356,6 +378,11 @@ export function createEaseeStream({ products = [], getAccessToken, clock = Date.
       if (ids.some(id => values?.get(id)?.conflict)) return null;
       return ids.flatMap(id => values?.has(id) ? [{ ...values.get(id).row }] : []);
     },
+    pending(device, ids) {
+      return [...(configured.get(device) ?? [])].some(id => (!ids || ids.includes(id)) && current?.rejected.has(`${device}:${id}`))
+        || pendingTime.some(row => row.context === current && row.fromStream
+        && row.observation.mid === device && (!ids || ids.includes(row.observation.id)));
+    },
     evidence(device, ids) {
       const connected = !closed && state === 'connected' && current?.active === true;
       const allowed = configured.get(device), evidence = current?.evidence.get(device), values = current?.live.get(device);
@@ -368,7 +395,8 @@ export function createEaseeStream({ products = [], getAccessToken, clock = Date.
           || sameValue(shared.row.value, live.row.value)
             && (shared.row.unit == null || live.row.unit == null || shared.row.unit === live.row.unit));
       };
-      const synchronized = Boolean(connected && validIds && online === true && evidence?.online === true && !evidence.synchronizing
+      const synchronized = Boolean(connected && !pendingTime.size && validIds && online === true && evidence?.online === true && !evidence.synchronizing
+        && ![...ids, 250].some(id => current.rejected.has(`${device}:${id}`))
         && ids.every(id => evidence.seen.has(id) && values?.has(id) && !values.get(id).conflict
           && values.get(id).at === evidence.seen.get(id).at && consistent(id)) && consistent(250));
       const receipts = synchronized ? ids.map(id => evidence.seen.get(id).receivedAt) : [];
@@ -390,6 +418,7 @@ export function createEaseeStream({ products = [], getAccessToken, clock = Date.
     close() {
       if (closePromise) return closePromise;
       closed = true;
+      pendingTime.clear();
       state = 'closed';
       retryAt = null;
       cache.clear();

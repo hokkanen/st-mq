@@ -1,4 +1,5 @@
 import { connectionEvidenceStart, bmwIdentityContextValid, bmwChargingEvents, bmwConsumedChargingAt } from './vehicle.js';
+import { validateAdmittedSourceTime } from '../domain/time-evidence.js';
 
 const MINUTE = 60_000;
 export const IDENTIFICATION_CHARGE_LIMIT_MS = 5 * MINUTE;
@@ -234,7 +235,7 @@ export function matchActiveBmwPause(reading, { state, now, lastDisconnectedAt, c
   const stop = events.find(row => row.value === false && row.retained === false && eventId(row.readingId)
     && row.readingId !== candidate.readingId && time(row.measuredAt) && time(row.receivedAt)
     && row.measuredAt > pause.requestedAt && row.measuredAt <= now && row.measuredAt <= state.pauseUntil
-    && row.receivedAt <= now && row.receivedAt >= row.measuredAt
+    && validateAdmittedSourceTime({ sourceTime: row.measuredAt, receivedAt: row.receivedAt, admittedAt: row.admittedAt, now })
     && Math.abs(row.measuredAt - pause.stoppedAt) <= 30_000
     && !events.some(other => other.value === false && other.measuredAt > candidate.measuredAt && other.measuredAt < row.measuredAt));
   if (!stop) return null;

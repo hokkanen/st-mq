@@ -1,5 +1,7 @@
 import { createMqttAdmission } from './mqtt-admission.js';
 import { createMqttReception } from './mqtt-reception.js';
+import { createSourceTimePending } from './source-time-pending.js';
+import { classifySourceTime, sourceTimeAdmission, validateAdmittedSourceTime } from '../domain/time-evidence.js';
 import { randomUUID, createHash } from 'node:crypto';
 import { createCaravanEnergy } from './shelly-energy.js';
 import { equipmentSignature, equipmentMeterIdentity } from './equipment-config.js';
@@ -50,7 +52,24 @@ export function createShellyCapture({ engine, store, settings, publish, canContr
   const energies = new Map();
   const reception = createMqttReception({ store, engine, admission, devices, meters: energies, requests });
   let receptionAt = null;
+  let admittedReceptionAt, pendingSequence = 0;
   const receivedNow = () => receptionAt ?? engine.clock();
+  const pendingFor = device => pendingTime.some(row => row.device === device);
+  const pendingTime = createSourceTimePending({ clock: engine.clock, ordered: row => row.device.id,
+    dispatch: action => {
+      const apply = () => (store.transaction ?? (fn => fn())).call(store, () => { const checkpoint = pendingTime.checkpoint();
+        store.afterRollback?.(() => pendingTime.restore(checkpoint)); return action(); });
+      return store.runWrite && !store.transactionDepth ? store.runWrite(apply) : apply();
+    },
+    onReject({ device }, reason) {
+      if (reason !== 'cleared' && device.stateName) unavailable(device, 'invalid-source-time');
+    },
+    onReady({ topic, body, packet }, receivedAt, admittedAt) {
+      if (closed || !connected) return;
+      const previous = admittedReceptionAt; admittedReceptionAt = admittedAt;
+      try { api.receive(topic, body, packet, receivedAt); }
+      finally { admittedReceptionAt = previous; }
+    } });
   const energyFor = device => {
     if (!metered(device) || device.generation > 1 && !device.identity) return null;
     const lineage = equipmentMeterIdentity({ ...device, readings: device.customReadings }, { brokerIdentity, nativeIdentity: device.identity });
@@ -108,6 +127,8 @@ export function createShellyCapture({ engine, store, settings, publish, canContr
     const signature = temperatureSignature(device, signal);
     if (signature) raw = { ...raw, temperatureRouteSignature: signature };
     const definition = definitions(device).find(row => row.signal === signal);
+    const timeAdmission = sourceTimeAdmission({ sourceTime: at, receivedAt: receivedNow(), now: admittedReceptionAt ?? receivedNow(), deferred: admittedReceptionAt !== undefined });
+    if (timeAdmission) raw = { ...raw, timeAdmission };
     const observation = { source: 'shelly-mqtt', device: device.role, signal, value, unit,
       sourceTime: at, receivedAt: receivedNow(), quality,
       raw: { timeBasis: value === null ? 'availability-transition' : 'mqtt-live-status',
@@ -124,10 +145,11 @@ export function createShellyCapture({ engine, store, settings, publish, canContr
         value: value === null ? null : Number(value > 0), sourceTime: at ?? receivedNow(),
         raw: { ...observation.raw, basis: powerFeedback ? 'measured-power' : 'reported-switch',
           reportIntervalMs: maxAge(device), reportGraceMs: 0, maxAgeMs: maxAge(device), verified: value !== null } });
-    device.readings[signal] = { value, unit, label: definition?.label ?? signal, observedAt: at, quality, ...raw };
+    device.readings[signal] = { value, unit, label: definition?.label ?? signal, observedAt: at, receivedAt: receivedNow(), quality, ...raw };
     reception.accept();
   };
   const unavailable = (device, reason, receivedAt = receivedNow()) => {
+    pendingTime.removeWhere(row => row.device === device);
     if (store.runWrite && !store.transactionDepth) {
       device.available = false; device.state = null;
       for (const definition of definitions(device)) if (definition.required || device.readings[definition.signal]) {
@@ -280,9 +302,12 @@ export function createShellyCapture({ engine, store, settings, publish, canContr
     }
     return false;
   }
-  const available = (device, now) => connected && device.available && (maxAge(device) === 0 || now - device.lastAt < maxAge(device))
+  const available = (device, now) => connected && device.available && (!stateName(device) || !pendingFor(device))
+    && device.lastAt <= now && (maxAge(device) === 0 || now - device.lastAt < maxAge(device))
     && definitions(device).filter(row => row.required).every(row => scalar(device.readings[row.signal]?.value)
-      && (maxAge(device) === 0 || now - device.readings[row.signal].observedAt < maxAge(device)));
+      && device.readings[row.signal].observedAt <= now
+      && (maxAge(device) === 0 || now - Math.min(device.readings[row.signal].observedAt,
+        device.readings[row.signal].receivedAt ?? device.readings[row.signal].observedAt) < maxAge(device)));
   async function switchDevice(device, output) {
     if (!device || typeof output !== 'boolean') throw error('invalid switch selection');
     if (device.waiters.size) throw error('switch operation already in progress');
@@ -331,6 +356,7 @@ export function createShellyCapture({ engine, store, settings, publish, canContr
     ownsGarage: devices.some(device => tempName(device) === 'garage_temperature' && hasTemperature(device)),
     signature(id) { const device = devices.find(row => row.id === id); return device && (!needsIdentity(device) || device.identity) ? createHash('sha256').update(JSON.stringify({ brokerIdentity, nativeIdentity: device.identity, target: equipmentSignature({ ...device, readings: device.customReadings, protocol: 'shelly', connection: `shelly:${device.prefix}` }) })).digest('hex') : null; },
     setConnected(value) {
+      pendingTime.clear();
       connected = value;
       for (const device of devices) device.connected = false;
       for (const device of devices) { if (!value) unavailable(device, 'mqtt-disconnected'); clearIdentity(device); }
@@ -342,12 +368,13 @@ export function createShellyCapture({ engine, store, settings, publish, canContr
       const device = devices.find(row => topic.startsWith(`${row.prefix}/`));
       if (!device && topic !== replyTopic) return false;
       if (!connected || closed) return true;
+      if (admittedReceptionAt === undefined) pendingTime.drain(engine.clock());
       const body = Buffer.isBuffer(payload) ? payload.toString('utf8') : String(payload ?? '');
       if (body.length > 65536) return true;
       let delivery; try { delivery = JSON.parse(body); } catch { delivery = null; }
       const sourceAt = scalar(delivery?.params?.ts) ? delivery.params.ts * 1000 : NaN;
-      if (!admission.admit(topic, body, packet, receivedAt, {
-        timestamped: Number.isFinite(sourceAt) && sourceAt >= 0 && sourceAt <= receivedAt,
+      if (admittedReceptionAt === undefined && !admission.admit(topic, body, packet, receivedAt, {
+        timestamped: ['ready', 'pending'].includes(classifySourceTime({ sourceTime: Math.round(sourceAt), receivedAt, now: receivedAt }).status),
         correlated: topic === replyTopic && requests.has(delivery?.id),
       })) return true;
       const suffix = device ? topic.slice(device.prefix.length + 1) : '';
@@ -427,10 +454,17 @@ export function createShellyCapture({ engine, store, settings, publish, canContr
         if (!params || typeof params !== 'object') return true;
         if (Object.hasOwn(params, 'ts')) {
           at = scalar(params.ts) ? Math.round(params.ts * 1000) : null;
+          const timing = classifySourceTime({ sourceTime: at, receivedAt, now: admittedReceptionAt ?? receivedAt });
+          if ((timing.status === 'pending' || timing.status === 'ready' && pendingFor(device)) && admittedReceptionAt === undefined) {
+            const queuedSourceTime = at;
+            reception.afterCommit(() => pendingTime.defer(++pendingSequence, { device, topic, body, packet }, { sourceTime: queuedSourceTime, receivedAt }));
+            at = null;
+          }
           // Reject this source clock without erasing unrelated, still-bounded
           // evidence. Explicit faults below still invalidate their components;
           // null time grants no measurement, readback, energy or liveness credit.
-          if (!Number.isSafeInteger(at) || params.ts < 0 || at > receivedAt) at = null;
+          if (!validateAdmittedSourceTime({ sourceTime: at, receivedAt, admittedAt: admittedReceptionAt,
+            now: admittedReceptionAt ?? receivedAt })) at = null;
           else if (receivedAt - at > (maxAge(device) || settings.maxAgeMs)) return true;
         }
         const full = frame.method === 'NotifyFullStatus', switchValue = params[`${device.kind === 'door' ? 'input' : 'switch'}:${device.switchId}`];
@@ -451,6 +485,7 @@ export function createShellyCapture({ engine, store, settings, publish, canContr
     },
     tick(now = engine.clock()) {
       if (closed) return;
+      pendingTime.drain(now);
       for (const energy of energies.values()) energy.tick(now);
       for (const [id, request] of requests) if (now - request.at > readbackTimeoutMs) { requests.delete(id); request.complete?.('timeout'); }
       for (const device of devices) if (device.available && maxAge(device) > 0 && now - device.lastAt >= maxAge(device)) unavailable(device, 'missing-report');
@@ -504,7 +539,8 @@ export function createShellyCapture({ engine, store, settings, publish, canContr
             description: device.generation === 1 ? 'Request native status and wait for live readings.' : 'Request native status and wait for its matching RPC reply.' },
           controls: { switch: device.controlsSwitch === true && (!needsIdentity(device) || Boolean(device.identity)), tariff: device.controlsHeat === true }, available: available(device, now), observedAt: device.lastAt, check: device.check,
           readings: Object.fromEntries(Object.entries(device.readings).map(([signal, reading]) => [signal,
-            { ...reading, stale: !connected || !device.available || !scalar(reading.value) || !scalar(reading.observedAt) || maxAge(device) > 0 && now - reading.observedAt >= maxAge(device) }])),
+            { ...reading, stale: !connected || !device.available || !scalar(reading.value) || !scalar(reading.observedAt)
+              || reading.observedAt > now || maxAge(device) > 0 && now - Math.min(reading.observedAt, reading.receivedAt ?? reading.observedAt) >= maxAge(device) }])),
           ...(energies.has(device.id) ? { energy: energies.get(device.id).status(now) } : {}) })) };
     },
     close() { api.setConnected(false); closed = true; requests.clear(); },

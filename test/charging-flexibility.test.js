@@ -217,6 +217,7 @@ test('missing future coverage is unavailable, never a fabricated zero-price savi
   assert.equal(comparison.savingsCents, null);
   assert.equal(comparison.normalFinishAt, null); assert.equal(comparison.deferredFinishAt, null);
   assert.equal(comparison.normalChargingDurationMs, null); assert.equal(comparison.deferredChargingDurationMs, null);
+  assert.equal(comparison.normalPeriods, null); assert.equal(comparison.deferredPeriods, null);
 });
 
 test('comparison completion and charging duration describe the selected schedule without counting pauses', () => {
@@ -234,6 +235,11 @@ test('comparison completion and charging duration describe the selected schedule
   assert.ok(comparison.deferredFinishAt <= options.now + 3 * HOUR);
   assert.ok(comparison.deferredFinishAt - options.now > comparison.deferredChargingDurationMs + HOUR * .9,
     'The later schedule includes a costly gap which is not charging time');
+  assert.equal(comparison.normalPeriods[0].startAt, options.now);
+  assert.equal(comparison.deferredPeriods[0].startAt, options.now);
+  assert.equal(comparison.deferredPeriods[0].endAt, options.now + HOUR);
+  assert.equal(comparison.deferredPeriods[1].startAt, options.now + 2 * HOUR);
+  assert.equal(comparison.deferredPeriods[1].endAt, null, 'The proposed final permission remains open, distinct from estimated finish');
 });
 
 test('comparison runs in the shared bounded worker while command calculations retain queue priority', async t => {

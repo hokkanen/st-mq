@@ -22,6 +22,7 @@ export function compareChargingFlexibility(options, { chargerId, normalReadyByAt
   const base = { at: options.now, normalReadyByAt, deferredReadyByAt, estimated: true, available: false,
     recommended: false, normalCostCents: null, deferredCostCents: null, savingsCents: null,
     normalFinishAt: null, deferredFinishAt: null, normalChargingDurationMs: null, deferredChargingDurationMs: null,
+    normalPeriods: null, deferredPeriods: null,
     householdSavingsCents: null, uncertaintyPremiumCents: null, riskAdjustedSavingsCents: null, usesForecast: false };
   const selected = options.chargers.find(charger => charger.id === chargerId);
   if (!selected || !(normalReadyByAt > options.now) || !(deferredReadyByAt > normalReadyByAt))
@@ -53,6 +54,8 @@ export function compareChargingFlexibility(options, { chargerId, normalReadyByAt
     normalCostCents: before.costCents, deferredCostCents: after.costCents,
     normalFinishAt: before.finishAt, deferredFinishAt: after.finishAt,
     normalChargingDurationMs: chargingDuration(before), deferredChargingDurationMs: chargingDuration(after),
+    normalPeriods: before.periods.map(({ startAt, endAt }) => ({ startAt, endAt })),
+    deferredPeriods: after.periods.map(({ startAt, endAt }) => ({ startAt, endAt })),
     savingsCents: before.costCents - after.costCents, householdSavingsCents,
     normalUncertaintyPremiumCents: before.uncertaintyPremiumCents ?? 0,
     uncertaintyPremiumCents: after.uncertaintyPremiumCents ?? 0,

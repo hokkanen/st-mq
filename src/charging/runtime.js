@@ -32,6 +32,9 @@ import { jointTeslaComparisonScope } from './joint-identification.js';
 import { validateChargingRuntimeState } from './runtime-state.js';
 import { chargingFlexibility, consumeChargingFlexibility, changeChargingFlexibility, flexibilityUnavailable, nextLocalChargingDay } from './flexibility.js';
 import { forecastPriceOutlook } from '../acquisition/electricity-forecast.js';
+import { createSourceTimePending } from '../acquisition/source-time-pending.js';
+import { classifySourceTime } from '../domain/time-evidence.js';
+import { socMeasurementTime } from './soc.js';
 
 const MINUTE = 60_000;
 const CURRENT_RECONCILE_MS = 5000;
@@ -178,6 +181,20 @@ export class ChargingRuntime {
         reading, consumedPlugId: reading ? previous?.consumedPlugId ?? null : null,
         consumedChargingId: reading ? previous?.consumedChargingId ?? null : null }];
     }));
+    for (const feed of Object.values(this.vehicleFeeds)) {
+      feed.sourcePacketSequence = 0;
+      feed.sourcePending = createSourceTimePending({ clock, ordered: true, limit: 128,
+        dispatch: action => this.write(() => {
+          const checkpoint = feed.sourcePending.checkpoint();
+          this.store.afterRollback?.(() => feed.sourcePending.restore(checkpoint));
+          return action();
+        }),
+        onReady: (packet, receivedAt, evaluatedAt) => this.receiveSoc(packet.topic, packet.payload, packet.packet, receivedAt, { evaluatedAt }),
+        onReject: (_packet, reason) => {
+          if (reason !== 'cleared') feed.mqtt.invalidReason = 'vehicle-source-clock-unavailable';
+        },
+      });
+    }
     this.chargers = Object.fromEntries(definitions.map(definition => {
       const association = definition.id === 'charger1' ? digest(['easee', config.connections?.easee?.charger_id, config.connections?.easee?.equalizer_id])
         : shellyAssociation(this.configuration.chargers.charger2, { address: mqttSourceIdentity(config, 'primary').address,
@@ -742,32 +759,47 @@ export class ChargingRuntime {
     for (const item of id ? [this.vehicleFeeds[id]].filter(Boolean) : Object.values(this.vehicleFeeds)) {
       const brokerConnected = status.brokerConnected ?? status.connected ?? item.mqtt.brokerConnected;
       const subscribed = brokerConnected && (status.subscribed ?? item.mqtt.subscribed);
+      if (!subscribed) item.sourcePending.clear();
       item.mqtt = { ...item.mqtt, ...status, connected: brokerConnected, brokerConnected, subscribed,
         lastValidLiveAt: subscribed ? item.mqtt.lastValidLiveAt : null,
         subscriptionStatus: !brokerConnected ? 'disconnected' : subscribed ? 'subscribed'
           : status.reason === 'mqtt-subscription-failed' ? 'failed' : 'pending' };
     }
   }
-  receiveSoc(topic, payload, packet = {}, now = this.clock()) {
+  receiveSoc(topic, payload, packet = {}, receivedAt = this.clock(), admission = null) {
     if (this.closed) return false;
     this.preserveWriteState();
     const route = this.mqttRoutes().find(item => item.topic === topic);
     if (!route) return false;
     const item = this.vehicleFeeds[route.id];
+    const now = admission?.evaluatedAt ?? receivedAt;
+    if (!admission && Buffer.byteLength(payload) <= 4096) {
+      let value;
+      try { value = JSON.parse(payload.toString()); } catch {}
+      const clocks = [value?.measuredAt, ...Object.values(value?.fields ?? {}).map(field => field?.measuredAt)]
+        .map(socMeasurementTime).filter(Number.isFinite);
+      const sourceTime = clocks.length ? Math.max(...clocks) : receivedAt;
+      const temporal = classifySourceTime({ sourceTime, receivedAt, now: this.clock() });
+      if (sourceTime > receivedAt && (temporal.status === 'invalid' || packet.retain)) {
+        item.mqtt.invalidReason = 'vehicle-source-clock-unavailable'; return true;
+      }
+      if (!packet.retain && item.sourcePending.defer(++item.sourcePacketSequence,
+        { topic, payload: Buffer.from(payload), packet: { ...packet } }, { sourceTime, receivedAt })) return true;
+    }
     const previouslyAvailable = vehicleFeedAvailable(item, now);
     const previousMqtt = { ...item.mqtt }, previousRevision = this.revision;
-    item.mqtt.lastMessageAt = now;
-    if (packet.retain) item.mqtt.lastRetainedAt = now; else item.mqtt.lastLiveAt = now;
+    item.mqtt.lastMessageAt = receivedAt;
+    if (packet.retain) item.mqtt.lastRetainedAt = receivedAt; else item.mqtt.lastLiveAt = receivedAt;
     if (Buffer.byteLength(payload) > 4096) { item.mqtt.invalidReason = 'invalid-payload'; return true; }
     const connections = Object.values(this.chargers).map(charger => charger.controller?.status()?.session?.connectedAt
       ?? charger.identification?.connectedAt).filter(Number.isSafeInteger);
     const evidenceSince = connections.length ? Math.max(0, Math.min(...connections) - 90_000) : now;
-    const result = acceptVehicleReading(item.reading, payload, { now, association: item.association, evidenceSince,
+    const result = acceptVehicleReading(item.reading, payload, { now, receivedAt, deferred: admission !== null, association: item.association, evidenceSince,
       retained: packet.retain === true, provider: item.provider });
     const valid = result.accepted || ['duplicate-reading', 'older-reading', 'unordered-reading'].includes(result.reason);
     item.mqtt.invalidReason = valid ? null : result.reason;
-    if (valid) item.mqtt.lastValidAt = now;
-    if (valid && !packet.retain && !packet.dup) item.mqtt.lastValidLiveAt = now;
+    if (valid) item.mqtt.lastValidAt = receivedAt;
+    if (valid && !packet.retain && !packet.dup) item.mqtt.lastValidLiveAt = receivedAt;
     if (result.accepted) {
       const previous = item.reading;
       const previousTeslaPower = this.consumedTeslaPower;
@@ -1411,7 +1443,7 @@ export class ChargingRuntime {
       const definition = { ...item.definition, capabilities: { ...item.definition.capabilities, ...item.adapter?.capabilities } };
       const selectedTarget = telemetry[id]?.vehicle?.id === 'bmw' && telemetry[id].vehicle.state === 'identified'
         && vehicleFeedAvailable(this.vehicleFeeds.bmw, now)
-        ? targetSelection(item.targetState, { reading: this.vehicleFeeds.bmw.reading }) : null;
+        ? targetSelection(item.targetState, { reading: this.vehicleFeeds.bmw.reading, now }) : null;
       const scopedTelemetry = { ...telemetry[id] };
       if (Object.hasOwn(item.request?.overrides ?? {}, 'capacityKwh')) { scopedTelemetry.capacityKwh = { value: settings.capacityKwh, available: true, source: 'session-request' }; scopedTelemetry.vehicleCapacityFallbackKwh = settings.capacityKwh; }
       if (Object.hasOwn(item.request?.overrides ?? {}, 'manualSoc')) {
@@ -1473,8 +1505,11 @@ export class ChargingRuntime {
         preview: preview?.comparison ?? null };
       return view;
     });
-    for (const view of views) if (this.charger(view.id).flexibilityPreview?.scope !== this.flexibilityScope(views, view.id, now))
-      view.flexibility.preview = null;
+    for (const view of views) {
+      view.flexibility.comparisonScope = this.flexibilityScope(views, view.id, now);
+      if (this.charger(view.id).flexibilityPreview?.scope !== view.flexibility.comparisonScope)
+        view.flexibility.preview = null;
+    }
     return views;
   }
   flexibilityScope(views, id, now = this.clock()) {
@@ -1484,16 +1519,21 @@ export class ChargingRuntime {
     // not inherit that estimate. Allow/cancel selects the same two alternatives.
     return digest({ priority: this.settings.priority, historySelection: this.historySelection,
       sessions: views.map(view => {
-        const flexibility = chargingFlexibility(view.request, now);
+        // Presentation can temporarily withhold the live request/assignment
+        // during an outage. The durable session still owns this dated estimate;
+        // telemetry clears it on a confirmed disconnect or changed identity.
+        const item = this.charger(view.id), request = item.request, vehicle = item.vehicleMatch?.id;
+        const flexibility = chargingFlexibility(request, now);
         return { id: view.id, association: view.association,
-          sessionId: view.request?.sessionId, connection: view.request?.scope,
-          vehicle: view.vehicle?.id, vehicleSession: view.vehicle?.sessionId,
-          settings: view.settings, configuration: view.configuration,
-          overrides: view.request?.overrides, anchorAt: view.request?.anchorAt,
-          chargeNow: view.request?.chargeNow,
+          sessionId: request?.sessionId, connection: request?.scope,
+          vehicle, vehicleAssociation: item.vehicleMatch?.vehicleAssociation,
+          settings: { ...this.settings.chargers[view.id], ...(vehicle ? this.settings.vehicles[vehicle] : {}), ...request?.overrides },
+          configuration: view.configuration,
+          overrides: request?.overrides, anchorAt: request?.anchorAt,
+          chargeNow: request?.chargeNow,
           normalReadyByAt: flexibility.normalReadyByAt, deferredReadyByAt: flexibility.deferredReadyByAt,
-          ...(view.id === id ? { authorizedBaseline: view.request?.flexibility?.authorizedBaseline === true }
-            : { deadlineAt: view.deadlineAt, forecastAllowed: view.forecastAllowed }) };
+          ...(view.id === id ? { authorizedBaseline: request?.flexibility?.authorizedBaseline === true }
+            : { deadlineAt: request?.deadlineAt, forecastAllowed: Boolean(request?.flexibility?.activeDefer || request?.flexibility?.authorizedBaseline) }) };
       }) });
   }
   flexibilityMarket(now = this.clock()) {
@@ -1508,12 +1548,36 @@ export class ChargingRuntime {
     if (!forecast?.available) return this.prices;
     return forecastPriceOutlook({ official: this.prices, forecast, contract: this.engine.contract(), now });
   }
+  flexibilityInputs(id, context = this.flexibilityContext, now = this.clock()) {
+    if (!context) return null;
+    const inputs = chargingPlannerInput({ chargers: context.chargers, supply: context.supply });
+    // Source receipt clocks do not change a counterfactual plan. Preserve the
+    // numerical inputs, request scope and actual changes of forecast coverage.
+    for (const charger of inputs.chargers) {
+      const soc = charger.values.soc;
+      charger.values.soc = { value: soc?.value, available: soc?.available, assumed: soc?.assumed };
+    }
+    const interval = row => [row.start <= now ? null : row.start, row.end];
+    const comparison = this.charger(id).flexibilityPreview?.comparison;
+    const periods = [...(comparison?.normalPeriods ?? []), ...(comparison?.deferredPeriods ?? [])];
+    // A proposed period starting now changes its visible start/finish as time
+    // advances, even before another energy reading. Waiting plans need only
+    // refresh when an input or an actual price/household/period boundary changes.
+    const running = periods.some(period => period.startAt <= now && (period.endAt === null || period.endAt > now));
+    return digest({ scope: context.scopes[id], inputs, priority: context.priority,
+      prices: context.prices.filter(row => row.end > now).map(row => [...interval(row),
+        row.priceCtPerKwh ?? row.allInCentsPerKWh ?? row.totalCtPerKwh ?? row.price, row.predicted === true, row.uncertaintyCtPerKwh ?? 0]),
+      household: (context.household ?? []).filter(row => row.end > now).map(row => [...interval(row), row.phaseCurrentA, row.scenarios]),
+      fixedPeriods: context.fixedPeriods, periodBoundaries: periods.map(period => [period.startAt <= now, Number.isFinite(period.endAt) && period.endAt <= now]),
+      runningMinute: running ? Math.floor(now / MINUTE) : null });
+  }
   queueFlexibilityPreviews() {
     if (this.flexibilityPreviewFlight || this.closed || !this.canControl()) return;
     this.flexibilityPreviewFlight = (async () => {
       for (const candidate of this.views()) {
         const item = this.charger(candidate.id), now = this.clock();
         if (!candidate.flexibility.eligible && !candidate.flexibility.active
+          || item.previewInputs && item.previewInputs === this.flexibilityInputs(candidate.id)
           || item.previewAttemptAt && now - item.previewAttemptAt < MINUTE) continue;
         item.previewAttemptAt = now;
         try { await this.calculateFlexibilityPreview(candidate.id); } catch { /* A preview never interrupts control. */ }
@@ -1549,6 +1613,7 @@ export class ChargingRuntime {
       return unavailable('comparison-changed');
     if (!comparison.available) return unavailable(comparison.reason);
     item.flexibilityPreview = { scope, comparison };
+    item.previewInputs = this.flexibilityInputs(id, context, now);
     return { flexibility: { ...flexibility, preview: comparison }, comparison, refreshReason: null };
   }
   async previewFlexibility(id, input) {
@@ -2493,6 +2558,7 @@ export class ChargingRuntime {
         ...(this.physicalTestsError ? { available: false, error: this.physicalTestsError } : {}) } };
   }
   beginShutdown() {
+    for (const feed of Object.values(this.vehicleFeeds)) feed.sourcePending.clear();
     this.closed = true; this.writeAbort.abort(); clearInterval(this.timer); clearTimeout(this.boundaryTimer); clearTimeout(this.streamTimer);
   }
   async close() {

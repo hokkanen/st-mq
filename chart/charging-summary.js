@@ -18,7 +18,9 @@ export function chargingFlexibility(charger, { now = Date.now(), comparison = ch
   const visible = connected && Boolean(state) && (active || awaitingCheckpoint || state.enabled === true && !complete);
   // The runtime retains the last successful comparison for this request. Its
   // original time stays attached; age alone does not erase a cost estimate.
-  const available = comparison?.available === true && finite(comparison.at) && comparison.at <= now;
+  // This is the server's completed estimate, not a device observation. A status
+  // tick or the browser clock can precede the HTTP response that produced it.
+  const available = comparison?.available === true && finite(comparison.at);
   const savings = available && finite(comparison.savingsCents) ? comparison.savingsCents : null;
   const recommended = !active && !awaitingCheckpoint && state?.eligible === true && comparison?.recommended === true && savings > 0;
   // Recommendation controls emphasis, never whether a valid comparison is shown.

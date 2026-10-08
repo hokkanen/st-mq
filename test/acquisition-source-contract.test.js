@@ -38,11 +38,11 @@ function fixture(t, { signal = 'indoor_temperature', mapping, clockRequired = tr
 }
 
 test('mandatory clocks never fall back on receipt after absent, null, malformed or future reports', async t => {
-  for (const time of [undefined, null, 'invalid', START + 1]) await t.test(String(time), t => {
+  for (const time of [undefined, null, 'invalid', START + 1001]) await t.test(String(time), t => {
     const f = fixture(t);
     for (let minute = 0; minute <= 80; minute += 5) {
       f.at(START + minute * 60_000);
-      f.send({ value: 21, ...(time === undefined ? {} : { measured_at: typeof time === 'number' ? f.now() + 1 : time }) });
+      f.send({ value: 21, ...(time === undefined ? {} : { measured_at: typeof time === 'number' ? f.now() + 1001 : time }) });
       assert.equal(f.view().upstairs.stale, true);
       assert.equal(f.engine.lastKnownTemperatures.indoor_temperature, undefined);
     }

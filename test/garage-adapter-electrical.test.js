@@ -59,7 +59,7 @@ test('cached field clocks, retained packets, stale and future measurements never
   assert.equal(f.adapter.status().telemetry.outdoorTemperature.usable, false);
   f.receive({ outdoorTemperature: f.field(-3, 'degC') }, { retain: true });
   assert.equal(f.adapter.status().telemetry.outdoorTemperature.usable, false);
-  f.receive({ outdoorTemperature: f.field(-3, 'degC', { measuredAt: f.now() + 1 }) });
+  f.receive({ outdoorTemperature: f.field(-3, 'degC', { measuredAt: f.now() + 1001 }) });
   assert.ok(f.adapter.status().telemetry.outdoorTemperature.quality.includes('future-source-time'));
   f.receive({ outdoorTemperature: f.field(-4, 'degC') });
   assert.equal(f.adapter.status().telemetry.outdoorTemperature.usable, true,
@@ -76,6 +76,19 @@ test('relative telemetry preserves reconstructed time provenance and cannot supp
   f.at(BASE + 60_000); f.power(500, { measuredAt: null, ageMs: 1000 });
   assert.equal(f.energy.length, 0);
   assert.equal(f.adapter.status().electrical.lastIssue, 'electrical-source-clock-unqualified');
+});
+
+test('tiny future Garage fields use delayed admission without extending their original lifetime', () => {
+  const f = fixture();
+  f.receive({ indoorTemperature: f.field(20, 'degC', { measuredAt: BASE + 4, ageMs: 0 }) });
+  assert.equal(f.adapter.status().telemetry.indoorTemperature, undefined);
+  f.at(BASE + 4); f.adapter.tick();
+  const field = f.adapter.status().telemetry.indoorTemperature;
+  assert.equal(field.usable, true); assert.equal(field.receivedAt, BASE); assert.equal(field.sourceTime, BASE + 4);
+  assert.deepEqual(f.observations.at(-1).raw.timeAdmission, { sourceTime: BASE + 4, receivedAt: BASE, admittedAt: BASE + 4 });
+  f.at(BASE + 120_000);
+  assert.equal(f.adapter.status().telemetry.indoorTemperature.usable, false);
+  f.adapter.close();
 });
 
 test('qualified counter updates produce one dedicated interval, retaining accuracy and timing qualification', () => {

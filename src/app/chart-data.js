@@ -33,6 +33,7 @@ import { RecordedEvidenceLine } from './chart-recorded-evidence.js';
 import { VOLTAGE_SIGNALS } from '../storage/voltage.js';
 import { currentPowerKw, voltageMetadata, voltageSegments } from './chart-voltage.js';
 import { recordedTransport } from '../domain/recording-source.js';
+import { observationTimeAdmitted } from '../domain/time-evidence.js';
 import { addChargingAllowanceHistory, CHARGING_ALLOWANCE_SERIES } from './chart-charging-allowances.js';
 
 export const CHART_TIME_ZONE = 'Europe/Helsinki';
@@ -513,7 +514,8 @@ export function getChartData({ store, input = 'offline', contract = null, market
   const compactImports = input !== 'simulated' && range.to - range.from > 7 * DAY;
   const columns = `o.id,o.source,o.device,o.signal,o.value,o.unit,o.source_time,o.received_at,
     json_extract(o.raw,'$.reportIntervalMs') AS report_interval_ms,
-    o.quality,o.import_id,o.row_number,CASE WHEN o.signal IN ('heat_pump_power','charger_power','solar_radiation','auxiliary_output','compressor_active','dhw_routing','operating_mode','controller_phase','dhwr_request',${[...LEARNING, ...RECORDED_EVIDENCE_SIGNALS].map(name => `'${name}'`).join(',')}) THEN o.raw END AS raw`;
+    o.quality,o.import_id,o.row_number,CASE WHEN json_type(o.raw,'$.timeAdmission') IS NOT NULL
+      OR o.signal IN ('heat_pump_power','charger_power','solar_radiation','auxiliary_output','compressor_active','dhw_routing','operating_mode','controller_phase','dhwr_request',${[...LEARNING, ...RECORDED_EVIDENCE_SIGNALS].map(name => `'${name}'`).join(',')}) THEN o.raw END AS raw`;
   const sourceScope = input === 'simulated' ? "(o.source='simulation' OR o.source IN ('controller-learning','controller-estimate','controller') AND o.device='simulated')"
     : "(o.source<>'simulation' AND NOT(o.source IN ('controller-learning','controller-estimate','controller') AND o.device='simulated'))";
   // Read only the selected signals from their index. A chronological full-table
@@ -794,7 +796,20 @@ export function getChartData({ store, input = 'offline', contract = null, market
     yield* earlier.sort((a, b) => a.source_time - b.source_time || a.id - b.id);
     yield* historyRows;
   }
-  const rows = mergeCoverageRows(rowsWithPreviousReadings(),store,{from:range.from-3*HOUR,to:queryTo,input,signals:requested,now});
+  function* admittedHistoryRows() {
+    for (const row of rowsWithPreviousReadings()) {
+      // Prices intentionally describe future delivery periods, and supported
+      // CSV history keeps its import boundary. Native measurement admission is
+      // evaluated before synthetic coverage/phase projection rewrites clocks.
+      if (!row.imported && row.import_id == null && row.signal !== 'spot_price') {
+        let raw;
+        try { raw = row.raw ? JSON.parse(row.raw) : null; } catch { continue; }
+        if (!observationTimeAdmitted({ sourceTime: row.source_time, receivedAt: row.received_at, raw }, now)) continue;
+      }
+      yield row;
+    }
+  }
+  const rows = mergeCoverageRows(admittedHistoryRows(),store,{from:range.from-3*HOUR,to:queryTo,input,signals:requested,now});
   const historyProgress = traversalProgress('reading-history');
   for (const row of aggregatePhases ? alignEaseePowerSnapshots(rows, store.db, now) : rows) {
     historyProgress?.(row.source_time);

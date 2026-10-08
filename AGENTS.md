@@ -460,6 +460,7 @@ permission to act. See [the configuration guide](docs/configuration.md).
   learning validation must not leak future evidence into training or forecasts.
 
 Details: [recording and provenance](docs/recording.md),
+[time and evidence](docs/time-evidence.md),
 [temperature evidence](docs/temperature-sensors.md),
 [learning and control](docs/learning-and-control.md).
 

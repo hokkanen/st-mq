@@ -48,6 +48,26 @@ const pairedGarage = { id: 'garage', kind: 'temperature', connection: 'shelly:in
     { key: 'front', signal: 'garage_temperature_2', component: 'temperature:101', unit: 'degC', required: true }] };
 const heat = { id: 'heat_savings', kind: 'switch', connection: 'shelly:invented-mini', tariff_control: true };
 
+test('native Shelly preserves both pending probe updates and original clocks across a tiny source lead', t => {
+  const f = fixture(t, [pairedGarage]); f.capture.setConnected(true);
+  f.status({ 'temperature:100': { tC: 9 }, 'temperature:101': { tC: 10 } });
+  f.now(initial + 10_000);
+  for (const [id, lead, value] of [[100, 4, 11], [101, 5, 12]])
+    f.capture.receive('invented-garage/events/rpc', JSON.stringify({ src: 'fixture-invented-garage', method: 'NotifyStatus',
+      params: { ts: (initial + 10_000 + lead) / 1000, [`temperature:${id}`]: { id, tC: value } } }));
+  assert.equal(f.capture.status().devices[0].readings.garage_temperature.value, 9);
+  f.now(initial + 10_005); f.capture.tick();
+  for (const [signal, lead, value] of [['garage_temperature', 4, 11], ['garage_temperature_2', 5, 12]]) {
+    const row = f.observations.findLast(row => row.signal === signal);
+    assert.equal(row.value, value); assert.equal(row.receivedAt, initial + 10_000);
+    assert.deepEqual(row.raw.timeAdmission, { sourceTime: initial + 10_000 + lead,
+      receivedAt: initial + 10_000, admittedAt: initial + 10_005 });
+  }
+  f.now(initial - 1);
+  assert.equal(f.capture.status().devices[0].available, false);
+  assert.equal(f.capture.status().devices[0].readings.garage_temperature.stale, true);
+});
+
 test('Gen2 status reads actual plug values, ignores retained/replayed payloads and expires individual readings', t => {
   const f = fixture(t, [caravan]); f.capture.setConnected(true);
   assert(f.publications.every(row => row.options.retain === false));
@@ -269,7 +289,7 @@ test('Garage temperature routes bind the native Shelly identity and preserve it 
 });
 
 for (const [name, timestamp] of [
-  ['four milliseconds ahead', (initial + 10_004) / 1000],
+  ['1001 milliseconds ahead', (initial + 11_001) / 1000],
   ['one hour ahead', (initial + HOUR) / 1000],
   ['null', null], ['numeric string', String(initial / 1000)], ['nonnumeric string', 'invalid'],
   ['boolean', true], ['object', {}], ['noncoercible object', { toString: null, valueOf: null }],

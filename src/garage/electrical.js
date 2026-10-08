@@ -45,6 +45,7 @@ export function createGarageElectrical({ source = 'none', onEnergy = () => {}, p
     const observation = { source: 'garage-adapter', device: 'garage-heat-pump', signal: 'garage_energy', value,
       unit: 'kWh', sourceTime: end, receivedAt: field.receivedAt, quality,
       raw: { intervalStart: start, intervalEnd: end, coveredMs: duration, durationMs: duration,
+        ...(field.timeAdmission ? { timeAdmission: field.timeAdmission } : {}),
         timingEligible: true, accuracyVerified: field.accuracyVerified, provisional,
         meterScope: 'garage-heat-pump-only', energyBasis: counter ? 'counter-delta' : 'power-trapezoid',
         sourceId: `garage-adapter:${source}`, contractVersion,

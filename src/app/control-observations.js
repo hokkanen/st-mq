@@ -1,13 +1,14 @@
 import { predictThermalStep } from '../control/adaptive-learning.js';
 import { estimateHeatPumpPerformance } from '../domain/heat-pump-performance.js';
 import { auxiliaryPowerFromOutput } from '../domain/telemetry.js';
+import { observationTimeAdmitted } from '../domain/time-evidence.js';
 
 const HOUR = 3600000;
 const finite = Number.isFinite;
 export function controlObservations({ latest, now, observations, outlook, checkpoint, phase, roomBoostC = 0, config, h66 }) {
   const fresh = (signal, age = 300000) => {
     const o = latest[signal];
-    return o && finite(o.value) && o.sourceTime <= now && now - o.sourceTime <= age
+    return o && finite(o.value) && observationTimeAdmitted(o, now) && now - o.sourceTime <= age
       && (o.source === 'husdata-h66' ? o.raw?.usableForControl === true : !(o.quality ?? []).some(q => !['good','simulated','estimated','current_snapshot_not_energy'].includes(q))) ? o : null;
   };
   const value = signal => fresh(signal)?.value ?? null;

@@ -8,6 +8,18 @@ const event = (id, value, at, previousValue, previousAt = at - 1, receivedAt = a
 const apply = (previous, value, options = {}) => acceptEaseeTransition(previous, value,
   { now: value.receivedAt, connectedAt: START, ...options });
 
+test('bounded deferred stream transitions need admission proof and preserve all clocks', () => {
+  const receivedAt = START + 1000, sourceAt = receivedAt + 400;
+  const packet = event(109, 1, sourceAt, 3, START, receivedAt);
+  assert.equal(apply(null, packet), null);
+  assert.equal(apply(null, packet, { now: sourceAt }), null, 'Catching up alone cannot invent ingress admission');
+  const admitted = apply(null, { ...packet, admittedAt: sourceAt }, { now: sourceAt });
+  assert.equal(admitted.boundary.measuredAt, sourceAt); assert.equal(admitted.boundary.receivedAt, receivedAt);
+  assert.equal(admitted.boundary.admittedAt, sourceAt);
+  assert.equal(apply(null, { ...packet, admittedAt: sourceAt }, { now: sourceAt - 1 }), null);
+  assert.equal(apply(null, { ...packet, measuredAt: receivedAt + 1001, admittedAt: receivedAt + 1001 }, { now: receivedAt + 1001 }), null);
+});
+
 test('only fresh validated live changes advance compact per-field watermarks', () => {
   const value = event(109, 3, START + 1000, 2);
   const first = apply(null, value);

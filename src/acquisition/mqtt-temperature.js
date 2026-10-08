@@ -1,5 +1,6 @@
 import { createHash } from 'node:crypto';
 import { temperatureReportMaxAge } from '../domain/temperature-reports.js';
+import { sourceTimeAdmission, validateAdmittedSourceTime } from '../domain/time-evidence.js';
 
 
 // The digest binds a persisted room report to its exact decoder and broker route.
@@ -14,7 +15,7 @@ export function temperatureRouteSignature({ brokerIdentity, topic, statePath = n
 
 // Alternative indoor/garage sensors publish a number in Celsius, or
 // {value, unit:'C'|'F', timestamp:<ISO UTC or epoch milliseconds>}.
-export function decodeMqttTemperature({ signal, payload, receivedAt, retained = false,
+export function decodeMqttTemperature({ signal, payload, receivedAt, admittedAt, retained = false,
   reportIntervalMs = null, reportGraceMs = 0, timestampRequired = false, scale = 1, offset = 0 }) {
   if (!['indoor_temperature', 'downstairs_temperature', 'bedroom_temperature', 'garage_temperature', 'garage_temperature_2', 'outdoor_temperature'].includes(signal)) return null;
   const text = Buffer.isBuffer(payload) ? payload.toString('utf8') : String(payload ?? '');
@@ -35,8 +36,11 @@ export function decodeMqttTemperature({ signal, payload, receivedAt, retained = 
   const timestampPresent = Object.hasOwn(object, 'timestamp');
   if (sourceTime === null && !retained && !timestampRequired && !timestampPresent) sourceTime = receivedAt;
   if (sourceTime === null) quality.push('source_time_unknown');
-  if (sourceTime > receivedAt) quality.push('future_source_time');
+  if (sourceTime > receivedAt && !validateAdmittedSourceTime({ sourceTime, receivedAt, admittedAt,
+    now: admittedAt ?? receivedAt })) quality.push('future_source_time');
+  const timeAdmission = sourceTimeAdmission({ sourceTime, receivedAt, now: admittedAt ?? receivedAt, deferred: admittedAt !== undefined });
   const raw = { timeBasis: !timestampRequired && !timestampPresent ? 'mqtt-received' : 'source-measured', retained,
+    ...(timeAdmission ? { timeAdmission } : {}),
     ...(reportIntervalMs !== null ? { reportIntervalMs, reportGraceMs } : {}) };
   const reportAge = temperatureReportMaxAge({ raw });
   if (reportAge !== null && Number.isFinite(sourceTime) && receivedAt - sourceTime >= reportAge) quality.push('stale');

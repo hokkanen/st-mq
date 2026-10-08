@@ -9,6 +9,14 @@ Run checks from the repository root. Ordinary tests, browser fixtures, container
 checks and Garage simulations use synthetic data. The separately invoked live
 suite contacts configured providers; see [live testing](live-testing.md).
 
+Time admission regressions in `test/time-evidence.test.js` and
+`test/time-evidence-integration.test.js` cover original timestamp preservation,
+bounded source-clock leads, causal temperature/learning prefixes, voltage restart
+and native energy. Adapter suites additionally cover asynchronous receipt clocks,
+automatic deferred admission, ordered session/permission transitions, disconnect
+and transaction rollback. Large skew remains invalid; freshness, authorization
+and physical deadlines receive no general grace. See [time and evidence](time-evidence.md).
+
 History recovery checks must validate and inventory the source without making a
 trial database or importing rows. Acceptance and model impact are assessed once,
 against the current master during recovery. `test/recovery-scheduling.test.js`

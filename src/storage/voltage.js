@@ -1,4 +1,5 @@
 import { voltageInput, validVoltageProvenance } from '../domain/voltage-provenance.js';
+import { observationTimeAdmitted, observationAvailableAt, validateAdmittedSourceTime } from '../domain/time-evidence.js';
 
 // One slow planning estimate per installation phase. Candidate readings are
 // bounded restart state, never a second raw-observation history.
@@ -24,7 +25,8 @@ const phaseEmpty = () => ({ mean: null, coverageMs: 0, selected: null, lastUpdat
   lastObservedAt: null, input: 0, inputs: 0, source: null, device: null, evidenceBasis: null });
 const empty = () => ({ version: VOLTAGE_VERSION, candidates: {}, phases: [phaseEmpty(), phaseEmpty(), phaseEmpty()], published: [null, null, null] });
 const sourceFor = input => input === 8 ? 'simulation' : 'easee';
-const reporting = (candidate, now) => candidate?.reporting === true && now <= candidate.validUntil;
+const reporting = (candidate, now) => candidate?.reporting === true && now <= candidate.validUntil
+  && validateAdmittedSourceTime({ ...candidate, now });
 function restored(store, input) {
   const state = store.getState(stateKey(input));
   if (state == null && store.db?.prepare('SELECT 1 FROM state WHERE key = ?').get(stateKey(input)))
@@ -32,15 +34,15 @@ function restored(store, input) {
   if (state != null) {
     const validCandidate = (key, row) => /^(1|2|4|8):[012]$/.test(key)
       && fields(row, ['identity', 'source', 'device', 'input', 'sourceTime', 'receivedAt', 'reporting',
-        'lastValue', 'validUntil', 'evidenceBasis', 'evidenceAt', 'healthyMs'])
+        'lastValue', 'validUntil', 'evidenceBasis', 'evidenceAt', 'healthyMs', ...(Object.hasOwn(row ?? {}, 'admittedAt') ? ['admittedAt'] : [])])
       && row.input === Number(key.split(':')[0]) && row.source === sourceFor(row.input)
       && (input === 'simulated' ? row.input === 8 : row.input !== 8)
       && typeof row.device === 'string' && row.device.length > 0 && row.identity === identity(row)
-      && (row.sourceTime === null || validTime(row.sourceTime) && row.sourceTime <= row.receivedAt)
+      && (row.sourceTime === null || validateAdmittedSourceTime(row))
       && validTime(row.receivedAt) && typeof row.reporting === 'boolean'
       && (row.lastValue === null || validVoltage(row.lastValue))
       && (row.validUntil === null || validTime(row.validUntil))
-      && (row.evidenceAt === null || validTime(row.evidenceAt) && row.evidenceAt <= row.receivedAt)
+      && (row.evidenceAt === null || validTime(row.evidenceAt) && row.evidenceAt <= Math.max(row.receivedAt, row.admittedAt ?? 0))
       && Number.isSafeInteger(row.healthyMs) && row.healthyMs >= 0
       && [null, 'source-report', 'held-with-device-telemetry'].includes(row.evidenceBasis)
       && (row.sourceTime === null ? row.lastValue === null && row.evidenceAt === null && row.validUntil === null
@@ -120,7 +122,7 @@ function sourceEvidence(o, now, telemetryAt, telemetryMaxAgeMs) {
     && validTime(telemetryAt) && telemetryAt <= now && now - telemetryAt <= telemetryMaxAgeMs;
   const fresh = now - o.sourceTime <= VOLTAGE_MAX_GAP_MS;
   const valid = o.unit === 'V' && validVoltage(o.value) && validTime(o.sourceTime) && validTime(o.receivedAt)
-    && o.sourceTime <= o.receivedAt && o.receivedAt <= now && (fresh || confirmed)
+    && observationTimeAdmitted(o, now) && (fresh || confirmed)
     && !o.raw?.retained && !o.raw?.cached && o.raw?.deviceConnection?.connected !== false
     && (o.quality ?? []).every(flag => ['good', 'simulated', 'duplicate_observation', 'local_ocpp', ...(confirmed ? ['stale'] : [])].includes(flag));
   return valid ? { basis: fresh ? 'source-report' : 'held-with-device-telemetry',
@@ -186,21 +188,25 @@ export class VoltageEstimator {
         || o.sourceTime === candidate.sourceTime && o.value !== candidate.lastValue
         || !candidate.reporting && (evidence.observedAt <= candidate.evidenceAt || evidence.observedAt < candidate.receivedAt)
         || o.receivedAt <= candidate.receivedAt)) return false;
-      const continuous = evidence && candidate.reporting && o.receivedAt <= candidate.validUntil
-        && o.receivedAt - candidate.receivedAt <= VOLTAGE_MAX_GAP_MS;
+      const availableAt = observationAvailableAt(o) ?? o.receivedAt;
+      const previousAvailableAt = Math.max(candidate.receivedAt, candidate.admittedAt ?? 0);
+      const continuous = evidence && candidate.reporting && availableAt <= candidate.validUntil
+        && availableAt - previousAvailableAt <= VOLTAGE_MAX_GAP_MS;
       if (evidence) {
-        candidate.healthyMs = continuous ? candidate.healthyMs + o.receivedAt - candidate.receivedAt : 0;
+        candidate.healthyMs = continuous ? candidate.healthyMs + availableAt - previousAvailableAt : 0;
         candidate.sourceTime = o.sourceTime; candidate.lastValue = o.value;
         candidate.validUntil = evidence.validUntil; candidate.evidenceBasis = evidence.basis; candidate.evidenceAt = evidence.observedAt;
       } else candidate.healthyMs = 0;
       candidate.reporting = Boolean(evidence); candidate.receivedAt = o.receivedAt;
+      if (evidence && o.raw?.timeAdmission) candidate.admittedAt = o.raw.timeAdmission.admittedAt;
+      else delete candidate.admittedAt;
       const accumulator = state.phases[target.phase], selectedBefore = accumulator.selected;
-      const replaceSeed = accumulator.coverageMs === 0 && accumulator.lastUpdatedAt === o.receivedAt
+      const replaceSeed = accumulator.coverageMs === 0 && accumulator.lastUpdatedAt === availableAt
         && target.input < accumulator.input;
       this.select(state, target.phase, now);
       if (evidence && accumulator.selected === key) {
         const dt = selectedBefore === key && continuous && accumulator.lastUpdatedAt !== null
-          && o.receivedAt >= accumulator.lastUpdatedAt ? o.receivedAt - accumulator.lastUpdatedAt : 0;
+          && availableAt >= accumulator.lastUpdatedAt ? availableAt - accumulator.lastUpdatedAt : 0;
         if (accumulator.mean === null || dt > 0 || replaceSeed) {
           if (accumulator.mean === null || replaceSeed) accumulator.mean = o.value;
           else accumulator.mean += -Math.expm1(-Math.LN2 * dt / VOLTAGE_HALF_LIFE_MS) * (o.value - accumulator.mean);
@@ -208,7 +214,7 @@ export class VoltageEstimator {
           accumulator.source = o.source; accumulator.device = o.device;
           accumulator.lastObservedAt = o.sourceTime; accumulator.evidenceBasis = evidence.basis;
         }
-        accumulator.lastUpdatedAt = o.receivedAt;
+        accumulator.lastUpdatedAt = availableAt;
       }
       this.publish(state, target.phase, now);
       this.store.setState(stateKey(this.input), state);

@@ -1,6 +1,7 @@
 import { ENERGY_SIGNALS, SIGNAL_INFO } from '../domain/history-series.js';
 import { pendingEnergyObservations, pendingEnergyObservationsFromStates } from '../storage/pending-energy.js';
 import { isRecordedEnergyGap, validEnergyQuality } from '../storage/energy-history.js';
+import { observationTimeAdmitted } from '../domain/time-evidence.js';
 
 export const RECOVERY_OUTAGE_LIMIT = 100;
 const allowanceSignals = ['charger1_current_allowance', 'charger2_current_allowance'];
@@ -107,6 +108,10 @@ export function validRecoverySourceSummary(value) {
  * size stay bounded; no history-sized arrays, trial merge or model rebuild. */
 export async function recoveryCoverageReport({ master, donor, input, now = Date.now(), yieldControl = async () => {}, progress = () => {} }) {
   if (!Number.isSafeInteger(now) || now <= 0) throw new TypeError('Invalid report time');
+  donor.db.function('recovery_report_time', { deterministic: true }, (sourceTime, receivedAt, raw) => {
+    try { return Number(observationTimeAdmitted({ sourceTime, receivedAt, raw: raw ? JSON.parse(raw) : null }, now)); }
+    catch { return 0; }
+  });
   donor.db.function('recovery_report_usable',{ deterministic: true },quality => {
     try { return Number(validEnergyQuality(JSON.parse(quality))); } catch { return 0; }
   });
@@ -116,7 +121,7 @@ export async function recoveryCoverageReport({ master, donor, input, now = Date.
       return Number(isRecordedEnergyGap({ value,unit },payload,flags)
         && Number.isSafeInteger(payload.intervalStart) && payload.intervalStart > 0
         && Number.isSafeInteger(end) && payload.intervalEnd === end && end > payload.intervalStart
-        && Number.isSafeInteger(received) && received >= end && received <= now);
+        && observationTimeAdmitted({ sourceTime: end, receivedAt: received, raw: payload }, now));
     } catch { return 0; }
   });
   const report = { checkedAt: now, categories: [], outages: { total: 0, limit: RECOVERY_OUTAGE_LIMIT, items: [] } };
@@ -165,16 +170,16 @@ export async function recoveryCoverageReport({ master, donor, input, now = Date.
   }
   outages.sort((a,b) => b.start_at - a.start_at || b.end_at - a.end_at);
   const observation = donor.db.prepare(`SELECT 1 FROM active_observations o WHERE signal=? AND source_time>=? AND source_time<=?
-    AND source_time<=received_at AND received_at<=? AND ${scope('o')}=? AND ${usable('o')} LIMIT 1`);
+    AND recovery_report_time(source_time,received_at,raw)=1 AND received_at<=? AND ${scope('o')}=? AND ${usable('o')} LIMIT 1`);
   const energy = donor.db.prepare(`SELECT 1 FROM active_observations o WHERE signal=? AND source_time>?
-    AND source_time<=received_at AND received_at<=? AND ${scope('o')}=? AND ${usable('o')}
+    AND recovery_report_time(source_time,received_at,raw)=1 AND received_at<=? AND ${scope('o')}=? AND ${usable('o')}
     AND unit='kWh' AND import_id IS NULL AND ${intervalStart}<?
     AND json_extract(${raw},'$.intervalEnd')=source_time
     AND COALESCE(json_extract(${raw},'$.auditOnly'),0)=0 AND COALESCE(json_extract(${raw},'$.acquisitionOnly'),0)=0
     AND COALESCE(json_extract(${raw},'$.timeBasis'),'')<>'completed-hour' LIMIT 1`);
   const coverage = donor.db.prepare(`SELECT 1 FROM active_recorder_coverage c JOIN active_observations o ON o.id=c.observation_id
     WHERE c.signal=? AND c.end_at>=? AND c.start_at<=? AND c.status='fresh' AND c.samples>0
-      AND c.end_at<=? AND o.source_time<=o.received_at AND o.received_at<=?
+      AND c.end_at<=? AND recovery_report_time(o.source_time,o.received_at,o.raw)=1 AND o.received_at<=?
       AND ${scope('c')}=? AND ${usable('o')} LIMIT 1`);
   for (const row of outages) {
     const signals = row.energy_prefix ? row.energy_prefix === 'caravan' ? ['caravan_energy']

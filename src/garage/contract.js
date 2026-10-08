@@ -1,5 +1,6 @@
 import { GARAGE_NATIVE_SETTINGS } from './native-settings.js';
 import { validGarageTarget } from './room-temperature.js';
+import { validateAdmittedSourceTime, sourceTimeAdmission } from '../domain/time-evidence.js';
 
 export const SHELLY_CN105_CONTRACT = 'shelly-cn105/v2';
 const controlStates = ['starting', 'disabled', 'sensor-stale', 'sensor-range', 'native-stale', 'suspended-mode',
@@ -28,17 +29,18 @@ export function validateGarageAdapterSnapshot(value) {
   if (value == null) return value;
   const invalid = () => { throw new Error('Unsupported saved Garage adapter state; start a fresh development database.'); };
   if (!object(value) || value.version !== 2 || value.contractVersion !== SHELLY_CN105_CONTRACT
-    || Object.keys(value).sort().join(',') !== 'contractVersion,control,deviceId,electrical,faultRaw,health,lastCommand,native,observedAt,receivedAt,version'
+    || Object.keys(value).filter(key => key !== 'admittedAt').sort().join(',') !== 'contractVersion,control,deviceId,electrical,faultRaw,health,lastCommand,native,observedAt,receivedAt,version'
     || !object(value.native) || !object(value.health)
     || !(value.deviceId === null || identity(value.deviceId))
     || !(value.observedAt === null || finiteTime(value.observedAt))
     || !(value.receivedAt === null || finiteTime(value.receivedAt))
     || (value.observedAt === null) !== (value.receivedAt === null)
-    || value.observedAt !== null && value.observedAt > value.receivedAt
+    || value.observedAt !== null && !validateAdmittedSourceTime({ sourceTime: value.observedAt, receivedAt: value.receivedAt, admittedAt: value.admittedAt })
     || value.control !== null && (!decodeGarageControl(value.control) || value.receivedAt === null)
     || !(value.faultRaw === null || typeof value.faultRaw === 'string' && /^[0-9a-f]{1,128}$/i.test(value.faultRaw))) invalid();
   const wrapper = field => object(field) && Object.keys(field).sort().join(',') === 'measuredAt,value'
-    && finiteTime(field.measuredAt) && value.receivedAt !== null && field.measuredAt <= value.receivedAt;
+    && finiteTime(field.measuredAt) && value.receivedAt !== null
+    && validateAdmittedSourceTime({ sourceTime: field.measuredAt, receivedAt: value.receivedAt, admittedAt: value.admittedAt });
   for (const [key, field] of Object.entries(value.native)) {
     const definition = GARAGE_NATIVE_SETTINGS[key];
     if (!definition || field !== null && (!wrapper(field) || (definition.values ? !definition.values.includes(field.value)
@@ -97,13 +99,14 @@ export function garageAdapterSettings(input = {}) {
   return result;
 }
 export const finiteTime = value => Number.isSafeInteger(value) && value >= 0;
-export function garageFieldRemainingMs(field, receivedAt, maxAgeMs, observedAt = receivedAt) {
+export function garageFieldRemainingMs(field, receivedAt, maxAgeMs, observedAt = receivedAt, admittedAt) {
   if (field?.ageMs != null && !finiteTime(field.ageMs)) return 0;
   const measuredAt = finiteTime(field?.measuredAt) ? field.measuredAt
     : finiteTime(field?.ageMs) && field.ageMs <= receivedAt ? receivedAt - field.ageMs : null;
-  if (measuredAt === null || measuredAt > receivedAt) return 0;
-  const sourceAge = finiteTime(field?.ageMs) ? field.ageMs + Math.max(0, receivedAt - observedAt) : 0;
-  return Math.max(0, maxAgeMs - Math.max(receivedAt - measuredAt, sourceAge));
+  const now = admittedAt ?? receivedAt;
+  if (!validateAdmittedSourceTime({ sourceTime: measuredAt, receivedAt, admittedAt, now })) return 0;
+  const sourceAge = finiteTime(field?.ageMs) ? field.ageMs + Math.max(0, receivedAt - observedAt) + (now - receivedAt) : 0;
+  return Math.max(0, maxAgeMs - Math.max(now - Math.min(measuredAt, receivedAt), sourceAge));
 }
 const identity = value => typeof value === 'string' && value.length > 0 && value.length <= 128 && !/[\u0000-\u001f]/.test(value);
 export function decodeGarageEnvelope(payload, { receivedAt, schema = SHELLY_CN105_CONTRACT } = {}) {
@@ -122,7 +125,7 @@ export function decodeGarageEnvelope(payload, { receivedAt, schema = SHELLY_CN10
     || !Number.isSafeInteger(value.sequence) || value.sequence < 0) return null;
   return value;
 }
-export function decodeGarageField(field, definition, { receivedAt, observedAt = receivedAt, retained = false, maxAgeMs, bootId, schema = SHELLY_CN105_CONTRACT }) {
+export function decodeGarageField(field, definition, { receivedAt, observedAt = receivedAt, admittedAt, retained = false, maxAgeMs, bootId, schema = SHELLY_CN105_CONTRACT }) {
   let timeBasis = 'source-measured';
   if (field?.measuredAt == null && finiteTime(field?.ageMs) && field.ageMs <= receivedAt) {
     field = { ...field, measuredAt: receivedAt - field.ageMs };
@@ -139,8 +142,8 @@ export function decodeGarageField(field, definition, { receivedAt, observedAt = 
   const expectedUnit = definition.boolean && schema === SHELLY_CN105_CONTRACT && field?.value === null ? null : definition.unit;
   if (field?.unit !== expectedUnit) quality.push('units-unverified');
   if (!finiteTime(field?.measuredAt)) quality.push('source-time-unknown');
-  else if (field.measuredAt > receivedAt) quality.push('future-source-time');
-  else if (receivedAt - field.measuredAt >= maxAgeMs) quality.push('stale');
+  else if (!validateAdmittedSourceTime({ sourceTime: field.measuredAt, receivedAt, admittedAt })) quality.push('future-source-time');
+  else if ((admittedAt ?? receivedAt) - Math.min(field.measuredAt, receivedAt) >= maxAgeMs) quality.push('stale');
   if (field?.ageMs != null && !finiteTime(field.ageMs)) quality.push('source-age-invalid');
   else if (finiteTime(field?.ageMs) && field.ageMs + Math.max(0, receivedAt - observedAt) >= maxAgeMs
     && !quality.includes('stale')) quality.push('stale');
@@ -153,12 +156,13 @@ export function decodeGarageField(field, definition, { receivedAt, observedAt = 
   // installed accuracy or promoting it to control/learning evidence.
   const diagnosticAvailable = !['unknown', 'unsupported', 'invalid', 'stale'].includes(field?.quality)
     && supported && field?.decodeVerified === true && field?.unit === expectedUnit && validNumber
-    && finiteTime(field.measuredAt) && field.measuredAt <= receivedAt
-    && garageFieldRemainingMs(field, receivedAt, maxAgeMs, observedAt) > 0 && !retained;
+    && validateAdmittedSourceTime({ sourceTime: field.measuredAt, receivedAt, admittedAt })
+    && garageFieldRemainingMs(field, receivedAt, maxAgeMs, observedAt, admittedAt) > 0 && !retained;
+  const timeAdmission = sourceTimeAdmission({ sourceTime: field?.measuredAt, receivedAt, now: admittedAt ?? receivedAt, deferred: admittedAt !== undefined });
   return { signal: definition.signal, value: validNumber && supported && field?.unit === expectedUnit ? field.value : null,
     unit: definition.unit, sourceTime: finiteTime(field?.measuredAt) ? field.measuredAt : null, receivedAt,
     quality, supported, diagnosticAvailable, usable: diagnosticAvailable && field?.quality !== 'observed-unverified',
-    bootId, timeBasis, accuracyVerified: field?.accuracyVerified === true,
+    bootId, timeBasis, ...(timeAdmission ? { timeAdmission } : {}), accuracyVerified: field?.accuracyVerified === true,
     // Counter cadence must describe independent counter updates, not packet frequency.
     updateIntervalMs: Number.isSafeInteger(field?.updateIntervalMs) && field.updateIntervalMs > 0 ? field.updateIntervalMs : null,
     resolution: Number.isFinite(field?.resolution) && field.resolution > 0 ? field.resolution : null,

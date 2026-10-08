@@ -334,17 +334,22 @@ or validation evidence and no claimed observed saving.
 
 ### Current acquisition boundary
 
-Configured `timestamp_path` is mandatory. Missing, null, malformed or future
-clocks make the reading unavailable; they never fall back to receipt time.
+Configured `timestamp_path` is mandatory. Missing, null, malformed or excessively
+future clocks make the reading unavailable; they never fall back to receipt time.
+A source clock at most one second ahead follows the shared
+[time-evidence contract](time-evidence.md): hold it until that time arrives,
+preserve the original source and receipt clocks, and record the actual admission
+time. Waiting creates no new evidence or control permission and cannot extend
+the original lifetime. Connection changes discard pending reports.
 Deliberately untimestamped numeric publishers remain supported as receipt-time
 sources, explicitly identified by `raw.timeBasis = mqtt-received`. A DUP-only
 untimestamped delivery cannot establish a new sample. A first-seen timestamped
 MQTT DUP is evaluated once using receiver-local bounded delivery memory. Subsequent
 retransmissions and cached timestamps cannot extend source-report coverage.
 
-For native Shelly notifications, a rejected malformed or future `ts` supplies no
+For native Shelly notifications, a rejected malformed or excessively future `ts` supplies no
 new evidence. Previously accepted measurements keep only their original remaining
-lifetime; the rejected packet cannot renew them or device availability. A clock
+lifetime while a bounded pending report waits; rejected packets cannot renew them or device availability. A clock
 rejection alone does not manufacture an outage for either Garage probe. Explicit
 invalid temperatures or component errors still revoke the affected measurement,
 including its control-only copy, even when the notification's clock is rejected.

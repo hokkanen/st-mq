@@ -32,6 +32,11 @@ startup and wall-clock changes must not turn cached values into new measurements
 Reported monotonic source ages bound native and telemetry freshness alongside
 their original UTC timestamps. Transit and local elapsed time consume the
 remaining lifetime; recorded coverage retains the same deadline after restart.
+Controller and sender clocks at most one second ahead use bounded delayed
+admission under the shared [time-evidence contract](time-evidence.md). Pending
+status blocks new commands, retains its original receipt time and cannot extend
+status, native-field or challenge expiry. Reconnection discards pending status;
+malformed or larger clock leads remain unavailable.
 Recording reserves one second for the publisher's coarse UTC and rounds stricter
 lifetimes down to whole seconds, keeping normal cached reports compact.
 Shortened deadlines for cached readings are policy boundaries, not additional

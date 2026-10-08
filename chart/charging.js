@@ -187,7 +187,7 @@ export const chargingFields = [
     help: 'Save a correction for this session. A newer vehicle reading can replace it.' },
   { key: 'minimumSoc', label: 'Target charge · %', type: 'number', min: 0, max: 100, step: 1, automatic: true,
     help: 'Planning target; the vehicle’s own charging limit still applies.' },
-  { key: 'capacityKwh', label: 'Usable battery capacity · kWh', type: 'number', min: 1, max: 300, step: 0.1, automatic: true,
+  { key: 'capacityKwh', label: 'Usable battery capacity · kWh', type: 'number', min: 1, max: 300, step: 0.01, automatic: true,
     help: 'Capacity used to estimate charging time and energy.' },
 ].map(field => ({ type: 'text', ...field }));
 

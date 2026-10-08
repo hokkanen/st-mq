@@ -9,8 +9,9 @@ const validValue = (id, value) => id === 31 || id === 250 ? typeof value === 'bo
       : id === 109 && Number.isInteger(value) && value >= 0 && value <= 8;
 const sameValue = (id, left, right) => left === right || (id === 31 || id === 250) && Number(left) === Number(right);
 const eventId = (id, at) => `easee-stream:${id}:${at}`;
+const admission = value => value.admittedAt === undefined ? {} : { admittedAt: value.admittedAt };
 const reconnect = connection => ({ readingId: eventId('connected', connection.measuredAt),
-  measuredAt: connection.measuredAt, receivedAt: connection.receivedAt, retained: false });
+  measuredAt: connection.measuredAt, receivedAt: connection.receivedAt, retained: false, ...admission(connection) });
 
 /** Preserve source-timed transitions independently of controller wakeups. The
  * caller supplies live changes only; subscription snapshots and REST reads are
@@ -19,7 +20,8 @@ export function acceptEaseeTransition(previous, event, { now = Date.now(), conne
   if (!time(now) || !event || !IDS.has(event.id) || !validValue(event.id, event.value)
     || !validValue(event.id, event.previousValue) || sameValue(event.id, event.value, event.previousValue)
     || !time(event.measuredAt) || !time(event.receivedAt) || !time(event.previousMeasuredAt)
-    || event.previousMeasuredAt >= event.measuredAt || event.measuredAt > event.receivedAt
+    || event.previousMeasuredAt >= event.measuredAt
+    || !validateAdmittedSourceTime({ sourceTime: event.measuredAt, receivedAt: event.receivedAt, admittedAt: event.admittedAt, now })
     || event.receivedAt > now || now - event.measuredAt > MAX_AGE || now - event.receivedAt > MAX_AGE
     || event.measuredAt <= (previous?.watermarks?.[event.id] ?? -1)) return null;
 
@@ -32,13 +34,13 @@ export function acceptEaseeTransition(previous, event, { now = Date.now(), conne
     watermarks: Object.fromEntries([...IDS].filter(id => time(previous?.watermarks?.[id]))
       .map(id => [id, previous.watermarks[id]])),
     connection: connection && typeof connection.value === 'boolean' && time(connection.measuredAt) && time(connection.receivedAt)
-      ? { value: connection.value, measuredAt: connection.measuredAt, receivedAt: connection.receivedAt } : null,
+      ? { value: connection.value, measuredAt: connection.measuredAt, receivedAt: connection.receivedAt, ...admission(connection) } : null,
     disconnectedAt: disconnectedAt >= 0 ? disconnectedAt : null,
     chargingTimes: [...(previous?.chargingTimes ?? [])], stoppedTimes: [...(previous?.stoppedTimes ?? [])],
     ...(previous?.boundary ? { boundary: structuredClone(previous.boundary) } : {}),
   };
   evidence.watermarks[event.id] = event.measuredAt;
-  const observed = { value: !negative, measuredAt: event.measuredAt, receivedAt: event.receivedAt };
+  const observed = { value: !negative, measuredAt: event.measuredAt, receivedAt: event.receivedAt, ...admission(event) };
   const positive = event.id === 100 && ['B', 'C', 'D'].includes(event.value)
     || event.id === 109 && CONNECTED_MODES.includes(event.value);
 
@@ -54,7 +56,7 @@ export function acceptEaseeTransition(previous, event, { now = Date.now(), conne
     const newCycle = priorBoundary?.reconnected && event.measuredAt > priorBoundary.reconnected.measuredAt;
     if (time(endedConnectedAt) && (!priorBoundary || newSession || newCycle)) {
       evidence.boundary = { source: 'easee-stream', readingId: eventId(event.id, event.measuredAt),
-        measuredAt: event.measuredAt, receivedAt: event.receivedAt, endedConnectedAt };
+        measuredAt: event.measuredAt, receivedAt: event.receivedAt, endedConnectedAt, ...admission(event) };
     }
     if (evidence.boundary?.reconnected?.measuredAt <= event.measuredAt) delete evidence.boundary.reconnected;
   } else if (positive && event.measuredAt > disconnectedAt
@@ -79,3 +81,4 @@ export function acceptEaseeTransition(previous, event, { now = Date.now(), conne
   evidence.stoppedTimes = prune(evidence.stoppedTimes);
   return { evidence, ...(evidence.boundary ? { boundary: evidence.boundary } : {}) };
 }
+import { validateAdmittedSourceTime } from '../domain/time-evidence.js';

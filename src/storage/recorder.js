@@ -9,6 +9,7 @@ import { VOLTAGE_RECORDING_FLOOR_V, VOLTAGE_SIGNALS, voltageRecordingStatus } fr
 import { recordedTransport } from '../domain/recording-source.js';
 import { ADAPTIVE_BUDGET_KEY, initialAdaptiveBudget as initialBudget, readAdaptiveBudget } from './adaptive-recording-budget.js';
 import { STORAGE_METRICS_KEY, initialStorageMetrics, readStorageMetrics } from './recording-metrics.js';
+import { observationTimeAdmitted, observationAvailableAt, sourceTimeAdmission, validateAdmittedSourceTime } from '../domain/time-evidence.js';
 
 const MINUTE = 60_000, HOUR = 60 * MINUTE, DAY = 24 * HOUR, YEAR = 365.25 * DAY;
 export const RECORDING_VERSION = 'recording-contract-v2';
@@ -92,7 +93,7 @@ function recordingFreshness(state, coverage, now) {
   if (status === 'failed' && !reasons.length) reasons.push('provider-error');
   if (status === 'unavailable' && !reasons.length) reasons.push('invalid-quality');
   if (Number.isFinite(state.last?.sourceTime) && Number.isFinite(state.last?.receivedAt)
-    && state.last.sourceTime > state.last.receivedAt) reasons.push('source-time-after-receipt');
+    && !observationTimeAdmitted({ ...state.last, raw: { timeAdmission: state.last.timeAdmission } }, now)) reasons.push('source-time-after-receipt');
   if (age !== null && age < 0) {
     reasons.push('future-source-time');
     if (status === 'fresh') status = 'unavailable';
@@ -208,17 +209,23 @@ export class Recorder {
         .get(reading.source, reading.device, reading.signal, at, at);
       const previousRaw = span?.raw ? JSON.parse(span.raw) : reading.raw ?? {};
       const sourceTime = span?.source_time ?? reading.sourceTime;
-      const receivedAt = span ? span.source_time === span.observed_source_time
-        ? previousRaw.originalReportReceivedAt ?? span.end_at : span.end_at : reading.receivedAt;
+      const lastReportTime = s.lastReportTime?.sourceTime === sourceTime ? s.lastReportTime : null;
+      const receivedAt = lastReportTime?.receivedAt ?? (span ? span.source_time === span.observed_source_time
+        ? previousRaw.originalReportReceivedAt ?? span.observed_received_at : span.end_at : reading.receivedAt);
+      const reportAdmission = lastReportTime
+        ? lastReportTime.admittedAt === undefined ? undefined
+          : sourceTimeAdmission({ sourceTime, receivedAt, now: lastReportTime.admittedAt, deferred: true })
+        : previousRaw.originalReportTimeAdmission ?? previousRaw.timeAdmission;
       const value = span?.value ?? reading.value, unit = span?.unit ?? reading.unit;
       if (!recoverConnection && same(s.reportPolicy, policy)) return { changed: false, reportSourceTime: sourceTime, reportReceivedAt: receivedAt,
         observation: { source: reading.source, device: reading.device, signal: reading.signal, ...s.last, unit,
-          raw: { ...policy, timeBasis: s.last.semanticQuality?.timeBasis } } };
+          raw: { ...policy, timeBasis: s.last.semanticQuality?.timeBasis,
+            ...(s.last.timeAdmission ? { timeAdmission: s.last.timeAdmission } : {}) } } };
       const quality = span?.quality ? JSON.parse(span.quality) : reading.quality ?? [];
       const lastQuality = s.last.quality ?? [];
       const ageOnly = lastQuality.every(flag => ['missing', 'missing-report', 'report-policy-changed', 'stale', 'unavailable'].includes(flag))
         && (s.status === 'stale' || lastQuality.some(flag => ['missing-report', 'report-policy-changed'].includes(flag)));
-      const genuine = finiteTime(sourceTime) && finiteTime(receivedAt) && sourceTime <= receivedAt && receivedAt <= at
+      const genuine = observationTimeAdmitted({ sourceTime, receivedAt, raw: { timeAdmission: reportAdmission } }, at)
         && Number.isFinite(value) && ['degC', '°C'].includes(unit)
         && (['garage_temperature', 'garage_temperature_2'].includes(reading.signal) ? value >= -60 && value <= 70 : value > 2 && value < 40)
         && quality.every(flag => ['good', 'simulated', 'historical', 'converted_fahrenheit', 'stale'].includes(flag))
@@ -231,7 +238,7 @@ export class Recorder {
         if (!genuine || at >= sourceTime + age) return { changed: false };
         if (s.status === 'fresh') return { changed: false, reportSourceTime: sourceTime, reportReceivedAt: receivedAt,
           observation: { ...reading, sourceTime, receivedAt, value, unit, quality,
-            raw: { ...previousRaw, ...policy, temperatureRouteSignature: routeSignature } } };
+            raw: { ...previousRaw, ...policy, timeAdmission: reportAdmission, temperatureRouteSignature: routeSignature } } };
         const transport = flag => ['mqtt-disconnected', 'mqtt-subscription-failed'].includes(flag);
         const allowed = flag => transport(flag) || ['missing', 'failed', 'unavailable', 'stale', 'missing-report', 'report-policy-changed'].includes(flag);
         if (!lastQuality.some(transport) || !lastQuality.every(allowed)) return { changed: false };
@@ -254,7 +261,9 @@ export class Recorder {
       const fresh = genuine && (s.status === 'fresh' || ageOnly || recoverConnection) && at < sourceTime + age;
       const q = fresh ? quality.filter(flag => flag !== 'stale') : flags(['missing',
         ...(s.status !== 'fresh' && !ageOnly ? lastQuality : ['missing-report'])]);
-      const raw = compactRaw({ ...previousRaw, ...policy, timeBasis: recoverConnection ? 'mqtt-transport-recovery' : 'report-policy-change',
+      const raw = compactRaw({ ...previousRaw, ...policy, timeAdmission: undefined,
+        originalReportTimeAdmission: reportAdmission,
+        timeBasis: recoverConnection ? 'mqtt-transport-recovery' : 'report-policy-change',
         ...(recoverConnection ? { transportRecoveredAt: at, temperatureRouteSignature: routeSignature } : { reportPolicyChangedAt: at }), originalReportReceivedAt: receivedAt,
         originalReportSourceTime: sourceTime,
         originalReportTimeBasis: previousRaw.originalReportTimeBasis ?? previousRaw.timeBasis }, reading);
@@ -285,7 +294,7 @@ export class Recorder {
     const contact = hostContactReport(o);
     if (q.some(x => /failed|disconnected|fetch-error|acquisition-failed|provider[-_]error/.test(x))) return 'failed';
     if (o.value === null || !Number.isFinite(o.sourceTime) || q.some(x => /missing|invalid|retained|unavailable/.test(x))) return 'unavailable';
-    if (q.some(x => /stale|out-of-order/.test(x)) || o.sourceTime > o.receivedAt
+    if (q.some(x => /stale|out-of-order/.test(x)) || !observationTimeAdmitted(o, o.raw?.timeAdmission ? this.clock() : Infinity)
       || (temperatureReportMaxAge(o) !== null
         ? o.receivedAt - o.sourceTime >= sourceAge(o) : o.receivedAt - o.sourceTime > sourceAge(o))
       || temperatureReportMaxAge(o) !== null && state.status && state.status !== 'fresh'
@@ -332,7 +341,8 @@ export class Recorder {
     // Coverage describes successful source updates and availability separately
     // from the value approximation. An unchanged OLD timestamp never advances
     // measurement freshness, even though its HTTP request succeeded.
-    const at = o.receivedAt, observed = Number.isFinite(o.sourceTime) ? o.sourceTime : null;
+    const at = status === 'fresh' ? observationAvailableAt(o) ?? o.receivedAt : o.receivedAt;
+    const observed = Number.isFinite(o.sourceTime) ? o.sourceTime : null;
     // Polling a cached MQTT reading is not another detector report. Keep the
     // compact span's endpoint on the actual report's source and receipt clocks.
     if (temperatureReportMaxAge(o) !== null && status === 'fresh' && !freshUpdate) {
@@ -404,6 +414,11 @@ export class Recorder {
       const status = this.classify(o,s), fresh = status === 'fresh';
       const freshUpdate = fresh && (hostContactReport(o) || s.lastSourceTime === null || o.sourceTime > s.lastSourceTime
         || o.sourceTime === s.lastSourceTime && s.previousValue !== o.value);
+      // Coverage stores admission endpoints. Keep the latest genuine report's
+      // original clocks independently so policy/reconnect events cannot mistake
+      // a deferred endpoint for another physical receipt.
+      if (freshUpdate) s.lastReportTime = { sourceTime: o.sourceTime, receivedAt: o.receivedAt,
+        ...(o.raw?.timeAdmission ? { admittedAt: o.raw.timeAdmission.admittedAt } : {}) };
       if (freshUpdate) this.scale(s,o.value,o.sourceTime);
       const exact = !policy.adaptive;
       s.recordingPolicy = policy.id;
@@ -430,7 +445,7 @@ export class Recorder {
           Object.assign(raw, { timeBasis: 'report-policy-change', reportPolicyChangedAt: o.receivedAt,
             originalReportSourceTime: o.sourceTime,
             originalReportReceivedAt: report?.source_time === report?.original_source_time
-              ? previousRaw.originalReportReceivedAt ?? report?.end_at ?? prior.receivedAt : report?.end_at ?? prior.receivedAt,
+              ? previousRaw.originalReportReceivedAt ?? previousRaw.timeAdmission?.receivedAt ?? prior.receivedAt : report?.end_at ?? prior.receivedAt,
             originalReportTimeBasis: previousRaw.originalReportTimeBasis ?? previousRaw.timeBasis ?? o.raw?.timeBasis });
         }
         raw.recorder = { version: VERSION, policy: policy.id, reason: cachedPolicyChange ? 'report-policy-change' : reason,
@@ -439,6 +454,7 @@ export class Recorder {
         committed = { ...o, raw, quality: fresh ? o.quality : flags([...o.quality,status]) };
         committed.id = this.store.observation(committed);
         s.last = { id:committed.id,value:o.value,sourceTime:o.sourceTime,receivedAt:o.receivedAt,
+          ...(o.raw?.timeAdmission ? { timeAdmission: o.raw.timeAdmission } : {}),
           quality:o.quality,usableForControl:o.raw?.usableForControl,semanticQuality:semanticQuality(o.raw) };
         s.unit=o.unit;
       }
@@ -471,11 +487,11 @@ export class Recorder {
    * increments and inserts share a transaction; retries cannot count energy twice.
    */
   recordEnergy(interval) {
-    const { source = 'easee', device, prefix, start, end, energies, powers, quality = [], receivedAt = end } = interval;
+    const { source = 'easee', device, prefix, start, end, energies, powers, quality = [], receivedAt = end, admittedAt } = interval;
     const transport = recordedTransport(interval);
     const signals = energySignals(prefix);
     if (!signals || !finiteTime(start) || !finiteTime(end) || end <= start
-      || !finiteTime(receivedAt) || end > receivedAt || !Array.isArray(energies) || energies.length !== signals.length
+      || !validateAdmittedSourceTime({ sourceTime: end, receivedAt, admittedAt, now: admittedAt === undefined ? Infinity : this.clock() }) || !Array.isArray(energies) || energies.length !== signals.length
       || energies.some(n => !Number.isFinite(n) || n < 0) || !Array.isArray(powers) || powers.length !== signals.length
       || powers.some(n => !Number.isFinite(n) || n < 0)) throw new TypeError('Invalid phase energy interval');
     return this.store.transaction(() => {
@@ -496,6 +512,7 @@ export class Recorder {
       // local interval and advance normally, so retries cannot double count or
       // permanently stall acquisition. Any uncovered remainder is a real gap.
       let recoveredEnd = null;
+      const availableAt = Math.max(receivedAt, admittedAt ?? 0);
       for (const row of this.store.db.prepare(`SELECT o.source_time,o.received_at,o.quality,o.raw FROM active_observations o
         WHERE o.signal IN (${signals.map(()=>'?').join(',')}) AND o.unit='kWh' AND o.value>=0
           AND o.import_id IS NULL AND o.source_time>? AND o.source_time<=? AND o.received_at<=?
@@ -503,12 +520,14 @@ export class Recorder {
           AND json_valid(o.raw) AND json_extract(o.raw,'$.intervalStart')<?
           AND EXISTS (SELECT 1 FROM recovery_provenance p WHERE p.table_name IN ('observations','recorder_pending_energy')
             AND p.target_id=CAST(o.id AS TEXT) AND p.disposition='missing')`)
-        .iterate(...signals,start,receivedAt,receivedAt,end)) {
+        .iterate(...signals,start,availableAt,availableAt,end)) {
         const raw = JSON.parse(row.raw);
         let quality; try { quality = JSON.parse(row.quality); } catch { continue; }
         if (raw.timeBasis === 'completed-hour' || raw.auditOnly || raw.acquisitionOnly || !validEnergyQuality(quality)
           || !finiteTime(raw.intervalStart) || raw.intervalEnd !== row.source_time
-          || raw.intervalEnd <= raw.intervalStart || row.received_at < row.source_time) continue;
+          || raw.intervalEnd <= raw.intervalStart || !observationTimeAdmitted({
+            sourceTime: row.source_time, receivedAt: row.received_at, raw,
+          }, availableAt)) continue;
         recoveredEnd = Math.max(recoveredEnd ?? -Infinity,raw.intervalEnd);
       }
       if (recoveredEnd !== null) {
@@ -519,7 +538,7 @@ export class Recorder {
         g.energyRevision++; this.store.setState(STORAGE_METRICS_KEY,g);
         this.store.setState(ADAPTIVE_BUDGET_KEY,budget);
         if (recoveredEnd<end) observations.push(...this.energyGap({source,device,prefix,start:Math.max(start,recoveredEnd),end,
-          receivedAt,quality:['recovery-overlap','missing']}));
+          receivedAt,admittedAt,quality:['recovery-overlap','missing']}));
         return {saved:observations.length>0,reason:'recovered-interval-overlap',observations};
       }
       // Close the previous valid interval before any gap or quality transition;
@@ -552,6 +571,10 @@ export class Recorder {
       state.pending.quality = flags([...state.pending.quality,...q]);
       if (native) state.pending.selectionPowers = [...powers];
       state.pending.end = end; state.pending.receivedAt = receivedAt;
+      // A later packet may already have arrived while an earlier ordered
+      // report was pending. Its original receipt cannot erase that wait.
+      if (admittedAt !== undefined || state.pending.admittedAt !== undefined)
+        state.pending.admittedAt = Math.max(state.pending.admittedAt ?? 0, admittedAt ?? receivedAt);
       state.lastEnd = end; state.lastReceivedAt = receivedAt;
       if (reason) observations.push(...this.commitEnergy(state,source,device,prefix,receivedAt,reason,budget));
       for (let i=0;i<signals.length;i++) {
@@ -576,6 +599,11 @@ export class Recorder {
     const observations = p.energies.map((value,i) => {
       const o = {source,device,signal:signals[i],value,unit:'kWh',sourceTime:p.end,receivedAt,
         quality:p.quality,raw:{intervalStart:p.start,intervalEnd:p.end,durationMs:p.end-p.start,
+          ...(p.admittedAt !== undefined ? {
+            timeAdmission: sourceTimeAdmission({ sourceTime: p.end, receivedAt,
+              now: Math.max(receivedAt, p.admittedAt), deferred: true }),
+            ...(p.receivedAt !== receivedAt ? { originalReportReceivedAt: p.receivedAt } : {}),
+          } : {}),
           ...(p.transport ? {transport:p.transport} : {}),
           basis:prefix==='caravan'?'meter-counter-delta':prefix==='ev2'?'native-meter-counter-phase-allocation':'integrated-power-phase-allocation',
           ...(prefix==='caravan'?{learningRole:'history-only'}:{}),recorder:{version:VERSION,policy:'adaptive-energy',reason,group:prefix}}};
@@ -583,7 +611,8 @@ export class Recorder {
       budget.estimatedBytes += observationBytes(o);
       const s = this.signalState(o,receivedAt);
       const previous = s.last;
-      s.last = {id:o.id,value,sourceTime:p.end,receivedAt,quality:p.quality,semanticQuality:semanticQuality(o.raw)};
+      s.last = {id:o.id,value,sourceTime:p.end,receivedAt,quality:p.quality,semanticQuality:semanticQuality(o.raw),
+        ...(o.raw.timeAdmission ? { timeAdmission: o.raw.timeAdmission } : {})};
       s.lastPollAt = receivedAt; s.lastSourceTime = p.end; s.unit = 'kWh'; s.recordingPolicy = 'adaptive-energy';
       s.scale = state.scales[i]?.scale ?? 0;
       this.coverage(s,o,'fresh');
@@ -600,9 +629,10 @@ export class Recorder {
     return observations;
   }
 
-  energyGap({ source = 'easee', device, prefix, start, end, receivedAt = end, quality = ['acquisition-failed'], transport }) {
+  energyGap({ source = 'easee', device, prefix, start, end, receivedAt = end, admittedAt, quality = ['acquisition-failed'], transport }) {
     const signals = energySignals(prefix);
-    if (!signals || !finiteTime(start) || !finiteTime(end) || end < start || !finiteTime(receivedAt) || receivedAt < end)
+    if (!signals || !finiteTime(start) || !finiteTime(end) || end < start
+      || !validateAdmittedSourceTime({ sourceTime: end, receivedAt, admittedAt, now: admittedAt === undefined ? Infinity : this.clock() }))
       throw new TypeError('Invalid phase energy gap');
     return this.store.transaction(() => {
       const key = `recorder:energy:${JSON.stringify([source,device,prefix])}`, state = this.store.getState(key);
@@ -619,6 +649,7 @@ export class Recorder {
         const result = this.record({source,device,signal,value:null,unit:'kWh',
           sourceTime:end,receivedAt,quality:flags([...quality,'missing']),
           raw:{basis:'availability-gap',intervalStart:start,intervalEnd:end,durationMs:end-start,
+            ...(admittedAt !== undefined ? { timeAdmission: sourceTimeAdmission({ sourceTime: end, receivedAt, now: admittedAt, deferred: true }) } : {}),
             ...(['cloud','ocpp'].includes(transport) ? {transport} : {})}});
         if (result.saved) observations.push(result.observation);
       }
@@ -643,7 +674,8 @@ export class Recorder {
         const [recordSource,recordDevice,recordPrefix] = JSON.parse(row.key.slice('recorder:energy:'.length));
         if (source !== undefined && source !== recordSource || device !== undefined && device !== recordDevice
           || selected && !selected.includes(recordPrefix)) continue;
-        if (p.end > now || p.receivedAt > now) throw new TypeError('Cannot finalize energy before it was received');
+        if (!validateAdmittedSourceTime({ sourceTime: p.end, receivedAt: p.receivedAt, admittedAt: p.admittedAt, now }))
+          throw new TypeError('Cannot finalize energy before its evidence was admitted');
         budget ??= this.adaptiveBudget(now);
         observations.push(...this.commitEnergy(s,recordSource,recordDevice,recordPrefix,now,'flush',budget));
         this.store.setState(row.key,s);
@@ -656,11 +688,14 @@ export class Recorder {
 
   committedAt(signal,at) {
     if (!finiteTime(at)) throw new TypeError('Invalid committed timestamp');
-    const row = this.store.db.prepare(`SELECT * FROM active_observations AS observations WHERE signal=? AND source_time<=? AND received_at<=?
-      AND import_id IS NULL ORDER BY source_time DESC,id DESC LIMIT 1`).get(signal,at,at);
-    if (!row) return null;
-    const o = {id:row.id,source:row.source,device:row.device,signal:row.signal,value:row.value,unit:row.unit,
-      sourceTime:row.source_time,receivedAt:row.received_at,quality:JSON.parse(row.quality),raw:row.raw ? JSON.parse(row.raw) : null};
+    let o = null;
+    for (const row of this.store.db.prepare(`SELECT * FROM active_observations AS observations WHERE signal=? AND source_time<=? AND received_at<=?
+      AND import_id IS NULL ORDER BY source_time DESC,id DESC`).iterate(signal,at,at)) {
+      const candidate = {id:row.id,source:row.source,device:row.device,signal:row.signal,value:row.value,unit:row.unit,
+        sourceTime:row.source_time,receivedAt:row.received_at,quality:JSON.parse(row.quality),raw:row.raw ? JSON.parse(row.raw) : null};
+      if (observationTimeAdmitted(candidate, at)) { o = candidate; break; }
+    }
+    if (!o) return null;
     if (o.raw?.acquisitionOnly || o.raw?.auditOnly) return null;
     const reportAge = temperatureReportMaxAge(o);
     if (reportAge !== null) {
@@ -676,9 +711,14 @@ export class Recorder {
       ORDER BY start_at DESC,id DESC LIMIT 1`).get(o.source,o.device,signal,at);
     if (coverage && coverage.end_at >= o.receivedAt) {
       if (coverage.status !== 'fresh') return {...o,value:null,quality:flags([...o.quality,coverage.status])};
-      if (coverage.end_at <= at && coverage.observation_id === o.id && coverage.source_time > o.sourceTime)
+      if (coverage.end_at <= at && coverage.observation_id === o.id && coverage.source_time > o.sourceTime) {
+        // Deferred coverage endpoints are admission clocks, not another
+        // physical receipt. Keep the measured row and its proof intact.
+        if (o.raw?.timeAdmission) return {...o,reportObservedAt:coverage.source_time,reportAvailableAt:coverage.end_at,
+          raw:{...o.raw,recorder:{...o.raw.recorder,temporalBasis:'held-recorded-value',coverageId:coverage.id}}};
         return {...o,sourceTime:coverage.source_time,receivedAt:coverage.end_at,
           raw:{...o.raw,recorder:{...o.raw?.recorder,originalSourceTime:o.sourceTime,temporalBasis:'held-recorded-value',coverageId:coverage.id}}};
+      }
     }
     return o;
   }
@@ -699,7 +739,8 @@ export class Recorder {
     for (const row of this.store.db.prepare("SELECT key,value FROM state WHERE key LIKE 'recorder:energy:%'").all()) {
       const [source,device,prefix] = JSON.parse(row.key.slice('recorder:energy:'.length));
       const pending = JSON.parse(row.value).pending;
-      if (!pending || pending.end > now || pending.receivedAt > now) continue;
+      if (!pending || !validateAdmittedSourceTime({ sourceTime: pending.end, receivedAt: pending.receivedAt,
+        admittedAt: pending.admittedAt, now })) continue;
       for (const [i,signal] of (energySignals(prefix) ?? []).entries())
         openEnergy.set(keyOf({source,device,signal,unit:'kWh'}), { start:pending.start,end:pending.end,
           receivedAt:pending.receivedAt,kwh:pending.energies[i],...(pending.transport ? {transport:pending.transport} : {}) });
@@ -790,12 +831,12 @@ function compactRaw(raw, observation) {
   if (!raw || typeof raw !== 'object') return {};
   // Repeated MQTT payload text and device metadata have no independent numeric
   // information. Retain interpretation, quality and lineage used by consumers.
-  const allowed = ['usableForControl','timeBasis','sensorMeasuredAt','installationVerified','verification','register',
+  const allowed = ['usableForControl','timeBasis','timeAdmission','sensorMeasuredAt','installationVerified','verification','register',
     'verified','retained','cached','publicationMayUseGatewayCache','verificationEvidence',
     'diagnosticAvailable','accuracyVerified','contractVersion','supported',
     'basis','energyBasis','source','issuedAt','fetchedAt','snapshotId','provenance','intervalStart','intervalEnd','durationMs',
     'modelVersion','controllerPhase','estimated','forecast','reportIntervalMs','reportGraceMs','eventOnly','maxAgeMs',
-    'reportPolicyChangedAt','originalReportReceivedAt','originalReportSourceTime','originalReportTimeBasis','transportRecoveredAt','temperatureRouteSignature',
+    'reportPolicyChangedAt','originalReportReceivedAt','originalReportSourceTime','originalReportTimeBasis','originalReportTimeAdmission','transportRecoveredAt','temperatureRouteSignature',
     'transport','voltageSource','voltageAvailability','voltageEstimate'];
   const result = Object.fromEntries(allowed.filter(key=>raw[key] !== undefined).map(key=>[key,raw[key]]));
   // Caravan appliance history stores one power/fan state. Keep its physical

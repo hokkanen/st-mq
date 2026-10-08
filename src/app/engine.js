@@ -15,6 +15,7 @@ import { Recorder } from '../storage/recorder.js';
 import { createWriteScope } from '../storage/write-scope.js';
 import { VoltageEstimator, voltageTelemetryAt, validateVoltageState } from '../storage/voltage.js';
 import { LEARNING_ALGORITHM, LEARNING_WINDOW_MS, committedLearningSample, appendLearningRecord, replayLearningJournal as replayCommittedLearning, recordLearningContext, learningCheckpointDigest } from './committed-learning.js';
+import { observationTimeAdmitted } from '../domain/time-evidence.js';
 import { addFireplace, removeFireplace, fireplaceView, fireplaceRevision, FireplaceRebuildManager } from './fireplace.js';
 import { fireplaceLearningContext, withFireplaceInputs } from './fireplace-inputs.js';
 import { evaluateThermalModel, fireplaceEvidenceReady, fireplaceGainUncertainty } from '../control/adaptive-learning.js';
@@ -83,7 +84,7 @@ function trustworthy(observation, now) {
     ? observation.quality.filter(flag => !(phaseCurrent && flag === 'current_snapshot_not_energy')
       && !(modelOutdoor && flag === 'estimated')) : observation?.quality;
   if (!observation || !Number.isFinite(observation.value) || !Number.isFinite(observation.sourceTime)
-    || observation.sourceTime > now || !goodQuality(quality)) return false;
+    || !observationTimeAdmitted(observation, now) || !goodQuality(quality)) return false;
   if (INDOOR_SIGNALS.includes(observation.signal)) return observation.value > 2 && observation.value < 40;
   if (observation.signal === 'outdoor_temperature') return observation.value >= -60 && observation.value <= 50;
   if (phaseCurrent) return observation.value >= 0 && observation.value <= 1000;

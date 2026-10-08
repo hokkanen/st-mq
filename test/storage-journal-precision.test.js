@@ -184,7 +184,7 @@ test('typed capture uses the portable SQLite argument limit and rejects incompat
   assert.doesNotThrow(() => journalSchema(table(62)));
   assert.throws(() => journalSchema(table(63)), /argument limit/);
   const { store } = await fixture(t);
-  assert.equal(SCHEMA_VERSION, 26);
+  assert.equal(SCHEMA_VERSION, 27);
   store.close();
   const raw = new DatabaseSync(store.path);
   raw.exec('PRAGMA user_version=25');

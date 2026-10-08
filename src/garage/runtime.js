@@ -5,13 +5,14 @@ import { validateGarageModeState, validGarageTarget, GARAGE_WARMING_WARNING } fr
 import { confirmedGarageDoor, GARAGE_DOOR_SIGNALS } from './door-state.js';
 import { temperatureReportMaxAge } from '../domain/temperature-reports.js';
 import { mqttSourceIdentity } from '../pairing/mqtt-source-context.js';
+import { observationTimeAdmitted } from '../domain/time-evidence.js';
 
 const finite = Number.isFinite;
 const copy = value => structuredClone(value);
 const observationView = (row, now, maxAge) => ({ value: finite(row?.value) ? row.value : null,
   observedAt: row?.sourceTime ?? null, source: row?.source ?? null,
-  stale: !row || !finite(row.sourceTime) || row.sourceTime > now || !finite(row.receivedAt) || row.receivedAt > now
-    || now - row.sourceTime >= Math.min(maxAge, temperatureReportMaxAge(row) ?? maxAge)
+  stale: !observationTimeAdmitted(row, now)
+    || now - Math.min(row.sourceTime, row.receivedAt) >= Math.min(maxAge, temperatureReportMaxAge(row) ?? maxAge)
     || row.raw?.retained === true || row.raw?.auditOnly === true
     || (row.quality ?? []).some(flag => !['good', 'simulated', 'historical', 'converted_fahrenheit', 'estimated'].includes(flag)) });
 

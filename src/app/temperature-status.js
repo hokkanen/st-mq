@@ -3,6 +3,7 @@ import { temperatureReportMaxAge } from '../domain/temperature-reports.js';
 import { OUTDOOR_MAX_AGE_MS } from '../domain/reading-freshness.js';
 import { indoorReadingUsable } from './indoor-readings.js';
 import { goodQuality } from '../control/learning.js';
+import { observationTimeAdmitted } from '../domain/time-evidence.js';
 
 const qualityReasons = Object.freeze({
   missing: 'missing-reading', invalid: 'invalid-value', 'invalid-value': 'invalid-value',
@@ -35,7 +36,7 @@ export function temperatureFailureReasons(observation, now) {
   if (held && !Number.isFinite(observation.receivedAt)) reasons.push('unknown-receipt-time');
   if (Number.isFinite(observation.receivedAt)) {
     if (observation.receivedAt > now) reasons.push('future-receipt-time');
-    if (held && observation.sourceTime > observation.receivedAt) reasons.push('source-time-after-receipt');
+    if (held && !observationTimeAdmitted(observation, now)) reasons.push('source-time-after-receipt');
   }
   if (held && !['degC', '°C'].includes(observation.unit)) reasons.push('unsupported-unit');
   if (observation.source === 'controller-estimate') reasons.push('controller-estimate');
@@ -131,7 +132,7 @@ export function recordedTemperatureAttempt(store, signal, knownAt, input) {
 }
 
 const outdoorTrustworthy = (row, now) => Boolean(row && Number.isFinite(row.value)
-  && Number.isFinite(row.sourceTime) && row.sourceTime <= now && row.value >= -60 && row.value <= 50
+  && observationTimeAdmitted(row, now) && row.value >= -60 && row.value <= 50
   && goodQuality((row.quality ?? []).filter(flag => !(row.source === 'openmeteo' && flag === 'estimated'))));
 const transition = row => row?.value === null && row.raw?.timeBasis === 'availability-transition';
 

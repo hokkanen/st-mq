@@ -38,7 +38,7 @@ function fixture(t, { streaming = false, authorizationMode = 'plug-and-charge', 
   let cloudObservations = null, cloudOffline = false, nativeRequest = null, streamRows = null, commandSourceAt = null;
   let resumeCurrentDelayReads = 0, pendingResumeCurrentAt = null;
   let streamObservation = null;
-  let streamConnected = true, streamDisconnect = null, streamEvidence = null;
+  let streamConnected = true, streamDisconnect = null, streamEvidence = null, streamPending = false;
   let readSetupState = () => states.get('setup');
   const stateFor = key => ({ get: () => clone(states.get(key) ?? null), set: value => states.set(key, clone(value)) });
   const newHttp = () => createHttp({ allowOcppSetup: true, allowChargerScheduling: true, allowChargerTakeover: true, canControl: () => permitted,
@@ -110,7 +110,7 @@ function fixture(t, { streaming = false, authorizationMode = 'plug-and-charge', 
           : streamRows instanceof Map ? clone(streamRows.get(device)?.filter(row => ids.includes(row.id)) ?? null) : clone(streamRows),
         evidence: (device, ids) => streamEvidence ? clone({ ...streamEvidence.get(device), observations:
           streamEvidence.get(device)?.synchronized === true ? streamEvidence.get(device)?.observations?.filter(row => ids.includes(row.id)) : null }) : undefined,
-        reconcile() {}, status: () => ({ connected: streamConnected }) };
+        pending: () => streamPending, reconcile() {}, status: () => ({ connected: streamConnected }) };
       } : null, ocppInstallation: installation, ocppState: stateFor('transactions'), ocppSetupState: stateFor('setup'),
       ocppFactory: options => {
         let ready = false, closed = false;
@@ -156,6 +156,7 @@ function fixture(t, { streaming = false, authorizationMode = 'plug-and-charge', 
     set resumeCurrentDelayReads(value) { resumeCurrentDelayReads = value; },
     set streamRows(value) { streamRows = clone(value); }, set cloudOffline(value) { cloudOffline = value; },
     set streamEvidence(value) { streamEvidence = clone(value); },
+    set streamPending(value) { streamPending = value; },
     set streamConnected(value) { if (streamConnected && !value) streamDisconnect?.(); streamConnected = value; },
     emitObservation(observation) { streamObservation?.(CHARGER, observation); },
     get nativeRequest() { return nativeRequest; }, set nativeRequest(value) { nativeRequest = value; },
@@ -663,7 +664,7 @@ async function nativeAppFixture(t, options) {
 }
 
 test('production native start authorization is fenced by live status, reconnect and app pause before controller polling', async t => {
-  for (const change of ['fault', 'unplug', 'reconnect', 'app-pause']) {
+  for (const change of ['fault', 'unplug', 'reconnect', 'app-pause', 'pending-source-clock']) {
     const x = await nativeAppFixture(t, { streaming: true });
     x.f.streamRows = x.f.observations; x.provider.startStreaming();
     const immediate = { ...x.plan, startAt: AT, periods: [{ startAt: AT, endAt: null }] };
@@ -675,6 +676,7 @@ test('production native start authorization is fenced by live status, reconnect 
     if (change === 'fault') x.physical('Faulted', 0);
     if (change === 'unplug') x.physical('Available', 0, null);
     if (change === 'reconnect') x.listener.control = { ...x.listener.control, connectionId: 'fixture-reconnected-socket' };
+    if (change === 'pending-source-clock') x.f.streamPending = true;
     if (change === 'app-pause') {
       x.observe({ 48: 0, 96: 52 }); x.f.streamRows = x.f.observations;
     }
@@ -683,6 +685,7 @@ test('production native start authorization is fenced by live status, reconnect 
     x.f.advance(1000);
     x.physical('Preparing', 0, null);
     if (change === 'app-pause') { x.observe({ 48: 16, 96: 0 }); x.f.streamRows = x.f.observations; }
+    if (change === 'pending-source-clock') x.f.streamPending = false;
     assert.equal(canStart(), false, `${change}: a recovered connection cannot reuse authorization issued before the interruption`);
   }
 });

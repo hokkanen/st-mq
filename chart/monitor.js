@@ -195,7 +195,10 @@ renderModelInputs($('model-inputs-content'), undefined, { sensorChanges: $('sens
   outdoorSensorChanges: $('outdoor-sensor-change-details') });
 const sensorChangePanel = createSensorChangePanel({ document, request: api, storage: sessionStorage,
   beforeMutation: () => { ++refreshSequence; }, afterMutation: () => refresh({ forceChart: true }) });
+let statusReceivedMonotonicAt = performance.now();
 const pairPanel = createPairPanel({ document, request: api, storage: sessionStorage, formatTime: time,
+  now: () => Number.isFinite(lastStatus?.now)
+    ? lastStatus.now + Math.max(0, performance.now() - statusReceivedMonotonicAt) : Date.now(),
   afterMutation: () => refresh({ forceChart: true }), onRecovery: options => historyRecovery.open(options) });
 const historyRecovery = createHistoryRecoveryPanel({ document, request: api, storage: sessionStorage, formatTime: historyTime,
   upload: file => api('/api/history-recovery/upload', file, { binary: true }),
@@ -779,6 +782,7 @@ function render(s) {
   $('auth').hidden = true;
   $('fireplace-family-help').hidden = webAccess?.role !== 'family';
   lastStatus = s;
+  statusReceivedMonotonicAt = performance.now();
   recordingHealth.update(s);
   readOnlyControls.update(s);
   garageControls.update(s);

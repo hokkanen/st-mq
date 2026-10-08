@@ -13,6 +13,7 @@ import { recordedEnergyGroups } from '../storage/energy-history.js';
 import { validComfortReference, hasEstimatedIndoor } from '../control/learning.js';
 
 import { LEARNING_ALGORITHM } from '../domain/learning-contract.js';
+import { observationTimeAdmitted } from '../domain/time-evidence.js';
 export { LEARNING_ALGORITHM } from '../domain/learning-contract.js';
 export const LEARNING_WINDOW_MS = 15 * 60_000;
 const HOUR = 3_600_000;
@@ -54,7 +55,7 @@ export function validLearningCheckpoint(checkpoint, lastEntry = null) {
 }
 
 function usable(row) {
-  return row && Number.isFinite(row.value) && !row.raw?.acquisitionOnly && !row.raw?.auditOnly
+  return row && row.timeAdmitted !== false && Number.isFinite(row.value) && !row.raw?.acquisitionOnly && !row.raw?.auditOnly
     && row.source !== 'controller-estimate'
     && (!row.source.startsWith('husdata') || row.raw?.usableForControl === true && row.raw?.retained !== true)
     && (row.quality ?? []).every(flag => ALLOWED.has(flag)
@@ -68,9 +69,12 @@ function trajectory(store, signal, from, to, input, maxAge, minimumTime = -Infin
   const outdoor = signal === 'outdoor_temperature' && ['mqtt', 'providers'].includes(input);
   const scope = input === 'simulated' ? "source='simulation'" : outdoor
     ? "source IN ('fmi','openmeteo')" : "source<>'simulation'";
-  const decode = row => ({ id: row.id, source: row.source, device: row.device, signal: row.signal,
+  const decode = row => {
+    const observation = { id: row.id, source: row.source, device: row.device, signal: row.signal,
     value: row.value, unit: row.unit, sourceTime: row.source_time, receivedAt: row.received_at,
-    quality: JSON.parse(row.quality), raw: row.raw ? JSON.parse(row.raw) : null });
+    quality: JSON.parse(row.quality), raw: row.raw ? JSON.parse(row.raw) : null };
+    return { ...observation, timeAdmitted: observationTimeAdmitted(observation, to) };
+  };
   const rows = store.db.prepare(`SELECT * FROM active_observations AS observations WHERE signal=? AND source_time>=? AND source_time<=?
     AND received_at<=? AND ${scope} ORDER BY source_time,id`).all(signal, Math.max(from - maxAge, minimumTime), to, to).map(decode);
   const coverage = store.db.prepare(`SELECT c.*,c.source_time AS coverage_source_time,o.source,o.device,o.signal,o.value,o.unit,o.source_time,o.received_at,o.quality,o.raw
@@ -85,19 +89,20 @@ function trajectory(store, signal, from, to, input, maxAge, minimumTime = -Infin
     rows.push({ ...observation, sourceTime: Math.max(from, span.start_at), coverageId: span.id,
       coverageEnd: Math.min(span.end_at, span.coverage_source_time) + readingAge(observation, maxAge), value: span.status === 'fresh' ? observation.value : null });
   }
-  rows.sort((a, b) => a.sourceTime - b.sourceTime || Number(Boolean(a.coverageId)) - Number(Boolean(b.coverageId)) || a.id - b.id);
+  rows.sort((a, b) => availableFrom(a) - availableFrom(b) || Number(Boolean(a.coverageId)) - Number(Boolean(b.coverageId)) || a.id - b.id);
   return rows;
 }
 
+const availableFrom = row => Math.max(row.sourceTime, row.raw?.timeAdmission?.admittedAt ?? row.sourceTime);
 function windowValues(rows, from, to, maxAge, priority = null) {
   const expires = row => row.coverageEnd ?? row.sourceTime + readingAge(row, maxAge);
-  const boundaries = [...new Set([from, to, ...rows.flatMap(row => [row.sourceTime, expires(row)])])]
+  const boundaries = [...new Set([from, to, ...rows.flatMap(row => [availableFrom(row), expires(row)])])]
     .filter(at => at >= from && at <= to).sort((a, b) => a - b);
   const current = new Map(), ids = new Set(), coverageIds = new Set(), segments = [];
   let index = 0, weighted = 0, covered = 0, selected = null;
   for (let i = 0; i < boundaries.length; i++) {
     const at = boundaries[i];
-    while (index < rows.length && rows[index].sourceTime <= at) {
+    while (index < rows.length && availableFrom(rows[index]) <= at) {
       const row = rows[index++]; current.set(priority ? `${row.source}:${row.device}` : 'latest', row);
     }
     const endpoint = at === to;

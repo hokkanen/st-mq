@@ -166,6 +166,16 @@ controller ownership and restoration obligations remain a separate contract.
 Every refresh reads service configuration/status, numeric current capabilities
 and [schedules](https://shelly-api-docs.shelly.cloud/gen2/ComponentsAndServices/Schedule/).
 RPC value readback requires positive native `last_update_ts` values in seconds.
+Native value and notification clocks may lead the original receipt by at most
+one second, under the shared [time-evidence policy](../../time-evidence.md).
+These packets wait in a bounded queue for the source time before admission.
+Waiting withholds commands and preserves packet order, so Stop and unplug/replug
+edges cannot disappear between polls. The queue belongs to the current MQTT
+connection and is cleared on disconnect; it never renews a command lease.
+Excessive skew, overflow or expiry closes readiness. A deferred correlated reply
+completes its original request without another device command or replacement
+receipt timestamp. Persisted evidence retains its source and receipt clocks plus
+the separate admission time needed to validate the bounded lead.
 Zero/unknown timestamps are unavailable. A correlated read renews setting receipt
 evidence without changing its original source clock. An unchanged current-limit,
 start-permission or work-state reply can have an older update timestamp than its

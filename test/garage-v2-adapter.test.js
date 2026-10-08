@@ -7,6 +7,38 @@ import { Store } from '../src/storage/store.js';
 import { Engine } from '../src/app/engine.js';
 import { garageAdapterSettings, validateGarageAdapterSnapshot } from '../src/garage/contract.js';
 
+test('tiny-ahead Garage status waits, retains original receipt and does not extend challenge lifetime', async () => {
+  const f = garageV2Fixture(); f.update();
+  f.at(GARAGE_TEST_AT + 1000);
+  f.update({ observedAt: GARAGE_TEST_AT + 1004 });
+  assert.equal(f.adapter.status().controlAvailable, false);
+  await assert.rejects(f.adapter.setControl({ targetC: 5, externalEnabled: true }), /source clock/);
+  f.at(GARAGE_TEST_AT + 1004); f.adapter.tick();
+  assert.equal(f.adapter.status().controlAvailable, true);
+  const saved = f.adapter.snapshot();
+  assert.equal(saved.observedAt, GARAGE_TEST_AT + 1004);
+  assert.equal(saved.receivedAt, GARAGE_TEST_AT + 1000);
+  assert.equal(saved.admittedAt, GARAGE_TEST_AT + 1004);
+  assert.doesNotThrow(() => validateGarageAdapterSnapshot(saved));
+  assert.throws(() => validateGarageAdapterSnapshot({ ...saved, admittedAt: GARAGE_TEST_AT + 1003 }));
+  f.at(GARAGE_TEST_AT + 15_000);
+  assert.equal(f.adapter.status().controlAvailable, false, 'Delivery headroom expires from original receipt, not the future source clock');
+  await f.adapter.close();
+});
+
+test('expired newer Garage status cannot revive the older command challenge', async () => {
+  let elapsed = 0;
+  const f = garageV2Fixture({ monotonicClock: () => elapsed }); f.update();
+  f.update({ observedAt: GARAGE_TEST_AT + 400 });
+  elapsed = 5000; f.adapter.tick();
+  assert.equal(f.adapter.status().controlAvailable, false);
+  await assert.rejects(f.adapter.setControl({ targetC: 5, externalEnabled: true }), /fresh heat-pump controller status/);
+  f.at(GARAGE_TEST_AT + 1000); f.update();
+  assert.equal(f.adapter.status().controlAvailable, true);
+  assert.equal(f.publications.length, 0);
+  await f.adapter.close();
+});
+
 test('v2 requires fresh native readback and retained state never grants authority', async () => {
   const f = garageV2Fixture();
   assert.equal(f.update({}, { retain: true }), false);

@@ -19,6 +19,37 @@ const home = { id: 'upstairs', label: 'Upstairs', area: 'home', kind: 'temperatu
 const plug = { id: 'caravan', kind: 'metered_switch', connection: 'shelly:invented/plug', switch_control: true };
 const genericSwitch = { id: 'relay', kind: 'switch', connection: 'mqtt:invented/state', switch_control: true,
   mqtt: { command_topic: 'invented/command', on_payload: 'ON', off_payload: 'OFF' } };
+
+for (const lead of [1, 4, 400, 1000]) test(`MQTT temperature defers a ${lead} ms source lead without erasing valid evidence`, t => {
+  const f = fixture(t, [{ ...home, mqtt: { state_path: 'value', timestamp_path: 'timestamp' } }]);
+  f.capture.setConnected(true); f.capture.confirmSubscriptions(f.capture.topics);
+  f.capture.receive('invented/upstairs', JSON.stringify({ value: 20, timestamp: initial }));
+  const receivedAt = initial + 1000, sourceTime = receivedAt + lead;
+  f.now(receivedAt);
+  f.capture.receive('invented/upstairs', JSON.stringify({ value: 21, timestamp: sourceTime }));
+  assert.equal(f.observations.at(-1).value, 20);
+  assert.equal(f.capture.status().devices[0].available, true);
+  f.now(sourceTime - 1); f.capture.tick();
+  assert.equal(f.observations.at(-1).value, 20);
+  f.now(sourceTime); f.capture.tick();
+  const admitted = f.observations.at(-1);
+  assert.equal(admitted.value, 21); assert.equal(admitted.receivedAt, receivedAt); assert.equal(admitted.sourceTime, sourceTime);
+  assert.deepEqual(admitted.raw.timeAdmission, { sourceTime, receivedAt, admittedAt: sourceTime });
+  assert(!admitted.quality.includes('future_source_time'));
+});
+
+test('pending MQTT source time cannot cross a connection or allow a malformed time to become usable', t => {
+  const f = fixture(t, [{ ...home, mqtt: { state_path: 'value', timestamp_path: 'timestamp' } }]);
+  f.capture.setConnected(true); f.capture.confirmSubscriptions(f.capture.topics);
+  f.capture.receive('invented/upstairs', JSON.stringify({ value: 21, timestamp: initial + 400 }));
+  f.capture.setConnected(false); f.capture.setConnected(true); f.capture.confirmSubscriptions(f.capture.topics);
+  f.now(initial + 400); f.capture.tick();
+  assert(!f.observations.some(row => row.value === 21));
+  for (const timestamp of [initial + 1401, null, 'unknown', -1]) {
+    f.capture.receive('invented/upstairs', JSON.stringify({ value: 99, timestamp }));
+    assert.equal(f.capture.status().devices[0].available, false);
+  }
+});
 function fixture(t, rows, options = {}) {
   const directory = mkdtempSync(join(tmpdir(), 'stmq-equipment-capture-')), store = new Store(join(directory, 'test.sqlite'));
   let now = initial, authority = true;

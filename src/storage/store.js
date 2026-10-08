@@ -69,7 +69,11 @@ export function validateCurrentDatabaseFormat(db, { full = false } = {}) {
   if (JSON.stringify(schemaObjects(db)) !== expectedStructure) throw Object.assign(new Error('Malformed current database schema; use an intact same-version backup or a new empty database. The existing database was not changed.'),
     { code: 'database_schema_invalid', actualSchema: version, requiredSchema: SCHEMA_VERSION });
   validateCheckpoint(db);
-  if (full && db.prepare('SELECT 1 FROM learning_journal_entries WHERE algorithm_version<>? LIMIT 1').get(LEARNING_ALGORITHM))
+  // Two indexed range seeks reject every unsupported algorithm before writable
+  // setup, including inactive epochs, without scanning a growing valid journal.
+  if (db.prepare(`SELECT 1 FROM learning_journal_entries WHERE algorithm_version<?
+    UNION ALL SELECT 1 FROM learning_journal_entries WHERE algorithm_version>? LIMIT 1`)
+    .get(LEARNING_ALGORITHM, LEARNING_ALGORITHM))
     throw Object.assign(new Error('Unsupported Home learning journal algorithm; use a new empty database or an intact current-version backup. The existing database was not changed.'),
       { code: 'database_algorithm_mismatch' });
   if (full && db.prepare('PRAGMA foreign_key_check').get()) throw Object.assign(new Error('Database contains dangling references; restore an intact same-version backup.'),

@@ -8,6 +8,7 @@ import { Recorder } from '../src/storage/recorder.js';
 import { HistoryMerge } from '../src/recovery/merge.js';
 import { recoveryPreview, recoverHistory, previewRecoveryRevision, reviseRecovery } from '../src/recovery/service.js';
 import { recordedEnergyGroups } from '../src/storage/energy-history.js';
+import { sourceTimeAdmission } from '../src/domain/time-evidence.js';
 import { fixture, recover, start, HOUR } from './helpers/recovery-fixture.js';
 
 const END = start + 49 * HOUR;
@@ -34,6 +35,29 @@ function finalized(store, { source = 'easee', device = 'invented-meter', prefix 
     value: energies[phase - 1], sourceTime: to, receivedAt: to, quality: [],
     raw: { intervalStart: from, intervalEnd: to, basis: 'integrated-power-phase-allocation', ...raw } });
 }
+
+for (const kind of ['pending', 'finalized']) test(`recovery accepts admitted ${kind} energy without borrowing future admission`, async t => {
+  for (const admitted of [false, true]) await t.test(String(admitted), async t => {
+    const f = memory(t), receivedAt = END, end = END + 400, admittedAt = END + 1000;
+    if (kind === 'pending') {
+      const { key, state } = pending(f.donor, { to: end, receivedAt });
+      state.pending.admittedAt = admittedAt; f.donor.setState(key, state);
+    } else for (let phase = 1; phase <= 3; phase++) f.donor.observation({ source: 'easee', device: 'invented-meter',
+      signal: `property_energy_l${phase}`, value: phase, unit: 'kWh', sourceTime: end, receivedAt, quality: [],
+      raw: { intervalStart: start, intervalEnd: end, basis: 'integrated-power-phase-allocation',
+        timeAdmission: sourceTimeAdmission({ sourceTime: end, receivedAt, now: admittedAt }) } });
+    const report = await f.merge({ now: admitted ? admittedAt : END + 500 }).run();
+    const rows = f.target.observations();
+    assert.equal(rows.length, admitted ? 3 : 0);
+    assert.equal(report.counts.missing, admitted ? 3 : 0);
+    for (const row of rows) {
+      assert.equal(row.sourceTime, end); assert.equal(row.receivedAt, receivedAt);
+      assert.deepEqual(row.raw.timeAdmission, { sourceTime: end, receivedAt, admittedAt });
+    }
+    assert.deepEqual([...recordedEnergyGroups(f.target, { from: start, to: end, now: END + 500,
+      input: 'mqtt', prefix: 'property' })], []);
+  });
+});
 
 test('service preview and apply preserve a frozen multi-day tail as history without importing recorder state', async t => {
   const f = fixture(t), initialEnd = start + 60_000;

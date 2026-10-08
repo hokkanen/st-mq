@@ -403,10 +403,29 @@ test('unsupported externally inserted journal algorithms are rejected by readers
   assert.deepEqual(store.db.prepare('SELECT * FROM learning_journal_entries').all(), before);
 });
 
+test('an unsupported inactive learning row rejects before writable setup even with an intact checkpoint', t => {
+  const directory = mkdtempSync(join(tmpdir(), 'stmq-obsolete-algorithm-'));
+  t.after(() => rmSync(directory, { recursive: true, force: true }));
+  const path = join(directory, 'synthetic.sqlite');
+  const store = new Store(path); store.close();
+  // Model a foreign writer without leaving an unsealed capture that would
+  // independently fail the checkpoint gate before algorithm admission runs.
+  const raw = new DatabaseSync(path); registerJournalFunctions(raw);
+  raw.function('journal_capture_enabled', () => 0);
+  raw.prepare(`INSERT INTO learning_journal_entries(epoch,input,key,kind,at,algorithm_version,payload)
+    VALUES('unselected-epoch','mqtt','unsupported','context',?,'committed-house-v16-observed-input-admission','{}')`).run(start);
+  raw.close();
+  const before = readFileSync(path);
+  for (const readOnly of [false, true]) {
+    assert.throws(() => new Store(path, { readOnly }), { code: 'database_algorithm_mismatch' });
+    assert.deepEqual(readFileSync(path), before);
+  }
+});
+
 test('opening externally altered learning history rejects at the transaction checkpoint before writable setup', t => {
   const directory = mkdtempSync(join(tmpdir(), 'stmq-foreign-journal-'));
   t.after(() => rmSync(directory, { recursive: true, force: true }));
-  for (const [index, algorithm] of ['committed-house-v15-continuous-comfort', 'invented-unsupported-algorithm'].entries()) {
+  for (const [index, algorithm] of ['committed-house-v16-observed-input-admission', 'invented-unsupported-algorithm'].entries()) {
     const path = join(directory, `synthetic-${index}.sqlite`);
     const store = new Store(path); store.close();
     const raw = new DatabaseSync(path); registerJournalFunctions(raw);
@@ -438,7 +457,7 @@ test('fresh learning saves the ROOM boost and shared recovery policy for determi
   appendLearningRecord(store, 'mqtt', 'context', { timestamp: start },
     { config: configuration, seed: { version: 1, samples: [], model } });
   const entry = store.learningJournal({ input: 'mqtt', algorithmVersion: LEARNING_ALGORITHM })[0];
-  assert.equal(LEARNING_ALGORITHM, 'committed-house-v16-observed-input-admission');
+  assert.equal(LEARNING_ALGORITHM, 'committed-house-v17-time-evidence-admission');
   assert.equal(entry.payload.configuration.preheatRoomBoostC, 5);
   assert.equal(entry.payload.configuration.recoveryHoldMinutes, 60);
   assert.equal(entry.payload.seed.model.floor.enabled, true);

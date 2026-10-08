@@ -294,7 +294,11 @@ deadline remains binding, but it never authorizes an unrepresentable native time
 All comparisons share the existing CPU worker. One active calculation, one latest
 queued control calculation and one latest low-priority preview keep load bounded;
 control work has queue priority. Cards request background comparisons at most once
-per minute per eligible charger, including an active allowance. A successful
+per minute per eligible charger, including an active allowance, when numerical
+planning inputs, forecast coverage or a relevant period boundary changes.
+Unchanged polling and renewed source receipt clocks do not start another search.
+An active proposed period also refreshes as its displayed minute advances; a
+temporary calculation failure remains retryable within the same bound. A successful
 comparison retains its original snapshot time while currents, voltages, progress,
 native command bookkeeping or market inputs change. Recalculation replaces it
 atomically; an unavailable replacement retains the last successful estimate and
@@ -302,9 +306,22 @@ reports the refresh limitation without pretending its source time is new. Equipm
 physical-session, vehicle, request, shared-priority and peer-deadline changes fence
 incompatible comparisons. Allowing or canceling the selected charger's day keeps
 the same normal/deferred comparison until its earlier checkpoint.
+Temporary loss of live session presentation does not erase the dated estimate:
+its comparison scope uses the retained physical request and vehicle association.
+This scope is display identity only and grants no current command permission.
 
-Opening the dialog requests a comparison. The open dialog holds that snapshot
-until an explicit refresh; background card comparisons never replace or expire it.
+Opening the dialog requests a comparison, retaining the last successful same-scope
+estimate while it loads or fails, including across closing and reopening. Once open,
+the dialog adopts completed background comparisons only when their displayed
+costs, finish times, charging durations or other comparison values change. Timestamp
+churn, elapsed age and changes below displayed precision do not refresh it or cause
+another calculation. The original estimate time remains visible; explicit refresh
+is also available. A server-created estimate is not rejected because its calculation
+completed after the preceding status tick or ahead of the browser clock.
+Each alternative includes expandable proposed charging periods from its own joint
+calculation. These are counterfactual permissions, not confirmed native schedules.
+An open final period remains labelled "onward", separately from estimated finish;
+it never implies that the charger is commanded to stop at the estimated finish.
 Showing an estimate grants no authority: every deadline action separately checks
 the current equipment, physical session, request revision and control eligibility.
 An old display cannot authorize a new connection or bypass native instructions.

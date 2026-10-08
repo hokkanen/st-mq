@@ -80,8 +80,8 @@ try {
  const {createChargingPanel}=await import('/chart/charging.js');
  const now=Date.parse('2026-10-08T14:00:00Z'),baseline=Date.parse('2026-10-09T03:00:00Z');
  const reading=value=>({value,available:true,source:'manual-fallback'});
- const comp={at:now,available:true,recommended:true,normalReadyByAt:baseline,deferredReadyByAt:baseline+86400000,normalCostCents:470,deferredCostCents:310,savingsCents:160,normalFinishAt:baseline-3600000,deferredFinishAt:baseline+86400000-7200000,normalChargingDurationMs:10800000,deferredChargingDurationMs:9000000,householdSavingsCents:145,uncertaintyPremiumCents:60,householdUncertaintyPremiumCents:60,riskAdjustedSavingsCents:85,usesForecast:true};
- const charger=id=>({id,label:id==='charger1'?'Charger 1':'Charger 2',provider:id==='charger1'?'easee':'shelly-evse',association:'synthetic:'+id,request:{sessionId:'synthetic-'+id,revision:1,overrides:{}},settings:{enabled:true,readyBy:'06:00',manualSoc:20,minimumSoc:80,capacityKwh:74},controls:{revision:1},capabilities:{scheduling:true},values:{connected:reading(true),charging:reading(false),soc:reading(34),minimumSoc:reading(80),capacityKwh:reading(74)},requiredGridKwh:32,sessionCost:{totalCents:470,recordedGridKwh:12.3},plan:{state:'waiting',startAt:now+3600000,finishAt:baseline-3600000,deadlineAt:baseline,feasible:true,periods:[{startAt:now+3600000,endAt:null}]},control:{phase:'waiting',confirmed:true},flexibility:{enabled:true,active:false,eligible:true,revision:1,normalReadyByAt:baseline,effectiveReadyByAt:baseline,deferredReadyByAt:baseline+86400000,preview:comp}});
+ const comp={at:now,available:true,recommended:true,normalReadyByAt:baseline,deferredReadyByAt:baseline+86400000,normalCostCents:470,deferredCostCents:310,savingsCents:160,normalFinishAt:baseline-3600000,deferredFinishAt:baseline+86400000-7200000,normalChargingDurationMs:10800000,deferredChargingDurationMs:9000000,normalPeriods:[{startAt:now+3600000,endAt:null}],deferredPeriods:[{startAt:baseline+20*3600000,endAt:null}],householdSavingsCents:145,uncertaintyPremiumCents:60,householdUncertaintyPremiumCents:60,riskAdjustedSavingsCents:85,usesForecast:true};
+ const charger=id=>({id,label:id==='charger1'?'Charger 1':'Charger 2',provider:id==='charger1'?'easee':'shelly-evse',association:'synthetic:'+id,request:{sessionId:'synthetic-'+id,revision:1,overrides:{}},settings:{enabled:true,readyBy:'06:00',manualSoc:20,minimumSoc:80,capacityKwh:74},controls:{revision:1},capabilities:{scheduling:true},values:{connected:reading(true),charging:reading(false),soc:reading(34),minimumSoc:reading(80),capacityKwh:reading(74)},requiredGridKwh:32,sessionCost:{totalCents:470,recordedGridKwh:12.3},plan:{state:'waiting',startAt:now+3600000,finishAt:baseline-3600000,deadlineAt:baseline,feasible:true,periods:[{startAt:now+3600000,endAt:null}]},control:{phase:'waiting',confirmed:true},flexibility:{comparisonScope:'comparison-'+id,enabled:true,active:false,eligible:true,revision:1,normalReadyByAt:baseline,effectiveReadyByAt:baseline,deferredReadyByAt:baseline+86400000,preview:comp}});
  window.fixture={role:'master',now,charging:{timezone:'Europe/Helsinki',settings:{priority:'balanced'},controls:{revision:1},chargers:[charger('charger1'),charger('charger2')]}};
  window.calls=[];window.panel=createChargingPanel({document,request:async(path,payload)=>{window.calls.push({path,payload});if(path.endsWith('preview'))return{comparison:comp,flexibility:window.fixture.charging.chargers[0].flexibility};return window.fixture;}});window.panel.update(window.fixture);
  for(const el of document.querySelectorAll('.charging-footer')){const button=document.createElement('button');button.className='charging-session-report';button.innerHTML='<span class="charging-session-report-copy"><span class="charging-session-report-label">Session report</span><span class="charging-session-report-status">In progress</span></span><span class="charging-session-report-open">Open ↗</span>';el.append(button);}
@@ -94,7 +94,7 @@ try {
     await evaluate(() => { window.fixture.charging.chargers.forEach(c => c.flexibility.enabled = false); window.panel.update(window.fixture); });
     const absent = await evaluate("document.getElementById('charger1-device-summary').getBoundingClientRect().height");
     await evaluate(() => { window.fixture.charging.chargers.forEach(c => c.flexibility.enabled = true); window.panel.update(window.fixture); });
-    assert.equal(before, absent, `No resting card height increase at ${width}/${theme}`);
+    assert.equal(before, absent, `No resting card height increase at ${width}/${theme}: ${JSON.stringify(await evaluate(() => [...document.querySelectorAll('#charger1-flexibility, #charger1-flexibility > *')].map(el => ({ text: el.textContent, width: el.getBoundingClientRect().width, height: el.getBoundingClientRect().height }))))}`);
     assert.equal(await evaluate('document.documentElement.scrollWidth <= innerWidth'), true);
     assert.equal(await evaluate("document.getElementById('charger1-flexibility').getBoundingClientRect().height >= 44"), true);
     assert.equal(await evaluate("document.getElementById('charger1-flexibility').textContent"), 'One extra day€1.60 est. saving');
@@ -118,7 +118,18 @@ try {
       assert.equal(state.valueHeight, 15, `The estimate stays on one line at ${width}/${theme}: ${state.label}`);
       assert.equal(state.overflow, false);
     }
-    assert.equal(await evaluate("getComputedStyle(document.querySelector('.charging-flexibility-entry-title'), '::after').content"), '"↗"');
+    const arrow = await evaluate(() => {
+      const button = document.querySelector('.charging-flexibility-entry'), style = getComputedStyle(button, '::after');
+      return { content: style.content, top: parseFloat(style.top), height: button.clientHeight,
+        transform: new DOMMatrix(style.transform).m42, arrowHeight: parseFloat(style.height) };
+    });
+    assert.equal(arrow.content, '"↗"');
+    assert(Math.abs(arrow.top + arrow.transform + arrow.arrowHeight / 2 - arrow.height / 2) < 1,
+      `The arrow is vertically centered in the entire button at ${width}/${theme}`);
+    assert.equal(await evaluate(() => {
+      const field = document.getElementById('charger1-setting-capacityKwh'); field.value = '74.27';
+      return field.step === '0.01' && field.checkValidity();
+    }), true, `Two decimal capacity is accepted at ${width}/${theme}`);
     assert.equal(await evaluate("getComputedStyle(document.querySelector('.charging-priority-entry-value'), '::after').content"), '"↗"');
     assert.equal(await evaluate("getComputedStyle(document.querySelector('.charging-session-report')).borderTopColor === getComputedStyle(document.querySelector('.charging-flexibility-entry')).borderTopColor"), false,
       'The ordinary report border remains distinct from the highlighted savings border');
@@ -129,13 +140,20 @@ try {
     assert.equal(await evaluate("document.getElementById('charger1-device').open"), false);
     assert.equal(await evaluate('document.activeElement.id'), 'charging-flexibility-close');
     assert.match(await evaluate("document.querySelectorAll('.charging-flexibility-plan')[1].textContent"), /Est\. finish 10 Oct 04:00.*Est\. charging 2 h 30 min/);
+    await evaluate(() => { document.querySelectorAll('.charging-flexibility-periods').forEach(details => { details.open = true; }); });
+    assert.match(await evaluate("document.querySelector('.charging-flexibility-periods').textContent"), /Proposed periods \(1\).*18:00 → onward/);
+    const periodContents = await evaluate(() => [...document.querySelectorAll('.charging-flexibility-periods')].map(details => {
+      const outer = details.getBoundingClientRect();
+      return [...details.querySelectorAll('li')].every(row => row.getBoundingClientRect().right <= outer.right + 1);
+    }));
+    assert(periodContents.every(Boolean), `Proposed periods fit each alternative at ${width}/${theme}`);
     const dialog = await evaluate("(() => {const r=document.getElementById('charging-flexibility-dialog').getBoundingClientRect();return {width:r.width,height:r.height};})()");
     assert(dialog.width <= width && dialog.height <= 800);
     await screenshot(`${width}-${theme}-dialog`); await key('Escape');
     assert.equal(await evaluate('document.activeElement.id'), 'charger1-flexibility');
     measurements.push({ width, theme, height: before, dialogHeight: dialog.height });
   }
-  // Market replacement updates the card but keeps the open comparison fixed.
+  // A completed comparison updates the open dialog only when displayed values change.
   await evaluate("document.getElementById('charger1-flexibility').click()");
   await until("document.getElementById('charging-flexibility-apply').disabled === false");
   await evaluate(() => {
@@ -145,7 +163,7 @@ try {
     window.panel.update(window.fixture);
   });
   assert.equal(await evaluate("document.getElementById('charging-flexibility-apply').disabled"), false);
-  assert.equal(await evaluate("document.getElementById('charging-flexibility-saving').textContent"), 'Estimated saving €1.60');
+  assert.equal(await evaluate("document.getElementById('charging-flexibility-saving').textContent"), 'Estimated saving €2.20');
   assert.match(await evaluate("document.getElementById('charger1-flexibility').textContent"), /€2.20/);
   assert.equal(await evaluate("document.getElementById('charging-flexibility-refresh').hidden"), false);
   const requestsBefore = await evaluate('window.calls.length');
@@ -154,13 +172,13 @@ try {
     window.panel.update(window.fixture); document.dispatchEvent(new Event('visibilitychange'));
   });
   assert.equal(await evaluate('window.calls.length'), requestsBefore, 'Elapsed age and status changes never auto-refresh the dialog');
-  assert.equal(await evaluate("document.getElementById('charging-flexibility-saving').textContent"), 'Estimated saving €1.60');
+  assert.equal(await evaluate("document.getElementById('charging-flexibility-saving').textContent"), 'Estimated saving €2.20');
   await evaluate(() => {
     window.fixture.charging.chargers[0].request.revision++;
     window.panel.update({ ...window.fixture });
   });
   assert.equal(await evaluate("document.getElementById('charging-flexibility-apply').disabled"), true);
-  assert.equal(await evaluate("document.getElementById('charging-flexibility-saving').textContent"), 'Estimated saving €1.60');
+  assert.equal(await evaluate("document.getElementById('charging-flexibility-saving').textContent"), 'Estimated saving €2.20');
   await key('Escape');
   // A retained estimate keeps its original time and remains visible past five minutes.
   await evaluate(() => {

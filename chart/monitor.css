@@ -1933,7 +1933,8 @@ button.garage-door-action:disabled { opacity: 1; cursor: default; }
 .charging-footer-flexible > .charging-footer-status, .charging-footer-flexible > .charging-control-message { grid-column: 1 / -1; }
 .charging-footer .charging-flexibility-entry { grid-column: 1; grid-row: 3; display: flex; flex-direction: column; justify-content: center; align-items: flex-start; gap: 2px; min-width: 0; width: 100%; min-height: 44px; margin: 0; padding: 5px 7px; border: 1px solid var(--border); border-radius: 6px; background: var(--surface-soft); color: var(--text); text-align: left; white-space: normal; font-size: 10px; line-height: 15px; }
 .charging-flexibility-entry-title { display: flex; align-items: baseline; justify-content: space-between; gap: 4px; width: 100%; color: var(--muted); }
-.charging-flexibility-entry-title::after { content: '↗'; }
+.charging-footer .charging-flexibility-entry { position: relative; padding-inline: 3px 12px; }
+.charging-flexibility-entry::after { content: '↗'; position: absolute; right: 3px; top: 50%; transform: translateY(-50%); color: var(--muted); }
 .charging-flexibility-entry-value { font-size: 10px; font-weight: 500; font-variant-numeric: tabular-nums; }
 .charging-flexibility-entry[data-tone="saving"] { border-color: color-mix(in srgb, var(--accent) 50%, var(--border)); background: color-mix(in srgb, var(--accent) 7%, var(--surface)); }
 .charging-flexibility-entry[data-tone="saving"] .charging-flexibility-entry-value { color: var(--accent); }
@@ -1947,6 +1948,9 @@ button.garage-door-action:disabled { opacity: 1; cursor: default; }
 .charging-flexibility-plan > span, .charging-flexibility-plan > small { color: var(--muted); font-size: 10px; line-height: 1.5; }
 .charging-flexibility-plan > strong { font-size: 14px; line-height: 1.4; font-weight: 550; overflow-wrap: anywhere; }
 .charging-flexibility-plan[data-selected="true"] { border-color: var(--error-text); }
+.charging-flexibility-periods { margin-top: 3px; font-size: 10px; line-height: 1.5; }
+.charging-flexibility-periods > summary { padding-block: 5px; color: var(--text); cursor: pointer; font-size: 11px; line-height: 1.5; }
+.charging-flexibility-periods > ol { display: grid; gap: 6px; margin: 4px 0 0; padding-left: 14px; color: var(--muted); }
 .charging-flexibility-dialog .charging-flexibility-saving { margin-bottom: 4px; font-size: 17px; font-weight: 550; }
 .charging-flexibility-saving[data-tone="saving"] { color: var(--accent); }
 .charging-flexibility-dialog .charging-flexibility-detail { margin: 4px 0; color: var(--muted); font-size: 11px; }

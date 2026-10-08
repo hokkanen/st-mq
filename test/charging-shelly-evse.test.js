@@ -6,7 +6,7 @@ import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { chargingConfiguration } from '../src/charging/config.js';
-import { createShellyEvseAdapter, createShellyController, shellyAssociation } from '../src/charging/shelly-evse.js';
+import { createShellyEvseAdapter, createShellyController, shellyAssociation, validateShellyAcquisitionState } from '../src/charging/shelly-evse.js';
 import { shellyProfile } from '../src/charging/shelly-profile.js';
 import { shellyCurrentLimit } from '../src/charging/shelly-limit.js';
 import { matchTeslaSession } from '../src/charging/vehicle.js';
@@ -319,6 +319,7 @@ test('native kW power agrees with phase current and supplies independent Tesla m
     fields: { charger_power: { value: 4, receivedAt: NOW, retained: false },
       plugged_in: { value: true, receivedAt: NOW, retained: false } } },
   { physical, connectedAt: NOW, chargingAt: [NOW], now: NOW }), true);
+  f.setNow(NOW + 1000);
   assert.throws(() => f.adapter.accept('phase_info', { last_update_ts: (NOW + 1000) / 1000,
     value: { ...f.fields.phase_info, total_power: 4138 } }, NOW + 1000),
   /invalid-evse-electrical-range/, 'The EVSE profile never guesses an alternative watt unit');
@@ -442,7 +443,7 @@ test('a valid zero C2 meter delta requires no positive phase-power weights', asy
 
 test('C2 phase records and unallocated diagnostics commit with their source cursor and survive adapter restart', t => {
   const store = new Store(':memory:');
-  const engine = { recorder: new Recorder(store) };
+  const engine = { recorder: new Recorder(store, { clock: () => NOW + 5000 }) };
   const create = () => createShellyEvseAdapter({ config: config(), broker: { address: 'mqtt://synthetic' },
     client: new EventEmitter(), store, engine, clock: () => NOW + 5000 });
   let adapter = create();
@@ -541,6 +542,102 @@ test('invalid or future Shelly phase packets cannot replace supported electrical
   assert.equal(f.adapter.readings().ev2_active_power_l3.value, 0, 'Reported idle zero is a valid measurement');
   assert.equal(f.energy.length, 1);
   assert.deepEqual(f.energy[0].energies, [0, 0, 0], 'Only the three phase contributions are recorded');
+});
+test('small future native Stop events wait once, fence commands, and retain original clocks after admission', async t => {
+  for (const lead of [1, 400, 1000]) await t.test(`${lead} ms`, async t => {
+    const f = fixture(t); await f.ready();
+    f.setNow(NOW + 1000);
+    const receivedAt = f.now(), sourceAt = receivedAt + lead;
+    f.delta('start_charging', { value: false, source: 'sys' }, { eventAt: sourceAt });
+    assert.equal(f.adapter.snapshot().controlReady, false, 'An uncommitted future instruction fences command publication');
+    assert.equal(f.adapter.snapshot().fields.start_charging.value, true, 'Future state cannot become current authority');
+    assert.equal(f.adapter.snapshot().permissionEvents.length, 0);
+    await assert.rejects(f.adapter.rpc('Boolean.Set', { owner: 'service:0', role: 'start_charging', value: true }, { mutation: true }),
+      { code: 'evse-control-unavailable' });
+    f.setNow(sourceAt + 1);
+    await new Promise(resolve => setTimeout(resolve, lead + 15));
+    const event = f.adapter.snapshot().permissionEvents[0];
+    assert.equal(event.value, false); assert.equal(event.eventAt, sourceAt); assert.equal(event.receivedAt, receivedAt);
+    assert.ok(event.admittedAt >= sourceAt);
+    assert.equal(f.adapter.snapshot().fields.start_charging.value, false);
+    const saved = f.values.get(`charging:shelly:${f.adapter.association}`);
+    assert.doesNotThrow(() => validateShellyAcquisitionState(saved));
+    const unsupported = structuredClone(saved); delete unsupported.permissionEvents[0].admittedAt;
+    assert.throws(() => validateShellyAcquisitionState(unsupported), /unsupported-shelly-state/);
+    f.restartAdapter();
+    assert.equal(f.adapter.snapshot().permissionEvents[0].receivedAt, receivedAt, 'Restart preserves the original source evidence');
+    assert.equal(f.writes.filter(row => row.method.endsWith('.Set')).length, 0);
+  });
+});
+test('deferred Shelly unplug and replug preserve both physical boundaries before the next poll', async t => {
+  const f = fixture(t); await f.ready(); const original = f.adapter.snapshot().session.sessionId;
+  f.setNow(NOW + 1000); f.delta('work_state', { value: 'charger_free' }, { eventAt: NOW + 1400 });
+  f.setNow(NOW + 3000); f.delta('work_state', { value: 'charger_charging' }, { eventAt: NOW + 3400 });
+  assert.equal(f.adapter.snapshot().controlReady, false);
+  f.setNow(NOW + 5000); await new Promise(resolve => setTimeout(resolve, 30)); await f.adapter.refresh();
+  const session = f.adapter.snapshot().session;
+  assert.notEqual(session.sessionId, original);
+  assert.equal(session.lastDisconnectedAt, NOW + 1400); assert.equal(session.connectedAt, NOW + 3400);
+});
+test('deferred Shelly transitions survive commit failure with original clocks and ordered admission', async t => {
+  const directory = mkdtempSync(join(tmpdir(), 'stmq-evse-time-rollback-'));
+  const store = new Store(join(directory, 'recording.sqlite'));
+  const f = fixture(t, {}, store);
+  t.after(() => { f.adapter.close(); store.close(); rmSync(directory, { recursive: true, force: true }); });
+  await f.ready();
+  const runWrite = store.runWrite.bind(store); let failCommit = true;
+  store.runWrite = (operation, options) => runWrite(() => {
+    const result = operation();
+    if (failCommit) throw new Error('Synthetic failure after deferred event admission');
+    return result;
+  }, options);
+  f.setNow(NOW + 1000);
+  f.delta('start_charging', { value: false, source: 'sys' }, { eventAt: NOW + 1020 });
+  f.setNow(NOW + 1001);
+  f.delta('current_limit', { value: 10, source: 'mqtt' }, { eventAt: NOW + 1001 });
+  f.setNow(NOW + 1021); await new Promise(resolve => setTimeout(resolve, 45));
+  assert.equal(f.adapter.snapshot().permissionEvents.length, 0, 'A failed commit publishes no Stop');
+  assert.equal(f.adapter.snapshot().fields.start_charging.value, true);
+  assert.equal(f.adapter.snapshot().fields.current_limit.value, 16);
+  assert.equal(f.adapter.snapshot().controlReady, false);
+  failCommit = false; await new Promise(resolve => setTimeout(resolve, 160));
+  const snapshot = f.adapter.snapshot(), event = snapshot.permissionEvents[0];
+  assert.equal(event.eventAt, NOW + 1020); assert.equal(event.receivedAt, NOW + 1000);
+  assert.equal(event.admittedAt, NOW + 1021); assert.equal(event.value, false);
+  assert.equal(snapshot.fields.current_limit.value, 10);
+  assert.equal(snapshot.fields.current_limit.instructionAt, NOW + 1001);
+  assert.equal(snapshot.fields.start_charging.value, false);
+  assert.equal(f.writes.filter(row => row.method.endsWith('.Set')).length, 0);
+});
+test('correlated Shelly readback with small clock skew settles without a second RPC or changed receipt', async t => {
+  for (const lead of [1, 400]) await t.test(`${lead} ms`, async t => {
+    const f = fixture(t); await f.ready(); f.setNow(NOW + 1000);
+    f.setSourceTime('current_limit', f.now() + lead);
+    const receivedAt = f.now(), before = f.writes.length;
+    let done = false;
+    const reading = f.adapter.refresh().then(() => { done = true; });
+    await new Promise(resolve => setImmediate(resolve));
+    assert.equal(done, false); assert.equal(f.adapter.snapshot().controlReady, false);
+    f.setNow(receivedAt + lead + 1); await new Promise(resolve => setTimeout(resolve, lead + 15)); await reading;
+    const field = f.adapter.snapshot().fields.current_limit;
+    assert.equal(field.measuredAt, receivedAt + lead); assert.equal(field.receivedAt, receivedAt);
+    assert.equal(field.readback.receivedAt, receivedAt); assert.ok(field.admittedAt >= field.measuredAt);
+    assert.equal(f.adapter.snapshot().controlReady, true);
+    assert.equal(f.writes.slice(before).filter(row => row.method === 'Number.GetStatus').length, 1);
+  });
+});
+test('future Shelly packets cannot cross a reconnect and excessive skew never becomes deferred authority', async t => {
+  const f = fixture(t); await f.ready(); f.setNow(NOW + 1000);
+  f.delta('start_charging', { value: false, source: 'sys' }, { eventAt: f.now() + 400, apply: false });
+  f.client.emit('offline'); f.setNow(NOW + 1500); await f.ready();
+  await new Promise(resolve => setTimeout(resolve, 420));
+  assert.equal(f.adapter.snapshot().permissionEvents.length, 0);
+  assert.equal(f.adapter.snapshot().fields.start_charging.value, true);
+  f.delta('start_charging', { value: false, source: 'sys' }, { eventAt: f.now() + 1001, apply: false });
+  assert.equal(f.adapter.snapshot().controlReady, false);
+  assert.equal(f.adapter.snapshot().error, 'evse-source-clock-unavailable');
+  f.setNow(NOW + 3000); await new Promise(resolve => setTimeout(resolve, 5));
+  assert.equal(f.adapter.snapshot().permissionEvents.length, 0);
 });
 test('each physical negative/positive notification closes its epoch even between polling ticks',async t=>{
   const f=fixture(t);await f.ready();const first=f.adapter.snapshot().session.sessionId;

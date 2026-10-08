@@ -22,6 +22,19 @@ const checked = () => primary({ peer: { reachable: true, role: 'protected' }, re
   actions: { 'check-recovery': true, recover: true, handover: false, promote: false, rejoin: true } });
 const operation = (view, state = 'complete', action = 'check-recovery') => ({ ...view, uiOperation: { id, action, state } });
 
+test('snapshot presentation tolerates peer clock uncertainty without negative ages or changing authority', () => {
+  for (const lead of [1, 400, 60000]) {
+    const sync = { state: 'verified', sourceAt: now + lead, verifiedAt: now + lead };
+    for (const view of [standby({ sync }), primary({ peer: { reachable: true, role: 'slave', sync } })]) {
+      const display = pairDisplay(view, { now });
+      assert.doesNotMatch(display.sync + display.syncDetail + display.syncStat, /clock ahead|-1 min/);
+      assert.match(display.syncStat, /0 min old/);
+      assert.equal(pairAllowsControl({ topology: 'pair', pair: view }), view.role === 'master');
+    }
+  }
+  assert.match(pairDisplay(standby({ sync: { sourceAt: now + 60001, verifiedAt: now + 60001 } }), { now }).syncStat, /clock ahead/);
+});
+
 test('optional full verification stays attached to an uncertain pairing request across reload', async () => {
   const saved = new Map(), sent = [];
   const storage = { getItem: key => saved.get(key), setItem: (key, value) => saved.set(key, value), removeItem: key => saved.delete(key) };
@@ -58,7 +71,7 @@ test('pairing verification choices belong to their action and disclose the inter
 test('historical slave checks do not contradict unavailable, stale or failed current mirroring', () => {
   for (const peer of [{}, { reachable: false, role: 'slave' }, { reachable: true, role: 'slave', sync: { state: 'stale' } },
     { reachable: true, role: 'slave', sync: { state: 'error' } },
-    { reachable: true, role: 'slave', sync: { state: 'ready', sourceAt: now + 60_000, verifiedAt: now } }]) {
+    { reachable: true, role: 'slave', sync: { state: 'ready', sourceAt: now + 60_001, verifiedAt: now } }]) {
     const view = primary({ peer, recovery: { state: 'ready', donorRole: 'slave', preview: preview() } });
     const display = pairDisplay(view, { now });
     assert.match(display.recovery, /earlier source check.*valid slave snapshot/);
@@ -865,7 +878,7 @@ test('master and slave show the same reported snapshot while unreachable or prot
   const failed = pairDisplay(primary({ peer: { ...peer, sync: { ...sync, state: 'error' } } }), { now });
   assert.match(failed.sync, /synchronization problem.*last verified snapshot is kept/);
   assert.equal(failed.error, true);
-  assert.match(pairDisplay(primary({ peer: { ...peer, sync: { ...sync, sourceAt: now + 60000 } } }), { now }).syncDetail, /snapshot clock ahead/);
+  assert.match(pairDisplay(primary({ peer: { ...peer, sync: { ...sync, sourceAt: now + 60001 } } }), { now }).syncDetail, /snapshot clock ahead/);
 });
 
 test('an uncertain release remains verifiable after peer became slave and browser operation storage cleared', async () => {

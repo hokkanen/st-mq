@@ -1,4 +1,5 @@
 import moment from 'moment-timezone';
+import { MAX_SOURCE_AHEAD_MS, sourceTimeAdmission } from '../domain/time-evidence.js';
 
 const validSoc = value => Number.isFinite(value) && value >= 0 && value <= 100;
 const identity = value => typeof value === 'string' && value.length > 0 && value.length <= 128;
@@ -15,7 +16,7 @@ export function socMeasurementTime(value) {
 
 /** Pure duplicate-safe MQTT ingestion. Caller persists reading only if accepted. */
 export function acceptSocReading(previous, payload, {
-  now = Date.now(), association = 'vehicle-mqtt', vehicleId, sourceId,
+  now = Date.now(), receivedAt = now, deferred = false, association = 'vehicle-mqtt', vehicleId, sourceId,
 } = {}) {
   const reject = reason => ({ accepted: false, reading: previous ?? null, reason });
   let value;
@@ -30,7 +31,7 @@ export function acceptSocReading(previous, payload, {
   if (vehicleId !== undefined && value.vehicleId !== vehicleId || sourceId !== undefined && value.sourceId !== sourceId) return reject('identity-mismatch');
   if (!identity(value.readingId)) return reject('missing-reading-id');
   const measuredAt = socMeasurementTime(value.measuredAt);
-  if (Number.isNaN(measuredAt) || measuredAt > now + 5 * 60_000) return reject('invalid-measurement-time');
+  if (Number.isNaN(measuredAt) || measuredAt > receivedAt + MAX_SOURCE_AHEAD_MS) return reject('invalid-measurement-time');
   const sequence = value.sequence == null ? null : value.sequence;
   if (sequence !== null && (!Number.isSafeInteger(sequence) || sequence < 0)) return reject('invalid-sequence');
   const sameIdentity = previous?.association === association
@@ -52,7 +53,7 @@ export function acceptSocReading(previous, payload, {
     const fieldTime = supplied === undefined ? measuredAt : socMeasurementTime(supplied?.measuredAt);
     const fieldId = supplied === undefined ? value.readingId : supplied?.readingId;
     if (supplied !== undefined && (value[key] === undefined || !identity(fieldId)
-      || Number.isNaN(fieldTime) || fieldTime > now + 5 * 60_000)) return reject('invalid-field-metadata');
+      || Number.isNaN(fieldTime) || fieldTime > receivedAt + MAX_SOURCE_AHEAD_MS)) return reject('invalid-field-metadata');
     const prior = sameIdentity && Number.isFinite(previous[key]) ? previous.fields?.[key]
       ?? { measuredAt: previous.measuredAt ?? null, receivedAt: previous.receivedAt ?? null, readingId: previous.readingId } : null;
     // CarData reports charge target/capacity independently of battery percentage.
@@ -62,7 +63,8 @@ export function acceptSocReading(previous, payload, {
       ? Number.isFinite(fieldTime) && (fieldTime > prior.measuredAt
         || sharesOrderedSoc && fieldTime === prior.measuredAt) : true));
     if (value[key] !== undefined && newer && (!socRejection || supplied !== undefined)) {
-      optional[key] = value[key]; fields[key] = { measuredAt: fieldTime, receivedAt: now, readingId: fieldId };
+      optional[key] = value[key]; fields[key] = { measuredAt: fieldTime, receivedAt, readingId: fieldId,
+        ...(sourceTimeAdmission({ sourceTime: fieldTime, receivedAt, now, deferred }) ? { admittedAt: now } : {}) };
       independentUpdate ||= supplied !== undefined;
     } else if (prior) {
       // Configuration-like vehicle facts may be published less frequently than
@@ -81,7 +83,8 @@ export function acceptSocReading(previous, payload, {
   if (socRejection) return independentUpdate || providerUpdate
     ? { accepted: true, reason: null, reading: { ...previous, ...optional, fields, ...provenance } } : reject(socRejection);
   return { accepted: true, reason: null, reading: { association, ...(vehicleId !== undefined ? { vehicleId } : {}), ...(sourceId !== undefined ? { sourceId } : {}), readingId: value.readingId,
-    soc: value.soc, measuredAt, receivedAt: now, sequence, ...optional, ...provenance,
+    soc: value.soc, measuredAt, receivedAt, sequence, ...optional, ...provenance,
+    ...(sourceTimeAdmission({ sourceTime: measuredAt, receivedAt, now, deferred }) ? { admittedAt: now } : {}),
     ...(Object.keys(fields).length ? { fields } : {}) } };
 }
 

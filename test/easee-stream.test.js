@@ -386,7 +386,7 @@ test('unknown, future and more-than-fifteen-minute-old source clocks never emit 
   const f = fixture(t, { products: transitionProducts, onObservation: (_device, row) => observations.push(row) });
   const connection = await f.start(); connection.update('invented-charger', 109, 2, START);
   await f.timers.advance(16 * 60_000);
-  for (const timestamp of [null, 'unknown', f.timers.now + 1])
+  for (const timestamp of [null, 'unknown', f.timers.now + 1001])
     connection.update('invented-charger', 109, 1, timestamp);
   connection.update('invented-charger', 109, 1, START + 59_999);
   assert.equal(observations.length, 0);
@@ -395,6 +395,41 @@ test('unknown, future and more-than-fifteen-minute-old source clocks never emit 
   connection.update('invented-charger', 109, 2, f.timers.now);
   assert.equal(observations.length, 1);
   assert.equal(observations[0].measuredAt, f.timers.now);
+});
+
+test('bounded source lead preserves short stream transitions and their actual receipt clocks', async t => {
+  const observations = [];
+  const f = fixture(t, { products: transitionProducts, onObservation: (_device, row) => observations.push(row) });
+  const connection = await f.start(); connection.update('invented-charger', 109, 2, START);
+  await f.timers.advance(100);
+  connection.update('invented-charger', 109, 1, START + 104);
+  connection.update('invented-charger', 109, 2, START + 105);
+  assert.equal(observations.length, 0);
+  await f.timers.advance(3); assert.equal(observations.length, 0);
+  await f.timers.advance(2);
+  assert.deepEqual(observations.map(row => [row.previousValue, row.value]), [[2, 1], [1, 2]]);
+  assert(observations.every(row => row.receivedAt === START + 100 && row.admittedAt >= row.measuredAt));
+  connection.update('invented-charger', 109, 1, START + 505);
+  connection.lose(); await f.timers.advance(500);
+  assert.equal(observations.length, 2, 'An old connection cannot admit a delayed transition');
+});
+
+test('an overflowed pending Stop keeps instruction evidence unavailable until a newer live report', async t => {
+  const f = fixture(t), connection = await f.start();
+  connection.update('invented-charger', 31, true, START);
+  connection.update('invented-charger', 250, true, START);
+  await f.timers.advance(100);
+  for (let index = 0; index < 128; index++) connection.update('invented-charger', 120, 1, START + 104);
+  connection.update('invented-charger', 31, false, START + 104);
+  assert.equal(f.stream.pending('invented-charger', [31]), true);
+  await f.timers.advance(4);
+  assert.equal(f.stream.pending('invented-charger', [31]), true, 'Draining other packets cannot revive the pre-Stop instruction');
+  assert.equal(f.stream.evidence('invented-charger', [31]).synchronized, false);
+  connection.update('invented-charger', 31, true, START + 104);
+  assert.equal(f.stream.pending('invented-charger', [31]), true, 'A same-clock replay cannot resolve a lost transition');
+  await f.timers.advance(1); connection.update('invented-charger', 31, false, START + 105);
+  assert.equal(f.stream.pending('invented-charger', [31]), false);
+  assert.equal(f.stream.snapshot('invented-charger', [31])[0].value, false);
 });
 
 test('throwing or rejecting observation callbacks cannot break the cache, readiness, or later transitions', async t => {
@@ -418,7 +453,7 @@ test('source timestamps survive cache reads and late, malformed or future update
   const observed = new Date(START - 60_000).toISOString();
   connection.update('invented-charger', 120, '2', observed, { dataType: 3 });
   connection.update('invented-charger', 120, '1', new Date(START - 120_000).toISOString(), { dataType: 3 });
-  for (const timestamp of [null, 'yesterday', '2026-09-22', new Date(START + 1).toISOString()]) {
+  for (const timestamp of [null, 'yesterday', '2026-09-22', new Date(START + 1001).toISOString()]) {
     connection.update('invented-charger', 120, '99', timestamp, { dataType: 3 });
   }
   await f.timers.advance(24 * 60 * 60_000);

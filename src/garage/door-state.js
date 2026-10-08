@@ -1,3 +1,4 @@
+import { observationTimeAdmitted } from '../domain/time-evidence.js';
 const finite = Number.isFinite;
 export const GARAGE_DOOR_SIGNALS = Object.freeze(['garage_door1_open', 'garage_door2_open']);
 export const isGarageDoorSignal = signal => GARAGE_DOOR_SIGNALS.includes(signal);
@@ -8,6 +9,6 @@ export function confirmedGarageDoor(observation, now) {
     && [0, 1].includes(observation.value) && observation.raw?.availabilityConfirmed === true
     && !observation.raw?.retained && !observation.raw?.auditOnly
     && finite(observation.sourceTime) && finite(observation.receivedAt) && finite(observation.raw.confirmedAt)
-    && observation.sourceTime <= observation.receivedAt && observation.receivedAt <= observation.raw.confirmedAt
+    && observationTimeAdmitted(observation, now) && observation.receivedAt <= observation.raw.confirmedAt
     && observation.raw.confirmedAt <= now && (observation.quality ?? []).every(flag => flag === 'good');
 }

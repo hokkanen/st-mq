@@ -2,6 +2,7 @@ import { selectedHistoryPredicate } from './schema.js';
 import { ENERGY_SIGNALS } from '../domain/history-series.js';
 import { pendingEnergyObservations } from './pending-energy.js';
 import { recordedTransport } from '../domain/recording-source.js';
+import { observationTimeAdmitted } from '../domain/time-evidence.js';
 
 const invalid = new Set(['missing','invalid-numeric','invalid-unit','invalid-value','provider-error','provider-unavailable',
   'integration-gap','unknown-phase-share','conflicting-duplicate','stale','retained','failed','unavailable',
@@ -40,15 +41,21 @@ export function recordedEnergyStart(store, prefix, input, now) {
     WHERE signal=? AND import_id IS NULL AND ${scope(input)} AND received_at<=? AND source_time<=? LIMIT 1`)
     .get(signal, now, now);
   const geometry = "json_extract(CASE WHEN json_valid(raw) THEN raw ELSE '{}' END,'$.intervalStart')";
-  const row = present && store.db.prepare(`SELECT ${geometry} AS at FROM observations INDEXED BY observations_energy_geometry
+  let firstAt = Infinity;
+  const candidates = present && store.db.prepare(`SELECT ${geometry} AS at,source_time,received_at,raw FROM observations INDEXED BY observations_energy_geometry
     WHERE signal IN (${ENERGY_SIGNALS.map(name => `'${name}'`).join(',')}) AND import_id IS NULL
     AND ${selectedHistoryPredicate('observations', 'observations')}
     AND signal=? AND ${scope(input)} AND ${physicalWriter} AND received_at<=? AND source_time<=?
     AND json_valid(raw) AND json_type(raw,'$.intervalStart')='integer'
     AND json_extract(raw,'$.intervalEnd')=source_time
-    AND source_time>json_extract(raw,'$.intervalStart') AND source_time<=received_at
-    ORDER BY ${geometry} LIMIT 1`).get(signal, now, now);
-  return Math.min(Number.isFinite(row?.at) ? row.at : Infinity,
+    AND source_time>json_extract(raw,'$.intervalStart')
+    ORDER BY ${geometry}`).iterate(signal, now, now);
+  if (candidates) for (const row of candidates) {
+    if (observationTimeAdmitted({ sourceTime: row.source_time, receivedAt: row.received_at, raw: JSON.parse(row.raw) }, now)) {
+      firstAt = row.at; break;
+    }
+  }
+  return Math.min(firstAt,
     ...pendingEnergyObservations(store, { now, input: input ?? 'providers', prefix }).map(row => JSON.parse(row.raw).intervalStart));
 }
 
@@ -105,7 +112,7 @@ function* rawRows(store, { from, to, now, input, prefix, source, device }) {
 
 export function* recordedEnergyGroups(store, options, stats = { rows: 0, conflicts: 0 }) {
   const pending = new Map();
-  for (const group of rawGroups(rawRows(store, options),stats)) {
+  for (const group of rawGroups(rawRows(store, options),stats,options.now)) {
     const state = pending.get(group.prefix) ?? { energy: null, gap: null };
     pending.set(group.prefix, state);
     if (state.energy && state.energy.end <= group.start) {
@@ -150,7 +157,7 @@ export function* recordedEnergyGroups(store, options, stats = { rows: 0, conflic
   }
 }
 
-function* rawGroups(rows, stats) {
+function* rawGroups(rows, stats, now) {
   let key = null, group = null;
   for (const row of rows) {
     stats.rows++;
@@ -158,7 +165,7 @@ function* rawGroups(rows, stats) {
     try { raw = JSON.parse(row.raw); flags = JSON.parse(row.quality); } catch { continue; }
     if (!Number.isSafeInteger(raw?.intervalStart) || !Number.isSafeInteger(raw?.intervalEnd)
       || raw.intervalEnd <= raw.intervalStart || raw.intervalEnd !== row.source_time
-      || !Number.isSafeInteger(row.received_at) || row.source_time > row.received_at) continue;
+      || !observationTimeAdmitted({ sourceTime: row.source_time, receivedAt: row.received_at, raw }, now)) continue;
     const prefix = prefixOf(row.signal);
     const availabilityGap = isRecordedEnergyGap(row, raw, flags);
     const nextKey = JSON.stringify([row.source, row.device, prefix, raw?.intervalStart, raw?.intervalEnd, availabilityGap]);

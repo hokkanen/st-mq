@@ -2,6 +2,7 @@
 // participates in this calculation. All durable learning inputs are the three
 // interval energies emitted here and subsequently committed by the recorder.
 import { recordedTransport } from './recording-source.js';
+import { observationTimeAdmitted } from './time-evidence.js';
 
 const HOUR = 3_600_000;
 const BAD = new Set(['provider_error', 'missing', 'invalid_unit', 'invalid_numeric', 'conflicting_duplicate', 'future_source_time']);
@@ -46,7 +47,7 @@ export class ElectricityAccumulator {
       const key = `${prefix}:${row.device}`;
       if (!groups.has(key)) groups.set(key, { device: row.device, prefix, rows: [] });
       groups.get(key).rows.push(row);
-      if (row.signal !== 'property_import_energy_counter' || !positive(row.value) || !time(row.sourceTime) || row.sourceTime > now
+      if (row.signal !== 'property_import_energy_counter' || !positive(row.value) || !observationTimeAdmitted(row, now)
         || (row.quality ?? []).some(flag => BAD.has(flag))) continue;
       const auditKey = `${key}:${row.signal}`, previous = this.auditHeads[auditKey];
       if (previous?.sourceTime === row.sourceTime && previous.value === row.value) continue;
@@ -98,7 +99,7 @@ export class ElectricityAccumulator {
 
   snapshot({ device, prefix, rows }, now) {
     const get = signal => rows.find(row => row.signal === `${prefix}_${signal}`);
-    const valid = row => row && positive(row.value) && time(row.sourceTime) && row.sourceTime <= now
+    const valid = row => row && positive(row.value) && observationTimeAdmitted(row, now)
       && !(row.quality ?? []).some(flag => BAD.has(flag));
     const usable = row => valid(row) && now - row.sourceTime <= this.maxAgeMs;
     const currents = [1, 2, 3].map(phase => get(`current_l${phase}`));

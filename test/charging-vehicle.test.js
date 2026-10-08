@@ -156,6 +156,76 @@ function pauseBmw(runtime, f, at = START + MINUTE) {
     fields: { charging: { measuredAt: at, readingId: `stop-${at}` } } });
 }
 
+test('BMW target reports with a small source-clock lead retain the live transition after bounded admission', async t => {
+  for (const lead of [1, 400]) await t.test(`${lead} ms`, async t => {
+    const f = fixture(), runtime = f.create(); t.after(() => runtime.close());
+    publish(runtime, facts(START, { chargeLimitSoc: 100 })); pauseBmw(runtime, f);
+    assert.equal(view(runtime).vehicle.id, 'bmw');
+    const receivedAt = START + 2 * MINUTE, sourceAt = receivedAt + lead;
+    f.setNow(receivedAt);
+    const target = (value, at, id) => ({ provider: 'bmw-cardata', chargeLimitSoc: value,
+      fields: { chargeLimitSoc: { measuredAt: at, readingId: id } } });
+    publish(runtime, target(85, sourceAt, 'target-lower'));
+    assert.equal(runtime.vehicleFeeds.bmw.reading.chargeLimitSoc, 100, 'Future evidence is not published early');
+    assert.equal(view(runtime).values.minimumSoc.value, 100);
+    f.setNow(sourceAt + 1); await new Promise(resolve => setTimeout(resolve, lead + 25));
+    const field = runtime.vehicleFeeds.bmw.reading.fields.chargeLimitSoc;
+    assert.equal(field.measuredAt, sourceAt); assert.equal(field.receivedAt, receivedAt); assert.ok(field.admittedAt >= sourceAt);
+    assert.equal(runtime.chargers.charger1.targetState.conflict, true);
+    f.setNow(START + 3 * MINUTE); publish(runtime, target(100, START + 3 * MINUTE, 'target-again'));
+    assert.equal(view(runtime).values.minimumSoc.value, 85, 'The admitted 100 to 85 transition continues to hold the lower target');
+  });
+});
+
+test('BMW future packets cannot cross MQTT reconnect or bypass the shared clock-lead bound', async t => {
+  const f = fixture(), runtime = f.create(); t.after(() => runtime.close());
+  publish(runtime, facts(START + 400));
+  assert.equal(runtime.vehicleFeeds.bmw.reading, null);
+  runtime.setMqttStatus({ connected: false }, 'bmw');
+  f.setNow(START + 500); runtime.setMqttStatus({ connected: true, subscribed: true }, 'bmw');
+  await new Promise(resolve => setTimeout(resolve, 420));
+  assert.equal(runtime.vehicleFeeds.bmw.reading, null);
+  publish(runtime, facts(START + 1501));
+  assert.equal(runtime.vehicleFeeds.bmw.reading, null);
+  assert.equal(runtime.vehicleFeeds.bmw.mqtt.invalidReason, 'vehicle-source-clock-unavailable');
+});
+test('deferred BMW admission survives transaction rollback without renewing its receipt or losing queue order', async t => {
+  const f = fixture(), runtime = f.create(); t.after(() => runtime.close());
+  publish(runtime, facts());
+  const original = structuredClone(runtime.vehicleFeeds.bmw.reading), runWrite = f.store.runWrite;
+  let failCommit = true;
+  f.store.runWrite = (operation, options) => runWrite(() => {
+    const result = operation();
+    if (failCommit) throw new Error('Synthetic transaction rollback after callback');
+    return result;
+  }, options);
+  publish(runtime, facts(START + 20, { soc: 65 }));
+  f.setNow(START + 21); await new Promise(resolve => setTimeout(resolve, 45));
+  assert.deepEqual(runtime.vehicleFeeds.bmw.reading, original);
+  assert.equal(runtime.vehicleFeeds.bmw.sourcePending.size, 1, 'Rollback restores the original queued report');
+  failCommit = false; await new Promise(resolve => setTimeout(resolve, 140));
+  assert.equal(runtime.vehicleFeeds.bmw.reading.soc, 65);
+  assert.equal(runtime.vehicleFeeds.bmw.reading.receivedAt, START);
+  assert.equal(runtime.vehicleFeeds.bmw.reading.measuredAt, START + 20);
+  assert.equal(runtime.vehicleFeeds.bmw.sourcePending.size, 0);
+});
+
+test('ordinary BMW facts held behind a future predecessor keep their actual admission time', async t => {
+  const f = fixture(), runtime = f.create(); t.after(() => runtime.close());
+  publish(runtime, facts(START, { chargeLimitSoc: 100 }));
+  publish(runtime, { provider: 'bmw-cardata', charging: false,
+    fields: { charging: { measuredAt: START + 20, readingId: 'queued-stop' } } });
+  f.setNow(START + 1);
+  publish(runtime, { provider: 'bmw-cardata', chargeLimitSoc: 85,
+    fields: { chargeLimitSoc: { measuredAt: START + 1, readingId: 'queued-target' } } });
+  assert.equal(runtime.vehicleFeeds.bmw.reading.chargeLimitSoc, 100);
+  f.setNow(START + 21); await new Promise(resolve => setTimeout(resolve, 45));
+  const field = runtime.vehicleFeeds.bmw.reading.fields.chargeLimitSoc;
+  assert.equal(field.measuredAt, START + 1); assert.equal(field.receivedAt, START + 1);
+  assert.equal(field.admittedAt, START + 21);
+  assert.equal(runtime.vehicleFeeds.bmw.reading.charging, false);
+});
+
 
 test('visitor keeps manual defaults until positive BMW correlation, then each available field takes precedence', async t => {
   const f = fixture({ defaults: { manualSoc: 25, minimumSoc: 80, capacityKwh: 50 } }), runtime = f.create(); t.after(() => runtime.close());

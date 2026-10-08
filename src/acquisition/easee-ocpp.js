@@ -3,9 +3,10 @@ import { timingSafeEqual, randomInt, randomUUID, createHash } from 'node:crypto'
 import { BlockList, isIP } from 'node:net';
 import { WebSocketServer } from 'ws';
 import { chargingDeviceInfo } from '../charging/device-info.js';
+import { MAX_SOURCE_AHEAD_MS } from '../domain/time-evidence.js';
 
 const MAX_AGE_MS = 60_000;
-const MAX_FUTURE_MS = 1000;
+const MAX_FUTURE_MS = MAX_SOURCE_AHEAD_MS;
 const CALL_TIMEOUT_MS = 15_000;
 const FIRST_MESSAGE_TIMEOUT_MS = 30_000;
 const NO_TRANSACTION_STATUSES = new Set(['Available', 'Finishing']);

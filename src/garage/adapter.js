@@ -5,17 +5,19 @@ import { SHELLY_CN105_CONTRACT, GARAGE_FIELDS, garageAdapterSettings,
 import { isShellyCn105Transport } from './shelly-cn105.js';
 import { GARAGE_NATIVE_SETTINGS, validateGarageNativeSetting, garageNativeOptions } from './native-settings.js';
 import { createGarageElectrical } from './electrical.js';
+import { createSourceTimePending } from '../acquisition/source-time-pending.js';
+import { classifySourceTime, sourceTimeAdmission, validateAdmittedSourceTime } from '../domain/time-evidence.js';
 
 const pending = command => ['published', 'accepted'].includes(command?.status);
 const validTarget = value => Number.isFinite(value) && value >= 0 && value <= 31 && Number.isInteger(value * 2);
 const recordedTelemetry = new Set(['garage_native_energy', 'garage_native_indoor_temperature',
   'garage_compressor_frequency', 'garage_compressor_active', 'garage_native_defrost']);
 const clone = value => value == null ? value : structuredClone(value);
-function measured(field, at) {
+function measured(field, at, admittedAt) {
   if (!field || typeof field !== 'object' || Array.isArray(field)) return null;
   const measuredAt = finiteTime(field.measuredAt) ? field.measuredAt
     : finiteTime(field.ageMs) && field.ageMs <= at ? at - field.ageMs : null;
-  return measuredAt === null || measuredAt > at ? null : { value: field.value, measuredAt };
+  return !validateAdmittedSourceTime({ sourceTime: measuredAt, receivedAt: at, admittedAt }) ? null : { value: field.value, measuredAt };
 }
 /** The heat-pump controller owns continuous regulation and frost rescue.
  * The application sends only explicit, challenge-bound edits; connection and
@@ -23,13 +25,20 @@ function measured(field, at) {
 export function createGarageAdapter({ settings: input = {}, clock = Date.now, canControl = () => true,
   monotonicClock = () => performance.now(),
   onObservation = () => {}, onEnergy = () => {}, onState = () => {}, onEquipmentDiagnostic = () => {},
-  persisted = null, productionTransport = null } = {}) {
+  persisted = null, productionTransport = null, defer = action => action() } = {}) {
   const settings = garageAdapterSettings(input);
   validateGarageAdapterSnapshot(persisted);
   const transport = settings.driver === 'shelly-cn105' && isShellyCn105Transport(productionTransport) ? productionTransport : null;
   let connected = false, seenConnection = false, stopped = false, state = null, latest = {}, subscribed = true;
   let lastObservedState = persisted?.control ? { deviceId: persisted.deviceId, observedAt: persisted.observedAt,
-    receivedAt: persisted.receivedAt, control: clone(persisted.control), native: clone(persisted.native), health: clone(persisted.health) } : null;
+    receivedAt: persisted.receivedAt, ...(persisted.admittedAt !== undefined ? { admittedAt: persisted.admittedAt } : {}),
+    control: clone(persisted.control), native: clone(persisted.native), health: clone(persisted.health) } : null;
+  let pendingSequence = 0;
+  const pendingTime = createSourceTimePending({ clock, monotonicClock, dispatch: defer, ordered: true,
+    onReject(_packet, reason) {
+      if (reason !== 'cleared' && state) { state.statusDeadline = -Infinity; state.challengeDeadline = -Infinity; changed(); }
+    },
+    onReady({ topic, payload, packet }, receivedAt, admittedAt) { receive(topic, payload, packet, receivedAt, admittedAt); } });
   let activeSignature = null, minimumTelemetryAt = 0;
   let telemetryDeadlines = {}, recordingAges = {};
   let stream = {}, usedChallenge = null, lastCommand = persisted?.lastCommand ? { ...persisted.lastCommand,
@@ -46,19 +55,21 @@ export function createGarageAdapter({ settings: input = {}, clock = Date.now, ca
     const observed = state ?? lastObservedState;
     return { version: 2, contractVersion: SHELLY_CN105_CONTRACT, deviceId: observed?.deviceId ?? null,
       observedAt: observed?.observedAt ?? null, receivedAt: observed?.receivedAt ?? null,
+      ...(observed?.admittedAt !== undefined ? { admittedAt: observed.admittedAt } : {}),
       control: clone(observed?.control ?? null), native: clone(observed?.native ?? {}), health: clone(observed?.health ?? {}),
       lastCommand: clone(lastCommand), electrical: electrical.snapshot(), faultRaw };
   }
   const changed = () => onState(snapshot());
   const fresh = now => connected && subscribed && !stopped && state && !state.retained
-    && state.observedAt <= now && now - state.observedAt < settings.maxAgeMs && state.statusDeadline > monotonicClock();
+    && state.observedAt <= now && state.receivedAt <= now
+    && now - Math.min(state.observedAt, state.receivedAt) < settings.maxAgeMs && state.statusDeadline > monotonicClock();
   // Status can remain useful for two minutes, but a command token only lasts
   // fifteen seconds. Keep time for delivery and never extend it after a clock
   // adjustment or a repeated publication of the same token.
   const challengeFresh = now => state?.challenge
     && state.challengeExpiresAt - Math.max(now, clock()) > 1000
     && state.challengeDeadline - monotonicClock() > 1000;
-  const remainingFreshness = (field, receivedAt, observedAt) => garageFieldRemainingMs(field, receivedAt, settings.maxAgeMs, observedAt);
+  const remainingFreshness = (field, receivedAt, observedAt, admittedAt) => garageFieldRemainingMs(field, receivedAt, settings.maxAgeMs, observedAt, admittedAt);
   // Pill UTC has one-second precision. Reserve that rounding window and bucket
   // stricter lifetimes downwards so clock jitter is not a new recording policy.
   const recordingAgeFor = (sourceTime, remaining, receivedAt) => Math.max(1, Math.min(settings.maxAgeMs - 1000,
@@ -73,6 +84,7 @@ export function createGarageAdapter({ settings: input = {}, clock = Date.now, ca
     if (!transport) reasons.push('The heat-pump controller connection is unavailable.');
     if (!canControl()) reasons.push('This instance is read-only.');
     if (!fresh(now)) reasons.push('Waiting for fresh heat-pump controller status.');
+    if (pendingTime.size) reasons.push('Waiting for the source clock before using newer controller status.');
     if (!health(now).pumpCommunicating) reasons.push('Waiting for heat-pump communication.');
     if (!challengeFresh(now) || state.challenge === usedChallenge) reasons.push('Waiting for a fresh command challenge.');
     if (pending(lastCommand) && now - lastCommand.requestedAt >= 30_000) {
@@ -162,10 +174,21 @@ export function createGarageAdapter({ settings: input = {}, clock = Date.now, ca
       faultRaw = null; onEquipmentDiagnostic({ value: null, status: 'unavailable', quality: [reason] }, at, snapshot());
     }
   }
-  function receive(topic, payload, packet = {}, receivedAt = clock()) {
+  function receive(topic, payload, packet = {}, receivedAt = clock(), admittedAt) {
     if (!topics.includes(topic) || stopped || !connected || !subscribed) return false;
     const value = decodeGarageEnvelope(payload, { receivedAt, schema: SHELLY_CN105_CONTRACT });
-    if (!value || packet.retain || packet.dup || value.observedAt > receivedAt || receivedAt - value.observedAt >= settings.maxAgeMs) return false;
+    if (!value || packet.retain || packet.dup) return false;
+    const clocks = [value.observedAt, value.readback?.measuredAt,
+      ...Object.values(value.native ?? {}).map(field => field?.measuredAt),
+      ...Object.values(value.fields ?? {}).map(field => field?.measuredAt)].filter(finiteTime);
+    const pendingClock = clocks.filter(at => classifySourceTime({ sourceTime: at, receivedAt, now: receivedAt }).status === 'pending');
+    if (admittedAt === undefined && (pendingClock.length || pendingTime.size)) {
+      if (pendingTime.defer(++pendingSequence, { topic, payload, packet }, {
+        sourceTime: pendingClock.length ? Math.max(...pendingClock) : value.observedAt, receivedAt })) return false;
+    }
+    const evaluatedAt = admittedAt ?? receivedAt;
+    if (!validateAdmittedSourceTime({ sourceTime: value.observedAt, receivedAt, admittedAt, now: evaluatedAt })
+      || evaluatedAt - Math.min(value.observedAt, receivedAt) >= settings.maxAgeMs) return false;
     const signature = `${value.deviceId}:${value.bootId}`;
     if (retiredBoots.has(signature)) return false;
     const previous = stream[topic];
@@ -183,29 +206,30 @@ export function createGarageAdapter({ settings: input = {}, clock = Date.now, ca
       if (!control || !value.native || typeof value.health?.nativeFresh !== 'boolean' || typeof value.readback?.complete !== 'boolean'
         || !challenge) return false;
       const native = Object.fromEntries(Object.entries(GARAGE_NATIVE_SETTINGS).map(([key, definition]) => {
-        const field = measured(value.native[key], receivedAt);
+        const field = measured(value.native[key], receivedAt, admittedAt);
         return [key, field && (definition.values ? definition.values.includes(field.value)
           : Number.isFinite(field.value) && field.value >= 10 && field.value <= 31) ? field : null];
       }));
-      const pumpClock = measured({ value: true, measuredAt: value.readback.measuredAt, ageMs: value.readback.ageMs }, receivedAt);
+      const pumpClock = measured({ value: true, measuredAt: value.readback.measuredAt, ageMs: value.readback.ageMs }, receivedAt, admittedAt);
       const receivedMonotonic = monotonicClock();
       const nativeDeadlines = Object.fromEntries(Object.keys(native).map(key => [key,
-        Math.min(receivedMonotonic + remainingFreshness(value.native[key], receivedAt, value.observedAt),
+        Math.min(receivedMonotonic + remainingFreshness(value.native[key], receivedAt, value.observedAt, admittedAt),
           native[key]?.measuredAt === state?.native[key]?.measuredAt && native[key]?.value === state?.native[key]?.value
             ? state?.nativeDeadlines[key] ?? Infinity : Infinity)]));
       const powerRecordingAge = Math.min(recordingAgeFor(native.power?.measuredAt,
-        remainingFreshness(value.native.power, receivedAt, value.observedAt), receivedAt),
+        remainingFreshness(value.native.power, receivedAt, value.observedAt, admittedAt), evaluatedAt),
         native.power?.measuredAt === state?.native.power?.measuredAt && native.power?.value === state?.native.power?.value
           ? recordingAges.garage_native_power ?? Infinity : Infinity);
       recordingAges.garage_native_power = powerRecordingAge;
-      const pumpDeadline = Math.min(receivedMonotonic + remainingFreshness(value.readback, receivedAt, value.observedAt),
+      const pumpDeadline = Math.min(receivedMonotonic + remainingFreshness(value.readback, receivedAt, value.observedAt, admittedAt),
         pumpClock?.measuredAt === state?.health.pump?.measuredAt ? state?.pumpDeadline ?? Infinity : Infinity);
-      const remaining = Math.max(0, challenge.expiresInMs - (receivedAt - value.observedAt));
+      const remaining = Math.max(0, challenge.expiresInMs - (evaluatedAt - Math.min(receivedAt, value.observedAt)));
       const sameChallenge = state?.challenge === challenge.value;
-      const challengeExpiresAt = Math.min(receivedAt + remaining, sameChallenge ? state.challengeExpiresAt : Infinity);
+      const challengeExpiresAt = Math.min(evaluatedAt + remaining, sameChallenge ? state.challengeExpiresAt : Infinity);
       const challengeDeadline = Math.min(monotonicClock() + remaining, sameChallenge ? state.challengeDeadline : Infinity);
       state = { deviceId: value.deviceId, bootId: value.bootId, observedAt: value.observedAt, receivedAt, retained: false,
-        statusDeadline: receivedMonotonic + settings.maxAgeMs - (receivedAt - value.observedAt),
+        ...(admittedAt !== undefined ? { admittedAt } : {}),
+        statusDeadline: receivedMonotonic + settings.maxAgeMs - (evaluatedAt - Math.min(value.observedAt, receivedAt)),
         control, native, nativeDeadlines, pumpDeadline,
         nativeOptions: value.capabilities?.manualOptions,
         manualControls: value.capabilities?.manualControls,
@@ -219,6 +243,8 @@ export function createGarageAdapter({ settings: input = {}, clock = Date.now, ca
         value: native.power.value === 'on' ? 1 : 0, unit: 'state', sourceTime: native.power.measuredAt, receivedAt,
         quality: nativeDeadlines.power > receivedMonotonic ? ['good'] : ['stale'],
         raw: { usableForControl: false, contractVersion: SHELLY_CN105_CONTRACT,
+          ...(sourceTimeAdmission({ sourceTime: native.power.measuredAt, receivedAt, now: evaluatedAt, deferred: admittedAt !== undefined }) ? {
+            timeAdmission: sourceTimeAdmission({ sourceTime: native.power.measuredAt, receivedAt, now: evaluatedAt, deferred: admittedAt !== undefined }) } : {}),
           reportIntervalMs: powerRecordingAge, reportGraceMs: 0 } });
       // The Bluetooth input is live diagnostic readback of the rear feed (or a
       // temporary commissioning sensor), not another temperature history stream.
@@ -231,6 +257,8 @@ export function createGarageAdapter({ settings: input = {}, clock = Date.now, ca
           quality: control[name] === null ? ['unknown'] : ['good'],
           recordingPolicy: 'change-only',
           raw: { usableForControl: false, contractVersion: SHELLY_CN105_CONTRACT,
+            ...(sourceTimeAdmission({ sourceTime: value.observedAt, receivedAt, now: evaluatedAt, deferred: admittedAt !== undefined }) ? {
+              timeAdmission: sourceTimeAdmission({ sourceTime: value.observedAt, receivedAt, now: evaluatedAt, deferred: admittedAt !== undefined }) } : {}),
             reportIntervalMs: 10_000, reportGraceMs: Math.max(0, settings.maxAgeMs - 10_000) } });
       }
       const result = value.result;
@@ -247,7 +275,7 @@ export function createGarageAdapter({ settings: input = {}, clock = Date.now, ca
       if (!value.fields || typeof value.fields !== 'object') return false;
       for (const [name, definition] of Object.entries(GARAGE_FIELDS)) {
         if (!Object.hasOwn(value.fields, name)) continue;
-        const field = decodeGarageField(value.fields[name], definition, { receivedAt, observedAt: value.observedAt, retained: false,
+        const field = decodeGarageField(value.fields[name], definition, { receivedAt, observedAt: value.observedAt, admittedAt, retained: false,
           maxAgeMs: settings.maxAgeMs, bootId: value.bootId, schema: SHELLY_CN105_CONTRACT });
         if (field.sourceTime !== null && field.sourceTime < minimumTelemetryAt) {
           field.diagnosticAvailable = false; field.usable = false; field.quality.push('pre-connection-observation');
@@ -255,8 +283,8 @@ export function createGarageAdapter({ settings: input = {}, clock = Date.now, ca
         const before = latest[definition.signal];
         const previousRecordingAge = recordingAges[definition.signal];
         const sameMeasurement = before?.sourceTime === field.sourceTime && before?.value === field.value;
-        const remaining = remainingFreshness(value.fields[name], receivedAt, value.observedAt);
-        const recordingAge = Math.min(recordingAgeFor(field.sourceTime, remaining, receivedAt),
+        const remaining = remainingFreshness(value.fields[name], receivedAt, value.observedAt, admittedAt);
+        const recordingAge = Math.min(recordingAgeFor(field.sourceTime, remaining, evaluatedAt),
           sameMeasurement ? previousRecordingAge ?? Infinity : Infinity);
         const deadline = Math.min(monotonicClock() + remaining,
           sameMeasurement ? telemetryDeadlines[definition.signal] ?? Infinity : Infinity);
@@ -276,6 +304,7 @@ export function createGarageAdapter({ settings: input = {}, clock = Date.now, ca
           onObservation({ ...field, value: field.diagnosticAvailable ? definition.boolean ? Number(field.value) : field.value : null,
             unit: definition.boolean ? 'state' : field.unit, sourceTime: field.diagnosticAvailable ? field.sourceTime : receivedAt, source: 'garage-adapter', device: 'garage-heat-pump',
             raw: { usableForControl: false, contractVersion: SHELLY_CN105_CONTRACT,
+              ...(field.diagnosticAvailable && field.timeAdmission ? { timeAdmission: field.timeAdmission } : {}),
               reportIntervalMs: recordingAge,
               reportGraceMs: 0, diagnosticAvailable: field.diagnosticAvailable,
               supported: field.supported, retained: false, meterScope: field.meterScope, provisional: false,
@@ -285,7 +314,7 @@ export function createGarageAdapter({ settings: input = {}, clock = Date.now, ca
     }
     activeSignature = signature; stream[topic] = { signature, sequence: value.sequence }; changed(); return true;
   }
-  return { topics, receive, snapshot, status, nativeControls,
+  return { topics, receive, snapshot, status, nativeControls, tick: now => pendingTime.drain(now),
     setControl(input, now = clock()) {
       if (!input || Object.keys(input).sort().join(',') !== 'externalEnabled,targetC'
         || !validTarget(input.targetC) || typeof input.externalEnabled !== 'boolean') throw new Error('Choose a valid room temperature target.');
@@ -301,6 +330,7 @@ export function createGarageAdapter({ settings: input = {}, clock = Date.now, ca
     },
     setConnected(value) {
       if (stopped || connected === Boolean(value)) return;
+      pendingTime.clear();
       const before = state;
       if (!value) invalidateTelemetry('mqtt-disconnected', clock());
       minimumTelemetryAt = seenConnection ? clock() : 0;
@@ -318,7 +348,7 @@ export function createGarageAdapter({ settings: input = {}, clock = Date.now, ca
       if (!connected && pending(lastCommand)) updateCommand({ status: 'uncertain', reason: 'MQTT disconnected.' });
       changed();
     },
-    subscriptionFailed() { subscribed = false; changed(); },
-    async close() { stopped = true; connected = false; changed(); },
+    subscriptionFailed() { pendingTime.clear(); subscribed = false; changed(); },
+    async close() { pendingTime.clear(); stopped = true; connected = false; changed(); },
   };
 }

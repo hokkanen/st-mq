@@ -46,6 +46,33 @@ test('loaded configuration reconciles on fresh status and only matching readback
   assert.equal(f.publications.length, 1);
 });
 
+test('future sender status cannot configure protection until admitted and cannot cross reconnect', async () => {
+  const f = fixture({ protection: { ...garageSettings().protection, approved: true } });
+  f.receive({ observedAt: base + 400 });
+  assert.equal(f.publications.length, 0); assert.equal(f.sender.status().available, false);
+  f.at(base + 400); f.sender.tick();
+  assert.equal(f.publications.length, 1); assert.equal(f.sender.status().available, true);
+  assert.equal(f.sender.snapshot().state.receivedAt, base);
+  assert.equal(f.sender.snapshot().state.admittedAt, base + 400);
+  f.receive({ observedAt: base + 800 });
+  f.sender.setConnected(false); f.sender.setConnected(true);
+  f.at(base + 800); f.sender.tick();
+  assert.equal(f.sender.status().available, false);
+  await f.sender.close();
+});
+
+test('expired pending sender state revokes earlier protection status until fresh readback', async () => {
+  let elapsed = 0;
+  const f = fixture({ monotonicClock: () => elapsed }); f.receive();
+  assert.equal(f.sender.status().available, true);
+  f.receive({ observedAt: base + 400 });
+  elapsed = 5000; f.sender.tick();
+  assert.equal(f.sender.status().available, false);
+  assert.equal(f.sender.status().configuration.status, 'unknown');
+  f.at(base + 1000); f.receive(); assert.equal(f.sender.status().available, true);
+  assert.equal(f.publications.length, 0); await f.sender.close();
+});
+
 test('retained status is recorded but does not authorize settings or provide current frost protection', async () => {
   const f = fixture({ protection: { ...garageSettings().protection, approved: true } });
   assert.equal(f.receive({}, { retain: true }), true);

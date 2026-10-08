@@ -1,7 +1,7 @@
 import { RECOVERY_DEPENDENCY_SCHEMA } from '../recovery/dependencies.js';
 import { journalSchema } from './journal-schema.js';
 // One current schema. Pre-production databases are never migrated.
-export const SCHEMA_VERSION = 26;
+export const SCHEMA_VERSION = 27;
 // Original source rows remain immutable evidence. The active views select the
 // current recovery interpretation without erasing history or changing local IDs.
 export const RECOVERABLE_TABLES = ['annotations', 'counters', 'energy_audits', 'events',
@@ -141,6 +141,7 @@ CREATE INDEX fireplace_events_input_time ON fireplace_events(input,at,id);
 CREATE INDEX learning_cycles_input_at ON learning_cycles(input, started_at);
 CREATE INDEX learning_entries_algorithm
           ON learning_journal_entries(epoch,input,algorithm_version,id);
+CREATE INDEX learning_entries_global_algorithm ON learning_journal_entries(algorithm_version);
 CREATE INDEX learning_entries_epoch_input ON learning_journal_entries(epoch,input,id);
 CREATE INDEX learning_entries_epoch_time ON learning_journal_entries(epoch,input,at,id);
 CREATE INDEX learning_entries_time ON learning_journal_entries(epoch,input,kind,at,id);

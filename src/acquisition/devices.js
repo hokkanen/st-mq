@@ -16,6 +16,7 @@ import { createEaseeOcpp } from './easee-ocpp.js';
 import { createOcppSetup, isOcppSetupState } from './easee-ocpp-setup.js';
 import { createOcppScheduleAdapter } from '../charging/ocpp.js';
 import { ProviderError, providerFailureCode } from './http.js';
+import { classifySourceTime, sourceTimeAdmission } from '../domain/time-evidence.js';
 
 const CURRENT_DEVICES = [
   ['charger_id', [183, 184, 185], 'ev1_current'],
@@ -50,10 +51,10 @@ function sourceTime(value) {
   if (typeof value !== 'string' || !/^\d{4}-\d{2}-\d{2}T.*(?:Z|[+-]\d{2}:\d{2})$/.test(value)) return null;
   const parsed = Date.parse(value); return Number.isFinite(parsed) ? parsed : null;
 }
-function timeQuality(at, now, maximumAge) {
+function timeQuality(at, now, maximumAge, receivedAt = now) {
   if (at === null) return ['source_time_unknown'];
-  if (at > now + 60_000) return ['future_source_time'];
-  return now - at > maximumAge ? ['stale'] : [];
+  const admission = classifySourceTime({ sourceTime: at, receivedAt, now, maxAgeMs: maximumAge });
+  return admission.status === 'stale' ? ['stale'] : admission.status === 'ready' ? [] : ['future_source_time'];
 }
 function httpStatus(error) {
   return Number.isInteger(error?.status) && error.status >= 100 && error.status <= 599 ? error.status : null;
@@ -78,7 +79,7 @@ function baseObservation({ source, device, signal, unit, now, quality = [], retr
     quality: [...quality, 'missing', 'source_time_unknown'], raw: Number.isFinite(retryAfterMs) ? { retryAfterMs } : null };
 }
 
-function currentObservations(payload, device, ids, prefix, now) {
+function currentObservations(payload, device, ids, prefix, receivedAt, now = receivedAt) {
   const observations = Array.isArray(payload) ? payload : payload?.observations;
   if (!Array.isArray(observations) || observations.length > 1000) throw new ProviderError('invalid-provider-observations');
   return ids.map((id, index) => {
@@ -88,7 +89,7 @@ function currentObservations(payload, device, ids, prefix, now) {
     const selected = candidates[0];
     const input = number(selected?.item.value); const at = selected?.at ?? null;
     let value = input;
-    const quality = ['current_snapshot_not_energy', ...timeQuality(at, now, 15 * 60_000)];
+    const quality = ['current_snapshot_not_energy', ...timeQuality(at, now, 15 * 60_000, receivedAt)];
     const unit = selected?.item.unit;
     if (unit !== undefined && unit !== null && unit !== 'A') { value = null; quality.push('invalid_unit'); }
     if (matches.length > 1) {
@@ -102,8 +103,9 @@ function currentObservations(payload, device, ids, prefix, now) {
     if (value !== null && value < 0) quality.push('negative_current');
     if (value !== null && value > 1000) quality.push('implausible_current');
     return { source: 'easee', device, signal: `${prefix}_l${index + 1}`, value, unit: 'A',
-      sourceTime: at, receivedAt: now, quality,
-      raw: { observationId: id, reportedValue: input, timestamp: at, transport: 'cloud' } };
+      sourceTime: at, receivedAt, quality,
+      raw: { observationId: id, reportedValue: input, timestamp: at, transport: 'cloud',
+        ...(sourceTimeAdmission({ sourceTime: at, receivedAt, now, deferred: now > receivedAt }) ? { timeAdmission: sourceTimeAdmission({ sourceTime: at, receivedAt, now, deferred: now > receivedAt }) } : {}) } };
   });
 }
 
@@ -175,7 +177,7 @@ function chargerSession(list, id, device, now) {
   return result;
 }
 
-function electricalObservations(payload, device, prefix, fields, now, voltageVerified = false) {
+function electricalObservations(payload, device, prefix, fields, receivedAt, voltageVerified = false, now = receivedAt) {
   const list = Array.isArray(payload) ? payload : payload?.observations;
   if (!Array.isArray(list) || list.length > 1000) throw new ProviderError('invalid-provider-observations');
   const connection = deviceConnection(list, now);
@@ -188,9 +190,7 @@ function electricalObservations(payload, device, prefix, fields, now, voltageVer
     const picked = matches[0], at = picked?.at ?? null, input = number(picked?.row.value);
     let value = input;
     const counter = name.endsWith('_counter');
-    const quality = counter ? [] : timeQuality(at, now, 5 * 60_000);
-    if (at === null && counter) quality.push('source_time_unknown');
-    if (at > now + 60_000 && counter) quality.push('future_source_time');
+    const quality = timeQuality(at, now, counter ? Infinity : 5 * 60_000, receivedAt);
     if (matches.length > 1) {
       quality.push('duplicate_observation');
       if (matches.some(row => row.at === at && number(row.row.value) !== input)) {
@@ -203,8 +203,9 @@ function electricalObservations(payload, device, prefix, fields, now, voltageVer
     }
     if (value === null) quality.push('missing');
     if (name.startsWith('current_')) quality.push('current_snapshot_not_energy');
-    return { source: 'easee', device, signal: `${prefix}_${name}`, value, unit, sourceTime: at, receivedAt: now,
+    return { source: 'easee', device, signal: `${prefix}_${name}`, value, unit, sourceTime: at, receivedAt,
       quality, raw: { observationId: id, acquisitionOnly: true, auditOnly: counter, deviceConnection: { ...connection }, deviceTelemetryAt: telemetryAt,
+        ...(sourceTimeAdmission({ sourceTime: at, receivedAt, now, deferred: now > receivedAt }) ? { timeAdmission: sourceTimeAdmission({ sourceTime: at, receivedAt, now, deferred: now > receivedAt }) } : {}),
         ...(prefix === 'ev1' && name === 'active_power' ? sessions : {}),
         ...(unit === 'V' ? { voltageMapping: prefix === 'property' || voltageVerified ? 'phase-neutral' : 'terminal-pair-unverified' } : {}) } };
   });
@@ -255,6 +256,7 @@ export function createDeviceProviders({ connections = {}, http, tokenStore, cloc
   const lifetime = new AbortController();
   let closed = false, stream = null, streaming = false, electricityEpoch = 0, nativeStopped = false, restoringOcpp = false;
   let nativeStartPermission = null;
+  const nativeSourcePending = () => stream?.pending?.(easee.charger_id, [31, 48, 96, 100, 109, 250]) === true;
   const streamedElectricity = new Set(), streamedVoltage = new Set(), transports = new Map(), reconcileAt = new Map();
   const cloudVoltage = new Map();
   let savedOcppSetup, invalidOcppSetup = false;
@@ -272,7 +274,7 @@ export function createDeviceProviders({ connections = {}, http, tokenStore, cloc
       const permission = nativeStartPermission, current = local.controlSnapshot?.();
       observeNativeStop(current);
       nativeAppControl();
-      const permitted = Boolean(permission && !closed && controlBackend === 'native' && canControl()
+      const permitted = Boolean(permission && !closed && controlBackend === 'native' && canControl() && !nativeSourcePending()
         && permission.until > clock() && permission.guard() && current?.connectionId === permission.connectionId
         && ['Preparing', 'Charging', 'SuspendedEV', 'SuspendedEVSE'].includes(current.connectorStatus)
         && instructionRevision === permission.instructionRevision);
@@ -517,6 +519,13 @@ export function createDeviceProviders({ connections = {}, http, tokenStore, cloc
   async function easeeRequest(device, ids, signal) {
     return easeeAuthenticated(`${API}/state/${encodeURIComponent(device)}/observations?ids=${ids.join(',')}`, { method: 'GET', signal });
   }
+  async function admitObservationTime(payload, receivedAt, signal) {
+    const rows = Array.isArray(payload) ? payload : payload?.observations;
+    const delays = (Array.isArray(rows) ? rows : []).map(row => classifySourceTime({
+      sourceTime: sourceTime(row?.timestamp), receivedAt, now: receivedAt })).filter(row => row.status === 'pending').map(row => row.delayMs);
+    if (delays.length) await delay(Math.max(...delays), undefined, { signal: openSignal(signal) });
+    return clock();
+  }
   async function observationResult(device, ids, { signal, forceRest = false, requiredIds = ids, reconcile = false,
     validate = () => {} } = {}) {
     openSignal(signal);
@@ -756,10 +765,10 @@ export function createDeviceProviders({ connections = {}, http, tokenStore, cloc
     readAllowanceTelemetry: nativeAllowanceTelemetry,
     readCurrentSupply,
     readDeviceInfo: () => local.deviceInfo?.() ?? null,
-    canControl: () => !closed && canControl() && controlBackend === 'native',
+    canControl: () => !closed && canControl() && controlBackend === 'native' && !nativeSourcePending(),
     setStartPermission: (snapshot, options = {}) => {
       if (snapshot) nativeAppControl();
-      nativeStartPermission = snapshot && typeof options.guard === 'function' && Number.isSafeInteger(options.until)
+      nativeStartPermission = snapshot && !nativeSourcePending() && typeof options.guard === 'function' && Number.isSafeInteger(options.until)
         && snapshot.instructionRevision === instructionRevision
         ? { connectionId: snapshot.connectionId, instructionRevision,
           issuedAt: clock(), until: options.until, guard: options.guard } : null;
@@ -768,7 +777,7 @@ export function createDeviceProviders({ connections = {}, http, tokenStore, cloc
     takeoverNative: async ({ expectedAppControl, expectedSnapshot, signal, canMutate, beforeWrite }) => {
       nativeAppControl();
       const expectedRevision = instructionRevision;
-      const allowed = () => { nativeAppControl(); return canMutate() && instructionRevision === expectedRevision; };
+      const allowed = () => { nativeAppControl(); return !nativeSourcePending() && canMutate() && instructionRevision === expectedRevision; };
       // Use the source-merged observation, including a newer streamed Resume.
       // An older REST pause cannot reintroduce a cloud dependency after it ends.
       const vendorPause = nativeDynamicChargerPaused === true;
@@ -826,7 +835,7 @@ export function createDeviceProviders({ connections = {}, http, tokenStore, cloc
     isCurrent: (snapshot, { requireTransaction = true, unchangedStatus = false } = {}) => {
       const current = local.controlSnapshot?.();
       nativeAppControl();
-      return Boolean(current && current.connectionId === snapshot.connectionId && (!requireTransaction
+      return Boolean(!nativeSourcePending() && current && current.connectionId === snapshot.connectionId && (!requireTransaction
         || (current.transaction?.id ?? null) === snapshot.transactionId
           && (snapshot.transactionId === null || current.transaction?.confirmed))
         && (!unchangedStatus || current.connectorStatus === snapshot.connectorStatus && current.timestamp === snapshot.statusAt
@@ -874,6 +883,8 @@ export function createDeviceProviders({ connections = {}, http, tokenStore, cloc
     let cached = cloudVoltage.get(id);
     const streamed = stream?.snapshot(id, ids, { requiredIds: [250] });
     let payload = streamed ?? cached?.payload;
+    let receivedAt = streamed ? now : cached?.receivedAt ?? now;
+    let admittedAt = streamed ? now : cached?.admittedAt ?? now;
     if (streamed) streamedVoltage.add(id);
     // Existing stream/cache evidence costs no provider request. Only an absent
     // local phase needs a bounded REST fallback; it shares normal provider backoff.
@@ -883,15 +894,17 @@ export function createDeviceProviders({ connections = {}, http, tokenStore, cloc
       try {
         const result = await observationResult(id, ids, { signal, requiredIds: [250] });
         payload = result.payload;
-        cloudVoltage.set(id, { ...cached, payload });
+        receivedAt = clock();
+        admittedAt = await admitObservationTime(payload, receivedAt, signal);
+        cloudVoltage.set(id, { ...cached, payload, receivedAt, admittedAt });
         if (result.usesStream) streamedVoltage.add(id);
       } catch {
         // An optional voltage fallback cannot discard usable local power/current.
         // Its prior source clocks still bound any cached evidence.
       }
     }
-    return payload ? electricalObservations(payload, id, 'ev1', voltageFields, now, true)
-      .map(row => ({ ...row, raw: { ...row.raw, transport: 'cloud', voltageOnly: true } })) : [];
+    return payload ? electricalObservations(payload, id, 'ev1', voltageFields, receivedAt, true, Math.max(now, admittedAt))
+      .map(row => ({ ...row, raw: { ...row.raw, transport: 'cloud', voltageOnly: true, requestStartedAt: now } })) : [];
   }
 
   return {
@@ -934,7 +947,7 @@ export function createDeviceProviders({ connections = {}, http, tokenStore, cloc
       await Promise.allSettled([setup?.close(), stream?.close(), local.close(), localStartFlight, nativeCloudFlight]);
     },
     chargerScheduleControl() { return controlBackend === 'native' ? nativeScheduleControl : scheduleControl; },
-    async electricity({ now = Date.now(), signal } = {}) {
+    async electricity({ now = clock(), signal } = {}) {
       validNow(now);
       const results = await Promise.allSettled(electricalDevices.map(async definition => {
         const { id, prefix, fields, verified, ids, requiredIds } = definition;
@@ -951,19 +964,23 @@ export function createDeviceProviders({ connections = {}, http, tokenStore, cloc
           return [...rows, ...fallback];
         }
         const validate = payload => {
-          const rows = electricalObservations(payload, id, prefix, fields, now, verified);
+          const receivedAt = clock();
+          const rows = electricalObservations(payload, id, prefix, fields, receivedAt, verified);
           if (stream?.snapshot(id, ids, { requiredIds }) && rows.some(row => row.value === null
-            || row.sourceTime === null || row.sourceTime > now))
+            || row.sourceTime === null || classifySourceTime({ sourceTime: row.sourceTime, receivedAt, now: receivedAt }).status === 'invalid'))
             throw new ProviderError('invalid-provider-observations');
         };
         const { payload, transport, usesStream } = await observationResult(id, ids, { signal, requiredIds, reconcile: streaming, validate });
         if (epoch !== electricityEpoch) throw new ProviderError('provider-request-aborted');
-        const rows = electricalObservations(payload, id, prefix, fields, now, verified);
-        if (prefix === 'ev1') cloudVoltage.set(id, { payload, nextReadAt: now + Math.max(60_000, fallbackIntervalMs) });
+        const receivedAt = clock();
+        const admittedAt = await admitObservationTime(payload, receivedAt, signal);
+        if (epoch !== electricityEpoch) throw new ProviderError('provider-request-aborted');
+        const rows = electricalObservations(payload, id, prefix, fields, receivedAt, verified, admittedAt);
+        if (prefix === 'ev1') cloudVoltage.set(id, { payload, receivedAt, admittedAt, nextReadAt: now + Math.max(60_000, fallbackIntervalMs) });
         transports.set(id, transport);
         if (usesStream) streamedElectricity.add(id);
         else streamedElectricity.delete(id);
-        return rows.map(row => ({ ...row, raw: { ...row.raw, transport: 'cloud' } }));
+        return rows.map(row => ({ ...row, raw: { ...row.raw, transport: 'cloud', requestStartedAt: now } }));
       }));
       const observations = results.flatMap((result, index) => result.status === 'fulfilled' ? result.value : electricalDevices[index].fields.map(([id, name, unit]) => ({
         ...baseObservation({ source: 'easee', device: electricalDevices[index].id, signal: `${electricalDevices[index].prefix}_${name}`, unit, now,
@@ -980,11 +997,15 @@ export function createDeviceProviders({ connections = {}, http, tokenStore, cloc
       return annotateElectricalCurrents(observations);
     },
 
-    async easee({ now = Date.now(), signal } = {}) {
+    async easee({ now = clock(), signal } = {}) {
       validNow(now);
       const jobs = CURRENT_DEVICES.filter(([key]) => supplied(easee[key]));
-      const results = await Promise.allSettled(jobs.map(async ([key, ids, prefix]) =>
-        currentObservations(await readObservations(easee[key], ids, { signal }), easee[key], ids, prefix, now)));
+      const results = await Promise.allSettled(jobs.map(async ([key, ids, prefix]) => {
+        const payload = await readObservations(easee[key], ids, { signal });
+        const receivedAt = clock(), admittedAt = await admitObservationTime(payload, receivedAt, signal);
+        return currentObservations(payload, easee[key], ids, prefix, receivedAt, admittedAt)
+          .map(row => ({ ...row, raw: { ...row.raw, requestStartedAt: now } }));
+      }));
       const rows = results.flatMap((result, index) => result.status === 'fulfilled' ? result.value : jobs[index][1].map((id, phase) => ({ ...baseObservation({
         source: 'easee', device: easee[jobs[index][0]], signal: `${jobs[index][2]}_l${phase + 1}`, unit: 'A', now,
         quality: ['current_snapshot_not_energy', ...failureFlags(result.reason)], retryAfterMs: result.reason?.retryAfterMs,

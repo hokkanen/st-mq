@@ -18,7 +18,7 @@ function counted(store) {
   let energyReads = 0, startReads = 0;
   const facade = { db: { prepare(sql) {
     if (sql.includes('SELECT id,source,device,signal,value,unit,source_time,received_at,quality,raw')) energyReads++;
-    if (sql.includes(' AS at FROM observations INDEXED BY observations_energy_geometry')) startReads++;
+    if (sql.includes(' AS at') && sql.includes('FROM observations INDEXED BY observations_energy_geometry')) startReads++;
     return store.db.prepare(sql);
   } } };
   return { facade, counts: () => ({ energyReads, startReads }) };

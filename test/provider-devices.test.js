@@ -1,10 +1,11 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
-import { createDeviceProviders } from '../src/acquisition/devices.js';
+import { createDeviceProviders as createProviders } from '../src/acquisition/devices.js';
 
 const fixtures = JSON.parse(readFileSync(new URL('./fixtures/provider-devices.json', import.meta.url), 'utf8'));
 const now = Date.parse('2026-09-06T12:05:00Z');
+const createDeviceProviders = options => createProviders({ clock: () => now, ...options });
 const easee = { access_token: 'synthetic-old-access', refresh_token: 'synthetic-old-refresh', charger_id: 'charger/device', equalizer_id: 'equalizer-device', user: 'synthetic-user', pw: 'synthetic-password' };
 const httpError = (status, message = 'provider included a synthetic-secret in its error') => Object.assign(new Error(message), { status });
 
@@ -13,6 +14,35 @@ test('unconfigured device providers perform no HTTP requests', async () => {
   assert.deepEqual(await providers.easee({ now }), []);
   assert.throws(() => createDeviceProviders({}), /HTTP JSON/);
   await assert.rejects(providers.easee({ now: NaN }), /timestamp/);
+});
+
+test('HTTP measurements made during the request retain the actual response receipt', async () => {
+  let current = now;
+  const provider = createDeviceProviders({ clock: () => current,
+    connections: { easee: { access_token: 'synthetic-token', equalizer_id: 'synthetic-equalizer' } },
+    http: { async json() {
+      current = now + 100;
+      return [31, 32, 33].map(id => ({ id, value: 5, timestamp: new Date(now + 50).toISOString() }));
+    } } });
+  const rows = await provider.easee({ now });
+  assert(rows.every(row => row.receivedAt === now + 100 && row.sourceTime === now + 50));
+  assert(rows.every(row => !row.quality.includes('future_source_time') && row.raw.requestStartedAt === now));
+  await provider.close();
+});
+
+test('HTTP source lead waits once and preserves its original receipt and admission proof', async () => {
+  let current = now;
+  const provider = createDeviceProviders({ clock: () => current,
+    connections: { easee: { access_token: 'synthetic-token', equalizer_id: 'synthetic-equalizer' } },
+    http: { async json() {
+      setTimeout(() => { current = now + 4; }, 0);
+      return [31, 32, 33].map(id => ({ id, value: 5, timestamp: new Date(now + 4).toISOString() }));
+    } } });
+  const rows = await provider.easee({ now });
+  assert(rows.every(row => row.receivedAt === now && row.sourceTime === now + 4));
+  assert(rows.every(row => !row.quality.includes('future_source_time')));
+  assert.deepEqual(rows[0].raw.timeAdmission, { sourceTime: now + 4, receivedAt: now, admittedAt: now + 4 });
+  await provider.close();
 });
 
 test('Easee uses replacement observations endpoint and preserves every phase timestamp and null', async () => {

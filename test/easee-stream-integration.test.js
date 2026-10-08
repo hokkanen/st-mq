@@ -476,7 +476,7 @@ for (const invalidTime of ['missing', 'future']) test(`reconciliation with ${inv
   const gaps = f.gaps.length, reconciliations = f.stream.reconciled.length;
   for (const deviceId of [CHARGER, EQUALIZER]) f.stream.publish(deviceId, observations(deviceId, latest));
   f.payload = deviceId => observations(deviceId, latest, 1).map(row => invalidTime === 'future'
-    ? { ...row, timestamp: new Date(latest + 1000).toISOString() }
+    ? { ...row, timestamp: new Date(latest + 1001).toISOString() }
     : Object.fromEntries(Object.entries(row).filter(([key]) => key !== 'timestamp')));
   await f.poll(latest);
   assert.equal(f.health().error, null);

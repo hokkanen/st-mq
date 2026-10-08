@@ -807,7 +807,7 @@ byte and variation metrics remain labeled as such. Current open energy is shown
 separately from finalized observation counts. The annual target measures overall
 SQLite growth; mandatory exact/history records are never dropped to meet it.
 
-This recording contract uses database schema 26. An incompatible development
+This recording contract uses database schema 27. An incompatible development
 schema is rejected before mutation with fresh-database guidance; no migration,
 backfill or automatic reset is provided. Supported read-only v0.7.5 CSV import,
 current-version restart, backup/restore and deterministic journal replay remain.
@@ -1155,7 +1155,7 @@ explicit initial seed when adopting an existing model; original discarded source
 polls are not required to reproduce subsequent learning. Older imported history is
 resampled causally with bounded holds, retaining unknown heating/solar information.
 
-The current algorithm is `committed-house-v16-observed-input-admission`. Saved configuration retains
+The current algorithm is `committed-house-v17-time-evidence-admission`. Saved configuration retains
 source-output assumptions, selected-slab priors, the relative ROOM increase and the
 bounded recovery policy. Changed equipment assumptions invalidate affected
 equipment/cost calibration. Checkpoint digests and journal-prefix identity detect

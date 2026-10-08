@@ -4,6 +4,7 @@ import { admittedChargingDeadlineRevision } from './flexibility.js';
 import { resolveChargingDeadline } from './settings.js';
 import { TIME_ZONE } from '../domain/prices.js';
 import { easeeScheduleTakeoverSupported, effectiveScheduleFingerprint, manualScheduleWindow, nextLocalOccurrence, normalizeScheduleState } from './easee.js';
+import { validateAdmittedSourceTime } from '../domain/time-evidence.js';
 
 const KIND = 'ocpp-tx-pause', MAX_PAUSE_MS = 48 * 3600_000, MIN_PAUSE_MS = 15 * 60_000;
 const MAX_ATTEMPTS = 3, MAX_AGE_MS = 60_000;
@@ -340,9 +341,10 @@ function validState(state, scope) {
       && (state.session.transactionId === null || id(state.session.transactionId)) && [true, false, null].includes(state.session.connected)
       && (state.session.connectedAt === null || time(state.session.connectedAt)) && (state.session.lastDisconnectedAt === null || time(state.session.lastDisconnectedAt)))
     && validExecution(state.execution)
-    && (state.vehicleDisconnect === null || fields(state.vehicleDisconnect, ['source', 'readingId', 'endedConnectedAt', 'measuredAt', 'receivedAt', 'awaitingConnection'])
+    && (state.vehicleDisconnect === null || fields(state.vehicleDisconnect, ['source', 'readingId', 'endedConnectedAt', 'measuredAt', 'receivedAt', 'awaitingConnection', 'admittedAt'])
       && ['easee-stream', 'bmw-cardata'].includes(state.vehicleDisconnect.source) && text(state.vehicleDisconnect.readingId)
       && [state.vehicleDisconnect.endedConnectedAt, state.vehicleDisconnect.measuredAt, state.vehicleDisconnect.receivedAt].every(time)
+      && validateAdmittedSourceTime({ sourceTime: state.vehicleDisconnect.measuredAt, receivedAt: state.vehicleDisconnect.receivedAt, admittedAt: state.vehicleDisconnect.admittedAt })
       && typeof state.vehicleDisconnect.awaitingConnection === 'boolean');
 }
 
@@ -656,11 +658,12 @@ export function createOcppChargingController({ adapter, initialState = null, sav
       const boundary = desired.vehicleDisconnect;
       if (boundary && text(boundary.readingId) && ['easee-stream', 'bmw-cardata'].includes(boundary.source)
         && [boundary.endedConnectedAt, boundary.measuredAt, boundary.receivedAt].every(time)
-        && boundary.measuredAt <= clock() && boundary.receivedAt <= clock()
+        && validateAdmittedSourceTime({ sourceTime: boundary.measuredAt, receivedAt: boundary.receivedAt, admittedAt: boundary.admittedAt, now: clock() })
         && boundary.readingId !== state.vehicleDisconnect?.readingId
         && (!state.vehicleDisconnect || boundary.measuredAt > state.vehicleDisconnect.measuredAt))
         await commit({ vehicleDisconnect: { source: boundary.source, readingId: boundary.readingId, endedConnectedAt: boundary.endedConnectedAt,
-          measuredAt: boundary.measuredAt, receivedAt: boundary.receivedAt, awaitingConnection: true }, execution: null, released: false });
+          measuredAt: boundary.measuredAt, receivedAt: boundary.receivedAt, awaitingConnection: true,
+          ...(boundary.admittedAt === undefined ? {} : { admittedAt: boundary.admittedAt }) }, execution: null, released: false });
       snapshot = await adapter.read({ signal });
       if (closed || current !== generation) return status();
       if (!snapshot.online || !fresh(snapshot.readAt, clock())) return display('unavailable', 'The local charger connection is unavailable; existing bounded profiles may still apply.', 'offline');

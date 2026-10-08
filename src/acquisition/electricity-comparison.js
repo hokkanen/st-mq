@@ -1,3 +1,4 @@
+import { validateAdmittedSourceTime } from '../domain/time-evidence.js';
 const instant = value => Number.isSafeInteger(value) && value >= 0;
 const duration = value => Number.isFinite(value) && value > 0;
 const fresh = (at, now, maximum) => instant(at) && at <= now && now - at <= maximum;
@@ -6,7 +7,7 @@ function confirmedTelemetry(snapshot, now, maximum) {
   return snapshot.telemetryConfirmed === true
     && fresh(snapshot.telemetryAt, now, maximum)
     && snapshot.sourceTime <= snapshot.telemetryAt
-    && snapshot.telemetryAt <= snapshot.receivedAt;
+    && validateAdmittedSourceTime({ sourceTime: snapshot.telemetryAt, receivedAt: snapshot.receivedAt, admittedAt: snapshot.admittedAt, now });
 }
 
 /** Compare the same supported held power accepted by electricity acquisition.
@@ -20,7 +21,7 @@ export function comparableElectricitySnapshot(snapshot, now, {
     || !snapshot || !Number.isFinite(snapshot.powerKw) || snapshot.powerKw < 0
     || snapshot.connected === false || !instant(snapshot.sourceTime)
     || snapshot.sourceTime > now || !fresh(snapshot.receivedAt, now, maxAgeMs)
-    || snapshot.sourceTime > snapshot.receivedAt) return false;
+    || !validateAdmittedSourceTime({ sourceTime: snapshot.sourceTime, receivedAt: snapshot.receivedAt, admittedAt: snapshot.admittedAt, now })) return false;
   return fresh(snapshot.sourceTime, now, maxAgeMs)
     || confirmedTelemetry(snapshot, now, maxTelemetryAgeMs);
 }

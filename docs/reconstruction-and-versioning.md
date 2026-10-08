@@ -144,7 +144,7 @@ They correct the retained interpretation, not the physical actions already taken
 
 ## Version discipline
 
-The Home learning algorithm is `committed-house-v16-observed-input-admission`, with
+The Home learning algorithm is `committed-house-v17-time-evidence-admission`, with
 thermal model version 4. Production starts from a fresh database and an explicit
 initial seed. There is no compatibility migration for development databases.
 

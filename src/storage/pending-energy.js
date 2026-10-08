@@ -1,3 +1,5 @@
+import { validateAdmittedSourceTime, sourceTimeAdmission } from '../domain/time-evidence.js';
+
 /** The bounded recorder tail is durable measured energy, not extrapolation.
  * Historical queries may use it only after both measurement and receipt. */
 export function pendingEnergyObservations(store, { now, input, prefix, source, device } = {}) {
@@ -25,7 +27,8 @@ export function pendingEnergyObservationsFromStates(states, { now, input, prefix
       : ['ev1', 'ev2', 'property'].includes(p) ? [1, 2, 3].map(n => `${p}_energy_l${n}`) : null;
     if (!signals || !pending || !Number.isSafeInteger(pending.start) || !Number.isSafeInteger(pending.end)
       || pending.end <= pending.start || pending.end > now || !Number.isSafeInteger(pending.receivedAt)
-      || pending.receivedAt < pending.end || pending.receivedAt > now || !Array.isArray(pending.energies) || pending.energies.length !== signals.length
+      || !validateAdmittedSourceTime({ sourceTime: pending.end, receivedAt: pending.receivedAt, admittedAt: pending.admittedAt, now })
+      || !Array.isArray(pending.energies) || pending.energies.length !== signals.length
       || pending.energies.some(value => !Number.isFinite(value) || value < 0) || !Array.isArray(pending.quality)
       || pending.quality.some(value => typeof value !== 'string')) continue;
     const basis = p === 'caravan' ? 'meter-counter-delta'
@@ -34,6 +37,8 @@ export function pendingEnergyObservationsFromStates(states, { now, input, prefix
       value: pending.energies[i], unit: 'kWh', source_time: pending.end, received_at: pending.receivedAt,
       quality: JSON.stringify(pending.quality), raw: JSON.stringify({ intervalStart: pending.start, intervalEnd: pending.end,
         durationMs: pending.end - pending.start, basis, pending: true,
+        ...(pending.admittedAt !== undefined ? { timeAdmission: sourceTimeAdmission({ sourceTime: pending.end,
+          receivedAt: pending.receivedAt, now: pending.admittedAt, deferred: true }) } : {}),
         ...(['cloud','ocpp'].includes(pending.transport) ? {transport:pending.transport} : {}),
         ...(p === 'caravan' ? { learningRole: 'history-only' } : {}) }) });
   }

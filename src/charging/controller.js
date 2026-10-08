@@ -4,6 +4,7 @@ import { delayedScheduleFor, easeeScheduleTakeoverSupported, easeeTakeoverFinger
 import { createHash } from 'node:crypto';
 import { chargingPlanInputsUnavailable } from './plan-inputs.js';
 import { admittedChargingDeadlineRevision } from './flexibility.js';
+import { validateAdmittedSourceTime } from '../domain/time-evidence.js';
 
 const copy = value => structuredClone(value);
 const isTime = value => Number.isSafeInteger(value) && value >= 0;
@@ -141,7 +142,7 @@ export function createChargingController({ adapter, initialState = null, saveSta
     const event = desired.vehicleDisconnect;
     if (!['bmw-cardata', 'easee-stream'].includes(event?.source) || !boundaryId(event.readingId)
       || !isTime(event.measuredAt) || !isTime(event.receivedAt) || !isTime(event.endedConnectedAt)
-      || event.measuredAt > now || event.receivedAt > now) return;
+      || !validateAdmittedSourceTime({ sourceTime: event.measuredAt, receivedAt: event.receivedAt, admittedAt: event.admittedAt, now })) return;
     const prior = copy(state);
     const known = state.vehicleDisconnect;
     if (known?.source !== event.source || known?.readingId !== event.readingId) {
@@ -155,7 +156,7 @@ export function createChargingController({ adapter, initialState = null, saveSta
         || event.measuredAt <= (state.session?.lastDisconnectedAt ?? -1)) return;
       state.vehicleDisconnect = { source: event.source, readingId: event.readingId,
         measuredAt: event.measuredAt, receivedAt: event.receivedAt, endedConnectedAt: event.endedConnectedAt,
-        cleanupPending: true, awaitingConnection: true };
+        cleanupPending: true, awaitingConnection: true, ...(event.admittedAt === undefined ? {} : { admittedAt: event.admittedAt }) };
       state.session = { ...state.session, connected: false, connectedAt: null,
         lastDisconnectedAt: event.measuredAt, waitingForScheduleAt: null, delayedReleaseAt: null };
       state.disconnected = true; state.released = false; state.provisional = false; state.execution = null;
@@ -171,10 +172,10 @@ export function createChargingController({ adapter, initialState = null, saveSta
       // Stream source events may arrive together or out of order. Their source
       // clocks establish the edge order; BMW delivery keeps its stricter rule.
       && (boundary.source === 'easee-stream' || reconnected.receivedAt > boundary.receivedAt)
-      && reconnected.measuredAt <= now && reconnected.receivedAt <= now
+      && validateAdmittedSourceTime({ sourceTime: reconnected.measuredAt, receivedAt: reconnected.receivedAt, admittedAt: reconnected.admittedAt, now })
       && (!boundary.reconnected || reconnected.measuredAt > boundary.reconnected.measuredAt))
       boundary.reconnected = { readingId: reconnected.readingId, measuredAt: reconnected.measuredAt,
-        receivedAt: reconnected.receivedAt, retained: false };
+        receivedAt: reconnected.receivedAt, retained: false, ...(reconnected.admittedAt === undefined ? {} : { admittedAt: reconnected.admittedAt }) };
     if (JSON.stringify(prior.vehicleDisconnect) === JSON.stringify(state.vehicleDisconnect)) return;
     try { await persist(); } catch (error) { state = prior; throw error; }
   }

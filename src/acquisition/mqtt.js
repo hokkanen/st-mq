@@ -222,7 +222,7 @@ export async function startMqtt({ engine, store, config, connect = mqtt.connect,
   if (equipment) engine.equipment = equipment;
   // The heat-pump controller owns local regulation; MQTT carries explicit owner edits.
   const garage = engine.garage || config.garage?.adapter ? createGarageAdapter({
-    settings: config.garage?.adapter, clock: () => engine.clock(), canControl,
+    settings: config.garage?.adapter, clock: () => engine.clock(), canControl, defer: action => write(action),
     productionTransport: createShellyCn105Transport({ settings: config.garage?.adapter, publish }),
     persisted: store.getState?.(`garage:adapter:${config.input}`),
     onObservation: observation => write(() => engine.ingest(observation)),
@@ -244,7 +244,7 @@ export async function startMqtt({ engine, store, config, connect = mqtt.connect,
       topics: [...garage.topics.map(topic => ({ role: 'Native telemetry subscription', topic, direction: 'subscribe' })),
         ...(config.garage?.adapter?.commandTopic ? [{ role: 'Explicit pump and room-target commands', topic: config.garage.adapter.commandTopic, direction: 'publish' }] : [])] });
   }
-  const garageSender = config.garage?.sender ? createGarageSender({ settings: config.garage.sender,
+  const garageSender = config.garage?.sender ? createGarageSender({ settings: config.garage.sender, defer: action => write(action),
     protection: config.garage.protection, enabled: config.garage.enabled === true,
     publish, clock: () => engine.clock(), canControl: () => config.input !== 'offline' && canControl(),
     persisted: store.getState?.(`garage:sender:${config.input}`),
