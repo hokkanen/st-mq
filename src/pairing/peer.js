@@ -1,4 +1,5 @@
-import { createServer } from 'node:http';
+import { Agent as HttpAgent, createServer, request as httpRequest } from 'node:http';
+import { Agent as HttpsAgent, request as httpsRequest } from 'node:https';
 import { createCipheriv, createDecipheriv, createHash, randomBytes, randomUUID } from 'node:crypto';
 import { pairError } from './state.js';
 import { RECOVERY_ERROR_CODES } from '../recovery/errors.js';
@@ -48,6 +49,27 @@ async function readBounded(stream) {
   return Buffer.concat(chunks).toString('utf8');
 }
 
+/** Long verification requests use the explicit operation deadline. Native fetch
+ * has an independent five-minute response timeout that cannot be set here. */
+function requestPeer(url, { method, body, headers, signal }, agents) {
+  return new Promise((resolve, reject) => {
+    const secure = url.protocol === 'https:';
+    const request = (secure ? httpsRequest : httpRequest)(url, {
+      method, headers: { ...headers, 'Content-Length': Buffer.byteLength(body) }, signal,
+      agent: secure ? agents.https : agents.http,
+    }, response => resolve({
+      ok: response.statusCode >= 200 && response.statusCode < 300,
+      status: response.statusCode, body: response,
+      dispose: () => { if (!response.readableEnded) response.destroy(); },
+    }));
+    // Reused sockets must not inherit any idle timeout from their agent. The
+    // combined lifetime/operation AbortSignal owns cancellation throughout I/O.
+    request.on('socket', socket => socket.setTimeout(0));
+    request.once('error', reject);
+    request.end(body);
+  });
+}
+
 const PUBLIC_ERRORS = new Set(['peer_unavailable', 'peer_authentication_failed', 'peer_message_too_large',
   'peer_protocol_failed', 'peer_replay', 'peer_busy', 'not_master', 'protected_history', 'invalid_claim',
   'invalid_action', 'snapshot_unavailable', 'snapshot_failed', 'verification_failed', 'integrity_failed',
@@ -70,7 +92,7 @@ export function publicPairError(error) {
 /** The LAN transport never sends the pairing secret or household data in plaintext. */
 export class PairPeer {
   constructor({ token, pairId, peerUrl, listenHost = '0.0.0.0', port = 8091, timeoutMs = 10000,
-    clock = Date.now, fetchImpl = fetch, handler }) {
+    clock = Date.now, fetchImpl, handler }) {
     this.key = keyFor(token);
     this.pairId = pairId;
     this.peerUrl = peerUrl;
@@ -78,7 +100,11 @@ export class PairPeer {
     this.port = port;
     this.timeoutMs = timeoutMs;
     this.clock = clock;
-    this.fetchImpl = fetchImpl;
+    this.agents = fetchImpl ? null : {
+      http: new HttpAgent({ keepAlive: true, maxSockets: 8, maxFreeSockets: 2, timeout: 0 }),
+      https: new HttpsAgent({ keepAlive: true, maxSockets: 8, maxFreeSockets: 2, timeout: 0 }),
+    };
+    this.fetchImpl = fetchImpl ?? ((url, options) => requestPeer(url, options, this.agents));
     this.handler = handler;
     this.nonces = new Map();
     this.closed = false;
@@ -148,12 +174,13 @@ export class PairPeer {
     if (Buffer.byteLength(request) > MAX_BODY) throw pairError('peer_message_too_large');
     const signals = [this.abort.signal, AbortSignal.timeout(timeoutMs)];
     if (signal) signals.push(signal);
-    let replied = false;
+    const cancellation = AbortSignal.any(signals);
+    let replied = false, response;
     try {
       const url = new URL(ROUTE, this.peerUrl);
       if (!['http:', 'https:'].includes(url.protocol) || url.username || url.password) throw pairError('peer_protocol_failed');
-      const response = await this.fetchImpl(url, { method: 'POST', body: request,
-        headers: { 'Content-Type': 'application/json' }, redirect: 'manual', signal: AbortSignal.any(signals) });
+      response = await this.fetchImpl(url, { method: 'POST', body: request,
+        headers: { 'Content-Type': 'application/json' }, redirect: 'manual', signal: cancellation });
       replied = true;
       // A replying HTTP service is reachable even when it refuses the request.
       // Startup authority must not mistake refusal or redirects for an offline
@@ -164,12 +191,18 @@ export class PairPeer {
       if (result.id !== id || result.pairId !== this.pairId) throw pairError('peer_authentication_failed');
       if (!result.ok) throw pairError(PUBLIC_ERRORS.has(result.error) ? result.error : 'peer_protocol_failed');
       return result.value;
-    } catch (error) { throw pairError(PUBLIC_ERRORS.has(error?.code) ? error.code : replied ? 'peer_protocol_failed' : 'peer_unavailable'); }
+    } catch (error) {
+      const reason = cancellation.aborted ? cancellation.reason : error;
+      throw pairError(PUBLIC_ERRORS.has(reason?.code) ? reason.code : replied ? 'peer_protocol_failed' : 'peer_unavailable');
+    }
+    finally { response?.dispose?.(); }
   }
 
   async close() {
     this.closed = true;
     this.abort.abort(pairError('stopped'));
+    this.agents?.http.destroy();
+    this.agents?.https.destroy();
     if (this.server?.listening) {
       const done = new Promise(resolve => this.server.close(resolve));
       this.server.closeAllConnections();
