@@ -342,6 +342,15 @@ try {
   assert.equal(await evaluate("document.getElementById('recording-status-freshness').hidden"), false, 'A stale check is explicitly labelled');
   await evaluate(`payload.recordingHealth.checkedAt = ${now}; panel.update(payload)`);
   assert.equal(await evaluate("document.getElementById('recording-status').hidden"), true, 'Fresh health clears stale attention');
+  await evaluate(`payload.recordingHealth.checkedAt = ${now + 1000}; panel.update(payload)`);
+  assert.equal(await evaluate("document.getElementById('recording-status').hidden"), true, 'A small server clock lead does not create stale attention');
+  assert.doesNotMatch(await evaluate("document.getElementById('recording-status-state').textContent"), /Last known/);
+  await evaluate(`payload.recordingHealth.checkedAt = ${now + 180_001}; panel.update(payload)`);
+  assert.equal(await evaluate("document.getElementById('recording-status').hidden"), false, 'A large clock difference remains visible');
+  assert.match(await evaluate("document.getElementById('recording-status-freshness').textContent"), /server and browser clocks differ/);
+  assert.doesNotMatch(await evaluate("document.getElementById('recording-status-freshness').textContent"), /just now|out of date/);
+  await evaluate(`payload.recordingHealth.checkedAt = ${now}; panel.update(payload)`);
+  assert.equal(await evaluate("document.getElementById('recording-status').hidden"), true, 'Corrected clocks clear the warning');
   await evaluate("document.querySelectorAll('#recording-details details').forEach(node=>node.open=false); scrollTo(0,0)");
   await settle(); await capture('snapshot-1440-dark');
   // Authenticated fallback can expose just health when the first status read fails.

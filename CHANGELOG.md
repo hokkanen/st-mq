@@ -6,6 +6,9 @@ Versions follow Semantic Versioning. `-dev.N` denotes a development prerelease.
 
 ## Unreleased
 
+- Recording health no longer shows an out-of-date warning for a small server
+  clock lead. Larger clock differences have an explicit explanation, while stale
+  checks and failed refreshes retain their warnings.
 - Controls recover after a failed MQTT observation save when fresh evidence from
   the affected input commits, without requiring a broker reconnect. Read-only
   status requests remain available while commands wait for trustworthy evidence.

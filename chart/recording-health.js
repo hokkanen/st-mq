@@ -1,5 +1,6 @@
 const finite = value => Number.isFinite(value) && value >= 0;
 const validTime = value => Number.isFinite(value) && value >= 0;
+const healthFreshnessMs = 3 * 60_000;
 const dates = new Intl.DateTimeFormat('en-GB', { timeZone: 'Europe/Helsinki',
   day: 'numeric', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit' });
 const decimal = value => new Intl.NumberFormat('en-GB', { maximumFractionDigits: 1 }).format(value);
@@ -15,7 +16,8 @@ export function storageBytes(value) {
 export function recordingEvidenceTime(value, now = Date.now()) {
   if (!validTime(value)) return 'Not known';
   const minutes = Math.max(0, Math.floor((now - value) / 60_000));
-  const age = minutes < 1 ? 'just now' : minutes < 60 ? `${minutes} min ago`
+  const age = value - now > healthFreshnessMs ? 'ahead of browser clock'
+    : minutes < 1 ? 'just now' : minutes < 60 ? `${minutes} min ago`
     : minutes < 1440 ? `${Math.floor(minutes / 60)} h ago` : `${Math.floor(minutes / 1440)} d ago`;
   return `${dates.format(new Date(value))} · ${age}`;
 }
@@ -46,7 +48,10 @@ export function recordingHealthView(health, recording, now = Date.now()) {
   const totalMeasured = budget.totalDatabaseMeasurementHours > 0 && finite(budget.totalDatabaseProjectedAnnualBytes);
   return {
     known: health?.version === 2,
-    outdated: !validTime(current.checkedAt) || current.checkedAt > now || now - current.checkedAt > 3 * 60_000,
+    outdated: !validTime(current.checkedAt) || now - current.checkedAt > healthFreshnessMs,
+    // The server dates the check; the browser renders it with a separate clock.
+    // Tolerate skew within the freshness window without changing source times.
+    clockMismatch: validTime(current.checkedAt) && current.checkedAt - now > healthFreshnessMs,
     settled: ['ok', 'read-only'].includes(recorder.state) && hasSpace && disk.state === 'ok',
     recordingScope: current.scope === 'snapshot' ? 'Recorded snapshot' : current.scope === 'history' ? 'History viewer' : 'Recording',
     scope: current.scope === 'snapshot' ? 'Recorded snapshot · disk space belongs to this computer'
@@ -137,7 +142,7 @@ export function createRecordingHealth({ document, request, now = () => Date.now(
   }
   function draw() {
     const view = recordingHealthView(health, recording, now());
-    const strip = $('recording-status'), dated = view.known && (view.outdated || unavailable);
+    const strip = $('recording-status'), dated = view.known && (view.outdated || view.clockMismatch || unavailable);
     const needsAttention = view.attention.length > 0 || dated;
     strip.hidden = !view.known || !(introVisible || needsAttention || !view.settled || strip.contains(document.activeElement));
     strip.dataset.tone = view.attention.some(item => item.severity === 'critical') ? 'critical' : needsAttention ? 'warning' : 'neutral';
@@ -149,6 +154,7 @@ export function createRecordingHealth({ document, request, now = () => Date.now(
     $('recording-status-disk').dataset.tone = view.disk.tone;
     renderIssues(view.attention);
     const freshness = unavailable ? `Refresh failed. ${view.checked} The last known status may be out of date.`
+      : view.clockMismatch ? `The server and browser clocks differ. Check this device’s date and time and the server clock. ${view.checked}`
       : view.outdated ? `Status is out of date. ${view.checked}` : '';
     set('recording-status-freshness', freshness);
     $('recording-status-freshness').hidden = !dated;
@@ -160,8 +166,8 @@ export function createRecordingHealth({ document, request, now = () => Date.now(
       meter.dataset.tone = view.disk.tone;
     }
     set('recording-health-scope', view.scope);
-    set('recording-health-checked', unavailable ? health ? `Refresh failed. ${view.checked}. The last known health may be out of date.` : 'Health could not be loaded. Try refreshing again.' : view.checked);
-    $('recording-health-checked').dataset.tone = unavailable ? 'warning' : 'neutral';
+    set('recording-health-checked', unavailable ? health ? `Refresh failed. ${view.checked}. The last known health may be out of date.` : 'Health could not be loaded. Try refreshing again.' : view.clockMismatch ? freshness : view.checked);
+    $('recording-health-checked').dataset.tone = unavailable || view.clockMismatch ? 'warning' : 'neutral';
     $('recording-health-refresh').disabled = pending;
     set('recording-health-refresh', pending ? 'Checking…' : 'Refresh health');
     set('recording-health-badge', view.attention.length ? 'Needs attention' : '');

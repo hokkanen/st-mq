@@ -1363,6 +1363,13 @@ failed database writes, a stalled update loop, unavailable recording sources or 
 failed backup. Recovery hides it again once the startup introduction has elapsed.
 Keyboard focus inside the summary defers hiding until focus leaves it.
 
+The check timestamp comes from the server, while the dashboard uses the browser's
+clock. A server timestamp up to three minutes ahead is tolerated within the same
+freshness window, preserving the original timestamp. A larger lead keeps the
+summary visible with a clock-mismatch explanation and **Last known** labels,
+rather than claiming an old check alongside “just now”. Checks more than three
+minutes behind the browser remain stale; failed refreshes remain visible.
+
 Recording and local free space have separate labels and links to their evidence.
 Each problem has its own explanation and link, with critical failures first;
 source loss does not label the database as faulty. Failed or stale health checks

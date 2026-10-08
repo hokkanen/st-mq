@@ -91,6 +91,54 @@ test('starting, unknown, failed refresh and stale checks remain visible without 
   assert.equal(view.element('recording-status').hidden, true);
 });
 
+test('small server clock leads do not label healthy checks as outdated or keep the banner visible', () => {
+  for (const lead of [1, 1000, 30_000, 180_000]) {
+    const view = panelFixture();
+    const response = health({ checkedAt: now + lead });
+    view.panel.update({ recordingHealth: response });
+    view.expireIntro();
+    assert.equal(view.element('recording-status').hidden, true);
+    assert.equal(view.element('recording-status-state').textContent, 'Monitoring active');
+    assert.equal(view.element('recording-status-free').textContent, '60 GB free');
+    assert.equal(view.element('recording-status-freshness').textContent, '');
+    assert.equal(response.checkedAt, now + lead, 'The original server timestamp stays intact');
+    view.advance(lead + 180_001);
+    view.panel.update({});
+    assert.equal(view.element('recording-status').hidden, false);
+    assert.match(view.element('recording-status-freshness').textContent, /out of date.*3 min ago/);
+  }
+});
+
+test('large future dates explain clock mismatch without calling a just-now check outdated', () => {
+  const view = panelFixture();
+  view.panel.update({ recordingHealth: health({ checkedAt: now + 180_001 }) });
+  view.expireIntro();
+  assert.equal(view.element('recording-status').hidden, false);
+  assert.match(view.element('recording-status-state').textContent, /^Last known:/);
+  assert.match(view.element('recording-status-freshness').textContent, /server and browser clocks differ/);
+  assert.match(view.element('recording-health-checked').textContent, /ahead of browser clock/);
+  assert.doesNotMatch(view.element('recording-status-freshness').textContent, /just now|out of date/);
+  view.panel.update({ recordingHealth: health() });
+  assert.equal(view.element('recording-status').hidden, true);
+  assert.equal(view.element('recording-health-checked').dataset.tone, 'neutral');
+});
+
+test('clock tolerance does not extend old checks or hide invalid dates and failed refreshes', async () => {
+  assert.equal(recordingHealthView(health({ checkedAt: now - 180_000 }), undefined, now).outdated, false);
+  for (const checkedAt of [now - 180_001, null, undefined, NaN, Infinity, -1, String(now)]) {
+    const result = recordingHealthView(health({ checkedAt }), undefined, now);
+    assert.equal(result.outdated, true);
+    assert.equal(result.clockMismatch, false);
+  }
+  const view = panelFixture(async () => { throw Error('Synthetic refresh failure'); });
+  view.panel.update({ recordingHealth: health({ checkedAt: now + 1000 }) });
+  view.expireIntro();
+  await view.panel.refresh();
+  assert.equal(view.element('recording-status').hidden, false);
+  assert.match(view.element('recording-status-state').textContent, /^Last known:/);
+  assert.match(view.element('recording-status-freshness').textContent, /Refresh failed/);
+});
+
 test('issues retain their own explanation and destination, with critical failures first', () => {
   const view = panelFixture();
   view.panel.update({ recordingHealth: health({ attention: [
