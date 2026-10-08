@@ -1425,7 +1425,7 @@ without claiming zero free bytes or blocking ordinary control. A stopped process
 unreachable dashboard or complete host failure cannot report its own condition.
 
 The **Other recorded data** fold appears immediately after **Adaptive measurements**,
-followed by **Recorded energy checks**. **Export database** and **Recover history**
+followed by **Recorded energy checks**. **Export database** and **History recovery**
 are grouped separately as history tools. Each tool retains its own fold, with
 its explanation and actions inside. The data inventory describes the remaining
 datasets using field lists, counts, available dates and the way each dataset is
@@ -1696,8 +1696,8 @@ current live readings.
 
 ## Recover history from a backup or paired computer
 
-Open the **Recover history** fold within **Recording details**, then choose
-**Open recovery** to review and recover missing history. Its description and
+Open the **History recovery** fold within **Recording details**, then choose
+**Review history** to review and recover missing history. Its description and
 launcher stay inside that fold. Standalone controllers and active paired masters
 use this same window.
 **Paired computers → Review history** opens it with the other computer selected.
@@ -1728,6 +1728,11 @@ scope, source counts, category date ranges and potential coverage are assessed
 from its self-contained file. The confirmation asserts household identity;
 it is not an assertion about software versions and cannot bypass automatic format
 validation. Matching format alone cannot establish household identity.
+For an incremental check, **History in this check** shows category counts and
+first/last dates for those changed records and their required references. This
+restores useful source identification without scanning unchanged history. The
+checked time and scope remain visible; the source inventory includes known zero
+counts. These dates do not establish continuous coverage or missing entries.
 Availability reports have a separate collapsed
 diagnostics fold: a point event has one timestamp and unknown duration, while a
 report period ends at the last saved evidence, not a confirmed recovery time.
@@ -1765,6 +1770,22 @@ and corrections. Original evidence and immutable decisions remain stored; a
 revert does not reclaim their disk space. The previous selected history and model
 remain available until the replacement is ready for atomic publication. See the
 [recovery source-correction contract](reconstruction-and-versioning.md#recovery-source-corrections).
+
+Each previous recovery shows its source, operation time, accepted record count
+and original recorded dates. The revert/restore review distinguishes that original
+period from the dates and categories affected by the proposed selection. It
+separates contributions from dependent records, identifies restore records that
+remain excluded, and reports whether learning needs rebuilding. A date range
+spans the first and last affected records; it does not mean every record between
+them changes. Original evidence remains retained.
+
+**Verification** belongs to the source check/recovery or the selected revision
+review. **Standard checks** use the normal checkpoint and source validation;
+**Also verify full snapshot** adds an independent full database read and may take
+longer. It does not turn a source check into a trial import or establish how far
+mirroring has caught up. **Reload results** only fetches saved checks, progress,
+available sources and the recovery list. The window also updates automatically;
+use **Check backup**, **Check other computer** or a revision review to run new work.
 
 Interrupted recovery can retain valid accepted entries. Reopen the window to
 review its saved outcome, revert its contribution or check the source again to

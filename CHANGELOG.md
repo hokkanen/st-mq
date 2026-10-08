@@ -6,6 +6,14 @@ Versions follow Semantic Versioning. `-dev.N` denotes a development prerelease.
 
 ## Unreleased
 
+- History recovery now shows recorded dates for incremental source checks and
+  clearer per-category results. Previous recoveries identify their accepted
+  records and original dates; revert/restore reviews show affected dates,
+  dependent records and whether the learned model changes. Verification choices
+  sit beside their actions, and **Reload results** explicitly refreshes saved
+  outcomes. Pairing groups history results, upgrade guidance and operation
+  messages with their related controls; earlier successful checks no longer
+  appear current when mirroring is stale or unavailable.
 - Journal capture preserves stored numeric precision across the Home Assistant
   and Ubuntu runtimes. This fixes valid snapshots being rejected with
   `database_journal_invalid` because SQLite JSON rendering rounded numeric values

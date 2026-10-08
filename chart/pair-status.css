@@ -1,0 +1,41 @@
+/* Keep the decision, its verification scope and its result together. */
+.pairing-panel #pairing-details[open] + .pairing-attention { display: none; }
+.pairing-panel .pairing-operation-status {
+  margin: 0 0 18px;
+  padding: 10px 12px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--surface-soft);
+}
+.pairing-panel .pairing-operation-status[data-tone="attention"] {
+  border-color: color-mix(in srgb, var(--stale) 50%, var(--border));
+}
+.pairing-panel .pairing-operation-status p { margin: 0; }
+.pairing-panel .pairing-operation-status p + p:not(:empty),
+.pairing-panel .pairing-operation-status button { margin-top: 8px; }
+.pairing-panel .pairing-role-action { gap: 6px 32px; }
+.pairing-panel .pairing-action-controls { grid-row: auto; display: grid; gap: 7px; min-width: 0; }
+.pairing-panel .pairing-action-controls > button { width: 100%; }
+.pairing-panel .pairing-action-controls .pairing-step-help { grid-column: auto; margin: 0; }
+.pairing-panel .pairing-verification { display: grid; gap: 5px; margin-bottom: 5px; }
+.pairing-panel .pairing-verification label { margin: 0; font-size: 11px; color: var(--muted); }
+.pairing-panel .pairing-verification select { width: 100%; min-width: 0; margin: 0; font-size: 12px; }
+.pairing-panel .pairing-verification p { margin: 0; font-size: 11px; line-height: 1.5; }
+.pairing-panel .pairing-history-result { margin-top: 12px; border-left: 2px solid var(--border); padding-left: 12px; }
+.pairing-panel .pairing-history-result[data-tone="attention"] { border-color: var(--stale); }
+.pairing-panel .pairing-history-result[data-tone="progress"] { border-color: var(--accent); }
+.pairing-panel .pairing-history-result h4 { font-size: 11px; color: var(--text); margin: 0 0 3px; }
+.pairing-panel .pairing-history-result p { margin: 0; }
+.pairing-panel .pairing-upgrade-help { margin-top: 14px; padding: 0; border: 0; max-width: 72ch; }
+.pairing-panel .pairing-upgrade-help > summary { font-size: 12px; padding: 0; color: var(--text); }
+.pairing-panel .pairing-upgrade-help p, .pairing-panel .pairing-upgrade-help li { font-size: 11px; color: var(--muted); }
+.pairing-panel .pairing-action-description { min-width: 0; }
+@media (max-width: 800px) {
+  .pairing-panel .pairing-role-action { gap: 12px; }
+  .pairing-panel .pairing-action-controls { width: 100%; max-width: 440px; }
+  .pairing-panel .pairing-verification { grid-template-columns: minmax(0, 1fr) minmax(130px, 1fr); align-items: center; }
+  .pairing-panel .pairing-verification p { grid-column: 1 / -1; }
+}
+@media (max-width: 380px) {
+  .pairing-panel .pairing-verification { grid-template-columns: minmax(0, 1fr); }
+}

@@ -33,9 +33,51 @@ test('optional full verification stays attached to an uncertain pairing request 
   assert.equal(sent[0].verifyWithFullSnapshot, true); assert.deepEqual(sent[1], sent[0]);
 });
 
+test('pairing verification choices belong to their action and disclose the interruption before confirmation', async () => {
+  for (const action of ['handover', 'promote']) {
+    const { document, $ } = fixture(), requests = [], confirmations = [];
+    const panel = createPairPanel({ document, now: () => now,
+      confirm: message => { confirmations.push(message); return true; },
+      request: async (_path, body) => { requests.push(body); return { status: operation(action === 'handover' ? primary() : standby(), 'complete', action) }; } });
+    panel.update(action === 'handover' ? primary() : standby());
+    const select = $(`pairing-${action}-verification`);
+    assert.equal(select.disabled, false);
+    assert.match($(`pairing-${action}-verification-help`).textContent, /Checks.*readiness/);
+    select.value = 'full'; select.listeners.get('change')();
+    assert.equal(requests.length, 0, 'choosing verification does not start an operation');
+    assert.match($(`pairing-${action}-verification-help`).textContent, action === 'handover' ? /lengthen the interruption to control/ : /cannot recover missing measurements/);
+    $(`pairing-${action}`).listeners.get('click')();
+    await new Promise(resolve => setImmediate(resolve));
+    assert.equal(requests[0].verifyWithFullSnapshot, true);
+    assert.match(confirmations[0], action === 'handover' ? /extend the time without controller operation/ : /may delay promotion/);
+    panel.unavailable();
+    assert.equal(select.disabled, true, 'verification choices lock with the operation during reconnect');
+  }
+});
+
+test('historical slave checks do not contradict unavailable, stale or failed current mirroring', () => {
+  for (const peer of [{}, { reachable: false, role: 'slave' }, { reachable: true, role: 'slave', sync: { state: 'stale' } },
+    { reachable: true, role: 'slave', sync: { state: 'error' } },
+    { reachable: true, role: 'slave', sync: { state: 'ready', sourceAt: now + 60_000, verifiedAt: now } }]) {
+    const view = primary({ peer, recovery: { state: 'ready', donorRole: 'slave', preview: preview() } });
+    const display = pairDisplay(view, { now });
+    assert.match(display.recovery, /earlier source check.*valid slave snapshot/);
+    assert.doesNotMatch(display.recovery, /No recovery needed/);
+    assert.equal(display.recoveryTone, 'attention');
+    assert.doesNotMatch(display.attention, /No recovery needed/);
+    const { document, $ } = fixture();
+    createPairPanel({ document, request: async () => {}, now: () => now }).update(view);
+    assert.equal($('pairing-history-result-title').textContent, 'Earlier source check');
+    assert.equal($('pairing-history-result').hidden, false);
+    assert.equal($('pairing-history-result').dataset.tone, 'attention');
+  }
+});
+
 test('shared-checkpoint rejoin discloses retained journal changes without claiming a full database copy', () => {
   for (const discardUnrecovered of [true, false]) {
     const message = pairConfirmation('rejoin', { incremental: true, discardUnrecovered });
+    assert.match(pairConfirmation('rejoin', { incremental: true, discardUnrecovered, verifyWithFullSnapshot: true }),
+      /Full history verification is selected.*matching checkpoint.*may take longer/);
     assert.match(message, /inactive journal branch/); assert.match(message, /no automatic expiry/);
     assert.doesNotMatch(message, /full database-sized copy|previous database is retained/);
   }
@@ -1018,7 +1060,7 @@ test('reset panel displays completed archive receipts for one day and stays avai
   assert.equal($('pairing-reset-receipt').hidden, false);
   assert.match($('pairing-reset-receipt').textContent, /synthetic-reset/);
   assert.match($('pairing-reset-receipt').textContent, /manually delete/);
-  assert.match($('pairing-reset-receipt').textContent, /1 verified backup was created.*Recording details → Recover history/);
+  assert.match($('pairing-reset-receipt').textContent, /1 verified backup was created.*Recording details → History recovery/);
   assert.equal($('pairing-reset-receipt').dataset.tone, 'neutral');
   panel.update(resettable({ reset: { token: resetToken, lastResult: { ...lastResult, completedAt: now - 86400_001 } } }));
   assert.equal($('pairing-reset-receipt').hidden, true);

@@ -15,7 +15,7 @@ import { beginRecovery, rememberContribution, selectedHistory } from './ledger.j
 import { assessRecoverySource } from './source-scope.js';
 import { recoveryFailure } from './errors.js';
 import { ScratchMap } from './scratch.js';
-import { recoveryCoverageReport } from './coverage-report.js';
+import { recoveryCoverageReport, recoverySourceSummary } from './coverage-report.js';
 import { commonCheckpoint, changedRecordKeys } from '../storage/journal.js';
 import { scopeIncrementalSource, openJournalSource } from './incremental-source.js';
 import { findLearningPrefix, retainLearningPrefix, prefixSourceId, withPrefixRevisions } from './learning-prefix.js';
@@ -112,7 +112,10 @@ async function checkSource(donorDigest) {
     donorDigest, input: workerData.input, sourceSelection, sourceAssessment, unsupported };
   const sourceSoftware = readBackupMetadata(donor.db);
   if (sourceSoftware) report.sourceSoftware = sourceSoftware;
-  if (donor.incremental) report.incremental = donor.incremental;
+  if (donor.incremental) {
+    report.incremental = donor.incremental;
+    report.sourceSummary = await recoverySourceSummary({ donor, input: workerData.input, yieldControl: yieldTurn });
+  }
   else report.coverage = await recoveryCoverageReport({ master: target, donor, input: workerData.input,
     yieldControl: yieldTurn, progress });
   report.previewId = learningVersion(report);

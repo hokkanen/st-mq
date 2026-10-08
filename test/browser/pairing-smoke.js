@@ -226,6 +226,21 @@ try {
   assert.equal(await evaluate(`${$('pairing-details')}.open`), true, 'Native disclosure opens with Enter');
   assert.equal(await evaluate(`${$('pairing-history-recovery')}.checkVisibility()`), true);
   assert.equal(await evaluate(`${$('pairing-rejoin-step')}.checkVisibility()`), false, 'Recovery steps live in the shared dialog');
+  assert.equal(await evaluate(`${$('pairing-handover-section')}.contains(${$('pairing-upgrade-help')})`), true, 'Upgrade guidance belongs to handover');
+  assert.equal(await evaluate(`${$('pairing-handover-verification')}.value`), 'standard');
+  await evaluate(`${$('pairing-handover-verification')}.value = 'full'; ${$('pairing-handover-verification')}.dispatchEvent(new Event('change', { bubbles: true })); true`);
+  assert.match(await evaluate(`${$('pairing-handover-verification-help')}.textContent`), /lengthen the interruption to control/);
+  const fullHandoverMessage = await confirmAction('pairing-handover', false);
+  assert.match(fullHandoverMessage, /Full history verification.*extend the time without controller operation/);
+  assert.equal(actions.length, 0, 'Verification choice and cancelled handover do not start an operation');
+  assert.equal(await evaluate(`${$('pairing-handover-verification')}.value`), 'full', 'Confirmation and polling preserve the selected verification');
+  await evaluate(`${$('pairing-handover-verification')}.value = 'standard'; ${$('pairing-handover-verification')}.dispatchEvent(new Event('change', { bubbles: true })); true`);
+  for (const width of [1440, 768, 390, 320]) for (const theme of ['dark', 'light']) {
+    await command('browsingContext.setViewport', { context, viewport: { width, height: 1000 }, devicePixelRatio: 1 });
+    if (await evaluate('document.documentElement.dataset.theme') !== theme) await evaluate("document.getElementById('theme-toggle').click(); true");
+    assert.equal(await evaluate('document.documentElement.scrollWidth <= innerWidth'), true, `Pairing action and verification fit ${width}px ${theme}`);
+    if (width === 1440 || width === 320) await capture(`pairing-actions-${width}-${theme}`);
+  }
   await command('browsingContext.setViewport', { context, viewport: { width: 1440, height: 1400 }, devicePixelRatio: 1 });
   await capture('desktop-expanded');
   await capture('desktop-header', true);
@@ -237,6 +252,8 @@ try {
   assert.match(await evaluate(`${$('pairing-broker')}.textContent`), /listener active · 3 connections/);
   assert.equal(await evaluate(`${$('pairing-handover')}.disabled`), true);
   assert.match(await evaluate(`${$('pairing-handover-help')}.textContent`), /must be connected/);
+  assert.equal(await evaluate(`${$('pairing-handover-verification')}.disabled`), true);
+  assert.equal(await evaluate(`${$('pairing-attention')}.checkVisibility()`), false, 'Expanded facts replace the duplicate collapsed warning');
   assert.equal(await evaluate(`${$('pairing-details')}.open`), true, 'Polling preserves the open disclosure');
   await evaluate(`window.pairingDisconnects = []; window.pairingObserver = new MutationObserver(() => {
     const summary = ${$('pairing-summary')}.textContent;
@@ -310,6 +327,11 @@ try {
   assert.equal(await evaluate(`${$('pairing-rejoin')}.disabled`), true);
   await evaluate(`${$('history-recovery-close')}.click(); true`);
   assert.equal(await evaluate('document.activeElement.id'), 'pairing-history-recovery');
+  assert.equal(await evaluate(`${$('pairing-history-result')}.contains(${$('pairing-recovery')})`), true, 'A source result belongs to the history action');
+  pair = { ...pair, peer: { ...pair.peer, reachable: false } };
+  await until(`${$('pairing-recovery')}.textContent.includes('earlier source check')`);
+  assert.equal(await evaluate(`${$('pairing-history-result')}.dataset.tone`), 'attention');
+  assert.doesNotMatch(await evaluate(`${$('pairing-recovery')}.textContent`), /No recovery needed/);
   pair = master();
   await evaluate(`${$('pairing-history-recovery')}.click(); true`);
   await until(`${$('history-recovery-check')}.disabled === false`);
@@ -380,6 +402,7 @@ try {
     for (const id of ['pairing-history-recovery', 'pairing-rejoin', 'pairing-handover'])
       assert.equal(await evaluate(`${$(id)}.checkVisibility()`), false, `${role} hides master control ${id}`);
     assert.equal(await evaluate(`${$('pairing-promote')}.checkVisibility()`), true);
+    assert.equal(await evaluate(`${$('pairing-promote-verification')}.value`), 'standard', 'Handover selection does not carry into promotion');
     assert.equal(await evaluate(`${$('replica-notice')}.hidden`), true, 'Paired viewer has no duplicate large banner');
     assert.doesNotMatch(await evaluate(`${$('connection')}.textContent`), /LIVE CONTROL|LIVE OBSERVATION/);
     await command('browsingContext.setViewport', { context, viewport: { width: 390, height: 1000 }, devicePixelRatio: 1 });

@@ -38,7 +38,8 @@ const preview = { previewId, status: 'checked',
     ] } } };
 let app, server, browser, socket, sequence = 0, admin = true, topology = 'standalone', peer = null, finishExport, recoveryReads = 0;
 let recovery = { available: true, readOnly: false, busy: false, job: null, preview: null, sources: [source], nextBefore: '10:old-operation',
-  operations: [{ id: 'old-operation', startedAt: 1, source: { label: 'Earlier backup' }, active: true, status: 'interrupted', canRevert: true }] };
+  operations: [{ id: 'old-operation', startedAt: now - 86400000, source: { label: 'Earlier backup' }, active: true, status: 'interrupted', canRevert: true,
+    contributions: 9, period: { from: now - 259200000, to: now - 172800000 } }] };
 try {
   const privatePath = join(directory, 'secrets.json'); await writeFile(privatePath, '{}', { mode: 0o600 });
   const config = loadConfig({ STMQ_CONFIG: privatePath, STMQ_DATA_DIR: directory, STMQ_PORT: '0', STMQ_INPUT: 'simulated' }, directory);
@@ -79,7 +80,10 @@ try {
           const revision = body.action.startsWith('review-');
           const correction = ['revert', 'restore'].includes(body.action);
           if (correction) recovery.operations[0] = { ...recovery.operations[0], active: body.action === 'restore', canRestore: body.action === 'revert', canRevert: body.action === 'restore' };
-          const revisionResult = { previewId, recoveryId: 'old-operation', active: body.action.endsWith('restore'), counts: { affected: 12 }, model: { status: correction ? 'rebuilt' : 'rebuild-required' } };
+          const revisionResult = { previewId, recoveryId: 'old-operation', active: body.action.endsWith('restore'), counts: { affected: 12 }, model: { status: correction ? 'rebuilt' : 'rebuild-required' },
+            period: { from: now - 259200000, to: now - 172800000 }, tables: [{ name: 'observations', count: 9 }, { name: 'cycle_assessments', count: 3 }],
+            impact: { direct: 9, dependent: 3, retained: 0, categories: [{ name: 'observations', count: 9, from: now - 259200000, to: now - 172800000, undated: 0 },
+              { name: 'cycle_assessments', count: 3, from: now - 172800000, to: now - 86400000, undated: 0 }] } };
           recovery = { ...recovery, busy: false, preview: revision ? revisionResult : correction ? null : preview,
             job: { ...recovery.job, status: 'complete', result: revision || correction ? revisionResult : preview } };
         }, 100);
@@ -147,6 +151,13 @@ try {
     await capture(`recording-folded-${width}`);
   }
   await evaluate(`${$('history-recovery-details')}.open = true; ${$('history-recovery-open')}.focus(); true`);
+  for (const width of [1440, 320]) {
+    await send('Emulation.setDeviceMetricsOverride', { width, height: 900, deviceScaleFactor: 1, mobile: false });
+    await evaluate(`${$('history-recovery-details')}.scrollIntoView({block:'center'});true`);
+    assert.equal(await evaluate('document.documentElement.scrollWidth <= innerWidth'), true, 'Expanded recovery launcher fits');
+    if (width === 1440) assert.equal(await evaluate("(() => { const row=document.querySelector('.recording-recovery-action'), text=row.firstElementChild.getBoundingClientRect(), button=row.querySelector('button').getBoundingClientRect(); return button.left >= text.right && Math.abs((button.top+button.bottom-text.top-text.bottom)/2)<2; })()"), true, 'Desktop launcher aligns its action beside the description');
+    await capture(`recording-recovery-expanded-${width}`);
+  }
   assert.equal(await evaluate('document.activeElement.id'), 'history-recovery-open', 'Recording opener receives keyboard focus');
   await key('Enter', 13);
   await until(`${$('history-recovery-dialog')}.open`);
@@ -154,6 +165,8 @@ try {
   assert.equal(await evaluate("document.querySelectorAll('#history-recovery-dialog').length"), 1);
   assert.equal(await evaluate(`${$('history-recovery-history')}.checkVisibility()`), false, 'New recovery starts without the previous-recovery list');
   await until(`${$('history-recovery-source')}.options.length === 2`);
+  assert.equal(await evaluate(`${$('history-recovery-full-verification')}.tagName`), 'SELECT');
+  assert.equal(await evaluate(`${$('history-recovery-full-verification')}.value`), 'standard');
   await evaluate(`${$('history-recovery-source')}.value='backup-fixture'; ${$('history-recovery-source')}.dispatchEvent(new Event('change',{bubbles:true}));true`);
   assert.equal(await evaluate(`${$('history-recovery-check')}.disabled`), true);
   await click('history-recovery-installation-confirm'); await click('history-recovery-check');
@@ -174,9 +187,12 @@ try {
   assert.match(await evaluate("document.querySelector('[data-recovery-section=diagnostic-1]').innerText"),/250 ms apart/,'Same formatted endpoints preserve a known subsecond report span');
   assert.doesNotMatch(await evaluate("document.querySelector('[data-recovery-section=availability-diagnostics]').textContent"),/potential coverage|No relevant usable source records|master outages/);
   const readsBeforeRefresh = recoveryReads;
+  const checksBeforeRefresh = requests.filter(item => item.action === 'check').length;
+  assert.equal(await evaluate(`${$('history-recovery-refresh')}.textContent`), 'Reload results');
   await click('history-recovery-refresh');
   for (let i = 0; i < 200 && recoveryReads === readsBeforeRefresh; i++) await pause(30);
   assert(recoveryReads > readsBeforeRefresh, 'The report refresh reached the synthetic API');
+  assert.equal(requests.filter(item => item.action === 'check').length, checksBeforeRefresh, 'Reload never runs a new source check');
   assert.equal(await evaluate("!!document.querySelector('[data-before-refresh]')"), true, 'An unchanged report retains its existing DOM');
   assert.equal(await evaluate("document.querySelector('[data-recovery-section=energy-gaps]').open"), true, 'Refreshing the same report preserves expanded energy gaps');
   assert.equal(await evaluate("document.querySelector('[data-recovery-section=availability-diagnostics]').open"),true);
@@ -242,9 +258,13 @@ try {
   await click('history-recovery-tab-history');
   assert.equal(await evaluate(`${$('history-recovery-source-section')}.checkVisibility()`), false, 'Previous recoveries is separate from selecting a new source');
   await reviewLayouts('previous-recoveries');
+  assert.match(await evaluate(`${$('history-recovery-operations')}.textContent`), /9 records accepted.*Recorded dates/);
+  await evaluate(`${$('history-recovery-revision-verification')}.value='full';${$('history-recovery-revision-verification')}.dispatchEvent(new Event('change',{bubbles:true}));true`);
   await evaluate(`${$('history-recovery-operations')}.querySelector('button').click();true`);
   await until(`!${$('history-recovery-revision-apply')}.hidden && !${$('history-recovery-revision-apply')}.disabled`);
   assert.match(await evaluate(`${$('history-recovery-preview')}.textContent`), /Affected records: 12/);
+  assert.match(await evaluate(`${$('history-recovery-preview')}.textContent`), /Originally recovered dates.*9 records from this recovery.*3 records dependent.*Affected dates/);
+  assert.equal(requests.findLast(item => item.action === 'review-revert').verifyWithFullSnapshot, true);
   await reviewLayouts('revision-review');
   await click('history-recovery-revision-apply'); await accept();
   await until(`${$('history-recovery-operations')}.textContent.includes('Review restore')`);
@@ -294,6 +314,18 @@ try {
   await reviewLayouts('normal-slave-check');
   assert.equal(await evaluate("document.querySelectorAll('dialog#history-recovery-dialog').length"), 1);
   await click('history-recovery-close'); await until("document.activeElement.id === 'pairing-history-recovery'");
+  const checkpoint = sequence => ({ sequence, hash: 'a'.repeat(64), databaseId: '11111111-1111-4111-8111-111111111111' });
+  peer = { ...peer, recovery: { ...peer.recovery, preview: { ...preview, coverage: undefined, sourceSoftware: undefined,
+    incremental: { records: 57, base: checkpoint(10), checkpoint: checkpoint(15) }, sourceSummary: { checkedAt: now,
+      categories: [{ name: 'temperatures', count: 42, from: now - 3600000, to: now - 1000, undated: 0 },
+        { name: 'energy', count: 15, from: now - 7200000, to: now - 1000, undated: 0 }] } } } };
+  await send('Page.reload'); await until(`${$('pairing-panel')} && !${$('pairing-panel')}.hidden`);
+  await evaluate(`${$('pairing-details')}.open=true;${$('pairing-history-recovery')}.click();true`);
+  await until(`${$('history-recovery-preview')}.textContent.includes('History in this check')`);
+  assert.match(await evaluate(`${$('history-recovery-preview')}.textContent`), /History in this check.*Changed source records.*Temperatures.*42.*Recorded energy.*15/s);
+  assert.doesNotMatch(await evaluate(`${$('history-recovery-preview')}.textContent`), /History date ranges|Recorded energy gaps/);
+  await reviewLayouts('incremental-source-check');
+  await click('history-recovery-close');
   peer = { ...peer, peer: { reachable: true, role: 'slave', sync: { state: 'error', error: 'database_algorithm_mismatch' } } };
   await send('Page.reload'); await until(`${$('pairing-panel')} && !${$('pairing-panel')}.hidden`);
   await evaluate(`${$('pairing-details')}.open=true; ${$('pairing-history-recovery')}.click();true`);
@@ -317,7 +349,7 @@ try {
   await reviewLayouts('incompatible-source');
   await click('history-recovery-close');
   await evaluate(`${$('pairing-upgrade-help')}.open=true;${$('pairing-upgrade-help')}.scrollIntoView({block:'start'});true`);
-  assert.match(await evaluate(`${$('pairing-upgrade-help')}.innerText`), /Update the slave first.*Hand over to the other computer.*returns as a slave/s);
+  assert.match(await evaluate(`${$('pairing-upgrade-help')}.innerText`), /Update the slave first.*Hand over here.*confirm its slave role.*mirrors the new master/s);
   for (const width of [1440, 320]) for (const theme of ['dark', 'light']) {
     await send('Emulation.setDeviceMetricsOverride', { width, height: 900, deviceScaleFactor: 1, mobile: false });
     await evaluate(`document.documentElement.dataset.theme='${theme}';${$('pairing-upgrade-help')}.scrollIntoView({block:'start'});true`);

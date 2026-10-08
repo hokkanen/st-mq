@@ -14,6 +14,7 @@ import { recoveryFailure } from './errors.js';
 import { RECOVERY_MODEL_TIME } from './dependencies.js';
 import { findLearningPrefix, retainLearningPrefix, prefixSourceId, withPrefixRevisions } from './learning-prefix.js';
 import { projectedSensorContext } from './state.js';
+import { recoveryRevisionImpact } from './impact-report.js';
 
 const previewOnly = workerData.mode === 'revision-preview';
 parentPort.postMessage({ type: 'progress', phase: 'validating', processed: 0 });
@@ -152,6 +153,8 @@ async function prepareSelection() {
     conflictVersion: restorationToken?.token ?? null,
     period: saved.period ?? { from: null, to: null }, tables,
     counts: { affected: tables.reduce((sum, row) => sum + row.count, 0) }, model: { status: 'rebuild-required' } };
+  report.impact = await recoveryRevisionImpact({ db, recoveryId: operation.id, generation, selection,
+    active: workerData.active, tables });
   modelChanged = tables.some(row => ['learning_journal','fireplace_events'].includes(row.name));
   report.model.status = modelChanged ? 'rebuild-required' : 'unchanged';
   report.previewId = learningVersion(report);

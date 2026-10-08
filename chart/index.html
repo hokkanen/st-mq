@@ -9,6 +9,7 @@
   <link rel="manifest" href="./app.webmanifest" crossorigin="use-credentials">
   <script vite-ignore src="./theme.js"></script>
   <link rel="stylesheet" href="./monitor.css">
+  <link rel="stylesheet" href="./pair-status.css">
   <link rel="stylesheet" href="./select-picker.css">
   <link rel="stylesheet" href="./timing-benefit.css">
 </head>
@@ -1036,11 +1037,11 @@ G_warming = G / 2</code>
             </div>
           </details>
           <details id="history-recovery-details" class="recording-section">
-            <summary><span>Recover history<small>Review a backup or manage previous recoveries</small></span></summary>
+            <summary><span>History recovery<small>Recover missing entries or undo an earlier recovery</small></span></summary>
             <div class="recording-section-body">
               <div class="recording-recovery-action">
-                <p class="muted">Recover missing entries from a backup, or review and undo an earlier recovery.</p>
-                <button id="history-recovery-open" data-admin-only class="secondary-button" type="button" aria-haspopup="dialog" aria-expanded="false" aria-controls="history-recovery-dialog">Open recovery</button>
+                <div><strong>Check a source before making changes</strong><p class="muted">Review a backup or paired computer, and see what previous recoveries added.</p></div>
+                <button id="history-recovery-open" data-admin-only class="secondary-button" type="button" aria-haspopup="dialog" aria-expanded="false" aria-controls="history-recovery-dialog">Review history</button>
                 <p id="history-recovery-summary" class="muted background-work-detail" role="status" hidden></p>
               </div>
             </div>
@@ -1067,36 +1068,53 @@ G_warming = G / 2</code>
           <span class="pairing-open-label">Details</span>
         </summary>
         <div class="pairing-content">
+          <div id="pairing-operation-status" class="pairing-operation-status" hidden>
+            <p id="pairing-phase" class="pairing-progress" role="status" aria-live="polite"></p>
+            <p id="pairing-message" role="status" aria-live="polite"></p>
+            <button id="pairing-retry" data-admin-only class="secondary-button" type="button" disabled hidden>Recheck the same request</button>
+          </div>
           <div class="pairing-facts">
             <div><h3>This computer</h3><p id="pairing-summary"></p><p id="pairing-broker"></p></div>
             <div><h3>Other computer</h3><p id="pairing-peer"></p></div>
             <div><h3>Database mirroring</h3><p id="pairing-sync"></p><p id="pairing-syncDetail" class="muted"></p></div>
           </div>
           <p class="muted pairing-snapshot-note">Mirroring copies the master’s changes and deletions. A verified snapshot matches that point in history; newer measurements may still be waiting to sync.</p>
-          <details id="pairing-upgrade-help" class="pairing-upgrade-help">
-            <summary>Updating paired computers</summary>
-            <p>Use the release’s supported upgrade instructions and keep a verified database backup before updating.</p>
-            <ol>
-              <li>Update the slave first. Start it and wait for a verified snapshot from the running master.</li>
-              <li>On the current master, use <strong>Hand over to the other computer</strong>. Wait until the new master is active and the former master confirms its slave role.</li>
-              <li>Update the former master. It returns as a slave and catches up from the new master.</li>
-            </ol>
-            <p>If compatibility or handover fails, stop the upgrade sequence and follow the reported next step. Do not promote another computer to bypass the failure. Before v1.0.0, incompatible development databases are blocked; no conversion is promised.</p>
-          </details>
-          <p id="pairing-phase" class="pairing-progress" role="status" aria-live="polite"></p>
-          <p id="pairing-recovery" class="pairing-progress" role="status" aria-live="polite"></p>
           <p class="family-access-note">Admin access is required to manage paired computers.</p>
-          <label class="history-recovery-checkbox"><input id="pairing-full-verification" data-admin-only type="checkbox"><span>Verify with full snapshot before handover or promotion. Reads all history and may take longer.</span></label>
           <section id="pairing-master-controls" class="pairing-management" aria-labelledby="pairing-recovery-title" hidden>
             <div class="pairing-role-action pairing-history-action">
-              <div><h3 id="pairing-recovery-title">History</h3><p id="pairing-recovery-intro"></p></div>
+              <div class="pairing-action-description"><h3 id="pairing-recovery-title">History</h3><p id="pairing-recovery-intro"></p>
+                <div id="pairing-history-result" class="pairing-history-result" hidden>
+                  <h4 id="pairing-history-result-title">Latest history review</h4>
+                  <p id="pairing-recovery" role="status" aria-live="polite"></p>
+                </div>
+              </div>
               <button id="pairing-history-recovery" data-admin-only class="secondary-button" type="button" aria-haspopup="dialog" aria-expanded="false" aria-controls="history-recovery-dialog" aria-describedby="pairing-check-help">Review history</button>
               <p id="pairing-check-help" class="muted pairing-step-help"></p>
             </div>
-            <div class="pairing-role-action">
-              <div><h3>Hand over control</h3><p>Move the master role to the ready slave after confirming the same final transaction checkpoint. The MQTT address moves with it; devices reconnect and some measurements may be missed.</p></div>
-              <button id="pairing-handover" data-admin-only class="secondary-button" type="button" aria-describedby="pairing-handover-help" disabled>Hand over to the other computer</button>
-              <p id="pairing-handover-help" class="muted pairing-step-help"></p>
+            <div id="pairing-handover-section" class="pairing-role-action">
+              <div class="pairing-action-description"><h3>Hand over control</h3><p>Move control to the ready slave with the master’s final changes. Devices reconnect to the new master; some measurements may be missed during the change.</p>
+                <details id="pairing-upgrade-help" class="pairing-upgrade-help">
+                  <summary>Updating both computers</summary>
+                  <p>Keep a verified backup and follow the release’s supported upgrade instructions.</p>
+                  <ol>
+                    <li>Update the slave first and wait for its verified snapshot from the running master.</li>
+                    <li>Hand over here. Wait for the new master to become active and this computer to confirm its slave role.</li>
+                    <li>Update the former master and check that it mirrors the new master.</li>
+                  </ol>
+                  <p>If compatibility or handover fails, stop and follow the reported next step. Do not promote another computer to bypass the failure.</p>
+                </details>
+              </div>
+              <div class="pairing-action-controls">
+                <div class="pairing-verification">
+                  <label for="pairing-handover-verification">Verification for this handover</label>
+                  <select id="pairing-handover-verification" data-admin-only aria-describedby="pairing-handover-verification-help">
+                    <option value="standard">Standard checks</option><option value="full">Full history check</option>
+                  </select>
+                  <p id="pairing-handover-verification-help" class="muted"></p>
+                </div>
+                <button id="pairing-handover" data-admin-only class="secondary-button" type="button" aria-describedby="pairing-handover-help pairing-handover-verification-help" disabled>Hand over to the other computer</button>
+                <p id="pairing-handover-help" class="muted pairing-step-help"></p>
+              </div>
             </div>
           </section>
           <section id="pairing-slave-controls" class="pairing-management" aria-labelledby="pairing-standby-title" hidden>
@@ -1104,9 +1122,18 @@ G_warming = G / 2</code>
             <p id="pairing-standby-help"></p>
             <p>If a master is running, use <strong>Hand over to the other computer</strong> in its dashboard. For initial setup or after a failure, promote this computer below. The other computer does not need to be online.</p>
             <div class="pairing-role-action">
-              <div><h3>Start this computer as master</h3><p>Before promotion, make sure no other master can control equipment or keep the virtual IP. Stop or isolate it first; being unreachable alone does not prove it has stopped. Measurements after this computer’s last snapshot may be missing.</p></div>
-              <button id="pairing-promote" data-admin-only class="secondary-button" type="button" aria-describedby="pairing-promote-help" disabled hidden>Promote this computer to master</button>
-              <p id="pairing-promote-help" class="muted pairing-step-help"></p>
+              <div class="pairing-action-description"><h3>Start this computer as master</h3><p>Before promotion, make sure no other master can control equipment or keep the virtual IP. Stop or isolate it first; being unreachable alone does not prove it has stopped. Measurements after this computer’s last snapshot may be missing.</p></div>
+              <div class="pairing-action-controls">
+                <div class="pairing-verification">
+                  <label for="pairing-promote-verification">Verification for this promotion</label>
+                  <select id="pairing-promote-verification" data-admin-only aria-describedby="pairing-promote-verification-help">
+                    <option value="standard">Standard checks</option><option value="full">Full history check</option>
+                  </select>
+                  <p id="pairing-promote-verification-help" class="muted"></p>
+                </div>
+                <button id="pairing-promote" data-admin-only class="secondary-button" type="button" aria-describedby="pairing-promote-help pairing-promote-verification-help" disabled hidden>Promote this computer to master</button>
+                <p id="pairing-promote-help" class="muted pairing-step-help"></p>
+              </div>
             </div>
           </section>
           <section class="pairing-management" aria-labelledby="pairing-reset-heading">
@@ -1117,8 +1144,6 @@ G_warming = G / 2</code>
             </div>
             <p id="pairing-reset-receipt" class="pairing-reset-receipt" role="status" aria-live="polite" hidden></p>
           </section>
-          <p id="pairing-message" role="status" aria-live="polite"></p>
-          <button id="pairing-retry" data-admin-only class="secondary-button" type="button" disabled hidden>Recheck the same request</button>
         </div>
       </details>
       <p id="pairing-attention" class="pairing-attention" role="status" aria-live="polite" hidden></p>
@@ -1221,12 +1246,20 @@ G_warming = G / 2</code>
       <p id="history-recovery-background" class="muted" hidden>You can close this window or leave this page. The operation continues on the server. Reopen recovery to see its progress.</p>
       <button id="history-recovery-retry" data-admin-only data-write-control class="secondary-button" type="button" hidden>Recheck the same request</button>
     </div>
-    <label class="history-recovery-checkbox"><input id="history-recovery-full-verification" data-admin-only type="checkbox"><span>Verify with full snapshot before this operation. Reads all history and may take longer.</span></label>
     <section id="history-recovery-source-section" class="history-recovery-source-section" aria-labelledby="history-recovery-source-label">
-      <label id="history-recovery-source-label" for="history-recovery-source">History source</label>
-      <select id="history-recovery-source" aria-describedby="history-recovery-source-help"><option value="upload">Upload a database backup</option></select>
+      <div class="history-recovery-source-fields">
+        <div class="history-recovery-field">
+          <label id="history-recovery-source-label" for="history-recovery-source">History source</label>
+          <select id="history-recovery-source" aria-describedby="history-recovery-source-help"><option value="upload">Upload a database backup</option></select>
+        </div>
+        <div class="history-recovery-field">
+          <label for="history-recovery-full-verification">Verification</label>
+          <select id="history-recovery-full-verification" data-admin-only aria-describedby="history-recovery-verification-help"><option value="standard">Standard checks</option><option value="full">Also verify full snapshot</option></select>
+        </div>
+      </div>
       <div id="history-recovery-upload"><label for="history-recovery-file">Database backup (.sqlite)</label><input id="history-recovery-file" data-admin-only data-write-control type="file" accept=".sqlite,.sqlite3,.db,application/vnd.sqlite3"></div>
       <p id="history-recovery-source-help" class="muted"></p>
+      <p id="history-recovery-verification-help" class="muted"></p>
       <div class="history-recovery-source-actions">
         <label id="history-recovery-installation" class="history-recovery-checkbox"><input id="history-recovery-installation-confirm" type="checkbox"><span>This backup contains this household’s history.</span></label>
         <button id="history-recovery-check" data-admin-only data-write-control class="secondary-button" type="button" disabled>Check backup</button>
@@ -1235,6 +1268,10 @@ G_warming = G / 2</code>
     <section id="history-recovery-history" class="history-recovery-history" aria-labelledby="history-recovery-history-title" hidden>
       <h3 id="history-recovery-history-title">Previous recoveries</h3>
       <p class="muted">Review a recovery before reverting or restoring its history. Later independent records and corrections stay in place.</p>
+      <div class="history-recovery-revision-options">
+        <div class="history-recovery-field"><label for="history-recovery-revision-verification">Verification for review and changes</label><select id="history-recovery-revision-verification" data-admin-only aria-describedby="history-recovery-revision-verification-help"><option value="standard">Standard checks</option><option value="full">Also verify full snapshot</option></select></div>
+        <p id="history-recovery-revision-verification-help" class="muted"></p>
+      </div>
       <ul id="history-recovery-operations" aria-label="Previous history recoveries"></ul>
       <p id="history-recovery-empty" class="muted">No previous recoveries.</p>
       <p id="history-recovery-list-status" class="muted" role="status" hidden></p>
@@ -1252,7 +1289,7 @@ G_warming = G / 2</code>
       <div id="pairing-rejoin-step" hidden><div><h3>Resume mirroring</h3><p>Catch up to this master’s confirmed checkpoint. The other computer’s unmatched history is retained inactive and is never reused automatically.</p></div><button id="pairing-rejoin" data-admin-only class="secondary-button" type="button" aria-describedby="pairing-rejoin-help" disabled>Resume mirroring</button><p id="pairing-rejoin-help" class="muted"></p></div>
       <p id="pairing-rejoin-storage" class="muted"></p>
     </section>
-    <div class="history-recovery-footer"><button id="history-recovery-refresh" class="secondary-button" type="button">Refresh status</button></div>
+    <div class="history-recovery-footer"><div><p id="history-recovery-refresh-help" class="muted">Results update automatically while this window is open. Reload fetches saved checks, progress and previous recoveries; use Check above to run a new source check.</p><p id="history-recovery-refreshed-at" class="muted" hidden></p></div><button id="history-recovery-refresh" class="secondary-button" type="button" aria-describedby="history-recovery-refresh-help">Reload results</button></div>
     </div>
   </dialog>
 

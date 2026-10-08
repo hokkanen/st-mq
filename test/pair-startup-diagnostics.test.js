@@ -24,7 +24,7 @@ async function fixture(t) {
     await rm(root, { recursive: true, force: true });
   });
   async function open(name, { role = 'master', releaseError = null, brokerError = null, runtimeError = null,
-    reportStartupFailure = null, openStore = false } = {}) {
+    reportStartupFailure = null } = {}) {
     const directory = join(root, name);
     const config = { ...loadConfig({ XDG_CONFIG_HOME: root, STMQ_DATA_DIR: directory, STMQ_PORT: '0' }, directory),
       input: 'mqtt', role: 'slave', connections: { mqtt: { address: 'mqtt://127.0.0.1' } } };
@@ -50,8 +50,9 @@ async function fixture(t) {
       startRuntime: async ({ config: current }) => {
         primaryStarts++;
         if (runtimeError) throw failure(runtimeError);
-        if (openStore) new Store(current.dbPath).close();
-        return { store: { path: current.dbPath }, close: async () => {} };
+        // Checkpoint lineage uses the active runtime's normal write admission.
+        const store = new Store(current.dbPath);
+        return { store, close: async () => store.close() };
       }, managerOptions: { announcements: () => null,
         reportStartupFailure: diagnostic => { diagnostics.push(diagnostic); return reportStartupFailure?.(diagnostic); }, vip: {
         acquire: async () => { owned = true; error = null; },
@@ -181,7 +182,7 @@ test('an incompatible master database reports its schema failure and stays prote
     raw.exec(code === 'database_schema_mismatch' ? `PRAGMA user_version=${SCHEMA_VERSION - 1}` : 'CREATE TABLE unexpected_synthetic_table (id)');
     raw.close();
     const bytes = await readFile(path);
-    const failed = await f.open('controller', { openStore: true });
+    const failed = await f.open('controller');
     const view = await status(failed.app);
     assert.equal(view.readOnly, true);
     assert.equal(view.pair.role, 'protected');
@@ -194,7 +195,7 @@ test('an incompatible master database reports its schema failure and stays prote
     assert.match(failed.diagnostics[0].location, /^src\/storage\/store\.js:\d+:\d+$/);
     assert.deepEqual(await readFile(path), bytes);
     await f.close(failed.app);
-    const restarted = await f.open('controller', { openStore: true });
+    const restarted = await f.open('controller');
     assert.equal((await status(restarted.app)).pair.error, code);
     assert.equal(restarted.primaryStarts(), 0);
     assert.equal(restarted.app.pair.canControl(), false);
@@ -210,7 +211,7 @@ test('unjournaled control-state corruption retains its public journal diagnosis 
   raw.prepare('INSERT INTO state(key,value,updated_at) VALUES(?,?,?)').run('executor:home', 'synthetic unreadable state', now);
   raw.close();
   const before = await readFile(path);
-  const failed = await f.open('controller', { openStore: true });
+  const failed = await f.open('controller');
   assert.equal((await status(failed.app)).pair.error, 'database_journal_invalid');
   assert.equal(failed.app.pair.state.value.activationError, 'database_journal_invalid');
   assert.equal(failed.app.pair.canControl(), false);
@@ -218,7 +219,7 @@ test('unjournaled control-state corruption retains its public journal diagnosis 
   assert.doesNotMatch(JSON.stringify(failed.diagnostics), /synthetic unreadable|executor:home/);
   assert.deepEqual(await readFile(path), before);
   await f.close(failed.app);
-  const restarted = await f.open('controller', { openStore: true });
+  const restarted = await f.open('controller');
   assert.equal((await status(restarted.app)).pair.error, 'database_journal_invalid');
   assert.equal(restarted.primaryStarts(), 0);
   assert.deepEqual(await readFile(path), before);

@@ -1,5 +1,5 @@
 import { ENERGY_SIGNALS, SIGNAL_INFO } from '../domain/history-series.js';
-import { pendingEnergyObservations } from '../storage/pending-energy.js';
+import { pendingEnergyObservations, pendingEnergyObservationsFromStates } from '../storage/pending-energy.js';
 import { isRecordedEnergyGap, validEnergyQuality } from '../storage/energy-history.js';
 
 export const RECOVERY_OUTAGE_LIMIT = 100;
@@ -33,7 +33,9 @@ const categories = [
   { name: 'charging_reports', sql: 'SELECT started_at start,COALESCE(ended_at,started_at) finish FROM charging_reports' },
   { name: 'charging_report_events', sql: 'SELECT at start,at finish FROM charging_report_events' },
 ];
-const validDates = "typeof(start)='integer' AND typeof(finish)='integer' AND start>0 AND finish>=start AND finish<=9007199254740991";
+// Scoped TEMP rows have no column affinity: SQLite can store a JavaScript
+// integer timestamp as REAL there. Accept exactly integral numeric clocks.
+const validDates = "typeof(start) IN ('integer','real') AND typeof(finish) IN ('integer','real') AND start=CAST(start AS INTEGER) AND finish=CAST(finish AS INTEGER) AND start>0 AND finish>=start AND finish<=8640000000000000";
 function range(store, category, input, master) {
   // Fixed SQL projections expose no paths, equipment IDs or source payloads.
   const outside = master ? `,
@@ -64,6 +66,39 @@ function pendingRange(rows, master) {
     : { before: summarize(rows.filter(row => JSON.parse(row.raw).intervalStart < master.from)),
       after: summarize(rows.filter(row => row.source_time > master.to)) };
   return result;
+}
+
+/** Inventory only the admitted changed-key closure. Never scan the master's
+ * historical ranges or interpret this partial source as complete coverage. */
+export async function recoverySourceSummary({ donor, input, now = Date.now(), yieldControl = async () => {} }) {
+  if (!donor.incremental || !donor.recoveryJournal || !donor.recoveryState)
+    throw new TypeError('Changed source inventory requires a scoped source');
+  const rows = [];
+  for (const category of categories.filter(row => !['charging_reports', 'charging_report_events'].includes(row.name))) {
+    const projection = category.name === 'learning_journal'
+      ? { ...category, sql: `SELECT at start,at finish FROM ${donor.recoveryJournal} WHERE input=?` } : category;
+    rows.push({ name: category.name, ...range(donor, projection, input) });
+    await yieldControl();
+  }
+  const pending = pendingEnergyObservationsFromStates(donor.db.prepare(`SELECT key,value FROM ${donor.recoveryState}
+    WHERE key LIKE 'recorder:energy:%'`).iterate(), { now, input }).filter(pendingUsable);
+  rows.push({ name: 'recorder_pending_energy', ...pendingRange(pending) });
+  return { checkedAt: now, categories: rows };
+}
+
+export function validRecoverySourceSummary(value) {
+  const names = categories.filter(row => !['charging_reports', 'charging_report_events'].includes(row.name)).map(row => row.name)
+    .concat('recorder_pending_energy');
+  const fields = (row, keys) => row !== null && typeof row === 'object' && !Array.isArray(row)
+    && Object.keys(row).every(key => keys.includes(key));
+  const count = number => Number.isSafeInteger(number) && number >= 0;
+  const date = number => Number.isSafeInteger(number) && number > 0 && number <= 8640000000000000;
+  return fields(value, ['checkedAt', 'categories']) && date(value.checkedAt)
+    && Array.isArray(value.categories) && value.categories.length === names.length
+    && new Set(value.categories.map(row => row?.name)).size === names.length
+    && value.categories.every(row => fields(row, ['name', 'count', 'from', 'to', 'undated']) && names.includes(row.name)
+      && count(row.count) && count(row.undated) && row.undated <= row.count
+      && (row.from === null && row.to === null || date(row.from) && date(row.to) && row.to >= row.from));
 }
 
 /** Informational potential coverage only. Neither this report nor its date

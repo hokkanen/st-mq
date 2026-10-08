@@ -22,9 +22,10 @@ export function seedChartFixture(store, now) {
     source, device, signal, value, unit, sourceTime: at, receivedAt: at,
     quality: ['simulated'], raw: { verified: 'Synthetic visual test fixture', usableForControl: true, ...raw },
   });
-  store.transaction(() => {
-    seedVoltageFixture(store, { at: start, input: 'simulated', voltageV: CHART_FIXTURE_VOLTAGE_V });
-    for (let at = start, i = 0; at <= now; at += 5 * minute, i++) {
+  seedVoltageFixture(store, { at: start, input: 'simulated', voltageV: CHART_FIXTURE_VOLTAGE_V });
+  for (let at = start, i = 0; at <= now; at += 5 * minute, i++) {
+    // Keep each synthetic frame within the controller-thread journal bound.
+    store.transaction(() => {
       const cycle = i % 48, charging = cycle >= 12 && cycle < 24;
       const auxiliaryKw = cycle >= 20 && cycle < 24 || cycle >= 30 && cycle <= 33 ? 3 : 0;
       const currents = [4 + 2 * Math.sin(i / 7), 5 + Math.sin(i / 9), 3 + 2 * Math.cos(i / 10)];
@@ -52,6 +53,6 @@ export function seedChartFixture(store, now) {
       if (i % 12 === 0) for (const [signal, value, unit] of [['learning_profit', Math.sin(i / 60), 'EUR/cycle'],
         ['learning_aux_profit', Math.sin(i / 60) - 0.3, 'EUR/cycle'], ['learning_recovery_error', 1 / (1 + i / 48), 'EUR/cycle'], ['learning_indoor_temperature', 21.1, 'degC']])
         add(signal, value, unit, at, 'controller-learning', 'simulated');
-    }
-  });
+    });
+  }
 }

@@ -7,10 +7,11 @@ import { createRecoveryHistoryReader } from './history-recovery-reader.js';
 import { validBackupMetadata } from '../storage/backup-metadata.js';
 import { RECOVERABLE_TABLES } from '../storage/schema.js';
 import { RECOVERY_ERROR_CODES, recoveryFailure } from '../recovery/errors.js';
-import { validRecoveryCoverageReport } from '../recovery/coverage-report.js';
+import { validRecoveryCoverageReport, validRecoverySourceSummary } from '../recovery/coverage-report.js';
 import { listSavedBackups } from '../storage/backup-catalog.js';
 import { verifyDatabase } from '../storage/full-verifier.js';
 import { validCheckpoint } from '../storage/journal.js';
+import { validRecoveryRevisionImpact } from '../recovery/impact-report.js';
 
 const UUID = /^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/;
 const ACTIONS = new Set(['check', 'recover', 'review-revert', 'revert', 'review-restore', 'restore']);
@@ -39,7 +40,7 @@ function validSource(value) {
 function validReport(value) {
   const root = ['policy', 'counts', 'period', 'tables', 'model', 'donorDigest', 'input', 'sourceSelection', 'previewId',
     'sourceAssessment', 'status', 'imported', 'recoveryId', 'active', 'source', 'sourceEpoch', 'sourceHead',
-    'sourceFireplace', 'sourceSensor', 'decisionHead', 'contributionHead', 'conflictVersion', 'unsupported', 'coverage', 'sourceSoftware', 'incremental'];
+    'sourceFireplace', 'sourceSensor', 'decisionHead', 'contributionHead', 'conflictVersion', 'unsupported', 'coverage', 'sourceSoftware', 'incremental', 'sourceSummary', 'impact'];
   if (!fields(value, root)) return false;
   if (value.incremental !== undefined && (!fields(value.incremental, ['base', 'checkpoint', 'records'])
     || !validCheckpoint(value.incremental.base) || !validCheckpoint(value.incremental.checkpoint)
@@ -47,6 +48,8 @@ function validReport(value) {
     || value.incremental.base.sequence > value.incremental.checkpoint.sequence || !count(value.incremental.records))) return false;
   if (value.sourceSoftware !== undefined && !validBackupMetadata(value.sourceSoftware)) return false;
   if (value.coverage !== undefined && !validRecoveryCoverageReport(value.coverage)) return false;
+  if (value.sourceSummary !== undefined && (!value.incremental || !validRecoverySourceSummary(value.sourceSummary))) return false;
+  if (value.impact !== undefined && !validRecoveryRevisionImpact(value.impact, value.tables)) return false;
   if (value.conflictVersion !== undefined && value.conflictVersion !== null
     && !/^[a-f0-9]{64}$/.test(value.conflictVersion)) return false;
   for (const key of ['policy', 'donorDigest', 'input', 'sourceSelection', 'previewId', 'status', 'recoveryId', 'sourceEpoch'])

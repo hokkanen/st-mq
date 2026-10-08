@@ -372,6 +372,10 @@ test('real backup upload recovers, reverts and restores an old contribution whil
     await f.post(request(`review-${action}`, { operationId })); await f.coordinator.settled();
     view = await f.coordinator.view();
     assert.equal(view.job.status, 'complete', JSON.stringify(view.job));
+    assert.equal(view.preview.impact.direct, 1);
+    const reviewReader = createHistoryRecovery({ store: f.store,getEngine: () => f.engine,getExportDirectory: () => join(f.root,'exports') });
+    try { assert.equal((await reviewReader.view()).preview.impact.categories[0].from, at,
+      'Exact bounded revision impact survives coordinator reopening'); } finally { await reviewReader.close(); }
     await f.post(request(action, { previewId: view.preview.previewId, confirmed: true })); await f.coordinator.settled();
     view = await f.coordinator.view();
     assert.equal(view.job.status, 'complete', JSON.stringify(view.job));

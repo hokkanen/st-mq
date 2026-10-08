@@ -435,7 +435,8 @@ records without loading the complete backlog into memory. Source acknowledgement
 rebases bounded batches between admitted controller writes. Unexpected local
 writes or a mismatched accepted checkpoint protect the slave for history review.
 
-**Verify with full snapshot** adds the independent full verifier to a manual
+The optional **Full history check** for handover/promotion and **Also verify full
+snapshot** for recovery add the independent full verifier to that manual
 operation. Handover and incremental rejoin compare the source and receiver only
 at the same transaction checkpoint; a newer master is never compared against an
 older slave as if they should already match. **Recording details → Verify
@@ -702,7 +703,7 @@ These files include committed WAL content and require no companion files. Distin
 databases get separately identified backups; reset never merges their histories.
 The current archive manifest records each portable backup and its checksum only
 after verified publication. These backups are available from **Recording details
-→ Recover history → Open recovery**, including when the computer later runs standalone. The
+→ History recovery → Review history**, including when the computer later runs standalone. The
 reset result reports how many usable backups were made and any unavailable
 history; it does not claim that preserved raw files are portable backups.
 
@@ -807,11 +808,24 @@ Protected recovery and transitions are shown separately from normal roles.
 Open **Paired computers**, just above **Event log**, for connection and snapshot details,
 recovery controls, handover or manual promotion. **Review history** opens the
 same [Recover history window](recording.md#recover-history-from-a-backup-or-paired-computer)
-as the **Recover history** fold in **Recording details**, with the peer preselected
+as the **History recovery** fold in **Recording details**, with the peer preselected
 in the **Recover history** view. It uses the same aligned action layout as
 handover and reset; protected history receives attention emphasis. The section
 stays compact when closed and still shows important progress or attention messages. Slaves use
 the same layout, with recovery and handover performed from the master's UI.
+
+Connection, control readiness and mirroring have their own status fields. A
+history-check result stays with the **History** action; an earlier successful
+check is marked as historical when the other computer is unavailable, stale or
+reports a new problem. Pending operations and failures remain visible above the
+status fields and in the closed section's summary.
+
+Handover and promotion each have their own **Verification** choice next to the
+action. **Standard checks** retain the normal readiness and checkpoint checks.
+**Full history check** adds the independent full read; for handover it can extend
+the control interruption while the final checkpoint is checked. The confirmation
+discloses that cost. **Updating both computers** is folded into the handover
+section so the slave-first upgrade instructions accompany the action they use.
 
 Checks are initiated on the master. When the other computer is a normal slave,
 the result is an informational **No recovery needed** result with a checkmark.
@@ -820,8 +834,11 @@ already been mirrored. Current synchronization and compatibility problems remain
 visible separately and take precedence over an earlier successful source check.
 For a shared configured-peer anchor, the check examines only consolidated
 changes since that checkpoint and their referenced evidence. Its counts and ranges describe that
-changed scope, not a full historical inventory. No trial import or model rebuild
-runs during a source check. Normal mirroring remains enabled, so recovery and resume-mirroring actions
+changed scope, not a full historical inventory. Category counts and first/last recorded dates in
+**History in this check** identify the checked changes and referenced evidence.
+They do not imply continuous coverage or known recoverable gaps. No trial import
+or model rebuild runs during a source check. Normal mirroring remains enabled,
+so recovery and resume-mirroring actions
 are unavailable. A record
 present only in that older snapshot can reflect a deliberate master deletion;
 the next ordinary snapshot applies the deletion. The source check does not

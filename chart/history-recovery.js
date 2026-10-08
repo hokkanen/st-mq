@@ -1,6 +1,6 @@
 import { confirmAction } from './confirmation.js';
 import { pairActionAllowed, pairDisplay, pairIssueCode, pairIssueHelp } from './pair-status.js';
-import { renderRecoveryReport } from './history-recovery-report.js';
+import { renderRecoveryReport, renderRecoveryRevision, recoveryOperationSummary } from './history-recovery-report.js';
 import { backgroundProgress, renderProgressBar } from './background-progress.js';
 import { RECOVERY_ERROR_CODES, recoveryErrorMessage } from '../src/recovery/errors.js';
 
@@ -38,8 +38,8 @@ function savedRequest(storage) {
 
 export function recoveryConfirmation(action) {
   return { recover: 'Recover missing history from the checked source? Recovery compares and imports history once. Existing history takes precedence; conflicting and unsupported entries are skipped. The model is rebuilt when needed while heating control remains available. Current settings and control permissions stay in place.',
-    revert: 'Revert this recovery? Its accepted history will be excluded and the model rebuilt from the remaining history. Later independent observations and corrections stay in place. You can restore this recovery later.',
-    restore: 'Restore this recovery? Its accepted history will be included again and the model rebuilt with current observations and corrections. Current settings and control permissions stay in place.' }[action];
+    revert: 'Revert this recovery? Its accepted history will be excluded and the model rebuilt only if the changed selection affects learning. Later independent observations and corrections stay in place. You can restore this recovery later.',
+    restore: 'Restore this recovery? Its accepted history will be included again where current evidence permits, and the model rebuilt only if the changed selection affects learning. Current settings and control permissions stay in place.' }[action];
 }
 
 /** Server jobs outlive the dialog. Lost responses keep their original request identity. */
@@ -144,10 +144,11 @@ export function recoveryJobText(view, now = Date.now()) {
 export function createHistoryRecoveryPanel({ document, request, upload, storage, formatTime = at => new Date(at).toISOString(),
   afterMutation, confirm, now = Date.now }) {
   const $ = id => document.getElementById(id), dialog = $('history-recovery-dialog'), selector = $('history-recovery-source');
-  const verificationOption = () => $('history-recovery-full-verification')?.checked ? { verifyWithFullSnapshot: true } : {};
+  const verificationOption = () => $(mode === 'history' ? 'history-recovery-revision-verification' : 'history-recovery-full-verification')?.value === 'full'
+    ? { verifyWithFullSnapshot: true } : {};
   const rows = new Map();
   let dashboard, opener, selected = 'upload', uploaded = null, uploadBusy = false, refreshing = false, rendered, sourceKey, reportKey, inspected = false;
-  let revision = null, sourceDirty = false, uploadError = '', pageCursor = null, mode = 'recover', focusReview = false;
+  let revision = null, sourceDirty = false, uploadError = '', pageCursor = null, mode = 'recover', focusReview = false, refreshedAt = null;
   const controller = createHistoryRecoveryActions({ request, storage, confirm: confirm ?? (message =>
     confirmAction({ document, title: 'Confirm history change', message,
       action: message.startsWith('Revert') ? 'Revert recovery' : message.startsWith('Restore') ? 'Restore recovery' : 'Recover history' })), afterMutation, onChange: render });
@@ -183,7 +184,7 @@ export function createHistoryRecoveryPanel({ document, request, upload, storage,
     const relevantJob = mode === 'history' ? revisionJob : selectedJob;
     const revisionView = mode === 'history' && revision;
     const normalCheck = peerView && peerRecovery?.state === 'ready' && peerRecovery?.donorRole === 'slave'
-      && !peerView.error && currentPair.peer?.reachable === true && currentPair.peer.role === 'slave';
+      && !peerView.error && peerView.syncTone !== 'attention' && currentPair.peer?.reachable === true && currentPair.peer.role === 'slave';
     $('history-recovery-source-section').hidden = mode !== 'recover';
     $('history-recovery-history').hidden = mode !== 'history';
     for (const name of ['recover', 'history']) $('history-recovery-tab-' + name).setAttribute('aria-pressed', String(mode === name));
@@ -194,6 +195,13 @@ export function createHistoryRecoveryPanel({ document, request, upload, storage,
     $('history-recovery-check').disabled = blocked || selected === 'upload' || !choice || choice.available === false
       || !peer && !$('history-recovery-installation-confirm').checked;
     $('history-recovery-check').textContent = peer ? 'Check other computer' : 'Check backup';
+    for (const id of ['history-recovery-full-verification', 'history-recovery-revision-verification']) $(id).disabled = blocked;
+    $('history-recovery-verification-help').textContent = $('history-recovery-full-verification').value === 'full'
+      ? `Adds an independent full database check before checking or recovering${peer ? ', and when resuming mirroring' : ''}. Reads all history and may take longer; the source review still shows only the scope being checked.`
+      : 'Validates the source and its checkpoint, checking only changes when shared history allows it. Unrelated backups require a full source inventory.';
+    $('history-recovery-revision-verification-help').textContent = $('history-recovery-revision-verification').value === 'full'
+      ? 'Adds an independent full database check before reviewing or applying a change. Reads all history and may take longer.'
+      : 'Reviews the selected recovery’s accepted records and their effect on current history. Learning is rebuilt only when needed.';
     // Navigation stays available while the job runs. Marking the whole dialog
     // busy would suppress the progress live region's announcements.
     const status = uploadError || state.message || (uploadBusy ? 'Uploading a private copy.'
@@ -201,6 +209,8 @@ export function createHistoryRecoveryPanel({ document, request, upload, storage,
       : running && job?.status !== 'running' ? 'A history operation is in progress.'
       : running ? recoveryJobText(state.view, now())
       : peerView?.error ? pairIssueHelp(currentPair) || peerView.recovery
+      : peerView && currentPair.peer?.reachable !== true ? 'The other computer is unavailable. Reconnect it before checking its history. Any earlier result describes the previously checked snapshot.'
+      : peerView?.syncTone === 'attention' ? peerView.attention || peerView.sync
       : normalCheck ? 'Valid slave snapshot. Newer master changes may still be waiting to sync.'
       : peerView ? peerView.recovery || (currentPair.peer?.reachable !== true ? 'The other computer is unavailable. Reconnect it before checking its history.'
         : choice?.available === false ? 'History checking is unavailable. Review the paired computers’ status before retrying.' : '')
@@ -208,7 +218,7 @@ export function createHistoryRecoveryPanel({ document, request, upload, storage,
     $('history-recovery-status').textContent = !admin() ? 'Admin access is required to recover history.'
       : !state.connected ? 'Recovery status is unavailable. Reconnect to check the saved outcome.'
         : readonly ? 'History recovery is read-only on this computer.' : status;
-    const tone = !state.connected || readonly || uploadError || state.error || peerView && (peerView.error || currentPair.peer?.reachable !== true)
+    const tone = !state.connected || readonly || uploadError || state.error || peerView && (peerView.error || peerView.syncTone === 'attention' || currentPair.peer?.reachable !== true)
       || relevantJob && ['error', 'interrupted'].includes(job?.status) ? 'attention'
       : running || uploadBusy || state.busy ? 'progress' : normalCheck ? 'success' : 'neutral';
     $('history-recovery-notice').dataset.tone = tone;
@@ -238,15 +248,22 @@ export function createHistoryRecoveryPanel({ document, request, upload, storage,
         : state.pending ? 'A recovery request is unconfirmed. Open recovery to check its outcome.'
           : recoveryJobText(state.view, now()) : '';
     $('history-recovery-summary').hidden = !$('history-recovery-summary').textContent;
-    $('history-recovery-open').textContent = running || state.pending ? 'View recovery progress' : 'Open recovery';
-    $('history-recovery-refresh').disabled = state.busy || uploadBusy;
+    $('history-recovery-open').textContent = running || state.pending ? 'View recovery progress' : 'Review history';
+    $('history-recovery-refresh').disabled = state.busy || uploadBusy || refreshing;
+    $('history-recovery-refresh').textContent = refreshing ? 'Reloading results…' : 'Reload results';
+    $('history-recovery-refresh-help').textContent = mode === 'history'
+      ? 'Results update automatically while this window is open. Reload fetches saved progress and the recovery list. Use Review revert or Review restore for a new assessment.'
+      : `Results update automatically while this window is open. Reload fetches saved results and progress. Use ${peer ? 'Check other computer' : 'Check backup'} to run a new source check.`;
+    $('history-recovery-refreshed-at').textContent = refreshedAt === null ? '' : `Results last received ${formatTime(refreshedAt)}`;
+    $('history-recovery-refreshed-at').hidden = refreshedAt === null;
     $('history-recovery-retry').hidden = !state.pending;
     $('history-recovery-retry').disabled = state.busy || !state.connected || readonly;
-    $('history-recovery-source-help').textContent = !peer && state.view?.sourcesError ? 'Backup sources are unavailable. Refresh to retry.'
+    $('history-recovery-source-help').textContent = !peer && state.view?.sourcesError ? 'Backup sources are unavailable. Reload results to retry.'
       : !peer && state.view?.sourcesLoading ? 'Loading available backups…' : peer
-      ? currentPair?.peer?.role === 'slave' ? 'Validate the slave snapshot. Normal mirroring applies the master’s changes automatically.'
-        : 'Check preserved history before recovery. Resuming mirroring is a separate decision.'
-      : 'Confirm that this backup contains this household’s history. Database format and committed checkpoint are checked automatically; checking does not change recorded history.';
+      ? currentPair?.peer?.role === 'slave' ? 'Inspect the other computer’s saved history and dates. Normal mirroring continues automatically.'
+        : 'Review preserved history before recovering missing entries. Checking leaves recorded history unchanged.'
+      : selected === 'upload' ? 'Choose a self-contained database backup. Keep your original file; the uploaded copy is temporary.'
+        : 'Confirm that this backup contains this household’s history. The check shows the source’s evidence and dates; it leaves recorded history unchanged.';
     const comparison = peer && peerRecovery?.donorRole === 'slave';
     const checked = revisionView ? state.view?.preview : peer ? peerRecovery?.preview : state.view?.preview;
     const result = peer ? peerRecovery?.report : state.view?.job?.result?.report ?? state.view?.job?.result;
@@ -258,7 +275,8 @@ export function createHistoryRecoveryPanel({ document, request, upload, storage,
       && job?.kind === `review-${revision.active ? 'restore' : 'revert'}` && job?.status === 'complete';
     const revisionComplete = revisionView && job?.result?.recoveryId === revision.id
       && job?.kind === (revision.active ? 'restore' : 'revert') && job?.status === 'complete';
-    const comparisonStale = comparison && (peerView?.error || currentPair?.peer?.reachable === true && currentPair.peer.role !== 'slave');
+    const comparisonStale = comparison && (peerView?.error || peerView?.syncTone === 'attention'
+      || currentPair?.peer?.reachable !== true || currentPair.peer.role !== 'slave');
     const nextReportKey = JSON.stringify(isRevision || revisionComplete ? [revision, isRevision ? checked : job.result, revisionComplete]
       : [reviewed, finished, comparison, comparisonStale, peer]);
     if (nextReportKey !== reportKey) {
@@ -266,6 +284,10 @@ export function createHistoryRecoveryPanel({ document, request, upload, storage,
       if (isRevision || revisionComplete) renderRevision(isRevision ? checked : job.result, revisionComplete);
       else renderRecoveryReport(document, $('history-recovery-preview'), reviewed,
         { formatTime, report: finished, comparison, comparisonStale, source: peer ? 'peer' : 'backup' });
+    }
+    if (!state.message && !state.pending && !running && !state.busy && !uploadBusy && !uploadError
+      && (tone === 'success' && normalCheck && reviewed || tone === 'neutral' && relevantJob && job?.status === 'complete' && (reviewed || isRevision || revisionComplete))) {
+      $('history-recovery-notice').hidden = true;
     }
     const canRecover = mode === 'recover' && !sourceDirty && (peer ? pairActionAllowed(currentPair, 'recover')
       : selectedJob && !!checked?.previewId && state.view?.job?.kind === 'check' && state.view?.job?.status === 'complete'
@@ -300,35 +322,15 @@ export function createHistoryRecoveryPanel({ document, request, upload, storage,
     renderOperations(state, blocked);
   }
   function renderRevision(data, complete = false) {
-    const root = $('history-recovery-preview'); root.replaceChildren(); root.hidden = !data;
-    if (!data) return;
-    const title = document.createElement('h3'); title.textContent = complete ? revision.active ? 'Recovery restored' : 'Recovery reverted'
-      : revision.active ? 'Restore recovery — review' : 'Revert recovery — review';
-    const detail = document.createElement('p'); detail.textContent = complete ? revision.active
-      ? 'This recovery’s accepted history is included again where current evidence permits.'
-      : 'This recovery’s accepted history is excluded. The original evidence remains available for restoration.' : revision.active
-      ? 'Include the selected recovery’s accepted history again. Later independent observations and corrections remain.'
-      : 'Exclude the selected recovery’s accepted history. Later independent observations and corrections remain.';
-    root.append(title, detail);
-    const affected = total(data.counts?.affected);
-    if (affected !== null) {
-      const line = document.createElement('p'); line.textContent = `Affected records: ${affected}.`; root.append(line);
-    }
-    const assessments = total(data.tables?.find(row => row.name === 'cycle_assessments')?.count);
-    if (assessments > 0) {
-      const line = document.createElement('p');
-      line.textContent = `Cycle assessments: ${assessments}. Original recorded outcomes and forecasts remain available.`; root.append(line);
-    }
-    const model = document.createElement('p'); model.className = 'muted';
-    model.textContent = complete ? 'The revised history and rebuilt model have been published. Later independent records and corrections remain.'
-      : 'The model is rebuilt before publication. Later independent records, current settings and control permissions remain in place.'; root.append(model);
+    renderRecoveryRevision(document, $('history-recovery-preview'), data, { formatTime, complete, restore: revision.active,
+      operation: controller.snapshot().view?.operations?.find(item => item.id === revision.id) });
   }
   function renderOperations(state, blocked) {
     const operations = state.view?.operations ?? [], retained = new Set(operations.map(item => item.id));
     $('history-recovery-empty').hidden = operations.length > 0 || !!state.view?.operationsError;
     $('history-recovery-empty').textContent = state.view?.operationsLoading ? 'Loading previous recoveries…' : 'No previous recoveries.';
     $('history-recovery-list-status').hidden = !state.view?.operationsError;
-    $('history-recovery-list-status').textContent = state.view?.operationsError ? 'Previous recoveries are unavailable. Refresh to retry.' : '';
+    $('history-recovery-list-status').textContent = state.view?.operationsError ? 'Previous recoveries are unavailable. Reload results to retry.' : '';
     $('history-recovery-earlier').hidden = !state.view?.nextBefore;
     $('history-recovery-earlier').disabled = state.busy || !state.connected;
     $('history-recovery-newest').hidden = !pageCursor;
@@ -338,7 +340,7 @@ export function createHistoryRecoveryPanel({ document, request, upload, storage,
       let row = rows.get(operation.id);
       if (!row) {
         const item = document.createElement('li'), info = document.createElement('div'), title = document.createElement('strong');
-        const at = document.createElement('time'), detail = document.createElement('p'), button = document.createElement('button');
+        const at = document.createElement('time'), detail = document.createElement('p'), summary = document.createElement('p'), button = document.createElement('button');
         item.className = 'history-recovery-entry'; info.className = 'history-recovery-entry-info'; detail.className = 'muted';
         button.type = 'button'; button.className = 'secondary-button'; button.setAttribute('data-admin-only', ''); button.setAttribute('data-write-control', '');
         button.addEventListener('click', () => {
@@ -348,7 +350,8 @@ export function createHistoryRecoveryPanel({ document, request, upload, storage,
           mode = 'history'; focusReview = true;
           void controller.run(revision.active ? 'review-restore' : 'review-revert', { operationId: current.id, ...verificationOption() });
         });
-        info.append(title, at, detail); item.append(info, button); row = { item, title, at, detail, button }; rows.set(operation.id, row);
+        summary.className = 'history-recovery-entry-summary';
+        info.append(title, at, detail, summary); item.append(info, button); row = { item, title, at, detail, summary, button }; rows.set(operation.id, row);
       }
       row.title.textContent = operation.source?.label ?? 'Recovered history';
       const at = operation.startedAt ?? operation.createdAt;
@@ -358,6 +361,8 @@ export function createHistoryRecoveryPanel({ document, request, upload, storage,
         : ['interrupted', 'error', 'failed'].includes(operation.status) ? 'Interrupted · accepted history can be reviewed'
           : 'Included in current history';
       row.detail.dataset.tone = ['interrupted', 'error', 'failed'].includes(operation.status) && operation.active !== false ? 'attention' : 'neutral';
+      row.summary.textContent = recoveryOperationSummary(operation, { formatTime });
+      row.summary.hidden = !row.summary.textContent;
       row.button.textContent = operation.active === false ? 'Review restore' : 'Review revert';
       row.button.disabled = blocked || (operation.active === false ? operation.canRestore === false : operation.canRevert === false);
       row.button.setAttribute('aria-label', `${row.button.textContent}: ${row.title.textContent}, ${row.at.textContent}`);
@@ -368,7 +373,9 @@ export function createHistoryRecoveryPanel({ document, request, upload, storage,
   async function refresh() {
     if (refreshing || !admin()) return;
     refreshing = true;
-    try { inspected = await controller.refresh(pageCursor); } finally { refreshing = false; }
+    if (rendered) render(controller.snapshot());
+    try { inspected = await controller.refresh(pageCursor); if (inspected) refreshedAt = now(); }
+    finally { refreshing = false; render(controller.snapshot()); }
   }
   async function open({ sourceId, trigger } = {}) {
     if (!admin() || dialog.open) return;
@@ -394,6 +401,9 @@ export function createHistoryRecoveryPanel({ document, request, upload, storage,
     mode = name; focusReview = false; render(controller.snapshot());
   });
   $('history-recovery-installation-confirm').addEventListener('change', () => render(controller.snapshot()));
+  for (const id of ['history-recovery-full-verification', 'history-recovery-revision-verification']) {
+    $(id).addEventListener('change', () => render(controller.snapshot()));
+  }
   $('history-recovery-file').addEventListener('change', async () => {
     const file = $('history-recovery-file').files?.[0];
     if (!file || uploadBusy || !admin() || activeJob(controller.snapshot().view)) return;

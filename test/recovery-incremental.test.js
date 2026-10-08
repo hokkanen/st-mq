@@ -9,6 +9,7 @@ import { scopeIncrementalSource,openJournalSource } from '../src/recovery/increm
 import { commonCheckpoint, changedRecordKeys } from '../src/storage/journal.js';
 import { enrollJournalPeer } from '../src/storage/journal-peer.js';
 import { PeerTransfers } from '../src/replication/coalesced.js';
+import { validRecoverySourceSummary } from '../src/recovery/coverage-report.js';
 
 async function peerDonor(f){enrollJournalPeer(f.master.db);return f.donor();}
 
@@ -35,6 +36,12 @@ test('shared checkpoint review scans only changed records and keeps a pinned WAL
   assert.equal(preview.tables.find(row=>row.name==='events').count,0);
   assert.equal(preview.tables.find(row=>row.name==='observations').count,1);
   assert.equal(preview.coverage,undefined);
+  assert.equal(validRecoverySourceSummary(preview.sourceSummary),true);
+  assert.deepEqual(preview.sourceSummary.categories.find(row=>row.name==='temperatures'),
+    {name:'temperatures',count:1,from:start+10000,to:start+10000,undated:0});
+  assert.equal(preview.sourceSummary.categories.find(row=>row.name==='events').count,0,
+    'Older common history never leaks into the changed-record date inventory');
+  assert.equal(validRecoverySourceSummary({...preview.sourceSummary,path:'/invented/private.sqlite'}),false);
   const scoped=new Store(donor.path,{readOnly:true});
   try {
     scoped.db.exec('BEGIN');

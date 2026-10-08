@@ -146,14 +146,14 @@ function fixture() {
 }
 const text = root => [root.textContent, ...root.children.map(text)].join(' ');
 
-test('recovery checkbox is unchecked by default and adds optional full verification to its check action', async () => {
+test('recovery verification choice defaults to standard and adds full verification only when selected', async () => {
   const { document, $ } = fixture(), bodies = [];
   const panel = createHistoryRecoveryPanel({ document, request: async (_path, body) => { if (body) bodies.push(body); return view(); } });
   panel.update(admin); await panel.open({ sourceId: source.id });
-  assert.equal($('history-recovery-full-verification').checked, false);
+  assert.notEqual($('history-recovery-full-verification').value, 'full');
   $('history-recovery-installation-confirm').checked = true;
   $('history-recovery-installation-confirm').listeners.get('change')();
-  $('history-recovery-full-verification').checked = true;
+  $('history-recovery-full-verification').value = 'full';
   $('history-recovery-check').click(); await new Promise(resolve => setImmediate(resolve));
   assert.equal(bodies.length, 1); assert.equal(bodies[0].verifyWithFullSnapshot, true);
 });
@@ -338,6 +338,35 @@ test('an unavailable paired source explains why checking is disabled', async () 
   assert.equal($('history-recovery-notice').dataset.tone, 'attention');
 });
 
+test('a saved slave check cannot show current success when the peer is unavailable or its snapshot is stale', async () => {
+  for (const peerState of [{ role: 'slave', reachable: false }, { role: 'slave', reachable: true, sync: { state: 'stale' } }]) {
+    const { document, $ } = fixture();
+    const peer = { role: 'master', canControl: true, peer: peerState, actions: { recover: false },
+      recovery: { state: 'ready', donorRole: 'slave', preview } };
+    const panel = createHistoryRecoveryPanel({ document, request: async () => view({ peer,
+      sources: [{ id: 'peer', kind: 'peer', label: 'Paired computer', available: true }] }) });
+    panel.update({ ...admin, topology: 'pair', pair: peer }); await panel.open({ sourceId: 'peer' });
+    assert.equal($('history-recovery-notice').dataset.tone, 'attention');
+    assert.doesNotMatch($('history-recovery-status').textContent, /Valid slave snapshot|No recovery needed/);
+    assert.equal($('history-recovery-preview').children[0].dataset.tone, 'attention');
+    assert.doesNotMatch(text($('history-recovery-preview')), /No recovery needed/);
+    assert.equal($('history-recovery-apply').hidden, true);
+  }
+});
+
+test('reload results fetches saved state without issuing a new source check', async () => {
+  const { document, $ } = fixture(), requests = [];
+  const panel = createHistoryRecoveryPanel({ document, now: () => 5000, formatTime: at => `time ${at}`,
+    request: async (path, body) => { requests.push({ path, body }); return view(); } });
+  panel.update(admin); await panel.open({ sourceId: source.id });
+  $('history-recovery-refresh').click(); await new Promise(resolve => setImmediate(resolve));
+  assert.equal(requests.length, 2);
+  assert(requests.every(item => item.path === '/api/history-recovery' && item.body === undefined));
+  assert.equal($('history-recovery-refresh').textContent, 'Reload results');
+  assert.match($('history-recovery-refresh-help').textContent, /saved results.*Check backup.*new source check/);
+  assert.equal($('history-recovery-refreshed-at').textContent, 'Results last received time 5000');
+});
+
 test('failed checks hide an earlier successful preview and explain database incompatibility', async () => {
   for (const sourceId of ['peer', source.id]) {
     const { document, $ } = fixture();
@@ -436,7 +465,7 @@ test('old and interrupted recovery operations remain reviewable and revisions su
   assert.equal($('history-recovery-operations').children[0].children[1].disabled, false);
   assert.equal($('history-recovery-revision-apply').hidden, false);
   assert.match(text($('history-recovery-preview')), /Revert recovery.*Affected records: 12/);
-  assert.match(text($('history-recovery-preview')), /Cycle assessments: 3.*Original recorded outcomes and forecasts remain/);
+  assert.match(text($('history-recovery-preview')), /Cycle assessments: 3.*original recorded outcomes and forecasts remain/i);
   assert.match(recoveryJobText(view({ job: { status: 'interrupted' } })), /Accepted history remains/);
 });
 
@@ -771,7 +800,7 @@ test('list failures remain distinct from empty history and do not conceal runnin
   panel.update(admin); await panel.open();
   assert.match($('history-recovery-status').textContent, /Catching up/);
   assert.equal($('history-recovery-empty').hidden, true);
-  assert.equal($('history-recovery-list-status').textContent, 'Previous recoveries are unavailable. Refresh to retry.');
-  assert.equal($('history-recovery-source-help').textContent, 'Backup sources are unavailable. Refresh to retry.');
+  assert.equal($('history-recovery-list-status').textContent, 'Previous recoveries are unavailable. Reload results to retry.');
+  assert.equal($('history-recovery-source-help').textContent, 'Backup sources are unavailable. Reload results to retry.');
   assert.doesNotMatch(text($('history-recovery-list-status')), /private/);
 });

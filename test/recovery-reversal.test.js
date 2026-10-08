@@ -9,6 +9,7 @@ import { addSensorChange, revertSensorChange } from '../src/app/sensor-changes.j
 import { sensorChangeEvents } from '../src/app/sensor-inputs.js';
 import { addFireplace } from '../src/app/fireplace.js';
 import { fireplaceLearningContext } from '../src/app/fireplace-inputs.js';
+import { validRecoveryRevisionImpact } from '../src/recovery/impact-report.js';
 
 async function change(f, id, active, options = {}) {
   const args = { store: f.master, input: 'mqtt', recoveryId: id, active, signal: f.signal };
@@ -29,6 +30,10 @@ test('revert and restore preserve original evidence, current state and later loc
   const preview = await previewRecoveryRevision({ store: f.master, input: 'mqtt', recoveryId: id, active: false, signal: f.signal });
   assert.equal(f.master.db.prepare('SELECT total_changes() n').get().n, previewBefore, 'preview does not write target');
   assert.equal(preview.counts.affected, 1);
+  assert.deepEqual(preview.impact, { direct: 1, dependent: 0, retained: 0,
+    categories: [{ name: 'observations', count: 1, direct: 1, dependent: 0, from: start + W, to: start + W, undated: 0 }] });
+  assert.equal(validRecoveryRevisionImpact(preview.impact, preview.tables), true);
+  assert.equal(validRecoveryRevisionImpact({ ...preview.impact, path: '/invented/private.sqlite' }, preview.tables), false);
   await reviseRecovery({ store: f.master, input: 'mqtt', recoveryId: id, active: false, preview, signal: f.signal });
   assert.deepEqual(f.master.observations().map(row => row.value), [20, 21]);
   assert.deepEqual(f.master.db.prepare('SELECT * FROM observations ORDER BY id').all(), original);
@@ -87,6 +92,10 @@ test('restoration retains later local evidence where it filled a rejected measur
   const f = fixture(t), donor = await f.donor(); observation(donor, start, 999);
   const first = await recover(f, await f.snapshot(donor)); await change(f, first.report.recoveryId, false);
   observation(f.master, start, 21);
+  const review = await previewRecoveryRevision({ store: f.master, input: 'mqtt', recoveryId: first.report.recoveryId,
+    active: true, signal: t.signal });
+  assert.deepEqual(review.impact, { direct: 0, dependent: 0, retained: 1, categories: [] },
+    'Review distinguishes a retained exclusion from history that restoration will select');
   await change(f, first.report.recoveryId, true);
   assert.deepEqual(f.master.observations().map(row => row.value), [21]);
   assert.equal(f.master.db.prepare('SELECT COUNT(*) n FROM observations').get().n, 2);
@@ -189,6 +198,13 @@ test('rejecting recovered observations invalidates dependent savings without del
     observations: [{ provenance: { observationId: id } }], assessment: { basis: 'estimated-space-heating-execution-and-reference', profitCents: 200 } };
   f.master.db.prepare('INSERT INTO learning_cycles(id,input,started_at,ended_at,status,payload) VALUES(?,?,?,?,?,?)')
     .run(cycle.id, 'mqtt', start, start + W, cycle.status, JSON.stringify(cycle));
+  const review = await previewRecoveryRevision({ store: f.master, input: 'mqtt', recoveryId: first.report.recoveryId,
+    active: false, signal: t.signal });
+  assert.equal(review.impact.direct, 1);
+  assert.equal(review.impact.dependent, 1);
+  assert.deepEqual(review.impact.categories.find(row => row.name === 'cycle_assessments'),
+    { name: 'cycle_assessments', count: 1, direct: 0, dependent: 1, from: start, to: start + W, undated: 0 });
+  assert.equal(review.period.to, start, 'Original recovered dates stay distinct from later affected assessments');
   await change(f, first.report.recoveryId, false);
   assert(f.master.db.prepare("SELECT 1 FROM recovery_exclusions WHERE generation=(SELECT generation FROM history_selection) AND table_name='cycle_assessments' AND record_key=?").get(cycle.id));
   assert.deepEqual(JSON.parse(f.master.db.prepare('SELECT payload FROM learning_cycles WHERE id=?').get(cycle.id).payload), cycle);
