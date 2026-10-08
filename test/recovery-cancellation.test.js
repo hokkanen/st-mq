@@ -29,12 +29,12 @@ for (const mode of ['preview', 'revision-preview']) test(`${mode} removes only i
     assert.deepEqual(f.master.observations(), before, 'a cancelled or completed review never changes source history');
     assert.equal(f.master.learningEpoch('mqtt'), epoch, 'review never publishes a different model history');
   };
-  for (const stage of mode === 'preview' ? ['before-start', 'validating', 'checking'] : ['before-start', 'validating', 'snapshotting']) await t.test(stage, async () => {
+  for (const stage of ['before-start', 'validating', 'checking']) await t.test(stage, async () => {
     const controller = new AbortController();
     let cancelled = stage === 'before-start';
     if (cancelled) controller.abort();
     await assert.rejects(run(AbortSignal.any([controller.signal, t.signal]), value => {
-      if (!cancelled && value.phase === stage && (stage !== 'snapshotting' || value.unit === 'pages')) {
+      if (!cancelled && value.phase === stage) {
         cancelled = true; controller.abort();
       }
     }));

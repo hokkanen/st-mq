@@ -37,7 +37,7 @@ test('a held-reading coverage extension during restoration invalidates the revie
   const oldEpoch = f.master.learningEpoch('mqtt'), rows = f.master.db.prepare('SELECT COUNT(*) n FROM observations').get().n;
   let extended = false;
   await assert.rejects(reviseRecovery({ ...restore, preview, onProgress(value) {
-    if (value.phase === 'rebuilding' && !extended) {
+    if (value.phase === 'catching-up' && !extended) {
       extended = true;
       recorder.record(reading(start + 1000));
       assert.equal(f.master.db.prepare('SELECT COUNT(*) n FROM observations').get().n, rows,
@@ -78,7 +78,7 @@ test(`restoration preserves recovered energy conflicts when an overlapping pendi
   const restoring = reviseRecovery({ ...restore, preview, onProgress(value) {
     // These phases begin after the initial restoration conflict scan. Later
     // independent updates must not revive any part of the rejected cohort.
-    if (!['projecting', 'rebuilding', 'catching-up'].includes(value.phase) || changedPhases.has(value.phase)
+    if (!['catching-up', 'publishing'].includes(value.phase) || changedPhases.has(value.phase)
       || change !== 'extend' && changedPhases.size) return;
     changedPhases.add(value.phase);
     tail.pending.end += W; tail.pending.receivedAt = tail.pending.end;
@@ -156,7 +156,7 @@ test('an unchanged future pending-energy receipt becoming eligible during restor
   const original = f.master.getState(energyKey), epoch = f.master.learningEpoch('mqtt');
   let crossed = false;
   await assert.rejects(reviseRecovery({ ...restore, preview, async onProgress(value) {
-    if (value.phase !== 'projecting' || crossed) return;
+    if (value.phase !== 'catching-up' || crossed) return;
     crossed = true;
     assert(Date.now() < cutoff, 'The initial conflict scan sees a future receipt');
     await new Promise(resolve => setTimeout(resolve, cutoff - Date.now() + 25));

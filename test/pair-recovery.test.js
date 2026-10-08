@@ -35,7 +35,8 @@ test('source check creates no trial database and the single merge preserves mast
   assert.deepEqual(f.master.observations(), before);
   assert.equal(preview.status, 'checked'); assert.equal(preview.model.status, 'not-assessed');
   assert.equal(preview.counts, undefined, 'source counts are not missing or conflict counts');
-  assert.equal(preview.tables.find(row => row.name === 'observations').count, 4);
+  assert.equal(preview.tables.find(row => row.name === 'observations').count, 3, 'shared unchanged history is excluded from incremental inventory');
+  assert(preview.incremental.records > 0);
   assert(progress.length > 0 && progress.every(value => ['validating', 'checking'].includes(value.phase)));
   assert.deepEqual(readdirSync(f.directory), files, 'check never creates a trial database');
   const result = await recoverHistory({ signal: f.signal, store: f.master, donorPath, preview });

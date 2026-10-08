@@ -168,6 +168,11 @@ export function renderRecoveryReport(document, root, data, { formatTime = at => 
     item.append(label, number); counts.append(item);
   }
   appendCount('Recovered entries', data.imported);
+  if (data.incremental) {
+    const scope = document.createElement('p'); scope.className = 'muted';
+    scope.textContent = 'Changed source records since the shared checkpoint, including required references. These counts do not include unchanged earlier history.';
+    root.append(scope);
+  }
   if (checked) renderCoverage(document, root, data.coverage, { formatTime, source, expanded });
   if (checked) {
     for (const row of data.tables ?? []) if (Object.hasOwn(sourceTables, row.name)) appendCount(sourceTables[row.name], row.count);
@@ -181,7 +186,7 @@ export function renderRecoveryReport(document, root, data, { formatTime = at => 
   }
   if (checked) {
     const line = document.createElement('p');
-    line.textContent = 'These are source record counts. Missing entries, conflicts and model changes have not yet been assessed.'
+    line.textContent = `${data.incremental ? 'These are changed source record counts.' : 'These are source record counts.'} Missing entries, conflicts and model changes have not yet been assessed.`
       + (comparison ? '' : ' Recovery compares and imports history once, then rebuilds the model only if needed.');
     root.append(line);
   }

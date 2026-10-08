@@ -28,6 +28,7 @@ function savedRequest(storage) {
   try {
     const value = JSON.parse(storage?.getItem(pendingKey) ?? 'null');
     if (!value || !actions.has(value.action) || !uuid.test(value.requestId)) return null;
+    if (value.verifyWithFullSnapshot !== undefined && typeof value.verifyWithFullSnapshot !== 'boolean') return null;
     if (mutation(value.action) && (value.confirmed !== true || typeof value.previewId !== 'string')) return null;
     if (value.action === 'check' && (typeof value.sourceId !== 'string' || value.sourceId !== 'peer' && value.installationConfirmed !== true)) return null;
     if (value.action.startsWith('review-') && typeof value.operationId !== 'string') return null;
@@ -143,6 +144,7 @@ export function recoveryJobText(view, now = Date.now()) {
 export function createHistoryRecoveryPanel({ document, request, upload, storage, formatTime = at => new Date(at).toISOString(),
   afterMutation, confirm, now = Date.now }) {
   const $ = id => document.getElementById(id), dialog = $('history-recovery-dialog'), selector = $('history-recovery-source');
+  const verificationOption = () => $('history-recovery-full-verification')?.checked ? { verifyWithFullSnapshot: true } : {};
   const rows = new Map();
   let dashboard, opener, selected = 'upload', uploaded = null, uploadBusy = false, refreshing = false, rendered, sourceKey, reportKey, inspected = false;
   let revision = null, sourceDirty = false, uploadError = '', pageCursor = null, mode = 'recover', focusReview = false;
@@ -213,7 +215,7 @@ export function createHistoryRecoveryPanel({ document, request, upload, storage,
     $('history-recovery-notice').hidden = !$('history-recovery-status').textContent && !state.pending;
     const failureCode = peerView ? pairIssueCode(currentPair) : relevantJob ? job?.errorCode : null;
     $('history-recovery-state').textContent = ['database_schema_mismatch', 'database_algorithm_mismatch', 'database_state_incompatible'].includes(failureCode)
-      ? 'Database incompatible' : ['database_schema_invalid', 'database_integrity_failed', 'recovery_database_corrupt'].includes(failureCode)
+      ? 'Database incompatible' : ['database_schema_invalid', 'database_integrity_failed', 'database_journal_invalid', 'recovery_database_corrupt'].includes(failureCode)
         ? 'Database validation failed' : tone === 'attention' ? peerRecovery?.state === 'error' && peerView || relevantJob && job?.status === 'error'
           ? 'Operation failed' : 'Attention needed' : tone === 'progress' ? 'In progress' : tone === 'success' ? 'No recovery needed' : '';
     $('history-recovery-state').hidden = !$('history-recovery-state').textContent;
@@ -244,7 +246,7 @@ export function createHistoryRecoveryPanel({ document, request, upload, storage,
       : !peer && state.view?.sourcesLoading ? 'Loading available backups…' : peer
       ? currentPair?.peer?.role === 'slave' ? 'Validate the slave snapshot. Normal mirroring applies the master’s changes automatically.'
         : 'Check preserved history before recovery. Resuming mirroring is a separate decision.'
-      : 'Confirm that this backup contains this household’s history. Database format and integrity are checked automatically; checking does not change recorded history.';
+      : 'Confirm that this backup contains this household’s history. Database format and committed checkpoint are checked automatically; checking does not change recorded history.';
     const comparison = peer && peerRecovery?.donorRole === 'slave';
     const checked = revisionView ? state.view?.preview : peer ? peerRecovery?.preview : state.view?.preview;
     const result = peer ? peerRecovery?.report : state.view?.job?.result?.report ?? state.view?.job?.result;
@@ -278,8 +280,11 @@ export function createHistoryRecoveryPanel({ document, request, upload, storage,
       || currentPair?.peer?.role === 'protected' && currentPair?.peer?.reachable === true
       || peerRecovery?.donorRole === 'protected' && ['ready', 'recovering', 'complete', 'error'].includes(peerRecovery?.state));
     const bytes = total(peerRecovery?.donorBytes);
-    $('pairing-rejoin-storage').textContent = `Storage retained: a full database copy${bytes === null ? ' (size not yet available)'
-      : ` of approximately ${(bytes / 1024 / 1024).toLocaleString('en', { maximumFractionDigits: 1 })} MiB`}. Copies can accumulate; there is no automatic expiry.`;
+    const incrementalRejoin = peerRecovery?.preview?.incremental || peerRecovery?.retainedStorage === 'journal-branch';
+    $('pairing-rejoin-storage').textContent = incrementalRejoin
+      ? 'Storage retained: divergent changes remain as an inactive journal branch in the other database. Size depends on changed records; there is no automatic expiry.'
+      : `Storage retained: a full database copy${bytes === null ? ' (size not yet available)'
+        : ` of approximately ${(bytes / 1024 / 1024).toLocaleString('en', { maximumFractionDigits: 1 })} MiB`}. Copies can accumulate; there is no automatic expiry.`;
     $('history-recovery-review').hidden = $('history-recovery-preview').hidden;
     const operation = revisionView && state.view?.operations?.find(item => item.id === revision.id);
     const revisionSource = operation?.source?.label ?? (isRevision ? checked : job?.result)?.source?.label ?? 'Previous recovery';
@@ -341,7 +346,7 @@ export function createHistoryRecoveryPanel({ document, request, upload, storage,
           if (!current || button.disabled) return;
           revision = { id: current.id, active: current.active === false }; sourceDirty = false;
           mode = 'history'; focusReview = true;
-          void controller.run(revision.active ? 'review-restore' : 'review-revert', { operationId: current.id });
+          void controller.run(revision.active ? 'review-restore' : 'review-revert', { operationId: current.id, ...verificationOption() });
         });
         info.append(title, at, detail); item.append(info, button); row = { item, title, at, detail, button }; rows.set(operation.id, row);
       }
@@ -402,16 +407,16 @@ export function createHistoryRecoveryPanel({ document, request, upload, storage,
   $('history-recovery-check').addEventListener('click', () => {
     if ($('history-recovery-check').disabled) return;
     sourceDirty = false; revision = null;
-    void controller.run('check', { sourceId: selected, ...(selected !== 'peer' ? { installationConfirmed: true } : {}) });
+    void controller.run('check', { sourceId: selected, ...(selected !== 'peer' ? { installationConfirmed: true } : {}), ...verificationOption() });
   });
   $('history-recovery-apply').addEventListener('click', () => {
     if ($('history-recovery-apply').disabled) return;
     const state = controller.snapshot(), preview = selected === 'peer' ? pair(state)?.recovery?.preview : state.view?.preview;
-    void controller.run('recover', { sourceId: selected, previewId: preview?.previewId });
+    void controller.run('recover', { sourceId: selected, previewId: preview?.previewId, ...verificationOption() });
   });
   $('history-recovery-revision-apply').addEventListener('click', () => {
     if ($('history-recovery-revision-apply').disabled || !revision) return;
-    void controller.run(revision.active ? 'restore' : 'revert', { previewId: controller.snapshot().view?.preview?.previewId });
+    void controller.run(revision.active ? 'restore' : 'revert', { previewId: controller.snapshot().view?.preview?.previewId, ...verificationOption() });
   });
   $('history-recovery-retry').addEventListener('click', () => { void controller.retry(); });
   $('history-recovery-earlier').addEventListener('click', () => {

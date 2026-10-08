@@ -16,12 +16,15 @@ import { assessRecoverySource } from './source-scope.js';
 import { recoveryFailure } from './errors.js';
 import { ScratchMap } from './scratch.js';
 import { recoveryCoverageReport } from './coverage-report.js';
+import { commonCheckpoint, changedRecordKeys, validateJournalCommit } from '../storage/journal.js';
+import { scopeIncrementalSource, openJournalSource } from './incremental-source.js';
+import { findLearningPrefix, retainLearningPrefix, prefixSourceId } from './learning-prefix.js';
 
 const json = JSON.stringify;
 const decode = row => ({ id: row.id, key: row.key, kind: row.kind, at: row.at,
   algorithmVersion: row.algorithm_version, configVersion: row.config_version === null ? null : JSON.parse(row.config_version),
   forecastVersion: row.forecast_version === null ? null : JSON.parse(row.forecast_version), payload: JSON.parse(row.payload) });
-const head = (store, input) => store.db.prepare('SELECT COALESCE(MAX(id),0) id FROM learning_journal WHERE input=?').get(input).id;
+const head = (store, input) => store.learningJournalHead(input);
 const epochOf = (store, input) => store.learningEpoch(input);
 const invalid = message => Object.assign(new Error(message), { code: 'RECOVERY_INVALID' });
 let target, donor, running = false, projection = null;
@@ -44,36 +47,43 @@ async function fileDigest(path) {
 }
 
 async function open() {
-  progress({ phase: 'validating', processed: 0 });
-  const sourceFile = await stat(workerData.donorPath);
-  donor = new Store(workerData.donorPath, { readOnly: true });
-  donor.db.exec('BEGIN'); donor.db.prepare('PRAGMA schema_version').get();
-  // The checked digest identifies one exported file. WAL pages are separate
-  // mutable evidence and cannot be authorized by hashing only that file.
-  // DELETE-mode readers also hold SQLite's shared lock until this source scan
-  // ends, so ordinary writers cannot change the snapshot beneath the digest.
-  if (donor.db.prepare('PRAGMA journal_mode').get().journal_mode !== 'delete')
-    throw Object.assign(new Error('Recovery requires a self-contained database snapshot'), { code: 'recovery_source_not_snapshot' });
-  if (donor.db.prepare('PRAGMA integrity_check').get().integrity_check !== 'ok')
-    throw Object.assign(new Error('Donor database integrity check failed'), { code: 'recovery_database_corrupt' });
-  sourceAssessment = assessRecoverySource(donor, workerData.input);
-  // Semantic rows with missing references are rejected individually by merge;
-  // only physical database corruption prevents scanning the donor altogether.
-  const donorDigest = await fileDigest(workerData.donorPath);
-  const checkedFile = await stat(workerData.donorPath);
-  if (['dev', 'ino', 'size', 'mtimeMs', 'ctimeMs'].some(field => sourceFile[field] !== checkedFile[field]))
-    throw invalid('The source database changed while checking it. Use a saved export and check again.');
-  if (workerData.mode === 'preview') {
-    target = new Store(workerData.masterPath, { readOnly: true });
-    // One brief read snapshot makes the category dates and recorded outages
-    // coherent while WAL writers continue. It is released when checking ends.
-    target.db.exec('BEGIN'); target.db.prepare('PRAGMA schema_version').get();
+  progress({ phase:'validating',processed:0 });
+  target=new Store(workerData.masterPath,{readOnly:workerData.mode==='preview'});
+  if(workerData.mode==='preview') { target.db.exec('BEGIN'); target.db.prepare('PRAGMA schema_version').get(); }
+  let donorDigest;
+  if(workerData.donorJournalPath) {
+    donor=await openJournalSource({masterPath:workerData.masterPath,journalPath:workerData.donorJournalPath,validateCommit:validateJournalCommit});
+    donorDigest=donor.incremental.checkpoint.hash;
+  } else {
+    const sourceFile=await stat(workerData.donorPath);
+    donor=new Store(workerData.donorPath,{readOnly:true});
+    donor.db.exec('BEGIN'); donor.db.prepare('PRAGMA schema_version').get();
+    const base=commonCheckpoint(target.db,donor.db);
+    if(base) {
+      const checkpoint=donor.checkpoint();
+      await scopeIncrementalSource(donor,{base,checkpoint,changes:changedRecordKeys(donor.db,{after:base,through:checkpoint})});
+      donorDigest=checkpoint.hash;
+    } else {
+      // An unrelated external backup has no authenticated common prefix.
+      // Its complete inventory is an explicit exceptional source repair.
+      if(donor.db.prepare('PRAGMA journal_mode').get().journal_mode!=='delete')
+        throw Object.assign(new Error('Recovery requires a self-contained database snapshot'),{code:'recovery_source_not_snapshot'});
+      if(donor.db.prepare('PRAGMA integrity_check').get().integrity_check!=='ok')
+        throw Object.assign(new Error('Donor database integrity check failed'),{code:'recovery_database_corrupt'});
+      donorDigest=await fileDigest(workerData.donorPath);
+      const checkedFile=await stat(workerData.donorPath);
+      if(['dev','ino','size','mtimeMs','ctimeMs'].some(field=>sourceFile[field]!==checkedFile[field]))
+        throw invalid('The source database changed while checking it. Use a saved export and check again.');
+    }
   }
-  else {
-    if (donorDigest !== workerData.preview?.donorDigest || workerData.preview?.input !== workerData.input)
+  sourceAssessment=assessRecoverySource(donor,workerData.input);
+  if(workerData.mode!=='preview') {
+    if(donorDigest!==workerData.preview?.donorDigest || workerData.preview?.input!==workerData.input)
       throw invalid('Recovery preview is stale; check the other instance again');
-    target = new Store(workerData.masterPath);
-    if (workerData.preview?.sourceSelection !== selectedHistory(target)) throw invalid('Selected history changed; check the source again');
+    if(workerData.preview?.sourceSelection!==selectedHistory(target)) throw invalid('Selected history changed; check the source again');
+    if(Boolean(workerData.preview?.incremental)!==Boolean(donor.incremental)
+      || donor.incremental && learningVersion(workerData.preview.incremental)!==learningVersion(donor.incremental))
+      throw invalid('The shared recovery checkpoint changed; check the source again');
   }
   target.db.exec('PRAGMA temp_store=FILE; PRAGMA temp.cache_size=-8192;');
   return donorDigest;
@@ -89,20 +99,21 @@ async function checkSource(donorDigest) {
     tables.push({ name, count });
     progress({ phase: 'checking', processed: tables.length }); await yieldTurn();
   }
-  tables.push({ name: 'learning_journal', count: donor.db.prepare('SELECT COUNT(*) count FROM learning_journal WHERE input=?').get(workerData.input).count });
-  tables.push({ name: 'charging_session_keys', count: donor.db.prepare("SELECT COUNT(*) count FROM state WHERE key LIKE 'charging-session-check:%'").get().count });
-  tables.push({ name: 'recorder_pending_energy', count: donor.db.prepare(`SELECT COUNT(*) count FROM state
+  tables.push({ name: 'learning_journal', count: donor.db.prepare(`SELECT COUNT(*) count FROM ${donor.recoveryJournal ?? 'learning_journal'} WHERE input=?`).get(workerData.input).count });
+  tables.push({ name: 'charging_session_keys', count: donor.db.prepare(`SELECT COUNT(*) count FROM ${donor.recoveryState ?? 'state'} WHERE key LIKE 'charging-session-check:%'`).get().count });
+  tables.push({ name: 'recorder_pending_energy', count: donor.db.prepare(`SELECT COUNT(*) count FROM ${donor.recoveryState ?? 'state'}
     WHERE key LIKE 'recorder:energy:%' AND json_valid(value) AND json_type(value,'$.pending')='object'`).get().count });
   if (sourceAssessment.skippedLearningRecords)
     tables.push({ name: 'other_learning_inputs', count: sourceAssessment.skippedLearningRecords });
   const unsupported = ['charging_reports', 'charging_report_events'].map(name => ({ name,
-    count: donor.db.prepare(`SELECT COUNT(*) count FROM ${name}`).get().count,
+    count: donor.incremental ? donor.db.prepare('SELECT COUNT(*) count FROM recovery_source_keys WHERE table_name=?').get(name).count : donor.db.prepare(`SELECT COUNT(*) count FROM ${name}`).get().count,
     reason: 'Saved charging reports are not included in history recovery.' })).filter(row => row.count > 0);
   const report = { status: 'checked', policy: RECOVERY_POLICY, tables, model: { status: 'not-assessed' },
     donorDigest, input: workerData.input, sourceSelection, sourceAssessment, unsupported };
   const sourceSoftware = readBackupMetadata(donor.db);
   if (sourceSoftware) report.sourceSoftware = sourceSoftware;
-  report.coverage = await recoveryCoverageReport({ master: target, donor, input: workerData.input,
+  if (donor.incremental) report.incremental = donor.incremental;
+  else report.coverage = await recoveryCoverageReport({ master: target, donor, input: workerData.input,
     yieldControl: yieldTurn, progress });
   report.previewId = learningVersion(report);
   parentPort.postMessage({ type: 'complete', report }); cleanup();
@@ -141,7 +152,6 @@ async function createProjection(merge, runId) {
   const epoch = `recovery-v1:${runId}`;
   target.db.prepare(`INSERT INTO recovery_runs(id,input,donor_digest,previous_epoch,epoch,status,started_at,report,previous_fireplace_revision,source_head)
     VALUES(?,?,?,?,?,'rebuilding',?,?,?,?)`).run(runId, input, merge.digest, sourceEpoch, epoch, Date.now(), json(merge.report), originalFireplaceRevision, sourceHead);
-  const originals = snapshot.db.prepare('SELECT * FROM learning_journal WHERE input=? ORDER BY at,CASE kind WHEN \'context\' THEN 0 WHEN \'sample\' THEN 1 ELSE 2 END,id').iterate(input);
   target.db.exec('CREATE TEMP TABLE recovery_accepted_journal(id INTEGER PRIMARY KEY,at INTEGER,rank INTEGER,entry TEXT,replaces_missing INTEGER)');
   const accept = target.db.prepare('INSERT INTO recovery_accepted_journal(id,at,rank,entry,replaces_missing) VALUES(?,?,?,?,?)');
   for (const entry of merge.journal) {
@@ -152,7 +162,7 @@ async function createProjection(merge, runId) {
     let conflicts = old && old.id !== entry.replacesMissing;
     if (entry.row.kind === 'sample') {
       const value = entry.payload.value;
-      conflicts = snapshot.db.prepare(`SELECT 1 FROM learning_journal WHERE input=? AND kind='sample'
+      conflicts = snapshot.db.prepare(`SELECT 1 FROM learning_journal WHERE input=? AND kind='sample' AND at>? AND at<?
         AND json_valid(payload) AND json_type(payload,CASE
           WHEN json_extract(payload,'$.value.sensorInputVersion')=1 AND json_type(payload,'$.value.measurementInputs')='object'
           THEN '$.value.measurementInputs.indoorC' ELSE '$.value.indoorC' END) IN ('integer','real')
@@ -166,7 +176,8 @@ async function createProjection(merge, runId) {
             OR q.value LIKE '%unavailable%' OR q.value LIKE '%failed%')
         AND COALESCE(json_extract(payload,'$.value.windowStart'),at-?)<?
         AND COALESCE(json_extract(payload,'$.value.windowEnd'),at)>? LIMIT 1`)
-        .get(input, LEARNING_WINDOW_MS, value.windowEnd ?? entry.row.at, value.windowStart ?? entry.row.at - LEARNING_WINDOW_MS);
+        .get(input,value.windowStart??entry.row.at-LEARNING_WINDOW_MS,(value.windowEnd??entry.row.at)+LEARNING_WINDOW_MS,
+          LEARNING_WINDOW_MS,value.windowEnd??entry.row.at,value.windowStart??entry.row.at-LEARNING_WINDOW_MS);
     }
     if (conflicts) {
       merge.count('learning_journal', 'conflicts');
@@ -199,6 +210,16 @@ async function createProjection(merge, runId) {
     await yieldTurn();
   }
   target.db.exec('CREATE INDEX recovery_accepted_order ON recovery_accepted_journal(at,rank,id); CREATE INDEX recovery_accepted_replacement ON recovery_accepted_journal(replaces_missing)');
+  const earliest=target.db.prepare('SELECT MIN(at) at FROM recovery_accepted_journal').get().at;
+  const retrospective=target.db.prepare(`SELECT 1 FROM recovery_accepted_journal
+    WHERE json_type(entry,'$.payload.value.sensorRevert')='object' LIMIT 1`).get();
+  const prefix=!retrospective && fireplaceLearningContext(target,input).fireplaceRevision===originalFireplaceRevision
+    ? await findLearningPrefix(snapshot,{input,epoch:sourceEpoch,earliest,
+      fireplaceRevision:originalFireplaceRevision,sensorRevision:sourceSensorRevision}) : null;
+  retainLearningPrefix(target,{input,epoch,prefix});
+  const originals=snapshot.db.prepare(`SELECT * FROM learning_journal WHERE input=? AND id>?
+    ORDER BY at,CASE kind WHEN 'context' THEN 0 WHEN 'sample' THEN 1 ELSE 2 END,id`).iterate(input,prefix?.cursor??0);
+
   function* acceptedRows() {
     let cursor = null;
     for (;;) {
@@ -216,6 +237,8 @@ async function createProjection(merge, runId) {
   const masterIds = new ScratchMap(target.db, 'projection-master'), donorIds = new ScratchMap(target.db, 'projection-donor'),
     sources = new ScratchMap(target.db, 'projection-sources');
   for (const map of [masterIds, donorIds, sources]) map.initialize();
+  const lookupMaster=masterIds.get.bind(masterIds);
+  masterIds.get=id=>lookupMaster(id)??prefixSourceId(target,{input,epoch:sourceEpoch,prefix,id});
   const insert = target.db.prepare(`INSERT INTO learning_journal_entries(epoch,input,key,kind,at,algorithm_version,config_version,forecast_version,payload,source_entry_id)
     VALUES(?,?,?,?,?,?,?,?,?,?)`);
   const stage = (row, payload, origin) => {
@@ -253,7 +276,7 @@ async function createProjection(merge, runId) {
   // Remap journal provenance only after every projection ID is allocated.
   // The first explicit seed must precede the accepted history; recovery cannot
   // claim a later trained checkpoint as the seed for an earlier missing week.
-  let after = 0, firstProjection = true;
+  let after = prefix?.cursor??0, firstProjection = !prefix;
   for (;;) {
     const rows = target.db.prepare('SELECT * FROM learning_journal_all WHERE epoch=? AND input=? AND id>? ORDER BY id LIMIT 64').all(epoch, input, after);
     if (!rows.length) break;
@@ -288,7 +311,7 @@ async function createProjection(merge, runId) {
   }
   const source = { ...fireplaceLearningContext(target, input), ...projectedSensorContext(target, input, epoch) };
   projection = { runId, epoch, sourceEpoch, sourceHead, sourceSensorRevision, source, sourceRevision: source.fireplaceRevision,
-    masterIds, donorIds, checkpoint: null, after: 0, processed: 0, lastAt: -Infinity, merge };
+    masterIds, donorIds, checkpoint: prefix?.checkpoint??null, after: prefix?.cursor??0, processed: 0, lastAt: prefix?.at??-Infinity, merge };
   await replayProjection();
   return projection;
 }
@@ -363,6 +386,7 @@ async function start() {
       if (!removed) break;
       await yieldTurn();
     }
+    target.db.prepare('DELETE FROM learning_epoch_segments WHERE epoch=?').run(run.epoch);
     target.db.prepare('DELETE FROM recovery_runs WHERE id=?').run(run.id);
   }
   const report = await merge.run();

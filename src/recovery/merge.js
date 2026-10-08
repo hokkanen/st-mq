@@ -457,7 +457,7 @@ export class HistoryMerge {
     // The donor connection is a frozen, read-only snapshot. Its bounded open
     // interval contains accepted measurements that may span days; it is source
     // history even though the adaptive writer has not closed it yet.
-    for (const checkpoint of this.donor.db.prepare("SELECT key,value FROM state WHERE key LIKE 'recorder:energy:%' ORDER BY key").iterate()) {
+    for (const checkpoint of this.donor.db.prepare(`SELECT key,value FROM ${this.donor.recoveryState ?? 'state'} WHERE key LIKE 'recorder:energy:%' ORDER BY key`).iterate()) {
       let identity, state, rows = [], valid = false;
       try {
         identity = decode(checkpoint.key.slice('recorder:energy:'.length)); state = decode(checkpoint.value);
@@ -662,7 +662,7 @@ export class HistoryMerge {
         && /^[a-f0-9]{64}$/.test(value.fingerprint) && event?.id != null && event.disposition !== 'conflicts');
       if (this.target.getState(row.key)) return { disposition: 'duplicates' };
       this.target.setState(row.key, { ...value, eventId: event.id }); return { disposition: 'missing' };
-    }, { query: "SELECT * FROM state WHERE key LIKE 'charging-session-check:%' ORDER BY key", map: false });
+    }, { query: `SELECT * FROM ${this.donor.recoveryState ?? 'state'} WHERE key LIKE 'charging-session-check:%' ORDER BY key`, map: false });
     await this.rows('energy_audits', row => {
       this.require(row.signal === 'property_import_energy_counter' && text(row.source) && text(row.device)
         && instant(row.source_time) && instant(row.received_at) && finite(row.value) && row.value >= 0 && flags(decode(row.quality)));
@@ -677,7 +677,7 @@ export class HistoryMerge {
     // Context identity uses timestamp + type, never the machine-local row ID.
     // Samples cover half-open windows; a donor window with any usable master
     // overlap is rejected in full, without invented prorated model inputs.
-    for (const row of this.donor.db.prepare('SELECT * FROM learning_journal WHERE input=? ORDER BY at,id').iterate(this.input)) {
+    for (const row of this.donor.db.prepare(`SELECT * FROM ${this.donor.recoveryJournal ?? 'learning_journal'} WHERE input=? ORDER BY at,id`).iterate(this.input)) {
       let disposition = 'skipped';
       try {
         if (rejectedContribution(this.target, 'learning_journal', row, this.donor)) {
@@ -728,7 +728,7 @@ export class HistoryMerge {
             this.require(instant(start) && instant(end) && end > start && end - start <= LEARNING_WINDOW_MS && end === row.at);
             this.require(finite(measured.indoorC) && finite(measured.outdoorC) && flags(measured.quality ?? [])
               && !(measured.quality ?? []).some(flag => /missing|invalid|stale|unavailable|failed/.test(flag)));
-            const overlap = this.target.db.prepare(`SELECT 1 FROM learning_journal WHERE input=? AND kind='sample'
+            const overlap = this.target.db.prepare(`SELECT 1 FROM learning_journal WHERE input=? AND kind='sample' AND at>? AND at<?
               AND json_valid(payload) AND json_extract(payload,'$.value.sensorInputVersion')=1
               AND json_type(payload,'$.value.inputSegments')='array' AND json_type(payload,CASE
                 WHEN json_type(payload,'$.value.measurementInputs')='object'
@@ -743,7 +743,7 @@ export class HistoryMerge {
                   OR q.value LIKE '%unavailable%' OR q.value LIKE '%failed%')
               AND json_extract(payload,'$.value.windowStart')<?
               AND json_extract(payload,'$.value.windowEnd')>? LIMIT 1`)
-              .get(this.input, end, start);
+              .get(this.input, start, end+LEARNING_WINDOW_MS, end, start);
             if (overlap) { disposition = 'conflicts'; this.maps.learning_journal.set(row.id, { id: old?.id ?? null, disposition }); }
             else {
               // Master conflicts in resolved provenance cannot sneak in through
@@ -786,7 +786,7 @@ export class HistoryMerge {
     await this.imports(); await this.snapshots(); await this.observations(); await this.pendingEnergy();
     await this.manual(); await this.evidence(); await this.scanJournal();
     this.report.unsupported = ['charging_reports', 'charging_report_events'].map(table => ({
-      name: table, count: this.donor.db.prepare(`SELECT COUNT(*) count FROM ${table}`).get().count,
+      name: table, count: this.donor.incremental ? this.donor.db.prepare('SELECT COUNT(*) count FROM recovery_source_keys WHERE table_name=?').get(table).count : this.donor.db.prepare(`SELECT COUNT(*) count FROM ${table}`).get().count,
       reason: 'Saved charging reports are not included in history recovery.' })).filter(row => row.count > 0);
     return this.report;
   }

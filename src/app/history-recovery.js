@@ -9,6 +9,8 @@ import { RECOVERABLE_TABLES } from '../storage/schema.js';
 import { RECOVERY_ERROR_CODES, recoveryFailure } from '../recovery/errors.js';
 import { validRecoveryCoverageReport } from '../recovery/coverage-report.js';
 import { listSavedBackups } from '../storage/backup-catalog.js';
+import { verifyDatabase } from '../storage/full-verifier.js';
+import { validCheckpoint } from '../storage/journal.js';
 
 const UUID = /^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/;
 const ACTIONS = new Set(['check', 'recover', 'review-revert', 'revert', 'review-restore', 'restore']);
@@ -37,8 +39,12 @@ function validSource(value) {
 function validReport(value) {
   const root = ['policy', 'counts', 'period', 'tables', 'model', 'donorDigest', 'input', 'sourceSelection', 'previewId',
     'sourceAssessment', 'status', 'imported', 'recoveryId', 'active', 'source', 'sourceEpoch', 'sourceHead',
-    'sourceFireplace', 'sourceSensor', 'decisionHead', 'contributionHead', 'conflictVersion', 'unsupported', 'coverage', 'sourceSoftware'];
+    'sourceFireplace', 'sourceSensor', 'decisionHead', 'contributionHead', 'conflictVersion', 'unsupported', 'coverage', 'sourceSoftware', 'incremental'];
   if (!fields(value, root)) return false;
+  if (value.incremental !== undefined && (!fields(value.incremental, ['base', 'checkpoint', 'records'])
+    || !validCheckpoint(value.incremental.base) || !validCheckpoint(value.incremental.checkpoint)
+    || value.incremental.base.databaseId !== value.incremental.checkpoint.databaseId
+    || value.incremental.base.sequence > value.incremental.checkpoint.sequence || !count(value.incremental.records))) return false;
   if (value.sourceSoftware !== undefined && !validBackupMetadata(value.sourceSoftware)) return false;
   if (value.coverage !== undefined && !validRecoveryCoverageReport(value.coverage)) return false;
   if (value.conflictVersion !== undefined && value.conflictVersion !== null
@@ -97,7 +103,7 @@ const safeError = error => recoveryFailure({ code: error?.code, errcode: error?.
 export function createHistoryRecovery({ store, getEngine, canControl = () => true, ready = () => true,
   getExportDirectory, getResetBackups = async () => [], pairContext, clock = Date.now,
   recoveryModule = () => import('../recovery/service.js'), directory = join(dirname(store.path), 'history-recovery'),
-  maxUploadBytes = 8 * 1024 ** 3, timeoutMs, uploadTimeoutMs = 3_600_000 } = {}) {
+  maxUploadBytes = 8 * 1024 ** 3, timeoutMs, uploadTimeoutMs = 3_600_000, fullVerifier = verifyDatabase } = {}) {
   const key = 'history-recovery:coordinator';
   let state = store.getState(key) ?? { version: 1, sources: [], receipts: [], job: null, review: null };
   if (!validState(state))
@@ -247,29 +253,37 @@ export function createHistoryRecovery({ store, getEngine, canControl = () => tru
     await engine.fireplaceRebuild?.close(); engine.fireplaceRebuild = null;
     if (signal.aborted || !canControl() || getEngine() !== engine) throw fail('Recovery authority changed.');
   }
-  function checkPath({ donorPath, source, requestId = randomUUID() }) {
+  async function fullCheck(enabled, paths, context) {
+    if (!enabled) return;
+    for (const dbPath of new Set(paths.filter(Boolean))) await fullVerifier({ dbPath, signal: context.signal,
+      onProgress: ({ checkpoint, ...progress }) => context.onProgress(progress) });
+  }
+  function checkPath({ donorPath, donorJournalPath, source, requestId = randomUUID(), verifyWithFullSnapshot = false }) {
     return begin('check', requestId, source, async ({ signal, onProgress, isCurrent }) => {
+      await fullCheck(verifyWithFullSnapshot, [store.path, donorPath], { signal, onProgress });
       const module = await recoveryModule();
-      const preview = await module.recoveryPreview({ masterPath: store.path, donorPath, input: input(),
+      const preview = await module.recoveryPreview({ masterPath: store.path, donorPath, donorJournalPath, input: input(),
         signal, onProgress });
       if (!isCurrent()) throw fail('Recovery authority changed.');
       state.review = { kind: 'recover', source, preview }; await persist();
       return preview;
     });
   }
-  function applyPath({ donorPath, preview, source, requestId = randomUUID(), isCurrent: sourceCurrent = () => true }) {
+  function applyPath({ donorPath, donorJournalPath, preview, source, requestId = randomUUID(), isCurrent: sourceCurrent = () => true, verifyWithFullSnapshot = false }) {
     return begin('recover', requestId, source, async context => {
+      await fullCheck(verifyWithFullSnapshot, [store.path, donorPath], context);
       await prepareMutation(context.engine, context.signal);
       const module = await recoveryModule();
-      return module.recoverHistory({ store, input: input(), donorPath, preview, ...context,
+      return module.recoverHistory({ store, input: input(), donorPath, donorJournalPath, preview, ...context,
         isCurrent: () => context.isCurrent() && sourceCurrent(), source: { kind: source.kind, label: source.label }, operationId: requestId });
     });
   }
   function validateAction(value) {
     if (!value || typeof value !== 'object' || Array.isArray(value) || !ACTIONS.has(value.action)
       || !UUID.test(value.requestId ?? '') || Object.keys(value).some(field => !['action', 'requestId', 'sourceId',
-        'operationId', 'previewId', 'confirmed', 'installationConfirmed'].includes(field))) throw fail('Choose a recovery action with a unique request ID.', 400);
-    const expected = ['action', 'requestId', ...({ check: ['sourceId', 'installationConfirmed'], recover: ['previewId', 'confirmed', 'sourceId'],
+        'operationId', 'previewId', 'confirmed', 'installationConfirmed', 'verifyWithFullSnapshot'].includes(field))) throw fail('Choose a recovery action with a unique request ID.', 400);
+    if (value.verifyWithFullSnapshot !== undefined && typeof value.verifyWithFullSnapshot !== 'boolean') throw fail('Choose whether to verify with a full snapshot.', 400);
+    const expected = ['action', 'requestId', 'verifyWithFullSnapshot', ...({ check: ['sourceId', 'installationConfirmed'], recover: ['previewId', 'confirmed', 'sourceId'],
       'review-revert': ['operationId'], 'review-restore': ['operationId'], revert: ['previewId', 'confirmed'], restore: ['previewId', 'confirmed'] }[value.action])];
     if (Object.keys(value).some(field => !expected.includes(field))) throw fail('Unsupported recovery action fields.', 400);
   }
@@ -285,13 +299,14 @@ export function createHistoryRecovery({ store, getEngine, canControl = () => tru
     if (value.sourceId === 'peer') {
       if (!pairContext || !['check', 'recover'].includes(value.action)) throw fail('Paired recovery is unavailable.');
       pairContext.requestAction({ action: value.action === 'check' ? 'check-recovery' : 'recover', requestId: value.requestId,
+        ...(value.verifyWithFullSnapshot === true ? { verifyWithFullSnapshot: true } : {}),
         ...(value.action === 'recover' ? { confirmed: value.confirmed, previewId: value.previewId } : {}) });
     } else if (value.action === 'check') {
       if (value.installationConfirmed !== true) throw fail('Confirm that this backup contains history from this household before checking it.');
       await refreshSources(true); assertIdle();
       const source = known.get(value.sourceId);
       if (!source) throw fail('Choose an available saved or uploaded backup.');
-      checkPath({ donorPath: source.path, source: publicSource(source), requestId: value.requestId });
+      checkPath({ donorPath: source.path, source: publicSource(source), requestId: value.requestId, verifyWithFullSnapshot: value.verifyWithFullSnapshot });
     } else if (value.action === 'recover') {
       const review = state.review;
       if (value.confirmed !== true || review?.kind !== 'recover' || review.preview.previewId !== value.previewId)
@@ -301,13 +316,14 @@ export function createHistoryRecovery({ store, getEngine, canControl = () => tru
       const source = known.get(review.source?.id);
       if (!source) throw fail('The checked backup is unavailable. Select an available source and check again.');
       if (state.review !== review) throw fail('The checked recovery changed. Review it again.');
-      applyPath({ ...review, donorPath: source.path, requestId: value.requestId });
+      applyPath({ ...review, donorPath: source.path, requestId: value.requestId, verifyWithFullSnapshot: value.verifyWithFullSnapshot });
     } else if (value.action.startsWith('review-')) {
       if (typeof value.operationId !== 'string' || !value.operationId || value.operationId.length > 128)
         throw fail('Select an existing recovery operation.', 400);
       const active = value.action === 'review-restore';
       state.review = null;
       begin(value.action, value.requestId, null, async ({ signal, onProgress, isCurrent }) => {
+        await fullCheck(value.verifyWithFullSnapshot, [store.path], { signal, onProgress });
         const module = await recoveryModule();
         const preview = await module.previewRecoveryRevision({ store, input: input(), recoveryId: value.operationId, active, signal, onProgress });
         if (!isCurrent()) throw fail('Recovery authority changed.');
@@ -321,6 +337,7 @@ export function createHistoryRecovery({ store, getEngine, canControl = () => tru
         throw fail('Review the recovery impact and confirm this change first.');
       state.review = null;
       begin(value.action, value.requestId, null, async context => {
+        await fullCheck(value.verifyWithFullSnapshot, [store.path], context);
         await prepareMutation(context.engine, context.signal);
         const module = await recoveryModule();
         return module.reviseRecovery({ store, input: input(), recoveryId: review.preview.recoveryId,

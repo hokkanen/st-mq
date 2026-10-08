@@ -1,8 +1,5 @@
 import { Worker } from 'node:worker_threads';
 import { randomUUID } from 'node:crypto';
-import { mkdir, mkdtemp, rm } from 'node:fs/promises';
-import { createDatabaseBackup } from '../storage/backup.js';
-import { dirname, join } from 'node:path';
 import { learningVersion, validLearningCheckpoint, LEARNING_ALGORITHM } from '../app/committed-learning.js';
 import { fireplaceLearningContext } from '../app/fireplace-inputs.js';
 import { sensorRevision } from '../app/sensor-inputs.js';
@@ -17,7 +14,7 @@ const validInput = input => {
   return input;
 };
 const unavailable = message => Object.assign(new Error(message), { statusCode: 409, code: 'recovery_invalid', public: true });
-const journalHead = (store, input) => store.db.prepare('SELECT COALESCE(MAX(id),0) id FROM learning_journal WHERE input=?').get(input).id;
+const journalHead = (store, input) => store.learningJournalHead(input);
 
 async function finishInterruptedRecovery(store, input, operationToken) {
   // Recording an interrupted job grants no publication or control authority.
@@ -33,15 +30,15 @@ async function finishInterruptedRecovery(store, input, operationToken) {
 
 /** Read-only source validation and inventory. No master backup or trial merge
  * is created; recovery makes acceptance decisions against current master data. */
-export function recoveryPreview({ masterPath, donorPath, input = 'mqtt', onProgress = () => {}, signal }) {
-  return workerJob({ mode: 'preview', masterPath, donorPath, input: validInput(input) }, { onProgress, signal });
+export function recoveryPreview({ masterPath, donorPath, donorJournalPath, input = 'mqtt', onProgress = () => {}, signal }) {
+  return workerJob({ mode: 'preview', masterPath, donorPath, donorJournalPath, input: validInput(input) }, { onProgress, signal });
 }
 
 /** Accepted source rows commit in bounded worker batches. Until publication,
  * live learning continues appending to its original selected epoch. A crash
  * leaves idempotent source imports and an unpublished projection, never half a
  * checkpoint. onPublish runs synchronously with no intervening control tick. */
-export async function recoverHistory({ store, donorPath, input = 'mqtt', preview, isCurrent = () => true,
+export async function recoverHistory({ store, donorPath, donorJournalPath, input = 'mqtt', preview, isCurrent = () => true,
   onPublish = () => {}, onProgress = () => {}, signal, source, operationId }) {
   validInput(input);
   if (store.path === ':memory:' || store.readOnly) throw new TypeError('Recovery requires the writable master database on disk');
@@ -54,7 +51,7 @@ export async function recoverHistory({ store, donorPath, input = 'mqtt', preview
   const operationToken = randomUUID();
   running.add(store);
   try {
-    return await workerJob({ mode: 'recover', masterPath: store.path, donorPath, input, preview, source, operationId, operationToken }, {
+    return await workerJob({ mode: 'recover', masterPath: store.path, donorPath, donorJournalPath, input, preview, source, operationId, operationToken }, {
       signal, onProgress, async onReady(message, worker) {
         if (!isCurrent()) throw unavailable('Master authority changed; recovery remains protected');
         const result = await store.runWrite(() => {
@@ -72,8 +69,8 @@ export async function recoverHistory({ store, donorPath, input = 'mqtt', preview
           const checkpoint = message.checkpoint;
           if (message.runId) {
             const projectedRevision = projectedSensorContext(store, input, message.epoch).sensorRevision;
-            const row = store.db.prepare(`SELECT * FROM learning_journal_all WHERE epoch=? AND input=? AND algorithm_version=? ORDER BY id DESC LIMIT 1`)
-              .get(message.epoch, input, LEARNING_ALGORITHM);
+            const row = store.db.prepare(`SELECT * FROM learning_journal_all WHERE epoch=? AND input=? AND id=?`)
+              .get(message.epoch, input, store.learningJournalHead(input,message.epoch));
             const last = row && { id: row.id, key: row.key, kind: row.kind, at: row.at, algorithmVersion: row.algorithm_version,
               configVersion: row.config_version === null ? null : JSON.parse(row.config_version),
               forecastVersion: row.forecast_version === null ? null : JSON.parse(row.forecast_version), payload: JSON.parse(row.payload) };
@@ -114,33 +111,7 @@ export async function recoverHistory({ store, donorPath, input = 'mqtt', preview
 
 async function workerJob(workerData, { onProgress, onReady, signal }) {
   if (signal?.aborted) throw unavailable('Recovery was cancelled; the other instance remains protected');
-  let temporary = null;
-  // The parent owns scratch from allocation through worker termination, including
-  // cancellation before the worker can send its first message. Source checks
-  // never create a candidate; only revision reviews need disposable writes.
-  if (workerData.mode === 'revision-preview') {
-    const base = join(dirname(workerData.masterPath), 'recovery');
-    await mkdir(base, { recursive: true, mode: 0o700 });
-    temporary = await mkdtemp(join(base, 'revision-preview-'));
-    workerData = { ...workerData, temporaryDirectory: temporary };
-  }
   try {
-  if (temporary) {
-    await onProgress?.({ phase: 'validating', processed: 0 });
-    signal?.throwIfAborted();
-    let progressMessages = Promise.resolve();
-    // The coordinator owns both workers in sequence. Cancelling a revision
-    // review first joins the backup worker, then removes its private files;
-    // no nested worker can publish into a directory whose owner has exited.
-    try {
-      await createDatabaseBackup({ sourcePath: workerData.masterPath, destination: join(temporary, 'candidate.sqlite'), signal,
-        onProgress(value) {
-          progressMessages = progressMessages.then(() => onProgress?.({ ...value, phase: 'snapshotting' }));
-          void progressMessages.catch(() => {});
-        } });
-    } finally { await progressMessages; }
-    signal?.throwIfAborted();
-  }
   return await new Promise((resolve, reject) => {
     const worker = new Worker(new URL(workerData.mode.startsWith('revision') ? './revision-worker.js' : './worker.js', import.meta.url), { workerData,
       ...(process.execArgv.some(value => value.startsWith('--input-type')) ? { execArgv: [] } : {}) });
@@ -196,7 +167,7 @@ async function workerJob(workerData, { onProgress, onReady, signal }) {
   } catch (error) {
     if (signal?.aborted) throw unavailable('Recovery was cancelled; the other instance remains protected');
     throw error;
-  } finally { if (temporary) await rm(temporary, { recursive: true, force: true }); }
+  }
 }
 
 export function previewRecoveryRevision({ store, input = 'mqtt', recoveryId, active, onProgress = () => {}, signal }) {
@@ -235,21 +206,21 @@ export async function reviseRecovery({ store, input = 'mqtt', recoveryId, active
             throw unavailable('Source history changed during reconstruction; review again');
           if (journalHead(store, input) !== message.sourceHead) return null;
           if (message.evidenceVersion !== null && message.evidenceVersion !== recoveryEvidenceVersion(store)) return null;
-          const row = store.db.prepare('SELECT * FROM learning_journal_all WHERE epoch=? AND input=? ORDER BY id DESC LIMIT 1')
-            .get(message.epoch, input);
+          const row = store.db.prepare('SELECT * FROM learning_journal_all WHERE epoch=? AND input=? AND id=?')
+            .get(message.epoch, input,store.learningJournalHead(input,message.epoch));
           const last = row && { id: row.id, key: row.key, kind: row.kind, at: row.at, algorithmVersion: row.algorithm_version,
             configVersion: row.config_version === null ? null : JSON.parse(row.config_version),
             forecastVersion: row.forecast_version === null ? null : JSON.parse(row.forecast_version), payload: JSON.parse(row.payload) };
-          if (last ? !validLearningCheckpoint(message.checkpoint, last) : message.checkpoint !== null)
+          if (message.modelChanged !== false && (last ? !validLearningCheckpoint(message.checkpoint, last) : message.checkpoint !== null))
             throw unavailable('The reconstructed model could not be verified');
-          const report = { ...message.report, previewId, status: 'complete', model: { status: 'rebuilt' } };
+          const report = { ...message.report, previewId, status: 'complete', model: { status: message.modelChanged === false ? 'unchanged' : 'rebuilt' } };
           store.db.prepare('UPDATE history_selection SET generation=? WHERE id=1').run(message.generation);
           store.db.prepare('INSERT INTO learning_epochs(input,epoch) VALUES(?,?) ON CONFLICT(input) DO UPDATE SET epoch=excluded.epoch')
             .run(input, message.epoch);
           store.db.prepare('UPDATE history_recoveries SET active=? WHERE id=? AND input=?').run(Number(active), recoveryId, input);
           store.db.prepare('INSERT INTO recovery_decisions(recovery_id,active,at,generation,epoch,report) VALUES(?,?,?,?,?,?)')
             .run(recoveryId, Number(active), Date.now(), message.generation, message.epoch, JSON.stringify(report));
-          store.setState(`adaptive:${input}`, message.checkpoint);
+          if (message.modelChanged !== false) store.setState(`adaptive:${input}`, message.checkpoint);
           store.setState(`pending-plan:${input}`, null);
           store.setState(`fireplace:rebuild:${input}`, { status: 'current', revision: message.fireplaceRevision,
             sensorRevision: message.sensorRevision, epoch: message.epoch, requiresRebuild: false });

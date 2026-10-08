@@ -10,6 +10,24 @@ const preview = { previewId, status: 'checked', tables: [{ name: 'observations',
 const view = changes => ({ available: true, readOnly: false, busy: false, sources: [source], operations: [],
   preview, job: { kind: 'check', status: 'complete', source }, ...changes });
 const admin = { topology: 'standalone', role: 'master', webAccess: { role: 'admin' } };
+
+test('full verification is an explicit recovery option and persists on transport retry', async () => {
+  const saved = storage(), bodies = [];
+  const first = createHistoryRecoveryActions({ storage: saved, makeRequestId: () => id, confirm: () => true,
+    request: async (_path, body) => { bodies.push(body); throw Error('disconnected'); } });
+  first.update(view()); await first.run('revert', { previewId, verifyWithFullSnapshot: true });
+  const second = createHistoryRecoveryActions({ storage: saved,
+    request: async (_path, body) => { bodies.push(body); return view(); } });
+  second.update(view()); await second.retry();
+  assert.equal(bodies[0].verifyWithFullSnapshot, true); assert.deepEqual(bodies[1], bodies[0]);
+});
+
+test('incremental recovery inventory labels only records since the shared checkpoint', () => {
+  const { document, $ } = fixture();
+  renderRecoveryReport(document, $('report'), { ...preview, incremental: { records: 19 } });
+  assert.match(text($('report')), /Changed source records since the shared checkpoint/);
+  assert.match(text($('report')), /do not include unchanged earlier history/);
+});
 test('recovery errors expose only known actionable source rejections', () => {
   for (const error of [
     'The database schema does not match this application. Use an intact current-schema backup or deliberately start with a fresh database.',
@@ -127,6 +145,18 @@ function fixture() {
   return { document, $: document.getElementById };
 }
 const text = root => [root.textContent, ...root.children.map(text)].join(' ');
+
+test('recovery checkbox is unchecked by default and adds optional full verification to its check action', async () => {
+  const { document, $ } = fixture(), bodies = [];
+  const panel = createHistoryRecoveryPanel({ document, request: async (_path, body) => { if (body) bodies.push(body); return view(); } });
+  panel.update(admin); await panel.open({ sourceId: source.id });
+  assert.equal($('history-recovery-full-verification').checked, false);
+  $('history-recovery-installation-confirm').checked = true;
+  $('history-recovery-installation-confirm').listeners.get('change')();
+  $('history-recovery-full-verification').checked = true;
+  $('history-recovery-check').click(); await new Promise(resolve => setImmediate(resolve));
+  assert.equal(bodies.length, 1); assert.equal(bodies[0].verifyWithFullSnapshot, true);
+});
 
 test('source reports show category dates and explicit energy gaps with separate folded diagnostics and inventory', () => {
   const { document, $ } = fixture(), range = { count: 2,from: 1000,to: 3000,undated: 0 };

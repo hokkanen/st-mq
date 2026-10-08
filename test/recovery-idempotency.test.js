@@ -111,7 +111,7 @@ test('an already mirrored repeated unavailable phase cohort is present without i
   const observations = f.master.db.prepare('SELECT * FROM observations ORDER BY id').all();
   const coverage = f.master.db.prepare('SELECT * FROM recorder_coverage ORDER BY id').all();
   const result = await recover(f, await f.snapshot(f.master));
-  assert.deepEqual(result.report.counts, { missing: 0, conflicts: 0, duplicates: 12, skipped: 0 });
+  assert.deepEqual(result.report.counts, { missing: 0, conflicts: 0, duplicates: 0, skipped: 0 });
   assert.equal(result.report.imported, 0);
   assert.deepEqual(f.master.db.prepare('SELECT * FROM observations ORDER BY id').all(), observations);
   assert.deepEqual(f.master.db.prepare('SELECT * FROM recorder_coverage ORDER BY id').all(), coverage);
@@ -129,7 +129,7 @@ test('an exact existing coverage span is present even when a later contrary span
   insert(f.master, 'unavailable', start, start + 2 * HOUR, start + HOUR, unknown, 3);
   const before = f.master.db.prepare('SELECT * FROM recorder_coverage ORDER BY id').all();
   const same = await recover(f, await f.snapshot(f.master));
-  assert.deepEqual(same.report.counts, { missing: 0, conflicts: 0, duplicates: 4, skipped: 0 });
+  assert.deepEqual(same.report.counts, { missing: 0, conflicts: 0, duplicates: 0, skipped: 0 });
   assert.deepEqual(f.master.db.prepare('SELECT * FROM recorder_coverage ORDER BY id').all(), before);
   const donor = await f.donor();
   insert(donor, 'fresh', start + HOUR / 4, start + HOUR / 2, start, fresh, 2);
@@ -169,7 +169,7 @@ test('distinct existing events and learning contexts sharing a timestamp are rec
   const journal = f.master.learningJournal({ input: 'mqtt' });
   assert.equal(journal.length, 2);
   const result = await recover(f, await f.snapshot(f.master));
-  assert.deepEqual(result.report.counts, { missing: 0, conflicts: 0, duplicates: 4, skipped: 0 });
+  assert.deepEqual(result.report.counts, { missing: 0, conflicts: 0, duplicates: 0, skipped: 0 });
   assert.deepEqual(f.master.learningJournal({ input: 'mqtt' }), journal);
   assert.equal(result.report.model.status, 'unchanged');
 });

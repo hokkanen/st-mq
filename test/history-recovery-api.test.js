@@ -81,6 +81,20 @@ async function fixture(t, options = {}) {
     loseAuthority: () => { control = false; coordinator.cancel(); }, replaceEngine: () => { currentEngine = { ...engine }; } };
 }
 
+test('full recovery verification is opt-in, runs before the operation and rejects invalid option types', async t => {
+  const verified = [];
+  const f = await fixture(t, { coordinator: { fullVerifier: async value => { verified.push(value.dbPath); } } });
+  const source = await (await f.upload(await f.backup())).json();
+  assert.equal((await f.post(request('check', { sourceId: source.sourceId, installationConfirmed: true }))).status, 202);
+  await f.coordinator.settled(); assert.equal(verified.length, 0);
+  assert.equal((await f.post(request('check', { sourceId: source.sourceId, installationConfirmed: true, verifyWithFullSnapshot: true }))).status, 202);
+  await f.coordinator.settled(); assert.equal(verified.length, 2); assert.equal(verified[0], f.store.path);
+  assert.equal((await f.post(request('review-revert', { operationId: 'fixture', verifyWithFullSnapshot: true }))).status, 202);
+  await f.coordinator.settled(); assert.equal(verified.length, 3);
+  assert.equal((await f.post(request('check', { sourceId: source.sourceId, installationConfirmed: true, verifyWithFullSnapshot: 'yes' }))).status, 400);
+  assert.equal(verified.length, 3);
+});
+
 test('standalone upload, explicit source review, recovery publication and retry receipts share durable coordinator state', async t => {
   const f = await fixture(t);
   const response = await f.upload(await f.backup());

@@ -799,7 +799,7 @@ byte and variation metrics remain labeled as such. Current open energy is shown
 separately from finalized observation counts. The annual target measures overall
 SQLite growth; mandatory exact/history records are never dropped to meet it.
 
-This recording contract uses database schema 23. An incompatible development
+This recording contract uses database schema 24. An incompatible development
 schema is rejected before mutation with fresh-database guidance; no migration,
 backfill or automatic reset is provided. Supported read-only v0.7.5 CSV import,
 current-version restart, backup/restore and deterministic journal replay remain.
@@ -1708,10 +1708,15 @@ development databases. Keep the original backup. Uploaded copies are temporary
 working sources and do not replace an independent backup.
 
 For a backup, confirm **This backup contains this household’s history**, then select
-**Check backup**. The check validates the database's current format, integrity
-and input scope and reports source record counts, category date ranges on both
-sides, recorded energy gaps and potential source coverage during those intervals
-or outside the master's date range. The confirmation asserts household identity;
+**Check backup**. A source sharing this database's transaction lineage is checked
+at its exact hash-linked checkpoint. The check inventories changed source rows
+since the shared checkpoint, including the referenced evidence needed by those
+rows; it does not recount unchanged history. A paired divergent source can be
+reviewed directly from its journal transfer, using a private overlay of changed
+rows without copying either database. An unrelated backup has no shared
+checkpoint and requires an exceptional full inventory: format, integrity, input
+scope, source counts, category date ranges and potential coverage are assessed
+from its self-contained file. The confirmation asserts household identity;
 it is not an assertion about software versions and cannot bypass automatic format
 validation. Matching format alone cannot establish household identity.
 Availability reports have a separate collapsed
@@ -1742,7 +1747,8 @@ source check does not offer gap recovery or imply that it is needed.
 
 Switch to **Previous recoveries** for later review of a recovery. Select
 **Review revert**, inspect its effect, then confirm **Revert recovery** to exclude
-its accepted evidence from current history and rebuild the model. **Review
+its accepted evidence from current history. The model is rebuilt only when the
+changed selection affects learning. **Review
 restore → Restore recovery** includes that evidence again where current evidence
 permits; later local evidence wins new conflicts. These actions apply
 to a whole recovery, have no time limit, and preserve later independent records
@@ -1765,8 +1771,24 @@ every update; job transitions and completed outcomes remain durable. The summary
 rediscovers an accepted job after a reload, and previous-recovery totals are read
 in a bounded background worker. Large accepted recovery jobs have no fixed
 one-hour cutoff; shutdown and authority loss still cancel them. Revert/restore
-reviews may temporarily copy the master database into a private workspace; this
-copy is removed after completion or cancellation and is not a retained backup.
+reviews pin a read-only source transaction and write only private temporary
+selection rows. Reverse source-reference indexes restrict dependency checks to
+affected evidence. A history-only correction keeps the existing model epoch and
+checkpoint. A learned correction reuses the last matching durable model checkpoint
+before the affected input. Compact epoch ranges retain the unchanged journal
+prefix with its original row identities, and the same reconstruction function
+replays only the affected suffix. Saved checkpoints come from the transactional
+journal's existing state images; they are validated against their selected
+input prefix and source revisions. If the correction reaches before an available
+matching checkpoint, or changes retrospective source corrections, replay from
+the retained seed remains necessary. This work stays separate from scanning
+unrelated observations or copying the database.
+
+**Verify with full snapshot** adds the independent full verifier to a manual
+operation. Manual verification and scheduled background checks use the same
+verifier. It compares data only at matching transaction checkpoints: continuing
+recording cannot turn different source times into a false mismatch. Verification
+results do not grant device authority or replace an independent dated backup.
 
 ## Single-file database export
 

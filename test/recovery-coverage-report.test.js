@@ -217,7 +217,8 @@ test('selected history and bounded outage details exclude reverted evidence with
 });
 
 test('worker check stays read only, uses a consistent master snapshot and leaves live writers responsive', { timeout: 20000 }, async t => {
-  const f = fixture(t), donor = await f.donor();
+  const f = fixture(t), donor = new Store(`${f.directory}/unrelated-source.sqlite`);
+  t.after(()=>donor.close());
   observation(f.master,start); observation(donor,start + HOUR);
   donor.transaction(() => {
     for (let i = 0; i < 10000; i++) observation(donor,start + 2 * HOUR + i * 1000);

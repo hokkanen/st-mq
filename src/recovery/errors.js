@@ -17,6 +17,7 @@ const messages = Object.freeze({
   database_schema_invalid: 'The database structure does not match its declared schema. Use an intact current-schema backup or deliberately start with a fresh database.',
   database_algorithm_mismatch: 'This database uses a different learning algorithm. Its history is preserved. Use matching software to inspect it; recovery requires a supported database for this version.',
   database_state_incompatible: 'This database contains saved application state that this version cannot safely use. Its history is preserved. Use matching software to inspect it before choosing a supported recovery path.',
+  database_journal_invalid: 'The transaction journal or checkpoint could not be verified. Preserve the database and run full verification or choose an intact current-format backup.',
   database_integrity_failed: 'This database failed its integrity checks and cannot be used safely. Keep its files intact and check storage or choose an intact verified backup.',
 });
 

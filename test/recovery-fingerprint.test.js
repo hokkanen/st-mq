@@ -24,7 +24,7 @@ test('rejected journal and context evidence cannot return through a reprojected 
   const args = { store: f.master, input: 'mqtt', recoveryId: first.report.recoveryId, active: false, signal: f.signal };
   await reviseRecovery({ ...args, preview: await previewRecoveryRevision(args) });
   const next = await recover(f, await f.snapshot(copied));
-  assert(next.report.counts.conflicts >= 2);
+  assert.equal(next.report.counts.conflicts,0,'unchanged rejected common-prefix records are outside the incremental source');
   assert.deepEqual(f.master.learningJournal({ input: 'mqtt' }).map(row => row.at), [start, start + W, start + 3 * W]);
   assert.equal(f.master.db.prepare('PRAGMA foreign_key_check').get(), undefined);
 });

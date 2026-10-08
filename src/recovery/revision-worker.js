@@ -1,6 +1,5 @@
 import { parentPort, workerData } from 'node:worker_threads';
 import { randomUUID } from 'node:crypto';
-import { join } from 'node:path';
 import { yieldToController as yieldTurn } from './scheduler.js';
 import { Store } from '../storage/store.js';
 import { RECOVERABLE_TABLES, recoveryRecordKey } from '../storage/schema.js';
@@ -12,23 +11,36 @@ import { HistoryMerge } from './merge.js';
 import { pendingEnergyObservationsFromStates } from '../storage/pending-energy.js';
 import { validEnergyQuality } from '../storage/energy-history.js';
 import { recoveryFailure } from './errors.js';
+import { RECOVERY_MODEL_TIME } from './dependencies.js';
+import { findLearningPrefix, retainLearningPrefix, prefixSourceId } from './learning-prefix.js';
+import { projectedSensorContext } from './state.js';
 
-const path = workerData.mode === 'revision-preview'
-  ? join(workerData.temporaryDirectory, 'candidate.sqlite') : workerData.masterPath;
+const previewOnly = workerData.mode === 'revision-preview';
 parentPort.postMessage({ type: 'progress', phase: 'validating', processed: 0 });
-const store = new Store(path);
-if (workerData.mode === 'revision-preview') store.db.exec('PRAGMA synchronous=OFF;');
+const store = new Store(workerData.masterPath, { readOnly: previewOnly });
 store.db.exec('PRAGMA temp_store=FILE; PRAGMA temp.cache_size=-8192;');
+if (previewOnly) {
+  // SQLite opened MAIN read-only. Permit private TEMP writes while retaining a
+  // pinned source read transaction; a review never copies the historical DB.
+  store.db.exec(`PRAGMA query_only=OFF; BEGIN;
+    CREATE TEMP TABLE recovery_exclusions (
+      generation TEXT NOT NULL,table_name TEXT NOT NULL,record_key TEXT NOT NULL,
+      reason TEXT NOT NULL DEFAULT 'rejected',PRIMARY KEY(generation,table_name,record_key)) WITHOUT ROWID;
+    INSERT INTO temp.recovery_exclusions SELECT * FROM main.recovery_exclusions
+      WHERE generation=(SELECT generation FROM main.history_selection WHERE id=1);`);
+  store.transaction = callback => callback();
+}
 const db = store.db, input = workerData.input;
-const generation = randomUUID(), epoch = `revision:${generation}`;
+const generation = randomUUID();
+let epoch = `revision:${generation}`, modelChanged = true;
 const decode = row => ({ id: row.id, key: row.key, kind: row.kind, at: row.at,
   algorithmVersion: row.algorithm_version, configVersion: row.config_version === null ? null : JSON.parse(row.config_version),
   forecastVersion: row.forecast_version === null ? null : JSON.parse(row.forecast_version), payload: JSON.parse(row.payload) });
 const fail = (message, code) => { throw Object.assign(new Error(message), { public: true, code }); };
-const head = () => db.prepare('SELECT COALESCE(MAX(id),0) n FROM learning_journal WHERE input=?').get(input).n;
+const head = () => store.learningJournalHead(input);
 const selection = selectedHistory(store), sourceEpoch = store.learningEpoch(input);
 const sourceFireplace = fireplaceLearningContext(store, input).fireplaceRevision, sourceSensor = sensorRevision(store, input);
-let sourceHead = head(), checkpoint = null, report, source, processed = 0, busy = false, closed = false;
+let sourceHead = head(), checkpoint = null, prefix = null, report, source, processed = 0, busy = false, closed = false;
 let restorationToken = null, restorationVerified = null;
 const pendingStates = source => source.db.prepare("SELECT key,value FROM state WHERE key LIKE 'recorder:energy:%' ORDER BY key").all();
 const observationHead = source => source.db.prepare('SELECT COALESCE(MAX(id),0) n FROM observations').get().n;
@@ -65,28 +77,12 @@ function selectProposedViews() {
   // Temporary views affect only this worker's read interpretation. Live charts,
   // control and other readers keep the previously published selection.
   for (const table of RECOVERABLE_TABLES) db.exec(`CREATE TEMP VIEW active_${table} AS SELECT r.* FROM main.${table} r
-    WHERE NOT EXISTS(SELECT 1 FROM main.recovery_exclusions x WHERE x.generation='${generation}'
+    WHERE NOT EXISTS(SELECT 1 FROM recovery_exclusions x WHERE x.generation='${generation}'
       AND x.table_name='${table}' AND x.record_key=${recoveryRecordKey(table)});`);
 }
 
-function referencesRejected(value) {
-  if (!value || typeof value !== 'object') return false;
-  for (const [key, item] of Object.entries(value)) {
-    if (['observationId', 'sourceObservationId'].includes(key) && hidden('observations', item)
-      || key === 'coverageId' && hidden('recorder_coverage', item)
-      || key === 'snapshotId' && hidden('provider_snapshot_fetches', item)
-      || ['cycleId', 'episodeId'].includes(key) && hidden('learning_cycles', item)) return true;
-    if (key === 'observations' && Array.isArray(item) && item.some(id => hidden('observations', id))) return true;
-    if (key === 'coverage' && Array.isArray(item) && item.some(id => hidden('recorder_coverage', id))) return true;
-    if (key === 'journal' && Array.isArray(item) && item.some(id => hidden('learning_journal', id))) return true;
-    if (key === 'forecastVersion' && item && hidden('provider_snapshot_fetches', item.id)) return true;
-    if (key === 'sensorRevert' && item && hidden('learning_journal', item.id)) return true;
-    if (referencesRejected(item)) return true;
-  }
-  return false;
-}
-
 async function prepareSelection() {
+  progress('checking',{processed:0,unit:'records'});
   const operation = db.prepare('SELECT * FROM history_recoveries WHERE id=? AND input=?').get(workerData.recoveryId, input);
   if (!operation || typeof workerData.active !== 'boolean') fail('Choose an existing recovery.');
   if (Boolean(operation.active) === workerData.active) fail('This recovery already has the selected state.');
@@ -156,67 +152,62 @@ async function prepareSelection() {
     conflictVersion: restorationToken?.token ?? null,
     period: saved.period ?? { from: null, to: null }, tables,
     counts: { affected: tables.reduce((sum, row) => sum + row.count, 0) }, model: { status: 'rebuild-required' } };
+  modelChanged = tables.some(row => ['learning_journal','fireplace_events'].includes(row.name));
+  report.model.status = modelChanged ? 'rebuild-required' : 'unchanged';
   report.previewId = learningVersion(report);
 }
 
-async function scanDependencies(after = 0) {
-  // One ordered pass handles journal references to preceding entries. Roots
-  // from every published epoch include observations recorded after recovery.
+async function scanDependencies() {
+  // Indexed reverse references expand only the affected graph. Newly rejected
+  // roots become inputs to the next bounded pass, including later local work.
   for (;;) {
-    const rows = db.prepare(`SELECT e.* FROM learning_journal_entries e WHERE e.input=? AND e.source_entry_id IS NULL AND e.id>?
-      AND ${publishedRoot} ORDER BY e.id LIMIT 64`).all(input, after, sourceEpoch);
+    const rows = db.prepare(`SELECT DISTINCT e.* FROM recovery_exclusions x
+      JOIN recovery_dependencies d ON d.source_table=x.table_name AND d.source_key=x.record_key
+      JOIN learning_journal_entries e ON e.id=CAST(d.owner_key AS INTEGER)
+      WHERE x.generation=? AND d.owner_table='learning_journal' AND e.input=? AND e.source_entry_id IS NULL
+      AND NOT EXISTS(SELECT 1 FROM recovery_exclusions old WHERE old.generation=?
+        AND old.table_name='learning_journal' AND old.record_key=d.owner_key)
+      AND ${publishedRoot} ORDER BY e.id LIMIT 64`).all(generation,input,generation,sourceEpoch);
     if (!rows.length) break;
-    store.transaction(() => {
-      for (const row of rows) {
-        if (referencesRejected(JSON.parse(row.payload))) exclude.run(generation, 'learning_journal', String(row.id));
-        after = row.id; processed++;
-      }
-    });
+    store.transaction(() => { for (const row of rows) {
+      exclude.run(generation,'learning_journal',String(row.id)); processed++;
+    } });
     progress('checking'); await yieldTurn();
   }
 }
 
 async function checkOtherInputs() {
-  // Physical observations are shared, but each input owns its journal/model.
-  // Never publish a correction that would silently leave another supported
-  // input's saved learning dependent on rejected physical evidence.
-  let after = 0;
-  for (;;) {
-    const rows = db.prepare('SELECT id,payload FROM learning_journal WHERE input<>? AND id>? ORDER BY id LIMIT 64').all(input, after);
-    if (!rows.length) break;
-    for (const row of rows) {
-      if (referencesRejected(JSON.parse(row.payload))) fail(
-        'This recovery affects saved learning in another input. Keep it active or use a separate database for that input.',
-        'recovery_other_input');
-      after = row.id;
-    }
-    await yieldTurn();
-  }
+  const row = db.prepare(`SELECT 1 FROM recovery_exclusions x
+    JOIN recovery_dependencies d ON d.source_table=x.table_name AND d.source_key=x.record_key
+    JOIN learning_journal_entries e ON e.id=CAST(d.owner_key AS INTEGER)
+    WHERE x.generation=? AND d.owner_table='learning_journal' AND e.input<>?
+      AND (e.epoch=COALESCE((SELECT epoch FROM learning_epochs WHERE input=e.input),'original')
+        OR EXISTS(SELECT 1 FROM learning_journal_all selected WHERE (selected.source_entry_id=e.id OR selected.id=e.id)
+          AND selected.input=e.input AND selected.epoch=COALESCE((SELECT epoch FROM learning_epochs WHERE input=e.input),'original')))
+    LIMIT 1`).get(generation,input);
+  if (row) fail('This recovery affects saved learning in another input. Keep it active or use a separate database for that input.',
+    'recovery_other_input');
 }
 
 async function invalidateAssessments() {
-  const earliest = db.prepare(`SELECT MIN(e.at) at FROM learning_journal_entries e
-    JOIN recovery_exclusions x ON x.table_name='learning_journal' AND x.record_key=CAST(e.id AS TEXT)
-    WHERE x.generation=? AND e.input=?`).get(generation, input).at;
+  const earliest = db.prepare(`SELECT MIN(e.at) at FROM recovery_exclusions x
+    JOIN learning_journal_entries e ON e.id=CAST(x.record_key AS INTEGER)
+    WHERE x.generation=? AND x.table_name='learning_journal' AND e.input=?`).get(generation,input).at;
   let after = '';
   for (;;) {
-    const rows = db.prepare('SELECT id,started_at,payload FROM active_learning_cycles WHERE input=? AND id>? ORDER BY id LIMIT 32').all(input, after);
+    const rows = db.prepare(`WITH affected(id) AS (
+      SELECT d.owner_key FROM recovery_exclusions x JOIN recovery_dependencies d
+        ON d.source_table=x.table_name AND d.source_key=x.record_key
+        WHERE x.generation=? AND d.owner_table='learning_cycles'
+      UNION SELECT d.source_key FROM recovery_exclusions x JOIN recovery_dependencies d
+        ON d.owner_table=x.table_name AND d.owner_key=x.record_key
+        WHERE x.generation=? AND x.table_name='learning_journal' AND d.source_table='learning_cycles'
+      UNION SELECT id FROM learning_cycles WHERE input=? AND ? IS NOT NULL
+        AND ${RECOVERY_MODEL_TIME}>=? AND json_type(payload,'$.plan.model')='object')
+      SELECT c.id FROM affected a JOIN learning_cycles c ON c.id=a.id
+      WHERE c.input=? AND c.id>? ORDER BY c.id LIMIT 64`).all(generation,generation,input,earliest,earliest,input,after);
     if (!rows.length) break;
-    store.transaction(() => { for (const row of rows) {
-      const cycle = JSON.parse(row.payload), trained = cycle.plan?.model?.trainedAt;
-      const trainedAt = Number.isFinite(trained) ? trained : Date.parse(trained);
-      // Frozen plans have no complete model-journal boundary. If their model
-      // could contain rejected learning, its derived savings are unknown; the
-      // original plan and observed outcome remain intact and inspectable.
-      const modelAffected = earliest !== null && cycle.plan?.model
-        && (Number.isFinite(trainedAt) ? trainedAt >= earliest : row.started_at >= earliest);
-      const episodeAffected = db.prepare(`SELECT 1 FROM learning_journal_entries e
-        JOIN recovery_exclusions x ON x.table_name='learning_journal' AND x.record_key=CAST(e.id AS TEXT)
-        WHERE x.generation=? AND e.input=? AND e.kind='episode' AND json_extract(e.payload,'$.value.id')=? LIMIT 1`)
-        .get(generation, input, row.id);
-      if (referencesRejected(cycle) || modelAffected || episodeAffected) exclude.run(generation, 'cycle_assessments', row.id);
-      after = row.id;
-    } });
+    store.transaction(() => { for (const row of rows) { exclude.run(generation,'cycle_assessments',row.id); after=row.id; } });
     await yieldTurn();
   }
 }
@@ -362,16 +353,26 @@ async function verifyRestoration() {
 async function buildProjection() {
   processed = 0; progress('projecting', { processed: 0, unit: 'entries' });
   db.exec('CREATE TEMP TABLE revision_map(original INTEGER PRIMARY KEY,projected INTEGER NOT NULL)');
+  const changed=db.prepare(`SELECT MIN(e.at) earliest,MAX(json_type(e.payload,'$.value.sensorRevert')='object') retrospective
+    FROM recovery_exclusions x JOIN learning_journal_entries e ON e.id=CAST(x.record_key AS INTEGER)
+    WHERE x.generation IN (?,?) AND x.table_name='learning_journal' AND e.input=?
+      AND NOT EXISTS(SELECT 1 FROM recovery_exclusions other WHERE other.generation=CASE WHEN x.generation=? THEN ? ELSE ? END
+        AND other.table_name=x.table_name AND other.record_key=x.record_key)`).get(selection,generation,input,selection,generation,selection);
+  if(!changed.retrospective && !report.tables.some(row=>row.name==='fireplace_events'))
+    prefix=await findLearningPrefix(store,{input,epoch:sourceEpoch,earliest:changed.earliest,
+      fireplaceRevision:sourceFireplace,sensorRevision:sourceSensor});
+  retainLearningPrefix(store,{input,epoch,prefix}); checkpoint=prefix?.checkpoint??null;
+
   // Only original payloads participate, including new live records written in
   // later epochs. Compact copied ordering references never become new evidence.
   let cursor = null;
   for (;;) {
     const rows = db.prepare(`SELECT e.*,CASE kind WHEN 'context' THEN 0 WHEN 'sample' THEN 1 ELSE 2 END rank
-      FROM learning_journal_entries e WHERE input=? AND source_entry_id IS NULL AND id<=?
+      FROM learning_journal_entries e WHERE input=? AND at>=? AND source_entry_id IS NULL AND id<=?
       AND NOT EXISTS(SELECT 1 FROM recovery_exclusions x WHERE x.generation=? AND x.table_name='learning_journal' AND x.record_key=CAST(e.id AS TEXT))
       AND ${publishedRoot}
       AND (? IS NULL OR (at,CASE kind WHEN 'context' THEN 0 WHEN 'sample' THEN 1 ELSE 2 END,id)>(?,?,?))
-      ORDER BY at,rank,id LIMIT 64`).all(input, sourceHead, generation, sourceEpoch, cursor?.at ?? null, cursor?.at ?? 0, cursor?.rank ?? 0, cursor?.id ?? 0);
+      ORDER BY at,rank,id LIMIT 64`).all(input, prefix?.at??Number.MIN_SAFE_INTEGER, sourceHead, generation, sourceEpoch, cursor?.at ?? null, cursor?.at ?? 0, cursor?.rank ?? 0, cursor?.id ?? 0);
     if (!rows.length) break;
     store.transaction(() => { for (const row of rows) { stage(row); cursor = row; } });
     progress('projecting', { unit: 'entries' }); await yieldTurn();
@@ -380,6 +381,7 @@ async function buildProjection() {
 }
 
 function stage(row) {
+  if(prefixSourceId(store,{input,epoch:sourceEpoch,prefix,id:row.id})!==undefined) return;
   if (row.algorithm_version !== LEARNING_ALGORITHM) fail('Unsupported learning history cannot be reconstructed.');
   const duplicate = db.prepare(`SELECT map.projected FROM recovery_members original
     JOIN recovery_members accepted ON accepted.table_name=original.table_name AND accepted.fingerprint=original.fingerprint
@@ -408,7 +410,7 @@ function stage(row) {
       db.prepare('DELETE FROM learning_journal_entries WHERE id=? AND epoch=?').run(old.id, epoch);
     }
   }
-  const first = !db.prepare('SELECT 1 FROM revision_map LIMIT 1').get();
+  const first = !prefix && !db.prepare('SELECT 1 FROM revision_map LIMIT 1').get();
   let payload = JSON.parse(row.payload);
   // If all earlier source history was rejected, restart from documented passive
   // priors. Never adopt the rejected recovery's trained checkpoint as a seed.
@@ -420,17 +422,19 @@ function stage(row) {
   db.prepare('INSERT INTO revision_map(original,projected) VALUES(?,?)').run(row.id, id); processed++;
 }
 
-async function remapAndReplay(after = 0) {
+async function remapAndReplay(after = prefix?.cursor??0) {
   for (;;) {
-    const rows = db.prepare('SELECT * FROM learning_journal_all WHERE epoch=? AND id>? ORDER BY id LIMIT 64').all(epoch, after);
+    const rows = db.prepare('SELECT * FROM learning_journal_all WHERE epoch=? AND input=? AND id>? ORDER BY id LIMIT 64').all(epoch,input,after);
     if (!rows.length) break;
     store.transaction(() => {
       for (const row of rows) {
         const payload = JSON.parse(row.payload);
         if (payload.value?.sensorRevert) {
-          const target = db.prepare('SELECT projected FROM revision_map WHERE original=?').get(rootId(payload.value.sensorRevert.id));
+          const original=rootId(payload.value.sensorRevert.id);
+          const target=db.prepare('SELECT projected FROM revision_map WHERE original=?').get(original)?.projected
+            ??prefixSourceId(store,{input,epoch:sourceEpoch,prefix,id:original});
           if (!target) fail('A sensor correction has no remaining source entry.');
-          payload.value.sensorRevert.id = target.projected;
+          payload.value.sensorRevert.id = target;
           db.prepare('UPDATE learning_journal_entries SET payload=? WHERE id=?').run(JSON.stringify(payload), row.id);
         }
         after = row.id;
@@ -438,10 +442,7 @@ async function remapAndReplay(after = 0) {
     });
     await yieldTurn();
   }
-  const reversals = db.prepare(`SELECT id,json_extract(payload,'$.value.sensorRevert.id') target FROM learning_journal_all
-    WHERE epoch=? AND kind='context' AND json_type(payload,'$.value.sensorRevert')='object' ORDER BY id`).all(epoch);
-  source = { ...fireplaceLearningContext(store, input), sensorRevision: reversals.at(-1)?.id ?? 0,
-    revertedSensorChanges: [...new Set(reversals.map(row => row.target))] };
+  source = { ...fireplaceLearningContext(store, input), ...projectedSensorContext(store, input, epoch) };
   // New corrections are fenced; catch-up only appends samples/contexts and
   // replays the appended suffix with the same selected source revision.
   after = checkpoint?.journalCursor ?? 0;
@@ -449,7 +450,7 @@ async function remapAndReplay(after = 0) {
   const total = db.prepare('SELECT COUNT(*) total FROM learning_journal_entries WHERE epoch=? AND id>?').get(epoch, after).total;
   progress('rebuilding', { processed: 0, total, unit: 'entries' });
   for (;;) {
-    const rows = db.prepare('SELECT * FROM learning_journal_all WHERE epoch=? AND id>? ORDER BY id LIMIT 64').all(epoch, after);
+    const rows = db.prepare('SELECT * FROM learning_journal_all WHERE epoch=? AND input=? AND id>? ORDER BY id LIMIT 64').all(epoch,input,after);
     if (!rows.length) break;
     for (const row of rows) { checkpoint = applyLearningRecord(checkpoint, decode(row), source); after = row.id; replayed++; }
     progress('rebuilding', { processed: replayed, total, unit: 'entries' }); await yieldTurn();
@@ -457,6 +458,7 @@ async function remapAndReplay(after = 0) {
 }
 
 async function catchup() {
+  if (!modelChanged) return catchupUnchanged();
   progress('catching-up', { processed: 0, unit: 'entries' });
   assertSource();
   const through = head();
@@ -493,13 +495,36 @@ async function catchup() {
   progress('publishing', { processed: 0 });
   parentPort.postMessage({ type: 'ready', revision: true, generation, epoch, sourceEpoch, sourceHead,
     sourceSelection: selection, sourceFireplace, sourceSensor, fireplaceRevision: source.fireplaceRevision,
-    sensorRevision: source.sensorRevision, checkpoint, evidenceVersion, report });
+    sensorRevision: source.sensorRevision, checkpoint, evidenceVersion, report, modelChanged });
+}
+
+async function catchupUnchanged() {
+  progress('catching-up',{processed:0,unit:'records'}); await yieldTurn();
+  assertSource();
+  const through = head();
+  await scanDependencies(); await invalidateAssessments(); await checkOtherInputs();
+  const affected = db.prepare(`SELECT 1 FROM recovery_exclusions x WHERE x.generation=?
+    AND x.table_name IN ('learning_journal','fireplace_events')
+    AND NOT EXISTS(SELECT 1 FROM recovery_exclusions old WHERE old.generation=?
+      AND old.table_name=x.table_name AND old.record_key=x.record_key) LIMIT 1`).get(generation,selection);
+  if (affected) fail('New learning depends on this recovery. Review its impact again.');
+  let evidenceVersion = null;
+  if (workerData.active) {
+    const current = await verifyRestoration();
+    if (current.token !== restorationToken.token) fail('New local evidence changes this restoration. Review its impact again.');
+    evidenceVersion = current.version;
+  }
+  sourceHead = through; epoch = sourceEpoch;
+  checkpoint = store.getState(`adaptive:${input}`) ?? null;
+  progress('publishing',{processed:0}); await yieldTurn();
+  parentPort.postMessage({ type:'ready',revision:true,generation,epoch,sourceEpoch,sourceHead,
+    sourceSelection:selection,sourceFireplace,sourceSensor,fireplaceRevision:sourceFireplace,
+    sensorRevision:sourceSensor,checkpoint,evidenceVersion,report,modelChanged:false });
 }
 
 function close() { if (!closed) { closed = true; store.close(); parentPort.close(); } }
 function failed(error) { parentPort.postMessage({ type: 'failed', ...recoveryFailure(error) }); close(); }
 async function start() {
-  if (workerData.mode !== 'revision-preview') await discardUnpublished();
   await prepareSelection();
   if (workerData.mode === 'revision-preview') {
     db.prepare('DELETE FROM recovery_exclusions WHERE generation=?').run(generation);
@@ -512,7 +537,8 @@ async function start() {
     || checked.conflictVersion !== report.conflictVersion
     || checked.decisionHead !== report.decisionHead || checked.contributionHead !== report.contributionHead)
     fail('Recovery review is stale. Review the impact again.');
-  await buildProjection(); await catchup();
+  if (modelChanged) { await discardUnpublished(); await buildProjection(); }
+  await catchup();
 }
 
 async function discardUnpublished() {
@@ -520,8 +546,8 @@ async function discardUnpublished() {
   // its epoch and exclusion generation so earlier interpretations remain valid.
   for (;;) {
     const rows = db.prepare(`SELECT generation,table_name,record_key FROM recovery_exclusions x
-      WHERE generation<>(SELECT generation FROM history_selection WHERE id=1)
-      AND NOT EXISTS(SELECT 1 FROM recovery_decisions d WHERE d.generation=x.generation) LIMIT 128`).all();
+      WHERE generation<>? AND generation<>(SELECT generation FROM history_selection WHERE id=1)
+      AND NOT EXISTS(SELECT 1 FROM recovery_decisions d WHERE d.generation=x.generation) LIMIT 128`).all(generation);
     if (!rows.length) break;
     store.transaction(() => { for (const row of rows)
       db.prepare('DELETE FROM recovery_exclusions WHERE generation=? AND table_name=? AND record_key=?')
@@ -529,7 +555,15 @@ async function discardUnpublished() {
     await yieldTurn();
   }
   for (;;) {
-    const rows = db.prepare(`SELECT id FROM learning_journal_entries e WHERE epoch LIKE 'revision:%'
+    const rows=db.prepare(`SELECT DISTINCT epoch FROM learning_epoch_segments s WHERE epoch>='revision:' AND epoch<'revision;'
+      AND NOT EXISTS(SELECT 1 FROM recovery_decisions d WHERE d.epoch=s.epoch)
+      AND NOT EXISTS(SELECT 1 FROM learning_epochs selected WHERE selected.epoch=s.epoch) LIMIT 64`).all();
+    if(!rows.length) break;
+    store.transaction(()=>{for(const row of rows) db.prepare('DELETE FROM learning_epoch_segments WHERE epoch=?').run(row.epoch);});
+    await yieldTurn();
+  }
+  for (;;) {
+    const rows = db.prepare(`SELECT id FROM learning_journal_entries e WHERE epoch>='revision:' AND epoch<'revision;'
       AND NOT EXISTS(SELECT 1 FROM recovery_decisions d WHERE d.epoch=e.epoch)
       AND NOT EXISTS(SELECT 1 FROM learning_epochs selected WHERE selected.epoch=e.epoch) LIMIT 64`).all();
     if (!rows.length) break;

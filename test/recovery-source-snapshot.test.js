@@ -2,11 +2,13 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { join } from 'node:path';
 import { readFile, readdir } from 'node:fs/promises';
+import { Store } from '../src/storage/store.js';
 import { recoveryPreview, recoverHistory } from '../src/recovery/service.js';
 import { fixture, observation, start } from './helpers/recovery-fixture.js';
 
 for (const open of [true, false]) test(`a ${open ? 'live' : 'closed'} WAL donor is rejected without modifying either history`, async t => {
-  const f = fixture(t), donor = await f.donor();
+  const f = fixture(t), donor = new Store(join(f.directory,'unrelated.sqlite'));
+  t.after(()=>{try{donor.close();}catch{}});
   observation(donor, start);
   const donorPath = donor.path;
   if (!open) donor.close();

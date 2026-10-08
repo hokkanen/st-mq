@@ -8,7 +8,7 @@ export function assessRecoverySource(donor, input) {
     COALESCE(SUM(input='mqtt'),0) mqtt, COALESCE(SUM(input='providers'),0) providers,
     COALESCE(SUM(input='simulated'),0) simulated, COALESCE(SUM(input='history'),0) history,
     COALESCE(SUM(input NOT IN ('mqtt','providers','simulated','history')),0) unknown
-    FROM learning_journal`).get();
+    FROM ${donor.recoveryJournal ?? 'learning_journal'}`).get();
   const observed = donor.db.prepare(`SELECT
     EXISTS(SELECT 1 FROM active_observations WHERE source='simulation'
       OR source='controller' AND device='simulated' LIMIT 1) simulated,

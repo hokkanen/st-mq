@@ -81,7 +81,9 @@ export async function learningCatchup(t, windows) {
     SUM(source_entry_id IS NOT NULL) references_count,
     SUM(COALESCE(length(payload),0)+COALESCE(length(config_version),0)+COALESCE(length(forecast_version),0)) payload_bytes
     FROM learning_journal_entries`).get();
-  assert.equal(storage.references_count, original.length + 1, 'master prefix and live tail use compact source references');
+  assert.equal(storage.references_count, 9, 'only the affected eight-window master suffix and live tail use new ordering references');
+  assert.equal(f.master.db.prepare('SELECT COUNT(*) n FROM learning_epoch_segments WHERE epoch=?').get(result.epoch).n, 1,
+    'the unchanged checkpoint prefix is retained as one range');
   assert.equal(storage.payloads, original.length + 1 + windows, 'each accepted source payload is saved once');
   assert.equal(f.master.db.prepare(`SELECT COUNT(*) n FROM learning_journal_entries a
     JOIN learning_journal_entries b ON a.source_entry_id=b.id WHERE b.source_entry_id IS NOT NULL`).get().n, 0,
