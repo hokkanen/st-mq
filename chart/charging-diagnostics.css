@@ -1,4 +1,4 @@
-.charging-footer .charging-session-report { grid-column: 1 / -1; grid-row: 3; display: flex; align-items: center; justify-content: space-between; gap: 12px; width: 100%; min-height: 44px; margin: 0; padding: 5px 12px; border: 1px solid transparent; border-radius: 6px; background: var(--surface-soft); color: var(--text); font-size: 11px; line-height: 1.4; font-weight: 400; text-align: left; white-space: normal; }
+.charging-footer .charging-session-report { grid-column: 1 / -1; grid-row: 3; display: flex; align-items: center; justify-content: space-between; gap: 12px; width: 100%; min-height: 44px; margin: 0; padding: 5px 12px; border: 1px solid var(--border); border-radius: 6px; background: var(--surface-soft); color: var(--text); font-size: 11px; line-height: 1.4; font-weight: 400; text-align: left; white-space: normal; }
 .charging-session-report-copy { display: grid; align-content: center; gap: 2px; min-width: 0; min-height: 32px; line-height: 15px; overflow-wrap: anywhere; }
 .charging-session-report-label, .charging-session-report-open { color: var(--muted); }
 .charging-session-report-status { font-weight: 500; }

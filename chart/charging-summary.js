@@ -6,8 +6,6 @@ const nativeForecast = forecast => ['forecast', 'uncertain'].includes(forecast?.
   && ['automatic-current-forecast', 'vehicle-stop-unknown'].includes(forecast.reason)
   || forecast?.state === 'forecast' || forecast?.controlled === false && forecast.state !== 'planned';
 
-export const CHARGING_FLEXIBILITY_PREVIEW_LIFETIME_MS = 5 * 60_000;
-
 /** A price opportunity is an estimate; only an unconsumed grant marks the deadline. */
 export function chargingFlexibility(charger, { now = Date.now(), comparison = charger.flexibility?.preview, loading = false } = {}) {
   const state = charger.flexibility;
@@ -18,8 +16,9 @@ export function chargingFlexibility(charger, { now = Date.now(), comparison = ch
   const remaining = charger.progress?.remainingGridKwh ?? charger.requiredGridKwh ?? charger.plan?.requiredGridKwh;
   const complete = finite(remaining) && remaining <= 0;
   const visible = connected && Boolean(state) && (active || awaitingCheckpoint || state.enabled === true && !complete);
-  const available = comparison?.available === true && finite(comparison.at) && comparison.at <= now
-    && now - comparison.at < CHARGING_FLEXIBILITY_PREVIEW_LIFETIME_MS;
+  // The runtime retains the last successful comparison for this request. Its
+  // original time stays attached; age alone does not erase a cost estimate.
+  const available = comparison?.available === true && finite(comparison.at) && comparison.at <= now;
   const savings = available && finite(comparison.savingsCents) ? comparison.savingsCents : null;
   const recommended = !active && !awaitingCheckpoint && state?.eligible === true && comparison?.recommended === true && savings > 0;
   // Recommendation controls emphasis, never whether a valid comparison is shown.
@@ -27,12 +26,11 @@ export function chargingFlexibility(charger, { now = Date.now(), comparison = ch
   const cents = savings === null ? null : Math.round(Math.abs(savings));
   const amount = cents === null ? null : `€${(cents / 100).toFixed(2)}`;
   const extraCost = savings < 0 && cents > 0;
-  const label = active ? 'Review flexibility' : awaitingCheckpoint ? 'Updating…'
-    : amount !== null ? extraCost ? `+${amount} est. cost` : `${amount} est. saving`
-      : loading ? 'Calculating…' : 'No estimate';
-  const detail = active ? 'Review the approved one-day allowance.' : awaitingCheckpoint ? 'Waiting for the updated charging request.'
-    : amount !== null ? extraCost ? `${amount} estimated extra cost.` : `${amount} estimated saving.`
-      : loading ? 'Calculating estimated savings.' : 'A current savings estimate is unavailable.';
+  const label = amount !== null ? extraCost ? `+${amount} est. cost` : `${amount} est. saving`
+    : loading ? 'Calculating…' : 'Compare savings';
+  const detail = [active ? 'Review the approved one-day allowance.' : awaitingCheckpoint ? 'Waiting for the updated charging request.' : '',
+    amount !== null ? extraCost ? `${amount} estimated extra cost.` : `${amount} estimated saving.`
+      : loading ? 'Calculating estimated savings.' : 'Compare the estimated charging costs.'].filter(Boolean).join(' ');
   return { visible, active, awaitingCheckpoint, complete, eligible: state?.eligible === true && !active && !awaitingCheckpoint && !complete,
     effectiveReadyByAt: timestamp(state?.effectiveReadyByAt ?? (state?.active ? state.deferredReadyByAt : state?.normalReadyByAt)),
     title: active ? 'One day allowed' : 'One extra day',

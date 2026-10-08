@@ -86,6 +86,11 @@ not establish a firmware cause or cure for the
 Basic start/stop requires fresh native state, start permission and current setting, working MQTT,
 a running service and no active errors or flags. It preserves native current
 settings, energy/time caps, automatic-start settings and `auto_balance`.
+An admitted packet awaiting storage withholds mutations and new minimum-current
+matches, but does not erase still-fresh committed observations or the existing
+identification attempt. Native notification readback keeps its separate command
+gate. A failed save, stale observations, offline device or native fault still
+withdraws readiness; waiting never renews source clocks or identification limits.
 Automatic charging remains a separate dashboard choice. A later setting change
 in the native app takes priority for the connection; turning Automatic charging
 on does not clear a native Stop or a current choice made during that connection.
@@ -297,13 +302,19 @@ measurements to that contract. It has no native expiry for the temporary current
 setting or identification pause: an application/MQTT outage can prolong either,
 and recovery must reconcile the original scoped obligation.
 
-A late Shelly Start notification may carry a fractional native clock slightly
+A late Shelly Start or Stop notification may carry a fractional native clock slightly
 before the application's dispatch clock in the same native setting second. Its
 original clock is preserved. Attribution requires the acknowledged same-session
-Start and a fresh matching RPC readback requested after both acknowledgement and
+command and a fresh matching RPC readback requested after both acknowledgement and
 notification receipt, while that accepted command is still pending confirmation.
-This does not absorb Stop, different-second events or events without an RPC
-source, or permit a second write after an uncertain result.
+This does not absorb an opposite instruction, different-second events or events
+without an RPC source, or permit a second write after an uncertain result.
+A matching same-second Stop without sufficient acknowledgement/readback remains
+stopped and unresolved; RPC provenance alone does not label its sender external.
+An owned identification pause retains the original whole-second permission
+timestamp, which can precede dispatch within that second; confirmation still
+follows the acknowledged command. Its separate physical stop evidence must follow
+the pause request before it can identify a vehicle.
 
 ## Hardware verification still required
 

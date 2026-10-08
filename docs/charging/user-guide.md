@@ -68,6 +68,22 @@ midnight, identification, replanning and restart do not roll it forward.
 A deliberate ready-by edit may change it. Drafts survive ordinary status refreshes,
 and a stale browser cannot edit a replacement connection.
 
+**One extra day ↗** compares a later deadline for that charger alone. The main
+saving is its estimated remaining charging cost reduction. If sharing capacity
+changes the other charger's estimated cost, the comparison explains that effect
+and the total; the other charger's ready-by time stays unchanged. Opening the
+window does not grant extra time. **Allow one more day** approves the later
+deadline for this connection, then the button says **One day allowed** and keeps
+its estimated saving visible. The red label and **+1 day** ready-by marker end at
+the earlier deadline; the approved later deadline remains binding.
+
+The comparison shows when it was calculated and stays fixed while the window is
+open. Use **Refresh comparison** to update it. The previous successful estimate
+remains visible during recalculation or a failed refresh. Card estimates update
+when a replacement is ready; ordinary voltage/current updates do not erase them.
+A changed connection or charging request still requires reviewing its comparison
+before making another choice. Estimates describe a plan, not guaranteed savings.
+
 **Added energy** and connection cost cover the physical connection. A new battery
 reading can change estimated charge without resetting its measured grid energy.
 Missing energy is not credited. [Progress and cost](evidence-and-reporting.md#charge-progress-and-cost)

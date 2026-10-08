@@ -253,7 +253,11 @@ occurrence; a missing spring time shifts forward by the clock-change gap, matchi
 the existing ready-by parser. The resulting absolute instant is persisted.
 
 Comparisons run two joint plans from one current snapshot for both connected
-chargers, holding remaining energy and already-delivered energy constant. Native
+chargers, changing only the selected charger's deadline and holding remaining
+energy and already-delivered energy constant. The peer keeps its own deadline;
+shared capacity can change its charging periods and remaining cost. The primary
+saving belongs to the selected charger. A separate household saving is the total
+cost effect of that same one-charger choice, never a grant for both chargers. Native
 constraints, electrical limits, shared priority and committed short running periods
 remain part of that snapshot. The displayed remaining cash cost and household
 saving exclude sunk cost. The main estimated session total may combine accrued
@@ -290,8 +294,20 @@ deadline remains binding, but it never authorizes an unrepresentable native time
 All comparisons share the existing CPU worker. One active calculation, one latest
 queued control calculation and one latest low-priority preview keep load bounded;
 control work has queue priority. Cards request background comparisons at most once
-per minute per eligible charger. Opening the dialog refreshes the snapshot; peer,
-priority, request, native-control, market and freshness changes fence pending and
-cached results. Forecast rows, decision-price caches and previews stay in RAM.
+per minute per eligible charger, including an active allowance. A successful
+comparison retains its original snapshot time while currents, voltages, progress,
+native command bookkeeping or market inputs change. Recalculation replaces it
+atomically; an unavailable replacement retains the last successful estimate and
+reports the refresh limitation without pretending its source time is new. Equipment,
+physical-session, vehicle, request, shared-priority and peer-deadline changes fence
+incompatible comparisons. Allowing or canceling the selected charger's day keeps
+the same normal/deferred comparison until its earlier checkpoint.
+
+Opening the dialog requests a comparison. The open dialog holds that snapshot
+until an explicit refresh; background card comparisons never replace or expire it.
+Showing an estimate grants no authority: every deadline action separately checks
+the current equipment, physical session, request revision and control eligibility.
+An old display cannot authorize a new connection or bypass native instructions.
+Forecast rows, decision-price caches and previews stay in RAM.
 Durable state retains deadlines, accepted periods, compact estimated totals and
 approval/consumption evidence; ordinary diagnostics retain published prices only.

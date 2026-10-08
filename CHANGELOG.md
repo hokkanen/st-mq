@@ -6,6 +6,18 @@ Versions follow Semantic Versioning. `-dev.N` denotes a development prerelease.
 
 ## Unreleased
 
+- One extra day keeps its last successful savings estimate through ordinary
+  telemetry updates and replaces it when a new comparison is ready. Open
+  comparisons stay fixed until explicitly refreshed. Savings remain visible
+  after allowing a day, and the comparison explains any cost effect on the other
+  charger without implying that its deadline is extended. Charger priority and
+  extra-day controls use matching diagonal arrows; Session report has a visible
+  border.
+- Shelly identification retains its bounded attempt while ordinary observation
+  storage and native readback are pending. Confirmed replies to the controller's
+  own Stop are reconciled across same-second device timestamps without turning
+  them into external instructions; unrelated native Stops and unresolved command
+  outcomes retain priority.
 - Shelly identification recovery now reconciles acknowledged Starts with fresh
   system permission readback instead of leaving an expired probe stuck at its
   temporary current. Later device Stops keep priority, missing acknowledgements

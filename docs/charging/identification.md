@@ -348,6 +348,12 @@ an identification action is blocked.
 Shelly requires available start/stop control,
 fresh physical readings and available MQTT, and retains native restrictions
 and its configured electrical limiter when enabled throughout the test.
+An ordinary meter packet waiting for durable storage does not interrupt an
+attempt supported by still-fresh committed evidence. Storage and native readback
+waits continue to fence commands and new current-comparison evidence, with the
+original probe energy allowance, current-test expiry and restoration duties
+unchanged. Real evidence loss, failed persistence and native restrictions retain
+their existing control barriers.
 
 ## Extra charging during an economic delay
 

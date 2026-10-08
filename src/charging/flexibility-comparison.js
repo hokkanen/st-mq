@@ -18,7 +18,7 @@ function covered(prices, start, end) {
 
 /** Both counterfactuals use this one immutable worker snapshot. No outcome,
  * price or delivered-energy history is written by a preview. */
-export function compareChargingFlexibility(options, { chargerId, normalReadyByAt, deferredReadyByAt }) {
+export function compareChargingFlexibility(options, { chargerId, normalReadyByAt, deferredReadyByAt, normalForecastAllowed = false }) {
   const base = { at: options.now, normalReadyByAt, deferredReadyByAt, estimated: true, available: false,
     recommended: false, normalCostCents: null, deferredCostCents: null, savingsCents: null,
     normalFinishAt: null, deferredFinishAt: null, normalChargingDurationMs: null, deferredChargingDurationMs: null,
@@ -31,7 +31,7 @@ export function compareChargingFlexibility(options, { chargerId, normalReadyByAt
   const prepare = deferred => ({ ...options, previousPeriods: {}, previousAllocations: [],
     chargers: options.chargers.map(charger => ({ ...charger,
       ...(charger.id === chargerId ? { deadlineAt: deferred ? deferredReadyByAt : normalReadyByAt,
-        forecastAllowed: deferred || charger.forecastAllowed === true } : {}),
+        forecastAllowed: deferred || normalForecastAllowed } : {}),
       // A preview can reconsider automatic permission, never an independent
       // native instruction or manual vehicle restriction.
       control: charger.settings.enabled && !charger.request?.chargeNow && !charger.control?.manual

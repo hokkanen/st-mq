@@ -1,16 +1,16 @@
-import { chargingFlexibility, CHARGING_FLEXIBILITY_PREVIEW_LIFETIME_MS } from './charging-summary.js';
+import { chargingFlexibility } from './charging-summary.js';
 
 const finite = Number.isFinite;
 const scope = charger => charger?.request ? `${charger.association}:${charger.request.sessionId}:${charger.request.revision}` : null;
 const money = cents => finite(cents) ? `€${(cents / 100).toFixed(2)}` : 'Unavailable';
+const snapshotDate = (at, timezone) => new Intl.DateTimeFormat('en-GB', { timeZone: timezone,
+  day: 'numeric', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit' }).format(at);
 const duration = milliseconds => {
   if (!finite(milliseconds) || milliseconds < 0) return 'Unavailable';
   if (milliseconds > 0 && milliseconds < 60_000) return '<1 min';
   const minutes = Math.round(milliseconds / 60_000), hours = Math.floor(minutes / 60);
   return hours ? `${hours} h${minutes % 60 ? ` ${minutes % 60} min` : ''}` : `${minutes} min`;
 };
-const PREVIEW_LIFETIME_MS = CHARGING_FLEXIBILITY_PREVIEW_LIFETIME_MS;
-const comparisonKey = comparison => comparison ? JSON.stringify(comparison) : null;
 // Idempotency identity also works on household HTTP origins where randomUUID is absent.
 export function chargingFlexibilityActionId(random = globalThis.crypto) {
   if (random?.randomUUID) return random.randomUUID();
@@ -41,8 +41,8 @@ const reasonText = reason => ({
 export function createChargingFlexibility({ document, request, save, formatTime }) {
   const entries = new Map(), listeners = [];
   let status, receivedAt = Date.now(), writable = false, busy = false, timer, disposed = false;
-  let dialog, title, description, comparisonRows, savingValue, combined, uncertainty, note, message, refresh, back, apply;
-  let selected, invoker, openedScope, preview, previewScope, loading = false, saving = false, generation = 0;
+  let dialog, title, description, comparisonRows, savingValue, combined, uncertainty, snapshotTime, note, message, refresh, back, apply;
+  let selected, invoker, openedScope, preview, previewScope, snapshot, loading = false, saving = false, generation = 0;
   const make = (tag, text = '', className = '', id) => {
     const node = document.createElement(tag); node.textContent = text;
     if (className) node.className = className; if (id) node.id = id; return node;
@@ -51,8 +51,10 @@ export function createChargingFlexibility({ document, request, save, formatTime 
   const now = () => (finite(status?.now) ? status.now : receivedAt) + Math.max(0, Date.now() - receivedAt);
   const chargerFor = id => status?.charging?.chargers?.find(charger => charger.id === id);
   const viewFor = charger => chargingFlexibility(charger, { now: now() });
-  const previewCurrent = charger => previewScope === scope(charger) && (!preview?.available
-    || finite(preview.at) && preview.at <= now() && now() - preview.at < PREVIEW_LIFETIME_MS);
+  const previewCurrent = charger => previewScope === scope(charger);
+  const captureSnapshot = charger => ({ state: structuredClone(charger.flexibility), active: viewFor(charger).active,
+    label: charger.label, now: now(), timezone: status?.charging?.timezone,
+    labels: Object.fromEntries((status?.charging?.chargers ?? []).map(item => [item.id, item.label])) });
   const close = () => { if (dialog?.open && !saving) dialog.close(); };
 
   function refreshEntries() {
@@ -74,12 +76,7 @@ export function createChargingFlexibility({ document, request, save, formatTime 
       entry.badge.hidden = !highlighted;
       if (!entry.deadlineGroup.hidden && finite(view.effectiveReadyByAt)) entry.deadline.textContent = formatTime(view.effectiveReadyByAt, status?.charging?.timezone, now());
       if (view.active) nextCheckpoint = Math.min(nextCheckpoint, charger.flexibility.checkpointAt);
-      const cached = charger?.flexibility?.preview;
-      if (view.visible && cached?.available && finite(cached.at) && cached.at + PREVIEW_LIFETIME_MS > currentNow)
-        nextCheckpoint = Math.min(nextCheckpoint, cached.at + PREVIEW_LIFETIME_MS);
     }
-    if (dialog?.open && preview?.available && previewScope && finite(preview.at) && preview.at + PREVIEW_LIFETIME_MS > currentNow)
-      nextCheckpoint = Math.min(nextCheckpoint, preview.at + PREVIEW_LIFETIME_MS);
     if (finite(nextCheckpoint)) {
       timer = setTimeout(() => { if (!disposed) { refreshEntries(); refreshDialog(); } }, Math.max(1, Math.min(2_147_483_647, nextCheckpoint - now())));
       timer.unref?.();
@@ -96,19 +93,20 @@ export function createChargingFlexibility({ document, request, save, formatTime 
     savingValue = make('p', '', 'charging-flexibility-saving', 'charging-flexibility-saving');
     combined = make('p', '', 'charging-flexibility-detail', 'charging-flexibility-household');
     uncertainty = make('p', '', 'charging-flexibility-detail', 'charging-flexibility-uncertainty');
+    snapshotTime = make('p', '', 'charging-flexibility-detail', 'charging-flexibility-as-of');
     note = make('p', '', 'charging-flexibility-note', 'charging-flexibility-note');
     message = make('p', '', 'temporary-status', 'charging-flexibility-message'); message.setAttribute('role', 'status');
     refresh = make('button', 'Refresh comparison', 'secondary-button', 'charging-flexibility-refresh'); refresh.type = 'button';
     const actions = make('div', '', 'confirmation-actions');
     back = make('button', 'Close', 'secondary-button', 'charging-flexibility-close'); back.type = 'button';
     apply = make('button', 'Allow one more day', '', 'charging-flexibility-apply'); apply.type = 'button'; apply.setAttribute('data-write-control', '');
-    actions.append(back, apply); dialog.append(title, description, comparisonRows, savingValue, combined, uncertainty, note, message, refresh, actions);
+    actions.append(back, apply); dialog.append(title, description, comparisonRows, savingValue, combined, uncertainty, snapshotTime, note, message, refresh, actions);
     document.body.append(dialog);
     bind(back, 'click', close);
     bind(refresh, 'click', () => { if (!refresh.disabled) return loadPreview(); });
     bind(dialog, 'cancel', event => { if (saving) event.preventDefault(); });
     bind(dialog, 'close', () => {
-      generation++; selected = null; loading = false; preview = null;
+      generation++; selected = null; loading = false; preview = null; snapshot = null;
       invoker?.setAttribute('aria-expanded', 'false');
       if (invoker?.isConnected && !invoker.hidden && !invoker.disabled) invoker.focus({ preventScroll: true });
       invoker = null; if (!disposed) refreshEntries();
@@ -133,9 +131,9 @@ export function createChargingFlexibility({ document, request, save, formatTime 
 
   function plan(label, at, cents, finishAt, chargingDurationMs, active) {
     const row = make('div', '', 'charging-flexibility-plan'); row.dataset.selected = String(active);
-    row.append(make('span', label), make('strong', finite(at) ? formatTime(at, status?.charging?.timezone, now()) : 'Time unavailable'),
+    row.append(make('span', label), make('strong', finite(at) ? formatTime(at, snapshot.timezone, snapshot.now) : 'Time unavailable'),
       make('small', `Remaining cost ${money(cents)}`),
-      make('small', `Est. finish ${finite(finishAt) ? formatTime(finishAt, status?.charging?.timezone, now()) : 'Unavailable'}`),
+      make('small', `Est. finish ${finite(finishAt) ? formatTime(finishAt, snapshot.timezone, snapshot.now) : 'Unavailable'}`),
       make('small', `Est. charging ${duration(chargingDurationMs)}`));
     return row;
   }
@@ -144,43 +142,52 @@ export function createChargingFlexibility({ document, request, save, formatTime 
     if (!dialog?.open) return;
     const charger = chargerFor(selected), sameSession = charger && openedScope === scope(charger);
     const view = charger ? viewFor(charger) : { visible: false };
-    const state = charger?.flexibility;
-    const fresh = sameSession && previewCurrent(charger) && !view.awaitingCheckpoint;
-    const comparison = fresh ? preview : null, available = comparison?.available === true;
+    const state = charger?.flexibility, displayedState = snapshot?.state;
+    const currentScope = sameSession && previewCurrent(charger) && !view.awaitingCheckpoint;
+    const comparison = preview, available = comparison?.available === true && finite(comparison.at) && comparison.at <= now();
     const active = view.active;
-    title.textContent = `${charger?.label ?? 'Charging'} · ${active ? 'One day allowed' : 'One extra day'}`;
-    description.textContent = active
+    const displayedActive = snapshot?.active;
+    title.textContent = `${snapshot?.label ?? 'Charging'} · ${displayedActive ? 'One day allowed' : 'One extra day'}`;
+    description.textContent = `This choice extends only ${snapshot?.label ?? 'this charger'}'s deadline. ` + (displayedActive
       ? 'Charging can use any time before the approved deadline. Another day needs a new approval after the earlier deadline.'
-      : 'Give this connection one more local day. Charging can still happen sooner when it costs less.';
-    comparisonRows.replaceChildren(plan(active ? 'Earlier ready-by' : 'Current ready-by', state?.normalReadyByAt,
+      : 'Charging can still happen sooner when it costs less.');
+    comparisonRows.replaceChildren(plan(displayedActive ? 'Earlier ready-by' : 'Current ready-by', comparison?.normalReadyByAt ?? displayedState?.normalReadyByAt,
       available ? comparison.normalCostCents : null, available ? comparison.normalFinishAt : null, available ? comparison.normalChargingDurationMs : null, false),
-    plan(active ? 'Approved ready-by' : 'With one extra day', state?.deferredReadyByAt ?? comparison?.deferredReadyByAt,
-      available ? comparison.deferredCostCents : null, available ? comparison.deferredFinishAt : null, available ? comparison.deferredChargingDurationMs : null, active));
+    plan(displayedActive ? 'Approved ready-by' : 'With one extra day', comparison?.deferredReadyByAt ?? displayedState?.deferredReadyByAt,
+      available ? comparison.deferredCostCents : null, available ? comparison.deferredFinishAt : null, available ? comparison.deferredChargingDurationMs : null, displayedActive));
     savingValue.textContent = available && finite(comparison.savingsCents)
       ? comparison.savingsCents > 0 ? `Estimated saving ${money(comparison.savingsCents)}`
         : comparison.savingsCents < 0 ? `Estimated extra cost ${money(-comparison.savingsCents)}` : 'No estimated saving'
-      : loading ? 'Comparing both charging plans…' : 'Saving unavailable';
+      : loading ? 'Comparing charging plans…' : '';
+    savingValue.hidden = !savingValue.textContent;
     savingValue.dataset.tone = available && comparison.recommended === true ? 'saving' : 'neutral';
-    combined.hidden = !available || !finite(comparison.householdSavingsCents);
-    combined.textContent = combined.hidden ? '' : `Both chargers together: ${comparison.householdSavingsCents < 0 ? `${money(-comparison.householdSavingsCents)} more` : `${money(comparison.householdSavingsCents)} less`} estimated.`;
+    const peerEffects = available ? (comparison.chargers ?? []).filter(peer => peer.id !== selected
+      && finite(peer.normalCostCents) && finite(peer.deferredCostCents) && Math.round(Math.abs(peer.normalCostCents - peer.deferredCostCents)) > 0) : [];
+    combined.hidden = !peerEffects.length;
+    combined.textContent = peerEffects.map(peer => {
+      const saving = peer.normalCostCents - peer.deferredCostCents;
+      return `${snapshot.labels[peer.id] ?? 'The other charger'}: ${money(Math.abs(saving))} ${saving < 0 ? 'more' : 'less'} estimated, with its ready-by time unchanged.`;
+    }).join(' ') + (!combined.hidden && finite(comparison.householdSavingsCents)
+      ? ` Total estimated ${comparison.householdSavingsCents < 0 ? 'extra cost' : 'saving'}: ${money(Math.abs(comparison.householdSavingsCents))}.` : '');
     uncertainty.hidden = !available || !comparison.usesForecast;
-    uncertainty.textContent = uncertainty.hidden ? '' : `Forecast risk allowance for both chargers: ${money(comparison.householdUncertaintyPremiumCents)}. This planning margin is not an electricity charge.`;
-    const readonly = !writable || charger?.readOnly;
+    uncertainty.textContent = uncertainty.hidden ? '' : `Forecast risk allowance: ${money(comparison.householdUncertaintyPremiumCents)}. This planning margin is not an electricity charge.`;
+    snapshotTime.hidden = !available;
+    snapshotTime.textContent = available ? `Estimate as of ${snapshotDate(comparison.at, snapshot.timezone)}. Refresh to update this comparison.` : '';
+    const readonly = !writable || charger?.readOnly === true;
     note.textContent = !view.visible ? 'This connection is no longer eligible. Close this comparison to review the current charging state.'
       : !sameSession || view.awaitingCheckpoint ? 'The charging request changed. Refresh the comparison before making another choice.'
-      : !loading && preview?.available && !fresh ? 'Prices or the charging plan changed, or the comparison expired. Refresh before making another choice.'
       : readonly ? 'View only. Changes are available on the controlling computer.'
-      : active ? `The +1 day marker ends at ${formatTime(state.checkpointAt, status?.charging?.timezone, now())}; the approved deadline then remains binding. Cancel restores the earlier deadline, with best-effort charging if it can no longer be met.`
+      : active ? `The +1 day marker ends at ${formatTime(displayedState.checkpointAt, snapshot.timezone, snapshot.now)}; the approved deadline then remains binding. Cancel restores the earlier deadline, with best-effort charging if it can no longer be met.`
       : !state?.eligible ? reasonText(state?.reason)
       : !available && !loading ? reasonText(comparison?.reason)
       : comparison?.usesForecast ? 'Charging time excludes pauses. Already delivered energy is unchanged. Predicted prices, savings and completion times may change.'
-      : 'Estimates compare the remaining energy for both chargers. Charging time excludes pauses. Energy already delivered is the same in both plans.';
-    refresh.hidden = active || loading || saving || fresh && available;
+      : 'Estimates compare this charger’s remaining energy. Charging time excludes pauses. Energy already delivered is the same in both plans.';
+    refresh.hidden = readonly;
     refresh.disabled = busy || saving || loading || !charger?.request || !view.visible || readonly;
     apply.hidden = !view.visible || readonly || !active && !state?.eligible;
     apply.textContent = saving ? 'Saving…' : active ? 'Cancel flexibility' : 'Allow one more day';
     apply.classList.toggle('secondary-button', active);
-    apply.disabled = busy || saving || !sameSession || !view.visible || readonly || !active && (loading || !fresh || !view.eligible);
+    apply.disabled = busy || saving || !sameSession || !view.visible || readonly || !active && (loading || !currentScope || !view.eligible);
     back.disabled = saving;
     dialog.setAttribute('aria-busy', String(loading || saving));
     if (document.activeElement === apply && (apply.disabled || apply.hidden)) back.focus({ preventScroll: true });
@@ -189,11 +196,14 @@ export function createChargingFlexibility({ document, request, save, formatTime 
   async function loadPreview() {
     const charger = chargerFor(selected);
     if (!charger?.request || loading || saving) return;
-    const requestScope = scope(charger), requestGeneration = ++generation;
-    openedScope = requestScope; preview = null; previewScope = null; loading = true;
+    const requestScope = scope(charger), requestGeneration = ++generation, requestedSnapshot = captureSnapshot(charger);
+    if (previewScope !== requestScope) {
+      preview = structuredClone(charger.flexibility?.preview ?? null); previewScope = requestScope; snapshot = requestedSnapshot;
+    }
+    openedScope = requestScope; loading = true;
     message.textContent = ''; message.classList.remove('form-error'); refreshEntries(); refreshDialog();
     if (!writable || charger.readOnly) {
-      preview = charger.flexibility?.preview ?? null; previewScope = requestScope; loading = false; refreshEntries(); refreshDialog(); return;
+      loading = false; refreshEntries(); refreshDialog(); return;
     }
     try {
       const result = await request(`/api/charging/chargers/${encodeURIComponent(charger.id)}/flexibility-preview`, {
@@ -201,7 +211,13 @@ export function createChargingFlexibility({ document, request, save, formatTime 
       });
       if (disposed || requestGeneration !== generation || !dialog.open) return;
       if (scope(chargerFor(selected)) !== requestScope) { message.textContent = 'The charging request changed. Refresh to review the current plan.'; return; }
-      preview = result.comparison; previewScope = requestScope;
+      // Keep the last successful snapshot visible during a failed refresh. A
+      // background status update never replaces this dialog's comparison.
+      if (result.comparison?.available || !preview?.available) {
+        preview = structuredClone(result.comparison); previewScope = requestScope; snapshot = requestedSnapshot;
+      }
+      const refreshReason = result.refreshReason ?? (!result.comparison?.available && preview?.available ? result.comparison?.reason : null);
+      if (refreshReason) message.textContent = `${reasonText(refreshReason)} Showing the previous estimate.`;
     } catch (error) {
       if (disposed || requestGeneration !== generation) return;
       message.textContent = error.message || 'The cost comparison is unavailable. Try again.'; message.classList.add('form-error');
@@ -224,6 +240,7 @@ export function createChargingFlexibility({ document, request, save, formatTime 
         if (button.disabled || button.hidden || dialog?.open) return;
         if (!dialog) createDialog();
         selected = id; invoker = button; openedScope = scope(chargerFor(id)); preview = null; previewScope = null;
+        snapshot = captureSnapshot(chargerFor(id));
         dialog.showModal(); button.setAttribute('aria-expanded', 'true'); back.focus({ preventScroll: true });
         refreshDialog(); return loadPreview();
       });
@@ -232,12 +249,6 @@ export function createChargingFlexibility({ document, request, save, formatTime 
     update(next, options) {
       if (next !== status) {
         receivedAt = Date.now(); status = next;
-        // The runtime clears/replaces its cached comparison when prices, its
-        // market generation, the charging request, or the cache age change.
-        // A visible dialog must not keep presenting that older estimate as live.
-        const charger = chargerFor(selected);
-        if (dialog?.open && preview?.available && previewScope === scope(charger)
-          && comparisonKey(preview) !== comparisonKey(charger?.flexibility?.preview)) previewScope = null;
       }
       writable = options.writable; busy = options.busy;
       refreshEntries(); refreshDialog();

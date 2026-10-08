@@ -122,7 +122,14 @@ and their required evidence.
 
 ## Automated tests and build
 
-`node test/browser/charging-flexibility-smoke.js` uses synthetic charger cards to check unchanged resting height at 280–1280px in both themes, guarded keyboard interaction, stale comparison expiry and checkpoint highlight removal; `STMQ_CHROME_BIN` can select a local Chrome executable.
+`node test/browser/charging-flexibility-smoke.js` uses synthetic charger cards to
+check unchanged resting height at 280–1280px in both themes, guarded keyboard
+interaction, comparison snapshots that stay visible until an explicit refresh,
+active-allowance savings and checkpoint highlight removal; `STMQ_CHROME_BIN` can
+select a local Chrome executable. Backend regressions separate displayed
+comparison scope from live command readiness: small telemetry changes and failed
+recalculations retain the prior estimate, while replacement sessions and changed
+requests cannot inherit it.
 
 The electricity-price forecast uses synthetic provider fixtures for units,
 native hours, gaps, freshness, throttling and RAM-only acquisition. Charging

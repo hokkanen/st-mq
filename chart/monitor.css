@@ -1933,10 +1933,11 @@ button.garage-door-action:disabled { opacity: 1; cursor: default; }
 .charging-footer-flexible > .charging-footer-status, .charging-footer-flexible > .charging-control-message { grid-column: 1 / -1; }
 .charging-footer .charging-flexibility-entry { grid-column: 1; grid-row: 3; display: flex; flex-direction: column; justify-content: center; align-items: flex-start; gap: 2px; min-width: 0; width: 100%; min-height: 44px; margin: 0; padding: 5px 7px; border: 1px solid var(--border); border-radius: 6px; background: var(--surface-soft); color: var(--text); text-align: left; white-space: normal; font-size: 10px; line-height: 15px; }
 .charging-flexibility-entry-title { display: flex; align-items: baseline; justify-content: space-between; gap: 4px; width: 100%; color: var(--muted); }
-.charging-flexibility-entry-title::after { content: '›'; }
+.charging-flexibility-entry-title::after { content: '↗'; }
 .charging-flexibility-entry-value { font-size: 10px; font-weight: 500; font-variant-numeric: tabular-nums; }
 .charging-flexibility-entry[data-tone="saving"] { border-color: color-mix(in srgb, var(--accent) 50%, var(--border)); background: color-mix(in srgb, var(--accent) 7%, var(--surface)); }
 .charging-flexibility-entry[data-tone="saving"] .charging-flexibility-entry-value { color: var(--accent); }
+.charging-flexibility-entry[data-tone="deferred"] .charging-flexibility-entry-title { color: var(--error-text); }
 .charging-flexibility-entry:hover:not(:disabled) { border-color: var(--accent); }
 .charging-flexibility-dialog { box-sizing: border-box; width: min(480px, calc(100vw - 24px)); }
 .charging-flexibility-dialog [hidden] { display: none !important; }
@@ -2008,7 +2009,7 @@ small.charging-reading-line { margin-top: 3px; color: var(--muted); font-size: 1
 .charging-priority-entry strong { display: block; font-size: 12px; font-weight: 500; }
 .charging-priority-entry small { display: block; margin-top: 4px; color: var(--muted); font-size: 10px; font-weight: 400; }
 .charging-priority-entry-value { display: flex; align-items: center; gap: 10px; font-size: 11px; font-weight: 500; }
-.charging-priority-entry-value::after { content: '›'; font-size: 20px; font-weight: 400; color: var(--muted); }
+.charging-priority-entry-value::after { content: '↗'; font-size: 14px; font-weight: 400; color: var(--muted); }
 .charging-priority-entry:hover { color: var(--accent); background: transparent; }
 .charging-priority-entry:focus-visible { outline: 2px solid var(--accent); outline-offset: 4px; }
 .charging-identification { margin-top: 18px; padding-top: 18px; border-top: 1px solid var(--border); }

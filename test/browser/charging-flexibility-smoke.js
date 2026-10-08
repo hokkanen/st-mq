@@ -101,7 +101,7 @@ try {
     const comparisonStates = await evaluate(() => {
       const charger = window.fixture.charging.chargers[0], original = charger.flexibility.preview;
       const results = [];
-      for (const [savingsCents, expected] of [[4, '€0.04 est. saving'], [0, '€0.00 est. saving'], [-35, '+€0.35 est. cost'], [null, 'No estimate']]) {
+      for (const [savingsCents, expected] of [[4, '€0.04 est. saving'], [0, '€0.00 est. saving'], [-35, '+€0.35 est. cost'], [null, 'Compare savings']]) {
         charger.flexibility.preview = { ...original, savingsCents, recommended: false };
         window.panel.update(window.fixture);
         const button = document.getElementById('charger1-flexibility'), label = button.querySelector('.charging-flexibility-entry-value');
@@ -118,6 +118,11 @@ try {
       assert.equal(state.valueHeight, 15, `The estimate stays on one line at ${width}/${theme}: ${state.label}`);
       assert.equal(state.overflow, false);
     }
+    assert.equal(await evaluate("getComputedStyle(document.querySelector('.charging-flexibility-entry-title'), '::after').content"), '"↗"');
+    assert.equal(await evaluate("getComputedStyle(document.querySelector('.charging-priority-entry-value'), '::after').content"), '"↗"');
+    assert.equal(await evaluate("getComputedStyle(document.querySelector('.charging-session-report')).borderTopColor === getComputedStyle(document.querySelector('.charging-flexibility-entry')).borderTopColor"), false,
+      'The ordinary report border remains distinct from the highlighted savings border');
+    assert.equal(await evaluate("getComputedStyle(document.querySelector('.charging-session-report')).borderTopColor !== 'rgba(0, 0, 0, 0)'"), true);
     await screenshot(`${width}-${theme}-cards`);
     await evaluate("document.getElementById('charger1-flexibility').focus()"); await key('Enter');
     await until("document.getElementById('charging-flexibility-apply').disabled === false");
@@ -130,25 +135,41 @@ try {
     assert.equal(await evaluate('document.activeElement.id'), 'charger1-flexibility');
     measurements.push({ width, theme, height: before, dialogHeight: dialog.height });
   }
-  // Market replacement invalidates an open comparison, even at the same request revision.
+  // Market replacement updates the card but keeps the open comparison fixed.
   await evaluate("document.getElementById('charger1-flexibility').click()");
   await until("document.getElementById('charging-flexibility-apply').disabled === false");
   await evaluate(() => {
     const old = window.fixture.charging.chargers[0];
     window.fixture = { ...window.fixture, charging: { ...window.fixture.charging,
-      chargers: [{ ...old, flexibility: { ...old.flexibility, preview: null } }, window.fixture.charging.chargers[1]] } };
+      chargers: [{ ...old, flexibility: { ...old.flexibility, preview: { ...old.flexibility.preview, savingsCents: 220 } } }, window.fixture.charging.chargers[1]] } };
     window.panel.update(window.fixture);
   });
+  assert.equal(await evaluate("document.getElementById('charging-flexibility-apply').disabled"), false);
+  assert.equal(await evaluate("document.getElementById('charging-flexibility-saving').textContent"), 'Estimated saving €1.60');
+  assert.match(await evaluate("document.getElementById('charger1-flexibility').textContent"), /€2.20/);
+  assert.equal(await evaluate("document.getElementById('charging-flexibility-refresh').hidden"), false);
+  const requestsBefore = await evaluate('window.calls.length');
+  await evaluate(() => {
+    window.fixture = { ...window.fixture, now: window.fixture.now + 6 * 60_000 };
+    window.panel.update(window.fixture); document.dispatchEvent(new Event('visibilitychange'));
+  });
+  assert.equal(await evaluate('window.calls.length'), requestsBefore, 'Elapsed age and status changes never auto-refresh the dialog');
+  assert.equal(await evaluate("document.getElementById('charging-flexibility-saving').textContent"), 'Estimated saving €1.60');
+  await evaluate(() => {
+    window.fixture.charging.chargers[0].request.revision++;
+    window.panel.update({ ...window.fixture });
+  });
   assert.equal(await evaluate("document.getElementById('charging-flexibility-apply').disabled"), true);
-  assert.equal(await evaluate("document.getElementById('charging-flexibility-saving').textContent"), 'Saving unavailable');
+  assert.equal(await evaluate("document.getElementById('charging-flexibility-saving').textContent"), 'Estimated saving €1.60');
   await key('Escape');
-  // Local cache expiry removes the card's saving cue even without another status poll.
+  // A retained estimate keeps its original time and remains visible past five minutes.
   await evaluate(() => {
     const c = window.fixture.charging.chargers[0], comparison = window.fixture.charging.chargers[1].flexibility.preview;
     c.flexibility.preview = { ...comparison, at: window.fixture.now - 5 * 60_000 + 150 };
     window.panel.update({ ...window.fixture });
   });
-  await until("document.getElementById('charger1-flexibility').dataset.tone === 'neutral'");
+  await pause(200);
+  assert.equal(await evaluate("document.getElementById('charger1-flexibility').dataset.tone"), 'saving');
   // Active permission is a dated obligation; a background tab cannot retain its highlight.
   await send('Emulation.setDeviceMetricsOverride', { width: 390, height: 780, deviceScaleFactor: 1, mobile: false });
   await evaluate(() => {
@@ -159,6 +180,9 @@ try {
     window.panel.update({ ...window.fixture });
   });
   assert.equal(await evaluate("document.getElementById('charger1-defer-badge').hidden"), false);
+  assert.equal(await evaluate("document.querySelector('#charger1-flexibility .charging-flexibility-entry-title').textContent"), 'One day allowed');
+  assert.equal(await evaluate("document.querySelector('#charger1-flexibility .charging-flexibility-entry-value').textContent"), '€1.60 est. saving');
+  assert.equal(await evaluate("getComputedStyle(document.querySelector('#charger1-flexibility .charging-flexibility-entry-title')).color === getComputedStyle(document.getElementById('charger1-deadline')).color"), true);
   await screenshot('active-light-cards');
   await evaluate("document.getElementById('charger1-flexibility').click()");
   await until("document.getElementById('charging-flexibility-apply').textContent === 'Cancel flexibility'");

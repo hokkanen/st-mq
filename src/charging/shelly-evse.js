@@ -102,9 +102,11 @@ export function createShellyEvseAdapter({ config, broker, client, store, engine,
   ];
   const admission = createMqttAdmission();
   let overflow = false, eventOverflow = false;
-  const ready = () => controlReady && storagePending === 0 && !eventOverflow && !state.permissionOverflow && finite(serviceAt) && clock() >= serviceAt && clock() - serviceAt <= config.maxAgeMs;
+  const observationServiceReady = () => controlReady && !eventOverflow && !state.permissionOverflow
+    && finite(serviceAt) && clock() >= serviceAt && clock() - serviceAt <= config.maxAgeMs;
+  const ready = () => observationServiceReady() && storagePending === 0;
   const currentReady = () => ready() && currentControlReady;
-  const identificationCurrentReady = () => currentReady()
+  const identificationCurrentReady = () => observationServiceReady() && currentControlReady
     && Number.isSafeInteger(state.fields.current_limit?.value)
     && state.fields.current_limit.value >= currentConfig.min
     && state.fields.current_limit.value <= Math.min(config.maximumCurrentA, currentConfig.max);
@@ -642,12 +644,12 @@ export function createShellyEvseAdapter({ config, broker, client, store, engine,
   };
   const knownWorkState = (now = clock()) => discovered && profileSupported && settingFresh('work_state', now)
     && [...config.connectedStates, ...config.chargingStates, ...config.disconnectedStates].includes(state.fields.work_state.value);
-  // An in-flight delta withholds mutation readiness. Existing observation and
-  // minimum-current capability remain available so preparation cannot silently
-  // become an unrestricted probe while its native readback is pending.
-  const observationReady = () => Boolean(connected && admitted && online && ready() && knownWorkState()
+  // Queued persistence and an in-flight delta withhold mutation readiness.
+  // Existing observation and minimum-current capability remain available so
+  // preparation cannot become an unrestricted probe while readback is pending.
+  const observationReady = () => Boolean(connected && admitted && online && observationServiceReady() && knownWorkState()
     && settingFresh('start_charging') && settingFresh('current_limit'));
-  const basicReady = () => observationReady() && !notificationPending.size;
+  const basicReady = () => observationReady() && storagePending === 0 && !notificationPending.size;
   const snapshot = () => ({ association, transport: 'shelly-evse', online: connected && admitted && online, controlReady: basicReady(), currentControlReady: basicReady() && currentReady(),
     identificationCurrentReady: observationReady() && identificationCurrentReady(),
     identificationReady: observationReady(),
@@ -833,7 +835,8 @@ function validIdentificationPause(value) {
     && value.startAt > value.requestedAt && value.startAt - value.requestedAt <= 5 * 60_000
     && (value.confirmedAt === null || time(value.confirmedAt) && value.confirmedAt >= value.requestedAt)
     && (value.permissionAt === null ? value.confirmedAt === null
-      : time(value.permissionAt) && value.permissionAt >= value.requestedAt
+      : time(value.permissionAt) && (value.permissionAt >= value.requestedAt
+          || value.permissionAt === Math.floor(value.requestedAt / 1000) * 1000)
         && time(value.confirmedAt) && value.permissionAt <= value.confirmedAt)
     && typeof value.witnessedCharging === 'boolean';
 }
@@ -931,9 +934,19 @@ export function createShellyController({ adapter, initialState, saveState = () =
       && !systemEcho(field, state.lastCurrent))
       state.manualCurrentA = field.value < adapter.config.maximumCurrentA ? field.value : null;
   };
-  const manualEvent = field => ({ kind: field.value ? 'enable' : 'stop', detectedAt: field.measuredAt,
-    origin: field.commandSource === 'sys' ? 'device' : field.commandSource ? 'external-command' : 'unknown',
-    commandSource: field.commandSource ?? null });
+  const manualEvent = (field, pending = null) => {
+    // RPC names a command channel, not its sender. A same-second matching
+    // instruction may be our unresolved write; retain the restriction without
+    // claiming an external actor or treating it as confirmed application control.
+    const unresolvedEcho = pending?.role === 'start_charging' && pending.sessionId === state.sessionId
+      && pending.value === field.value && time(pending.dispatchedAt) && field.commandSource === 'rpc'
+      && field.receivedAt >= pending.dispatchedAt
+      && Math.floor(field.measuredAt / 1000) === Math.floor(pending.dispatchedAt / 1000)
+      && (pending.stage !== 'accepted' || !time(pending.acceptedAt) || field.measuredAt < pending.dispatchedAt);
+    return { kind: field.value ? 'enable' : 'stop', detectedAt: field.measuredAt,
+      origin: unresolvedEcho ? 'unknown' : field.commandSource === 'sys' ? 'device' : field.commandSource ? 'external-command' : 'unknown',
+      commandSource: field.commandSource ?? null };
+  };
   const rememberPermissionCommand = pending => {
     if (pending?.role === 'start_charging' && pending.stage === 'accepted' && time(pending.acceptedAt))
       state.permissionCommand = { value: pending.value, dispatchedAt: pending.dispatchedAt,
@@ -968,27 +981,27 @@ export function createShellyController({ adapter, initialState, saveState = () =
       const field = snapshot.fields.start_charging;
       // A value-only notification has the device's event clock, while dispatch
       // and acknowledgement use our receipt clock. An earlier fractional time
-      // in the same native setting second can still be our confirmed Start.
+      // in the same native setting second can still be our confirmed command.
       // Require a correlated query after both ACK and this notification; never
-      // round the event forward, absorb a Stop, or use an old cached readback.
-      const confirmedStartEcho = command === pending && command?.value === true && event.value === true
+      // round the event forward, absorb an opposite event, or use cached readback.
+      const confirmedCommandEcho = command === pending && typeof command?.value === 'boolean' && event.value === command.value
         && event.commandSource === 'rpc' && field?.commandSource === 'rpc'
         && event.eventAt < command.dispatchedAt && event.receivedAt >= command.dispatchedAt
         && Math.floor(event.eventAt / 1000) === Math.floor(command.dispatchedAt / 1000)
-        && fresh(field) && field.value === true && field.measuredAt === Math.floor(event.eventAt / 1000) * 1000
+        && fresh(field) && field.value === command.value && field.measuredAt === Math.floor(event.eventAt / 1000) * 1000
         && field.readback?.measuredAt === field.measuredAt
         && field.readback.requestedAt >= Math.max(command.acceptedAt, event.receivedAt)
         && field.readback.receivedAt >= field.readback.requestedAt
         && commandReadback(field, command);
       const own = !external && command?.sessionId === event.sessionId && command.value === event.value
-        && (event.eventAt >= command.dispatchedAt && event.eventAt <= command.acceptedAt || confirmedStartEcho);
+        && (event.eventAt >= command.dispatchedAt && event.eventAt <= command.acceptedAt || confirmedCommandEcho);
       const systemPermission = event.value !== null && event.commandSource === 'sys';
       if (own || systemPermission) continue;
       external = true;
       state.deviceHold = null;
       state.manual = event.value === null
         ? { ...manualEvent({ ...event, measuredAt: event.eventAt }), kind: 'instruction-unconfirmed' }
-        : manualEvent({ ...event, measuredAt: event.eventAt });
+        : manualEvent({ ...event, measuredAt: event.eventAt }, pending);
       state.owned = null; state.ownedPause = false; state.automaticPermission = null;
       state.execution = null; state.provisional = false;
     }
@@ -1438,7 +1451,7 @@ export function createShellyController({ adapter, initialState, saveState = () =
             // A lost reply cannot attribute an arbitrary later false event to
             // this application: it could be an explicit native Stop instead.
             if (pending.owned) state.owned ??= copy(pending.owned);
-            if (readback.commandSource !== 'sys') state.manual = manualEvent(readback);
+            if (readback.commandSource !== 'sys') state.manual = manualEvent(readback, pending);
             state.execution = null; state.provisional = false;
             state.phase = 'uncertain'; state.reason = pending.owned ? 'identification-resume-required' : 'evse-command-unconfirmed'; await persist(); return;
           }

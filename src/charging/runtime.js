@@ -1398,7 +1398,6 @@ export class ChargingRuntime {
     const telemetry = this.telemetry(now);
     const forecastSnapshot = this.engine.electricityForecast?.snapshot({ now });
     const forecastEnabled = forecastSnapshot?.enabled === true;
-    const previewMarket = this.flexibilityMarket(now);
     const views = Object.entries(this.chargers).map(([id, item]) => {
       const savedSettings = this.settings.chargers[id], control = this.controlStatus(id);
       const assignedVehicle = telemetry[id]?.vehicle?.id;
@@ -1471,25 +1470,31 @@ export class ChargingRuntime {
       const preview = item.flexibilityPreview;
       view.flexibility = { ...flexibility, enabled: forecastEnabled || Boolean(view.request?.flexibility?.activeDefer),
         eligible: reason === null && !this.closed && this.canControl(), reason,
-        preview: preview?.sessionId === view.request?.sessionId && preview?.revision === view.request?.revision
-          && preview?.market === previewMarket && now - preview.comparison.at < 5 * MINUTE
-          && preview.comparison.normalReadyByAt === flexibility.normalReadyByAt ? preview.comparison : null };
+        preview: preview?.comparison ?? null };
       return view;
     });
-    const evidence = this.flexibilityEvidence(views);
-    for (const view of views) if (this.charger(view.id).flexibilityPreview?.evidence !== evidence) view.flexibility.preview = null;
+    for (const view of views) if (this.charger(view.id).flexibilityPreview?.scope !== this.flexibilityScope(views, view.id, now))
+      view.flexibility.preview = null;
     return views;
   }
-  flexibilityEvidence(views) {
-    const external = views.find(view => view.capabilities.externalLoadBalancing);
-    const installation = this.configuration.chargers.charger2;
-    const supply = { ...(external?.telemetry.providerConnected === false ? {} : external?.telemetry.supply),
-      ...(installation.enabled && installation.limiterEnabled ? { configuredBudgetCurrentA:
-        installation.mainFuseA.map((amps, phase) => Math.max(0, amps - installation.marginA[phase])) } : {}) };
-    return digest({ priority: this.controls, historyAt: this.historyAt, historySelection: this.historySelection,
-      inputs: chargingPlannerInput({ chargers: views, supply }),
-      sessions: views.map(view => [view.association, view.request, view.controls, view.control?.manual,
-        view.control?.pending, view.control?.execution, view.control?.takeover]) });
+  flexibilityScope(views, id, now = this.clock()) {
+    // A displayed comparison is an as-of estimate, not command authority. Live
+    // currents, voltage, progress and command bookkeeping can refresh its costs
+    // without erasing them. A different request, vehicle or peer deadline must
+    // not inherit that estimate. Allow/cancel selects the same two alternatives.
+    return digest({ priority: this.settings.priority, historySelection: this.historySelection,
+      sessions: views.map(view => {
+        const flexibility = chargingFlexibility(view.request, now);
+        return { id: view.id, association: view.association,
+          sessionId: view.request?.sessionId, connection: view.request?.scope,
+          vehicle: view.vehicle?.id, vehicleSession: view.vehicle?.sessionId,
+          settings: view.settings, configuration: view.configuration,
+          overrides: view.request?.overrides, anchorAt: view.request?.anchorAt,
+          chargeNow: view.request?.chargeNow,
+          normalReadyByAt: flexibility.normalReadyByAt, deferredReadyByAt: flexibility.deferredReadyByAt,
+          ...(view.id === id ? { authorizedBaseline: view.request?.flexibility?.authorizedBaseline === true }
+            : { deadlineAt: view.deadlineAt, forecastAllowed: view.forecastAllowed }) };
+      }) });
   }
   flexibilityMarket(now = this.clock()) {
     const forecast = this.engine.electricityForecast?.snapshot({ now });
@@ -1508,7 +1513,8 @@ export class ChargingRuntime {
     this.flexibilityPreviewFlight = (async () => {
       for (const candidate of this.views()) {
         const item = this.charger(candidate.id), now = this.clock();
-        if (!candidate.flexibility.eligible || item.previewAttemptAt && now - item.previewAttemptAt < MINUTE) continue;
+        if (!candidate.flexibility.eligible && !candidate.flexibility.active
+          || item.previewAttemptAt && now - item.previewAttemptAt < MINUTE) continue;
         item.previewAttemptAt = now;
         try { await this.calculateFlexibilityPreview(candidate.id); } catch { /* A preview never interrupts control. */ }
       }
@@ -1516,26 +1522,34 @@ export class ChargingRuntime {
   }
   async calculateFlexibilityPreview(id) {
     const now = this.clock(), views = this.views(now), view = views.find(charger => charger.id === id), item = this.charger(id);
-    const flexibility = view.flexibility, context = this.flexibilityContext;
-    const unavailable = reason => ({ flexibility, comparison: { available: false, reason, at: now,
-      normalReadyByAt: flexibility.normalReadyByAt, deferredReadyByAt: flexibility.deferredReadyByAt,
-      recommended: false, estimated: true } });
+    const flexibility = structuredClone(view.flexibility), context = this.flexibilityContext, scope = this.flexibilityScope(views, id, now);
+    const unavailable = reason => {
+      const currentViews = this.views(), sameScope = scope === this.flexibilityScope(currentViews, id);
+      const retained = sameScope ? currentViews.find(charger => charger.id === id).flexibility.preview : null;
+      // A delayed old request must never borrow the next connection's cache or
+      // deadlines. Its response stays bound to the snapshot the caller opened.
+      return { flexibility: { ...flexibility, preview: retained,
+        ...(!sameScope ? { eligible: false, reason: 'connection-changed' } : {}) },
+      comparison: retained ?? { available: false, reason, at: now,
+        normalReadyByAt: flexibility.normalReadyByAt, deferredReadyByAt: flexibility.deferredReadyByAt,
+        recommended: false, estimated: true }, refreshReason: retained ? reason : null };
+    };
     if (!flexibility.active && !flexibility.eligible) return unavailable(flexibility.reason);
     if (!context || now < context.now || now - context.now >= 30_000 || !this.historyReady
-      || context.evidence !== this.flexibilityEvidence(views))
+      || context.scopes[id] !== scope || context.market !== this.flexibilityMarket(now))
       return unavailable('planning-unavailable');
     const selected = context.chargers.find(charger => charger.id === id);
-    if (selected?.association !== view.association || selected.request?.sessionId !== view.request?.sessionId
-      || selected.request?.revision !== view.request?.revision) return unavailable('connection-changed');
-    const market = this.flexibilityMarket(now), sessionId = view.request.sessionId, revision = view.request.revision;
-    const comparison = await this.plannerService.compare({ ...context, prices: this.getPlanningPrices(context.now, true) },
-      { chargerId: id, normalReadyByAt: flexibility.normalReadyByAt, deferredReadyByAt: flexibility.deferredReadyByAt });
-    if (!comparison || this.closed || !this.canControl() || item.request?.sessionId !== sessionId
-      || item.request?.revision !== revision || market !== this.flexibilityMarket() || this.clock() >= flexibility.normalReadyByAt
-      || context.evidence !== this.flexibilityEvidence(this.views()))
+    if (selected?.association !== view.association || selected.request?.sessionId !== view.request?.sessionId)
+      return unavailable('connection-changed');
+    const comparison = await this.plannerService.compare(context,
+      { chargerId: id, normalReadyByAt: flexibility.normalReadyByAt, deferredReadyByAt: flexibility.deferredReadyByAt,
+        normalForecastAllowed: selected.request?.flexibility?.authorizedBaseline === true });
+    if (!comparison || this.closed || !this.canControl() || context.market !== this.flexibilityMarket()
+      || this.clock() >= flexibility.normalReadyByAt || scope !== this.flexibilityScope(this.views(), id))
       return unavailable('comparison-changed');
-    item.flexibilityPreview = { sessionId, revision, market, evidence: context.evidence, comparison };
-    return { flexibility: { ...flexibility, preview: comparison }, comparison };
+    if (!comparison.available) return unavailable(comparison.reason);
+    item.flexibilityPreview = { scope, comparison };
+    return { flexibility: { ...flexibility, preview: comparison }, comparison, refreshReason: null };
   }
   async previewFlexibility(id, input) {
     this.checkControlAuthority();
@@ -1564,7 +1578,7 @@ export class ChargingRuntime {
         throw new Error(`One-day flexibility is unavailable (${view.flexibility.reason ?? 'control-unavailable'}).`);
       changeChargingFlexibility(item.request, input, this.clock());
       if (input.action === 'cancel') { item.plan = null; item.replan = true; }
-      this.revision++; delete item.flexibilityPreview;
+      this.revision++;
       this.persist();
       this.store.afterCommit(() => this.scheduleWakeup(this.clock()));
       return true;
@@ -1967,14 +1981,15 @@ export class ChargingRuntime {
     });
     if (current() && this.historyReady) {
       const contextNow = this.clock(), contextViews = this.views(contextNow);
-      this.flexibilityContext = { ...planning, now: contextNow, prices: this.getPlanningPrices(contextNow, true), chargers: contextViews,
-        evidence: this.flexibilityEvidence(contextViews),
+      this.flexibilityContext = structuredClone({ ...planning, now: contextNow, prices: this.getPlanningPrices(contextNow, true), chargers: contextViews,
+        scopes: Object.fromEntries(contextViews.map(view => [view.id, this.flexibilityScope(contextViews, view.id, contextNow)])),
+        market: this.flexibilityMarket(contextNow),
         fixedPeriods: Object.fromEntries(contextViews.flatMap(view => {
           const running = view.control?.execution?.periods?.find(period => period.startAt <= now
             && (period.endAt === null || period.endAt > now));
           return running && now - running.startAt < MIN_PRICE_PAUSE_MS
             ? [[view.id, confirmedPeriods(view, now)]] : [];
-        })) };
+        })) });
       this.queueFlexibilityPreviews();
     }
   }

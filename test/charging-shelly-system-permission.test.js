@@ -1,6 +1,12 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { EventEmitter } from 'node:events';
+import { DatabaseSync } from 'node:sqlite';
+import { mkdtempSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { setTimeout as delay } from 'node:timers/promises';
+import { Store } from '../src/storage/store.js';
 import { ChargingRuntime } from '../src/charging/runtime.js';
 import { createShellyEvseAdapter } from '../src/charging/shelly-evse.js';
 import { createChargingTeslaCapture } from '../src/charging/teslamate.js';
@@ -14,6 +20,7 @@ const COMPONENTS = { current_limit: ['Number', 200], start_charging: ['Boolean',
 // Only the EVSE/broker and economic result are synthetic. Permission events pass
 // through the real MQTT parser, persistent queue, controller and runtime matcher.
 async function fixture(t, { initiallyPermitted = false, autoCharge = false, startOutcome = 'confirmed', startEcho = null,
+  stopEcho = null, stopOutcome = 'confirmed', durableStorage = false,
   automatic = true, vehicleFeed = true, limiterEnabled = false } = {}) {
   let now = START, measuredCurrentA = 0, runtime, newerStartInjected = false, pendingStartEcho = null,
     planStartAt = START, ownershipSaveFailure = false, delayedStart = false;
@@ -29,12 +36,19 @@ async function fixture(t, { initiallyPermitted = false, autoCharge = false, star
     teslamate: { enabled: vehicleFeed, carId: '1', namespace: 'synthetic-system', homeGeofence: 'Home' },
   }, charging: { chargers: { charger2: { enabled: true, deviceId: DEVICE, topicPrefix: PREFIX, limiterEnabled,
     mainFuseA: [25, 25, 25], marginA: [1, 1, 1], fallbackCurrentA: 12 } } } };
-  const store = { getState: key => structuredClone(data.get(key)),
+  const directory = durableStorage ? mkdtempSync(join(tmpdir(), 'stmq-shelly-identification-')) : null;
+  const store = durableStorage ? new Store(join(directory, 'fixture.sqlite')) : { getState: key => structuredClone(data.get(key)),
     setState: (key, value) => {
       if (ownershipSaveFailure && key === runtime.ownershipKey('charger2')) throw Error('synthetic-ownership-save-failure');
       data.set(key, structuredClone(value));
     }, transaction: fn => fn(), event: () => 1 };
-  withReportDatabase(store, t);
+  if (!durableStorage) withReportDatabase(store, t);
+  const writer = durableStorage ? new DatabaseSync(store.path) : null;
+  if (writer) t.after(async () => {
+    if (writer.isTransaction) writer.exec('ROLLBACK');
+    await runtime?.close(); adapter.close(); writer.close(); store.close();
+    rmSync(directory, { recursive: true, force: true });
+  });
   const meter = () => ({ total_power: measuredCurrentA * .69, total_act_energy: 0,
     ...Object.fromEntries(['phase_a', 'phase_b', 'phase_c'].map(phase => [phase,
       { voltage: 230, current: measuredCurrentA, power: measuredCurrentA * .23 }])) });
@@ -52,8 +66,10 @@ async function fixture(t, { initiallyPermitted = false, autoCharge = false, star
       options: ['charger_free', 'charger_insert', 'charger_wait', 'charger_pause', 'charger_end', 'charger_charging'] };
     else if (frame.method.endsWith('.Set')) {
       writes.push({ method: frame.method, ...frame.params, at: now });
-      if (role === 'start_charging' && frame.params.value === true && startEcho) {
-        pendingStartEcho = { dispatchedAt: now, nativeAt: now - (startEcho === 'different native second' ? 1083 : 83) };
+      const echoKind = frame.params.value ? startEcho : stopEcho;
+      if (role === 'start_charging' && echoKind) {
+        pendingStartEcho = { dispatchedAt: now, nativeAt: now - (echoKind === 'different native second' ? 1083 : 83),
+          value: frame.params.value, kind: echoKind };
         echoTrace.push(pendingStartEcho);
       }
       now += 100;
@@ -63,7 +79,7 @@ async function fixture(t, { initiallyPermitted = false, autoCharge = false, star
         delayedStart = true;
         fields.start_charging = { value: false, at: START, source: 'rpc' };
       }
-      if (role === 'start_charging' && frame.params.value === true && startOutcome === 'no acknowledgement') {
+      if (role === 'start_charging' && (frame.params.value ? startOutcome : stopOutcome) === 'no acknowledgement') {
         // Publication failed after the synthetic device applied the command;
         // the application cannot infer whether delivery or execution occurred.
         done?.(Error('synthetic uncertain publication')); return;
@@ -78,15 +94,17 @@ async function fixture(t, { initiallyPermitted = false, autoCharge = false, star
         // the application's dispatch clock. Receipt time remains independent.
         now += 140; echo.receivedAt = now;
         client.emit('message', `${PREFIX}/events/rpc`, Buffer.from(JSON.stringify({ src: DEVICE, method: 'NotifyStatus',
-          params: { ts: echo.nativeAt / 1000, 'boolean:201': { value: true,
-            ...(startEcho === 'unknown source' ? { source: 'synthetic-unknown' } : {}) } } })), {});
+          params: { ts: echo.nativeAt / 1000, 'boolean:201': { value: echo.value,
+            ...(echo.kind === 'unknown source' ? { source: 'synthetic-unknown' } : {}) } } })), {});
+        runtime?.telemetry(now);
         echo.event = structuredClone(adapter.snapshot().permissionEvents.at(-1));
-        if (startEcho === 'external Stop during readback') {
+        if (echo.kind === 'external Stop during readback' || echo.kind === 'external Enable during readback') {
+          const value = echo.kind === 'external Enable during readback';
           now += 17;
-          fields.start_charging = { value: false, at: Math.floor(now / 1000) * 1000, source: 'rpc' };
-          fields.work_state = { value: 'charger_pause', at: now };
+          fields.start_charging = { value, at: Math.floor(now / 1000) * 1000, source: 'rpc' };
+          fields.work_state = { value: value ? 'charger_wait' : 'charger_pause', at: now };
           client.emit('message', `${PREFIX}/events/rpc`, Buffer.from(JSON.stringify({ src: DEVICE, method: 'NotifyStatus',
-            params: { ts: now / 1000, 'boolean:201': { value: false, source: 'rpc' } } })), {});
+            params: { ts: now / 1000, 'boolean:201': { value, source: 'rpc' } } })), {});
           echo.externalStopAt = now;
         }
         now += 265; echo.readReceivedAt = now;
@@ -97,7 +115,8 @@ async function fixture(t, { initiallyPermitted = false, autoCharge = false, star
         newerStartInjected = true; now += 1000; fields[role].at = Math.floor(now / 1000) * 1000;
       }
       result = role === 'phase_info' ? { value: meter(), last_update_ts: now / 1000 }
-        : { value: role === 'start_charging' && startOutcome === 'unknown readback' && fields[role].value === true
+        : { value: role === 'start_charging' && (fields[role].value ? startOutcome : stopOutcome) === 'unknown readback'
+          && writes.some(row => row.role === role && row.value === fields[role].value)
           ? null : fields[role].value, last_update_ts: fields[role].at / 1000,
           ...(fields[role].source !== undefined ? { source: fields[role].source } : {}) };
     }
@@ -135,13 +154,17 @@ async function fixture(t, { initiallyPermitted = false, autoCharge = false, star
   publishTesla({ healthy: true, geofence: 'Home', plugged_in: true, charging_state: 'Stopped',
     charger_phases: 3, charger_power: 0, charger_actual_current: 0 });
   await create();
-  return { get now() { return now; }, get runtime() { return runtime; }, adapter, fields, writes, schedules, echoTrace,
+  return { get now() { return now; }, get runtime() { return runtime; }, adapter, fields, writes, schedules, echoTrace, store, writer,
     service, serviceStatus, currentCapability, publishTesla,
     get delayedStart() { return delayedStart; },
     setPlanStartAt(at) { planStartAt = at; },
     failOwnershipSave(value) { ownershipSaveFailure = value; },
     item: () => runtime.chargers.charger2,
     advance(ms) { now += ms; },
+    meterNotification() {
+      client.emit('message', `${PREFIX}/events/rpc`, Buffer.from(JSON.stringify({ src: DEVICE, method: 'NotifyStatus',
+        params: { ts: now / 1000, 'object:203': { value: meter(), last_update_ts: now / 1000 } } })), {});
+    },
     measure(currentA) { measuredCurrentA = currentA; fields.work_state = {
       value: currentA > 0 ? 'charger_charging' : fields.start_charging.value ? 'charger_wait' : 'charger_pause', at: now }; },
     async update() { await runtime.reconcile('charger2'); return runtime.chargers.charger2.controller.status(); },
@@ -260,6 +283,77 @@ test('a later external Stop supersedes a confirmed own Start with a clock-skewed
   assert.equal(f.item().controller.status().manual?.kind, 'stop');
   assert.equal(f.fields.start_charging.value, false);
   assert.equal(f.writes.filter(row => row.role === 'start_charging' && row.value === true).length, 1);
+});
+
+test('queued meter persistence keeps the active attempt and committed evidence while mutations and current matching wait', async t => {
+  const f = await startedFixture(t, { durableStorage: true });
+  const before = f.item().controller.status(), attempt = structuredClone(f.item().identification);
+  const oldMeter = structuredClone(f.adapter.snapshot().fields.phase_info), writes = f.writes.length;
+  f.advance(1000); f.measure(6);
+  f.writer.exec('BEGIN IMMEDIATE');
+  f.meterNotification();
+  const waiting = f.adapter.snapshot();
+  assert.equal(waiting.online, true);
+  assert.equal(waiting.error, null);
+  assert.equal(waiting.controlReady, false, 'A queued packet still fences every device mutation');
+  assert.equal(waiting.identificationReady, true, 'Storage wait is not loss of committed charger observations');
+  assert.equal(waiting.identificationCurrentReady, true, 'The bounded current-test capability cannot disappear into an unrestricted probe');
+  assert.equal(f.adapter.normalize(waiting).identificationCurrentReady, false, 'Pending input cannot confirm a new current match');
+  assert.deepEqual(waiting.fields.phase_info, oldMeter, 'Uncommitted metering never becomes physical evidence');
+  f.runtime.telemetry(f.now);
+  await assert.rejects(f.adapter.rpc('Boolean.Set', { owner: 'service:0', role: 'start_charging', value: false },
+    { mutation: true, guard: () => true }), /evse-control-unavailable/);
+  await delay(100);
+  f.runtime.telemetry(f.now);
+  assertOriginalAttempt(f, before, attempt);
+  assert.equal(f.item().identification.completedAt, null);
+  assert.equal(f.item().vehicleMatch, null);
+  assert.equal(f.writes.length, writes);
+  f.writer.exec('ROLLBACK');
+  await f.store.runWrite(() => {});
+  await f.adapter.refresh({ force: true }); await f.update();
+  assertOriginalAttempt(f, before, attempt);
+  assert.equal(f.item().identification.completedAt, null);
+  assert.equal(f.adapter.snapshot().controlReady, true);
+  assert.equal(f.adapter.snapshot().fields.phase_info.value.phase_a.current, 6);
+  assert.equal(f.writes.length, writes);
+});
+
+test('a queued meter packet cannot hide genuinely stale charger evidence', async t => {
+  const f = await startedFixture(t, { durableStorage: true });
+  const before = f.item().controller.status(), attempt = structuredClone(f.item().identification), writes = f.writes.length;
+  f.writer.exec('BEGIN IMMEDIATE');
+  f.advance(f.adapter.config.maxAgeMs + 1); f.meterNotification(); f.runtime.telemetry(f.now);
+  assert.equal(f.adapter.snapshot().identificationReady, false);
+  assertOriginalAttempt(f, before, attempt);
+  assert.equal(f.runtime.identificationAvailable(f.item(), f.now), false);
+  assert.equal(f.adapter.snapshot().controlReady, false);
+  assert.equal(f.writes.length, writes);
+  f.writer.exec('ROLLBACK'); await f.store.runWrite(() => {});
+});
+
+test('probe expiry reconciles its own fractional-clock Stop without another attempt or external instruction', async t => {
+  const f = await fixture(t, { stopEcho: 'own Stop' });
+  f.setPlanStartAt(START + 3600_000);
+  await f.update(); await f.reconnect(); await f.update();
+  const attempt = structuredClone(f.item().identification), currentTest = f.item().controller.status().currentTest;
+  assert.ok(attempt.probe?.deadlineAt > f.now);
+  f.advance(1000); f.measure(6); await f.update();
+  f.advance(attempt.probe.deadlineAt - f.now + 200); await f.update();
+  const control = f.item().controller.status(), echo = f.echoTrace.find(row => row.value === false);
+  assert.ok(echo.nativeAt < echo.dispatchedAt);
+  assert.ok(control.snapshot.fields.start_charging.readback.requestedAt >= Math.max(echo.acknowledgedAt, echo.receivedAt));
+  assert.equal(control.manual, null);
+  assert.equal(control.pending, null);
+  assert.equal(f.item().identification.id, attempt.id);
+  assert.equal(f.item().identification.attempt, attempt.attempt);
+  assert.equal(f.item().identification.probe.deadlineAt, attempt.probe.deadlineAt);
+  assert.equal(f.item().identification.reason, 'probe-time-limit');
+  assert.equal(control.currentTest.expiresAt, currentTest.expiresAt);
+  assert.equal(f.writes.filter(row => row.role === 'start_charging' && row.value === true).length, 1);
+  f.advance(1100); f.measure(0); await f.update();
+  assert.equal(f.item().controller.status().manual, null);
+  assert.equal(f.item().identification.probe.deadlineAt, attempt.probe.deadlineAt);
 });
 
 const starts = f => f.writes.filter(row => row.role === 'start_charging' && row.value === true);
@@ -601,8 +695,8 @@ test(`saved SYS hold with ${label} rejects before mutation`, async t => {
   assert.equal(f.writes.length, before);
 });
 
-async function ownedPauseFixture(t) {
-  const f = await startedFixture(t);
+async function ownedPauseFixture(t, options = {}) {
+  const f = await startedFixture(t, options);
   f.advance(1000); f.measure(6); await f.adapter.refresh({ force: true });
   const attempt = structuredClone(f.item().identification), originalTest = f.item().controller.status().currentTest;
   let saved = structuredClone(f.runtime.savedOwnership('charger2'));
@@ -621,8 +715,75 @@ async function ownedPauseFixture(t) {
   assert.equal(controller.status().pauseConfirmed, true);
   assert.equal(f.fields.current_limit.value, 16);
   return Object.assign(f, { controller, update, originalTest, pauseUntil: request.pauseUntil,
+    savedState() { return structuredClone(saved); },
     endRequest() { request = null; } });
 }
+
+test('an acknowledged own Stop keeps its raw same-second permission clock and survives pause restoration and restart validation', async t => {
+  const f = await ownedPauseFixture(t, { stopEcho: 'own Stop' });
+  const control = f.controller.status(), echo = f.echoTrace.find(row => row.value === false);
+  assert.equal(control.manual, null);
+  assert.equal(control.pauseConfirmed, true);
+  assert.equal(control.owned.permissionAt, Math.floor(echo.dispatchedAt / 1000) * 1000);
+  assert.ok(control.owned.permissionAt < control.owned.requestedAt);
+  assert.ok(control.owned.confirmedAt >= echo.acknowledgedAt);
+  assert.equal(control.currentTest.phase, 'restored');
+  const saved = f.savedState();
+  const restored = f.adapter.createController({ initialState: saved, clock: () => f.now });
+  t.after(() => restored.close());
+  assert.equal(restored.status().owned.permissionAt, control.owned.permissionAt);
+  assert.throws(() => f.adapter.createController({ initialState: { ...saved,
+    owned: { ...saved.owned, permissionAt: saved.owned.permissionAt - 1000 } } }), /unsupported-shelly-ownership/);
+});
+
+for (const stopEcho of ['unknown source', 'different native second', 'external Enable during readback'])
+test(`a Stop notification with ${stopEcho} cannot acquire confirmed pause ownership`, async t => {
+  const f = await fixture(t, { vehicleFeed: false, stopEcho });
+  await f.update(); await f.reconnect(); await f.update();
+  f.advance(2200); f.setPlanStartAt(f.now + 3600_000); await f.update();
+  const control = f.item().controller.status();
+  assert.equal(f.echoTrace.length, 1);
+  assert.equal(control.manual?.kind, stopEcho === 'external Enable during readback' ? 'enable' : 'stop');
+  assert.equal(control.ownsInstruction, false);
+  assert.equal(control.pauseConfirmed, false);
+  assert.equal(f.item().vehicleMatch, null);
+});
+
+for (const stopOutcome of ['unknown readback', 'no acknowledgement'])
+test(`a Stop with ${stopOutcome} stays uncertain without replay or confirmed ownership`, async t => {
+  const f = await fixture(t, { vehicleFeed: false, stopOutcome });
+  await f.update(); await f.reconnect(); await f.update();
+  f.advance(2200); f.setPlanStartAt(f.now + 3600_000); await f.update();
+  assert.ok(f.item().controller.status().pending);
+  assert.equal(f.item().controller.status().ownsInstruction, false);
+  assert.equal(f.item().controller.status().pauseConfirmed, false);
+  f.advance(1000); await f.update();
+  assert.equal(f.writes.filter(row => row.role === 'start_charging' && row.value === false).length, 1);
+  assert.equal(f.item().controller.status().ownsInstruction, false);
+  if (stopOutcome === 'no acknowledgement') {
+    assert.equal(f.item().controller.status().manual?.kind, 'stop');
+    assert.equal(f.item().controller.status().manual?.origin, 'unknown', 'RPC provenance cannot prove who sent a Stop while our same-second write remains unresolved');
+  }
+});
+
+test('a matching notification without a Stop acknowledgement remains uncertain while a later distinct Stop is external', async t => {
+  const f = await fixture(t, { vehicleFeed: false, stopOutcome: 'no acknowledgement' });
+  await f.update(); await f.reconnect(); await f.update();
+  f.advance(2200); f.setPlanStartAt(f.now + 3600_000); await f.update();
+  const pending = f.item().controller.status().pending;
+  assert.equal(pending.stage, 'dispatched');
+  f.permission(false, 'rpc', { eventAt: pending.dispatchedAt - 31 });
+  await f.update();
+  assert.equal(f.item().controller.status().pending.stage, 'dispatched');
+  assert.equal(f.item().controller.status().manual?.kind, 'stop');
+  assert.equal(f.item().controller.status().manual?.origin, 'unknown');
+  assert.equal(f.item().controller.status().ownsInstruction, false);
+  assert.equal(f.writes.filter(row => row.role === 'start_charging' && row.value === false).length, 1);
+  f.advance(2000); f.permission(false, 'rpc'); await f.update();
+  assert.equal(f.item().controller.status().manual?.origin, 'external-command');
+  assert.equal(f.item().controller.status().ownsInstruction, false);
+  assert.equal(f.writes.filter(row => row.role === 'start_charging' && row.value === false).length, 1);
+});
 
 test('same-value SYS false preserves an owned pause through Charge now and resumes only at its original deadline', async t => {
   const f = await ownedPauseFixture(t), before = structuredClone(f.controller.status().owned), initialStarts = starts(f).length;

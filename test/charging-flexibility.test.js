@@ -195,6 +195,20 @@ test('one snapshot compares equal remaining service for both chargers and expose
   assert.deepEqual(options, before, 'no delivered energy or session request is reset by a counterfactual');
 });
 
+test('refreshing an active allowance preserves the ordinary baseline forecast permission', () => {
+  const options = planning();
+  const choice = { chargerId: 'charger1', normalReadyByAt: options.now + 3 * HOUR,
+    deferredReadyByAt: options.now + 4 * HOUR, normalForecastAllowed: false };
+  const original = compareChargingFlexibility(options, choice);
+  options.chargers[0].forecastAllowed = true;
+  options.chargers[0].deadlineAt = choice.deferredReadyByAt;
+  const active = compareChargingFlexibility(options, choice);
+  assert.deepEqual(active, original, 'allowing the day does not silently authorize the earlier alternative to use predictions');
+  const promoted = compareChargingFlexibility(options, { ...choice, normalForecastAllowed: true });
+  assert.ok(promoted.normalCostCents < original.normalCostCents,
+    'a previously consumed allowance retains its explicit baseline permission');
+});
+
 test('missing future coverage is unavailable, never a fabricated zero-price saving', () => {
   const options = planning(); options.prices.pop();
   const comparison = compareChargingFlexibility(options, { chargerId: 'charger1',
