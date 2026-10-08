@@ -178,21 +178,41 @@ export function recordLearningContext(store, input, context, at, { config = {}, 
     floorOverrideMode: ['on', 'off', 'partial', 'unknown'].includes(context.floorOverrideMode) ? context.floorOverrideMode : 'off',
     treatmentKey: typeof context.treatmentKey === 'string' ? context.treatmentKey : 'native',
     dhwrActive: typeof context.dhwrActive === 'boolean' ? context.dhwrActive : null };
-  const previous = store.db.prepare(`SELECT id,at,config_version,payload FROM learning_journal
-    WHERE input=? AND kind='context' AND algorithm_version=?
-    AND json_type(payload,'$.value.controlContext')='object' ORDER BY at DESC,id DESC LIMIT 1`).get(input, LEARNING_ALGORITHM);
+  const previous = learningControlContexts(store, input, { latest: true })[0];
   if (previous && at < previous.at) throw new Error('Control context cannot be backdated before an already recorded context');
   if (previous && learningVersion(JSON.parse(previous.payload).value.controlContext) === learningVersion(controlContext)
     && JSON.parse(previous.config_version) === learningVersion(learningConfiguration(config))) return previous.id;
   return appendLearningRecord(store, input, 'context', { timestamp: at, controlContext }, { config, seed });
 }
 
+/** Seek time within each retained range instead of sorting the inherited
+ * journal. A known newer context also bounds searches in older source epochs. */
+function learningControlContexts(store, input, { from = Number.MIN_SAFE_INTEGER, to = Number.MAX_SAFE_INTEGER, latest = false } = {}) {
+  const epoch = store.db.prepare('SELECT epoch FROM learning_epochs WHERE input=?').get(input)?.epoch ?? 'original';
+  const ranges = [{ source_epoch: epoch, after_id: 0, through_id: Number.MAX_SAFE_INTEGER },
+    ...store.db.prepare('SELECT source_epoch,after_id,through_id FROM learning_epoch_segments WHERE epoch=? AND input=? ORDER BY through_id DESC')
+      .all(epoch, input)];
+  const statement = store.db.prepare(`SELECT e.id,e.at,COALESCE(e.config_version,s.config_version) config_version,
+    COALESCE(e.payload,s.payload) payload FROM learning_journal_entries e INDEXED BY learning_entries_time
+    LEFT JOIN learning_journal_entries s ON s.id=e.source_entry_id
+    WHERE e.epoch=? AND e.input=? AND e.kind='context' AND e.at${latest ? '>=' : '>'}? AND e.at<=?
+      AND e.id>? AND e.id<=? AND e.algorithm_version=?
+      AND json_type(COALESCE(e.payload,s.payload),'$.value.controlContext')='object'
+    ORDER BY e.at${latest ? ' DESC' : ''},e.id${latest ? ' DESC' : ''}${latest ? ' LIMIT 1' : ''}`);
+  const rows = []; let best;
+  for (const range of ranges) {
+    const params = [range.source_epoch, input, best?.at ?? from, to, range.after_id, range.through_id, LEARNING_ALGORITHM];
+    if (latest) {
+      const row = statement.get(...params);
+      if (row && (!best || row.at > best.at || row.at === best.at && row.id > best.id)) best = row;
+    } else rows.push(...statement.all(...params));
+  }
+  return latest ? best ? [best] : [] : rows.sort((a, b) => a.at - b.at || a.id - b.id);
+}
+
 function controlContexts(store, input, from, to) {
-  const where = "input=? AND kind='context' AND algorithm_version=? AND json_type(payload,'$.value.controlContext')='object'";
-  const before = store.db.prepare(`SELECT id,at,payload FROM learning_journal WHERE ${where} AND at<=? ORDER BY at DESC,id DESC LIMIT 1`)
-    .get(input, LEARNING_ALGORITHM, from);
-  const changes = store.db.prepare(`SELECT id,at,payload FROM learning_journal WHERE ${where} AND at>? AND at<=? ORDER BY at,id`)
-    .all(input, LEARNING_ALGORITHM, from, to);
+  const before = learningControlContexts(store, input, { to: from, latest: true })[0];
+  const changes = learningControlContexts(store, input, { from, to });
   return [...(before ? [before] : []), ...changes].map(row => {
     const payload = JSON.parse(row.payload);
     return { id: row.id, at: row.at, ...payload.value.controlContext, configuration: payload.configuration };
