@@ -13,6 +13,9 @@ export const recoveryRecordKey = (table, alias = 'r') => table === 'import_rows'
 export const selectedHistoryPredicate = (table, alias = 'r') => `NOT EXISTS(SELECT 1 FROM recovery_exclusions x
  WHERE x.generation=(SELECT generation FROM history_selection WHERE id=1)
  AND x.table_name='${table}' AND x.record_key=${recoveryRecordKey(table, alias)})`;
+// In learning_journal_all, +e.id on the inherited lower bound deliberately
+// leaves the external requested cursor as the index seek. Without unary +,
+// SQLite can seek at the historical segment start and filter the cursor later.
 const DATA_SCHEMA = `
 CREATE TABLE annotations (
   id INTEGER PRIMARY KEY, kind TEXT NOT NULL, start_at INTEGER NOT NULL, end_at INTEGER,
@@ -64,6 +67,10 @@ CREATE TABLE learning_cycles (
  id TEXT PRIMARY KEY, input TEXT NOT NULL, started_at INTEGER NOT NULL, ended_at INTEGER,
  status TEXT NOT NULL, payload TEXT NOT NULL);
 CREATE TABLE learning_epochs (input TEXT PRIMARY KEY, epoch TEXT NOT NULL);
+CREATE TABLE learning_epoch_segments (
+ epoch TEXT NOT NULL,input TEXT NOT NULL,source_epoch TEXT NOT NULL,
+ after_id INTEGER NOT NULL CHECK(after_id>=0),through_id INTEGER NOT NULL CHECK(through_id>after_id),
+ CHECK(epoch<>source_epoch),PRIMARY KEY(epoch,input,source_epoch,after_id,through_id)) WITHOUT ROWID;
 CREATE TABLE learning_journal_entries (
             id INTEGER PRIMARY KEY AUTOINCREMENT, epoch TEXT NOT NULL,
             input TEXT NOT NULL, key TEXT NOT NULL, kind TEXT NOT NULL, at INTEGER NOT NULL,
@@ -128,7 +135,10 @@ CREATE INDEX learning_cycles_input_at ON learning_cycles(input, started_at);
 CREATE INDEX learning_entries_algorithm
           ON learning_journal_entries(epoch,input,algorithm_version,id);
 CREATE INDEX learning_entries_epoch_input ON learning_journal_entries(epoch,input,id);
+CREATE INDEX learning_entries_epoch_time ON learning_journal_entries(epoch,input,at,id);
 CREATE INDEX learning_entries_time ON learning_journal_entries(epoch,input,kind,at,id);
+CREATE INDEX learning_sensor_contexts ON learning_journal_entries(input,id)
+ WHERE kind='context' AND (json_type(payload,'$.value.sensorChange')='object' OR json_type(payload,'$.value.sensorRevert')='object');
 CREATE INDEX learning_roots_time ON learning_journal_entries(input,at,CASE kind WHEN 'context' THEN 0 WHEN 'sample' THEN 1 ELSE 2 END,id)
  WHERE source_entry_id IS NULL;
 CREATE INDEX observations_easee_acquisition ON observations(device, received_at, id)
@@ -167,7 +177,13 @@ CREATE VIEW learning_journal_all AS SELECT e.id,e.epoch,e.input,e.key,e.kind,e.a
             COALESCE(e.config_version,s.config_version) AS config_version,
             COALESCE(e.forecast_version,s.forecast_version) AS forecast_version,
             COALESCE(e.payload,s.payload) AS payload,e.source_entry_id
-            FROM learning_journal_entries e LEFT JOIN learning_journal_entries s ON s.id=e.source_entry_id;
+            FROM learning_journal_entries e LEFT JOIN learning_journal_entries s ON s.id=e.source_entry_id
+            UNION ALL SELECT e.id,g.epoch,e.input,e.key,e.kind,e.at,e.algorithm_version,
+            COALESCE(e.config_version,s.config_version),COALESCE(e.forecast_version,s.forecast_version),
+            COALESCE(e.payload,s.payload),e.source_entry_id
+            FROM learning_epoch_segments g JOIN learning_journal_entries e
+              ON e.epoch=g.source_epoch AND e.input=g.input AND +e.id>g.after_id AND e.id<=g.through_id
+            LEFT JOIN learning_journal_entries s ON s.id=e.source_entry_id;
 CREATE VIEW provider_snapshots AS SELECT f.id,f.kind,f.source,f.issued_at,f.fetched_at,
  c.payload AS payload,f.digest FROM provider_snapshot_fetches f
  JOIN provider_snapshot_contents c ON c.id=f.content_id;

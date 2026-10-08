@@ -10,7 +10,8 @@ export function journalSchema(dataSchema) {
     tables = reference.prepare("SELECT name FROM sqlite_schema WHERE type='table' AND name NOT GLOB 'sqlite_*' AND name<>'recovery_dependencies' ORDER BY name").all()
       .map(({ name }) => {
         const columns = reference.prepare(`PRAGMA table_info(${quoteIdentifier(name)})`).all();
-        return { name, columns: columns.map(c => c.name), keys: columns.filter(c => c.pk).sort((a,b) => a.pk-b.pk).map(c => c.name) };
+        return { name, columns: columns.map(c => c.name), textColumns: columns.filter(c => c.type === 'TEXT').map(c => c.name),
+          keys: columns.filter(c => c.pk).sort((a,b) => a.pk-b.pk).map(c => c.name) };
       });
   } finally { reference.close(); }
   if (tables.some(table => !table.keys.length)) throw new Error('Journal tables require explicit primary keys');
@@ -29,10 +30,12 @@ CREATE TABLE journal_branch_commits(branch_id TEXT NOT NULL REFERENCES journal_b
  payload TEXT NOT NULL,PRIMARY KEY(branch_id,sequence)) WITHOUT ROWID;
 `;
   const capture = tables.flatMap(table => ['INSERT','UPDATE','DELETE'].map(operation => {
-    const row = alias => `json_object(${table.columns.map(column => `'${column}',${alias}.${quoteIdentifier(column)}`).join(',')})`;
+    // SQLite JSON SQL functions attach a transient subtype. Capture the TEXT
+    // actually stored, including NULL, rather than embedding that subtype as JSON.
+    const row = alias => `json_object(${table.columns.map(column => `'${column}',${alias}.${quoteIdentifier(column)}${table.textColumns.includes(column) ? "||''" : ''}`).join(',')})`;
     const before = operation === 'INSERT' ? 'NULL' : row('OLD'), after = operation === 'DELETE' ? 'NULL' : row('NEW');
     const alias = operation === 'DELETE' ? 'OLD' : 'NEW';
-    const key = `json_array(${table.keys.map(column => `${alias}.${quoteIdentifier(column)}`).join(',')})`;
+    const key = `json_array(${table.keys.map(column => `${alias}.${quoteIdentifier(column)}${table.textColumns.includes(column) ? "||''" : ''}`).join(',')})`;
     const condition = table.name === 'state' ? ` WHEN ${alias}.key<>'backup:metadata'` : '';
     return `CREATE TRIGGER journal_${table.name}_${operation.toLowerCase()} AFTER ${operation} ON ${quoteIdentifier(table.name)}${condition}
  BEGIN INSERT INTO journal_pending(table_name,record_key,before_row,after_row) VALUES('${table.name}',${key},${before},${after}); END;`;

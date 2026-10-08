@@ -1,13 +1,10 @@
 import { fireplaceLearningContext } from '../app/fireplace-inputs.js';
-import { sensorRevision } from '../app/sensor-inputs.js';
+import { sensorLearningContext, sensorRevision } from '../app/sensor-inputs.js';
 
 /** A recovery projection is not selected until publication. Read its compact
  * corrections without switching the live journal view. */
 export function projectedSensorContext(store, input, epoch) {
-  const rows = store.db.prepare(`SELECT id,json_extract(payload,'$.value.sensorRevert.id') target
-    FROM learning_journal_all WHERE epoch=? AND input=? AND kind='context'
-    AND json_type(payload,'$.value.sensorRevert')='object' ORDER BY id`).all(epoch, input);
-  return { sensorRevision: rows.at(-1)?.id ?? 0, revertedSensorChanges: [...new Set(rows.map(row => row.target))] };
+  return sensorLearningContext(store, input, Number.MAX_SAFE_INTEGER, { epoch });
 }
 
 /** A failed import may have accepted old manual source events already. Let the

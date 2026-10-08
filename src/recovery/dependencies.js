@@ -1,22 +1,22 @@
 // Reverse source references are maintained with the owning row's transaction.
 // Recovery can inspect only affected roots and cycles instead of historical JSON.
 const references = `CASE
-  WHEN j.key IN ('observationId','sourceObservationId') OR p.key='observations' AND p.type='array' THEN 'observations'
-  WHEN j.key='coverageId' OR p.key='coverage' AND p.type='array' THEN 'recorder_coverage'
-  WHEN j.key='snapshotId' OR j.key='id' AND p.key IN ('forecastVersion','forecast_version') THEN 'provider_snapshot_fetches'
+  WHEN j.key IN ('observationId','sourceObservationId') OR j.path GLOB '*.observations' AND typeof(j.key)='integer' THEN 'observations'
+  WHEN j.key='coverageId' OR j.path GLOB '*.coverage' AND typeof(j.key)='integer' THEN 'recorder_coverage'
+  WHEN j.key='snapshotId' OR j.key='id' AND (j.path GLOB '*.forecastVersion' OR j.path GLOB '*.forecast_version') THEN 'provider_snapshot_fetches'
   WHEN j.key IN ('cycleId','episodeId') THEN 'learning_cycles'
-  WHEN p.key='journal' AND p.type='array' OR j.key='id' AND p.key='sensorRevert' THEN 'learning_journal'
+  WHEN j.path GLOB '*.journal' AND typeof(j.key)='integer' OR j.key='id' AND j.path GLOB '*.sensorRevert' THEN 'learning_journal'
 END`;
 function triggers(table) {
   const root = table === 'learning_journal_entries' ? ' AND NEW.source_entry_id IS NULL' : '';
   const owner = table === 'learning_journal_entries' ? 'learning_journal' : table;
-  const sourceReferences = table === 'learning_journal_entries' ? references.replace("WHEN j.key IN ('cycleId','episodeId')", "WHEN j.key='id' AND p.key='value' AND NEW.kind='episode' OR j.key IN ('cycleId','episodeId')") : references;
-  const insert = `INSERT OR IGNORE INTO recovery_dependencies(owner_table,owner_key,source_table,source_key)
-    SELECT '${owner}',CAST(NEW.id AS TEXT),source_table,
+  const sourceReferences = table === 'learning_journal_entries' ? references.replace("WHEN j.key IN ('cycleId','episodeId')", "WHEN j.key='id' AND j.path GLOB '*.value' AND NEW.kind='episode' OR j.key IN ('cycleId','episodeId')") : references;
+  const insert = `INSERT INTO recovery_dependencies(owner_table,owner_key,source_table,source_key)
+    SELECT DISTINCT '${owner}',CAST(NEW.id AS TEXT),source_table,
       CASE WHEN source_table='learning_journal' THEN CAST(COALESCE((SELECT COALESCE(e.source_entry_id,e.id)
         FROM learning_journal_entries e WHERE e.id=source_key),source_key) AS TEXT) ELSE CAST(source_key AS TEXT) END
     FROM (SELECT ${sourceReferences} source_table,j.atom source_key
-      FROM json_tree(NEW.payload) j LEFT JOIN json_tree(NEW.payload) p ON p.id=j.parent
+      FROM json_tree(NEW.payload) j
       WHERE j.type IN ('integer','text')) WHERE source_table IS NOT NULL;`;
   return `CREATE TRIGGER ${table}_recovery_insert AFTER INSERT ON ${table}
     WHEN json_valid(NEW.payload)${root} BEGIN ${insert} END;

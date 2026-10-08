@@ -1,6 +1,5 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { DatabaseSync } from 'node:sqlite';
 import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -22,12 +21,11 @@ function database(t, key, encoded) {
   const directory = mkdtempSync(join(tmpdir(), 'stmq-heating-state-preflight-'));
   t.after(() => rmSync(directory, { recursive: true, force: true }));
   const path = join(directory, 'synthetic.sqlite');
-  const store = new Store(path); store.close();
+  const store = new Store(path);
   if (key) {
-    const raw = new DatabaseSync(path);
-    raw.prepare('INSERT INTO state(key,value,updated_at) VALUES(?,?,?)').run(key, encoded, 123);
-    raw.close();
+    store.db.prepare('INSERT INTO state(key,value,updated_at) VALUES(?,?,?)').run(key, encoded, 123);
   }
+  store.close();
   return { directory, path };
 }
 

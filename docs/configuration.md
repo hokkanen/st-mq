@@ -319,6 +319,24 @@ For ingress, use Home Assistant to log out.
 
 ## Recording budget and database exports
 
+`recording.full_verification_interval_hours` configures optional background full
+database checks. The shared default is `0` (disabled); a positive interval up to
+8760 hours schedules a check after startup and after the previous check finishes.
+**Recording details → Verify database** starts the same check manually. It pins a
+read-only SQLite transaction, checks integrity, the complete commit hash chain and
+canonical content in a separate worker. Recording continues. Results identify
+the checked transaction; later changes are outside that result. A full check reads
+all history and may temporarily retain WAL pages while it runs, so its I/O and
+duration grow with database size. It is independent of routine replication and
+does not repair or replace any database.
+
+Manual pairing and history recovery actions offer **Verify with full snapshot**,
+unchecked by default. Recovery sources with different histories are checked
+individually. Comparing full contents is permitted only when both read snapshots
+have the same database identity, transaction sequence and commit hash; different
+heads require catch-up before comparison. Full database exports remain available
+independently of these checks.
+
 `recording.annual_budget_gb` defaults to 10 decimal GB per year for estimated
 adaptive measurement additions. Exact records, learning history, imports and
 SQLite overhead are additional; this is neither a whole-database cap nor a

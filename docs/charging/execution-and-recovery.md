@@ -225,7 +225,7 @@ still withhold readiness for further commands, and physical charging or stopping
 requires its own fresh measurement.
 
 Pre-1.0 native state is not migrated. The current charging state remains version 6
-and database schema 23; the physical adapter uses its own explicitly scoped
+and database schema 24; the physical adapter uses its own explicitly scoped
 current state. New optional control choices default to OFF/Balanced when absent;
 recorded presentation never supplies control permission. Retired configuration switches for automatic charging and
 priority, dashboard overrides of permanent battery defaults, old pseudo-C2

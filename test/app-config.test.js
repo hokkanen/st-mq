@@ -36,8 +36,10 @@ test('default startup has no global mode with simulated devices, no provider con
   assert.equal(cfg.dbPath, '/missing-repository/var/simulation.sqlite');
 });
 test('recording and acquisition options are independent, configurable and validated',()=>{
-  assert.deepEqual(recordingConfiguration(),{annualBudgetBytes:10000000000,exportDirectory:homedir()});
-  assert.deepEqual(recordingConfiguration({annual_budget_gb:4}),{annualBudgetBytes:4000000000,exportDirectory:homedir()});
+  assert.deepEqual(recordingConfiguration(),{annualBudgetBytes:10000000000,exportDirectory:homedir(),fullVerificationIntervalMs:0});
+  assert.deepEqual(recordingConfiguration({annual_budget_gb:4}),{annualBudgetBytes:4000000000,exportDirectory:homedir(),fullVerificationIntervalMs:0});
+  assert.equal(recordingConfiguration({full_verification_interval_hours:24}).fullVerificationIntervalMs,86400000);
+  for (const full_verification_interval_hours of [-1, '24', 8761, true]) assert.throws(() => recordingConfiguration({full_verification_interval_hours}));
   assert.equal(acquisitionConfiguration().easeeIntervalMs,15000);
   assert.equal(acquisitionConfiguration().electricityTelemetryMaxAgeMs,1020000);
   assert.equal(acquisitionConfiguration({electricity_telemetry_max_age_seconds:600}).electricityTelemetryMaxAgeMs,600000);
@@ -62,7 +64,7 @@ test('sparse recording destination overrides preserve public budget defaults and
   const source = JSON.stringify({ recording: { export_directory: '~/database-copies' } });
   writeFileSync(path, source, { mode: 0o600 });
   const config = loadConfig({ STMQ_CONFIG: path }, directory);
-  assert.deepEqual(config.recording, { annualBudgetBytes: 10_000_000_000, exportDirectory: join(homedir(), 'database-copies') });
+  assert.deepEqual(config.recording, { annualBudgetBytes: 10_000_000_000, exportDirectory: join(homedir(), 'database-copies'), fullVerificationIntervalMs: 0 });
   assert.equal(readFileSync(path, 'utf8'), source);
   for (const export_directory of [null, false, '', 'relative/copies']) {
     const invalid = JSON.stringify({ recording: { export_directory } });

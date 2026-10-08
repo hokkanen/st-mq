@@ -149,6 +149,10 @@ test('removed Shelly comparisons and aggregation fields reject instead of becomi
     assert.throws(() => assertCurrentChargingSessionCheck({ version: 1, ...session(fields) }), /Unsupported charging session-check/);
   }
   assert.equal(store.events().length, 0);
-  store.event('charging-session-check', { version: 1, ...session({ source: 'shelly-evse' }) }, 61000);
-  assert.throws(() => chargingSessionCheckSummaries(store), /Unsupported charging session-check/);
+  const checkpoint = store.checkpoint();
+  assert.throws(() => store.event('charging-session-check', { version: 1, ...session({ source: 'shelly-evse' }) }, 61000),
+    { code: 'database_state_incompatible' });
+  assert.deepEqual(store.checkpoint(), checkpoint);
+  assert.equal(store.events().length, 0);
+  assert.equal(chargingSessionCheckSummaries(store)[0].summary.recordedSessions, 0);
 });

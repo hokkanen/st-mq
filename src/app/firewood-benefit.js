@@ -1,4 +1,5 @@
 import { createHash } from 'node:crypto';
+import { learningJournalHead } from '../storage/store.js';
 import moment from 'moment-timezone';
 import { initialAdaptiveModel, restoreAdaptiveCheckpoint, thermalEvidenceReady, fireplaceEvidenceReady } from '../control/adaptive-learning.js';
 import { LEARNING_ALGORITHM, learningVersion, validLearningCheckpoint } from './committed-learning.js';
@@ -52,7 +53,7 @@ function computeFirewoodBenefit({ store, input, range, now, priceIntervals = [],
     return empty(range, now, context, 'Price history uses unsupported rate-assumption fields.');
   const result = empty(range, now, context, 'No logged fires overlap the available history.');
   if (through <= range.from || !context.fireplaceEvents.some(event => event.at < through)) return result;
-  const bounds = store.db.prepare('SELECT MAX(id) id FROM learning_journal WHERE input=?').get(input);
+  const bounds = { id: learningJournalHead(store.db,input) };
   const checkpointRow = store.db.prepare('SELECT value FROM state WHERE key=?').get(`adaptive:${input}`);
   const committedThrough = store.db.prepare(`SELECT MAX(at) at FROM learning_journal
     WHERE input=? AND kind='sample' AND algorithm_version=? AND at<=?`).get(input, LEARNING_ALGORITHM, through).at ?? 0;

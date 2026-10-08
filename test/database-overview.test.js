@@ -35,7 +35,7 @@ test('empty overview explains all physical tables without inventing historical p
     const actualViews = store.db.prepare("SELECT name FROM sqlite_schema WHERE type='view' AND name NOT LIKE 'sqlite_%' ORDER BY name").all();
     assert.deepEqual(overview.accounting.views.map(view => view.name), actualViews.map(view => view.name));
     assert(overview.accounting.views.every(view => view.description));
-    assert.equal(overview.accounting.totalRows, 1, 'fresh databases contain only the initial current history selection');
+    assert.equal(overview.accounting.totalRows, 2, 'fresh databases contain the history selection and durable transaction checkpoint');
     assert.equal(overview.accounting.selection.retainedSourceRows, 0);
     assert.equal(overview.accounting.selection.selectedSourceRows, 0);
     assert.equal(overview.accounting.selection.excludedSourceRows, 0);
@@ -46,7 +46,7 @@ test('empty overview explains all physical tables without inventing historical p
     assert.match(overview.groups.find(group => group.id === 'support').description, /cached chart responses stay in memory/);
     for (const [id, item] of items(overview)) {
       assert(item.description && item.retentionDescription, id);
-      assert.equal(item.status, id === 'history-selection' ? 'present' : 'empty', id);
+      assert.equal(item.status, ['history-selection','journal_meta'].includes(id) ? 'present' : 'empty', id);
     }
   } finally { store.close(); }
 });
@@ -363,7 +363,8 @@ test('fireplace inventory separates retained loads, correction actions and curre
     assert.equal(corrections.dateBasis, 'correction time');
     assert.equal(rows.get('state-fireplace').count, 1, 'updated worker progress is current state, not duplicated historical records');
     assert.equal(overview.accounting.tables.find(table => table.name === 'fireplace_events').rows, 5);
-    assert.equal(overview.accounting.totalRows, 7, 'six evidence/state records plus the initialized history selection');
+    const transactionRows = overview.accounting.tables.filter(row => row.name.startsWith('journal_')).reduce((sum,row)=>sum+row.rows,0);
+    assert.equal(overview.accounting.totalRows-transactionRows, 7, 'six evidence/state records plus the initialized history selection');
     assert(!JSON.stringify(overview).includes('invented-private'));
   } finally { store.close(); }
 });
@@ -427,7 +428,8 @@ test('overview counts composite CSV source identities and avoids disclosing unkn
   store.db.prepare(`INSERT INTO import_rows(import_id,row_number,source_time,raw,quality,canonical)
     VALUES(1,2,?,'private-original-row','[]','{}')`).run(at);
   store.db.exec(`INSERT INTO recovery_exclusions(generation,table_name,record_key) VALUES('original','import_rows','1:2');
-    CREATE VIEW "private-view-identity" AS SELECT id FROM observations; PRAGMA query_only=ON`);
+    CREATE VIEW "private-view-identity" AS SELECT id FROM observations`);
+  store.db.exec('PRAGMA query_only=ON');
   const overview = getDatabaseOverview({ store, now: at });
   assert.deepEqual(overview.accounting.selection.tables.find(row => row.name === 'import_rows'),
     { name: 'import_rows', retainedRows: 1, selectedRows: 0, excludedRows: 1 });

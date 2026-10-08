@@ -25,6 +25,7 @@ import { renderRecording, renderRecordingOverview, renderEnergyAudits, recording
 import { createRecordingHealth } from './recording-health.js';
 import './recording-health.css';
 import { bindDatabaseExport } from './database-export.js';
+import { bindDatabaseVerification } from './database-verification.js';
 import { learningOverview, settingsReloadScope } from './dashboard-status.js';
 import { createFireplacePanel } from './fireplace.js';
 import { createSensorChangePanel } from './sensor-changes.js';
@@ -199,6 +200,7 @@ const pairPanel = createPairPanel({ document, request: api, storage: sessionStor
 const historyRecovery = createHistoryRecoveryPanel({ document, request: api, storage: sessionStorage, formatTime: historyTime,
   upload: file => api('/api/history-recovery/upload', file, { binary: true }),
   afterMutation: () => refresh({ forceChart: true }) });
+const databaseVerification = bindDatabaseVerification({ document, request: api, formatTime: historyTime });
 const garageDoors = createGarageDoorPanel({ document,
   onAction: (deviceId, action) => equipmentPanel.actions.cover(deviceId, action),
   blocked: () => !lastStatus || isReadOnlyReplica(lastStatus) || temporaryBusy || heatingTestBusy || h66TestBusy || settingsReloadBusy });
@@ -788,6 +790,7 @@ function render(s) {
   pairPanel.update(pairPanelView(s));
   ++pairStatusRevision;
   historyRecovery.update({ ...s, webAccess });
+  databaseVerification.update({ ...s, webAccess });
   const replica = renderReplicaStatus(document, s, { formatTime: time });
   if (replica) garageDoors.close();
   renderHomePlannedChange(document, s);

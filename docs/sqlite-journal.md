@@ -42,8 +42,17 @@ foreign keys, journal and materialized rows. A paired comparison requires identi
 transaction checkpoints before comparing canonical table contents. A moving or
 different checkpoint is reported as a comparison mismatch, never proof of damage.
 Exporter metadata and internal journal archives are outside the active-row content
-comparison. SQLite's AUTOINCREMENT high-water marks may remain higher after a
+comparison; retained branch hashes are still checked independently. SQLite's
+AUTOINCREMENT high-water marks may remain higher after a
 retained branch; existing row identities and active contents are authoritative.
+
+Recovery and recovery revert reuse durable learning checkpoints from committed
+state images. A matching checkpoint before the first affected input preserves the
+unchanged prefix as compact ranges of immutable journal rows. The existing learning
+update function then replays the affected suffix. Each range uses indexed, bounded
+reads, including the first-entry seed check; an outer SQL LIMIT alone does not
+guarantee that a union avoids scanning its complete prefix. A correction without
+a matching prior checkpoint still requires reconstruction from the saved seed.
 
 The journal retains before and after images and therefore adds storage proportional
 to changed data. It currently has no automatic retention expiry. Required learning

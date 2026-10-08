@@ -297,6 +297,13 @@ configuration:
           /config/st-mq/exports. The shared default ~ is the server account's
           home inside the container and does not survive image replacement.
           Download database instead saves through the browser.
+      full_verification_interval_hours:
+        name: Full verification interval in hours
+        description: >-
+          Optional background integrity and full content check. Zero disables
+          scheduled checks. Full verification reads all database history in a
+          separate worker while recording continues. Each run checks one fixed
+          transaction checkpoint; normal mirroring does not wait for it.
   pair:
     name: Paired computers with manual takeover
     description: >-

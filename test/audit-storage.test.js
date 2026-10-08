@@ -121,7 +121,10 @@ for (const shape of ['unversioned','unversioned-sqlite-lookalike','current-sqlit
   if(shape==='wrong-structure')raw.exec(`CREATE TABLE state(key TEXT);PRAGMA user_version=${SCHEMA_VERSION}`);
   if(shape==='dangling-content')raw.exec('PRAGMA foreign_keys=OFF;DELETE FROM provider_snapshot_contents');
   raw.close();const before=readFileSync(path);
-  assert.throws(()=>new Store(path),/Unsupported|Malformed|dangling/);assert.deepEqual(readFileSync(path),before);
-  assert.throws(()=>new Store(path,{readOnly:true}),/Unsupported|Malformed|dangling/);assert.deepEqual(readFileSync(path),before);
-  await assert.rejects(Store.restore(path,destination),/Unsupported|Malformed|dangling/);assert(!existsSync(destination));assert.deepEqual(readFileSync(path),before);
+  const rejection = shape === 'dangling-content' ? { code: 'database_journal_invalid' } : /Unsupported|Malformed/;
+  assert.throws(()=>new Store(path),rejection);assert.deepEqual(readFileSync(path),before);
+  assert.throws(()=>new Store(path,{readOnly:true}),rejection);assert.deepEqual(readFileSync(path),before);
+  const restoreRejection = shape === 'dangling-content'
+    ? { code: 'backup_source_incompatible', details: { code: 'database_journal_invalid' } } : rejection;
+  await assert.rejects(Store.restore(path,destination),restoreRejection);assert(!existsSync(destination));assert.deepEqual(readFileSync(path),before);
 });

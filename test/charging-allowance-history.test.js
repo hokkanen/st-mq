@@ -168,10 +168,11 @@ test('report pruning cannot remove independent allowance history and public inve
   assert.match(entry.writeBehavior, /unchanged valid observations extend/); assert(!JSON.stringify(overview).includes(association));
 });
 
-test('five-second unchanged polling over a day uses one state and one coverage row with constant size', t => {
-  const { store, put } = fixture(t); put(); const before = store.databaseBytes();
+test('five-second unchanged polling over a day updates one state and one coverage row with journaled continuity', t => {
+  const { store, put } = fixture(t); put(); const before = store.checkpoint();
   for (let offset = 5000; offset <= DAY; offset += 5000) put(decision({}, { evaluatedAt: at + offset }), at + offset);
-  assert.equal(store.databaseBytes(), before); assert.equal(store.observations().length, 1);
+  assert(store.checkpoint().sequence>before.sequence, 'coverage extensions remain transferable committed changes');
+  assert.equal(store.observations().length, 1);
   const rows = store.db.prepare('SELECT * FROM recorder_coverage').all();
   assert.equal(rows.length, 1); assert.equal(rows[0].samples, 17_281); assert.equal(rows[0].end_at, at + DAY);
 });

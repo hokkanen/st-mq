@@ -56,8 +56,10 @@ test('direct circulation dispatch stays idle until a POST and shutdown saves unc
   const status = await (await fetch(`${endpoint}/api/status`)).json();
   assert.equal(status.heatingTests.available, true);
   assert.equal(status.automation.home.enabled, false);
-  app.engine.setTemporary({ pauseUntil: null });
-  app.engine.tick();
+  await app.engine.runWrite(() => {
+    app.engine.setTemporary({ pauseUntil: null });
+    app.engine.tick();
+  });
   assert.equal(clients.length, 0, 'Startup, status, temporary controls and automatic ticks never connect the publisher');
   const post = command => fetch(`${endpoint}/api/heating-test`, {
     method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ command }),

@@ -367,23 +367,42 @@ test('configuration epochs update nominal prediction power and replay identicall
   assert.deepEqual(replayLearningJournal(store, 'mqtt', null, { rebuild: true }), checkpoint);
 });
 
-test('unsupported journal algorithms are rejected at append, read and replay boundaries without mutation', t => {
+test('unsupported journal algorithms are rejected by every journal writer without mutation', t => {
   const store = new Store(':memory:'); t.after(() => store.close());
   const foreign = { kind: 'sample', at: start, key: `sample:${start}`,
     algorithmVersion: 'invented-unsupported-algorithm', payload: { value: { timestamp: start } } };
   assert.throws(() => store.appendLearningJournal('mqtt', foreign), /Unsupported Home learning journal algorithm/);
   assert.equal(store.learningJournal({ input: 'mqtt' }).length, 0);
   assert.throws(() => store.learningJournal({ input: 'mqtt', algorithmVersion: foreign.algorithmVersion }), /Unsupported Home learning journal algorithm/);
-  store.db.prepare(`INSERT INTO learning_journal_entries(epoch,input,key,kind,at,algorithm_version,payload)
-    VALUES('original','mqtt',?,'sample',?,?,?)`).run(foreign.key, start, foreign.algorithmVersion, JSON.stringify(foreign.payload));
+  const checkpoint = store.checkpoint();
+  assert.throws(() => store.db.prepare(`INSERT INTO learning_journal_entries(epoch,input,key,kind,at,algorithm_version,payload)
+    VALUES('original','mqtt',?,'sample',?,?,?)`).run(foreign.key, start, foreign.algorithmVersion, JSON.stringify(foreign.payload)),
+  { code: 'database_algorithm_mismatch' });
+  assert.deepEqual(store.checkpoint(), checkpoint);
+  assert.equal(store.learningJournal({ input: 'mqtt' }).length, 0);
+  assert.equal(store.db.prepare('SELECT COUNT(*) AS count FROM journal_pending').get().count, 0);
+});
+
+test('unsupported externally inserted journal algorithms are rejected by readers and replay without mutation', t => {
+  const directory = mkdtempSync(join(tmpdir(), 'stmq-corrupt-journal-'));
+  const path = join(directory, 'synthetic.sqlite');
+  const store = new Store(path);
+  t.after(() => { store.close(); rmSync(directory, { recursive: true, force: true }); });
+  const raw = new DatabaseSync(path);
+  try {
+    raw.prepare(`INSERT INTO learning_journal_entries(epoch,input,key,kind,at,algorithm_version,payload)
+      VALUES('original','mqtt','foreign','sample',?,'invented-unsupported-algorithm','{}')`).run(start);
+  } finally { raw.close(); }
+  const checkpoint = store.checkpoint();
   const before = store.db.prepare('SELECT * FROM learning_journal_entries').all();
   assert.throws(() => store.learningJournal({ input: 'mqtt', algorithmVersion: LEARNING_ALGORITHM }), /Unsupported Home learning journal algorithm/);
   assert.throws(() => replayLearningJournal(store, 'mqtt'), /Unsupported Home learning journal algorithm/);
   assert.equal(store.getState('adaptive:mqtt'), null);
+  assert.deepEqual(store.checkpoint(), checkpoint);
   assert.deepEqual(store.db.prepare('SELECT * FROM learning_journal_entries').all(), before);
 });
 
-test('opening a current-schema database with the previous or a foreign algorithm rejects before writable setup', t => {
+test('opening externally altered learning history rejects at the transaction checkpoint before writable setup', t => {
   const directory = mkdtempSync(join(tmpdir(), 'stmq-foreign-journal-'));
   t.after(() => rmSync(directory, { recursive: true, force: true }));
   for (const [index, algorithm] of ['committed-house-v15-continuous-comfort', 'invented-unsupported-algorithm'].entries()) {
@@ -395,7 +414,7 @@ test('opening a current-schema database with the previous or a foreign algorithm
     raw.close();
     const before = readFileSync(path);
     for (const readOnly of [false, true]) {
-      assert.throws(() => new Store(path, { readOnly }), /Unsupported Home learning journal algorithm.*existing database was not changed/);
+      assert.throws(() => new Store(path, { readOnly }), { code: 'database_journal_invalid' });
       assert.deepEqual(readFileSync(path), before);
     }
   }

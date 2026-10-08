@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtemp, rm, readFile } from 'node:fs/promises';
+import { mkdtemp, rm, readFile, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { spawnSync } from 'node:child_process';
@@ -86,6 +86,10 @@ test('rejoin stores losing suffix before rewind and retains it across restart an
   const retained=JSON.parse(reopened.db.prepare('SELECT payload FROM journal_branch_commits WHERE branch_id=?').get(branch).payload);
   assert.deepEqual(retained.changes[0].after.value,JSON.stringify({observed:2}));
   assert.equal(reopened.getState('master-tail'),3);
+  assert.equal(verifyJournal(reopened.db).archivedCommits,1);
+  retained.changes[0].after.value=JSON.stringify({observed:999});
+  reopened.db.prepare('UPDATE journal_branch_commits SET payload=? WHERE branch_id=?').run(JSON.stringify(retained),branch);
+  assert.throws(()=>verifyJournal(reopened.db),{code:'journal_hash_mismatch'});
 });
 test('kill during uncommitted write leaves exactly the last durable checkpoint',async t=>{
   const {source,dir}=await fixture(t);source.setState('committed',1);const before=source.checkpoint();source.close();
@@ -102,4 +106,55 @@ test('unsealed external changes fail startup without rewriting original bytes',a
   const bytes=await readFile(source.path);
   assert.throws(()=>new Store(source.path),{code:'database_journal_invalid'});
   assert.deepEqual(await readFile(source.path),bytes);
+});
+
+test('startup preserves malformed WAL companions instead of silently opening older main-file contents',async t=>{
+  const {source}=await fixture(t);source.setState('committed',1);source.close();
+  const main=await readFile(source.path),wal=Buffer.from('synthetic damaged write-ahead journal');
+  await writeFile(`${source.path}-wal`,wal);
+  for(const readOnly of [false,true]) {
+    assert.throws(()=>new Store(source.path,{readOnly}),{code:'database_integrity_failed'});
+    assert.deepEqual(await readFile(source.path),main);
+    assert.deepEqual(await readFile(`${source.path}-wal`),wal);
+  }
+});
+
+test('read-only startup validates one checkpoint while a concurrent writer advances',async t=>{
+  const {source}=await fixture(t);source.setState('before-read',1);
+  const prepare=DatabaseSync.prototype.prepare;
+  let armed=true;
+  t.mock.method(DatabaseSync.prototype,'prepare',function(sql) {
+    const statement=prepare.call(this,sql);
+    if(sql==='SELECT database_id,sequence,hash FROM journal_meta WHERE id=1') {
+      const get=statement.get.bind(statement);
+      statement.get=(...args)=>{
+        const result=get(...args);
+        if(armed) {armed=false;source.setState('during-read',2);}
+        return result;
+      };
+    }
+    return statement;
+  });
+  const reader=new Store(source.path,{readOnly:true});t.after(()=>reader.close());
+  assert.equal(armed,false);
+  assert.deepEqual(reader.checkpoint(),source.checkpoint());
+  assert.equal(reader.getState('during-read'),2);
+});
+
+test('raw transaction-control batches and outer savepoints fail before mutation',async t=>{
+  const {source:s}=await fixture(t),before=s.checkpoint();
+  for(const sql of ["BEGIN; INSERT INTO events(type,payload,at) VALUES('bad','{}',1); COMMIT",'SAVEPOINT outer',
+    "PRAGMA busy_timeout=0; BEGIN; INSERT INTO events(type,payload,at) VALUES('bad','{}',1); COMMIT"])
+    assert.throws(()=>s.db.exec(sql),{code:'journal_transaction_boundary_invalid'});
+  assert.throws(()=>s.db.prepare('COMMIT'),{code:'journal_transaction_boundary_invalid'});
+  assert.deepEqual(s.checkpoint(),before);assert.equal(s.events().length,0);
+  s.setState('still-writable',true);assert.equal(s.getState('still-writable'),true);
+});
+test('JSON SQL subtypes are captured as stored text and CTE reads require no writer transaction',async t=>{
+  const {source:s}=await fixture(t);
+  s.db.exec("INSERT INTO events(type,payload,at) VALUES('fixture',json_object('value','synthetic'),1)");
+  const batch=s.exportChanges({after:s.checkpointAt(0)});
+  assert.equal(batch.commits[0].changes[0].after.payload,'{"value":"synthetic"}');
+  assert.equal([...s.db.prepare('/* prefix */ WITH values_read AS (SELECT 1 n) SELECT n FROM values_read').iterate()][0].n,1);
+  assert.equal(s.checkpoint().sequence,1);
 });

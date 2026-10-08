@@ -85,7 +85,7 @@ function interval(value, fallback, minimum, maximum, name) {
 
 export function recordingConfiguration(input = {}) {
   if (!input || typeof input !== 'object' || Array.isArray(input)) throw new TypeError('Recording settings must be an object');
-  for (const key of Object.keys(input)) if (!['annual_budget_gb', 'export_directory'].includes(key))
+  for (const key of Object.keys(input)) if (!['annual_budget_gb', 'export_directory', 'full_verification_interval_hours'].includes(key))
     throw new Error(`Unsupported recording setting: ${key}. Recording has no maximum interval.`);
   const directory = input.export_directory === undefined ? '~' : input.export_directory;
   if (typeof directory !== 'string' || !directory.trim() || /[\u0000-\u001f\u007f]/.test(directory)
@@ -94,6 +94,7 @@ export function recordingConfiguration(input = {}) {
   return {
     annualBudgetBytes: Math.round(interval(input.annual_budget_gb, 10, 0.01, 10000, 'annual_budget_gb') * 1_000_000_000),
     exportDirectory: directory.startsWith('~') ? resolve(`${homedir()}${directory.slice(1)}`) : resolve(directory),
+    fullVerificationIntervalMs: Math.round(interval(input.full_verification_interval_hours, 0, 0, 8760, 'full_verification_interval_hours') * 3_600_000),
   };
 }
 

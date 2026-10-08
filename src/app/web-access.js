@@ -1,6 +1,7 @@
 import { createAppServer } from './server.js';
 import { createRecordingHealth } from './recording-health.js';
 import { createDatabaseExport } from './database-export.js';
+import { createDatabaseVerification } from './database-verification.js';
 import { homedir } from 'node:os';
 
 const loopback = host => ['127.0.0.1', '::1', 'localhost'].includes(host);
@@ -65,6 +66,16 @@ export function createWebAccess({ config: initialConfig, ...serverOptions }) {
     getDirectory: () => serverOptions.getDatabaseExportDirectory?.() ?? config.recording?.exportDirectory ?? homedir(),
     onBackupEvent: (event, store) => serverOptions.recordingHealth.backupEvent(event, store),
   });
+  serverOptions.databaseVerification ??= createDatabaseVerification({
+    clock: serverOptions.clock ?? Date.now,
+    getIntervalMs: () => config.recording?.fullVerificationIntervalMs ?? 0,
+    available: () => !closed && !serverOptions.settingsReloadStatus?.().busy && !serverOptions.settingsReloadStatus?.().unavailable,
+    acquire: async () => {
+      const context = await serverOptions.getReadContext?.();
+      const store = context?.store ?? serverOptions.store;
+      return { dbPath: store?.path, release: context?.release };
+    },
+  });
   const draining = new Map();
   const ingressAccess = { enabled: true, token: '', tokenRequired: false };
   const binding = candidate => [candidate.addon, candidate.host, candidate.port,
@@ -128,6 +139,7 @@ export function createWebAccess({ config: initialConfig, ...serverOptions }) {
           void drain(previous.server);
         }
         config = next;
+        serverOptions.databaseVerification.configure();
         finished = true;
         pending = null;
       },
@@ -161,6 +173,7 @@ export function createWebAccess({ config: initialConfig, ...serverOptions }) {
         }
         const transaction = await prepare(config);
         await transaction.commit();
+        serverOptions.databaseVerification.enable();
       } catch (error) {
         await drain(ingressServer ?? { listening: false }, true);
         started = false;
@@ -178,6 +191,7 @@ export function createWebAccess({ config: initialConfig, ...serverOptions }) {
       closed = true;
       ingressAccess.enabled = false;
       if (direct) direct.state = { enabled: false, token: '', tokenRequired: true };
+      await serverOptions.databaseVerification.close();
       // Shutdown cancels remaining requests so streams cannot retain the app.
       await Promise.all([...new Set([ingressServer, direct?.server, pending?.server, ...draining.keys()])]
         .filter(Boolean).map(server => drain(server, true)));

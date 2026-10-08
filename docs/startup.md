@@ -72,6 +72,12 @@ and heating state before runtime constructors can write configuration or recover
 state. Existing files are checked read-only first, including committed WAL pages;
 an incompatible database keeps its original bytes and companions. The admitted
 writable connection rechecks the current state under a transaction before setup.
+Routine validation checks the indexed transaction checkpoint and current control
+state, without scanning historical observations or all learning entries. Invalid
+or externally unjournaled changes fail closed with `database_journal_invalid`;
+malformed WAL headers retain the original files and report an integrity failure.
+Historical integrity and row-by-row continuity audits use the optional independent
+[full verifier](sqlite-journal.md), which never grants control authority.
 Charging runtime and snapshot verification share the same validators, so handover
 can reject unsupported state before the current master stops. Diagnostics use
 `database_algorithm_mismatch`, `database_state_incompatible` and

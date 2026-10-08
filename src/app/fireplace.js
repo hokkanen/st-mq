@@ -1,4 +1,5 @@
 import { Worker } from 'node:worker_threads';
+import { learningJournalHead } from '../storage/store.js';
 import { LEARNING_ALGORITHM, validLearningCheckpoint } from './committed-learning.js';
 import { fireplaceLearningContext } from './fireplace-inputs.js';
 import { sensorLearningContext, sensorRevision } from './sensor-inputs.js';
@@ -124,9 +125,7 @@ export class FireplaceRebuildManager {
     revision: fireplaceRevision(this.store, this.input), sensorRevision: sensorRevision(this.store, this.input),
     epoch: this.store.learningEpoch(this.input) }; }
   setStatus(value) { this.store.setState(jobKey(this.input), value); }
-  head() { return this.store.db.prepare(`SELECT COALESCE(MAX(id),0) id FROM learning_journal WHERE input=?
-    AND algorithm_version=?`)
-    .get(this.input, LEARNING_ALGORITHM).id; }
+  head() { return learningJournalHead(this.store.db,this.input); }
   current(selection) {
     return selection.revision === fireplaceRevision(this.store, this.input)
       && selection.sensorRevision === sensorRevision(this.store, this.input)

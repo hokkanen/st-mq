@@ -500,6 +500,24 @@ export function getDatabaseOverview({ store, now = Date.now() }) {
   if (snapshots.get('other')?.count) groups.at(-1).items.push(item('snapshot-other', 'Other provider fetch references',
     'Additional provider snapshot kinds present in the database.', snapshots.get('other'), { dateBasis: 'fetch time' }));
 
+  const journalTables = [
+    ['journal_meta', 'Current transaction checkpoint', 'The durable database identity, sequence and linked commit hash.', 'current', 'NULL'],
+    ['journal_commits', 'Committed transactions', 'Ordered commit hashes used to verify continuity when transferring changes.', 'history', 'at'],
+    ['journal_changes', 'Recorded row changes', 'Before and after values support incremental transfer and reversal of divergent history.', 'history', 'NULL'],
+    ['journal_pending', 'Uncommitted capture', 'Transaction-local staging; a successfully committed database has no pending rows.', 'current', 'NULL'],
+    ['journal_branches', 'Retained inactive branches', 'Divergent history retained during rejoin. It is never automatic control input.', 'history', 'created_at'],
+    ['journal_branch_commits', 'Inactive branch transactions', 'Archived changes preserve the losing branch without copying shared historical data.', 'history', 'NULL'],
+    ['recovery_dependencies', 'Recovery source references', 'Derived references locate learning and assessments affected by a correction.', 'derived', 'NULL'],
+    ['learning_epoch_segments', 'Preserved learning prefixes', 'Compact ranges reuse unaffected learning history before the checkpoint used for a correction.', 'history', 'NULL'],
+  ];
+  const journalCounts = Object.fromEntries(journalTables.map(([table,,, ,time])=>[table,aggregate(table,time)]));
+  add('transactions', 'Transaction history and retained branches',
+    'Stored changes add space proportional to writes, including updated current state. Transaction and inactive branch history currently has no automatic expiry. These are transfer and recovery evidence, not additional measured observations.',
+    journalTables.map(([table,label,description,retention,time])=>item(table,label,description,journalCounts[table], {
+      retention, dateBasis: time==='NULL' ? 'no independent timestamps stored' : 'transaction time',
+      writeBehavior: retention==='derived' ? 'Maintained with the owning source record.' : 'Saved atomically with the transaction or explicit rejoin.',
+      retentionDescription: retention==='history' ? 'Retained without automatic expiry; includes original values needed for incremental recovery.' : 'Replaced with the current committed value.' })));
+
   // Physical table accounting is separate from logical dataset counts above:
   // contract periods live inside state documents and snapshot content is shared.
   const tableCounts = {
@@ -513,6 +531,7 @@ export function getDatabaseOverview({ store, now = Date.now() }) {
     charging_reports: chargingReports.count, charging_report_events: chargingEvents.count,
     history_recoveries: recoveries.count, recovery_members: recoveryMembers.count, recovery_decisions: recoveryDecisions.count,
     history_selection: historySelections.count, recovery_exclusions: recoveryExclusions.count,
+    ...Object.fromEntries(Object.entries(journalCounts).map(([table,value])=>[table,value.count])),
   };
   const actualTables = db.prepare("SELECT name FROM sqlite_schema WHERE type='table' AND name NOT LIKE 'sqlite_%' ORDER BY name").all();
   if (actualTables.some(({ name }) => !Object.hasOwn(tableCounts, name))) inventoryIssues.push('An unregistered physical table needs a writer and retention description.');

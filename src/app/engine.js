@@ -327,12 +327,12 @@ export class Engine {
     if (rememberAnchor && JSON.stringify(saved) !== JSON.stringify(control.anchor)) this.store.setState(key, control.anchor);
     return observations;
   }
-  replayLearning(checkpoint) {
+  replayLearning(checkpoint, { persistCheckpoint = true } = {}) {
     const job = this.store.getState(`fireplace:rebuild:${this.config.input}`);
     const updating = ['pending', 'running', 'ready', 'failed'].includes(job?.status);
     return replayCommittedLearning(this.store, this.config.input, checkpoint,
-      updating && checkpoint ? { fireplaceRevision: checkpoint.fireplaceRevision ?? 0,
-        sensorRevision: checkpoint.sensorRevision ?? 0 } : {});
+      { persistCheckpoint, ...(updating && checkpoint ? { fireplaceRevision: checkpoint.fireplaceRevision ?? 0,
+        sensorRevision: checkpoint.sensorRevision ?? 0 } : {}) });
   }
   fireplaceManager() {
     return this.fireplaceRebuild ??= new FireplaceRebuildManager({ store: this.store, input: this.config.input });
@@ -447,7 +447,7 @@ export class Engine {
     this.config = config;
     this.clock = clock;
     this.canControl = canControl;
-    const { exportDirectory, ...recorderConfig } = config.recording ?? {};
+    const { exportDirectory, fullVerificationIntervalMs, ...recorderConfig } = config.recording ?? {};
     this.recorder = new Recorder(store, { config: recorderConfig, clock });
     const easeeVoltage = config.connections?.easee ?? {};
     const voltageSources = ['mqtt', 'providers'].includes(config.input) ? {
@@ -1201,15 +1201,20 @@ export class Engine {
     }
     const completedWindow = Math.floor(now / LEARNING_WINDOW_MS) * LEARNING_WINDOW_MS;
     const lastWindow = checkpoint.windowCursor;
+    const beforeWindows = checkpoint;
     let windowAt = Number.isSafeInteger(lastWindow) ? lastWindow + LEARNING_WINDOW_MS : completedWindow;
     for (let count = 0; windowAt <= completedWindow && count < 256; count++, windowAt += LEARNING_WINDOW_MS) {
       const committed = committedLearningSample({ store: this.store, input, at: windowAt, config: this.control, context,
         measurementEpochAt: checkpoint.measurementEpochAt });
       committed.provenance.modelVersion = checkpoint.model.trainedAt ?? 'prior-v1';
       appendLearningRecord(this.store, input, 'sample', committed, { config: this.control, seed: checkpoint });
-      checkpoint = this.replayLearning(checkpoint);
+      // Replay in the same order, but publish the replaceable checkpoint once
+      // for this catch-up batch. Journaling every growing intermediate cache
+      // can exceed the transaction limit after a long recording gap.
+      checkpoint = this.replayLearning(checkpoint, { persistCheckpoint: false });
       this.checkpoint = checkpoint;
     }
+    if (checkpoint !== beforeWindows) this.store.setState(`adaptive:${input}`, checkpoint);
     if ((checkpoint.fireplaceRevision ?? 0) !== fireplaceContext.fireplaceRevision && fireplaceContext.fireplaceExcludedRanges.length) {
       const corrected = checkpoint.samples.map(row => withFireplaceInputs(row, fireplaceContext));
       this.fireplaceReserveOverride = evaluateThermalModel(checkpoint.model, corrected,

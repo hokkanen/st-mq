@@ -4,6 +4,7 @@ const guidance = {
   database_algorithm_mismatch: 'The saved learning history uses a different algorithm. Use matching application builds and supported history. Earlier development journals are not converted; preserve them before deliberately starting fresh. See docs/pairing.md#software-upgrades.',
   database_state_incompatible: 'Saved device or control state is unsupported or unreadable. Preserve the database and resolve any outstanding equipment restoration before choosing a compatible backup or a deliberate fresh start.',
   database_integrity_failed: 'The database failed an integrity check. Keep the original files intact and use a verified intact backup. Retrying or changing application versions does not repair damaged data.',
+  database_journal_invalid: 'The transaction journal or checkpoint could not be verified. Preserve the database and its SQLite companions. Run full verification to investigate, or use an intact current-format backup. Retrying startup or changing roles does not repair the journal.',
 };
 
 const stateErrors = new Set(['HEATING_CONTROL_STATE_UNREADABLE', 'H66_STATE_UNSUPPORTED', 'EXECUTOR_STATE_UNSUPPORTED',
@@ -13,6 +14,7 @@ const stateErrors = new Set(['HEATING_CONTROL_STATE_UNREADABLE', 'H66_STATE_UNSU
 export function databaseErrorDetails(error) {
   let code = typeof error?.code === 'string' ? error.code : null;
   if (stateErrors.has(code)) code = 'database_state_incompatible';
+  if (['journal_hash_mismatch', 'journal_row_conflict'].includes(code)) code = 'database_journal_invalid';
   if (code === 'ERR_SQLITE_ERROR' && Number.isSafeInteger(error.errcode)
     && [11, 26].includes(error.errcode & 0xff)) code = 'database_integrity_failed';
   if (!Object.hasOwn(guidance, code)) return null;

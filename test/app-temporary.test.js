@@ -4,6 +4,7 @@ import { Store } from '../src/storage/store.js';
 import { Engine } from '../src/app/engine.js';
 import { validateSettings } from '../src/app/config.js';
 import { finnishLocalInstant, temporaryUpdate } from '../src/app/temporary.js';
+import { replayLearningJournal } from '../src/app/committed-learning.js';
 
 test('Finnish picker deadlines resolve winter/summer and reject DST gaps and repeated times', () => {
   assert.equal(finnishLocalInstant('2026-01-10T12:00'), Date.parse('2026-01-10T10:00Z'));
@@ -53,6 +54,8 @@ test('away and pause are atomic, persistent, independent and expire without rest
   restarted.status();
   assert.equal(store.events().filter(e => e.type === 'occupancy-expired').length, 1);
   assert.equal(store.events().filter(e => e.type === 'heating-pause-ended').length, 1);
+  assert.deepEqual(replayLearningJournal(store, config.input, null, { rebuild: true, persistCheckpoint: false }),
+    store.getState(`adaptive:${config.input}`), 'Catch-up keeps the complete deterministic checkpoint after both expiry deadlines');
 });
 
 test('cancel one temporary control preserves the other and an expired saved absence is reconciled on startup', t => {

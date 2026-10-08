@@ -88,7 +88,7 @@ function chargingReportQuery(url, kind) {
 
 export function createAppServer({ engine, getEngine = () => engine, store, chartService, token = '', familyToken = '',
   getAccess, ingress = false, role = 'master', topology = 'standalone', getReadContext, syncStatus,
-  pairContext, controlAuthority, historyRecovery, recordingHealth, databaseExport, getDatabaseExportDirectory = homedir,
+  pairContext, controlAuthority, historyRecovery, recordingHealth, databaseExport, databaseVerification, getDatabaseExportDirectory = homedir,
   reloadSettings, previewSettings, settingsReloadStatus = () => ({ available: false, busy: false,
     reason: 'This instance has no reloadable configuration source.' }), staticDir = resolve('dist') }) {
   const overviewService = getReadContext ? null : chartService?.overview ? chartService : createChartService({ store });
@@ -165,8 +165,17 @@ export function createAppServer({ engine, getEngine = () => engine, store, chart
           if (settingsReloadStatus().stopping) return json(503, { error: 'The application is shutting down.' });
           return json(202, pairContext.requestAction(input));
         }
+        if (url.pathname === '/api/database-verification' && ['GET', 'POST'].includes(req.method)) {
+          if (!databaseVerification) return json(409, { error: 'Database verification is unavailable.' });
+          if (req.method === 'GET') return json(200, databaseVerification.status());
+          const input = await body(req);
+          if (!stillAuthorized()) return;
+          if (!input || typeof input !== 'object' || Array.isArray(input) || Object.keys(input).length)
+            return json(400, { error: 'Start database verification with an empty JSON object.' });
+          return json(202, databaseVerification.start());
+        }
         const saveDatabase = req.method === 'POST' && url.pathname === '/api/database-export';
-        // Pair management above is the sole write exception on a standby. Even
+        // Pair management and read-only verification above are explicit standby exceptions. Even
         // saving a new database file on this host requires the active master;
         // downloading existing history remains available through GET.
         if (writesBlocked() && !['GET', 'HEAD'].includes(req.method))
@@ -586,6 +595,9 @@ export function createAppServer({ engine, getEngine = () => engine, store, chart
       }
     } catch (error) {
       if (!res.destroyed) {
+        if (/^\/api\/database-verification(?:\?|$)/.test(req.url))
+          return json(error.statusCode ?? (error instanceof SyntaxError ? 400 : 503),
+            { error: 'Database verification is unavailable or the request is invalid. Refresh its status before retrying.' });
         if (req.method === 'GET' && /^\/api\/database-export(?:\?|$)/.test(req.url)
           && databaseExportErrorMessage(error.code))
           return json(error.statusCode ?? 503, { error: databaseExportErrorMessage(error.code) });

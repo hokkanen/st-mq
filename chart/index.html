@@ -1042,6 +1042,15 @@ G_warming = G / 2</code>
               </div>
             </div>
           </details>
+          <details id="database-verification-details" class="recording-section">
+            <summary><span>Verify database<small>Optional full integrity and content check</small></span></summary>
+            <div class="recording-section-body">
+              <p class="muted">Read the complete database at one fixed transaction checkpoint. This can take time and disk I/O; recording and normal mirroring continue.</p>
+              <button id="database-verification-start" data-admin-only type="button" class="secondary-button">Verify with full snapshot</button>
+              <p id="database-verification-status" class="muted" role="status" aria-live="polite"></p>
+              <p id="database-verification-schedule" class="muted"></p>
+            </div>
+          </details>
         </section>
       </details>
     </section>
@@ -1073,6 +1082,7 @@ G_warming = G / 2</code>
           <p id="pairing-phase" class="pairing-progress" role="status" aria-live="polite"></p>
           <p id="pairing-recovery" class="pairing-progress" role="status" aria-live="polite"></p>
           <p class="family-access-note">Admin access is required to manage paired computers.</p>
+          <label class="history-recovery-checkbox"><input id="pairing-full-verification" data-admin-only type="checkbox"><span>Verify with full snapshot before handover or promotion. Reads all history and may take longer.</span></label>
           <section id="pairing-master-controls" class="pairing-management" aria-labelledby="pairing-recovery-title" hidden>
             <div class="pairing-role-action pairing-history-action">
               <div><h3 id="pairing-recovery-title">History</h3><p id="pairing-recovery-intro"></p></div>
@@ -1080,7 +1090,7 @@ G_warming = G / 2</code>
               <p id="pairing-check-help" class="muted pairing-step-help"></p>
             </div>
             <div class="pairing-role-action">
-              <div><h3>Hand over control</h3><p>Move the master role to the ready slave after a final verified snapshot. The MQTT address moves with it; devices reconnect and some measurements may be missed.</p></div>
+              <div><h3>Hand over control</h3><p>Move the master role to the ready slave after confirming the same final transaction checkpoint. The MQTT address moves with it; devices reconnect and some measurements may be missed.</p></div>
               <button id="pairing-handover" data-admin-only class="secondary-button" type="button" aria-describedby="pairing-handover-help" disabled>Hand over to the other computer</button>
               <p id="pairing-handover-help" class="muted pairing-step-help"></p>
             </div>
@@ -1207,6 +1217,7 @@ G_warming = G / 2</code>
       <p id="history-recovery-background" class="muted" hidden>You can close this window or leave this page. The operation continues on the server. Reopen recovery to see its progress.</p>
       <button id="history-recovery-retry" data-admin-only data-write-control class="secondary-button" type="button" hidden>Recheck the same request</button>
     </div>
+    <label class="history-recovery-checkbox"><input id="history-recovery-full-verification" data-admin-only type="checkbox"><span>Verify with full snapshot before this operation. Reads all history and may take longer.</span></label>
     <section id="history-recovery-source-section" class="history-recovery-source-section" aria-labelledby="history-recovery-source-label">
       <label id="history-recovery-source-label" for="history-recovery-source">History source</label>
       <select id="history-recovery-source" aria-describedby="history-recovery-source-help"><option value="upload">Upload a database backup</option></select>
@@ -1234,7 +1245,7 @@ G_warming = G / 2</code>
       </div>
     </section>
     <section id="history-recovery-peer" class="history-recovery-peer" hidden>
-      <div id="pairing-rejoin-step" hidden><div><h3>Resume mirroring</h3><p>Mirror a verified copy of this master. The other computer’s previous database is retained inactive, including unmatched history, and is never reused automatically.</p></div><button id="pairing-rejoin" data-admin-only class="secondary-button" type="button" aria-describedby="pairing-rejoin-help" disabled>Resume mirroring</button><p id="pairing-rejoin-help" class="muted"></p></div>
+      <div id="pairing-rejoin-step" hidden><div><h3>Resume mirroring</h3><p>Catch up to this master’s confirmed checkpoint. The other computer’s unmatched history is retained inactive and is never reused automatically.</p></div><button id="pairing-rejoin" data-admin-only class="secondary-button" type="button" aria-describedby="pairing-rejoin-help" disabled>Resume mirroring</button><p id="pairing-rejoin-help" class="muted"></p></div>
       <p id="pairing-rejoin-storage" class="muted"></p>
     </section>
     <div class="history-recovery-footer"><button id="history-recovery-refresh" class="secondary-button" type="button">Refresh status</button></div>

@@ -108,7 +108,23 @@ function seal(db) {
   state.exec('DELETE FROM journal_pending');
 }
 const sqlStart = sql => sql.replace(/^(?:\s|--[^\n]*(?:\n|$)|\/\*[\s\S]*?\*\/)+/,'').trim();
-const mutable = sql => !/^(?:SELECT|EXPLAIN|PRAGMA)\b/i.test(sqlStart(sql));
+const statements = sql => sql.replace(/--[^\n]*|\/\*[\s\S]*?\*\/|'(?:''|[^'])*'|"(?:""|[^"])*"|`[^`]*`|\[[^\]]*\]/g,' ')
+  .split(';').map(value=>value.trim()).filter(Boolean);
+function mutable(sql) {
+  const start=sqlStart(sql);
+  if(/^(?:SELECT|EXPLAIN|PRAGMA)\b/i.test(start)) return false;
+  if(!/^WITH\b/i.test(start)) return true;
+  // The statement following a CTE is its top-level operation. Quoted values,
+  // identifiers and nested SELECTs must not make a read acquire a write lock.
+  const tokens=start.match(/--[^\n]*|\/\*[\s\S]*?\*\/|'(?:''|[^'])*'|"(?:""|[^"])*"|`[^`]*`|\[[^\]]*\]|[a-zA-Z_]+|[()]/g) ?? [];
+  let depth=0;
+  for(const token of tokens) {
+    if(token==='(') depth++;
+    else if(token===')') depth--;
+    else if(!depth && /^(SELECT|INSERT|UPDATE|DELETE|REPLACE)$/i.test(token)) return token.toUpperCase()!=='SELECT';
+  }
+  return true;
+}
 /** All Store connection writes, including direct prepared writes in workers,
  * share this boundary. SQLite triggers capture actual row effects and savepoint
  * rollback; the seal and head are committed with those same effects. */
@@ -126,6 +142,17 @@ export function installJournal(db) {
   };
   db.exec = sql => {
     const start = sqlStart(sql);
+    const parts=statements(sql);
+    const boundary=/^(?:BEGIN|COMMIT|END|ROLLBACK|SAVEPOINT|RELEASE)\b/i;
+    const triggerDefinition=/^CREATE\s+(?:(?:TEMP|TEMPORARY)\s+)?TRIGGER\b/i.test(start)
+      && /^END$/i.test(parts.at(-1) ?? '') && !parts.slice(0,-1).some(part=>boundary.test(part));
+    if(parts.length>1 && parts.some(part=>boundary.test(part))
+      && !triggerDefinition
+      && !(parts.length===2 && /^ROLLBACK\s+TO\b/i.test(parts[0]) && /^RELEASE\b/i.test(parts[1])))
+      fail('journal_transaction_boundary_invalid');
+    if(parts.length>1 && parts.some(part=>/^PRAGMA\s+query_only\b/i.test(part)) && parts.some(part=>!/^PRAGMA\b/i.test(part)))
+      fail('journal_transaction_boundary_invalid');
+    if(/^SAVEPOINT\b/i.test(start) && !state.transaction) fail('journal_transaction_boundary_invalid');
     if (/^(?:BEGIN|SAVEPOINT)\b/i.test(start)) {
       const result = state.exec(sql); state.transaction=true; return result;
     }
@@ -135,10 +162,11 @@ export function installJournal(db) {
     if (/^ROLLBACK\b/i.test(start) && !/^ROLLBACK\s+TO\b/i.test(start)) {
       const result=state.exec(sql); state.transaction=false; return result;
     }
-    if (/^(?:RELEASE|ROLLBACK\s+TO|PRAGMA)\b/i.test(start)) return state.exec(sql);
-    return mutable(start) ? atomic(() => state.exec(sql)) : state.exec(sql);
+    if (/^(?:RELEASE|ROLLBACK\s+TO)\b/i.test(start) || parts.every(part=>/^PRAGMA\b/i.test(part))) return state.exec(sql);
+    return atomic(() => state.exec(sql));
   };
   db.prepare = sql => {
+    if (/^(?:BEGIN|COMMIT|END|ROLLBACK|SAVEPOINT|RELEASE)\b/i.test(sqlStart(sql))) fail('journal_transaction_boundary_invalid');
     const statement = state.prepare(sql);
     if (!mutable(sql)) return statement;
     for (const method of ['run','get','all']) {
@@ -268,11 +296,27 @@ export function verifyJournal(db) {
   const head=validateCheckpoint(db); let previous=checkpointAt(db,0),count=0;
   for(const row of raw(db).prepare('SELECT * FROM journal_commits ORDER BY sequence').iterate()) {
     const commit=readCommit(db,row);
-    if(commit.sequence!==previous.sequence+1 || commit.previousHash!==previous.hash || commit.hash!==commitHash(head.databaseId,commit)
-      || commit.changes.length!==row.change_count) fail('journal_hash_mismatch');
-    previous={databaseId:head.databaseId,sequence:commit.sequence,hash:commit.hash}; count++;
+    previous=validateJournalCommit(commit,previous);
+    if(commit.changes.length!==row.change_count || Buffer.byteLength(JSON.stringify(commit))!==row.bytes) fail('journal_hash_mismatch');
+    count++;
   }
   if(!same(previous,head)) fail('journal_hash_mismatch');
+  let branches=0,archivedCommits=0;
+  for(const branch of raw(db).prepare('SELECT * FROM journal_branches ORDER BY id').iterate()) {
+    let base,tip;
+    try {base=JSON.parse(branch.base);tip=JSON.parse(branch.head);} catch {fail('journal_hash_mismatch');}
+    if(!validCheckpoint(base) || !validCheckpoint(tip) || base.databaseId!==head.databaseId
+      || tip.databaseId!==head.databaseId || base.sequence>=tip.sequence) fail('journal_hash_mismatch');
+    previous=base;
+    for(const row of raw(db).prepare('SELECT sequence,payload FROM journal_branch_commits WHERE branch_id=? ORDER BY sequence').iterate(branch.id)) {
+      let commit;
+      try {commit=JSON.parse(row.payload);} catch {fail('journal_hash_mismatch');}
+      if(row.sequence!==commit.sequence) fail('journal_hash_mismatch');
+      previous=validateJournalCommit(commit,previous);archivedCommits++;
+    }
+    if(!same(previous,tip)) fail('journal_hash_mismatch');
+    branches++;
+  }
   // Validate final materialized values against their last retained row effect.
   // This expensive audit is deliberately absent from startup and replication.
   for(const row of raw(db).prepare(`SELECT c.* FROM journal_changes c WHERE NOT EXISTS(
@@ -282,5 +326,5 @@ export function verifyJournal(db) {
     const actual=raw(db).prepare(`SELECT * FROM ${q(table.name)} WHERE ${table.keys.map(key=>`${q(key)} IS ?`).join(' AND ')}`).get(...change.key) ?? null;
     if(!isDeepStrictEqual(actual && {...actual},change.after)) fail('journal_row_conflict');
   }
-  return {checkpoint:head,commits:count};
+  return {checkpoint:head,commits:count,branches,archivedCommits};
 }

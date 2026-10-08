@@ -524,8 +524,10 @@ export function applyLearningRecord(checkpoint, entry, fireplaceContext = {}) {
 /** Immutable entries are already committed, so replay needs no writer lock.
  * The checkpoint and its cursor are one atomic state update after computation.
  * A crash before that update replays the same entries from the saved cursor.
- * Rebuild uses precisely this same ordered entry function. */
-export function replayLearningJournal(store, input, checkpoint = null, { rebuild = false, fireplaceRevision, sensorRevision } = {}) {
+ * Rebuild uses precisely this same ordered entry function. A caller composing
+ * a catch-up batch may defer checkpoint persistence until its final result. */
+export function replayLearningJournal(store, input, checkpoint = null,
+  { rebuild = false, fireplaceRevision, sensorRevision, persistCheckpoint = true } = {}) {
   // Source recovery may commit old manual events in bounded batches while the
   // selected journal/model still serves live control. Its completed projection
   // is published atomically; do not accidentally trigger a synchronous rebuild
@@ -548,7 +550,7 @@ export function replayLearningJournal(store, input, checkpoint = null, { rebuild
     const entries = store.learningJournal({ input, after: next?.journalCursor ?? 0, limit: 256, algorithmVersion: LEARNING_ALGORITHM });
     if (!entries.length) break;
     for (const entry of entries) next = applyLearningRecord(next, entry, fireplaceContext);
-    store.setState(`adaptive:${input}`, next);
+    if (persistCheckpoint) store.setState(`adaptive:${input}`, next);
   }
   return next ?? restoreAdaptiveCheckpoint(null);
 }

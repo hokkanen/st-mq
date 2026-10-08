@@ -42,11 +42,10 @@ test('actual startup and read-only preflight reject all saved charging readers b
     const directory = mkdtempSync(join(tmpdir(), 'stmq-charging-startup-'));
     t.after(() => rmSync(directory, { recursive: true, force: true }));
     const config = loadConfig({ XDG_CONFIG_HOME: directory, STMQ_DATA_DIR: directory, STMQ_PORT: '0' }, directory);
-    new Store(config.dbPath).close();
-    const db = new DatabaseSync(config.dbPath);
-    db.prepare('INSERT INTO state(key,value,updated_at) VALUES(?,?,?)').run(key, raw ? value : JSON.stringify(value), 1000);
-    db.exec('PRAGMA journal_mode=DELETE');
-    db.close();
+    const fixtureStore = new Store(config.dbPath);
+    fixtureStore.db.prepare('INSERT INTO state(key,value,updated_at) VALUES(?,?,?)').run(key, raw ? value : JSON.stringify(value), 1000);
+    fixtureStore.db.exec('PRAGMA journal_mode=DELETE');
+    fixtureStore.close();
     const before = readFileSync(config.dbPath);
     let acquisitions = 0;
     await assert.rejects(start({ config, installSignalHandlers: false,
@@ -87,10 +86,10 @@ test('failed startup preserves committed WAL bytes left by an interrupted proces
   // Deliberately bypass normal close in an isolated child to leave committed WAL
   // evidence, exactly as an interrupted application can leave it on disk.
   const child = spawnSync(process.execPath, ['--input-type=module', '-e', `
-    import { DatabaseSync } from 'node:sqlite';
-    const db = new DatabaseSync(process.argv[1]);
-    db.exec('PRAGMA journal_mode=WAL; PRAGMA wal_autocheckpoint=0');
-    db.prepare('INSERT INTO state VALUES(?,?,?)').run('charging:simulated', '{"version":5}', 1000);
+    import { Store } from ${JSON.stringify(new URL('../src/storage/store.js', import.meta.url).href)};
+    const store = new Store(process.argv[1]);
+    store.db.exec('PRAGMA wal_autocheckpoint=0');
+    store.setState('charging:simulated', {version:5});
     process.exit(0);
   `, config.dbPath], { encoding: 'utf8', timeout: 5000 });
   assert.equal(child.status, 0, child.stderr);

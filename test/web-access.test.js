@@ -29,6 +29,23 @@ function simulateProxy(server, address = '172.30.32.2') {
   server.on('connection', socket => Object.defineProperty(socket, 'remoteAddress', { value: address }));
 }
 
+test('manual database verification is an admin-only read operation on a slave and rejects caller paths', async t => {
+  let calls = 0;
+  const verifier = { configure() {}, enable() {}, close() {}, status: () => ({ state: 'idle' }),
+    start: () => { calls++; return { state: 'running' }; } };
+  const familyToken = 'synthetic-family-web-access-token';
+  const { access } = await setup(t, configuration({ addon: false, token: firstToken, familyToken }),
+    { role: 'slave', databaseVerification: verifier });
+  const url = `${endpoint(access.server)}/api/database-verification`;
+  assert.equal((await fetch(url, { headers: authorization(familyToken) })).status, 403);
+  assert.equal((await fetch(url, { method: 'POST', headers: { ...authorization(familyToken), 'Content-Type': 'application/json' }, body: '{}' })).status, 403);
+  assert.equal((await fetch(url, { headers: authorization(firstToken) })).status, 200);
+  assert.equal((await fetch(url, { method: 'POST', headers: { ...authorization(firstToken), 'Content-Type': 'application/json' }, body: '{"dbPath":"private"}' })).status, 400);
+  assert.equal(calls, 0);
+  assert.equal((await fetch(url, { method: 'POST', headers: { ...authorization(firstToken), 'Content-Type': 'application/json' }, body: '{}' })).status, 202);
+  assert.equal(calls, 1);
+});
+
 test('add-on without a token starts only ingress, which rejects direct and spoofed proxy requests', async t => {
   const { access } = await setup(t);
   assert.equal(access.status().ingress.enabled, true);

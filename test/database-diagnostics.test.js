@@ -4,13 +4,14 @@ import { mkdtempSync, readFileSync, rmSync, writeFileSync, existsSync, readdirSy
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { DatabaseSync } from 'node:sqlite';
-import { Store, SCHEMA_VERSION } from '../src/storage/store.js';
+import { Store, SCHEMA_VERSION, validateCurrentDatabase } from '../src/storage/store.js';
 import { createDatabaseBackup } from '../src/storage/backup.js';
 import { readBackupMetadata, validBackupMetadata } from '../src/storage/backup-metadata.js';
 import { databaseErrorDetails, databaseErrorGuidance } from '../src/storage/database-errors.js';
 import { createSourceSnapshot, publicReplicationError } from '../src/replication/transport.js';
 import { verifySnapshot } from '../src/pairing/snapshots.js';
 import { LEARNING_ALGORITHM } from '../src/domain/learning-contract.js';
+import { verifyDatabase } from '../src/storage/full-verifier.js';
 
 function fixture(t) {
   const directory = mkdtempSync(join(tmpdir(), 'stmq-database-diagnostics-'));
@@ -20,7 +21,7 @@ function fixture(t) {
   return { directory, path };
 }
 
-test('algorithm incompatibility survives real snapshot and verification workers without mutating the donor', async t => {
+test('unjournaled external history fails fast startup and worker validation without mutating the donor', async t => {
   const { directory, path } = fixture(t);
   const db = new DatabaseSync(path);
   db.prepare('INSERT INTO learning_journal_entries(epoch,input,key,kind,at,algorithm_version,payload) VALUES(?,?,?,?,?,?,?)')
@@ -28,20 +29,50 @@ test('algorithm incompatibility survives real snapshot and verification workers 
   db.exec('PRAGMA journal_mode=DELETE');
   db.close();
   const bytes = readFileSync(path), destination = join(directory, 'copy.sqlite');
-  assert.throws(() => new Store(path), { code: 'database_algorithm_mismatch' });
-  await assert.rejects(createSourceSnapshot({ dbPath: path, destination }), { code: 'database_algorithm_mismatch' });
-  await assert.rejects(verifySnapshot(path, {}), { code: 'database_algorithm_mismatch' });
+  assert.throws(() => new Store(path), { code: 'database_journal_invalid' });
+  await assert.rejects(createSourceSnapshot({ dbPath: path, destination }), { code: 'database_journal_invalid' });
+  await assert.rejects(verifySnapshot(path, {}), { code: 'database_journal_invalid' });
   await assert.rejects(createDatabaseBackup({ sourcePath: path, destination }), { code: 'backup_source_incompatible' });
   assert.deepEqual(readFileSync(path), bytes);
   assert.equal(existsSync(destination), false);
   assert.deepEqual(readdirSync(directory), ['source.sqlite']);
 });
 
+test('historical algorithm checks remain available through explicit full verification', async t => {
+  const { path } = fixture(t);
+  const source = new Store(path);
+  source.db.prepare('INSERT INTO learning_journal_entries(epoch,input,key,kind,at,algorithm_version,payload) VALUES(?,?,?,?,?,?,?)')
+    .run('fixture-epoch', 'home', 'fixture-key', 'observation', 1000, LEARNING_ALGORITHM, '{}');
+  source.close();
+  const raw = new DatabaseSync(path);
+  // Simulate latent historical damage outside the writer, including damaged
+  // capture evidence. Routine startup does not scan all historical algorithms.
+  raw.prepare('UPDATE learning_journal_entries SET algorithm_version=?').run('unsupported-fixture-algorithm');
+  raw.exec('DELETE FROM journal_pending'); raw.close();
+  const before = readFileSync(path), check = new DatabaseSync(path, { readOnly: true });
+  try { assert.throws(() => validateCurrentDatabase(check, { full: true }), { code: 'database_algorithm_mismatch' }); }
+  finally { check.close(); }
+  await assert.rejects(verifyDatabase({ dbPath: path }), { code: 'database_algorithm_mismatch' });
+  assert.deepEqual(readFileSync(path), before);
+});
+
+test('unsupported learning algorithms fail admission without creating a historical record', t => {
+  const { path } = fixture(t), source = new Store(path), checkpoint = source.checkpoint();
+  try {
+    assert.throws(() => source.db.prepare('INSERT INTO learning_journal_entries(epoch,input,key,kind,at,algorithm_version,payload) VALUES(?,?,?,?,?,?,?)')
+      .run('fixture-epoch', 'home', 'fixture-key', 'observation', 1000, 'unsupported-fixture-algorithm', '{}'),
+    { code: 'database_algorithm_mismatch' });
+    assert.deepEqual(source.checkpoint(), checkpoint);
+    assert.equal(source.db.prepare('SELECT COUNT(*) AS n FROM learning_journal_entries').get().n, 0);
+    assert.equal(source.db.prepare('SELECT COUNT(*) AS n FROM journal_pending').get().n, 0);
+  } finally { source.close(); }
+});
+
 test('unreadable control state is diagnosed separately from physical corruption through workers', async t => {
   const { directory, path } = fixture(t);
-  const db = new DatabaseSync(path);
-  db.prepare('INSERT INTO state(key,value,updated_at) VALUES(?,?,?)').run('executor:home', '{private fixture', 1000);
-  db.close();
+  const store = new Store(path);
+  store.db.prepare('INSERT INTO state(key,value,updated_at) VALUES(?,?,?)').run('executor:home', '{private fixture', 1000);
+  store.close();
   const before = readFileSync(path);
   await assert.rejects(createSourceSnapshot({ dbPath: path, destination: join(directory, 'copy.sqlite') }), { code: 'database_state_incompatible' });
   await assert.rejects(verifySnapshot(path, {}), { code: 'database_state_incompatible' });
@@ -68,11 +99,17 @@ test('snapshot failure never deletes a destination owned by someone else', async
 });
 
 test('database diagnostics expose only fixed codes and numeric schema fields', () => {
-  for (const code of ['database_algorithm_mismatch', 'database_state_incompatible', 'database_integrity_failed']) {
+  for (const code of ['database_algorithm_mismatch', 'database_state_incompatible', 'database_integrity_failed', 'database_journal_invalid']) {
     assert.deepEqual(databaseErrorDetails({ code, message: 'private fixture', path: '/private/fixture', actualAlgorithm: 'private' }), { code });
     assert.equal(publicReplicationError({ code }), code);
     assert.equal(typeof databaseErrorGuidance({ code }), 'string');
   }
+  for (const code of ['journal_hash_mismatch', 'journal_row_conflict']) {
+    assert.deepEqual(databaseErrorDetails({ code, message: 'private fixture', path: '/private/fixture', row: { private: true } }), { code: 'database_journal_invalid' });
+    assert.equal(publicReplicationError({ code }), 'database_journal_invalid');
+    assert.match(databaseErrorGuidance({ code }), /Preserve the database/);
+  }
+  assert.equal(databaseErrorDetails({ code: 'journal_checkpoint_mismatch' }), null, 'different peer checkpoints do not establish journal damage');
   for (const code of ['HEATING_CONTROL_STATE_UNREADABLE', 'H66_STATE_UNSUPPORTED', 'EXECUTOR_STATE_UNSUPPORTED',
     'ADAPTIVE_RECORDING_BUDGET_UNSUPPORTED', 'RECORDING_STORAGE_METRICS_UNSUPPORTED'])
     assert.equal(databaseErrorDetails({ code }).code, 'database_state_incompatible');

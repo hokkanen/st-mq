@@ -1,5 +1,5 @@
 import { DatabaseSync } from 'node:sqlite';
-import { mkdirSync, statSync } from 'node:fs';
+import { mkdirSync, statSync, openSync, readSync, closeSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 import { createHash } from 'node:crypto';
 import { isMainThread } from 'node:worker_threads';
@@ -20,6 +20,36 @@ import { initializeJournal, installJournal, validateCheckpoint, readCheckpoint, 
   commonCheckpoint, exportChanges, applyChanges, rewindTo, changedRecordKeys } from './journal.js';
 export { SCHEMA_VERSION } from './schema.js';
 const MAX_LIMIT = 5000;
+
+/** Seek direct entries and compact prefix boundaries instead of aggregating a
+ * union of every historical learning row after a correction. */
+export function learningJournalHead(db, input, epoch) {
+  epoch ??= db.prepare('SELECT epoch FROM learning_epochs WHERE input=?').get(input)?.epoch ?? 'original';
+  const row=db.prepare(`SELECT MAX(
+    COALESCE((SELECT MAX(id) FROM learning_journal_entries WHERE epoch=? AND input=?),0),
+    COALESCE((SELECT MAX(through_id) FROM learning_epoch_segments WHERE epoch=? AND input=?),0)) id`)
+    .get(epoch,input,epoch,input);
+  return row.id;
+}
+
+/** Each immutable prefix range supplies at most one page. A UNION query with
+ * an outer LIMIT can sort every inherited row before yielding its first entry. */
+export function learningJournalRows(db, { input, epoch, after = 0, limit = 256 }) {
+  label(input, 'input'); integer(after, 'after'); limit=limitValue(limit);
+  if (!limit) return [];
+  epoch ??= db.prepare('SELECT epoch FROM learning_epochs WHERE input=?').get(input)?.epoch ?? 'original';
+  const ranges=db.prepare(`SELECT source_epoch,after_id,through_id FROM learning_epoch_segments
+    WHERE epoch=? AND input=? AND through_id>?`).all(epoch,input,after);
+  ranges.push({source_epoch:epoch,after_id:after,through_id:Number.MAX_SAFE_INTEGER});
+  const page=db.prepare(`SELECT e.id,e.input,e.key,e.kind,e.at,e.algorithm_version,
+    COALESCE(e.config_version,s.config_version) AS config_version,
+    COALESCE(e.forecast_version,s.forecast_version) AS forecast_version,
+    COALESCE(e.payload,s.payload) AS payload,e.source_entry_id
+    FROM learning_journal_entries e LEFT JOIN learning_journal_entries s ON s.id=e.source_entry_id
+    WHERE e.epoch=? AND e.input=? AND e.id>? AND e.id<=? ORDER BY e.id LIMIT ?`);
+  return ranges.flatMap(range=>page.all(range.source_epoch,input,Math.max(after,range.after_id),range.through_id,limit))
+    .sort((a,b)=>a.id-b.id).slice(0,limit);
+}
 
 // Validate the complete structural contract before any writable pragma or DDL.
 // The reference is made from the same single bootstrap definition, not migrations.
@@ -81,6 +111,22 @@ const databaseFileIdentity = path => {
   const stat = statSync(path, { bigint: true });
   return `${stat.dev}:${stat.ino}`;
 };
+
+export function validateWalHeader(path) {
+  let file;
+  try { file=openSync(`${path}-wal`,'r'); }
+  catch(error) { if(error.code==='ENOENT') return; throw error; }
+  try {
+    const header=Buffer.alloc(32),bytes=readSync(file,header,0,32,0);
+    if(bytes===0) return;
+    const magic=bytes>=4 ? header.readUInt32BE(0) : 0;
+    const pageSize=bytes>=12 ? header.readUInt32BE(8) : 0;
+    if(bytes!==32 || ![0x377f0682,0x377f0683].includes(magic) || header.readUInt32BE(4)!==3007000
+      || pageSize<512 || pageSize>65536 || (pageSize & (pageSize-1))!==0)
+      throw Object.assign(new Error('The SQLite write-ahead journal header is invalid. Preserve the database and its companions for verification.'),
+        {code:'database_integrity_failed'});
+  } finally { closeSync(file); }
+}
 
 function preflightExistingDatabase(path) {
   try { statSync(path); } catch (error) { if (error.code === 'ENOENT') return; throw error; }
@@ -156,6 +202,7 @@ export class Store {
     this.writeQueue = new WriteQueue({ transaction: fn => this._transaction(fn, true),
       onFailure: error => this.writeHealth.failure(error) });
     this.writeHealth = createWriteHealth(Date.now, () => this.writeQueue.status());
+    if (path !== ':memory:') validateWalHeader(this.path);
     if (!readOnly && path !== ':memory:') mkdirSync(dirname(this.path), { recursive: true });
     // Closing the last writable connection can checkpoint an existing WAL even
     // when validation only read data. Reject unsupported files through a genuine
@@ -179,7 +226,13 @@ export class Store {
         this.db.exec('BEGIN IMMEDIATE');
         try { validateCurrentDatabase(this.db); }
         finally { this.db.exec('ROLLBACK'); }
-      } else validateCurrentDatabase(this.db);
+      } else {
+        // A concurrent writer may advance between the checkpoint's individual
+        // indexed reads. Validate one committed snapshot, then release it.
+        this.db.exec('BEGIN');
+        try { validateCurrentDatabase(this.db); }
+        finally { this.db.exec('ROLLBACK'); }
+      }
       if (readOnly) { this.db.exec(`PRAGMA query_only = ON; PRAGMA busy_timeout = ${isMainThread ? 0 : 5000};`); return; }
       this.db.exec('PRAGMA journal_mode = WAL; PRAGMA synchronous = FULL;');
       installJournal(this.db);
@@ -346,13 +399,14 @@ export class Store {
     return this.db.prepare('SELECT epoch FROM learning_epochs WHERE input=?').get(label(input, 'input'))?.epoch ?? 'original';
   }
 
+  learningJournalHead(input, epoch = this.learningEpoch(input)) { return learningJournalHead(this.db,input,epoch); }
+
   learningJournal({ input, after = 0, limit = 256, algorithmVersion } = {}) {
     if (algorithmVersion !== undefined && algorithmVersion !== LEARNING_ALGORITHM)
       throw new TypeError('Unsupported Home learning journal algorithm; start fresh.');
-    // Do not filter unsupported rows out of replay. The database opener checks
-    // every stored epoch once; each bounded read also rejects unexpected rows.
-    const rows = this.db.prepare('SELECT * FROM learning_journal WHERE input=? AND id>? ORDER BY id LIMIT ?')
-      .all(label(input, 'input'), integer(after, 'after'), limitValue(limit));
+    // Do not filter unsupported rows out of replay. Writer admission and each
+    // bounded read reject unsupported rows; full historical audits are optional.
+    const rows = learningJournalRows(this.db,{input,after,limit});
     if (rows.some(row => row.algorithm_version !== LEARNING_ALGORITHM))
       throw new TypeError('Unsupported Home learning journal algorithm; start fresh.');
     return rows.map(row => ({ id: row.id, key: row.key,

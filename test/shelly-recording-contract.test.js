@@ -30,17 +30,30 @@ test('Shelly native meter recording reopens without session-check state or histo
   } finally { reopened.close(); }
 });
 
-test('removed Shelly checks and accumulator state reject database open without changing source bytes', t => {
+test('removed Shelly checks fail transaction admission without persisting history or a checkpoint', t => {
+  const { path, store } = fixture(t), checkpoint = store.checkpoint();
+  assert.throws(() => store.event('charging-session-check', { version: 1, source: 'shelly-evse', start: 1000, end: 2000,
+    estimatedKwh: 1, referenceKwh: 1, complete: true, quality: [],
+    recordingBasis: 'native-meter-counter-phase-allocation', referenceBasis: 'native-session-energy' }, 2000),
+  { code: 'database_state_incompatible' });
+  assert.deepEqual(store.checkpoint(), checkpoint);
+  assert.equal(store.events().length, 0);
+  assert.equal(store.db.prepare('SELECT COUNT(*) AS n FROM journal_pending').get().n, 0);
+  store.close();
+  const before = readFileSync(path), reopened = new Store(path, { readOnly: true });
+  try { assert.deepEqual(reopened.checkpoint(), checkpoint); assert.equal(reopened.events().length, 0); }
+  finally { reopened.close(); }
+  assert.deepEqual(readFileSync(path), before);
+});
+
+test('retired Shelly accumulator state rejects database open without changing source bytes', t => {
   const retiredStates = [{ checkSession: null }, { sessionCheck: null },
     { sessionCheck: { version: 1, active: { nativeRuns: { version: 1 } } } },
     { counter: { at: 1000, value: 1, powerW: 0 } },
     { fields: { energy_charge: { value: 1 } } }, { fields: { time_charge: { value: 1 } } }];
-  for (const state of [null, ...retiredStates]) {
+  for (const state of retiredStates) {
     const { path, store } = fixture(t);
-    if (state) store.setState('charging:shelly:synthetic-association', { version: 2, ...state });
-    else store.event('charging-session-check', { version: 1, source: 'shelly-evse', start: 1000, end: 2000,
-      estimatedKwh: 1, referenceKwh: 1, complete: true, quality: [],
-      recordingBasis: 'native-meter-counter-phase-allocation', referenceBasis: 'native-session-energy' }, 2000);
+    store.setState('charging:shelly:synthetic-association', { version: 2, ...state });
     store.close();
     const before = readFileSync(path);
     for (const readOnly of [false, true]) {

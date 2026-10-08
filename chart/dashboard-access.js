@@ -4,9 +4,10 @@ import { lockControl, unlockControl } from './control-locks.js';
 
 export const readOnlyMessage = 'View only: database edits, settings changes and device commands are disabled. Use the master to make changes.';
 
-/** Pair management is the only explicit exception to a read-only dashboard. */
+/** Pair management and read-only database verification remain usable on a slave. */
 export function assertDashboardWrite(path, data, status) {
   if (data === undefined || isPairManagementRequest(path, data, status)) return;
+  if (status && path === '/api/database-verification' && data && typeof data === 'object' && !Array.isArray(data) && !Object.keys(data).length) return;
   if (!status || isReadOnlyReplica(status)) throw Object.assign(new Error(status ? readOnlyMessage
     : 'Wait for the installation status before making changes.'), { status: 403 });
 }
