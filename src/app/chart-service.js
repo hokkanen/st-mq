@@ -64,7 +64,7 @@ export function createChartService({ store, maxQueue = 8, idleMs = 60_000 } = {}
       const entry = lane.active;
       progress(entry, { stage: 'reading-history' });
       if (lane.active === entry && lane.worker) lane.worker.postMessage({ id: entry.id, args: entry.args,
-        operation: entry.operation, wire: entry.wire });
+        operation: entry.operation, wire: entry.wire, checkpoint: store.expectedCheckpoint });
     } catch {
       const entry = lane.active; lane.active = null; reset(lane);
       if (entry) settle(entry, new Error('Chart history request could not start'));
@@ -78,7 +78,7 @@ export function createChartService({ store, maxQueue = 8, idleMs = 60_000 } = {}
     args = { ...args, now: args?.now ?? Date.now() };
     try {
       if (!Object.hasOwn(lanes, priority)) throw new TypeError('Invalid chart priority');
-      if (!['chart', 'overview', 'energy-checks'].includes(operation)) throw new TypeError('Invalid history operation');
+      if (!['chart', 'overview', 'energy-checks', 'pin'].includes(operation)) throw new TypeError('Invalid history operation');
       if (operation === 'chart') {
         const { selection } = chartRequestRange(args);
         if (priority === 'prefetch' && Date.parse(selection.endDate) - Date.parse(selection.startDate) >= 7 * 86_400_000)
@@ -88,6 +88,7 @@ export function createChartService({ store, maxQueue = 8, idleMs = 60_000 } = {}
     } catch (error) { return Promise.reject(error); }
     if (store.path === ':memory:') {
       try {
+        if (operation === 'pin') return Promise.resolve({ ready: true });
         const result = operation === 'overview' ? getDatabaseOverview({ ...args, store })
           : operation === 'energy-checks' ? energyCheckSummaries(store, args) : getChartData({ ...args, store, onProgress });
         const prepared = operation === 'chart' ? prepareChartResponse(result) : null;
@@ -110,6 +111,7 @@ export function createChartService({ store, maxQueue = 8, idleMs = 60_000 } = {}
     });
   }
   return {
+    pin(options = {}) { return query({}, { ...options, operation: 'pin' }); },
     overview(options = {}) { return query({}, { ...options, operation: 'overview' }); },
     energyChecks(args = {}, options = {}) { return query(args, { ...options, operation: 'energy-checks', priority: 'foreground' }); },
     query,

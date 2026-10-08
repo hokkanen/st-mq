@@ -2,8 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { DatabaseSync } from 'node:sqlite';
 import { Store } from '../../src/storage/store.js';
-import { readdirSync } from 'node:fs';
-import { mkdtemp, rm, writeFile, mkdir, readFile, readdir } from 'node:fs/promises';
+import { mkdtemp, rm, writeFile, mkdir, readFile, readdir, stat } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
 import { tmpdir } from 'node:os';
 import { spawn, spawnSync } from 'node:child_process';
@@ -39,7 +38,7 @@ async function fixture(t) {
   return { directory, source, db, config };
 }
 
-test('real sqlite3_rsync protocol catches up current-schema inserts, deletes, freelists and page-size changes identically', { skip: skipRsync, timeout: 60_000 }, async t => {
+test('real sqlite3_rsync seeds once then journal transfer catches up inserts and deletions without snapshots', { skip: skipRsync, timeout: 60_000 }, async t => {
   assert.ok(available, 'STMQ_REQUIRE_RSYNC_TESTS requires a working sqlite3_rsync on PATH or STMQ_TEST_RSYNC');
   const { directory, source, db, config } = await fixture(t);
   const commands = [];
@@ -48,24 +47,19 @@ test('real sqlite3_rsync protocol catches up current-schema inserts, deletes, fr
   let publication = await verifyReplicaPublication(config.remoteDirectory);
   assert.equal(publication.digest, first.digest);
   assert.equal(publication.bytes, first.bytes);
-  const immutable = await readFile(publication.dbPath);
-  // A crashed source worker can leave a complete backup and SQLite sidecars.
-  // The next online attempt must reclaim these before making its new backup.
-  const interrupted = join(config.sourceDirectory, 'source-00000000-0000-0000-0000-000000000001.sqlite');
-  await writeFile(interrupted, immutable);
-  await writeFile(`${interrupted}-journal`, 'synthetic unfinished backup journal');
-  let inspectedWorkDirectory = false;
+  const originalPath = publication.dbPath, originalInode = (await stat(publication.dbPath)).ino;
+  let createdSnapshot = false;
   const observeSnapshot = phase => {
-    if (phase !== 'snapshotting') return;
-    inspectedWorkDirectory = true;
-    assert.deepEqual(readdirSync(config.sourceDirectory).filter(name => name.startsWith('source-')), []);
+    if (phase === 'snapshotting') createdSnapshot = true;
   };
-  // Represents a long standby outage; no transfer history is kept or replayed.
-  db.exec(`BEGIN; DELETE FROM events WHERE id % 3 <> 0;
-    UPDATE events SET type='corrected-synthetic-history'; DELETE FROM state; COMMIT`);
+  // An offline standby catches up from durable committed transactions.
+  db.exec(`DELETE FROM events WHERE id % 3 <> 0;
+    UPDATE events SET type='corrected-synthetic-history'; DELETE FROM state`);
   assert.ok(db.prepare('PRAGMA freelist_count').get().freelist_count > 0);
-  const second = await synchronizeReplica({ signal: t.signal, dbPath: source, config, spawnProcess, onPhase: observeSnapshot });
-  assert.equal(inspectedWorkDirectory, true);
+  const second = await synchronizeReplica({ signal: t.signal, dbPath: source,
+    config: { ...config, rsyncPath: '/nonexistent/rsync-is-unnecessary' }, spawnProcess, onPhase: observeSnapshot,
+    snapshot: async () => assert.fail('A seeded receiver must use journal transactions') });
+  assert.equal(createdSnapshot, false);
   publication = await verifyReplicaPublication(config.remoteDirectory);
   assert.equal(publication.digest, second.digest);
   assert.notEqual(second.digest, first.digest);
@@ -76,20 +70,22 @@ test('real sqlite3_rsync protocol catches up current-schema inserts, deletes, fr
     assert.deepEqual(replica.prepare('SELECT * FROM sqlite_schema ORDER BY name').all(), db.prepare('SELECT * FROM sqlite_schema ORDER BY name').all());
     assert.equal(replica.prepare('SELECT COUNT(*) n FROM state').get().n, 0);
   } finally { replica.close(); }
-  assert.deepEqual(await readFile(join(config.remoteDirectory, `snapshot-${first.generation}.sqlite`)), immutable);
+  assert.equal(publication.dbPath, originalPath);
+  assert.equal((await stat(publication.dbPath)).ino, originalInode);
   // Native compatibility stops at the exact current schema, even on the real
   // transport. An unsupported source cannot replace the last valid publication.
   db.exec('CREATE TABLE unsupported_development_table(value TEXT)');
   await assert.rejects(synchronizeReplica({ signal:t.signal,dbPath:source,config }), { code: 'database_schema_invalid' });
   assert.equal((await readReplicaPublication(config.remoteDirectory)).generation,second.generation);
   db.exec('DROP TABLE unsupported_development_table');
-  db.exec('VACUUM');
+  // Physical compaction changes page placement, not transaction identity.
+  const maintenance = new DatabaseSync(source);
+  try { maintenance.exec('VACUUM'); } finally { maintenance.close(); }
   const third = await synchronizeReplica({ signal: t.signal, dbPath: source, config });
   assert.equal((await verifyReplicaPublication(config.remoteDirectory)).digest, third.digest);
-  db.exec('PRAGMA journal_mode=DELETE; PRAGMA page_size=8192; VACUUM; PRAGMA journal_mode=WAL');
   const fourth = await synchronizeReplica({ signal: t.signal, dbPath: source, config });
   assert.equal((await verifyReplicaPublication(config.remoteDirectory)).digest, fourth.digest);
-  assert.equal((await readdir(config.remoteDirectory)).filter(name => name.startsWith('snapshot-')).length, 2);
+  assert.equal((await readdir(config.remoteDirectory)).filter(name => /^snapshot-.+\.sqlite$/.test(name)).length, 1);
   assert.deepEqual((await readdir(config.sourceDirectory)).filter(name => name.endsWith('.sqlite')), []);
   assert.equal((await readdir(config.sourceDirectory)).some(name => name.endsWith('-journal')), false);
   const ssh = commands.find(command => command.command === 'ssh');
@@ -131,7 +127,7 @@ test('timed out sync leaves publication intact and the next real transfer recove
   const { source, config } = await fixture(t);
   const first = await synchronizeReplica({ signal: t.signal, dbPath: source, config });
   await assert.rejects(synchronizeReplica({ signal: t.signal, dbPath: source, config: { ...config, timeoutMs: 500 },
-    spawnProcess: (command, args, options) => command === rsync && !args.includes('--version')
+    spawnProcess: (command, args, options) => command === 'ssh'
       ? spawn(process.execPath, ['-e', 'setInterval(()=>{},1000)'], options) : spawn(command, args, options),
   }), /timed_out/);
   assert.equal((await readReplicaPublication(config.remoteDirectory)).generation, first.generation);

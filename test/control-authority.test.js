@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtemp, rm, readFile, mkdir, writeFile, readdir } from 'node:fs/promises';
+import { mkdtemp, rm, readFile, mkdir, writeFile, readdir, stat } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { randomUUID, createHash } from 'node:crypto';
@@ -9,6 +9,8 @@ import { equipmentConfiguration } from '../src/acquisition/equipment-config.js';
 import { loadConfig } from '../src/app/config.js';
 import { CONTROL_SCOPE, standaloneAuthority } from '../src/control/authority.js';
 import { idleIdentityClient, identityConnection } from './helpers/identity-mqtt.js';
+import { Store } from '../src/storage/store.js';
+import { readReplicaPublication } from '../src/replication/publication.js';
 
 test('retired standalone authority is rejected without replacing its identity or opening MQTT', async t => {
   const dataDir = await mkdtemp(join(tmpdir(), 'stmq-retired-authority-'));
@@ -54,11 +56,26 @@ test('standalone MQTT authority loss stops writes, retains a read-only dashboard
     assert.equal(JSON.parse(await readFile(identityPath, 'utf8')).blocked, true);
     assert.ok(publications.every(value => value === topic), 'loss and shutdown send no equipment restoration');
   } finally { await app.close(); }
+  const sourceInode = (await stat(config.dbPath)).ino;
   const previousConnections = connections, restarted = await start(options);
   try {
     assert.equal(restarted.engine, undefined); assert.equal(connections, previousConnections);
     const status = await (await fetch(`http://127.0.0.1:${restarted.server.address().port}/api/status`)).json();
     assert.equal(status.readOnly, true, JSON.stringify(status)); assert.equal(status.controlAuthority.state, 'protected');
+    const viewDirectory = join(directory, 'controller-authority', 'view');
+    const publication = await readReplicaPublication(viewDirectory);
+    assert.equal(publication.dbPath, config.dbPath, 'Protected startup reuses its existing database');
+    assert.equal((await stat(publication.dbPath)).ino, sourceInode);
+    assert.equal((await readdir(viewDirectory)).some(name => name.endsWith('.sqlite')), false,
+      'Protected startup creates no full database copy');
+    // A different authorized process may keep this file moving. This viewer
+    // must reject a request for the stale checkpoint rather than combine rows.
+    const writer = new Store(config.dbPath);
+    try { writer.event('synthetic-other-owner', { value: 1 }, Date.now()); } finally { writer.close(); }
+    assert.equal((await fetch(`http://127.0.0.1:${restarted.server.address().port}/api/status`)).status, 503);
+    assert.equal(restarted.status().readOnly, true);
+    assert.equal(JSON.parse(await readFile(join(directory, 'controller-authority/identity.json'), 'utf8')).blocked, true);
+    assert.equal(connections, previousConnections);
   } finally { await restarted.close(); }
 });
 

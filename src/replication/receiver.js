@@ -1,9 +1,13 @@
 import { createInterface } from 'node:readline';
-import { lstat, open, readdir, rm } from 'node:fs/promises';
+import { lstat, open, readFile, readdir, rm } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
-import { copySnapshot, GENERATION_PATTERN, normalizeSnapshot, ownedDirectory, privateFile,
-  pruneReplicaSnapshots, publishSnapshot, readReplicaPublication, replicationError, snapshotDigest } from './publication.js';
+import { createHash, randomUUID } from 'node:crypto';
+import { applyJournalPublication, recoverJournalPublication } from './journal-publication.js';
+import { sameCheckpoint, validCheckpoint } from './incremental.js';
+import { CHANGE_CHUNK_BYTES, MAX_CHANGE_BYTES } from './change-transfer.js';
+import { GENERATION_PATTERN, normalizeSnapshot, ownedDirectory, privateFile,
+  pruneReplicaSnapshots, publishSnapshot, replicationError, snapshotDigest } from './publication.js';
 
 const MARKER = '.st-mq-replica';
 const LOCK = '.receiver-lock.sqlite';
@@ -40,7 +44,7 @@ export async function acquireReceiverLock(directory) {
 }
 
 function parseMessage(line) {
-  if (line.length > 8192) throw replicationError('invalid_protocol');
+  if (line.length > 1024 * 1024) throw replicationError('invalid_protocol');
   try { return JSON.parse(line); } catch { throw replicationError('invalid_protocol'); }
 }
 
@@ -52,14 +56,14 @@ export async function runReceiver({ directory, input = process.stdin, output = p
   // Attach the iterator before filesystem awaits so an immediate SSH prepare
   // message cannot be lost while the private directory is being initialized.
   const messages = lines[Symbol.asyncIterator]();
-  let unlock, incoming, generation, reset = false;
+  let unlock, incoming, generation, reset = false, publication, staged;
   const send = value => output.write(`${JSON.stringify(value)}\n`);
   try {
     await initializeDirectory(directory);
     for await (const line of messages) {
       const message = parseMessage(line);
       if (!generation) {
-        if (message.type !== 'prepare' || message.version !== 1 || !GENERATION_PATTERN.test(message.generation)) {
+        if (message.type !== 'prepare' || message.version !== 2 || !GENERATION_PATTERN.test(message.generation)) {
           throw replicationError('invalid_protocol');
         }
         unlock = await acquireReceiverLock(directory);
@@ -68,26 +72,55 @@ export async function runReceiver({ directory, input = process.stdin, output = p
         // Remove leftovers only after ownership is established. Active orphan
         // writers may retain an unlinked inode but cannot publish it.
         for (const name of await readdir(directory)) {
-          if (/^incoming-[a-f0-9-]+\.sqlite(?:-wal|-shm|-journal)?$/.test(name)) await rm(join(directory, name));
+          if (/^incoming-[a-f0-9-]+\.(?:changes|sqlite(?:-wal|-shm|-journal)?)$/.test(name)) await rm(join(directory, name));
         }
         incoming = join(directory, `incoming-${generation}.sqlite`);
-        const previous = await readReplicaPublication(directory);
-        // A crash between snapshot rename and manifest replacement may leave a
-        // full orphan copy. Free it BEFORE allocating the next incoming copy so
-        // a disk sized for current+previous+incoming can recover automatically.
-        await pruneReplicaSnapshots(directory, previous);
+        publication = await recoverJournalPublication(directory);
+        await pruneReplicaSnapshots(directory, publication);
         await rm(join(directory, 'publication.json.tmp'), { force: true });
-        let useBase = false;
-        if (previous) {
-          try {
-            const digest = await snapshotDigest(previous.dbPath);
-            useBase = digest.digest === previous.digest && digest.bytes === previous.bytes;
-          } catch { /* A damaged/missing standby copy is rebuilt from the primary. */ }
-        }
-        if (useBase) await copySnapshot(previous.dbPath, incoming);
-        else { const file = await open(incoming, 'wx', 0o600); await file.close(); }
-        send({ type: 'ready', version: 1 });
+        if (!publication || message.repair === true) { const file = await open(incoming, 'wx', 0o600); await file.close(); }
+        else incoming = null;
+        send({ type: 'ready', version: 2, publication });
         continue;
+      }
+      if (message.type === 'apply-begin') {
+        if (!publication || staged || !validCheckpoint(message.from) || !validCheckpoint(message.to)
+          || !sameCheckpoint(message.from, publication.checkpoint) || !Number.isSafeInteger(message.bytes)
+          || message.bytes < 1 || message.bytes > MAX_CHANGE_BYTES || !/^[a-f0-9]{64}$/.test(message.digest ?? ''))
+          throw replicationError('invalid_protocol');
+        const path = join(directory, `incoming-${randomUUID()}.changes`);
+        staged = { ...message, path, file: await open(path, 'wx', 0o600), offset: 0, hash: createHash('sha256') };
+        send({ type: 'apply-ready' });
+        continue;
+      }
+      if (message.type === 'apply-chunk') {
+        if (!staged || message.offset !== staged.offset || typeof message.data !== 'string'
+          || message.data.length > Math.ceil(CHANGE_CHUNK_BYTES / 3) * 4) throw replicationError('invalid_protocol');
+        const bytes = Buffer.from(message.data, 'base64');
+        if (bytes.length !== Math.min(CHANGE_CHUNK_BYTES, staged.bytes - staged.offset)) throw replicationError('invalid_protocol');
+        await staged.file.writeFile(bytes); staged.hash.update(bytes); staged.offset += bytes.length;
+        send({ type: 'apply-chunk', offset: staged.offset });
+        continue;
+      }
+      if (message.type === 'apply-commit') {
+        if (!staged || staged.offset !== staged.bytes || staged.hash.digest('hex') !== staged.digest)
+          throw replicationError('verification_failed');
+        await staged.file.sync(); await staged.file.close(); staged.file = null;
+        const batch = JSON.parse(await readFile(staged.path, 'utf8'));
+        if (!sameCheckpoint(batch.from, staged.from) || !sameCheckpoint(batch.to, staged.to))
+          throw replicationError('verification_failed');
+        await assertUnpairedDirectory(directory);
+        publication = await applyJournalPublication({ directory, batch, metadata: message.metadata,
+          guard: () => assertUnpairedDirectory(directory) });
+        await rm(staged.path); staged = null;
+        send({ type: 'applied', checkpoint: publication.checkpoint });
+        continue;
+      }
+      if (message.type === 'complete') {
+        if (!publication || staged || !sameCheckpoint(publication.checkpoint, message.checkpoint))
+          throw replicationError('verification_failed');
+        send({ type: 'published', ...publication });
+        return publication;
       }
       if (message.type === 'reset' && !reset && GENERATION_PATTERN.test(message.generation) && message.generation !== generation) {
         // A page-size change or damaged delta base can make rsync reject its
@@ -101,7 +134,7 @@ export async function runReceiver({ directory, input = process.stdin, output = p
         send({ type: 'reset', generation });
         continue;
       }
-      if (message.type !== 'publish' || message.generation !== generation || !/^[a-f0-9]{64}$/.test(message.digest) ||
+      if (!incoming || message.type !== 'publish' || message.generation !== generation || !/^[a-f0-9]{64}$/.test(message.digest) ||
           !Number.isSafeInteger(message.bytes) || message.bytes < 512 ||
           ![message.sourceStartedAt, message.sourceAt].every(at => Number.isSafeInteger(at) && at > 0) ||
           message.sourceStartedAt > message.sourceAt) throw replicationError('invalid_protocol');
@@ -110,15 +143,16 @@ export async function runReceiver({ directory, input = process.stdin, output = p
       const actual = await snapshotDigest(incoming);
       if (actual.digest !== message.digest || actual.bytes !== message.bytes) throw replicationError('verification_failed');
       await assertUnpairedDirectory(directory);
-      const publication = await publishSnapshot(directory, incoming, { generation, ...actual,
-        sourceStartedAt: message.sourceStartedAt, sourceAt: message.sourceAt, verifiedAt: Date.now() });
+      publication = await publishSnapshot(directory, incoming, { generation, ...actual,
+        checkpoint: message.checkpoint, sourceStartedAt: message.sourceStartedAt, sourceAt: message.sourceAt, verifiedAt: Date.now() });
       incoming = null;
-      send({ type: 'published', generation, digest: publication.digest, bytes: publication.bytes, verifiedAt: publication.verifiedAt });
+      send({ type: 'published', ...publication });
       return publication;
     }
     throw replicationError('transfer_interrupted');
   } finally {
     lines.close();
+    if (staged) { await staged.file?.close().catch(() => {}); await rm(staged.path, { force: true }).catch(() => {}); }
     if (incoming) {
       for (const suffix of ['', '-wal', '-shm', '-journal']) await rm(`${incoming}${suffix}`, { force: true }).catch(() => {});
     }

@@ -17,7 +17,7 @@ test('optional synchronization failure leaves the primary running and control AP
   const app = await start({ config });
   t.after(async () => { await app.close(); rmSync(directory, { recursive: true, force: true }); });
   for (let attempt = 0; attempt < 200 && app.mirror.status().state !== 'error'; attempt++) await delay(5);
-  assert.equal(app.mirror.status().error, 'tool_unavailable');
+  assert.equal(app.mirror.status().error, 'connection_failed');
   const endpoint = `http://127.0.0.1:${app.server.address().port}`;
   let response = await fetch(`${endpoint}/api/status`);
   assert.equal(response.status, 200);

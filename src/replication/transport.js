@@ -1,12 +1,15 @@
 import { spawn } from 'node:child_process';
 import { Worker } from 'node:worker_threads';
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import { fileURLToPath } from 'node:url';
 import { join, isAbsolute, resolve } from 'node:path';
 import { rm, readdir } from 'node:fs/promises';
 import { ownedDirectory, replicationError } from './publication.js';
 import { sshOptions } from './ssh-options.js';
 import { databaseErrorDetails } from '../storage/database-errors.js';
+import { databaseCheckpoint, exportDatabaseChanges, sameCheckpoint } from './incremental.js';
+import { checkpointMetadata } from './journal-publication.js';
+import { CHANGE_CHUNK_BYTES } from './change-transfer.js';
 
 const wrapper = fileURLToPath(new URL('../../scripts/replica-ssh.js', import.meta.url));
 const SAFE_PATH = /^[A-Za-z0-9_./-]+$/;
@@ -14,10 +17,12 @@ const PUBLIC_ERRORS = new Set(['configuration_invalid', 'tool_unavailable', 'con
   'snapshot_failed', 'verification_failed', 'integrity_failed', 'receiver_busy', 'receiver_failed', 'snapshot_busy',
   'directory_not_empty', 'unsafe_directory', 'invalid_publication', 'timed_out', 'stopped', 'protocol_failed',
   'database_schema_mismatch', 'database_schema_invalid', 'database_algorithm_mismatch',
-  'database_state_incompatible', 'database_integrity_failed']);
+  'database_state_incompatible', 'database_integrity_failed', 'database_journal_invalid',
+  'lineage_mismatch', 'journal_checkpoint_mismatch', 'journal_hash_mismatch', 'journal_transaction_too_large']);
 
 export function publicReplicationError(error) {
-  return PUBLIC_ERRORS.has(error?.code) ? error.code : 'transfer_failed';
+  const code = databaseErrorDetails(error)?.code ?? error?.code;
+  return PUBLIC_ERRORS.has(code) ? code : 'transfer_failed';
 }
 
 export function validateTransportConfig(config) {
@@ -132,7 +137,8 @@ export async function createSourceSnapshot({ dbPath, destination, signal }) {
   });
 }
 
-/** One attempt, including peer preflight, immutable backup, delta transfer and verification. */
+/** One attempt: peer preflight, bounded journal catch-up, and durable publication.
+ * A receiver without a baseline first needs one complete seed. */
 export async function synchronizeReplica({ dbPath, config, signal, onPhase = () => {},
   spawnProcess = spawn, snapshot = createSourceSnapshot }) {
   validateTransportConfig(config);
@@ -150,11 +156,46 @@ export async function synchronizeReplica({ dbPath, config, signal, onPhase = () 
   let channel, destination;
   try {
     onPhase('connecting');
-    await runProcess(config.rsyncPath ?? 'sqlite3_rsync', ['--version'], { ...options, code: 'tool_unavailable' });
     channel = receiverChannel(config, generation, options);
-    channel.send({ type: 'prepare', version: 1, generation });
+    channel.send({ type: 'prepare', version: 2, generation });
     const ready = await channel.next();
-    if (ready.type !== 'ready' || ready.version !== 1) throw replicationError('protocol_failed');
+    if (ready.type !== 'ready' || ready.version !== 2) throw replicationError('protocol_failed');
+    if (ready.publication) {
+      const checkpoint = await databaseCheckpoint({ dbPath, signal: abort.signal });
+      const metadata = await checkpointMetadata({ dbPath, checkpoint });
+      if (ready.publication.checkpoint?.databaseId !== checkpoint.databaseId) throw replicationError('lineage_mismatch');
+      let after = ready.publication.checkpoint, transferredBytes = 0;
+      onPhase('transferring');
+      do {
+        const batch = sameCheckpoint(after, checkpoint)
+          ? { version: 1, from: after, to: after, commits: [], hasMore: false }
+          : await exportDatabaseChanges({ dbPath, after, through: checkpoint, signal: abort.signal });
+        const bytes = Buffer.from(JSON.stringify(batch));
+        channel.send({ type: 'apply-begin', from: batch.from, to: batch.to, bytes: bytes.length,
+          digest: createHash('sha256').update(bytes).digest('hex') });
+        if ((await channel.next()).type !== 'apply-ready') throw replicationError('protocol_failed');
+        for (let offset = 0; offset < bytes.length; offset += CHANGE_CHUNK_BYTES) {
+          const part = bytes.subarray(offset, offset + CHANGE_CHUNK_BYTES);
+          channel.send({ type: 'apply-chunk', offset, data: part.toString('base64') });
+          const acknowledged = await channel.next();
+          if (acknowledged.type !== 'apply-chunk' || acknowledged.offset !== offset + part.length) throw replicationError('protocol_failed');
+        }
+        channel.send({ type: 'apply-commit', metadata: { ...metadata,
+          generation: batch.hasMore ? randomUUID() : metadata.generation, checkpoint: batch.to, digest: batch.to.hash } });
+        const applied = await channel.next();
+        if (applied.type !== 'applied' || !sameCheckpoint(applied.checkpoint, batch.to)) throw replicationError('verification_failed');
+        transferredBytes += bytes.length;
+        after = batch.to;
+      } while (!sameCheckpoint(after, checkpoint));
+      channel.send({ type: 'complete', checkpoint });
+      const published = await channel.next();
+      if (published.type !== 'published' || !sameCheckpoint(published.checkpoint, checkpoint)) throw replicationError('verification_failed');
+      channel.child.stdin.end(); await channel.done;
+      return { ...metadata, verifiedAt: published.verifiedAt, transferredBytes };
+    }
+    // A full snapshot is an exceptional initial seed. Subsequent attempts use
+    // only committed changes, with no dependence on sqlite3_rsync availability.
+    await runProcess(config.rsyncPath ?? 'sqlite3_rsync', ['--version'], { ...options, code: 'tool_unavailable' });
     await ownedDirectory(sourceDirectory, '.st-mq-replication-work');
     // The receiver lock guarantees no other legitimate primary attempt is active.
     for (const name of await readdir(sourceDirectory)) {
@@ -180,13 +221,13 @@ export async function synchronizeReplica({ dbPath, config, signal, onPhase = () 
     }
     onPhase('verifying');
     channel.send({ type: 'publish', generation, digest: result.digest, bytes: result.bytes,
-      sourceStartedAt: result.sourceStartedAt, sourceAt: result.sourceAt });
+      checkpoint: result.checkpoint, sourceStartedAt: result.sourceStartedAt, sourceAt: result.sourceAt });
     const published = await channel.next();
     if (published.type !== 'published' || published.generation !== generation || published.digest !== result.digest ||
         published.bytes !== result.bytes || !Number.isSafeInteger(published.verifiedAt)) throw replicationError('verification_failed');
     channel.child.stdin.end();
     await channel.done;
-    return { generation, digest: result.digest, bytes: result.bytes, sourceStartedAt: result.sourceStartedAt,
+    return { generation, digest: result.digest, checkpoint: result.checkpoint, bytes: result.bytes, sourceStartedAt: result.sourceStartedAt,
       sourceAt: result.sourceAt, verifiedAt: published.verifiedAt };
   } catch (error) {
     const reason = abort.signal.aborted ? abort.signal.reason : error;

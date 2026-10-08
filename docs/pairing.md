@@ -413,22 +413,33 @@ not proof that it includes writes made after that snapshot. An unreachable peer
 has unknown current synchronization status. During transfers or role changes,
 the panels show progress rather than claim that both databases are current.
 
-The master retries synchronization after a slave outage. Transfers are based
-on consistent snapshots, with integrity and content-identity verification
-before publication. An incomplete transfer cannot replace the last verified
-snapshot. A long outage does not depend on retaining an unbounded MQTT event
-queue. Disk space must cover the working snapshot, current/previous published
-generations and a temporary recovery donor; leave room for SQLite's own
-journals and concurrent master writes.
+The master retries synchronization after a slave outage. Routine transfer uses
+[hash-linked SQLite transaction commits](sqlite-journal.md), starting at the
+slave's durable checkpoint. Each received transaction checks its predecessor,
+content hash and expected previous row values. Its changes and new checkpoint
+commit atomically. Incomplete frames and disconnected transfers never expose a
+partial transaction; restart reconciles the durable publication receipt with the
+actual database checkpoint. A receiver retains one writable SQLite database,
+while read-only viewers pin coherent read transactions.
 
-Transfers reuse matching 1 MiB chunks and retain interrupted progress. Each
-received database passes SQLite integrity and SHA-256 page-content verification
-before it becomes visible. The current protocol accepts databases up to 64 GiB;
-an oversized or failed transfer leaves the last verified snapshot available.
-Before replacing or exporting a slave snapshot, pairing verifies that its
-accepted identity still matches the local publication and fences changes during
-the operation. Unexpected local database writes, journal data or replacement
-put the slave into protected recovery instead of silently overwriting it.
+Only a receiver with no base needs a full initial snapshot. Independent histories
+without a common journal ancestor and explicit exceptional repairs can also need
+a full snapshot. Those exports retain full integrity and byte-content validation.
+Normal synchronization, startup and handover neither copy the complete database
+nor hash all its pages. Transport frames are bounded at 256 KiB; source commits
+retain their atomic boundary even when they require several frames. Journal
+history is retained, so a long outage can resume from the last accepted commit.
+Unexpected local writes or a mismatched accepted checkpoint protect the slave
+instead of silently overwriting its history.
+
+**Verify with full snapshot** adds the independent full verifier to a manual
+operation. Handover and incremental rejoin compare the source and receiver only
+at the same transaction checkpoint; a newer master is never compared against an
+older slave as if they should already match. **Recording details → Verify
+database** runs the same verifier manually. Optional background checks are
+configured with `recording.full_verification_interval_hours` (`0` disables them).
+These full checks are intentionally proportional to database size and can consume
+storage bandwidth. Their results are separate from routine journal continuity.
 
 Synchronization is asynchronous. Forced takeover can therefore start from a
 snapshot older than the last master write. A snapshot that was recently
@@ -457,8 +468,9 @@ its native settings. Directly connected devices can recover independently of HA.
 When both computers are available and the slave is ready, use **Hand over to
 the other computer** on the master and confirm the operation. The old master
 finishes required restoration and control work while it still owns authority,
-closes VIP MQTT and local OCPP connections, prepares the final verified history
-and releases its role/address. The new master then starts its local controller,
+closes VIP MQTT and local OCPP connections, transfers the remaining commits
+through the final checkpoint and releases its role/address. Both computers reuse
+their existing database files during the role change. The new master then starts its local controller,
 owns the MQTT address and opens its frontend after primary subscriptions are
 ready. Devices reconnect to the new local broker; fixed HA clients retain their
 connections. Fresh input becomes available according to each device's normal
@@ -797,9 +809,10 @@ the result is an informational **No recovery needed** result with a checkmark.
 It validates that slave snapshot, not whether every current master record has
 already been mirrored. Current synchronization and compatibility problems remain
 visible separately and take precedence over an earlier successful source check.
-The check reports category date ranges for both computers, recorded
-energy gaps and potential source coverage, without a trial import or model
-rebuild. Normal mirroring remains enabled, so recovery and resume-mirroring actions
+For a shared journal, the check examines only changes since the common
+checkpoint and their referenced evidence. Its counts and ranges describe that
+changed scope, not a full historical inventory. No trial import or model rebuild
+runs during a source check. Normal mirroring remains enabled, so recovery and resume-mirroring actions
 are unavailable. A record
 present only in that older snapshot can reflect a deliberate master deletion;
 the next ordinary snapshot applies the deletion. The source check does not
@@ -824,11 +837,11 @@ required confirmations.
 
 For a computer in **Protected recovery**:
 
-1. In **Review history**, **Check other computer** takes a consistent donor snapshot,
-   verifies its database format and integrity, assesses its input scope and shows
-   source record counts, both computers' history ranges by category, recorded
-   energy-gap dates and whether the source has relevant records during those intervals
-   or outside the master's date range. These are potential coverage, never a
+1. In **Review history**, **Check other computer** identifies the donor checkpoint
+   and transfers the bounded journal suffix since the common ancestor. It assesses
+   the changed records and their dependencies using the existing recovery rules.
+   Independent databases without shared ancestry require a full donor snapshot
+   and inventory as an exceptional repair. These are potential coverage, never a
    promise of recoverable entries. Sparse measurements do not establish outages.
    Checking does not copy the master database, run a trial
    import or change the master's history. Missing entries, conflicts and model
@@ -845,9 +858,9 @@ For a computer in **Protected recovery**:
    documented learning epoch and uses the established ordered replay contract.
    The existing model keeps control available while the replacement catches
    up; a partial or stale rebuilt model is not published.
-4. After successful recovery, explicitly **Resume mirroring**. A verified
-   master snapshot makes the other database match the master, and normal
-   one-way synchronization resumes.
+4. After successful recovery, explicitly **Resume mirroring**. The other computer
+   retains its divergent commits as an inactive branch, reverses only that suffix
+   and applies the master's commits. Normal one-way synchronization then resumes.
 
 If you stop after recovery, protection stays active. Waiting, closing the
 dashboard or restarting does not resume mirroring. A repeated check of the same
@@ -921,30 +934,25 @@ inputs and 18 ordering references in a 1.86 MB database including its indexes
 and state. Actual storage depends on the retained history and its provenance.
 
 Conflicts and unsupported donor entries are counted, not silently rewritten
-into the master. Temporary transfer copies can be removed after verified rejoin,
-but the other computer retains its original former-master database and any SQLite
-sidecars. This also preserves excluded datasets such as saved charging reports.
-If the protected computer held only a slave snapshot, rejoin first retains a
-verified self-contained copy in its pairing exports directory. That copy is pinned
-against normal pruning and remains inactive after later synchronization. An
-additional full database-sized copy therefore consumes storage on that computer.
-The confirmation shows the checked source size when known. There is no automatic
-expiry: repeated protected rejoins can accumulate copies until the owner deliberately
-archives or removes them. Ordinary successful mirroring still prunes its routine
-snapshots and does not create this archive on each synchronization. An
-interrupted replacement continues to check that retained donor, not the replacement
-master snapshot. Missing or invalid retained history blocks completion and leaves
-the protected management UI available with the failure reason.
-A failed or interrupted recovery keeps protection in place for another explicit
-check. Independent self-contained database exports remain advisable before
-maintenance; an inactive database with sidecars is not a single-file backup.
+into the master. Shared-lineage rejoin retains the divergent journal suffix,
+including excluded datasets and before/after row values, inside the same database.
+The retained branch is inactive evidence and cannot restore control permissions.
+Only changed records consume additional retained storage; rejoin does not create
+another full database copy. The branch archive and rollback commit atomically,
+while the saved release request makes retries use the originally reviewed donor
+and target checkpoints. Lost replies never authorize a different replacement.
 
-After successful rejoin, both dedicated `master-*.sqlite` databases in the pairing
-directory and the initially configured application database remain inactive.
-They are not automatically deleted, reopened or promoted. Later promotion always
-copies the latest verified publication, so retained history cannot restore old
-control permissions. These files consume storage until deliberately archived or
-removed by the owner; pairing does not silently discard them to reclaim space.
+Independent donor histories require exceptional full replacement. That path
+retains the original former-master database and its SQLite sidecars; a protected
+snapshot-only donor retains a pinned self-contained export. These exceptional
+copies can each be database-sized and have no automatic expiry. The confirmation
+discloses that storage cost. Missing or invalid retained evidence blocks completion.
+
+Promotion always uses the current accepted database and its equipment/restoration
+checks. It reuses the existing file rather than cloning historical pages. Retained
+branches and exceptional backup files never grant authority. Independent verified
+backups remain available for maintenance; a database with WAL sidecars is not a
+portable single-file backup.
 
 ## Two masters reconnecting
 

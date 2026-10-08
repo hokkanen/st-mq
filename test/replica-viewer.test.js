@@ -72,6 +72,31 @@ async function viewer(t, directory, readPublication, extra = {}) {
   return { app, request };
 }
 
+test('replica startup seeks the latest recorded decision by commit order without sorting history', async t => {
+  const directory=fixture(t),publication=snapshot(directory,'decision-index');
+  const writer=new Store(publication.dbPath);
+  writer.transaction(()=>{
+    for(let i=0;i<2048;i++) writer.event('decision',{input:'mqtt'},at+i);
+    writer.event('decision',{input:'providers'},at-1000);
+  });
+  writer.close();
+  let lookup;
+  const prepare=DatabaseSync.prototype.prepare;
+  t.mock.method(DatabaseSync.prototype,'prepare',function(sql) {
+    if(/^SELECT payload,at FROM active_events/.test(sql)) lookup=sql;
+    return prepare.call(this,sql);
+  });
+  const {request}=await viewer(t,directory,async()=>publication);
+  assert.equal((await request('/api/status')).body.input,'providers','later stored decisions retain ID ordering even with an older timestamp');
+  assert(lookup,'inspect the actual startup lookup');
+  const reader=new Store(publication.dbPath,{readOnly:true});
+  try {
+    const plan=reader.db.prepare(`EXPLAIN QUERY PLAN ${lookup}`).all().map(row=>row.detail);
+    assert(plan.some(detail=>/SEARCH (?:r|events) USING INDEX events_type_id/.test(detail)),plan.join('; '));
+    assert(!plan.some(detail=>/TEMP B-TREE|SCAN (?:r|events)\b/.test(detail)),plan.join('; '));
+  } finally {reader.close();}
+});
+
 function recordLearningModels(publication, { recordedAt = publication.sourceAt, matching = true, homeModelVersion = 4 } = {}) {
   const store = new Store(publication.dbPath), seed = restoreAdaptiveCheckpoint(null);
   seed.model.parameters.lossPerHour = .031;
@@ -501,7 +526,7 @@ test('in-flight chart requests lease their generation across publication and old
   const entered = deferred(), proceed = deferred();
   const makeChartService = ({ store }) => {
     const service = createChartService({ store });
-    return { overview: options => service.overview(options), close: () => service.close(),
+    return { pin: options => service.pin(options), overview: options => service.overview(options), close: () => service.close(),
       async query(args, options) {
         if (store.path === first.dbPath) { entered.resolve(); await proceed.promise; }
         return service.query(args, options);

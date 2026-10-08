@@ -30,7 +30,7 @@ async function bounded(promise, milliseconds = 1500) {
   } finally { clearTimeout(timeout); }
 }
 
-async function fixture(t, { runtimeFactory, recoveryModule, snapshotSource } = {}) {
+async function fixture(t, { runtimeFactory, recoveryModule, checkpointSource } = {}) {
   const root = await mkdtemp(join(tmpdir(), 'stmq-pair-runtime-race-'));
   const dbPath = join(root, 'source.sqlite'); await writeFile(dbPath, 'synthetic placeholder');
   const config = { dbPath, dataDir: root, databaseDir: root, input: 'mqtt', role: 'master', port: 0, host: '127.0.0.1', token: '',
@@ -45,7 +45,7 @@ async function fixture(t, { runtimeFactory, recoveryModule, snapshotSource } = {
     return instance;
   };
   const app = await startPaired({ config, frontendFactory: fixtureMqttFrontend, sourceContextFactory: fixtureMqttSourceContext, installSignalHandlers: false, prepareVipPolicy: async () => {},
-    validateBroker: async () => {}, recoveryModule, snapshotSource,
+    validateBroker: async () => {}, recoveryModule, checkpointSource,
     startRuntime: async options => {
       gates.push(options.pairContext.canControl);
       runtimeConfigurations.push(options.config);
@@ -67,9 +67,9 @@ async function fixture(t, { runtimeFactory, recoveryModule, snapshotSource } = {
   return { app, hooks, instances, gates, config, runtimeConfigurations, sourceActivations, demote: () => { controlling = false; } };
 }
 
-test('shutdown cancels protected-view snapshot creation before opening a new listener', async t => {
+test('shutdown cancels protected-view checkpoint validation before opening a new listener', async t => {
   const entered = deferred(); let aborted = false;
-  const f = await fixture(t, { snapshotSource: async ({ signal }) => {
+  const f = await fixture(t, { checkpointSource: async ({ signal }) => {
     entered.resolve();
     try { await abortable(signal); } finally { aborted = signal.aborted; }
   } });
@@ -225,5 +225,6 @@ test('a slave gap-check export and normal catchup serialize without falsely prot
   assert.equal((await snapshotDigest(join(slave.snapshots.directory, `export-${exported.generation}.sqlite`))).digest, original.digest);
   assert.equal(slave.state.value.role, 'slave');
   assert.equal(slave.sync.state, 'ready');
-  assert.equal((await readReplicaPublication(slave.config.snapshotDirectory)).digest, updated.digest);
+  assert((await readReplicaPublication(slave.config.snapshotDirectory)).checkpoint.sequence >= updated.checkpoint.sequence);
+  assert.equal((await readReplicaPublication(slave.config.snapshotDirectory)).checkpoint.databaseId, updated.checkpoint.databaseId);
 });

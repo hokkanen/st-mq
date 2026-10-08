@@ -1,5 +1,6 @@
 import { parentPort, workerData } from 'node:worker_threads';
 import { DatabaseSync } from 'node:sqlite';
+import { readCheckpoint, matchingCheckpoint } from '../storage/journal.js';
 import { getChartData, chartRequestRange } from './chart-data.js';
 import { getDatabaseOverview, OVERVIEW_REFRESH_MS } from './database-overview.js';
 import { energyCheckSummaries } from './energy-checks.js';
@@ -62,15 +63,18 @@ let overview = null, overviewRevision = null;
 const readOverviewRevision = db.prepare(`SELECT generation,
   (SELECT COUNT(*) FROM history_recoveries WHERE completed_at IS NOT NULL) completedRecoveries
   FROM history_selection WHERE id=1`);
-parentPort.on('message', ({ id, args, operation, wire }) => {
+parentPort.on('message', ({ id, args, operation, wire, checkpoint }) => {
   const onProgress = progress => parentPort.postMessage({ id, progress });
   try {
+    db.exec('BEGIN');
+    if (checkpoint && !matchingCheckpoint(readCheckpoint(db), checkpoint))
+      throw new Error('The replica checkpoint advanced. Retry the request.');
+    if (operation === 'pin') {
+      parentPort.postMessage({ id, result: { ready: true } }); return;
+    }
     if (operation === 'energy-checks') {
-      db.exec('BEGIN');
       onProgress({ stage: 'reading-energy-checks' });
-      let result;
-      try { result = energyCheckSummaries(store, args); db.exec('COMMIT'); }
-      catch (error) { db.exec('ROLLBACK'); throw error; }
+      const result = energyCheckSummaries(store, args);
       parentPort.postMessage({ id, result });
       return;
     }
@@ -80,15 +84,8 @@ parentPort.on('message', ({ id, args, operation, wire }) => {
       const hit = overview && overviewRevision === currentOverviewRevision
         && at - overview.generatedAt >= 0 && at - overview.generatedAt < OVERVIEW_REFRESH_MS;
       if (!hit) {
-        // Consistent read snapshot across aggregate queries. WAL permits the
-        // controller's writer to continue while the worker builds the overview.
-        db.exec('BEGIN');
-        try {
-          overview = getDatabaseOverview({ store, now: at });
-          overviewRevision = JSON.stringify(readOverviewRevision.get());
-          db.exec('COMMIT');
-        }
-        catch (error) { db.exec('ROLLBACK'); throw error; }
+        overview = getDatabaseOverview({ store, now: at });
+        overviewRevision = JSON.stringify(readOverviewRevision.get());
       }
       parentPort.postMessage({ id, result: { ...overview,
         cache: { hit: Boolean(hit), ageMs: at - overview.generatedAt, maxAgeMs: OVERVIEW_REFRESH_MS } } });
@@ -108,7 +105,7 @@ parentPort.on('message', ({ id, args, operation, wire }) => {
       (SELECT group_concat(json_extract(value,'$.lastSourceTime')||':'||json_extract(value,'$.coverageId'))
         FROM state WHERE key LIKE 'recorder:signal:%' AND json_extract(value,'$.reportPolicy.reportIntervalMs')>0
           AND json_extract(value,'$.signal')<>'dhwr_active') temperatureReports,
-      (SELECT MAX(id) FROM learning_journal) learningJournal,
+      (SELECT MAX(id) FROM learning_journal_entries) learningJournal,
       (SELECT MAX(id) FROM active_fireplace_events AS fireplace_events) fireplaceRevision,
       (SELECT group_concat(CASE WHEN json_valid(value) THEN json_extract(value,'$.checkpointDigest') ELSE 'invalid' END) FROM state WHERE key IN ('adaptive:mqtt','adaptive:providers','adaptive:simulated')) adaptiveModels,
       (SELECT group_concat(value) FROM state WHERE key IN ('fireplace:rebuild:mqtt','fireplace:rebuild:providers','fireplace:rebuild:simulated')) fireplaceRebuilds,
@@ -143,11 +140,9 @@ parentPort.on('message', ({ id, args, operation, wire }) => {
       prepared = entry.prepared;
     } else {
       // Replay and source handovers must see one committed journal prefix.
-      let pendingFingerprint,sourceFingerprint;
-      db.exec('BEGIN');
-      try { result = getChartData({ ...args, store, onProgress }); pendingFingerprint=pendingEnergyFingerprint(args,range);
-        sourceFingerprint=sourceCoverageFingerprint(args,range); db.exec('COMMIT'); }
-      catch (error) { db.exec('ROLLBACK'); throw error; }
+      result = getChartData({ ...args, store, onProgress });
+      const pendingFingerprint=pendingEnergyFingerprint(args,range);
+      const sourceFingerprint=sourceCoverageFingerprint(args,range);
       onProgress({ stage: 'preparing-response' });
       prepared = prepareChartResponse(result);
       // Account for the cached JS objects as well as their encoded strings.
@@ -163,4 +158,5 @@ parentPort.on('message', ({ id, args, operation, wire }) => {
       parentPort.postMessage({ id, result: bytes }, [bytes.buffer]);
     } else parentPort.postMessage({ id, result });
   } catch (error) { parentPort.postMessage({ id, error: { name: error.name, message: error.message } }); }
+  finally { try { db.exec('ROLLBACK'); } catch {} }
 });

@@ -130,6 +130,7 @@ CREATE INDEX charging_report_events_report ON charging_report_events(namespace,c
 CREATE INDEX charging_report_events_category ON charging_report_events(namespace,charger_id,report_id,category,id DESC);
 CREATE INDEX energy_audits_device_time ON energy_audits(device,source_time,id);
 CREATE INDEX events_type_time ON events(type,at,id);
+CREATE INDEX events_type_id ON events(type,id);
 CREATE INDEX fireplace_events_input_time ON fireplace_events(input,at,id);
 CREATE INDEX learning_cycles_input_at ON learning_cycles(input, started_at);
 CREATE INDEX learning_entries_algorithm

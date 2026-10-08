@@ -9,7 +9,8 @@ import { join } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { createHash } from 'node:crypto';
 import { Store } from '../../src/storage/store.js';
-import { readReplicaPublication, snapshotDigest } from '../../src/replication/publication.js';
+import { readReplicaPublication } from '../../src/replication/publication.js';
+import { verifyDatabase } from '../../src/storage/full-verifier.js';
 
 const root = fileURLToPath(new URL('../..', import.meta.url));
 const delay = milliseconds => new Promise(done => setTimeout(done, milliseconds));
@@ -57,7 +58,7 @@ function portReady(port) {
   });
 }
 
-test('real SSH transport verifies SQLite snapshots and catches up after receiver outage', { timeout: 60_000 }, async t => {
+test('real SSH transport seeds SQLite and incrementally catches up after receiver outage', { timeout: 60_000 }, async t => {
   const tools = await prerequisites();
   if (tools.missing.length) {
     const reason = `Real SSH replication test requires ${tools.missing.join(', ')}.`;
@@ -170,9 +171,8 @@ test('real SSH transport verifies SQLite snapshots and catches up after receiver
     const publication = await readReplicaPublication(remoteDirectory);
     assert.equal(publication.digest, result.result.digest);
     assert.equal(publication.generation, result.result.generation);
-    const actual = await snapshotDigest(publication.dbPath);
-    assert.equal(actual.digest, publication.digest, 'Published pages independently match the primary snapshot digest');
-    assert.equal(actual.bytes, result.result.bytes);
+    const actual = await verifyDatabase({ dbPath: publication.dbPath, checkpoint: publication.checkpoint });
+    assert.deepEqual(actual.checkpoint, source.checkpoint(), 'Full verification independently checks the matching checkpoint');
     const replica = new Store(publication.dbPath, { readOnly: true });
     try {
       assert.deepEqual(replica.getState('replica-test'), source.getState('replica-test'));
@@ -191,6 +191,7 @@ test('real SSH transport verifies SQLite snapshots and catches up after receiver
   });
   const second = await assertPublished(await synchronize());
   assert.notEqual(second.generation, first.generation);
+  assert.equal(second.dbPath, first.dbPath, 'Normal replication preserves the active database file');
 
   await stopDaemon();
   source.transaction(() => {

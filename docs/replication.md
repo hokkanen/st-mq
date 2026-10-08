@@ -1,6 +1,6 @@
 # Read-only database mirror
 
-In mirror mode, the master copies its SQLite database to a second Linux
+In mirror mode, the master sends committed SQLite changes to a second Linux
 computer. The slave serves recorded history and charts, but cannot record
 measurements, change settings, learn, connect to providers, or command equipment. Its role is
 machine-local configuration; copied master settings cannot activate a controller.
@@ -116,64 +116,68 @@ supported by that unit.
 
 ## Outages and large catch-ups
 
-The master attempts synchronization automatically while it runs. Only one
-attempt runs at a time. An unreachable receiver, failed transfer or failed
-verification is reported without stopping home control. Subsequent attempts
-compare against the latest published snapshot; there is no queue of telemetry
-messages or retained change log that can expire during a long outage.
-Failed attempts back off to a maximum of five minutes, unless the configured
-interval is longer. If the delta tool rejects its destination, the same pinned
-source snapshot gets one retry against an empty incoming file; this also handles
-database page-size changes. Missing or damaged snapshot bases are copied afresh.
+The master attempts synchronization automatically while it runs, with one
+attempt at a time. An unavailable receiver or failed transfer is reported without
+stopping home control. Once the first full seed exists, synchronization transfers
+only the journal suffix after the receiver's durable checkpoint. Inserts, updates
+and deletions use the same atomic commit format. Normal catch-up does not run
+`sqlite3_rsync`, create a full backup, clone the receiver or hash historical pages.
 
-The receiver keeps serving its last verified snapshot during synchronization.
-It receives the next snapshot into a separate incoming file, verifies it, then
-atomically publishes its manifest. Readers switch generations without combining
-queries from different snapshots. An interrupted transfer cannot become visible
-history. Receiver ownership uses an operating-system-backed SQLite lock, released
-on process or machine failure; a long transfer does not lose a timed lease.
+The receiver stages bounded 256 KiB transport frames and verifies the complete
+commit before applying it. SQLite publishes the rows and checkpoint in one
+transaction. A durable pending receipt distinguishes a crash before that commit
+from a crash after it but before acknowledgement. Partial transfers leave the last
+complete checkpoint readable and retry from committed progress. Read-only viewers
+pin coherent read snapshots; they cannot control equipment or write application
+state. Receiver ownership remains an operating-system-backed SQLite lock.
 
-The transfer timeout defaults to one hour and can be raised to 24 hours for large
-databases or slow links. The interval is the delay between attempts; a long
-transfer does not start overlapping copies. A slave that loses its database
-can be initialized again from the master. If the master is offline, the viewer
-still serves saved history, marked stale, until synchronization resumes.
+The retained transaction journal supports long outages without a volatile MQTT
+queue. A missing base needs one fully verified initial snapshot; an unrelated or
+damaged base requires explicit exceptional repair. Corruption never silently
+causes replacement of a database with unreviewed local history. The existing
+full backup transport remains available for those exceptional cases.
 
-Mirroring uses incremental network transfer, but snapshot preparation and
-verification perform local disk work proportional to database size. A background
-worker pins a consistent master read transaction, makes a SQLite backup and
-hashes it. This does not block the controller's JavaScript event loop, although
-it consumes disk bandwidth and a long read can retain master WAL pages. Increase
-the interval for large databases or slow storage. Prepare enough disk space for
-the source snapshot, and on the slave for the current, previous and incoming
-snapshots. Filesystem reflinks reduce local copying where available; do not assume
-they are available when sizing storage. Allow additional headroom for SQLite's
-rollback journal during catch-up and for older files still held open by ongoing
-viewer requests. Old published generations and interrupted incoming files are
-pruned; the manifest names the current and previous retained snapshots.
+Routine disk and network work depends on newly committed changes, including
+SQLite's WAL/index work, rather than total retained history. Keep capacity for the
+journal, transaction staging and WAL. A full initial seed, independent backup or
+optional full verification still performs work proportional to database size.
+The configured timeout covers the entire attempt, and failed attempts back off.
+See [the transaction journal contract](sqlite-journal.md).
 
-There is no zero-loss guarantee: the slave contains only a successfully copied
-master snapshot. A permanently lost master disk can lose changes newer than
-that snapshot, and no computer records provider history while the master is
+There is no zero-loss guarantee: the slave contains only the successfully applied
+master checkpoint. A permanently lost master disk can lose changes newer than
+that checkpoint, and no computer records provider history while the master is
 stopped. Ordinary retained backups remain useful because mirroring also copies
 intentional deletions and application mistakes.
 
 ## What identity verification means
 
-Every successful publication requires a full SQLite `integrity_check`, matching
-file length and matching SHA-256 of the standalone source and received database.
-The digest includes schema, table, index and free-page contents. It excludes only
-SQLite's change counter and writer/version counters in header bytes 24–27 and
-92–99, which SQLite can legitimately change while copying a database. The digest
-format is versioned as `sha256-sqlite-pages-v1`. This verifies the pinned source
-snapshot, rather than comparing the slave with a master that has kept writing.
+A normal publication proves transaction continuity: matching database identity,
+sequence, predecessor hash, commit hash and expected old row values. The accepted
+checkpoint is durable with the applied changes. This is distinct from a full scan
+for unrelated dormant corruption.
+
+The optional reusable verifier performs SQLite integrity checks, verifies the
+complete journal and canonically hashes current application contents in a pinned
+read transaction. Peer comparisons require equal transaction checkpoints; a
+source that has advanced is not falsely compared against an older receiver.
+Manual checks are available under **Recording details → Verify database** and
+scheduled checks use `recording.full_verification_interval_hours` (`0` disables
+them). Pairing manual operations also offer **Verify with full snapshot**.
+
+Initial full seeds additionally match byte length and the `sha256-sqlite-pages-v1`
+transport digest. That digest excludes only SQLite header counters that can change
+during a faithful backup. Full exports and verification are independent facilities,
+not a prerequisite for every normal synchronization.
 
 The header shows **Mirror · Master** on the source and **Mirror · Slave** on
 the viewer. The **Database mirroring** section shows synchronization status.
-The viewer shows the master snapshot time, last successful synchronization and
-verification time. The snapshot timestamp describes when the source read was
-pinned, not when a long transfer finished. Chart observation extensions stop at
-that snapshot time. Clocks should be synchronized on both computers.
+The viewer shows the master checkpoint time and last successful synchronization.
+The synchronization verification time confirms journal continuity; optional full
+verification has its own result and completion time. The checkpoint timestamp
+describes when the source read was pinned, not when a long transfer finished.
+Chart observation extensions stop at that time. Clocks should be synchronized on
+both computers.
 
 To check a saved snapshot again without writing to it:
 

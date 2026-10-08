@@ -22,6 +22,25 @@ const checked = () => primary({ peer: { reachable: true, role: 'protected' }, re
   actions: { 'check-recovery': true, recover: true, handover: false, promote: false, rejoin: true } });
 const operation = (view, state = 'complete', action = 'check-recovery') => ({ ...view, uiOperation: { id, action, state } });
 
+test('optional full verification stays attached to an uncertain pairing request across reload', async () => {
+  const saved = new Map(), sent = [];
+  const storage = { getItem: key => saved.get(key), setItem: (key, value) => saved.set(key, value), removeItem: key => saved.delete(key) };
+  const first = createPairActions({ storage, requestId: () => id, confirm: () => true,
+    request: async (_path, body) => { sent.push(body); throw new Error('disconnected'); } });
+  first.update(primary()); await first.run('handover', { verifyWithFullSnapshot: true });
+  const second = createPairActions({ storage, request: async (_path, body) => { sent.push(body); return { status: operation(primary(), 'complete', 'handover') }; } });
+  second.update(primary()); await second.retry();
+  assert.equal(sent[0].verifyWithFullSnapshot, true); assert.deepEqual(sent[1], sent[0]);
+});
+
+test('shared-checkpoint rejoin discloses retained journal changes without claiming a full database copy', () => {
+  for (const discardUnrecovered of [true, false]) {
+    const message = pairConfirmation('rejoin', { incremental: true, discardUnrecovered });
+    assert.match(message, /inactive journal branch/); assert.match(message, /no automatic expiry/);
+    assert.doesNotMatch(message, /full database-sized copy|previous database is retained/);
+  }
+});
+
 test('handover mismatch remains visible in the collapsed alert and operation message after refresh', () => {
   const { document, $ } = fixture();
   const panel = createPairPanel({ document, request: async () => {}, now: () => now });

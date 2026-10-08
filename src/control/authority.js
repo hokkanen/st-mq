@@ -1,8 +1,9 @@
 import { randomUUID } from 'node:crypto';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 import { readFile } from 'node:fs/promises';
-import { durableJson, ownedDirectory, publishSnapshot } from '../replication/publication.js';
-import { createSourceSnapshot } from '../replication/transport.js';
+import { configurePublicationRoots, durableJson, ownedDirectory } from '../replication/publication.js';
+import { databaseCheckpoint } from '../replication/incremental.js';
+import { adoptJournalDatabase, checkpointMetadata } from '../replication/journal-publication.js';
 import { startReplica } from '../app/replica.js';
 import { compareAuthority, validClaim } from '../pairing/state.js';
 import { ControllerAnnouncements } from '../pairing/announcements.js';
@@ -12,9 +13,17 @@ export const CONTROL_SCOPE = 'from_stmq/heat/action';
 export async function stoppedControllerViewer({ config, authority, clock, installSignalHandlers }) {
   const directory = join(config.dataDir, 'controller-authority', 'view');
   await ownedDirectory(directory, '.st-mq-authority-view');
-  const generation = randomUUID(), incoming = join(directory, `incoming-${generation}.sqlite`);
-  const snapshot = await createSourceSnapshot({ dbPath: config.dbPath, destination: incoming });
-  await publishSnapshot(directory, incoming, { generation, ...snapshot, verifiedAt: clock() });
+  configurePublicationRoots(directory, [dirname(config.dbPath)]);
+  try {
+    const checkpoint = await databaseCheckpoint({ dbPath: config.dbPath });
+    const metadata = await checkpointMetadata({ dbPath: config.dbPath, checkpoint, clock });
+    await adoptJournalDatabase({ directory, dbPath: config.dbPath, metadata });
+  } catch (error) {
+    // Another owner may advance this same file between checkpoint reads. The
+    // viewer then reports unavailable history until a matching boundary exists;
+    // neither a stale manifest nor this diagnostic path grants control.
+    if (error.code !== 'verification_failed') throw error;
+  }
   return startReplica({ config: { ...config, role: 'slave' }, snapshotDirectory: directory,
     controlAuthority: authority, clock, installSignalHandlers });
 }

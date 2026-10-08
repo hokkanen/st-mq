@@ -130,7 +130,7 @@ test('graceful handover commits final snapshot, demotion survives restart and la
   assert.equal(left.sync.state, 'ready');
   const oldDb = left.config.databasePath;
   await left.action('promote', command());
-  assert.notEqual(left.state.value.activeDbPath, oldDb);
+  assert.equal(left.state.value.activeDbPath, oldDb, 'promotion reuses the incrementally maintained database');
   const db = new DatabaseSync(left.state.value.activeDbPath, { readOnly: true });
   assert.equal(db.prepare('SELECT value FROM observations').get().value, 20); db.close();
 });
@@ -162,7 +162,8 @@ test('former preferred master restarts as slave and catches up after completed n
   const mirrored = new Store(publication.dbPath, { readOnly: true });
   try { assert.deepEqual(mirrored.db.prepare('SELECT value FROM observations ORDER BY source_time').all().map(row => row.value), [20, 21]); }
   finally { mirrored.close(); }
-  assert.deepEqual(await readFile(inactivePath), inactiveBytes, 'Former master history remains inactive and untouched');
+  assert.equal(publication.dbPath, inactivePath, 'the former master database becomes the incrementally maintained replica');
+  assert.notDeepEqual(await readFile(inactivePath), inactiveBytes, 'new committed history advances that same database');
 });
 
 test('OCPP readiness refusal leaves the current primary and its VIP running', async t => {
@@ -199,7 +200,7 @@ test('handover checks database compatibility before stopping the master, includi
       source.snapshots.snapshot = async ({ dbPath, destination }) => {
         await copyFile(dbPath, destination);
         const db = new DatabaseSync(destination); db.exec('PRAGMA user_version=7'); db.close();
-        return { ...await snapshotDigest(destination), sourceStartedAt: 1, sourceAt: 1 };
+        return { ...await snapshotDigest(destination), checkpoint: { databaseId: randomUUID(), sequence: 0, hash: 'a'.repeat(64) }, sourceStartedAt: 1, sourceAt: 1 };
       };
     }
     const originalBytes = originalPath ? await readFile(originalPath) : null;
@@ -222,7 +223,7 @@ test('handover preflight rejects current incompatible state despite a cached or 
     const target = await manager(t, root, 'target', { role: 'slave' }); connect(source, target);
     const cached = await source.exportSnapshot({ force: true });
     if (pending) await target.state.update({ pendingSnapshot: cached });
-    const db = new DatabaseSync(source.state.value.activeDbPath);
+    const db = new Store(source.state.value.activeDbPath).db;
     db.prepare('INSERT INTO state(key,value,updated_at) VALUES(?,?,?)').run('charging:mqtt', '{"version":-1}', 1);
     db.close();
     await assert.rejects(source.action('handover', command()), { code: 'database_state_incompatible' });
@@ -419,13 +420,13 @@ test('manual recovery pins donor, keeps protection until verified rejoin, then r
   const primary = await manager(t, root, 'master', { platform: 'hassio', hooks: {
     recoveryPreview: async () => ({ previewId: randomBytes(32).toString('hex'), status: 'checked', model: { status: 'not-assessed' } }),
     recoveryApply: async () => {
-      const db = new DatabaseSync(primary.state.value.activeDbPath);
+      const db = new Store(primary.state.value.activeDbPath).db;
       db.exec(`INSERT INTO observations(source,device,signal,value,unit,source_time,received_at,quality) VALUES('fixture','fixture','temperature',21,'degC',200,200,'[]')`); db.close();
       return { status: 'complete', imported: 1 };
     },
   } });
   const donor = await manager(t, root, 'donor'); connect(primary, donor);
-  const db = new DatabaseSync(donor.state.value.activeDbPath); db.exec(`INSERT INTO observations(source,device,signal,value,unit,source_time,received_at,quality) VALUES('fixture','fixture','temperature',21,'degC',200,200,'[]'); INSERT INTO observations(source,device,signal,value,unit,source_time,received_at,quality) VALUES('fixture','fixture','temperature',99,'degC',300,300,'[]')`); db.close();
+  const db = new Store(donor.state.value.activeDbPath).db; db.exec(`INSERT INTO observations(source,device,signal,value,unit,source_time,received_at,quality) VALUES('fixture','fixture','temperature',21,'degC',200,200,'[]'); INSERT INTO observations(source,device,signal,value,unit,source_time,received_at,quality) VALUES('fixture','fixture','temperature',99,'degC',300,300,'[]')`); db.close();
   await donor.observeClaim(primary.state.claim());
   await primary.action('check-recovery', command());
   assert.equal(donor.state.value.role, 'protected');
@@ -490,7 +491,7 @@ test('explicit rejoin without recovery requires the checked preview and replaces
     recoveryApply: async () => { imported = true; },
   } });
   const donor = await manager(t, root, 'donor'); connect(primary, donor);
-  const original = new DatabaseSync(donor.state.value.activeDbPath);
+  const original = new Store(donor.state.value.activeDbPath).db;
   original.exec(`UPDATE observations SET value=99; INSERT INTO observations(source,device,signal,value,unit,source_time,received_at,quality) VALUES('fixture','fixture','temperature',21,'degC',200,200,'[]')`); original.close();
   await donor.observeClaim(primary.state.claim());
   await primary.poll();
@@ -553,7 +554,7 @@ test('discarding unchecked donor changes is rejected and leaves the donor protec
   await donor.observeClaim(primary.state.claim());
   await primary.action('check-recovery', command());
   const previewId = primary.status().recovery.preview.previewId;
-  const changed = new DatabaseSync(donor.state.value.activeDbPath);
+  const changed = new Store(donor.state.value.activeDbPath).db;
   changed.exec(`INSERT INTO observations(source,device,signal,value,unit,source_time,received_at,quality) VALUES('fixture','fixture','temperature',21,'degC',200,200,'[]')`); changed.close();
   await assert.rejects(primary.action('rejoin', { ...command(), discardUnrecovered: true, previewId }), { code: 'recovery_required' });
   assert.equal(donor.state.value.role, 'protected');
@@ -601,14 +602,14 @@ test('a stale recovery completion cannot erase changes made to the protected don
   await donor.observeClaim(primary.state.claim());
   await primary.action('check-recovery', command());
   await primary.action('recover', { ...command(), previewId: primary.state.value.recovery.preview.previewId });
-  const db = new DatabaseSync(donor.state.value.activeDbPath); db.exec(`INSERT INTO observations(source,device,signal,value,unit,source_time,received_at,quality) VALUES('fixture','fixture','temperature',22,'degC',900,900,'[]')`); db.close();
+  const db = new Store(donor.state.value.activeDbPath).db; db.exec(`INSERT INTO observations(source,device,signal,value,unit,source_time,received_at,quality) VALUES('fixture','fixture','temperature',22,'degC',900,900,'[]')`); db.close();
   await assert.rejects(primary.action('rejoin', command()), { code: 'recovery_required' });
   assert.equal(donor.state.value.role, 'protected');
 });
 
 test('large catchup retains its immutable source and completed chunks across receiver restart', async t => {
   const root = await fixture(t), source = await manager(t, root, 'source');
-  const original = new DatabaseSync(source.state.value.activeDbPath);
+  const original = new Store(source.state.value.activeDbPath).db;
   original.prepare("INSERT INTO events(type,payload,at) VALUES('bulk',json_object('value',?),0)").run('x'.repeat(3500000)); original.close();
   const replica = await manager(t, root, 'slave', { role: 'slave' }); connect(source, replica);
   const request = replica.peer.request.bind(replica.peer);
@@ -649,7 +650,7 @@ test('startup protects an accepted replica that acquired unclassified local writ
   await replica.synchronize(source.state.claim());
   const publication = await readReplicaPublication(replica.config.snapshotDirectory);
   await replica.close();
-  const changed = new DatabaseSync(publication.dbPath); changed.exec(`INSERT INTO observations(source,device,signal,value,unit,source_time,received_at,quality) VALUES('fixture','fixture','temperature',23,'degC',300,300,'[]')`); changed.close();
+  const changed = new Store(publication.dbPath).db; changed.exec(`INSERT INTO observations(source,device,signal,value,unit,source_time,received_at,quality) VALUES('fixture','fixture','temperature',23,'degC',300,300,'[]')`); changed.close();
   const restarted = await manager(t, root, 'slave', { role: 'slave', create: false });
   assert.equal(restarted.state.value.role, 'protected'); assert.equal(restarted.state.value.reason, 'snapshot_verification_failed');
   const donor = await restarted.exportSnapshot({ force: true });
@@ -749,14 +750,14 @@ test('a stale activation callback cannot write or demote a newer local primary',
   assert.equal(app.state.value.epoch, epoch); assert.equal(app.canControl(), true);
 });
 
-test('A10-002 repeated cached synchronization remains a valid immutable publication',async t=>{
+test('A10-002 repeated synchronization retains the same database and advances its journal checkpoint',async t=>{
   const root=await fixture(t),source=await manager(t,root,'source'),replica=await manager(t,root,'slave',{role:'slave'});
   connect(source,replica);await replica.synchronize(source.state.claim());
   const first=await readReplicaPublication(replica.config.snapshotDirectory);
   await replica.synchronize(source.state.claim());
   const second=await readReplicaPublication(replica.config.snapshotDirectory);
-  assert.equal(second.generation,first.generation);assert.notEqual(second.previousGeneration,second.generation);
-  assert.equal(replica.state.value.accepted.generation,first.generation);
+  assert.equal(second.dbPath,first.dbPath);assert(second.checkpoint.sequence>first.checkpoint.sequence);
+  assert.equal(replica.state.value.accepted.generation,second.generation);
 });
 
 test('A10-003 delayed pre-handover poll and MQTT claim cannot demote the new primary',async t=>{
@@ -860,7 +861,7 @@ test('ordinary slave comparisons cannot import its older history or replace it t
   assert.equal(slave.state.value.role, 'slave');
 });
 
-test('rejoin retains the original dedicated database without restoring its excluded data on later promotion', async t => {
+test('rejoin retains the divergent journal branch without restoring its excluded data on later promotion', async t => {
   for (const skip of [false, true]) await t.test(skip ? 'explicit skip' : 'completed recovery', async t => {
     const root = await fixture(t);
     const primary = await manager(t, root, 'master', { platform: 'hassio', hooks: {
@@ -871,14 +872,14 @@ test('rejoin retains the original dedicated database without restoring its exclu
     await donor.synchronize(primary.state.claim());
     await donor.action('promote', command());
     const originalPath = donor.state.value.activeDbPath;
-    assert.ok(originalPath.startsWith(join(donor.config.directory, 'master-')));
+    assert.equal(originalPath, (await readReplicaPublication(donor.config.snapshotDirectory)).dbPath);
     const original = new Store(originalPath);
     original.db.prepare(`INSERT INTO charging_reports(namespace,charger_id,report_id,association,started_at,saved_at,summary,checkpoint)
       VALUES(?,?,?,?,?,?,?,?)`).run('mqtt', 'charger2', 'synthetic-saved-report', 'synthetic-association', 100, 200, '{}', '{}');
     original.setState('synthetic-excluded-control', { enabled: true });
     original.close();
     await donor.observeClaim(primary.state.claim());
-    const before = await readFile(originalPath);
+    const before = originalPath;
     await primary.action('check-recovery', command());
     const previewId = primary.status().recovery.preview.previewId;
     if (!skip) await primary.action('recover', { ...command(), previewId });
@@ -886,18 +887,20 @@ test('rejoin retains the original dedicated database without restoring its exclu
     await primary.action('rejoin', rejoin);
     assert.equal(donor.state.value.role, 'slave');
     assert.equal(donor.state.value.activeDbPath, null);
-    assert.deepEqual(await readFile(originalPath), before, 'Rejoin must retain every original database byte');
+    assert.equal((await readReplicaPublication(donor.config.snapshotDirectory)).dbPath, before);
     const retained = new Store(originalPath, { readOnly: true });
-    assert.equal(retained.db.prepare('SELECT COUNT(*) n FROM charging_reports').get().n, 1);
+    assert.equal(retained.db.prepare('SELECT COUNT(*) n FROM charging_reports').get().n, 0);
+    const archive = retained.db.prepare('SELECT payload FROM journal_branch_commits').all();
+    assert(archive.some(row => row.payload.includes('synthetic-saved-report')), 'excluded records remain in the inactive branch');
     assert.equal(retained.db.prepare('PRAGMA integrity_check').get().integrity_check, 'ok');
     retained.close();
     await donor.action('promote', command());
-    assert.notEqual(donor.state.value.activeDbPath, originalPath);
+    assert.equal(donor.state.value.activeDbPath, originalPath);
     const promoted = new Store(donor.state.value.activeDbPath, { readOnly: true });
     assert.equal(promoted.db.prepare('SELECT COUNT(*) n FROM charging_reports').get().n, 0);
     assert.equal(promoted.getState('synthetic-excluded-control'), null);
     promoted.close();
-    assert.deepEqual(await readFile(originalPath), before);
+    assert.equal(donor.state.value.activeDbPath, before);
   });
 });
 
@@ -940,11 +943,14 @@ test('rejoin retains protected replica history through later mirroring and inter
       await donor.exportSnapshot({ force: true });
     }
     const pins = (await readdir(donor.snapshots.directory)).filter(name => name.endsWith('.pin'));
-    assert.equal(pins.length, 1, 'The protected source remains pinned after ordinary export/publication pruning');
-    const retainedPath = join(donor.snapshots.directory, pins[0].replace(/\.pin$/, '.sqlite'));
+    assert.equal(pins.length, 0, 'shared history retains only its divergent branch, not a full export');
+    const retainedPath = (await readReplicaPublication(donor.config.snapshotDirectory)).dbPath;
     const retained = new Store(retainedPath, { readOnly: true });
-    try { assert.deepEqual(retained.getState('synthetic-unmatched-history'), { value: 'preserve me' }); }
-    finally { retained.close(); }
+    try {
+      assert.equal(retained.getState('synthetic-unmatched-history'), null);
+      assert(retained.db.prepare('SELECT payload FROM journal_branch_commits').all()
+        .some(row => row.payload.includes('preserve me')), 'divergent history survives later mirroring');
+    } finally { retained.close(); }
     await donor.close();
     donor = await manager(t, root, 'donor', { role: 'slave', create: false }); connect(primary, donor);
     await donor.synchronize(primary.state.claim());
@@ -1024,7 +1030,7 @@ test('changed donor evidence after completed recovery requires a fresh recovery 
   await donor.observeClaim(primary.state.claim());
   await primary.action('check-recovery', command());
   await primary.action('recover', { ...command(), previewId: primary.status().recovery.preview.previewId });
-  const changed = new DatabaseSync(donor.state.value.activeDbPath);
+  const changed = new Store(donor.state.value.activeDbPath).db;
   changed.exec("INSERT INTO observations(source,device,signal,value,unit,source_time,received_at,quality) VALUES('fixture','fixture','temperature',23,'degC',900,900,'[]')");
   changed.close();
   await assert.rejects(primary.action('rejoin', command()), { code: 'recovery_required' });
@@ -1059,7 +1065,7 @@ test('running replica mutations are preserved before synchronization or ordinary
     const slave = await manager(t, root, 'slave', { role: 'slave' }); connect(primary, slave);
     await slave.synchronize(primary.state.claim());
     const publication = await readReplicaPublication(slave.config.snapshotDirectory);
-    const changed = new DatabaseSync(publication.dbPath);
+    const changed = new Store(publication.dbPath).db;
     changed.exec('UPDATE observations SET value=29'); changed.close();
     if (action === 'synchronize') await slave.synchronize(primary.state.claim());
     else await assert.rejects(slave.exportSnapshot({ force: true }), { code: 'verification_failed' });
@@ -1106,7 +1112,7 @@ test('a preserved incompatible slave reports its database problem to the master 
   await slave.synchronize(primary.state.claim());
   const publication = await readReplicaPublication(slave.config.snapshotDirectory);
   await slave.close();
-  const changed = new DatabaseSync(publication.dbPath); changed.exec('PRAGMA user_version=7'); changed.close();
+  const changed = new Store(publication.dbPath).db; changed.exec('PRAGMA user_version=7'); changed.close();
   const before = await readFile(publication.dbPath);
   for (let n = 0; n < 2; n++) {
     slave = await manager(t, root, 'slave', { role: 'slave', create: false }); connect(primary, slave);

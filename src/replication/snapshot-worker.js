@@ -2,7 +2,7 @@ import { parentPort, workerData } from 'node:worker_threads';
 import { DatabaseSync, backup } from 'node:sqlite';
 import { lstat, open, rm } from 'node:fs/promises';
 import { normalizeSnapshot, snapshotDigest } from './publication.js';
-import { validateCurrentDatabase } from '../storage/store.js';
+import { Store, validateCurrentDatabase } from '../storage/store.js';
 import { databaseErrorDetails } from '../storage/database-errors.js';
 
 let created = false;
@@ -30,7 +30,10 @@ try {
   } finally { db.close(); }
   normalizeSnapshot(workerData.destination);
   const digest = await snapshotDigest(workerData.destination);
-  parentPort.postMessage({ ok: true, ...digest, sourceStartedAt, sourceAt });
+  const exported = new Store(workerData.destination, { readOnly: true });
+  let checkpoint;
+  try { checkpoint = exported.checkpoint(); } finally { exported.close(); }
+  parentPort.postMessage({ ok: true, ...digest, checkpoint, sourceStartedAt, sourceAt });
 } catch (error) {
   if (created) for (const suffix of ['', '-wal', '-shm', '-journal'])
     await rm(`${workerData.destination}${suffix}`, { force: true }).catch(() => {});

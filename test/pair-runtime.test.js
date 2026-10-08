@@ -115,7 +115,7 @@ test('full application handover switches controller/viewer, preserves durable ro
   await b.pair.synchronize(a.pair.state.claim());
   assert.equal(b.pair.sync.state, 'ready');
   const initial = await (await fetch(`${url(b)}/api/status`)).json();
-  assert.equal(initial.readOnly, true); assert.equal(initial.pair.role, 'slave');
+  assert.equal(initial.readOnly, true, JSON.stringify(initial)); assert.equal(initial.pair.role, 'slave');
   assert.equal((await fetch(`${url(b)}/api/settings/reload`, { method: 'POST' })).status, 405);
   const handover = command('handover'); await apiAction(a, handover);
   assert.equal(a.pair.canControl(), false); assert.equal(b.pair.canControl(), true);

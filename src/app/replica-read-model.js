@@ -228,7 +228,7 @@ export function replicaReadModel(snapshot, config) {
   }));
   const outlook = at === null ? { prices: [], forecast: [], spot: [] }
     : assembleOutlook(state('provider:market'), state('provider:weather'), state(`contract:${input}`), at);
-  const { exportDirectory: _directory, ...recordingConfiguration } = config.recording ?? {};
+  const { exportDirectory: _directory, fullVerificationIntervalMs: _verification, ...recordingConfiguration } = config.recording ?? {};
   // Recorder construction configures pure read helpers only; status never
   // records, samples, extends coverage or prunes an existing recorder state.
   const recording = store ? new Recorder(store, { config: recordingConfiguration, clock: () => at }).status(at)

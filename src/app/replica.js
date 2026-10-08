@@ -3,7 +3,7 @@ import { resolve, dirname } from 'node:path';
 import { homedir } from 'node:os';
 import { fileURLToPath } from 'node:url';
 import { Store } from '../storage/store.js';
-import { readReplicaPublication } from '../replication/publication.js';
+import { readReplicaPublication, configurePublicationRoots } from '../replication/publication.js';
 import { createChartService } from './chart-service.js';
 import { createWebAccess } from './web-access.js';
 import { fireplaceView } from './fireplace.js';
@@ -18,6 +18,7 @@ import { chargingSettings } from '../charging/settings.js';
 import { CHARGER_DEFINITIONS } from '../charging/model.js';
 import { validateTargetState, validateTargetSelection } from '../charging/target.js';
 import { replicaReadModel, snapshotState } from './replica-read-model.js';
+import { matchingCheckpoint } from '../storage/journal.js';
 
 const INPUTS = new Set(['mqtt', 'providers', 'simulated', 'offline']);
 const unavailable = 'This slave is read-only. Make changes on the master instance.';
@@ -114,8 +115,8 @@ function recordedInput(store) {
   const decision = row ? { ...JSON.parse(row.payload), at: row.at } : null;
   if (INPUTS.has(decision?.input)) return { input: decision.input, decision };
   const scopes = [...INPUTS];
-  const journal = store.db.prepare(`SELECT input FROM learning_journal WHERE input IN (${scopes.map(() => '?').join(',')})
-    ORDER BY id DESC LIMIT 1`).get(...scopes);
+  const journal = scopes.map(input => ({ input, id: store.learningJournalHead(input) }))
+    .filter(row => row.id > 0).sort((a,b) => b.id-a.id)[0];
   const input = journal?.input;
   if (INPUTS.has(input)) return { input, decision };
   const contract = store.db.prepare("SELECT key FROM state WHERE key IN ('contract:mqtt','contract:providers','contract:simulated') ORDER BY key LIMIT 1").get();
@@ -156,6 +157,7 @@ export async function startReplica({ config, clock = Date.now,
   const snapshotSettings = config.topology === 'pair' ? config.pair : config.mirror;
   const directory = snapshotDirectory ?? (config.topology === 'pair' ? snapshotSettings?.snapshotDirectory : snapshotSettings?.directory);
   if (!directory) throw new TypeError('A local snapshot directory is required');
+  configurePublicationRoots(directory, [directory, config.pair?.directory, config.dbPath && dirname(config.dbPath)].filter(Boolean));
   let current = null, refreshing = null, closed = false, lastError = null;
   let closePending = null, finishStartup;
   const startupSettled = new Promise(resolve => { finishStartup = resolve; });
@@ -187,12 +189,16 @@ export async function startReplica({ config, clock = Date.now,
           }
           if (publication.generation === current?.publication.generation) { lastError = null; return; }
           store = new Store(publication.dbPath, { readOnly: true });
+          store.db.exec('BEGIN');
+          if (publication.checkpoint && !matchingCheckpoint(store.checkpoint(), publication.checkpoint))
+            throw new Error('Replica checkpoint advanced during publication');
+          store.expectedCheckpoint = publication.checkpoint;
           const recorded = recordedInput(store);
           chartService = makeChartService({ store });
-          const abort = new AbortController();
-          const timeout = setTimeout(() => abort.abort(), 30_000);
-          try { await chartService.overview({ signal: abort.signal }); }
-          finally { clearTimeout(timeout); }
+          // Open the worker's file handle without computing a historical
+          // overview. Existing requests can finish if a seeded file is retired.
+          await chartService.pin?.();
+          store.db.exec('ROLLBACK');
           if (closed) { await chartService.close(); store.close(); return; }
           const previous = current;
           current = { publication, store, chartService, ...recorded, references: 0, retired: false };
@@ -209,6 +215,18 @@ export async function startReplica({ config, clock = Date.now,
   }
 
   function status(snapshot = current) {
+    if (!snapshot || snapshot.references > 0) return readStatus(snapshot);
+    snapshot.store.db.exec('BEGIN');
+    try {
+      if (snapshot.publication.checkpoint && !matchingCheckpoint(snapshot.store.checkpoint(), snapshot.publication.checkpoint)) {
+        if (snapshot.lastStatus) return structuredClone(snapshot.lastStatus);
+        return readStatus(null);
+      }
+      return snapshot.lastStatus = readStatus(snapshot);
+    } finally { snapshot.store.db.exec('ROLLBACK'); }
+  }
+
+  function readStatus(snapshot) {
     const now = clock(), publication = snapshot?.publication;
     // Source evidence and recording metrics are immutable within a verified
     // generation. Only the explicit freshness views below use the viewer clock.
@@ -267,7 +285,16 @@ export async function startReplica({ config, clock = Date.now,
     await refresh();
     if (closed) throw Object.assign(new Error('Slave viewer is closed'), { statusCode: 503 });
     const snapshot = current;
-    if (snapshot) snapshot.references++;
+    if (snapshot) {
+      if (!snapshot.references) {
+        snapshot.store.db.exec('BEGIN');
+        if (snapshot.publication.checkpoint && !matchingCheckpoint(snapshot.store.checkpoint(), snapshot.publication.checkpoint)) {
+          snapshot.store.db.exec('ROLLBACK');
+          throw Object.assign(new Error('The replica checkpoint advanced. Retry the request.'), { statusCode: 503 });
+        }
+      }
+      snapshot.references++;
+    }
     let released = false;
     return { store: snapshot?.store, chartService: snapshot?.chartService,
       engine: { clock: () => snapshot?.publication.sourceAt ?? clock(), config: { input: snapshot?.input ?? 'offline' }, plant: null,
@@ -277,7 +304,9 @@ export async function startReplica({ config, clock = Date.now,
         sensorChangesStatus: () => status(snapshot).sensorChanges },
       release() {
         if (released || !snapshot) return;
-        released = true; snapshot.references--; retire(snapshot);
+        released = true; snapshot.references--;
+        if (!snapshot.references) snapshot.store.db.exec('ROLLBACK');
+        retire(snapshot);
       } };
   }
 

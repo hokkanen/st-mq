@@ -1,4 +1,4 @@
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 import { createHash, randomUUID } from 'node:crypto';
 import { existsSync } from 'node:fs';
 import { isDeepStrictEqual } from 'node:util';
@@ -6,8 +6,9 @@ import { mkdir, rm } from 'node:fs/promises';
 import { configurationSource } from '../app/config.js';
 import { inheritConfigurationSnapshot } from '../app/configuration-preview.js';
 import { startReplica } from '../app/replica.js';
-import { createSourceSnapshot } from '../replication/transport.js';
-import { durableJson, ownedDirectory, publishSnapshot } from '../replication/publication.js';
+import { configurePublicationRoots, durableJson, ownedDirectory } from '../replication/publication.js';
+import { databaseCheckpoint } from '../replication/incremental.js';
+import { adoptJournalDatabase, checkpointMetadata } from '../replication/journal-publication.js';
 import { databaseErrorDetails } from '../storage/database-errors.js';
 import { requireLocalBroker } from './config.js';
 import { PairManager } from './manager.js';
@@ -36,7 +37,7 @@ export async function startPaired({ config, readConfig, clock = Date.now, provid
   validateBroker = requireLocalBroker, recoveryModule = () => import('../recovery/service.js'),
   frontendFactory = options => new MqttFrontend(options),
   sourceContextFactory = createMqttSourceContext,
-  managerOptions = {}, prepareVipPolicy = prepareAddonVipPolicy, snapshotSource = createSourceSnapshot,
+  managerOptions = {}, prepareVipPolicy = prepareAddonVipPolicy, checkpointSource = databaseCheckpoint,
   resetStorage = { createResetArchive, resumeResetArchive, selectResetDatabase } } = {}) {
   let runtime = null, manager, closed = false, latestOperation = null;
   let primaryPath = config.dbPath;
@@ -242,16 +243,15 @@ export async function startPaired({ config, readConfig, clock = Date.now, provid
           directory = join(config.pair.directory, 'reset-view');
           await ownedDirectory(directory, '.st-mq-reset-view');
         } else if ((role ?? manager.status().role) === 'protected' && dbPath && existsSync(dbPath)) {
-          let incoming;
           try {
             directory = join(config.pair.directory, 'protected-view');
             await ownedDirectory(directory, '.st-mq-protected-view');
-            const generation = randomUUID(); incoming = join(directory, `incoming-${generation}.sqlite`);
-            const snapshot = await snapshotSource({ dbPath, destination: incoming, signal });
+            configurePublicationRoots(directory, [config.pair.directory, dirname(config.dbPath)]);
+            const checkpoint = await checkpointSource({ dbPath, signal });
+            const snapshot = await checkpointMetadata({ dbPath, checkpoint, clock });
             if (closed || closing || signal.aborted) return;
-            await publishSnapshot(directory, incoming, { generation, ...snapshot, verifiedAt: clock() });
+            await adoptJournalDatabase({ directory, dbPath, metadata: snapshot, signal });
           } catch (error) {
-            if (incoming) for (const suffix of ['', '-wal', '-shm', '-journal']) await rm(`${incoming}${suffix}`, { force: true }).catch(() => {});
             if (closed || closing || signal.aborted) return;
             // Protection and its management UI must survive an unreadable
             // donor. Existing verified history remains available for viewing.
@@ -274,15 +274,15 @@ export async function startPaired({ config, readConfig, clock = Date.now, provid
       })();
       try { await runtimeStarting; } finally { runtimeStarting = null; replicaAbort = null; }
     },
-    async recoveryPreview({ donorPath, requestId }) {
+    async recoveryPreview({ donorPath, donorJournalPath, requestId, verifyWithFullSnapshot }) {
       if (!context.canControl() || !runtime?.store) throw requestError('Recovery is available on the active master.');
-      return runtime.historyRecovery.checkPath({ donorPath, source: { id: 'peer', kind: 'peer', label: 'Paired computer' },
-        requestId });
+      return runtime.historyRecovery.checkPath({ donorPath, donorJournalPath, source: { id: 'peer', kind: 'peer', label: 'Paired computer' },
+        requestId, verifyWithFullSnapshot });
     },
-    async recoveryApply({ donorPath, preview, isCurrent, requestId }) {
+    async recoveryApply({ donorPath, donorJournalPath, preview, isCurrent, requestId, verifyWithFullSnapshot }) {
       if (!context.canControl() || !runtime?.engine) throw requestError('Recovery is available on the active master.');
-      return runtime.historyRecovery.applyPath({ donorPath, preview, isCurrent,
-        source: { id: 'peer', kind: 'peer', label: 'Paired computer' }, requestId });
+      return runtime.historyRecovery.applyPath({ donorPath, donorJournalPath, preview, isCurrent,
+        source: { id: 'peer', kind: 'peer', label: 'Paired computer' }, requestId, verifyWithFullSnapshot });
     },
   };
   const makeManager = state => managerFactory({ config: config.pair, hooks, clock, ...managerOptions, ...(state ? { state } : {}) });

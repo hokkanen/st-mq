@@ -9,13 +9,19 @@ Versions follow Semantic Versioning. `-dev.N` denotes a development prerelease.
 - Controls recover after a failed MQTT observation save when fresh evidence from
   the affected input commits, without requiring a broker reconnect. Read-only
   status requests remain available while commands wait for trustworthy evidence.
-- Handover verifies a newly exported database on the receiver before stopping
-  the master. Unsupported saved charging state is rejected before startup writes,
-  preserving the original database and interrupted WAL files. Pairing and recovery
-  distinguish incompatible state, learning versions and database corruption.
-- Protected snapshot-only history survives rejoin, restart and normal pruning as
-  an inactive full copy. Resume mirroring explains its size and indefinite storage
-  retention; ordinary mirroring continues to replace and prune routine snapshots.
+- SQLite now commits row changes and hash-linked transaction checkpoints together.
+  Startup and routine mirroring use bounded checkpoint checks and transfer only
+  missing transactions. Handover reuses the existing database, and shared-history
+  recovery and rejoin retain divergent changes without copying the full archive.
+  Interrupted transfers preserve the last committed checkpoint and authority.
+  This changes the development database schema; incompatible files remain intact
+  and require a deliberate fresh development start.
+- Full verification is available separately in Recording details, through an
+  optional manual-operation checkbox, and on a configurable background schedule
+  that defaults to disabled. Comparisons require matching transaction checkpoints.
+  Full backups remain available; initial replication and exceptional repair may
+  still require a complete copy. Transaction history adds storage and currently
+  has no automatic expiry; Recording details explains this retention.
 - Database exports and previous-recovery summaries run in background workers.
   Recovery uses bounded scratch storage and preserves concurrent recordings;
   measured progress and elapsed time remain visible across navigation and reload.
@@ -103,7 +109,7 @@ Versions follow Semantic Versioning. `-dev.N` denotes a development prerelease.
 - A bounded, explicitly labelled estimate can bridge one unavailable room from
   the movement of the other two. Extra uncertainty constrains control; estimated
   temperatures never train the model or fill measured history. These changed
-  learning semantics use SQLite schema 23 and require a deliberate fresh development
+  learning semantics require the current SQLite schema and a deliberate fresh development
   database. Incompatible databases are rejected before mutation; supported v0.7.5
   CSV files may be reimported. No installation database is reset automatically.
 - Charger 2 keeps recording available current while a device command awaits

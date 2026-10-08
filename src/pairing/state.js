@@ -3,6 +3,7 @@ import { isAbsolute, join, resolve } from 'node:path';
 import { lstat, open, readFile } from 'node:fs/promises';
 import { DatabaseSync } from 'node:sqlite';
 import { durableJson, ownedDirectory, privateFile, replicationError } from '../replication/publication.js';
+import { validCheckpoint } from '../replication/incremental.js';
 
 export const NODE_PATTERN = /^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/;
 export const ROLES = new Set(['master', 'slave', 'protected']);
@@ -20,12 +21,16 @@ const releaseIdentity = value => record(value)
   && ['requestId', 'donorEpoch', 'generation', 'targetEpoch', 'targetNodeId'].every(key => NODE_PATTERN.test(value[key]))
   && ['donorDigest', 'digest'].every(key => /^[a-f0-9]{64}$/.test(value[key]))
   && ['donorBytes', 'bytes'].every(key => Number.isSafeInteger(value[key]) && value[key] >= 512)
+  && (value.verifyWithFullSnapshot === undefined || typeof value.verifyWithFullSnapshot === 'boolean')
   && Object.keys(value).every(key => ['requestId', 'donorEpoch', 'donorDigest', 'donorBytes',
-    'generation', 'digest', 'bytes', 'targetEpoch', 'targetNodeId'].includes(key));
+    'generation', 'digest', 'bytes', 'targetEpoch', 'targetNodeId', 'verifyWithFullSnapshot'].includes(key));
 const releaseRecord = (value, owner) => record(value) && owner.role === 'protected'
   && releaseIdentity(value.identity) && value.epoch === value.identity.targetEpoch && value.digest === value.identity.digest
   && value.identity.donorEpoch === owner.epoch
-  && Object.keys(value).every(key => ['epoch', 'digest', 'identity', 'preservedSnapshot'].includes(key))
+  && Object.keys(value).every(key => ['epoch', 'digest', 'identity', 'preservedSnapshot', 'journalRejoin'].includes(key))
+  && (value.journalRejoin === undefined || record(value.journalRejoin) && validCheckpoint(value.journalRejoin.base)
+    && validCheckpoint(value.journalRejoin.donor) && value.journalRejoin.retainedStorage === 'journal-branch'
+    && (value.journalRejoin.branchId === undefined || NODE_PATTERN.test(value.journalRejoin.branchId)))
   && (value.preservedSnapshot === undefined || record(value.preservedSnapshot)
     && validClaim(value.preservedSnapshot.claim) && value.preservedSnapshot.claim.role === 'protected'
     && value.preservedSnapshot.claim.nodeId === owner.nodeId && value.preservedSnapshot.claim.epoch === owner.epoch

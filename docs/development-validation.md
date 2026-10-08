@@ -34,12 +34,16 @@ recording after read-only validation.
 
 Handover preflight tests include an empty receiver, an incompatible retained
 snapshot and cached/pending compatible transfers followed by incompatible current
-state. Preflight always requests a new export before stopping the master.
+state. Preflight always requests a fresh checkpoint before stopping the master.
 `test/extended/pair-handover-scale.test.js` runs real encrypted loopback HTTP,
 snapshot workers and concurrent recording with larger synthetic databases. VIP
 and equipment hooks are simulated. It verifies one owner, final retained records,
 integrity and failure before service interruption, while reporting total,
-preflight and simulated control-gap timings separately. To run a larger case:
+preflight and simulated control-gap timings separately. Its warm return handover
+rejects any attempt to create a full snapshot, retains the same database inode and
+reports incremental handover latency and filesystem I/O. On Linux it also bounds
+`/proc/self/io` read/write bytes, so cached full-file scans cannot hide behind zero
+physical read blocks. To run a larger case:
 
 ```sh
 STMQ_PAIR_SCALE_MIB=512 node --test --test-timeout=180000 test/extended/pair-handover-scale.test.js
@@ -60,11 +64,32 @@ preserve exact evidence bounds and counts under grouping, and ensure independent
 bounded diagnostics cannot displace older energy gaps. Browser fixtures check the
 collapsed signal groups, unknown point duration, subsecond report spans and focus
 retention across refresh at narrow and wide widths in both themes.
-Rejoin tests retain the original dedicated database byte-for-byte, including
-excluded records, while proving that later promotion uses the verified replica
-and cannot reactivate the retained database's control state. The paired MQTT
+Shared-lineage rejoin tests retain the divergent journal branch, including
+excluded records, while proving that later promotion uses the accepted checkpoint
+and cannot reactivate retained control state. Independent-database repair tests
+retain the original full donor. The paired MQTT
 source-context tests exercise actual recording and equipment consumers across
 handover and restart so a transport change cannot create a new device identity.
+
+`test/incremental-replication.test.js` compares identical changes over 1 and 32 MiB
+of synthetic payload, verifies equal bounded transfer size and database inode
+reuse, injects a disconnect during a multi-frame transaction, and exercises crash
+receipts before and after SQLite commit. `test/extended/incremental-storage-scale.test.js`
+measures startup, checkpoint, suffix export and mutation over larger retained
+databases. `test/database-verification.test.js` checks full scan independence,
+checkpoint alignment and corruption detection. Full initial seeds and optional
+full checks are measured separately from routine operation; cache-dependent timing
+alone is not proof of bounded I/O. These are controlled Linux fixtures, not
+qualification of physical Raspberry Pi storage or household failover.
+
+`test/recovery-learning-prefix.test.js` grows retained learning history from 256
+to 4096 entries while recovering, reverting and restoring the same recent change.
+It checks exact agreement with full reconstruction, constant staged suffix size,
+bounded measured I/O, authority loss before publication, and the actual SQLite
+seek operands. `test/recovery-incremental.test.js` also checks aggregate query
+plans: a keyed join to a union view can still materialize all historical rows,
+so source inventories use private scratch rows containing only the changed keys
+and their required evidence.
 
 ## Automated tests and build
 

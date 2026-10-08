@@ -25,7 +25,7 @@ const ocppReadinessHelp = 'The other computer is not ready to accept the local c
 
 const startupProblem = view => view?.role === 'protected' && ['activation_failed', 'vip_release_failed'].includes(view.reason);
 const databaseIssues = new Set(['database_schema_mismatch', 'database_schema_invalid', 'database_algorithm_mismatch',
-  'database_state_incompatible', 'database_integrity_failed']);
+  'database_state_incompatible', 'database_integrity_failed', 'database_journal_invalid']);
 export const pairIssueCode = view => (view?.uiOperation?.state === 'error' ? view.uiOperation.errorCode : null)
   ?? view?.error ?? view?.vip?.error ?? view?.mqttFrontend?.error ?? view?.sync?.error ?? view?.recovery?.error
   ?? (view?.role === 'master' && view?.peer?.reachable === true ? view.peer.sync?.error : null);
@@ -58,6 +58,7 @@ export function pairIssueHelp(view) {
     database_algorithm_mismatch: 'The database uses a different learning algorithm. Run matching software on both computers; a matching SQLite schema alone is insufficient. Keep the original files. This development version cannot convert earlier learning formats.',
     database_state_incompatible: 'Saved application state is incompatible with this software. Keep the original files and run the matching current build on both computers. Do not reset state to bypass equipment or pairing safeguards.',
     database_integrity_failed: 'The database failed its integrity check. Keep the original files and restore an intact current-format backup. Any previously verified snapshot remains selected.',
+    database_journal_invalid: 'The transaction journal or checkpoint could not be verified. Preserve the database and its SQLite companions. Run full verification to investigate or use an intact current-format backup; changing roles cannot repair it.',
     pair_reset_failed: 'The pairing reset could not finish. Existing files remain preserved. Review the reset status below and retry the same choice.',
     pair_reset_storage_failed: 'The pairing archive could not be completed. Existing files remain protected. Check available disk space and storage permissions, then retry the same reset choice.',
     pair_reset_unsafe_storage: 'The configured storage locations cannot be safely archived. Check for overlapping storage locations or symbolic links inside the files being archived before retrying.',
@@ -65,6 +66,9 @@ export function pairIssueHelp(view) {
     pair_reset_restoration_required: 'Resolve outstanding temporary equipment changes before starting fresh. Keep local history preserves their restoration records. Archiving records does not restore equipment.',
     snapshot_failed: 'The history source could not be opened or copied. Keep its database files intact and check the application log on the source computer. Any last verified snapshot remains available.',
     verification_failed: 'The copied snapshot could not be verified. Keep the source files intact and check the source and receiving computers’ logs. Any last verified snapshot remains selected.',
+    full_verification_checkpoint_mismatch: 'Full comparison needs the same transaction checkpoint on both computers. Let mirroring catch up, then retry verification. Different advancing checkpoints do not prove damaged data.',
+    full_verification_content_mismatch: 'Full verification found different contents at the same transaction checkpoint. Preserve both databases and investigate before replacing either copy.',
+    full_verification_failed: 'The optional full database check failed. Preserve the source files and review storage health before retrying.',
     ocpp_handover_not_ready: ocppReadinessHelp,
   }[code] ?? recoveryErrorMessage(code) ?? (startupProblem(view) ? 'The controller could not start. Check the application’s terminal or service log for the startup error, then correct the local setup.' : '');
 }
@@ -91,17 +95,21 @@ export function pairActionAllowed(view, action) {
   return ['check-recovery', 'handover'].includes(action);
 }
 
-export function pairConfirmation(action, { discardUnrecovered = false, bootstrapPending = false, mode, donorBytes } = {}) {
+export function pairConfirmation(action, { discardUnrecovered = false, bootstrapPending = false, mode, donorBytes, incremental = false } = {}) {
   const retainedSize = Number.isSafeInteger(donorBytes) && donorBytes > 0
     ? ` (the checked source is ${new Intl.NumberFormat('en-GB', { maximumFractionDigits: 1 }).format(donorBytes / 1024 ** 2)} MiB)` : '';
-  const retention = ` If the other computer holds only a slave snapshot, this keeps an additional full database-sized copy${retainedSize}. Retained copies have no automatic expiry; repeated protected rejoins can accumulate copies. They remain inactive until you deliberately archive or remove them.`;
+  const retention = incremental
+    ? ' The other computer retains its divergent changes as an inactive journal branch in its database. Storage depends on the changed records, and retained branches have no automatic expiry.'
+    : ` If the other computer holds only a slave snapshot, this keeps an additional full database-sized copy${retainedSize}. Retained copies have no automatic expiry; repeated protected rejoins can accumulate copies. They remain inactive until you deliberately archive or remove them.`;
   if (action === 'reset') return mode === 'fresh'
     ? 'Archive this computer’s database and pairing state, then start as an empty slave? Local recording and control stop. Current history, learning and saved dashboard choices leave the active database. Archives are kept until you manually delete them; configuration and credentials stay in place. The other computer is unchanged and may supply its database through mirroring. This computer will not become master automatically.'
     : 'Reset pairing and keep local history? Local recording and control stop. The database and saved settings remain intact. Old pairing state is archived. This computer stays in Protected recovery until you explicitly choose recovery or promotion. Configuration, credentials and the other computer are unchanged.';
   if (action === 'promote' && bootstrapPending) return 'Promote this computer to the pair’s first master? Confirm that the other computer is not already master or controlling equipment. Only one computer may be master. This starts local recording and enables control according to the saved equipment permissions. Leave the other computer as a read-only slave; it will synchronize from this master.';
   if (action === 'rejoin' && discardUnrecovered) {
+    if (incremental) return 'Skip recovery and resume mirroring from this master? Missing history has not been assessed. The other computer catches up from the shared checkpoint; its unmatched history stays inactive and is never reused automatically. This master’s history and learned model stay as they are.' + retention;
     return 'Skip recovery and resume mirroring from this master? The source check does not determine how much history is missing here. The other computer’s previous database is retained inactive, including unmatched and unsupported history. Mirroring uses a verified copy of this master’s database; the previous database is never reused automatically. This master’s history and learned model stay as they are.' + retention;
   }
+  if (action === 'rejoin' && incremental) return 'Resume mirroring to the other computer? Recovery must be complete. The other computer catches up from the shared checkpoint and confirms the master’s transaction checkpoint. Skipped history stays inactive and is never reused automatically.' + retention;
   return {
     promote: 'Promote this computer to master? Confirm that the previous master has failed or has been stopped or isolated from the home. If its host is still running, release its broker virtual IP or isolate the host first. An unreachable computer may still be controlling equipment. This uses the local history; data since its last snapshot may be missing.',
     handover: 'Hand control to the other computer? The current master will finish its handover and transfer a verified final snapshot before the other computer takes over. MQTT devices and a configured local charger will reconnect to the moved address.',
@@ -330,11 +338,13 @@ function restoredOperation(storage) {
   try {
     const body = JSON.parse(storage?.getItem(pendingKey) ?? 'null');
     if (!actions.includes(body?.action) || !uuid.test(body?.requestId ?? '')) return null;
+    if (body.verifyWithFullSnapshot !== undefined && typeof body.verifyWithFullSnapshot !== 'boolean') return null;
     if (body.action !== 'check-recovery' && body.confirmed !== true) return null;
     if (body.action === 'reset' && (!resetModes.includes(body.mode) || !validResetToken(body.resetToken) || (body.mode === 'fresh' && body.restorationConfirmed !== true))) return null;
     if (body.action === 'recover' && !validPreviewId(body.previewId)) return null;
     if (body.action === 'rejoin' && body.discardUnrecovered === true && !validPreviewId(body.previewId)) return null;
     return { action: body.action, requestId: body.requestId,
+      ...(body.verifyWithFullSnapshot === true ? { verifyWithFullSnapshot: true } : {}),
       ...(body.action !== 'check-recovery' ? { confirmed: true } : {}),
       ...(body.action === 'reset' ? { mode: body.mode, resetToken: body.resetToken, ...(body.mode === 'fresh' ? { restorationConfirmed: true } : {}) } : {}),
       ...(body.action === 'recover' ? { previewId: body.previewId } : {}),
@@ -376,6 +386,7 @@ export function createPairActions({ request, storage, confirm = message => confi
     if (body) {
       const confirmation = body.action === 'rejoin' && view.recovery?.pendingRelease?.requestId === body.requestId ? null : pairConfirmation(body.action, { discardUnrecovered: body.discardUnrecovered,
         mode: body.mode, donorBytes: view.recovery?.donorBytes,
+        incremental: Boolean(view.recovery?.preview?.incremental || view.recovery?.retainedStorage === 'journal-branch'),
         bootstrapPending: view.bootstrapPending && !(view.peer?.reachable === true && view.peer.role === 'master') });
       let accepted = !confirmation;
       try { if (confirmation) accepted = await confirm(confirmation); } catch { /* A blocked dialog is a cancelled action. */ }
@@ -418,6 +429,7 @@ export function createPairActions({ request, storage, confirm = message => confi
       if (busy || pending || !available || !actions.includes(action) || !pairActionAllowed(view, action)) return Promise.resolve(false);
       if (action === 'reset' && (!resetModes.includes(options.mode) || (options.mode === 'fresh' && options.restorationConfirmed !== true) || (view.reset?.pendingMode && view.reset.pendingMode !== options.mode) || (options.mode === 'keep' && view.reset?.keepBlockedReason))) return Promise.resolve(false);
       return send({ action, ...(action === 'reset' ? { mode: options.mode, resetToken: view.reset.token, ...(options.mode === 'fresh' ? { restorationConfirmed: true } : {}) } : {}), requestId: action === 'rejoin' && view.recovery?.pendingRelease ? view.recovery.pendingRelease.requestId : requestId(), ...(action !== 'check-recovery' ? { confirmed: true } : {}),
+        ...((action === 'rejoin' && savedRelease(view) ? view.recovery.pendingRelease.verifyWithFullSnapshot : options.verifyWithFullSnapshot) === true && action !== 'reset' ? { verifyWithFullSnapshot: true } : {}),
         ...(action === 'recover' ? { previewId: view.recovery.preview.previewId } : {}),
         ...(action === 'rejoin' && savedRelease(view) ? view.recovery.pendingRelease.discardUnrecovered
           ? { discardUnrecovered: true, previewId: view.recovery.pendingRelease.previewId } : {}
@@ -541,7 +553,10 @@ export function createPairPanel({ document, request, storage, confirm, afterMuta
     $('pairing-retry').hidden = !state.pending || (state.view.uiOperation?.id === state.pending.requestId && state.view.uiOperation.state === 'running');
     $('pairing-retry').disabled = !state.available || state.busy;
   }
-  for (const action of ['handover', 'promote', 'rejoin']) $(`pairing-${action}`).addEventListener('click', () => { void controller.run(action); });
+  for (const action of ['handover', 'promote', 'rejoin']) $(`pairing-${action}`).addEventListener('click', () => {
+    const checkbox = $(action === 'rejoin' ? 'history-recovery-full-verification' : 'pairing-full-verification');
+    void controller.run(action, checkbox?.checked ? { verifyWithFullSnapshot: true } : {});
+  });
   $('pairing-history-recovery').addEventListener('click', () => {
     if (!$('pairing-history-recovery').disabled) onRecovery({ sourceId: 'peer', trigger: $('pairing-history-recovery') });
   });

@@ -6,10 +6,11 @@ import { isDeepStrictEqual } from 'node:util';
 import { Worker } from 'node:worker_threads';
 import { createSourceSnapshot } from '../replication/transport.js';
 import { acquireReceiverLock } from '../replication/receiver.js';
-import { copySnapshot, DIGEST_ALGORITHM, durableJson, ownedDirectory, privateFile,
-  publishSnapshot, readReplicaPublication, snapshotFileState, syncDirectory } from '../replication/publication.js';
+import { DIGEST_ALGORITHM, durableJson, ownedDirectory, privateFile,
+  publishSnapshot, readReplicaPublication, syncDirectory } from '../replication/publication.js';
 import { NODE_PATTERN, pairError, validClaim } from './state.js';
 import { databaseErrorDetails } from '../storage/database-errors.js';
+import { databaseCheckpoint, JOURNAL_DIGEST, sameCheckpoint, validCheckpoint } from '../replication/incremental.js';
 
 export const CHUNK_BYTES = 1024 * 1024;
 const MAX_DATABASE_BYTES = 64 * 1024 ** 3;
@@ -17,7 +18,7 @@ const hash = data => createHash('sha256').update(data).digest('hex');
 
 export function validateSnapshot(value) {
   if (!value || !NODE_PATTERN.test(value.generation) || !/^[a-f0-9]{64}$/.test(value.digest) ||
-      value.digestAlgorithm !== DIGEST_ALGORITHM || value.chunkBytes !== CHUNK_BYTES ||
+      ![DIGEST_ALGORITHM, JOURNAL_DIGEST].includes(value.digestAlgorithm) || !validCheckpoint(value.checkpoint) || value.chunkBytes !== CHUNK_BYTES ||
       !Number.isSafeInteger(value.bytes) || value.bytes < 512 || value.bytes > MAX_DATABASE_BYTES ||
       !Number.isSafeInteger(value.sourceStartedAt) || !Number.isSafeInteger(value.sourceAt) ||
       value.sourceStartedAt <= 0 || value.sourceAt < value.sourceStartedAt ||
@@ -31,8 +32,13 @@ async function chunkHashes(path) {
   return result;
 }
 
-export async function verifySnapshot(path, metadata, signal) {
+export async function verifySnapshot(path, metadata, signal, { full = false } = {}) {
   if (signal?.aborted) throw pairError('stopped');
+  if (!full) {
+    const actual = await databaseCheckpoint({ dbPath: path, signal });
+    if (!sameCheckpoint(actual, metadata.checkpoint)) throw pairError('verification_failed');
+    return;
+  }
   // Default inheritance filters process-only flags; --input-type belongs to an
   // inline launcher and must not be forwarded to this file-based worker.
   const worker = new Worker(new URL('./verify-worker.js', import.meta.url), { workerData: { path, metadata },
@@ -80,11 +86,13 @@ export async function createReplicaPublicationGuard({ directory, accepted, signa
     if (!accepted || publication.generation !== accepted.generation || publication.digest !== accepted.digest ||
         publication.claim.epoch !== accepted.epoch || publication.claim.nodeId !== accepted.nodeId ||
         publication.sequence !== accepted.sequence) throw pairError('verification_failed');
-    const before = [originalManifest, await snapshotFileState(publication.dbPath)];
+    const before = originalManifest;
     const assertUnchanged = async () => {
       try {
-        const current = [await manifestState(), await snapshotFileState(publication.dbPath)];
+        const current = await manifestState();
         if (!isDeepStrictEqual(before, current)) throw pairError('verification_failed');
+        const checkpoint = await databaseCheckpoint({ dbPath: publication.dbPath, signal });
+        if (!sameCheckpoint(checkpoint, publication.checkpoint)) throw pairError('verification_failed');
       } catch { throw pairError('verification_failed'); }
     };
     await verifySnapshot(publication.dbPath, publication, signal);
@@ -244,7 +252,7 @@ export class SnapshotRepository {
   }
 }
 
-/** Compare bounded chunks against a previous copy and retain interrupted progress. */
+/** Receive an exceptional full seed with bounded frames and resumable progress. */
 export async function receiveSnapshot({ directory, metadata, peer, signal, guard = async () => {},
   publish = true, onProgress = () => {}, commit = action => action() }) {
   validateSnapshot(metadata);
@@ -258,8 +266,8 @@ export async function receiveSnapshot({ directory, metadata, peer, signal, guard
     await syncDirectory(directory);
   }
   await guard();
-  // Only uncommitted downloads are cleaned here; protected writable DBs never
-  // live in this directory. Gate precedes even this bounded cleanup.
+  // Only uncommitted downloads are cleaned here; accepted databases use a
+  // separate snapshot filename even when promoted. The authority gate runs first.
   for (const name of await readdir(directory)) {
     const match = /^incoming-([a-f0-9-]+)\.sqlite$/.exec(name);
     if (match && NODE_PATTERN.test(match[1]) && match[1] !== metadata.generation) await rm(join(directory, name));
@@ -268,11 +276,6 @@ export async function receiveSnapshot({ directory, metadata, peer, signal, guard
   try { await privateFile(incoming); }
   catch (error) {
     if (error.code !== 'ENOENT') throw error;
-    const previous = publish ? await readReplicaPublication(directory).catch(() => null) : null;
-    if (previous) {
-      try { await copySnapshot(previous.dbPath, incoming); }
-      catch { await rm(incoming, { force: true }); }
-    }
     try { const file = await open(incoming, 'wx', 0o600); await file.close(); }
     catch (error) { if (error.code !== 'EEXIST') throw error; }
   }
@@ -299,7 +302,11 @@ export async function receiveSnapshot({ directory, metadata, peer, signal, guard
           buffer = Buffer.from(chunk.data, 'base64');
           if (buffer.length !== bytes || hash(buffer) !== hashes[n]) throw pairError('verification_failed');
           await guard();
-          await file.write(buffer, 0, bytes, index * CHUNK_BYTES);
+          for (let written = 0; written < bytes;) {
+            const result = await file.write(buffer, written, bytes - written, index * CHUNK_BYTES + written);
+            if (!result.bytesWritten) throw pairError('verification_failed');
+            written += result.bytesWritten;
+          }
           transferredBytes += bytes;
         }
         onProgress({ completedBytes: Math.min(metadata.bytes, (index + 1) * CHUNK_BYTES), transferredBytes, bytes: metadata.bytes });
@@ -307,7 +314,7 @@ export async function receiveSnapshot({ directory, metadata, peer, signal, guard
     }
     await file.sync();
   } finally { await file.close(); }
-  await verifySnapshot(incoming, metadata, signal);
+  await verifySnapshot(incoming, metadata, signal, { full: true });
   await guard();
   if (!publish) return { ...metadata, dbPath: incoming, transferredBytes, verifiedAt: Date.now() };
   const result = await commit(async () => {

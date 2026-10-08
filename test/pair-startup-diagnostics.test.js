@@ -201,7 +201,7 @@ test('an incompatible master database reports its schema failure and stays prote
   });
 });
 
-test('unreadable control state retains its public compatibility diagnosis across protected restart', async t => {
+test('unjournaled control-state corruption retains its public journal diagnosis across protected restart', async t => {
   const f = await fixture(t), initial = await f.open('controller');
   const path = initial.app.pair.state.value.activeDbPath;
   await f.close(initial.app);
@@ -210,20 +210,20 @@ test('unreadable control state retains its public compatibility diagnosis across
   raw.close();
   const before = await readFile(path);
   const failed = await f.open('controller', { openStore: true });
-  assert.equal((await status(failed.app)).pair.error, 'database_state_incompatible');
-  assert.equal(failed.app.pair.state.value.activationError, 'database_state_incompatible');
+  assert.equal((await status(failed.app)).pair.error, 'database_journal_invalid');
+  assert.equal(failed.app.pair.state.value.activationError, 'database_journal_invalid');
   assert.equal(failed.app.pair.canControl(), false);
-  assert.equal(failed.diagnostics[0].reason, 'database_state_incompatible');
+  assert.equal(failed.diagnostics[0].reason, 'database_journal_invalid');
   assert.doesNotMatch(JSON.stringify(failed.diagnostics), /synthetic unreadable|executor:home/);
   assert.deepEqual(await readFile(path), before);
   await f.close(failed.app);
   const restarted = await f.open('controller', { openStore: true });
-  assert.equal((await status(restarted.app)).pair.error, 'database_state_incompatible');
+  assert.equal((await status(restarted.app)).pair.error, 'database_journal_invalid');
   assert.equal(restarted.primaryStarts(), 0);
   assert.deepEqual(await readFile(path), before);
 });
 
-test('a missing retained donor keeps protected management available and blocks release after restart', async t => {
+test('a missing journal donor keeps protected management available and blocks release after restart', async t => {
   const f = await fixture(t), master = await f.open('master'), donor = await f.open('donor', { role: 'slave' });
   const connect = other => {
     master.app.pair.peer.peerUrl = `http://127.0.0.1:${other.app.pair.peer.server.address().port}`;
@@ -242,7 +242,8 @@ test('a missing retained donor keeps protected management available and blocks r
   pair.hooks.closeReplica = async () => { throw failure('runtime_failed'); };
   await assert.rejects(primary.action('rejoin', request), { code: 'runtime_failed' });
   pair.hooks.closeReplica = closeReplica;
-  const retained = join(pair.snapshots.directory, `export-${pair.state.value.release.preservedSnapshot.generation}.sqlite`);
+  assert.equal(pair.state.value.release.journalRejoin.retainedStorage, 'journal-branch');
+  const retained = publication.dbPath;
   await f.close(donor.app);
   await rm(retained);
   const restarted = await f.open('donor', { role: 'slave' }); connect(restarted);
@@ -251,7 +252,7 @@ test('a missing retained donor keeps protected management available and blocks r
   assert.equal(view.pair.error, 'verification_failed');
   assert.equal(view.readOnly, true);
   assert.equal(restarted.primaryStarts(), 0);
-  await assert.rejects(restarted.app.pair.exportSnapshot({ force: true }), { code: 'verification_failed' });
+  await assert.rejects(restarted.app.pair.exportCheckpoint(), { code: 'verification_failed' });
   await assert.rejects(primary.action('rejoin', request), { code: 'verification_failed' });
   assert.equal(restarted.app.pair.state.value.role, 'protected');
   assert.equal(primary.canControl(), true);

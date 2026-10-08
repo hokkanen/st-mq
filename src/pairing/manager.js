@@ -1,7 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import { DatabaseSync } from 'node:sqlite';
 import { isDeepStrictEqual } from 'node:util';
-import { join } from 'node:path';
+import { dirname, join, resolve } from 'node:path';
 import { lstat, open, rm } from 'node:fs/promises';
 import { fileURLToPath } from 'node:url';
 import { setTimeout as delay } from 'node:timers/promises';
@@ -11,8 +11,13 @@ import { createReplicaPublicationGuard, receiveSnapshot, SnapshotRepository, val
 import { VirtualIP, VIP_ERRORS } from './vip.js';
 import { MQTT_FRONTEND_ERRORS } from './mqtt-frontend.js';
 import { createControllerAnnouncements } from './announcements.js';
-import { copySnapshot, ownedDirectory, readReplicaPublication, syncDirectory } from '../replication/publication.js';
+import { configurePublicationRoots, ownedDirectory, readReplicaPublication, syncDirectory } from '../replication/publication.js';
 import { databaseErrorDetails, databaseErrorGuidance } from '../storage/database-errors.js';
+import { databaseCheckpoint, journalOperation, JOURNAL_DIGEST, sameCheckpoint } from '../replication/incremental.js';
+import { ChangeTransfers, receiveChanges } from '../replication/change-transfer.js';
+import { adoptJournalDatabase, applyJournalPublication, checkpointMetadata, recoverJournalPublication } from '../replication/journal-publication.js';
+import { acquireReceiverLock } from '../replication/receiver.js';
+import { checkpointAt, installJournal } from '../storage/journal.js';
 
 const ACTIONS = new Set(['handover', 'promote', 'check-recovery', 'recover', 'rejoin']);
 const sourceRoot = fileURLToPath(new URL('../', import.meta.url));
@@ -60,6 +65,8 @@ export class PairManager {
   constructor({ config, hooks = {}, clock = Date.now, vip, peer, state, snapshots, announcements,
     reportStartupFailure = diagnostic => console.error(JSON.stringify(diagnostic)) }) {
     this.config = config;
+    configurePublicationRoots(config.snapshotDirectory, [config.directory,
+      config.databasePath ? dirname(config.databasePath) : null]);
     this.hooks = hooks;
     this.reportStartupFailure = reportStartupFailure;
     this.clock = clock;
@@ -68,6 +75,7 @@ export class PairManager {
     this.peer = peer ?? new PairPeer({ ...config, clock, timeoutMs: Math.min(config.timeoutMs ?? 10000, 10000),
       handler: (operation, body) => this.handlePeer(operation, body) });
     this.snapshots = snapshots ?? new SnapshotRepository({ directory: join(config.directory, 'exports'), clock });
+    this.changes = new ChangeTransfers(join(config.directory, 'change-exports'));
     this.announcementsFactory = announcements ?? createControllerAnnouncements;
     this.activeAllowed = false;
     this.closed = false;
@@ -96,18 +104,18 @@ export class PairManager {
     await marker.sync(); await marker.close(); await syncDirectory(this.config.snapshotDirectory);
     // Old standalone publications lack a branch ancestry proof. Existing paired
     // publications must also match the durable accepted record after a restart.
-    const publication = await readReplicaPublication(this.config.snapshotDirectory).catch(() => false);
+    const publication = await recoverJournalPublication(this.config.snapshotDirectory, { signal: this.abort.signal }).catch(() => false);
     const pending = this.state.value.pendingSnapshot;
     let publicationVerified = false;
     if (this.state.value.role === 'slave' && publication && pending && publication.generation === pending.generation &&
         publication.digest === pending.digest && acceptsLineage(this.state.value.accepted, pending.claim)) {
-      // The immutable publication may have committed immediately before a
+      // The checkpoint publication may have committed immediately before a
       // crash, while the separate node-state acknowledgement had not.
       try {
         await verifySnapshot(publication.dbPath, publication, this.abort.signal);
         publicationVerified = true;
         await this.state.update({ pendingSnapshot: null, accepted: { generation: publication.generation,
-          digest: publication.digest, epoch: pending.claim.epoch, sequence: pending.sequence, nodeId: pending.claim.nodeId } });
+          digest: publication.digest, checkpoint: publication.checkpoint, epoch: pending.claim.epoch, sequence: pending.sequence, nodeId: pending.claim.nodeId } });
       } catch (error) {
         const database = databaseErrorDetails(error);
         if (database) this.reportFailure(error, database.code);
@@ -319,7 +327,11 @@ export class PairManager {
     if (this.stopping || this.closed) return;
     const local = this.state.value;
     let preserved = null;
-    try { preserved = local.role === 'protected' ? await this.preservedReleaseSnapshot() : null; }
+    try {
+      preserved = local.role === 'protected' ? await this.preservedReleaseSnapshot() : null;
+      if (local.role === 'protected' && local.release?.journalRejoin)
+        await databaseCheckpoint({ dbPath: await this.journalSource(), signal: this.abort.signal });
+    }
     catch (error) {
       // A damaged retained donor must not take the management UI down. Keep
       // its failure visible while viewing only the last verified publication;
@@ -344,7 +356,8 @@ export class PairManager {
       donorBytes: Number.isSafeInteger(recovery.metadata?.bytes) && recovery.metadata.bytes >= 0 ? recovery.metadata.bytes : null,
       error: recovery.error ?? null,
       pendingRelease: recovery.releaseOperation ? { requestId: recovery.releaseOperation.requestId,
-        discardUnrecovered: recovery.releaseOperation.skipRecovery, previewId: recovery.preview?.previewId } : null };
+        discardUnrecovered: recovery.releaseOperation.skipRecovery, previewId: recovery.preview?.previewId,
+        verifyWithFullSnapshot: recovery.releaseOperation.verifyWithFullSnapshot === true } : null };
   }
 
   status() {
@@ -490,27 +503,36 @@ export class PairManager {
     this.sync = { ...this.sync, state: 'syncing', error: null };
     try {
       await this.assertReplica(claim);
-      // Ordinary mirroring resumes interrupted immutable transfers. Handover
-      // must check a newly exported boundary, never a previously usable cache.
-      let metadata = force ? null : this.state.value.pendingSnapshot;
-      if (!metadata || metadata.claim?.epoch !== claim.epoch) {
-        metadata = validateSnapshot(await this.peer.request('snapshot', force ? { force: true } : {}, { signal, timeoutMs: this.config.timeoutMs }));
-        await this.state.update({ pendingSnapshot: metadata });
-      } else validateSnapshot(metadata);
+      let metadata = validateSnapshot(await this.peer.request('checkpoint', {}, { signal, timeoutMs: this.config.timeoutMs }));
       if (metadata.claim.role !== 'master' || metadata.claim.epoch !== claim.epoch
         || metadata.claim.nodeId !== claim.nodeId) throw pairError('authority_changed');
-      const result = await this.installReplica(metadata, { signal });
+      const existing = await readReplicaPublication(this.config.snapshotDirectory);
+      // Only an empty receiver needs a full base. A divergent or damaged base
+      // is protected; it never silently falls back to replacing local history.
+      let result;
+      if (!existing) {
+        const pending = this.state.value.pendingSnapshot;
+        metadata = pending?.digestAlgorithm !== JOURNAL_DIGEST && pending?.claim?.epoch === claim.epoch
+          ? validateSnapshot(pending)
+          : validateSnapshot(await this.peer.request('snapshot', { force: true }, { signal, timeoutMs: this.config.timeoutMs }));
+        await this.state.update({ pendingSnapshot: metadata });
+        result = await this.installReplica(metadata, { signal });
+      } else result = await this.installCheckpoint(metadata, { signal });
       this.sync = { state: 'ready', sourceAt: result.sourceAt, verifiedAt: result.verifiedAt, bytes: result.bytes,
         lastSuccessAt: this.clock(), error: null, transferredBytes: result.transferredBytes };
       return result;
     } catch (error) {
       this.sync = { ...this.sync, state: 'error', error: publicPairError(error) };
+      if (this.state.value.role === 'slave' && ['verification_failed', 'database_journal_invalid',
+        'journal_checkpoint_mismatch', 'journal_hash_mismatch'].includes(error?.code))
+        await this.state.update({ role: 'protected', reason: 'snapshot_verification_failed', bootstrapPending: false });
       if (['snapshot_unavailable', 'authority_changed'].includes(error?.code)) await this.state.update({ pendingSnapshot: null });
     }
     finally { this.nextSyncAt = this.clock() + (this.config.intervalMs ?? 60000); this.syncAbort = null; }
   }
 
   async installReplica(metadata, { signal, allowRelease = false } = {}) {
+    if (metadata.digestAlgorithm === JOURNAL_DIGEST) return this.installCheckpoint(metadata, { signal, allowRelease });
     await this.assertReplica(metadata.claim, { allowRelease });
     const unchanged = allowRelease ? null : await this.replicaPublicationGuard(signal);
     const guard = async () => {
@@ -527,10 +549,52 @@ export class PairManager {
           || remote.claim.nodeId !== metadata.claim.nodeId) throw pairError('authority_changed');
         await guard();
         const result = await action();
-        await this.state.update({ pendingSnapshot: null, accepted: { generation: result.generation, digest: result.digest,
+        await this.state.update({ pendingSnapshot: null, accepted: { generation: result.generation, digest: result.digest, checkpoint: result.checkpoint,
           epoch: metadata.claim.epoch, sequence: metadata.sequence, nodeId: metadata.claim.nodeId } });
         return result;
       }) });
+  }
+
+  async installCheckpoint(metadata, { signal, allowRelease = false } = {}) {
+    await this.assertReplica(metadata.claim, { allowRelease });
+    const unlock = await acquireReceiverLock(this.config.snapshotDirectory);
+    try {
+      let publication = await recoverJournalPublication(this.config.snapshotDirectory, { signal });
+      if (!publication) throw pairError('snapshot_unavailable');
+      if (publication.checkpoint.databaseId !== metadata.checkpoint.databaseId) throw pairError('lineage_mismatch');
+      const actual = await databaseCheckpoint({ dbPath: publication.dbPath, signal });
+      if (!sameCheckpoint(actual, publication.checkpoint)) throw pairError('verification_failed');
+      const guard = () => this.assertReplica(metadata.claim, { allowRelease });
+      let transferredBytes = 0;
+      do {
+        await guard();
+        const batch = sameCheckpoint(publication.checkpoint, metadata.checkpoint)
+          ? { version: 1, from: publication.checkpoint, to: publication.checkpoint, commits: [], hasMore: false }
+          : await receiveChanges({ directory: join(this.config.directory, 'change-incoming'), peer: this.peer,
+            after: publication.checkpoint, through: metadata.checkpoint, signal, guard });
+        if ((!sameCheckpoint(publication.checkpoint, metadata.checkpoint)
+          && batch.to.sequence <= publication.checkpoint.sequence)
+          || (!sameCheckpoint(batch.from, batch.to) && !batch.commits.length)) throw pairError('verification_failed');
+        transferredBytes += Buffer.byteLength(JSON.stringify(batch));
+        const boundary = { ...metadata, generation: batch.hasMore ? randomUUID() : metadata.generation,
+          checkpoint: batch.to, digest: batch.to.hash };
+        await this.state.update({ pendingSnapshot: boundary });
+        publication = await this.serialized(async () => {
+          const result = await applyJournalPublication({ directory: this.config.snapshotDirectory, batch,
+            metadata: boundary, signal, guard, beforeCommit: async () => {
+              const remote = await this.peer.request('status', { claim: this.state.claim(), sync: publicSync(this.sync) }, { signal });
+              if (remote.claim?.role !== 'master' || remote.claim.epoch !== metadata.claim.epoch
+                || remote.claim.nodeId !== metadata.claim.nodeId) throw pairError('authority_changed');
+              await guard();
+            } });
+          await this.state.update({ pendingSnapshot: null, accepted: { generation: result.generation,
+            digest: result.digest, checkpoint: result.checkpoint, epoch: metadata.claim.epoch,
+            sequence: metadata.sequence, nodeId: metadata.claim.nodeId } });
+          return result;
+        });
+      } while (!sameCheckpoint(publication.checkpoint, metadata.checkpoint));
+      return { ...publication, transferredBytes };
+    } finally { await unlock(); }
   }
 
   async replicaPublicationGuard(signal = this.abort.signal) {
@@ -538,7 +602,8 @@ export class PairManager {
       try { return await operation(); }
       catch (error) {
         const database = databaseErrorDetails(error);
-        if ((error?.code === 'verification_failed' || database) && this.state.value.role === 'slave') {
+        if ((['verification_failed', 'database_journal_invalid', 'journal_checkpoint_mismatch', 'journal_hash_mismatch'].includes(error?.code)
+          || database) && this.state.value.role === 'slave') {
           this.sync = { ...this.sync, state: 'error', error: publicPairError(error) };
           await this.state.update({ role: 'protected', reason: 'snapshot_verification_failed', bootstrapPending: false,
             ...(database ? { activationError: database.code } : {}) });
@@ -568,6 +633,69 @@ export class PairManager {
     return this.snapshots.create({ dbPath: local.activeDbPath ?? this.hooks.dbPath?.(), claim: this.state.claim(),
       sequence: this.state.value.sequence, signal: this.abort.signal, force, pin,
       assertSource: () => { if (this.closed || this.state.value.epoch !== epoch || this.state.value.role !== role) throw pairError('authority_changed'); } });
+  }
+
+  async journalSource() {
+    const local = this.state.value;
+    if (local.role === 'master' || local.role === 'protected' && local.everWritten && local.activeDbPath)
+      return local.activeDbPath ?? this.hooks.dbPath?.();
+    const publication = await readReplicaPublication(this.config.snapshotDirectory)
+      .catch(() => { throw pairError('verification_failed'); });
+    if (!publication) throw pairError('snapshot_unavailable');
+    return publication.dbPath;
+  }
+
+  async exportCheckpoint() {
+    if (this.state.value.role === 'master') await this.prepareExportStamp();
+    const claim = this.state.claim(), dbPath = await this.journalSource();
+    const checkpoint = await databaseCheckpoint({ dbPath, signal: this.abort.signal });
+    if (this.state.value.epoch !== claim.epoch || this.state.value.role !== claim.role) throw pairError('authority_changed');
+    return checkpointMetadata({ dbPath, checkpoint, claim, sequence: this.state.value.sequence, clock: this.clock });
+  }
+
+  async fullVerification(dbPath, checkpoint) {
+    const { verifyDatabase } = await import('../storage/full-verifier.js');
+    return verifyDatabase({ dbPath, checkpoint, signal: this.abort.signal });
+  }
+
+  async commonPeerCheckpoint(metadata, dbPath = this.state.value.activeDbPath) {
+    const local = await databaseCheckpoint({ dbPath, signal: this.abort.signal });
+    if (local.databaseId !== metadata.checkpoint.databaseId) return null;
+    let low = 0, high = Math.min(local.sequence, metadata.checkpoint.sequence);
+    const db = new DatabaseSync(dbPath, { readOnly: true });
+    try {
+      while (low < high) {
+        const middle = Math.ceil((low + high) / 2);
+        const remote = await this.peer.request('checkpoint-at', { sequence: middle }, { signal: this.abort.signal });
+        if (sameCheckpoint(checkpointAt(db, middle), remote)) low = middle; else high = middle - 1;
+      }
+      const common = checkpointAt(db, low);
+      const remote = await this.peer.request('checkpoint-at', { sequence: low }, { signal: this.abort.signal });
+      return sameCheckpoint(common, remote) ? common : null;
+    } finally { db.close(); }
+  }
+
+  async stageRecoveryJournal(metadata, base) {
+    const directory = join(this.config.directory, 'recovery-journals');
+    await ownedDirectory(directory, '.st-mq-recovery-journals');
+    const path = join(directory, `donor-${randomUUID()}.ndjson`);
+    const file = await open(path, 'wx', 0o600);
+    try {
+      await file.writeFile(`${JSON.stringify({ version: 1, base, checkpoint: metadata.checkpoint })}\n`);
+      let after = base;
+      while (!sameCheckpoint(after, metadata.checkpoint)) {
+        const batch = await receiveChanges({ directory: join(this.config.directory, 'change-incoming'), peer: this.peer,
+          after, through: metadata.checkpoint, signal: this.abort.signal,
+          guard: async () => { if (!this.canControl()) throw pairError('not_master'); } });
+        if (!batch.commits.length) throw pairError('verification_failed');
+        for (const commit of batch.commits) await file.writeFile(`${JSON.stringify(commit)}\n`);
+        after = batch.to;
+      }
+      await file.sync();
+      await syncDirectory(directory);
+      return path;
+    } catch (error) { await rm(path, { force: true }); throw error; }
+    finally { await file.close(); }
   }
 
   async exportReplicaSnapshot({ force, pin, role }) {
@@ -611,6 +739,7 @@ export class PairManager {
   async writeLineage(dbPath, value) {
     if (this.hooks.writeLineage) return this.hooks.writeLineage({ dbPath, value });
     const db = new DatabaseSync(dbPath);
+    installJournal(db);
     try {
       db.exec('PRAGMA busy_timeout=1000');
       db.prepare("INSERT INTO state(key,value,updated_at) VALUES('pairing-lineage',?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value,updated_at=excluded.updated_at")
@@ -670,8 +799,8 @@ export class PairManager {
         { requestId: body.requestId, name, state: 'running', startedAt: this.clock() }] }));
       this.syncAbort?.abort(pairError('authority_changed'));
       await this.syncTask;
-      if (name === 'promote') await this.promote();
-      else if (name === 'handover') await this.handover();
+      if (name === 'promote') await this.promote(body);
+      else if (name === 'handover') await this.handover(body);
       else if (name === 'check-recovery') await this.checkRecovery(body);
       else if (name === 'recover') await this.recover(body);
       else await this.rejoin(body);
@@ -689,7 +818,7 @@ export class PairManager {
       { ...item, state, error, finishedAt: this.clock() } : item) }));
   }
 
-  async promote({ handover = false } = {}) {
+  async promote({ handover = false, verifyWithFullSnapshot = false } = {}) {
     if (!handover && canBootstrap(this.state.value)) {
       let present;
       try { present = await lstat(this.state.value.activeDbPath); }
@@ -703,9 +832,11 @@ export class PairManager {
       }
     }
     if (this.state.value.role === 'protected' && this.state.value.everWritten && this.state.value.activeDbPath && !handover) {
-      const source = await this.exportSnapshot({ force: true });
-      await verifySnapshot(join(this.snapshots.directory, `export-${source.generation}.sqlite`), source, this.abort.signal);
-      await this.hooks.authorizeMqttPromotion?.({ dbPath: join(this.snapshots.directory, `export-${source.generation}.sqlite`) });
+      const source = await this.exportCheckpoint();
+      const dbPath = await this.journalSource();
+      await verifySnapshot(dbPath, source, this.abort.signal);
+      if (verifyWithFullSnapshot) await this.fullVerification(dbPath, source.checkpoint);
+      await this.hooks.authorizeMqttPromotion?.({ dbPath });
       await this.hooks.closeReplica?.();
       const epoch = randomUUID();
       await this.serialized(() => this.state.update({ role: 'master', epoch, sequence: 0,
@@ -721,11 +852,10 @@ export class PairManager {
       || publication.claim?.epoch !== accepted.epoch || publication.claim?.nodeId !== accepted.nodeId
       || publication.sequence !== accepted.sequence) throw pairError('verification_failed');
     await verifySnapshot(publication.dbPath, publication, this.abort.signal);
+    if (verifyWithFullSnapshot) await this.fullVerification(publication.dbPath, publication.checkpoint);
     if (!handover) await this.hooks.authorizeMqttPromotion?.({ dbPath: publication.dbPath });
     await this.hooks.closeReplica?.();
-    const epoch = randomUUID(), destination = join(this.config.directory, `master-${epoch}.sqlite`);
-    await copySnapshot(publication.dbPath, destination);
-    const file = await open(destination, 'r'); await file.sync(); await file.close(); await syncDirectory(this.config.directory);
+    const epoch = randomUUID(), destination = publication.dbPath;
     const ancestors = [...(publication.claim?.ancestors ?? []),
       { epoch: this.state.value.accepted.epoch, sequence: this.state.value.accepted.sequence }];
     await this.serialized(() => this.state.update({ role: 'master', epoch, sequence: 0,
@@ -736,7 +866,7 @@ export class PairManager {
     if (!handover) this.nextSyncAt = 0;
   }
 
-  async handover() {
+  async handover({ verifyWithFullSnapshot = false } = {}) {
     if (!this.canControl()) throw pairError('not_master');
     if (this.state.value.recovery?.releaseOperation) throw pairError('invalid_transition');
     const claim = this.state.claim(), token = randomUUID();
@@ -759,21 +889,21 @@ export class PairManager {
       await this.releaseTransport();
       this.controlReleased = true;
       if (this.state.value.role !== 'master') throw pairError('authority_changed');
-      const metadata = await this.exportSnapshot({ force: true });
-      await this.peer.request('handover-stage', { token, metadata }, { timeoutMs: this.config.timeoutMs });
+      const metadata = await this.exportCheckpoint();
+      const dbPath = await this.journalSource();
+      const verification = verifyWithFullSnapshot ? await this.fullVerification(dbPath, metadata.checkpoint) : null;
+      await this.peer.request('handover-stage', { token, metadata, verification }, { timeoutMs: this.config.timeoutMs });
       await this.serialized(() => this.state.update({ role: 'protected', reason: 'handover_released',
         transition: { kind: 'handover', phase: 'released', token, peerNodeId: remote.nodeId, generation: metadata.generation } }));
       const activated = await this.peer.request('handover-activate', { token }, { timeoutMs: this.config.timeoutMs });
       if (activated.role !== 'master' || activated.accepted?.generation !== metadata.generation) throw pairError('invalid_transition');
       // The peer accepted the exact final copy. There is no independent history
       // left to recover; normal lineage gating can now follow its new branch.
-      const publication = await receiveSnapshot({ directory: this.config.snapshotDirectory, metadata,
-        peer: { request: (operation, body) => operation === 'snapshot-hashes' ? this.snapshots.hashes(body) : this.snapshots.chunk(body) },
-        signal: this.abort.signal, guard: async () => {
-          if (this.state.value.role !== 'protected' || this.state.value.transition?.token !== token) throw pairError('authority_changed');
-        }, commit: action => this.serialized(action) });
+      if (this.state.value.role !== 'protected' || this.state.value.transition?.token !== token) throw pairError('authority_changed');
+      const publication = await adoptJournalDatabase({ directory: this.config.snapshotDirectory,
+        dbPath, metadata, signal: this.abort.signal });
       await this.state.update({ role: 'slave', reason: null, transition: null, everWritten: false, activeDbPath: null, accepted: {
-        generation: metadata.generation, digest: metadata.digest, epoch: metadata.claim.epoch,
+        generation: metadata.generation, digest: metadata.digest, checkpoint: metadata.checkpoint, epoch: metadata.claim.epoch,
         sequence: metadata.sequence, nodeId: metadata.claim.nodeId } });
       this.sync = { state: 'ready', sourceAt: publication.sourceAt, verifiedAt: publication.verifiedAt,
         bytes: publication.bytes, lastSuccessAt: this.clock(), error: null, transferredBytes: publication.transferredBytes };
@@ -790,7 +920,7 @@ export class PairManager {
     }
   }
 
-  async checkRecovery({ requestId } = {}) {
+  async checkRecovery({ requestId, verifyWithFullSnapshot = false } = {}) {
     if (!this.canControl()) throw pairError('not_master');
     if (!this.hooks.recoveryPreview) throw pairError('recovery_unavailable');
     const previous = this.state.value.recovery;
@@ -799,17 +929,27 @@ export class PairManager {
     await this.state.update({ recovery: { ...completedReceipt, state: 'checking' } });
     try {
       const peerObservation = this.peerObservation;
-      const metadata = validateSnapshot(await this.peer.request('snapshot', { force: true }, { timeoutMs: this.config.timeoutMs }));
+      let metadata = validateSnapshot(await this.peer.request('checkpoint', {}, { timeoutMs: this.config.timeoutMs }));
       if (metadata.claim.role === 'master') throw pairError('authority_changed');
       if (peerObservation === this.peerObservation) this.recordPeerStatus(metadata.claim);
-      const donor = await receiveSnapshot({ directory: join(this.config.directory, 'recovery'), metadata,
-        peer: this.peer, signal: this.abort.signal, publish: false,
-        guard: async () => { if (!this.canControl()) throw pairError('not_master'); } });
-      const preview = await this.hooks.recoveryPreview({ donorPath: donor.dbPath, requestId });
+      if (verifyWithFullSnapshot) await this.peer.request('verify-checkpoint', { checkpoint: metadata.checkpoint }, { timeoutMs: this.config.timeoutMs });
+      const base = await this.commonPeerCheckpoint(metadata);
+      let donorPath, donorJournalPath;
+      if (base) donorJournalPath = await this.stageRecoveryJournal(metadata, base);
+      else {
+        // Independent databases have no journal ancestry to compare. An owner
+        // initiated recovery is the exceptional repair that needs a full base.
+        metadata = validateSnapshot(await this.peer.request('snapshot', { force: true }, { timeoutMs: this.config.timeoutMs }));
+        const donor = await receiveSnapshot({ directory: join(this.config.directory, 'recovery'), metadata,
+          peer: this.peer, signal: this.abort.signal, publish: false,
+          guard: async () => { if (!this.canControl()) throw pairError('not_master'); } });
+        donorPath = donor.dbPath;
+      }
+      const preview = await this.hooks.recoveryPreview({ donorPath, donorJournalPath, requestId, verifyWithFullSnapshot });
       if (!checkedSource(preview))
         throw pairError('recovery_unavailable');
       const completed = completedReceipt.report && sameDonor(previous.metadata, metadata);
-      await this.state.update({ recovery: { state: completed ? 'complete' : 'ready', metadata, donorPath: donor.dbPath, preview,
+      await this.state.update({ recovery: { state: completed ? 'complete' : 'ready', metadata, donorPath, donorJournalPath, preview,
         ...(completed ? { report: previous.report } : {}) } });
     } catch (error) {
       await this.state.update({ recovery: { ...completedReceipt, state: 'error', error: publicPairError(error) } });
@@ -824,9 +964,12 @@ export class PairManager {
       || !checkedSource(recovery.preview) || body.previewId !== recovery.preview.previewId) throw pairError('invalid_transition');
     if (!this.hooks.recoveryApply) throw pairError('recovery_unavailable');
     await this.assertRecoveryDonor(recovery);
+    if (body.verifyWithFullSnapshot === true && recovery.donorJournalPath)
+      await this.peer.request('verify-checkpoint', { checkpoint: recovery.metadata.checkpoint }, { timeoutMs: this.config.timeoutMs });
     await this.state.update({ recovery: { ...recovery, state: 'recovering' } });
     try {
-      const report = await this.hooks.recoveryApply({ donorPath: recovery.donorPath, preview: recovery.preview, requestId: body.requestId,
+      const report = await this.hooks.recoveryApply({ donorPath: recovery.donorPath, donorJournalPath: recovery.donorJournalPath,
+        preview: recovery.preview, requestId: body.requestId, verifyWithFullSnapshot: body.verifyWithFullSnapshot === true,
         isCurrent: () => this.canControl() });
       if (!this.canControl()) throw pairError('authority_changed');
       await this.state.update({ recovery: { ...recovery, state: 'complete', report: report.report ?? report } });
@@ -857,6 +1000,7 @@ export class PairManager {
       // result. Verify exactly that request even after the source-check UI
       // contract changes; an old preview alone grants no new permission.
       if (operation.requestId !== body.requestId || operation.skipRecovery !== skipRecovery
+        || operation.verifyWithFullSnapshot !== (body.verifyWithFullSnapshot === true)
         || skipRecovery && body.previewId !== recovery.preview?.previewId) throw pairError('invalid_transition');
     } else if (skipRecovery) {
       if (recovery?.state !== 'ready' || !checkedSource(recovery.preview)) throw pairError('recovery_required');
@@ -864,8 +1008,20 @@ export class PairManager {
     } else if (recovery?.state !== 'complete') throw pairError('recovery_required');
     if (!operation) {
       await this.assertRecoveryDonor(recovery);
-      const metadata = await this.exportSnapshot({ force: true, pin: true });
-      operation = { requestId: body.requestId, donor: recovery.metadata, metadata, skipRecovery };
+      let metadata = await this.exportCheckpoint();
+      const incremental = metadata.checkpoint.databaseId === recovery.metadata.checkpoint.databaseId;
+      let verification;
+      if (body.verifyWithFullSnapshot === true) {
+        verification = await this.fullVerification(await this.journalSource());
+        metadata = { ...metadata, checkpoint: verification.checkpoint, digest: verification.checkpoint.hash };
+      }
+      if (!incremental) {
+        metadata = await this.exportSnapshot({ force: true, pin: true });
+        if (body.verifyWithFullSnapshot === true) verification = await this.fullVerification(
+          join(this.snapshots.directory, `export-${metadata.generation}.sqlite`), metadata.checkpoint);
+      }
+      operation = { requestId: body.requestId, donor: recovery.metadata, metadata, skipRecovery,
+        verifyWithFullSnapshot: body.verifyWithFullSnapshot === true, ...(verification ? { verification } : {}) };
       await this.state.update({ recovery: { ...recovery, releaseOperation: operation } });
     }
     const metadata = operation.metadata;
@@ -876,7 +1032,7 @@ export class PairManager {
       // It needs a new check, whereas a lost response must retain the same release.
       if (error?.code === 'recovery_required') {
         await this.state.update({ recovery: { ...recovery, releaseOperation: null } });
-        await this.snapshots.unpin(metadata.generation).catch(() => {});
+        if (metadata.digestAlgorithm !== JOURNAL_DIGEST) await this.snapshots.unpin(metadata.generation).catch(() => {});
       }
       throw error;
     }
@@ -886,9 +1042,51 @@ export class PairManager {
     const report = skipRecovery ? { ...recovery.preview, status: 'skipped', recoverySkipped: true,
       imported: 0, model: { status: 'unchanged' } } : recovery.report;
     await this.state.update({ recovery: { state: 'resolved', report } });
-    await this.snapshots.unpin(metadata.generation).catch(() => {});
-    await rm(recovery.donorPath, { force: true }).catch(() => {});
+    if (metadata.digestAlgorithm !== JOURNAL_DIGEST) await this.snapshots.unpin(metadata.generation).catch(() => {});
+    if (recovery.donorPath) await rm(recovery.donorPath, { force: true }).catch(() => {});
+    if (recovery.donorJournalPath) await rm(recovery.donorJournalPath, { force: true }).catch(() => {});
     this.recordPeerStatus(result, result.sync);
+  }
+
+  async releaseJournal({ donor, metadata, identity, verification, verifyWithFullSnapshot }) {
+    const dbPath = await this.journalSource();
+    let rejoin = this.state.value.release?.journalRejoin;
+    if (!rejoin) {
+      const current = await databaseCheckpoint({ dbPath, signal: this.abort.signal });
+      if (!sameCheckpoint(current, donor.checkpoint)) throw pairError('recovery_required');
+      const base = await this.commonPeerCheckpoint(metadata, dbPath);
+      if (!base) throw pairError('lineage_mismatch');
+      rejoin = { base, donor: donor.checkpoint, retainedStorage: 'journal-branch' };
+      await this.state.update({ role: 'protected', reason: 'rejoining', release: {
+        epoch: metadata.claim.epoch, digest: metadata.digest, identity, journalRejoin: rejoin } });
+    }
+    await this.hooks.closeReplica?.();
+    let current = await databaseCheckpoint({ dbPath, signal: this.abort.signal });
+    if (sameCheckpoint(current, rejoin.donor) && !sameCheckpoint(current, rejoin.base)) {
+      const branchId = await journalOperation('rewind', { dbPath, checkpoint: rejoin.base, signal: this.abort.signal });
+      rejoin = { ...rejoin, branchId };
+      await this.state.update({ release: { ...this.state.value.release, journalRejoin: rejoin } });
+      current = rejoin.base;
+    }
+    if (sameCheckpoint(current, rejoin.base)) {
+      await adoptJournalDatabase({ directory: this.config.snapshotDirectory, dbPath,
+        metadata: { ...metadata, checkpoint: rejoin.base, digest: rejoin.base.hash, generation: randomUUID() }, signal: this.abort.signal });
+    }
+    const result = await this.installCheckpoint(metadata, { signal: this.abort.signal, allowRelease: true });
+    if (verifyWithFullSnapshot) {
+      if (!verification || !sameCheckpoint(verification.checkpoint, metadata.checkpoint)) throw pairError('verification_failed');
+      const actual = await this.fullVerification(result.dbPath, metadata.checkpoint);
+      if (actual.digest !== verification.digest) throw pairError('full_verification_content_mismatch');
+    }
+    await this.state.update({ role: 'slave', reason: null, release: null, transition: null, everWritten: false,
+      activeDbPath: null, recovery: null, activationError: null,
+      releaseReceipt: { requestId: identity.requestId, identity } });
+    this.sync = { state: 'ready', sourceAt: result.sourceAt, verifiedAt: result.verifiedAt, bytes: result.bytes,
+      lastSuccessAt: this.clock(), error: null, transferredBytes: result.transferredBytes };
+    this.error = null;
+    await this.startReplica(result);
+    return { ...this.state.claim(), accepted: this.state.value.accepted, releaseReceipt: identity,
+      retainedStorage: 'journal-branch', sync: publicSync(this.sync) };
   }
 
   async handlePeer(operation, body) {
@@ -903,6 +1101,12 @@ export class PairManager {
         controlReleased: this.controlReleased && !this.canControl() && !this.demoting && this.state.value.role !== 'master' };
     }
     if (operation === 'snapshot') return this.exportSnapshot({ force: body.force === true });
+    if (operation === 'checkpoint') return this.exportCheckpoint();
+    if (operation === 'verify-checkpoint') return this.fullVerification(await this.journalSource(), body.checkpoint);
+    if (operation === 'checkpoint-at') return journalOperation('checkpoint-at', { dbPath: await this.journalSource(), sequence: body.sequence, signal: this.abort.signal });
+    if (operation === 'changes') return this.changes.export({ dbPath: await this.journalSource(),
+      after: body.after, through: body.through, signal: this.abort.signal });
+    if (operation === 'changes-chunk') return this.changes.chunk(body);
     if (operation === 'snapshot-hashes') return this.snapshots.hashes(body);
     if (operation === 'snapshot-chunk') return this.snapshots.chunk(body);
     if (operation === 'handover-prepare') {
@@ -940,6 +1144,11 @@ export class PairManager {
       try {
         this.syncAbort?.abort(pairError('authority_changed')); await this.syncTask;
         const publication = await this.installReplica(metadata, { signal: this.abort.signal });
+        if (body.verification) {
+          const actual = await this.fullVerification(publication.dbPath, metadata.checkpoint);
+          if (!sameCheckpoint(actual.checkpoint, body.verification.checkpoint)) throw pairError('full_verification_checkpoint_mismatch');
+          if (actual.digest !== body.verification.digest) throw pairError('full_verification_content_mismatch');
+        }
         await this.hooks.verifyHandover?.({ dbPath: publication.dbPath, requirements: this.state.value.transition.ocpp });
         await this.hooks.verifyMqttHandover?.({ dbPath: publication.dbPath, requirements: this.state.value.transition.mqtt,
           token: body.token });
@@ -972,7 +1181,8 @@ export class PairManager {
       if (!NODE_PATTERN.test(body.requestId ?? '')) throw pairError('invalid_request_id');
       const identity = { requestId: body.requestId, donorEpoch: donor.claim.epoch, donorDigest: donor.digest,
         donorBytes: donor.bytes, generation: metadata.generation, digest: metadata.digest,
-        bytes: metadata.bytes, targetEpoch: metadata.claim.epoch, targetNodeId: metadata.claim.nodeId };
+        bytes: metadata.bytes, targetEpoch: metadata.claim.epoch, targetNodeId: metadata.claim.nodeId,
+        verifyWithFullSnapshot: body.verifyWithFullSnapshot === true };
       const receipt = this.state.value.releaseReceipt;
       if (receipt?.requestId === body.requestId) {
         if (JSON.stringify(receipt.identity) !== JSON.stringify(identity) || this.state.value.role !== 'slave'
@@ -994,8 +1204,11 @@ export class PairManager {
         this.syncAbort?.abort(pairError('authority_changed')); await this.syncTask;
         if (this.state.value.release && !isDeepStrictEqual(this.state.value.release.identity, identity))
           throw pairError('invalid_transition');
+        if (metadata.digestAlgorithm === JOURNAL_DIGEST) return await this.releaseJournal({ donor, metadata, identity,
+          verification: body.verification, verifyWithFullSnapshot: body.verifyWithFullSnapshot === true });
         const preserved = await this.preservedReleaseSnapshot();
-        const retainReplica = !this.state.value.everWritten || !this.state.value.activeDbPath;
+        const retainReplica = !this.state.value.everWritten || !this.state.value.activeDbPath
+          || resolve(this.state.value.activeDbPath).startsWith(`${resolve(this.config.snapshotDirectory)}/`);
         const currentDonor = preserved ?? await this.exportSnapshot({ force: true, pin: retainReplica });
         if (currentDonor.digest !== donor.digest || currentDonor.bytes !== donor.bytes) {
           if (retainReplica && !preserved) await this.snapshots.unpin(currentDonor.generation);
@@ -1008,6 +1221,12 @@ export class PairManager {
         await this.state.update({ role: 'protected', release: { epoch: metadata.claim.epoch, digest: metadata.digest, identity,
           ...(retainReplica ? { preservedSnapshot } : {}) }, reason: 'rejoining' });
         const result = await this.installReplica(metadata, { signal: this.abort.signal, allowRelease: true });
+        if (body.verifyWithFullSnapshot === true) {
+          if (!body.verification || !sameCheckpoint(body.verification.checkpoint, metadata.checkpoint))
+            throw pairError('full_verification_checkpoint_mismatch');
+          const actual = await this.fullVerification(result.dbPath, metadata.checkpoint);
+          if (actual.digest !== body.verification.digest) throw pairError('full_verification_content_mismatch');
+        }
         await this.hooks.closeReplica?.();
         await this.state.update({ role: 'slave', reason: null, release: null, transition: null, everWritten: false,
           activeDbPath: null, recovery: null, activationError: null, releaseReceipt: { requestId: body.requestId, identity } });
@@ -1019,7 +1238,7 @@ export class PairManager {
         // Recovery intentionally excludes some datasets and may reject source
         // records. Rejoin replaces the selected replica, not the only original
         // evidence. A null activeDbPath fences these inactive files: later
-        // promotion always copies the verified publication, never this history.
+        // promotion always selects the verified publication, never this history.
         return { ...this.state.claim(), accepted: this.state.value.accepted, releaseReceipt: identity, sync: publicSync(this.sync) };
       } finally { this.busy = false; }
     }

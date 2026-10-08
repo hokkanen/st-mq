@@ -1,13 +1,18 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtemp, rm, stat } from 'node:fs/promises';
+import { mkdtemp, readFile, rm, stat } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { randomUUID } from 'node:crypto';
-import { DatabaseSync } from 'node:sqlite';
 import { Store } from '../../src/storage/store.js';
 import { PairManager } from '../../src/pairing/manager.js';
 import { snapshotDigest } from '../../src/replication/publication.js';
+
+async function processIo() {
+  if (process.platform !== 'linux') return null;
+  return Object.fromEntries((await readFile('/proc/self/io', 'utf8')).trim().split('\n')
+    .map(line => { const [key, value] = line.split(':'); return [key, Number(value.trim())]; }));
+}
 
 // Real encrypted loopback HTTP, snapshot workers, SQLite validation and pair
 // state transitions. VIP/equipment hooks are simulated; these timings do not
@@ -29,8 +34,8 @@ async function fixture(t, payloadMiB) {
   const payload = JSON.stringify({ synthetic: 'x'.repeat(4096) });
   const rows = payloadMiB * 256;
   const insert = seed.db.prepare('INSERT INTO events(type,payload,at) VALUES(?,?,?)');
-  seed.transaction(() => {
-    for (let index = 0; index < rows; index++) insert.run('synthetic-scale', payload, index);
+  for (let start = 0; start < rows; start += 512) seed.transaction(() => {
+    for (let index = start; index < Math.min(rows, start + 512); index++) insert.run('synthetic-scale', payload, index);
   });
   seed.close();
   async function node(name, platform) {
@@ -98,11 +103,29 @@ for (const payloadMiB of scales) {
       assert.equal(selected.db.prepare('PRAGMA integrity_check').get().integrity_check, 'ok');
       assert.equal(selected.db.prepare('PRAGMA foreign_key_check').get(), undefined);
     } finally { selected.close(); }
+    const retainedPath = f.source.config.databasePath;
+    const retainedInode = (await stat(retainedPath)).ino;
+    f.source.snapshots.create = f.receiver.snapshots.create = async () => { throw Error('Warm handover must not create a full snapshot'); };
+    const warmStarted = performance.now(), ioBefore = process.resourceUsage(), syscallBefore = await processIo();
+    await f.receiver.action('handover', { requestId: randomUUID(), confirmed: true });
+    const warmMs = performance.now() - warmStarted, ioAfter = process.resourceUsage(), syscallAfter = await processIo();
+    const warmReadBytes = syscallAfter && syscallAfter.rchar - syscallBefore.rchar;
+    const warmWriteBytes = syscallAfter && syscallAfter.wchar - syscallBefore.wchar;
+    if (syscallAfter) {
+      assert(warmReadBytes < 32 * 1024 ** 2, `Warm handover must not read historical database contents (${warmReadBytes} bytes)`);
+      assert(warmWriteBytes < 8 * 1024 ** 2, `Warm handover must not copy historical database contents (${warmWriteBytes} bytes)`);
+    }
+    assert.equal(f.source.canControl(), true);
+    assert.equal(f.receiver.canControl(), false);
+    assert.equal(f.source.state.value.activeDbPath, retainedPath);
+    assert.equal((await stat(retainedPath)).ino, retainedInode, 'warm handover reuses the receiver file');
     assert(metrics.maxHeartbeatMs < 2000, 'large transfer leaves the loop responsive within a generous offline bound');
     t.diagnostic(JSON.stringify({ payloadMiB, databaseMiB: +(f.bytes / 1024 ** 2).toFixed(2),
       elapsedMs: +elapsedMs.toFixed(1), preflightMs: +(metrics.stoppedAt - started).toFixed(1),
       simulatedControlGapMs: +(metrics.activatedAt - metrics.stoppedAt).toFixed(1),
-      writes: metrics.writes, heartbeatTicks: metrics.ticks, maxHeartbeatMs: +metrics.maxHeartbeatMs.toFixed(1) }));
+      writes: metrics.writes, heartbeatTicks: metrics.ticks, maxHeartbeatMs: +metrics.maxHeartbeatMs.toFixed(1),
+      warmHandoverMs: +warmMs.toFixed(1), warmReadBlocks: ioAfter.fsRead - ioBefore.fsRead,
+      warmWriteBlocks: ioAfter.fsWrite - ioBefore.fsWrite, warmReadBytes, warmWriteBytes }));
   });
 }
 
@@ -112,10 +135,11 @@ test('large incompatible receiver snapshot is rejected without stopping the curr
   // offered export is changed; the running master's database remains intact.
   f.source.snapshots.snapshot = async options => {
     const result = await original(options);
-    const db = new DatabaseSync(options.destination);
-    try { db.prepare('INSERT INTO state(key,value,updated_at) VALUES(?,?,?)').run('charging:mqtt', '{"version":-1}', 1); }
-    finally { db.close(); }
-    return { ...result, ...await snapshotDigest(options.destination) };
+    const store = new Store(options.destination);
+    let checkpoint;
+    try { store.setState('charging:mqtt', { version: -1 }, 1); checkpoint = store.checkpoint(); }
+    finally { store.close(); }
+    return { ...result, checkpoint, ...await snapshotDigest(options.destination) };
   };
   const started = performance.now();
   await assert.rejects(f.source.action('handover', { requestId: randomUUID(), confirmed: true }), { code: 'database_state_incompatible' });

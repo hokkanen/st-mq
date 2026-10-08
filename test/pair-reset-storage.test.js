@@ -195,7 +195,7 @@ test('slave and protected replica keep the actual published history rather than 
   const { config, create } = await fixture(t);
   const generation = randomUUID(), snapshot = join(config.pair.snapshotDirectory, `snapshot-${generation}.sqlite`);
   await file(snapshot, 'accepted snapshot history');
-  await file(join(config.pair.snapshotDirectory, 'publication.json'), JSON.stringify({ format: 1,
+  await file(join(config.pair.snapshotDirectory, 'publication.json'), JSON.stringify({ format: 2, fileGeneration: generation, checkpoint: { databaseId: randomUUID(), sequence: 0, hash: 'b'.repeat(64) },
     digestAlgorithm: 'sha256-sqlite-pages-v1', generation, digest: 'a'.repeat(64), bytes: 512,
     sourceStartedAt: 1000, sourceAt: 1100, verifiedAt: 1200, previousGeneration: null }));
   for (const role of ['slave', 'protected']) assert.equal(await selectResetDatabase(config, { role, everWritten: false }), snapshot);

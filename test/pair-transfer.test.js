@@ -53,7 +53,7 @@ for (const scenario of [
     const remote = new SnapshotRepository({ directory: join(f.root, 'unsupported-exports'),
       snapshot: async ({ dbPath, destination }) => {
         await copyFile(dbPath, destination);
-        return { ...await snapshotDigest(destination), sourceStartedAt: 1, sourceAt: 1 };
+        return { ...await snapshotDigest(destination), checkpoint: { databaseId: randomUUID(), sequence: 0, hash: 'a'.repeat(64) }, sourceStartedAt: 1, sourceAt: 1 };
       } });
     await remote.init();
     const incoming = await remote.create({ dbPath: path, claim: f.claim, sequence: 2 });
@@ -78,7 +78,7 @@ test('publication guard retains the schema diagnosis without changing incompatib
   assert.deepEqual(await readFile(join(directory, 'publication.json')), manifest);
 });
 
-test('paired snapshot replication catches up inserts, changes and deletions exactly with changed chunks', async t => {
+test('exceptional full replacement preserves old readers and publishes exact current contents', async t => {
   const f = await fixture(t), directory = join(f.root, 'slave');
   const first = await f.repository.create({ dbPath: f.dbPath, claim: f.claim, sequence: 1 });
   const result = await receiveSnapshot({ directory, metadata: first, peer: f.peer });
@@ -89,7 +89,6 @@ test('paired snapshot replication catches up inserts, changes and deletions exac
   const second = await f.repository.create({ dbPath: f.dbPath, claim: f.claim, sequence: 2, force: true });
   const next = await receiveSnapshot({ directory, metadata: second, peer: f.peer });
   assert.equal((await snapshotDigest(next.dbPath)).digest, second.digest);
-  assert.ok(next.transferredBytes < second.bytes, 'unchanged chunks are reused');
   const nextReader = new DatabaseSync(next.dbPath, { readOnly: true }); t.after(() => nextReader.close());
   assert.equal(nextReader.prepare('SELECT count(*) AS n FROM events').get().n, 99);
   assert.equal(oldReader.prepare('SELECT count(*) AS n FROM events').get().n, 100);
@@ -132,7 +131,7 @@ test('a changed local publication is preserved before another master snapshot ca
   changed.close();
   const preserved = await readFile(publication.dbPath), manifest = await readFile(join(directory, 'publication.json'));
   await assert.rejects(createReplicaPublicationGuard({ directory, accepted: acceptedSnapshot(metadata) }),
-    { code: 'verification_failed' });
+    { code: 'database_journal_invalid' });
   assert.deepEqual(await readFile(publication.dbPath), preserved);
   assert.deepEqual(await readFile(join(directory, 'publication.json')), manifest);
 });
@@ -173,7 +172,7 @@ test('published snapshots require their accepted identity and reject additional 
   const original = await readFile(publication.dbPath);
   await writeFile(`${publication.dbPath}-wal`, 'synthetic unclassified journal data', { mode: 0o600 });
   await assert.rejects(guard(), { code: 'verification_failed' });
-  await assert.rejects(verifySnapshot(publication.dbPath, metadata), { code: 'verification_failed' });
+  await assert.rejects(verifySnapshot(publication.dbPath, metadata), { code: 'database_integrity_failed' });
   assert.deepEqual(await readFile(publication.dbPath), original);
 });
 

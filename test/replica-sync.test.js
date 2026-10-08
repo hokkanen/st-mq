@@ -34,7 +34,7 @@ function session(directory) {
     return Promise.race([response, result]);
   };
   return { input, result, generation, incoming: join(directory, `incoming-${generation}.sqlite`),
-    prepare: () => send({ type: 'prepare', version: 1, generation }),
+    prepare: () => send({ type: 'prepare', version: 2, repair: true, generation }),
     publish: metadata => send({ type: 'publish', generation, ...metadata }) };
 }
 
@@ -105,7 +105,8 @@ test('receiver publishes only matching snapshots, preserves old readers, and bou
   t.after(() => oldReader.close());
   const receiver = session(replica);
   await receiver.prepare();
-  const bad = new DatabaseSync(receiver.incoming);
+  await copyFile(first.dbPath, receiver.incoming);
+  const bad = new Store(receiver.incoming).db;
   bad.exec("UPDATE events SET payload=json_object('value','unexpected replica edit')"); bad.close();
   await assert.rejects(receiver.publish({ digest: first.digest, bytes: first.bytes,
     sourceStartedAt: first.sourceStartedAt, sourceAt: first.sourceAt }), /verification_failed/);
@@ -177,7 +178,7 @@ test('receiver lock automatically recovers after SIGKILL with an unfinished inco
   const receiver = spawn(process.execPath, [resolve('scripts/replica-receiver.js'), replica], { stdio: ['pipe', 'pipe', 'ignore'] });
   t.after(() => receiver.kill('SIGKILL'));
   const ready = once(receiver.stdout, 'data');
-  receiver.stdin.write(`${JSON.stringify({ type: 'prepare', version: 1, generation: randomUUID() })}\n`);
+  receiver.stdin.write(`${JSON.stringify({ type: 'prepare', version: 2, repair: true, generation: randomUUID() })}\n`);
   assert.equal(JSON.parse(String((await ready)[0])).type, 'ready');
   receiver.kill('SIGKILL');
   await once(receiver, 'close');
@@ -194,7 +195,7 @@ test('verification is read-only and catches changed data, while damaged replica 
   assert.deepEqual(await readFile(join(replica, 'publication.json')), manifest);
   const corrupted = new DatabaseSync(first.dbPath);
   corrupted.exec("UPDATE events SET payload=json_object('value','unexpected replica data')"); corrupted.close();
-  await assert.rejects(verifyReplicaPublication(replica), /verification_failed/);
+  await assert.rejects(verifyReplicaPublication(replica), error => ['database_journal_invalid', 'database_integrity_failed'].includes(error.code));
   const receiver = session(replica);
   await receiver.prepare();
   assert.equal((await stat(receiver.incoming)).size, 0, 'damaged base requires a full fresh transfer');
@@ -234,7 +235,7 @@ for (const scenario of [
   const lines = createInterface({ input: receiver.stdout }), messages = lines[Symbol.asyncIterator]();
   t.after(() => { lines.close(); receiver.kill('SIGKILL'); });
   const generation = randomUUID();
-  receiver.stdin.write(`${JSON.stringify({ type: 'prepare', version: 1, generation })}\n`);
+  receiver.stdin.write(`${JSON.stringify({ type: 'prepare', version: 2, repair: true, generation })}\n`);
   assert.equal(JSON.parse((await messages.next()).value).type, 'ready');
   await copyFile(path, join(replica, `incoming-${generation}.sqlite`));
   const metadata = await snapshotDigest(path);

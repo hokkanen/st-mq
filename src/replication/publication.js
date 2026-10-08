@@ -1,15 +1,35 @@
 import { createHash } from 'node:crypto';
-import { createReadStream, constants } from 'node:fs';
-import { chmod, copyFile, lstat, mkdir, open, readFile, readdir, rename, rm, link } from 'node:fs/promises';
+import { createReadStream } from 'node:fs';
+import { chmod, lstat, mkdir, open, readFile, readdir, realpath, rename, rm, link } from 'node:fs/promises';
 import { isDeepStrictEqual } from 'node:util';
 import { dirname, isAbsolute, join, resolve } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
-import { validateCurrentDatabase } from '../storage/store.js';
+import { validateCurrentDatabase, validateWalHeader } from '../storage/store.js';
+import { databaseCheckpoint, JOURNAL_DIGEST, sameCheckpoint, validCheckpoint } from './incremental.js';
 
-export const PUBLICATION_FORMAT = 1;
+export const PUBLICATION_FORMAT = 2;
 export const DIGEST_ALGORITHM = 'sha256-sqlite-pages-v1';
 export const GENERATION_PATTERN = /^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/;
 const MANIFEST = 'publication.json';
+const publicationRoots = new Map();
+
+/** Roots come only from local configuration, never a peer or manifest. */
+export function configurePublicationRoots(directory, roots) {
+  publicationRoots.set(resolve(directory), [...new Set([resolve(directory), ...roots.filter(Boolean).map(root => resolve(root))])]);
+}
+
+export async function validatePublicationDatabasePath(directory, path) {
+  if (!isAbsolute(path ?? '')) throw replicationError('invalid_publication');
+  const info = await lstat(path);
+  if (!info.isFile() || info.isSymbolicLink()) throw replicationError('unsafe_file');
+  const physical = await realpath(path), roots = publicationRoots.get(resolve(directory)) ?? [resolve(directory)];
+  for (const root of roots) {
+    let physicalRoot;
+    try { physicalRoot = await realpath(root); } catch { continue; }
+    if (physical.startsWith(`${physicalRoot}/`)) return physical;
+  }
+  throw replicationError('unsafe_file');
+}
 
 export function replicationError(code) {
   const error = new Error(code);
@@ -64,7 +84,8 @@ export async function readReplicaPublication(directory) {
   catch (error) { if (error.code === 'ENOENT') return null; throw replicationError('publication_unavailable'); }
   let value;
   try { value = JSON.parse(raw); } catch { throw replicationError('invalid_publication'); }
-  if (value.format !== PUBLICATION_FORMAT || value.digestAlgorithm !== DIGEST_ALGORITHM ||
+  if (value.format !== PUBLICATION_FORMAT || ![DIGEST_ALGORITHM, JOURNAL_DIGEST].includes(value.digestAlgorithm) ||
+      !GENERATION_PATTERN.test(value.fileGeneration) || !validCheckpoint(value.checkpoint) ||
       !GENERATION_PATTERN.test(value.generation) || !/^[a-f0-9]{64}$/.test(value.digest) ||
       !Number.isSafeInteger(value.bytes) || value.bytes < 512 ||
       ![value.sourceStartedAt, value.sourceAt, value.verifiedAt].every(at => Number.isSafeInteger(at) && at > 0) ||
@@ -72,13 +93,9 @@ export async function readReplicaPublication(directory) {
         (!GENERATION_PATTERN.test(value.previousGeneration) || value.previousGeneration === value.generation))) {
     throw replicationError('invalid_publication');
   }
-  return { ...value, dbPath: join(resolve(directory), `snapshot-${value.generation}.sqlite`) };
-}
-
-/** Copy a closed, standalone snapshot. Reflinks avoid full disk copies where supported. */
-export async function copySnapshot(source, destination) {
-  await copyFile(source, destination, constants.COPYFILE_EXCL | constants.COPYFILE_FICLONE);
-  await privateFile(destination);
+  const dbPath = value.databasePath === undefined ? join(resolve(directory), `snapshot-${value.fileGeneration}.sqlite`)
+    : await validatePublicationDatabasePath(directory, value.databasePath);
+  return { ...value, dbPath };
 }
 
 /** Published snapshots are standalone files, never writable SQLite/WAL stores. */
@@ -123,6 +140,7 @@ export async function snapshotDigest(path) {
 
 /** Close WAL state before publication. This is only for an unpublished snapshot. */
 export function normalizeSnapshot(path) {
+  validateWalHeader(path);
   const db = new DatabaseSync(path);
   try {
     validateCurrentDatabase(db);
@@ -135,25 +153,25 @@ export function normalizeSnapshot(path) {
   } finally { db.close(); }
 }
 
-/** Verification never changes the immutable generation or its manifest. */
+/** Explicit full verification never changes application rows or the manifest. */
 export async function verifyReplicaPublication(directory) {
   const publication = await readReplicaPublication(directory);
   if (!publication) throw replicationError('publication_unavailable');
-  const db = new DatabaseSync(publication.dbPath, { readOnly: true });
-  try {
-    db.exec('PRAGMA query_only=ON');
-    validateCurrentDatabase(db);
-    const result = db.prepare('PRAGMA integrity_check').all();
-    if (result.length !== 1 || result[0].integrity_check !== 'ok') throw replicationError('database_integrity_failed');
-  } finally { db.close(); }
-  const actual = await snapshotDigest(publication.dbPath);
-  if (actual.digest !== publication.digest || actual.bytes !== publication.bytes) throw replicationError('verification_failed');
-  return publication;
+  const { verifyDatabase } = await import('../storage/full-verifier.js');
+  const fullVerification = await verifyDatabase({ dbPath: publication.dbPath, checkpoint: publication.checkpoint });
+  if (publication.digestAlgorithm === JOURNAL_DIGEST) {
+    const actual = await databaseCheckpoint({ dbPath: publication.dbPath });
+    if (!sameCheckpoint(actual, publication.checkpoint)) throw replicationError('verification_failed');
+  } else {
+    const actual = await snapshotDigest(publication.dbPath);
+    if (actual.digest !== publication.digest || actual.bytes !== publication.bytes) throw replicationError('verification_failed');
+  }
+  return { ...publication, fullVerification };
 }
 
 /** Caller holds the receiver lock. The manifest names the only retained copies. */
 export async function pruneReplicaSnapshots(directory, publication) {
-  const retained = new Set([publication?.generation, publication?.previousGeneration]);
+  const retained = new Set([publication?.fileGeneration, publication?.previousGeneration]);
   for (const name of await readdir(directory)) {
     const match = /^snapshot-([a-f0-9-]+)\.sqlite$/.exec(name);
     if (match && GENERATION_PATTERN.test(match[1]) && !retained.has(match[1])) await rm(join(directory, name));
@@ -166,6 +184,7 @@ export async function publishSnapshot(directory, incoming, metadata) {
   if (!isAbsolute(directory) || !GENERATION_PATTERN.test(metadata.generation) ||
       incoming !== join(directory, `incoming-${metadata.generation}.sqlite`)) throw replicationError('invalid_publication');
   await privateFile(incoming);
+  validateWalHeader(incoming);
   const candidate = new DatabaseSync(incoming, { readOnly: true });
   try { validateCurrentDatabase(candidate); } finally { candidate.close(); }
   const actual = await snapshotDigest(incoming);
@@ -190,8 +209,10 @@ export async function publishSnapshot(directory, incoming, metadata) {
   }
   await rm(incoming);
   await syncDirectory(directory);
-  const publication = { format: PUBLICATION_FORMAT, ...metadata, digestAlgorithm: DIGEST_ALGORITHM,
-    previousGeneration: previous?.generation ?? null };
+  const checkpoint = await databaseCheckpoint({ dbPath: target });
+  if (metadata.checkpoint && !sameCheckpoint(checkpoint, metadata.checkpoint)) throw replicationError('verification_failed');
+  const publication = { format: PUBLICATION_FORMAT, ...metadata, checkpoint, fileGeneration: metadata.generation,
+    digestAlgorithm: DIGEST_ALGORITHM, previousGeneration: previous?.fileGeneration ?? null };
   await durableJson(join(directory, MANIFEST), publication);
   // Linux keeps existing read-only SQLite connections valid after unlink. New
   // readers resolve the manifest again if a generation disappears before open.
