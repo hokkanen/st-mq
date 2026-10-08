@@ -3,6 +3,7 @@ import { TIME_ZONE } from '../domain/prices.js';
 import { delayedScheduleFor, easeeScheduleTakeoverSupported, easeeTakeoverFingerprint, effectiveScheduleFingerprint, manualScheduleWindow, nextLocalOccurrence, scheduleFingerprint } from './easee.js';
 import { createHash } from 'node:crypto';
 import { chargingPlanInputsUnavailable } from './plan-inputs.js';
+import { admittedChargingDeadlineRevision } from './flexibility.js';
 
 const copy = value => structuredClone(value);
 const isTime = value => Number.isSafeInteger(value) && value >= 0;
@@ -304,7 +305,8 @@ export function createChargingController({ adapter, initialState = null, saveSta
       || revision.previousPlanId !== prior.planId || !isTime(revision.at) || revision.at > now
       || revision.at < prior.periods[0].startAt || plan.feasible !== true || plan.provisional === true
       || !Number.isFinite(plan.requiredGridKwh) || plan.requiredGridKwh <= 0
-      || !isTime(plan.deadlineAt) || plan.deadlineAt <= now || plan.deadlineAt !== prior.deadlineAt
+      || !isTime(plan.deadlineAt) || plan.deadlineAt <= now
+      || !admittedChargingDeadlineRevision(plan, prior.deadlineAt, desired.deadlineRequest, state.session?.connectedAt)
       || revised.periods[0].startAt < revision.at) return null;
     // Retain elapsed automatic history, including the part of a running period
     // before this proposal. A continuous revision must not invent a pause.

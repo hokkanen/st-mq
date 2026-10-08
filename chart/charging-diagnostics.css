@@ -8,6 +8,9 @@
 .charging-session-report[data-state="attention"] .charging-session-report-status, .charging-session-report[data-state="unknown"] .charging-session-report-status { color: var(--stale); }
 .charging-footer .charging-session-report:hover { background: var(--surface-soft); border-color: var(--border); }
 .charging-session-report:focus-visible { outline: 2px solid var(--focus); outline-offset: 3px; }
+.charging-footer-flexible .charging-session-report { grid-column: 2; padding-inline: 9px; gap: 5px; font-size: 10px; }
+.charging-footer-flexible .charging-session-report-open { font-size: 0; }
+.charging-footer-flexible .charging-session-report-open::after { content: '↗'; font-size: 12px; }
 .charging-report-dialog { --report-padding: 24px; width: min(620px, calc(100vw - 28px)); box-sizing: border-box; max-height: calc(100dvh - 28px); padding: var(--report-padding); overflow-y: auto; scroll-padding-top: calc(6em + var(--report-padding)); }
 .charging-report-heading { display: flex; align-items: center; justify-content: space-between; gap: 12px; position: sticky; top: calc(-1 * var(--report-padding)); z-index: 2; background: var(--surface); margin: calc(-1 * var(--report-padding)) calc(-1 * var(--report-padding)) 0; padding: var(--report-padding) var(--report-padding) 12px; border-bottom: 1px solid var(--border); }
 .charging-report-heading h2 { margin: 0; }

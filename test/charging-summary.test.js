@@ -17,6 +17,14 @@ function summary(item) {
 }
 const notice = item => chargingNotice(item, chargerDisplay(item, { now }), summary(item));
 
+test('predicted remaining cost is disclosed without claiming that delivered cost or price coverage is missing', () => {
+  const item = charger({ sessionCost: { totalCents: 456, estimated: true, usesForecast: true } });
+  const cost = chargingCost(item, chargerDisplay(item, { now }), summary(item), { now });
+  assert.equal(cost.value, '€4.56');
+  assert.match(cost.detail, /Remaining energy includes predicted electricity prices/);
+  assert.doesNotMatch(cost.detail, /Missing forecast|last available cost estimate/);
+});
+
 test('missing vehicle feeds leave both chargers planned with configured inputs', () => {
   for (const id of ['charger1', 'charger2']) {
     const item = charger({ id, vehicle: { state: 'identifying', id: null },

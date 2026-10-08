@@ -45,8 +45,8 @@ function production(runtime) {
 
 test('guided-test API uses real normalized charger readiness and keeps declarations out of production settings', async t => {
   const f = fixture(t), token = 'synthetic-physical-test-authorization';
-  // Keep background forecast completion out of the before/after action
-  // comparison. Ordinary synchronous production planning remains enabled.
+  // Keep background household preparation out of the action comparison.
+  // The numerical charging worker is settled after the synthetic connection.
   await f.runtime.historyService.close(); f.runtime.historyService = null;
   f.engine.status();
   const server = createAppServer({ engine: f.engine, store: f.store, token,
@@ -87,6 +87,7 @@ test('guided-test API uses real normalized charger readiness and keeps declarati
   assert.deepEqual(f.runtime.settings, before);
   assert.equal(f.runtime.chargers.charger1.request, null);
   f.plug(); f.runtime.persist();
+  await f.runtime.updatePlan();
   const view = f.runtime.status(), run = view.physicalTests.runs[0];
   assert.equal(run.phase, 'observing'); assert.ok(run.sessionId);
   assert.equal(view.chargers[0].values.soc.value, before.chargers.charger1.manualSoc);

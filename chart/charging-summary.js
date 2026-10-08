@@ -6,6 +6,29 @@ const nativeForecast = forecast => ['forecast', 'uncertain'].includes(forecast?.
   && ['automatic-current-forecast', 'vehicle-stop-unknown'].includes(forecast.reason)
   || forecast?.state === 'forecast' || forecast?.controlled === false && forecast.state !== 'planned';
 
+export const CHARGING_FLEXIBILITY_PREVIEW_LIFETIME_MS = 5 * 60_000;
+
+/** A price opportunity is an estimate; only an unconsumed grant marks the deadline. */
+export function chargingFlexibility(charger, { now = Date.now(), comparison = charger.flexibility?.preview } = {}) {
+  const state = charger.flexibility;
+  const connected = charger.values?.connected?.value === true && Boolean(charger.request);
+  const checkpoint = timestamp(state?.checkpointAt);
+  const active = connected && state?.active === true && checkpoint !== null && now < checkpoint;
+  const awaitingCheckpoint = connected && state?.active === true && checkpoint !== null && now >= checkpoint;
+  const remaining = charger.progress?.remainingGridKwh ?? charger.requiredGridKwh ?? charger.plan?.requiredGridKwh;
+  const complete = finite(remaining) && remaining <= 0;
+  const visible = connected && Boolean(state) && (active || awaitingCheckpoint || state.enabled === true && !complete);
+  const available = comparison?.available === true && finite(comparison.at) && comparison.at <= now
+    && now - comparison.at < CHARGING_FLEXIBILITY_PREVIEW_LIFETIME_MS;
+  const savings = available && finite(comparison.savingsCents) ? comparison.savingsCents : null;
+  const recommended = !active && !awaitingCheckpoint && state?.eligible === true && comparison?.recommended === true && savings > 0;
+  return { visible, active, awaitingCheckpoint, complete, eligible: state?.eligible === true && !active && !awaitingCheckpoint && !complete,
+    effectiveReadyByAt: timestamp(state?.effectiveReadyByAt ?? (state?.active ? state.deferredReadyByAt : state?.normalReadyByAt)),
+    title: active ? 'One day allowed' : 'One extra day',
+    label: active ? 'Review flexibility' : awaitingCheckpoint ? 'Compare again' : recommended ? `Est. €${(savings / 100).toFixed(2)} less` : available ? 'Compare costs' : 'Check savings',
+    tone: active ? 'deferred' : recommended ? 'saving' : 'neutral' };
+}
+
 /** A bounded summary notice; its full explanation remains available on demand. */
 export function chargingNotice(charger, view, summary) {
   const detail = [view.problem, view.priority, view.readiness, ...view.notes].filter(Boolean).join('\n\n');
@@ -44,7 +67,8 @@ export function chargingCost(charger, view, summary, { now = Date.now(), prices 
   if (view.showMetrics && finite(charger.sessionCost?.totalCents)) return {
     value: `€${(charger.sessionCost.totalCents / 100).toFixed(2)}`,
     detail: 'Estimated total electricity cost from plugging in through the target, including charging losses. Delivered energy remains included after the target and any further charging adds to the cost.'
-      + (charger.sessionCost.estimated ? ' Missing forecast or rate coverage uses the last available cost estimate.' : '') };
+      + (charger.sessionCost.usesForecast ? ' Remaining energy includes predicted electricity prices; savings and final cost may change.'
+        : charger.sessionCost.estimated ? ' Missing forecast or rate coverage uses the last available cost estimate.' : '') };
   const forecast = charger.forecast, remaining = charger.progress?.remainingGridKwh ?? charger.requiredGridKwh ?? forecast?.requiredGridKwh;
   const unavailable = { value: 'No estimate', detail: 'A current charging forecast and electricity rates covering the time to target are needed.' };
   if (!view.showMetrics || !finite(remaining)) return unavailable;

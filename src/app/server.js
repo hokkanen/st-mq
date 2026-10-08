@@ -11,6 +11,7 @@ import { createDatabaseExport, databaseExportErrorMessage } from './database-exp
 import { createRecordingHealth } from './recording-health.js';
 import { familyRouteAllowed, familyActionAllowed, fireplaceAccess, FAMILY_FIREWOOD_REMOVAL_MS } from './web-permissions.js';
 import { ChargingSessionDiagnostics } from '../charging/session-diagnostics.js';
+import { electricityForecastView } from './electricity-forecast-view.js';
 
 function authorized(req, token) {
   if (!token) return false;
@@ -440,12 +441,14 @@ export function createAppServer({ engine, getEngine = () => engine, store, chart
             const result = await commit(() => current.charging.chargingTestAction(chargingTestAction[1], input));
             return json(200, chargingTestAction[1] === 'preview' ? result : status());
           });
-        const chargerAction = url.pathname.match(/^\/api\/charging\/chargers\/([^/]+)\/(settings|control|resume|use-automatic|charge-now|identify)$/);
+        const chargerAction = url.pathname.match(/^\/api\/charging\/chargers\/([^/]+)\/(settings|control|resume|use-automatic|charge-now|identify|flexibility|flexibility-preview)$/);
         if (req.method === 'POST' && chargerAction)
           return await mutate(async (current, input) => {
             const [, id, action] = chargerAction;
-            const method = { settings: 'setChargerSettings', control: 'setControl', resume: 'resume', 'use-automatic': 'useAutomatic', 'charge-now': 'chargeNow', identify: 'identifyVehicle' }[action];
-            await current.charging[method](id, input); return json(200, status());
+            const method = { settings: 'setChargerSettings', control: 'setControl', resume: 'resume', 'use-automatic': 'useAutomatic', 'charge-now': 'chargeNow', identify: 'identifyVehicle',
+              flexibility: 'setFlexibility', 'flexibility-preview': 'previewFlexibility' }[action];
+            const result = await current.charging[method](id, input);
+            return json(200, action === 'flexibility-preview' ? result : status());
           });
         if (req.method === 'POST' && url.pathname === '/api/garage/heating')
           return await mutate(async (current, input) => { await current.garage.setHeating(input); return json(200, status()); });
@@ -494,6 +497,12 @@ export function createAppServer({ engine, getEngine = () => engine, store, chart
             if (ownsService) await service.close();
           }
           return;
+        }
+        if (req.method === 'GET' && url.pathname === '/api/electricity-forecast') {
+          const now = engine.clock();
+          return json(200, electricityForecastView({ now,
+            forecast: engine.electricityForecast?.snapshot({ now }),
+            official: readerStore.getState('provider:market')?.intervals ?? [], contract: engine.contract() }));
         }
         if (req.method === 'GET' && url.pathname === '/api/chart') {
           const now = engine.clock();

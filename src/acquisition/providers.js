@@ -7,6 +7,7 @@ import { fileTokenStore } from './token-store.js';
 import { ocppInstallation } from './easee-ocpp-setup.js';
 import { createDeviceProviders } from './devices.js';
 import { fetchMarket } from './market.js';
+import { startElectricityForecast, fetchElectricityForecast } from './electricity-forecast.js';
 import { resolveMarketIntervals } from '../domain/market-authority.js';
 import { fetchWeather, fetchOutdoorTemperature } from './weather.js';
 import { ElectricityAccumulator } from '../domain/electricity.js';
@@ -158,6 +159,7 @@ function cacheWeather(previous, result, snapshotId, now) {
  * of its last good data; it cannot postpone control or another provider's poll. */
 export function startProviders({ engine, store, config, clock = Date.now, http,
   devices, market = fetchMarket, weather = fetchWeather, outdoor = fetchOutdoorTemperature,
+  electricityForecast = fetchElectricityForecast,
   temperatureProvider, automatic = true, canControl = () => true, streamFactory, ocppFactory } = {}) {
   let closed = false, timer;
   const cancellation = new AbortController();
@@ -166,6 +168,9 @@ export function startProviders({ engine, store, config, clock = Date.now, http,
     : Promise.resolve().then(action);
   const connections = config.connections ?? {};
   http ??= createHttp({ allowChargerScheduling: true, allowChargerTakeover: true, allowOcppSetup: true, canControl });
+  const priceForecast = startElectricityForecast({ enabled: config.electricityForecast?.enabled === true,
+    clock, http, automatic: false, canAcquire: canControl, fetcher: electricityForecast });
+  engine.electricityForecast = priceForecast;
   const location = configuredLocation(connections);
   const ownsDevices = !devices;
   let localInstallation;
@@ -511,6 +516,8 @@ export function startProviders({ engine, store, config, clock = Date.now, http,
 
   function runDue() {
     if (closed || !canControl()) return Promise.resolve([]);
+    // Deliberately outside the durable provider poll/snapshot machinery.
+    const priceForecastFlight = priceForecast.runDue();
     if (ownsDevices && !pending.has('ocpp-setup')) {
       const flight = Promise.resolve(devices.reconcileOcpp?.()).catch(() => {}).finally(() => pending.delete('ocpp-setup'));
       pending.set('ocpp-setup', flight);
@@ -522,7 +529,7 @@ export function startProviders({ engine, store, config, clock = Date.now, http,
       const flight = poll(name).finally(() => pending.delete(name));
       pending.set(name, flight);
     }
-    return Promise.allSettled([...pending.values()]);
+    return Promise.allSettled([...pending.values(), priceForecastFlight]);
   }
   if (automatic) {
     // Acquisition publishes durable readings before the passive charging observer runs.
@@ -545,8 +552,9 @@ export function startProviders({ engine, store, config, clock = Date.now, http,
         void interruptElectricity([easee.charger_id, easee.equalizer_id].filter(present));
       closed = true; clearInterval(timer);
       engine.ocppSetup = null;
+      if (engine.electricityForecast === priceForecast) engine.electricityForecast = null;
       cancellation.abort(); http.close?.();
-      await Promise.allSettled([...pending.values(), ...(ownsDevices ? [devices.close?.()] : [])]);
+      await Promise.allSettled([...pending.values(), priceForecast.close(), ...(ownsDevices ? [devices.close?.()] : [])]);
     },
   };
 }

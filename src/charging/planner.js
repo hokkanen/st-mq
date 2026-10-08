@@ -1,3 +1,6 @@
+import { delayedScheduleFor } from './easee.js';
+import { TIME_ZONE } from '../domain/prices.js';
+
 const HOUR = 3_600_000, EPS = 1e-7, MIN_CURRENT_A = 6;
 const MIN_PERIOD_MS = 15 * 60_000, MIN_PAUSE_MS = 15 * 60_000;
 const STABLE_PERIOD_MS = 2 * 60_000, STABLE_COST_CENTS = 0.1;
@@ -7,6 +10,10 @@ const three = value => Array.isArray(value) && value.length === 3 && value.every
 const asPhases = value => three(value) ? value : finite(value) && value >= 0 ? [value, value, value] : null;
 const value = (charger, key) => charger.values?.[key]?.available === false ? null : charger.values?.[key]?.value ?? null;
 const priceValue = row => row.priceCtPerKwh ?? row.allInCentsPerKWh ?? row.totalCtPerKwh ?? row.price;
+const cashPrice = row => row.cashPriceCtPerKwh ?? row.priceCtPerKwh;
+const decisionCost = result => result.costCents + (result.uncertaintyPremiumCents ?? 0);
+const acceptsPredicted = job => job.charger.forecastAllowed === true || job.preservePermission || job.fixedPeriods
+  || job.remaining <= EPS && !targetKnown(job.charger);
 // A requested minimum is not a vehicle stop instruction. Only an observed
 // native vehicle ceiling can bound consumption at the modeled target.
 const targetKnown = charger => charger.values.minimumSoc.available && !charger.values.minimumSoc.assumed
@@ -27,6 +34,33 @@ const requestEnergy = charger => Math.max(charger.requiredGridKwh,
   charger.requiredGridKwh + (finite(charger.sessionCost?.recordedGridKwh) ? Math.max(0, charger.sessionCost.recordedGridKwh) : 0));
 const singleAllocations = new WeakMap();
 const simulationBoundaries = new WeakMap();
+const nativeStarts = new WeakMap();
+
+function nativePeriodsAvailable(job, starts, periods) {
+  if (!job.charger.capabilities.localClockSchedule || job.fixedPeriods || job.preservePermission) return true;
+  let cache = nativeStarts.get(job);
+  if (!cache) { cache = new Map(); nativeStarts.set(job, cache); }
+  let pauseAt = job.now;
+  for (const period of periods?.[job.charger.id] ?? [{ startAt: starts[job.charger.id], endAt: null }]) {
+    if (period.startAt > pauseAt) {
+      const key = `${pauseAt}:${period.startAt}`;
+      let available = cache.get(key);
+      if (available === undefined) {
+        try {
+          // This is the adapter's existing date/DST representation check.
+          // The dummy minimum pilot never becomes an electrical command.
+          delayedScheduleFor({ startAt: period.startAt, timezone: TIME_ZONE, maximumAmps: MIN_CURRENT_A }, pauseAt);
+          available = true;
+        } catch { available = false; }
+        if (cache.size < 4096) cache.set(key, available);
+      }
+      if (!available) return false;
+    }
+    if (period.endAt === null) break;
+    pauseAt = Math.max(pauseAt, period.endAt);
+  }
+  return true;
+}
 
 function electrical(charger, supply = {}) {
   // Both supported installations use three-phase charging, including while the
@@ -310,6 +344,14 @@ function allocateOne(active, resource, at) {
 // pattern before averaging. Average household current can otherwise predict
 // charging during load cycles where the Equalizer would actually suspend it.
 function allocate(active, resource, at) {
+  // Forecast prices can move only an explicitly flexible session. Independently
+  // confirmed native permissions remain real loads, including their future use.
+  if (resource.predicted && active.some(job => !acceptsPredicted(job))) {
+    const admitted = active.filter(acceptsPredicted), excluded = active.filter(job => !acceptsPredicted(job));
+    const result = allocate(admitted, resource, at);
+    return { ...result, currents: { ...result.currents,
+      ...Object.fromEntries(excluded.map(job => [job.charger.id, 0])) } };
+  }
   // Single-charger allocation depends on the resource and electrical contract,
   // not the candidate's remaining energy or start time. Reuse it across the
   // bounded search; weak keys keep the cache scoped to the current inputs.
@@ -391,7 +433,7 @@ function prepareSimulationBoundaries(jobs, intervals) {
 }
 
 function simulate({ starts, periods, jobs, intervals, details = true }) {
-  const states = jobs.map(job => ({ ...job, remaining: job.charger.requiredGridKwh, costCents: 0, deliveredGridKwh: 0,
+  const states = jobs.map(job => ({ ...job, remaining: job.charger.requiredGridKwh, costCents: 0, uncertaintyPremiumCents: 0, deliveredGridKwh: 0,
     deliveredByTargetKwh: 0, finishAt: job.charger.requiredGridKwh <= EPS ? starts[job.charger.id] : null, accounting: [] }));
   const allocations = [], currentLimits = [];
   const prepared = prepareSimulationBoundaries(jobs, intervals);
@@ -407,7 +449,8 @@ function simulate({ starts, periods, jobs, intervals, details = true }) {
   })) : null;
   const changes = unique([...Object.values(starts), ...Object.values(periods ?? {}).flatMap(rows => rows.flatMap(row => [row.startAt, row.endAt]))]
     .filter(finite)).sort((a, b) => a - b);
-  let admissible = true;
+  const nativeScheduleSupported = jobs.every(job => nativePeriodsAvailable(job, starts, periods));
+  let admissible = nativeScheduleSupported;
   for (let intervalIndex = 0; intervalIndex < intervals.length; intervalIndex++) {
     const interval = intervals[intervalIndex];
     const extra = changes.filter(at => at > interval.start && at < interval.end);
@@ -454,8 +497,10 @@ function simulate({ starts, periods, jobs, intervals, details = true }) {
           if (details) row.chargers[id] = { currentA, powerKw, currentLimitA: distribution.suggestions[id] ?? null,
             externallyBalanced: Boolean(item.charger.capabilities.externalLoadBalancing) };
           if (energyKwh > EPS) {
-            if (details) item.accounting.push({ start: at, end, energyKwh, powerKw, currentA, priceCtPerKwh: interval.priceCtPerKwh });
-            item.costCents += energyKwh * interval.priceCtPerKwh;
+            if (details) item.accounting.push({ start: at, end, energyKwh, powerKw, currentA, priceCtPerKwh: cashPrice(interval),
+              ...(interval.predicted ? { predicted: true, uncertaintyCtPerKwh: interval.uncertaintyCtPerKwh } : {}) });
+            item.costCents += energyKwh * cashPrice(interval);
+            item.uncertaintyPremiumCents += energyKwh * (interval.uncertaintyCtPerKwh ?? 0);
             item.deliveredGridKwh += energyKwh;
             if (end <= item.targetAt + .1) item.deliveredByTargetKwh += energyKwh;
             item.remaining = Math.max(0, item.remaining - energyKwh);
@@ -468,7 +513,8 @@ function simulate({ starts, periods, jobs, intervals, details = true }) {
       }
     }
   }
-  return { admissible, allocations, currentLimits, states, costCents: states.reduce((sum, item) => sum + item.costCents, 0),
+  return { admissible, nativeScheduleSupported, allocations, currentLimits, states, costCents: states.reduce((sum, item) => sum + item.costCents, 0),
+    uncertaintyPremiumCents: states.reduce((sum, item) => sum + item.uncertaintyPremiumCents, 0),
     feasible: admissible && states.every(item => item.deliveredByTargetKwh + EPS >= item.charger.requiredGridKwh) };
 }
 
@@ -501,7 +547,7 @@ function compare(a, b, jobs) {
     if (Math.abs(left.deliveredByTargetKwh - right.deliveredByTargetKwh) > EPS) return right.deliveredByTargetKwh - left.deliveredByTargetKwh;
   }
   const count = candidate => jobs.reduce((sum, job) => sum + (candidate.periods?.[job.charger.id]?.length ?? 1), 0);
-  const economicCost = candidate => candidate.costCents;
+  const economicCost = decisionCost;
   if (Math.abs(economicCost(a) - economicCost(b)) > EPS) return economicCost(a) - economicCost(b);
   if (Math.abs((a.zeroEnergyPrice ?? 0) - (b.zeroEnergyPrice ?? 0)) > EPS) return a.zeroEnergyPrice - b.zeroEnergyPrice;
   const preferred = jobs[0]?.priority;
@@ -826,7 +872,7 @@ export function planChargers({ now, chargers = [], prices = [], household = [], 
     const locked = explicit ? fixedPeriods[charger.id] : observed
       ? [{ startAt: forecast.startAt, endAt: charger.telemetry?.scheduledEndKind === 'scheduled-stop' ? forecast.endAt : null }]
       : released(charger) || charger.deadlineAt <= now ? [{ startAt: now, endAt: null }] : null;
-    return [{ charger, priority, electric, targetAt: plans[charger.id].targetAt, fixedPeriods: locked, allocationHold,
+    return [{ charger, priority, electric, now, targetAt: plans[charger.id].targetAt, fixedPeriods: locked, allocationHold,
       preservePermission: !canSchedule, continuingLoad: charger.requiredGridKwh <= EPS && (forecast.charging === true || forecast.permitted === true) }];
   })
     .sort((a, b) => a.targetAt - b.targetAt || b.charger.requiredGridKwh - a.charger.requiredGridKwh || a.charger.id.localeCompare(b.charger.id));
@@ -898,7 +944,8 @@ export function planChargers({ now, chargers = [], prices = [], household = [], 
   let partialPrices = false;
   for (let index = 0; index < boundaries.length - 1; index++) {
     const start = boundaries[index], stop = boundaries[index + 1];
-    const price = validPrices.find(row => row.start <= start && row.end >= stop);
+    const overlapping = validPrices.filter(row => row.start <= start && row.end >= stop);
+    const price = overlapping.find(row => row.predicted !== true) ?? overlapping[0];
     if (!price) partialPrices = true;
     if (!price && !forecastOnly) {
       // Do not pretend an unrestricted native period pauses inside an unknown
@@ -906,7 +953,11 @@ export function planChargers({ now, chargers = [], prices = [], household = [], 
       if (intervals.length) break;
       continue;
     }
-    intervals.push({ start, end: stop, priceCtPerKwh: price ? priceValue(price) : 0, ...resources(start, supply, household, fixed) });
+    const uncertaintyCtPerKwh = price?.predicted === true ? Math.max(0, Math.min(10,
+      finite(price.uncertaintyCtPerKwh) ? price.uncertaintyCtPerKwh : 2)) : 0;
+    intervals.push({ start, end: stop, priceCtPerKwh: price ? priceValue(price) + uncertaintyCtPerKwh : 0,
+      ...(price?.predicted === true ? { predicted: true, cashPriceCtPerKwh: priceValue(price), uncertaintyCtPerKwh } : {}),
+      ...resources(start, supply, household, fixed) });
   }
   if (!intervals.length) return fallback('price-coverage-unavailable', 'No published electricity prices cover the remaining readiness horizon.');
   if (jobs.some(job => job.targetAt > now && !intervals.some(row => row.start < job.targetAt
@@ -994,6 +1045,8 @@ export function planChargers({ now, chargers = [], prices = [], household = [], 
       }
     }
   }
+  if (!best.nativeScheduleSupported) return fallback('native-schedule-unavailable',
+    'The charger cannot represent the proposed local start date. Charging is allowed while a supported schedule is prepared.');
   // Reassess all retained periods together so stability cannot spend the same
   // shared headroom twice. This applies only to future schedules with unchanged
   // intent (the runtime owns that gate), never to imminent release or a running
@@ -1011,8 +1064,8 @@ export function planChargers({ now, chargers = [], prices = [], household = [], 
     const periods = Object.fromEntries(jobs.map(job => [job.charger.id, job.fixedPeriods ?? previousPeriods[job.charger.id]]));
     const starts = Object.fromEntries(jobs.map(job => [job.charger.id, periods[job.charger.id][0].startAt]));
     const retained = { ...simulate({ starts, periods, jobs, intervals }), starts, periods };
-    if (retained.feasible && retained.costCents <= best.costCents + STABLE_COST_CENTS
-      && retained.states.every(item => item.costCents <= best.states.find(other => other.charger.id === item.charger.id).costCents + STABLE_COST_CENTS)) {
+    if (retained.feasible && decisionCost(retained) <= decisionCost(best) + STABLE_COST_CENTS
+      && retained.states.every(item => decisionCost(item) <= decisionCost(best.states.find(other => other.charger.id === item.charger.id)) + STABLE_COST_CENTS)) {
       best = retained;
       result.assumptions.scheduleRetained = true;
     }
@@ -1032,10 +1085,10 @@ export function planChargers({ now, chargers = [], prices = [], household = [], 
   for (const job of jobs) {
     let remaining = job.charger.requiredGridKwh;
     const relaxed = availableIntervals(job, intervals).filter(row => row.start < job.targetAt && row.powerKw > 0)
-      .sort((a,b) => a.priceCtPerKwh - b.priceCtPerKwh);
+      .sort((a,b) => cashPrice(a) - cashPrice(b));
     for (const row of relaxed) {
       const energy = Math.min(remaining, row.powerKw * (Math.min(row.end, job.targetAt) - row.start) / HOUR);
-      lowerBound += energy * row.priceCtPerKwh; remaining -= energy;
+      lowerBound += energy * cashPrice(row); remaining -= energy;
       if (remaining <= EPS) break;
     }
     if (remaining > EPS) bounded = false;
@@ -1043,6 +1096,8 @@ export function planChargers({ now, chargers = [], prices = [], household = [], 
   if (bounded) Object.assign(result.solver, { cashCostLowerBoundCents: lowerBound,
     cashCostGapBoundCents: Math.max(0, best.costCents - lowerBound) });
   result.allocations = best.allocations;
+  if (intervals.some(row => row.predicted)) Object.assign(result.assumptions, {
+    costObjective: 'useful-grid-energy-cash-cost-plus-forecast-uncertainty', forecastUncertaintyCtPerKwh: 2 });
   result.currentLimits = best.admissible ? best.currentLimits : [];
   result.assumptions.householdMethod = household.some(row => row.scenarios?.length)
     ? 'comparable-nights-deliverable-energy' : 'duration-weighted-mean';
@@ -1070,14 +1125,17 @@ export function planChargers({ now, chargers = [], prices = [], household = [], 
       startAt: completedRelease ? now : startAt, finishAt: completedRelease ? now : item.finishAt,
       periods: planPeriods, finalStartAt: planPeriods.at(-1).startAt,
       reason: item.preservePermission ? plan.reason : reason, feasible, provisional: !feasible,
-      costCents: forecastOnly && !accountingPriced(item.accounting) ? null : item.costCents, deliveredGridKwh: item.deliveredGridKwh,
+      costCents: forecastOnly && !accountingPriced(item.accounting) ? null : item.costCents,
+      uncertaintyPremiumCents: item.uncertaintyPremiumCents,
+      decisionCostCents: forecastOnly && !accountingPriced(item.accounting) ? null : decisionCost(item),
+      usesForecast: item.accounting.some(row => row.predicted), deliveredGridKwh: item.deliveredGridKwh,
       shortfallGridKwh: Math.max(0, item.charger.requiredGridKwh - item.deliveredByTargetKwh),
       continuousCostCents: !forecastOnly && continuous.feasible ? continuousState.costCents : null,
       savingsCents: !forecastOnly && continuous.feasible ? continuousState.costCents - item.costCents : null,
       accounting: item.accounting, allocations, warnings: unique([...plan.warnings, ...warnings,
         ...(targetConflict ? ['The requested target exceeds the reported vehicle limit.'] : []),
         ...(!feasible ? ['Predicted charging capacity cannot deliver this minimum by its ready-by time.'] : [])]),
-      intervals: intervals.filter(row => row.start < item.targetAt).map(row => ({ ...row,
+      intervals: intervals.filter(row => row.start < item.targetAt).map(row => ({ ...row, priceCtPerKwh: cashPrice(row),
         powerKw: Math.max(0, ...best.allocations.filter(allocation => allocation.start < row.end && allocation.end > row.start)
           .map(allocation => allocation.chargers[id]?.powerKw ?? 0)) })) });
     const forecast = forecasts[id];

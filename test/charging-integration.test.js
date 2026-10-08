@@ -23,6 +23,50 @@ function fixture(t, charging) {
 
 const chargerView = (runtime, id = 'charger1') => runtime.status().chargers.find(item => item.id === id);
 
+test('one-day API separates preview from approval and fences authentication, authority, revision and repeated clicks', async t => {
+  const { store, engine } = fixture(t, { defaults: { readyBy: '07:15' } });
+  engine.electricityForecast = { snapshot: () => ({ enabled: true, available: false }),
+    status: () => ({ enabled: true, available: false }) };
+  const runtime = engine.charging, item = runtime.chargers.charger1, connectedAt = engine.clock();
+  item.adapter = { normalize: () => ({ connected: { value: true, available: true },
+    charging: { value: false, available: true, measuredAt: engine.clock() } }) };
+  item.controller = { status: () => ({ session: { connectedAt }, snapshot: { online: true, readAt: engine.clock() }, phase: 'waiting' }),
+    async update() {}, close() {} };
+  await engine.runWrite(() => engine.tick());
+  const before = chargerView(runtime);
+  await runtime.setControl('charger1', { association: before.association, revision: before.controls.revision, enabled: true });
+  const initial = chargerView(runtime), scope = { association: initial.association, sessionId: initial.request.sessionId,
+    revision: initial.request.revision }, allowance = { ...scope, action: 'allow', actionId: 'synthetic-api-day' };
+  let primary = true;
+  const token = 'synthetic-flexibility-api-token';
+  const server = createAppServer({ engine, store, token, controlAuthority: { canControl: () => primary, status: () => ({}) } });
+  await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
+  t.after(() => new Promise(resolve => server.close(resolve)));
+  const post = (action, payload, authenticated = true) => fetch(`http://127.0.0.1:${server.address().port}/api/charging/chargers/charger1/${action}`,
+    { method: 'POST', headers: { 'content-type': 'application/json', ...(authenticated ? { authorization: `Bearer ${token}` } : {}) },
+      body: JSON.stringify(payload) });
+  for (const [action, payload] of [['flexibility-preview', scope], ['flexibility', allowance]]) {
+    assert.equal((await post(action, payload, false)).status, 401);
+    primary = false; assert.equal((await post(action, payload)).status, 409); primary = true;
+    assert.equal((await post(action, { ...payload, association: 'another-equipment' })).status, 400);
+    assert.equal((await post(action, { ...payload, revision: scope.revision + 1 })).status, 400);
+  }
+  const preview = await post('flexibility-preview', scope);
+  const previewBody = await preview.json();
+  assert.equal(preview.status, 200, JSON.stringify(previewBody)); assert.equal(previewBody.comparison.available, false);
+  assert.equal(chargerView(runtime).request.flexibility, undefined, 'Opening comparison grants no additional time');
+  const approved = await post('flexibility', allowance);
+  assert.equal(approved.status, 200, JSON.stringify(await approved.json()));
+  const current = chargerView(runtime);
+  assert.equal(current.deadlineAt, initial.deadlineAt + 24 * 3_600_000);
+  assert.equal((await post('flexibility', allowance)).status, 200, 'A repeated action receipt is idempotent');
+  assert.equal(chargerView(runtime).request.revision, current.request.revision);
+  assert.equal((await post('flexibility', { ...allowance, actionId: 'another-click' })).status, 400);
+  assert.equal((await post('flexibility', { ...allowance, revision: current.request.revision,
+    actionId: 'cancel-api-day', action: 'cancel' })).status, 200);
+  assert.equal(chargerView(runtime).deadlineAt, initial.deadlineAt);
+});
+
 test('charging API saves fenced dashboard controls separately from defaults and scoped session edits', async t => {
   const { store, engine, config } = fixture(t, { defaults: { capacityKwh: 79, readyBy: '07:15', manualSoc: 43 } });
   const item = engine.charging.chargers.charger1, connectedAt = engine.clock();

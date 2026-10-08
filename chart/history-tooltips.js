@@ -56,6 +56,11 @@ export function historyTooltipLabel(item) {
   const source = raw.modelInput || raw.modelOutcome ? null : key === 'outdoor_temperature' ? outdoorSourceLabel(raw.source)
     : raw.source === 'easee' ? recordingSourceLabel(raw) : providerName(raw.source);
   if (source) details.push(source);
+  if (raw.priceForecast) {
+    details.push('Forecast', `${raw.nativeResolutionMinutes ?? 60}-minute native prediction`);
+    if (Number.isFinite(raw.fetchedAt)) details.push(`fetched ${dateTime.format(raw.fetchedAt)}`);
+    if (Number.isFinite(raw.modelUpdatedAt)) details.push(`model updated ${dateTime.format(raw.modelUpdatedAt)}`);
+  }
   if (raw.modelCoefficient) {
     details.push('model result', coefficientStatusLabel(raw.coefficientStatus));
     if (raw.inputSource) details.push(raw.inputSource);

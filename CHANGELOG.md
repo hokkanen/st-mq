@@ -6,6 +6,15 @@ Versions follow Semantic Versioning. `-dev.N` denotes a development prerelease.
 
 ## Unreleased
 
+- Optional Finnish electricity-price predictions extend the existing price
+  chart with sparse dots, independently of connected cars. Electricity prices
+  lists the new forecast feed. Connected charger cards offer a compact estimated
+  savings comparison and a separate one-day allowance: the later Ready by is
+  marked **+1 day** until the earlier deadline passes, then becomes the normal
+  deadline. Each further day needs a new approval. Forecasts expire in memory,
+  use a separate planning risk allowance, and never enter recorded bills or
+  heating inputs. Enable `electricity.forecast_enabled` for private,
+  non-commercial use; it defaults to off.
 - History recovery now shows recorded dates for incremental source checks and
   clearer per-category results. Previous recoveries identify their accepted
   records and original dates; revert/restore reviews show affected dates,

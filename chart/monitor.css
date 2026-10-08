@@ -1891,6 +1891,8 @@ button.garage-door-action:disabled { opacity: 1; cursor: default; }
 .charging-ready-by { text-align: right; font-size: 11px; line-height: 1.5; }
 .charging-ready-by > span { display: block; color: var(--muted); font-size: 10px; }
 .charging-deadline { font-weight: 500; font-variant-numeric: tabular-nums; }
+.charging-ready-by-deferred .charging-deadline { color: var(--error-text); }
+.charging-defer-badge { display: block; color: var(--error-text); font-size: 9px; font-weight: 550; line-height: 1.2; }
 .charging-device .charging-overview { display: grid; grid-template-columns: var(--charging-columns); grid-template-rows: minmax(16px, auto) minmax(calc(33px - var(--charging-compact, 0) * 5px), auto) minmax(calc(27px - var(--charging-compact, 0) * 1px), auto); column-gap: var(--charging-gap); margin: 0; align-items: start; }
 .charging-overview .equipment-value { display: grid; grid-template-rows: subgrid; grid-row: 1 / span 3; min-width: 0; }
 .charging-charge { grid-column: 1; }
@@ -1927,6 +1929,36 @@ button.garage-door-action:disabled { opacity: 1; cursor: default; }
 .charging-allowance[data-tone="limited"] { color: var(--chart-outdoor); }
 .charging-allowance[data-tone="zero"] { color: var(--error-text); }
 .charging-allowance[data-tone="fallback"] { color: var(--chart-learning); }
+.charging-footer-flexible { grid-template-columns: minmax(0, .95fr) minmax(0, 1.05fr); column-gap: 8px; }
+.charging-footer-flexible > .charging-footer-status, .charging-footer-flexible > .charging-control-message { grid-column: 1 / -1; }
+.charging-footer .charging-flexibility-entry { grid-column: 1; grid-row: 3; display: flex; flex-direction: column; justify-content: center; align-items: flex-start; gap: 2px; min-width: 0; width: 100%; min-height: 44px; margin: 0; padding: 5px 9px; border: 1px solid var(--border); border-radius: 6px; background: var(--surface-soft); color: var(--text); text-align: left; white-space: normal; font-size: 10px; line-height: 15px; }
+.charging-flexibility-entry-title { color: var(--muted); }
+.charging-flexibility-entry-value { font-size: 10px; font-weight: 500; font-variant-numeric: tabular-nums; }
+.charging-flexibility-entry-value::after { content: ' ›'; }
+.charging-flexibility-entry[data-tone="saving"] { border-color: color-mix(in srgb, var(--accent) 50%, var(--border)); background: color-mix(in srgb, var(--accent) 7%, var(--surface)); }
+.charging-flexibility-entry[data-tone="saving"] .charging-flexibility-entry-value { color: var(--accent); }
+.charging-flexibility-entry:hover:not(:disabled) { border-color: var(--accent); }
+.charging-flexibility-dialog { box-sizing: border-box; width: min(480px, calc(100vw - 24px)); }
+.charging-flexibility-dialog [hidden] { display: none !important; }
+.charging-flexibility-dialog p { margin: 10px 0; font-size: 12px; line-height: 1.55; overflow-wrap: anywhere; }
+.charging-flexibility-plans { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; margin: 18px 0; }
+.charging-flexibility-plan { display: flex; flex-direction: column; gap: 6px; min-width: 0; padding: 12px; border: 1px solid var(--border); border-radius: 7px; }
+.charging-flexibility-plan > span, .charging-flexibility-plan > small { color: var(--muted); font-size: 10px; line-height: 1.5; }
+.charging-flexibility-plan > strong { font-size: 14px; line-height: 1.4; font-weight: 550; overflow-wrap: anywhere; }
+.charging-flexibility-plan[data-selected="true"] { border-color: var(--error-text); }
+.charging-flexibility-dialog .charging-flexibility-saving { margin-bottom: 4px; font-size: 17px; font-weight: 550; }
+.charging-flexibility-saving[data-tone="saving"] { color: var(--accent); }
+.charging-flexibility-dialog .charging-flexibility-detail { margin: 4px 0; color: var(--muted); font-size: 11px; }
+.charging-flexibility-dialog .charging-flexibility-note { margin-top: 16px; padding-top: 12px; border-top: 1px solid var(--border); color: var(--muted); font-size: 11px; }
+.charging-flexibility-dialog .confirmation-actions { flex-wrap: wrap; }
+.charging-flexibility-dialog button { min-height: 44px; max-width: 100%; white-space: normal; font-size: 12px; }
+.charging-flexibility-dialog .confirmation-actions button { flex: 1 1 100px; }
+.charging-flexibility-dialog .temporary-status:empty { display: none; }
+@media (max-width: 360px) {
+  .charging-flexibility-dialog { padding: 16px; }
+  .charging-flexibility-plans { gap: 7px; }
+  .charging-flexibility-plan { padding: 9px; }
+}
 .charging-detail-section { padding: 18px 0; border-top: 1px solid var(--border); }
 .charging-detail-section > h5 { margin: 0 0 12px; font-size: 12px; font-weight: 600; }
 .charging-priority, .charging-readiness, .charging-problem, .charging-session-status { font-size: 11px; line-height: 1.6; margin: 0 0 12px; }

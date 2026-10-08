@@ -1,5 +1,6 @@
 import { createHash, randomInt } from 'node:crypto';
 import { chargingPlanInputsUnavailable } from './plan-inputs.js';
+import { admittedChargingDeadlineRevision } from './flexibility.js';
 import { resolveChargingDeadline } from './settings.js';
 import { TIME_ZONE } from '../domain/prices.js';
 import { easeeScheduleTakeoverSupported, effectiveScheduleFingerprint, manualScheduleWindow, nextLocalOccurrence, normalizeScheduleState } from './easee.js';
@@ -266,13 +267,14 @@ function executionFor(plan) {
   if (planId !== null && !text(planId) || deadlineAt !== null && !time(deadlineAt)) return null;
   return { planId, periods, finalStartAt: periods.at(-1).startAt, deadlineAt };
 }
-function revisedExecution(plan, prior, now) {
+function revisedExecution(plan, prior, now, deadlineRequest, connectedAt) {
   const revision = plan?.priceRevision, next = executionFor(plan);
   if (!prior || !revision || !next || !next.planId || next.planId === prior.planId
     || revision.previousPlanId !== prior.planId || !time(revision.at) || revision.at > now
     || revision.at < prior.periods[0].startAt || plan.feasible !== true || plan.provisional === true
     || !Number.isFinite(plan.requiredGridKwh) || plan.requiredGridKwh <= 0
-    || !time(next.deadlineAt) || next.deadlineAt <= now || next.deadlineAt !== prior.deadlineAt
+    || !time(next.deadlineAt) || next.deadlineAt <= now
+    || !admittedChargingDeadlineRevision(plan, prior.deadlineAt, deadlineRequest, connectedAt)
     || next.periods[0].startAt < revision.at) return null;
   const elapsed = prior.periods.filter(row => row.startAt < revision.at).map(row => ({
     startAt: row.startAt, endAt: Math.min(row.endAt ?? revision.at, revision.at),
@@ -287,8 +289,8 @@ function revisedExecution(plan, prior, now) {
 }
 const validExecution = value => value === null || fields(value, ['planId', 'periods', 'finalStartAt', 'deadlineAt'])
   && JSON.stringify(executionFor(value)) === JSON.stringify(value);
-function selectExecution(plan, previous, now) {
-  const priceRevision = revisedExecution(plan, previous, now);
+function selectExecution(plan, previous, now, deadlineRequest, connectedAt) {
+  const priceRevision = revisedExecution(plan, previous, now, deadlineRequest, connectedAt);
   if (plan?.priceRevision && !priceRevision) plan = null;
   const candidate = executionFor(plan);
   let execution = priceRevision ?? (previous && now >= previous.periods[0].startAt ? previous : candidate);
@@ -435,7 +437,7 @@ export function createOcppChargingController({ adapter, initialState = null, sav
       || app?.faulted || app?.authorizationBlocked
       || nativeStopped() || state.takeoverPending || state.automaticTakeover
       || state.manual && state.manual.kind !== 'release') return;
-    const selected = selectExecution(plan, state.execution, now);
+    const selected = selectExecution(plan, state.execution, now, desired.deadlineRequest, state.session?.connectedAt);
     const periods = selected.execution?.periods ?? [];
     const active = periods.find(period => period.startAt <= now && (period.endAt === null || period.endAt > now));
     const identifying = identification && identification.phase !== 'pausing'
@@ -809,7 +811,7 @@ export function createOcppChargingController({ adapter, initialState = null, sav
       }
       let { plan, execution, priceRevision } = selectExecution(identification
         ? { id: identification.id, startAt: identification.mode === 'probe' ? identification.returnStartAt : identification.pauseUntil }
-        : startPlan, state.execution, clock());
+        : startPlan, state.execution, clock(), desired.deadlineRequest, state.session?.connectedAt);
       if (!canWrite(current)) throw fail('control-revoked');
       if (state.released && !state.provisional && !priceRevision) {
         const restriction = state.pending?.instruction ?? state.owned;

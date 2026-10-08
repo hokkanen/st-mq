@@ -7,7 +7,7 @@ import { homeIndoorEstimate } from './home-controls.js';
 import { PROVIDER_CURRENT_ATTENTION_MS, PROVIDER_TEMPERATURE_ATTENTION_MS } from '../src/domain/reading-freshness.js';
 
 const names = Object.freeze({ entsoe: 'ENTSO-E', elering: 'Elering', fmi: 'FMI',
-  openmeteo: 'Open-Meteo', 'husdata-h66': 'H66', 'mqtt-temperature':'MQTT', 'shelly-mqtt': 'Shelly', 'mqtt-equipment': 'MQTT', easee: 'Easee', teslamate: 'TeslaMate', 'shelly-evse': 'Shelly EVSE' });
+  openmeteo: 'Open-Meteo', energypriceforecast: 'Energy Price Forecast EU', 'husdata-h66': 'H66', 'mqtt-temperature':'MQTT', 'shelly-mqtt': 'Shelly', 'mqtt-equipment': 'MQTT', easee: 'Easee', teslamate: 'TeslaMate', 'shelly-evse': 'Shelly EVSE' });
 const jobs = Object.freeze({ temperatures: 'Temperature adapter',
   easee: 'Property & Charger 1 · Easee', teslamate: 'Tesla vehicle · TeslaMate', 'shelly-evse': 'Charger 2 · Shelly EVSE',
   market: 'Electricity market', weather: 'Weather forecast', outdoor: 'Outdoor temperature' });
@@ -498,6 +498,26 @@ function temperatureWeatherDisplay(status, temperatures, weather, options) {
       datasets: detailedDatasets(group, status, options) })) };
 }
 
+function withPriceForecast(group, status, options) {
+  const forecast = status.providers?.electricityForecast;
+  if (group.key !== 'market' || !forecast) return group;
+  const now = options?.now ?? status.now ?? Date.now();
+  const available = forecast.enabled && forecast.available && now < forecast.expiresAt && !recordedView(status);
+  const state = !forecast.enabled ? 'Not enabled' : recordedView(status) ? 'Unavailable on this replica'
+    : available ? 'Available' : forecast.status === 'stale' ? 'Out of date' : forecast.status === 'running' ? 'Updating' : 'Unavailable';
+  const description = 'Hourly predictions extend the existing price chart, up to 48 hours from download. Optional one-day charging flexibility uses these estimates; recorded costs and heating use published prices.';
+  const detail = !forecast.enabled ? 'Enable Electricity price forecast in configuration for private, non-commercial use.'
+    : recordedView(status) ? 'Forecasts are temporary and are not copied into recorded history. A new master downloads a fresh forecast.'
+      : available ? 'Published prices always take precedence. Predictions are uncertain and are not billed rates.'
+        : 'Published prices remain available independently. Existing charging deadlines still apply.';
+  const row = { signals: ['electricity_price_forecast'], label: '48-hour price forecast', unit: 'c/kWh',
+    source: 'Energy Price Forecast EU', sourceUrl: 'https://energypriceforecast.eu/',
+    state, tone: available ? 'available' : 'pending', description, detail,
+    reported: Number.isFinite(forecast.fetchedAt) ? `Downloaded ${options.formatTime(forecast.fetchedAt)}` : null };
+  return { ...group, datasets: [...group.datasets, row],
+    sourceStates: [...group.sourceStates, ...(forecast.enabled ? [{ label: row.source, state, tone: row.tone }] : [])] };
+}
+
 /** Four data categories own their sources, readings and diagnostics. */
 export function dashboardProviders(status, options) {
   const entries = Object.entries(status.providers ?? {}).filter(([key, health]) => health && typeof health === 'object'
@@ -529,7 +549,7 @@ export function dashboardProviders(status, options) {
   return [consumption, market ? describe(market) : null,
     status.charging?.vehicleFeeds?.length || entries.some(([key]) => key === 'teslamate') ? vehicleDisplay(status) : null,
     currentTemperatures || weather ? temperatureWeatherDisplay(status, currentTemperatures, weather ? describe(weather) : null, options) : null,
-  ].filter(Boolean).map(group => ({ ...(recordedView(status) ? recordedProviderGroup(group, status, options) : group),
+  ].filter(Boolean).map(group => ({ ...withPriceForecast(recordedView(status) ? recordedProviderGroup(group, status, options) : group, status, options),
     introduction: providerIntroductions[group.key] }));
 }
 

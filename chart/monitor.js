@@ -451,6 +451,12 @@ function renderProviderSeries(root, rows, { datasets = false } = {}) {
         title: row.label, detail: `${row.state}. ${row.statusDetail ? `${row.statusDetail} ` : ''}${row.detail}${row.source ? ` Source: ${row.source}.` : ''}` });
       source.className = 'provider-series-source';
       source.textContent = datasets ? [row.source, row.unit && !row.value ? row.unit : '', row.reported].filter(Boolean).join(' · ') : row.source ?? '';
+      if (row.sourceUrl) {
+        const link = document.createElement('a'); link.href = row.sourceUrl; link.textContent = row.source;
+        link.target = '_blank'; link.rel = 'noopener noreferrer';
+        source.replaceChildren(link, document.createTextNode(datasets
+          ? [row.unit && !row.value ? row.unit : '', row.reported].filter(Boolean).map(value => ` · ${value}`).join('') : ''));
+      }
       source.hidden = !source.textContent;
     } else {
       value.className = 'provider-series-description';

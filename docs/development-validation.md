@@ -122,6 +122,17 @@ and their required evidence.
 
 ## Automated tests and build
 
+`node test/browser/charging-flexibility-smoke.js` uses synthetic charger cards to check unchanged resting height at 280–1280px in both themes, guarded keyboard interaction, stale comparison expiry and checkpoint highlight removal; `STMQ_CHROME_BIN` can select a local Chrome executable.
+
+The electricity-price forecast uses synthetic provider fixtures for units,
+native hours, gaps, freshness, throttling and RAM-only acquisition. Charging
+flexibility tests cover renewable calendar-day checkpoints, durable deadlines,
+restart/identity fencing and joint cost comparisons separately from billed cost.
+`node test/browser/electricity-forecast-smoke.js` checks the actual chart and
+feed entry with no connected cars, sparse canvas strokes, shared colors/toggles,
+unchanged date controls and 320/390/1280px layouts in both themes. Run after the
+dashboard build; it creates an isolated offline database and browser profile.
+
 ```sh
 npm ci
 npm run check

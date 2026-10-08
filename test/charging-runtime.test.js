@@ -9,6 +9,8 @@ import { Recorder } from '../src/storage/recorder.js';
 import { VoltageEstimator } from '../src/storage/voltage.js';
 import { createShellyController } from '../src/charging/shelly-evse.js';
 import { shellyProfile } from '../src/charging/shelly-profile.js';
+import { createOcppScheduleAdapter } from '../src/charging/ocpp.js';
+import { chargingPlannerInput } from '../src/charging/planner-input.js';
 
 const HOUR = 3_600_000, initialNow = Date.parse('2026-01-15T00:00:00Z');
 function fixture(charging = {}, saved = {}, automatic = {}) {
@@ -85,6 +87,194 @@ const editSession = (runtime, id, changes) => {
     sessionId: view.request?.sessionId, revision: view.request?.revision, changes });
 };
 const packet = (soc, at, readingId = 'reading-1', extra = {}) => JSON.stringify({ provider: 'bmw-cardata', soc, measuredAt: at, readingId, ...extra });
+
+test('cloud date representability reaches worker inputs through real runtime views without restricting OCPP', async t => {
+  for (const transport of ['cloud', 'ocpp']) {
+    const f = fixture(preferences), runtime = f.create(); t.after(() => runtime.close());
+    const cloud = fakeAdapter(f.clock), cloudSnapshot = await cloud.read();
+    const snapshot = transport === 'cloud' ? cloudSnapshot : { ...cloudSnapshot, transport: 'ocpp',
+      statusAt: initialNow, connectorStatus: 'Preparing', powerAt: initialNow, transactionConfirmed: true };
+    const adapter = transport === 'cloud' ? cloud : createOcppScheduleAdapter({ scope: 'a'.repeat(64),
+      readSnapshot: () => snapshot, request: () => { throw Error('No wire operation expected'); }, clock: f.clock });
+    const item = runtime.chargers.charger1;
+    item.adapter = adapter;
+    item.controller = { status: () => ({ snapshot, phase: 'off' }), close() {} };
+    const view = chargerView(runtime), worker = chargingPlannerInput({ now: initialNow, chargers: [view] }).chargers[0];
+    assert.equal(view.capabilities.localClockSchedule === true, transport === 'cloud');
+    assert.equal(worker.capabilities.localClockSchedule === true, transport === 'cloud');
+  }
+});
+
+const flexibilityInput = (runtime, action = 'allow', actionId = 'test-allowance') => {
+  const view = chargerView(runtime);
+  return { association: view.association, sessionId: view.request.sessionId, revision: view.request.revision, action, actionId };
+};
+function syntheticElectricityForecast(f) {
+  let available = true;
+  f.engine.contract = () => ({ periods: [{ from: 0, marginCtPerKwh: 0, taxCtPerKwh: 0, vatRate: 0,
+    tariff: 'day-night', transferRates: { vatIncluded: false, dayCtPerKwh: 0, nightCtPerKwh: 0,
+      winterDayCtPerKwh: 0, otherCtPerKwh: 0 } }] });
+  f.engine.electricityForecast = { snapshot: () => ({ enabled: true, available,
+    fetchedAt: initialNow, generatedAt: initialNow, expiresAt: initialNow + 6 * HOUR,
+    intervals: Array.from({ length: 48 }, (_, index) => ({ start: initialNow + index * HOUR,
+      end: initialNow + (index + 1) * HOUR, spotCtPerKwh: 1, unit: 'c/kWh', vatIncluded: false,
+      predicted: true, source: 'energypriceforecast' })) }) };
+  return value => { available = value; };
+}
+
+test('one-day preview and selected forecast cost stay outside published accounting, stored hourly data and default authority', async t => {
+  const f = fixture(preferences, {}, { charger1: true }), setAvailable = syntheticElectricityForecast(f);
+  const runtime = f.create(), adapter = fakeAdapter(f.clock); t.after(() => runtime.close());
+  const official = [30, 20, 20, 30].map((price, index) => ({ start: initialNow + index * HOUR,
+    end: initialNow + (index + 1) * HOUR, price }));
+  await runtime.setAdapter('charger1', adapter); await runtime.tick({ prices: official }); await runtime.reconcile();
+  let view = chargerView(runtime);
+  assert.ok(view.plan.finishAt <= initialNow + 4 * HOUR); assert.equal(view.plan.usesForecast, false);
+  assert.equal(runtime.getPlanningPrices().some(row => row.predicted), false);
+  const preview = await runtime.previewFlexibility('charger1', { association: view.association,
+    sessionId: view.request.sessionId, revision: view.request.revision });
+  assert.equal(preview.comparison.available, true, preview.comparison.reason);
+  assert.ok(preview.comparison.savingsCents > 100); assert.ok(preview.comparison.uncertaintyPremiumCents > 0);
+  await runtime.setFlexibility('charger1', flexibilityInput(runtime));
+  view = chargerView(runtime);
+  assert.equal(view.plan.usesForecast, true); assert.ok(view.plan.startAt >= initialNow + 4 * HOUR);
+  assert.equal(view.control.phase, 'waiting');
+  assert.equal(view.sessionCost.usesForecast, true);
+  assert.ok(Math.abs(view.sessionCost.totalCents - view.sessionCost.accruedCents - view.plan.costCents) < 1e-6);
+  assert.ok(runtime.chargers.charger1.sessionCost.unitPriceCt >= 20, 'predictions cannot lower the accrued-cost fallback rate');
+  assert.deepEqual(runtime.prices, official);
+  const saved = f.values.get('charging:mqtt');
+  assert.equal(JSON.stringify(saved).includes('"predicted":true'), false, 'no prediction rows in ordinary runtime or replica state');
+  assert.equal(JSON.stringify(saved).includes('decisionPriceSnapshot'), false);
+  assert.equal(saved.chargers.charger1.sessionCost.prices.some(row => row.priceCtPerKwh === 1), false);
+  const granted = view.deadlineAt;
+  setAvailable(false); await runtime.tick({ prices: official }); await runtime.reconcile();
+  assert.equal(chargerView(runtime).deadlineAt, granted, 'an outage cannot revoke authorized time');
+  assert.equal(runtime.getPlanningPrices().some(row => row.predicted), false);
+  assert.equal(chargerView(runtime).plan.usesForecast, false);
+});
+
+test('allowing one day during an open native period waits its minimum run before a confirmed forecast-driven pause', async t => {
+  const f = fixture(preferences, {}, { charger1: true }); syntheticElectricityForecast(f);
+  const runtime = f.create(), adapter = fakeAdapter(f.clock); t.after(() => runtime.close());
+  const official = [20, 30, 30, 30].map((price, index) => ({ start: initialNow + index * HOUR,
+    end: initialNow + (index + 1) * HOUR, price }));
+  await runtime.setAdapter('charger1', adapter); await runtime.tick({ prices: official }); await runtime.reconcile();
+  assert.equal(chargerView(runtime).control.phase, 'released');
+  assert.ok(chargerView(runtime).control.execution?.planId, JSON.stringify({ execution: chargerView(runtime).control.execution,
+    planId: chargerView(runtime).plan.id, provisional: chargerView(runtime).control.provisional }));
+  await runtime.setFlexibility('charger1', flexibilityInput(runtime));
+  assert.equal(chargerView(runtime).control.phase, 'released', 'permission does not bypass minimum run');
+  assert.equal(runtime.chargers.charger1.priceRecheckAt, initialNow + 15 * 60_000);
+  f.setNow(initialNow + 15 * 60_000); await runtime.tick({ prices: official }); await runtime.reconcile();
+  assert.equal(chargerView(runtime).control.phase, 'paused');
+  assert.ok(chargerView(runtime).control.owned.startAt >= initialNow + 4 * HOUR);
+  assert.equal(chargerView(runtime).flexibility.active, true);
+});
+
+test('a peer or shared-priority edit fences an in-flight one-day comparison and any cached saving', async t => {
+  const f = fixture(preferences, {}, { charger1: true }); syntheticElectricityForecast(f);
+  const runtime = f.create(), adapter = fakeAdapter(f.clock); t.after(() => runtime.close());
+  await runtime.setAdapter('charger1', adapter); await runtime.tick({ prices }); await runtime.reconcile();
+  await runtime.flexibilityPreviewFlight;
+  runtime.queueFlexibilityPreviews = () => {};
+  let finish, started;
+  const entered = new Promise(resolve => { started = resolve; });
+  runtime.plannerService.compare = () => new Promise(resolve => { finish = resolve; started(); });
+  const view = chargerView(runtime), pending = runtime.previewFlexibility('charger1', {
+    association: view.association, sessionId: view.request.sessionId, revision: view.request.revision });
+  await entered;
+  await runtime.setSettings({ associations: Object.fromEntries(runtime.views().map(row => [row.id, row.association])),
+    priority: 'charger2', revision: runtime.controls.revision });
+  finish({ at: f.clock(), available: true, recommended: true, savingsCents: 999 });
+  const result = await pending;
+  assert.equal(result.comparison.available, false); assert.equal(result.comparison.reason, 'comparison-changed');
+  assert.equal(chargerView(runtime).flexibility.preview, null);
+});
+
+test('canceling a one-day allowance during its running first period replaces later pauses to meet the restored deadline', async t => {
+  const f = fixture(preferences, {}, { charger1: true }); syntheticElectricityForecast(f);
+  const runtime = f.create(), adapter = fakeAdapter(f.clock); t.after(() => runtime.close());
+  const official = [0, 30, 30, 30].map((price, index) => ({ start: initialNow + index * HOUR,
+    end: initialNow + (index + 1) * HOUR, price }));
+  await runtime.setAdapter('charger1', adapter); await runtime.tick({ prices: official }); await runtime.reconcile();
+  const baseline = chargerView(runtime).deadlineAt;
+  f.setNow(initialNow + 15 * 60_000); await runtime.reconcile();
+  await runtime.setFlexibility('charger1', flexibilityInput(runtime));
+  let view = chargerView(runtime);
+  assert.equal(view.control.execution.periods.length, 2);
+  assert.ok(view.control.execution.periods[1].startAt >= baseline);
+  assert.ok(view.control.execution.periods[0].endAt > f.clock());
+  await runtime.setFlexibility('charger1', flexibilityInput(runtime, 'cancel', 'cancel-during-first-period'));
+  view = chargerView(runtime);
+  assert.equal(view.deadlineAt, baseline); assert.equal(view.flexibility.active, false);
+  assert.equal(view.plan.feasible, true); assert.ok(view.plan.finishAt <= baseline);
+  assert.ok(view.control.execution.periods.every(period => period.startAt < baseline),
+    'no old beyond-deadline pause remains in the native execution');
+});
+
+test('one-day flexibility is durable, revision-fenced, consumes exactly once through restart and retains the promoted deadline', async t => {
+  const f = fixture(preferences, {}, { charger1: true });
+  f.engine.electricityForecast = { snapshot: () => ({ enabled: true, available: false, status: 'unavailable' }) };
+  let runtime = f.create(), adapter = fakeAdapter(f.clock); t.after(() => runtime.close());
+  await runtime.setAdapter('charger1', adapter); await runtime.tick({ prices }); await runtime.reconcile();
+  const original = chargerView(runtime).deadlineAt, input = flexibilityInput(runtime);
+  assert.equal(chargerView(runtime).flexibility.eligible, true);
+  await runtime.setFlexibility('charger1', input);
+  let view = chargerView(runtime);
+  assert.equal(view.deadlineAt, original + 24 * HOUR); assert.equal(view.flexibility.active, true);
+  assert.equal(view.defaults.readyBy, '06:00'); assert.equal(view.settings.readyBy, '06:00');
+  const revision = view.request.revision;
+  await runtime.setFlexibility('charger1', input);
+  assert.equal(chargerView(runtime).request.revision, revision);
+  await assert.rejects(runtime.setFlexibility('charger1', { ...input, actionId: 'different-click' }), /changed/);
+  await assert.rejects(runtime.setFlexibility('charger1', flexibilityInput(runtime, 'allow', 'stacked')), /unavailable/);
+  assert.equal(f.values.get('charging:mqtt').chargers.charger1.request.deadlineAt, original + 24 * HOUR);
+  await runtime.close(); f.setNow(original + HOUR); runtime = f.create(); adapter = fakeAdapter(f.clock);
+  assert.equal(runtime.chargers.charger1.request.deadlineAt, original + 24 * HOUR);
+  await runtime.setAdapter('charger1', adapter); await runtime.tick({ prices: [] }); await runtime.reconcile();
+  view = chargerView(runtime);
+  assert.equal(view.flexibility.active, false); assert.equal(view.flexibility.normalReadyByAt, original + 24 * HOUR);
+  assert.equal(view.deadlineAt, original + 24 * HOUR); assert.equal(view.flexibility.eligible, true);
+  assert.equal(view.request.flexibility.lastTransition.action, 'consume');
+  const consumedRevision = view.request.revision;
+  await runtime.tick({ prices: [] }); assert.equal(chargerView(runtime).request.revision, consumedRevision);
+  f.setNow(original + 25 * HOUR); await runtime.tick({ prices: [] }); await runtime.reconcile();
+  assert.equal(chargerView(runtime).deadlineAt, original + 24 * HOUR);
+  assert.equal(chargerView(runtime).flexibility.eligible, false);
+  assert.equal(chargerView(runtime).flexibility.reason, 'ready-by-passed');
+});
+
+test('one-day permission rollback, explicit edit, charge-now precedence, replica fencing and unplug scope remain independent', async t => {
+  const f = fixture(preferences, {}, { charger1: true });
+  f.engine.electricityForecast = { snapshot: () => ({ enabled: true, available: false }) };
+  const runtime = f.create(), adapter = fakeAdapter(f.clock); t.after(() => runtime.close());
+  await runtime.setAdapter('charger1', adapter); await runtime.tick({ prices }); await runtime.reconcile();
+  const original = structuredClone(chargerView(runtime).request), input = flexibilityInput(runtime);
+  f.store.fail = true;
+  await assert.rejects(runtime.setFlexibility('charger1', input), /locked/);
+  assert.deepEqual(chargerView(runtime).request, original);
+  f.store.fail = false;
+  runtime.canControl = () => false;
+  await assert.rejects(runtime.setFlexibility('charger1', input), { code: 'STORAGE_WRITE_STALE' });
+  runtime.canControl = () => true;
+  await runtime.setFlexibility('charger1', input);
+  await runtime.setFlexibility('charger1', flexibilityInput(runtime, 'cancel', 'test-cancel'));
+  assert.equal(chargerView(runtime).deadlineAt, original.deadlineAt);
+  await runtime.setFlexibility('charger1', flexibilityInput(runtime, 'allow', 'test-second'));
+  await editSession(runtime, 'charger1', { readyBy: '08:00' });
+  assert.equal(chargerView(runtime).request.flexibility, undefined);
+  assert.equal(chargerView(runtime).deadlineAt, initialNow + 6 * HOUR);
+  const fresh = chargerView(runtime);
+  await runtime.chargeNow('charger1', { association: fresh.association, sessionId: fresh.request.sessionId,
+    revision: fresh.request.revision });
+  assert.equal(chargerView(runtime).flexibility.eligible, false);
+  assert.equal(chargerView(runtime).flexibility.reason, 'charge-now');
+  f.setNow(initialNow + 60_000); adapter.setObservation({ mode: 1, pluggedIn: false }); await runtime.reconcile();
+  f.setNow(initialNow + 120_000); adapter.setObservation({ mode: 2, pluggedIn: true }); await runtime.reconcile();
+  assert.equal(chargerView(runtime).request.flexibility, undefined);
+  await assert.rejects(runtime.setFlexibility('charger1', input), /changed/);
+});
 
 test('Charger 2 voltage cannot fill the shared startup estimate or Charger 1 readings', async t => {
   const f = fixture(), runtime = f.create(); t.after(() => runtime.close());

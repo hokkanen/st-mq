@@ -73,8 +73,9 @@ the unchanged command-readiness gates.
 
 ### Joint allocation and execution
 
-The expensive joint search runs in one local worker, with one active calculation
-and only the latest pending request. Repeated equivalent inputs reuse a bounded
+The expensive joint search runs in one local worker, with one active calculation,
+the latest pending control calculation and at most one pending cost comparison.
+Control calculations take queue priority. Repeated equivalent inputs reuse a bounded
 cache for at most 30 seconds and never across a schedule, allocation or deadline
 boundary. Results retain their calculation time. Changed requests, connections,
 native instructions, authority, source selection or expired results are checked
@@ -217,3 +218,80 @@ releases its economic hold so the vehicle can start when it allows. The other
 charger keeps its own plan. If published prices do not cover any eligible time,
 the provisional fallback also permits charging. ST-MQ cannot override a vehicle
 timer, target or user stop. The final period always remains an open release.
+
+## Explicit one-day flexibility
+
+With the optional [electricity forecast](../electricity-forecast.md) enabled, a
+connected unfinished automatic session may compare its current ready-by deadline
+with one additional Helsinki calendar day. Opening the comparison is read-only;
+only the separate **Allow one more day** action grants the later deadline. The
+request is bound to the existing equipment association, physical connection and
+request revision, with a bounded idempotent action receipt. Ordinary defaults,
+charge progress and delivered energy retain their original owners.
+
+There is at most one unconsumed allowance. Until the earlier ready-by checkpoint,
+the later effective deadline is highlighted with **+1 day**. At that checkpoint,
+the authorized later instant becomes the normal binding deadline and the highlight
+disappears. A durable transition consumes the permission exactly once; status can
+project that already-authorized transition without writing on a page refresh.
+Restart or handover across the checkpoint promotes only the previously authorized
+day, even if recovery is after both deadlines. An overdue baseline stays overdue.
+One further day requires a new affirmative action after the previous checkpoint.
+
+Cancel before the checkpoint restores the earlier baseline; insufficient remaining
+time produces the existing safe best-effort charging result. After consumption
+there is no old allowance to cancel. An explicit session Ready by edit clears the
+allowance and establishes the edited absolute deadline. Unplugging ends its scope.
+Charge now, external/native instructions, disabled automation, physical readiness
+and existing restoration duties remain authoritative; a deadline grant never
+supplies native command permission. Forecast loss neither revokes an approved
+deadline nor creates another day.
+
+Calendar arithmetic preserves local wall-clock time: ordinary Finnish DST days
+can add 23 or 25 elapsed hours. An ambiguous autumn time chooses its earlier
+occurrence; a missing spring time shifts forward by the clock-change gap, matching
+the existing ready-by parser. The resulting absolute instant is persisted.
+
+Comparisons run two joint plans from one current snapshot for both connected
+chargers, holding remaining energy and already-delivered energy constant. Native
+constraints, electrical limits, shared priority and committed short running periods
+remain part of that snapshot. The displayed remaining cash cost and household
+saving exclude sunk cost. The main estimated session total may combine accrued
+published-price cost with the selected forecast plan's remaining cash estimate;
+this display projection does not update accrual, its fallback unit price or the
+published-price ledger.
+
+Predicted slots receive a bounded **2 c/kWh uncertainty premium** in the decision
+objective; their actual estimated cash price remains separate. Published prices
+win overlaps and receive no premium. An ordinary session cannot move its economic
+schedule into predicted slots without an approved flexible deadline. A promoted
+baseline retains that permission only within its now-binding deadline. Independently
+confirmed native periods remain real competing loads without gaining new scheduling
+authority. A positive individual saving is recommended only when combined remaining
+cash cost also improves and the household risk-adjusted improvement is at least
+5 cents. Running speculative replans require more than 5 cents of risk-adjusted
+joint improvement and retain the existing minimum-run/pause and period-stability
+checks; published-only replans retain the existing cash-cost policy.
+
+Missing coverage through the proposed later deadline or unequal/infeasible modeled
+service makes the comparison unavailable. It never supplies a free future rate.
+The permission can still be granted without a savings estimate, with the UI stating
+that limitation; ordinary fallback then charges conservatively toward the hard
+deadline. New published prices replace predictions on the next assessment.
+
+Local OCPP and Shelly scheduling can use the full forecast horizon. Easee cloud
+delayed schedules encode a local clock time without a date. Every proposed cloud
+start, including a restart after a planned pause, must therefore be the next
+unambiguous occurrence of that time from the point where the pause begins. The
+planner applies the existing native date/DST guard while evaluating candidates;
+it may choose an earlier supported period and report less saving. A later approved
+deadline remains binding, but it never authorizes an unrepresentable native timer.
+
+All comparisons share the existing CPU worker. One active calculation, one latest
+queued control calculation and one latest low-priority preview keep load bounded;
+control work has queue priority. Cards request background comparisons at most once
+per minute per eligible charger. Opening the dialog refreshes the snapshot; peer,
+priority, request, native-control, market and freshness changes fence pending and
+cached results. Forecast rows, decision-price caches and previews stay in RAM.
+Durable state retains deadlines, accepted periods, compact estimated totals and
+approval/consumption evidence; ordinary diagnostics retain published prices only.

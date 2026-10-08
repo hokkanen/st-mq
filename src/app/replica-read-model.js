@@ -1,4 +1,5 @@
 import { validateSettings } from './config.js';
+import { unavailableElectricityForecast } from '../acquisition/electricity-forecast.js';
 import { validateHeatingAutomationState } from './automation.js';
 import { assembleOutlook } from './contract.js';
 import { Recorder } from '../storage/recorder.js';
@@ -187,6 +188,8 @@ export function replicaReadModel(snapshot, config) {
         readOnly: true, recorded: true, snapshotAt: at } } : {}),
       ...(saved.reception ? { reception: { ...copy(saved.reception), connected: null,
         brokerConnected: null, subscribed: null, readOnly: true, snapshotAt: at } } : {}) }]));
+  providers.electricityForecast = unavailableElectricityForecast({ enabled: config.electricityForecast?.enabled === true,
+    readOnly: true });
   // Provider health is a saved acquisition result, not the complete data
   // catalogue. In particular Shelly health is composed only by the live engine.
   // Read the bounded electrical catalogue from the snapshot itself, retaining

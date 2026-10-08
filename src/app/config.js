@@ -13,6 +13,7 @@ import { floorOverrideConfiguration } from '../control/floor-override.js';
 import { chargingConfiguration } from '../charging/config.js';
 import { localOcppConfiguration } from '../acquisition/easee-ocpp.js';
 import { rememberConfigurationOptions } from './configuration-preview.js';
+import { marketLocation } from '../acquisition/market.js';
 
 // Keep the configuration source private and out of status/serialized settings.
 // Programmatically constructed configurations have no implicit disk source.
@@ -288,6 +289,8 @@ function buildConfiguration(options, env, cwd, configuration, source, { bootstra
   const dataDir = resolve(env.STMQ_DATA_DIR ?? (addon ? '/data/st-mq' : `${cwd}/var`));
   const databaseDir = resolve(env.STMQ_DATABASE_DIR ?? (addon ? '/config/st-mq' : dataDir));
   const haMqtt = haMqttConfiguration(options.mqtt?.ha);
+  if (options.electricity?.forecast_enabled === true && marketLocation(options).country !== 'fi')
+    throw new Error('electricity.forecast_enabled requires the Finnish electricity market.');
   let connections = {};
   if (input === 'mqtt' || input === 'providers') {
     const { ha: _ha, ...mqtt } = options.mqtt ?? {};
@@ -332,6 +335,7 @@ function buildConfiguration(options, env, cwd, configuration, source, { bootstra
   const config = { addon, topology, role, input, dataDir, databaseDir, dbPath: resolve(databaseDir, databaseName),
     host, port, token, familyToken, ingressPort, ingressHost: env.STMQ_INGRESS_HOST ?? '0.0.0.0', configuration,
     connections, priceSettings: configuredPriceSettings(options.electricity),
+    electricityForecast: { enabled: options.electricity?.forecast_enabled === true },
     charging: chargingConfiguration(options.charging),
     garage: { ...garageSettings(Object.fromEntries(Object.entries(options.garage ?? {}).filter(([key]) => !['adapter', 'sender'].includes(key)))),
       adapter: garageAdapterSettings(options.garage?.adapter), sender: garageSenderSettings(options.garage?.sender) },

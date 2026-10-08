@@ -169,6 +169,7 @@
       }
     },
     "electricity": {
+      "forecast_enabled": false,
       "margin_ct_per_kwh_ex_vat": 0.33,
       "tax_ct_per_kwh_ex_vat": 2.325,
       "vat_percent": 25.5,
@@ -636,6 +637,7 @@
       }
     },
     "electricity": {
+      "forecast_enabled": "bool",
       "margin_ct_per_kwh_ex_vat": "float(-20,100)",
       "tax_ct_per_kwh_ex_vat": "float(0,100)",
       "vat_percent": "float(0,100)",

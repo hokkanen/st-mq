@@ -2,6 +2,17 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { createChargingDiagnosticsPanel, chargingReportFacts, chargingPlanChanges, chargingPlanPresentation } from '../chart/charging-diagnostics.js';
 
+test('flexibility report evidence distinguishes approval, cancellation, and consumed permission', () => {
+  const baseline = Date.parse('2026-10-09T03:00:00Z'), later = Date.parse('2026-10-10T03:00:00Z');
+  const approval = { action: 'allow', normalReadyByAt: baseline, checkpointAt: baseline, effectiveReadyByAt: later };
+  const approved = chargingPlanChanges([{ field: 'flexibility', before: null, after: approval }])[0];
+  assert.equal(approved.label, 'One-day flexibility'); assert.match(approved.after, /One extra day approved.*10 Oct.*marker until.*9 Oct/);
+  const consumed = chargingPlanChanges([{ field: 'flexibility', before: approval, after: { action: 'consume', effectiveReadyByAt: later } }])[0];
+  assert.match(consumed.after, /Approved deadline is now normal/); assert.doesNotMatch(consumed.after, /marker|approved.*extra day/i);
+  const canceled = chargingPlanChanges([{ field: 'flexibility', before: approval, after: { action: 'cancel', effectiveReadyByAt: baseline } }])[0];
+  assert.match(canceled.after, /Allowance canceled.*9 Oct/);
+});
+
 function fixture() {
   const document = { activeElement: null };
   class Node {

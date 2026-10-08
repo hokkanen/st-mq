@@ -165,6 +165,9 @@ export function chargingPlanChanges(changes, timezone = 'Europe/Helsinki') {
     state: ['Planner state', value => STATE_LABELS[value] ?? 'Unknown'],
     schedule: ['Controller schedule', value => SCHEDULE_LABELS[value] ?? 'Unknown'],
     readyBy: ['Ready by', value => time(value, timezone)],
+    flexibility: ['One-day flexibility', value => !value ? 'No active allowance'
+      : `${({ allow: 'One extra day approved', cancel: 'Allowance canceled', consume: 'Approved deadline is now normal' })[value.action] ?? 'Deadline permission recorded'} · ready by ${time(value.effectiveReadyByAt, timezone)}`
+        + (value.action === 'allow' && Number.isFinite(value.checkpointAt) ? ` · +1 day marker until ${time(value.checkpointAt, timezone)}` : '')],
     startingSoc: ['Starting-charge input', percent],
     soc: ['Battery input', percent],
     target: ['Requested target', percent],

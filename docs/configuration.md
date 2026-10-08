@@ -631,6 +631,16 @@ assumptions are labelled in the interface; known dated rates remain unchanged.
 Simulation prices remain labelled synthetic and independent of the household
 contract.
 
+### Optional electricity-price forecast
+
+`electricity.forecast_enabled` defaults to `false`. Enable it for the Finnish
+market in a private, non-commercial installation to fetch hourly predictions
+for up to 48 hours from the current request. Apply the reviewed configuration
+or restart. It adds the forward price-chart feed and enables forecast-aware
+charging comparisons independently of plugged-in vehicles. It does not change
+heating inputs, historical prices, recorded costs or charging permissions.
+See [forecast acquisition, provider conditions and storage boundaries](electricity-forecast.md).
+
 ## Primary MQTT and HA-hosted integrations
 
 `mqtt.address`, `mqtt.user` and `mqtt.pw` own the primary broker connection.
@@ -695,7 +705,7 @@ larger sections without adding another configuration format.
 
 | Sections, in file order | Settings they own |
 | --- | --- |
-| `controller`, `garage`, `charging`, `electricity` | Topology, Home operation/heating and web access passwords, Garage presets, local-protection sender and pump adapter, charger/vehicle sources, permanent charging defaults and report retention, electricity tariffs. |
+| `controller`, `garage`, `charging`, `electricity` | Topology, Home operation/heating and web access passwords, Garage presets, local-protection sender and pump adapter, charger/vehicle sources, permanent charging defaults and report retention, electricity tariffs and optional private Finnish price-forecast acquisition. |
 | `geoloc`, `mqtt`, `entsoe`, `easee`, `teslamate` | Location, primary broker access, optional `mqtt.ha` access for the four HA-hosted integrations, and provider connections. `easee.local_ocpp` contains the authenticated local charger listener and explicit authorization tags; see [Easee setup](charging/integrations/easee.md#direct-local-ocpp-telemetry-firmware-344-or-later). |
 | `equipment` | The current MQTT/Shelly equipment inventory and device mappings. |
 | `acquisition`, `recording` | Provider polling/freshness and recording/storage settings. |

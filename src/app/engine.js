@@ -1,5 +1,6 @@
 import { createHash } from 'node:crypto';
 import { weatherAcquisitionIdentity } from '../acquisition/weather-identity.js';
+import { unavailableElectricityForecast } from '../acquisition/electricity-forecast.js';
 import { createFloorOverride, floorOverrideObligation, floorOverrideStatus } from '../control/floor-override.js';
 import { HeatingAutomation } from './automation.js';
 import { dhwrEligible } from '../control/dhwr.js';
@@ -130,6 +131,9 @@ function decorate(reading, signal, now) {
 export class Engine {
   providerStatus() {
     const providers = { ...(this.store.getState('providers:health') ?? {}) };
+    providers.electricityForecast = this.electricityForecast?.status({ now: this.clock() })
+      ?? unavailableElectricityForecast({ enabled: this.config.electricityForecast?.enabled === true,
+        reason: ['mqtt', 'providers'].includes(this.config.input) ? undefined : 'live-input-required' });
     if (this.ocppSetup) providers.easee = { ...providers.easee, localOcpp: this.ocppSetup.status() };
     if (this.teslamate) providers.teslamate = { source: 'teslamate', enabled: true, ...this.teslamate.status(), reception: this.charging?.teslaCapture?.reception?.() ?? null };
     else if (['mqtt', 'providers'].includes(this.config.input)) {

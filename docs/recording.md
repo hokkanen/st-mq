@@ -25,6 +25,14 @@ provenance. An older runtime or database is not a supported upgrade input; see
 | FMI outdoor observations, Open-Meteo backup | Every five minutes | A successful fetch can contain the same older station or model timestamp. |
 | FMI/Open-Meteo forecast | Every 30 minutes | Actual forecasts update on provider/model schedules; unchanged content is referenced rather than copied. |
 | ENTSO-E/Elering prices | Hourly, with 15-minute checks when the available horizon is shorter than the next 24 hours | Native hourly/quarter-hour delivery intervals remain unchanged. Missing current-day coverage and failed requests have separate backoff. |
+| Energy Price Forecast EU, when enabled | Every 30 minutes on the master, independently of connected vehicles | Hourly predictions live only in a bounded expiring RAM cache for the forward chart and charging outlook; no historical price rows or learning input. |
+
+The optional [Finnish electricity-price prediction feed](electricity-forecast.md)
+has a separate lifetime from official market prices. Published prices always win
+on overlap. Neither routine forecast polls nor their hourly values are recorded;
+the session's explicit one-day approval and binding deadline are durable charging
+intent, not electricity-price observations. A read-only replica does not fetch
+or reconstruct transient predictions from copied history.
 
 One SignalR connection subscribes to the configured Charger 1 and Equalizer,
 requesting their current observations when it connects and subscribing again

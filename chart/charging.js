@@ -7,6 +7,7 @@ import { chargingAllowanceDisplay } from './charging-allowance.js';
 import { chargerSummary, chargingCost, chargingNotice } from './charging-summary.js';
 import { createChargingPriority } from './charging-priority.js';
 import { createChargingTime } from './charging-time.js';
+import { createChargingFlexibility } from './charging-flexibility.js';
 import { chargingControlLabel, chargingControlReason, chargingIdentificationInProgress, chargingTransactionWaiting, chargingPauseConfirmedForPeriod } from './charging-status.js';
 import { CHARGING_LOSS_FRACTION, CHARGING_EFFICIENCY } from '../src/domain/charging-energy.js';
 
@@ -544,6 +545,8 @@ export function createChargingPanel({ document, request, beforeRequest = () => {
       associations: Object.fromEntries((status.charging.chargers ?? []).map(charger => [charger.id, charger.association])),
       revision: status.charging.controls.revision, priority,
     }, message, 'Priority saved. It stays in effect until changed.') });
+  const flexibility = createChargingFlexibility({ document, request, formatTime: chargingTime,
+    save: (id, payload, message) => mutate(`/api/charging/chargers/${encodeURIComponent(id)}/flexibility`, payload, message) });
   const rowNodes = new WeakMap();
   const energyNodes = new WeakMap();
   function energyText(root, text) {
@@ -695,6 +698,7 @@ export function createChargingPanel({ document, request, beforeRequest = () => {
     const footerStatus = make('div', '', 'charging-footer-status');
     const allowance = make('span', '', 'charging-allowance', `${id}-allowance`);
     footerStatus.append(notice, allowance); footer.append(footerStatus, controlMessage);
+    footer.append(flexibility.createEntry(id, { deadlineGroup, deadline }));
     summary.append(facts, footer);
     const readingTime = make('p', '', 'charging-reading-time', `${id}-reading-time`);
     const scheduleHeading = make('div', '', 'charging-schedule-heading');
@@ -845,6 +849,7 @@ export function createChargingPanel({ document, request, beforeRequest = () => {
   function refreshControls() {
     const locked = busy || !writable();
     sharedPriority.update(status?.charging, { busy, writable: writable() });
+    flexibility.update(status, { busy, writable: writable() });
     for (const device of devices.values()) {
       const { charger, settings } = device, supported = charger.capabilities?.scheduling === true;
       for (const [key, { field, input, label }] of settings.fields) {
@@ -1029,9 +1034,10 @@ export function createChargingPanel({ document, request, beforeRequest = () => {
     for (const [id, device] of devices) if (!currentIds.has(id)) {
       timePicker.remove(device.settings.fields.get('readyBy').input);
       device.section.remove(); devices.delete(id); sharedPriority.removeEntry(id);
+      flexibility.removeEntry(id);
     }
     refreshControls();
   }
   refreshControls();
-  return { update, refreshControls, close() { sharedPriority.close(); timePicker.close(); for (const remove of listeners) remove(); } };
+  return { update, refreshControls, close() { flexibility.close(); sharedPriority.close(); timePicker.close(); for (const remove of listeners) remove(); } };
 }

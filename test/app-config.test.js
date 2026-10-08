@@ -34,6 +34,23 @@ test('default startup has no global mode with simulated devices, no provider con
   assert.equal(cfg.settings.comfort.targetC, null);
   assert.deepEqual(cfg.connections, {});
   assert.equal(cfg.dbPath, '/missing-repository/var/simulation.sqlite');
+  assert.deepEqual(cfg.electricityForecast, { enabled: false });
+});
+test('Finnish price predictions require an explicit valid integration switch', t => {
+  const directory = mkdtempSync(join(tmpdir(), 'stmq-price-forecast-config-'));
+  t.after(() => rmSync(directory, { recursive: true, force: true }));
+  const path = join(directory, 'fixture.json');
+  const write = options => writeFileSync(path, JSON.stringify(options), { mode: 0o600 });
+  write({ electricity: { forecast_enabled: true } });
+  assert.deepEqual(loadConfig({ STMQ_CONFIG: path }, directory).electricityForecast, { enabled: true });
+  for (const forecast_enabled of ['true', 1, null]) {
+    write({ electricity: { forecast_enabled } });
+    assert.throws(() => loadConfig({ STMQ_CONFIG: path }, directory), /forecast_enabled/);
+  }
+  for (const location of [{ geoloc: { country_code: 'se' } }, { entsoe: { domain: '10Y1001A1001A39I' } }]) {
+    write({ ...location, electricity: { forecast_enabled: true } });
+    assert.throws(() => loadConfig({ STMQ_CONFIG: path }, directory), /Finnish electricity market/);
+  }
 });
 test('recording and acquisition options are independent, configurable and validated',()=>{
   assert.deepEqual(recordingConfiguration(),{annualBudgetBytes:10000000000,exportDirectory:homedir(),fullVerificationIntervalMs:0});

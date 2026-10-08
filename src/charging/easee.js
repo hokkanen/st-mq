@@ -270,7 +270,7 @@ export function easeeChargerTelemetry(snapshot = {}, { now = Date.now(), allowan
   const allowanceInputs = [230, 231, 232].map(id => ({ id, measuredAt: allowanceEvidence?.source === 'easee-stream'
     ? instant(allowanceRows?.find(row => Number(row.id) === id)?.timestamp) : snapshot.observations?.[id]?.at ?? null }));
   return { ...snapshot, provider: 'easee', providerConnected: available,
-    capabilities: { scheduling: true, currentControl: false, externalLoadBalancing,
+    capabilities: { scheduling: true, currentControl: false, externalLoadBalancing, localClockSchedule: true,
       automatic: { capacityKwh: false, soc: false, minimumSoc: false, connected: true, currentA: true, schedule: true } },
     capacityKwh: signal(null), soc: signal(null), minimumSoc: signal(null),
     connected: signal(snapshot.pluggedIn, [100, 109]),

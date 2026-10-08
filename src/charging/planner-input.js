@@ -8,10 +8,10 @@ export function chargingPlannerInput(options) {
     && supply.configuredBudgetCurrentA.length === 3 && supply.configuredBudgetCurrentA.every(value => Number.isFinite(value) && value >= 0);
   return { ...options,
     chargers: (options.chargers ?? []).map(charger => ({
-      ...fields(charger, ['id', 'label', 'requiredGridKwh', 'referenceGridKwh', 'deadlineAt']),
+      ...fields(charger, ['id', 'label', 'requiredGridKwh', 'referenceGridKwh', 'deadlineAt', 'forecastAllowed']),
       sessionCost: fields(charger.sessionCost, ['recordedGridKwh']),
       settings: fields(charger.settings, ['enabled']),
-      capabilities: fields(charger.capabilities, ['scheduling', 'currentControl', 'externalLoadBalancing', 'maxSchedulePeriods']),
+      capabilities: fields(charger.capabilities, ['scheduling', 'currentControl', 'externalLoadBalancing', 'maxSchedulePeriods', 'localClockSchedule']),
       configuration: fields(charger.configuration, ['maximumCurrentA', 'limiterEnabled', 'fallbackCurrentA']),
       request: fields(charger.request, ['chargeNow']),
       control: { ...fields(charger.control, ['released', 'provisional']),

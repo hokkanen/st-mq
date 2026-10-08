@@ -1,5 +1,5 @@
 const ALLOWED_HOSTS = new Set(['api.easee.com', 'web-api.tp.entsoe.eu',
-  'dashboard.elering.ee', 'api.open-meteo.com', 'opendata.fmi.fi']);
+  'dashboard.elering.ee', 'api.open-meteo.com', 'opendata.fmi.fi', 'api.energypriceforecast.eu']);
 const FAILURE_CODES = new Set(['provider-request-timeout', 'provider-request-aborted',
   'provider-network-error', 'invalid-provider-json', 'invalid-provider-observations',
   'provider-response-too-large', 'empty-provider-response']);

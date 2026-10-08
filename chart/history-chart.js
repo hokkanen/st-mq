@@ -19,6 +19,7 @@ import { createChartGeometryCache } from './chart-geometry-cache.js';
 import { styleChartGeometry } from './chart-geometry.js';
 import { chartLoadingLabel } from './chart-stream.js';
 import { ENERGY_SIGNALS } from '../src/domain/history-series.js';
+import { createElectricityForecastLoader, withElectricityForecast } from './electricity-forecast.js';
 
 const clock = new Intl.DateTimeFormat('en-GB', { timeZone: 'Europe/Helsinki', hour: '2-digit', minute: '2-digit', hourCycle: 'h23' });
 Interaction.modes.historyPoint = historyTooltipInteraction;
@@ -83,6 +84,7 @@ export function createHistoryChart({ api, getTheme = () => document.documentElem
   const canvas = $('history');
   const mobilePointer = window.matchMedia('(pointer: coarse)');
   const loader = createChartLoader({ api });
+  const priceForecastLoader = createElectricityForecastLoader({ api });
   const geometry = createChartGeometryCache();
   const comparisons = createComparisonRange({ api });
   let storage; try { storage = localStorage; } catch { /* Optional browser persistence. */ }
@@ -95,6 +97,30 @@ export function createHistoryChart({ api, getTheme = () => document.documentElem
   let activePreset = 'today';
   let detailState = 'idle', pendingFullRender = false, refreshQueued = false, queuedForce = false, lastInput;
   let overlays, renderGeneration = 0, lastLegendKey, lastNotesKey, loadingProgress;
+  let priceForecast, forecastSeriesCache, forecastRead, forecastExpiryTimer, statusReceivedAt = Date.now();
+  const forecastClock = () => (Number.isFinite(status?.now) ? status.now : statusReceivedAt)
+    + Math.max(0, Date.now() - statusReceivedAt);
+  function expirePriceForecast() {
+    if (!priceForecast) return;
+    if (forecastClock() < priceForecast.expiresAt) {
+      clearTimeout(forecastExpiryTimer);
+      forecastExpiryTimer = setTimeout(expirePriceForecast, Math.max(1, Math.ceil(priceForecast.expiresAt - forecastClock())));
+      return;
+    }
+    priceForecast = null; forecastSeriesCache = undefined;
+    clearTimeout(forecastExpiryTimer); forecastExpiryTimer = undefined;
+    void renderChart();
+  }
+  function acceptPriceForecast(next) {
+    if (closed) return;
+    if (next && !(forecastClock() < next.expiresAt)) next = null;
+    clearTimeout(forecastExpiryTimer); forecastExpiryTimer = undefined;
+    if (next?.available) forecastExpiryTimer = setTimeout(expirePriceForecast, Math.max(1, next.expiresAt - forecastClock()));
+    if (JSON.stringify(priceForecast) === JSON.stringify(next)) return;
+    priceForecast = next; forecastSeriesCache = undefined;
+    // Optional predictions must never hold up recorded history rendering.
+    void renderChart();
+  }
   const navigation = createChartNavigation({ canvas, getChart: () => graph, onMove: () => overlays?.clear(), onSettle: () => {
     if (!overview || closed) return;
     renderChart({ viewOnly: navigation.fullscreen && !pendingFullRender }); requestDetail();
@@ -267,7 +293,14 @@ export function createHistoryChart({ api, getTheme = () => document.documentElem
     const source = exploring ? selectChartResolution(overview, [detail, ...cachedDetails()], view) : overview;
     if (source !== overview) detail = source;
     const plotNow = chartObservationTime(status, source.now);
-    const nextPayload = source === overview ? overview : { ...source, now: plotNow, series: historySeriesAt(source, plotNow) };
+    let nextPayload = source === overview ? overview : { ...source, now: plotNow, series: historySeriesAt(source, plotNow) };
+    const forecastNow = forecastClock();
+    const forecastKey = JSON.stringify([priceForecast?.fetchedAt, priceForecast?.expiresAt,
+      forecastNow < priceForecast?.expiresAt, Math.floor(forecastNow / 60_000)]);
+    if (forecastSeriesCache?.series !== nextPayload.series || forecastSeriesCache.key !== forecastKey || forecastSeriesCache.forecast !== priceForecast)
+      forecastSeriesCache = { series: nextPayload.series, key: forecastKey, forecast: priceForecast,
+        merged: withElectricityForecast(nextPayload.series, priceForecast, nextPayload.range, forecastNow) };
+    if (forecastSeriesCache.merged !== nextPayload.series) nextPayload = { ...nextPayload, series: forecastSeriesCache.merged };
     const started = performance.now();
     // A theme or legend change can occur during a request. Keep the previous
     // graph's labels and axes attached to its own data until the new data arrives.
@@ -353,16 +386,18 @@ export function createHistoryChart({ api, getTheme = () => document.documentElem
     const noteFlags = datasets.map(dataset => [dataset.kind, dataset.chartEvidence?.carriedForward,
       !dataset.hidden && dataset.chartEvidence?.needsAttention]);
     const aggregated = Object.values(payload.shading ?? {}).some(intervals => intervals.some(interval => interval.aggregated));
-    const notesKey = JSON.stringify([chartView.key, preferences.interpolation, noteFlags, aggregated,
+    const hasPriceForecast = datasets.some(dataset => !dataset.hidden && dataset.data.some(point => point.priceForecast));
+    const notesKey = JSON.stringify([chartView.key, preferences.interpolation, noteFlags, aggregated, hasPriceForecast,
       replicaSnapshotKey(status) !== null, payload.meta?.warnings]);
     if (notesKey === lastNotesKey) return;
     lastNotesKey = notesKey;
     const keys = [...chartView.leftSignals, ...chartView.rightSignals];
-    const notes = ['Left-axis lines are solid; right-axis temperatures are dashed. Future forecasts and charging fallback use dash-dot lines; electricity prices are dotted. Toggle any legend item to tailor this view; price choices apply to every view.',
+    const notes = ['Left-axis lines are solid; right-axis temperatures are dashed. Weather forecasts and charging fallback use dash-dot lines; electricity prices are dotted. Toggle any legend item to tailor this view; price choices apply to every view.',
       (preferences.interpolation
         ? 'Temperature curves use cubic interpolation without overshoot, including displayed settings and targets. Recorded values remain unchanged; a curve between settings does not imply gradual control changes. Power and states retain their steps. '
         : 'Interpolation is off: all connected lines use steps. Recorded values and individual observation markers remain unchanged. ')
       + 'Missing evidence remains a gap. Activity rows share the time axis; hover or drag along a bar to inspect the same moment across the chart. Open a row title for its colours and explanation.'];
+    if (hasPriceForecast) notes.push('Sparse dots extend published electricity prices with predictions from Energy Price Forecast EU. Forecasts are estimates, available up to 48 hours from download; they are not recorded prices or bills.');
     if (chartView.stackPhases) notes.push('Charger currents form translucent stacks separately for L1, L2 and L3. Each phase keeps its property reference line. Tooltips show each charger’s own current; stacks require overlapping recorded evidence.');
     if (keys.includes('property_current_max')) notes.push('Property highest phase is the maximum of the simultaneous phase-current estimates, calculated before display reduction. It is an interval average, not an instantaneous peak. Charger allowances are separate ceilings; they do not prove actual draw, a native setting or permission to start. Purple dash-dot segments show Charger 2 fallback; missing evidence stays blank.');
     if (keys.includes('solar_radiation')) notes.push('Solar estimate is the latest valid weather estimate known at each historical time, not a solar sensor reading. Later forecast revisions do not replace it. The future Solar forecast remains separate.');
@@ -388,7 +423,9 @@ export function createHistoryChart({ api, getTheme = () => document.documentElem
     // An explicit refresh follows a mutation and must discard earlier queries.
     // Recorder updates discovered below may still coalesce a slow live query.
     if (force) invalidate();
+    if (status !== nextStatus) statusReceivedAt = Date.now();
     status = nextStatus ?? { now: Date.now() };
+    expirePriceForecast();
     if (navigation.moving && overview && sameSelection(selection, plottedSelection)) { refreshQueued = true; queuedForce ||= force; return; }
     const today = finnishDate(status.now);
     if (!initialized) {
@@ -436,6 +473,11 @@ export function createHistoryChart({ api, getTheme = () => document.documentElem
       $('chart-status').textContent = chartLoadingLabel(loadingProgress); canvas.dataset.ready = 'false';
     }
     try {
+      const forecastRequest = priceForecastLoader.load(status);
+      forecastRead = forecastRequest;
+      void forecastRequest.then(nextForecast => {
+        if (forecastRead === forecastRequest) acceptPriceForecast(nextForecast);
+      });
       const result = await loader.load(requestedSelection, { force, today, onProgress(progress) {
         if (generation !== selectionGeneration || closed || !sameSelection(requestedSelection, selection)) return;
         loadingProgress = progress;
@@ -502,10 +544,10 @@ export function createHistoryChart({ api, getTheme = () => document.documentElem
   listen($('range-back'), 'click', () => shiftRange(-1));
   listen($('range-forward'), 'click', () => shiftRange(1));
   listen(mobilePointer, 'change', () => renderChart());
-  listen(document, 'visibilitychange', () => { if (document.hidden) loader.cancelPrefetch(); });
+  listen(document, 'visibilitychange', () => { if (document.hidden) loader.cancelPrefetch(); expirePriceForecast(); });
   function updateTheme() { readPalette(); renderChart(); }
   readPalette(); updateControls();
   return { refresh(nextStatus, options) {
     return Promise.all([refresh(nextStatus, options), comparisons.refresh(nextStatus, options)]);
-  }, updateTheme, close() { closed = true; startDatePicker.close(); endDatePicker.close(); seriesPicker.close(); overlays.close(); navigation.close(); detailLoader.close(); loader.close(); geometry.close(); comparisons.close(); listeners.forEach(remove => remove()); graph?.destroy(); } };
+  }, updateTheme, close() { closed = true; clearTimeout(forecastExpiryTimer); startDatePicker.close(); endDatePicker.close(); seriesPicker.close(); overlays.close(); navigation.close(); detailLoader.close(); loader.close(); priceForecastLoader.close(); geometry.close(); comparisons.close(); listeners.forEach(remove => remove()); graph?.destroy(); } };
 }

@@ -714,6 +714,25 @@ test('a verified price revision retains elapsed history and confirms replacement
   assert.deepEqual(view.execution.periods, [{ startAt: START, endAt: START + 20 * MINUTE }, { startAt: START + 60 * MINUTE, endAt: null }]);
 });
 
+test('a one-day deadline revision needs matching live session request scope before OCPP can pause', async t => {
+  const f = fixture(); t.after(() => f.controller.close());
+  const deadlineAt = START + 4 * 60 * MINUTE;
+  const initial = await f.controller.update({ enabled: true, plan: plan(START, { deadlineAt }) });
+  f.advance(30 * MINUTE);
+  const deadlineRequest = { actionId: 'one-day-approval', revision: 4,
+    connectedAt: initial.session.connectedAt, deadlineAt: deadlineAt + 24 * 60 * MINUTE };
+  const revised = plan(START + 5 * 60 * MINUTE, { id: 'one-day-plan', deadlineAt: deadlineRequest.deadlineAt,
+    requiredGridKwh: 3, priceRevision: { previousPlanId: 'synthetic-plan', at: f.now, deadlineRequest } });
+  for (const supplied of [null, { ...deadlineRequest, revision: 5 }, { ...deadlineRequest, connectedAt: START + 1 }]) {
+    const rejected = await f.controller.update({ enabled: true, plan: revised, deadlineRequest: supplied });
+    assert.equal(rejected.execution.planId, 'synthetic-plan'); assert.equal(writes(f).length, 0);
+  }
+  const accepted = await f.controller.update({ enabled: true, plan: revised, deadlineRequest });
+  assert.equal(accepted.phase, 'paused'); assert.equal(accepted.execution.planId, 'one-day-plan');
+  assert.equal(accepted.execution.deadlineAt, deadlineRequest.deadlineAt);
+  assert.equal(writes(f).filter(row => row.action === 'SetChargingProfile').length, 1);
+});
+
 test('withdrawing an unconfirmed price revision releases the uncertain pause and keeps original execution', async () => {
   const f = fixture(), deadlineAt = START + 180 * MINUTE, original = plan(START, { deadlineAt });
   await f.controller.update({ enabled: true, plan: original }); f.advance(20 * MINUTE);

@@ -143,7 +143,7 @@ configuration:
           settings. Vehicle defaults override shared defaults only for that
           vehicle. A feed does not permanently assign a vehicle to a charger.
   electricity:
-    name: Electricity rates — c/kWh excluding VAT
+    name: Electricity prices and rates
     description: >-
       Enter margin, electricity tax and every transfer rate in cents/kWh
       excluding VAT. VAT is added once using vat_percent. Daytime is
@@ -151,6 +151,13 @@ configuration:
       Monday–Saturday, with no holiday exceptions. transfer_tariff selects
       day-night or seasonal. Elapsed price history is preserved.
     fields:
+      forecast_enabled:
+        name: Enable Finnish price forecast
+        description: >-
+          Fetch the free Energy Price Forecast EU hourly predictions for up to
+          48 hours. Private, non-commercial installations only. Used for the
+          forward price chart and optional charging flexibility, never heating
+          or recorded costs. Predictions are kept temporarily in memory.
       effective_date:
         name: Rate effective date
         description: >-

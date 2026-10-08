@@ -212,18 +212,29 @@ test('recording metrics and unmapped equipment remain readable without sampling,
 });
 
 test('missing snapshot labels local defaults explicitly and invents no saved readings or native capability', () => {
-  const result = replicaReadModel(null, config);
-  assert.equal(result.settings.comfort.maxDropC, 1);
-  assert.equal(result.readView.settingsSource, 'local-configuration');
-  assert.match(result.readView.configurationMessage, /No Home settings were saved/);
-  assert.deepEqual(result.h66.readings, {});
-  assert.deepEqual(result.providers, {});
-  assert.equal(result.garage.requestedTargetC, null);
-  assert.equal(result.garage.adapter.native.power, null);
-  assert.deepEqual(result.garage.adapter.telemetry, {});
-  assert.deepEqual(result.equipment.devices[0].readings, {});
-  assert.deepEqual(result.recording.parameters, []);
-  assert.deepEqual(result.prices, []);
+  for (const enabled of [false, true]) {
+    const result = replicaReadModel(null, { ...config, electricityForecast: { enabled } });
+    assert.equal(result.settings.comfort.maxDropC, 1);
+    assert.equal(result.readView.settingsSource, 'local-configuration');
+    assert.match(result.readView.configurationMessage, /No Home settings were saved/);
+    assert.deepEqual(result.h66.readings, {});
+    assert.deepEqual(Object.keys(result.providers), ['electricityForecast']);
+    const forecast = result.providers.electricityForecast;
+    assert.equal(forecast.enabled, enabled);
+    assert.equal(forecast.available, false);
+    assert.equal(forecast.readOnly, true);
+    assert.equal(forecast.status, enabled ? 'read-only' : 'disabled');
+    assert.equal(forecast.reason, enabled ? 'read-only-instance' : 'not-enabled');
+    for (const clock of ['lastAttemptAt', 'lastSuccessAt', 'nextAttemptAt', 'fetchedAt', 'generatedAt', 'modelUpdatedAt', 'expiresAt'])
+      assert.equal(forecast[clock], null, `${clock} cannot imply a forecast acquisition`);
+    assert.equal(forecast.intervals, undefined);
+    assert.equal(result.garage.requestedTargetC, null);
+    assert.equal(result.garage.adapter.native.power, null);
+    assert.deepEqual(result.garage.adapter.telemetry, {});
+    assert.deepEqual(result.equipment.devices[0].readings, {});
+    assert.deepEqual(result.recording.parameters, []);
+    assert.deepEqual(result.prices, []);
+  }
 });
 
 test('malformed or retired room intent is unavailable without hiding unrelated recorded history', t => {

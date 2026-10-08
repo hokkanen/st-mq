@@ -42,6 +42,28 @@ test('chart API requires authentication and rejects malformed date/axis/point se
   assert.equal(response.status, 403);
 });
 
+test('transient forecast API is authenticated, charger-independent and cannot alter recorded chart prices', async t => {
+  const { base, headers, engine, store, now } = await fixture(t);
+  const hour = 3_600_000;
+  const row = (start, price) => ({ start, end: start + hour, spotCtPerKwh: price, unit: 'c/kWh', vatIncluded: false,
+    source: 'energypriceforecast', predicted: true, nativeStart: start, nativeEnd: start + hour, nativeResolutionMinutes: 60 });
+  const forecast = { enabled: true, available: true, source: 'energypriceforecast', fetchedAt: now,
+    expiresAt: now + hour, intervals: [row(now, -10), row(now + hour, 0), row(now + 2 * hour, 5)] };
+  store.setState('provider:market', { fetchedAt: now, intervals: [{ ...row(now, 10), source: 'elering', predicted: false }] });
+  const original = store.getState('provider:market');
+  engine.electricityForecast = { snapshot: () => forecast };
+  assert.equal((await fetch(`${base}/api/electricity-forecast`)).status, 401);
+  const response = await fetch(`${base}/api/electricity-forecast`, { headers });
+  assert.equal(response.status, 200);
+  const result = await response.json();
+  assert.deepEqual(result.intervals.map(row => row.spotCtPerKwh), [0, 5]);
+  assert.equal(result.publishedThrough, now + hour);
+  const historical = await fetch(`${base}/api/chart?start=2026-09-07&view=power`, { headers }).then(response => response.json());
+  assert(!JSON.stringify(historical).includes('energypriceforecast'));
+  assert(!Object.values(historical.series).some(points => points.some(point => point.priceForecast)));
+  assert.deepEqual(store.getState('provider:market'), original);
+});
+
 test('named-view API and worker cache keep distinct context and source selection for overview and detail', async t => {
   const { base, headers, store, now } = await fixture(t);
   const at = now - 24 * 3_600_000;

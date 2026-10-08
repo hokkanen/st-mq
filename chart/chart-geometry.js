@@ -1,6 +1,7 @@
 import { defaultPalette, historyDatasets, visible } from './history-model.js';
 import { clipChartSeries } from './chart-resolution.js';
 import { preparePowerFills } from './power-fill.js';
+import { PRICE_FORECAST_DASH } from './electricity-forecast.js';
 
 const pointOptions = ['pointBackgroundColor', 'pointBorderWidth', 'pointRadius', 'pointHoverRadius', 'pointHitRadius'];
 function compact(value) {
@@ -41,6 +42,10 @@ export function styleChartGeometry(datasets, descriptor, visibility, palette, in
     if (previousColor !== dataset.borderColor) dataset.pointBackgroundColor = Array.isArray(dataset.pointBackgroundColor)
       ? dataset.pointBackgroundColor.map(value => value === 'transparent' ? value : dataset.borderColor)
       : dataset.pointBackgroundColor === 'transparent' ? 'transparent' : dataset.borderColor;
+    if (['spot_price', 'all_in_price'].includes(dataset.key)) dataset.segment = {
+      borderDash: context => context.p0.raw?.priceForecast || context.p1.raw?.priceForecast
+        ? PRICE_FORECAST_DASH : dataset.borderDash,
+    };
   }
   return datasets;
 }

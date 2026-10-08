@@ -40,7 +40,7 @@ const PLAN_REASONS = new Set(['control-unsupported', 'disabled', 'observing', 'm
   'charge-now', 'cheapest-feasible-periods', 'cheapest-feasible-start', 'minimum-already-satisfied',
   'vehicle-start-after-deadline', 'multiple-external-load-balancers', 'connection-unavailable',
   'electrical-telemetry-unavailable', 'equalizer-allowance-unavailable', 'insufficient-time', 'price-coverage-unavailable',
-  'household-history-loading', 'household-history-unavailable']);
+  'household-history-loading', 'household-history-unavailable', 'native-schedule-unavailable']);
 // Planning warnings are application-owned explanations, but their prefixes may
 // contain private installation labels. Keep only exact supported wording.
 const PLAN_WARNINGS = [
@@ -55,6 +55,7 @@ const PLAN_WARNINGS = [
   'Predicted charging capacity cannot deliver this minimum by its ready-by time.',
   'Household history is unavailable. Charging is allowed while preparation retries.',
   'Household history is being prepared. Charging is allowed until the forecast is ready.',
+  'The charger cannot represent the proposed local start date. Charging is allowed while a supported schedule is prepared.',
 ];
 const CHARGER_PLAN_WARNINGS = [
   'its scheduled load cannot be estimated until current and voltage are available.',
@@ -129,6 +130,14 @@ function planFor(view, now) {
     nativeStartAt: inputAvailable ? at(view.values?.vehicleNotBefore?.available ? view.values.vehicleNotBefore.value : null) : null,
     nativeStartKnown: inputAvailable && view.values?.vehicleNotBefore?.available === true
       && (view.values.vehicleNotBefore.value === null || time(view.values.vehicleNotBefore.value)),
+    flexibility: inputAvailable && view.request?.flexibility ? {
+      normalReadyByAt: at(view.request.flexibility.normalReadyByAt),
+      checkpointAt: at(view.request.flexibility.activeDefer?.checkpointAt),
+      effectiveReadyByAt: deadlineAt,
+      action: ['allow', 'cancel', 'consume'].includes(view.request.flexibility.lastTransition?.action)
+        ? view.request.flexibility.lastTransition.action : null,
+      transitionAt: at(view.request.flexibility.lastTransition?.at),
+    } : null,
     priceIntervals: priceEvidence };
 }
 function remainingPeriods(rows, now) {
@@ -196,6 +205,7 @@ function planChanges(history, next, now) {
   change('plannerReason', known.plannerReason, next.plannerReason);
   change('warnings', known.warnings, next.warnings);
   change('assumptions', known.assumptions, next.assumptions);
+  change('flexibility', known.flexibility ?? null, next.flexibility);
   if (known.scheduleState !== 'unknown' && next.scheduleState !== 'unknown') change('schedule', known.scheduleState, next.scheduleState);
   const periodChanges = !equal(remainingPeriods(known.periods, now), remainingPeriods(next.periods, now));
   if (periodChanges) changes.push({ field: 'periods', before: clone(known.periods), after: clone(next.periods) });
@@ -229,6 +239,7 @@ function planReason(changes, initial = false) {
   if (initial) return 'initial-plan';
   const fields = new Set(changes.map(row => row.field));
   if (fields.has('automatic') || fields.has('chargeNow')) return 'charging-choice';
+  if (fields.has('flexibility')) return 'charging-flexibility';
   if (fields.has('vehicle')) return 'vehicle-identification';
   if (fields.has('readyBy') || fields.has('startingSoc')) return 'session-settings';
   if (fields.has('target')) return 'target-update';
