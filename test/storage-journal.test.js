@@ -1,3 +1,4 @@
+import { registerJournalFunctions, encodeChange } from '../src/storage/journal-codec.js';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { mkdtemp, rm, readFile, writeFile } from 'node:fs/promises';
@@ -6,17 +7,13 @@ import { join } from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { DatabaseSync } from 'node:sqlite';
 import { Store } from '../src/storage/store.js';
-import { verifyJournal } from '../src/storage/journal.js';
+import { verifyJournal, resolveChange } from '../src/storage/journal.js';
 
 async function fixture(t) {
   const dir=await mkdtemp(join(tmpdir(),'stmq-journal-'));
   const source=new Store(join(dir,'source.sqlite'));
   t.after(async()=>{try{source.close();}catch{} await rm(dir,{recursive:true,force:true});});
-  const copy=async()=>{
-    const path=join(dir,'replica.sqlite'); await source.backup(path);
-    const store=new Store(path);t.after(()=>{try{store.close();}catch{}});return store;
-  };
-  return {dir,source,copy};
+  return {dir,source};
 }
 test('one transaction seals all actual row effects; rollback and nested savepoints leave no journal evidence',async t=>{
   const {source:s}=await fixture(t),genesis=s.checkpoint();
@@ -43,54 +40,6 @@ test('direct prepared writes and multi-statement writes are journaled with savep
   assert.equal(s.checkpoint().sequence,2);
   assert.equal(s.exportChanges({after:s.checkpointAt(1)}).commits[0].changes.length,2);
 });
-test('replication applies an intact transaction atomically, including deletes, and repeated delivery never restores older values',async t=>{
-  const {source,copy}=await fixture(t);source.setState('value',1);
-  const replica=await copy(),base=replica.checkpoint();
-  source.transaction(()=>{source.setState('value',2);source.setState('deleted',3);});
-  source.transaction(()=>{source.db.prepare('DELETE FROM state WHERE key=?').run('deleted');source.event('fixture',{},2);});
-  const first=source.exportChanges({after:base,limit:1});
-  assert.equal(first.hasMore,true); replica.applyChanges(first);
-  const second=source.exportChanges({after:first.to});replica.applyChanges(second);
-  assert.deepEqual(replica.checkpoint(),source.checkpoint());
-  assert.deepEqual(replica.applyChanges(first),source.checkpoint());
-  assert.equal(replica.getState('value'),2);assert.equal(replica.getState('deleted'),null);
-  assert.equal(verifyJournal(replica.db).commits,source.checkpoint().sequence);
-});
-test('damaged, truncated, reordered and wrong-lineage transfers fail before mutation',async t=>{
-  const {source,copy}=await fixture(t),replica=await copy(),base=replica.checkpoint();
-  source.setState('value',1);source.setState('value',2);
-  const batch=source.exportChanges({after:base});
-  const cases=[{...batch,commits:batch.commits.slice(0,1)}, {...batch,commits:[...batch.commits].reverse()},
-    {...batch,from:{...batch.from,databaseId:'00000000-0000-0000-0000-000000000000'}},
-    {...batch,unknown:true}, {...batch,commits:batch.commits.map((commit,i)=>i ? commit : {...commit,changes:[]})}];
-  for(const damaged of cases){assert.throws(()=>replica.applyChanges(damaged));assert.deepEqual(replica.checkpoint(),base);assert.equal(replica.getState('value'),null);}
-  replica.applyChanges(batch);assert.equal(replica.getState('value'),2);
-});
-test('row conflicts fence a transaction even if a checkpoint still matches',async t=>{
-  const {source,copy}=await fixture(t);source.setState('value',1);const replica=await copy();
-  source.setState('value',2);
-  // Simulate disk/tool damage outside the application, without forging a valid journal.
-  const raw=new DatabaseSync(replica.path);raw.prepare("UPDATE state SET value='9' WHERE key='value'").run();raw.close();
-  assert.throws(()=>replica.applyChanges(source.exportChanges({after:replica.checkpoint()})),/checkpoint/);
-  assert.equal(replica.getState('value'),9);
-});
-test('rejoin stores losing suffix before rewind and retains it across restart and subsequent replication',async t=>{
-  const {source,copy}=await fixture(t);source.setState('common',1);const replica=await copy(),base=replica.checkpoint();
-  replica.setState('private-tail',{observed:2});source.setState('master-tail',3);
-  assert.deepEqual(source.commonCheckpoint(replica),base);
-  const branch=replica.rewindTo(base,{preserve:true});
-  assert.equal(replica.getState('private-tail'),null);
-  assert.equal(replica.db.prepare('SELECT COUNT(*) n FROM journal_branch_commits WHERE branch_id=?').get(branch).n,1);
-  replica.applyChanges(source.exportChanges({after:base}));const expected=replica.checkpoint();replica.close();
-  const reopened=new Store(replica.path);t.after(()=>reopened.close());assert.deepEqual(reopened.checkpoint(),expected);
-  const retained=JSON.parse(reopened.db.prepare('SELECT payload FROM journal_branch_commits WHERE branch_id=?').get(branch).payload);
-  assert.deepEqual(retained.changes[0].after.value,JSON.stringify({observed:2}));
-  assert.equal(reopened.getState('master-tail'),3);
-  assert.equal(verifyJournal(reopened.db).archivedCommits,1);
-  retained.changes[0].after.value=JSON.stringify({observed:999});
-  reopened.db.prepare('UPDATE journal_branch_commits SET payload=? WHERE branch_id=?').run(JSON.stringify(retained),branch);
-  assert.throws(()=>verifyJournal(reopened.db),{code:'journal_hash_mismatch'});
-});
 test('kill during uncommitted write leaves exactly the last durable checkpoint',async t=>{
   const {source,dir}=await fixture(t);source.setState('committed',1);const before=source.checkpoint();source.close();
   const url=new URL('../src/storage/store.js',import.meta.url).href;
@@ -102,7 +51,7 @@ test('kill during uncommitted write leaves exactly the last durable checkpoint',
 });
 test('unsealed external changes fail startup without rewriting original bytes',async t=>{
   const {source}=await fixture(t);source.setState('value',1);source.close();
-  const raw=new DatabaseSync(source.path);raw.prepare("INSERT INTO events(type,payload,at) VALUES('external','{}',1)").run();raw.close();
+  const raw=new DatabaseSync(source.path); registerJournalFunctions(raw);raw.prepare("INSERT INTO events(type,payload,at) VALUES('external','{}',1)").run();raw.close();
   const bytes=await readFile(source.path);
   assert.throws(()=>new Store(source.path),{code:'database_journal_invalid'});
   assert.deepEqual(await readFile(source.path),bytes);
@@ -157,4 +106,18 @@ test('JSON SQL subtypes are captured as stored text and CTE reads require no wri
   assert.equal(batch.commits[0].changes[0].after.payload,'{"value":"synthetic"}');
   assert.equal([...s.db.prepare('/* prefix */ WITH values_read AS (SELECT 1 n) SELECT n FROM values_read').iterate()][0].n,1);
   assert.equal(s.checkpoint().sequence,1);
+});
+
+test('compact payload updates validate the complete current event contract before mutation',async t=>{
+  const {source:s}=await fixture(t);
+  s.event('charging-session-check',{version:1,source:'easee'},1);
+  const row={...s.db.prepare('SELECT * FROM events').get()},head=s.checkpoint();
+  const after={...row,payload:JSON.stringify({version:0,source:'easee'})};
+  const change=encodeChange('events',[row.id],row,after);
+  assert.equal(change.after.type,undefined,'The update carries no unchanged event type');
+  assert.throws(()=>resolveChange(change,row),{code:'database_state_incompatible'});
+  assert.throws(()=>s.db.prepare('UPDATE events SET payload=? WHERE id=?').run(after.payload,row.id),
+    {code:'database_state_incompatible'});
+  assert.deepEqual(s.checkpoint(),head);
+  assert.deepEqual({...s.db.prepare('SELECT * FROM events').get()},row);
 });

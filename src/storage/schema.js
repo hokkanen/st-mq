@@ -1,7 +1,7 @@
 import { RECOVERY_DEPENDENCY_SCHEMA } from '../recovery/dependencies.js';
 import { journalSchema } from './journal-schema.js';
 // One current schema. Pre-production databases are never migrated.
-export const SCHEMA_VERSION = 24;
+export const SCHEMA_VERSION = 25;
 // Original source rows remain immutable evidence. The active views select the
 // current recovery interpretation without erasing history or changing local IDs.
 export const RECOVERABLE_TABLES = ['annotations', 'counters', 'energy_audits', 'events',
@@ -67,6 +67,12 @@ CREATE TABLE learning_cycles (
  id TEXT PRIMARY KEY, input TEXT NOT NULL, started_at INTEGER NOT NULL, ended_at INTEGER,
  status TEXT NOT NULL, payload TEXT NOT NULL);
 CREATE TABLE learning_epochs (input TEXT PRIMARY KEY, epoch TEXT NOT NULL);
+CREATE TABLE learning_checkpoints (
+ input TEXT NOT NULL,epoch TEXT NOT NULL,journal_cursor INTEGER NOT NULL REFERENCES learning_journal_entries(id) ON DELETE CASCADE,
+ at INTEGER NOT NULL,fireplace_revision INTEGER NOT NULL,sensor_revision INTEGER NOT NULL,history_selection TEXT NOT NULL,
+ payload TEXT NOT NULL CHECK(json_valid(payload)),PRIMARY KEY(input,epoch,fireplace_revision,sensor_revision,journal_cursor)) WITHOUT ROWID;
+CREATE INDEX learning_checkpoints_time ON learning_checkpoints(input,at DESC,journal_cursor DESC);
+CREATE INDEX learning_checkpoints_cursor ON learning_checkpoints(input,epoch,journal_cursor DESC);
 CREATE TABLE learning_epoch_segments (
  epoch TEXT NOT NULL,input TEXT NOT NULL,source_epoch TEXT NOT NULL,
  after_id INTEGER NOT NULL CHECK(after_id>=0),through_id INTEGER NOT NULL CHECK(through_id>after_id),

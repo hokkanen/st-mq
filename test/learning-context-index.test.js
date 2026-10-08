@@ -15,7 +15,9 @@ test('control context endpoints and windows seek chronological ranges after pref
   const put = (epoch, i, phase, source = null) => Number(insert.run(epoch, `${epoch}:${i}`, start + i * minute,
     LEARNING_ALGORITHM, source ? null : JSON.stringify(learningVersion(configuration)), source ? null : JSON.stringify({
       configuration, value: { timestamp: start + i * minute, controlContext: context(phase) } }), source).lastInsertRowid);
-  store.transaction(() => { for (let i = 1; i <= count; i++) put('original', i, i % 2 ? 'normal' : 'preheat'); });
+  for (let offset = 1; offset <= count; offset += 256) store.transaction(() => {
+    for (let i = offset; i <= Math.min(count, offset + 255); i++) put('original', i, i % 2 ? 'normal' : 'preheat');
+  });
   let latestId;
   store.transaction(() => {
     store.db.prepare('INSERT INTO learning_epoch_segments VALUES(?,?,?,?,?)').run('selected', 'mqtt', 'original', 0, count - 10);

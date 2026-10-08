@@ -1,3 +1,4 @@
+import { registerJournalFunctions } from '../src/storage/journal-codec.js';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { DatabaseSync } from 'node:sqlite';
@@ -388,7 +389,7 @@ test('unsupported externally inserted journal algorithms are rejected by readers
   const path = join(directory, 'synthetic.sqlite');
   const store = new Store(path);
   t.after(() => { store.close(); rmSync(directory, { recursive: true, force: true }); });
-  const raw = new DatabaseSync(path);
+  const raw = new DatabaseSync(path); registerJournalFunctions(raw);
   try {
     raw.prepare(`INSERT INTO learning_journal_entries(epoch,input,key,kind,at,algorithm_version,payload)
       VALUES('original','mqtt','foreign','sample',?,'invented-unsupported-algorithm','{}')`).run(start);
@@ -408,7 +409,7 @@ test('opening externally altered learning history rejects at the transaction che
   for (const [index, algorithm] of ['committed-house-v15-continuous-comfort', 'invented-unsupported-algorithm'].entries()) {
     const path = join(directory, `synthetic-${index}.sqlite`);
     const store = new Store(path); store.close();
-    const raw = new DatabaseSync(path);
+    const raw = new DatabaseSync(path); registerJournalFunctions(raw);
     raw.prepare(`INSERT INTO learning_journal_entries(epoch,input,key,kind,at,algorithm_version,payload)
       VALUES('unselected-epoch','mqtt','invented-foreign','context',?,?,'{}')`).run(start, algorithm);
     raw.close();

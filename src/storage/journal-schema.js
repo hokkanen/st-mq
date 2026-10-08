@@ -17,17 +17,27 @@ export function journalSchema(dataSchema) {
   if (tables.some(table => !table.keys.length)) throw new Error('Journal tables require explicit primary keys');
   const structure = `
 CREATE TABLE journal_meta(id INTEGER PRIMARY KEY CHECK(id=1),database_id TEXT NOT NULL,
- sequence INTEGER NOT NULL,hash TEXT NOT NULL,genesis_hash TEXT NOT NULL,algorithm_version TEXT NOT NULL);
+ sequence INTEGER NOT NULL,hash TEXT NOT NULL,genesis_hash TEXT NOT NULL,algorithm_version TEXT NOT NULL,
+ base_sequence INTEGER NOT NULL,base_hash TEXT NOT NULL,content_hash TEXT NOT NULL,base_content_hash TEXT NOT NULL,
+ retained_bytes INTEGER NOT NULL,retained_commits INTEGER NOT NULL);
 CREATE TABLE journal_commits(sequence INTEGER PRIMARY KEY,previous_hash TEXT NOT NULL,hash TEXT NOT NULL UNIQUE,
- at INTEGER NOT NULL,change_count INTEGER NOT NULL,bytes INTEGER NOT NULL);
+ at INTEGER NOT NULL,change_count INTEGER NOT NULL,bytes INTEGER NOT NULL,content_hash TEXT NOT NULL);
 CREATE TABLE journal_changes(sequence INTEGER NOT NULL REFERENCES journal_commits(sequence) DEFERRABLE INITIALLY DEFERRED,
- ordinal INTEGER NOT NULL,table_name TEXT NOT NULL,record_key TEXT NOT NULL,before_row TEXT,after_row TEXT,
- PRIMARY KEY(sequence,ordinal)) WITHOUT ROWID;
+ ordinal INTEGER NOT NULL,table_name TEXT NOT NULL,record_key TEXT NOT NULL,payload TEXT NOT NULL,
+ PRIMARY KEY(sequence,ordinal));
 CREATE INDEX journal_changes_record ON journal_changes(table_name,record_key,sequence);
-CREATE TABLE journal_pending(ordinal INTEGER PRIMARY KEY,table_name TEXT NOT NULL,record_key TEXT NOT NULL,before_row TEXT,after_row TEXT);
-CREATE TABLE journal_branches(id TEXT PRIMARY KEY,created_at INTEGER NOT NULL,base TEXT NOT NULL,head TEXT NOT NULL);
-CREATE TABLE journal_branch_commits(branch_id TEXT NOT NULL REFERENCES journal_branches(id),sequence INTEGER NOT NULL,
- payload TEXT NOT NULL,PRIMARY KEY(branch_id,sequence)) WITHOUT ROWID;
+CREATE TABLE journal_pending(ordinal INTEGER PRIMARY KEY,payload TEXT NOT NULL);
+CREATE TABLE journal_peer(id INTEGER PRIMARY KEY CHECK(id=1),anchor TEXT NOT NULL,content_hash TEXT NOT NULL,
+ pending TEXT,rebase_cursor INTEGER);
+CREATE TABLE journal_peer_changes(table_name TEXT NOT NULL,record_key TEXT NOT NULL,before_hash TEXT,
+ after_hash TEXT,last_sequence INTEGER NOT NULL,PRIMARY KEY(table_name,record_key)) WITHOUT ROWID;
+CREATE TABLE journal_peer_before(table_name TEXT NOT NULL,record_key TEXT NOT NULL,row TEXT,
+ PRIMARY KEY(table_name,record_key),FOREIGN KEY(table_name,record_key) REFERENCES journal_peer_changes(table_name,record_key) ON DELETE CASCADE) WITHOUT ROWID;
+CREATE TABLE journal_peer_branches(id TEXT PRIMARY KEY,created_at INTEGER NOT NULL,base TEXT NOT NULL,head TEXT NOT NULL,
+ base_content_hash TEXT NOT NULL,content_hash TEXT NOT NULL,rows INTEGER NOT NULL,digest TEXT NOT NULL);
+CREATE TABLE journal_peer_branch_rows(branch_id TEXT NOT NULL REFERENCES journal_peer_branches(id),ordinal INTEGER NOT NULL,
+ table_name TEXT NOT NULL,record_key TEXT NOT NULL,before_row TEXT,after_row TEXT,
+ PRIMARY KEY(branch_id,ordinal)) WITHOUT ROWID;
 `;
   const capture = tables.flatMap(table => ['INSERT','UPDATE','DELETE'].map(operation => {
     // SQLite JSON SQL functions attach a transient subtype. Capture the TEXT
@@ -36,9 +46,11 @@ CREATE TABLE journal_branch_commits(branch_id TEXT NOT NULL REFERENCES journal_b
     const before = operation === 'INSERT' ? 'NULL' : row('OLD'), after = operation === 'DELETE' ? 'NULL' : row('NEW');
     const alias = operation === 'DELETE' ? 'OLD' : 'NEW';
     const key = `json_array(${table.keys.map(column => `${alias}.${quoteIdentifier(column)}${table.textColumns.includes(column) ? "||''" : ''}`).join(',')})`;
-    const condition = table.name === 'state' ? ` WHEN ${alias}.key<>'backup:metadata'` : '';
+    const conditions = ['journal_capture_enabled()',...(table.name === 'state' ? [`${alias}.key<>'backup:metadata'`] : [])];
+    if (operation === 'UPDATE') conditions.push(`(${table.columns.map(column => `OLD.${quoteIdentifier(column)} IS NOT NEW.${quoteIdentifier(column)}`).join(' OR ')})`);
+    const condition = conditions.length ? ` WHEN ${conditions.join(' AND ')}` : '';
     return `CREATE TRIGGER journal_${table.name}_${operation.toLowerCase()} AFTER ${operation} ON ${quoteIdentifier(table.name)}${condition}
- BEGIN INSERT INTO journal_pending(table_name,record_key,before_row,after_row) VALUES('${table.name}',${key},${before},${after}); END;`;
+ BEGIN INSERT INTO journal_pending(payload) VALUES(journal_capture('${table.name}',${key},${before},${after})); END;`;
   })).join('\n');
   return { tables, sql: structure + capture };
 }

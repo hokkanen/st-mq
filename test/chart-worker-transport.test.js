@@ -48,8 +48,8 @@ test('canceling speculative work retains the independent foreground cache and qu
 test('new foreground selection starts after obsolete worker retirement and stale work never publishes', async t => {
   const { store, service } = fixture(t);
   const from = Date.parse('2025-01-01T00:00:00Z');
-  store.transaction(() => {
-    for (let index = 0; index < 20_000; index++) store.observation({ source: 'synthetic-chart', device: 'invented-garage',
+  for (let offset = 0; offset < 20_000; offset += 256) store.transaction(() => {
+    for (let index = offset; index < Math.min(20_000, offset + 256); index++) store.observation({ source: 'synthetic-chart', device: 'invented-garage',
       signal: 'garage_native_indoor_temperature', sourceTime: from + index * 900_000,
       receivedAt: from + index * 900_000, value: 10 + index % 5, unit: 'degC' });
   });
@@ -144,8 +144,8 @@ test('worker startup failures release their lane and allow the next valid select
 test('recording continues during concurrent chart snapshots and later queries see the committed evidence', async t => {
   const { store, service } = fixture(t);
   const from = Date.parse('2026-09-01T00:00:00Z');
-  store.transaction(() => {
-    for (let index = 0; index < 20_000; index++) store.observation({ source: 'synthetic-chart', device: 'invented-garage',
+  for (let offset = 0; offset < 20_000; offset += 256) store.transaction(() => {
+    for (let index = offset; index < Math.min(20_000, offset + 256); index++) store.observation({ source: 'synthetic-chart', device: 'invented-garage',
       signal: 'garage_native_indoor_temperature', sourceTime: from + index * 20_000,
       receivedAt: from + index * 20_000, value: 10 + index % 5, unit: 'degC' });
   });

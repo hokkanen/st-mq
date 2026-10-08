@@ -16,8 +16,9 @@ import { createWriteHealth } from './write-health.js';
 import { WriteQueue, sqliteContention } from './write-queue.js';
 import { readAdaptiveBudget } from './adaptive-recording-budget.js';
 import { readStorageMetrics } from './recording-metrics.js';
+import { registerJournalFunctions } from './journal-codec.js';
 import { initializeJournal, installJournal, validateCheckpoint, readCheckpoint, checkpointAt,
-  commonCheckpoint, exportChanges, applyChanges, rewindTo, changedRecordKeys } from './journal.js';
+  commonCheckpoint, exportChanges, changedRecordKeys, journalBase, compactJournal } from './journal.js';
 export { SCHEMA_VERSION } from './schema.js';
 const MAX_LIMIT = 5000;
 
@@ -233,7 +234,7 @@ export class Store {
         try { validateCurrentDatabase(this.db); }
         finally { this.db.exec('ROLLBACK'); }
       }
-      if (readOnly) { this.db.exec(`PRAGMA query_only = ON; PRAGMA busy_timeout = ${isMainThread ? 0 : 5000};`); return; }
+      if (readOnly) { registerJournalFunctions(this.db); this.db.exec(`PRAGMA query_only = ON; PRAGMA busy_timeout = ${isMainThread ? 0 : 5000};`); return; }
       this.db.exec('PRAGMA journal_mode = WAL; PRAGMA synchronous = FULL;');
       installJournal(this.db);
       this.insertObservation = this.db.prepare(`INSERT INTO observations
@@ -247,11 +248,11 @@ export class Store {
   close() { this.writeQueue.close(); this.db.close(); }
 
   checkpoint() { return readCheckpoint(this.db); }
+  journalBase() { return journalBase(this.db); }
+  compactJournal(options) { return compactJournal(this.db,options); }
   checkpointAt(sequence) { return checkpointAt(this.db, sequence); }
   commonCheckpoint(other) { return commonCheckpoint(this.db, other.db ?? other); }
   exportChanges(options) { return exportChanges(this.db, options); }
-  applyChanges(batch) { return applyChanges(this.db, batch); }
-  rewindTo(checkpoint, options) { return rewindTo(this.db, checkpoint, options); }
   changedRecordKeys(options) { return changedRecordKeys(this.db, options); }
 
   runWrite(fn, options = {}) {

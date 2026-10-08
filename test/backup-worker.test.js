@@ -7,8 +7,8 @@ import { fixture, observation, start } from './helpers/recovery-fixture.js';
 
 function fill(store, count) {
   const raw = { synthetic: 'x'.repeat(2048) };
-  store.transaction(() => {
-    for (let index = 0; index < count; index++) observation(store, start + index * 1000, 20 + index % 2, { raw });
+  for (let offset = 0; offset < count; offset += 256) store.transaction(() => {
+    for (let index = offset; index < Math.min(count, offset + 256); index++) observation(store, start + index * 1000, 20 + index % 2, { raw });
   });
 }
 

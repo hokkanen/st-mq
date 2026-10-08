@@ -26,8 +26,8 @@ function energy(store, from, to) {
 function counters(store, count) {
   const insert = store.db.prepare(`INSERT INTO energy_audits(source,device,signal,source_time,received_at,value,quality)
     VALUES('easee','invented-property',?,?,?,?, '[]')`);
-  store.transaction(() => {
-    for (let index = 0; index < count; index++) insert.run(signal, start + index * 1000, start + index * 1000, index);
+  for (let offset = 0; offset < count; offset += 256) store.transaction(() => {
+    for (let index = offset; index < Math.min(count, offset + 256); index++) insert.run(signal, start + index * 1000, start + index * 1000, index);
   });
 }
 async function serverFixture(t, store, chartService, overrides = {}) {

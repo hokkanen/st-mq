@@ -2,7 +2,8 @@
 import { resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { Store } from '../src/storage/store.js';
-import { importCsv, exportCsv } from '../src/storage/history.js';
+import { exportCsv } from '../src/storage/history.js';
+import { importCsvInWorker } from '../src/storage/import-service.js';
 
 const usage = `Offline history administration (does not start device providers).
   node scripts/history.js import --file FILE --kind stmq|easee [--db data/st-mq.sqlite]
@@ -55,14 +56,21 @@ export async function main(argv = process.argv.slice(2)) {
     required(options, 'db');
     console.log(JSON.stringify({ restored: await Store.restore(required(options, 'input'), path) }, null, 2)); return;
   }
+  if (command === 'import') {
+    const file = required(options, 'file'), kind = required(options, 'kind');
+    const cancellation = new AbortController();
+    const stop = () => cancellation.abort(Object.assign(new Error('CSV import interrupted; retry from the unchanged source file.'), { code: 'csv_import_interrupted' }));
+    process.once('SIGINT', stop); process.once('SIGTERM', stop);
+    try {
+      const result = await importCsvInWorker({ databasePath: path, file, kind, signal: cancellation.signal });
+      console.log(JSON.stringify(result, null, 2));
+    } finally { process.removeListener('SIGINT', stop); process.removeListener('SIGTERM', stop); }
+    return;
+  }
   const store = new Store(path); let following = false;
   try {
     let result;
     switch (command) {
-      case 'import': {
-        result = await importCsv(store, required(options, 'file'), { kind: required(options, 'kind') });
-        break;
-      }
       case 'summary': result = store.summary(); break;
       case 'export': result = await exportCsv(store, required(options, 'output'), { signal: options.signal, from: timestamp(options.from), to: timestamp(options.to) }); break;
       case 'backup': result = { backup: await store.backup(required(options, 'output')) }; break;

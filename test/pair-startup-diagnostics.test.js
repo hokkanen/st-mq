@@ -1,3 +1,4 @@
+import { registerJournalFunctions } from '../src/storage/journal-codec.js';
 import { fixtureMqttFrontend, fixtureMqttSourceContext } from './helpers/pair-frontend.js';
 import test from 'node:test';
 import assert from 'node:assert/strict';
@@ -176,7 +177,7 @@ test('an incompatible master database reports its schema failure and stays prote
     const f = await fixture(t), initial = await f.open('controller');
     const path = initial.app.pair.state.value.activeDbPath;
     await f.close(initial.app);
-    const raw = new DatabaseSync(path);
+    const raw = new DatabaseSync(path); registerJournalFunctions(raw);
     raw.exec(code === 'database_schema_mismatch' ? `PRAGMA user_version=${SCHEMA_VERSION - 1}` : 'CREATE TABLE unexpected_synthetic_table (id)');
     raw.close();
     const bytes = await readFile(path);
@@ -205,7 +206,7 @@ test('unjournaled control-state corruption retains its public journal diagnosis 
   const f = await fixture(t), initial = await f.open('controller');
   const path = initial.app.pair.state.value.activeDbPath;
   await f.close(initial.app);
-  const raw = new DatabaseSync(path);
+  const raw = new DatabaseSync(path); registerJournalFunctions(raw);
   raw.prepare('INSERT INTO state(key,value,updated_at) VALUES(?,?,?)').run('executor:home', 'synthetic unreadable state', now);
   raw.close();
   const before = await readFile(path);
@@ -262,7 +263,7 @@ test('a generic saved failure is refined by current database validation without 
   const f = await fixture(t), initial = await f.open('controller', { runtimeError: 'runtime_failed' });
   const path = initial.app.pair.state.value.activeDbPath;
   await f.close(initial.app);
-  const raw = new DatabaseSync(path);
+  const raw = new DatabaseSync(path); registerJournalFunctions(raw);
   raw.exec(`PRAGMA user_version=${SCHEMA_VERSION - 1}`); raw.close();
   const before = await readFile(path);
   const restarted = await f.open('controller');

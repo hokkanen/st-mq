@@ -788,8 +788,8 @@ test('pixel envelope retains peaks, endpoints and missing-data breaks within a b
 test('combined history scans beyond old 5000-row limit and retains both date-range ends', () => {
   const store = voltageStore();
   try {
-    store.transaction(() => {
-      for (let index = 0; index < 12_000; index++) put(store, 'indoor_temperature', index === 8000 ? 30 : 20, from + index * 1000);
+    for (let offset = 0; offset < 12_000; offset += 256) store.transaction(() => {
+      for (let index = offset; index < Math.min(12_000, offset + 256); index++) put(store, 'indoor_temperature', index === 8000 ? 30 : 20, from + index * 1000);
     });
     const result = get(store, { points: 100 });
     assert.equal(result.meta.rawRows, 12_000);

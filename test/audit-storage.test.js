@@ -1,3 +1,4 @@
+import { registerJournalFunctions } from '../src/storage/journal-codec.js';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs, { mkdtempSync, rmSync, writeFileSync, readFileSync, existsSync } from 'node:fs';
@@ -115,7 +116,7 @@ for (const shape of ['unversioned','unversioned-sqlite-lookalike','current-sqlit
   const {dir}=fixture(t),path=join(dir,'unsupported.sqlite'),destination=join(dir,'restore.sqlite');
   if(shape==='dangling-content') {const db=new Store(path);db.snapshot({kind:'weather',source:'synthetic',fetchedAt:1000,payload:{}});db.close();}
   if(shape==='current-sqlite-lookalike') {const db=new Store(path);db.close();}
-  const raw=new DatabaseSync(path);
+  const raw=new DatabaseSync(path); registerJournalFunctions(raw);
   if(shape==='unversioned')raw.exec('CREATE TABLE unrelated(value TEXT)');
   if(shape.endsWith('sqlite-lookalike'))raw.exec("CREATE TABLE sqliteXcustom(value TEXT); INSERT INTO sqliteXcustom VALUES ('preserve me')");
   if(shape==='wrong-structure')raw.exec(`CREATE TABLE state(key TEXT);PRAGMA user_version=${SCHEMA_VERSION}`);

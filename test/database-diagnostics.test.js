@@ -12,6 +12,7 @@ import { createSourceSnapshot, publicReplicationError } from '../src/replication
 import { verifySnapshot } from '../src/pairing/snapshots.js';
 import { LEARNING_ALGORITHM } from '../src/domain/learning-contract.js';
 import { verifyDatabase } from '../src/storage/full-verifier.js';
+import { registerJournalFunctions } from '../src/storage/journal-codec.js';
 
 function fixture(t) {
   const directory = mkdtempSync(join(tmpdir(), 'stmq-database-diagnostics-'));
@@ -24,6 +25,7 @@ function fixture(t) {
 test('unjournaled external history fails fast startup and worker validation without mutating the donor', async t => {
   const { directory, path } = fixture(t);
   const db = new DatabaseSync(path);
+  registerJournalFunctions(db);
   db.prepare('INSERT INTO learning_journal_entries(epoch,input,key,kind,at,algorithm_version,payload) VALUES(?,?,?,?,?,?,?)')
     .run('fixture-epoch', 'home', 'fixture-key', 'observation', 1000, 'unsupported-fixture-algorithm', '{}');
   db.exec('PRAGMA journal_mode=DELETE');
@@ -45,6 +47,7 @@ test('historical algorithm checks remain available through explicit full verific
     .run('fixture-epoch', 'home', 'fixture-key', 'observation', 1000, LEARNING_ALGORITHM, '{}');
   source.close();
   const raw = new DatabaseSync(path);
+  registerJournalFunctions(raw);
   // Simulate latent historical damage outside the writer, including damaged
   // capture evidence. Routine startup does not scan all historical algorithms.
   raw.prepare('UPDATE learning_journal_entries SET algorithm_version=?').run('unsupported-fixture-algorithm');

@@ -1,6 +1,7 @@
 import { readFileSync } from 'node:fs';
 import { SCHEMA_VERSION } from './schema.js';
 import { LEARNING_ALGORITHM } from '../domain/learning-contract.js';
+import { registerJournalFunctions } from './journal-codec.js';
 
 const applicationVersion = JSON.parse(readFileSync(new URL('../../package.json', import.meta.url), 'utf8')).version;
 const key = 'backup:metadata';
@@ -26,6 +27,7 @@ export function readBackupMetadata(db) {
 
 /** Called only on the private backup copy after source validation. */
 export function stampBackupMetadata(db, exportedAt = Date.now()) {
+  registerJournalFunctions(db);
   const value = { format: 1, exportedAt, applicationVersion, schemaVersion: SCHEMA_VERSION,
     learningAlgorithm: LEARNING_ALGORITHM };
   if (!validBackupMetadata(value)) throw new Error('Invalid backup exporter metadata');

@@ -1,3 +1,4 @@
+import { registerJournalFunctions } from '../src/storage/journal-codec.js';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { mkdtemp, readFile, rm } from 'node:fs/promises';
@@ -154,7 +155,7 @@ test('unreadable and unsupported current-state records remain unknown when no in
 
 test('old schemas remain opaque even if their rows resemble current obligations', async t => {
   const path = await fixture(t, [['equipment-tests:v1', { version: 1, active: {} }]]);
-  const db = new DatabaseSync(path);
+  const db = new DatabaseSync(path); registerJournalFunctions(db);
   db.exec(`PRAGMA user_version=${SCHEMA_VERSION - 1}`);
   db.close();
   const before = await readFile(path);
@@ -164,7 +165,7 @@ test('old schemas remain opaque even if their rows resemble current obligations'
 
 test('a malformed current schema is not reinterpreted as an empty history', async t => {
   const path = await fixture(t);
-  const db = new DatabaseSync(path);
+  const db = new DatabaseSync(path); registerJournalFunctions(db);
   db.exec('DROP TABLE state'); db.close();
   const before = await readFile(path);
   assert.equal(resetRestorationStatus(path), 'unknown');
@@ -173,7 +174,7 @@ test('a malformed current schema is not reinterpreted as an empty history', asyn
 
 test('an unsupported learning algorithm keeps reset inventory opaque despite a current schema', async t => {
   const path = await fixture(t, [['equipment-tests:v1', { version: 1, active: {} }]]);
-  const db = new DatabaseSync(path);
+  const db = new DatabaseSync(path); registerJournalFunctions(db);
   db.prepare(`INSERT INTO learning_journal_entries(epoch,input,key,kind,at,algorithm_version,payload)
     VALUES('original','mqtt','old-entry','context',1,'committed-house-v15-continuous-comfort','{}')`).run();
   db.close();
