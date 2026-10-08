@@ -954,12 +954,13 @@ export function createDeviceProviders({ connections = {}, http, tokenStore, cloc
         const epoch = electricityEpoch;
         const direct = prefix === 'ev1' ? local.snapshot() : null;
         if (direct) {
+          const snapshotAt = clock();
           transports.set(id, 'ocpp'); streamedElectricity.delete(id);
-          const rows = electricalObservations(direct, id, prefix, ELECTRICITY_FIELDS.ev1, now, true).map(row => ({ ...row,
+          const rows = electricalObservations(direct, id, prefix, ELECTRICITY_FIELDS.ev1, snapshotAt, true).map(row => ({ ...row,
             quality: [...row.quality, 'local_ocpp'], raw: { ...row.raw, transport: 'ocpp' } }));
           const missingPhase = rows.some(row => row.unit === 'V' && (row.value === null || row.value < 200 || row.value > 250
             || row.quality.some(flag => ['missing', 'stale', 'invalid_numeric', 'invalid_unit', 'future_source_time'].includes(flag))));
-          const fallback = await supplementalCloudVoltage(definition, now, signal, missingPhase);
+          const fallback = await supplementalCloudVoltage(definition, snapshotAt, signal, missingPhase);
           if (epoch !== electricityEpoch) throw new ProviderError('provider-request-aborted');
           return [...rows, ...fallback];
         }
@@ -991,9 +992,11 @@ export function createDeviceProviders({ connections = {}, http, tokenStore, cloc
       // A voltage-only native sample may coexist with cloud electrical evidence.
       // Keep it out of energy integration and live-current readiness.
       const voltage = local.voltageSnapshot?.();
-      if (voltage && !observations.some(row => row.raw?.transport === 'ocpp'))
-        observations.push(...electricalObservations(voltage, easee.charger_id, 'ev1', ELECTRICITY_FIELDS.ev1.filter(([, , unit]) => unit === 'V'), now, true)
+      if (voltage && !observations.some(row => row.raw?.transport === 'ocpp')) {
+        const snapshotAt = clock();
+        observations.push(...electricalObservations(voltage, easee.charger_id, 'ev1', ELECTRICITY_FIELDS.ev1.filter(([, , unit]) => unit === 'V'), snapshotAt, true)
           .map(row => ({ ...row, quality: [...row.quality, 'local_ocpp'], raw: { ...row.raw, transport: 'ocpp', voltageOnly: true } })));
+      }
       return annotateElectricalCurrents(observations);
     },
 

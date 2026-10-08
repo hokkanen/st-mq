@@ -45,6 +45,32 @@ test('HTTP source lead waits once and preserves its original receipt and admissi
   await provider.close();
 });
 
+for (const voltageOnly of [false, true]) test(`admitted OCPP ${voltageOnly ? 'voltage-only' : 'electrical'} snapshot uses publication time after the earlier poll clock`, async () => {
+  let current = now, requests = 0;
+  const native = [[120, 0], [194, 230], [195, 231], [196, 232], [250, true]]
+    .map(([id, value]) => ({ id, value, timestamp: new Date(now + 4).toISOString(), receivedAt: now }));
+  const provider = createDeviceProviders({ clock: () => current,
+    connections: { easee: { access_token: 'synthetic-token', charger_id: 'synthetic-charger' } },
+    http: { async json() {
+      requests++; current = now + 2;
+      return native.map(row => ({ ...row, timestamp: new Date(now).toISOString() }));
+    } },
+    ocppFactory: () => ({
+      snapshot() { if (voltageOnly) return null; current = now + 5; return native; },
+      voltageSnapshot() { if (!voltageOnly) return null; current = now + 5; return native.filter(row => row.id !== 120); },
+      async close() {},
+    }) });
+  try {
+    const rows = (await provider.electricity({ now })).filter(row => row.raw.transport === 'ocpp' && row.value !== null);
+    assert.equal(requests, voltageOnly ? 1 : 0);
+    assert.equal(rows.length, voltageOnly ? 3 : 4);
+    assert(rows.every(row => row.sourceTime === now + 4 && row.receivedAt === now + 5));
+    assert(rows.every(row => !row.quality.includes('future_source_time') && row.raw.acquisitionOnly));
+    assert(rows.every(row => Boolean(row.raw.voltageOnly) === voltageOnly));
+    assert(native.every(row => row.receivedAt === now), 'Publishing a snapshot must not rewrite original native receipt clocks');
+  } finally { await provider.close(); }
+});
+
 test('Easee uses replacement observations endpoint and preserves every phase timestamp and null', async () => {
   const calls = [];
   const providers = createDeviceProviders({ connections: { easee }, http: { async json(url, options) {

@@ -5,7 +5,7 @@ meanings. ST-MQ preserves them instead of correcting device timestamps or adding
 a future allowance to every freshness comparison.
 
 - **Source time** is the device/provider's measurement or transition timestamp.
-- **Receipt time** is local wall time when the response or packet arrives. An
+- **Transport receipt time** is local wall time when the response or packet arrives. An
   HTTP request's start time is not its receipt time. Re-reading a cache does not
   produce another receipt.
 - **Admission time** records when a slightly early report became eligible for
@@ -53,6 +53,16 @@ Recording, indoor selection, voltage estimation, electrical integration, native
 energy tails and recovery use the same admission validation. Original timestamps
 and energy interval geometry remain intact. A later aggregate publication keeps
 its separate publication receipt; it cannot backdate the supporting evidence.
+
+Electrical rows marked `raw.acquisitionOnly` may represent a published snapshot
+of already admitted OCPP or stream values. Their `receivedAt` is the snapshot
+publication time, sampled after reading the snapshot; it is not a new transport
+receipt or independent measurement. The original source clocks and native
+transport evidence remain unchanged. These rows feed electrical integration and
+voltage coverage rather than being stored as new raw measurements. Repeated
+publication cannot renew source freshness: native OCPP snapshots retain their
+60-second source bound, ordinary electrical inputs retain their five-minute
+bound, and existing held-value exceptions require independent device telemetry.
 
 Home learning uses `committed-house-v17-time-evidence-admission` because admission
 changes input selection. Current journals replay deterministically under that
