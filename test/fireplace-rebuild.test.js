@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { EventEmitter } from 'node:events';
+import { Worker } from 'node:worker_threads';
 import { DatabaseSync } from 'node:sqlite';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -228,4 +229,94 @@ test('rebuild teardown preserves durable job intent without waiting for a foreig
     clearTimeout(timeout); writer.exec('ROLLBACK'); writer.close(); await manager.close(); store.close();
     rmSync(directory, { recursive: true, force: true });
   }
+});
+
+for (const correction of ['fireplace', 'sensor']) test(`late ${correction} corrections reuse sparse prefixes after compaction and worker restart`,
+  { timeout: 30_000 }, async t => {
+    const directory = mkdtempSync(join(tmpdir(), 'stmq-late-correction-'));
+    const store = new Store(join(directory, 'invented.sqlite'));
+    let manager = new FireplaceRebuildManager({ store, input: 'mqtt' });
+    t.after(async () => { await manager.close(); store.close(); rmSync(directory, { recursive: true, force: true }); });
+    store.transaction(() => {
+      for (let i = 1; i <= 128; i++) {
+        if (i <= 16) sample(store, i);
+        else appendLearningRecord(store, 'mqtt', 'context', { timestamp: at + i * 900_000,
+          phase: 'normal', regime: 'occupied', targetC: 21, roomBoostC: 0 });
+      }
+    });
+    replayLearningJournal(store, 'mqtt');
+    for (let index = 0; index < 2; index++) {
+      const boundary = 129 + index * 10, affectedAt = at + boundary * 900_000;
+      const event = correction === 'fireplace'
+        ? addFireplace(store, 'mqtt', { requestId: `invented-late-load-${index}`, kg: 4 }, affectedAt)
+        : addSensorChange(store, 'mqtt', { requestId: `invented-late-sensor-${index}`, signal: 'outdoor_temperature', reason: 'replacement' }, affectedAt);
+      for (const i of [boundary + 1, boundary + 2]) sample(store, i);
+      const old = replayLearningJournal(store, 'mqtt', store.getState('adaptive:mqtt'));
+      if (correction === 'fireplace') removeFireplace(store, 'mqtt',
+        { requestId: `invented-late-removal-${index}`, id: event.id }, at + (boundary + 3) * 900_000 + 1);
+      else revertSensorChange(store, 'mqtt',
+        { requestId: `invented-late-reversal-${index}`, id: event.id }, at + (boundary + 3) * 900_000 + 1);
+      assert.equal(manager.status().affectedAt, affectedAt, 'a completed earlier correction does not widen this new job');
+      store.setState('synthetic-current-bookkeeping', { index });
+      store.compactJournal({ maxBytes: 1, maxCommits: 1 });
+      if (index === 0) {
+        manager.start();
+        await manager.close();
+        manager = new FireplaceRebuildManager({ store, input: 'mqtt' });
+      }
+      manager.start();
+      let candidate = await ready(manager);
+      assert.deepEqual(store.getState('adaptive:mqtt'), old, 'the existing model remains selected during reconstruction');
+      assert(manager.status().processed <= 4, 'only the correction suffix was replayed after transaction patches expired');
+      sample(store, boundary + 4);
+      assert.equal(manager.takeReady(), null);
+      candidate = await ready(manager);
+      assert(manager.status().processed <= 5, 'catch-up adds the newly committed input without restarting replay');
+      assert.deepEqual(candidate.checkpoint, replayLearningJournal(store, 'mqtt', null,
+        { rebuild: true, persistCheckpoint: false }), 'sparse replay equals independent replay from the retained seed');
+      store.transaction(() => {
+        store.setState('adaptive:mqtt', candidate.checkpoint);
+        assert.equal(manager.complete(candidate.checkpoint), true);
+      });
+    }
+  });
+
+test('queued catch-up cannot replace a correction candidate while prefix lookup yields', { timeout: 30_000 }, async t => {
+  const directory = mkdtempSync(join(tmpdir(), 'stmq-correction-queue-'));
+  const store = new Store(join(directory, 'invented.sqlite'));
+  const worker = new Worker(new URL('../src/app/fireplace-worker.js', import.meta.url),
+    { workerData: { dbPath: store.path, input: 'mqtt' } });
+  t.after(async () => { await worker.terminate(); store.close(); rmSync(directory, { recursive: true, force: true }); });
+  for (let i = 1; i <= 16; i++) sample(store, i);
+  let checkpoint = replayLearningJournal(store, 'mqtt');
+  const affectedAt = at + 16.5 * 900_000;
+  const load = addFireplace(store, 'mqtt', { requestId: 'invented-queued-load', kg: 4 }, affectedAt);
+  // More than sixteen recent unusable states force the asynchronous prefix
+  // lookup to yield before it reaches the unaffected committed boundary.
+  for (let i = 17; i <= 48; i++) {
+    sample(store, i);
+    checkpoint = replayLearningJournal(store, 'mqtt', checkpoint);
+  }
+  const removed = removeFireplace(store, 'mqtt', { requestId: 'invented-queued-removal', id: load.id }, at + 49 * 900_000);
+  const entries = store.learningJournal({ input: 'mqtt', limit: 100 }), last = entries.at(-1).id;
+  const replies = [];
+  const completed = new Promise((resolve, reject) => {
+    worker.on('error', reject);
+    worker.on('message', result => {
+      if (result.type === 'failed' || result.type === 'stale') reject(new Error(`Unexpected ${result.type} correction reply`));
+      if (result.type === 'ready') { replies.push(result); if (replies.length === 2) resolve(); }
+    });
+  });
+  const selection = { revision: removed.revision, sensorRevision: 0, epoch: store.learningEpoch('mqtt') };
+  worker.postMessage({ type: 'rebuild', ...selection, affectedAt, head: last - 1 });
+  worker.postMessage({ type: 'catchup', ...selection, head: last });
+  await completed;
+  const source = fireplaceLearningContext(store, 'mqtt');
+  for (const [index, head] of [last - 1, last].entries()) {
+    assert.equal(replies[index].head, head, 'responses retain request order and their own journal boundary');
+    const expected = entries.filter(entry => entry.id <= head)
+      .reduce((model, entry) => applyLearningRecord(model, entry, source), null);
+    assert.deepEqual(replies[index].checkpoint, expected);
+  }
+  assert.equal(replies[1].processed, 32, 'the prefix is reused once and only one later input is caught up');
 });

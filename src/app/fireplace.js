@@ -42,13 +42,15 @@ export function fireplaceEvents(store, input, { revision, asOf } = {}) {
 
 function queueRevision(store, input, revision, at, affectedAt) {
   const previous = store.getState(jobKey(input));
+  const pending = ['pending', 'running', 'ready', 'failed'].includes(previous?.status);
+  const previousAffectedAt = pending ? previous?.affectedAt ?? null : null;
   const affected = affectedAt !== null && Boolean(store.db.prepare(`SELECT 1 FROM learning_journal
     WHERE input=? AND kind='sample' AND algorithm_version=? AND at>? LIMIT 1`).get(input, LEARNING_ALGORITHM, affectedAt));
-  const requiresRebuild = affected || ['pending', 'running', 'ready', 'failed'].includes(previous?.status);
+  const requiresRebuild = affected || pending;
   if (requiresRebuild) store.setState(jobKey(input), { status: 'pending', revision,
     sensorRevision: sensorRevision(store, input), epoch: store.learningEpoch(input),
-    requestedAt: at, affectedAt: affectedAt === null ? previous?.affectedAt ?? null
-      : Math.min(affectedAt, previous?.affectedAt ?? affectedAt), requiresRebuild: true });
+    requestedAt: at, affectedAt: affectedAt === null ? previousAffectedAt
+      : Math.min(affectedAt, previousAffectedAt ?? affectedAt), requiresRebuild: true });
   return requiresRebuild;
 }
 
@@ -184,7 +186,8 @@ export class FireplaceRebuildManager {
         this.ready = { checkpoint: result.checkpoint, ...selection, head: result.head };
         this.setStatus({ ...this.status(), status: 'ready', journalCursor: result.head, processed: result.processed });
       }));
-      this.store.afterCommit(() => { if (!this.closed && generation === this.generation) this.send({ type: 'rebuild', ...selection, head: this.head() }); });
+      this.store.afterCommit(() => { if (!this.closed && generation === this.generation)
+        this.send({ type: 'rebuild', ...selection, head: this.head(), affectedAt: old.affectedAt }); });
       return true;
     } catch {
       const worker = this.worker; this.worker = null; this.generation++;

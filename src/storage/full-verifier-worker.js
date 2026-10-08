@@ -66,7 +66,7 @@ function verify({ db, checkpoint }) {
     const names = columns.map(column => identifier(column.name));
     const keys = columns.filter(column => column.pk).sort((a, b) => a.pk - b.pk).map(column => identifier(column.name));
     const ordered = keys.length ? keys : names;
-    const statement = db.prepare(`SELECT ${names.join(',')} FROM ${identifier(name)}${name === 'state' ? " WHERE key<>'backup:metadata'" : ''} ORDER BY ${ordered.map(key => `${key} COLLATE BINARY`).join(',')}`);
+    const statement = db.prepare(`SELECT ${names.join(',')} FROM ${identifier(name)}${name === 'state' ? " WHERE key IS NOT 'backup:metadata'" : ''} ORDER BY ${ordered.map(key => `${key} COLLATE BINARY`).join(',')}`);
     statement.setReadBigInts(true);
     for (const row of statement.iterate()) {
       add(columns.map(column => canonicalValue(row[column.name]))); rows++;

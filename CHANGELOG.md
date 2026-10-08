@@ -6,6 +6,18 @@ Versions follow Semantic Versioning. `-dev.N` denotes a development prerelease.
 
 ## Unreleased
 
+- Journal capture preserves stored numeric precision across the Home Assistant
+  and Ubuntu runtimes. This fixes valid snapshots being rejected with
+  `database_journal_invalid` because SQLite JSON rendering rounded numeric values
+  before hashing. Schema 26 requires a deliberate fresh development start;
+  existing databases and their original journal evidence remain preserved.
+- Late firewood removals and sensor-change reversals reuse a verified unaffected
+  learning prefix, including after restart and transaction compaction, instead
+  of replaying all earlier learning inputs for every correction.
+- Interrupted initial-seed acknowledgements retain a cleanup receipt so a lost
+  reply or restart cannot leave a full snapshot permanently pinned.
+- Pairing reset archives pending replication files beside the database and reports
+  bounded, private-safe failure diagnostics when a shutdown or archive fails.
 - Recording health no longer shows an out-of-date warning for a small server
   clock lead. Larger clock differences have an explicit explanation, while stale
   checks and failed refreshes retain their warnings.
@@ -23,7 +35,7 @@ Versions follow Semantic Versioning. `-dev.N` denotes a development prerelease.
   durable checkpoints and protected divergent evidence.
 - Sparse learning checkpoints keep late history recovery and reversal proportional
   to the affected suffix after transaction compaction. Required original learning
-  inputs and correction records remain retained. These changes require schema 25;
+  inputs and correction records remain retained. These changes require schema 26;
   incompatible development databases remain intact and need a deliberate fresh start.
 - Full verification remains available manually, during manual operations, and on
   an optional schedule. Application checks now share one visible queue and compare

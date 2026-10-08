@@ -9,6 +9,9 @@ const UUID = /^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/;
 const SHA = /^[a-f0-9]{64}$/;
 const MANIFEST = 'reset.json';
 const SIDECARS = ['', '-wal', '-shm', '-journal'];
+const PEER_SUFFIX = new RegExp(`^\\.peer-(?:${UUID.source.slice(1, -1)}\\.sqlite(?:\\.partial)?|lock)(?:-wal|-shm|-journal)?$`);
+const peerCompanion = (databasePath, path) => path.startsWith(databasePath) && PEER_SUFFIX.test(path.slice(databasePath.length));
+const peerStorageFile = path => PEER_SUFFIX.test(path.slice(path.lastIndexOf('.peer-')));
 const MAX_FILES = 20000;
 const BACKUP_REASONS = ['incompatible-database', 'invalid-database'];
 const within = (parent, path) => path === parent || path.startsWith(`${parent}${sep}`);
@@ -157,7 +160,7 @@ function copiedMarker(paths, path) {
 
 function recoveryBackupCandidates(plan) {
   return plan.entries.filter(entry => entry.source === plan.databasePath || entry.source === plan.selectedDbPath
-    || entry.source.endsWith('.sqlite') && !basename(entry.source).startsWith('.'))
+    || entry.source.endsWith('.sqlite') && !basename(entry.source).startsWith('.') && !peerStorageFile(entry.source))
     .map(entry => ({ source: entry.destination,
       destination: `backups/${entry.source === plan.databasePath ? 'configured' : entry.source === plan.selectedDbPath ? 'active' : 'history'}-${createHash('sha256').update(entry.destination).digest('hex').slice(0, 16)}.sqlite` }));
 }
@@ -207,8 +210,18 @@ export async function createResetArchive({ config, state, mode, requestId, clock
     };
     await scan(paths.pairDirectory, 'pairing');
     await scan(paths.snapshotDirectory, 'snapshots');
-    for (const suffix of SIDECARS) await addFile(`${paths.databasePath}${suffix}`, `database/configured.sqlite${suffix}`);
-    if (selectedDbPath) for (const suffix of SIDECARS) await addFile(`${selectedDbPath}${suffix}`, `database/active.sqlite${suffix}`);
+    const addDatabase = async (source, destination) => {
+      for (const suffix of SIDECARS) await addFile(`${source}${suffix}`, `${destination}${suffix}`);
+      if (!(await present(dirname(source)))) return;
+      // Peer delivery spools and their SQLite lock are siblings of the database,
+      // including when that directory is outside pairing/snapshot storage.
+      for await (const entry of await opendir(dirname(source))) {
+        const companion = join(dirname(source), entry.name);
+        if (peerCompanion(source, companion)) await addFile(companion, `${destination}${companion.slice(source.length)}`);
+      }
+    };
+    await addDatabase(paths.databasePath, 'database/configured.sqlite');
+    if (selectedDbPath && selectedDbPath !== paths.databasePath) await addDatabase(selectedDbPath, 'database/active.sqlite');
     if (mode === 'keep' && !selectedDbPath && entries.some(entry => /\.sqlite(?:-wal|-shm|-journal)?$/.test(entry.source)
       && !/^\.receiver-lock\.sqlite(?:-wal|-shm|-journal)?$/.test(basename(entry.source))))
       throw failure('pair_reset_history_unavailable');
@@ -261,7 +274,7 @@ function validatePlan(plan, archiveDirectory) {
       || entry.archived !== undefined && typeof entry.archived !== 'boolean'
       || typeof entry.source !== 'string' || !isAbsolute(entry.source) || entry.source !== resolve(entry.source)
       || !(within(plan.pairDirectory, entry.source) || within(plan.snapshotDirectory, entry.source)
-        || SIDECARS.some(suffix => entry.source === `${plan.databasePath}${suffix}`))
+        || SIDECARS.some(suffix => entry.source === `${plan.databasePath}${suffix}`) || peerCompanion(plan.databasePath, entry.source))
       || excluded(plan, entry.source) || !destination(entry.destination)
       || !Number.isSafeInteger(entry.bytes) || entry.bytes < 0 || !SHA.test(entry.digest)
       || typeof entry.retain !== 'boolean' || entry.retain !== copiedMarker(plan, entry.source)

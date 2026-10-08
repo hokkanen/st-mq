@@ -7,7 +7,7 @@ import { yieldToController } from '../recovery/scheduler.js';
 import { Store } from '../storage/store.js';
 import { MAX_COMMIT_BYTES, validCheckpoint, matchingCheckpoint } from '../storage/journal.js';
 import { enrollJournalPeer, peerAnchor, preparePeerTransfer, peerTransferRows, acknowledgePeer,
-  applyPeerTransfer, acceptPeerCheckpoint, rewindPeer } from '../storage/journal-peer.js';
+  applyPeerTransfer, acceptPeerCheckpoint, rewindPeer, releasePeerSource } from '../storage/journal-peer.js';
 import { databaseErrorDetails } from '../storage/database-errors.js';
 
 const invalid=()=>{throw Object.assign(new Error('Invalid consolidated transfer'),{code:'journal_peer_invalid'});};
@@ -59,14 +59,13 @@ try {
   }
   else if(operation==='enroll') value=enrollJournalPeer(store.db,{checkpoint:workerData.checkpoint});
   else if(operation==='accept') value=acceptPeerCheckpoint(store.db,{checkpoint:workerData.checkpoint});
+  else if(operation==='release-source') value=releasePeerSource(store.db,{sourcePath:workerData.sourcePath});
   else if(operation==='rewind') value=rewindPeer(store.db,{checkpoint:workerData.checkpoint});
   else if(operation==='acknowledge') {
-    const sourcePath=peerAnchor(store.db)?.pending?.sourcePath;
     do { value=acknowledgePeer(store.db,{checkpoint:workerData.checkpoint});if(!value.complete) await yieldToController(); } while(!value.complete);
-    if(sourcePath)value={...value,sourcePath};
   } else if(operation==='export') {
     const anchor=peerAnchor(store.db);
-    if(anchor?.pending && matchingCheckpoint(workerData.after,anchor.pending.metadata?.target ?? anchor.pending.target)) {
+    if(anchor?.pending && matchingCheckpoint(workerData.after,anchor.pending.target)) {
       do {value=acknowledgePeer(store.db,{checkpoint:workerData.after});if(!value.complete) await yieldToController();} while(!value.complete);
     }
     const metadata=preparePeerTransfer(store.db,{after:workerData.after,sourcePath:workerData.sourcePath,refresh:workerData.refresh});

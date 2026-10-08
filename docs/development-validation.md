@@ -91,6 +91,21 @@ commands, measured before/after allocations, full learning replay checks and the
 remaining synchronous filesystem limits. Keep useful history, journal payload,
 indexes, reusable pages, WAL, transfer files and serialized network bytes separate.
 
+Journal changes must also run against the pinned add-on Node version in
+`Dockerfile`, not only the developer's installed Node. SQLite numeric JSON
+rendering and embedded-NUL TEXT handling differ across these runtimes.
+`test/storage-journal-precision.test.js` checks exact stored values, rejected
+unsupported scalars, bounded capture and independent corruption detection.
+For a real process boundary between two installed runtimes, run:
+
+```sh
+STMQ_OTHER_NODE=/absolute/path/to/node22 node --test test/extended/journal-cross-runtime.test.js
+```
+
+This checks initial seed verification, catch-up after compaction, exact replica
+rows and reverse-direction updates. It does not replace testing the deployed HA
+and Ubuntu applications, their actual transport, restart and live recording.
+
 `test/recovery-learning-prefix.test.js` grows retained learning history from 256
 to 4096 entries while recovering, reverting and restoring the same recent change.
 It checks exact agreement with full reconstruction, constant staged suffix size,
@@ -113,9 +128,14 @@ dashboard, so run `npm run build` once before invoking `npm test` directly in a
 fresh checkout. CI uses the same `npm run check` command.
 
 `npm test` (also `npm run test:unit`) runs the routine offline regression suite
-with at most four test files in parallel and a 60-second test deadline. Pairing
+with at most four test files in parallel and a 60-second deadline per test case. Pairing
 handover, outage promotion, recovery correctness and rejoin regressions remain
 in this suite. New top-level `test/*.test.js` files are included automatically.
+The offline runner gives every file its own Node process and applies the deadline
+inside it. This preserves process isolation and the same case budget on Node 22
+and newer versions; Node 22's default isolated runner also applies the command-line
+timeout to the entire file, which can cancel a long file of successful short tests.
+Use `npm test -- --test-name-pattern=...` to select matching cases.
 
 The optional extended Node package runs separately:
 
@@ -125,7 +145,7 @@ npm run test:all        # routine followed by extended
 ```
 
 Extended tests live in `test/extended/`, run one file at a time, and retain
-a three-minute test deadline. Serial files keep unrelated bulk fixture writes
+a three-minute deadline per test case. Serial files keep unrelated bulk fixture writes
 from contaminating another benchmark's latency measurements. Each workload still
 exercises its concurrent recording, HTTP requests, transfers and failure cases;
 the latency guards are unchanged. These measurements do not establish latency

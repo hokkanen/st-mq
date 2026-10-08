@@ -2,9 +2,9 @@ import { spawn } from 'node:child_process';
 import { Worker } from 'node:worker_threads';
 import { createHash, randomUUID } from 'node:crypto';
 import { fileURLToPath } from 'node:url';
-import { join, isAbsolute, resolve } from 'node:path';
+import { join, isAbsolute, resolve, dirname, basename } from 'node:path';
 import { rm, readdir, open } from 'node:fs/promises';
-import { ownedDirectory, replicationError } from './publication.js';
+import { ownedDirectory, replicationError, syncDirectory } from './publication.js';
 import { sshOptions } from './ssh-options.js';
 import { databaseErrorDetails } from '../storage/database-errors.js';
 import { databaseCheckpoint, JOURNAL_DIGEST, sameCheckpoint } from './incremental.js';
@@ -159,6 +159,17 @@ export async function synchronizeReplica({ dbPath, config, signal, onPhase = () 
   const options = { signal: abort.signal, spawnProcess, env };
   let generation = randomUUID();
   let channel, destination;
+  const acknowledge=async checkpoint=>{
+    const result=await peerOperation('acknowledge',{dbPath,checkpoint,signal:abort.signal,onYield});
+    if(result.sourcePath) {
+      if(dirname(result.sourcePath)!==sourceDirectory || !/^source-[a-f0-9-]{36}\.sqlite$/.test(basename(result.sourcePath)))
+        throw replicationError('verification_failed');
+      for(const suffix of ['', '-wal', '-shm', '-journal']) await rm(`${result.sourcePath}${suffix}`,{force:true});
+      await syncDirectory(sourceDirectory);
+      await peerOperation('release-source',{dbPath,sourcePath:result.sourcePath,signal:abort.signal});
+    }
+    return result;
+  };
   try {
     onPhase('connecting');
     channel = receiverChannel(config, generation, options);
@@ -166,6 +177,8 @@ export async function synchronizeReplica({ dbPath, config, signal, onPhase = () 
     const ready = await channel.next();
     if (ready.type !== 'ready' || ready.version !== 2) throw replicationError('protocol_failed');
     await peerOperation('enroll',{dbPath,signal:abort.signal,onYield});
+    const enrolled=await peerOperation('anchor',{dbPath,signal:abort.signal});
+    if(enrolled.completedSourcePath)await acknowledge(enrolled.checkpoint);
     const peerTransfers=new PeerTransfers(join(sourceDirectory,'peer-exports'));
     if (ready.publication) {
       const checkpoint=await databaseCheckpoint({dbPath,signal:abort.signal});
@@ -173,9 +186,11 @@ export async function synchronizeReplica({ dbPath, config, signal, onPhase = () 
       let after=ready.publication.checkpoint,transferredBytes=0,metadata=await checkpointMetadata({dbPath,checkpoint});
       const currentMetadata=metadata;
       if(sameCheckpoint(after,checkpoint)) {
-        await peerOperation('acknowledge',{dbPath,checkpoint:after,signal:abort.signal,onYield});
+        await acknowledge(after);
       } else do {
         onPhase('transferring');
+        const anchor=await peerOperation('anchor',{dbPath,signal:abort.signal});
+        if(anchor.pending && sameCheckpoint(anchor.pending.target,after))await acknowledge(after);
         const transfer=await peerTransfers.export({dbPath,after,signal:abort.signal,onYield});
         metadata={...currentMetadata,...(transfer.target.sequence<checkpoint.sequence?{
           sourceAt:ready.publication.sourceAt,sourceStartedAt:ready.publication.sourceStartedAt}:{}),
@@ -191,7 +206,7 @@ export async function synchronizeReplica({ dbPath, config, signal, onPhase = () 
         channel.send({type:'apply-commit',metadata});
         const applied=await channel.next();
         if(applied.type!=='applied'||!sameCheckpoint(applied.checkpoint,transfer.target))throw replicationError('verification_failed');
-        await peerOperation('acknowledge',{dbPath,checkpoint:transfer.target,signal:abort.signal,onYield});
+        await acknowledge(transfer.target);
         transferredBytes+=transfer.bytes;after=transfer.target;
       }while(after.sequence<checkpoint.sequence);
       channel.send({type:'complete',checkpoint:after});
@@ -239,7 +254,7 @@ export async function synchronizeReplica({ dbPath, config, signal, onPhase = () 
         published.bytes !== result.bytes || !Number.isSafeInteger(published.verifiedAt)) throw replicationError('verification_failed');
     channel.child.stdin.end();
     await channel.done;
-    await peerOperation('acknowledge',{dbPath,checkpoint:result.checkpoint,signal:abort.signal,onYield});
+    await acknowledge(result.checkpoint);
     return publicationResult(published,result.bytes);
   } catch (error) {
     const reason = abort.signal.aborted ? abort.signal.reason : error;

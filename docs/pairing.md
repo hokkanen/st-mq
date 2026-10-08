@@ -686,6 +686,10 @@ Archives use private permissions and are named by time and operation ID:
   accessible as `/addon_configs/<actual-app-slug>/reset-archives/<archive>/`.
 - Ubuntu: `<dataDir>/reset-archives/<archive>/`.
 
+Pending replication spools, partial spools and their SQLite lock/sidecars beside
+the selected or configured database are archived with their original bytes.
+They are preserved evidence, not independent application backups.
+
 The result displays the specific archive path for 24 hours. Archives include the
 original `state.json`, the configured database when present, the actual promoted
 or published database, and their SQLite companion files. Configuration and

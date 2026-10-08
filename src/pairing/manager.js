@@ -678,7 +678,11 @@ export class PairManager {
 
   async exportPeerSeed() {
     const dbPath=await this.journalSource();
-    const anchor=await this.peerOperation('enroll',{dbPath,signal:this.abort.signal});
+    let anchor=await this.peerOperation('enroll',{dbPath,signal:this.abort.signal});
+    if(anchor.completedSourcePath) {
+      await this.acknowledgePeerTransfer(anchor.checkpoint,dbPath);
+      anchor=await this.peerOperation('anchor',{dbPath,signal:this.abort.signal});
+    }
     if(anchor.pending?.sourcePath) {
       const generation=/export-([a-f0-9-]{36})\.sqlite$/.exec(anchor.pending.sourcePath)?.[1];
       if(!generation) throw pairError('verification_failed');
@@ -690,13 +694,15 @@ export class PairManager {
     return metadata;
   }
 
-  async acknowledgePeerTransfer(checkpoint) {
-    const dbPath=await this.journalSource();
+  async acknowledgePeerTransfer(checkpoint,dbPath) {
+    dbPath??=await this.journalSource();
     const {sourcePath,...result}=await this.peerOperation('acknowledge',{dbPath,checkpoint,signal:this.abort.signal});
     if(result.complete && sourcePath) {
       const generation=/export-([a-f0-9-]{36})\.sqlite$/.exec(sourcePath)?.[1];
       if(generation && this.state.value.recovery?.releaseOperation?.metadata?.generation!==generation)
         await this.snapshots.unpin(generation);
+      if(!generation)throw pairError('verification_failed');
+      await this.peerOperation('release-source',{dbPath,sourcePath,signal:this.abort.signal});
     }
     return result;
   }
@@ -710,13 +716,17 @@ export class PairManager {
     const current=await databaseCheckpoint({dbPath,signal:this.abort.signal});
     if(current.databaseId!==metadata.checkpoint.databaseId) return null;
     let local=await this.peerOperation('anchor',{dbPath,signal:this.abort.signal});
+    if(local?.completedSourcePath) {
+      await this.acknowledgePeerTransfer(local.checkpoint,dbPath);
+      local=await this.peerOperation('anchor',{dbPath,signal:this.abort.signal});
+    }
     let remote=await this.peer.request('peer-anchor',{}, {signal:this.abort.signal});
     if(!local || !remote) return null;
     if(!validCheckpoint(remote.checkpoint)) throw pairError('peer_protocol_failed');
     // An acknowledgement may have been lost before either side diverged. The
     // peer's durable accepted anchor is sufficient to finish that same rebase.
     if(local.pending && sameCheckpoint(local.pending.target,remote.checkpoint)) {
-      await this.peerOperation('acknowledge',{dbPath,checkpoint:remote.checkpoint,signal:this.abort.signal});
+      await this.acknowledgePeerTransfer(remote.checkpoint,dbPath);
       local=await this.peerOperation('anchor',{dbPath,signal:this.abort.signal});
     }
     if(remote.pendingTarget && sameCheckpoint(remote.pendingTarget,local.checkpoint)) {
@@ -1174,7 +1184,14 @@ export class PairManager {
     if (operation === 'peer-transfer') {
       if(!Object.keys(body).every(key=>['after','refresh'].includes(key)) || !validCheckpoint(body.after)
         || body.refresh!==undefined && typeof body.refresh!=='boolean')throw pairError('peer_protocol_failed');
-      return this.peerTransfers.export({dbPath:await this.journalSource(),onYield:()=>this.hooks.admitStorageWrite?.(),after:body.after,
+      const dbPath=await this.journalSource();
+      const anchor=await this.peerOperation('anchor',{dbPath,signal:this.abort.signal});
+      // A receiver's accepted checkpoint also recovers a lost seed acknowledgement.
+      // Keep pin cleanup with this owner, including a crash after the SQLite ack.
+      if(anchor?.completedSourcePath) await this.acknowledgePeerTransfer(anchor.checkpoint,dbPath);
+      else if(anchor?.pending && sameCheckpoint(anchor.pending.target,body.after))
+        await this.acknowledgePeerTransfer(body.after,dbPath);
+      return this.peerTransfers.export({dbPath,onYield:()=>this.hooks.admitStorageWrite?.(),after:body.after,
         refresh:body.refresh===true && (this.state.value.role==='protected'||Boolean(this.state.value.recovery?.releaseOperation)),signal:this.abort.signal});
     }
     if (operation === 'peer-transfer-chunk') {

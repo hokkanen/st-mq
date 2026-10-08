@@ -46,13 +46,14 @@ export function peerAnchor(db) {
   if(!row) return null;
   const checkpoint=parse(row.anchor),pending=parse(row.pending);
   if(!validCheckpoint(checkpoint)) fail();
-  return {checkpoint,contentHash:row.content_hash,pending:pending&&{...pending,status:row.rebase_cursor===null?'ready':'rebasing',cursor:row.rebase_cursor}};
+  return {checkpoint,contentHash:row.content_hash,pending:pending&&{...pending,status:row.rebase_cursor===null?'ready':'rebasing',cursor:row.rebase_cursor},
+    ...(row.completed_source ? {completedSourcePath:row.completed_source} : {})};
 }
 export function enrollJournalPeer(db,{checkpoint=readCheckpoint(db)}={}) {
   return journalExclusive(db,()=>{
     const current=meta(db);if(current) return peerAnchor(db);
     const hash=checkpointContent(db,checkpoint);
-    journalConnection(db).prepare('INSERT INTO journal_peer VALUES(1,?,?,NULL,NULL)').run(JSON.stringify(checkpoint),hash);
+    journalConnection(db).prepare('INSERT INTO journal_peer VALUES(1,?,?,NULL,NULL,NULL)').run(JSON.stringify(checkpoint),hash);
     return peerAnchor(db);
   });
 }
@@ -62,7 +63,7 @@ export function acceptPeerCheckpoint(db,{checkpoint=readCheckpoint(db)}={}) {
   return journalExclusive(db,()=>{
     const hash=checkpointContent(db,checkpoint),state=journalConnection(db);
     state.exec('DELETE FROM journal_peer_changes');
-    state.prepare('INSERT INTO journal_peer VALUES(1,?,?,NULL,NULL) ON CONFLICT(id) DO UPDATE SET anchor=excluded.anchor,content_hash=excluded.content_hash,pending=NULL,rebase_cursor=NULL')
+    state.prepare('INSERT INTO journal_peer VALUES(1,?,?,NULL,NULL,NULL) ON CONFLICT(id) DO UPDATE SET anchor=excluded.anchor,content_hash=excluded.content_hash,pending=NULL,rebase_cursor=NULL,completed_source=NULL')
       .run(JSON.stringify(checkpoint),hash);
     return peerAnchor(db);
   });
@@ -97,6 +98,7 @@ export function preparePeerTransfer(db,{after,sourcePath,refresh=false}={}) {
 function stagePeerTransfer(db,{after,sourcePath,refresh}) {
   let anchor=peerAnchor(db);
   if(!anchor) fail('journal_peer_unregistered');
+  if(anchor.completedSourcePath) fail('journal_peer_pending');
   if(refresh && anchor.pending) {
     if(anchor.pending.status==='rebasing'||!matchingCheckpoint(after,anchor.checkpoint)) fail();
     const previous=anchor.pending;
@@ -192,7 +194,7 @@ export function acknowledgePeer(db,{checkpoint,limit=128}={}) {
   if(!anchor) fail('journal_peer_unregistered');
   if(!anchor.pending) {
     if(!matchingCheckpoint(anchor.checkpoint,checkpoint)) fail();
-    return {complete:true,checkpoint};
+    return {complete:true,checkpoint,...(anchor.completedSourcePath?{sourcePath:anchor.completedSourcePath}:{})};
   }
   if(!matchingCheckpoint(anchor.pending.target,checkpoint)) fail();
   const {spool,pending}=openPending(db,anchor.pending.id);
@@ -223,15 +225,27 @@ export function acknowledgePeer(db,{checkpoint,limit=128}={}) {
       }
       const complete=cursor+1===pending.rows;
       if(complete && projected!==pending.contentHash) fail();
-      if(complete) state.prepare('UPDATE journal_peer SET anchor=?,content_hash=?,pending=NULL,rebase_cursor=NULL WHERE id=1')
-        .run(JSON.stringify(pending.target),pending.contentHash);
+      if(complete) state.prepare('UPDATE journal_peer SET anchor=?,content_hash=?,pending=NULL,rebase_cursor=NULL,completed_source=? WHERE id=1')
+        .run(JSON.stringify(pending.target),pending.contentHash,pending.sourcePath??null);
       else state.prepare('UPDATE journal_peer SET rebase_cursor=?,pending=? WHERE id=1')
         .run(cursor,JSON.stringify({...parse(meta(db).pending),ackContentHash:projected}));
-      return {complete,checkpoint:complete?pending.target:current.checkpoint};
+      return {complete,checkpoint:complete?pending.target:current.checkpoint,
+        ...(complete&&pending.sourcePath?{sourcePath:pending.sourcePath}:{})};
     });
   } finally {spool.close();}
   if(result.complete) rmSync(pending.path,{force:true});
   return result;
+}
+/** The snapshot owner releases its pin before clearing this committed receipt.
+ * A crash after acknowledgement must not forget a database-sized seed export. */
+export function releasePeerSource(db,{sourcePath}={}) {
+  return journalExclusive(db,()=>{
+    const saved=meta(db);
+    if(!saved || typeof sourcePath!=='string' || !sourcePath) fail();
+    if(saved.completed_source===null)return;
+    if(saved.completed_source!==sourcePath)fail();
+    journalConnection(db).prepare('UPDATE journal_peer SET completed_source=NULL WHERE id=1').run();
+  });
 }
 function resetHead(db,target,hash) {
   const state=journalConnection(db);
@@ -246,6 +260,7 @@ export function applyPeerTransfer(db,{base,target,contentHash,changes,rows}={}) 
     const head=validateCheckpoint(db),state=journalConnection(db);
     if(matchingCheckpoint(head,target)) return head;
     if(!matchingCheckpoint(head,base)) fail();
+    if(meta(db)?.completed_source) fail('journal_peer_pending');
     let hash=content(db),count=0;
     for(const change of changes) {
       journalApplyRow(db,change);hash=changeContentHash(hash,[change]);count++;
@@ -253,7 +268,7 @@ export function applyPeerTransfer(db,{base,target,contentHash,changes,rows}={}) 
     if(count!==rows||hash!==contentHash) fail();
     resetHead(db,target,hash);
     state.exec('DELETE FROM journal_peer_changes');
-    state.prepare('INSERT INTO journal_peer VALUES(1,?,?,NULL,NULL) ON CONFLICT(id) DO UPDATE SET anchor=excluded.anchor,content_hash=excluded.content_hash,pending=NULL,rebase_cursor=NULL')
+    state.prepare('INSERT INTO journal_peer VALUES(1,?,?,NULL,NULL,NULL) ON CONFLICT(id) DO UPDATE SET anchor=excluded.anchor,content_hash=excluded.content_hash,pending=NULL,rebase_cursor=NULL,completed_source=NULL')
       .run(JSON.stringify(target),hash);
     return target;
   });

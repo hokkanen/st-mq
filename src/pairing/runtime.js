@@ -11,7 +11,7 @@ import { databaseCheckpoint } from '../replication/incremental.js';
 import { adoptJournalDatabase, checkpointMetadata } from '../replication/journal-publication.js';
 import { databaseErrorDetails } from '../storage/database-errors.js';
 import { requireLocalBroker } from './config.js';
-import { PairManager } from './manager.js';
+import { PairManager, startupFailureDiagnostic } from './manager.js';
 import { ocppHandoverHooks } from './ocpp.js';
 import { MqttFrontend } from './mqtt-frontend.js';
 import { createMqttSourceContext } from './mqtt-source-context.js';
@@ -23,6 +23,27 @@ const ACTIONS = new Set(['check-recovery', 'recover', 'handover', 'promote', 're
 const RESET_ERRORS = new Set(['pair_reset_storage_failed', 'pair_reset_unsafe_storage',
   'pair_reset_history_unavailable', 'pair_reset_restoration_required', 'pair_reset_failed']);
 const requestError = message => Object.assign(new Error(message), { statusCode: 409, publicMessage: message });
+const RESET_STAGES = new Set(['stop-control', 'release-address', 'close-manager', 'check-restoration',
+  'prepare-archive', 'archive', 'reset-state', 'start-manager']);
+
+/** Shutdown aggregates can hide the failing subsystem. Keep their bounded leaf
+ * diagnostics under the same privacy rules as activation failures. */
+export function resetFailureDiagnostic(error, stage) {
+  const failures = [], seen = new Set();
+  const visit = (value, depth) => {
+    if (failures.length >= 8 || seen.size >= 32 || seen.has(value)) return;
+    seen.add(value);
+    if (depth < 4 && Array.isArray(value?.errors) && value.errors.length) {
+      for (const child of value.errors.slice(0, 8)) visit(child, depth + 1);
+    } else {
+      const { reason, location } = startupFailureDiagnostic(value, value?.code ?? 'runtime_failed');
+      failures.push({ reason: RESET_ERRORS.has(value?.code) ? value.code : reason,
+        ...(location ? { location } : {}) });
+    }
+  };
+  visit(error, 0);
+  return { event: 'paired-reset-failed', stage: RESET_STAGES.has(stage) ? stage : 'unknown', failures };
+}
 
 async function prepareAddonVipPolicy(config) {
   if (!config.addon || config.pair.vip.socketPath) return;
@@ -38,7 +59,8 @@ export async function startPaired({ config, readConfig, clock = Date.now, provid
   frontendFactory = options => new MqttFrontend(options),
   sourceContextFactory = createMqttSourceContext,
   managerOptions = {}, prepareVipPolicy = prepareAddonVipPolicy, checkpointSource = databaseCheckpoint,
-  resetStorage = { createResetArchive, resumeResetArchive, selectResetDatabase } } = {}) {
+  resetStorage = { createResetArchive, resumeResetArchive, selectResetDatabase },
+  reportResetFailure = diagnostic => console.error(JSON.stringify(diagnostic)) } = {}) {
   let runtime = null, manager, closed = false, latestOperation = null;
   let primaryPath = config.dbPath;
   let closing = null;
@@ -311,7 +333,11 @@ export async function startPaired({ config, readConfig, clock = Date.now, provid
   }
 
   async function performReset(old, input) {
-    let original, result, failure;
+    let original, result, failure, stage = 'stop-control';
+    const report = error => {
+      try { void Promise.resolve(reportResetFailure(resetFailureDiagnostic(error, stage))).catch(() => {}); }
+      catch { /* Diagnostics cannot prevent protection or preservation. */ }
+    };
     try {
       old.prepareShutdown();
       // Retain command authority only for ordinary graceful restoration. It is
@@ -319,11 +345,14 @@ export async function startPaired({ config, readConfig, clock = Date.now, provid
       // every physical obligation has been resolved.
       await hooks.stopControl({ restore: old.canControl() });
       old.activeAllowed = false;
+      stage = 'release-address';
       await old.vip.release();
       if (old.vip.status().owned !== false) throw requestError('The virtual address could not be released. Pairing was not reset.');
+      stage = 'close-manager';
       await old.close({ preserveState: true });
       await old.snapshots.mutations;
       original = structuredClone(old.state.value);
+      stage = 'check-restoration';
       if (!original.reset && input.mode === 'fresh' && original.everWritten) {
         const source = await resetStorage.selectResetDatabase(config, original).catch(error => {
           if (error.code !== 'pair_reset_history_unavailable') throw error;
@@ -336,11 +365,13 @@ export async function startPaired({ config, readConfig, clock = Date.now, provid
       requireOpen();
       let journal = original.reset;
       if (!journal) {
+        stage = 'prepare-archive';
         const plan = await resetStorage.createResetArchive({ config, state: original, mode: input.mode,
           requestId: input.requestId, clock });
         journal = { requestId: input.requestId, mode: input.mode, archiveDirectory: plan.archiveDirectory };
         await old.state.beginReset(journal);
       }
+      stage = 'archive';
       result = await resetStorage.resumeResetArchive(journal.archiveDirectory,
         { config, requestId: journal.requestId, mode: journal.mode });
       const unavailable = (result.recoveryBackups ?? []).filter(item => item.status === 'unavailable');
@@ -348,6 +379,7 @@ export async function startPaired({ config, readConfig, clock = Date.now, provid
         backupCount: (result.recoveryBackups ?? []).filter(item => item.status === 'complete').length,
         unavailableCount: unavailable.length + (result.recoveryBackupUnavailable ? 1 : 0),
         unavailableReasons: [...new Set([...unavailable.map(item => item.reason), result.recoveryBackupUnavailable].filter(Boolean))] };
+      stage = 'reset-state';
       await old.state.resetPairing({ activeDbPath: result.keptDbPath, receipt });
       primaryPath = result.keptDbPath ?? config.dbPath;
       result = receipt;
@@ -361,14 +393,16 @@ export async function startPaired({ config, readConfig, clock = Date.now, provid
       // former master. The pending journal retains the explicit retry operation.
       await old.state.update({ role: 'protected', reason: old.state.value.reset ? 'pairing_reset_pending' : 'pairing_reset_failed',
         transition: null, activationError: null }).catch(() => {});
+      report(error);
     }
     // The same SQLite lock remains held across manager replacement. There is no
     // interval in which another process can adopt these paths during a reset.
     manager = makeManager(old.state);
     initialMasterSeedAllowed = false;
     if (!closing) {
+      stage = 'start-manager';
       try { await manager.init({ stateOpen: true }); await manager.start(); }
-      catch (error) { failure ??= error; }
+      catch (error) { failure ??= error; report(error); }
     }
     if (failure) throw failure?.publicMessage ? failure
       : requestError('Pairing reset did not complete. The old files remain preserved. Review the state and retry.');

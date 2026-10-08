@@ -1,7 +1,7 @@
 import { createHash, randomUUID } from 'node:crypto';
 import { isDeepStrictEqual } from 'node:util';
 import { JOURNALED_TABLES, SCHEMA_VERSION } from './schema.js';
-import { quoteIdentifier as q } from './journal-schema.js';
+import { quoteIdentifier as q, journalTextNulExpression } from './journal-schema.js';
 import { LEARNING_ALGORITHM } from '../domain/learning-contract.js';
 import { assertCurrentChargingSessionCheck } from '../app/charging-session-checks.js';
 import { encodeChange, rowHash, emptyContentHash, changeContentHash, patchedValue, registerJournalFunctions } from './journal-codec.js';
@@ -95,8 +95,11 @@ function readCommit(db, row) {
 }
 const commitHash = (databaseId,commit) => digest({ version: JOURNAL_VERSION, databaseId,
   sequence: commit.sequence, previousHash: commit.previousHash, at: commit.at, contentHash:commit.contentHash, changes: commit.changes });
+const validScalar = value => value === null || typeof value === 'number' && Number.isFinite(value)
+  || typeof value === 'string' && !value.includes('\0');
 function validateMaterializedRow(table,row) {
   if(!row) return;
+  if(Object.values(row).some(value=>!validScalar(value)) || tables.get(table).keys.some(key=>row[key]===null)) fail();
   if(table==='learning_journal_entries' && row.algorithm_version!==LEARNING_ALGORITHM) fail('database_algorithm_mismatch');
   if(table==='events' && row.type==='charging-session-check') {
     try { assertCurrentChargingSessionCheck(JSON.parse(row.payload)); } catch { fail('database_state_incompatible'); }
@@ -105,16 +108,18 @@ function validateMaterializedRow(table,row) {
 function validateChange(change) {
   const table = tables.get(change?.table);
   if (!table || Object.keys(change).sort().join(',') !== 'after,afterHash,before,beforeHash,key,table'
-    || !Array.isArray(change.key) || change.key.length !== table.keys.length || change.before === null && change.after === null) fail();
+    || !Array.isArray(change.key) || change.key.length !== table.keys.length
+    || change.key.some(value=>value===null || !validScalar(value)) || change.before === null && change.after === null) fail();
   for (const row of [change.before,change.after]) {
     if (row === null) continue;
     if (!row || Array.isArray(row) || Object.keys(row).some(key=>!table.columns.includes(key))) fail();
     const full=change.before===null || change.after===null;
     if(full && (Object.keys(row).length!==table.columns.length || table.columns.some(key=>!Object.hasOwn(row,key)))) fail();
-    if (Object.values(row).some(value => value !== null && !['number','string'].includes(typeof value)
-      && (full || !value || Object.keys(value).join(',')!=='$text' || !Array.isArray(value.$text) || value.$text.length!==3
-        || !value.$text.slice(0,2).every(n=>Number.isSafeInteger(n)&&n>=0) || typeof value.$text[2]!=='string')
-      || typeof value === 'number' && !Number.isFinite(value))) fail();
+    if (Object.values(row).some(value => !validScalar(value)
+      && (full || !value || typeof value!=='object' || Object.keys(value).join(',')!=='$text'
+        || !Array.isArray(value.$text) || value.$text.length!==3
+        || !value.$text.slice(0,2).every(n=>Number.isSafeInteger(n)&&n>=0)
+        || typeof value.$text[2]!=='string' || !validScalar(value.$text[2])))) fail();
   }
   for(const side of ['before','after']) {
     if(change[side]===null ? change[`${side}Hash`]!==null : !/^[a-f0-9]{64}$/.test(change[`${side}Hash`])) fail();
@@ -284,13 +289,18 @@ export function exportChanges(db,{after,through,limit=128,maxBytes=4*1024*1024}=
 }
 function readRow(db,change) {
   const table=tables.get(change.table);
-  const row=raw(db).prepare(`SELECT * FROM ${q(table.name)} WHERE ${table.keys.map(key=>`${q(key)} IS ?`).join(' AND ')}`).get(...change.key);
-  return row ? {...row} : null;
+  const row=raw(db).prepare(`SELECT *,(${journalTextNulExpression(table.columns)}) AS __journal_has_nul FROM ${q(table.name)} WHERE ${table.keys.map(key=>`${q(key)} IS ?`).join(' AND ')}`).get(...change.key);
+  if(!row) return null;
+  const {__journal_has_nul:hasNul,...value}=row;
+  if(hasNul) fail();
+  validateMaterializedRow(change.table,value);
+  return value;
 }
 export function resolveChange(change,actual,{reverse=false}={}) {
   // Iterators also carry their position; the wire representation remains strict.
   const {sequence,ordinal,...value}=change,table=validateChange(value);
   actual=actual ? {...actual} : null;
+  validateMaterializedRow(change.table,actual);
   const expected=reverse?change.afterHash:change.beforeHash,target=reverse?change.before:change.after;
   if(rowHash(change.table,change.key,actual)!==expected) fail('journal_row_conflict');
   let result=null;
@@ -395,7 +405,10 @@ export function verifyJournal(db) {
   // also detects damage in rows older than the retained mutation window.
   let actualContent=emptyContentHash;
   for(const table of tables.values()) {
-    for(const row of state.prepare(`SELECT * FROM ${q(table.name)}${table.name==='state'?" WHERE key<>'backup:metadata'":''}`).iterate()) {
+    for(const found of state.prepare(`SELECT *,(${journalTextNulExpression(table.columns)}) AS __journal_has_nul FROM ${q(table.name)}${table.name==='state'?" WHERE key IS NOT 'backup:metadata'":''}`).iterate()) {
+      const {__journal_has_nul:hasNul,...row}=found;
+      if(hasNul) fail();
+      validateMaterializedRow(table.name,row);
       const key=table.keys.map(key=>row[key]);
       actualContent=changeContentHash(actualContent,[{beforeHash:null,afterHash:rowHash(table.name,key,{...row})}]);
     }

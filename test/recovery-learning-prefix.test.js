@@ -211,3 +211,53 @@ for(const correction of ['fireplace','sensor','fireplace-removal']) test(`late $
     check(revised,progress);
   }
 });
+
+test('successive late recoveries retain exact source selection across compaction, reopen and nonsequential reversals',async t=>{
+  const f=fixture(t),history=128;
+  f.master.transaction(()=>{for(let i=1;i<=history;i++) {
+    if(i<=16) sample(f.master,start+i*W);
+    else appendLearningRecord(f.master,'mqtt','context',{timestamp:start+i*W,phase:'normal',regime:'occupied',targetC:21,roomBoostC:0},{config:{}});
+  }});
+  replayLearningJournal(f.master,'mqtt');
+  const donor=await f.donor(),recoveries=[],selected=new Set(),local=new Set();
+  const expireAndReopen=()=>{
+    f.master.setState('synthetic-current-bookkeeping',{retained:true});
+    f.master.compactJournal({maxBytes:1,maxCommits:1});
+    const reopened=new Store(f.master.path,{readOnly:true});
+    try {
+      assert.deepEqual(reopened.getState('adaptive:mqtt'),f.master.getState('adaptive:mqtt'));
+      assert.equal(reopened.db.prepare('SELECT COUNT(*) n FROM learning_checkpoints').get().n,
+        f.master.db.prepare('SELECT COUNT(*) n FROM learning_checkpoints').get().n);
+    } finally { reopened.close(); }
+  };
+  const verify=(result,progress)=>{
+    const expected=[...Array.from({length:16},(_,i)=>i+1),...local,...selected].sort((a,b)=>a-b);
+    assert.deepEqual(f.master.learningJournal({input:'mqtt',limit:1000}).filter(row=>row.kind==='sample').map(row=>row.at),
+      expected.map(i=>start+i*W));
+    assert.deepEqual(replayLearningJournal(f.master,'mqtt',null,{rebuild:true,persistCheckpoint:false}),result.checkpoint);
+    assert(progress.filter(value=>value.phase==='rebuilding').every(value=>value.total<=9),
+      'each correction replays only the recent affected suffix across flattened prefix ranges');
+    assert.equal(f.master.db.prepare('PRAGMA foreign_key_check').get(),undefined);
+  };
+  for(let index=0;index<3;index++) {
+    const gap=history+index*3+1;
+    sample(donor,start+gap*W,{indoorC:21+index/10});
+    for(const at of [gap+1,gap+2]) {sample(f.master,start+at*W);local.add(at);}
+    replayLearningJournal(f.master,'mqtt',f.master.getState('adaptive:mqtt'));
+    expireAndReopen();
+    const progress=[],result=await recover(f,await f.snapshot(donor),{onProgress:value=>progress.push(value)});
+    recoveries.push({id:result.report.recoveryId,gap});selected.add(gap);
+    verify(result,progress);
+  }
+  const originalSources=f.master.db.prepare('SELECT id,payload FROM learning_journal_entries WHERE source_entry_id IS NULL ORDER BY id').all();
+  for(const [index,active] of [[1,false],[0,false],[1,true],[2,false],[0,true],[2,true]]) {
+    expireAndReopen();
+    const operation=recoveries[index],args={store:f.master,input:'mqtt',recoveryId:operation.id,active,signal:f.signal};
+    const preview=await previewRecoveryRevision(args),progress=[];
+    const result=await reviseRecovery({...args,preview,onProgress:value=>progress.push(value)});
+    if(active) selected.add(operation.gap);else selected.delete(operation.gap);
+    verify(result,progress);
+    assert.deepEqual(f.master.db.prepare('SELECT id,payload FROM learning_journal_entries WHERE source_entry_id IS NULL ORDER BY id').all(),originalSources,
+      'revisions retain every immutable source input even when another recovery remains excluded');
+  }
+});

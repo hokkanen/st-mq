@@ -1,6 +1,6 @@
 # SQLite checkpoints, recording and peer catch-up
 
-The current development schema is **25**; the transaction format is **2**.
+The current development schema is **26**; the transaction format is **2**.
 Incompatible development databases are rejected before mutation. Select a fresh
 empty development database deliberately; no migration or automatic reset exists.
 Current-schema restart, backups, correction replay and source-only recovery remain
@@ -32,6 +32,16 @@ so a small document edit does not stage two complete document copies. Full-row
 SHA-256 fingerprints check both sides of each change. Primary keys stay stable.
 Unsupported external writers without the capture functions fail before mutation;
 unsealed capture remains a startup error.
+
+Capture passes SQLite's typed column values directly to JavaScript and uses the
+same serialization as row verification. SQLite JSON rendering is not a lossless
+encoding of REAL values on every supported runtime: rounding a value before
+hashing would make an intact database fail verification. Numeric precision, TEXT
+bytes and NULL remain unchanged. Unsupported nonfinite or binary values, and TEXT
+containing an embedded NUL that older supported Node bindings truncate on read,
+fail atomically rather than being normalized into another value. Existing development
+journals with rounded fingerprints are preserved and rejected, never silently
+rehashed or translated.
 
 The row effects, linked commit hash, current materialized-content fingerprint,
 peer change index and durable head commit together under FULL synchronous WAL.
@@ -103,6 +113,12 @@ New exports wait while the common anchor is being rebased; the new anchor
 publishes only after all its keys are consistent. Completed/orphan staging is
 reclaimable; a missing or corrupt required pending source remains an error rather
 than authorizing a guessed checkpoint or silent replacement.
+
+A completed initial-seed acknowledgement retains its source-file cleanup receipt
+until the owning transport has released the snapshot pin. Restart or a lost reply
+can repeat that cleanup without pinning a full database copy indefinitely. Export
+waits for this cleanup, including when the next peer request proves acceptance of
+the earlier seed.
 
 For explicit protected rejoin, both peers first establish the retained common
 anchor. The selected master's complete changed-row transfer is staged **before**

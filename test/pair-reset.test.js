@@ -10,6 +10,7 @@ import { start } from '../src/main.js';
 import { loadConfig } from '../src/app/config.js';
 import { Store, SCHEMA_VERSION } from '../src/storage/store.js';
 import * as resetStorage from '../src/pairing/reset-storage.js';
+import { resetFailureDiagnostic } from '../src/pairing/runtime.js';
 
 async function fixture(t) {
   const root = await mkdtemp(join(tmpdir(), 'pair-reset-')), apps = new Set();
@@ -46,6 +47,55 @@ async function completed(app, input) {
   throw Error('Reset did not settle');
 }
 async function promote(app) { await app.pair.action('promote', { requestId: randomUUID(), confirmed: true }); }
+
+test('reset diagnostics bound aggregate failures and reuse private-safe source and reason filtering', () => {
+  const source = new URL('../src/storage/journal.js', import.meta.url).href;
+  const known = Object.assign(new Error('synthetic private database value'), { code: 'database_journal_invalid',
+    stack: `Error: synthetic private database value\n    at fail (${source}:17:42)` });
+  const privateError = Object.assign(new Error('synthetic private credentials'), { code: 'private-account-code',
+    stack: 'Error: synthetic private credentials\n    at connect (/private/installation/account.js:19:2)' });
+  const aggregate = new AggregateError([known, new AggregateError([privateError], 'private nested value')], 'private top value');
+  assert.deepEqual(resetFailureDiagnostic(aggregate, 'stop-control'), {
+    event: 'paired-reset-failed', stage: 'stop-control', failures: [
+      { reason: 'database_journal_invalid', location: 'src/storage/journal.js:17:42' },
+      { reason: 'peer_protocol_failed' },
+    ],
+  });
+  aggregate.errors.push(aggregate);
+  assert.equal(resetFailureDiagnostic(aggregate, 'private stage').stage, 'unknown');
+  const many = new AggregateError(Array.from({ length: 100 }, () => new Error('private leaf')), 'private aggregate');
+  assert.equal(resetFailureDiagnostic(many, 'archive').failures.length, 8);
+  assert.equal(resetFailureDiagnostic({ code: 'pair_reset_restoration_required' }, 'check-restoration')
+    .failures[0].reason, 'pair_reset_restoration_required');
+  assert.doesNotMatch(JSON.stringify(resetFailureDiagnostic(aggregate, 'stop-control')), /private|credentials|installation|account/);
+});
+
+for (const asyncSink of [false, true]) test(`shutdown failure reports safe reset diagnostics and preserves protection when the sink ${asyncSink ? 'rejects' : 'throws'}`, async t => {
+  const f = await fixture(t), diagnostics = [];
+  const store = new Store(f.config.dbPath);
+  store.event('synthetic-preserved-after-close-failure', { value: 1 }, 1); store.close();
+  const leaf = Object.assign(new Error('synthetic private shutdown detail'), { code: 'database_journal_invalid',
+    stack: `Error: synthetic private shutdown detail\n    at fail (${new URL('../src/storage/journal.js', import.meta.url).href}:17:42)` });
+  const app = await f.open({ startRuntime: async ({ config }) => ({ store: { path: config.dbPath },
+    close: async () => { throw new AggregateError([leaf], 'synthetic private aggregate'); } }),
+  reportResetFailure: diagnostic => {
+    diagnostics.push(diagnostic);
+    if (asyncSink) return Promise.reject(new Error('synthetic private diagnostic sink'));
+    throw new Error('synthetic private diagnostic sink');
+  } });
+  await promote(app);
+  const op = await completed(app, command(app, 'fresh'));
+  assert.equal(op.state, 'error'); assert.equal(op.errorCode, 'pair_reset_failed');
+  assert.equal(app.status().role, 'protected'); assert.equal(app.pair.canControl(), false);
+  assert.equal(app.pair.state.value.reset, undefined, 'failed shutdown must not begin an archive');
+  assert.deepEqual(diagnostics, [{ event: 'paired-reset-failed', stage: 'stop-control', failures: [
+    { reason: 'database_journal_invalid', location: 'src/storage/journal.js:17:42' },
+  ] }]);
+  assert.doesNotMatch(JSON.stringify({ diagnostics, op }), /synthetic private|aggregate|\/private\//);
+  const preserved = new Store(f.config.dbPath, { readOnly: true });
+  try { assert.equal(preserved.db.prepare("SELECT COUNT(*) n FROM events WHERE type='synthetic-preserved-after-close-failure'").get().n, 1); }
+  finally { preserved.close(); }
+});
 
 test('keep history archives previous pairing identity and returns a master as protected without losing records', async t => {
   const f = await fixture(t), app = await f.open(); await promote(app);

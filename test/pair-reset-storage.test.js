@@ -159,6 +159,64 @@ test('fresh reset archives exact database sidecars and pairing state without tou
   assert.deepEqual(await resume(plan, config, plan.archiveDirectory), result, 'completed archive is idempotent');
 });
 
+for (const mode of ['fresh', 'keep']) test(`${mode} reset archives only recognized database peer companions byte for byte`, async t => {
+  const { config, create } = await fixture(t), id = randomUUID();
+  const suffixes = [`.peer-${id}.sqlite`, `.peer-${id}.sqlite-journal`, `.peer-${id}.sqlite-wal`,
+    `.peer-${id}.sqlite-shm`, `.peer-${id}.sqlite.partial`, `.peer-${id}.sqlite.partial-journal`,
+    '.peer-lock', '.peer-lock-journal'];
+  for (const suffix of suffixes) await file(`${config.dbPath}${suffix}`, `synthetic retained bytes ${suffix}`);
+  const unrelated = [`${config.dbPath}.peer-${id}.sqlite.extra`, `${config.dbPath}.peer-not-a-uuid.sqlite`,
+    `${config.dbPath}.peer-lock.extra`, `${config.dbPath}.other.peer-${id}.sqlite`];
+  for (const path of unrelated) await file(path, 'unrelated sibling');
+  const plan = await create(mode);
+  assert.equal(plan.recoveryBackups.length, 1, 'transfer spools are evidence, not standalone application backups');
+  for (const suffix of suffixes) {
+    assert(plan.entries.some(entry => entry.source === `${config.dbPath}${suffix}`));
+    assert.equal(await readFile(`${config.dbPath}${suffix}`, 'utf8'), `synthetic retained bytes ${suffix}`, 'planning is read only');
+  }
+  const first = plan.entries.find(entry => entry.source === `${config.dbPath}${suffixes[0]}`);
+  const moved = archived(plan, first.source);
+  await mkdir(dirname(moved), { recursive: true });
+  await rename(first.source, moved); // Crash after moving a peer spool, before acknowledging that archive entry.
+  const result = await resume(plan, config, plan.archiveDirectory);
+  for (const suffix of suffixes) {
+    assert.equal(await readFile(archived(plan, `${config.dbPath}${suffix}`), 'utf8'), `synthetic retained bytes ${suffix}`);
+    await absent(`${config.dbPath}${suffix}`);
+  }
+  for (const path of unrelated) assert.equal(await readFile(path, 'utf8'), 'unrelated sibling');
+  assert.equal(await readFile(join(config.pair.directory, '.node-lock.sqlite'), 'utf8'), 'stable lock');
+  if (mode === 'keep') assert.equal(await readFile(result.keptDbPath, 'utf8'), 'database bytes');
+  assert.deepEqual(await resume(plan, config, plan.archiveDirectory), result);
+});
+
+test('peer companion discovery rejects matching symlinks without following unrelated sibling links', async t => {
+  const { root, config, create } = await fixture(t), target = join(root, 'unrelated', 'evidence');
+  await file(target, 'unrelated evidence');
+  const unrelated = `${config.dbPath}.peer-not-a-uuid.sqlite`;
+  await symlink(target, unrelated);
+  const recognized = `${config.dbPath}.peer-${randomUUID()}.sqlite`;
+  await symlink(target, recognized);
+  await assert.rejects(create('fresh'), { code: 'pair_reset_unsafe_storage' });
+  assert.equal(await readFile(target, 'utf8'), 'unrelated evidence');
+  assert.equal(await readFile(config.dbPath, 'utf8'), 'database bytes');
+  await rm(recognized);
+  const plan = await create('fresh');
+  assert(!plan.entries.some(entry => entry.source === unrelated));
+});
+
+test('an edited reset manifest cannot expand a peer companion into an unrelated sibling', async t => {
+  const { config, create } = await fixture(t);
+  const companion = `${config.dbPath}.peer-${randomUUID()}.sqlite`, unrelated = `${companion}.extra`;
+  await file(companion, 'retained spool'); await file(unrelated, 'retained spool');
+  const plan = await create('fresh'), manifestPath = join(plan.archiveDirectory, 'reset.json');
+  const manifest = JSON.parse(await readFile(manifestPath, 'utf8'));
+  manifest.entries.find(entry => entry.source === companion).source = unrelated;
+  await writeFile(manifestPath, JSON.stringify(manifest));
+  await assert.rejects(resume(plan, config), { code: 'pair_reset_unsafe_storage' });
+  assert.equal(await readFile(unrelated, 'utf8'), 'retained spool');
+  assert.equal(await readFile(companion, 'utf8'), 'retained spool');
+});
+
 test('keep history selects a promoted database and retains its SQLite companions while archiving the configured database separately', async t => {
   const { config, state, create } = await fixture(t);
   const promoted = join(config.pair.directory, `master-${randomUUID()}.sqlite`);
