@@ -89,10 +89,18 @@ test('full recovery verification is opt-in, runs before the operation and reject
   await f.coordinator.settled(); assert.equal(verified.length, 0);
   assert.equal((await f.post(request('check', { sourceId: source.sourceId, installationConfirmed: true, verifyWithFullSnapshot: true }))).status, 202);
   await f.coordinator.settled(); assert.equal(verified.length, 2); assert.equal(verified[0], f.store.path);
-  assert.equal((await f.post(request('review-revert', { operationId: 'fixture', verifyWithFullSnapshot: true }))).status, 202);
-  await f.coordinator.settled(); assert.equal(verified.length, 3);
+  assert.equal((await f.post(request('recover', { previewId: 'a'.repeat(64), confirmed: true, verifyWithFullSnapshot: true }))).status, 202);
+  await f.coordinator.settled(); assert.equal(verified.length, 4);
+  for (const action of ['revert', 'restore']) {
+    const before = verified.length;
+    assert.equal((await f.post(request(`review-${action}`, { operationId: 'fixture', verifyWithFullSnapshot: true }))).status, 202);
+    await f.coordinator.settled(); assert.equal(verified.length, before + 1);
+    assert.equal((await f.post(request(action, { previewId: 'b'.repeat(64), confirmed: true, verifyWithFullSnapshot: true }))).status, 202);
+    await f.coordinator.settled(); assert.equal(verified.length, before + 2);
+    assert.deepEqual(verified.slice(before), [f.store.path, f.store.path]);
+  }
   assert.equal((await f.post(request('check', { sourceId: source.sourceId, installationConfirmed: true, verifyWithFullSnapshot: 'yes' }))).status, 400);
-  assert.equal(verified.length, 3);
+  assert.equal(verified.length, 8);
 });
 
 test('standalone upload, explicit source review, recovery publication and retry receipts share durable coordinator state', async t => {

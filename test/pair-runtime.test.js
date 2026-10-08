@@ -80,6 +80,35 @@ function observation(store, at, value) {
     value, unit: 'degC', sourceTime: at, receivedAt: at });
 }
 
+test('pair HTTP actions admit full verification only as a boolean for supported operations', async t => {
+  const f = await fixture(t), app = await f.open('options', 'slave', 'ubuntu'), received = [];
+  // Exercise the real HTTP and supervisor admission boundary without performing
+  // five unrelated authority transitions. Lifecycle tests cover the verifier.
+  const action = app.pair.action;
+  app.pair.action = async (name, input) => { received.push({ name, input }); return { ok: true }; };
+  t.after(() => { app.pair.action = action; });
+  for (const name of ['check-recovery', 'recover', 'handover', 'promote', 'rejoin']) {
+    for (const verifyWithFullSnapshot of [true, false]) {
+      const input = command(name, { verifyWithFullSnapshot });
+      await apiAction(app, input);
+      assert.deepEqual(received.at(-1), { name, input });
+    }
+  }
+  const accepted = received.length;
+  for (const verifyWithFullSnapshot of ['true', 1, null, {}, []]) {
+    const response = await fetch(`${url(app)}/api/pair/action`, { method: 'POST',
+      headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(command('handover', { verifyWithFullSnapshot })) });
+    assert.equal(response.status, 409);
+  }
+  for (const verifyWithFullSnapshot of [true, false]) {
+    const response = await fetch(`${url(app)}/api/pair/action`, { method: 'POST',
+      headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(command('reset', {
+        mode: 'keep', resetToken: app.status().reset.token, verifyWithFullSnapshot })) });
+    assert.equal(response.status, 409);
+  }
+  assert.equal(received.length, accepted, 'Rejected options cannot reach the operation owner');
+});
+
 test('both fresh pair nodes stay read-only until explicit promotion, then restart preserves the chosen master', async t => {
   const f = await fixture(t), a = await f.open('a', 'slave', 'hassio'), b = await f.open('b', 'slave', 'ubuntu');
   connect(a, b);
@@ -117,7 +146,7 @@ test('full application handover switches controller/viewer, preserves durable ro
   const initial = await (await fetch(`${url(b)}/api/status`)).json();
   assert.equal(initial.readOnly, true, JSON.stringify(initial)); assert.equal(initial.pair.role, 'slave');
   assert.equal((await fetch(`${url(b)}/api/settings/reload`, { method: 'POST' })).status, 405);
-  const handover = command('handover'); await apiAction(a, handover);
+  const handover = command('handover', { verifyWithFullSnapshot: true }); await apiAction(a, handover);
   assert.equal(a.pair.canControl(), false); assert.equal(b.pair.canControl(), true);
   assert.equal(a.engine, undefined); assert.equal(b.engine.config.input, 'mqtt');
   assert.equal(b.store.latestObservation('indoor_temperature').value, 20);
@@ -135,7 +164,7 @@ test('outage promotion, returning Hassio, manual gap recovery and exact rejoin r
   connect(a, b); observation(a.store, now - 4 * W, 20);
   await b.pair.synchronize(a.pair.state.claim()); assert.equal(b.pair.sync.state, 'ready');
   await f.close(a);
-  await apiAction(b, command('promote')); assert.equal(b.pair.canControl(), true);
+  await apiAction(b, command('promote', { verifyWithFullSnapshot: true })); assert.equal(b.pair.canControl(), true);
   observation(b.store, now - 3 * W, 21);
   observation(b.store, now - 2 * W, 99); // conflict: returning master's observation must win.
   b.store.setState('synthetic-donor-only-state', { obsolete: true });
@@ -143,15 +172,15 @@ test('outage promotion, returning Hassio, manual gap recovery and exact rejoin r
   observation(returned.store, now - 2 * W, 22);
   connect(returned, b); await b.pair.observeClaim(returned.pair.state.claim());
   assert.equal(b.pair.state.value.role, 'protected'); assert.equal(b.engine, undefined);
-  await historyAction(returned, { action: 'check', requestId: randomUUID() });
+  await historyAction(returned, { action: 'check', requestId: randomUUID(), verifyWithFullSnapshot: true });
   const preview = returned.pair.state.value.recovery.preview;
   assert.match(preview.previewId, /^[a-f0-9]{64}$/); assert.equal(preview.status, 'checked'); assert.equal(preview.counts, undefined);
-  await historyAction(returned, command('recover', { previewId: preview.previewId }));
+  await historyAction(returned, command('recover', { previewId: preview.previewId, verifyWithFullSnapshot: true }));
   assert.equal(b.pair.state.value.role, 'protected');
   assert.equal(returned.store.observations().find(row => row.sourceTime === now - 3 * W).value, 21);
   assert.equal(returned.store.observations().find(row => row.sourceTime === now - 2 * W).value, 22);
   assert.deepEqual(replayLearningJournal(returned.store, 'mqtt', null, { rebuild: true }), returned.engine.checkpoint);
-  await apiAction(returned, command('rejoin'));
+  await apiAction(returned, command('rejoin', { verifyWithFullSnapshot: true }));
   assert.equal(b.pair.state.value.role, 'slave');
   const publication = await readReplicaPublication(b.pair.config.snapshotDirectory);
   const replica = new Store(publication.dbPath, { readOnly: true });

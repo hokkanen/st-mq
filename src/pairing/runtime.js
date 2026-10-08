@@ -86,7 +86,8 @@ export async function startPaired({ config, readConfig, clock = Date.now, provid
     requestAction(input) {
       if (!input || typeof input !== 'object' || Array.isArray(input)
         || Object.keys(input).some(key => !['action', 'requestId', 'confirmed', 'previewId', 'discardUnrecovered',
-          'mode', 'resetToken', 'restorationConfirmed'].includes(key))
+          'mode', 'resetToken', 'restorationConfirmed', 'verifyWithFullSnapshot'].includes(key))
+        || ('verifyWithFullSnapshot' in input && (typeof input.verifyWithFullSnapshot !== 'boolean' || input.action === 'reset'))
         || (input.action !== 'reset' && ['mode', 'resetToken', 'restorationConfirmed'].some(key => key in input))
         || (input.action === 'reset' && (!['keep', 'fresh'].includes(input.mode)
           || typeof input.resetToken !== 'string' || !/^[a-f0-9]{64}$/.test(input.resetToken)
