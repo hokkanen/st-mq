@@ -435,8 +435,12 @@ export function createOcppChargingController({ adapter, initialState = null, sav
     });
   }
   let takeoverState = null, takeoverAttempt = null;
+  // Losing a supplementary schedule read is not a new instruction. Preserve
+  // its observed comparison baseline without marking that schedule fresh.
+  const takeoverAppControl = () => snapshot?.appControl && snapshot.appControl.schedule === null && state.appControl?.schedule
+    ? { ...snapshot.appControl, schedule: state.appControl.schedule } : snapshot?.appControl;
   const takeoverToken = () => snapshot ? hash([adapter.scope, snapshot.connectionId, snapshot.transactionId,
-    snapshot.connectorStatus, snapshot.statusAt, state.session?.connectedAt, appFingerprint(snapshot.appControl)]) : null;
+    snapshot.connectorStatus, snapshot.statusAt, state.session?.connectedAt, appFingerprint(takeoverAppControl())]) : null;
   const takeoverStatus = () => {
     const app = snapshot?.appControl;
     const supported = app?.schedule == null || easeeScheduleTakeoverSupported(app.schedule);
@@ -616,7 +620,13 @@ export function createOcppChargingController({ adapter, initialState = null, sav
         schedule: app.schedule && (!prior || app.readAt >= prior.readAt) ? app.schedule : prior?.schedule ?? null };
     }
     const witness = state.pauseWitness;
-    if (!changes.manual && !state.manual && witness && state.owned?.profileId === witness.profileId
+    // An uncertain Clear may already have released our pause. Its resulting
+    // Charging status cannot identify an external release; retain the exact
+    // pending command until its existing reconciliation completes. Independently
+    // observed Stop and schedule changes above keep their own authority.
+    const clearingOwned = state.pending?.action === 'clear'
+      && state.pending.instruction.fingerprint === state.owned?.fingerprint;
+    if (!changes.manual && !state.manual && !clearingOwned && witness && state.owned?.profileId === witness.profileId
       && snapshot.transactionConfirmed && snapshot.transactionId === witness.transactionId
       && snapshot.connectionId === witness.connectionId && now < state.owned.startAt
       && snapshot.connectorStatus === 'Charging' && snapshot.statusAt > witness.at && fresh(snapshot.statusAt, now)) {

@@ -412,8 +412,17 @@ removal yields the current physical connection to external control; only the
 application's exact OCPP profile is released. Native current limits remain in
 the charger.
 A fresh Charging observation before an owned, physically confirmed pause expires
-also establishes an app release. `SuspendedEVSE` or zero power alone does not
-identify a manual action.
+also establishes an app release, unless ST-MQ already has a pending Clear for
+that exact owned profile. The charger may have applied that Clear despite a lost
+reply; its resulting Charging status cannot become a new external instruction
+that prevents normal Resume. The pending Clear keeps its existing reconciliation
+and retry boundary. Separately observed external Stops and schedule edits retain
+priority. `SuspendedEVSE` or zero power alone does not identify a manual action.
+
+Explicit takeover compares a temporarily unavailable cloud schedule read against
+the last observed schedule without renewing its source evidence. Losing that
+read does not change the instruction token; an actually observed different
+schedule still invalidates an earlier token before native mutation.
 
 An actual OCPP `StopTransaction` with reason `Remote`, `Local` or `DeAuthorized`
 is definite local stop evidence. It blocks replacement Start for the same

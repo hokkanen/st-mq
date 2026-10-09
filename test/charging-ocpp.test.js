@@ -953,6 +953,40 @@ test('Charge Now preserves a confirmed native OCPP stop and never sends a remote
   assert(!writes(f).some(row => /RemoteStart|RemoteStop/.test(row.action)));
 });
 
+for (const externalStop of [false, true]) test(`an applied Clear with a lost reply ${externalStop ? 'preserves a later external Stop' : 'cannot become an external release and prevent normal Resume'}`, async t => {
+  const f = fixture(), future = plan(START + 30 * MINUTE);
+  t.after(() => f.controller.close());
+  f.app(appState(START, true));
+  const paused = await f.controller.update({ enabled: true, plan: future });
+  assert.equal(paused.pauseConfirmed, true);
+  assert.ok(f.stored.pauseWitness);
+  const connectedAt = paused.session.connectedAt;
+  f.advance(1000);
+  f.intercept((action, _payload, _options, result) => {
+    const reply = result();
+    if (action === 'ClearChargingProfile') throw Object.assign(Error('synthetic lost clear response'), { code: 'ocpp-request-timeout' });
+    return reply;
+  });
+  await f.controller.update({ chargeNow: { connectedAt } });
+  assert.equal(f.profiles.size, 0, 'The charger applied the exact profile clear despite the lost reply');
+  assert.equal(f.stored.pending.action, 'clear');
+  assert.equal(f.stored.pending.accepted, false);
+  f.intercept(null); f.advance(1000);
+  if (externalStop) f.app(appState(f.now, false));
+  let view = await f.controller.update();
+  assert.equal(view.snapshot.connectorStatus, 'Charging');
+  assert.equal(view.manual?.kind ?? null, externalStop ? 'stop' : null,
+    'Expected Charging after our own uncertain Clear is not an external instruction');
+  assert.equal(writes(f).length, 2, 'The uncertain Clear keeps its existing retry boundary');
+  f.advance(30_000);
+  view = await f.controller.update();
+  assert.equal(view.pending, null, 'A later Unknown reply reconciles the exact cleared profile');
+  view = await f.controller.update({ chargeNow: null, replan: true });
+  assert.equal(view.phase, externalStop ? 'yielded' : 'paused');
+  assert.equal(view.manual?.kind ?? null, externalStop ? 'stop' : null);
+  assert.equal(view.pauseConfirmed, !externalStop, 'Normal Resume restores the economic pause without Use automatic');
+});
+
 test('an earlier OCPP session’s Charge Now cannot release a new transaction’s planned pause', async () => {
   const f = fixture(); await f.controller.update({ enabled: true, plan: plan(START + 30 * MINUTE) });
   const connectedAt = f.controller.status().session.connectedAt;
@@ -1382,6 +1416,21 @@ test('native handover identifies the final readback failure and retains uncertai
   const later = await f.controller.update({ enabled: true });
   assert.equal(later.errorCode, 'takeover-unconfirmed'); assert.equal(later.reasonCode, null);
   assert.equal(f.nativeCalls.length, 1, 'Uncertain handover cannot be replayed by ordinary polling');
+});
+
+for (const changed of [false, true]) test(`Use automatic ${changed ? 'rejects a newly observed different schedule' : 'retains its instruction token when a cloud schedule read is unavailable'}`, async t => {
+  const f = fixture({ nativeTakeover: true });
+  t.after(() => f.controller.close());
+  const baseline = { ...appState(START, true), schedule: noNativeSchedule() };
+  f.app(baseline);
+  const prior = await f.controller.update({ enabled: false, plan: plan(START + 30 * MINUTE) });
+  f.app({ ...baseline, schedule: changed ? { ...noNativeSchedule(), enabled: 'daily', daily: {
+    timezone: 'UTC', periods: [{ maximumAmps: 8, startTime: '12:00:00', stopTime: '12:05:00' }] } } : null });
+  const result = await f.controller.update({ enabled: true, takeover: prior.takeover.token });
+  assert.equal(result.takeover.state, changed ? 'blocked' : 'confirmed');
+  assert.equal(result.errorCode, changed ? 'takeover-stale' : null);
+  assert.equal(f.nativeCalls.length, changed ? 0 : 1);
+  assert.equal(result.pauseConfirmed, !changed);
 });
 
 test('native Use automatic permanently removes a native schedule when the plan is open', async () => {
