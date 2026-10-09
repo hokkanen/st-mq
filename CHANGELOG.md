@@ -18,6 +18,10 @@ Versions follow Semantic Versioning. `-dev.N` denotes a development prerelease.
   dashboard reads no longer change control state. Failed buffered Tesla admission
   remains unavailable until a successful fresh subscription, and OCPP current
   retains its original measurement clock.
+- Queued or rejected Tesla and BMW observations no longer appear as fresh vehicle
+  evidence through another charger connection. Recovery requires the affected
+  evidence to be saved; unrelated readings cannot clear the failure. Charging
+  replans from labelled session references instead of reusing the former plan.
 - Recording diagnostics separate queue waiting from transaction BEGIN, body and
   COMMIT time, helping identify storage stalls without adding recorded history.
 - Updated a build-only source-map dependency to fix unbounded processing of

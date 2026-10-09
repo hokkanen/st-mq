@@ -2,6 +2,7 @@ import { actionReceiptRecent, createReceiptTracker } from './action-receipts.js'
 import { isReadOnlyReplica } from './replica-status.js';
 import { setStatusDetail } from './status-details.js';
 import { temperatureReadingStatus } from './temperature-status.js';
+import { vehicleObservationAdmissionStatus } from './vehicle-feed-status.js';
 import { TEMPERATURE_SENSORS } from '../src/domain/indoor-sensors.js';
 import { FLOOR_PREHEAT_DEVICE, FLOOR_PREHEAT_CIRCUITS } from '../src/domain/floor-circuits.js';
 import { createCaravanContents, dehumidifierCommandAllowed, temperatureControlAllowed, temperatureControlValueAllowed } from './caravan.js';
@@ -368,20 +369,22 @@ function vehicleConnection({ reception = {}, enabled = true, label, source, deta
   const subscribed = reception.subscribed === true || reception.subscriptionStatus === 'subscribed';
   const failed = ['failed', 'denied', 'error'].includes(reception.subscriptionStatus);
   const { lastLiveAt, lastRetainedAt, lastMessageAt, invalidReason } = reception;
+  const storage = vehicleObservationAdmissionStatus(reception.reason);
   return { label, kind: 'vehicle', source, mqttStatus: reception,
     lastReportAt: lastLiveAt,
     connectionState: enabled === false ? { label: 'Not enabled', state: 'pending' }
       : connected === false ? { label: 'Disconnected', state: 'attention' }
         : failed ? { label: 'Subscription failed', state: 'attention' }
-          : invalidReason ? { label: 'Invalid vehicle report', state: 'attention' }
-            : reception.available === false && subscribed ? { label: reception.reason === 'vehicle-feed-stale' ? 'Vehicle feed stale' : 'Awaiting live vehicle report', state: 'attention' }
-            : connected === true && (subscribed || Number.isFinite(lastMessageAt)) ? { label: 'Connected', state: 'available' }
-              : { label: 'Awaiting subscription', state: 'pending' },
+          : storage ? { label: storage.label, state: storage.state }
+            : invalidReason ? { label: 'Invalid vehicle report', state: 'attention' }
+              : reception.available === false && subscribed ? { label: reception.reason === 'vehicle-feed-stale' ? 'Vehicle feed stale' : 'Awaiting live vehicle report', state: 'attention' }
+                : connected === true && (subscribed || Number.isFinite(lastMessageAt)) ? { label: 'Connected', state: 'available' }
+                  : { label: 'Awaiting subscription', state: 'pending' },
     recent: Number.isFinite(lastMessageAt) ? `Received ${clock.format(lastMessageAt)}`
       : subscribed ? 'Waiting for the first vehicle report' : 'No vehicle report yet',
     feedDetail: `${detail}${usedBy ? ` Used by ${usedBy}.` : ''}`,
     connectionDetail: `${source} sends vehicle reports through this MQTT subscription. Connection status and packet diagnostics show whether the publisher is reporting. A sleeping or idle vehicle can remain quiet while MQTT stays connected.`,
-    packetDetail: [invalidReason ? 'The latest vehicle report could not be used; previous accepted readings keep their original timestamps.' : '',
+    packetDetail: [storage?.detail ?? (invalidReason ? 'The latest vehicle report could not be used; previous accepted readings keep their original timestamps.' : ''),
       reception.reason === 'vehicle-feed-stale' ? 'The MQTT broker is connected, but the vehicle publisher has stopped reporting. Automatic vehicle inputs await a valid live report.' : '',
       Number.isFinite(lastLiveAt) ? ''
         : Number.isFinite(lastRetainedAt) ? 'Saved broker context only; no live vehicle report received yet.'

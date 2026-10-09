@@ -1,4 +1,5 @@
 import { isReadOnlyReplica } from './replica-status.js';
+import { vehicleObservationAdmissionStatus } from './vehicle-feed-status.js';
 
 const VEHICLES = ['bmw', 'tesla'];
 const numeric = value => Number.isFinite(value) ? Number(value.toFixed(1)) : null;
@@ -118,6 +119,8 @@ function feedState(feed, vehicle) {
   if (connected === false) return { label: 'Disconnected', state: 'attention', detail: 'The MQTT connection is unavailable. Last known readings do not establish current vehicle readiness.' };
   if (['failed', 'denied', 'error', 'rejected'].includes(reception.subscriptionStatus))
     return { label: 'Subscription issue', state: 'attention', detail: 'The vehicle subscription is unavailable. Check the broker connection and topic access under MQTT.' };
+  const storage = vehicleObservationAdmissionStatus(reception.reason);
+  if (storage) return storage;
   if (reception.invalidReason) return { label: 'Invalid report', state: 'attention', detail: 'The latest vehicle report could not be used. Check publisher fields and original timestamps.' };
   if ((vehicle === 'tesla' || reception.available === true) && feed.setup?.available === true) {
     const sleeping = vehicle === 'tesla' && feed.setup.state === 'asleep';

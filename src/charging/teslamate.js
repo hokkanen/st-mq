@@ -79,7 +79,7 @@ export function decodeChargingTeslaField(field, payload) {
 
 /** One durable vehicle projection. Vehicle data never produces EVSE electricity. */
 export function createChargingTeslaCapture({ settings = {}, clock = Date.now, initialState, saveState = () => {},
-  afterRollback = () => {}, brokerIdentity = null, onObservation = () => {} } = {}) {
+  afterRollback = () => {}, brokerIdentity = null, onObservation = () => {}, admissionStatus = () => null } = {}) {
   settings = teslamateConfiguration(settings);
   const root = `teslamate/${settings.namespace ? `${settings.namespace}/` : ''}cars/${settings.carId}/`;
   const signature = createHash('sha256').update(JSON.stringify([brokerIdentity, root, settings.homeGeofence])).digest('hex');
@@ -91,12 +91,14 @@ export function createChargingTeslaCapture({ settings = {}, clock = Date.now, in
   let lastMessageAt = restored.lastMessageAt ?? null, lastLiveAt = null, lastRetainedAt = null;
   const reception = () => ({ brokerConnected, connected, subscribed: connected, subscriptionStatus,
     vehicleId: 'tesla', lastMessageAt, lastLiveAt, lastRetainedAt,
-    reason: !brokerConnected ? 'mqtt-disconnected' : !connected ? 'awaiting-subscription' : null });
+    admission: admissionStatus(),
+    reason: !brokerConnected ? 'mqtt-disconnected' : !connected ? 'awaiting-subscription' : admissionStatus()?.reason ?? null });
   const snapshot = () => {
     const value = field => fields[field]?.value, now = clock();
     const newest = [fields.state, fields.charging_state].filter(Boolean).sort((a, b) => b.sequence - a.sequence)[0];
     const health = fields.healthy;
-    const healthy = connected && liveFields.has('healthy') && health?.value === true && !health.retained
+    const admission = admissionStatus();
+    const healthy = connected && !admission?.pending && !admission?.failed && liveFields.has('healthy') && health?.value === true && !health.retained
       && now >= health.receivedAt && now - health.receivedAt <= settings.maxAgeMs;
     const result = { connected, healthy, maxAgeMs: settings.maxAgeMs, association: signature, reception: reception(),
       atHome: connected && typeof value('geofence') === 'string' ? value('geofence') === settings.homeGeofence : undefined,
@@ -112,7 +114,7 @@ export function createChargingTeslaCapture({ settings = {}, clock = Date.now, in
     setConnected(value, reason) { if (!value) liveFields.clear(); connected = value;
       brokerConnected = ['subscription-failed', 'awaiting-subscription'].includes(reason) || value;
       subscriptionStatus = value ? 'subscribed' : reason === 'subscription-failed' ? 'failed' : 'pending'; },
-    receive(topic, payload, packet = {}, now = clock()) {
+    receive(topic, payload, packet = {}, now = clock(), onAccepted = () => false) {
       if (!connected || !topic.startsWith(root)) return false;
       const field = topic.slice(root.length), value = decodeChargingTeslaField(field, payload);
       if (value === undefined) return false;
@@ -134,7 +136,10 @@ export function createChargingTeslaCapture({ settings = {}, clock = Date.now, in
         // ramp. Keep its original delivery provenance, including retained data.
         // Only healthy pulses renew health. Unknown gaps also cannot turn the
         // same last-known value into a new edge when the value becomes available.
-        if (previous?.value === value && (packet.retain || CHANGE_ONLY_FIELDS.has(field))) return true;
+        if (previous?.value === value && (packet.retain || CHANGE_ONLY_FIELDS.has(field))) {
+          if (!packet.retain && value !== null && onAccepted()) onObservation({ field, boundary: null });
+          return true;
+        }
         if (identity && value !== null && lastKnown?.value === value) {
           fields[field] = structuredClone(lastKnown);
         } else {
@@ -148,6 +153,7 @@ export function createChargingTeslaCapture({ settings = {}, clock = Date.now, in
           boundaries = [...boundaries, boundary].slice(-64);
         }
         saveState({ version: 1, signature, fields: structuredClone(fields), sequence, boundaries, lastMessageAt });
+        if (!packet.retain && value !== null) onAccepted();
         onObservation({ field, boundary: boundary ?? null });
       } catch (error) {
         rewind(); throw error;
@@ -155,7 +161,7 @@ export function createChargingTeslaCapture({ settings = {}, clock = Date.now, in
       return true;
     },
     status() { const s = snapshot(); return { status: !connected ? 'waiting' : s.healthy ? 'ok' : 'degraded',
-      reason: !connected ? 'mqtt-disconnected' : s.healthy ? 'vehicle-observation' : 'vehicle-logger-unhealthy',
+      reason: !connected ? 'mqtt-disconnected' : s.reception.reason ?? (s.healthy ? 'vehicle-observation' : 'vehicle-logger-unhealthy'),
       connected, healthy: s.healthy, charging: s.charging, home: s.atHome, recording: false }; },
     close() { connected = false; liveFields.clear(); },
   };
@@ -171,7 +177,7 @@ export function teslamateVehicleTelemetry(snapshot = {}, { now = Date.now(), cha
     const fresh = metadata.receivedAt == null || Number.isSafeInteger(metadata.receivedAt) && metadata.receivedAt <= now;
     return { ...metadata, value: available && fresh && value != null ? value : null,
       lastKnownValue: value ?? null, source: 'teslamate', available: available && fresh && value != null,
-      reason: !available ? 'vehicle-logger-unhealthy' : !fresh ? 'vehicle-evidence-stale' : null,
+      reason: !available ? snapshot.reception?.admission?.reason ?? 'vehicle-logger-unhealthy' : !fresh ? 'vehicle-evidence-stale' : null,
       measuredAt: null, receivedAt: metadata.receivedAt ?? null, timeBasis: 'receipt-only' };
   };
   const requested = signal(snapshot.requestedCurrentA, 'charge_current_request');

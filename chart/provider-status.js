@@ -3,6 +3,7 @@ import { temperatureReadingStatus } from './temperature-status.js';
 export { temperatureReadingStatus, temperatureAttentionDetails } from './temperature-status.js';
 import { vehicleConnections, equipmentConnectionSummary } from './equipment.js';
 import { durationText } from './reading-status.js';
+import { vehicleObservationAdmissionStatus } from './vehicle-feed-status.js';
 import { homeIndoorEstimate } from './home-controls.js';
 import { PROVIDER_CURRENT_ATTENTION_MS, PROVIDER_TEMPERATURE_ATTENTION_MS } from '../src/domain/reading-freshness.js';
 
@@ -826,13 +827,14 @@ const teslamateReasons = Object.freeze({
 });
 
 function describeTeslaMate(health, { now, formatTime }) {
-  const reason = Object.hasOwn(teslamateReasons, health.reason) ? teslamateReasons[health.reason] : 'Waiting for Tesla vehicle observation status.';
+  const storage = vehicleObservationAdmissionStatus(health.reason);
+  const reason = storage?.detail ?? (Object.hasOwn(teslamateReasons, health.reason) ? teslamateReasons[health.reason] : 'Waiting for Tesla vehicle observation status.');
   const messages = [reason];
   if (Number.isFinite(health.lastMessageAt) && health.lastMessageAt > 0 && health.lastMessageAt <= now) {
     messages.push(`Last MQTT message ${formatTime(health.lastMessageAt)}. Message receipt time is not a vehicle measurement timestamp.`);
   }
-  return { title: jobs.teslamate, state: states[health.status] ?? 'Status pending',
-    attention: ['error', 'degraded'].includes(health.status), detail: messages.join(' ') };
+  return { title: jobs.teslamate, state: storage?.label ?? states[health.status] ?? 'Status pending',
+    attention: storage ? storage.state === 'attention' : ['error', 'degraded'].includes(health.status), detail: messages.join(' ') };
 }
 
 /** Only known source names, failure codes and quality flags enter display text; provider bodies never do. */

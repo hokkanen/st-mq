@@ -38,6 +38,7 @@ import { classifySourceTime } from '../domain/time-evidence.js';
 import { socMeasurementTime } from './soc.js';
 
 const MINUTE = 60_000;
+const noRecordedEnergy = () => null;
 const CURRENT_RECONCILE_MS = 5000;
 // Initial preference is preparation time, not a lease on passive observation.
 // The saved attempt clock prevents polling or restart from renewing it.
@@ -48,13 +49,20 @@ const identificationCurrentBusy = (test, now) => ['proposed', 'applying', 'activ
 // The CarData Home Assistant bridge publishes unchanged facts every five
 // minutes. Broker connectivity alone cannot prove that bridge is still alive.
 const VEHICLE_FEED_MAX_AGE_MS = 10 * MINUTE;
+const vehicleFeedAdmission = feed => {
+  const status = feed?.admissionStatus?.() ?? null;
+  return feed?.sourcePending?.size ? { ...status, pending: true,
+    reason: status?.reason ?? 'vehicle-source-clock-pending' } : status;
+};
 const vehicleFeedAvailable = (feed, now) => feed?.mqtt.connected && feed.mqtt.subscribed
+  && !vehicleFeedAdmission(feed)?.pending && !vehicleFeedAdmission(feed)?.failed
   && Number.isSafeInteger(feed.mqtt.lastValidLiveAt) && feed.mqtt.lastValidLiveAt <= now
   && now - feed.mqtt.lastValidLiveAt <= VEHICLE_FEED_MAX_AGE_MS;
 const vehicleReception = (feed, now) => ({ ...feed.mqtt, provider: feed.provider,
+  admission: vehicleFeedAdmission(feed),
   available: Boolean(vehicleFeedAvailable(feed, now)),
   reason: !feed.mqtt.connected || !feed.mqtt.subscribed ? feed.mqtt.reason
-    : vehicleFeedAvailable(feed, now) ? null : feed.mqtt.lastValidLiveAt === null ? 'awaiting-report' : 'vehicle-feed-stale' });
+    : vehicleFeedAdmission(feed)?.reason ?? (vehicleFeedAvailable(feed, now) ? null : feed.mqtt.lastValidLiveAt === null ? 'awaiting-report' : 'vehicle-feed-stale') });
 const MIN_PRICE_PAUSE_MS = 15 * MINUTE, MIN_PRICE_SAVINGS_CENTS = 0;
 // Current sharing follows native permission, never the momentary charging
 // state. Equalizer may reduce a permitted transaction to zero without changing
@@ -214,9 +222,15 @@ export class ChargingRuntime {
           this.store.afterRollback?.(() => feed.sourcePending.restore(checkpoint));
           return action();
         }),
-        onReady: (packet, receivedAt, evaluatedAt) => this.receiveSoc(packet.topic, packet.payload, packet.packet, receivedAt, { evaluatedAt }),
-        onReject: (_packet, reason) => {
-          if (reason !== 'cleared') feed.mqtt.invalidReason = 'vehicle-source-clock-unavailable';
+        onReady: (packet, receivedAt, evaluatedAt) => {
+          const receive = () => this.receiveSoc(packet.topic, packet.payload, packet.packet, receivedAt, { evaluatedAt }, packet.onAccepted);
+          return packet.onAccepted?.within ? packet.onAccepted.within(receive) : receive();
+        },
+        onReject: (packet, reason) => {
+          if (reason !== 'cleared') {
+            feed.mqtt.invalidReason = 'vehicle-source-clock-unavailable';
+            packet.onAccepted?.reject?.();
+          }
         },
       });
     }
@@ -369,7 +383,7 @@ export class ChargingRuntime {
     if (id !== 'tesla') throw new Error('Unknown vehicle observation source');
     this.preserveWriteState();
     const before = Object.values(this.chargers).map(item => [item.identification?.phase, item.vehicleMatch?.id]);
-    this.persist();
+    this.refreshPlanningState(this.clock(), { recordedEnergy: false });
     const changed = Object.values(this.chargers).some((item, index) =>
       item.identification?.phase !== before[index][0] || item.vehicleMatch?.id !== before[index][1]);
     this.tick({ force: changed });
@@ -383,7 +397,7 @@ export class ChargingRuntime {
       item.vehicleEvidence = evidence?.teslaCurrentMatchTestId ? { scope: evidence.scope,
         chargingTimes: [], stoppedTimes: [], teslaCurrentMatchTestId: evidence.teslaCurrentMatchTestId } : null;
     }
-    this.revision++; this.persist(); this.tick({ force: true });
+    this.revision++; this.refreshPlanningState(this.clock(), { recordedEnergy: false }); this.tick({ force: true });
   }
   setAdapter(id, adapter) {
     const item = this.charger(id);
@@ -443,6 +457,9 @@ export class ChargingRuntime {
       && !control.manual ? probe : null;
   }
   controlPlan(item, plan, now = this.clock()) {
+    // A newly unavailable source invalidates the old plan's evidence. A fresh
+    // calculation may still use explicitly labelled same-session references.
+    if (this.vehicleAdmissionBasis(item) !== null && item.limiterPlanBasis !== this.currentPlanBasis(item)) plan = null;
     const probe = this.probeReturn(item, now);
     if (!probe) return plan;
     const control = item.controller.status(), test = control.currentTest;
@@ -833,7 +850,20 @@ export class ChargingRuntime {
           : status.reason === 'mqtt-subscription-failed' ? 'failed' : 'pending' };
     }
   }
-  receiveSoc(topic, payload, packet = {}, receivedAt = this.clock(), admission = null) {
+  setVehicleAdmissionStatus(id, status) {
+    const feed = this.vehicleFeeds[id];
+    if (!feed || typeof status !== 'function') throw new Error('Unknown vehicle admission source');
+    feed.admissionStatus = status;
+  }
+  vehicleAdmissionChanged(id) {
+    // Cancel already selected work when its source becomes unavailable. The
+    // next reconciliation still owns restoration and may plan from references.
+    for (const item of Object.values(this.chargers)) {
+      const ids = item.vehicleConflict?.ids ?? (item.vehicleMatch?.id ? [item.vehicleMatch.id] : ['bmw', 'tesla']);
+      if (ids.includes(id)) item.controller?.invalidate?.();
+    }
+  }
+  receiveSoc(topic, payload, packet = {}, receivedAt = this.clock(), admission = null, onAccepted = () => {}) {
     if (this.closed) return false;
     this.preserveWriteState();
     const route = this.mqttRoutes().find(item => item.topic === topic);
@@ -851,7 +881,10 @@ export class ChargingRuntime {
         item.mqtt.invalidReason = 'vehicle-source-clock-unavailable'; return true;
       }
       if (!packet.retain && item.sourcePending.defer(++item.sourcePacketSequence,
-        { topic, payload: Buffer.from(payload), packet: { ...packet } }, { sourceTime, receivedAt })) return true;
+        { topic, payload: Buffer.from(payload), packet: { ...packet }, onAccepted }, { sourceTime, receivedAt })) {
+        onAccepted.deferred?.();
+        return true;
+      }
     }
     const previouslyAvailable = vehicleFeedAvailable(item, now);
     const previousMqtt = { ...item.mqtt }, previousRevision = this.revision;
@@ -868,6 +901,9 @@ export class ChargingRuntime {
     if (valid) item.mqtt.lastValidAt = receivedAt;
     if (valid && !packet.retain && !packet.dup) item.mqtt.lastValidLiveAt = receivedAt;
     if (result.accepted) {
+      if (!packet.retain && !packet.dup) onAccepted(['soc', 'usableCapacityKwh', 'chargeLimitSoc', 'pluggedIn', 'charging', 'atHome']
+        .filter(field => field === 'soc' ? result.reading.readingId !== item.reading?.readingId
+          : result.reading.fields?.[field]?.readingId !== item.reading?.fields?.[field]?.readingId));
       const previous = item.reading;
       const previousTeslaPower = this.consumedTeslaPower;
       const previousTeslaCurrent = this.consumedTeslaCurrent;
@@ -899,7 +935,7 @@ export class ChargingRuntime {
               connectedAt: session.connectedAt, evidenceStart: connectionEvidenceStart(session.connectedAt, session.lastDisconnectedAt),
               reading: result.reading, now, live: packet.retain !== true });
         }
-        this.persist();
+        this.refreshPlanningState(now, { recordedEnergy: false });
       } catch (error) {
         this.revision = previousRevision; item.mqtt = previousMqtt; item.reading = previous;
         this.consumedTeslaPower = previousTeslaPower;
@@ -1603,7 +1639,7 @@ export class ChargingRuntime {
     const item = this.chargers[id], normalize = item.adapter?.normalize ?? easeeChargerTelemetry;
     return easeeAllowanceStatus({ telemetry: normalize(control.snapshot ?? {}, { now }), now });
   }
-  views(now = this.clock()) {
+  views(now = this.clock(), { readEnergy = this.readEnergy } = {}) {
     const telemetry = this.telemetry(now);
     const forecastSnapshot = this.engine.electricityForecast?.snapshot({ now });
     const forecastEnabled = forecastSnapshot?.enabled === true;
@@ -1638,7 +1674,7 @@ export class ChargingRuntime {
         deadlineAt: referenceRequest?.deadlineAt ?? item.plan?.deadlineAt ?? resolveChargingDeadline(now, settings.readyBy, TIME_ZONE) });
       if (Object.hasOwn(referenceRequest?.overrides ?? {}, 'minimumSoc')) { charger.values.minimumSoc = { value: settings.minimumSoc, source: 'session-request', available: true };
         charger.requiredGridKwh = charger.values.capacityKwh.value * Math.max(0, settings.minimumSoc - charger.values.soc.value) / 100 / charger.configuration.efficiency; }
-      const progress = updateChargingProgress(item.progress, charger, now, this.readEnergy);
+      const progress = updateChargingProgress(item.progress, charger, now, readEnergy);
       Object.assign(charger.values, progress.batteryValues);
       charger.requiredGridKwh = charger.values.capacityKwh.value
         * Math.max(0, charger.values.minimumSoc.value - charger.values.soc.value) / 100 / charger.configuration.efficiency;
@@ -1881,10 +1917,13 @@ export class ChargingRuntime {
       prices: priceSnapshot(this.getPlanningPrices(this.clock())), historyReady: this.historyReady, historyError: this.historyError,
       historyAt: this.historyAt });
   }
-  refreshPlanningState(now) {
+  refreshPlanningState(now, { recordedEnergy = true } = {}) {
+    // Source admission remembers battery references in its existing state write.
+    // Recording/planning owns energy accrual; a source packet needs no history scan.
+    const readEnergy = recordedEnergy ? this.readEnergy : noRecordedEnergy;
     this.advanceTelemetry(now);
     for (const item of Object.values(this.chargers)) if (consumeChargingFlexibility(item.request, now)) this.revision++;
-    const views = this.views(now);
+    const views = this.views(now, { readEnergy });
     for (const view of views) {
       const item = this.charger(view.id), pluggedIn = view.values.connected.value;
       item.newEpisode ||= pluggedIn === false && (item.wasPluggedIn !== false || item.plan?.deadlineAt <= now)
@@ -1896,7 +1935,7 @@ export class ChargingRuntime {
       if (resumed && resumed.reason !== 'explicit' && resumed.at >= resumed.deadlineAt
         && item.plan?.deadlineAt <= resumed.deadlineAt) item.plan = null;
       const raw = { ...view, requiredGridKwh: view.referenceGridKwh };
-      item.progress = updateChargingProgress(item.progress, raw, now, this.readEnergy).state;
+      item.progress = updateChargingProgress(item.progress, raw, now, readEnergy).state;
       if (typeof pluggedIn === 'boolean') item.wasPluggedIn = pluggedIn;
     }
     this.persistAcceptedState(now);
@@ -2431,12 +2470,19 @@ export class ChargingRuntime {
   currentPlanBasis(item) {
     const control = item.controller?.status();
     return digest({ association: item.association, request: item.request, controls: item.controls,
-      priority: this.settings.priority, authority: this.canControl(),
+      priority: this.settings.priority, authority: this.canControl(), vehicleAdmission: this.vehicleAdmissionBasis(item),
       connected: control?.session?.connected, connectedAt: control?.session?.connectedAt,
       manual: control?.manual, nativeSchedule: control?.snapshot?.nativeScheduleActive,
       ready: control?.snapshot?.controlReady, devicePermissionHeld: control?.devicePermissionHeld,
       identification: [item.identification?.id, item.identification?.phase, item.vehicleMatch?.id],
       currentTest: [control?.currentTest?.id, control?.currentTest?.phase] });
+  }
+  vehicleAdmissionBasis(item) {
+    const ids = item.vehicleConflict?.ids ?? (item.vehicleMatch?.id ? [item.vehicleMatch.id] : ['bmw', 'tesla']);
+    const unavailable = ids.map(id => [id, id === 'tesla' ? this.teslaCapture?.reception?.()?.admission
+      : vehicleFeedAdmission(this.vehicleFeeds[id])]).filter(([, status]) => status?.pending || status?.failed)
+      .map(([id, status]) => [id, Boolean(status.pending), Boolean(status.failed)]);
+    return unavailable.length ? unavailable : null;
   }
   currentPlanReusable(item, snapshot = item.controller?.status()?.snapshot) {
     const sameConnection = snapshot?.session?.connected === false ? item.request == null

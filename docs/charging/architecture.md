@@ -94,8 +94,30 @@ admits these changes even when Automatic is off. An accepted Tesla observation
 updates its capture and runtime context in the same acquisition transaction;
 buffered subscription replay isolates each observation with a savepoint so a
 caught failure cannot commit only one side. Failed buffered replay or its outer
-commit withholds Tesla source readiness until a fresh successful subscription.
+commit withholds source readiness until a fresh successful subscription; BMW
+subscription replay follows the same savepoint and readiness boundary. An
+overflowed subscription buffer also requires a fresh successful subscription;
+dropping older boundaries cannot establish a healthy partial replay.
 Existing original source clocks and physical obligations retain their meaning.
+
+Ordinary vehicle MQTT receipts also withhold source availability while queued or
+after failed admission. Tesla topics and independently reported BMW fields keep
+their own failure outcomes: unrelated, retained or duplicate packets cannot
+restore failed evidence. A fresh accepted report for the affected evidence must
+commit before availability returns. Source-clock quarantine follows the same
+admission outcome. The synchronous owning transition can evaluate its candidate
+observation, while other pending or failed receipts remain unavailable. Failed
+postcommit observers do not roll back or invalidate committed source evidence.
+Accepted source transitions save usable battery references in the same runtime
+write; retaining them adds no recorded-energy queries.
+
+Admission health belongs to the relevant vehicle's planning basis. A cached plan
+cannot retain its earlier evidence assumptions after source admission fails. A
+pending or failed receipt also cancels already selected native work before dispatch;
+ordinary synchronously accepted traffic does not repeatedly cancel that work. A
+new calculation may use labelled same-connection references under the existing
+planning policy. Other vehicle sources, native restoration and fallback retain
+their own evidence and authority checks.
 
 `telemetry()`, `views()` and `status()` project accepted context and current
 availability. Polling cannot create session requests or attempt IDs, consume

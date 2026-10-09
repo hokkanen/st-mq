@@ -4,6 +4,7 @@ import { isReadOnlyReplica, replicaSnapshotKey } from './replica-status.js';
 import { setStatusDetail } from './status-details.js';
 import { shellyLimiterDisplay } from './shelly-limiter.js';
 import { chargingAllowanceDisplay } from './charging-allowance.js';
+import { vehicleObservationAdmissionStatus } from './vehicle-feed-status.js';
 import { chargerSummary, chargingCost, chargingNotice } from './charging-summary.js';
 import { createChargingPriority } from './charging-priority.js';
 import { createChargingTime } from './charging-time.js';
@@ -435,11 +436,13 @@ export function chargerDisplay(charger, { now = Date.now(), timezone = 'Europe/H
     notes.push(`Planned pause ${window(missed.pauseAt, missed.resumeAt, true)} was not confirmed; charging may have continued.`);
   const vehicleNotes = [];
   const recordedVehicleFeed = charger.readOnly === true && charger.recorded === true || charger.mqtt?.reason === 'read-only-snapshot';
+  const storage = vehicleObservationAdmissionStatus(charger.mqtt?.reason);
   const feedReason = charger.mqtt?.reason && !['awaiting-mqtt', 'awaiting-subscription', 'awaiting-report', 'idle', 'asleep'].includes(charger.mqtt.reason)
-    ? ({ 'mqtt-disconnected': 'MQTT is disconnected', 'mqtt-subscription-failed': 'the MQTT subscription failed',
+    ? storage?.cause ?? ({ 'mqtt-disconnected': 'MQTT is disconnected', 'mqtt-subscription-failed': 'the MQTT subscription failed',
       'vehicle-feed-stale': 'no recent vehicle report' })[charger.mqtt.reason] ?? human(charger.mqtt.reason) : '';
   if (showMetrics && recordedVehicleFeed) vehicleNotes.push('Recorded vehicle snapshot. Readings retain their original times; estimates are shown as recorded.');
   else if (showMetrics && retainedVehicleReference) vehicleNotes.push(`Vehicle readings are unavailable${feedReason ? ` (${feedReason})` : ''}. The estimate uses the last vehicle charge and measured energy for this connection. Edit Current charge in Session settings to set a new reference.`);
+  else if (showMetrics && storage) vehicleNotes.push(storage.detail);
   else if (showMetrics && feedReason) vehicleNotes.push(`Vehicle feed: ${feedReason}. The last valid reading keeps its original timestamp.`);
   if (showMetrics && progress.basis?.energyCoverageIncomplete) vehicleNotes.push('Some charging energy was not measured. The charge estimate may be low until a new vehicle reading arrives.');
   notes.push(...vehicleNotes);

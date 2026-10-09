@@ -27,6 +27,11 @@ new live healthy pulse; retained values alone cannot restore live availability.
 The configured `teslamate.maxAgeMs` controls logger-health age (three minutes
 by default). Most vehicle fields may remain held while
 health is current; their original receipt times do not advance with polling.
+Queued or failed database admission also makes the affected source unavailable.
+The last committed values and their clocks remain visible as unavailable context.
+A failed topic needs a fresh successfully saved live report for that topic;
+another topic, a retained value or a duplicate delivery cannot restore its health.
+Reconnection still requires a successful subscription and a new live health pulse.
 
 ## Accepted observations
 

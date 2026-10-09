@@ -40,10 +40,13 @@ export async function startMqtt({ engine, store, config, connect = mqtt.connect,
   const equipmentSettings = config.connections.equipment;
   const equipmentOwnedSignals = equipmentSettings?.ownedSignals ?? [];
   const teslaSettings = teslamateConfiguration(config.connections.teslamate);
+  const vehicleAdmissions = new Map();
+  const vehicleAdmission = id => vehicleAdmissions.get(id)?.() ?? { pending: false, failed: false, reason: null };
   const teslamate = teslaSettings.enabled ? createChargingTeslaCapture({ settings: teslaSettings,
     clock: () => engine.clock(), initialState: store.getState('charging:teslamate'),
     brokerIdentity: routing.identity('ha'), saveState: state => store.setState('charging:teslamate', state),
     afterRollback: effect => store.afterRollback?.(effect),
+    admissionStatus: () => vehicleAdmission('tesla'),
     onObservation: ({ boundary }) => boundary ? engine.charging?.receiveVehicleBoundary?.('tesla', boundary)
       : engine.charging?.receiveVehicleObservation?.('tesla') }) : null;
   const chargingTesla = teslamate;
@@ -80,7 +83,7 @@ export async function startMqtt({ engine, store, config, connect = mqtt.connect,
       connected: false, generation: 0, ready: false, subscriptionsReady: false, readinessFailed: false, readinessWaiters: new Set(),
       vehicleSubscriptions: new Map(), equipmentSubscriptionBuffer: null, teslaSubscriptionBuffer: null, teslaSubscriptionOverflow: false,
       pendingPublications: new Set(), pendingSubscriptions: new Set(), pendingReceipts: 0, receptionFailed: false,
-      receiptSequence: 0, receptionOutcomes: new Map() });
+      receiptSequence: 0, receptionOutcomes: new Map(), pendingVehicleReceipts: new Map(), admittingVehicleReceipt: null });
   }
   const primary = channels.get('primary'), client = primary.client;
   const evseConfig = engine.charging?.configuration?.chargers?.charger2;
@@ -326,6 +329,25 @@ export async function startMqtt({ engine, store, config, connect = mqtt.connect,
     const { client, vehicleSubscriptions } = channel;
     const isPrimary = channel.id === 'primary', ownsTesla = channel.id === routing.teslaBroker;
     const equipmentTopics = shelly?.topicsForBroker(channel.id) ?? [];
+    const vehicleRoutes = (engine.charging?.mqttRoutes() ?? []).filter(route => routing.vehicleBroker(route) === channel.id);
+    const vehicleSource = key => {
+      if (!key) return null;
+      const [kind, topic] = JSON.parse(key);
+      return kind === 'teslamate' ? 'tesla' : kind === 'vehicle' ? vehicleRoutes.find(route => route.topic === topic)?.id ?? null : null;
+    };
+    for (const id of [...vehicleRoutes.map(route => route.id), ...(ownsTesla && chargingTesla ? ['tesla'] : [])]) {
+      vehicleAdmissions.set(id, () => {
+        const candidate = channel.admittingVehicleReceipt;
+        const admitted = candidate?.source === id && candidate.acceptedKeys.size > 0;
+        const pending = [...channel.pendingVehicleReceipts.values()].some(receipt => receipt.source === id
+          && receipt.generation === channel.generation && !(admitted && receipt.sequence === candidate.sequence));
+        const failed = [...channel.receptionOutcomes].some(([key, outcome]) => vehicleSource(key) === id && !outcome.successful
+          && !(admitted && candidate.acceptedKeys.has(key) && (candidate.sequence > outcome.sequence
+            || candidate.sequence === outcome.sequence && candidate.attempt > outcome.attempt)));
+        return { pending, failed, reason: failed ? 'vehicle-observation-admission-failed' : pending ? 'vehicle-observation-storage-pending' : null };
+      });
+      if (id !== 'tesla') engine.charging?.setVehicleAdmissionStatus?.(id, () => vehicleAdmission(id));
+    }
     // Only configured input routes can fence control. Native wildcard routes
     // share their configured device key; arbitrary broker topic strings cannot
     // grow this memory. H66 settings retain independent register fences.
@@ -342,13 +364,15 @@ export async function startMqtt({ engine, store, config, connect = mqtt.connect,
       }
       return shelly?.receptionKey(topic, payload, channel.id) ?? null;
     };
-    const receptionOutcome = (key, sequence, successful) => {
+    const receptionOutcome = (key, sequence, successful, attempt = 0) => {
       if (key === null) return;
       const previous = channel.receptionOutcomes.get(key);
       // Promise rejection can arrive after a later synchronous commit. Older
       // completions must not reinstate a resolved failure or erase a newer one.
-      if (previous && previous.sequence >= sequence) return;
-      channel.receptionOutcomes.set(key, { sequence, successful });
+      if (previous && (previous.sequence > sequence || previous.sequence === sequence && previous.attempt >= attempt)) return;
+      channel.receptionOutcomes.set(key, { sequence, attempt, successful });
+      const source = vehicleSource(key);
+      if (source && !successful && previous?.successful !== false) engine.charging?.vehicleAdmissionChanged?.(source);
       channel.receptionFailed = [...channel.receptionOutcomes.values()].some(outcome => !outcome.successful);
       channel.ready = channel.connected && channel.subscriptionsReady && !channel.readinessFailed && !channel.receptionFailed;
       if (channel.ready) for (const finish of [...channel.readinessWaiters]) finish(null);
@@ -379,17 +403,30 @@ export async function startMqtt({ engine, store, config, connect = mqtt.connect,
         catch { done(new Error('MQTT subscription failed')); }
       };
       for (const { id, topic } of (engine.charging?.mqttRoutes() ?? []).filter(route => routing.vehicleBroker(route) === channel.id)) {
-        const subscription = { subscribed: false, messages: [] };
+        const subscription = { subscribed: false, messages: [], overflow: false };
         vehicleSubscriptions.set(topic, subscription);
         engine.charging.setMqttStatus({ connected: true, subscribed: false, reason: 'awaiting-subscription', broker: channel.id }, id);
         subscribe(topic, { qos: 1 }, (error, granted) => {
-          const rejected = subscriptionRejected(topic, error, granted);
+          const rejected = subscription.overflow || subscriptionRejected(topic, error, granted);
+          const failedAdmission = () => {
+            subscription.subscribed = false;
+            engine.charging.setMqttStatus({ connected: true, subscribed: false, reason: 'mqtt-subscription-failed', broker: channel.id }, id);
+            engine.charging.vehicleAdmissionChanged?.(id);
+            channel.readinessFailed = true; channel.ready = false;
+          };
+          // Replay and readiness share one admission. A discarded departure
+          // cannot leave the old source available after a failed subscription.
+          store.afterRollback(failedAdmission);
           subscription.subscribed = !rejected;
           engine.charging.setMqttStatus({ connected: true, subscribed: !rejected, reason: rejected ? 'mqtt-subscription-failed' : null, broker: channel.id }, id);
           const buffered = subscription.messages; subscription.messages = null;
+          if (rejected) failedAdmission();
           if (!rejected) for (const message of buffered ?? []) {
-            try { engine.charging.receiveSoc(topic, message.payload, message.packet, message.at); }
-            catch { report('mqtt-observation-rejected'); }
+            try { store.transaction(() => {
+              const receive = () => engine.charging.receiveSoc(topic, message.payload, message.packet, message.at, null, message.onAccepted);
+              return message.onAccepted?.within ? message.onAccepted.within(receive) : receive();
+            }); }
+            catch { failedAdmission(); report('mqtt-observation-rejected'); break; }
           }
         });
       }
@@ -480,15 +517,18 @@ export async function startMqtt({ engine, store, config, connect = mqtt.connect,
     client.on('connect', connectedHandler);
     client.on('error', () => report(isPrimary ? 'mqtt-error' : 'mqtt-ha-error'));
     client.on('offline', disconnected); client.on('close', disconnected);
-    const receive = (topic, payload, packet, receivedAt, snapshotRequestedAt) => {
+    const receive = (topic, payload, packet, receivedAt, snapshotRequestedAt, onVehicleAccepted) => {
       if (!channel.connected || stopped || stopping) return;
       const vehicleSubscription = vehicleSubscriptions.get(topic);
       if (vehicleSubscription) {
         if (vehicleSubscription.messages) {
-          if (vehicleSubscription.messages.length >= 32) vehicleSubscription.messages.shift();
-          vehicleSubscription.messages.push({ payload: Buffer.from(payload.subarray(0, 4097)),
-            packet: { retain: packet.retain, dup: packet.dup, qos: packet.qos, messageId: packet.messageId }, at: receivedAt });
-        } else if (vehicleSubscription.subscribed) return engine.charging.receiveSoc(topic, payload, packet, receivedAt);
+          if (vehicleSubscription.messages.length >= 32) {
+            vehicleSubscription.overflow = true; vehicleSubscription.messages = [];
+          }
+          if (!vehicleSubscription.overflow) vehicleSubscription.messages.push({ payload: Buffer.from(payload.subarray(0, 4097)),
+            packet: { retain: packet.retain, dup: packet.dup, qos: packet.qos, messageId: packet.messageId },
+            at: receivedAt, onAccepted: onVehicleAccepted });
+        } else if (vehicleSubscription.subscribed) return engine.charging.receiveSoc(topic, payload, packet, receivedAt, null, onVehicleAccepted);
         return false;
       }
       if (ownsTesla && chargingTesla) {
@@ -499,7 +539,7 @@ export async function startMqtt({ engine, store, config, connect = mqtt.connect,
           else { channel.teslaSubscriptionOverflow = true; channel.teslaSubscriptionBuffer = []; chargingTesla.setConnected(false, 'subscription-overflow'); }
           return;
         }
-        if (chargingTesla.receive(topic, payload, packet, receivedAt)) return true;
+        if (chargingTesla.receive(topic, payload, packet, receivedAt, onVehicleAccepted)) return true;
       }
       if (isPrimary) {
         if (floorOverride.ingest(topic, payload, packet, receivedAt)) return true;
@@ -567,11 +607,59 @@ export async function startMqtt({ engine, store, config, connect = mqtt.connect,
       if (bytes > 65_536) { report('mqtt-observation-rejected'); return; }
       const body = Buffer.from(payload), metadata = { retain: packet.retain, dup: packet.dup, qos: packet.qos, messageId: packet.messageId };
       const key = receptionKey(topic, body), sequence = ++channel.receiptSequence;
+      const source = vehicleSource(key);
+      const wasUnavailable = source && (vehicleAdmission(source).pending || vehicleAdmission(source).failed);
+      let keys = [key];
+      if (source && source !== 'tesla') {
+        let value;
+        try { value = JSON.parse(body.toString()); } catch {}
+        const fields = ['soc', 'usableCapacityKwh', 'chargeLimitSoc', 'pluggedIn', 'charging', 'atHome']
+          .filter(field => Object.hasOwn(value ?? {}, field));
+        keys = fields.length ? fields.map(field => JSON.stringify(['vehicle', topic, field])) : [key];
+      }
+      const vehicleReceipt = source && !metadata.retain && !metadata.dup
+        ? { source, sequence, generation, attempt: 0, acceptedKeys: new Set() } : null;
+      if (vehicleReceipt) channel.pendingVehicleReceipts.set(sequence, vehicleReceipt);
       const currentReceipt = () => !stopped && !stopping && canControl() && channel.connected && channel.generation === generation;
       channel.pendingReceipts++;
       let released = false;
-      const release = () => { if (!released) { released = true; channel.pendingReceipts--; } };
+      const release = () => { if (!released) {
+        released = true; channel.pendingReceipts--; channel.pendingVehicleReceipts.delete(sequence);
+      } };
+      const acceptVehicle = fields => {
+        if (!vehicleReceipt) return false;
+        const recovering = vehicleAdmission(source).failed;
+        for (const accepted of source === 'tesla' ? keys : (fields ?? []).map(field => JSON.stringify(['vehicle', topic, field])))
+          vehicleReceipt.acceptedKeys.add(accepted);
+        return recovering;
+      };
+      // Deferred source-clock admission uses the same receipt/generation and
+      // commit outcome. Its original arrival never becomes a fresh timestamp.
+      acceptVehicle.within = action => {
+        if (!currentReceipt()) return false;
+        const attempt = vehicleReceipt ? ++vehicleReceipt.attempt : 0;
+        vehicleReceipt?.acceptedKeys.clear();
+        const previous = channel.admittingVehicleReceipt;
+        channel.admittingVehicleReceipt = vehicleReceipt;
+        const committed = () => {
+          release();
+          if (currentReceipt()) for (const accepted of vehicleReceipt?.acceptedKeys ?? []) receptionOutcome(accepted, sequence, true, attempt);
+        };
+        store.afterCommit?.(committed);
+        store.afterRollback?.(() => { if (currentReceipt()) for (const key of keys) receptionOutcome(key, sequence, false, attempt); });
+        try {
+          const result = action();
+          if (!store.afterCommit) committed();
+          return result;
+        } finally { channel.admittingVehicleReceipt = previous; }
+      };
+      acceptVehicle.reject = () => {
+        const attempt = vehicleReceipt ? ++vehicleReceipt.attempt : 0;
+        if (currentReceipt()) for (const key of keys) receptionOutcome(key, sequence, false, attempt);
+      };
+      acceptVehicle.deferred = () => { if (vehicleReceipt) vehicleReceipt.deferred = true; };
       write(() => {
+        if (source) return acceptVehicle.within(() => receive(topic, body, metadata, receivedAt, snapshotRequestedAt, acceptVehicle));
         let accepted = false;
         const committed = () => {
           release();
@@ -582,8 +670,17 @@ export async function startMqtt({ engine, store, config, connect = mqtt.connect,
         if (!store.afterCommit) committed();
       }, { bytes: bytes + Buffer.byteLength(topic),
         isCurrent: currentReceipt,
-        onFailure: () => { if (currentReceipt()) receptionOutcome(key, sequence, false); },
+        // Executed vehicle attempts publish rollback outcomes synchronously.
+        // This rejection handler only supplies a missing pre-execution failure;
+        // it cannot overwrite a later retry of the same quarantined receipt.
+        onFailure: error => { if (error?.committed !== true && currentReceipt() && !vehicleReceipt?.attempt)
+          for (const key of keys) receptionOutcome(key, sequence, false); },
       }).finally(() => { release(); resumePublications(); });
+      // An ordinary synchronous accepted report has already cleared its receipt
+      // here. Only a real admission gap cancels selected work, so healthy traffic
+      // cannot perpetually restart a slow native preflight.
+      if (vehicleReceipt && !wasUnavailable && (channel.pendingVehicleReceipts.has(sequence) || vehicleReceipt.deferred))
+        engine.charging?.vehicleAdmissionChanged?.(source);
     });
     channel.startIfConnected = () => { if (client.connected) connectedHandler(); };
   }

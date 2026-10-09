@@ -111,7 +111,12 @@ for (const fault of ['IOERR', 'FULL']) test(`failed ${fault} admission rolls Tes
   f.setFault(null); await settle(f.store);
   assert.deepEqual(f.store.getState(f.runtime.key), runtime);
   assert.deepEqual(f.store.getState('charging:teslamate'), source);
-  assert.deepEqual(f.runtime.teslaCapture.snapshot(), before);
+  const { healthy, reception, connectionContext, ...after } = f.runtime.teslaCapture.snapshot();
+  const { healthy: _healthy, reception: _reception, connectionContext: _context, ...prior } = before;
+  assert.deepEqual(after, prior);
+  assert.equal(healthy, false, 'Rolled-back source bytes cannot remain fresh control evidence.');
+  assert.equal(connectionContext, null);
+  assert.equal(reception.reason, 'vehicle-observation-admission-failed');
   assert.equal(f.runtime.chargers.charger1.vehicleMatch, null);
   assert.equal(f.runtime.consumedTeslaPower, null);
   assert.deepEqual(f.nativeCommands, []);

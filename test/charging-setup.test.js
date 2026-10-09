@@ -104,6 +104,19 @@ test('setup summary never equates a broker connection with live vehicle health o
   const invalid = chargingSetupView(status);
   assert.equal(invalid.vehicles.tesla.label, 'Invalid report');
   assert.doesNotMatch(JSON.stringify(invalid), /<img|onerror/);
+  for (const vehicle of ['bmw', 'tesla']) for (const [reason, label, state] of [
+    ['vehicle-observation-storage-pending', 'Saving vehicle report', 'pending'],
+    ['vehicle-observation-admission-failed', 'Vehicle report not accepted', 'attention'],
+  ]) {
+    const unavailable = vehicle === 'tesla' ? teslaVehicleSetup({ ...tesla(), healthy: false }, { now: NOW })
+      : bmwVehicleSetup(bmw(), { available: false, now: NOW });
+    const waiting = chargingSetupView({ charging: { vehicleFeeds: [{ id: vehicle,
+      reception: { brokerConnected: true, subscribed: true, available: false, reason }, setup: unavailable }] } }).vehicles[vehicle];
+    assert.equal(waiting.label, label); assert.equal(waiting.state, state);
+    assert.match(waiting.detail, /Vehicle readings are unavailable.*original times/);
+    assert.match(waiting.fields.soc, /^Unavailable/);
+    assert.doesNotMatch(waiting.detail, /logger|publisher|private-|storage-pending|admission-failed/);
+  }
 });
 
 test('setup text retains source clocks, privacy and readiness boundaries', () => {

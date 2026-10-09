@@ -1945,6 +1945,16 @@ test('schedule groups separate forecast assumptions from native evidence and con
   assert.equal($('charger2-vehicle-notes').children.length, 2, 'One outage note and one distinct energy-coverage warning remain');
   assert.match($('charger2-vehicle-notes').textContent, /Vehicle readings are unavailable \(the MQTT subscription failed\).*Edit Current charge.*Some charging energy was not measured/);
   assert.doesNotMatch($('charger2-notes').textContent, /Vehicle feed|Vehicle readings|charging energy was not measured/);
+  for (const [reason, cause] of [
+    ['vehicle-observation-storage-pending', /waiting to save a vehicle report/],
+    ['vehicle-observation-admission-failed', /the vehicle report could not be accepted/],
+  ]) {
+    panel.update(status({ ...item, mqtt: { available: false, reason } }));
+    assert.match($('charger2-vehicle-notes').textContent, cause);
+    assert.match($('charger2-vehicle-notes').textContent, /Vehicle readings are unavailable.*last vehicle charge/);
+    assert.equal(section.textContent.split('Measured 15 Sept, 20:00').length - 1, 1);
+    assert.doesNotMatch($('charger2-vehicle-notes').textContent, /storage.pending|admission.failed|logger|publisher/);
+  }
   const label = descendants(reference).find(node => node.tagName === 'DT' && node.textContent === 'Last reported charge');
   const trigger = label.querySelector('.status-detail-trigger'); trigger.focus();
   panel.update(status({ ...item, readOnly: true, recorded: true, mqtt: { reason: 'read-only-snapshot' },

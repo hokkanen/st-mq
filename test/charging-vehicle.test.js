@@ -605,7 +605,9 @@ test('one BMW 100 to X transition holds the latest lower target across restart w
   f.setNow(START + 6 * MINUTE); publishTarget(runtime, 100, START + 6 * MINUTE);
   assert.equal(view(runtime).values.minimumSoc.value, 90);
   const restarted = f.create(); t.after(() => restarted.close());
-  assert.equal(view(restarted).values.minimumSoc.value, 80, 'Automatic targets wait for a live bridge heartbeat after restart');
+  assert.equal(view(restarted).values.minimumSoc.value, 90, 'Same-session target survives restart as a planning reference');
+  assert.equal(view(restarted).values.minimumSoc.retainedForSession, true);
+  assert.equal(restarted.telemetry().charger1.soc.available, false, 'Raw source still waits for a live bridge heartbeat');
   publishTarget(restarted, 100, START + 6 * MINUTE);
   assert.equal(view(restarted).values.minimumSoc.value, 90);
   assert.equal(view(restarted).targetSelection.raw.value, 100);

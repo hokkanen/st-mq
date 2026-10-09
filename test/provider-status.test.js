@@ -72,6 +72,8 @@ test('vehicle overview follows each MQTT feed and keeps quiet vehicles and elect
     [{ brokerConnected: true, subscriptionStatus: 'failed' }, 'Needs attention', true, 'Subscription failed'],
     [{ brokerConnected: true, subscriptionStatus: 'subscribed', invalidReason: 'invalid-soc' }, 'Needs attention', true, 'Invalid vehicle report'],
     [{ brokerConnected: true, subscriptionStatus: 'subscribed', available: false, reason: 'vehicle-feed-stale' }, 'Needs attention', true, 'Vehicle feed stale'],
+    [{ brokerConnected: true, subscriptionStatus: 'subscribed', available: false, reason: 'vehicle-observation-storage-pending' }, 'Partly available', false, 'Saving vehicle report'],
+    [{ brokerConnected: true, subscriptionStatus: 'subscribed', available: false, reason: 'vehicle-observation-admission-failed' }, 'Needs attention', true, 'Vehicle report not accepted'],
   ];
   for (const index of [0, 1]) for (const [reception, state, attention, sourceState] of cases) {
     const status = completeDashboard();
@@ -93,6 +95,16 @@ test('vehicle overview follows each MQTT feed and keeps quiet vehicles and elect
   const entries = dashboardProviders(status, options);
   assert.equal(entries[0].display.state, 'Needs attention');
   assert.equal(entries[2].display.state, 'Available');
+  for (const [reason, state, attention] of [
+    ['vehicle-observation-storage-pending', 'Saving vehicle report', false],
+    ['vehicle-observation-admission-failed', 'Vehicle report not accepted', true],
+  ]) {
+    const display = describeProvider('teslamate', { status: 'degraded', reason, lastMessageAt: now - 60_000 }, options);
+    assert.equal(display.state, state); assert.equal(display.attention, attention);
+    assert.match(display.detail, /Vehicle readings are unavailable.*original times/);
+    assert.match(display.detail, /Last MQTT message 09:59/);
+    assert.doesNotMatch(display.detail, /logger|unhealthy|storage-pending|admission-failed/);
+  }
 });
 
 test('combined temperature and forecast summary preserves backup and attention with unique actual source names', () => {
