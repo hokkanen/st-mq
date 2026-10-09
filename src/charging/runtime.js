@@ -420,6 +420,13 @@ export class ChargingRuntime {
       if (this.closed || generation !== item.adapterGeneration) return;
       item.adapter = adapter;
       const createController = adapter?.createController ?? createChargingController;
+      const hasAuthority = () => {
+        const control = item.controller?.status(), boundary = item.vehicleDisconnect;
+        return !this.closed && this.canControl()
+          && (boundary?.source !== 'easee-stream' || boundary.readingId === control?.vehicleDisconnect?.readingId
+            || control?.session?.connectedAt !== boundary.endedConnectedAt && !control?.vehicleDisconnect?.awaitingConnection)
+          && ['mqtt', 'providers'].includes(this.config.input);
+      };
       item.controller = createController({ adapter, initialState: this.savedOwnership(id),
         saveState: state => this.write(() => {
           this.store.setState(this.ownershipKey(id), state);
@@ -431,13 +438,8 @@ export class ChargingRuntime {
           if (id === 'charger2' && generation === item.adapterGeneration && item.adapter === adapter)
             this.recordLimiterHistory();
         },
-        canControl: () => {
-          const control = item.controller?.status(), boundary = item.vehicleDisconnect;
-          return !this.closed && !this.streamPersistencePending && this.canControl()
-            && (boundary?.source !== 'easee-stream' || boundary.readingId === control?.vehicleDisconnect?.readingId
-              || control?.session?.connectedAt !== boundary.endedConnectedAt && !control?.vehicleDisconnect?.awaitingConnection)
-            && ['mqtt', 'providers'].includes(this.config.input);
-        },
+        hasAuthority,
+        canControl: () => !this.streamPersistencePending && hasAuthority(),
         getMaximumAmps: scheduleCeiling,
         getIdentification: snapshot => this.identificationControl(item, snapshot),
         getPlan: async (snapshot, { refresh = true, takeover = false } = {}) => {

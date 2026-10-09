@@ -8,8 +8,8 @@ import { chargerDisplay } from '../chart/charging.js';
 
 const START = Date.parse('2026-09-24T09:00:00Z'), MINUTE = 60_000, scope = 'a'.repeat(64);
 const plan = (startAt, extra = {}) => ({ id: 'synthetic-plan', startAt, feasible: true, periods: [{ startAt, endAt: null }], ...extra });
-function fixture({ initialState = null, identification = null, nativeTakeover = false, getPlan } = {}) {
-  let now = START, authority = true, connected = true, confirmed = true, transactionId = 7, connectionId = 'synthetic-socket', physicalPause = true;
+function fixture({ initialState = null, identification = null, nativeTakeover = false, getPlan, requestMeterReadback } = {}) {
+  let now = START, authority = true, admission = true, connected = true, confirmed = true, transactionId = 7, connectionId = 'synthetic-socket', physicalPause = true;
   let stored = null, saveError = false, witnessSaveError = false, interceptor = null, appControl = null, snapshotChanges = {};
   const profiles = new Map(), calls = [], saves = [], nativeCalls = [];
   const isPausing = () => [...profiles.values()].some(row => row.transactionId === transactionId
@@ -34,7 +34,7 @@ function fixture({ initialState = null, identification = null, nativeTakeover = 
     };
     return interceptor ? interceptor(action, payload, options, result) : result();
   };
-  const adapter = createOcppScheduleAdapter({ scope, readSnapshot, request, clock: () => now, canControl: () => authority,
+  const adapter = createOcppScheduleAdapter({ scope, readSnapshot, request, requestMeterReadback, clock: () => now, canControl: () => authority,
     ...(nativeTakeover ? { takeoverNative: async ({ expectedAppControl, canMutate, beforeWrite }) => {
       assert.equal(canMutate(), true); assert.deepEqual(appControl, expectedAppControl);
       await beforeWrite();
@@ -46,7 +46,7 @@ function fixture({ initialState = null, identification = null, nativeTakeover = 
     isCurrent: (value, { unchangedStatus = false } = {}) => connected && value.connectionId === connectionId
       && value.transactionId === transactionId && (!unchangedStatus || value.connectorStatus === readSnapshot().connectorStatus
         && value.statusAt === readSnapshot().statusAt) });
-  const controller = adapter.createController({ initialState, clock: () => now, canControl: () => authority,
+  const controller = adapter.createController({ initialState, clock: () => now, canControl: () => authority && admission, hasAuthority: () => authority,
     getPlan,
     getIdentification: snapshot => typeof identification === 'function' ? identification(snapshot) : identification,
     saveState: state => {
@@ -54,7 +54,7 @@ function fixture({ initialState = null, identification = null, nativeTakeover = 
       stored = structuredClone(state); saves.push(stored);
     } });
   return { controller, adapter, calls, saves, profiles, nativeCalls, get stored() { return stored; }, get now() { return now; },
-    advance: ms => { now += ms; }, authority: value => { authority = value; }, connected: value => { connected = value; },
+    advance: ms => { now += ms; }, authority: value => { authority = value; }, admission: value => { admission = value; }, connected: value => { connected = value; },
     confirmed: value => { confirmed = value; }, transaction: value => { transactionId = value; },
     physicalPause: value => { physicalPause = value; }, saveError: value => { saveError = value; },
     witnessSaveError: value => { witnessSaveError = value; },
@@ -126,6 +126,54 @@ test('a contrary native composite withdraws pause confirmation and a later match
   f.intercept(null);
   assert.equal((await f.controller.update()).pauseConfirmed, true);
   assert.equal(writes(f).length, 1, 'Composite recovery verifies the existing profile without replaying it');
+});
+
+for (const code of ['ocpp-request-revoked', 'ocpp-request-timeout', 'ocpp-unavailable'])
+  test(`ordinary ${code} retains scoped native pause evidence without renewing clocks or repeating writes`, async t => {
+    const f = fixture(); t.after(() => f.controller.close());
+    const initial = await f.controller.update({ enabled: true, plan: plan(START + 30 * MINUTE) });
+    f.advance(1000); f.snapshot({ statusAt: START, powerAt: START });
+    f.intercept((action, _payload, _options, result) => {
+      if (action === 'GetCompositeSchedule') throw Object.assign(Error('synthetic read gate'), { code });
+      return result();
+    });
+    const retained = await f.controller.update();
+    assert.equal(retained.pauseConfirmed, true); assert.equal(retained.ownsInstruction, true);
+    assert.equal(retained.errorCode, code); assert.equal(retained.owned.startAt, initial.owned.startAt);
+    assert.equal(retained.snapshot.powerAt, START); assert.equal(writes(f).length, 1);
+    f.advance(60_000); assert.equal(f.controller.status().pauseConfirmed, false);
+    f.intercept(null); f.snapshot({});
+    assert.equal((await f.controller.update()).pauseConfirmed, true); assert.equal(writes(f).length, 1);
+  });
+
+for (const change of ['connection', 'transaction', 'instruction', 'authority', 'positive-power'])
+  test(`a failed ordinary query cannot retain pause confirmation over changed ${change}`, async t => {
+    const f = fixture(); t.after(() => f.controller.close());
+    await f.controller.update({ enabled: true, plan: plan(START + 30 * MINUTE) });
+    f.intercept((action, _payload, _options, result) => {
+      if (action !== 'GetCompositeSchedule') return result();
+      if (change === 'connection') f.reconnect();
+      if (change === 'transaction') f.transaction(8);
+      if (change === 'instruction') f.app(appState(START, false));
+      if (change === 'authority') f.authority(false);
+      if (change === 'positive-power') f.physicalPause(false);
+      throw Object.assign(Error('synthetic read gate'), { code: 'ocpp-request-revoked' });
+    });
+    assert.equal((await f.controller.update()).pauseConfirmed, false);
+    assert.equal(writes(f).length, 1);
+  });
+
+test('pending command admission retains established pause evidence while still withholding command permission', async t => {
+  const f = fixture(); t.after(() => f.controller.close());
+  await f.controller.update({ enabled: true, plan: plan(START + 30 * MINUTE) });
+  f.admission(false); f.advance(1000); f.snapshot({ statusAt: START, powerAt: START });
+  const held = await f.controller.update();
+  assert.equal(held.pauseConfirmed, true); assert.equal(held.errorCode, 'control-revoked');
+  assert.equal(held.snapshot.powerAt, START); assert.equal(writes(f).length, 1);
+  f.authority(false);
+  assert.equal((await f.controller.update()).pauseConfirmed, false, 'Real authority loss still withdraws');
+  f.authority(true); f.admission(true); f.snapshot({});
+  assert.equal((await f.controller.update()).pauseConfirmed, true); assert.equal(writes(f).length, 1);
 });
 
 test('OCPP preserves explicit balancing evidence and rejects malformed metadata', async t => {
@@ -1028,6 +1076,43 @@ test('a completed native identification pause becomes the economic profile witho
 const probeIdentification = (phase = 'charging', extra = {}) => ({ id: 'identify-probe', connectedAt: START - MINUTE,
   phase, mode: 'probe', probeUntil: START + 45_000, returnStartAt: START + 30 * MINUTE,
   ...(phase === 'pausing' ? { pauseUntil: START + 90_000 } : {}), ...extra });
+
+test('bounded identification samples native power without awaiting ACK or holding its original pause deadline', async t => {
+  const samples = [];
+  const f = fixture({ identification: probeIdentification(), requestMeterReadback: options => {
+    assert.equal(options.guard(), true); samples.push(options);
+    return new Promise((_resolve, reject) => options.signal.addEventListener('abort', () => reject(Error('cancelled')), { once: true }));
+  } });
+  t.after(() => f.controller.close());
+  assert.equal((await f.controller.update({ enabled: true })).phase, 'identifying');
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(samples.length, 1);
+  await f.controller.update();
+  assert.equal(samples[0].signal.aborted, true, 'Read-only sample cannot hold the next native duty');
+  assert.equal(samples.length, 1, 'The existing reconciliation cannot trigger a sample storm');
+  f.advance(2000); await f.controller.update();
+  assert.equal(samples.length, 2);
+  f.advance(43_000);
+  const paused = await f.controller.update();
+  assert.equal(samples[1].signal.aborted, true);
+  assert.equal(paused.owned.startAt, START + 30 * MINUTE);
+  assert.equal(writes(f).at(-1).action, 'SetChargingProfile');
+  assert.equal(samples.length, 2, 'Expired probe cannot renew its sampling budget');
+  f.identify(null); await f.controller.update({ plan: plan(START + 30 * MINUTE) });
+  f.advance(2000); await f.controller.update();
+  assert.equal(samples.length, 2, 'Ordinary economic operation does not poll via TriggerMessage');
+});
+
+test('identification meter ACK supplies no physical pause evidence and invalidation cancels the sample', async t => {
+  let count = 0, last;
+  const f = fixture({ identification: probeIdentification('pausing'), requestMeterReadback: options => {
+    count++; last = options; return Promise.resolve({ status: 'Accepted' });
+  } });
+  t.after(() => f.controller.close()); f.physicalPause(false);
+  const pending = await f.controller.update({ enabled: true });
+  assert.equal(count, 1); assert.equal(pending.pauseConfirmed, false); assert.equal(pending.snapshot.powerKw, 7);
+  f.controller.invalidate(); assert.equal(last.signal.aborted, true); assert.equal(last.guard(), false);
+});
 
 test('scoped identification starts and returns at its original deadline while economic planning remains unresolved', async t => {
   let finishPlanning, plannerCalls = 0, permission = null;

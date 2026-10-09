@@ -274,12 +274,12 @@ export function createDeviceProviders({ connections = {}, http, tokenStore, cloc
       const permission = nativeStartPermission, current = local.controlSnapshot?.();
       observeNativeStop(current);
       nativeAppControl();
-      const permitted = Boolean(permission && !closed && controlBackend === 'native' && canControl() && !nativeSourcePending()
-        && permission.until > clock() && permission.guard() && current?.connectionId === permission.connectionId
+      const valid = Boolean(permission && !closed && controlBackend === 'native' && canControl()
+        && permission.until > clock() && current?.connectionId === permission.connectionId
         && ['Preparing', 'Charging', 'SuspendedEV', 'SuspendedEVSE'].includes(current.connectorStatus)
         && instructionRevision === permission.instructionRevision);
-      if (!permitted) nativeStartPermission = null;
-      return permitted;
+      if (!valid) nativeStartPermission = null;
+      return valid && !nativeSourcePending() && permission.guard();
     },
     onDisconnect: () => {
       nativeStartPermission = null;
@@ -768,12 +768,16 @@ export function createDeviceProviders({ connections = {}, http, tokenStore, cloc
     canControl: () => !closed && canControl() && controlBackend === 'native' && !nativeSourcePending(),
     setStartPermission: (snapshot, options = {}) => {
       if (snapshot) nativeAppControl();
-      nativeStartPermission = snapshot && !nativeSourcePending() && typeof options.guard === 'function' && Number.isSafeInteger(options.until)
+      // A pending source receipt withholds use/renewal of the previous lease.
+      // Explicit revocation (null) still clears it immediately.
+      if (snapshot && nativeSourcePending()) return;
+      nativeStartPermission = snapshot && typeof options.guard === 'function' && Number.isSafeInteger(options.until)
         && snapshot.instructionRevision === instructionRevision
         ? { connectionId: snapshot.connectionId, instructionRevision,
           issuedAt: clock(), until: options.until, guard: options.guard } : null;
     },
     request: (...args) => local.request(...args),
+    requestMeterReadback: options => local.request('TriggerMessage', { requestedMessage: 'MeterValues', connectorId: 1 }, options),
     takeoverNative: async ({ expectedAppControl, expectedSnapshot, signal, canMutate, beforeWrite }) => {
       nativeAppControl();
       const expectedRevision = instructionRevision;

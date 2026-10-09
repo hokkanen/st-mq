@@ -12,7 +12,7 @@ const FIRST_MESSAGE_TIMEOUT_MS = 30_000;
 const NO_TRANSACTION_STATUSES = new Set(['Available', 'Finishing']);
 const RECOVERABLE_STATUSES = new Set(['Charging', 'SuspendedEVSE', 'SuspendedEV']);
 const EXTERNAL_STOP_REASONS = new Set(['Remote', 'Local', 'DeAuthorized']);
-const REQUEST_ACTIONS = new Set(['SetChargingProfile', 'ClearChargingProfile', 'GetCompositeSchedule', 'GetConfiguration', 'ChangeAvailability']);
+const REQUEST_ACTIONS = new Set(['SetChargingProfile', 'ClearChargingProfile', 'GetCompositeSchedule', 'GetConfiguration', 'ChangeAvailability', 'TriggerMessage']);
 const requestError = code => Object.assign(new Error(code), { code });
 const unreachableAddresses = new BlockList();
 for (const [address, prefix, type] of [['0.0.0.0', 8, 'ipv4'], ['127.0.0.0', 8, 'ipv4'],
@@ -105,7 +105,7 @@ export function createEaseeOcpp({ config: input, chargerId, clock = Date.now, ca
   const configured = Boolean(config.enabled && config.password && chargerId);
   const identity = config.charge_point_id || chargerId;
   let server, sockets, socket, timer, startPromise, booted = false, lastMessageAt = null, connectedAt = null, error = null, closed = false;
-  let ownsConnection = false, telemetryConfigured = false;
+  let ownsConnection = false, telemetryConfigured = false, meterTriggerUnsupported = false;
   let connectorStatus = null, connectorStatusAt = null, connectorReceivedAt = null, connectorStatusExplicit = false;
   let preparingAttempted = false, remoteStartStatus = 'idle';
   let device = null;
@@ -286,7 +286,7 @@ export function createEaseeOcpp({ config: input, chargerId, clock = Date.now, ca
     deferredTransactions.clear();
     rejectRequests('ocpp-disconnected');
     booted = false; values.clear(); futureReadings.length = 0; replies.clear();
-    configurationFailures.clear(); lastMessageAt = null; connectedAt = null; telemetryConfigured = false;
+    configurationFailures.clear(); lastMessageAt = null; connectedAt = null; telemetryConfigured = false; meterTriggerUnsupported = false;
     connectorStatus = null; connectorStatusAt = null; connectorReceivedAt = null; connectorStatusExplicit = false;
     observedTransaction = null; connectionId = null; authenticatedConnectionId = null; transactionEvidence = null;
     recoveryCandidate = null; recoveryConflict = false; evidenceBoundaryAt = null;
@@ -356,6 +356,7 @@ export function createEaseeOcpp({ config: input, chargerId, clock = Date.now, ca
   }
   function configureTelemetry() {
     telemetryConfigured = true;
+    meterTriggerUnsupported = false;
     configurationFailures.clear(); rejectRequests('ocpp-reconfigured');
     for (const [key, value] of [['MeterValuesSampledData', 'Power.Active.Import,Current.Import,Voltage'],
       ['MeterValuesAlignedData', 'Power.Active.Import,Current.Import,Voltage'], ['MeterValueSampleInterval', '30'],
@@ -495,6 +496,9 @@ export function createEaseeOcpp({ config: input, chargerId, clock = Date.now, ca
   function completeResponse(id, pending, frame, waited = false) {
     if (pendingCalls.get(id) !== pending) return;
     pendingCalls.delete(id);
+    if (pending.action === 'TriggerMessage' && pending.payload.requestedMessage === 'MeterValues'
+      && (frame[0] === 3 && ['Rejected', 'NotImplemented'].includes(frame[2]?.status)
+        || frame[0] === 4 && ['NotImplemented', 'NotSupported'].includes(frame[2]))) meterTriggerUnsupported = true;
     if (pending.resolve) {
       const expired = waited && (clock() < pending.queuedAt || clock() - pending.queuedAt >= CALL_TIMEOUT_MS);
       const revoked = !refreshAuthority() || pending.connection !== socket || !transportFresh()
@@ -812,6 +816,10 @@ export function createEaseeOcpp({ config: input, chargerId, clock = Date.now, ca
     },
     request(action, payload, { signal, guard = () => true, beforeSend = () => true } = {}) {
       if (!REQUEST_ACTIONS.has(action)) return Promise.reject(requestError('ocpp-action-not-allowed'));
+      if (action === 'TriggerMessage' && (!payload || payload.connectorId !== 1 || payload.requestedMessage !== 'MeterValues'
+        || Object.keys(payload).some(key => !['connectorId', 'requestedMessage'].includes(key))))
+        return Promise.reject(requestError('ocpp-invalid-payload'));
+      if (action === 'TriggerMessage' && meterTriggerUnsupported) return Promise.reject(requestError('ocpp-meter-trigger-unsupported'));
       if (action === 'ChangeAvailability' && (!payload || payload.connectorId !== 0 || payload.type !== 'Operative'
         || Object.keys(payload).some(key => !['connectorId', 'type'].includes(key))))
         return Promise.reject(requestError('ocpp-invalid-payload'));
@@ -832,7 +840,12 @@ export function createEaseeOcpp({ config: input, chargerId, clock = Date.now, ca
           const index = callQueue.indexOf(call);
           if (index >= 0) callQueue.splice(index, 1);
           finishRequest(call, 'ocpp-request-aborted');
-          // An already sent request still occupies the wire until reply or
+          // This specific read-only request has no charging effect to resolve.
+          // A late sample/reply remains ordinary telemetry; it must not hold a
+          // physical pause or restoration behind its acknowledgement timeout.
+          if (action === 'TriggerMessage') for (const [id, pending] of pendingCalls)
+            if (pending === call) pendingCalls.delete(id);
+          // Other already sent requests still occupy the wire until reply or
           // timeout; cancelling a promise cannot cancel its physical effect.
           sendNextCall();
         };

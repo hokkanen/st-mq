@@ -135,12 +135,15 @@ async function handoverOperation(step, operation) {
 
 export function createOcppScheduleAdapter({ request, readSnapshot, isCurrent = () => false,
   scope, clock = Date.now, canControl = () => false, takeoverNative, setStartPermission = () => {}, readCurrentSupply,
-  readDeviceInfo = () => null, readAllowanceTelemetry = null } = {}) {
+  readDeviceInfo = () => null, readAllowanceTelemetry = null, requestMeterReadback } = {}) {
   if (!scopeValid(scope) || typeof request !== 'function' || typeof readSnapshot !== 'function') throw fail('invalid-ocpp-adapter');
   const adapter = {
     scope, ownershipNamespace: 'ocpp', supportsTakeover: typeof takeoverNative === 'function',
     capabilities: { scheduling: true, currentControl: false, externalLoadBalancing: true },
     ...(typeof readCurrentSupply === 'function' ? { readCurrentSupply } : {}),
+    ...(typeof requestMeterReadback === 'function' ? { requestMeterReadback(snapshot, { signal, guard = () => false } = {}) {
+      return requestMeterReadback({ signal, guard: () => canControl() && guard() && isCurrent(snapshot) });
+    } } : {}),
     setStartPermission,
     deviceInfo: () => readDeviceInfo(),
     async read({ signal, forceAppRefresh = false } = {}) { return snapshotFor(await readSnapshot({ signal, forceAppRefresh }), scope, clock()); },
@@ -402,13 +405,34 @@ export function validateOcppChargingOwnershipState(state, scope = state?.scope) 
 
 /** Current transaction only; no cloud schedule is presented as native readback. */
 export function createOcppChargingController({ adapter, initialState = null, saveState = () => {}, clock = Date.now,
-  canControl = () => false, getPlan, getIdentification } = {}) {
+  canControl = () => false, hasAuthority = canControl, getPlan, getIdentification } = {}) {
   if (!adapter || !scopeValid(adapter.scope)) throw fail('invalid-ocpp-adapter');
   validateOcppChargingOwnershipState(initialState, adapter.scope);
   let state = initialState ? clone(initialState) : initialOcppControllerState(adapter.scope);
   let snapshot = null, desired = { enabled: false, plan: null, readyBy: '06:00', timezone: TIME_ZONE }, closed = false, generation = 0, queue = Promise.resolve(), abort = null;
   let phase = 'off', reason = 'Automatic charging is off.', errorCode = null, reasonCode = null, ownsInstruction = false, pauseConfirmed = false, handoverConfirmed = true;
   let planningRevision = null, identification = null;
+  let meterSample = null, nextMeterSampleAt = 0;
+  function cancelMeterSample() { meterSample?.abort(); meterSample = null; }
+  function sampleIdentification(current, signal) {
+    const deadline = identification?.phase === 'pausing' ? identification.pauseUntil
+      : identification?.mode === 'probe' ? identification.probeUntil : null;
+    const now = clock();
+    if (!adapter.requestMeterReadback || !time(deadline) || now >= deadline || now < nextMeterSampleAt
+      || meterSample || !canWrite(current)) return;
+    const request = new AbortController(), evidence = snapshot;
+    meterSample = request; nextMeterSampleAt = now + 2000;
+    const timer = setTimeout(() => request.abort(), deadline - now); timer.unref();
+    // Use existing identification reconciliations, not another polling loop.
+    // The acknowledgement never establishes power or renews a source clock.
+    void Promise.resolve().then(() => adapter.requestMeterReadback(evidence, {
+      signal: AbortSignal.any([signal, request.signal]),
+      guard: () => canWrite(current) && !request.signal.aborted && clock() < deadline,
+    })).catch(() => {}).finally(() => {
+      clearTimeout(timer);
+      if (meterSample === request) meterSample = null;
+    });
+  }
   let takeoverState = null, takeoverAttempt = null;
   const takeoverToken = () => snapshot ? hash([adapter.scope, snapshot.connectionId, snapshot.transactionId,
     snapshot.connectorStatus, snapshot.statusAt, state.session?.connectedAt, appFingerprint(snapshot.appControl)]) : null;
@@ -478,23 +502,26 @@ export function createOcppChargingController({ adapter, initialState = null, sav
     // Reconcile the newly observed identification/native state synchronously.
     // A routine read may retain permission while waiting, but a completed
     // decision that calls for a pause must withdraw it before any awaited work.
-    adapter.setStartPermission?.(null);
+    const revoke = () => { adapter.setStartPermission?.(null); return false; };
     const now = clock(), app = snapshot?.appControl;
-    if (!canWrite(current) || !snapshot?.online || snapshot.pluggedIn !== true
+    if (closed || current !== generation || !hasAuthority() || !snapshot?.online || snapshot.pluggedIn !== true
       || !fresh(snapshot.readAt, now) || ['Unavailable', 'Faulted', 'Reserved'].includes(snapshot.connectorStatus)
       || app?.faulted || app?.authorizationBlocked
       || nativeStopped() || state.takeoverPending || state.automaticTakeover
-      || state.manual && state.manual.kind !== 'release') return;
+      || state.manual && state.manual.kind !== 'release') return revoke();
     const selected = selectExecution(plan, state.execution, now, desired.deadlineRequest, state.session?.connectedAt);
     const periods = selected.execution?.periods ?? [];
     const active = periods.find(period => period.startAt <= now && (period.endAt === null || period.endAt > now));
     const identifying = identification && identification.phase !== 'pausing'
       && (identification.mode !== 'probe' || now < identification.probeUntil);
-    if (identification && !identifying) return;
+    if (identification && !identifying) return revoke();
     const openRelease = state.released && !state.provisional && !selected.priceRevision
       || selected.plan?.provisional === true || selected.plan?.feasible === false
       || !selected.execution && time(selected.plan?.startAt) && selected.plan.startAt <= now;
-    if (desired.enabled && !state.manual && !chargeNowActive() && !identifying && !active && !openRelease) return;
+    if (desired.enabled && !state.manual && !chargeNowActive() && !identifying && !active && !openRelease) return revoke();
+    // Keep only the previous lease while unrelated input persistence is pending.
+    // Its dynamic guard still denies Start, and this path cannot extend expiry.
+    if (!canWrite(current)) return true;
     const until = Math.min(now + MAX_AGE_MS,
       desired.enabled && !state.manual && !chargeNowActive() && !identifying ? active?.endAt ?? Infinity : Infinity,
       identifying && identification.mode === 'probe' ? identification.probeUntil : Infinity);
@@ -693,7 +720,10 @@ export function createOcppChargingController({ adapter, initialState = null, sav
   }
   async function reconcile(current) {
     if (closed || current !== generation) return status();
+    cancelMeterSample();
     const signal = abort.signal;
+    const priorConfirmation = ownsInstruction ? { snapshot, fingerprint: state.owned?.fingerprint } : null;
+    let retainedStartAdmission = false;
     try {
       if (desired.replan === true) {
         await commit({ released: false, execution: null, provisional: false });
@@ -817,7 +847,7 @@ export function createOcppChargingController({ adapter, initialState = null, sav
       const independentPermission = identification !== null || chargeNowActive() || desired.enabled !== true;
       const startPlan = retainExecution(!independentPermission && typeof getPlan === 'function'
         ? await readPlan(signal) : desired.plan);
-      permitStart(startPlan, current);
+      retainedStartAdmission = permitStart(startPlan, current) === true;
       const instruction = state.pending?.instruction ?? state.owned;
       const wrongSession = instruction && snapshot.transactionConfirmed && instruction.transactionId !== snapshot.transactionId;
       const identificationEnded = instruction?.purpose === 'identification'
@@ -849,6 +879,7 @@ export function createOcppChargingController({ adapter, initialState = null, sav
         if (identification.phase !== 'pausing' && (identification.mode !== 'probe' || clock() < identification.probeUntil)) {
           const restriction = state.pending?.instruction ?? state.owned;
           if (restriction && !await clearInstruction(restriction, current, signal)) return display('unconfirmed', 'Vehicle identification is waiting for the native profile release.');
+          sampleIdentification(current, signal);
           return display('identifying', identification.phase === 'waiting' ? 'Vehicle identification is pending until charging starts.'
             : 'Charging briefly to identify the connected vehicle.');
         }
@@ -942,16 +973,42 @@ export function createOcppChargingController({ adapter, initialState = null, sav
       if (pauseConfirmed) await commit({ pauseWitness: { profileId: state.owned.profileId,
         transactionId: snapshot.transactionId, connectionId: snapshot.connectionId,
         at: Math.max(snapshot.statusAt, snapshot.powerAt) } });
-      if (identification) return display('identifying', pauseConfirmed
+      if (identification) {
+        sampleIdentification(current, signal);
+        return display('identifying', pauseConfirmed
         ? 'Charging is briefly paused while waiting for the vehicle identification response.'
         : 'The identification pause is awaiting fresh confirmation from the charger.');
+      }
       return display(pauseConfirmed ? 'paused' : 'pause-unconfirmed', pauseConfirmed
         ? 'The native pause is confirmed and expires at the planned start.'
         : missingPauseEvidence());
     } catch (error) {
-      adapter.setStartPermission?.(null);
+      if (!retainedStartAdmission || !hasAuthority()) adapter.setStartPermission?.(null);
       if (takeoverState === 'pending') takeoverState = 'blocked';
       if (closed || current !== generation) return status();
+      // A blocked observational check does not erase a confirmed native profile.
+      // Admission can be pending while equipment authority remains unchanged;
+      // this retains evidence only, never permission for a new command/start.
+      if (priorConfirmation && !state.pending && !state.takeoverPending && !state.automaticTakeover
+        && priorConfirmation.fingerprint === state.owned?.fingerprint && hasAuthority()
+        && ['control-revoked', 'ocpp-request-revoked', 'ocpp-request-timeout', 'ocpp-unavailable'].includes(error?.code)) {
+        try {
+          const before = priorConfirmation.snapshot;
+          snapshot = await adapter.read({ signal });
+          if (!closed && current === generation && hasAuthority() && snapshot.online && fresh(snapshot.readAt, clock())
+            && snapshot.pluggedIn === true && snapshot.connectionId === before.connectionId && snapshot.transactionConfirmed
+            && snapshot.transactionId === before.transactionId && !instructionChanged(before, snapshot)
+            && isDeepStrictEqual(snapshot.nativeStop, before.nativeStop)
+            && !snapshot.appControl?.faulted && !snapshot.appControl?.authorizationBlocked
+            && !['Unavailable', 'Faulted', 'Reserved'].includes(snapshot.connectorStatus)) {
+            ownsInstruction = true; observePause();
+            if (identification) sampleIdentification(current, signal);
+            return display(identification ? 'identifying' : pauseConfirmed ? 'paused' : 'pause-unconfirmed', pauseConfirmed
+              ? 'The existing native pause remains confirmed; its latest schedule check could not complete.'
+              : missingPauseEvidence(), error.code);
+          }
+        } catch { /* An unavailable scope check cannot retain prior confirmation. */ }
+      }
       ownsInstruction = pauseConfirmed = false;
       handoverConfirmed = !controlRequested() ? false : null;
       const code = typeof error?.code === 'string' && Object.hasOwn(REASONS, error.code) ? error.code : 'command-failed';

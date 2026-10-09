@@ -1233,6 +1233,52 @@ test('small future status timestamps wait for source time, preserve receipt time
     'Reconnect explicitly requests native connector status');
 });
 
+test('bounded native meter request ACK cannot renew measurements and real +2ms samples retain both clocks', async t => {
+  const f = await fixture(t), client = await f.connect();
+  await client.call('StatusNotification', preparing); await client.call('MeterValues', meter()); await flushCalls(client);
+  const original = f.local.snapshot().find(row => row.id === 120);
+  f.now = at + 1000;
+  assert.deepEqual(await f.local.request('TriggerMessage', { requestedMessage: 'MeterValues', connectorId: 1 }), { status: 'Accepted' });
+  assert.deepEqual(f.local.snapshot().find(row => row.id === 120), original, 'ACK is transport activity only');
+  await client.call('MeterValues', meter([{ measurand: 'Power.Active.Import', unit: 'W', value: '7000' }], at + 1002));
+  assert.equal(f.local.snapshot().find(row => row.id === 120).value, 6.9);
+  f.now = at + 1002;
+  const measured = f.local.snapshot().find(row => row.id === 120);
+  assert.equal(measured.value, 7); assert.equal(measured.timestamp, new Date(at + 1002).toISOString());
+  assert.equal(measured.receivedAt, at + 1000, 'Local clock catch-up needs no second packet and preserves receipt');
+  for (const payload of [{ requestedMessage: 'StatusNotification', connectorId: 1 },
+    { requestedMessage: 'MeterValues', connectorId: 0 }, { requestedMessage: 'MeterValues', connectorId: 1, extra: true }])
+    await assert.rejects(f.local.request('TriggerMessage', payload), { code: 'ocpp-invalid-payload' });
+});
+
+test('cancelled read-only meter request releases the wire for a native pause while its late reply grants nothing', async t => {
+  const f = await fixture(t); let hold = false;
+  const client = await f.connect({ autoReply: frame => hold ? null : 'Accepted' });
+  await client.call('StatusNotification', preparing); await flushCalls(client); hold = true;
+  const controller = new AbortController();
+  let next = once(client.ws, 'message');
+  const sample = resultOf(f.local.request('TriggerMessage', { requestedMessage: 'MeterValues', connectorId: 1 }, { signal: controller.signal }));
+  await next; const sampling = client.calls.at(-1);
+  next = once(client.ws, 'message');
+  const pause = f.local.request('SetChargingProfile', { connectorId: 1 });
+  controller.abort(); assert.deepEqual(await sample, { code: 'ocpp-request-aborted' }); await next;
+  const command = client.calls.at(-1); assert.equal(command[2], 'SetChargingProfile');
+  respond(client, sampling, { status: 'Accepted' });
+  await client.call('Heartbeat', {}); assert.equal(f.local.snapshot(), null);
+  respond(client, command, { status: 'Accepted' }); assert.deepEqual(await pause, { status: 'Accepted' });
+});
+
+test('known unsupported native meter triggers are suppressed only for their current connection', async t => {
+  const f = await fixture(t), client = await f.connect({ autoReply: frame =>
+    frame[2] === 'TriggerMessage' && frame[3].requestedMessage === 'MeterValues' ? 'NotImplemented' : 'Accepted' });
+  await client.call('StatusNotification', preparing); await flushCalls(client);
+  const count = client.calls.length;
+  await assert.rejects(f.local.request('TriggerMessage', { requestedMessage: 'MeterValues', connectorId: 1 }), { code: 'ocpp-meter-trigger-unsupported' });
+  assert.equal(client.calls.length, count);
+  const replacement = await f.connect(); await replacement.call('StatusNotification', preparing); await flushCalls(replacement);
+  assert.deepEqual(await f.local.request('TriggerMessage', { requestedMessage: 'MeterValues', connectorId: 1 }), { status: 'Accepted' });
+});
+
 test('future meter values become usable only at their true source time and retain their original receipt', async t => {
   const f = await fixture(t), client = await f.connect();
   await client.call('StatusNotification', preparing);

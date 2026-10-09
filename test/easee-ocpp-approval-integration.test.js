@@ -14,7 +14,7 @@ const CHARGER = 'synthetic-approval-charger', PASSWORD = 'synthetic-ocpp-pass';
 async function fixture(t) {
   const reservation = createServer(); reservation.listen(0, '127.0.0.1'); await once(reservation, 'listening');
   const port = reservation.address().port; await new Promise(resolve => reservation.close(resolve));
-  let now = START, remote = null, sequence = 0;
+  let now = START, remote = null, sequence = 0, admitted = true, authority = true;
   const calls = [], requests = [], states = new Map(), observations = new Map();
   const observe = changes => {
     for (const [id, value] of Object.entries(changes)) observations.set(Number(id),
@@ -57,7 +57,8 @@ async function fixture(t) {
   await provider.reconcileOcpp();
   assert.equal(provider.localOcppStatus().controlTransport, 'ocpp');
   const adapter = provider.chargerScheduleControl();
-  controller = adapter.createController({ clock: () => now, canControl: () => true, saveState: stateFor('controller').set });
+  controller = adapter.createController({ clock: () => now, canControl: () => authority && admitted,
+    hasAuthority: () => authority, saveState: stateFor('controller').set });
   ws = new WebSocket(`ws://127.0.0.1:${port}/ocpp/${CHARGER}`, 'ocpp1.6', {
     headers: { Authorization: `Basic ${Buffer.from(`${CHARGER}:${PASSWORD}`).toString('base64')}` },
   });
@@ -85,8 +86,34 @@ async function fixture(t) {
   await status('Preparing'); await meter(0);
   await adapter.read({ forceAppRefresh: true });
   return { provider, adapter, controller, calls, requests, installation, states, call, status, meter, observe,
+    admission(value) { admitted = value; }, authority(value) { authority = value; },
     get now() { return now; }, advance(ms) { now += ms; } };
 }
+
+test('committed input restores the original unexpired native Start lease without another reconcile', async t => {
+  const f = await fixture(t), plan = { id: 'open', startAt: START, feasible: true, periods: [{ startAt: START, endAt: null }] };
+  await f.controller.update({ enabled: true, plan });
+  const authorize = async () => (await f.call('Authorize', { idTag: f.installation.virtualTag }))[2].idTagInfo.status;
+  assert.equal(await authorize(), 'Accepted'); f.advance(1000);
+  const read = f.adapter.read;
+  f.adapter.read = async options => { const snapshot = await read(options); f.admission(false); return snapshot; };
+  try {
+    await f.controller.update({ enabled: true, plan });
+    assert.equal(await authorize(), 'Blocked', 'Pending admission cannot authorize physical Start');
+    f.admission(true);
+    assert.equal(await authorize(), 'Accepted', 'The unchanged original lease remains usable after commit');
+    f.advance(60_000);
+    assert.equal(await authorize(), 'Blocked', 'Pending refresh cannot extend original expiry');
+  } finally { f.admission(true); f.adapter.read = read; }
+});
+
+test('actual controller authority loss permanently revokes a retained Start lease', async t => {
+  const f = await fixture(t), plan = { id: 'open', startAt: START, feasible: true, periods: [{ startAt: START, endAt: null }] };
+  await f.controller.update({ enabled: true, plan });
+  f.admission(false); f.authority(false); await f.controller.update({ enabled: true, plan });
+  f.authority(true); f.admission(true);
+  assert.equal((await f.call('Authorize', { idTag: f.installation.virtualTag }))[2].idTagInfo.status, 'Blocked');
+});
 
 test('pending native approval starts through the real OCPP transport only when the economic period opens', async t => {
   const f = await fixture(t), startAt = START + 30 * MINUTE;

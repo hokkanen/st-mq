@@ -506,6 +506,13 @@ requires the current authorized connection, but can remove that exact profile
 when the old transaction is no longer confirmed. A missing profile ID is rejected;
 ST-MQ never turns an incomplete cleanup instruction into a clear-all request.
 
+An ordinary schedule query rejected by a transient admission gate, timeout or
+unavailable transport does not erase an already confirmed profile. The controller
+first rereads the native connection, transaction and instructions; only unchanged
+scope can retain the original confirmation. Original power freshness and profile
+expiry still apply, and contrary measurements or instructions withdraw it. A
+later successful query verifies the existing profile without rewriting it.
+
 At expiry, the restriction disappears on the charger without a new resume
 command. Charging then follows the charger, vehicle and Equalizer's existing
 limits. Normal release does not impose an artificial current setpoint or use a
@@ -530,6 +537,16 @@ economic release; the ordinary 90-second correlation-pause expiry does not end
 that economic hold. See the
 [identification lifecycle](../identification.md#vehicle-assignment) and the
 [qualification scope](#qualification-scope) for the physical validation scope.
+
+During a bounded identification probe or correlation pause, existing controller
+updates may request `TriggerMessage` with `MeterValues` for connector 1, using the
+same native request as telemetry setup. At most one sample request is in flight,
+no more often than once per two seconds, within the original attempt deadline.
+Only actual meter reports provide evidence; the acknowledgement cannot renew
+measurement clocks. The next controller action cancels the read-only request so
+its missing reply cannot delay a pause or restoration. Known rejected or
+unsupported sampling is suppressed until the next native connection. Ordinary
+economic operation does not use this sampling loop.
 
 ### Qualification scope
 
