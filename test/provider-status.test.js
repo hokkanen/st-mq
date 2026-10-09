@@ -1019,6 +1019,27 @@ test('completed charger setup schedules a connection check without implying anot
   assert.doesNotMatch(JSON.stringify(display), /Next setup attempt|property readings|ST-MQ/);
 });
 
+test('connection recovery shows its own wait and stops promising retries after the bounded attempts', () => {
+  const localOcpp = { configured: true, connected: false, available: false, setup: {
+    state: 'connecting', reason: 'waiting-connection', nextAttemptAt: now + 60_000,
+    recovery: { attempts: 1, nextAttemptAt: now + 15 * 60_000, exhausted: false },
+  } };
+  let display = easeeLocalConnectionDisplay({ localOcpp }, options);
+  assert.match(display.setup.detail, /Connection recovery no earlier than 10:15/);
+  assert.doesNotMatch(display.setup.detail, /Next setup attempt/);
+  Object.assign(localOcpp.setup, { state: 'retrying', reason: 'cloud-unavailable',
+    recovery: { attempts: 3, nextAttemptAt: null, exhausted: true } });
+  display = easeeLocalConnectionDisplay({ localOcpp }, options);
+  assert.equal(display.setup.label, 'Connection needs attention');
+  assert.equal(display.setup.tone, 'attention');
+  assert.match(display.setup.detail, /three-attempt limit.*Local OCPP remains enabled/);
+  assert.doesNotMatch(display.setup.detail, /retry automatically|Next setup attempt|ST-MQ/);
+  localOcpp.setup = { state: 'recovering', reason: 'reapplying-connection' };
+  display = easeeLocalConnectionDisplay({ localOcpp }, options);
+  assert.equal(display.setup.label, 'Recovering connection');
+  assert.match(display.setup.detail, /same verified.*charging instructions are preserved/);
+});
+
 test('local setup readiness diagnostics distinguish storage and authorization from network failures', () => {
   for (const [reason, detail] of [
     ['listener-not-ready', /Waiting for local readiness checks/],

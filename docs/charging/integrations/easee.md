@@ -315,8 +315,8 @@ restart close the connection while retaining the setup journal, charging control
 intent and outstanding profile obligations. They do not apply `OcppOff`, clear
 owned pauses or switch the charger to cloud operation. Paired handover preserves
 the same state so the charger reconnects to the shared address on the next
-controller. Startup verifies matching installed configuration without rewriting
-or applying charger configuration. Fresh authenticated local readings can establish a matching
+controller. Startup verifies matching installed configuration without immediately
+rewriting or applying charger configuration. Fresh authenticated local readings can establish a matching
 installation when its setup journal is genuinely absent; an unconnected initial
 installation still requires confirmed commissioning.
 
@@ -443,6 +443,28 @@ takeover locally. A same-session restart preserves its durable authority and
 known later external instructions. Local commands do not wait for cloud polling
 or renew permission from a cached cloud response. Background setup checks remain
 distinct from an already authenticated, working local installation.
+
+If the commissioned charger has no local connection for five minutes while the
+listener is ready, a separate recovery attempt can reapply its unchanged, verified
+connection configuration through Easee cloud. It requires matching owned settings,
+supported firmware, online/Wi-Fi readback and unchanged configuration/version
+immediately before Apply. It never stores replacement settings, applies `OcppOff`,
+hands control to cloud scheduling, clears charging instructions or closes the local
+listener. A cloud error leaves the existing local installation available for
+reconnection; ordinary local operation still needs no cloud reply.
+
+Recovery reserves at most three attempts per outage in the setup journal, before
+dispatch, including attempts whose result is uncertain. Further attempts wait at
+least 15 minutes after the first and 60 minutes after the second. Provider failure
+and rate-limit backoff can lengthen those waits. Restart/handover retains the used
+budget and adds a fresh five-minute observation period. An authenticated open
+socket suppresses recovery even before electricity readings are complete; actual
+OCPP traffic clears the used budget independently of cloud access. A reconnect
+during verification, storage or token refresh cancels the pending Apply. After the
+budget is exhausted, the connection panel requests charger/network attention and
+the listener keeps accepting connections. Reapplication is an attempted recovery,
+not proof of receipt or restored physical charging; installed hardware recovery
+still needs validation.
 
 Missing, stale or unknown cloud data supplies no new contrary instruction. It
 does not become synthetic fresh `enabled`, `none` or zero-current evidence and

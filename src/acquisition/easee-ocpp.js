@@ -908,6 +908,7 @@ export function createEaseeOcpp({ config: input, chargerId, clock = Date.now, ca
     status() {
       const available = Boolean(this.snapshot()), listening = Boolean(server?.listening && !closed);
       return { configured, listening, ready: listening && stateReady && authorizationReady && canControl() && !error,
+        transportConnected: Boolean(canControl() && socket?.readyState === 1), connectionGeneration: connectionSequence,
         connected: Boolean(canControl() && socket?.readyState === 1 && lastMessageAt !== null), hasBootReported: booted, available,
         error: error ?? (authorizationReady ? null : 'authorization-unavailable'), lastMessageAt, configurationFailures: [...configurationFailures],
         authorizationMode: config.authorization_mode, remoteStartStatus,

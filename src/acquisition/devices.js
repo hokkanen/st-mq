@@ -325,8 +325,8 @@ export function createDeviceProviders({ connections = {}, http, tokenStore, cloc
       observations: ({ signal }) => easeeRequest(easee.charger_id, [80, 141, 250], signal),
       store: (body, { signal }) => easeeAuthenticated(`${API}${setupBase}`, {
         method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body), signal }),
-      apply: (body, { signal }) => easeeAuthenticated(`${API}/local-ocpp/v1/connections/chargers/${encodeURIComponent(easee.charger_id)}`, {
-        method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body), signal }, true),
+      apply: (body, { signal, isCurrent }) => easeeAuthenticated(`${API}/local-ocpp/v1/connections/chargers/${encodeURIComponent(easee.charger_id)}`, {
+        method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body), signal, controlGuard: isCurrent }, true),
     } }) : null;
   let localStartFlight = null, nextLocalStartAt = 0;
   async function ensureLocalListener() {

@@ -167,6 +167,13 @@ try {
   await refresh(); await until(`document.querySelector('${setupLabel}').textContent === 'Setup complete'`);
   assert.equal(await evaluate(`document.querySelector('${local} [data-local-connection=readings]').textContent`), 'Available');
   assert.equal(await evaluate(`document.querySelector('${local} .provider-local-message').textContent`), '', 'Confirmed setup replaces the earlier waiting notice');
+  await evaluate("window.localAvailable = false; window.setupFixture = { state: 'recovering', reason: 'reapplying-connection', endpointSource: 'pair-vip' }; true");
+  await refresh(); await until(`document.querySelector('${setupLabel}').textContent === 'Recovering connection'`);
+  assert.match(await evaluate(`document.querySelector('${local}').textContent`), /charging instructions are preserved/);
+  await evaluate("window.setupFixture = { state: 'retrying', reason: 'cloud-unavailable', endpointSource: 'pair-vip', recovery: { attempts: 3, nextAttemptAt: null, exhausted: true } }; true");
+  await refresh(); await until(`document.querySelector('${setupLabel}').textContent === 'Connection needs attention'`);
+  assert.match(await evaluate(`document.querySelector('${local}').textContent`), /three-attempt limit.*Local OCPP remains enabled/);
+  assert.equal(await evaluate(`document.querySelector('${button}').hidden`), true);
   for (const width of [1100, 320]) for (const theme of ['dark', 'light']) {
     await command('Emulation.setDeviceMetricsOverride', {width, height:800, deviceScaleFactor:1, mobile:false});
     await evaluate(`document.documentElement.dataset.theme = '${theme}'`);
@@ -186,13 +193,13 @@ try {
     writeFileSync(join(artifacts, `ocpp-setup-${width}-${theme}.png`), Buffer.from(shot.data, 'base64'));
   }
   await evaluate("window.setupFixture = { state: 'blocked', reason: 'foreign-configuration', canAdopt: true, revision: 'a'.repeat(64) }; window.fixtureReadOnly = true; true");
-  await refresh(); await until(`document.querySelector('${setupLabel}').textContent === 'Setup needs attention'`);
+  await refresh(); await until(`document.querySelector('${setupLabel}').textContent === 'Recorded snapshot'`);
   assert.equal(await evaluate(`document.querySelector('${button}').hidden`), true, 'Read-only history cannot adopt a charger connection');
   assert.deepEqual(errors, []);
   console.log(JSON.stringify({ result: 'ocpp-setup-browser-smoke-passed', artifacts, checks: [
     'setup-and-reading-status-independent', 'endpoint-ambiguity-guidance', 'detected-configured-and-pair-addresses', 'invalid-and-sensitive-endpoints-hidden',
     'pending-native-and-cloud-handover', 'confirmation-cancel', 'revision-change-during-confirmation',
-    'adoption-busy-and-actual-revision', 'confirmed-local-readings', 'single-native-setup-owner', 'desktop-and-320px-both-themes', 'read-only-action-hidden' ] }));
+    'adoption-busy-and-actual-revision', 'confirmed-local-readings', 'bounded-connection-recovery', 'single-native-setup-owner', 'desktop-and-320px-both-themes', 'read-only-action-hidden' ] }));
 } finally {
   ws?.close(); for (const entry of pending.values()) clearTimeout(entry.timer);
   await app?.close();

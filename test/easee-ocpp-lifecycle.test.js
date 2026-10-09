@@ -25,7 +25,7 @@ const deferred = () => {
   return { promise, resolve };
 };
 
-function fixture(t, { streaming = false, authorizationMode = 'plug-and-charge', equalizer = false } = {}) {
+function fixture(t, { streaming = false, authorizationMode = 'plug-and-charge', equalizer = false, realOcpp = false } = {}) {
   const config = { dataDir: '/unused-fixture-directory', connections: { easee: {
     charger_id: CHARGER, access_token: 'fixture-access-token', ...(equalizer ? { equalizer_id: 'fixture-equalizer' } : {}), local_ocpp: {
       server_url: 'ws://192.0.2.10:9001/ocpp', password: 'fixture-ocpp-pass', authorization_mode: authorizationMode,
@@ -45,7 +45,8 @@ function fixture(t, { streaming = false, authorizationMode = 'plug-and-charge', 
     fetchImpl: async (url, options) => {
       const path = new URL(url).pathname, method = options.method, body = options.body ? JSON.parse(options.body) : null;
       events.push({ type: 'http', path, method, body });
-      await beforeRequest({ path, method });
+      const intercepted = await beforeRequest({ path, method, body });
+      if (intercepted instanceof Response) return intercepted;
       if (path === '/api/equalizers/fixture-equalizer/config') return Response.json({ maxAllocatedCurrent: 27 });
       if (path === '/state/fixture-equalizer/observations') return Response.json({ observations:
         [31, 32, 33, 34, 35, 36].map(id => ({ id, value: id < 34 ? 5 : 230, timestamp: new Date(AT).toISOString() })) });
@@ -60,7 +61,10 @@ function fixture(t, { streaming = false, authorizationMode = 'plug-and-charge', 
       }
       if (path === `/local-ocpp/v1/connections/chargers/${CHARGER}`) {
         assert.equal(method, 'POST'); assert.equal(body.version, current.version);
-        assert.equal(readSetupState().intent.version, current.version);
+        const setup = readSetupState();
+        if (setup.intent) assert.equal(setup.intent.version, current.version);
+        else assert(setup.ownedFingerprint && setup.appliedFingerprint === setup.ownedFingerprint,
+          'Recovery only reapplies an already commissioned and owned connection');
         await applyHook(current.connectivityMode);
         schedule = { ...schedule, enabled: current.connectivityMode === 'DualProtocol' ? 'ocpp.direct' : 'none' };
         return new Response(null, { status: 204 });
@@ -112,7 +116,7 @@ function fixture(t, { streaming = false, authorizationMode = 'plug-and-charge', 
           streamEvidence.get(device)?.synchronized === true ? streamEvidence.get(device)?.observations?.filter(row => ids.includes(row.id)) : null }) : undefined,
         pending: () => streamPending, reconcile() {}, status: () => ({ connected: streamConnected }) };
       } : null, ocppInstallation: installation, ocppState: stateFor('transactions'), ocppSetupState: stateFor('setup'),
-      ocppFactory: options => {
+      ocppFactory: realOcpp ? undefined : options => {
         let ready = false, closed = false;
         let control = { connectionId: 'fixture-native-connection', connectorStatus: 'Available', timestamp: now,
           receivedAt: now, transaction: null, readings: [] };
@@ -537,6 +541,99 @@ async function waitFor(condition) {
   }
   assert.fail('Synthetic application did not reach the expected lifecycle boundary');
 }
+
+async function recoveryFixture(t) {
+  const f = fixture(t, { realOcpp: true }), port = await freePort();
+  f.config.connections.easee.refresh_token = 'fixture-recovery-refresh-token';
+  Object.assign(f.config.connections.easee.local_ocpp, { host: '127.0.0.1', port,
+    server_url: `ws://192.0.2.10:${port}/ocpp` });
+  const provider = f.make(); await provider.reconcileOcpp();
+  const nativeFrames = [];
+  async function connect() {
+    const client = new WebSocket(`ws://127.0.0.1:${port}/ocpp/${CHARGER}`, 'ocpp1.6', {
+      headers: { Authorization: `Basic ${Buffer.from(`${CHARGER}:${f.config.connections.easee.local_ocpp.password}`).toString('base64')}` },
+    });
+    client.on('error', () => {}); t.after(() => client.terminate());
+    client.on('message', raw => {
+      const frame = JSON.parse(raw);
+      if (frame[0] !== 2) return;
+      nativeFrames.push(frame);
+      client.send(JSON.stringify([3, frame[1], { status: 'Accepted' }]));
+    });
+    await once(client, 'open');
+    client.send(JSON.stringify([2, 'recovery-status', 'StatusNotification', { connectorId: 1,
+      status: 'Available', errorCode: 'NoError', timestamp: new Date(f.now).toISOString() }]));
+    client.send(JSON.stringify([2, 'recovery-meter', 'MeterValues', { connectorId: 1,
+      meterValue: [{ timestamp: new Date(f.now).toISOString(),
+        sampledValue: [{ measurand: 'Power.Active.Import', unit: 'W', value: '0' }] }] }]));
+    await waitFor(() => provider.localOcppStatus().available === true);
+    return client;
+  }
+  return { f, provider, connect, nativeFrames };
+}
+
+test('failed cloud-assisted OCPP recovery preserves the native backend and accepts local reconnection during cloud loss', async t => {
+  const { f, provider, connect, nativeFrames } = await recoveryFixture(t);
+  const commissioned = clone(f.states.get('setup')), adapter = provider.chargerScheduleControl();
+  const start = f.events.length;
+  f.transition = () => assert.fail('Connection recovery must not transition or recreate the native controller');
+  f.applyHook = () => { throw Error('synthetic recovery apply failure'); };
+  f.advance(300_001); await provider.reconcileOcpp();
+  const attempted = f.events.slice(start).filter(row => row.type === 'http' && row.method === 'POST');
+  assert.deepEqual(attempted.map(({ path, body }) => ({ path, body })),
+    [{ path: `/local-ocpp/v1/connections/chargers/${CHARGER}`, body: { version: f.current.version } }],
+    'Recovery attempts Apply without storing configuration or changing charger mode');
+  assert.equal(provider.localOcppStatus().setup.reason, 'cloud-unavailable');
+  assert.equal(provider.localOcppStatus().listening, true);
+  assert.equal(provider.localOcppStatus().controlTransport, 'ocpp');
+  assert.equal(provider.chargerScheduleControl(), adapter);
+  assert.equal(f.current.connectivityMode, 'DualProtocol');
+  assert.equal(f.states.get('setup').intent, null);
+  assert.equal(f.states.get('setup').ownedFingerprint, commissioned.ownedFingerprint);
+  assert.equal(f.states.get('setup').appliedFingerprint, commissioned.appliedFingerprint);
+
+  f.cloudOffline = true;
+  f.beforeRequest = () => { throw Error('synthetic total cloud outage'); };
+  await connect();
+  await provider.reconcileOcpp();
+  const snapshot = await adapter.read();
+  assert.equal(snapshot.online, true, 'Fresh local readback survives the failed optional cloud recovery');
+  assert.equal(snapshot.connectorStatus, 'Available');
+  await adapter.clear({ profileId: 719 }, snapshot);
+  assert.deepEqual(nativeFrames.filter(frame => frame[2] === 'ClearChargingProfile').map(frame => frame[3]), [{ id: 719 }]);
+  assert.equal(provider.localOcppStatus().listening, true);
+  assert.equal(provider.localOcppStatus().controlTransport, 'ocpp');
+  assert.equal(provider.chargerScheduleControl(), adapter);
+});
+
+test('a local OCPP connection arriving during cloud token refresh cancels the pending recovery Apply retry', async t => {
+  const { f, provider, connect } = await recoveryFixture(t);
+  const releaseRefresh = deferred(), start = f.events.length;
+  let rejectedApply = false, refreshing = false;
+  t.after(() => releaseRefresh.resolve());
+  f.transition = () => assert.fail('Connection recovery must not transition the native controller');
+  f.beforeRequest = async ({ path }) => {
+    if (path === `/local-ocpp/v1/connections/chargers/${CHARGER}` && !rejectedApply) {
+      rejectedApply = true; return new Response(null, { status: 401 });
+    }
+    if (path === '/api/accounts/refresh_token') {
+      refreshing = true; await releaseRefresh.promise;
+      return Response.json({ accessToken: 'fixture-recovery-rotated-access', refreshToken: 'fixture-recovery-rotated-refresh' });
+    }
+  };
+  f.advance(300_001);
+  const recovery = provider.reconcileOcpp();
+  try { await waitFor(() => refreshing); await connect(); } finally { releaseRefresh.resolve(); }
+  await recovery;
+  const requests = f.events.slice(start).filter(row => row.type === 'http');
+  assert.equal(requests.filter(row => row.path === `/local-ocpp/v1/connections/chargers/${CHARGER}`).length, 1,
+    'A rejected request cannot be retried after the authenticated local connection appears');
+  assert.equal(requests.some(row => row.method === 'POST' && row.path === `/local-ocpp/v1/connection-details/${CHARGER}`), false);
+  assert.equal(provider.localOcppStatus().available, true);
+  assert.equal(provider.localOcppStatus().controlTransport, 'ocpp');
+  assert.equal(f.states.get('setup').intent, null);
+  assert.equal(f.current.connectivityMode, 'DualProtocol');
+});
 
 test('application shutdown preserves native commissioning on orderly stop and authority loss; restart does not reapply', async t => {
   for (const restore of [true, false]) {

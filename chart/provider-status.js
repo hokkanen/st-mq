@@ -639,6 +639,7 @@ const localSetupStates = Object.freeze({
   checking: ['Checking charger', 'Checking the charger’s local connection settings through Easee cloud.'],
   'waiting-charger': ['Waiting for charger', 'Waiting for the charger to become available for setup.'],
   applying: ['Applying setup', 'Saving and applying the local connection settings through Easee cloud.'],
+  recovering: ['Recovering connection', 'Reapplying the verified local connection settings. Local control remains enabled.'],
   connecting: ['Waiting for connection', 'The charger settings are applied. Waiting for its local connection.'],
   ready: ['Setup complete', 'The charger’s local connection settings are confirmed.'],
   blocked: ['Setup needs attention', 'Automatic setup cannot continue. Check the saved charger configuration, then apply configuration.'],
@@ -661,6 +662,7 @@ const localSetupReasons = Object.freeze({
   'wifi-required': 'Connect the charger to Wi-Fi before applying local connection settings.',
   'charger-offline': 'The charger is offline. Setup will continue when it is available.',
   'foreign-configuration': 'The charger already has a different OCPP server connection. Review it before replacing it with this installation’s local connection.',
+  'missing-cloud-configuration': 'Easee no longer reports the installed connection settings. Automatic recovery cannot verify them. Local OCPP remains enabled; check the charger’s connection configuration.',
   'cloud-authentication': 'Easee cloud access was denied. Check the saved Easee credentials, then apply configuration.',
   'cloud-rate-limit': 'Easee cloud has limited setup requests. Setup will retry automatically after the waiting period.',
   'cloud-unavailable': 'Easee cloud setup is unavailable. Setup will retry automatically.',
@@ -668,6 +670,7 @@ const localSetupReasons = Object.freeze({
   'storage-unavailable': 'The local setup could not be saved. Restore database storage before retrying setup.',
   'authority-revoked': 'This computer no longer has authority to change the charger’s connection.',
   'waiting-connection': 'The charger settings are applied. Waiting for its local connection.',
+  'reapplying-connection': 'Reapplying the same verified connection settings through Easee cloud. Local control and charging instructions are preserved.',
 });
 const localPendingReasons = Object.freeze({
   'native-control-unavailable': 'Activation pending',
@@ -698,17 +701,24 @@ export function easeeLocalConnectionDisplay(health, { now, formatTime } = {}) {
   const [stateLabel, stateExplanation] = known ? localSetupStates[setup.state]
     : ['Checking setup', 'Waiting for automatic local connection setup status.'];
   const controlPending = Object.hasOwn(localPendingReasons, setup.reason);
-  const label = controlPending ? localPendingReasons[setup.reason] : stateLabel;
-  const explanation = Object.hasOwn(localSetupReasons, setup.reason) ? localSetupReasons[setup.reason] : stateExplanation;
-  const setupAttention = !controlPending && ['needs-endpoint', 'blocked', 'retrying'].includes(setup.state);
+  const recovery = setup.recovery;
+  const exhausted = recovery?.exhausted === true;
+  const label = exhausted ? 'Connection needs attention' : controlPending ? localPendingReasons[setup.reason] : stateLabel;
+  const explanation = exhausted ? 'The charger has not re-established its local OCPP connection.'
+    : Object.hasOwn(localSetupReasons, setup.reason) ? localSetupReasons[setup.reason] : stateExplanation;
+  const setupAttention = exhausted || !controlPending && ['needs-endpoint', 'blocked', 'retrying'].includes(setup.state);
   const endpointLabel = Object.hasOwn(localEndpointSources, setup.endpointSource)
     ? localEndpointSources[setup.endpointSource] : null;
   const endpointAddress = endpointLabel && health.readOnly !== true && health.status !== 'snapshot'
     ? localEndpointAddress(setup.endpoint) : null;
   const endpoint = endpointLabel ? `${endpointLabel}${endpointAddress ? `: ${endpointAddress}` : ''}` : 'Address unavailable';
-  const timing = typeof formatTime === 'function' && Number.isFinite(now)
+  const recoveryTiming = typeof formatTime === 'function' && Number.isFinite(now)
+    && Number.isSafeInteger(recovery?.nextAttemptAt) && recovery.nextAttemptAt > now
+    ? ` Connection recovery no earlier than ${formatTime(recovery.nextAttemptAt)}.` : '';
+  const timing = exhausted ? ' Automatic recovery has reached its three-attempt limit. Check the charger and network. Local OCPP remains enabled.'
+    : recoveryTiming || (typeof formatTime === 'function' && Number.isFinite(now)
     && Number.isSafeInteger(setup.nextAttemptAt) && setup.nextAttemptAt > now
-    ? ` ${setup.state === 'ready' ? 'Next connection check' : 'Next setup attempt'} ${formatTime(setup.nextAttemptAt)}.` : '';
+    ? ` ${setup.state === 'ready' ? 'Next connection check' : 'Next setup attempt'} ${formatTime(setup.nextAttemptAt)}.` : '');
   const readings = setup.state === 'disabled' ? ['Not enabled', 'Local charger readings are disabled. Cloud readings remain available.', 'pending']
     : local.error ? ['Needs attention', 'The local listener needs attention. Available cloud readings remain the backup.', 'attention']
     : local.available === true ? ['Available', 'Fresh charger electricity readings are available through local OCPP.', 'available']

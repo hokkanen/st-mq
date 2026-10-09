@@ -6,6 +6,10 @@ Versions follow Semantic Versioning. `-dev.N` denotes a development prerelease.
 
 ## Unreleased
 
+- A missing commissioned local OCPP connection now gets up to three spaced recovery
+  attempts using its verified existing Easee configuration. Cloud failures preserve
+  local OCPP and charging instructions; working local control stays independent of
+  cloud access. The connection panel shows the recovery wait or exhausted budget.
 - Charging forecasts now account for temporary household peaks by their modeled
   duration instead of treating the lowest possible current as an all-day limit.
   This prevents false ready-by warnings and unnecessary immediate charging when

@@ -6,6 +6,9 @@ import { detectLocalOcppAddress } from './local-ocpp-address.js';
 
 const digest = value => createHash('sha256').update(JSON.stringify(value)).digest('hex');
 const HASH = /^[a-f0-9]{64}$/;
+const RECOVERY_GRACE_MS = 5 * 60_000;
+const RECOVERY_RETRY_MS = [15 * 60_000, 60 * 60_000];
+const MAX_RECOVERY_ATTEMPTS = 3;
 const fail = (reason, statusCode = 409) => Object.assign(new Error(reason), { code: reason, statusCode });
 const fields = (value, allowed) => value && typeof value === 'object' && !Array.isArray(value)
   && Object.keys(value).every(key => allowed.includes(key));
@@ -64,10 +67,14 @@ export function ocppInstallation(config, { createCredential = false, detectAddre
 
 function validState(value, scope) {
   return fields(value, ['version', 'scope', 'ownedFingerprint', 'appliedFingerprint', 'adoptionFingerprint',
-    'intent', 'lastAppliedAt', 'lastSuccessAt', 'nextAttemptAt', 'failures']) && value.version === 1 && value.scope === scope
+    'intent', 'lastAppliedAt', 'lastSuccessAt', 'nextAttemptAt', 'failures', 'recovery']) && value.version === 1 && value.scope === scope
     && ['ownedFingerprint', 'appliedFingerprint', 'adoptionFingerprint'].every(key => value[key] === null || HASH.test(value[key]))
     && ['lastAppliedAt', 'lastSuccessAt', 'nextAttemptAt'].every(key => value[key] === null || Number.isSafeInteger(value[key]) && value[key] >= 0)
     && Number.isInteger(value.failures) && value.failures >= 0 && value.failures <= 10
+    // Absent new state means no recovery has been attempted, not an old format.
+    && (value.recovery === undefined || value.recovery === null || fields(value.recovery, ['attempts', 'lastAttemptAt'])
+      && Number.isInteger(value.recovery.attempts) && value.recovery.attempts >= 1 && value.recovery.attempts <= MAX_RECOVERY_ATTEMPTS
+      && Number.isSafeInteger(value.recovery.lastAttemptAt) && value.recovery.lastAttemptAt >= 0)
     && (value.intent === null || fields(value.intent, ['fingerprint', 'base', 'version']) && HASH.test(value.intent.fingerprint)
       && (value.intent.base === null || HASH.test(value.intent.base)) && (value.intent.version === null || version(value.intent.version)));
 }
@@ -152,10 +159,29 @@ export function createOcppSetup({ installation, state, api, listener, clock = Da
     ? saved.appliedFingerprint !== wanted
     : Boolean(saved.ownedFingerprint || saved.intent));
   const active = () => !closed && canControl();
+  const installed = () => !invalid && desiredEnabled && saved.ownedFingerprint === wanted
+    && saved.appliedFingerprint === wanted && saved.intent === null && saved.adoptionFingerprint === null;
+  let missingSince = clock(), connectionGeneration = listener.status().connectionGeneration;
+  function observeTransport() {
+    const local = listener.status(), now = clock();
+    if (!local.ready || local.transportConnected || local.connected || local.available) missingSince = null;
+    else if (missingSince === null || now < missingSince || local.connectionGeneration !== connectionGeneration) missingSince = now;
+    connectionGeneration = local.connectionGeneration;
+    return local;
+  }
+  function recoveryDueAt(local = observeTransport()) {
+    if (!installed() || local.transportConnected !== false || local.connected || local.available
+      || !Number.isSafeInteger(local.connectionGeneration) || missingSince === null
+      || saved.recovery?.attempts >= MAX_RECOVERY_ATTEMPTS) return null;
+    return Math.max(missingSince + RECOVERY_GRACE_MS, (saved.lastAppliedAt ?? 0) + RECOVERY_GRACE_MS,
+      saved.recovery ? saved.recovery.lastAttemptAt + RECOVERY_RETRY_MS[saved.recovery.attempts - 1] : 0,
+      saved.failures || ['foreign-configuration', 'missing-cloud-configuration'].includes(status.reason)
+        ? saved.nextAttemptAt ?? 0 : 0);
+  }
   function check() { if (!active()) throw fail('authority-revoked'); }
   function describeStatus(next, reason = null) {
     return { ...status, state: next, reason, nextAttemptAt: saved.nextAttemptAt, lastSuccessAt: saved.lastSuccessAt,
-      canAdopt: desiredEnabled && active() && next === 'blocked' && reason === 'foreign-configuration',
+      canAdopt: desiredEnabled && active() && foreign !== null && next === 'blocked' && reason === 'foreign-configuration',
       revision: next === 'blocked' && reason === 'foreign-configuration' ? digest([foreign, wanted]) : null };
   }
   function publish(next, reason = null) { status = describeStatus(next, reason); }
@@ -217,7 +243,7 @@ export function createOcppSetup({ installation, state, api, listener, clock = Da
     if (current === null) {
       await prepareControl('cloud'); check();
       await commitControl('cloud'); check();
-      await persist({ ownedFingerprint: null, appliedFingerprint: null, adoptionFingerprint: null, intent: null, nextAttemptAt: null });
+      await persist({ ownedFingerprint: null, appliedFingerprint: null, adoptionFingerprint: null, intent: null, recovery: null, nextAttemptAt: null });
       publish('disabled'); return;
     }
     if (original !== saved.ownedFingerprint && original !== saved.intent?.fingerprint) {
@@ -256,8 +282,35 @@ export function createOcppSetup({ installation, state, api, listener, clock = Da
     // duty. A later configuration reload can recognize this exact inactive
     // connection even when its newly detected address differs.
     await persist({ ownedFingerprint: null, appliedFingerprint: fingerprint, adoptionFingerprint: null, intent: null,
-      nextAttemptAt: null, lastAppliedAt: clock(), failures: 0 });
+      recovery: null, nextAttemptAt: null, lastAppliedAt: clock(), failures: 0 });
     publish('disabled');
+  }
+  async function recoverConnection(current) {
+    const generation = connectionGeneration;
+    const isCurrent = () => {
+      const local = observeTransport();
+      return active() && installed() && !prerequisiteReason() && local.transportConnected === false
+        && !local.connected && !local.available && local.connectionGeneration === generation;
+    };
+    // Recovery never hands charging control away, stores replacement settings,
+    // disables OCPP or creates a commissioning intent. A lost cloud reply leaves
+    // the current local installation usable and only consumes a bounded attempt.
+    await prerequisites();
+    if (!isCurrent()) return;
+    await persist({ recovery: { attempts: (saved.recovery?.attempts ?? 0) + 1, lastAttemptAt: clock() } });
+    if (!isCurrent()) return;
+    const verified = await remote();
+    if (!isCurrent()) return;
+    if (connectionFingerprint(verified) !== wanted || verified?.version !== current.version) {
+      foreign = connectionFingerprint(verified); throw fail('foreign-configuration');
+    }
+    publish('recovering', 'reapplying-connection');
+    // The provider also checks this guard at actual dispatch after token loading
+    // or refresh. A connection arriving during either operation cancels Apply.
+    await api.apply({ version: verified.version }, { signal: cancellation.signal, isCurrent });
+    check();
+    await persist({ lastAppliedAt: clock(), failures: 0, nextAttemptAt: clock() + RECOVERY_GRACE_MS });
+    publish('connecting', 'waiting-connection');
   }
   async function reconcile() {
     check();
@@ -266,6 +319,20 @@ export function createOcppSetup({ installation, state, api, listener, clock = Da
     if (!desiredEnabled) return disableOwned();
     publish('checking');
     let current = await remote(), fingerprint = connectionFingerprint(current);
+    if (installed()) {
+      // Once commissioned, missing or changed cloud settings cannot silently
+      // replace the installation or authorize a new commissioning transition.
+      if (fingerprint !== wanted) {
+        foreign = fingerprint; await persist({ nextAttemptAt: clock() + RECOVERY_GRACE_MS });
+        publish('blocked', current === null ? 'missing-cloud-configuration' : 'foreign-configuration'); return;
+      }
+      foreign = null;
+      const local = observeTransport(), dueAt = recoveryDueAt(local);
+      if (dueAt !== null && dueAt <= clock()) return recoverConnection(current);
+      await persist({ failures: 0, nextAttemptAt: clock() + (local.available ? 3600_000 : RECOVERY_GRACE_MS),
+        ...(local.available ? { lastSuccessAt: clock() } : {}) });
+      publish(local.available ? 'ready' : 'connecting', local.available ? null : 'waiting-connection'); return;
+    }
     const ours = fingerprint === null || fingerprint === wanted || fingerprint === saved.ownedFingerprint
       || fingerprint === saved.adoptionFingerprint || saved.intent !== null && fingerprint === saved.intent.base
       || current?.connectivityMode === 'OcppOff' && (fingerprint === saved.appliedFingerprint
@@ -284,7 +351,7 @@ export function createOcppSetup({ installation, state, api, listener, clock = Da
       await commitControl('native'); check();
       const available = listener.status().available;
       await persist({ ownedFingerprint: wanted, appliedFingerprint: wanted, adoptionFingerprint: null,
-        failures: 0, nextAttemptAt: clock() + (available ? 3600_000 : 300_000),
+        recovery: null, failures: 0, nextAttemptAt: clock() + (available ? 3600_000 : 300_000),
         ...(available ? { lastSuccessAt: clock() } : {}) });
       publish(available ? 'ready' : 'connecting', available ? null : 'waiting-connection'); return;
     }
@@ -317,7 +384,7 @@ export function createOcppSetup({ installation, state, api, listener, clock = Da
     await call('apply', { version: verified.version });
     await commitControl('native'); check();
     await persist({ ownedFingerprint: wanted, appliedFingerprint: wanted, adoptionFingerprint: null, intent: null,
-      lastAppliedAt: clock(), nextAttemptAt: clock() + 30_000, failures: 0 });
+      recovery: null, lastAppliedAt: clock(), nextAttemptAt: clock() + 30_000, failures: 0 });
     publish('connecting', 'waiting-connection');
   }
   async function attempt() {
@@ -337,19 +404,40 @@ export function createOcppSetup({ installation, state, api, listener, clock = Da
   }
   return {
     status({ includeEndpoint = false } = {}) {
+      const local = observeTransport();
       const blocked = prerequisiteReason();
       // Live prerequisites must not overwrite the reconciliation result: a
       // temporary listener outage can recover before the next cloud check.
       if (!blocked && saved.appliedFingerprint === wanted && saved.intent === null
         && status.state === 'connecting' && listener.status().available) publish('ready');
-      const current = blocked ? describeStatus(...blocked) : status;
+      let current = blocked ? describeStatus(...blocked) : status;
+      if (!blocked && installed() && !flight && ['ready', 'connecting', 'recovering'].includes(current.state))
+        current = describeStatus(local.available ? 'ready' : 'connecting', local.available ? null : 'waiting-connection');
+      const recovery = installed() ? { attempts: saved.recovery?.attempts ?? 0,
+        lastAttemptAt: saved.recovery?.lastAttemptAt ?? null, nextAttemptAt: recoveryDueAt(local),
+        exhausted: !flight && !local.transportConnected && !local.connected && !local.available
+          && saved.recovery?.attempts >= MAX_RECOVERY_ATTEMPTS
+          && clock() >= saved.recovery.lastAttemptAt + RECOVERY_GRACE_MS } : null;
       // Only live dashboard reads request the base address. Persisted health,
       // setup history and adoption responses keep installation details out.
-      return { ...current, canAdopt: current.canAdopt && active(), busy: flight !== null,
+      return { ...current, recovery, canAdopt: current.canAdopt && active(), busy: flight !== null,
         ...(includeEndpoint ? { endpoint: installation.endpoint ? new URL(installation.endpoint).href : null } : {}) };
     },
     runDue() {
-      if (!active() || flight || !changedConfiguration && saved.nextAttemptAt > clock()) return flight ?? Promise.resolve();
+      const local = observeTransport();
+      if (!active() || flight) return flight ?? Promise.resolve();
+      // Authenticated local traffic ends the outage without a cloud reply.
+      if (installed() && local.connected && saved.recovery) {
+        flight = persist({ recovery: null }).then(() => {
+          if (!['foreign-configuration', 'missing-cloud-configuration'].includes(status.reason))
+            publish(local.available ? 'ready' : 'connecting', local.available ? null : 'waiting-connection');
+        }).catch(() => publish('blocked', 'storage-unavailable'))
+          .finally(() => { flight = null; });
+        return flight;
+      }
+      const recoveryAt = recoveryDueAt(local);
+      if (!changedConfiguration && saved.nextAttemptAt > clock() && !(recoveryAt !== null && recoveryAt <= clock()))
+        return Promise.resolve();
       changedConfiguration = false;
       flight = attempt().finally(() => { flight = null; }); return flight;
     },
