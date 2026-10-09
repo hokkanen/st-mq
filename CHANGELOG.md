@@ -18,16 +18,20 @@ Versions follow Semantic Versioning. `-dev.N` denotes a development prerelease.
   planning continues. Shelly's confirmed identification current preparation no
   longer invalidates its own automatic takeover.
 - Charging actions finish with the selected charger's result while peer updates
-  continue independently. A due probe stop or restoration can interrupt an old
-  planning wait, including after its observation window has expired. Shelly's
+  continue independently. Newly selected identification Start and current
+  preparation can interrupt an old planning wait, as can a due probe stop or
+  restoration, including after its observation window has expired. Shelly's
   accepted Stop confirmation survives a separate current-setting readback.
-- After restart or handover, saved vehicle targets survive the initial absence
-  of live feeds. Easee transaction confirmation recovers from conflicting power
-  samples when later valid reports arrive for the same transaction.
+- After restart or handover, the same vehicle connection retains its saved
+  target and battery capacity through the initial absence of live feeds. An
+  accepted Easee transaction stays identified when only its power sample is
+  uncertain. Transactions recovered from meter reports can regain confirmation
+  when later valid reports arrive for the same transaction.
 - Local OCPP starts and confirmed pauses survive harmless refreshes and cost
-  estimate changes. Shelly actions admit already received observations within
-  their existing command budget, then recheck the original connection and native
-  instruction before dispatch.
+  estimate changes. Shelly actions wait briefly for already received observations,
+  then recheck the original connection and native instruction before dispatch.
+  Legitimate command preparation no longer consumes the charger's response
+  timeout; input waiting and native replies retain their separate bounds.
 - An unrelated Easee source clock lead no longer forces healthy current feeds
   into fallback or delays ready observations from another device. Original
   measurement clocks and actual source-loss checks remain intact.
