@@ -10,6 +10,7 @@ import { verifyDatabase } from '../../src/storage/full-verifier.js';
 import { peerOperation } from '../../src/replication/coalesced.js';
 
 const otherNode = process.env.STMQ_OTHER_NODE;
+const required = process.env.STMQ_REQUIRE_CROSS_RUNTIME_TESTS === '1';
 const storeURL = new URL('../../src/storage/store.js', import.meta.url).href;
 const peerURL = new URL('../../src/storage/journal-peer.js', import.meta.url).href;
 const transferURL = new URL('../../src/replication/coalesced.js', import.meta.url).href;
@@ -29,7 +30,8 @@ function run(source, directory, signal) {
 }
 
 test('different Node/SQLite runtimes seed, compact, catch up and reverse direction without losing stored precision',
-  { skip: !otherNode && 'Set STMQ_OTHER_NODE to another supported Node executable.', timeout: 60_000 }, async t => {
+  { skip: !otherNode && !required && 'Set STMQ_OTHER_NODE to another supported Node executable.', timeout: 60_000 }, async t => {
+    assert.ok(otherNode, 'Cross-runtime validation is required: set STMQ_OTHER_NODE to another supported Node executable.');
     const directory = await mkdtemp(join(tmpdir(), 'stmq-cross-runtime-'));
     t.after(() => rm(directory, { recursive: true, force: true }));
     const sourcePath = join(directory, 'source.sqlite'), targetPath = join(directory, 'target.sqlite');

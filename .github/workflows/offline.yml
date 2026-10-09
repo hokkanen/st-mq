@@ -23,7 +23,7 @@ jobs:
       - run: node scripts/check-secrets.js --history HEAD
   test:
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 15
     strategy:
       matrix:
         node: [22, 24]
@@ -35,3 +35,7 @@ jobs:
           cache: npm
       - run: npm ci
       - run: npm run check
+      - name: Exercise real process-death recovery boundaries
+        run: |
+          node scripts/test-offline.js --file test/extended/learning-publication-crash.test.js 180000
+          node scripts/test-offline.js --file test/extended/executor-process-recovery.test.js 60000

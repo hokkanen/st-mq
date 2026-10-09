@@ -6,6 +6,20 @@ Versions follow Semantic Versioning. `-dev.N` denotes a development prerelease.
 
 ## Unreleased
 
+- Backups verify their complete contents and captured transaction boundary before
+  publication. Damaged WAL headers and inconsistent recovery references are
+  rejected without repairing the source; a complete export survives a failed
+  directory flush for diagnosis, with success still withheld.
+- Circulation restoration retains its original device obligation across failed
+  saves and restart. Confirmed OFF clears that obligation only after commit.
+  Saved heating, equipment-test, charging and handover state rejects malformed
+  current data before granting control; recovery cleanup protects active databases.
+- Charging observations advance vehicle/session evidence when admitted, so
+  dashboard reads no longer change control state. Failed buffered Tesla admission
+  remains unavailable until a successful fresh subscription, and OCPP current
+  retains its original measurement clock.
+- Recording diagnostics separate queue waiting from transaction BEGIN, body and
+  COMMIT time, helping identify storage stalls without adding recorded history.
 - Caravan dehumidifier power checks no longer fail on brief recording backlogs
   or repeatedly lock settings when meter reports arrive slightly ahead of the
   local clock. Commands keep their original deadlines, require fresh native

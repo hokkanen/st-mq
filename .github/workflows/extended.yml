@@ -10,9 +10,18 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        node: [22, 24]
+        include:
+          - node: 22
+            peer-node: 24
+          - node: 24
+            peer-node: 22
     steps:
       - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.peer-node }}
+      - name: Retain the other supported runtime for replication checks
+        run: echo "STMQ_OTHER_NODE=$(command -v node)" >> "$GITHUB_ENV"
       - uses: actions/setup-node@v4
         with:
           node-version: ${{ matrix.node }}
@@ -32,6 +41,7 @@ jobs:
           STMQ_REQUIRE_RSYNC_TESTS: '1'
           STMQ_REQUIRE_SSH_TESTS: '1'
           STMQ_REQUIRE_MQTT_TESTS: '1'
+          STMQ_REQUIRE_CROSS_RUNTIME_TESTS: '1'
   containers:
     runs-on: ubuntu-latest
     timeout-minutes: 30

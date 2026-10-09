@@ -117,12 +117,18 @@ unsupported scalars, bounded capture and independent corruption detection.
 For a real process boundary between two installed runtimes, run:
 
 ```sh
-STMQ_OTHER_NODE=/absolute/path/to/node22 node --test test/extended/journal-cross-runtime.test.js
+STMQ_OTHER_NODE=/absolute/path/to/node22 STMQ_REQUIRE_CROSS_RUNTIME_TESTS=1 node --test test/extended/journal-cross-runtime.test.js
 ```
 
 This checks initial seed verification, catch-up after compaction, exact replica
 rows and reverse-direction updates. It does not replace testing the deployed HA
 and Ubuntu applications, their actual transport, restart and live recording.
+
+When adding or changing a persisted source reference, update its owning dependency
+extraction and add a synthetic test with explicitly expected recovery edges. Do
+not calculate the expected edges using the production extractor. Exercise
+exclusion and reinstatement where that reference affects corrected learning,
+while preserving original evidence and unrelated inputs.
 
 `test/recovery-learning-prefix.test.js` grows retained learning history from 256
 to 4096 entries while recovering, reverting and restoring the same recent change.
@@ -205,15 +211,27 @@ Mosquitto brokers and transport proxies. Install `mosquitto` to run them; set
 mocked transport validation stays in the routine suite. These tests use synthetic
 data and local processes; they make no paid model or provider API calls.
 
+A failed latency guard remains a failed check even when the baseline also shows
+slow storage. Compare the same workload and runtime, separating writer admission,
+transaction execution and event-loop delay. Syscall tracing can attribute a wait
+but changes execution timing; retain the original failure alongside diagnostic
+runs. Do not weaken durability or raise a deadline simply to obtain a passing run.
+
 Pushes and pull requests run routine tests and builds on Node 22 and 24, the
 secret-history audit and the pinned Home Assistant Supervisor contract check
-below. The **Extended validation** workflow runs weekly on Monday
+below. Both Node jobs also run the deterministic learning-publication and
+circulation-restoration process-death matrices: real child processes are killed
+at transaction/command boundaries and reopened against the same files. These
+checks compare complete prior/published state and retained physical duties;
+they do not simulate hardware power cuts. The **Extended validation** workflow runs weekly on Monday
 at 03:27 UTC or manually using `workflow_dispatch`; it runs the extended Node
 suite on both versions and the amd64/arm64 container checks. Run it before a
 release and after changes to recovery, mirroring or packaging. This workflow
-installs and requires mirror and MQTT broker prerequisites, so a missing tool
-fails instead of silently skipping coverage. Local extended runs report missing
-tools as skips.
+installs and requires mirror and MQTT broker prerequisites and a second supported
+Node executable for real cross-runtime replication. Each matrix job retains the
+other runtime's absolute path before selecting its primary runtime. A missing
+required tool fails instead of silently skipping coverage. Local extended runs
+report missing tools as skips unless their corresponding requirement is enabled.
 
 To require real mirroring and broker tests locally, install Mosquitto and OpenSSH
 client and server tools, prepare the host's SSH privilege-separation directory,
