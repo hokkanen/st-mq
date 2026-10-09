@@ -125,6 +125,13 @@ watermark or identify a connection before admission. Excessive leads are rejecte
 pending reports cannot cross an MQTT disconnect. This needs no
 publisher change and does not claim to diagnose GPS reception.
 
+Messages buffered before subscription confirmation use the same ordered,
+per-message database admission as [TeslaMate](teslamate.md). The feed remains
+unavailable until the complete received prefix commits. A failed packet cannot
+be skipped to announce readiness; earlier committed values remain unavailable
+context until the existing reconnect/subscription recovery succeeds. Original
+measurement and receipt clocks are preserved.
+
 An explicit valid away report or replacement of the configured vehicle feed
 prevents the fallback. A BMW unplug event does not erase the remembered location.
 A later live home-zone correction can supersede an away calculation while

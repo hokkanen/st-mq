@@ -6,6 +6,9 @@ Versions follow Semantic Versioning. `-dev.N` denotes a development prerelease.
 
 ## Unreleased
 
+- Vehicle feeds can finish startup and reconnect with populated charging plans.
+  Buffered MQTT observations commit in order without one oversized transaction;
+  pending or failed replay cannot grant vehicle evidence readiness.
 - Charging plans finish under repeated unchanged observations instead of
   restarting until reporting becomes quiet. A bounded additional candidate
   recovers feasible two-car schedules around an earlier vehicle deadline.

@@ -32,6 +32,12 @@ The last committed values and their clocks remain visible as unavailable context
 A failed topic needs a fresh successfully saved live report for that topic;
 another topic, a retained value or a duplicate delivery cannot restore its health.
 Reconnection still requires a successful subscription and a new live health pulse.
+Messages received before subscription confirmation replay in receipt order, one
+bounded database transaction per message. The source remains unavailable until
+the complete buffered prefix commits, including any departure already received;
+new arrivals join that prefix. A failed replay retains earlier committed values
+as unavailable context and requires the existing reconnect/subscription recovery.
+Neither replay nor subscription completion changes an observation's original clock.
 
 ## Accepted observations
 

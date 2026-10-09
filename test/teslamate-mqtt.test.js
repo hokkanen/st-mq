@@ -20,7 +20,7 @@ async function fixture(t) {
   const config={input:'mqtt',connections:{mqtt:{address:'mqtt://synthetic.invalid'},teslamate:{enabled:true}}};
   const capture=await startMqtt({engine,store,config,connect:()=>client});
   t.after(async()=>{await capture.close();store.close();rmSync(directory,{recursive:true,force:true});});
-  return {client,store,engine,publications,boundaries,get now(){return now;},advance(){now+=1000;},
+  return {client,store,engine,publications,boundaries,ready:()=>capture.ready(),get now(){return now;},advance(){now+=1000;},
     ack(qos=0){acknowledge(null,[{topic:'teslamate/cars/1/#',qos}]);},
     send(field,value,packet={}){client.emit('message',`teslamate/cars/1/${field}`,Buffer.from(String(value)),packet);}};
 }
@@ -38,7 +38,7 @@ test('one MQTT subscription captures vehicle evidence without producing physical
 test('SUBACK buffering preserves every negative boundary and original receipt order',async t=>{
   const f=await fixture(t);f.client.emit('connect');
   f.send('battery_level',80,{retain:true});f.send('plugged_in',true);f.advance();f.send('plugged_in',false);f.advance();f.send('plugged_in',true);
-  f.ack();const capture=f.engine.charging.teslaCapture;
+  f.ack();await f.ready();const capture=f.engine.charging.teslaCapture;
   assert.equal(capture.snapshot().batteryLevel,80);
   assert.deepEqual(capture.snapshot().boundaries.filter(row=>row.field==='plugged_in').map(row=>row.value),[true,false,true]);
   assert.equal(capture.reception().lastRetainedAt,f.now-2000);
