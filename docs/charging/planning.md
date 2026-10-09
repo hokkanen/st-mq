@@ -102,8 +102,13 @@ the separate windows in which a fixed native current fits every forecast phase
 and scenario. This recovers earlier charging opportunities that a later household
 peak would exclude from a continuous period. The joint simulator still checks
 peer allocation, native restrictions, fixed periods and schedule limits; the same
-service, priority and cost comparison selects the result. This bounded fallback
-does not add search work to already-feasible plans or promise exhaustive recovery.
+service, priority and cost comparison selects the result. If that still fails,
+freely scheduled requests receive one deadline-ordered candidate: fit the earlier
+request first, then fit later requests around its modeled draw. This can preserve
+an earlier deadline by pausing a later request through a temporary shared shortage.
+The same joint simulation, native period limits and cost comparison apply. These
+bounded candidates do not add search work to already-feasible plans or promise
+exhaustive recovery.
 
 Running-session readiness and price-driven interruption decisions reassess both
 adopted executions together with the selected priority. A cheaper replacement

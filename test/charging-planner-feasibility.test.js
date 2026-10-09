@@ -144,6 +144,48 @@ test('the recovered split schedule remains practical when an extra short window 
   });
 });
 
+test('balanced planning preserves an earlier deadline by pausing the later request during a shared shortage', () => {
+  const quarter = 15 * MINUTE;
+  for (const rawPrices of [[1, 1, 1, 1], [10, 10, -2, 15]]) {
+    const input = splitFixture({ priority: 'balanced' });
+    input.supply.configuredBudgetCurrentA = [12, 12, 12];
+    input.prices = rawPrices.map((priceCtPerKwh, index) => ({
+      start: now + index * quarter, end: now + (index + 1) * quarter, priceCtPerKwh,
+    }));
+    input.household = [12, 6, 12, 6].map((available, index) => ({
+      start: now + index * quarter, end: now + (index + 1) * quarter,
+      phaseCurrentA: Array(3).fill(12 - available),
+    }));
+    input.chargers.forEach((charger, index) => {
+      charger.requiredGridKwh = [2, 3][index] * 1.035;
+      charger.deadlineAt = now + [2, 4][index] * quarter;
+      charger.values.currentA = reading(6);
+      charger.values.maximumCurrentA = reading(6);
+      charger.values.vehicleCeilingSoc = reading(80);
+      charger.capabilities.currentControl = index === 1;
+    });
+    // Independent five-slot witness: C1 needs both early slots, while C2 uses
+    // the first, third and fourth. Each slot delivers 6 A * 690 V * .25 h.
+    const witness = { charger1: [{ startAt: now, endAt: null }], charger2: [
+      { startAt: now, endAt: now + quarter }, { startAt: now + 2 * quarter, endAt: null },
+    ] };
+    assert.equal(planChargers({ ...input, fixedPeriods: witness }).feasible, true);
+    const before = structuredClone(input), result = planChargers(input);
+    assert.equal(result.feasible, true, 'Normalized sharing must not hide an available schedule meeting both deadlines');
+    assert.deepEqual(input, before);
+    const expectedCost = 1.035 * (2 * rawPrices[0] + rawPrices[1] + rawPrices[2] + rawPrices[3]);
+    assert.ok(result.solver.cashCostCandidateCents <= expectedCost + 1e-7);
+    for (const plan of Object.values(result.plans)) {
+      assert.ok(plan.finishAt <= plan.deadlineAt);
+      assertPracticalPeriods(plan);
+    }
+    assert.equal(planChargers({ ...input, fixedPeriods: Object.fromEntries(Object.entries(result.plans)
+      .map(([id, plan]) => [id, plan.periods])) }).feasible, true);
+    input.chargers[1].capabilities.maxSchedulePeriods = 1;
+    assert.equal(planChargers(input).feasible, false, 'The earlier deadline cannot invent a second native period');
+  }
+});
+
 test('the real worker finds a full-day fixed-current split plan while the main thread remains responsive', async t => {
   const service = createChargingPlannerService();
   t.after(() => service.close());

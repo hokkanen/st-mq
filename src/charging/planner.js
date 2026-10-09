@@ -773,6 +773,26 @@ function sharedPeriodCandidate(jobs, intervals) {
   return periodCandidate(periods, jobs, intervals);
 }
 
+function deadlinePeriodCandidate(jobs, intervals) {
+  if (jobs.length < 2 || jobs.some(job => job.fixedPeriods)) return null;
+  const periods = {}, assigned = [];
+  let simulation = null;
+  // A normalized-sharing candidate can miss an earlier deadline even when
+  // the later request can pause and catch up. Seed the earlier request first,
+  // then fit each later request around its actual modeled draw. This is one
+  // bounded feasibility candidate; the ordinary joint comparison decides it.
+  for (const job of [...jobs].sort((a, b) => a.targetAt - b.targetAt || a.charger.id.localeCompare(b.charger.id))) {
+    const nativeLimit = job.charger.capabilities.maxSchedulePeriods;
+    const limit = Number.isInteger(nativeLimit) && nativeLimit > 0 ? nativeLimit : Infinity;
+    const proposed = cheapestPeriods(job, availableIntervals(job, intervals, simulation), limit);
+    if (!proposed) return null;
+    periods[job.charger.id] = proposed;
+    assigned.push(job);
+    simulation = periodCandidate(periods, [...assigned], intervals);
+  }
+  return simulation;
+}
+
 function splitCandidate(best, jobs, intervals) {
   let selected = { ...best, periods: Object.fromEntries(jobs.map(job => [job.charger.id,
     job.fixedPeriods ?? best.periods[job.charger.id]])) };
@@ -1093,6 +1113,13 @@ function planChargersAtDeadlines({ now, chargers = [], prices = [], household = 
       if (available) {
         const candidate = splitCandidate(available, jobs, intervals);
         if (compare(candidate, best, jobs) < 0) best = candidate;
+      }
+      if (!best.feasible) {
+        const deadline = deadlinePeriodCandidate(jobs, intervals);
+        if (deadline) {
+          const candidate = splitCandidate(deadline, jobs, intervals);
+          if (compare(candidate, best, jobs) < 0) best = candidate;
+        }
       }
     }
   }
