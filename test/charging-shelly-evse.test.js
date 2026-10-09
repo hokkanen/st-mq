@@ -137,6 +137,108 @@ test('contended Shelly notification closes command readiness until its original 
   assert.equal(store.writeHealth.status().failing, false);
 });
 
+test('queued unrelated messages preserve observed limits and the adopted plan without renewing evidence', async t => {
+  const directory = mkdtempSync(join(tmpdir(), 'stmq-evse-readiness-'));
+  const store = new Store(join(directory, 'recording.sqlite')), writer = new DatabaseSync(store.path);
+  let locked = false;
+  const f = fixture(t, { limiterEnabled: true }, store);
+  t.after(() => {
+    if (locked) writer.exec('ROLLBACK');
+    f.adapter.close(); writer.close(); store.close(); rmSync(directory, { recursive: true, force: true });
+  });
+  f.fields.start_charging = false; f.fields.work_state = 'charger_pause';
+  f.fields.phase_info.total_power = 0;
+  for (const phase of ['phase_a', 'phase_b', 'phase_c']) {
+    f.fields.phase_info[phase].current = 0; f.fields.phase_info[phase].power = 0;
+  }
+  await f.ready();
+  const before = f.adapter.normalize(), scope = f.adapter.snapshot().session;
+  const initialState = { version: 1, association: f.adapter.association, sessionId: scope.sessionId,
+    phase: 'waiting', reason: 'economic-wait', manual: null, ownedPause: true, pending: null,
+    lastStart: false, lastStartAt: NOW, execution: { planId: 'synthetic-stable-plan', deadlineAt: NOW + 7200_000,
+      finalStartAt: NOW + 3600_000, periods: [{ startAt: NOW + 3600_000, endAt: null }] } };
+  // Hold only ingestion. Controller snapshots must retain the instruction while
+  // its adapter blocks all writes, even when reconciliation hits that window.
+  const adapter = { ...f.adapter, refresh: async () => {} };
+  let saved;
+  const controller = createShellyController({ adapter, initialState, clock: f.now, canControl: () => true,
+    saveState: state => { saved = structuredClone(state); } });
+  t.after(() => controller.close());
+  writer.exec('BEGIN IMMEDIATE'); locked = true;
+  f.setNow(NOW + 1000);
+  for (let index = 0; index < 3; index++)
+    f.client.emit('message', 'test/evse/events/rpc', Buffer.from(JSON.stringify({ src: 'synthetic-evse',
+      method: 'NotifyStatus', params: { ts: f.now() / 1000, 'unknown:999': { value: index } } })), {});
+  const held = f.adapter.snapshot();
+  assert.equal(held.controlReady, false); assert.equal(held.currentControlReady, false);
+  assert.equal(held.observationReady, true); assert.equal(held.currentObservationReady, true);
+  assert.equal(held.commandBlockReason, 'evse-input-persistence-pending');
+  assert.deepEqual(f.adapter.normalize().currentA, before.currentA);
+  assert.deepEqual(f.adapter.normalize().maximumCurrentA, before.maximumCurrentA);
+  await assert.rejects(f.adapter.rpc('Number.Set', { owner: 'service:0', role: 'current_limit', value: 6 },
+    { mutation: true }), { code: 'evse-control-unavailable' });
+  const view = await controller.update({ enabled: true });
+  assert.equal(view.phase, 'waiting'); assert.equal(view.reason, 'economic-wait');
+  assert.deepEqual(saved.execution, initialState.execution);
+  assert.equal(view.snapshot.commandBlockReason, 'evse-input-persistence-pending');
+  writer.exec('ROLLBACK'); locked = false;
+  const deadline = performance.now() + 2000;
+  while (store.writeQueueStatus().pending) {
+    assert.ok(performance.now() < deadline); await new Promise(resolve => setTimeout(resolve, 5));
+  }
+  const recovered = controller.status();
+  assert.equal(recovered.phase, 'waiting'); assert.equal(recovered.reason, 'economic-wait');
+  assert.equal(recovered.snapshot.controlReady, true); assert.equal(recovered.snapshot.commandBlockReason, null);
+  assert.deepEqual(f.adapter.normalize().maximumCurrentA, before.maximumCurrentA);
+  assert.deepEqual(f.adapter.normalize().currentA, before.currentA);
+  assert.equal(f.writes.filter(row => row.method.endsWith('.Set')).length, 0);
+  f.setNow(NOW + f.adapter.config.maxAgeMs + 1);
+  assert.equal(f.adapter.snapshot().currentObservationReady, false, 'Waiting cannot prolong evidence freshness');
+  assert.equal(f.adapter.normalize().maximumCurrentA.available, false);
+});
+
+test('native restrictions and storage failures withdraw observations instead of masquerading as processing holds', async t => {
+  const f = fixture(t, { limiterEnabled: true }); await f.ready();
+  f.setFail(true); f.setNow(NOW + 1000); f.notify('start_charging', false);
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(f.adapter.snapshot().observationReady, false);
+  assert.equal(f.adapter.snapshot().currentObservationReady, false);
+  assert.equal(f.adapter.snapshot().commandBlockReason, 'evse-recording-unavailable');
+  assert.equal(f.adapter.normalize().maximumCurrentA.available, false);
+  f.setFail(false); await f.adapter.refresh({ force: true });
+  assert.equal(f.adapter.snapshot().observationReady, true);
+  f.serviceStatus.flags = ['synthetic-native-restriction'];
+  await f.adapter.refresh({ force: true });
+  assert.equal(f.adapter.snapshot().currentObservationReady, false);
+  assert.equal(f.adapter.snapshot().commandBlockReason, 'evse-native-restriction');
+  assert.equal(f.adapter.normalize().maximumCurrentA.available, false);
+  const controller = createShellyController({ adapter: f.adapter, clock: f.now, canControl: () => true });
+  t.after(() => controller.close());
+  assert.equal((await controller.update({ enabled: true })).reason, 'evse-native-restriction');
+  f.client.emit('offline');
+  assert.equal((await controller.update({ enabled: true })).reason, 'provider-offline');
+  assert.equal(f.adapter.normalize().maximumCurrentA.available, false);
+  assert.equal(f.writes.filter(row => row.method.endsWith('.Set')).length, 0);
+});
+
+test('a removed current setting invalidates that observation while retaining the independently confirmed maximum', async t => {
+  const f = fixture(t, { limiterEnabled: true }); await f.ready();
+  const maximum = f.adapter.normalize().maximumCurrentA;
+  f.setNow(NOW + 1000); f.delta('current_limit', { value: null }, { apply: false });
+  assert.equal(f.adapter.snapshot().observationReady, false);
+  assert.equal(f.adapter.snapshot().currentObservationReady, false);
+  assert.equal(f.adapter.snapshot().controlReady, false);
+  assert.equal(f.adapter.snapshot().commandBlockReason, 'evse-notification-readback-required');
+  assert.equal(f.adapter.normalize().currentA.available, false);
+  assert.deepEqual(f.adapter.normalize().maximumCurrentA, maximum);
+  await f.adapter.refresh({ force: true });
+  assert.equal(f.adapter.snapshot().currentObservationReady, true);
+  assert.equal(f.adapter.snapshot().commandBlockReason, null);
+  assert.equal(f.adapter.normalize().currentA.available, true);
+  assert.equal(f.adapter.normalize().currentA.measuredAt, NOW, 'Readback retains the native setting clock');
+  assert.equal(f.writes.filter(row => row.method.endsWith('.Set')).length, 0);
+});
+
 test('unplugged capacity keeps updating without current or charging commands', async t => {
   const f = fixture(t, { limiterEnabled: true });
   f.fields.work_state = 'charger_free'; f.fields.start_charging = false; f.fields.current_limit = 6;
@@ -548,8 +650,12 @@ test('small future native Stop events wait once, fence commands, and retain orig
     const f = fixture(t); await f.ready();
     f.setNow(NOW + 1000);
     const receivedAt = f.now(), sourceAt = receivedAt + lead;
+    const maximum = f.adapter.normalize().maximumCurrentA;
     f.delta('start_charging', { value: false, source: 'sys' }, { eventAt: sourceAt });
     assert.equal(f.adapter.snapshot().controlReady, false, 'An uncommitted future instruction fences command publication');
+    assert.equal(f.adapter.snapshot().commandBlockReason, 'evse-source-time-pending');
+    assert.equal(f.adapter.snapshot().observationReady, true);
+    assert.deepEqual(f.adapter.normalize().maximumCurrentA, maximum, 'Time admission cannot erase or renew the confirmed equipment limit');
     assert.equal(f.adapter.snapshot().fields.start_charging.value, true, 'Future state cannot become current authority');
     assert.equal(f.adapter.snapshot().permissionEvents.length, 0);
     await assert.rejects(f.adapter.rpc('Boolean.Set', { owner: 'service:0', role: 'start_charging', value: true }, { mutation: true }),

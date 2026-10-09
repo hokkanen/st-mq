@@ -201,8 +201,8 @@ test('replica preserves recorded charging assessments while withdrawing live evi
   const { app, root, digest, originalDigest, advance } = await fixture(t, { version: 6, chargers: {}, view: {
     settings, chargers: CHARGER_DEFINITIONS.map(definition => buildCharger({ definition,
       settings: settings.chargers[definition.id], now: snapshotAt })), vehicleFeeds: [feed],
-    diagnostics: { version: 2, retention: { days: 30 }, chargers: [{ id: 'charger1', current, recent: [finished], hasMore: true }] },
-    physicalTests: { version: 2, canManage: true, runs: [run] },
+    diagnostics: { version: 3, retention: { days: 30 }, chargers: [{ id: 'charger1', current, recent: [finished], hasMore: true }] },
+    physicalTests: { version: 3, canManage: true, runs: [run] },
   } });
   const before = app.status().charging, projected = before.diagnostics.chargers[0];
   assert.deepEqual(projected.current.outcome, outcome);

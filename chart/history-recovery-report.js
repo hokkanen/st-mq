@@ -9,7 +9,7 @@ const sourceTables = { imports: 'CSV imports', import_rows: 'CSV rows', observat
   events: 'Events', energy_audits: 'Energy audits', learning_journal: 'Learning journal',
   recorder_pending_energy: 'Open energy intervals', charging_session_keys: 'Charging session references' };
 const coverageCategories = { ...sourceTables, energy: 'Recorded energy', temperatures: 'Temperatures', other_observations: 'Other measurements and states',
-  charging_reports: 'Saved charging reports',charging_report_events: 'Charging report events' };
+  charging_reports: 'Saved charging reports',charging_report_events: 'Charging report events', charging_report_contexts: 'Charging report contexts' };
 const signalLabel = signal => Object.hasOwn(SIGNAL_INFO,signal) || ['charger1_current_allowance', 'charger2_current_allowance'].includes(signal)
   ? recordedSignalInfo(signal).label : 'Recorded measurement';
 const energyLabel = prefix => ({ ev1: 'Charger 1 energy',ev2: 'Charger 2 energy',property: 'Property energy',caravan: 'Caravan energy' })[prefix];
@@ -200,14 +200,14 @@ function renderCoverage(document, root, data, { formatTime, source, expanded }) 
       if (count(outside?.after?.count) > 0) messages.push(`${outside.after.count} entries extend later`);
       if (messages.length) {
         const potential = document.createElement('small'); potential.className = 'history-recovery-potential';
-        potential.textContent = `${['charging_reports','charging_report_events'].includes(row.name) ? 'Additional retained history' : 'Potential coverage'}: ${messages.join('; ')}.`; cell.append(potential);
+        potential.textContent = `${['charging_reports','charging_report_events','charging_report_contexts'].includes(row.name) ? 'Additional retained history' : 'Potential coverage'}: ${messages.join('; ')}.`; cell.append(potential);
       }
       tr.append(cell);
     }
     body.append(tr);
   }
   table.append(body); section.append(table);
-  if (data.categories.some(row => ['charging_reports','charging_report_events'].includes(row.name) && (count(row.master?.count) > 0 || count(row.source?.count) > 0))) {
+  if (data.categories.some(row => ['charging_reports','charging_report_events','charging_report_contexts'].includes(row.name) && (count(row.master?.count) > 0 || count(row.source?.count) > 0))) {
     const note = document.createElement('p'); note.className = 'muted';
     note.textContent = 'Saved charging reports and their events are not merged by recovery. They remain in the original source database. An unfinished report contributes its start date only.'; section.append(note);
   }
@@ -306,7 +306,7 @@ export function renderRecoveryReport(document, root, data, { formatTime = at => 
       root.append(details);
     }
   }
-  const unsupported = (data.unsupported ?? []).filter(row => ['charging_reports', 'charging_report_events'].includes(row.name) && count(row.count) > 0);
+  const unsupported = (data.unsupported ?? []).filter(row => ['charging_reports', 'charging_report_events', 'charging_report_contexts'].includes(row.name) && count(row.count) > 0);
   if (unsupported.length) paragraph(document, root, `Kept only in the source: ${unsupported.map(row => `${row.count} ${coverageCategories[row.name].toLowerCase()}`).join(' and ')}. These are not imported by recovery.`, 'history-recovery-callout');
   const from = stamp(data.period?.from), to = stamp(data.period?.to);
   if (from || to) { const line = document.createElement('p'); line.textContent = `${comparison ? 'Entries only in the other snapshot span' : data.recoverySkipped ? 'Unrecovered entries span' : report ? 'Recovered entries span' : 'Missing entries span'}: ${from ? formatTime(from) : 'unknown'} – ${to ? formatTime(to) : 'unknown'}.`; root.append(line); }

@@ -91,6 +91,16 @@ matches, but does not erase still-fresh committed observations or the existing
 identification attempt. Native notification readback keeps its separate command
 gate. A failed save, stale observations, offline device or native fault still
 withdraws readiness; waiting never renews source clocks or identification limits.
+Reported hardware maximum and current-setting observations have separate readiness
+from command publication. A packet waiting for storage or bounded source-time
+admission blocks commands with an explicit processing reason; it does not withdraw
+still-valid committed limits, replace an adopted economic plan or reset an
+identification attempt. The command reason clears immediately when admission
+finishes, and ordinary reconciliation resumes within its five-second polling
+cycle. Unknown or invalidated settings, failed persistence, native restrictions
+and actual connection loss retain their own unavailable reasons. These checks
+do not extend an observation's lifetime or establish that a requested setting
+has taken physical effect.
 Automatic charging remains a separate dashboard choice. A later setting change
 in the native app takes priority for the connection; turning Automatic charging
 on does not clear a native Stop or a current choice made during that connection.

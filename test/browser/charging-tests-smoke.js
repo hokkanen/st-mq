@@ -1062,6 +1062,23 @@ try {
     'Expanded planning and nested exact-rate evidence survive polling');
   assert.equal(await evaluate("Math.abs(document.getElementById('charging-report-dialog').scrollTop - savedPlanScroll) <= 2"), true);
 
+  await evaluate(`(() => {
+    const model = {state:'unknown',priority:null,feasible:null,costCents:null,costLowerBoundCents:null,
+      costGapBoundCents:null,scheduleKey:null,allocationKey:null,chargers:[]};
+    chargingFixture.report.timeline.push({kind:'evidence',code:'shared-charging-evidence',at:${now + 1500},shared:{
+      at:${now + 1500},selectedPriority:'charger2',priority:'unknown',prioritySince:null,overlap:'unknown',
+      peers:[{id:'charger1',connected:true,drawing:false,powerKw:0},{id:'charger2',connected:true,drawing:false,powerKw:0}],
+      proposed:model,adopted:model,execution:{state:'unknown',expectedCurrentA:16,allocationAt:${now},
+        lastExpectedCurrentA:16,lastAllocationAt:${now},reportedCurrentA:16,measuredAt:${now},expectationAt:${now},
+        commandReady:false,commandBlockReason:'input-processing'}}});
+  })()`);
+  await poll();
+  const allowanceText = await evaluate("document.querySelector('.charging-report-timeline').textContent");
+  assert.match(allowanceText, /Shared charging evidence changed/);
+  assert.match(allowanceText, /expected allowance 16 A/);
+  assert.match(allowanceText, /Confirmed current setting 16 A/);
+  assert.match(allowanceText, /waiting for input processing/);
+
   for (const width of [320, 390, 1440]) for (const theme of ['light', 'dark']) {
     await send('Emulation.setDeviceMetricsOverride', { width, height: 1000, deviceScaleFactor: 1, mobile: false });
     await evaluate(`document.documentElement.dataset.theme='${theme}';

@@ -422,7 +422,7 @@ test('new optional verification state defaults to none and malformed saved verif
   const f = fixture(); let tests = f.create();
   const run = tests.start(f.input({ nativeTargetSoc: 85 }), f.view), charger = f.plug(); f.identify(charger);
   charger.values.vehicleCeilingSoc = value(100, { source: 'bmw-cardata', measuredAt: f.clock() }); tests.update(f.view);
-  assert.equal(tests.status().version, 2);
+  assert.equal(tests.status().version, 3);
   const unverified = tests.status(), writes = f.writes.length;
   tests = f.create();
   assert.deepEqual(tests.status(), unverified, 'absence of genuinely new verification state grants no acknowledgement');
@@ -841,7 +841,7 @@ test('guided native completion needs fresh near-zero power after measured chargi
 test('unsupported saved state and retired action fields fail before storage mutation', () => {
   const f = fixture(), tests = f.create(); tests.start(f.input(), f.view);
   const saved = structuredClone(f.saved.get('physical-tests'));
-  for (const corrupt of [state => { state.version = 1; }, state => { state.version = 99; }, state => { state.legacy = true; }, state => { state.runs[0].command = 'start'; },
+  for (const corrupt of [state => { state.version = 2; }, state => { state.version = 1; }, state => { state.version = 99; }, state => { state.legacy = true; }, state => { state.runs[0].command = 'start'; },
     state => { state.runs[0].expectations.manualSoc = 99; }, state => { state.runs[0].headroom.oldFixedPercent = 10; },
     state => { delete state.runs[0].expectations.capacityKwh; }, state => { state.runs[0].scheduleConfirmedAt = START; },
     state => { state.runs[0].schedule.startAt = START; }, state => { state.runs[0].target.history[0].targetSoc = 90; },

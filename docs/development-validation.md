@@ -314,6 +314,10 @@ priority. `test/charging-planner-service.test.js` separately checks that the rea
 worker leaves the main thread responsive, coalesces queued requests and expires
 cached results at relevant boundaries. These offline checks do not establish
 native Raspberry Pi 5 timing or physical charger behavior.
+`test/charging-plan-settling.test.js` checks the fixed 30-second background
+deadline, timer scheduling, immediate edits and price changes, and bypasses for
+unavailable evidence, restrictions, active periods and imminent deadlines. Its
+runtime fixture retains both accepted native schedules without new commands.
 
 `test/energy-checks-worker.test.js` exercises 100,000 synthetic property counters
 through the actual HTTP route and history worker while independent timers,
@@ -576,8 +580,13 @@ cover history beyond the former event/session count limits, complete event pages
 age-based whole-report expiry, saved active/completed reports, removal from saved,
 explicit completed-report deletion, restart, transaction rollback and read-only
 inspection. Report actions must leave energy records, production inputs and
-charger authority unchanged. Database-overview checks account for report summaries
-and event rows without exposing private payloads. These checks do not establish
+charger authority unchanged. Repeated-price and shared-assessment fixtures verify
+lossless context reuse, original event horizons, scoped foreign keys, rejection
+of damaged contexts, deletion cascades and peer journal replay. Brief processing
+holds remain dated evidence without becoming new planning instructions; actual
+expiry and new connections still remove current authority. Database-overview
+checks account for report summaries, events and contexts without exposing private
+payloads. These checks do not establish
 that installed charger confirmation chatter or replanning has been resolved.
 
 The Tuya Local bridge tests render synthetic HA templates and verify independent

@@ -1,5 +1,6 @@
 const priorityName = value => ({ balanced: 'Balanced', charger1: 'Charger 1', charger2: 'Charger 2' })[value] ?? 'Unknown';
 const amount = value => Number.isFinite(value) ? Number(value.toFixed(3)).toString() : 'unknown';
+const timestamp = value => Number.isSafeInteger(value) ? new Date(value).toISOString().replace('T', ' ').replace('.000Z', ' UTC') : 'unknown time';
 
 export function chargingSharedSummary(shared) {
   const current = shared?.current ?? shared;
@@ -33,11 +34,23 @@ export function chargingSharedText(shared, focus) {
     ? `Planner-reported cost lower bound ${amount(solver.costLowerBoundCents)} cents; gap bound ${amount(solver.costGapBoundCents)} cents.`
     : 'A joint cost bound is unavailable.';
   const execution = current.execution?.state;
+  const allowance = Number.isFinite(current.execution?.expectedCurrentA)
+    ? `Charger 2 expected allowance ${amount(current.execution.expectedCurrentA)} A, calculated ${timestamp(current.execution.allocationAt)}.`
+    : `Charger 2 expected allowance unknown.${Number.isFinite(current.execution?.lastExpectedCurrentA)
+      ? ` Last known allowance ${amount(current.execution.lastExpectedCurrentA)} A, calculated ${timestamp(current.execution.lastAllocationAt)}; historical only.` : ''}`;
+  const setting = Number.isFinite(current.execution?.reportedCurrentA)
+    ? `Confirmed current setting ${amount(current.execution.reportedCurrentA)} A, measured ${timestamp(current.execution.measuredAt)}.`
+    : 'Confirmed current setting unknown.';
+  const blocked = ({ 'provider-offline': 'provider evidence unavailable', 'input-processing': 'waiting for input processing',
+    'source-time-pending': 'waiting for source time admission', 'device-permission-held': 'device permission held',
+    'readback-unavailable': 'current readback unavailable', 'control-unavailable': 'command readiness unavailable' })[current.execution?.commandBlockReason];
+  const command = current.execution?.commandReady === true ? 'Current adjustment ready.'
+    : `Current adjustment blocked: ${blocked ?? 'readiness unknown'}.`;
   const readback = execution === 'consistent' ? 'Charger 2 current readback respects its active current ceiling.'
     : execution === 'inconsistent' ? 'Charger 2 current readback exceeds its active current ceiling.'
       : execution === 'settling' ? 'Charger 2 allocation change is settling.'
         : execution === 'not-exercised' ? 'Charger 2 current sharing has not been exercised.' : 'Charger 2 allocation readback is unconfirmed.';
   return [`Shared priority: ${priorityName(current.selectedPriority)}.`, peerText, overlap, consistency,
-    ...(shared?.priorityChanges ? [`Observed priority changes: ${shared.priorityChanges}.`] : []), readback, ...models, bounds,
+    ...(shared?.priorityChanges ? [`Observed priority changes: ${shared.priorityChanges}.`] : []), allowance, setting, command, readback, ...models, bounds,
     'Allocation checks use reported limits and configured ceilings. Unknown current uses the maximum available within shared property capacity as a delivery estimate. Model checks do not confirm charger readiness, physical delivery or global optimality.'].join(' ');
 }

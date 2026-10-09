@@ -145,9 +145,14 @@ export class Recorder {
     const elapsed = now - g.measuredAt;
     if (elapsed >= HOUR) {
       const bytes = this.store.databaseBytes(), daily = Math.max(0, bytes - g.measuredBytes) * DAY / elapsed;
-      const alpha = 1 - Math.exp(-elapsed / DAY), weeklyAlpha = 1 - Math.exp(-elapsed / (7 * DAY));
-      g.bytesPerDay = g.measuredHours ? g.bytesPerDay + alpha * (daily - g.bytesPerDay) : daily;
-      g.bytesPerDay7d = g.measuredHours ? g.bytesPerDay7d + weeklyAlpha * (daily - g.bytesPerDay7d) : daily;
+      // Weight all measured time during warmup. Seeding a slow exponential
+      // average with the first hour makes startup allocation dominate for days.
+      // Once enough time is covered, retain the bounded daily/weekly response.
+      const warmupAlpha = elapsed / (g.measuredHours * HOUR + elapsed);
+      const alpha = Math.max(warmupAlpha, -Math.expm1(-elapsed / DAY));
+      const weeklyAlpha = Math.max(warmupAlpha, -Math.expm1(-elapsed / (7 * DAY)));
+      g.bytesPerDay += alpha * (daily - g.bytesPerDay);
+      g.bytesPerDay7d += weeklyAlpha * (daily - g.bytesPerDay7d);
       g.measuredHours += elapsed / HOUR; g.measuredAt = now; g.measuredBytes = bytes;
       g.metricsPrunedBefore = Math.floor(now/HOUR)*HOUR-7*DAY;
       this.store.db.prepare('DELETE FROM recorder_metrics WHERE bucket<?').run(g.metricsPrunedBefore);

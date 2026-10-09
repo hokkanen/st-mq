@@ -789,7 +789,7 @@ export class HistoryMerge {
   async run() {
     await this.imports(); await this.snapshots(); await this.observations(); await this.pendingEnergy();
     await this.manual(); await this.evidence(); await this.scanJournal();
-    this.report.unsupported = ['charging_reports', 'charging_report_events'].map(table => ({
+    this.report.unsupported = ['charging_reports', 'charging_report_events', 'charging_report_contexts'].map(table => ({
       name: table, count: this.donor.incremental ? this.donor.db.prepare('SELECT COUNT(*) count FROM recovery_source_keys WHERE table_name=?').get(table).count : this.donor.db.prepare(`SELECT COUNT(*) count FROM ${table}`).get().count,
       reason: 'Saved charging reports are not included in history recovery.' })).filter(row => row.count > 0);
     return this.report;

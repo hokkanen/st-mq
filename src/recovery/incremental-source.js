@@ -37,7 +37,7 @@ function initializeKeys(donor) {
     PRIMARY KEY(table_name,record_key)) WITHOUT ROWID;`);
 }
 function include(donor,table,row) {
-  if(row && ['charging_reports','charging_report_events'].includes(table)) {
+  if(row && ['charging_reports','charging_report_events','charging_report_contexts'].includes(table)) {
     donor.db.prepare('INSERT OR IGNORE INTO recovery_source_keys(table_name,record_key,visited) VALUES(?,?,1)')
       .run(table,JSON.stringify(tables.get(table).keys.map(key=>row[key])));
     return;

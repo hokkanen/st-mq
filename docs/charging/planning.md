@@ -161,6 +161,19 @@ increment as new intent. Running periods and starts within the next two minutes
 are not retained by this rule. The retained schedule is the actual plan, so session
 diagnostics do not log discarded candidate movements as schedule changes.
 
+Background forecast updates may share one fixed 30-second settling window when
+both connected chargers already have feasible, accepted future waiting programs.
+The deadline is anchored to the last completed plan calculation; later updates
+cannot extend it, and a timer rechecks the plan even if no new message arrives.
+Explicit actions, changed prices, priorities, requests, connections, battery
+inputs or current limits bypass the window. So do unavailable source evidence,
+native restrictions, pending commands, active identification, running periods,
+and starts, allocation boundaries or deadlines within the next 30 seconds.
+An identification attempt merely waiting for evidence does not block settling.
+This delays only background forecast calculation. Evidence keeps its original
+clocks, diagnostic transitions are recorded, and physical reconciliation, live
+current protection and command permission checks continue independently.
+
 Live property and charger currents establish actual draw and household phase
 demand. Shelly applies the same priority, energy and deadline allocation policy
 to admitted present household headroom; absolute forecast shares do not become

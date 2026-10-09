@@ -1,5 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
 import { createRecordingHealth, recordingHealthView, storageBytes } from '../chart/recording-health.js';
 
 const now = Date.parse('2026-10-07T12:00:00Z');
@@ -186,10 +187,26 @@ test('adaptive payload target and prospective size remain separate from whole da
   assert.equal(view.growth.database, '83 GB');
   assert.equal(view.growth.total, '32 GB/year');
   assert.match(view.growth.totalWindow, /240 h.*allocation/);
+  assert.match(view.growth.totalWindow, /7-day smoothing/);
   const missing = recordingHealthView(health(), { annualBudgetBytes: 10e9, adaptiveMeasurementHours: 0, adaptiveProjectedAnnualBytes: 0 }, now);
   assert.equal(missing.growth.adaptive, 'Collecting evidence');
   assert.equal(missing.growth.database, 'Unknown');
   assert.equal(missing.growth.adaptiveStored, 'Not measured yet');
+});
+
+test('annualized database growth names its settling period and does not claim a retention-aware size forecast', () => {
+  const recording = { totalDatabaseMeasurementHours: 7, totalDatabaseProjectedAnnualBytes: 12e9 };
+  const view = recordingHealthView(health(), recording, now);
+  assert.equal(view.growth.total, '12 GB/year');
+  assert.match(view.growth.totalWindow, /Still settling.*7 h.*allocation measurements/);
+  for (const invalid of [null, NaN, Infinity, -1]) {
+    const unknown = recordingHealthView(health(), { ...recording, totalDatabaseMeasurementHours: invalid }, now);
+    assert.equal(unknown.growth.total, 'Collecting evidence');
+  }
+  const dashboard = readFileSync(new URL('../chart/index.html', import.meta.url), 'utf8');
+  assert.match(dashboard, /Annualized recent growth/);
+  assert.match(dashboard, /Does not forecast report expiry or database size next year/);
+  assert.doesNotMatch(dashboard, /Projected growth/);
 });
 
 

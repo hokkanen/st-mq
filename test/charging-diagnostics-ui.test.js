@@ -59,7 +59,7 @@ function setup() {
   const reports = new Map([[current.id, current], [previous.id, previous]]);
   const records = new Map([[current.id, [{ id: 1, at: now, kind: 'physical', code: 'charging-observed', powerKw: 7, source: 'easee', measuredAt: now, receivedAt: now }]], [previous.id, []]]);
   const state = { now, webAccess: { role: 'admin' }, charging: { timezone: 'Europe/Helsinki', chargers: [{ id: 'charger1', label: 'Charger 1' }, { id: 'charger2', label: 'Charger 2' }],
-    diagnostics: { version: 2, retention: { days: 30 }, chargers: [{ id: 'charger1', current, recent: [previous] }, { id: 'charger2', current: null, recent: [] }] },
+    diagnostics: { version: 3, retention: { days: 30 }, chargers: [{ id: 'charger1', current, recent: [previous] }, { id: 'charger2', current: null, recent: [] }] },
     physicalTests: { runs: [{ id: 'test1', vehicleId: 'bmw', chargerId: 'charger1', program: 'immediate', phase: 'observing', report: { id: 'current' } }] } } };
   const request = async (path, body) => {
     calls.push({ path, body }); const url = new URL(path, 'http://local');

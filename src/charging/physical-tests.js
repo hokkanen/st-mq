@@ -191,7 +191,7 @@ export function validateChargingPhysicalTestState(saved) {
   const keys = ['id', 'chargerId', 'vehicleId', 'program', 'association', 'backend', 'phase', 'createdAt', 'updatedAt',
     'expiresAt', 'endedAt', 'endReason', 'sessionId', 'connectedAt', 'expectations', 'headroom', 'recommendation', 'milestones',
     'findings', 'initialPlan', 'latestPlan', 'deadlineAt', 'schedule', 'target', 'restorationReminder', 'report', 'lastSeenAt', 'shared'];
-  if (!allowed(saved, ['version', 'runs']) || saved.version !== 2 || !Array.isArray(saved.runs) || saved.runs.length > MAX_RUNS)
+  if (!allowed(saved, ['version', 'runs']) || saved.version !== 3 || !Array.isArray(saved.runs) || saved.runs.length > MAX_RUNS)
     throw new Error('Unsupported physical charging test state; start a fresh development database.');
   for (const run of saved.runs) {
     if (!allowed(run, keys) || typeof run.id !== 'string' || !run.id.length
@@ -267,7 +267,7 @@ export class ChargingPhysicalTests {
     Object.assign(this, { store, key, clock });
     const saved = store.getState(key);
     if (saved !== undefined && saved !== null) validateChargingPhysicalTestState(saved);
-    this.state = saved == null ? { version: 2, runs: [] } : copy(saved);
+    this.state = saved == null ? { version: 3, runs: [] } : copy(saved);
   }
 
   status() { return copy(this.state); }

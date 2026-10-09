@@ -624,8 +624,15 @@ in the same transaction as its observations. It survives restart and does not
 advance for rolled-back writes. It estimates logical serialized data, not SQLite
 page allocation or physical flash writes. A 10 GB adaptive target therefore
 does not imply 10 GB of total filesystem growth, even when other histories are
-quiet. Projections extrapolate a rolling seven-day rate, begin after an hour of
-measurement, and are estimates rather than guaranteed annual usage.
+quiet. Annualized rates begin after an hour of measurement and are estimates
+rather than guaranteed annual usage. The total SQLite growth estimate weights
+each interval by its elapsed time during startup, so an allocation-heavy first
+hour does not seed the following week. After warmup it uses exponential smoothing
+with a seven-day time constant; its separate daily diagnostic has a one-day time
+constant. This calculation does not change adaptive precision or its accounting.
+It annualizes recent allocation growth; it does not predict the database size
+next year, report expiry or when SQLite will reuse existing pages. A stable file
+can therefore show no new growth while retained records consume reusable pages.
 
 For a repeatable offline comparison, run
 `node scripts/benchmarks/recorder-budget.js`. It exercises invented scalar and
@@ -1328,8 +1335,11 @@ open the others. Refreshes preserve expanded sections and keyboard focus.
 
 **Storage & growth** owns the size and growth figures for the section. It separates
 current whole-database allocation, database-file and WAL sizes, retained adaptive
-payload and prospective adaptive additions. Separate adaptive and total annual
-growth projections show their measurement windows. The adaptive target remains
+payload and prospective adaptive additions. Separate adaptive and total
+**Annualized recent growth** figures show their measurement windows; the total
+shows **Still settling** during its first week and then names its seven-day
+smoothing. It explicitly excludes forecasting report expiry or next year's
+database size. The adaptive target remains
 next to adaptive growth, never beside total growth as if it were a total cap.
 The prospective adaptive byte counter names its start date. Opening Recording
 details requests the existing cached, read-only inventory in a worker;
@@ -1916,6 +1926,16 @@ not a hard storage cap. Exact changes, imports, learning journals, source revisi
 diagnostics and SQLite overhead add growth on top of it. Compaction reduces unnecessary future observations; it does not
 rewrite history, reclaim existing database pages or establish physical flash-write
 savings.
+
+Charging reports retain unchanged price arrays and shared forecast context once
+per report, with original event references preserving their interpretation.
+These owned contexts follow the report's existing retention: completed unsaved
+reports expire after the configured period (30 days by default) measured from
+session end; active and saved reports remain. Expiry frees pages for reuse and
+does not by itself shrink SQLite allocation. This retention is not anticipated
+by the annualized recent-growth figure. The inventory describes Caravan shutdown
+restoration events as historical unconfirmed outcomes, separately from whether a
+restoration obligation remains active now.
 
 The explicit storage inventory separates observation pages, other retained
 history, current state and derived caches, disposable transaction history, pending peer catch-up storage,

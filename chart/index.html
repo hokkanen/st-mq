@@ -951,20 +951,20 @@ G_warming = G / 2</code>
         <section class="recording-section-group" aria-labelledby="recording-data-title">
           <h3 id="recording-data-title" class="recording-group-title">Recorded data</h3>
           <details id="recording-storage-details" class="recording-section">
-            <summary><span>Storage &amp; growth<small>Retained sizes, annual estimates and the adaptive target</small></span></summary>
+            <summary><span>Storage &amp; growth<small>Retained sizes, recent growth and the adaptive target</small></span></summary>
             <div class="recording-section-body">
               <div class="recording-overview-toolbar">
                 <p id="recording-overview-message" class="muted" role="status" aria-live="polite">Open Recording details to inspect the database.</p>
                 <button id="recording-overview-refresh" class="secondary-button" type="button">Refresh inventory</button>
               </div>
               <table class="recording-storage-table">
-                <thead><tr><th scope="col">Stored data</th><th scope="col">Retained size</th><th scope="col">Projected growth</th></tr></thead>
+                <thead><tr><th scope="col">Stored data</th><th scope="col">Retained size</th><th scope="col">Annualized recent growth</th></tr></thead>
                 <tbody>
                   <tr>
                     <th scope="row" id="recording-storage-database-label">Whole database<small>All recorded history and saved state</small></th>
                     <td data-label="Retained size"><strong id="recording-growth-database" class="recording-storage-value">Unknown</strong><small>SQLite allocation</small>
                     </td>
-                    <td data-label="Projected growth"><strong id="recording-growth-total" class="recording-storage-value">Collecting evidence</strong><small id="recording-growth-totalWindow"></small><small>Includes exact records, history and overhead</small></td>
+                    <td data-label="Annualized recent growth"><strong id="recording-growth-total" class="recording-storage-value">Collecting evidence</strong><small id="recording-growth-totalWindow"></small><small>Includes exact records, history and overhead. Does not forecast report expiry or database size next year.</small></td>
                   </tr>
                   <tr class="recording-storage-detail-row"><td colspan="3" headers="recording-storage-database-label">
                     <details class="recording-storage-evidence"><summary>Files on disk</summary>
@@ -980,7 +980,7 @@ G_warming = G / 2</code>
                     <th scope="row" id="recording-storage-adaptive-label">Adaptive measurements<small>Changes in temperature, power and other measurements</small></th>
                     <td data-label="Retained size"><strong id="recording-growth-retained" class="recording-storage-value">Not checked</strong><small>Approximate retained payload</small>
                     </td>
-                    <td data-label="Projected growth"><strong id="recording-growth-adaptive" class="recording-storage-value">Collecting evidence</strong><small id="recording-growth-adaptiveWindow"></small><span class="recording-storage-target">Soft target <strong id="recording-growth-target">Not available</strong></span></td>
+                    <td data-label="Annualized recent growth"><strong id="recording-growth-adaptive" class="recording-storage-value">Collecting evidence</strong><small id="recording-growth-adaptiveWindow"></small><span class="recording-storage-target">Soft target <strong id="recording-growth-target">Not available</strong></span></td>
                   </tr>
                   <tr class="recording-storage-detail-row"><td colspan="3" headers="recording-storage-adaptive-label">
                     <details class="recording-storage-evidence"><summary>Measurement evidence</summary>

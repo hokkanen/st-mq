@@ -38,6 +38,7 @@ const EVENTS = { connected: 'Connection observed', 'observation-started': 'Monit
   observing: 'Identification awaiting matching reports', inconclusive: 'Identification inconclusive', completed: 'Identification completed',
   'initial-plan': 'Initial planning snapshot', 'target-changed': 'Requested target changed',
   'shared-charging-context': 'Both chargers and shared priority',
+  'shared-charging-evidence': 'Shared charging evidence changed',
   ...OUTCOMES, ...COVERAGE };
 const validTime = value => Number.isFinite(value) && Math.abs(value) <= 8.64e15;
 const timeFormatter = (timezone, seconds = false) => new Intl.DateTimeFormat('en-GB', {
@@ -339,7 +340,7 @@ export function createChargingDiagnosticsPanel({ document, request, onOpenTest =
     const p = parts.get(node), details = [], evidenceRow = row.context ? { ...row.context, ...row } : row;
     if (['finding', 'finding-update', 'recovery'].includes(row.kind)) details.push(FINDINGS[row.code]?.[1] ?? 'Finding recorded.');
     if (row.kind === 'finding-update') details.push('The same episode remains active; its recorded evidence changed.');
-    if (row.kind === 'shared') details.push(chargingSharedText(row.shared, selectedCharger));
+    if (row.shared) details.push(chargingSharedText(row.shared, selectedCharger));
     setText(p.label, `${time(row.at, timezone, true)} · ${eventLabel(row)}`);
     if (Number.isFinite(row.powerKw)) details.push(`Measured draw ${number(row.powerKw)} kW`);
     const source = sourceName(row.source);

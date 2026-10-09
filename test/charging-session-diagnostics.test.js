@@ -258,7 +258,7 @@ test('failed persistence remains dirty and retries a quiet next observation', ()
 
 test('unsupported persisted contract fails before mutation', () => {
   let mutated = false;
-  for (const saved of [{ version: 0, chargers: {} }, { version: 1, chargers: {}, retired: true },
+  for (const saved of [{ version: 2, chargers: {} }, { version: 0, chargers: {} }, { version: 1, chargers: {}, retired: true },
     { version: 1, chargers: { unknown: {} } }]) {
     assert.throws(() => new ChargingSessionDiagnostics({ store: { getState: () => saved, setState: () => { mutated = true; } } }), /fresh development database/);
   }

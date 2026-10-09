@@ -1,7 +1,8 @@
 import { createHash } from 'node:crypto';
-import { sharedChargingAssessment, advanceSharedAssessment, sharedAssessmentKey, validSharedAssessment } from './shared-assessment.js';
+import { sharedChargingAssessment, advanceSharedAssessment, sharedAssessmentKey, sharedPlanningKey, validSharedAssessment } from './shared-assessment.js';
+import { compactReportEvent, expandReportEvents } from './report-contexts.js';
 
-const VERSION = 2, MINUTE = 60_000, DAY = 24 * 60 * MINUTE, EXPIRY_BATCH = 1;
+const VERSION = 3, MINUTE = 60_000, DAY = 24 * 60 * MINUTE, EXPIRY_BATCH = 1;
 const FILTERS = new Set(['all', 'findings', 'plans', 'charging', 'control', 'vehicle', 'evidence']);
 const COVERAGE = ['identification', 'initialRelease', 'pause', 'resume', 'lateReplan', 'targetAttainment', 'completion', 'energy'];
 const VEHICLES = new Set(['bmw', 'tesla']);
@@ -28,6 +29,7 @@ const CONTROL_ERRORS = new Set(['read-failed', 'command-failed', 'readback-faile
   'evse-publish-unconfirmed', 'evse-rpc-rejected', 'evse-profile-unsupported', 'evse-current-control-unavailable', 'evse-work-state-unavailable', 'evse-read-unavailable',
   'evse-native-restriction', 'evse-native-schedule-unavailable', 'evse-event-overflow', 'evse-component-mapping-unverified',
   'evse-notification-readback-required', 'evse-permission-event-overflow',
+  'evse-input-persistence-pending', 'evse-source-time-pending',
   'identification-resume-required', 'command-unconfirmed']);
 const CONTROL_REASONS = new Set([...CONTROL_ERRORS, 'manual-stop', 'manual-release', 'manual-enable', 'manual-charge-now', 'manual-schedule', 'native-schedule',
   'device-permission-held',
@@ -150,8 +152,10 @@ function remainingPeriods(rows, now) {
 function priceIntervals(snapshot, now, deadlineAt) {
   if (!Array.isArray(snapshot) || deadlineAt === null) return null;
   const rows = snapshot.filter(row => Array.isArray(row) && time(row[0]) && time(row[1]) && row[1] > row[0] && Number.isFinite(row[2]))
-    .map(([startAt, endAt, priceCtPerKwh]) => ({ startAt: Math.max(startAt, now), endAt: Math.min(endAt, deadlineAt), priceCtPerKwh }))
-    .filter(row => row.endAt > row.startAt).sort((a, b) => a.startAt - b.startAt || a.endAt - b.endAt);
+    // Preserve publication bounds for immutable storage. The event's own at /
+    // deadlineAt delimit its horizon; public pages clip it when reconstructed.
+    .map(([startAt, endAt, priceCtPerKwh]) => ({ startAt, endAt, priceCtPerKwh }))
+    .filter(row => row.endAt > now && row.startAt < deadlineAt).sort((a, b) => a.startAt - b.startAt || a.endAt - b.endAt);
   const result = [];
   for (const row of rows) {
     const previous = result.at(-1);
@@ -629,8 +633,13 @@ export class ChargingSessionDiagnostics {
       ended_at=excluded.ended_at,saved_at=excluded.saved_at,summary=excluded.summary,checkpoint=excluded.checkpoint`)
       .run(this.key, record.chargerId, record.id, record.association, record.startedAt, record.endedAt,
         record.savedAt, JSON.stringify(summary), JSON.stringify(record));
-    const insert = this.store.db.prepare('INSERT INTO charging_report_events(namespace,charger_id,report_id,at,category,payload) VALUES(?,?,?,?,?,?)');
-    for (const entry of pending) insert.run(this.key, record.chargerId, record.id, entry.at, category(entry.kind), JSON.stringify(entry));
+    const insert = this.store.db.prepare(`INSERT INTO charging_report_events(namespace,charger_id,report_id,at,category,payload,
+      price_context_id,proposed_context_id,adopted_context_id) VALUES(?,?,?,?,?,?,?,?,?)`);
+    for (const entry of pending) {
+      const compact = compactReportEvent(this.store.db, this.key, record, entry);
+      insert.run(this.key, record.chargerId, record.id, entry.at, category(entry.kind), compact.payload,
+        compact.price, compact.proposed, compact.adopted);
+    }
   }
   prune(now) {
     return this.store.db.prepare(`DELETE FROM charging_reports WHERE (namespace,charger_id,report_id) IN
@@ -684,8 +693,11 @@ export class ChargingSessionDiagnostics {
       if (!record || now < record.observedAt || id && id !== record.id) continue;
       const before = JSON.stringify([record.findings, record.coverage, record.pendingChecks]);
       const sharedAssessment = advanceSharedAssessment(record.shared, shared);
-      if (!record.shared || sharedAssessmentKey(record.shared.current) !== sharedAssessmentKey(sharedAssessment.current))
-        event(record, now, 'shared', 'shared-charging-context', { shared: clone(sharedAssessment.current) });
+      if (!record.shared || sharedAssessmentKey(record.shared.current) !== sharedAssessmentKey(sharedAssessment.current)) {
+        const planning = !record.shared || sharedPlanningKey(record.shared.current) !== sharedPlanningKey(sharedAssessment.current);
+        event(record, now, planning ? 'shared' : 'evidence', planning ? 'shared-charging-context' : 'shared-charging-evidence',
+          { shared: clone(sharedAssessment.current) });
+      }
       record.shared = sharedAssessment;
       // SQL already preserves the complete semantic history; the checkpoint
       // needs only its current comparison reference and cumulative coverage.
@@ -760,10 +772,11 @@ export class ChargingSessionDiagnostics {
       if (typeof before !== 'string' || !/^[1-9][0-9]*$/.test(before) || !Number.isSafeInteger(Number(before))) throw new TypeError('Invalid event cursor');
       clauses.push('id<?'); values.push(Number(before));
     }
-    const rows = this.store.db.prepare(`SELECT id,payload FROM charging_report_events WHERE ${clauses.join(' AND ')} ORDER BY id DESC LIMIT ?`)
+    const rows = this.store.db.prepare(`SELECT id,payload,price_context_id,proposed_context_id,adopted_context_id
+      FROM charging_report_events WHERE ${clauses.join(' AND ')} ORDER BY id DESC LIMIT ?`)
       .all(...values, limit + 1);
     const more = rows.length > limit; if (more) rows.pop();
-    return { events: rows.map(row => ({ id: row.id, ...JSON.parse(row.payload) })), nextBefore: more ? String(rows.at(-1).id) : null };
+    return { events: expandReportEvents(this.store.db, this.key, id, report, rows), nextBefore: more ? String(rows.at(-1).id) : null };
   }
   saveReport({ chargerId: id, reportId: report, saved } = {}) {
     this.writable(); chargerId(id); reportId(report);

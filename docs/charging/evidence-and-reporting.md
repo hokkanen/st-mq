@@ -40,6 +40,17 @@ recorded before/after changes, full planning inputs and periods inside the entry
 Proposed periods, adopted execution, identification permission, confirmed pauses
 and physical charging remain distinct.
 
+The shared assessment separates the controller's expected current allowance,
+the charger's confirmed current setting, and readiness to issue an adjustment.
+A short input-persistence or source-time admission hold blocks commands without
+erasing still-valid observations or an allocation evaluated within the preceding
+15 seconds for the same connection, request and priority. Native clocks remain
+unchanged. Expired or contradictory evidence makes the affected current value
+unknown; the last known allowance may remain explicitly historical with its
+original calculation time. Neither that value nor a command-ready status proves
+physical draw. Readiness and readback changes appear under **Evidence**; an actual
+shared-model or priority change appears under **Plans & inputs**.
+
 The session selector offers recent and saved reports for that charger, loading
 older sessions and events in pages. An expired or deleted selection stays
 explicitly unavailable instead of opening another session. The guided-test link
@@ -138,6 +149,12 @@ Active sessions never expire. There is no per-session event, finding or planning
 record count that discards older evidence. Events are appended to indexed database
 records; dashboard summaries, runtime checkpoints and page requests stay bounded.
 This retains recorded diagnostic evidence, not every raw telemetry publication.
+Unchanged price intervals and shared forecast contexts are stored once per report
+and referenced by its immutable events. Contexts are complete snapshots, never
+chains of deltas. Bounded page reads reconstruct each event's original planning
+horizon and forecast; original clocks and brief unknown/ready transitions remain
+available without copying complete forecast inputs into every evidence event.
+Report-owned contexts follow the report's save, expiry and deletion lifetime.
 Automatic expiry is performed by writable observer maintenance, checked hourly
 and processed one report at a time when a backlog exists. Read-only browsing
 does not prune the database.

@@ -69,8 +69,8 @@ function chargingSnapshot(snapshot) {
     fields: Object.fromEntries(Object.entries(setup.fields ?? {}).map(([key, value]) => [key,
       { ...value, available: false, recorded: true, reason: 'read-only-snapshot' }])) } : null;
   const reports = saved.view.diagnostics, tests = saved.view.physicalTests;
-  if (reports && (reports.version !== 2 || !Array.isArray(reports.chargers))
-    || tests && (tests.version !== 2 || !Array.isArray(tests.runs)))
+  if (reports && (reports.version !== 3 || !Array.isArray(reports.chargers))
+    || tests && (tests.version !== 3 || !Array.isArray(tests.runs)))
     throw new Error('Unsupported charging assessment snapshot; start a fresh development database');
   const recordedReport = report => report ? { ...structuredClone(report), readOnly: true, recorded: true, snapshotAt,
     liveAvailable: false, evidenceStale: report.endedAt === null || report.evidenceStale === true } : null;

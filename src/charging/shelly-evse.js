@@ -727,7 +727,16 @@ export function createShellyEvseAdapter({ config, broker, client, store, engine,
   const observationReady = () => Boolean(connected && admitted && online && observationServiceReady() && knownWorkState()
     && settingFresh('start_charging') && settingFresh('current_limit'));
   const basicReady = () => observationReady() && storagePending === 0 && sourcePending.size === 0 && !notificationPending.size;
+  const commandBlockReason = () => !connected || !admitted || !online ? 'provider-offline'
+    : error ?? (state.permissionOverflow ? 'evse-permission-event-overflow'
+      : notificationPending.size ? 'evse-notification-readback-required'
+        : !knownWorkState() ? 'evse-work-state-unavailable'
+          : !observationReady() ? 'evse-read-unavailable'
+            : sourcePending.size ? 'evse-source-time-pending'
+              : storagePending ? 'evse-input-persistence-pending' : null);
   const snapshot = () => ({ association, transport: 'shelly-evse', online: connected && admitted && online, controlReady: basicReady(), currentControlReady: basicReady() && currentReady(),
+    observationReady: observationReady(), currentObservationReady: observationReady() && currentControlReady,
+    commandBlockReason: commandBlockReason(),
     identificationCurrentReady: observationReady() && identificationCurrentReady(),
     identificationReady: observationReady(),
     pluggedIn: knownWorkState() ? state.connection?.connected ?? null : null,
@@ -829,7 +838,10 @@ export function createShellyEvseAdapter({ config, broker, client, store, engine,
       return { source: 'shelly-evse', providerConnected: online && admitted, association,
         identificationCurrentReady: basicReady() && identificationCurrentReady(),
         connected: signal(knownState ? state.connection?.connected : null, 'work_state'), charging: signal(knownState ? config.chargingStates.includes(state.fields.work_state?.value) : null, 'work_state'),
-        currentA: signal(state.fields.current_limit?.value, 'current_limit'), maximumCurrentA: { value: currentConfig?.max ?? null, available: ready() && finite(currentConfig?.max), source: 'shelly-evse' },
+        currentA: signal(state.fields.current_limit?.value, 'current_limit'), maximumCurrentA: {
+          value: currentConfig?.max ?? null, available: Boolean(connected && admitted && online && discovered
+            && observationServiceReady() && finite(currentConfig?.max)),
+          measuredAt: serviceAt, receivedAt: serviceAt, source: 'shelly-evse' },
         phaseCurrentA: signal(phases ? config.phaseMap.map(index => phases[PHASE_KEYS[index]].current) : null, 'phase_info'),
         actualCurrentA: signal(phases ? Math.max(...['phase_a', 'phase_b', 'phase_c'].map(key => phases[key].current)) : null, 'phase_info'),
         voltageV: signal(phases ? Math.min(...['phase_a', 'phase_b', 'phase_c'].map(key => phases[key].voltage)) : null, 'phase_info'),
@@ -1397,8 +1409,17 @@ export function createShellyController({ adapter, initialState, saveState = () =
           rememberLimiter(limitCurrent(context), context, snapshot);
         }
         if (unavailable) {
+          // A queued packet fences all mutations, but does not erase the
+          // existing economic instruction or restart identification. The live
+          // snapshot explains the hold and clears it as soon as input admission
+          // completes; the ordinary five-second reconciliation resumes work.
+          if (snapshot.observationReady && ['evse-input-persistence-pending', 'evse-source-time-pending'].includes(snapshot.commandBlockReason)) {
+            await persist(); return;
+          }
           identification = null;
-          state.phase = 'unavailable'; state.reason = snapshot.error ?? 'provider-offline'; await persist(); return;
+          state.phase = 'unavailable'; state.reason = snapshot.commandBlockReason ?? snapshot.error
+            ?? (!snapshot.online ? 'provider-offline' : !fresh(workState) || !permittedState || !sessionId
+              ? 'evse-work-state-unavailable' : 'evse-read-unavailable'); await persist(); return;
         }
         if (currentUnavailable) {
           identification = null;

@@ -7,6 +7,7 @@ import { forecastFixedPlans, currentChargingAllocation } from './planner.js';
 import { createChargingPlannerService } from './planner-service.js';
 import { chargingPlannerInput, chargingPlanValidUntil } from './planner-input.js';
 import { chargingPlanInputsUnavailable } from './plan-inputs.js';
+import { backgroundPlanDeadline } from './plan-settling.js';
 import { createChargingController } from './controller.js';
 import { easeeChargerTelemetry, effectiveScheduleFingerprint } from './easee.js';
 import { teslamateVehicleTelemetry, teslamateConnectionContext, teslamateDeparture } from './teslamate.js';
@@ -380,7 +381,7 @@ export class ChargingRuntime {
           if (!refresh && !takeover && this.currentPlanReusable(item, snapshot))
             return this.controlPlan(item, this.pricesInitialized ? item.plan : null);
           item.awaitingPlan = true;
-          try { await this.updatePlan(this.clock(), { sourceId: id }); }
+          try { await this.updatePlan(this.clock(), { sourceId: id, background: !refresh && !takeover }); }
           catch { this.error = 'charging-planning-unavailable'; return this.controlPlan(item, null); }
           finally { item.awaitingPlan = false; }
           return this.controlPlan(item, this.pricesInitialized ? item.plan : null);
@@ -1653,7 +1654,7 @@ export class ChargingRuntime {
     try { await this.updatePlan(); } catch { this.error = 'charging-planning-unavailable'; }
     await this.reconcile();
   }
-  updatePlan(now = this.clock(), { sourceId } = {}) {
+  updatePlan(now = this.clock(), { sourceId, background = false } = {}) {
     if (this.closed) return Promise.resolve();
     // Accepted observations/progress must survive a restart even while an old
     // numerical search is still running. They are independent of plan adoption.
@@ -1662,7 +1663,10 @@ export class ChargingRuntime {
         .catch(() => { if (!this.closed) this.error = 'charging-planning-unavailable'; })
         .finally(() => { this.stateRefreshFlight = null; });
     }
-    this.planningRequest = { sourceId, generation: ++this.planningGeneration };
+    // A later background notification cannot demote an explicit request that
+    // has not started yet. No timer or settling permission survives restart.
+    this.planningRequest = { sourceId, background: background && this.planningRequest?.background !== false,
+      generation: ++this.planningGeneration };
     if (!this.planningFlight) {
       this.planningFlight = (async () => {
         while (this.planningRequest && !this.closed) {
@@ -1718,7 +1722,7 @@ export class ChargingRuntime {
     }
     this.persist();
   }
-  async calculatePlan(now, { sourceId, generation }) {
+  async calculatePlan(now, { sourceId, generation, background = false }) {
     const current = () => !this.closed && this.store.db.isOpen && generation === this.planningGeneration;
     await this.write(() => { if (current()) this.refreshPlanningState(this.clock()); });
     if (!current()) return;
@@ -1809,6 +1813,28 @@ export class ChargingRuntime {
         view.referenceGridKwh, view.capabilities.externalLoadBalancing || view.capabilities.currentControl ? null : view.values.currentA.value,
         ...['connected', 'soc', 'minimumSoc', 'capacityKwh', 'maximumCurrentA',
           'vehicleNotBefore', 'vehicleCurrentA', 'nativeCurrentA', 'vehicleCeilingSoc'].map(key => view.values[key]?.value ?? null)]) });
+    const settlingKey = digest({ stabilityBasis, historySelection, authority: this.canControl(),
+      ready: this.historyReady, historyError: this.historyError,
+      supply: { configuredBudgetCurrentA: supply.configuredBudgetCurrentA,
+        available: Boolean(supply.configuredBudgetCurrentA || supply.availableCurrentA || supply.estimate?.available),
+        voltageAvailable: planningVoltageV.map(Number.isFinite) },
+      chargers: views.map(view => [view.id, view.association, view.request?.sessionId, view.request?.chargeNow,
+        view.control?.session?.connectedAt, view.control?.snapshot?.generation, view.control?.snapshot?.connectionId,
+        view.control?.snapshot?.instructionRevision, view.control?.snapshot?.nativeStop, view.control?.manual,
+        view.telemetry?.providerConnected, view.vehicle?.state, view.vehicle?.id,
+        ...['connected', 'soc', 'minimumSoc', 'capacityKwh', 'maximumCurrentA', 'nativeCurrentA',
+          'vehicleCurrentA', 'vehicleNotBefore', 'vehicleCeilingSoc'].map(key => {
+          const field = view.values[key]; return [field?.available, field?.assumed, field?.source];
+        })]) });
+    const settlingUntil = background && !priceReplans.size && !Object.values(this.chargers).some(item => item.replan || item.newEpisode)
+      ? backgroundPlanDeadline({ now, previous: this.lastBackgroundPlan, key: settlingKey, chargers: views,
+        plans: Object.fromEntries(Object.entries(this.chargers).map(([id, item]) => [id, item.plan])), coordination: this.coordination }) : null;
+    if (settlingUntil) {
+      this.backgroundPlanDueAt = settlingUntil;
+      this.scheduleWakeup(this.clock());
+      return;
+    }
+    this.backgroundPlanDueAt = null;
     const previousPeriods = Object.fromEntries(views.flatMap(view => {
       const item = this.charger(view.id), previous = item.plan;
       return !item.newEpisode && previous?.stabilityBasis === stabilityBasis && previous.feasible === true
@@ -2042,7 +2068,11 @@ export class ChargingRuntime {
       item.newEpisode = false;
       item.limiterPlanBasis = this.currentPlanBasis(item);
     }
-    this.persist(); this.store.afterCommit(() => this.scheduleWakeup(this.clock()));
+    this.persist(); this.store.afterCommit(() => {
+      this.lastBackgroundPlan = { key: settlingKey, at: now };
+      this.backgroundPlanDueAt = null;
+      this.scheduleWakeup(this.clock());
+    });
     });
     if (current() && this.historyReady) {
       const contextNow = this.clock(), contextViews = this.views(contextNow);
@@ -2101,7 +2131,7 @@ export class ChargingRuntime {
   }
   scheduleWakeup(now = this.clock()) {
     if (this.closed) return;
-    const boundaries = [...(this.coordination?.allocations ?? []).flatMap(row => [row.start, row.end])
+    const boundaries = [this.backgroundPlanDueAt, ...(this.coordination?.allocations ?? []).flatMap(row => [row.start, row.end])
       .filter(Number.isFinite).map(Math.ceil),
       ...Object.values(this.chargers).flatMap(item => {
         const control = item.controller?.status();
@@ -2132,7 +2162,7 @@ export class ChargingRuntime {
     if (Array.isArray(prices)) { this.prices = prices; this.pricesInitialized = true; }
     let planning;
     try {
-      planning = this.updatePlan(now).then(() => {
+      planning = this.updatePlan(now, { background: true }).then(() => {
         if (!this.closed) this.error = null;
       }).catch(() => { if (!this.closed) this.error = 'charging-planning-unavailable'; });
     } catch { this.error = 'charging-planning-unavailable'; }
@@ -2301,7 +2331,7 @@ export class ChargingRuntime {
     item.error = null;
     }, { priority: 'control', isCurrent: () => item.controller === controller });
     if (refreshPlan || !this.currentPlanReusable(item)) {
-      try { await this.updatePlan(this.clock(), { sourceId: id }); this.error = null; } catch { this.error = 'charging-planning-unavailable'; }
+      try { await this.updatePlan(this.clock(), { sourceId: id, background: !refreshPlan }); this.error = null; } catch { this.error = 'charging-planning-unavailable'; }
     }
   }
   checkControlAuthority() {

@@ -33,6 +33,7 @@ const categories = [
   { name: 'learning_journal', sql: 'SELECT at start,at finish FROM learning_journal WHERE input=?', input: true },
   { name: 'charging_reports', sql: 'SELECT started_at start,COALESCE(ended_at,started_at) finish FROM charging_reports' },
   { name: 'charging_report_events', sql: 'SELECT at start,at finish FROM charging_report_events' },
+  { name: 'charging_report_contexts', sql: 'SELECT NULL start,NULL finish FROM charging_report_contexts' },
 ];
 // Scoped TEMP rows have no column affinity: SQLite can store a JavaScript
 // integer timestamp as REAL there. Accept exactly integral numeric clocks.
@@ -75,7 +76,7 @@ export async function recoverySourceSummary({ donor, input, now = Date.now(), yi
   if (!donor.incremental || !donor.recoveryJournal || !donor.recoveryState)
     throw new TypeError('Changed source inventory requires a scoped source');
   const rows = [];
-  for (const category of categories.filter(row => !['charging_reports', 'charging_report_events'].includes(row.name))) {
+  for (const category of categories.filter(row => !['charging_reports', 'charging_report_events', 'charging_report_contexts'].includes(row.name))) {
     const projection = category.name === 'learning_journal'
       ? { ...category, sql: `SELECT at start,at finish FROM ${donor.recoveryJournal} WHERE input=?` } : category;
     rows.push({ name: category.name, ...range(donor, projection, input) });
@@ -88,7 +89,7 @@ export async function recoverySourceSummary({ donor, input, now = Date.now(), yi
 }
 
 export function validRecoverySourceSummary(value) {
-  const names = categories.filter(row => !['charging_reports', 'charging_report_events'].includes(row.name)).map(row => row.name)
+  const names = categories.filter(row => !['charging_reports', 'charging_report_events', 'charging_report_contexts'].includes(row.name)).map(row => row.name)
     .concat('recorder_pending_energy');
   const fields = (row, keys) => row !== null && typeof row === 'object' && !Array.isArray(row)
     && Object.keys(row).every(key => keys.includes(key));

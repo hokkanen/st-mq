@@ -365,6 +365,20 @@ test('current operational checkpoints stay distinct from retained measurements a
   assert(!JSON.stringify(unsupported).includes(marker));
 });
 
+test('Caravan shutdown restoration events have a historical writer description without implying an active obligation', t => {
+  const store = new Store(':memory:'); t.after(() => store.close());
+  store.event('caravan-shutdown-restoration-pending', { privatePayload: 'synthetic-private-marker' }, at);
+  const overview = getDatabaseOverview({ store, now: at + 1000 });
+  assert.equal(overview.catalogueComplete, true);
+  assert.deepEqual(overview.inventoryIssues, []);
+  const row = items(overview).get('events-caravan-restoration');
+  assert.equal(row.count, 1);
+  assert.match(row.description, /shuts down.*unconfirmed/);
+  assert.match(row.description, /historical event does not establish whether restoration remains pending now/);
+  assert.equal(row.breakdown[0].label, 'caravan-shutdown-restoration-pending');
+  assert(!JSON.stringify(overview).includes('synthetic-private-marker'));
+});
+
 test('charging report inventory counts sessions and retained evidence without exposing report payloads', t => {
   const store = new Store(':memory:'); t.after(() => store.close());
   const marker = 'private-synthetic-report-payload';
@@ -377,6 +391,9 @@ test('charging report inventory counts sessions and retained evidence without ex
     (namespace,charger_id,report_id,at,category,payload) VALUES(?,?,?,?,?,?)`);
   event.run(marker, 'charger1', 'active', at, 'control', JSON.stringify({ note: marker }));
   event.run(marker, 'charger1', 'saved', at - 1000, 'plans', JSON.stringify({ note: marker }));
+  store.db.prepare(`INSERT INTO charging_report_contexts
+    (namespace,charger_id,report_id,kind,digest,payload) VALUES(?,?,?,?,?,?)`)
+    .run(marker, 'charger1', 'saved', 'prices', 'synthetic-digest', JSON.stringify([{ privateValue: marker }]));
   store.db.exec('PRAGMA query_only=ON');
   const overview = getDatabaseOverview({ store, now: at }), rows = items(overview);
   assert.equal(overview.catalogueComplete, true);
@@ -386,8 +403,13 @@ test('charging report inventory counts sessions and retained evidence without ex
   ]);
   assert.equal(rows.get('charging-report-events').count, 2);
   assert.match(rows.get('charging-report-events').retentionDescription, /Whole-report expiry or deletion/);
+  assert.equal(rows.get('charging-report-contexts').count, 1);
+  assert.equal(rows.get('charging-report-contexts').firstAt, null);
+  assert.match(rows.get('charging-report-contexts').description, /stored once per report/);
+  assert.match(rows.get('charging-report-contexts').retentionDescription, /Whole-report expiry or deletion/);
   assert.equal(overview.accounting.tables.find(row => row.name === 'charging_reports').rows, 2);
   assert.equal(overview.accounting.tables.find(row => row.name === 'charging_report_events').rows, 2);
+  assert.equal(overview.accounting.tables.find(row => row.name === 'charging_report_contexts').rows, 1);
   assert(!JSON.stringify(overview).includes(marker));
 });
 

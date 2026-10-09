@@ -16,7 +16,7 @@ function fixture(t) {
     chargers: ['charger1', 'charger2'].map((id, index) => ({ id, label: id, association: `synthetic-${id}`,
       provider: index ? 'shelly-evse' : 'easee', controls: { enabled: true }, settings: { enabled: true },
       capabilities: { scheduling: true, currentControl: index === 1, externalLoadBalancing: index === 0 },
-      control: { phase: 'active', snapshot: { online: true, readAt: now, controlReady: true, transport: index ? 'shelly-evse' : 'easee' }, session: { connected: false } },
+      control: { phase: 'active', snapshot: { online: true, readAt: now, controlReady: true, currentControlReady: true, currentObservationReady: true, transport: index ? 'shelly-evse' : 'easee' }, session: { connected: false } },
       forecast: { powerKw: 11.04, voltageV: 230 }, telemetry: { providerConnected: true }, request: null,
       vehicle: { state: 'disconnected' }, values: { connected: reading(false), soc: reading(40), minimumSoc: reading(80),
         capacityKwh: reading(74), vehicleCeilingSoc: reading(80), powerKw: reading(0), charging: reading(false),
@@ -442,4 +442,60 @@ test('enabled current adjustment stays unknown before its limiter and coordinati
   const result = sharedChargingAssessment(f.view.chargers, undefined, f.now());
   assert.equal(result.execution.state, 'unknown');
   assert.equal(result.execution.expectedCurrentA, null);
+});
+
+test('processing holds preserve dated allocation and readback and append evidence without replanning copies', t => {
+  const f = fixture(t); f.plug(); f.coordinate('charger2');
+  const charger = f.view.chargers[1], diagnostics = f.createDiagnostics(), start = f.now();
+  charger.configuration = { limiterEnabled: true, maximumCurrentA: 16 };
+  charger.control.limiter = { currentA: 16, priority: 'charger2', evaluatedAt: start };
+  charger.values.currentA = f.reading(16, 'shelly-evse');
+  diagnostics.observe(f.view.chargers, start, f.view.coordination);
+  const initial = diagnostics.status(start).chargers[1].current;
+  for (let index = 1; index <= 30; index++) {
+    const ready = index % 2 === 0;
+    Object.assign(charger.control.snapshot, { controlReady: ready, currentControlReady: ready,
+      commandBlockReason: ready ? null : 'evse-input-persistence-pending' });
+    diagnostics.observe(f.view.chargers, start + index * 100, f.view.coordination);
+    const current = diagnostics.status(start + index * 100).chargers[1].current;
+    assert.equal(current.shared.current.execution.expectedCurrentA, 16);
+    assert.equal(current.shared.current.execution.allocationAt, start, 'Processing cannot renew an allocation clock');
+    assert.equal(current.shared.current.execution.reportedCurrentA, 16);
+    assert.equal(current.shared.current.execution.measuredAt, start, 'Processing cannot renew native readback');
+    assert.equal(current.shared.current.execution.commandReady, ready);
+    assert.equal(current.counts.plans, initial.counts.plans);
+  }
+  const ref = { chargerId: 'charger2', reportId: initial.id };
+  const evidence = diagnostics.reportEvents({ ...ref, filter: 'evidence', limit: 100 }).events
+    .filter(row => row.code === 'shared-charging-evidence');
+  assert.equal(evidence.length, 30, 'Every short command hold and recovery is retained');
+  assert.equal(diagnostics.reportEvents({ ...ref, filter: 'plans' }).events.filter(row => row.kind === 'shared').length, 1);
+  assert.equal(f.store.db.prepare("SELECT count(*) n FROM charging_report_contexts WHERE report_id=? AND kind='model'").get(initial.id).n, 1,
+    'Identical proposed and adopted forecasts are stored once for the report');
+  assert.ok(evidence.every(row => row.shared.adopted.state === 'feasible'), 'Each bounded page reconstructs complete contexts');
+  const text = chargingSharedText(evidence.find(row => !row.shared.execution.commandReady).shared, 'charger2');
+  assert.match(text, /expected allowance 16 A/);
+  assert.match(text, /Confirmed current setting 16 A/);
+  assert.match(text, /waiting for input processing/);
+});
+
+test('expired allocations remain unknown beside dated history, without carrying it to another connection', t => {
+  const f = fixture(t); f.plug(); f.coordinate('charger2');
+  const charger = f.view.chargers[1], diagnostics = f.createDiagnostics(), start = f.now();
+  charger.configuration = { limiterEnabled: true, maximumCurrentA: 16 };
+  charger.control.limiter = { currentA: 16, priority: 'charger2', evaluatedAt: start };
+  charger.values.currentA = f.reading(16, 'shelly-evse');
+  diagnostics.observe(f.view.chargers, start, f.view.coordination);
+  diagnostics.observe(f.view.chargers, start + 15_001, f.view.coordination);
+  const shared = diagnostics.status(start + 15_001).chargers[1].current.shared;
+  assert.equal(shared.current.execution.expectedCurrentA, null);
+  assert.equal(shared.current.execution.allocationAt, null);
+  assert.equal(shared.current.execution.lastExpectedCurrentA, 16);
+  assert.equal(shared.current.execution.lastAllocationAt, start);
+  assert.equal(shared.current.execution.reportedCurrentA, 16);
+  assert.equal(validSharedAssessment(shared), true);
+  assert.match(chargingSharedText(shared, 'charger2'), /expected allowance unknown.*Last known allowance 16 A.*historical only/);
+  charger.request.sessionId = 'replacement'; charger.control.session.connectedAt = start + 16_000;
+  diagnostics.observe(f.view.chargers, start + 16_000, f.view.coordination);
+  assert.equal(diagnostics.status(start + 16_000).chargers[1].current.shared.current.execution.lastExpectedCurrentA, null);
 });

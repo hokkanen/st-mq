@@ -1,7 +1,7 @@
 import { RECOVERY_DEPENDENCY_SCHEMA } from '../recovery/dependencies.js';
 import { journalSchema } from './journal-schema.js';
 // One current schema. Pre-production databases are never migrated.
-export const SCHEMA_VERSION = 27;
+export const SCHEMA_VERSION = 28;
 // Original source rows remain immutable evidence. The active views select the
 // current recovery interpretation without erasing history or changing local IDs.
 export const RECOVERABLE_TABLES = ['annotations', 'counters', 'energy_audits', 'events',
@@ -34,9 +34,20 @@ CREATE TABLE charging_reports (
  summary TEXT NOT NULL CHECK(json_valid(summary)), checkpoint TEXT NOT NULL CHECK(json_valid(checkpoint)),
  PRIMARY KEY(namespace,charger_id,report_id)
 ) WITHOUT ROWID;
+CREATE TABLE charging_report_contexts (
+ id INTEGER PRIMARY KEY, namespace TEXT NOT NULL, charger_id TEXT NOT NULL, report_id TEXT NOT NULL,
+ kind TEXT NOT NULL CHECK(kind IN ('prices','model')), digest TEXT NOT NULL,
+ payload TEXT NOT NULL CHECK(json_valid(payload)),
+ UNIQUE(namespace,charger_id,report_id,kind,digest), UNIQUE(namespace,charger_id,report_id,id),
+ FOREIGN KEY(namespace,charger_id,report_id) REFERENCES charging_reports(namespace,charger_id,report_id) ON DELETE CASCADE
+);
 CREATE TABLE charging_report_events (
  id INTEGER PRIMARY KEY AUTOINCREMENT, namespace TEXT NOT NULL, charger_id TEXT NOT NULL, report_id TEXT NOT NULL,
  at INTEGER NOT NULL, category TEXT NOT NULL, payload TEXT NOT NULL CHECK(json_valid(payload)),
+ price_context_id INTEGER, proposed_context_id INTEGER, adopted_context_id INTEGER,
+ FOREIGN KEY(namespace,charger_id,report_id,price_context_id) REFERENCES charging_report_contexts(namespace,charger_id,report_id,id),
+ FOREIGN KEY(namespace,charger_id,report_id,proposed_context_id) REFERENCES charging_report_contexts(namespace,charger_id,report_id,id),
+ FOREIGN KEY(namespace,charger_id,report_id,adopted_context_id) REFERENCES charging_report_contexts(namespace,charger_id,report_id,id),
  FOREIGN KEY(namespace,charger_id,report_id) REFERENCES charging_reports(namespace,charger_id,report_id) ON DELETE CASCADE
 );
 CREATE TABLE energy_audits (
@@ -134,6 +145,9 @@ CREATE INDEX charging_reports_history ON charging_reports(namespace,charger_id,s
 CREATE INDEX charging_reports_expiry ON charging_reports(namespace,ended_at) WHERE saved_at IS NULL AND ended_at IS NOT NULL;
 CREATE INDEX charging_report_events_report ON charging_report_events(namespace,charger_id,report_id,id DESC);
 CREATE INDEX charging_report_events_category ON charging_report_events(namespace,charger_id,report_id,category,id DESC);
+CREATE INDEX charging_report_events_prices ON charging_report_events(price_context_id) WHERE price_context_id IS NOT NULL;
+CREATE INDEX charging_report_events_proposed ON charging_report_events(proposed_context_id) WHERE proposed_context_id IS NOT NULL;
+CREATE INDEX charging_report_events_adopted ON charging_report_events(adopted_context_id) WHERE adopted_context_id IS NOT NULL;
 CREATE INDEX energy_audits_device_time ON energy_audits(device,source_time,id);
 CREATE INDEX events_type_time ON events(type,at,id);
 CREATE INDEX events_type_id ON events(type,id);

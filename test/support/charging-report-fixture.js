@@ -21,5 +21,6 @@ export function readCompleteReport(observer, report) {
 export function diagnosticRows(store) {
   return [...store.db.prepare('SELECT value FROM state').all(),
     ...store.db.prepare('SELECT summary,checkpoint FROM charging_reports').all(),
-    ...store.db.prepare('SELECT payload FROM charging_report_events').all()];
+    ...store.db.prepare('SELECT payload FROM charging_report_events').all(),
+    ...store.db.prepare('SELECT payload FROM charging_report_contexts').all()];
 }

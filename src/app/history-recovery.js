@@ -74,8 +74,8 @@ function validReport(value) {
     || !Array.isArray(source.learningInputs) || source.learningInputs.some(input => !['mqtt', 'providers', 'simulated', 'history'].includes(input))
     || !fields(source.skippedLearning, ['mqtt', 'providers', 'simulated', 'history', 'unknown']) || !Object.values(source.skippedLearning).every(count)
     || !count(source.skippedLearningRecords) || source.installationIdentity !== 'not-proven-by-format')) return false;
-  if (value.unsupported && (!Array.isArray(value.unsupported) || value.unsupported.length > 2 || !value.unsupported.every(row =>
-    fields(row, ['name', 'count', 'reason']) && ['charging_reports', 'charging_report_events'].includes(row.name) && count(row.count)
+  if (value.unsupported && (!Array.isArray(value.unsupported) || value.unsupported.length > 3 || !value.unsupported.every(row =>
+    fields(row, ['name', 'count', 'reason']) && ['charging_reports', 'charging_report_events', 'charging_report_contexts'].includes(row.name) && count(row.count)
       && row.reason === 'Saved charging reports are not included in history recovery.'))) return false;
   return true;
 }

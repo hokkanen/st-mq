@@ -156,13 +156,13 @@ test('a stale comparison cannot approve a revised request or a replacement physi
 test('unavailable comparisons stay honest and unplugged, completed, or disabled cards have no empty widget', async () => {
   const document = documentFixture(), $ = id => document.getElementById(id), item = flexibleCharger({ preview: null });
   const panel = createChargingPanel({ document, request: async () => ({ flexibility: item.flexibility,
-    comparison: { available: false, reason: 'price-coverage-unavailable' } }) });
+    comparison: { available: false, reason: 'forecast-unavailable' } }) });
   panel.update(status(item)); assert.equal($('charger1-flexibility').dataset.tone, 'neutral');
   await $('charger1-flexibility').listeners.get('click')({ preventDefault() {}, stopPropagation() {} });
   assert.equal($('charging-flexibility-saving').hidden, true);
   assert.match($('charging-flexibility-plans').textContent, /Est\. finish Unavailable.*Est\. charging Unavailable/);
   assert.doesNotMatch($('charging-flexibility-plans').textContent, /0 min|Est\. charging 0/);
-  assert.match($('charging-flexibility-note').textContent, /Prices do not cover/);
+  assert.match($('charging-flexibility-note').textContent, /A fresh price forecast is unavailable/);
   $('charging-flexibility-close').dispatch('click');
   for (const changed of [{ ...item, values: { ...item.values, connected: reading(false) } },
     { ...item, requiredGridKwh: 0 }, { ...item, flexibility: { ...item.flexibility, enabled: false } }]) {
@@ -210,9 +210,9 @@ test('temporary missing savings and an HTTP calculation ahead of the status tick
   }
   const opening = $('charger1-flexibility').listeners.get('click')({ preventDefault() {}, stopPropagation() {} });
   assert.equal($('charger1-flexibility').children[1].textContent, '€1.60 est. saving');
-  resolve({ comparison: { available: false, reason: 'price-coverage-unavailable' } }); await opening;
+  resolve({ comparison: { available: false, reason: 'forecast-unavailable' } }); await opening;
   assert.equal($('charger1-flexibility').children[1].textContent, '€1.60 est. saving');
-  assert.match($('charging-flexibility-message').textContent, /Prices do not cover.*Showing the previous estimate/);
+  assert.match($('charging-flexibility-message').textContent, /A fresh price forecast is unavailable.*Showing the previous estimate/);
   panel.close();
 });
 

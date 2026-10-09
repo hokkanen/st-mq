@@ -8,6 +8,8 @@ const fresh = (value, now) => time(value) && value <= now && now - value <= 2 * 
 const value = (charger, key) => charger?.values?.[key]?.available === true ? charger.values[key].value : null;
 const hash = input => createHash('sha256').update(JSON.stringify(input)).digest('hex');
 const SOURCES = ['easee', 'easee-ocpp', 'shelly-evse'];
+const COMMAND_BLOCKS = ['provider-offline', 'input-processing', 'source-time-pending', 'device-permission-held',
+  'readback-unavailable', 'control-unavailable'];
 
 function physical(charger, id, now) {
   const snapshot = charger?.control?.snapshot, reading = charger?.values?.powerKw;
@@ -121,14 +123,18 @@ function execution(chargers, coordination, now) {
   // equal live household headroom. An old priority is not a new instruction.
   const adjusted = charger?.configuration?.limiterEnabled === true || control?.limiter?.priority != null;
   const limit = control?.limiter;
-  const liveLimitReady = limit && PRIORITIES.includes(coordination?.priority)
+  const currentScope = fresh(coordination?.at, now) && coordination?.sessions?.charger2 === charger?.request?.sessionId
+    && coordination?.requests?.charger2?.revision === charger?.request?.revision
+    && coordination?.requests?.charger2?.automatic === charger?.settings?.enabled
+    && time(control?.session?.connectedAt) && control.session.connectedAt <= now;
+  const liveLimitReady = currentScope && limit && PRIORITIES.includes(coordination?.priority)
     && limit.priority === coordination.priority && time(limit.evaluatedAt)
-    && limit.evaluatedAt <= now && now - limit.evaluatedAt <= 15_000
-    && control?.snapshot?.controlReady === true && control.snapshot.currentControlReady === true
-    && !['unavailable', 'uncertain'].includes(control.phase) && control.devicePermissionHeld !== true;
+    && limit.evaluatedAt >= control.session.connectedAt && limit.evaluatedAt <= now && now - limit.evaluatedAt <= 15_000
+    && control?.snapshot?.online === true && fresh(control.snapshot.readAt, now)
+    && control.snapshot.currentObservationReady === true;
   let expectedCurrentA = adjusted || coordination?.priority === 'charger2'
     ? liveLimitReady ? number(limit.currentA) : null
-    : number(allocation?.currentLimitA);
+    : currentScope ? number(allocation?.currentLimitA) : null;
   if (adjusted && expectedCurrentA !== null) {
     const vehicle = value(charger, 'vehicleCurrentA');
     const ceilings = [value(charger, 'maximumCurrentA'), charger?.configuration?.maximumCurrentA,
@@ -136,15 +142,32 @@ function execution(chargers, coordination, now) {
       .filter(value => finite(value) && value >= 0);
     expectedCurrentA = Math.min(expectedCurrentA, ...ceilings);
   }
-  const base = { state: 'unknown', expectedCurrentA, reportedCurrentA: null, measuredAt: null, expectationAt: now };
-  if (value(charger, 'connected') === false) return { ...base, state: 'not-exercised' };
-  if (!fresh(coordination?.at, now) || coordination?.sessions?.charger2 !== charger?.request?.sessionId
-    || coordination?.requests?.charger2?.revision !== charger?.request?.revision
-    || coordination?.requests?.charger2?.automatic !== charger?.settings?.enabled
-    || control?.snapshot?.online !== true || !fresh(control.snapshot.readAt, now)
-    || control.pending || control.manual || charger?.identification?.active || expectedCurrentA === null
-    || current?.source !== 'shelly-evse' || !current.available || current.assumed || current.retained
-    || !finite(current.value) || current.value < 0 || !fresh(measuredAt, now)) return base;
+  const online = control?.snapshot?.online === true && fresh(control.snapshot.readAt, now)
+    && charger?.telemetry?.providerConnected !== false;
+  const commandReady = online && control.snapshot.controlReady === true && control.snapshot.currentControlReady === true
+    && control.devicePermissionHeld !== true;
+  const pendingReason = control?.snapshot?.commandBlockReason;
+  const commandBlockReason = commandReady ? null : !online ? 'provider-offline'
+    : control.devicePermissionHeld === true ? 'device-permission-held'
+      : pendingReason === 'evse-input-persistence-pending' ? 'input-processing'
+        : pendingReason === 'evse-source-time-pending' ? 'source-time-pending'
+          : control.snapshot.currentObservationReady !== true ? 'readback-unavailable' : 'control-unavailable';
+  const observed = online && current?.source === 'shelly-evse' && current.available && !current.assumed && !current.retained
+    && finite(current.value) && current.value >= 0 && fresh(measuredAt, now)
+    && time(control?.session?.connectedAt) && measuredAt >= control.session.connectedAt;
+  const allocationAt = expectedCurrentA === null ? null : adjusted || coordination?.priority === 'charger2' ? limit.evaluatedAt : coordination.at;
+  const session = typeof charger?.association === 'string' && typeof charger.request?.sessionId === 'string'
+    && time(control?.session?.connectedAt) ? hash([charger.association, charger.request.sessionId, control.session.connectedAt]) : null;
+  const base = { state: 'unknown', session, expectedCurrentA, allocationAt,
+    lastExpectedCurrentA: expectedCurrentA, lastAllocationAt: allocationAt,
+    reportedCurrentA: observed ? current.value : null, measuredAt: observed ? measuredAt : null,
+    commandReady, commandBlockReason, expectationAt: now };
+  if (value(charger, 'connected') === false) return { ...base, state: 'not-exercised', expectedCurrentA: null, allocationAt: null,
+    lastExpectedCurrentA: null, lastAllocationAt: null };
+  // A command hold does not erase either an admitted allocation or its native
+  // readback. It does withhold a claim that the active instruction is verified.
+  if (!currentScope || !commandReady || ['unavailable', 'uncertain'].includes(control.phase)
+    || control.pending || control.manual || charger?.identification?.active || expectedCurrentA === null || !observed) return base;
   if (expectedCurrentA === 0) {
     const peer = physical(charger, 'charger2', now);
     const paused = ['waiting', 'paused'].includes(control.phase) && peer.drawing === false;
@@ -169,12 +192,16 @@ export function sharedChargingAssessment(chargers, coordination, now) {
 }
 
 /** Clock refreshes and small energy progress are not new shared instructions. */
-export function sharedAssessmentKey(snapshot) {
-  return JSON.stringify({ selectedPriority: snapshot.selectedPriority, overlap: snapshot.overlap, priority: snapshot.priority,
-    execution: [snapshot.execution.state, snapshot.execution.expectedCurrentA],
-    peers: snapshot.peers.map(row => [row.id, row.connected, row.session, row.drawing]),
+export function sharedPlanningKey(snapshot) {
+  return JSON.stringify({ selectedPriority: snapshot.selectedPriority, priority: snapshot.priority,
     models: [snapshot.proposed, snapshot.adopted].map(row => [row.state, row.priority, row.scheduleKey, row.allocationKey,
       row.chargers.map(charger => [charger.id, charger.sufficient, charger.reportedFeasible, charger.deadlineAt])]) });
+}
+export function sharedAssessmentKey(snapshot) {
+  return JSON.stringify({ planning: sharedPlanningKey(snapshot), overlap: snapshot.overlap,
+    execution: [snapshot.execution.state, snapshot.execution.expectedCurrentA, snapshot.execution.reportedCurrentA,
+      snapshot.execution.commandReady, snapshot.execution.commandBlockReason],
+    peers: snapshot.peers.map(row => [row.id, row.connected, row.session, row.drawing]) });
 }
 
 export function advanceSharedAssessment(previous, snapshot) {
@@ -189,6 +216,11 @@ export function advanceSharedAssessment(previous, snapshot) {
     if (snapshot.at - snapshot.prioritySince < 2 * MINUTE) snapshot.priority = 'settling';
   }
   const prior = previous?.current.execution;
+  if (snapshot.execution.expectedCurrentA === null && prior && snapshot.execution.state !== 'not-exercised'
+    && snapshot.execution.session !== null && prior.session === snapshot.execution.session) {
+    snapshot.execution.lastExpectedCurrentA = prior.lastExpectedCurrentA;
+    snapshot.execution.lastAllocationAt = prior.lastAllocationAt;
+  }
   if (prior && prior.expectedCurrentA === snapshot.execution.expectedCurrentA
     && previous.current.peers[1].session === snapshot.peers[1].session)
     snapshot.execution.expectationAt = prior.expectationAt;
@@ -238,9 +270,13 @@ export function validSharedAssessment(value) {
       && nonnegative(peer.powerKw) && optionalTime(peer.measuredAt) && optionalTime(peer.receivedAt)
       && (peer.source === null || SOURCES.includes(peer.source)) && nonnegative(peer.requiredGridKwh) && optionalTime(peer.deadlineAt))
     && model(row.proposed) && model(row.adopted)
-    && exact(row.execution, 'state,expectedCurrentA,reportedCurrentA,measuredAt,expectationAt')
+    && exact(row.execution, 'state,session,expectedCurrentA,allocationAt,lastExpectedCurrentA,lastAllocationAt,reportedCurrentA,measuredAt,commandReady,commandBlockReason,expectationAt')
     && ['unknown', 'not-exercised', 'consistent', 'inconsistent', 'settling'].includes(row.execution.state)
+    && signature(row.execution.session)
     && optionalNumber(row.execution.expectedCurrentA) && optionalNumber(row.execution.reportedCurrentA)
+    && optionalNumber(row.execution.lastExpectedCurrentA) && optionalTime(row.execution.allocationAt) && optionalTime(row.execution.lastAllocationAt)
+    && typeof row.execution.commandReady === 'boolean'
+    && (row.execution.commandReady ? row.execution.commandBlockReason === null : COMMAND_BLOCKS.includes(row.execution.commandBlockReason))
     && optionalTime(row.execution.measuredAt) && time(row.execution.expectationAt) && row.execution.expectationAt <= row.at;
   return exact(value, 'current,coverage,priorityChanges,history') && snapshot(value.current)
     && exact(value.coverage, 'overlap,priority,jointSchedule')

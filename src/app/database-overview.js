@@ -332,6 +332,7 @@ export function getDatabaseOverview({ store, now = Date.now() }) {
     ['cycles', "type LIKE 'cycle-%'", 'Cycle events', 'Cycle planning, progression, interruption and completion notifications.'],
     ['heating-scenarios', "type LIKE 'heating-scenario-%'", 'One-cycle scenario events', 'Explicit scenario approvals, cancellation, expiry and completion. These describe control intent and recorded outcomes, not evidence supplied by simulations.'],
     ['execution', "type LIKE 'h66-%' OR type LIKE 'floor-%' OR type LIKE 'heating-test-%' OR type LIKE 'control-%' OR type='restoration-pending' OR type='simulated-command-readback'", 'Equipment execution and readback events', 'Requests, confirmations, failures, restoration and manual-test outcomes.'],
+    ['caravan-restoration', "type='caravan-shutdown-restoration-pending'", 'Caravan shutdown restoration', 'Recorded when the application shuts down while Caravan probe restoration is still unconfirmed. This historical event does not establish whether restoration remains pending now.'],
     ['garage-feed', "type='garage-external-temperature-diagnostic'", 'Garage external-temperature problems', 'Local sensor, temperature-control or frost-feed faults and recovery. Fresh measurements remain separate from saved targets.'],
     ['garage-diagnostics', "type='garage-pump-diagnostic'", 'Garage native diagnostic bytes', 'Changes to raw native diagnostic bytes and their availability after genuine observation. These bytes are not interpreted as a diagnosed fault.'],
     ['garage', "type LIKE 'garage-%'", 'Garage control changes', 'Native-setting requests, Normal/Away selections, target changes and warm-up advisories.'],
@@ -382,6 +383,7 @@ export function getDatabaseOverview({ store, now = Date.now() }) {
   const epochs = aggregate('learning_epochs', 'NULL');
   const chargingReports = aggregate('charging_reports', 'started_at', 'COALESCE(ended_at,started_at)');
   const chargingEvents = aggregate('charging_report_events', 'at');
+  const chargingContexts = aggregate('charging_report_contexts', 'NULL');
   const chargingReportCounts = db.prepare(`SELECT SUM(ended_at IS NULL) active,
     SUM(saved_at IS NOT NULL) saved FROM charging_reports`).get();
   add('charging_reports', 'Charging session reports',
@@ -400,7 +402,14 @@ export function getDatabaseOverview({ store, now = Date.now() }) {
         retentionDescription: 'All events survive while their report is retained. Whole-report expiry or deletion removes its owned events; display grouping and paging never discard evidence.',
         writeBehavior: 'Appended on meaningful diagnostic changes; unchanged polls do not produce new instructions.',
         fields: fields(['Evidence', 'Original source and receipt clocks, known values and explicit unavailable states.'],
-          ['Planning', 'Recorded input changes and full planning snapshots, separate from physical execution.']),
+          ['Planning', 'Recorded input changes and planning snapshots referencing unchanged shared context, separate from physical execution.']),
+      }),
+      item('charging-report-contexts', 'Shared report context', 'Immutable price arrays and shared forecast context stored once per report and referenced by its original events.', chargingContexts, {
+        countLabel: 'contexts', dateBasis: 'dates belong to the referencing events', retention: 'mixed',
+        retentionDescription: 'Owned by the session report. Whole-report expiry or deletion removes these contexts together with the referencing events; active and saved reports retain them.',
+        writeBehavior: 'Appended only when a report first records distinct context; unchanged content is reused.',
+        fields: fields(['Context and interpretation', 'Original price or forecast content, retained without exposing private payloads.'],
+          ['Report ownership', 'Context belongs to one report and cannot extend its retention or grant control authority.']),
       }),
     ]);
   const recoveryRuns = aggregate('recovery_runs', 'started_at', 'COALESCE(completed_at,started_at)');
@@ -535,7 +544,7 @@ export function getDatabaseOverview({ store, now = Date.now() }) {
     learning_journal_entries: journalEntries.count, learning_epochs: epochs.count, recovery_runs: recoveryRuns.count,
     recovery_provenance: recoverySources.count, learning_cycles: cycles.count,
     fireplace_events: sum([...fireplace.values()]).count,
-    charging_reports: chargingReports.count, charging_report_events: chargingEvents.count,
+    charging_reports: chargingReports.count, charging_report_events: chargingEvents.count, charging_report_contexts: chargingContexts.count,
     history_recoveries: recoveries.count, recovery_members: recoveryMembers.count, recovery_decisions: recoveryDecisions.count,
     history_selection: historySelections.count, recovery_exclusions: recoveryExclusions.count,
     ...Object.fromEntries(Object.entries(journalCounts).map(([table,value])=>[table,value.count])),

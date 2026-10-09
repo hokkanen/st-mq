@@ -105,7 +105,7 @@ async function checkSource(donorDigest) {
     WHERE key LIKE 'recorder:energy:%' AND json_valid(value) AND json_type(value,'$.pending')='object'`).get().count });
   if (sourceAssessment.skippedLearningRecords)
     tables.push({ name: 'other_learning_inputs', count: sourceAssessment.skippedLearningRecords });
-  const unsupported = ['charging_reports', 'charging_report_events'].map(name => ({ name,
+  const unsupported = ['charging_reports', 'charging_report_events', 'charging_report_contexts'].map(name => ({ name,
     count: donor.incremental ? donor.db.prepare('SELECT COUNT(*) count FROM recovery_source_keys WHERE table_name=?').get(name).count : donor.db.prepare(`SELECT COUNT(*) count FROM ${name}`).get().count,
     reason: 'Saved charging reports are not included in history recovery.' })).filter(row => row.count > 0);
   const report = { status: 'checked', policy: RECOVERY_POLICY, tables, model: { status: 'not-assessed' },

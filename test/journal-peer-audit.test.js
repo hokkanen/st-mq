@@ -111,8 +111,10 @@ test('peer apply and rewind preserve cascading report and learning dependencies'
   const f = await fixture(t, store => store.transaction(() => {
     store.db.prepare('INSERT INTO charging_reports VALUES(?,?,?,?,?,?,?,?,?)')
       .run('mqtt', 'synthetic-charger', 'synthetic-report', '{}', 1, null, null, '{}', '{}');
-    store.db.prepare('INSERT INTO charging_report_events(namespace,charger_id,report_id,at,category,payload) VALUES(?,?,?,?,?,?)')
-      .run('mqtt', 'synthetic-charger', 'synthetic-report', 2, 'synthetic', '{}');
+    store.db.prepare('INSERT INTO charging_report_contexts(id,namespace,charger_id,report_id,kind,digest,payload) VALUES(?,?,?,?,?,?,?)')
+      .run(1, 'mqtt', 'synthetic-charger', 'synthetic-report', 'prices', 'synthetic-digest', '[]');
+    store.db.prepare('INSERT INTO charging_report_events(namespace,charger_id,report_id,at,category,payload,price_context_id) VALUES(?,?,?,?,?,?,?)')
+      .run('mqtt', 'synthetic-charger', 'synthetic-report', 2, 'synthetic', '{}', 1);
     store.db.prepare('INSERT INTO learning_journal_entries(id,epoch,input,key,kind,at,algorithm_version,payload) VALUES(?,?,?,?,?,?,?,?)')
       .run(1, 'synthetic-epoch', 'mqtt', 'synthetic-key', 'synthetic', 1, LEARNING_ALGORITHM, '{}');
     store.db.prepare('INSERT INTO learning_checkpoints VALUES(?,?,?,?,?,?,?,?)')
@@ -127,10 +129,11 @@ test('peer apply and rewind preserve cascading report and learning dependencies'
   deliver(f.source, f.receiver, transfer);
   assert.deepEqual(contents(f.receiver), contents(f.source));
   assert.equal(f.receiver.db.prepare('SELECT COUNT(*) n FROM charging_report_events').get().n, 0);
+  assert.equal(f.receiver.db.prepare('SELECT COUNT(*) n FROM charging_report_contexts').get().n, 0);
   const branch = rewindPeer(f.source.db, { checkpoint: base });
   assert(branch);
   assert.deepEqual(contents(f.source), original, 'undo restores parent and cascading child rows together');
-  assert.equal(verifyJournal(f.source.db).archivedPeerRows, 5);
+  assert.equal(verifyJournal(f.source.db).archivedPeerRows, 6);
   verifyJournal(f.receiver.db);
 });
 

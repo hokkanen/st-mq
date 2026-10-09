@@ -63,10 +63,14 @@ test('excluded charging reports have dates without claiming merged coverage or e
     VALUES('mqtt','charger-2','invented-report','invented-association',?,NULL,'{}','{}')`).run(start);
   f.donor.db.prepare(`INSERT INTO charging_report_events(namespace,charger_id,report_id,at,category,payload)
     VALUES('mqtt','charger-2','invented-report',?,'synthetic','{}')`).run(start + HOUR);
+  f.donor.db.prepare(`INSERT INTO charging_report_contexts(namespace,charger_id,report_id,kind,digest,payload)
+    VALUES('mqtt','charger-2','invented-report','prices','synthetic','[]')`).run();
   const report = await recoveryCoverageReport(f);
   assert.equal(category(report,'charging_reports').source.from,start);
   assert.equal(category(report,'charging_reports').source.to,start);
   assert.equal(category(report,'charging_report_events').source.to,start + HOUR);
+  assert.equal(category(report,'charging_report_contexts').source.count, 1);
+  assert.equal(category(report,'charging_report_contexts').source.from, null, 'A reused context has no observation clock of its own');
   assert.equal(validRecoveryCoverageReport(report),true);
 });
 

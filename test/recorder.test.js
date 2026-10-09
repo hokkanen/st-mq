@@ -404,6 +404,67 @@ test('unused adaptive allowance gradually restores precision even while exact hi
   assert.equal(store.observations().filter(o=>o.signal==='supply_temperature').length,1,'No heartbeat is invented');
 });
 
+test('whole-database growth weights startup allocation by all measured time, including irregular intervals and restart',t=>{
+  const {store,recorder}=fixture(t),start=1000;
+  let bytes=1_000_000;
+  store.databaseBytes=()=>bytes;
+  recorder.flush(start);
+  bytes+=1_000_000;
+  recorder.flush(start+HOUR);
+  assert.equal(recorder.status(start+HOUR).totalDatabaseBytesPerDay7d,24_000_000);
+  const restarted=new Recorder(store);
+  for(let hour=2;hour<=7;hour++) {
+    bytes+=100_000;
+    restarted.flush(start+hour*HOUR);
+  }
+  const status=restarted.status(start+7*HOUR),meanDaily=1_600_000/7*24;
+  assert(Math.abs(status.totalDatabaseBytesPerDay-meanDaily)<1e-6);
+  assert(Math.abs(status.totalDatabaseBytesPerDay7d-meanDaily)<1e-6);
+  assert(Math.abs(status.totalDatabaseProjectedAnnualBytes-meanDaily*365.25)<0.001);
+  assert.equal(status.totalDatabaseMeasurementHours,7);
+  assert.equal(status.adaptiveAccountingStartedAt,null,'Allocation measurement does not seed adaptive precision');
+
+  const irregular=fixture(t);let irregularBytes=1_000_000;
+  irregular.store.databaseBytes=()=>irregularBytes;
+  irregular.recorder.flush(start);
+  irregularBytes+=1_000_000;irregular.recorder.flush(start+HOUR);
+  irregularBytes+=600_000;irregular.recorder.flush(start+7*HOUR);
+  assert(Math.abs(irregular.recorder.status(start+7*HOUR).totalDatabaseBytesPerDay7d-meanDaily)<1e-6,
+    'A six-hour interval counts six times as much as a one-hour interval');
+});
+
+test('mature whole-database growth has a seven-day response instead of averaging the entire lifetime',t=>{
+  const {store,recorder}=fixture(t),start=1000;
+  let bytes=1_000_000;
+  store.databaseBytes=()=>bytes;
+  recorder.flush(start);
+  for(let hour=1;hour<=35*24;hour++) {
+    bytes+=2_000_000;recorder.flush(start+hour*HOUR);
+  }
+  assert.equal(recorder.status(start+35*24*HOUR).totalDatabaseBytesPerDay7d,48_000_000);
+  for(let hour=35*24+1;hour<=42*24;hour++) {
+    bytes+=4_000_000;recorder.flush(start+hour*HOUR);
+  }
+  const status=recorder.status(start+42*24*HOUR);
+  assert(Math.abs(status.totalDatabaseBytesPerDay7d-(96_000_000-48_000_000/Math.E))<1e-6,
+    'After one time constant, only 1/e of the preceding steady rate remains');
+  assert(status.totalDatabaseBytesPerDay>95_000_000,'Daily rate responds faster than weekly display');
+});
+
+test('reused and released SQLite allocation count as no new growth, without inventing negative annual bytes',t=>{
+  const {store,recorder}=fixture(t),start=1000;
+  let bytes=1_000_000;
+  store.databaseBytes=()=>bytes;
+  recorder.flush(start);
+  assert.equal(recorder.status(start).totalDatabaseMeasurementHours,0);
+  bytes+=1_000_000;recorder.flush(start+HOUR);
+  recorder.flush(start+2*HOUR);
+  bytes-=500_000;recorder.flush(start+3*HOUR);
+  const status=recorder.status(start+3*HOUR);
+  assert(Math.abs(status.totalDatabaseBytesPerDay7d-8_000_000)<1e-6);
+  assert.equal(status.measuredDatabaseBytes,1_500_000);
+});
+
 test('exact writes, imports, journals and indexes cannot change adaptive precision or byte accounting',async t=>{
   const baseline=fixture(t,{annualBudgetBytes:100_000}), loaded=fixture(t,{annualBudgetBytes:100_000});
   const directory=mkdtempSync(join(tmpdir(),'stmq-budget-isolation-'));

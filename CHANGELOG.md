@@ -6,6 +6,20 @@ Versions follow Semantic Versioning. `-dev.N` denotes a development prerelease.
 
 ## Unreleased
 
+- Charging keeps confirmed current limits available during brief input-storage
+  holds while commands remain fenced. Reports distinguish expected allowance,
+  confirmed settings and command readiness, and classify evidence transitions
+  separately from plan changes. Background forecast updates share a fixed
+  30-second settling window only while accepted future schedules remain usable;
+  urgent changes and live current protection bypass it.
+- Charging reports store repeated price arrays and shared forecast context once
+  per report, retaining original events and whole-report expiry. Schema 28
+  requires a deliberate fresh development database; existing databases are
+  rejected before mutation and are never automatically replaced.
+- Whole-database growth weights elapsed time during startup so the first hour
+  does not dominate the following week. Storage details describe annualized
+  recent growth and explicitly exclude report-expiry or year-end-size forecasts.
+  Caravan shutdown restoration events now have a registered inventory description.
 - Price forecasts retain the provider's complete final hourly interval. One
   extra day compares feasible charging plans even when prices end before the
   later deadline, with a notice that incomplete coverage may change the saving.

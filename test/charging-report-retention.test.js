@@ -44,6 +44,7 @@ test('expiry follows completion time, protects saved and active reports, and un-
   assert.equal(f.observer.saveReport({ ...ref(first), saved: false }), null);
   assert.equal(f.observer.reportEvents(ref(first)), null);
   assert.equal(f.store.db.prepare('SELECT count(*) AS n FROM charging_report_events WHERE report_id=?').get(first.id).n, 0);
+  assert.equal(f.store.db.prepare('SELECT count(*) AS n FROM charging_report_contexts WHERE report_id=?').get(first.id).n, 0);
 });
 
 test('saving an active report protects subsequent events across restart and equipment replacement', () => {
@@ -93,6 +94,7 @@ test('completed reports can be deleted without deleting independent history or r
   const restarted = new ChargingSessionDiagnostics({ store: f.store, clock: () => START + 3 * MINUTE });
   assert.equal(restarted.observe([f.view], START + 3 * MINUTE).chargers[0].current, null);
   assert.equal(f.store.db.prepare('SELECT count(*) AS n FROM charging_report_events').get().n, 0);
+  assert.equal(f.store.db.prepare('SELECT count(*) AS n FROM charging_report_contexts').get().n, 0);
 });
 
 test('paged reports and filtered events are stable with equal timestamps and concurrent newer inserts', () => {
@@ -120,6 +122,68 @@ test('paged reports and filtered events are stable with equal timestamps and con
   assert.throws(() => f.observer.reportEvents({ ...ref(report), filter: 'retired-filter' }), /filter/);
 });
 
+test('price contexts are reused without changing event horizons, bounded pages or report ownership', t => {
+  const f = fixture(), horizon = START + DAY;
+  f.view.deadlineAt = horizon;
+  f.view.plan.priceSnapshot = Array.from({ length: 96 }, (_, index) =>
+    [START + index * 15 * MINUTE, START + (index + 1) * 15 * MINUTE, 2 + index % 7]);
+  f.view.plan.reason = 'cheapest-feasible-periods';
+  const first = f.tick(START).chargers[0].current;
+  for (let index = 1; index <= 100; index++) {
+    f.view.plan.assumptions = index % 2 ? [{ code: 'maximum-available-current', maximumCurrentA: 16, source: 'configured-maximum' }] : [];
+    f.tick(START + index * 10);
+  }
+  const report = f.observer.getReport(ref(first));
+  const complete = readCompleteReport(f.observer, report);
+  assert.equal(complete.plans.length, 101, 'Genuine changed assumptions remain individually interpretable');
+  assert.equal(f.store.db.prepare("SELECT count(*) n FROM charging_report_contexts WHERE report_id=? AND kind='prices'").get(first.id).n, 1);
+  for (const plan of complete.plans) {
+    assert.equal(plan.priceIntervals[0].startAt, plan.at, 'The API restores each original selected horizon');
+    assert.equal(plan.priceIntervals.at(-1).endAt, horizon);
+    assert.equal(plan.priceIntervals.length, 96);
+  }
+  const payloadBytes = f.store.db.prepare('SELECT sum(length(payload)) n FROM charging_report_events WHERE report_id=?').get(first.id).n;
+  const contextBytes = f.store.db.prepare('SELECT sum(length(payload)) n FROM charging_report_contexts WHERE report_id=?').get(first.id).n;
+  const expandedBytes = complete.timeline.reduce((sum, row) => sum + JSON.stringify(row).length, 0);
+  assert.ok(payloadBytes + contextBytes < expandedBytes * .45, 'Repeated forecast inputs no longer dominate stored event payloads');
+  t.diagnostic(`Synthetic 101-plan report: event+context JSON ${payloadBytes + contextBytes} bytes vs ${expandedBytes} bytes expanded (${Math.round(100 * (payloadBytes + contextBytes) / expandedBytes)}%). Excludes SQLite/journal allocation.`);
+  const reader = new ChargingSessionDiagnostics({ store: f.store, clock: () => START + 1000 });
+  assert.equal(reader.reportEvents({ ...ref(first), filter: 'plans', limit: 2 }).events.length, 2);
+  assert.deepEqual(readCompleteReport(reader, reader.getReport(ref(first))).plans, complete.plans);
+  f.observer.saveReport({ ...ref(first), saved: true }); f.finish(START + MINUTE);
+  const second = f.start(START + 2 * MINUTE, 'second-context-owner');
+  const foreign = f.store.db.prepare("SELECT id FROM charging_report_contexts WHERE report_id=? AND kind='prices'").get(first.id).id;
+  assert.throws(() => f.store.db.prepare('UPDATE charging_report_events SET price_context_id=? WHERE report_id=? AND price_context_id IS NOT NULL')
+    .run(foreign, second.id), /FOREIGN KEY/);
+  assert.equal(f.observer.deleteReport(ref(first)), true);
+  assert.equal(f.store.db.prepare('SELECT count(*) n FROM charging_report_contexts WHERE report_id=?').get(first.id).n, 0);
+  assert.ok(f.store.db.prepare('SELECT count(*) n FROM charging_report_contexts WHERE report_id=?').get(second.id).n > 0);
+  assert.ok(f.observer.reportEvents({ ...ref(second), filter: 'plans' }).events.find(row => row.plan).plan.priceIntervals.length);
+  assert.deepEqual(f.store.db.prepare('PRAGMA foreign_key_check').all(), []);
+});
+
+test('bounded report reads reject damaged context hashes, wrong kinds and retired inline prices without mutation', () => {
+  const f = fixture(); f.view.deadlineAt = START + DAY;
+  f.view.plan.priceSnapshot = [[START, START + DAY, 4]];
+  const report = f.tick(START).chargers[0].current;
+  const event = f.store.db.prepare('SELECT * FROM charging_report_events WHERE price_context_id IS NOT NULL').get();
+  const price = f.store.db.prepare('SELECT * FROM charging_report_contexts WHERE id=?').get(event.price_context_id);
+  const model = f.store.db.prepare("SELECT id FROM charging_report_contexts WHERE kind='model'").get();
+  const rejectWithoutMutation = () => {
+    const before = f.store.checkpoint();
+    assert.throws(() => f.observer.reportEvents(ref(report)), /Unsupported charging report context/);
+    assert.deepEqual(f.store.checkpoint(), before);
+  };
+  f.store.db.prepare('UPDATE charging_report_contexts SET digest=? WHERE id=?').run('0'.repeat(64), price.id);
+  rejectWithoutMutation();
+  f.store.db.prepare('UPDATE charging_report_contexts SET digest=? WHERE id=?').run(price.digest, price.id);
+  f.store.db.prepare('UPDATE charging_report_events SET price_context_id=? WHERE id=?').run(model.id, event.id);
+  rejectWithoutMutation();
+  const retired = JSON.parse(event.payload); retired.plan.priceIntervals = [];
+  f.store.db.prepare('UPDATE charging_report_events SET price_context_id=NULL,payload=? WHERE id=?').run(JSON.stringify(retired), event.id);
+  rejectWithoutMutation();
+});
+
 test('repeated control findings retain every episode and material cause while summaries remain compact', () => {
   const f = fixture(); let report;
   for (let episode = 0; episode < 30; episode++) {
@@ -144,12 +208,14 @@ test('repeated control findings retain every episode and material cause while su
 test('failed append rolls back events, summary and checkpoint together without corrupting retry', () => {
   const f = fixture(), first = f.tick(START).chargers[0].current;
   const state = structuredClone(f.observer.state), before = readCompleteReport(f.observer, first);
+  const contexts = f.store.db.prepare('SELECT * FROM charging_report_contexts').all();
   f.store.db.exec("CREATE TEMP TRIGGER fail_report_append BEFORE INSERT ON charging_report_events BEGIN SELECT RAISE(ABORT,'synthetic append failure'); END");
   f.view.control.phase = 'unconfirmed';
   assert.throws(() => f.tick(START + MINUTE), /synthetic append failure/);
   assert.deepEqual(f.observer.state, state);
   assert.equal(f.observer.getReport(ref(first)).counts.events, first.counts.events);
   assert.equal(readCompleteReport(f.observer, first).timeline.length, before.timeline.length);
+  assert.deepEqual(f.store.db.prepare('SELECT * FROM charging_report_contexts').all(), contexts);
   f.store.db.exec('DROP TRIGGER fail_report_append'); f.tick(START + MINUTE + 1);
   const after = readCompleteReport(f.observer, f.observer.getReport(ref(first)));
   assert.equal(after.timeline.filter(row => row.kind === 'control' && row.code === 'unconfirmed').length, 1);

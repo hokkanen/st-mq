@@ -45,7 +45,8 @@ export function recordingHealthView(health, recording, now = Date.now()) {
       : validTime(backup.latestAt) ? 'Listed on this computer; not verified by this status check.' : '';
   const budget = recording ?? {};
   const adaptiveMeasured = budget.adaptiveMeasurementHours > 0 && finite(budget.adaptiveProjectedAnnualBytes);
-  const totalMeasured = budget.totalDatabaseMeasurementHours > 0 && finite(budget.totalDatabaseProjectedAnnualBytes);
+  const totalMeasured = finite(budget.totalDatabaseMeasurementHours) && budget.totalDatabaseMeasurementHours > 0
+    && finite(budget.totalDatabaseProjectedAnnualBytes);
   return {
     known: health?.version === 2,
     outdated: !validTime(current.checkedAt) || now - current.checkedAt > healthFreshnessMs,
@@ -80,7 +81,7 @@ export function recordingHealthView(health, recording, now = Date.now()) {
       target: finite(budget.annualBudgetBytes) ? `${storageBytes(budget.annualBudgetBytes)}/year` : 'Not available',
       total: totalMeasured ? `${storageBytes(budget.totalDatabaseProjectedAnnualBytes)}/year` : 'Collecting evidence',
       adaptiveWindow: adaptiveMeasured ? `Estimated from ${decimal(budget.adaptiveMeasurementHours)} h of adaptive additions` : 'Waiting for measured adaptive additions',
-      totalWindow: totalMeasured ? `Projected from ${decimal(budget.totalDatabaseMeasurementHours)} h of SQLite allocation` : 'Waiting for measured database growth',
+      totalWindow: totalMeasured ? `${budget.totalDatabaseMeasurementHours < 168 ? 'Still settling' : '7-day smoothing'} · ${decimal(budget.totalDatabaseMeasurementHours)} h of SQLite allocation measurements` : 'Waiting for measured database growth',
     },
   };
 }
