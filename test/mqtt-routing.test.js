@@ -75,6 +75,45 @@ test('primary readiness and independent observations do not wait for an unavaila
   assert.deepEqual(f.clients.get('ha').options.username, 'ha-user');
 });
 
+test('rejected MQTT observations retain a closed failure category and source location without private error data', async t => {
+  const cases = [
+    { cause: new TypeError('mqtt://private-user:private-password@household.invalid private-payload'), category: 'type_error' },
+    { cause: Object.assign(new Error('private-payload'), { code: 'STORAGE_WRITE_STALE' }), category: 'write_stale' },
+    { cause: Object.assign(new Error('private-payload'), { errcode: 5 }), category: 'database_busy', errorCode: 5 },
+    { cause: Object.assign(new Error('private-payload'), { code: 'private-password', name: 'private-user' }), category: 'observation_error' },
+  ];
+  for (const { cause, category, errorCode } of cases) {
+    const f = await fixture(t); f.clients.get('primary').emit('connect'); await f.reader.ready();
+    cause.stack = `private-user private-password private-payload\n`
+      + '    at privateFunction (/private/household/private-device.js:2:3)\n'
+      + `    at privateFunction (${new URL('../src/private-password.js', import.meta.url).pathname}:4:5)\n`
+      + `    at privateFunction (${new URL('../src/charging/runtime.js', import.meta.url).href}:88:9)\n`
+      + `    at privateFunction (${new URL('../src/acquisition/mqtt.js', import.meta.url).pathname}:123:4)`;
+    f.engine.ingest = () => { throw cause; };
+    f.send('primary', 'fixture/air/state', { temperature: 7, timestamp: initial, privatePayload: 'private-payload' });
+    await settle(); await f.store.runWrite(() => {});
+    const events = f.store.db.prepare("SELECT payload FROM events WHERE type='mqtt-observation-rejected'").all();
+    assert.equal(events.length, 1);
+    const payload = JSON.parse(events[0].payload);
+    assert.deepEqual(payload, { source: 'teslamate', errorCategory: category,
+      location: 'src/charging/runtime.js:88:9', ...(errorCode === undefined ? {} : { errorCode }) });
+    assert.doesNotMatch(events[0].payload, /private|household|mqtt:\/\/|fixture\/air|TypeError| at /);
+    assert.equal(f.reader.status().brokers.primary.ready, false, 'The diagnostic does not relax failed observation admission');
+  }
+});
+
+test('rejected MQTT observation diagnostics omit external-only and malformed stack locations', async t => {
+  const f = await fixture(t); f.clients.get('primary').emit('connect'); await f.reader.ready();
+  const cause = new Error('private-password');
+  cause.stack = `Error: private-password\n    at leak (/private/secret.js:1:2)\n`
+    + `    at leak (${new URL('../src/../private-payload.js', import.meta.url).pathname}:3:4)`;
+  f.engine.ingest = () => { throw cause; };
+  f.send('primary', 'fixture/air/state', { temperature: 7, timestamp: initial });
+  await settle(); await f.store.runWrite(() => {});
+  const payload = JSON.parse(f.store.db.prepare("SELECT payload FROM events WHERE type='mqtt-observation-rejected'").get().payload);
+  assert.deepEqual(payload, { source: 'teslamate', errorCategory: 'observation_error' });
+});
+
 test('HA commands, reports and shared availability stay isolated from primary in both outage directions', async t => {
   const f = await fixture(t); for (const client of f.clients.values()) client.emit('connect');
   f.send('primary', 'fixture/air/state', { temperature: 7, timestamp: initial }); f.doorReport();

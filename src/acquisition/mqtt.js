@@ -1,5 +1,6 @@
 import { createEquipmentCapture } from './equipment.js';
-import { readFileSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
+import { fileURLToPath } from 'node:url';
 import mqtt from 'mqtt';
 import { gateMqttPublications } from '../control/mqtt-publication-gate.js';
 import { heatingErrorCode, heatingErrorMessage } from '../control/mqtt.js';
@@ -17,6 +18,31 @@ import { createChargingTeslaCapture, decodeChargingTeslaField } from '../chargin
 import { mqttRouting } from './mqtt-routing.js';
 
 export { decodeMqttTemperature } from './mqtt-temperature.js';
+
+const sourceRoot = fileURLToPath(new URL('../', import.meta.url));
+const observationErrorCodes = new Map([
+  ['STORAGE_WRITE_CANCELLED', 'write_cancelled'], ['STORAGE_WRITE_STALE', 'write_stale'],
+  ['STORAGE_QUEUE_FULL', 'write_queue_full'],
+]);
+function observationFailure(cause) {
+  const sqliteCode = Number.isSafeInteger(cause?.errcode) ? cause.errcode : null;
+  const errorCategory = observationErrorCodes.get(cause?.code)
+    ?? (sqliteCode !== null ? [5, 6].includes(sqliteCode & 255) ? 'database_busy' : 'database_error'
+      : cause instanceof TypeError ? 'type_error' : cause instanceof RangeError ? 'range_error'
+        : cause instanceof ReferenceError ? 'reference_error' : cause instanceof SyntaxError ? 'syntax_error'
+          : cause === undefined ? 'observation_rejected' : 'observation_error');
+  // Only a current repository source file and numeric line/column survive.
+  // Error messages, function names, external paths and arbitrary error codes
+  // may contain installation data and must never enter the recorded event.
+  const location = typeof cause?.stack === 'string' ? cause.stack.split('\n').slice(1).flatMap(line => {
+    if (!/^\s+at /.test(line)) return [];
+    const path = line.match(/(?:\(|\s)(?:file:\/\/)?(\/[^()\n]+\.js:\d+:\d+)\)?$/)?.[1];
+    const relative = path?.startsWith(sourceRoot) ? path.slice(sourceRoot.length) : null;
+    return relative && /^[a-zA-Z0-9_/-]+\.js:\d+:\d+$/.test(relative)
+      && existsSync(path.replace(/:\d+:\d+$/, '')) ? [`src/${relative}`] : [];
+  })[0] : null;
+  return { errorCategory, ...(location ? { location } : {}) };
+}
 
 // Each integration owns one explicit MQTT route for observations and commands.
 // Credentials and raw broker errors never enter event logs.
@@ -120,6 +146,7 @@ export async function startMqtt({ engine, store, config, connect = mqtt.connect,
       // Rate-limit failed attempts too; never recursively log into a busy DB.
       lastErrorAt.set(type, now);
       const errorCode = Number.isSafeInteger(cause?.errcode) ? cause.errcode : undefined;
+      const diagnostic = type === 'mqtt-observation-rejected' ? observationFailure(cause) : {};
       const rejected = error => {
         const busy = Number.isSafeInteger(error?.errcode) && [5, 6].includes(error.errcode & 255);
         try { reportStorageFailure({ event: 'mqtt-event-write-failed', source, attemptedEvent: type,
@@ -128,7 +155,7 @@ export async function startMqtt({ engine, store, config, connect = mqtt.connect,
         catch { /* A failed diagnostic sink cannot terminate acquisition either. */ }
       };
       try {
-        const action = () => store.event(type, { source, ...(errorCode === undefined ? {} : { errorCode }) }, now);
+        const action = () => store.event(type, { source, ...diagnostic, ...(errorCode === undefined ? {} : { errorCode }) }, now);
         if (store.runWrite) store.runWrite(action, { signal: cancellation.signal }).catch(rejected); else action();
       } catch (error) { rejected(error); }
     }
@@ -426,7 +453,7 @@ export async function startMqtt({ engine, store, config, connect = mqtt.connect,
               const receive = () => engine.charging.receiveSoc(topic, message.payload, message.packet, message.at, null, message.onAccepted);
               return message.onAccepted?.within ? message.onAccepted.within(receive) : receive();
             }); }
-            catch { failedAdmission(); report('mqtt-observation-rejected'); break; }
+            catch (cause) { failedAdmission(); report('mqtt-observation-rejected', cause); break; }
           }
         });
       }
@@ -467,7 +494,7 @@ export async function startMqtt({ engine, store, config, connect = mqtt.connect,
             // Retain original receipt clocks across SUBACK buffering.
             for (const message of buffered.messages) {
               try { shelly.receive(message.topic, message.payload, message.packet, message.receivedAt, channel.id); }
-              catch { report('mqtt-observation-rejected'); }
+              catch (cause) { report('mqtt-observation-rejected', cause); }
             }
             for (const failed of [...failedTopics, ...buffered.overflow]) shelly.subscriptionFailed(failed, channel.id);
             try { shelly.confirmSubscriptions?.(confirmedTopics.filter(topic => !buffered.overflow.has(topic)), channel.id); }
@@ -490,7 +517,7 @@ export async function startMqtt({ engine, store, config, connect = mqtt.connect,
             chargingTesla.setConnected(true);
             for (const message of buffered ?? []) {
               try { store.transaction(() => chargingTesla.receive(message.topic, message.payload, message.packet, message.at)); }
-              catch { failedAdmission(); report('mqtt-observation-rejected'); break; }
+              catch (cause) { failedAdmission(); report('mqtt-observation-rejected', cause); break; }
             }
           }
         });
