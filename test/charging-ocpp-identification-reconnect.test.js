@@ -227,7 +227,9 @@ test('an already observed stalled physical connection recovers after restart wit
   assert.equal(attempt.probe, null);
   assert.equal(f.startAllowed, false);
   f.advance(1000); await f.restart({ savedDisconnectPending: true });
+  const returnPlan = structuredClone(f.item.plan);
   f.publishBmw({ atHome: true, pluggedIn: true, charging: false });
+  assert.deepEqual(f.item.plan, returnPlan, 'Admitting vehicle evidence retains the current economic return plan');
   const recovered = await f.update();
   assert.equal(recovered.session.connectedAt, connectedAt);
   assert.equal(recovered.session.transactionId, null);

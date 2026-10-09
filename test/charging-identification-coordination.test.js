@@ -14,7 +14,8 @@ function fixture(chargerId = 'charger1') {
     vehicleEvidence: { chargingTimes: [NOW - 300_000], stoppedTimes: [] } };
   const physical = { providerConnected: true, connected: signal(true), charging: signal(true), powerKw: signal(11) };
   const runtime = Object.assign(Object.create(ChargingRuntime.prototype), {
-    chargers: { [chargerId]: item, [peerId]: peer }, configuration: { chargers: {} }, config: {}, clock: () => NOW,
+    chargers: { [chargerId]: item, [peerId]: peer }, vehicleFeeds: { bmw: { sourcePending: { size: 0 } } },
+    configuration: { chargers: {} }, config: {}, clock: () => NOW,
   });
   return { runtime, item, peer, control, physical,
     available: () => runtime.identificationPauseAvailable(item, { [peerId]: physical }, NOW) };

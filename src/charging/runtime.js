@@ -346,6 +346,17 @@ export class ChargingRuntime {
     this.advanceTelemetry(now);
     this.persistAcceptedState(now);
   }
+  persistVehicleObservation(now) {
+    this.advanceTelemetry(now);
+    // Source admission remembers battery references in its existing state write.
+    // Planning owns episode changes, flexibility and recorded-energy accrual.
+    for (const view of this.views(now, { readEnergy: noRecordedEnergy })) {
+      const item = this.charger(view.id);
+      item.progress = updateChargingProgress(item.progress,
+        { ...view, requiredGridKwh: view.referenceGridKwh }, now, noRecordedEnergy).state;
+    }
+    this.persistAcceptedState(now);
+  }
   persistAcceptedState(now) {
     // Assessors only observe the production view. A diagnostic storage failure
     // must not block charging or an outstanding physical restoration duty.
@@ -383,7 +394,7 @@ export class ChargingRuntime {
     if (id !== 'tesla') throw new Error('Unknown vehicle observation source');
     this.preserveWriteState();
     const before = Object.values(this.chargers).map(item => [item.identification?.phase, item.vehicleMatch?.id]);
-    this.refreshPlanningState(this.clock(), { recordedEnergy: false });
+    this.persistVehicleObservation(this.clock());
     const changed = Object.values(this.chargers).some((item, index) =>
       item.identification?.phase !== before[index][0] || item.vehicleMatch?.id !== before[index][1]);
     this.tick({ force: changed });
@@ -397,7 +408,7 @@ export class ChargingRuntime {
       item.vehicleEvidence = evidence?.teslaCurrentMatchTestId ? { scope: evidence.scope,
         chargingTimes: [], stoppedTimes: [], teslaCurrentMatchTestId: evidence.teslaCurrentMatchTestId } : null;
     }
-    this.revision++; this.refreshPlanningState(this.clock(), { recordedEnergy: false }); this.tick({ force: true });
+    this.revision++; this.persistVehicleObservation(this.clock()); this.tick({ force: true });
   }
   setAdapter(id, adapter) {
     const item = this.charger(id);
@@ -935,7 +946,7 @@ export class ChargingRuntime {
               connectedAt: session.connectedAt, evidenceStart: connectionEvidenceStart(session.connectedAt, session.lastDisconnectedAt),
               reading: result.reading, now, live: packet.retain !== true });
         }
-        this.refreshPlanningState(now, { recordedEnergy: false });
+        this.persistVehicleObservation(now);
       } catch (error) {
         this.revision = previousRevision; item.mqtt = previousMqtt; item.reading = previous;
         this.consumedTeslaPower = previousTeslaPower;
@@ -1917,13 +1928,10 @@ export class ChargingRuntime {
       prices: priceSnapshot(this.getPlanningPrices(this.clock())), historyReady: this.historyReady, historyError: this.historyError,
       historyAt: this.historyAt });
   }
-  refreshPlanningState(now, { recordedEnergy = true } = {}) {
-    // Source admission remembers battery references in its existing state write.
-    // Recording/planning owns energy accrual; a source packet needs no history scan.
-    const readEnergy = recordedEnergy ? this.readEnergy : noRecordedEnergy;
+  refreshPlanningState(now) {
     this.advanceTelemetry(now);
     for (const item of Object.values(this.chargers)) if (consumeChargingFlexibility(item.request, now)) this.revision++;
-    const views = this.views(now, { readEnergy });
+    const views = this.views(now);
     for (const view of views) {
       const item = this.charger(view.id), pluggedIn = view.values.connected.value;
       item.newEpisode ||= pluggedIn === false && (item.wasPluggedIn !== false || item.plan?.deadlineAt <= now)
@@ -1935,7 +1943,7 @@ export class ChargingRuntime {
       if (resumed && resumed.reason !== 'explicit' && resumed.at >= resumed.deadlineAt
         && item.plan?.deadlineAt <= resumed.deadlineAt) item.plan = null;
       const raw = { ...view, requiredGridKwh: view.referenceGridKwh };
-      item.progress = updateChargingProgress(item.progress, raw, now, readEnergy).state;
+      item.progress = updateChargingProgress(item.progress, raw, now, this.readEnergy).state;
       if (typeof pluggedIn === 'boolean') item.wasPluggedIn = pluggedIn;
     }
     this.persistAcceptedState(now);
