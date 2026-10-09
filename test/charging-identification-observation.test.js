@@ -486,6 +486,30 @@ for (const transport of ['cloud', 'ocpp']) {
     assert.equal(f.view().id, 'bmw'); assert.equal(attempt(f).phase, 'completed');
   });
 
+  for (const unavailable of ['vehicle feed', 'charger'])
+  test(`${transport}: Identify explains current ${unavailable} availability separately from the completed attempt`, async t => {
+    const f = await fixture(t, transport); f.setNow(START + 1000); await f.update();
+    const stoppedAt = f.physical.at;
+    f.setNow(stoppedAt + 4000); f.publish({ charging: false }, stoppedAt + 2000); await f.update();
+    assert.equal(attempt(f).phase, 'completed');
+    const previousReason = card(f).identification.reason;
+    if (unavailable === 'vehicle feed') f.runtime.setMqttStatus({ connected: false, subscribed: false }, 'bmw');
+    else { f.physical.enabled = false; f.physical.enabledAt = f.now; await f.update(); }
+    const current = card(f), writes = f.writes.length;
+    assert.equal(current.identification.available, false);
+    assert.equal(current.identification.availabilityReason, unavailable === 'vehicle feed' ? 'vehicle-feed-stale' : 'charger-unavailable');
+    assert.equal(current.identification.reason, previousReason, 'Attempt history remains distinct from present retry availability');
+    await assert.rejects(f.runtime.identifyVehicle('charger1', sessionInput(f)), unavailable === 'vehicle feed'
+      ? /current vehicle feed is not available/ : /charger is not ready/);
+    assert.equal(f.writes.length, writes, 'An unavailable retry sends no native command');
+  });
+
+  test(`${transport}: Identify reports an active attempt separately from unavailable inputs`, async t => {
+    const f = await fixture(t, transport); f.setNow(START + 1000); await f.update();
+    assert.equal(attempt(f).phase, 'pausing');
+    await assert.rejects(f.runtime.identifyVehicle('charger1', sessionInput(f)), /already in progress for this connection/);
+  });
+
   test(`${transport}: fresh Tesla evidence avoids an unnecessary identification pause`, async t => {
     const f = await fixture(t, transport, 'tesla', { normalCharging: true }); await f.update();
     f.setNow(START + 10_000);

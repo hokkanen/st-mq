@@ -137,6 +137,85 @@ test('contended Shelly notification closes command readiness until its original 
   assert.equal(store.writeHealth.status().failing, false);
 });
 
+for (const action of ['identification-pause', 'automatic-off', 'charge-now', 'planning-interrupt'])
+  test(`an obsolete Shelly economic wait releases the native queue for ${action}`, async t => {
+    const f = fixture(t); await f.ready();
+    let finish, calls = 0, identification = null, completed = false;
+    const held = new Promise(resolve => { finish = resolve; });
+    const selected = { periods: [{ startAt: NOW + 1800_000, endAt: null }] };
+    const controller = createShellyController({ adapter: f.adapter, clock: f.now, canControl: () => true,
+      getIdentification: () => identification, getPlan: () => { calls++; return held; } });
+    t.after(async () => { finish(selected); await controller.close(); });
+    const first = controller.update({ enabled: true, plan: selected });
+    for (let i = 0; i < 30 && !calls; i++) await new Promise(resolve => setImmediate(resolve));
+    assert.equal(calls, 1);
+    const connectedAt = f.adapter.snapshot().session.connectedAt, input = { enabled: true, plan: selected };
+    if (['identification-pause', 'planning-interrupt'].includes(action))
+      identification = { id: 'bounded-native-pause', connectedAt, phase: 'pausing', pauseUntil: NOW + 90_000 };
+    if (action === 'automatic-off') input.enabled = false;
+    if (action === 'charge-now') input.chargeNow = { connectedAt };
+    if (action === 'planning-interrupt') assert.equal(controller.interruptPlanning(), true);
+    else controller.invalidate();
+    const second = controller.update(input).then(value => { completed = true; return value; });
+    try {
+      for (let i = 0; i < 30 && !completed; i++) await new Promise(resolve => setImmediate(resolve));
+      assert.equal(completed, true, 'The scoped action must finish while the old numerical result remains unresolved');
+      const commandCount = f.writes.filter(row => row.method.endsWith('.Set')).length;
+      const state = controller.status();
+      finish(selected); await first;
+      assert.equal(f.writes.filter(row => row.method.endsWith('.Set')).length, commandCount);
+      assert.deepEqual(controller.status(), state, 'The late old result cannot rewrite the current instruction');
+      assert.equal(controller.interruptPlanning(), false);
+    } finally { finish(selected); await Promise.all([first, second]); }
+  });
+
+for (const action of ['automatic-off', 'charge-now'])
+  test(`Shelly ${action} at entry completes without an economic calculation`, async t => {
+    const f = fixture(t); await f.ready();
+    let calls = 0;
+    const controller = createShellyController({ adapter: f.adapter, clock: f.now, canControl: () => true,
+      getPlan: () => { calls++; return new Promise(() => {}); } });
+    t.after(() => controller.close());
+    const input = { enabled: action !== 'automatic-off',
+      ...(action === 'charge-now' ? { chargeNow: { connectedAt: f.adapter.snapshot().session.connectedAt } } : {}) };
+    await controller.update(input);
+    assert.equal(calls, 0);
+  });
+
+test('revoked Shelly automatic takeover planning cannot hold OFF or apply its late result', async t => {
+  const f = fixture(t); f.fields.start_charging = false; await f.ready();
+  let finish, options, completed = false;
+  const held = new Promise(resolve => { finish = resolve; });
+  const selected = { periods: [{ startAt: NOW + 1800_000, endAt: null }] };
+  const controller = createShellyController({ adapter: f.adapter, clock: f.now, canControl: () => true,
+    getPlan: (_snapshot, requested) => { options = requested; return held; } });
+  t.after(async () => { finish(selected); await controller.close(); });
+  const takeover = controller.update({ enabled: true, plan: selected });
+  for (let i = 0; i < 30 && !options; i++) await new Promise(resolve => setImmediate(resolve));
+  assert.equal(options.takeover, true);
+  controller.invalidate();
+  const off = controller.update({ enabled: false }).then(value => { completed = true; return value; });
+  try {
+    for (let i = 0; i < 30 && !completed; i++) await new Promise(resolve => setImmediate(resolve));
+    assert.equal(completed, true);
+    const commands = f.writes.filter(row => row.method.endsWith('.Set')).length;
+    finish(selected); await takeover;
+    assert.equal(f.writes.filter(row => row.method.endsWith('.Set')).length, commands);
+  } finally { finish(selected); await Promise.all([takeover, off]); }
+});
+
+test('session Charge now supplies permission for a new automatic takeover without economic planning', async t => {
+  const f = fixture(t); f.fields.start_charging = false; await f.ready();
+  let calls = 0;
+  const selected = { periods: [{ startAt: NOW + 1800_000, endAt: null }] };
+  const controller = createShellyController({ adapter: f.adapter, clock: f.now, canControl: () => true,
+    getPlan: () => { calls++; return Promise.resolve(selected); } });
+  t.after(() => controller.close());
+  await controller.update({ enabled: true, plan: selected, chargeNow: { connectedAt: f.adapter.snapshot().session.connectedAt } });
+  assert.equal(calls, 0, 'The new connection already owns automatic takeover and Charge now supplies its immediate permission');
+  assert.equal(f.fields.start_charging, true);
+});
+
 test('Shelly action admission waits for a real queued receipt and preserves its original scope and clocks', async t => {
   for (const transition of ['unchanged', 'stop', 'disconnect', 'transport-loss', 'failure', 'cancel', 'deadline']) await t.test(transition, async t => {
     const directory = mkdtempSync(join(tmpdir(), 'stmq-evse-action-admission-'));
@@ -2668,6 +2747,31 @@ test('current adjustment physical confirmation does not erase accepted permissio
   f.client.emit('offline');
   assert.equal(controller.status().confirmed, false, 'Lost contact still invalidates live confirmation');
 });
+
+for (const role of ['current_limit', 'start_charging', 'work_state', 'phase_info'])
+  test(`a pending ${role} notification withdraws only its own pause evidence`, async t => {
+    const f = fixture(t); f.fields.work_state = 'charger_wait'; f.fields.phase_info.total_power = 0;
+    for (const key of ['phase_a', 'phase_b', 'phase_c']) Object.assign(f.fields.phase_info[key], { current: 0, power: 0 });
+    await f.ready(); f.setNow(NOW + 1000);
+    const controller = createShellyController({ adapter: f.adapter, clock: f.now, canControl: () => true });
+    t.after(() => controller.close());
+    const plan = { id: 'pause', deadlineAt: NOW + 7200_000, periods: [{ startAt: NOW + 1800_000, endAt: null }] };
+    await controller.update({ enabled: true, plan });
+    assert.equal(controller.status().pauseConfirmed, true);
+    const originalPermission = structuredClone(controller.status().snapshot.fields.start_charging);
+    f.setNow(NOW + 2000);
+    const value = role === 'current_limit' ? 12 : role === 'start_charging' ? true : role === 'work_state'
+      ? 'charger_charging' : { ...structuredClone(f.fields.phase_info), total_power: 1.38 };
+    f.delta(role, { value });
+    if (role === 'phase_info') await f.adapter.refresh({ force: true });
+    const state = controller.status();
+    if (role === 'current_limit') {
+      assert.equal(state.snapshot.controlReady, false); assert.equal(state.confirmed, true);
+      assert.equal(state.scheduleConfirmed, true); assert.equal(state.ownsInstruction, true); assert.equal(state.pauseConfirmed, true);
+      assert.deepEqual(state.snapshot.fields.start_charging, originalPermission, 'Unrelated receipt renews no permission/source clock');
+      f.setNow(NOW + 120_000); assert.equal(controller.status().pauseConfirmed, false, 'Original evidence still expires');
+    } else assert.equal(state.pauseConfirmed, false, 'Contrary permission, connection or physical data withdraws pause proof');
+  });
 
 test('an unresolved current-only write preserves the confirmed schedule and pause without granting another command', async t => {
   const f = fixture(t, { limiterEnabled: true });

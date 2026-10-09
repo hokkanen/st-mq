@@ -1206,6 +1206,33 @@ test('revoked takeover planning cannot block OFF or apply its late plan', async 
   } finally { finishPlanning(plan(START + 30 * MINUTE)); await Promise.all([obsolete, off]); }
 });
 
+test('planning-only OCPP interruption releases economics without interrupting native profile installation', async t => {
+  let finish, planning = false;
+  const held = new Promise(resolve => { finish = resolve; });
+  const f = fixture({ getPlan: () => { planning = true; return held; } });
+  t.after(async () => { finish(plan(START + 30 * MINUTE)); await f.controller.close(); });
+  const first = f.controller.update({ enabled: true });
+  await new Promise(resolve => setImmediate(resolve)); assert.equal(planning, true);
+  assert.equal(f.controller.interruptPlanning(), true);
+  f.identify(probeIdentification('pausing'));
+  let release, entered;
+  const writing = new Promise(resolve => { entered = resolve; });
+  f.intercept(async (action, _payload, options, result) => {
+    if (action === 'SetChargingProfile') {
+      entered(); await new Promise(resolve => { release = resolve; });
+      assert.equal(options.guard(), true, 'The planning hook must not revoke native preflight');
+    }
+    return result();
+  });
+  const pause = f.controller.update({ enabled: true });
+  await writing;
+  assert.equal(f.controller.interruptPlanning(), false);
+  release(); assert.equal((await pause).pauseConfirmed, true);
+  const commands = writes(f).length;
+  finish(plan(START + 60 * MINUTE)); await first;
+  assert.equal(writes(f).length, commands);
+});
+
 test('economic identification releases normal charging then installs only a zero profile until the economic return', async () => {
   const f = fixture();
   const economic = await f.controller.update({ enabled: true, plan: plan(START + 30 * MINUTE) });

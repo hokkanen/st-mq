@@ -412,6 +412,7 @@ export function createOcppChargingController({ adapter, initialState = null, sav
   let snapshot = null, desired = { enabled: false, plan: null, readyBy: '06:00', timezone: TIME_ZONE }, closed = false, generation = 0, queue = Promise.resolve(), abort = null;
   let phase = 'off', reason = 'Automatic charging is off.', errorCode = null, reasonCode = null, ownsInstruction = false, pauseConfirmed = false, handoverConfirmed = true;
   let planningRevision = null, identification = null;
+  let planningWait = null;
   let meterSample = null, nextMeterSampleAt = 0;
   function cancelMeterSample() { meterSample?.abort(); meterSample = null; }
   function sampleIdentification(current, signal) {
@@ -492,11 +493,16 @@ export function createOcppChargingController({ adapter, initialState = null, sav
       signal.addEventListener('abort', onAbort, { once: true });
       if (signal.aborted) onAbort();
     });
+    const waiting = { cancel: onAbort };
+    planningWait = waiting;
     // The shared economic worker may still serve another charger. Release this
     // obsolete controller wait immediately, without granting its late result
     // authority or holding the next scoped physical duty behind that worker.
     try { return await Promise.race([getPlan(clone(snapshot), options), revoked]); }
-    finally { signal.removeEventListener('abort', onAbort); }
+    finally {
+      signal.removeEventListener('abort', onAbort);
+      if (planningWait === waiting) planningWait = null;
+    }
   }
   function permitStart(plan, current) {
     // Reconcile the newly observed identification/native state synchronously.
@@ -1018,6 +1024,10 @@ export function createOcppChargingController({ adapter, initialState = null, sav
     }
   }
   return { status, supportsIdentification: true,
+    interruptPlanning() {
+      if (!planningWait) return false;
+      adapter.setStartPermission?.(null); generation++; planningWait.cancel(); return true;
+    },
     update(input = {}) {
       if (Object.hasOwn(input, 'resume')) throw new Error('Unsupported charging control field: resume');
       if (typeof input.takeover !== 'string' && takeoverState !== 'pending') { takeoverState = null; takeoverAttempt = null; }

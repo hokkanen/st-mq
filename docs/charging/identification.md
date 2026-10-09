@@ -4,6 +4,10 @@
 
 This contract owns positive vehicle matching, bounded identification attempts and their restoration. Vehicle-feed setup belongs in the [BMW](integrations/bmw.md) and [TeslaMate](integrations/teslamate.md) guides. Identification does not replace [control authority](execution-and-recovery.md).
 
+An explicit Identify retry reports its current availability separately from the
+previous attempt's outcome. An active attempt, unavailable vehicle feed and
+unready charger have distinct explanations; retry keeps the same admission rules.
+
 ## Vehicle assignment
 
 The observer evaluates both charging points together, including while automatic charging is OFF and hours after connection. Assignment requires positive corroboration: applicable vehicle home/plug/start evidence and physical charging behavior. Similar powers or currents on two charging points can remain ambiguous. A negative Tesla match never identifies BMW or the other charger by elimination.

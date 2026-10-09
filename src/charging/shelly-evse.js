@@ -1040,6 +1040,20 @@ export function createShellyController({ adapter, initialState, saveState = () =
   state.limiter = null;
   let closed = false, revision = 0, planningRevision = null, identification = null, enabled = false, queue = Promise.resolve(),
     takeoverResult = null, takeoverAttemptToken = null, takeoverAttemptRevision = null;
+  let planningWait = null;
+  const cancelPlanning = () => planningWait?.cancel();
+  async function readPlan(snapshot, options, intentRevision) {
+    if (closed || intentRevision !== revision) throw fail('evse-planning-revoked');
+    let cancel;
+    const revoked = new Promise((_resolve, reject) => { cancel = () => reject(fail('evse-planning-revoked')); });
+    const waiting = { cancel };
+    planningWait = waiting;
+    try {
+      const plan = await Promise.race([getPlan(copy(snapshot), options), revoked]);
+      if (closed || intentRevision !== revision) throw fail('evse-planning-revoked');
+      return plan;
+    } finally { if (planningWait === waiting) planningWait = null; }
+  }
   const notifyStatus = () => {
     // Recording is an observer, never part of device command authority.
     try { onStatusChange()?.catch?.(() => {}); } catch {}
@@ -1219,8 +1233,7 @@ export function createShellyController({ adapter, initialState, saveState = () =
     // Admission holds block new commands, not already committed confirmation.
     // Keep its original evidence clocks; actual changes, read failures and stale
     // observations still withdraw it through their separate readiness fences.
-    const instructionEvidenceReady = snapshot.controlReady || snapshot.observationReady === true
-      && ['evse-input-persistence-pending', 'evse-source-time-pending'].includes(snapshot.commandBlockReason);
+    const instructionEvidenceReady = snapshot.controlReady || pendingInstructionObservation(snapshot);
     const owned = projected.pauseBroken ? null : state.owned ?? null;
     const permission = snapshot.fields.start_charging;
     const economicPause = state.execution
@@ -1422,12 +1435,23 @@ export function createShellyController({ adapter, initialState, saveState = () =
       await persist();
     }
   }
+  function pendingInstructionObservation(snapshot) {
+    return snapshot.observationReady === true
+      && (['evse-input-persistence-pending', 'evse-source-time-pending'].includes(snapshot.commandBlockReason)
+        || snapshot.commandBlockReason === 'evse-notification-readback-required'
+          && snapshot.notificationPending?.length > 0 && snapshot.notificationPending.every(role => role === 'current_limit'));
+  }
   const stopObserving = adapter.observeStatus?.(() => { if (!closed) notifyStatus(); });
-  return { status, supportsIdentification: true, invalidate() { revision++; },
-    close() { closed = true; stopObserving?.(); revision++; return queue.catch(() => {}); },
+  return { status, supportsIdentification: true, invalidate() { revision++; cancelPlanning(); },
+    interruptPlanning() {
+      if (!planningWait) return false;
+      revision++; cancelPlanning(); return true;
+    },
+    close() { closed = true; stopObserving?.(); revision++; cancelPlanning(); return queue.catch(() => {}); },
     update(input = {}) {
       if (Object.hasOwn(input, 'resume')) throw fail('unsupported-shelly-control-input');
       const intentRevision = ++revision;
+      cancelPlanning();
       let takeoverRequested = typeof input.takeover === 'string';
       const requestedSnapshot = adapter.snapshot();
       const takeoverCurrent = takeoverRequested && input.enabled === true
@@ -1453,6 +1477,9 @@ export function createShellyController({ adapter, initialState, saveState = () =
           return;
         }
         const sessionId = snapshot.session?.sessionId;
+        const chargeNow = Number.isSafeInteger(input.chargeNow?.connectedAt)
+          && input.chargeNow.connectedAt === snapshot.session?.connectedAt;
+        const immediatePermission = () => ({ periods: [{ startAt: clock(), endAt: null }] });
         const changedSession = snapshot.session?.connected === true && sessionId && state.sessionId !== sessionId
           || snapshot.session?.connected === false && state.sessionId != null;
         if (changedSession) {
@@ -1520,7 +1547,7 @@ export function createShellyController({ adapter, initialState, saveState = () =
           // existing economic instruction or restart identification. The live
           // snapshot explains the hold and clears it as soon as input admission
           // completes; the ordinary five-second reconciliation resumes work.
-          if (snapshot.observationReady && ['evse-input-persistence-pending', 'evse-source-time-pending'].includes(snapshot.commandBlockReason)) {
+          if (pendingInstructionObservation(snapshot)) {
             await persist(); return;
           }
           identification = null;
@@ -1546,7 +1573,8 @@ export function createShellyController({ adapter, initialState, saveState = () =
             await persist(); return;
           } else {
             if (claim.fingerprint === null) { state.automaticTakeover = { ...claim, fingerprint }; await persist(); }
-            takeoverPlan = typeof getPlan === 'function' ? await getPlan(copy(snapshot), { takeover: true, refresh: input.refreshPlan !== false }) : input.plan;
+            takeoverPlan = chargeNow ? immediatePermission() : typeof getPlan === 'function'
+              ? await readPlan(snapshot, { takeover: true, refresh: input.refreshPlan !== false }, intentRevision) : input.plan;
             if (!takeoverPlan?.periods?.length) {
               state.phase = 'unavailable'; state.reason = 'charging-plan-unavailable'; await persist(); return;
             }
@@ -1577,7 +1605,8 @@ export function createShellyController({ adapter, initialState, saveState = () =
             await persist();
             if (snapshot.nativeScheduleActive) {
               if (typeof adapter.disableNativeSchedules !== 'function') throw fail('evse-native-schedule-unsupported');
-              takeoverPlan ??= typeof getPlan === 'function' ? await getPlan(copy(snapshot), { takeover: true, refresh: input.refreshPlan !== false }) : input.plan;
+              takeoverPlan ??= chargeNow ? immediatePermission() : typeof getPlan === 'function'
+                ? await readPlan(snapshot, { takeover: true, refresh: input.refreshPlan !== false }, intentRevision) : input.plan;
               if (!takeoverGuard()) throw fail('evse-takeover-changed');
               const openPeriod = takeoverPlan?.periods?.some(period => period.startAt <= clock()
                 && (period.endAt === null || period.endAt > clock()));
@@ -1643,6 +1672,7 @@ export function createShellyController({ adapter, initialState, saveState = () =
             if (!takeoverGuard()) throw fail('evse-takeover-changed');
             acceptedTakeoverToken = takeoverToken(snapshot);
           } catch (cause) {
+            if (cause.code === 'evse-planning-revoked') throw cause;
             takeoverResult = { state: 'blocked', reason: cause.code ?? 'evse-command-unconfirmed' };
             state.phase = 'uncertain'; state.reason = takeoverResult.reason;
             await persist(); return;
@@ -1769,10 +1799,10 @@ export function createShellyController({ adapter, initialState, saveState = () =
         await refreshIdentification(snapshot);
         if (closed || intentRevision !== revision) return;
         if (state.manual || snapshot.nativeScheduleActive) identification = null;
-        const chargeNow = Number.isSafeInteger(input.chargeNow?.connectedAt)
-          && input.chargeNow.connectedAt === snapshot.session?.connectedAt;
         const restoringUnscheduled = state.owned?.sessionId === sessionId && (!input.enabled || chargeNow);
-        let plan = !identification && typeof getPlan === 'function' ? await getPlan(copy(snapshot), { refresh: input.refreshPlan !== false }) : input.plan;
+        const independentPermission = identification || chargeNow || !input.enabled;
+        let plan = !independentPermission && typeof getPlan === 'function'
+          ? await readPlan(snapshot, { refresh: input.refreshPlan !== false }, intentRevision) : input.plan;
         if (!identification && chargingPlanInputsUnavailable(plan) && state.execution && !state.provisional)
           plan = { ...copy(state.execution), startAt: state.execution.periods[0].startAt };
         const context = typeof getAllocation === 'function' ? await getAllocation(copy(snapshot)) : input.allocation ?? {};
@@ -1822,7 +1852,8 @@ export function createShellyController({ adapter, initialState, saveState = () =
             test.probeDeadlineAt = identification.probeUntil;
             await persist();
           }
-          if (!identification && typeof getPlan === 'function') plan = await getPlan(copy(snapshot), { refresh: input.refreshPlan !== false });
+          if (!identification && !chargeNow && input.enabled && typeof getPlan === 'function')
+            plan = await readPlan(snapshot, { refresh: input.refreshPlan !== false }, intentRevision);
         }
         // A native instruction received while the current-test RPC was pending
         // must fence the remaining start/stop work in this same reconcile.
@@ -2089,6 +2120,8 @@ export function createShellyController({ adapter, initialState, saveState = () =
           if (takeoverRequested) takeoverResult = { state: 'blocked', reason: state.reason };
         }
         await persist();
+      }).catch(cause => {
+        if (cause.code !== 'evse-planning-revoked' || !closed && intentRevision === revision) throw cause;
       }).finally(() => {
         if (takeoverRequested && takeoverAttemptRevision === intentRevision && takeoverResult?.state === 'pending')
           takeoverResult = { state: 'blocked', reason: 'evse-takeover-changed' };

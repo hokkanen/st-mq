@@ -38,6 +38,12 @@ cannot cancel a newer request or a replacement connection. Unplugging ends the
 override. The request remains subject to native
 restrictions and confirmed control readiness.
 
+Charge now and Automatic OFF reach the selected charger without waiting for an
+economic calculation. Returning to Automatic still waits for the current plan
+and the selected charger's native result. These actions queue joint-allocation
+updates for the peer, but their completion does not wait for the peer's native
+work. Each charger retains its own authority, connection and instruction checks.
+
 The Automatic switch saves the scheduling preference. It stays **ON** while
 manual control has priority. With Automatic enabled, a new confirmed physical
 connection takes automatic control and supersedes earlier charger instructions

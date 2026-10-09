@@ -91,6 +91,10 @@ matches, but does not erase still-fresh committed observations or the existing
 identification attempt. Native notification readback keeps its separate command
 gate. A failed save, stale observations, offline device or native fault still
 withdraws readiness; waiting never renews source clocks or identification limits.
+A current-only notification awaiting readback retains the accepted Start/Stop
+instruction and its original fresh physical evidence while blocking new writes.
+Pending permission or work-state changes, or contrary physical readings, still
+withdraw the corresponding confirmation.
 Reported hardware maximum and current-setting observations have separate readiness
 from command publication. A packet waiting for storage or bounded source-time
 admission blocks commands with an explicit processing reason; it does not withdraw
@@ -148,6 +152,11 @@ A successful takeover can continue directly through its own confirmed 6 A
 preparation to the scoped Start. Only the captured, correlated current-write
 receipt advances that takeover check; a changed permission, connection, schedule
 or later external current choice still prevents the application Start.
+Scoped identification, Automatic OFF and session Charge now do not wait for a
+new economic calculation. Replacing an instruction cancels only its obsolete
+planning wait; a due bounded duty can also interrupt that wait without cancelling
+a native RPC already in progress. Shared planning work and native uncertain-write
+recovery retain their existing ownership.
 Configure the installation's fuse ratings, signed calibration margins and maximum current; charger
 RPC cannot establish those electrical limits. The limiter subtracts the minimum
 admitted measured Shelly phase current equally from the property phases, so it

@@ -94,6 +94,13 @@ An earlier request or connection cannot satisfy that publication check.
 After a native update and its state commit finish, their follow-up economic
 refresh runs independently. It cannot hold the next native read, identification
 stop or current-restoration deadline while waiting for its first plan result.
+A newly due duty in the current connection may interrupt an older native plan
+wait through the controller's planning-only hook. This leaves device RPC and
+preflight work intact. The existing bounded wakeup remains armed while numerical
+work is pending; it does not renew the attempt, deadline or energy allowance.
+An attempt that has ended can still owe its captured physical return. That
+existing return program does not require a new economic calculation, and remains
+subject to its original connection, instruction and return-time boundaries.
 
 The implementation is a bounded search over a declared slot/current model, **not a globally exact continuous-time optimizer**. Results expose the search kind, relaxed cost lower bound, feasible candidate cost and upper bound on the cost gap where available. Search pruning can miss a better joint candidate; reported feasibility is conditional on the recorded assumptions. Synthetic exhaustive small-horizon comparisons validate representative cases. There is no one-cent pause penalty or mandatory one-cent saving hurdle. Practical minimum economic runs/gaps remain 15 minutes; equal-cost choices prefer stability.
 

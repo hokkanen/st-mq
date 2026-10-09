@@ -636,6 +636,7 @@ test('normal Save overrides a held BMW target with 84 or 100 for this connection
   assert.deepEqual(current.targetSelection, held.targetSelection, 'Saving preserves source conflict evidence and raw clocks');
   assert.equal(current.automatic.minimumSoc.value, 100);
   assert.ok(Math.abs(current.referenceGridKwh - current.values.capacityKwh.value * .24 / current.configuration.efficiency) < 1e-9);
+  await runtime.close();
   const restarted = f.create(); t.after(() => restarted.close());
   assert.equal(view(restarted).values.minimumSoc.value, 84, 'Session choice remains usable before a live bridge heartbeat');
   assert.equal(view(restarted).values.minimumSoc.source, 'session-request');
@@ -650,12 +651,13 @@ test('normal Save overrides a held BMW target with 84 or 100 for this connection
   assert.equal(current.targetSelection.raw.value, 100);
   assert.ok(Math.abs(current.referenceGridKwh - current.values.capacityKwh.value * .4 / current.configuration.efficiency) < 1e-9);
   assert.deepEqual(restarted.settings, before, 'Session target edits leave configured defaults intact');
+  await restarted.close();
   const again = f.create(); t.after(() => again.close());
   assert.equal(view(again).values.minimumSoc.value, 100);
   const stale = sessionEdit(again, { minimumSoc: 84 });
-  f.setConnection(false); again.tick();
+  f.setConnection(false); await again.tick();
   await assert.rejects(again.setChargerSettings('charger1', stale), /connection changed/);
-  f.setNow(START + 5 * MINUTE); f.setConnection(true); again.tick();
+  f.setNow(START + 5 * MINUTE); f.setConnection(true); await again.tick();
   assert.equal(again.chargers.charger1.targetState, null);
   assert.deepEqual(view(again).request.overrides, {});
   assert.equal(view(again).values.minimumSoc.value, 80);

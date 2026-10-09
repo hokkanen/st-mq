@@ -443,8 +443,13 @@ export class ChargingRuntime {
         getMaximumAmps: scheduleCeiling,
         getIdentification: snapshot => this.identificationControl(item, snapshot),
         getPlan: async (snapshot, { refresh = true, takeover = false } = {}) => {
+          const selected = this.controlPlan(item, this.pricesInitialized ? item.plan : null);
+          // A bounded probe already selected its return program. Even a
+          // terminal attempt can still owe that physical return; a new price
+          // calculation is not a prerequisite for carrying it out.
+          if (!takeover && selected?.reason === 'identification-return') return selected;
           if (!refresh && !takeover && this.currentPlanReusable(item, snapshot))
-            return this.controlPlan(item, this.pricesInitialized ? item.plan : null);
+            return selected;
           item.awaitingPlan = true;
           try { await this.updatePlanForControl(this.clock(), { sourceId: id, background: !refresh && !takeover }); }
           catch { this.error = 'charging-planning-unavailable'; return this.controlPlan(item, null); }
@@ -1695,6 +1700,11 @@ export class ChargingRuntime {
       const identificationPauseOutstanding = control.owned?.purpose === 'identification'
         || control.pending?.owned?.purpose === 'identification';
       const currentTestOutstanding = ['proposed', 'applying', 'active', 'restoring', 'uncertain'].includes(control.currentTest?.phase);
+      const identificationAvailabilityReason = !request ? 'assignment-unresolved'
+        : identificationPauseOutstanding ? 'awaiting-stop-confirmation'
+          : currentTestOutstanding ? 'current-test-restoration-pending'
+            : !this.identificationAvailable(item, now) ? 'charger-unavailable'
+              : this.identificationFeedReason(item, now);
       const currentTest = currentTestOutstanding || control.currentTest?.id === identification?.id
         && control.currentTest?.sessionId === control.session?.sessionId
         && control.currentTest?.connectedAt === control.session?.connectedAt ? control.currentTest ?? null : null;
@@ -1707,11 +1717,10 @@ export class ChargingRuntime {
           pauseRecovery: item.definition.provider === 'shelly-evse' ? 'controller' : 'charger',
           pauseOutstanding: identificationPauseOutstanding,
           reason: request ? this.identificationReason(item, telemetry, now) : 'assignment-unresolved',
-          available: Boolean(request) && !identificationPauseOutstanding && !currentTestOutstanding
-            && this.identificationAvailable(item, now)
-            // An explicit retry may wait for its peer. Requesting observation
-            // does not acquire the shared slot or authorize a device command.
-            && this.identificationFeedReady(item, now),
+          // Retry availability describes current inputs separately from the
+          // previous attempt's reason. Waiting for a peer does not block retry.
+          availabilityReason: identificationAvailabilityReason,
+          available: identificationAvailabilityReason === null,
           active: ['waiting', 'charging', 'pausing'].includes(identification?.phase),
           attempted: Boolean(identification?.chargingStartedAt) },
         request: telemetry[id]?.vehicle?.sessionId ? request : null, vehicle: telemetry[id]?.vehicle ?? null,
@@ -1848,7 +1857,7 @@ export class ChargingRuntime {
     if (!object(input) || Object.keys(input).sort().join(',') !== 'association,revision,sessionId')
       throw new Error('Review one-day flexibility for the displayed charging connection.');
     this.checkedSession(id, input);
-    await this.updatePlan();
+    await this.updatePlanForControl();
     this.checkedSession(id, input);
     return this.calculateFlexibilityPreview(id);
   }
@@ -1877,8 +1886,9 @@ export class ChargingRuntime {
     }, { priority: 'control', isCurrent: () => this.canControl() });
     if (!changed) return;
     this.invalidateCommands();
-    try { await this.updatePlan(); } catch { this.error = 'charging-planning-unavailable'; }
-    await this.reconcile();
+    try { await this.updatePlanForControl(); } catch { this.error = 'charging-planning-unavailable'; }
+    await this.reconcile(id);
+    this.reconcilePeers(id);
   }
   updatePlan(now = this.clock(), { sourceId, background = false } = {}) {
     if (this.closed) return Promise.resolve();
@@ -2436,14 +2446,33 @@ export class ChargingRuntime {
         if (!this.closed) this.error = null;
       }).catch(() => { if (!this.closed) this.error = 'charging-planning-unavailable'; });
     } catch { this.error = 'charging-planning-unavailable'; }
-    if (force) for (const item of Object.values(this.chargers))
-      if (item.reconcileFlight && !item.backendTransition) item.reconcileAgain = true;
+    if (force) for (const item of Object.values(this.chargers)) if (item.reconcileFlight && !item.backendTransition) {
+      item.reconcileAgain = true;
+      const control = item.controller?.status(), connectedAt = control?.session?.connectedAt;
+      const identification = item.identification, test = control?.currentTest;
+      const nativeConnection = control?.session?.connected === true && Number.isSafeInteger(connectedAt);
+      const sameConnection = nativeConnection && item.request && sessionConnectedAt(item.request) === connectedAt;
+      const identificationDue = sameConnection && identification?.connectedAt === connectedAt
+        && (identification.phase === 'pausing' && identification.pauseUntil > now || identification.probe?.endedAt === null
+          && identification.probe.deadlineAt <= now);
+      const restorationDue = nativeConnection && test?.connectedAt === connectedAt
+        && test.sessionId === control.session.sessionId
+        && ['applying', 'active', 'restoring', 'uncertain'].includes(test.phase) && test.expiresAt <= now;
+      const probe = this.probeReturn(item, now);
+      const returnDue = probe && probe.deadlineAt <= now
+        && this.controlPlan(item, item.plan, now)?.reason === 'identification-return';
+      // Only the native owner knows whether it is waiting for a plan or an
+      // actual device operation. Due physical duties may revoke that plan wait;
+      // ordinary polling must not repeatedly cancel native RPC/preflight.
+      if (identificationDue || restorationDue || returnDue) item.controller?.interruptPlanning?.();
+    }
     // A forecast failure must not stop independent EVSE readback, manual
     // override detection, owned-schedule cleanup or confirmed release times.
     for (const [id, item] of Object.entries(this.chargers)) if (item.controller && !item.backendTransition && !item.reconcileFlight && (force || item.lastReconcileAt === null
       || now - item.lastReconcileAt >= (item.identification?.phase === 'pausing' || item.identification?.probe?.endedAt === null
         || ['proposed', 'applying', 'active', 'restoring', 'uncertain'].includes(item.controller?.status()?.currentTest?.phase) ? 2000 : MINUTE)))
       void this.reconcile(id).catch(() => { item.error = 'charging-reconciliation-unavailable'; });
+    this.scheduleWakeup(now);
     return planning;
   }
   allocationContext() {
@@ -2563,6 +2592,20 @@ export class ChargingRuntime {
       }
     }
   }
+  reconcilePeers(id) {
+    for (const [peer, item] of Object.entries(this.chargers)) if (peer !== id && !item.backendTransition) {
+      // A selected charger action completes on its own native result. Joint
+      // allocation still reaches peers, coalescing with any work they own.
+      if (item.reconcileFlight) item.reconcileAgain = true;
+      else {
+        const controller = item.controller, generation = item.adapterGeneration;
+        void this.reconcile(peer).catch(() => {
+          if (!this.closed && item.controller === controller && item.adapterGeneration === generation)
+            item.error = 'charging-reconciliation-unavailable';
+        });
+      }
+    }
+  }
   async reconcileCharger(id, { replan = false, takeover = null, refreshPlan = true } = {}) {
     const item = this.charger(id);
     if (item.backendTransition) return;
@@ -2641,8 +2684,11 @@ export class ChargingRuntime {
     }
     }, { priority: 'control', isCurrent: () => this.canControl() });
     this.invalidateCommands();
-    try { await this.updatePlan(); } catch { this.error = 'charging-planning-unavailable'; }
-    await this.reconcile();
+    if (input.enabled) {
+      try { await this.updatePlanForControl(); } catch { this.error = 'charging-planning-unavailable'; }
+    }
+    await this.reconcile(id);
+    this.reconcilePeers(id);
   }
   async setSettings(input) {
     await this.write(() => {
@@ -2665,7 +2711,7 @@ export class ChargingRuntime {
     }
     }, { priority: 'control', isCurrent: () => this.canControl() });
     this.invalidateCommands();
-    try { await this.updatePlan(); } catch { this.error = 'charging-planning-unavailable'; }
+    try { await this.updatePlanForControl(); } catch { this.error = 'charging-planning-unavailable'; }
     await this.reconcile();
   }
   async setChargerSettings(id, input) {
@@ -2710,9 +2756,9 @@ export class ChargingRuntime {
     }
     }, { priority: 'control', isCurrent: () => this.canControl() });
     this.invalidateCommands();
-    try { await this.updatePlan(); } catch { this.error = 'charging-planning-unavailable'; }
     // Release scheduling immediately even when price/history work is unavailable.
-    await this.reconcile();
+    await this.reconcile(id);
+    this.reconcilePeers(id);
   }
   async identifyVehicle(id, input) {
     await this.settleActionInputs(id);
@@ -2721,8 +2767,21 @@ export class ChargingRuntime {
     if (!object(input) || Object.keys(input).sort().join(',') !== 'association,revision,sessionId')
       throw new Error('Identify requires the displayed charging connection.');
     const { item, view } = this.checkedSession(id, input);
-    if (!view.identification.available || view.identification.active)
-      throw new Error('Identification is unavailable or already in progress.');
+    if (view.identification.active) throw new Error('Identification is already in progress for this connection.');
+    if (!view.identification.available) {
+      const reason = {
+        'assignment-unresolved': 'the charging connection is not established',
+        'awaiting-stop-confirmation': 'the previous identification pause is awaiting confirmation',
+        'current-test-restoration-pending': 'the previous current test is awaiting restoration',
+        'charger-unavailable': 'the charger is not ready for identification',
+        'vehicle-feed-stale': 'a current vehicle feed is not available',
+        'evidence-capacity': 'vehicle observation history is incomplete',
+        'bmw-away': 'the vehicle reports that it is away',
+        'bmw-home-unknown': 'the vehicle location is not available',
+        'bmw-not-plugged': 'the vehicle does not have current plugged-in evidence',
+      }[view.identification.availabilityReason];
+      throw new Error(`Identification is unavailable because ${reason}.`);
+    }
     const previous = Object.fromEntries(Object.entries(this.chargers).map(([key, charger]) => [key, structuredClone({
       identification: charger.identification, vehicleMatch: charger.vehicleMatch, vehicleEvidence: charger.vehicleEvidence,
       vehicleConflict: charger.vehicleConflict, targetState: charger.targetState, plan: charger.plan, request: charger.request })]));
@@ -2770,7 +2829,8 @@ export class ChargingRuntime {
       item.request = previous; item.plan = previousPlan; item.identification = previousIdentification; this.revision = previousRevision; throw error;
     }
     }, { priority: 'control', isCurrent: () => this.canControl() });
-    this.invalidateCommands(); await this.updatePlan(); await this.reconcile();
+    this.invalidateCommands(); await this.updatePlanForControl(); await this.reconcile(id);
+    this.reconcilePeers(id);
   }
   async resume(id, input) {
     await this.write(() => {
@@ -2796,7 +2856,7 @@ export class ChargingRuntime {
     // Cancelling Charge now returns our session choice to planning. It does not
     // authorize clearing a native instruction; Use automatic owns that action.
     await this.reconcile(id, { replan: true });
-    await Promise.all(Object.keys(this.chargers).filter(peer => peer !== id).map(peer => this.reconcile(peer)));
+    this.reconcilePeers(id);
   }
   takeoverCurrent(item, attempt) {
     return !this.closed && !item.backendTransition && this.canControl()
@@ -2838,7 +2898,7 @@ export class ChargingRuntime {
     }, { priority: 'control', isCurrent: () => this.canControl() });
     this.invalidateCommands();
     try {
-      await this.updatePlan();
+      await this.updatePlanForControl();
       await this.reconcile(id, { takeover: attempt.token });
       if (!this.takeoverCurrent(item, attempt))
         throw new Error('Charging controls or connection changed during takeover. Review the current status.');
@@ -2849,9 +2909,11 @@ export class ChargingRuntime {
       if (item.takeoverAttempt === attempt) delete item.takeoverAttempt;
       // No takeover permission survives this request or a restart. Subsequent
       // reconciliation uses actual native evidence and preserves newer choices.
-      try { await this.updatePlan(); } catch { this.error = 'charging-planning-unavailable'; }
+      void Promise.resolve().then(() => this.updatePlan())
+        .then(() => { if (!this.closed) this.error = null; })
+        .catch(() => { if (!this.closed) this.error = 'charging-planning-unavailable'; });
     }
-    await Promise.all(Object.keys(this.chargers).filter(peer => peer !== id).map(peer => this.reconcile(peer)));
+    this.reconcilePeers(id);
   }
   chargingTestAction(action, input) {
     this.checkControlAuthority();

@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import { Store } from '../src/storage/store.js';
 import { ChargingRuntime } from '../src/charging/runtime.js';
 import { planChargers } from '../src/charging/planner.js';
+import { advanceIdentification } from '../src/charging/identification.js';
 import { easeeChargerTelemetry, normalizeScheduleState, scheduleFingerprint } from '../src/charging/easee.js';
 
 const AT = Date.parse('2026-10-03T10:00:00Z'), HOUR = 3_600_000;
@@ -149,6 +150,152 @@ test('pending economic work does not let a deadline wakeup bypass lost native au
   f.planner.complete(0); await first;
 });
 
+for (const action of ['Charge now', 'Automatic OFF']) test(`${action} completes its native action while global planning and the peer are held`, async t => {
+  const f = await fixture(t), item = f.runtime.chargers.charger1;
+  const planning = f.runtime.updatePlan();
+  await waitForCalls(f.planner, 1);
+  let releasePeer, returned = false;
+  const peer = new Promise(resolve => { releasePeer = resolve; });
+  t.after(releasePeer);
+  f.controllers.charger2.update = () => peer;
+  const updates = [];
+  f.controllers.charger1.update = async input => { updates.push(input); };
+  const scope = { association: item.association, sessionId: item.request.sessionId, revision: item.request.revision };
+  const work = (action === 'Charge now' ? f.runtime.chargeNow('charger1', scope)
+    : f.runtime.setControl('charger1', { association: item.association, revision: item.controls.revision, enabled: false }))
+    .then(() => { returned = true; });
+  for (let i = 0; i < 20 && !returned; i++) await turn();
+  assert.equal(updates.length, 1, 'Independent native action reaches the selected controller before a plan result');
+  assert.equal(returned, true, 'The selected action does not wait for a different charger');
+  if (action === 'Charge now') assert.equal(updates[0].chargeNow.connectedAt, AT);
+  else assert.equal(updates[0].enabled, false);
+  assert.equal(f.planner.calls[0].done, false);
+  releasePeer(); await f.runtime.close(); await Promise.all([work, planning]);
+});
+
+test('returning to Automatic waits for its accepted plan but not the peer native flight', async t => {
+  const f = await fixture(t), item = f.runtime.chargers.charger1;
+  await f.runtime.write(() => f.runtime.refreshPlanningState(AT));
+  item.request.chargeNow = true;
+  let releasePeer, returned = false, acceptedPlan;
+  const peer = new Promise(resolve => { releasePeer = resolve; });
+  t.after(releasePeer);
+  f.controllers.charger2.update = () => peer;
+  f.controllers.charger1.update = async () => { acceptedPlan = await f.controllers.charger1.getPlan(); };
+  const work = f.runtime.resume('charger1', { association: item.association,
+    sessionId: item.request.sessionId, revision: item.request.revision }).then(() => { returned = true; });
+  await waitForCalls(f.planner, 1);
+  assert.equal(returned, false, 'Automatic scheduling still needs the selected current plan');
+  assert.equal(acceptedPlan, undefined);
+  f.planner.complete(0);
+  for (let i = 0; i < 20 && !returned; i++) await turn();
+  assert.ok(acceptedPlan?.periods.length);
+  assert.equal(returned, true, 'Accepted selected scheduling is not held by the peer');
+  releasePeer(); await f.runtime.close(); await work;
+});
+
+for (const action of ['Save', 'Use automatic']) test(`${action} can complete after its current publication while a later changed search is held`, async t => {
+  const f = await fixture(t), item = f.runtime.chargers.charger1;
+  await f.runtime.write(() => f.runtime.refreshPlanningState(AT));
+  const calculate = f.runtime.calculatePlan.bind(f.runtime);
+  let completed = 0, returned = false, nativeUpdates = 0;
+  f.runtime.calculatePlan = async (...args) => {
+    await calculate(...args);
+    if (++completed === 1) {
+      f.controllers.charger2.control.snapshot.limits.chargerA = 12;
+      void f.runtime.updatePlan();
+    }
+  };
+  f.controllers.charger1.control.takeover = { available: true, token: 'synthetic-foreground-takeover' };
+  f.controllers.charger1.update = async input => {
+    nativeUpdates++;
+    if (input.takeover) f.controllers.charger1.control.takeover = { available: true,
+      token: input.takeover, state: 'confirmed', attemptToken: input.takeover };
+  };
+  const scope = { association: item.association, sessionId: item.request.sessionId, revision: item.request.revision };
+  const work = (action === 'Save'
+    ? f.runtime.setSessionRequest('charger1', { scope: 'session', ...scope, changes: { minimumSoc: 85 } })
+    : f.runtime.useAutomatic('charger1', { ...scope, controlRevision: item.controls.revision,
+      takeoverToken: 'synthetic-foreground-takeover' })).then(() => { returned = true; });
+  await waitForCalls(f.planner, 1);
+  assert.equal(returned, false);
+  f.planner.complete(0); await waitForCalls(f.planner, 2);
+  for (let i = 0; i < 20 && !returned; i++) await turn();
+  assert.ok(nativeUpdates > 0, 'The selected controller receives its accepted current request');
+  assert.equal(returned, true, 'A later numerical search does not hold the completed selected action');
+  assert.equal(f.planner.calls[1].done, false);
+  assert.equal(f.runtime.coordination.requests.charger1.revision, item.request.revision);
+  await f.runtime.close(); await work;
+});
+
+for (const boundary of ['close', 'controller', 'adapter generation']) test(`a queued peer failure cannot overwrite diagnostics after ${boundary}`, async t => {
+  const f = await fixture(t), item = f.runtime.chargers.charger2;
+  let reject, entered = false;
+  const pending = new Promise((_resolve, rejectWork) => { reject = rejectWork; });
+  f.controllers.charger2.update = async () => { entered = true; await pending; };
+  f.runtime.reconcilePeers('charger1');
+  for (let i = 0; i < 20 && !entered; i++) await turn();
+  assert.equal(entered, true);
+  if (boundary === 'close') await f.runtime.close();
+  else if (boundary === 'controller') item.controller = { ...item.controller };
+  else item.adapterGeneration++;
+  item.error = 'current-owner-diagnostic';
+  reject(new Error('Older peer work failed'));
+  for (let i = 0; i < 10; i++) await turn();
+  assert.equal(item.error, 'current-owner-diagnostic');
+});
+
+for (const scenario of [
+  { name: 'new pause', kind: 'pause', interrupt: true },
+  { name: 'original probe deadline', kind: 'probe', interrupt: true },
+  { name: 'terminal probe still owing its return', kind: 'return', interrupt: true },
+  { name: 'current restoration without a planning request', kind: 'test', noRequest: true, interrupt: true },
+  { name: 'future probe deadline', kind: 'probe', future: true, interrupt: false },
+  { name: 'expired selected pause', kind: 'pause', expired: true, interrupt: false },
+  { name: 'previous identification connection', kind: 'pause', previous: true, interrupt: false },
+  { name: 'identification without a current request', kind: 'pause', noRequest: true, interrupt: false },
+  { name: 'replaced native current-test session', kind: 'test', previous: true, interrupt: false },
+]) test(`deadline wakeup respects the existing duty scope: ${scenario.name}`, async t => {
+  const f = await fixture(t), item = f.runtime.chargers.charger2, controller = f.controllers.charger2;
+  await f.runtime.write(() => f.runtime.refreshPlanningState(AT));
+  // The native owner deliberately reports an in-flight device operation. The
+  // runtime can request planning interruption, but cannot cancel that operation.
+  let release, entered = false, interruptions = 0;
+  const pending = new Promise(resolve => { release = resolve; });
+  t.after(release);
+  controller.update = async () => { entered = true; await pending; };
+  controller.interruptPlanning = () => { interruptions++; return false; };
+  f.runtime.updatePlan = async () => {};
+  const native = f.runtime.reconcile('charger2');
+  for (let i = 0; i < 20 && !entered; i++) await turn();
+  assert.equal(entered, true);
+  const previous = { request: item.request, identification: item.identification, currentTest: controller.control.currentTest };
+  const now = AT + 1000, connectedAt = scenario.previous ? AT - 1000 : AT;
+  f.setNow(now);
+  if (scenario.kind === 'test') controller.control.currentTest = { phase: 'active', connectedAt,
+    sessionId: controller.control.session.sessionId, expiresAt: now };
+  else {
+    item.identification = advanceIdentification(null, { connectedAt, now: AT, available: true, connected: true });
+    if (scenario.kind === 'pause') Object.assign(item.identification, { phase: 'pausing', action: 'pause',
+      pauseUntil: scenario.expired ? now - 1 : now + 90_000 });
+    else {
+      item.identification.probe = { startedAt: AT, deadlineAt: scenario.future ? now + 2000 : now - 500,
+        returnStartAt: AT + HOUR, endedAt: scenario.kind === 'return' ? now - 1 : null };
+      if (scenario.kind === 'return') Object.assign(item.identification, { phase: 'inconclusive', reason: 'pause-timeout',
+        action: null, pauseUntil: now - 1 });
+    }
+  }
+  if (scenario.noRequest) item.request = null;
+  await f.runtime.tick({ force: true });
+  assert.equal(interruptions, scenario.interrupt ? 1 : 0);
+  assert.ok(item.reconcileFlight, 'Native RPC ownership remains until its owner completes it');
+  if (scenario.kind === 'probe') assert.equal(f.runtime.boundaryAt, now + 2000,
+    'The next bounded wakeup is armed without waiting for numerical publication');
+  item.request = previous.request; item.identification = previous.identification;
+  controller.control.currentTest = previous.currentTest;
+  release(); await native;
+});
+
 test('a valid native plan returns while newer changed measurements keep background planning busy', async t => {
   const f = await fixture(t), calculate = f.runtime.calculatePlan.bind(f.runtime);
   let completed = 0;
@@ -228,19 +375,20 @@ test('an unchanged native read receipt does not discard useful planning work', a
   assert.equal(f.runtime.coordination.solver.testRequest, 0);
 });
 
-test('a failed replan still returns a captured probe obligation when no execution snapshot remains', async t => {
+test('a captured probe return needs no new calculation even after its pause window expired', async t => {
   const f = await fixture(t), item = f.runtime.chargers.charger1, returnStartAt = AT + HOUR;
   f.controllers.charger1.control.execution = null;
   item.request = { scope: `${item.association}:${AT}`, sessionId: `${item.association}:${AT}`, deadlineAt: AT + 2 * HOUR };
-  item.identification = { id: 'synthetic-return-after-failed-plan', connectedAt: AT, phase: 'inconclusive',
+  item.identification = { id: 'synthetic-return-after-failed-plan', connectedAt: AT, phase: 'inconclusive', pauseUntil: AT + 70_000,
     probe: { startedAt: AT, deadlineAt: AT + 60_000, returnStartAt, endedAt: AT + 70_000 } };
   f.setNow(AT + 80_000);
-  f.runtime.updatePlan = async () => { throw Error('synthetic planning unavailable'); };
+  let calculations = 0;
+  f.runtime.updatePlan = async () => { calculations++; throw Error('synthetic planning unavailable'); };
   const plan = await f.controllers.charger1.getPlan();
   assert.equal(plan.startAt, returnStartAt);
   assert.deepEqual(plan.periods, [{ startAt: returnStartAt, endAt: null }]);
-  assert.equal(f.runtime.error, 'charging-planning-unavailable');
-  assert.equal(item.awaitingPlan, false);
+  assert.equal(calculations, 0, 'The original physical obligation is already selected');
+  assert.equal(Boolean(item.awaitingPlan), false);
 });
 
 test('a changed joint program still revokes a controller that already reached native preflight', async t => {

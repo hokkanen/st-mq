@@ -17,6 +17,10 @@ Versions follow Semantic Versioning. `-dev.N` denotes a development prerelease.
   Completed native work releases the controller for the next bounded duty while
   planning continues. Shelly's confirmed identification current preparation no
   longer invalidates its own automatic takeover.
+- Charging actions finish with the selected charger's result while peer updates
+  continue independently. A due probe stop or restoration can interrupt an old
+  planning wait, including after its observation window has expired. Shelly's
+  accepted Stop confirmation survives a separate current-setting readback.
 - Local OCPP starts and confirmed pauses survive harmless refreshes and cost
   estimate changes. Shelly actions admit already received observations within
   their existing command budget, then recheck the original connection and native

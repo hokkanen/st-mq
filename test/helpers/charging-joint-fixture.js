@@ -160,6 +160,7 @@ export async function fixture(t, { limiter = true, budgetA = 16, notifyRuntime =
   const settle = async () => {
     await runtime.reconcile(); await new Promise(resolve => setImmediate(resolve));
     for (const item of Object.values(runtime.chargers)) await item.reconcileFlight;
+    await runtime.planningFlight;
   };
   t.after(async () => { await runtime.close(); shelly.close(); capture.close(); store.close(); });
   return { get runtime() { return runtime; }, get now() { return now; }, store, cars, household, commands, fields, schedules, reads, view, automatic, scope, settle,
