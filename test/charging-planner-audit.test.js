@@ -79,12 +79,17 @@ test('joint economic seeds preserve native period limits and individual timer/de
   });
 });
 
-test('current commanded limits bound C2 delivery in every household scenario', () => {
+test('adjustable C2 delivery follows each household scenario instead of one worst-case current', () => {
   const result = run([job('charger2', 8)], { household: [{ start: now, end: now + HOUR, phaseCurrentA: [4,4,4],
     scenarios: [{ phaseCurrentA: [8,8,8], weight: 1 }, { phaseCurrentA: [0,0,0], weight: 1 }] }] });
-  assert.equal(result.plans.charger2.feasible, false);
-  assert.ok(result.plans.charger2.deliveredGridKwh <= 5.52 + 1e-8);
-  for (const row of result.allocations) assert.equal(row.chargers.charger2.currentA, row.chargers.charger2.currentLimitA);
+  assert.equal(result.plans.charger2.feasible, true);
+  assert.ok(Math.abs(result.plans.charger2.deliveredGridKwh - 8) < 1e-8);
+  // Half the time at 8 A and half at 16 A delivers 8.28 kWh per hour.
+  // The conservative proposal remains separate from the expected delivery.
+  for (const row of result.allocations) {
+    assert.equal(row.chargers.charger2.currentA, 12);
+    assert.equal(row.chargers.charger2.currentLimitA, 8);
+  }
 });
 
 test('configured capacity is usable without an Equalizer estimate; clipped live data is not reconstructed', () => {

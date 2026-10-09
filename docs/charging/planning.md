@@ -188,6 +188,15 @@ freshness, control authority, changed session requests or a missed deadline.
 
 Easee's Equalizer, charger and vehicle determine the available charging current. Native OCPP economic pauses impose an expiring 0 A restriction; identification probes briefly release the owned pause at normal current before returning to that economic pause or normal charging. This never raises native limits or changes circuit protection or fuse settings. Current already drawn by an automatic-OFF, manually running or post-target peer remains a load until physical evidence says otherwise. Forecast household load, gross configured capacity and current net allowance are distinct. A clipped zero Equalizer allowance does not establish an exact gross budget. Missing shared rates or usable property capacity produce provisional decisions, not free electricity or invented assured readiness; unknown charging-current restrictions use the maximum-available-current planning assumption.
 
+Forecast delivery applies the shared allocation policy separately to each household
+load scenario, then weights its delivered energy. A temporary peak that leaves
+less than a valid 6 A pilot contributes zero delivery for its own weight; it does
+not force every other scenario to zero. Adjustable Charger 2 can reduce or pause
+during those peaks and use available capacity in the other scenarios. Conservative
+current proposals remain separate from expected delivery and never replace the
+live current calculation. A fixed native current still has to fit every included
+phase and scenario, and known native or vehicle limits constrain all scenarios.
+
 Capacity estimates count contributing source observations, not polling frequency.
 When Easee reports an idle cloud mode or OCPP connector status and less than
 0.1 A on every phase, new charger

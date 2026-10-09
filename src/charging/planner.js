@@ -390,8 +390,9 @@ function allocateUncached(active, resource, at) {
     const distribution = allocateOne(active, scenario, at);
     admissible &&= distribution.admissible;
     for (const [id, current] of Object.entries(distribution.currents)) currents[id] = (currents[id] ?? 0) + current * scenario.weight;
-    // A future current command must fit every included scenario. The mean
-    // expected current is an energy forecast, not an executable current limit.
+    // Keep a conservative proposal that fits every included scenario. Live
+    // current adjustment uses actual headroom; this proposal does not cap the
+    // scenario-weighted delivery of an adjustable charger.
     for (const item of active.filter(item => item.charger.capabilities.currentControl && !item.charger.capabilities.externalLoadBalancing)) {
       const id = item.charger.id;
       suggestions[id] = Math.min(suggestions[id] ?? Infinity, distribution.suggestions[id] ?? 0);
@@ -399,21 +400,6 @@ function allocateUncached(active, resource, at) {
     distribution.phaseCurrentA.forEach((current, index) => { phaseCurrentA[index] += current * scenario.weight; });
   }
   for (const [id, current] of Object.entries(suggestions)) if (current < MIN_CURRENT_A) suggestions[id] = 0;
-  if (resource.scenarios.length > 1 && Object.keys(suggestions).length) {
-    // A conservative commanded limit also limits forecast delivery. Recompute
-    // the externally balanced remainder for each scenario at that same command.
-    for (const id of Object.keys(currents)) currents[id] = 0;
-    phaseCurrentA.fill(0);
-    const executable = active.map(item => suggestions[item.charger.id] === undefined ? item : { ...item,
-      electric: { ...item.electric, currentA: suggestions[item.charger.id], currentAssumed: false },
-      charger: { ...item.charger, capabilities: { ...item.charger.capabilities, currentControl: false } } });
-    for (const scenario of resource.scenarios) {
-      const distribution = allocateOne(executable, scenario, at);
-      admissible &&= distribution.admissible;
-      for (const [id, current] of Object.entries(distribution.currents)) currents[id] += current * scenario.weight;
-      distribution.phaseCurrentA.forEach((current,index) => { phaseCurrentA[index] += current * scenario.weight; });
-    }
-  }
   return { currents, suggestions, admissible, phaseCurrentA };
 }
 

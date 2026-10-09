@@ -6,6 +6,11 @@ Versions follow Semantic Versioning. `-dev.N` denotes a development prerelease.
 
 ## Unreleased
 
+- Charging forecasts now account for temporary household peaks by their modeled
+  duration instead of treating the lowest possible current as an all-day limit.
+  This prevents false ready-by warnings and unnecessary immediate charging when
+  a later feasible period is cheaper. Live current protection and native Stops
+  remain authoritative.
 - Charging keeps confirmed current limits available during brief input-storage
   holds while commands remain fenced. Reports distinguish expected allowance,
   confirmed settings and command readiness, and classify evidence transitions
