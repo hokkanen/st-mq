@@ -2,6 +2,7 @@ import { createEquipmentCapture } from './equipment.js';
 import { readFileSync } from 'node:fs';
 import mqtt from 'mqtt';
 import { gateMqttPublications } from '../control/mqtt-publication-gate.js';
+import { heatingErrorCode, heatingErrorMessage } from '../control/mqtt.js';
 import { createH66Decoder, H66_REGISTERS } from '../domain/telemetry.js';
 import { createH66Controller, H66_WRITABLE_REGISTERS } from '../control/h66.js';
 import { DEFAULT_TEMPERATURE_REPORT_INTERVAL_MS, DEFAULT_TEMPERATURE_REPORT_GRACE_MS } from '../domain/temperature-reports.js';
@@ -67,6 +68,9 @@ export async function startMqtt({ engine, store, config, connect = mqtt.connect,
   let equipment = null;
   const cancellation = new AbortController();
   const controlAllowed = () => canControl() && [...channels.values()].every(channel => !channel.pendingReceipts && !channel.receptionFailed);
+  const waitingPublications = new Set();
+  const resumePublications = () => { for (const resume of [...waitingPublications]) resume(); };
+  const publicationFailure = (code, message) => Object.assign(new Error(message), { code });
   let stopping = false, stopped = false, disconnectedRecorded = false, lastSnapshotRequestedAt = null, lastGatewayStatusAt = null;
   for (const [id, connection] of [['primary', config.connections.mqtt], ...(routing.ha ? [['ha', routing.ha]] : [])]) {
     const client = connect(connection.address, { username: connection.user, password: connection.pw,
@@ -138,18 +142,11 @@ export async function startMqtt({ engine, store, config, connect = mqtt.connect,
     const channel = channels.get(broker);
     if (!channel?.connected || stopped) { reject(new Error('MQTT unavailable')); return; }
     if (!canControl()) { reject(new Error('This instance no longer owns device control')); return; }
-    if (!controlAllowed() && !(decoder && topic === `${deviceId}/HP/CMD` && payload === 'GETALL')
-      && !equipment?.isReadRequest(topic, payload, broker)) {
-      reject(new Error('Device control is waiting for received observations to reach storage')); return;
-    }
     const { client, pendingPublications } = channel;
-    const { noReplay = false, ...publicationOptions } = options ?? {};
-    // MQTT.js can defer ID allocation while replaying its outgoing store. Do
-    // not enqueue a new movement during that phase. These queue guards match
-    // the pinned client's publish implementation; ordinary telemetry is unchanged.
-    if (noReplay && (client.connected === false || client._storeProcessing || client._storeProcessingQueue?.length)) {
-      reject(new Error('MQTT door command route is reconnecting')); return;
-    }
+    const { noReplay = false, beforePublish, signal, ...publicationOptions } = options ?? {};
+    const generation = channel.generation;
+    const readRequest = decoder && topic === `${deviceId}/HP/CMD` && payload === 'GETALL'
+      || equipment?.isReadRequest(topic, payload, broker);
     let finished = false, failed = false, outgoingId = null, outgoingRemoved = false;
     const removeOutgoing = () => {
       if (!failed || !noReplay || outgoingRemoved || !Number.isInteger(outgoingId)) return;
@@ -163,26 +160,59 @@ export async function startMqtt({ engine, store, config, connect = mqtt.connect,
     const finish = error => {
       if (finished) return;
       finished = true; failed = Boolean(error); clearTimeout(timer); pendingPublications.delete(finish);
+      waitingPublications.delete(attempt); signal?.removeEventListener('abort', cancelled);
       client.off?.('packetsend', capturePacket);
       // MQTT.js normally retransmits unacknowledged QoS 1 packets after its
       // connection recovers. A manual door movement must require a new request.
       removeOutgoing();
-      if (error) reject(new Error('MQTT publication failed')); else resolve();
+      if (error) {
+        const code = heatingErrorCode(error.code);
+        reject(code ? publicationFailure(code, heatingErrorMessage(code)) : new Error('MQTT publication failed'));
+      } else resolve();
     };
-    const timer = setTimeout(() => finish(new Error('MQTT timeout')), settings.readbackTimeoutMs ?? 10_000);
+    const cancelled = () => finish(new Error('The pending device command was cancelled.'));
+    const timer = setTimeout(() => finish(waitingPublications.has(attempt)
+      ? publicationFailure('MQTT_STORAGE_PENDING', 'Device control is waiting for received observations to reach storage')
+      : new Error('MQTT timeout')), settings.readbackTimeoutMs ?? 10_000);
     pendingPublications.add(finish);
-    if (noReplay) client.on?.('packetsend', capturePacket);
-    const previousId = noReplay ? client.getLastMessageId?.() : null;
-    try { client.publish(topic, payload, publicationOptions, finish); } catch { finish(new Error('MQTT publication failed')); }
-    if (noReplay) {
-      const allocatedId = client.getLastMessageId?.();
-      if (Number.isInteger(allocatedId) && allocatedId !== previousId) {
-        outgoingId = allocatedId; client.off?.('packetsend', capturePacket);
+    function attempt() {
+      if (finished) return;
+      if (signal?.aborted) { cancelled(); return; }
+      if (!channel.connected || generation !== channel.generation || stopped || !canControl()) {
+        finish(new Error('MQTT publication unavailable')); return;
       }
-      // Disconnect can occur inside publish before any packet reaches the wire.
-      // The allocated ID still lets us remove that unsent outgoing-store entry.
-      removeOutgoing();
+      if (!readRequest && !controlAllowed()) {
+        if ([...channels.values()].some(row => row.receptionFailed)) {
+          finish(publicationFailure('MQTT_STORAGE_FAILED', 'Device control is blocked by an unsaved observation')); return;
+        }
+        // Only callers that can cancel and revalidate their native command may
+        // wait. Never queue an unchecked action or renew its original deadline.
+        if (!beforePublish || !signal) {
+          finish(publicationFailure('MQTT_STORAGE_PENDING', 'Device control is waiting for received observations to reach storage')); return;
+        }
+        waitingPublications.add(attempt); return;
+      }
+      waitingPublications.delete(attempt);
+      try { beforePublish?.(); } catch (error) { finish(error); return; }
+      // MQTT.js defers ID allocation while replaying its outgoing store. Never
+      // enqueue a new command during that phase, including after storage waits.
+      if (noReplay && (client.connected === false || client._storeProcessing || client._storeProcessingQueue?.length)) {
+        finish(new Error('MQTT command route is reconnecting')); return;
+      }
+      if (noReplay) client.on?.('packetsend', capturePacket);
+      const previousId = noReplay ? client.getLastMessageId?.() : null;
+      try { client.publish(topic, payload, publicationOptions, finish); } catch { finish(new Error('MQTT publication failed')); }
+      if (noReplay) {
+        const allocatedId = client.getLastMessageId?.();
+        if (Number.isInteger(allocatedId) && allocatedId !== previousId) {
+          outgoingId = allocatedId; client.off?.('packetsend', capturePacket);
+        }
+        // Disconnect can occur inside publish before any packet reaches the wire.
+        removeOutgoing();
+      }
     }
+    signal?.addEventListener('abort', cancelled, { once: true });
+    attempt();
   });
   const publish = (...args) => {
     if (!store.transactionDepth || !store.afterCommit) return publishNow(...args);
@@ -547,7 +577,7 @@ export async function startMqtt({ engine, store, config, connect = mqtt.connect,
       }, { bytes: bytes + Buffer.byteLength(topic),
         isCurrent: currentReceipt,
         onFailure: () => { if (currentReceipt()) receptionOutcome(key, sequence, false); },
-      }).finally(release);
+      }).finally(() => { release(); resumePublications(); });
     });
     channel.startIfConnected = () => { if (client.connected) connectedHandler(); };
   }
@@ -570,7 +600,13 @@ export async function startMqtt({ engine, store, config, connect = mqtt.connect,
   const brokerStatus = () => Object.fromEntries([...channels].map(([id, channel]) => [id, { connected: channel.connected,
     ready: channel.ready && (id !== 'primary' || !evse || evse.snapshot().mqtt.subscriptionStatus === 'subscribed') }]));
   if (equipment) equipment.brokerStatus = brokerStatus;
-  return { h66, garage, floorOverride, equipment, ready, revoke: () => { for (const channel of channels.values()) channel.gate.revoke(); },
+  return { h66, garage, floorOverride, equipment, ready, revoke: () => {
+    for (const channel of channels.values()) {
+      channel.gate.revoke();
+      // Storage-waiting commands have not reached the MQTT.js gate yet.
+      for (const finish of [...channel.pendingPublications]) finish(new Error('MQTT authority revoked'));
+    }
+  },
     status: () => ({ ...(h66?.status() ?? { connected: primary.connected, writesEnabled: false }), brokers: brokerStatus(), lastSnapshotRequestedAt, lastGatewayStatusAt }),
     ...(h66 ? { setPhase: args => h66.setPhase(args), writeSettings: (...args) => h66.writeSettings(...args),
       restore: args => h66.restore(args), test: args => h66.test(args), requestSnapshot } : {}),

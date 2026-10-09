@@ -14,6 +14,8 @@ const MESSAGES = {
   MQTT_COMMAND_INVALID: 'Choose normal heating, reduced heating, or circulation.',
   MQTT_RELAY_UNAVAILABLE: 'Configure a direct tariff relay with live device readback before requesting heating.',
   MQTT_UNAVAILABLE: 'MQTT acknowledgement was not received. The command may have reached the device; check its state before retrying.',
+  MQTT_STORAGE_PENDING: 'The device command was not sent because received readings are still waiting to be saved.',
+  MQTT_STORAGE_FAILED: 'The device command was not sent because an incoming observation could not be saved. Waiting for fresh recorded evidence.',
   MQTT_CLOSED: 'MQTT command transport is closed. Check device state if a test was in progress.',
   MQTT_BUSY: 'An MQTT test is already in progress. Wait for its result before trying again.',
   MQTT_AUTHORITY_LOST: 'This instance no longer owns device control.',
@@ -29,6 +31,7 @@ export function heatingErrorMessage(code) {
   return Object.hasOwn(MESSAGES, code) ? MESSAGES[code]
     : 'The heating request could not be confirmed. Check the reported equipment state.';
 }
+export const heatingErrorCode = code => typeof code === 'string' && Object.hasOwn(MESSAGES, code) ? code : null;
 
 // Equipment acquisition owns direct native RPC, command fencing and readback.
 // This dispatcher gives timed circulation and heating one exclusive command lane.
@@ -42,12 +45,15 @@ export function createHeatingTransport({ canControl = () => true } = {}) {
     if (!canControl()) throw failure('MQTT_AUTHORITY_LOST');
     if (active) throw failure('MQTT_BUSY');
     if (!handler) throw failure(target === 'dhwr' ? 'MQTT_DHWR_UNAVAILABLE' : 'MQTT_RELAY_UNAVAILABLE');
-    const completion = Promise.resolve().then(() => {
+    const beforePublish = () => {
       if (closed) throw failure('MQTT_CLOSED');
       if (!canControl()) throw failure('MQTT_AUTHORITY_LOST');
       if (clock() >= validUntil || expectedTarget && transport.targetIdentity[target] !== expectedTarget)
         throw failure('EXECUTOR_EXPIRED');
-      return handler(value);
+    };
+    const completion = Promise.resolve().then(() => {
+      beforePublish();
+      return handler(value, { beforePublish });
     });
     active = completion;
     try {

@@ -53,6 +53,22 @@ function setup(t, { automationEnabled = true, delayed = false, store = new Store
   };
 }
 
+test('controller execution errors retain safe dispatch codes without exposing raw error messages', async t => {
+  for (const code of ['MQTT_STORAGE_FAILED', 'MQTT_STORAGE_PENDING', 'unrecognized-private-code']) {
+    const r = setup(t); r.plan();
+    r.transport.publish = async () => { throw Object.assign(new Error('private synthetic transport details'), { code }); };
+    r.engine.tick(); await r.settle();
+    const event = r.store.events().find(row => row.type === 'control-execution-failed');
+    assert.ok(event);
+    assert.equal(event.payload.code, code.startsWith('MQTT_') ? code : undefined);
+    assert.equal(JSON.stringify(event).includes('private'), false);
+    if (code.startsWith('MQTT_')) {
+      assert.match(event.payload.reason, /not sent/);
+      assert.equal(r.engine.status().execution.code, code);
+    }
+  }
+});
+
 test('a background heating search is adopted only by a later current controller update', async t => {
   const r = setup(t), plan = r.plan();
   r.engine.pendingPlan = null;

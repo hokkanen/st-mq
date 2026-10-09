@@ -20,6 +20,10 @@ Versions follow Semantic Versioning. `-dev.N` denotes a development prerelease.
   does not dominate the following week. Storage details describe annualized
   recent growth and explicitly exclude report-expiry or year-end-size forecasts.
   Caravan shutdown restoration events now have a registered inventory description.
+- Heating and hot-water circulation relay commands wait through brief observation
+  storage backlogs, with authority, identity, feedback and deadline checks before
+  dispatch. Failed recording still blocks control, and execution errors retain
+  specific safe diagnostic codes.
 - Price forecasts retain the provider's complete final hourly interval. One
   extra day compares feasible charging plans even when prices end before the
   later deadline, with a notice that incomplete coverage may change the saving.
