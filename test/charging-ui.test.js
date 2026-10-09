@@ -2454,7 +2454,10 @@ test('Charge now toggles the current session without adding confirmation message
     assert.equal(indicator.textContent, 'ON', 'ON describes the request independently of physical charging');
   }
   await clickAction(button);
-  assert.deepEqual(calls[1], ['/api/charging/chargers/charger1/resume', {}]);
+  assert.deepEqual(calls[1], ['/api/charging/chargers/charger1/resume', {
+    association: item.association, sessionId: item.request.sessionId, revision: item.request.revision,
+  }]);
+  assert.equal(calls.length, 2, 'Each toggle sends one scoped action');
   assert.equal(button.textContent, 'Charge nowOFF'); assert.equal(button.disabled, false); assert.equal($('charger1-resume'), null);
   assert.equal(button.getAttribute('aria-pressed'), 'false');
   assert.equal($('charger1-control-message').textContent, '');
@@ -2554,9 +2557,9 @@ test('Charge now works with automatic OFF and toggling back enables automatic ch
   let item = active(); item.settings.enabled = false; item.controls = { enabled: false, revision: 4 };
   const panel = createChargingPanel({ document, request: async (path, payload) => {
     calls.push([path, payload]);
-    item = { ...item, settings: { ...item.settings, enabled: path.endsWith('/control') || item.settings.enabled },
-      controls: { enabled: path.endsWith('/control') || item.settings.enabled, revision: 5 },
-      request: { ...item.request, chargeNow: path.endsWith('/resume') ? false : path.endsWith('/charge-now') || item.request.chargeNow }, control: { phase: 'released' } };
+    item = { ...item, settings: { ...item.settings, enabled: path.endsWith('/resume') || item.settings.enabled },
+      controls: { enabled: path.endsWith('/resume') || item.settings.enabled, revision: 5 },
+      request: { ...item.request, revision: item.request.revision + 1, chargeNow: path.endsWith('/charge-now') }, control: { phase: 'released' } };
     return status(item);
   } });
   panel.update(status(item)); const button = $('charger1-charge-now');
@@ -2566,9 +2569,10 @@ test('Charge now works with automatic OFF and toggling back enables automatic ch
   assert.equal(button.getAttribute('aria-pressed'), 'true'); assert.equal($('charger1-resume'), null);
   assert.match($('charger1-notice').textContent, /Charge now selected/);
   assert.match($('charger1-state').textContent, /Charge now/);
+  const scope = { association: item.association, sessionId: item.request.sessionId, revision: item.request.revision };
   await clickAction(button);
-  assert.deepEqual(calls[1], ['/api/charging/chargers/charger1/control', { association: item.association, revision: 5, enabled: true }]);
-  assert.deepEqual(calls[2], ['/api/charging/chargers/charger1/resume', {}]);
+  assert.deepEqual(calls[1], ['/api/charging/chargers/charger1/resume', scope]);
+  assert.equal(calls.length, 2, 'Turning Charge now off atomically enables Automatic without a separate preference request');
   assert.equal($('charger1-enabled').getAttribute('aria-checked'), 'true');
   assert.equal(button.getAttribute('aria-pressed'), 'false'); panel.close();
 });
@@ -2583,58 +2587,81 @@ test('a shared priority draft closes if a physical charging point is replaced', 
   assert($('charging-priority-save').disabled); await submit($('charging-priority-form')); assert.deepEqual(calls, []); panel.close();
 });
 
-test('toggling Charge now off holds the mutation lock through enable and native handover', async () => {
+test('toggling Charge now off holds the mutation lock through one scoped action', async () => {
   const document = documentFixture(), $ = id => document.getElementById(id), calls = []; let finish;
   const item = active(); item.settings.enabled = false; item.request.chargeNow = true;
-  const enabled = { ...item, settings: { ...item.settings, enabled: true },
-    control: { phase: 'yielded', manual: { kind: 'stop', reason: 'Native stop.' } } };
+  const resumed = { ...item, settings: { ...item.settings, enabled: true },
+    controls: { enabled: true, revision: item.controls.revision + 1 },
+    request: { ...item.request, chargeNow: false, revision: item.request.revision + 1 }, control: { phase: 'waiting' } };
   const panel = createChargingPanel({ document, request: async (path, payload) => {
-    calls.push([path, payload]); return path.endsWith('/control') ? status(enabled) : new Promise(resolve => { finish = resolve; });
+    calls.push([path, payload]); return new Promise(resolve => { finish = resolve; });
   } });
   panel.update(status(item)); const pending = clickAction($('charger1-charge-now'));
   await Promise.resolve(); await Promise.resolve();
-  assert.equal(calls.length, 2); assert($('charger1-charge-now').disabled); assert($('charger1-enabled').disabled);
+  assert.deepEqual(calls, [['/api/charging/chargers/charger1/resume', {
+    association: item.association, sessionId: item.request.sessionId, revision: item.request.revision,
+  }]]);
+  assert($('charger1-charge-now').disabled); assert($('charger1-enabled').disabled);
+  assert.equal($('charger1-enabled').getAttribute('aria-checked'), 'false');
+  assert.equal($('charger1-charge-now').getAttribute('aria-pressed'), 'true');
   assert.equal($('charger1-control-message').textContent, '');
-  await clickAction($('charger1-charge-now')); await clickAction($('charger1-enabled')); assert.equal(calls.length, 2);
-  finish(status({ ...enabled, request: { ...item.request, chargeNow: false }, control: { phase: 'waiting' } })); await pending;
+  await clickAction($('charger1-charge-now')); await clickAction($('charger1-enabled')); assert.equal(calls.length, 1);
+  finish(status(resumed)); await pending;
+  assert.equal($('charger1-enabled').getAttribute('aria-checked'), 'true');
+  assert.equal($('charger1-charge-now').getAttribute('aria-pressed'), 'false');
+  assert(!$('charger1-charge-now').disabled); assert(!$('charger1-enabled').disabled);
   assert.equal($('charger1-control-message').textContent, ''); panel.close();
 });
 
-test('toggling Charge now off does not acknowledge a native instruction after a failed enable or changed connection', async () => {
-  for (const change of ['enable-failed', 'association', 'session', 'read-only']) {
-    const document = documentFixture(), $ = id => document.getElementById(id), calls = [];
+test('a rejected Charge now OFF keeps the latest observed scope and never sends a second action', async () => {
+  for (const change of ['save-failed', 'association', 'session', 'request', 'read-only']) {
+    const document = documentFixture(), $ = id => document.getElementById(id), calls = []; let reject;
     const item = active(); item.settings.enabled = false; item.request.chargeNow = true;
-    const panel = createChargingPanel({ document, request: async (path, payload) => {
+    const panel = createChargingPanel({ document, request: (path, payload) => {
       calls.push([path, payload]);
-      if (change === 'enable-failed') throw new Error('Enable could not be saved.');
-      const enabled = { ...item, settings: { ...item.settings, enabled: true },
-        ...(change === 'association' ? { association: 'new-physical-charger' } : {}),
-        ...(change === 'session' ? { request: { ...item.request, sessionId: 'new-vehicle-connection' } } : {}) };
-      return { ...status(enabled), ...(change === 'read-only' ? { readOnly: true } : {}) };
+      return new Promise((resolve, fail) => { reject = fail; });
     } });
-    panel.update(status(item)); await clickAction($('charger1-charge-now'));
-    assert.equal(calls.length, 1, change); assert($('charger1-control-message').matches('.form-error'));
-    assert.doesNotMatch(openDetail($('charger1-control-message')).textContent, /enabled and requested/); panel.close();
+    panel.update(status(item)); const pending = clickAction($('charger1-charge-now'));
+    const latest = structuredClone(item);
+    if (change === 'association') latest.association = 'new-physical-charger';
+    if (change === 'session') latest.request.sessionId = 'new-vehicle-connection';
+    if (change === 'request') latest.request.revision++;
+    if (['association', 'session'].includes(change)) latest.request.chargeNow = false;
+    panel.update({ ...status(latest), ...(change === 'read-only' ? { readOnly: true } : {}) });
+    reject(new Error(change === 'save-failed' ? 'Charging settings could not be saved.'
+      : change === 'read-only' ? 'Control authority changed.' : 'Charging connection changed; refresh before editing.'));
+    await pending;
+    assert.deepEqual(calls, [['/api/charging/chargers/charger1/resume', {
+      association: item.association, sessionId: item.request.sessionId, revision: item.request.revision,
+    }]], change);
+    assert.equal($('charger1-enabled').getAttribute('aria-checked'), 'false');
+    assert.equal($('charger1-charge-now').getAttribute('aria-pressed'), String(latest.request.chargeNow));
+    assert.equal($('charger1-charge-now').disabled, change === 'read-only');
+    assert($('charger1-control-message').matches('.form-error'));
+    assert.doesNotMatch(openDetail($('charger1-control-message')).textContent, /Automatic charging is on|handover could not be completed/);
+    panel.close();
   }
 });
 
-test('a failed handover keeps acknowledged Automatic ON and explains partial success', async () => {
+test('a failed Charge now OFF retains observed settings until fresh status confirms the result', async () => {
   const document = documentFixture(), $ = id => document.getElementById(id), calls = [];
   const item = active(); item.settings.enabled = false; item.request.chargeNow = true;
-  const enabled = { ...item, settings: { ...item.settings, enabled: true },
-    control: { phase: 'yielded', manual: { kind: 'stop', reason: 'Native stop.' } } };
   const panel = createChargingPanel({ document, request: async (path, payload) => {
-    calls.push([path, payload]); if (path.endsWith('/resume')) throw new Error('Fresh native confirmation is unavailable.');
-    return status(enabled);
+    calls.push([path, payload]); throw new Error('The charging response was interrupted.');
   } });
   panel.update(status(item)); await clickAction($('charger1-charge-now'));
-  assert.equal(calls.length, 2); assert.equal($('charger1-enabled').getAttribute('aria-checked'), 'true');
+  assert.equal(calls.length, 1); assert.equal($('charger1-enabled').getAttribute('aria-checked'), 'false');
   assert.equal($('charger1-control-message').textContent, 'Action failed');
   const popup = openDetail($('charger1-control-message'));
-  assert.match(popup.textContent, /Automatic charging is on, but handover could not be completed/);
-  assert.match(popup.textContent, /native confirmation/);
+  assert.match(popup.textContent, /response was interrupted/);
+  assert.doesNotMatch(popup.textContent, /Automatic charging is on|handover could not be completed/);
   assert.equal($('charger1-charge-now').getAttribute('aria-pressed'), 'true');
-  assert(!$('charger1-charge-now').disabled, 'A failed handover keeps the toggle available to retry');
+  assert(!$('charger1-charge-now').disabled, 'An interrupted response keeps the scoped action available to retry');
+  panel.update(status({ ...item, settings: { ...item.settings, enabled: true },
+    controls: { enabled: true, revision: item.controls.revision + 1 },
+    request: { ...item.request, chargeNow: false, revision: item.request.revision + 1 } }));
+  assert.equal($('charger1-enabled').getAttribute('aria-checked'), 'true');
+  assert.equal($('charger1-charge-now').getAttribute('aria-pressed'), 'false');
   assert.equal($('charger1-resume'), null); assert(!$('charger1-enabled').disabled); panel.close();
 });
 

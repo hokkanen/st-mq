@@ -120,7 +120,7 @@ test('family may use every charging card route but not charger commissioning', a
       revision: 1, changes: { readyBy: '18:00', minimumSoc: 90, capacityKwh: 75 } }, 'charging.setChargerSettings'],
     ['/api/charging/chargers/charger1/control', { enabled: false, association: 'synthetic-identity', revision: 1 }, 'charging.setControl'],
     ['/api/charging/chargers/charger1/control', { enabled: true, association: 'synthetic-identity', revision: 2 }, 'charging.setControl'],
-    ['/api/charging/chargers/charger1/resume', {}, 'charging.resume'],
+    ['/api/charging/chargers/charger1/resume', { association: 'synthetic-identity', sessionId: 'synthetic-session', revision: 1 }, 'charging.resume'],
     ['/api/charging/chargers/charger1/use-automatic', { association: 'synthetic-identity', sessionId: 'synthetic-session',
       revision: 1, controlRevision: 2, takeoverToken: 'synthetic-native-state' }, 'charging.useAutomatic'],
     ['/api/charging/chargers/charger1/charge-now', { association: 'synthetic-identity', sessionId: 'synthetic-session', revision: 1 }, 'charging.chargeNow'],
@@ -129,7 +129,8 @@ test('family may use every charging card route but not charger commissioning', a
   for (const [path, input, name] of actions) {
     assert.equal((await f.post(path, input)).status, 200, path);
     assert.equal(f.calls.at(-1).name, name);
-    if (name === 'charging.identifyVehicle') assert.deepEqual(f.calls.at(-1).args, ['charger1', input]);
+    if (['charging.identifyVehicle', 'charging.resume', 'charging.chargeNow'].includes(name))
+      assert.deepEqual(f.calls.at(-1).args, ['charger1', input]);
   }
   assert.equal((await f.post('/api/charging/ocpp-setup', { action: 'adopt', revision: 'a'.repeat(64) })).status, 403);
   assert.equal(f.calls.length, actions.length);

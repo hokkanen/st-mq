@@ -270,7 +270,6 @@ export class ChargingRuntime {
     this.historyGeneration = 0; this.historyReady = false; this.historyFlights = new Set();
     this.household = []; this.historyAt = null; this.coordination = null; this.closed = false;
     this.plannerService = createChargingPlannerService();
-    this.planningGeneration = 0;
   }
   refreshSettings() {
     this.settings = chargingSettingsFromConfiguration(this.configuration, { priority: this.controls.priority,
@@ -1890,8 +1889,7 @@ export class ChargingRuntime {
     }
     // A later background notification cannot demote an explicit request that
     // has not started yet. No timer or settling permission survives restart.
-    this.planningRequest = { sourceId, background: background && this.planningRequest?.background !== false,
-      generation: ++this.planningGeneration };
+    this.planningRequest = { sourceId, background: background && this.planningRequest?.background !== false };
     if (!this.planningFlight) {
       this.planningFlight = (async () => {
         while (this.planningRequest && !this.closed) {
@@ -1948,8 +1946,11 @@ export class ChargingRuntime {
     }
     this.persistAcceptedState(now);
   }
-  async calculatePlan(now, { sourceId, generation, background = false }) {
-    const current = () => !this.closed && this.store.db.isOpen && generation === this.planningGeneration;
+  async calculatePlan(now, { sourceId, background = false }) {
+    // Receiving another notification is not itself a changed planning input.
+    // The evidence check below rejects changed intent, authority and source
+    // values without starving useful work during steady healthy reporting.
+    const current = () => !this.closed && this.store.db.isOpen;
     await this.write(() => { if (current()) this.refreshPlanningState(this.clock()); });
     if (!current()) return;
     now = this.clock();
@@ -2079,7 +2080,7 @@ export class ChargingRuntime {
       const at = this.clock();
       if (selectedHistory.get().generation !== historySelection || evidence !== this.planningEvidence() || at < now
         || at >= chargingPlanValidUntil({ now: result.at, chargers: planningViews }, result)) {
-        this.planningRequest = { generation: ++this.planningGeneration };
+        this.planningRequest ??= { sourceId, background };
         return false;
       }
       return true;
@@ -2148,6 +2149,7 @@ export class ChargingRuntime {
     }
     await this.write(() => {
     if (!acceptResult(result)) return;
+    const coveredRequest = this.planningRequest;
     const environment = { supply: { budget: supply?.configuredBudgetCurrentA
         ?? (supply?.estimate?.available ? supply.estimate.budgetCurrentA : supply?.availableCurrentA),
         voltageV: planningVoltageV, allocationA: supply?.allocationA,
@@ -2314,6 +2316,9 @@ export class ChargingRuntime {
       item.limiterPlanBasis = this.currentPlanBasis(item);
     }
     this.persist(); this.store.afterCommit(() => {
+      // This committed result already covers any notification queued before
+      // its final evidence check. A later request still owns its next pass.
+      if (this.planningRequest === coveredRequest) this.planningRequest = null;
       this.lastBackgroundPlan = { key: settlingKey, at: now };
       this.backgroundPlanDueAt = null;
       this.scheduleWakeup(this.clock());
@@ -2651,6 +2656,17 @@ export class ChargingRuntime {
       || input.revision !== item.request.revision) throw new Error('Charging connection changed; refresh before editing');
     return { item, view };
   }
+  async settleActionInputs(id) {
+    this.checkControlAuthority();
+    const adapter = this.charger(id).adapter;
+    if (adapter?.waitForInputAdmission && ['evse-input-persistence-pending', 'evse-source-time-pending']
+      .includes(adapter.snapshot?.().commandBlockReason)) {
+      // A received observation can finish inside the adapter's existing read
+      // budget. It supplies no action authority: the caller still validates
+      // the original displayed connection, revision and native instruction.
+      await adapter.waitForInputAdmission({ signal: this.writeAbort.signal });
+    }
+  }
   async chargeNow(id, input) {
     await this.write(() => {
     if (!object(input) || Object.keys(input).sort().join(',') !== 'association,revision,sessionId')
@@ -2674,6 +2690,7 @@ export class ChargingRuntime {
     await this.reconcile();
   }
   async identifyVehicle(id, input) {
+    await this.settleActionInputs(id);
     const item = await this.write(() => {
     this.checkControlAuthority();
     if (!object(input) || Object.keys(input).sort().join(',') !== 'association,revision,sessionId')
@@ -2733,23 +2750,22 @@ export class ChargingRuntime {
   async resume(id, input) {
     await this.write(() => {
     this.checkControlAuthority();
-    this.charger(id);
-    if (!object(input) || Object.keys(input).length) throw new Error('Resume automatic charging with an empty object');
-    const view = this.views().find(item => item.id === id);
+    if (!object(input) || Object.keys(input).sort().join(',') !== 'association,revision,sessionId')
+      throw new Error('Turn off Charge now for the displayed charging connection.');
+    const { item, view } = this.checkedSession(id, input);
     if (!view.capabilities.scheduling) throw new Error(`${view.label} does not support automatic scheduling`);
-    if (!view.settings.enabled) throw new Error('Enable automatic charging before resuming');
-    const item = this.charger(id);
-    const previousIdentification = structuredClone(item.identification);
+    // Returning this connection to Automatic is one durable choice. Splitting
+    // preference and session edits across HTTP requests can apply the second
+    // half to a replacement connection or leave a misleading partial result.
     this.supersedeProbeReturn(item);
-    if (item.request?.chargeNow) {
-      const previous = copyRequest(item.request), previousRevision = this.revision, previousPlan = item.plan;
-      delete item.request.chargeNow; item.request.revision++; this.revision++; item.plan = null;
-      try { this.persist(); } catch (error) {
-        item.request = previous; item.plan = previousPlan; item.identification = previousIdentification; this.revision = previousRevision; throw error;
-      }
-    } else {
-      try { this.persist(); } catch (error) { item.identification = previousIdentification; throw error; }
+    if (!item.controls.enabled) {
+      item.controls = { enabled: true, revision: item.controls.revision + 1 };
+      this.revision++; this.refreshSettings();
     }
+    if (item.request?.chargeNow) {
+      delete item.request.chargeNow; item.request.revision++; this.revision++; item.plan = null;
+    }
+    this.persist();
     }, { priority: 'control', isCurrent: () => this.canControl() });
     this.invalidateCommands();
     // Cancelling Charge now returns our session choice to planning. It does not
@@ -2764,6 +2780,7 @@ export class ChargingRuntime {
       && item.request?.sessionId === attempt.sessionId && item.request.revision === attempt.revision;
   }
   async useAutomatic(id, input) {
+    await this.settleActionInputs(id);
     const { item, attempt } = await this.write(() => {
     this.checkControlAuthority();
     if (!object(input) || Object.keys(input).sort().join(',') !== 'association,controlRevision,revision,sessionId,takeoverToken'

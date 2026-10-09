@@ -79,7 +79,11 @@ Control calculations take queue priority. Repeated equivalent inputs reuse a bou
 cache for at most 30 seconds and never across a schedule, allocation or deadline
 boundary. Results retain their calculation time. Changed requests, connections,
 native instructions, authority, source selection or expired results are checked
-before publication; stale work cannot replace the current plan. Accepted session
+before publication; stale work cannot replace the current plan. Equivalent
+notifications received during a search do not invalidate its result. A committed
+result covers those queued notifications so native control can continue while
+healthy reporting remains active. Changed evidence still requires a fresh
+calculation, and result-age and charging-boundary checks remain in force. Accepted session
 evidence and progress are saved independently while planning runs. Device
 readback and command fencing remain authoritative.
 

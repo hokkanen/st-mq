@@ -687,7 +687,7 @@ test('completed planning observes live identification at the post-search clock',
   f.runtime.plannerService = { request: input => { options = input; return new Promise(resolve => { finish = resolve; }); }, close() {} };
   f.runtime.prices = [{ start: START, end: START + 24 * 3600_000, price: 10 }];
   const requestedAt = f.now;
-  const planning = f.runtime.calculatePlan(requestedAt, { generation: ++f.runtime.planningGeneration });
+  const planning = f.runtime.calculatePlan(requestedAt, {});
   await new Promise(resolve => setImmediate(resolve));
   assert.ok(options, 'The real calculation is waiting for its asynchronous search');
   f.onPhaseReadback(() => f.advance(1)); await f.adapter.refresh(); f.observe();

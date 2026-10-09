@@ -142,6 +142,82 @@ test('forecast-only current prices allow a worker plan to publish as the clock a
   assert.equal(runtime.error, null);
 });
 
+test('ongoing equivalent planning notifications cannot starve a completed worker result', async t => {
+  const f = fixture(preferences, {}, { charger1: true }), runtime = f.create(), adapter = fakeAdapter(f.clock);
+  t.after(() => runtime.close());
+  await runtime.setAdapter('charger1', adapter); await runtime.tick({ prices }); await runtime.reconcile();
+  await runtime.planningFlight;
+  const requestedAt = f.clock() + 1000;
+  f.setNow(requestedAt);
+  const request = runtime.plannerService.request.bind(runtime.plannerService);
+  let searches = 0, notifications = 0;
+  runtime.plannerService.request = async options => {
+    const result = await request(options);
+    searches++;
+    // The probe wakeup is every two seconds. Keep notifications arriving
+    // during each asynchronous search, stopping only after a bounded failure
+    // witness so a regressed test cannot hang indefinitely.
+    if (searches <= 4) {
+      const evidence = runtime.planningEvidence();
+      for (let tick = 0; tick < 2; tick++) {
+        f.setNow(f.clock() + 2000);
+        void runtime.tick(); notifications++;
+        await new Promise(resolve => setImmediate(resolve));
+        assert.equal(runtime.planningEvidence(), evidence, 'These wakeups contain no changed planning evidence');
+      }
+    }
+    return result;
+  };
+  await runtime.updatePlan(requestedAt);
+  assert.equal(searches, 1, 'The result publishes while notifications are still arriving');
+  assert.equal(notifications, 2);
+  assert.equal(runtime.coordination.at, requestedAt, 'The forecast retains its original calculation time');
+  assert.equal(runtime.planningRequest, null, 'Equivalent queued work is covered by the committed result');
+  assert.equal(chargerView(runtime).plan.feasible, true);
+});
+
+for (const changed of ['control', 'source-current', 'authority', 'connection', 'price'])
+test(`a planning notification cannot admit a worker result after changed ${changed} evidence`, async t => {
+  const f = fixture(preferences, {}, { charger1: true }), runtime = f.create(), adapter = fakeAdapter(f.clock);
+  t.after(() => runtime.close());
+  await runtime.setAdapter('charger1', adapter); await runtime.tick({ prices }); await runtime.reconcile();
+  await runtime.planningFlight;
+  const previousAt = runtime.coordination.at;
+  f.setNow(f.clock() + 1000);
+  const request = runtime.plannerService.request.bind(runtime.plannerService);
+  let searches = 0;
+  runtime.plannerService.request = async options => {
+    if (++searches === 2) assert.equal(runtime.coordination.at, previousAt, 'The obsolete first result was not published');
+    const result = await request(options);
+    if (searches === 1) {
+      const evidence = runtime.planningEvidence(), item = runtime.chargers.charger1;
+      if (changed === 'control') {
+        item.controls = { enabled: false, revision: item.controls.revision + 1 };
+        runtime.revision++; runtime.refreshSettings();
+      } else if (changed === 'authority') runtime.canControl = () => false;
+      else if (changed === 'price') runtime.prices = prices.map(row => ({ ...row, price: row.price + 5 }));
+      else {
+        // Publish a newly observed native value through the same controller
+        // snapshot consumed by runtime views; no command is authorized here.
+        const status = item.controller.status.bind(item.controller);
+        item.controller.status = () => {
+          const observed = status();
+          if (changed === 'source-current') observed.snapshot.limits.chargerA = 6;
+          else observed.session = { ...observed.session, connectedAt: observed.session.connectedAt + 1 };
+          return observed;
+        };
+      }
+      assert.notEqual(runtime.planningEvidence(), evidence);
+      void runtime.updatePlan(f.clock(), { background: true });
+      await new Promise(resolve => setImmediate(resolve));
+    }
+    return result;
+  };
+  await runtime.updatePlan(f.clock());
+  assert.equal(searches, 2, 'Changed evidence requires one fresh calculation');
+  assert.equal(runtime.coordination.at, f.clock());
+});
+
 test('one-day preview and selected forecast cost stay outside published accounting and stored hourly data', async t => {
   const f = fixture(preferences, {}, { charger1: true }), setAvailable = syntheticElectricityForecast(f);
   const runtime = f.create(), adapter = fakeAdapter(f.clock); t.after(() => runtime.close());
@@ -1867,6 +1943,43 @@ test('Use automatic rejects stale displayed scope or native instruction before p
   }
 });
 
+test('Use automatic admits an already received observation before checking the original displayed scope', async t => {
+  for (const reason of ['evse-input-persistence-pending', 'evse-source-time-pending']) {
+    const f = await takeoverFixture(t), scope = takeoverScope(chargerView(f.runtime));
+    f.takeover.available = false; f.takeover.reason = 'evse-control-unavailable';
+    let waits = 0;
+    f.adapter.snapshot = () => ({ commandBlockReason: reason });
+    f.adapter.waitForInputAdmission = async ({ signal }) => {
+      assert.equal(signal.aborted, false); waits++;
+      f.takeover.available = true; f.takeover.reason = null;
+      return true;
+    };
+    await f.runtime.useAutomatic('charger1', scope);
+    assert.equal(waits, 1); assert.equal(f.calls.length, 1);
+    assert.equal(f.calls[0].takeover, scope.takeoverToken);
+  }
+});
+
+test('waiting for received charger input cannot renew a stale action or bypass an unavailable charger', async t => {
+  for (const change of ['request', 'connection', 'controls', 'instruction', 'authority', 'timeout']) {
+    const f = await takeoverFixture(t), scope = takeoverScope(chargerView(f.runtime));
+    const item = f.runtime.chargers.charger1, writes = f.writes.length;
+    f.adapter.snapshot = () => ({ commandBlockReason: 'evse-input-persistence-pending' });
+    f.adapter.waitForInputAdmission = async () => {
+      if (change === 'request') item.request.revision++;
+      if (change === 'connection') item.request.sessionId = 'replacement-session';
+      if (change === 'controls') item.controls.revision++;
+      if (change === 'instruction') f.takeover.token = 'synthetic-newer-native-instruction';
+      if (change === 'authority') f.runtime.canControl = () => false;
+      if (change === 'timeout') { f.takeover.available = false; f.takeover.reason = 'evse-control-unavailable'; }
+      return change !== 'timeout';
+    };
+    await assert.rejects(f.runtime.useAutomatic('charger1', scope), /changed|authority|unavailable|no longer belongs/i);
+    assert.equal(f.writes.length, writes); assert.equal(f.calls.length, 0);
+    assert.equal(item.takeoverAttempt, undefined);
+  }
+});
+
 test('Use automatic durably enables Automatic and clears Charge now with one scoped confirmed takeover', async t => {
   const f = await takeoverFixture(t);
   await f.runtime.chargeNow('charger1', requestScope(chargerView(f.runtime)));
@@ -1967,7 +2080,7 @@ test('Charge now OFF never acknowledges native manual priority or sends explicit
       periods: [{ startTime: '03:00', stopTime: '04:00', maximumAmps: 16 }] } });
     await f.runtime.reconcile('charger1');
     const mutations = f.adapter.calls.filter(row => row.kind !== 'read').length;
-    await f.runtime.resume('charger1', {});
+    await f.runtime.resume('charger1', requestScope(chargerView(f.runtime)));
     const view = chargerView(f.runtime);
     assert.equal(view.request.chargeNow, undefined);
     if (mode === 'stop') assert.equal(view.control.snapshot.stopped, true);
@@ -1976,6 +2089,49 @@ test('Charge now OFF never acknowledges native manual priority or sends explicit
     assert.equal(f.adapter.calls.filter(row => row.kind !== 'read').length, mutations);
     assert.notEqual(view.control.phase, 'released');
   }
+});
+
+test('Charge now OFF enables Automatic for the same request with one committed state transition', async t => {
+  const f = fixture(preferences), runtime = f.create(), adapter = fakeAdapter(f.clock);
+  t.after(() => runtime.close());
+  await runtime.setAdapter('charger1', adapter); runtime.tick({ prices }); await runtime.reconcile();
+  await runtime.chargeNow('charger1', requestScope(chargerView(runtime)));
+  const before = chargerView(runtime), input = requestScope(before);
+  assert.equal(before.settings.enabled, false);
+  assert.equal(before.request.chargeNow, true);
+  f.store.fail = true;
+  await assert.rejects(runtime.resume('charger1', input), /database temporarily locked/);
+  assert.equal(chargerView(runtime).settings.enabled, false);
+  assert.equal(chargerView(runtime).request.chargeNow, true);
+  assert.equal(chargerView(runtime).request.revision, input.revision);
+  f.store.fail = false;
+  await runtime.resume('charger1', input);
+  const after = chargerView(runtime);
+  assert.equal(after.settings.enabled, true);
+  assert.equal(after.request.chargeNow, undefined);
+  assert.equal(after.controls.revision, before.controls.revision + 1);
+  assert.equal(after.request.revision, before.request.revision + 1);
+  assert.equal(after.control.phase, 'waiting');
+});
+
+test('Charge now OFF rejects unscoped, replaced and superseded requests without altering the current instruction', async t => {
+  const f = fixture(preferences, {}, { charger1: true }), runtime = f.create(), adapter = fakeAdapter(f.clock);
+  t.after(() => runtime.close());
+  await runtime.setAdapter('charger1', adapter); runtime.tick({ prices }); await runtime.reconcile();
+  await runtime.chargeNow('charger1', requestScope(chargerView(runtime)));
+  const before = chargerView(runtime), input = requestScope(before);
+  const writes = adapter.calls.filter(row => row.kind !== 'read').length;
+  for (const stale of [{}, { ...input, association: 'replaced-equipment' },
+    { ...input, sessionId: 'previous-connection' }, { ...input, revision: input.revision - 1 }]) {
+    await assert.rejects(runtime.resume('charger1', stale));
+    const after = chargerView(runtime);
+    assert.equal(after.request.chargeNow, true);
+    assert.equal(after.request.revision, before.request.revision);
+    assert.deepEqual(after.controls, before.controls);
+    assert.equal(adapter.calls.filter(row => row.kind !== 'read').length, writes);
+  }
+  await runtime.resume('charger1', input);
+  assert.equal(chargerView(runtime).request.chargeNow, undefined);
 });
 
 test('Charge Now removes the automatic delay immediately and automatic handover restores scheduling', async t => {
@@ -1991,7 +2147,7 @@ test('Charge Now removes the automatic delay immediately and automatic handover 
   assert.equal(adapter.calls.filter(row => row.kind === 'clear').length, 1);
   runtime.tick({ prices: priceOutlook([100, 1, 1, 1]) }); await runtime.reconcile();
   assert.equal(adapter.calls.filter(row => row.kind === 'install').length, 1, 'Cheaper prices cannot reclaim the session');
-  await runtime.resume('charger1', {});
+  await runtime.resume('charger1', requestScope(chargerView(runtime)));
   assert.equal(chargerView(runtime).request.chargeNow, undefined);
   assert.equal(chargerView(runtime).control.phase, 'waiting');
   assert.equal(adapter.calls.filter(row => row.kind === 'install').length, 2);

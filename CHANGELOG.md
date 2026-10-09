@@ -6,6 +6,19 @@ Versions follow Semantic Versioning. `-dev.N` denotes a development prerelease.
 
 ## Unreleased
 
+- Charging plans finish under repeated unchanged observations instead of
+  restarting until reporting becomes quiet. A bounded additional candidate
+  recovers feasible two-car schedules around an earlier vehicle deadline.
+- Local OCPP starts and confirmed pauses survive harmless refreshes and cost
+  estimate changes. Shelly actions admit already received observations within
+  their existing command budget, then recheck the original connection and native
+  instruction before dispatch.
+- An unrelated Easee source clock lead no longer forces healthy current feeds
+  into fallback or delays ready observations from another device. Original
+  measurement clocks and actual source-loss checks remain intact.
+- Turning Charge now off returns the displayed connection to Automatic in one
+  committed action. Failed saves leave both choices unchanged, and an older
+  browser cannot cancel a newer charging request.
 - Backups verify their complete contents and captured transaction boundary before
   publication. Damaged WAL headers and inconsistent recovery references are
   rejected without repairing the source; a complete export survives a failed

@@ -77,18 +77,16 @@ async function fixture(t) {
     setAuthority(value) { authority = value; } };
 }
 
-test('joint planning coalesces a burst into the running search and one latest request', async t => {
+test('joint planning coalesces an equivalent burst into the running search', async t => {
   const f = await fixture(t), first = f.runtime.updatePlan();
   await waitForCalls(f.planner, 1);
   const rest = Array.from({ length: 8 }, () => f.runtime.updatePlan());
   assert.equal(f.planner.calls.length, 1);
   assert.ok(rest.every(flight => flight === first));
-  f.planner.complete(0); await waitForCalls(f.planner, 2);
-  assert.equal(f.runtime.coordination, null, 'The superseded search cannot publish');
-  assert.equal(f.planner.calls.length, 2);
-  f.planner.complete(1); await first;
-  assert.equal(f.runtime.coordination.solver.testRequest, 1);
-  assert.equal(f.planner.calls.length, 2);
+  f.planner.complete(0); await first;
+  assert.equal(f.runtime.coordination.solver.testRequest, 0);
+  assert.equal(f.planner.calls.length, 1);
+  assert.equal(f.runtime.planningRequest, null);
 });
 
 test('two controllers awaiting a shared calculation receive it without invalidating each other', async t => {
@@ -100,9 +98,9 @@ test('two controllers awaiting a shared calculation receive it without invalidat
   const second = f.controllers.charger2.getPlan();
   assert.equal(f.runtime.chargers.charger1.awaitingPlan, true);
   assert.equal(f.runtime.chargers.charger2.awaitingPlan, true);
-  f.planner.complete(0); await waitForCalls(f.planner, 2);
-  f.planner.complete(1);
+  f.planner.complete(0);
   const plans = await Promise.all([first, second]);
+  assert.equal(f.planner.calls.length, 1, 'Both controllers use the same current result');
   for (const [index, id] of ['charger1', 'charger2'].entries()) {
     assert.ok(plans[index]?.periods.length);
     assert.equal(f.controllers[id].invalidations, before[id]);

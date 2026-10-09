@@ -828,34 +828,18 @@ export function createChargingPanel({ document, request, beforeRequest = () => {
       event.preventDefault(); event.stopPropagation();
       if (chargeNow.disabled) return;
       const current = device.charger;
-      if (current.request?.chargeNow === true) return resumeAutomatic();
-      return mutate(`${prefix}/charge-now`, { association: current.association,
+      const action = current.request?.chargeNow === true ? 'resume' : 'charge-now';
+      return mutate(`${prefix}/${action}`, { association: current.association,
         sessionId: current.request.sessionId, revision: current.request.revision }, controlMessage);
     });
-    function resumeAutomatic(success = '') {
-      const current = device.charger;
-      return current.settings.enabled
-        ? mutate(`${prefix}/resume`, {}, controlMessage, success)
-        : mutate(`${prefix}/control`, { association: current.association, revision: current.controls.revision, enabled: true },
-          controlMessage, success, undefined, async () => {
-            const latest = device.charger;
-            if (devices.get(id) !== device || latest.association !== current.association
-              || latest.request?.sessionId !== current.request?.sessionId || !latest.settings.enabled)
-              throw new Error('The charging connection or preference changed. Review it before trying again.');
-            if (!writable() || latest.readOnly) throw new Error('Control authority changed before automatic handover. Review the current status.');
-            try { return await request(`${prefix}/resume`, {}); }
-            catch (error) { throw new Error(`Automatic charging is on, but handover could not be completed. ${chargingControlReason(error.message) || 'Try again.'}`); }
-          });
-    }
     devices.set(id, device); return device;
   }
-  async function mutate(path, payload, message, success = '', saved = () => {}, followup) {
+  async function mutate(path, payload, message, success = '', saved = () => {}) {
     if (busy || !writable()) return false;
     actionMessages.delete(message);
     busy = true; actionMessage(message, success ? 'Saving…' : '', { pending: true }); refreshControls();
     try {
       beforeRequest(); const result = await request(path, payload); saved(); update(result); onStatus(result);
-      if (followup) { const next = await followup(); update(next); onStatus(next); }
       actionMessage(message, typeof success === 'function' ? success() : success);
       return true;
     } catch (error) { actionMessage(message, chargingControlReason(error.message) || 'Could not save charging settings.', { error: true }); return false; }

@@ -33,7 +33,9 @@ unresolved restoration remain separate restrictions. See
 **Charge now** releases the controller's automatic scheduling delay for the
 current connection without changing the Automatic preference. It works with
 Automatic off. Turning Charge now off returns to Automatic and enables it if
-needed; unplugging ends the override. The request remains subject to native
+needed in one committed, connection-and-request-scoped action; a stale browser
+cannot cancel a newer request or a replacement connection. Unplugging ends the
+override. The request remains subject to native
 restrictions and confirmed control readiness.
 
 The Automatic switch saves the scheduling preference. It stays **ON** while
@@ -62,6 +64,18 @@ external instruction takes priority again. Returning to the price plan may keep
 charging paused until a cheaper period. The action is available only for the current connection and control authority.
 Pending, blocked and unconfirmed outcomes remain distinct; success requires
 charger readback.
+
+A received Shelly observation that is awaiting persistence or its source time
+may settle within the existing native command timeout. The action then checks
+the original displayed connection and instruction again. A timeout, failed save,
+newer instruction or changed connection does not become permission to dispatch.
+Waiting and the native reply share the original command budget.
+
+Ordinary local OCPP refreshes preserve an unchanged authorized start and an
+established confirmation while their original evidence remains valid. They do
+not renew evidence clocks. Changed control intent, contrary native readback,
+expired evidence or a lost connection withdraws that permission or confirmation.
+Changes only to displayed cost estimates do not revoke an otherwise valid start.
 
 Persisted ownership and runtime vehicle evidence use the same current validators
 at database startup and controller construction. Unknown fields, malformed
