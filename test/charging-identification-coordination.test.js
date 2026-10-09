@@ -5,18 +5,28 @@ import { ChargingRuntime } from '../src/charging/runtime.js';
 const NOW = Date.parse('2026-10-03T12:00:00Z');
 const signal = value => ({ value, available: true, measuredAt: NOW - 1000 });
 
-function fixture() {
+function fixture(chargerId = 'charger1') {
+  const peerId = chargerId === 'charger1' ? 'charger2' : 'charger1';
   const control = { snapshot: { online: true }, execution: { periods: [{ startAt: NOW - 300_000, endAt: NOW + 600_000 }] } };
-  const item = { definition: { id: 'charger1' }, controls: { enabled: true } };
-  const peer = { definition: { id: 'charger2' }, controller: { status: () => control },
+  const item = { definition: { id: chargerId }, controls: { enabled: true } };
+  const peer = { definition: { id: peerId }, controller: { status: () => control },
     controls: { enabled: true }, request: {}, plan: { feasible: true, periods: control.execution.periods },
     vehicleEvidence: { chargingTimes: [NOW - 300_000], stoppedTimes: [] } };
   const physical = { providerConnected: true, connected: signal(true), charging: signal(true), powerKw: signal(11) };
   const runtime = Object.assign(Object.create(ChargingRuntime.prototype), {
-    chargers: { charger1: item, charger2: peer }, configuration: { chargers: {} }, config: {}, clock: () => NOW,
+    chargers: { [chargerId]: item, [peerId]: peer }, configuration: { chargers: {} }, config: {}, clock: () => NOW,
   });
   return { runtime, item, peer, control, physical,
-    available: () => runtime.identificationPauseAvailable(item, { charger2: physical }, NOW) };
+    available: () => runtime.identificationPauseAvailable(item, { [peerId]: physical }, NOW) };
+}
+
+function offlinePeerFixture(chargerId) {
+  const f = fixture(chargerId);
+  f.control.snapshot.online = false;
+  f.physical.providerConnected = false;
+  for (const key of ['connected', 'charging', 'powerKw'])
+    f.physical[key] = { value: null, available: false, measuredAt: NOW - 600_000 };
+  return f;
 }
 
 function idlePeerFixture(transport = 'shelly-evse') {
@@ -255,7 +265,7 @@ test('a settled native manual stop permits the other charger to identify without
   }
 });
 
-test('unknown, offline, manual, pending or competing peer control cannot establish an isolated pause', async t => {
+test('unknown, inconsistent, manual, pending or competing online peer control cannot establish an isolated pause', async t => {
   const changes = {
     'unknown connection': f => { f.physical.connected.available = false; },
     'unknown power': f => { f.physical.powerKw.available = false; },
@@ -263,7 +273,6 @@ test('unknown, offline, manual, pending or competing peer control cannot establi
     'stale power': f => { f.physical.powerKw.measuredAt = NOW - 61_000; },
     'future power': f => { f.physical.powerKw.measuredAt = NOW + 1; },
     'offline provider': f => { f.physical.providerConnected = false; },
-    'offline charger': f => { f.control.snapshot.online = false; },
     'manual instruction': f => { f.control.manual = { kind: 'stop' }; },
     'pending command': f => { f.control.pending = { role: 'start_charging' }; },
     'fault': f => { f.control.snapshot.faulted = true; },
@@ -279,6 +288,95 @@ test('unknown, offline, manual, pending or competing peer control cannot establi
   for (const [name, change] of Object.entries(changes)) await t.test(name, () => {
     const f = fixture(); change(f); assert.equal(f.available(), false);
   });
+});
+
+test('either charger may admit one identification pause with an explicitly unreachable peer and no known competing transition', () => {
+  for (const chargerId of ['charger1', 'charger2']) {
+    const f = offlinePeerFixture(chargerId);
+    f.control.execution = null; f.peer.plan = null;
+    f.control.manual = { kind: 'stop' };
+    const before = structuredClone({ control: f.control, physical: f.physical, evidence: f.peer.vehicleEvidence });
+    assert.equal(f.available(), true, `${chargerId}: offline peer evidence need not prove an unplugged or stopped car`);
+    assert.equal(f.runtime.identificationPauseAvailable(f.item, {}, NOW), true,
+      'Explicit offline status also admits a peer with no physical readings');
+    assert.deepEqual({ control: f.control, physical: f.physical, evidence: f.peer.vehicleEvidence }, before,
+      'Admission neither invents peer observations nor changes its native instructions');
+    assert.equal(f.peer.vehicleMatch, undefined, 'Admission alone does not assign a vehicle to either charger');
+    assert.equal(f.item.vehicleMatch, undefined);
+  }
+});
+
+test('an offline peer still blocks a competing action, known source edge or imminent schedule boundary', async t => {
+  const changes = {
+    'backend transition': f => { f.peer.backendTransition = true; },
+    'pending start': f => { f.control.pending = { role: 'start_charging', value: true }; },
+    'pending stop': f => { f.control.pending = { role: 'start_charging', value: false }; },
+    'pending takeover': f => { f.control.takeoverPending = { requestedAt: NOW - 1000 }; },
+    'identification pause': f => { f.peer.identification = { phase: 'pausing' }; },
+    'identification probe': f => { f.peer.identification = { phase: 'charging', probe: { endedAt: null } }; },
+    'owned identification instruction': f => { f.control.owned = { purpose: 'identification', startAt: NOW + 600_000 }; },
+    'current test applying': f => { f.control.currentTest = { phase: 'applying' }; },
+    'current test active': f => { f.control.currentTest = { phase: 'active' }; },
+    'current test restoring': f => { f.control.currentTest = { phase: 'restoring', expiresAt: NOW - 1000 }; },
+    'current test uncertain': f => { f.control.currentTest = { phase: 'uncertain', expiresAt: NOW - 1000 }; },
+    'pending current preparation': f => {
+      f.control.currentTest = { phase: 'proposed', expiresAt: NOW - 1000, pending: { value: 6 } };
+    },
+    'recent charging edge': f => { f.peer.vehicleEvidence.chargingTimes = [NOW - 1000]; },
+    'recent stop edge': f => { f.peer.vehicleEvidence.stoppedTimes = [NOW - 59_999]; },
+    'recent stream charging edge': f => { f.peer.streamEvidence = { chargingTimes: [NOW - 1000], stoppedTimes: [] }; },
+    'recent stream stop edge': f => { f.peer.streamEvidence = { chargingTimes: [], stoppedTimes: [NOW - 59_999] }; },
+    'Shelly native schedule': f => { Object.assign(f.control.snapshot, { transport: 'shelly-evse', nativeScheduleActive: true }); },
+    'OCPP known native schedule': f => { Object.assign(f.control.snapshot, { transport: 'ocpp', appControl: { schedule: { enabled: 'delayed' } } }); },
+    'cloud native schedule': f => { Object.assign(f.control.snapshot, { transport: 'easee-cloud', schedule: { enabled: 'weekly' } }); },
+    'accepted stop inside pause': f => { f.control.execution.periods[0].endAt = NOW + 30_000; },
+    'accepted stop at correlation boundary': f => { f.control.execution.periods[0].endAt = NOW + 120_000; },
+    'accepted start at correlation boundary': f => { f.control.execution.periods = [{ startAt: NOW + 120_000, endAt: null }]; },
+    'owned start at correlation boundary': f => { f.control.owned = { purpose: 'schedule', startAt: NOW + 120_000 }; },
+    'accepted stop just passed': f => { f.control.execution.periods[0].endAt = NOW - 1000; },
+    'accepted start just passed': f => { f.control.execution.periods = [{ startAt: NOW - 59_999, endAt: null }]; },
+    'owned start just passed': f => { f.control.owned = { purpose: 'schedule', startAt: NOW - 1000 }; },
+    'accepted stop at current instant': f => { f.control.execution.periods[0].endAt = NOW; },
+    'accepted start at current instant': f => { f.control.execution.periods = [{ startAt: NOW, endAt: null }]; },
+    'owned start at current instant': f => { f.control.owned = { purpose: 'schedule', startAt: NOW }; },
+  };
+  for (const chargerId of ['charger1', 'charger2']) for (const [name, change] of Object.entries(changes))
+    await t.test(`${chargerId}: ${name}`, () => {
+      const f = offlinePeerFixture(chargerId); change(f);
+      assert.equal(f.available(), false, 'Losing communication cannot erase a known competing transition or restoration duty');
+    });
+});
+
+test('offline admission preserves existing settling, completed-work and observation-horizon bounds', () => {
+  for (const chargerId of ['charger1', 'charger2']) {
+    const f = offlinePeerFixture(chargerId);
+    f.peer.vehicleEvidence = { chargingTimes: [NOW - 60_000], stoppedTimes: [NOW - 61_000] };
+    f.peer.streamEvidence = { chargingTimes: [NOW - 60_000], stoppedTimes: [NOW - 61_000] };
+    f.peer.identification = { phase: 'complete', probe: { endedAt: NOW - 60_000 } };
+    f.control.currentTest = { phase: 'proposed', expiresAt: NOW - 1000, pending: null };
+    f.control.execution.periods[0].endAt = NOW + 120_001;
+    f.control.owned = { purpose: 'schedule', startAt: NOW - 60_000 };
+    assert.equal(f.available(), true, `${chargerId}: old settled evidence and untouched expired preparation do not reserve a pause`);
+  }
+});
+
+test('unavailable measurements or a malformed online state cannot claim the explicit offline exception', async t => {
+  const changes = {
+    'missing online state': f => { delete f.control.snapshot.online; },
+    'unknown online state': f => { f.control.snapshot.online = null; },
+    'string offline state': f => { f.control.snapshot.online = 'false'; },
+    'numeric offline state': f => { f.control.snapshot.online = 0; },
+    'online with unavailable physical evidence': f => { f.control.snapshot.online = true; },
+    'missing snapshot': f => { delete f.control.snapshot; },
+    'missing controller': f => {
+      delete f.peer.controller;
+      f.runtime.configuration.chargers[f.peer.definition.id] = { enabled: true };
+    },
+  };
+  for (const chargerId of ['charger1', 'charger2']) for (const [name, change] of Object.entries(changes))
+    await t.test(`${chargerId}: ${name}`, () => {
+      const f = offlinePeerFixture(chargerId); change(f); assert.equal(f.available(), false);
+    });
 });
 
 test('a confirmed disconnected or unconfigured peer does not block the only charging point', () => {

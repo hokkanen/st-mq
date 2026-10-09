@@ -6,6 +6,12 @@ Versions follow Semantic Versioning. `-dev.N` denotes a development prerelease.
 
 ## Unreleased
 
+- Vehicle identification can proceed on a reachable charger while its peer is
+  explicitly offline. Tesla requires a matching physical charging baseline and
+  confirmed controlled stop with fresh vehicle evidence; BMW retains its
+  existing matching checks. Known peer actions and restoration duties still
+  block conflicting tests. Charger current details remove the duplicate selected
+  current row and use compact allowance, confirmed-setting and limit values.
 - Brief vehicle-feed outages retain the current connection's last observed
   charge target and battery capacity, including across restart. This prevents
   a nearly full battery being compared with a lower configuration default and

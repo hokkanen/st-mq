@@ -21,7 +21,7 @@ import { updateSessionCost } from './session-cost.js';
 import { updateTargetState, targetSelection } from './target.js';
 import { acceptEaseeTransition } from './stream-evidence.js';
 import { confirmedIdentityPause } from './identity-evidence.js';
-import { advanceIdentification, prepareActiveBmwCandidate, matchActiveBmwPause, IDENTIFICATION_ENERGY_LIMIT_KWH, IDENTIFICATION_PAUSE_WAIT_MS } from './identification.js';
+import { advanceIdentification, prepareActiveBmwCandidate, matchActiveBmwPause, prepareActiveTeslaCandidate, matchActiveTeslaPause, IDENTIFICATION_ENERGY_LIMIT_KWH, IDENTIFICATION_PAUSE_WAIT_MS } from './identification.js';
 import { shellyAssociation, shellyCurrentCommandReadback } from './shelly-evse.js';
 import { mqttSourceIdentity } from '../pairing/mqtt-source-context.js';
 import { ChargingSessionDiagnostics } from './session-diagnostics.js';
@@ -564,6 +564,23 @@ export class ChargingRuntime {
       if (peer === item || !(peer.controller || peer.adapter || this.configuration.chargers[id]?.enabled
         || id === 'charger1' && this.config.connections?.easee?.charger_id)) return true;
       const physical = physicalById[id], control = peer.controller?.status();
+      if (control?.snapshot?.online === false) {
+        // An unreachable peer stays unknown. Only its missing live evidence
+        // is waived: known commands, obligations and transitions still apply.
+        const horizon = now + IDENTIFICATION_PAUSE_WAIT_MS + 30_000;
+        const schedule = control.snapshot.appControl?.schedule ?? control.snapshot.schedule;
+        return !peer.backendTransition && !control.pending && !control.takeoverPending
+          && control.owned?.purpose !== 'identification'
+          && peer.identification?.phase !== 'pausing' && peer.identification?.probe?.endedAt !== null
+          && !identificationCurrentBusy(control.currentTest, now)
+          && ![...(peer.vehicleEvidence?.chargingTimes ?? []), ...(peer.vehicleEvidence?.stoppedTimes ?? []),
+            ...(peer.streamEvidence?.chargingTimes ?? []), ...(peer.streamEvidence?.stoppedTimes ?? [])]
+            .some(at => at > now - MINUTE && at <= now)
+          && control.snapshot.nativeScheduleActive !== true
+          && (!schedule?.enabled || schedule.enabled === 'none')
+          && ![control.owned?.startAt, ...(control.execution?.periods ?? []).flatMap(row => [row.startAt, row.endAt])]
+            .some(at => at > now - MINUTE && at <= horizon);
+      }
       if (physical?.connected?.available !== true) return false;
       if (physical.connected.value === false) return true;
       const power = physical.powerKw, charging = physical.charging;
@@ -635,6 +652,17 @@ export class ChargingRuntime {
         physicalAt: physical.powerKw.measuredAt ?? physical.charging?.measuredAt, now,
         consumedChargingId: item.identification?.attempt > 1 ? null : bmw.consumedChargingId }) : null;
   }
+  identificationTeslaCandidate(item, physicalById, now) {
+    // This additional pause path is scoped to an explicitly unreachable peer.
+    // Online ambiguity and static current comparisons retain their own rules.
+    if (!Object.values(this.chargers).some(peer => peer !== item && peer.controller?.status()?.snapshot?.online === false)
+      || item.vehicleEvidence?.historyOverflow) return null;
+    const tesla = this.teslaCapture?.snapshot(), session = item.controller?.status()?.session;
+    return prepareActiveTeslaCandidate(tesla, { physical: physicalById[item.definition.id],
+      connectedAt: session?.connectedAt, lastDisconnectedAt: session?.lastDisconnectedAt,
+      startedAt: item.identification?.startedAt, now,
+      consumedPowerAt: this.consumedTeslaPower && this.consumedTeslaPower.association === tesla?.association ? this.consumedTeslaPower.receivedAt : null });
+  }
   identificationReason(item, physicalById, now) {
     const control = item.controller?.status();
     if (item.identification?.reason) return item.identification.reason;
@@ -650,7 +678,8 @@ export class ChargingRuntime {
     if (item.identification?.phase === 'pausing') return 'awaiting-stop-confirmation';
     if (item.identification?.phase !== 'charging') return 'waiting-for-charging';
     if (this.minimumCurrentIdentification(item, now)) return 'observing-charge';
-    if (this.identificationBmwCandidate(item, physicalById[item.definition.id], now))
+    if (this.identificationTeslaCandidate(item, physicalById, now)
+      || this.identificationBmwCandidate(item, physicalById[item.definition.id], now))
       return this.identificationPauseAvailable(item, physicalById, now) ? 'observing-charge' : 'peer-transition-pending';
     if (item.definition.id === 'charger2' && teslamateConnectionContext(this.teslaCapture?.snapshot(), { now })
       && control.snapshot?.identificationCurrentReady !== true) return 'current-control-unavailable';
@@ -874,7 +903,7 @@ export class ChargingRuntime {
     return true;
   }
   telemetry(now) {
-    const result = {}, controls = {}, candidates = {}, freshCandidates = {}, currentMatches = {}, bmwMatches = {}, awaitingConnection = new Set(), tesla = this.teslaCapture?.snapshot() ?? {}, bmw = this.vehicleFeeds.bmw;
+    const result = {}, controls = {}, candidates = {}, freshCandidates = {}, currentMatches = {}, teslaPauseMatches = {}, independentTeslaMatches = new Set(), bmwMatches = {}, awaitingConnection = new Set(), tesla = this.teslaCapture?.snapshot() ?? {}, bmw = this.vehicleFeeds.bmw;
     // A corroborated live-current match may legitimately coexist with an old
     // unchanged unplug field. Keep that proven connection through a controlled
     // zero-current pause; only a newer negative observation breaks its scope.
@@ -1004,7 +1033,10 @@ export class ChargingRuntime {
           // This restriction belongs to the paused connection. Preserve it
           // if the peer later disconnects or replaces its own history; a
           // retry's distinct request boundary cannot inherit this verdict.
-          if (contested) evidence.bmwContestedPauseRequestedAt = pauseRequestedAt;
+          if (contested) {
+            evidence.bmwContestedPauseRequestedAt = pauseRequestedAt;
+            evidence.teslaContestedPauseRequestedAt = pauseRequestedAt;
+          }
         }
         const pauseUncontested = !Number.isSafeInteger(pauseRequestedAt)
           || evidence.bmwContestedPauseRequestedAt !== pauseRequestedAt;
@@ -1023,6 +1055,15 @@ export class ChargingRuntime {
             consumedChargingId: retainedBmw ? null : bmw.consumedChargingId });
         if (activeBmw) { candidates[id].push('bmw'); evidence.bmwReason = 'matched-identification-pause';
           evidence.bmwChargingReadingId = activeBmw.chargingReadingId; evidence.bmwPlugReadingId = null; }
+        const teslaPauseUncontested = !Number.isSafeInteger(pauseRequestedAt)
+          || evidence.teslaContestedPauseRequestedAt !== pauseRequestedAt;
+        const activeTesla = teslaPauseUncontested && !evidence.historyOverflow
+          && item.identification?.connectedAt === connectedAt
+          && matchActiveTeslaPause(tesla, { state: { ...item.identification, pause: activePause ?? item.identification.pause },
+            now, lastDisconnectedAt: session.lastDisconnectedAt,
+            consumedPowerAt: item.vehicleMatch?.id !== 'tesla' && this.consumedTeslaPower && this.consumedTeslaPower.association === tesla.association
+              ? this.consumedTeslaPower.receivedAt : null });
+        if (activeTesla) { candidates[id].push('tesla'); teslaPauseMatches[id] = activeTesla; }
         const passiveOptions = { connectedAt, lastDisconnectedAt: session.lastDisconnectedAt,
           chargingAt: evidence.chargingTimes, stoppedAt: evidence.stoppedTimes, now,
           matchingSince: retrySince,
@@ -1066,7 +1107,9 @@ export class ChargingRuntime {
         if (alone && vehicleAssociations.tesla && (!reidentifying || tesla.fields?.charger_power?.receivedAt > item.identification.startedAt)
           && matchTeslaSession(tesla, { physical: result[id], connectedAt, lastDisconnectedAt: session.lastDisconnectedAt,
           chargingAt: evidence.chargingTimes, now, consumedPowerAt: (reidentifying || item.vehicleMatch?.id !== 'tesla')
-            && this.consumedTeslaPower?.association === tesla.association ? this.consumedTeslaPower.receivedAt : null })) candidates[id].push('tesla');
+            && this.consumedTeslaPower?.association === tesla.association ? this.consumedTeslaPower.receivedAt : null })) {
+          candidates[id].push('tesla'); independentTeslaMatches.add(id);
+        }
         const minimumControl = controls.charger2, currentTest = minimumControl?.currentTest;
         const currentScope = currentTest?.sessionId === minimumControl?.session?.sessionId
           && currentTest?.connectedAt === minimumControl?.session?.connectedAt
@@ -1083,9 +1126,17 @@ export class ChargingRuntime {
               observedAt: now, physicalAt: current.physicalAt, minimumPhysicalAt: current.minimumPhysicalAt };
           else if (now - prior.observedAt >= 5000 && current.physicalAt > prior.physicalAt
             && current.minimumPhysicalAt > prior.minimumPhysicalAt) {
-            candidates[id].push('tesla'); currentMatches[id] = current;
+            candidates[id].push('tesla'); currentMatches[id] = current; independentTeslaMatches.add(id);
           }
         } else evidence.teslaCurrentCandidate = null;
+        if (independentTeslaMatches.has(id) && item.vehicleMatch?.id === 'tesla') delete item.vehicleMatch.pauseRequestedAt;
+        if (!teslaPauseUncontested && item.vehicleMatch?.id === 'tesla'
+          && item.vehicleMatch.pauseRequestedAt === pauseRequestedAt) {
+          item.vehicleMatch = null;
+          if (item.identification?.phase === 'completed') item.identification = {
+            ...item.identification, phase: 'observing', action: null, completedAt: null, reason: 'awaiting-evidence',
+          };
+        }
         freshCandidates[id] = [...new Set(candidates[id])];
         if (item.vehicleMatch?.id === 'tesla' && teslaDepartedSince(item.vehicleMatch.matchedAt)) item.vehicleMatch = null;
         if (item.vehicleMatch?.id === 'bmw' && (bmw.reading?.pluggedIn === false || bmw.reading?.atHome === false)) item.vehicleMatch = null;
@@ -1186,6 +1237,7 @@ export class ChargingRuntime {
       const vehicleId = !conflict && options.length === 1 ? options[0] : null;
       const reidentifying = item.identification?.attempt > 1 && item.identification.phase !== 'completed';
       const freshIdentity = Boolean(vehicleId && (freshCandidates[id]?.includes(vehicleId) || jointQualified.has(id)));
+      if (vehicleId === 'tesla' && jointQualified.has(id) && item.vehicleMatch) delete item.vehicleMatch.pauseRequestedAt;
       if (vehicleId === 'tesla' && currentMatches[id]) {
         this.chargers.charger2.vehicleEvidence.teslaCurrentResolvedTestId = currentMatches[id].testId;
         this.consumedTeslaCurrent = { association: tesla.association, receivedAt: currentMatches[id].receivedAt };
@@ -1193,14 +1245,18 @@ export class ChargingRuntime {
       if (vehicleId && (item.vehicleMatch?.id !== vehicleId || reidentifying && freshIdentity)) {
         item.vehicleMatch = { id: vehicleId, scope: item.request.scope, association: item.association,
           vehicleAssociation: vehicleAssociations[vehicleId],
-          connectedAt: item.controller.status().session.connectedAt, matchedAt: now, revision: ++this.revision };
+          connectedAt: item.controller.status().session.connectedAt, matchedAt: now, revision: ++this.revision,
+          ...(vehicleId === 'tesla' && teslaPauseMatches[id] && !independentTeslaMatches.has(id) && !jointQualified.has(id)
+            ? { pauseRequestedAt: teslaPauseMatches[id].requestedAt } : {}) };
         if (vehicleId === 'bmw') {
           consumeBmwEpisode(bmw, item.vehicleEvidence?.bmwChargingReadingId ?? bmw.reading.fields?.charging?.positiveEvent?.readingId);
           bmw.consumedPlugId = item.vehicleEvidence?.bmwPlugReadingId ?? bmw.reading.fields?.pluggedIn?.positiveEvent?.readingId ?? null;
         }
-        if (vehicleId === 'tesla') this.consumedTeslaPower = { association: tesla.association,
-          receivedAt: tesla.fields.charger_power.receivedAt };
       } else if (!vehicleId) item.vehicleMatch = null;
+      if (vehicleId === 'tesla' && (independentTeslaMatches.has(id) || teslaPauseMatches[id])) this.consumedTeslaPower = { association: tesla.association,
+        receivedAt: Math.max(this.consumedTeslaPower?.association === tesla.association ? this.consumedTeslaPower.receivedAt : 0,
+          teslaPauseMatches[id] && !independentTeslaMatches.has(id) && !jointQualified.has(id)
+            ? teslaPauseMatches[id].powerReceivedAt : tesla.fields.charger_power.receivedAt) };
       if (item.controller?.supportsIdentification && connected === true) {
         const control = item.controller.status(), physical = result[id];
         const available = !item.vehicleEvidence?.historyOverflow && this.identificationAvailable(item, now) && this.identificationFeedReady(item, now)
@@ -1255,9 +1311,15 @@ export class ChargingRuntime {
         // response on a charging peer. A still-bound Tesla identity on a
         // confirmed stopped peer can instead admit BMW's own independent pause
         // after verified 6 A draw; this never creates a Tesla match or BMW identity.
-        const candidate = (!minimumCurrent && (!sameCurrentTest || currentComparisonResolved) || stoppedTeslaPeer)
+        const unreachablePeer = Object.values(this.chargers).some(peer => peer !== item
+          && peer.controller?.status()?.snapshot?.online === false);
+        const unreachableComparisonReady = unreachablePeer && (!sameCurrentTest || currentTest.phase === 'active'
+          && comparisonCurrentOwned && measuredMinimum?.measuredAt >= currentTest.confirmedAt
+          && now >= currentTest.confirmedAt + 5000 && currentTest.expiresAt > now);
+        const candidate = (!minimumCurrent && (!sameCurrentTest || currentComparisonResolved)
+          || stoppedTeslaPeer || unreachableComparisonReady)
           && this.identificationPauseAvailable(item, result, now)
-          && this.identificationBmwCandidate(item, physical, now);
+          && (this.identificationTeslaCandidate(item, result, now) || this.identificationBmwCandidate(item, physical, now));
         // Identifying Tesla on the peer leaves BMW unassigned. Keep only the
         // original remaining comparison window for its independent baseline;
         // this cannot repeat a current write or renew any probe allowance.

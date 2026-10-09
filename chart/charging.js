@@ -381,7 +381,6 @@ export function chargerDisplay(charger, { now = Date.now(), timezone = 'Europe/H
   if (charger.capabilities?.externalLoadBalancing && finite(values.availableCurrentA?.value))
     rows.push(['Last reported Equalizer allowance', `${number(values.availableCurrentA.value, 'A per phase')}${validTime(values.availableCurrentA.measuredAt)
       ? ` · ${time(values.availableCurrentA.measuredAt)}` : validTime(values.availableCurrentA.receivedAt) ? ` · received ${time(values.availableCurrentA.receivedAt)}` : ''}`]);
-  else if (showMetrics && !charger.capabilities?.externalLoadBalancing && finite(values.currentA?.value)) rows.push(['Selected charging current', number(values.currentA.value, 'A per phase')]);
   if (finite(values.maximumCurrentA?.value)) rows.push(['Charging limit', number(values.maximumCurrentA.value, 'A per phase')]);
   if (showPlan && requiredGridKwh > 0 && finite(forecast.powerKw) && finite(forecast.shortfallGridKwh)
     && typeof forecast.feasible === 'boolean')
@@ -1054,10 +1053,7 @@ export function createChargingPanel({ document, request, beforeRequest = () => {
       list(device.periods, view.periodRows.map(([label, text]) => [label, text.replace(' onwards · vehicle finishes naturally', ' onwards')]));
       device.periods.hidden = !view.periodRows.length;
       list(device.explanations, view.explanations);
-      const duplicateCurrentSetting = charger.limiter?.applicationStatus === 'confirmed'
-        && finite(charger.values?.currentA?.value) && charger.values.currentA.value === charger.limiter.appliedCurrentA;
-      const rows = view.rows.filter(([label]) => !['Estimated cost to target', 'Delivered since charge reference'].includes(label)
-        && !(label === 'Selected charging current' && duplicateCurrentSetting)).map(([label, text, detail]) => {
+      const rows = view.rows.filter(([label]) => !['Estimated cost to target', 'Delivered since charge reference'].includes(label)).map(([label, text, detail]) => {
         if (label === 'Last reported Equalizer allowance') return ['Reported allowance', text.split(' · ')[0], `${text}. ${explanation['Current allocation'] ?? ''}`];
         if (label === 'Forecast charging power') return ['Forecast power', text.replace(' average during planned periods', ''), `${text}. ${explanation['Current allocation'] ?? explanation['Energy estimate'] ?? ''}`];
         if (label === 'Other scheduled charging') return ['Other charging', text.split(' · ')[0], `${text}. ${explanation['Other charging'] ?? ''}`];
@@ -1065,8 +1061,14 @@ export function createChargingPanel({ document, request, beforeRequest = () => {
         if (label === 'Charging limit') return [label, text, 'The reported maximum current per phase. Actual current can be lower when supply is shared or the vehicle limits its draw.'];
         return [label, text, detail];
       });
-      if (charger.limiter) rows.push(['Load balancing', limiter.label, limiter.detail],
-        ['Charger setting', limiter.setting, 'Native current setting and limiter instruction confirmation, separate from measured charging current.']);
+      if (charger.limiter) rows.push(['Load balancing', limiter.label, limiter.detail]);
+      const nativeCurrent = charger.values?.currentA;
+      const reportedSetting = charger.provider === 'shelly-evse' && !charger.capabilities?.externalLoadBalancing
+        && nativeCurrent?.available === true && finite(nativeCurrent.value) && nativeCurrent.value >= 0;
+      if (reportedSetting && !['confirmed', 'idle', 'pending', 'blocked'].includes(charger.limiter?.applicationStatus))
+        rows.push(['Charger setting', `${number(nativeCurrent.value, 'A')} reported`,
+          `Reported native current setting per phase. This does not confirm a controller instruction or show measured charging current.${validTime(nativeCurrent.measuredAt) ? ` Measured ${chargingReadingTime(nativeCurrent.measuredAt, charging.timezone)}.` : ''}`]);
+      else if (charger.limiter) rows.push(['Charger setting', limiter.setting, limiter.detail]);
       if (charger.values?.vehicleNotBefore?.available) rows.push(['Vehicle may accept from', chargingTime(charger.values.vehicleNotBefore.value, charging.timezone, next.now)]);
       if (charger.values?.vehicleCurrentA?.available) rows.push(['Vehicle current ceiling', number(charger.values.vehicleCurrentA.value, 'A')]);
       const planLabels = new Set(['Plan prices', 'Planning current', 'Forecast power', 'Other charging', 'Saving from pauses', 'Vehicle may accept from']);
@@ -1074,7 +1076,7 @@ export function createChargingPanel({ document, request, beforeRequest = () => {
       const planRows = rows.filter(([label]) => planLabels.has(label));
       const vehicleRows = rows.filter(([label]) => vehicleLabels.has(label));
       const currentOrder = ['Drawing now', 'Load balancing', 'Reported allowance', 'Charger setting',
-        'Selected charging current', 'Charging limit', 'Vehicle current ceiling', 'Manual change noticed'];
+        'Charging limit', 'Vehicle current ceiling', 'Manual change noticed'];
       const currentRows = rows.filter(([label]) => !planLabels.has(label) && !vehicleLabels.has(label))
         .sort(([a], [b]) => currentOrder.indexOf(a) - currentOrder.indexOf(b));
       list(device.planReadings, planRows); device.planReadings.hidden = !planRows.length;

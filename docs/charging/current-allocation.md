@@ -261,9 +261,19 @@ Scheduled or manual stops do not become load-balancing pauses merely because
 power is zero. Fallback remains explicit when a tighter restriction lowers it.
 Unplugged chargers retain numeric allowances when source evidence is usable;
 current-setting application and vehicle connection are shown separately.
-A confirmed idle standby setting is labeled **Idle current setting** separately
-from the varying **Available** allowance. Its confirmation does not claim that
-the standby pilot equals present headroom or that charging is permitted.
+Current readings use compact rows: **Load balancing: 12 A · Fallback**,
+**Charger setting: 12 A confirmed** and **Charging limit: 16 A per phase**.
+The balancing value comes first in every numeric mode. There is no duplicate
+selected-current row. A confirmed idle standby setting uses the same compact
+charger-setting row; its details explain that charging permission is off, the
+fallback setting is held and present capacity is confirmed before starting.
+Current values are per phase. Pending and blocked instructions remain explicit.
+When no limiter instruction is confirmed, usable native current readback remains
+in the single charger-setting row as **12 A reported**; it does not claim a
+confirmed controller instruction. Easee's calculated allowance is not relabeled
+as a native setting.
+Setting confirmation does not claim that the standby pilot equals present
+headroom or that charging is permitted.
 
 The **Charging currents** view replaces the dedicated session-check view. It
 plots the highest property phase current at each timestamp and both charger

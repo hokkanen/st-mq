@@ -43,6 +43,7 @@ function validateCurrentIdentificationEvidence(evidence) {
     || ['receivedAt', 'physicalAt', 'minimumPhysicalAt'].some(key => !time(candidate[key]) || candidate[key] > candidate.observedAt))
     || ['teslaCurrentResolvedTestId', 'teslaCurrentMatchTestId'].some(key => evidence?.[key] != null && !id(evidence[key]))
     || evidence?.bmwContestedPauseRequestedAt !== undefined && !time(evidence.bmwContestedPauseRequestedAt)
+    || evidence?.teslaContestedPauseRequestedAt !== undefined && !time(evidence.teslaContestedPauseRequestedAt)
     || evidence?.teslaCurrentMatch != null && evidence.teslaCurrentMatch.testId !== evidence.teslaCurrentMatchTestId)
     throw new Error('Unsupported saved current identification evidence; start a fresh development database');
 }
@@ -77,6 +78,11 @@ export function validateChargingRuntimeState(saved) {
       throw new Error('Unsupported saved charging controls; start a fresh development database');
     validateSavedRequest(previous.request, previous.association);
     validateCurrentIdentificationEvidence(previous.vehicleEvidence);
+    if (previous.vehicleMatch?.pauseRequestedAt !== undefined && (previous.vehicleMatch.id !== 'tesla'
+      || !Number.isSafeInteger(previous.vehicleMatch.pauseRequestedAt)
+      || previous.vehicleMatch.pauseRequestedAt < previous.vehicleMatch.connectedAt
+      || previous.vehicleMatch.pauseRequestedAt > previous.vehicleMatch.matchedAt))
+      throw new Error('Unsupported saved controlled Tesla identity; start a fresh development database');
     if (previous.identification != null) validateIdentificationState(previous.identification);
   }
   for (const previous of saved.view?.chargers ?? []) validateTargetSelection(previous?.targetSelection);

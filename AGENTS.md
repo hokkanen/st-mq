@@ -494,6 +494,20 @@ permission to act. See [the configuration guide](docs/configuration.md).
   measured Charger 2 phase must remain within the offer's measurement tolerance,
   and BMW still needs its own positive episode. See
   [vehicle assignment](docs/charging/identification.md#vehicle-assignment).
+- On 2026-10-09 the owner approved identification on either reachable charger
+  while its peer is explicitly unreachable. Missing peer observations remain
+  unknown; they cannot supply disconnection, zero draw or an identity. BMW keeps
+  its existing positive matching rules. Its controlled pause may proceed without
+  live peer evidence. Tesla may instead use fresh matching measured current and
+  power as a baseline, followed by an owned, physically confirmed pause and new
+  live vehicle stop, zero-current and zero-power reports with matching clocks.
+  Static current/power matching retains its peer requirements. Known peer
+  instructions, pending actions, test/restoration duties, nearby transitions and
+  conflicting assignments retain priority; later contradictory peer evidence
+  withdraws a match supported only by that pause. The owner accepts the residual
+  possibility of a coincident unobserved peer transition. Only the reachable
+  connection is identified; all other freshness, scope, budget and restoration
+  checks remain in force.
 - Keep original frozen forecasts and outcomes separate from later corrected model
   assessments. Estimated or timing-only benefits are not measured causal savings;
   overlapping energy totals and components must not be double-counted.

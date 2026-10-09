@@ -54,6 +54,40 @@ BMW source timestamps, home scope and consumed plug/start events serve the same
 connection separation. Neither feed's remote voltage or power fills missing
 household electrical measurements.
 
+### An unreachable peer
+
+An explicit offline observation from the other configured charger permits a
+bounded identification pause on the reachable charger. Unknown startup state,
+stale measurements or unavailable current control on an online peer do not
+qualify. The peer remains unknown, and known pending commands, identification
+or current-restoration duties, recent transitions, active native schedules and
+nearby installed schedule transitions still block the pause. Existing conflicting
+vehicle assignments are retained. No commands are sent to the unreachable peer.
+
+BMW retains its existing positive start/stop and controlled-pause matching.
+Tesla can use fresh live charging state, actual current and power that match
+the reachable charger's fresh measured draw as a baseline for a controlled
+pause. This baseline is not an identity. The owned pause must have a confirmed
+physical stop, and new live Tesla stopped/complete state, zero current and zero
+power must all arrive after the guarded request and within 30 seconds of the
+physical stop. Retained reports, unknown/asleep state alone and requested current
+cannot supply that response. TeslaMate receipts remain receipt clocks.
+
+This path works on either charging adapter and uses the existing attempt,
+pause deadline, energy allowance and restoration. Charger 2 may retain its
+bounded 6 A preparation; it is not evidence about the unreachable peer. Saved
+candidate and pause evidence retain their original clocks across restart, and
+retry, changed equipment/connection/feed or a later departure fences reuse.
+A previously inferred connection from live charging remains usable for its
+controlled stop unless newer departure evidence contradicts it. The original
+positive power receipt is consumed, not the subsequent zero-power report.
+Late peer transitions in the correlation window withdraw an assignment based
+only on that pause. Independent earlier identity evidence remains distinct.
+
+The owner approved this exception on 2026-10-09, accepting the residual risk of
+a coincident unobserved peer transition. It identifies only the reachable
+connection and does not relax the static matching rules below.
+
 ## Minimum-current comparison and joint assignment
 
 When current-write capability is verified, Charger 2 can temporarily use its
@@ -300,16 +334,19 @@ test leaves its budget unused; loss during an active test never renews its limit
 When normal charging is permitted, it proceeds under native current limits;
 waiting for either vehicle has no short charging timeout or identification energy budget.
 Ordinary observation does not override the accepted economic program or its
-start/stop commitments. Only a bounded probe, minimum-current test or BMW pause
-can acquire temporary identification control. An active probe retains its saved
+start/stop commitments. Only a bounded probe, minimum-current test or controlled
+identification pause can acquire temporary identification control. An active probe retains its saved
 economic return time even if its own temporary draw changes the forecast.
 A conclusive Tesla match can finish immediately. A usable BMW charging baseline
 can trigger one brief, confirmed pause while the same connection is charging.
+Tesla uses that bounded pause only under the [unreachable-peer exception](#an-unreachable-peer),
+after its own current and power baseline qualifies; ordinary conclusive Tesla
+matching does not require a pause.
 Startup can use live ongoing BMW charging without inventing a
 missing historical start edge. Matching charger and vehicle stop evidence is
 still required; an accepted pause command alone is insufficient. Active tests
-are serialized across charging points. A BMW pause waits while its peer has a
-recent charging transition, pending control or an upcoming economic transition
+are serialized across charging points. A correlation pause waits while its peer
+has a known recent charging transition, pending control or an upcoming economic transition
 within the pause and correlation window. This avoids creating two matching stop
 episodes without holding the peer away from its economic schedule. Unexpected
 physical or manual changes still take priority and ambiguous evidence stays unresolved.
@@ -363,7 +400,8 @@ OCPP continues to use its established zero-current pause and release commands.
 Shelly uses the verified minimum-current comparison when available, preserving
 its native limits and configured electrical limiter. A conclusive vehicle match ends the extra test immediately and
 returns to the current charging choice. A usable BMW baseline triggers its
-correlation pause; absent a match, the shared 0.15 kWh extra-energy allowance
+correlation pause; Tesla's qualified baseline can do so under the unreachable-peer
+exception. Absent a match, the shared 0.15 kWh extra-energy allowance
 ends probing for either vehicle.
 An independent five-minute maximum and loss of current power evidence also end
 probing. These limits do not expire the saved identification evidence. Metering
@@ -388,12 +426,12 @@ A brief identification pause during ordinary charging has a deadline
 90 seconds later, rounded up to the next whole second. Easee cloud and OCPP
 enforce that expiry at the charger. Shelly's pause uses its start permission and
 is released by the application; its outage behavior is described below. With a
-usable BMW baseline, physical stop confirmation retains the pause until a
-positive identity match or the original deadline, giving BMW time to observe
+qualified BMW or scoped Tesla baseline, physical stop confirmation retains the
+pause until a positive identity match or the original deadline, giving the vehicle time to observe
 and report the stop. Manual supersession retains priority. Physical confirmation
 ends extra-energy accounting; it does not renew the pause or change source-time
-matching tolerance. If a probe ends without a BMW baseline, its confirmed stop
-returns immediately to the current charging choice. During an economic delay,
+matching tolerance. If a probe ends without a qualified vehicle baseline, its
+confirmed stop returns immediately to the current charging choice. During an economic delay,
 that choice is the scheduled pause. The zero-current OCPP restriction that
 ends an extra probe can therefore last until the planned economic release; it
 does not expire after the ordinary 90-second identification pause.
@@ -411,8 +449,8 @@ same physical connection and ends at its original release time.
 Exhaustion, interruption or the pause deadline ends active testing for that
 attempt. Completion of the minimum-current comparison also ends testing unless
 a unique Tesla match on the peer permits an independent BMW baseline to begin
-its one pause within that comparison's original window, or that pause has
-already begun. An already started BMW pause
+its one pause within that comparison's original window, or a qualified correlation
+pause has already begun. An already started correlation pause
 keeps only its own original deadline; expiry cannot start a new pause.
 An unresolved attempt shows
 **Identification inconclusive** while normal control uses session/default battery inputs.
@@ -423,7 +461,8 @@ newer current state is never rolled backward by historical evidence. Tests never
 repeat automatically for that connection: polling, restart, economic replanning
 and **Use automatic** cannot reopen an ended attempt. Choosing **Identify** or a
 new physical connection permits a new attempt. There is at most one bounded
-charging probe, one minimum-current comparison and one BMW pause per attempt.
+charging probe, one minimum-current comparison and one controlled identification
+pause per attempt: BMW, or Tesla under the unreachable-peer exception.
 Normal scheduled charging can supply additional evidence after the probe budget is exhausted.
 **Charge now** during preparation or an active test permits ordinary charging
 without cancelling identification. It ends the extra-energy probe accounting

@@ -1939,7 +1939,7 @@ test('schedule groups separate forecast assumptions from native evidence and con
   const section = $('charger2-schedule-readings'), reference = $('charger2-vehicle-readings');
   assert.match($('charger2-plan-readings').textContent, /Plan pricesIncludes forecast pricesForecast power11 kW/);
   assert.doesNotMatch($('charger2-readings').textContent, /Forecast|Selected charging current|Last reported charge/);
-  assert.match($('charger2-readings').textContent, /Load balancingUnrestricted · 16 ACharger setting16 A confirmedCharging limit16 A per phase/);
+  assert.match($('charger2-readings').textContent, /Load balancing16 A · UnrestrictedCharger setting16 A confirmedCharging limit16 A per phase/);
   assert.doesNotMatch(section.textContent, /Connection delivered|Charge measured/);
   assert.equal(section.textContent.split('Measured 15 Sept, 20:00').length - 1, 1, 'Original source time appears once beside the vehicle reference');
   assert.equal($('charger2-vehicle-notes').children.length, 2, 'One outage note and one distinct energy-coverage warning remain');
@@ -1950,7 +1950,8 @@ test('schedule groups separate forecast assumptions from native evidence and con
   panel.update(status({ ...item, readOnly: true, recorded: true, mqtt: { reason: 'read-only-snapshot' },
     limiter: { ...item.limiter, appliedCurrentA: 12, applicationStatus: 'pending' } }));
   assert.equal(document.activeElement, trigger, 'Refresh preserves focus on the original vehicle evidence');
-  assert.match($('charger2-readings').textContent, /Awaiting charger confirmation · last confirmed setting 12 A.*Selected charging current16 A per phase/);
+  assert.match($('charger2-readings').textContent, /Awaiting charger confirmation · last confirmed setting 12 A/);
+  assert.doesNotMatch($('charger2-readings').textContent, /Selected charging current/);
   assert.match($('charger2-vehicle-notes').textContent, /Recorded vehicle snapshot.*Some charging energy was not measured/);
   assert.doesNotMatch($('charger2-vehicle-notes').textContent, /Vehicle readings are unavailable|Edit Current charge|read only snapshot/);
   assert.equal($('charger2-vehicle-notes').dataset.state, 'attention', 'A recorded snapshot does not hide missing-energy uncertainty');
@@ -2768,6 +2769,42 @@ test('pending approval uses an intentional label and time while keeping the comp
   panel.close();
 });
 
+test('native current readback remains in one setting row without inventing limiter confirmation', () => {
+  const document = documentFixture(), $ = id => document.getElementById(id);
+  const panel = createChargingPanel({ document, request: async () => status() });
+  const item = connected('charger2');
+  const readings = () => $('charger2-readings').textContent;
+  for (const limiter of [undefined, { mode: 'inactive', applicationStatus: 'inactive' },
+    { mode: 'unknown', applicationStatus: 'unknown' }]) {
+    for (const amps of [0, 12]) {
+      panel.update(status({ ...item, limiter, capabilities: { scheduling: true, currentControl: false, externalLoadBalancing: false },
+        values: { ...item.values, currentA: reading(amps, 'shelly-evse', { measuredAt: now - 1000 }) } }));
+      assert.match(readings(), new RegExp(`Charger setting${amps} A reported`));
+      assert.equal((readings().match(/Charger setting/g) ?? []).length, 1);
+      assert.doesNotMatch(readings(), /Selected charging current|A confirmed/);
+      const label = descendants($('charger2-readings')).find(node => node.tagName === 'DT' && node.textContent === 'Charger setting');
+      const detail = openDetail(label);
+      assert.match(detail.textContent, /native current setting per phase.*does not confirm a controller instruction.*Measured/s);
+      detail.querySelector('.status-detail-close').dispatch('click');
+    }
+  }
+  for (const applicationStatus of ['pending', 'blocked']) {
+    panel.update(status({ ...item, limiter: { mode: 'fallback', allowanceA: 12, appliedCurrentA: 8, applicationStatus },
+      values: { ...item.values, currentA: reading(12, 'shelly-evse') } }));
+    assert.match(readings(), applicationStatus === 'pending' ? /Awaiting charger confirmation/ : /Application blocked/);
+    assert.doesNotMatch(readings(), /A reported|Selected charging current/);
+  }
+  for (const currentA of [{ ...reading(12), available: false }, reading(null), reading(-1)]) {
+    panel.update(status({ ...item, values: { ...item.values, currentA } }));
+    assert.doesNotMatch(readings(), /Charger setting|A reported/);
+  }
+  panel.update(status({ ...item, provider: 'easee', capabilities: { externalLoadBalancing: true },
+    values: { ...item.values, currentA: reading(12, 'easee-equalizer'), availableCurrentA: reading(12, 'easee-equalizer') } }));
+  assert.match(readings(), /Reported allowance12 A per phase/);
+  assert.doesNotMatch(readings(), /Charger setting|A reported/);
+  panel.close();
+});
+
 test('idle fallback setting and retained vehicle target remain separate from live capacity and fresh vehicle readings', () => {
   const document = documentFixture(), $ = id => document.getElementById(id);
   const panel = createChargingPanel({ document, request: async () => status() });
@@ -2777,10 +2814,14 @@ test('idle fallback setting and retained vehicle target remain separate from liv
   panel.update(status(connected(), { ...item, limiter,
     vehicle: { state: 'identified', id: 'tesla', label: 'Tesla' },
     allowance: { mode: 'unrestricted', allowanceA: 16, maximumCurrentA: 16, source: 'st-mq-load-balancing', limiter },
-    values: { ...item.values, minimumSoc: { value: 100, available: true, source: 'teslamate',
+    values: { ...item.values, currentA: reading(12), maximumCurrentA: reading(16), minimumSoc: { value: 100, available: true, source: 'teslamate',
       measuredAt: now - 60_000, retainedForSession: true, assumed: true } } }));
   assert.equal($('charger2-allowance').textContent, '16 A Available');
   assert.match(openDetail($('charger2-allowance')).textContent, /Idle current setting: 12 A confirmed/);
+  assert.match($('charger2-readings').textContent, /Load balancing16 A · UnrestrictedCharger setting12 A confirmedCharging limit16 A per phase/);
+  assert.doesNotMatch($('charger2-readings').textContent, /Selected charging current|Idle current setting/);
+  const setting = descendants($('charger2-readings')).find(node => node.tagName === 'DT' && node.textContent === 'Charger setting');
+  assert.match(openDetail(setting).textContent, /Charging permission is off.*current allocation is confirmed before starting.*All current values are per phase/s);
   assert.match($('charger2-readings').textContent, /100 % · last vehicle value/);
   assert.equal($('charger2-setting-minimumSoc').value, 100);
   assert.match($('charger2-setting-minimumSoc').parentElement.textContent, /Last vehicle value retained.*current vehicle data is unavailable/);

@@ -61,6 +61,15 @@ fixture.setCase = name => {
       item.telemetry = {identificationCurrentReady:true,commissioning:{controlReady:true,currentControlReady:true}};
       item.plan.periods = [{startAt:now + 3600000,endAt:null}];
     }
+    if (name === 'idle-current') {
+      item.control = { phase: 'waiting', owned: { startAt: now + 3600000 } };
+      if (item.provider === 'shelly-evse') {
+        item.values = { ...item.values, currentA: reading(12), maximumCurrentA: reading(16) };
+        item.limiter = { mode: 'fallback', loadAllowanceA: 12, allowanceA: 12,
+          appliedCurrentA: 12, applicationStatus: 'idle' };
+        item.allowance = { ...item.allowance, mode: 'fallback', allowanceA: 12 };
+      }
+    }
     if (name.startsWith('schedule-')) {
       item.control = { phase: 'waiting', owned: { startAt: now + 3600000 } };
       item.plan = { ...item.plan, usesForecast: true, periods: [{ startAt: now + 3600000, endAt: null }] };
@@ -354,7 +363,7 @@ try {
       assert.equal(await evaluate(`document.getElementById('${id}-control-message').textContent`), '', 'Success and failure receipts expire after 24 hours');
       await receiptFits(id, `${width}px ${theme} ${id} expired receipt`);
     }
-    for (const state of ['ordinary', 'backend-readings', 'schedule-overview', 'schedule-outage', 'schedule-recorded', 'missing-vehicle-feed', 'approval-pending', 'confirmed-pause', 'long', 'manual-stop', 'manual-start', 'manual-window', 'pending', 'blocked', 'handover-timeout', 'handover-cancelled', 'handover-protocol', 'unavailable', 'estimate', 'vehicle-reference', 'readonly', 'disconnected', 'unknown-connection', 'missing-token', 'monitoring', 'uncertain', 'startup-stop', 'unavailable-startup-stop']) {
+    for (const state of ['ordinary', 'backend-readings', 'idle-current', 'schedule-overview', 'schedule-outage', 'schedule-recorded', 'missing-vehicle-feed', 'approval-pending', 'confirmed-pause', 'long', 'manual-stop', 'manual-start', 'manual-window', 'pending', 'blocked', 'handover-timeout', 'handover-cancelled', 'handover-protocol', 'unavailable', 'estimate', 'vehicle-reference', 'readonly', 'disconnected', 'unknown-connection', 'missing-token', 'monitoring', 'uncertain', 'startup-stop', 'unavailable-startup-stop']) {
       await evaluate(`chargingFixture.setCase('${state}'); document.querySelectorAll('.charging-device').forEach(card => card.open = true)`);
       const layout = await evaluate(`(() => {
         const cards = [...document.querySelectorAll('.charging-device')];
@@ -396,8 +405,22 @@ try {
         }
         assert.match(await evaluate("document.getElementById('charger1-readings').textContent"), /Reported allowance12 A per phase/,
           'Easee keeps its native Equalizer allowance');
-        assert.match(await evaluate("document.getElementById('charger2-readings').textContent"), /Selected charging current10 A per phase/,
-          'Shelly keeps its selected current distinct from measured draw');
+        assert.doesNotMatch(await evaluate("document.getElementById('charger2-readings').textContent"), /Selected charging current/,
+          'The selected-current row is removed even without limiter confirmation');
+        assert.match(await evaluate("document.getElementById('charger2-readings').textContent"), /Charger setting10 A reported/,
+          'Independent native readback remains visible without claiming controller confirmation');
+      }
+      if (state === 'idle-current') {
+        const rows = await evaluate(`(() => {
+          const labels = [...document.querySelectorAll('#charger2-readings dt')];
+          return labels.map(node => ({ label: node.textContent, value: node.nextElementSibling.textContent,
+            labelLines: node.getBoundingClientRect().height / parseFloat(getComputedStyle(node).lineHeight),
+            valueLines: node.nextElementSibling.getBoundingClientRect().height / parseFloat(getComputedStyle(node.nextElementSibling).lineHeight) }));
+        })()`);
+        assert.deepEqual(rows.map(({ label, value }) => [label, value]), [
+          ['Load balancing', '12 A · Fallback'], ['Charger setting', '12 A confirmed'], ['Charging limit', '16 A per phase'],
+        ]);
+        assert(rows.every(row => row.labelLines < 1.1 && row.valueLines < 1.1), `${width}px ${theme}: idle current rows stay on one line`);
       }
       if (state.startsWith('schedule-')) for (const id of ['charger1', 'charger2']) {
         const structure = await evaluate(`(() => {
@@ -517,14 +540,14 @@ try {
           assert.equal(await evaluate(`document.getElementById('${id}-energy').textContent`), '—');
         }
       }
-      if (['ordinary', 'backend-readings', 'schedule-overview', 'schedule-outage', 'schedule-recorded', 'approval-pending', 'long', 'manual-stop', 'estimate', 'vehicle-reference', 'uncertain', 'startup-stop', 'unavailable-startup-stop', 'handover-timeout', 'unknown-connection'].includes(state)) {
+      if (['ordinary', 'backend-readings', 'idle-current', 'schedule-overview', 'schedule-outage', 'schedule-recorded', 'approval-pending', 'long', 'manual-stop', 'estimate', 'vehicle-reference', 'uncertain', 'startup-stop', 'unavailable-startup-stop', 'handover-timeout', 'unknown-connection'].includes(state)) {
         const metrics = await send('Page.getLayoutMetrics');
         const shot = await send('Page.captureScreenshot', { format: 'png', captureBeyondViewport: true,
           clip: { x: 0, y: 0, width, height: Math.min(metrics.cssContentSize.height, 12000), scale: 1 } });
         writeFileSync(join(artifacts, `charging-${state}-${width}-${theme}.png`), Buffer.from(shot.data, 'base64'));
-        if (state === 'estimate' || state === 'manual-stop' || state.startsWith('schedule-')) {
+        if (state === 'estimate' || state === 'manual-stop' || state === 'idle-current' || state.startsWith('schedule-')) {
           const clip = await evaluate(`(() => {
-            const node = ${state.startsWith('schedule-') ? "document.getElementById('charger2-schedule-readings')" : state === 'estimate' ? "document.getElementById('charger1-session-settings')" : "document.getElementById('charger1-use-automatic').parentElement"};
+            const node = ${state === 'idle-current' || state.startsWith('schedule-') ? "document.getElementById('charger2-schedule-readings')" : state === 'estimate' ? "document.getElementById('charger1-session-settings')" : "document.getElementById('charger1-use-automatic').parentElement"};
             const bounds = node.getBoundingClientRect();
             return { x: bounds.left + scrollX, y: bounds.top + scrollY, width: bounds.width, height: bounds.height, scale: 1 };
           })()`);

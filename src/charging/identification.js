@@ -1,4 +1,5 @@
-import { connectionEvidenceStart, bmwIdentityContextValid, bmwChargingEvents, bmwConsumedChargingAt } from './vehicle.js';
+import { connectionEvidenceStart, bmwIdentityContextValid, bmwChargingEvents, bmwConsumedChargingAt, measuredChargingCurrent } from './vehicle.js';
+import { teslamateConnectionContext, teslamateDeparture } from './teslamate.js';
 import { validateAdmittedSourceTime } from '../domain/time-evidence.js';
 
 const MINUTE = 60_000;
@@ -13,16 +14,25 @@ const stateKeys = ['version', 'id', 'connectedAt', 'attempt', 'phase', 'action',
   'chargingStartedAt', 'chargeDeadlineAt', 'chargeEnergyKwh', 'chargeUsedKwh', 'chargePowerKw',
   'pauseUntil', 'candidate', 'pause', 'completedAt', 'reason'];
 const candidateKeys = ['connectedAt', 'association', 'kind', 'readingId', 'measuredAt', 'receivedAt', 'physicalAt', 'capturedAt'];
+const teslaCandidateKeys = ['connectedAt', 'association', 'kind', 'currentReceivedAt', 'powerReceivedAt',
+  'chargingReceivedAt', 'physicalAt', 'capturedAt'];
 const pauseKeys = ['connectedAt', 'requestedAt', 'confirmedAt', 'startAt', 'stoppedAt'];
 const probeKeys = ['startedAt', 'deadlineAt', 'returnStartAt', 'endedAt'];
 const reasons = ['identified', 'manual-stop', 'interrupted', 'pause-timeout',
   'awaiting-evidence', 'probe-energy-limit', 'probe-time-limit', 'telemetry-lost'];
 const exactKeys = (value, keys) => object(value) && Object.keys(value).sort().join(',') === [...keys].sort().join(',');
-const validCandidate = value => exactKeys(value, candidateKeys) && ['start', 'ongoing'].includes(value.kind)
+const validBmwCandidate = value => exactKeys(value, candidateKeys) && ['start', 'ongoing'].includes(value.kind)
   && (value.association === null || typeof value.association === 'string' && value.association.length > 0)
   && eventId(value.readingId) && ['connectedAt', 'measuredAt', 'receivedAt', 'physicalAt', 'capturedAt'].every(key => time(value[key]))
   && value.connectedAt <= value.capturedAt && value.measuredAt <= value.capturedAt
   && value.receivedAt <= value.capturedAt && value.physicalAt <= value.capturedAt;
+const validTeslaCandidate = value => exactKeys(value, teslaCandidateKeys) && value.kind === 'tesla'
+  && typeof value.association === 'string' && value.association.length > 0
+  && teslaCandidateKeys.filter(key => !['association', 'kind'].includes(key)).every(key => time(value[key]))
+  && value.connectedAt <= value.physicalAt && value.physicalAt <= value.capturedAt
+  && ['currentReceivedAt', 'powerReceivedAt', 'chargingReceivedAt'].every(key =>
+    value[key] >= value.connectedAt && value[key] <= value.capturedAt);
+const validCandidate = value => validBmwCandidate(value) || validTeslaCandidate(value);
 const validPause = value => exactKeys(value, pauseKeys) && pauseKeys.every(key => time(value[key]))
   && value.requestedAt >= value.connectedAt && value.confirmedAt >= value.requestedAt
   && value.stoppedAt >= value.requestedAt && value.startAt > value.stoppedAt;
@@ -107,6 +117,14 @@ export function advanceIdentification(previous, { connectedAt, now, connected = 
     if (Number.isFinite(energyKwh) && state.chargeEnergyKwh !== null)
       state.chargeUsedKwh = Math.max(state.chargeUsedKwh, energyKwh - state.chargeEnergyKwh);
   }
+  // The native stop and vehicle response may arrive in the same update. Save
+  // the witnessed pause before completing so later peer contradictions and
+  // restart still have its original request boundary after ownership clears.
+  const admittedPause = state.phase === 'pausing' && validPause(pause) && pause.connectedAt === connectedAt
+    && [state.pauseUntil, state.probe?.returnStartAt].includes(pause.startAt)
+    && pause.requestedAt >= (state.candidate?.capturedAt ?? state.startedAt)
+    && pause.confirmedAt <= now && pause.stoppedAt <= now && pause.stoppedAt < state.pauseUntil;
+  if (admittedPause) state.pause = structuredClone(pause);
   if (identified && !manualRetry) return state.phase === 'completed' ? state : finish(state, 'completed', 'identified', now);
   if (['completed', 'inconclusive', 'observing'].includes(state.phase)) return state;
   if (interrupted) return finish(state, 'inconclusive', 'interrupted', now);
@@ -114,11 +132,7 @@ export function advanceIdentification(previous, { connectedAt, now, connected = 
     state.action = null;
     return state.phase === 'waiting' && !state.probe ? state : finish(state, 'inconclusive', 'manual-stop', now);
   }
-  if (state.phase === 'pausing' && validPause(pause) && pause.connectedAt === connectedAt
-    && [state.pauseUntil, state.probe?.returnStartAt].includes(pause.startAt)
-    && pause.requestedAt >= (state.candidate?.capturedAt ?? state.startedAt)
-    && pause.confirmedAt <= now && pause.stoppedAt <= now && pause.stoppedAt < state.pauseUntil) {
-    state.pause = structuredClone(pause);
+  if (admittedPause) {
     if (!state.candidate) return finish(state, 'inconclusive', state.reason ?? 'awaiting-evidence', now);
     if (state.probe) state.probe.endedAt ??= now;
     state.reason ??= 'awaiting-evidence';
@@ -162,7 +176,8 @@ export function advanceIdentification(previous, { connectedAt, now, connected = 
   }
   const usable = state.phase === 'charging' && available && charging && validCandidate(candidate)
     && candidate.connectedAt === connectedAt && candidate.capturedAt >= state.startedAt
-    && candidate.capturedAt <= now && now - candidate.capturedAt <= MINUTE && candidate.measuredAt < now;
+    && candidate.capturedAt <= now && now - candidate.capturedAt <= MINUTE
+    && (candidate.kind === 'tesla' ? candidate.chargingReceivedAt : candidate.measuredAt) < now;
   if (state.phase !== 'pausing' && (usable || stopReason)) {
     if (usable) state.candidate = structuredClone(candidate);
     state.reason = stopReason;
@@ -222,7 +237,7 @@ export function matchActiveBmwPause(reading, { state, now, lastDisconnectedAt, c
   if (!state || !bmwIdentityContextValid(reading, now)) return null;
   const { candidate, pause, connectedAt } = state;
   const consumedAt = bmwConsumedChargingAt(reading, consumedChargingId);
-  if (!validCandidate(candidate) || !validPause(pause) || candidate.connectedAt !== connectedAt
+  if (!validBmwCandidate(candidate) || !validPause(pause) || candidate.connectedAt !== connectedAt
     || pause.connectedAt !== connectedAt || ![state.pauseUntil, state.probe?.returnStartAt].includes(pause.startAt)
     || candidate.association !== (reading.association ?? null) || candidate.readingId === consumedChargingId
     || consumedAt !== null && candidate.measuredAt <= consumedAt
@@ -240,4 +255,60 @@ export function matchActiveBmwPause(reading, { state, now, lastDisconnectedAt, c
     && !events.some(other => other.value === false && other.measuredAt > candidate.measuredAt && other.measuredAt < row.measuredAt));
   if (!stop) return null;
   return { chargingReadingId: candidate.readingId, stopReadingId: stop.readingId, confirmedAt: pause.confirmedAt };
+}
+
+const liveTeslaField = (field, now) => field?.retained === false && time(field.receivedAt)
+  && field.receivedAt <= now && now - field.receivedAt <= MINUTE;
+function teslaDepartedAfter(reading, after, now) {
+  return (reading.boundaries ?? []).some(edge => edge.association === reading.association
+    && (teslamateDeparture(edge) || edge.field === 'geofence' && edge.value !== reading.fields?.geofence?.value)
+    && (!time(edge.at) || edge.at > after && edge.at <= now));
+}
+
+/** With an unreachable peer, matching draw is a pause baseline only. It never
+ * identifies Tesla until the independent vehicle reports the confirmed stop.
+ * TeslaMate has receipt clocks; none are rewritten as measurement times. */
+export function prepareActiveTeslaCandidate(reading, { physical, connectedAt, lastDisconnectedAt,
+  startedAt = connectedAt, consumedPowerAt, now } = {}) {
+  const current = reading?.fields?.charger_actual_current, power = reading?.fields?.charger_power;
+  const state = [reading?.fields?.charging_state, reading?.fields?.state].find(field =>
+    liveTeslaField(field, now) && ['Charging', 'charging'].includes(field.value));
+  const measured = measuredChargingCurrent(physical, now), localPower = physical?.powerKw;
+  const since = Math.max(connectedAt, startedAt, (lastDisconnectedAt ?? -1) + 1);
+  if (!time(connectedAt) || !time(startedAt) || !time(now) || connectedAt > now || reading?.healthy !== true
+    || reading.connected !== true || reading.atHome !== true || reading.charging !== true
+    || !teslamateConnectionContext(reading, { now }) || teslaDepartedAfter(reading, since, now)
+    || !state || !liveTeslaField(current, now) || !liveTeslaField(power, now)
+    || [state, current, power].some(field => field.receivedAt < since)
+    || time(consumedPowerAt) && power.receivedAt <= consumedPowerAt
+    || !measured || measured.measuredAt < since || physical.charging?.available !== true || physical.charging.value !== true
+    || localPower?.available !== true || localPower.retained === true || localPower.assumed === true
+    || !time(localPower.measuredAt) || localPower.measuredAt < since || localPower.measuredAt > now
+    || now - localPower.measuredAt > MINUTE || !(localPower.value > .5)
+    || !(reading.actualCurrentA > .5) || !(reading.actualPowerKw > .5)
+    || Math.abs(measured.value - reading.actualCurrentA) > .5
+    || Math.abs(localPower.value - reading.actualPowerKw) > .75) return null;
+  return { kind: 'tesla', association: reading.association, connectedAt,
+    currentReceivedAt: current.receivedAt, powerReceivedAt: power.receivedAt,
+    chargingReceivedAt: state.receivedAt, physicalAt: Math.min(measured.measuredAt, localPower.measuredAt), capturedAt: now };
+}
+
+export function matchActiveTeslaPause(reading, { state, now, lastDisconnectedAt, consumedPowerAt } = {}) {
+  const candidate = state?.candidate, pause = state?.pause;
+  if (!validTeslaCandidate(candidate) || !validPause(pause) || reading?.healthy !== true || reading.connected !== true
+    || reading.atHome !== true || reading.charging !== false || candidate.association !== reading.association
+    || candidate.connectedAt !== state.connectedAt || pause.connectedAt !== state.connectedAt
+    || candidate.capturedAt < state.startedAt || candidate.capturedAt > pause.requestedAt
+    || candidate.physicalAt >= pause.requestedAt || candidate.connectedAt <= (lastDisconnectedAt ?? -1)
+    || time(consumedPowerAt) && candidate.powerReceivedAt <= consumedPowerAt
+    || teslaDepartedAfter(reading, candidate.capturedAt, now)
+    || ![state.pauseUntil, state.probe?.returnStartAt].includes(pause.startAt)
+    || pause.confirmedAt > now || pause.stoppedAt > now || pause.stoppedAt >= state.pauseUntil) return null;
+  const stopped = reading.fields?.charging_state, current = reading.fields?.charger_actual_current,
+    power = reading.fields?.charger_power;
+  if (!['Stopped', 'Complete'].includes(stopped?.value) || current?.value !== 0 || power?.value !== 0
+    || [stopped, current, power].some(field => !liveTeslaField(field, now)
+      || field.receivedAt <= pause.requestedAt || field.receivedAt > state.pauseUntil
+      || Math.abs(field.receivedAt - pause.stoppedAt) > 30_000)) return null;
+  return { powerReceivedAt: candidate.powerReceivedAt, confirmedAt: pause.confirmedAt, requestedAt: pause.requestedAt };
 }

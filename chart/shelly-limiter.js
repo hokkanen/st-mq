@@ -39,13 +39,14 @@ export function shellyLimiterDisplay(value) {
     blocked: `Application blocked${applied ? ` · charger setting ${applied}` : ''}`,
     inactive: 'No limiter instruction applied', unknown: 'Charger setting unconfirmed' })[value?.applicationStatus]
       ?? 'Charger setting unconfirmed';
-  const setting = value?.applicationStatus === 'confirmed' && value?.allowanceA !== 0 && applied
-    ? `${applied} confirmed` : application;
-  const label = `${state.label}${allowance ? ` · ${allowance}` : ''}`;
+  const setting = value?.applicationStatus === 'confirmed' && value?.allowanceA !== 0
+    || value?.applicationStatus === 'idle'
+    ? applied ? `${applied} confirmed` : 'Unconfirmed' : application;
+  const label = `${allowance ? `${allowance} · ` : ''}${state.label}`;
   const effectiveAllowance = effective && effective !== allowance ? `Effective allowance: ${effective}` : '';
   return { mode, label, allowance, reason, reasonInLabel: false, application, setting,
     effectiveAllowance,
     detail: [`${state.label}${allowance ? ` · ${allowance} allowance` : ''}${reason ? ` · ${reason}` : ''}`,
       effectiveAllowance ? `${effectiveAllowance}, respecting other restrictions.` : '',
-      application, value?.applicationStatus === 'idle' ? 'Charging permission is off. The configured fallback is held while idle, respecting native and vehicle limits; available capacity is still calculated. The current allocation is confirmed before starting.' : '', state.description, 'Allowance is a controller ceiling, not measured charging current. Scheduled and manual stops remain separate.'].filter(Boolean).join('\n\n') };
+      application, value?.applicationStatus === 'idle' ? 'Charging permission is off. The configured fallback is held while idle, respecting native and vehicle limits; available capacity is still calculated. The current allocation is confirmed before starting.' : '', state.description, 'All current values are per phase. Allowance is a controller ceiling, not measured charging current. Scheduled and manual stops remain separate.'].filter(Boolean).join('\n\n') };
 }
