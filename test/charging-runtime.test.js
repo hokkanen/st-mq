@@ -122,7 +122,7 @@ function syntheticElectricityForecast(f) {
   return value => { available = value; };
 }
 
-test('one-day preview and selected forecast cost stay outside published accounting, stored hourly data and default authority', async t => {
+test('one-day preview and selected forecast cost stay outside published accounting and stored hourly data', async t => {
   const f = fixture(preferences, {}, { charger1: true }), setAvailable = syntheticElectricityForecast(f);
   const runtime = f.create(), adapter = fakeAdapter(f.clock); t.after(() => runtime.close());
   const official = [30, 20, 20, 30].map((price, index) => ({ start: initialNow + index * HOUR,
@@ -130,7 +130,7 @@ test('one-day preview and selected forecast cost stay outside published accounti
   await runtime.setAdapter('charger1', adapter); await runtime.tick({ prices: official }); await runtime.reconcile();
   let view = chargerView(runtime);
   assert.ok(view.plan.finishAt <= initialNow + 4 * HOUR); assert.equal(view.plan.usesForecast, false);
-  assert.equal(runtime.getPlanningPrices().some(row => row.predicted), false);
+  assert.equal(runtime.getPlanningPrices().some(row => row.predicted), true);
   const preview = await runtime.previewFlexibility('charger1', { association: view.association,
     sessionId: view.request.sessionId, revision: view.request.revision });
   assert.equal(preview.comparison.available, true, preview.comparison.reason);
@@ -150,6 +150,44 @@ test('one-day preview and selected forecast cost stay outside published accounti
   const granted = view.deadlineAt;
   setAvailable(false); await runtime.tick({ prices: official }); await runtime.reconcile();
   assert.equal(chargerView(runtime).deadlineAt, granted, 'an outage cannot revoke authorized time');
+  assert.equal(runtime.getPlanningPrices().some(row => row.predicted), false);
+  assert.equal(chargerView(runtime).plan.usesForecast, false);
+});
+
+test('ordinary scheduling uses forecasts before its deadline and extra-day permission does not create their saving', async t => {
+  const f = fixture({ defaults: { capacityKwh: 20, readyBy: '08:00' } }, {}, { charger1: true });
+  const setAvailable = syntheticElectricityForecast(f);
+  const runtime = f.create(), adapter = fakeAdapter(f.clock); t.after(() => runtime.close());
+  const official = [30, 20, 20, 30].map((price, index) => ({ start: initialNow + index * HOUR,
+    end: initialNow + (index + 1) * HOUR, price }));
+  await runtime.setAdapter('charger1', adapter); await runtime.tick({ prices: official }); await runtime.reconcile();
+  let view = chargerView(runtime);
+  const deadline = view.deadlineAt;
+  assert.equal(view.request.flexibility, undefined);
+  assert.equal(view.plan.usesForecast, true);
+  assert.ok(view.plan.startAt >= initialNow + 4 * HOUR);
+  assert.ok(view.plan.finishAt <= deadline);
+  assert.ok(view.plan.uncertaintyPremiumCents > 0);
+  assert.equal(view.control.phase, 'waiting');
+  assert.equal(view.sessionCost.usesForecast, true);
+  assert.ok(Math.abs(view.sessionCost.totalCents - view.sessionCost.accruedCents - view.plan.costCents) < 1e-6);
+  assert.ok(runtime.chargers.charger1.sessionCost.unitPriceCt >= 20);
+  const comparison = (await runtime.calculateFlexibilityPreview('charger1')).comparison;
+  assert.equal(comparison.available, true, comparison.reason);
+  assert.ok(Math.abs(comparison.savingsCents) < 1e-6);
+  assert.ok(Math.abs(comparison.riskAdjustedSavingsCents) < 1e-6);
+  assert.equal(comparison.recommended, false);
+  assert.ok(comparison.normalUncertaintyPremiumCents > 0);
+  assert.ok(Math.abs(comparison.normalUncertaintyPremiumCents - comparison.uncertaintyPremiumCents) < 1e-6);
+  await runtime.setFlexibility('charger1', flexibilityInput(runtime));
+  await runtime.setFlexibility('charger1', flexibilityInput(runtime, 'cancel', 'test-cancel-allowance'));
+  view = chargerView(runtime);
+  assert.equal(view.deadlineAt, deadline);
+  assert.equal(view.flexibility.active, false);
+  assert.equal(view.plan.usesForecast, true, 'canceling extra time does not turn off forecast pricing');
+  assert.equal(JSON.stringify(f.values.get('charging:mqtt')).includes('"predicted":true'), false);
+  setAvailable(false); await runtime.tick({ prices: official }); await runtime.reconcile();
+  assert.equal(chargerView(runtime).deadlineAt, deadline);
   assert.equal(runtime.getPlanningPrices().some(row => row.predicted), false);
   assert.equal(chargerView(runtime).plan.usesForecast, false);
 });
@@ -555,6 +593,45 @@ test('new cheaper prices can pause the final automatic period before its target 
   assert.equal(after.control.phase, 'pause-unconfirmed');
   assert.equal(after.control.owned.startAt, initialNow + 3 * HOUR);
   assert.equal(adapter.calls.filter(call => call.kind === 'install').length, 1);
+});
+
+test('the speculative replan hurdle follows forecast energy in either alternative, not unused outlook prices', async t => {
+  for (const exposure of ['neither', 'adopted', 'candidate']) await t.test(exposure, async t => {
+    const f = await activePriceFixture(t, [5, 5, 50, 50]);
+    const { runtime, adapter, original } = f;
+    syntheticElectricityForecast(f);
+    const snapshot = f.engine.electricityForecast.snapshot;
+    f.engine.electricityForecast.snapshot = () => ({ ...snapshot(), intervals: snapshot().intervals.map(row => ({
+      ...row, spotCtPerKwh: exposure === 'adopted' ? 3.5 : 2.5,
+    })) });
+    const next = exposure === 'adopted' ? priceOutlook([5, 5, 50, 5]).slice(2)
+      : exposure === 'candidate' ? priceOutlook([5, 5, 50]) : priceOutlook([5, 5, 50, 4.5]);
+    let candidate;
+    const request = runtime.plannerService.request;
+    runtime.plannerService.request = async options => {
+      const result = await request(options);
+      if (!options.fixedPeriods.charger1) candidate = structuredClone(result.plans.charger1);
+      return result;
+    };
+    const remaining = chargerView(runtime).requiredGridKwh;
+    assert.ok(remaining * .5 > 0 && remaining * .5 < 5, 'the improvement is positive but below the speculative hurdle');
+    await runtime.tick({ prices: next }); await runtime.reconcile();
+    const after = chargerView(runtime);
+    assert.equal(candidate.usesForecast, exposure === 'candidate');
+    assert.ok(runtime.getPlanningPrices().some(row => row.predicted && row.start >= original.deadlineAt),
+      'every case also contains unused predictions beyond the deadline');
+    if (exposure === 'neither') {
+      assert.equal(after.plan.usesForecast, false);
+      assert.equal(after.control.phase, 'pause-unconfirmed', 'published-only savings retain the ordinary cash policy');
+      assert.equal(after.control.owned.startAt, initialNow + 3 * HOUR);
+      assert.equal(adapter.calls.filter(call => call.kind === 'install').length, 1);
+    } else {
+      assert.equal(after.control.execution.planId, original.planId);
+      assert.equal(after.control.released, true, 'forecast exposure on either side requires more than 5 cents');
+      assert.equal(after.plan.usesForecast, exposure === 'adopted');
+      assert.equal(adapter.calls.filter(call => call.kind === 'install').length, 0);
+    }
+  });
 });
 
 test('unchanged economics, dearer slots and missing coverage do not interrupt active charging', async t => {

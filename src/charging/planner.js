@@ -12,8 +12,6 @@ const value = (charger, key) => charger.values?.[key]?.available === false ? nul
 const priceValue = row => row.priceCtPerKwh ?? row.allInCentsPerKWh ?? row.totalCtPerKwh ?? row.price;
 const cashPrice = row => row.cashPriceCtPerKwh ?? row.priceCtPerKwh;
 const decisionCost = result => result.costCents + (result.uncertaintyPremiumCents ?? 0);
-const acceptsPredicted = job => job.charger.forecastAllowed === true || job.preservePermission || job.fixedPeriods
-  || job.remaining <= EPS && !targetKnown(job.charger);
 // A requested minimum is not a vehicle stop instruction. Only an observed
 // native vehicle ceiling can bound consumption at the modeled target.
 const targetKnown = charger => charger.values.minimumSoc.available && !charger.values.minimumSoc.assumed
@@ -344,14 +342,6 @@ function allocateOne(active, resource, at) {
 // pattern before averaging. Average household current can otherwise predict
 // charging during load cycles where the Equalizer would actually suspend it.
 function allocate(active, resource, at) {
-  // Forecast prices can move only an explicitly flexible session. Independently
-  // confirmed native permissions remain real loads, including their future use.
-  if (resource.predicted && active.some(job => !acceptsPredicted(job))) {
-    const admitted = active.filter(acceptsPredicted), excluded = active.filter(job => !acceptsPredicted(job));
-    const result = allocate(admitted, resource, at);
-    return { ...result, currents: { ...result.currents,
-      ...Object.fromEntries(excluded.map(job => [job.charger.id, 0])) } };
-  }
   // Single-charger allocation depends on the resource and electrical contract,
   // not the candidate's remaining energy or start time. Reuse it across the
   // bounded search; weak keys keep the cache scoped to the current inputs.
@@ -935,7 +925,7 @@ export function planChargers({ now, chargers = [], prices = [], household = [], 
     if (!price) partialPrices = true;
     if (!price && !forecastOnly) {
       // Do not pretend an unrestricted native period pauses inside an unknown
-      // price gap. Optimize the first contiguous published horizon.
+      // price gap. Optimize the first contiguous priced horizon.
       if (intervals.length) break;
       continue;
     }
@@ -945,11 +935,11 @@ export function planChargers({ now, chargers = [], prices = [], household = [], 
       ...(price?.predicted === true ? { predicted: true, cashPriceCtPerKwh: priceValue(price), uncertaintyCtPerKwh } : {}),
       ...resources(start, supply, household, fixed) });
   }
-  if (!intervals.length) return fallback('price-coverage-unavailable', 'No published electricity prices cover the remaining readiness horizon.');
+  if (!intervals.length) return fallback('price-coverage-unavailable', 'No available electricity prices cover the remaining readiness horizon.');
   if (jobs.some(job => job.targetAt > now && !intervals.some(row => row.start < job.targetAt
     && row.end > Math.max(now, value(job.charger, 'vehicleNotBefore') ?? now))))
-    return fallback('price-coverage-unavailable', 'No published electricity prices cover an eligible charging time before ready-by; charging is allowed now.');
-  if (partialPrices) warnings.push('Only published electricity prices are used. The pending schedule will be reconsidered when more prices arrive.');
+    return fallback('price-coverage-unavailable', 'No available electricity prices cover an eligible charging time before ready-by; charging is allowed now.');
+  if (partialPrices) warnings.push('Prices do not yet cover the full ready-by period. The schedule will be reconsidered when more prices arrive.');
   result.assumptions.priceCoverage = partialPrices ? 'partial' : 'complete';
   result.assumptions.household = intervals.every(row => row.history) ? 'history' : intervals.some(row => row.history) ? 'mixed' : 'zero';
   warnings.push(...fixed.flatMap(forecast => forecast.warnings));

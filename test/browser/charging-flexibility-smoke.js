@@ -10,7 +10,7 @@ import { join, resolve } from 'node:path';
 const root = resolve(import.meta.dirname, '../..');
 const directory = mkdtempSync(join(tmpdir(), 'stmq-flexibility-browser-'));
 const artifacts = mkdtempSync(join(tmpdir(), 'stmq-flexibility-screenshots-'));
-const html = `<!doctype html><html data-theme="dark"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><link rel="stylesheet" href="/chart/monitor.css"><link rel="stylesheet" href="/chart/charging-diagnostics.css"><body data-authenticated="true"><div class="zone-content" style="margin:12px;max-width:920px;container:charging-area / inline-size"><div id="charging-devices" class="charging-device-list"></div></div></body></html>`;
+const html = `<!doctype html><html lang="en" data-theme="dark"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><link rel="stylesheet" href="/chart/monitor.css"><link rel="stylesheet" href="/chart/charging-diagnostics.css"><body data-authenticated="true" data-access-role="family"><div class="zone-content" style="margin:12px;max-width:920px;container:charging-area / inline-size"><div id="charging-devices" class="charging-device-list"></div></div></body></html>`;
 const server = createServer(async (request, response) => {
   try {
     const path = new URL(request.url, 'http://localhost').pathname;
@@ -78,12 +78,27 @@ try {
   await evaluate(async () => {
 
  const {createChargingPanel}=await import('/chart/charging.js');
+ const {assertWebRequest}=await import('/chart/web-access.js');
  const now=Date.parse('2026-10-08T14:00:00Z'),baseline=Date.parse('2026-10-09T03:00:00Z');
  const reading=value=>({value,available:true,source:'manual-fallback'});
- const comp={at:now,available:true,recommended:true,priceCoverage:'partial',normalReadyByAt:baseline,deferredReadyByAt:baseline+86400000,normalCostCents:470,deferredCostCents:310,savingsCents:160,normalFinishAt:baseline-3600000,deferredFinishAt:baseline+86400000-7200000,normalChargingDurationMs:10800000,deferredChargingDurationMs:9000000,normalPeriods:[{startAt:now+3600000,endAt:null}],deferredPeriods:[{startAt:baseline+20*3600000,endAt:null}],householdSavingsCents:145,uncertaintyPremiumCents:60,householdUncertaintyPremiumCents:60,riskAdjustedSavingsCents:85,usesForecast:true};
+ const comp={at:now,available:true,recommended:true,priceCoverage:'partial',normalReadyByAt:baseline,deferredReadyByAt:baseline+86400000,normalCostCents:470,deferredCostCents:310,savingsCents:160,normalFinishAt:baseline-3600000,deferredFinishAt:baseline+86400000-7200000,normalChargingDurationMs:10800000,deferredChargingDurationMs:9000000,normalPeriods:[{startAt:now+3600000,endAt:null}],deferredPeriods:[{startAt:baseline+20*3600000,endAt:null}],householdSavingsCents:160,normalHouseholdUncertaintyPremiumCents:20,uncertaintyPremiumCents:60,householdUncertaintyPremiumCents:60,riskAdjustedSavingsCents:120,normalUsesForecast:true,deferredUsesForecast:true,usesForecast:true};
  const charger=id=>({id,label:id==='charger1'?'Charger 1':'Charger 2',provider:id==='charger1'?'easee':'shelly-evse',association:'synthetic:'+id,request:{sessionId:'synthetic-'+id,revision:1,overrides:{}},settings:{enabled:true,readyBy:'06:00',manualSoc:20,minimumSoc:80,capacityKwh:74},controls:{revision:1},capabilities:{scheduling:true},values:{connected:reading(true),charging:reading(false),soc:reading(34),minimumSoc:reading(80),capacityKwh:reading(74)},requiredGridKwh:32,sessionCost:{totalCents:470,recordedGridKwh:12.3},plan:{state:'waiting',startAt:now+3600000,finishAt:baseline-3600000,deadlineAt:baseline,feasible:true,periods:[{startAt:now+3600000,endAt:null}]},control:{phase:'waiting',confirmed:true},flexibility:{comparisonScope:'comparison-'+id,enabled:true,active:false,eligible:true,revision:1,normalReadyByAt:baseline,effectiveReadyByAt:baseline,deferredReadyByAt:baseline+86400000,preview:comp}});
  window.fixture={role:'master',now,charging:{timezone:'Europe/Helsinki',settings:{priority:'balanced'},controls:{revision:1},chargers:[charger('charger1'),charger('charger2')]}};
- window.calls=[];window.panel=createChargingPanel({document,request:async(path,payload)=>{window.calls.push({path,payload});if(path.endsWith('preview'))return{comparison:comp,flexibility:window.fixture.charging.chargers[0].flexibility};return window.fixture;}});window.panel.update(window.fixture);
+ window.calls=[];window.panel=createChargingPanel({document,request:async(path,payload)=>{
+   assertWebRequest({role:'family'},path,payload,window.fixture);
+   window.calls.push({path,payload});
+   const item=window.fixture.charging.chargers.find(charger=>path.includes('/'+charger.id+'/'));
+   if(path.endsWith('preview'))return{comparison:comp,flexibility:item.flexibility};
+   if(path.endsWith('/flexibility')) {
+     const active=payload.action==='allow';item.request.revision++;
+     item.flexibility={...item.flexibility,active,eligible:!active,revision:item.request.revision,
+       checkpointAt:active?item.flexibility.normalReadyByAt:null,
+       effectiveReadyByAt:active?item.flexibility.deferredReadyByAt:item.flexibility.normalReadyByAt};
+   }
+   return window.fixture;
+ }});
+ window.fixture.charging.chargers.forEach(charger=>Object.assign(charger.plan,{usesForecast:true,costCents:470,uncertaintyPremiumCents:20}));
+ window.panel.update(window.fixture);
  for(const el of document.querySelectorAll('.charging-footer')){const button=document.createElement('button');button.className='charging-session-report';button.innerHTML='<span class="charging-session-report-copy"><span class="charging-session-report-label">Session report</span><span class="charging-session-report-status">In progress</span></span><span class="charging-session-report-open">Open ↗</span>';el.append(button);}
   });
   const measurements = [];
@@ -139,6 +154,8 @@ try {
     await until("document.getElementById('charging-flexibility-apply').disabled === false");
     assert.equal(await evaluate("document.getElementById('charger1-device').open"), false);
     assert.equal(await evaluate('document.activeElement.id'), 'charging-flexibility-close');
+    assert.match(await evaluate("document.getElementById('charging-flexibility-price-basis').textContent"), /same all-in prices and forecast uncertainty/);
+    assert.match(await evaluate("document.getElementById('charging-flexibility-uncertainty').textContent"), /€1.20 combined saving/);
     assert.match(await evaluate("document.getElementById('charging-flexibility-as-of').textContent"), /Prices cover only part.*later prices may change the saving/);
     assert.match(await evaluate("document.querySelectorAll('.charging-flexibility-plan')[1].textContent"), /Est\. finish 10 Oct 04:00.*Est\. charging 2 h 30 min/);
     await evaluate(() => { document.querySelectorAll('.charging-flexibility-periods').forEach(details => { details.open = true; }); });
@@ -150,8 +167,29 @@ try {
     assert(periodContents.every(Boolean), `Proposed periods fit each alternative at ${width}/${theme}`);
     const dialog = await evaluate("(() => {const r=document.getElementById('charging-flexibility-dialog').getBoundingClientRect();return {width:r.width,height:r.height};})()");
     assert(dialog.width <= width && dialog.height <= 800);
-    await screenshot(`${width}-${theme}-dialog`); await key('Escape');
+    await screenshot(`${width}-${theme}-dialog`);
+    await evaluate(() => document.querySelector('#charging-flexibility-price-details > summary').focus());
+    await key('Enter');
+    assert.equal(await evaluate("document.getElementById('charging-flexibility-price-details').open"), true);
+    assert.match(await evaluate("document.getElementById('charging-flexibility-price-details').textContent"), /Published prices always take precedence.*2 c\/kWh.*not an electricity charge/);
+    assert.equal(await evaluate("(() => { const d = document.getElementById('charging-flexibility-dialog'); return d.scrollWidth <= d.clientWidth + 1; })()"), true, `Forecast disclosure fits ${width}/${theme}`);
+    await evaluate(() => window.panel.update({ ...window.fixture }));
+    assert.equal(await evaluate("document.activeElement === document.querySelector('#charging-flexibility-price-details > summary')"), true);
+    await screenshot(`${width}-${theme}-forecast-details`);
+    await key('Enter'); await key('Escape');
     assert.equal(await evaluate('document.activeElement.id'), 'charger1-flexibility');
+    await evaluate(() => {
+      document.getElementById('charger1-device').open = true;
+      document.getElementById('charger1-explanation-details').open = true;
+    });
+    assert.match(await evaluate("document.getElementById('charger1-readings').textContent"), /Plan pricesIncludes forecast prices/);
+    assert.match(await evaluate("document.getElementById('charger1-explanations').textContent"), /Prices & uncertainty.*Ordinary planning and one extra day.*2 c\/kWh/);
+    assert.equal(await evaluate('document.documentElement.scrollWidth <= innerWidth'), true, `Schedule and help fit ${width}/${theme}`);
+    await screenshot(`${width}-${theme}-schedule-help`);
+    await evaluate(() => {
+      document.getElementById('charger1-device').open = false;
+      document.getElementById('charger1-explanation-details').open = false;
+    });
     measurements.push({ width, theme, height: before, dialogHeight: dialog.height });
   }
   // A completed comparison updates the open dialog only when displayed values change.
@@ -215,6 +253,31 @@ try {
   await screenshot('checkpoint-light-cards');
   assert.equal(await evaluate("window.calls.every(call=>call.path.endsWith('flexibility-preview'))"), true,
     'Opening, closing, changing time and reviewing never submit a deadline mutation');
+  // The real client family allowlist guards the full workflow, independently of
+  // the HTTP tests that guard server authorization and equipment/session scope.
+  await evaluate(() => {
+    const c=window.fixture.charging.chargers[0];
+    c.flexibility={...c.flexibility,active:false,eligible:true,checkpointAt:null,
+      normalReadyByAt:window.fixture.now+86400000,deferredReadyByAt:window.fixture.now+172800000,
+      effectiveReadyByAt:window.fixture.now+86400000};
+    window.panel.update({...window.fixture});document.getElementById('charger1-flexibility').click();
+  });
+  await until("!document.getElementById('charging-flexibility-apply').disabled");
+  const beforeRefresh = await evaluate('window.calls.length');
+  await evaluate("document.getElementById('charging-flexibility-refresh').click()");
+  await until('window.calls.length === '+(beforeRefresh+1));
+  await until("!document.getElementById('charging-flexibility-apply').disabled");
+  await evaluate("document.getElementById('charging-flexibility-apply').click()");
+  await until("!document.getElementById('charging-flexibility-dialog').open");
+  assert.equal(await evaluate('window.calls.at(-1).payload.action'), 'allow');
+  assert.equal(await evaluate("document.getElementById('charger1-defer-badge').hidden"), false);
+  await evaluate("document.getElementById('charger1-flexibility').click()");
+  await until("document.getElementById('charging-flexibility-apply').textContent === 'Cancel flexibility' && !document.getElementById('charging-flexibility-apply').disabled");
+  await evaluate("document.getElementById('charging-flexibility-apply').click()");
+  await until("!document.getElementById('charging-flexibility-dialog').open");
+  assert.equal(await evaluate('window.calls.at(-1).payload.action'), 'cancel');
+  assert.equal(await evaluate("document.getElementById('charger1-defer-badge').hidden"), true);
+  assert.equal(await evaluate('document.activeElement.id'), 'charger1-flexibility');
   assert.deepEqual(errors, []);
   console.log(JSON.stringify({ measurements, artifacts }, null, 2));
 } finally {

@@ -365,6 +365,8 @@ export function chargerDisplay(charger, { now = Date.now(), timezone = 'Europe/H
   const readingTime = showMetrics && vehicleCharge(referenceSoc) ? validTime(referenceSoc.measuredAt) ? `Charge measured ${chargingReadingTime(referenceSoc.measuredAt, timezone)}`
     : validTime(referenceSoc.receivedAt) ? `Charge received ${chargingReadingTime(referenceSoc.receivedAt, timezone)} · measurement time unavailable` : 'Charge measurement time unavailable' : '';
   const rows = [];
+  if (showPlan && typeof plan.usesForecast === 'boolean') rows.push(['Plan prices', plan.usesForecast ? 'Includes forecast prices' : 'Published prices',
+    'All-in electricity prices include spot price, margin, electricity tax, transfer and VAT. Published prices take precedence; fresh forecasts fill unpublished times when enabled. Both ordinary and extra-day planning apply a 2 c/kWh uncertainty allowance to forecast-priced energy when choosing periods. Displayed electricity costs exclude this planning allowance. Forecast prices and periods may change.']);
   if (showPlan && currentAssumption) rows.push(['Planning current', `Up to ${number(currentAssumption.maximumCurrentA, 'A per phase')} assumed · shared capacity may reduce it`]);
   if (activeManual && validTime(manual.detectedAt)) rows.push(['Manual change noticed', chargingReadingTime(manual.detectedAt, timezone)]);
   if (charging && finite(values.actualCurrentA?.value)) rows.push(['Drawing now', number(values.actualCurrentA.value, 'A per phase')]);
@@ -464,6 +466,8 @@ export function chargerDisplay(charger, { now = Date.now(), timezone = 'Europe/H
   if (supported) explanations.push(
     ['Ready-by time', 'The configured or session-specific local time is the deadline for reaching the target. The estimated target time shows the current forecast; readiness compares that forecast with the deadline. Ready-by is not a scheduled stop.'],
     ['Price planning', `The planner chooses economical charging periods to reach the target by ready-by, with planned pauses of at least 15 minutes. ${easee ? 'New prices can pause automatic charging for cheaper periods if the target is still unmet, ready-by can still be met, and the remaining charge costs less. Charging runs at least 15 minutes before such a pause. ' : ''}Manual charging instructions keep priority. The final period stays open: reaching the target or ready-by time does not stop charging. Estimates cover reaching the requested target.`],
+    ['Prices & uncertainty', 'Ordinary planning and one extra day use the same all-in electricity prices: spot price, margin, electricity tax, transfer and VAT. Published prices always take precedence. Fresh forecasts fill unpublished times when enabled; unavailable forecasts are not invented. For each forecast-priced kWh, both plans add a 2 c/kWh uncertainty allowance when choosing periods. This favors published prices when the expected saving is small. The allowance is not an electricity charge and is excluded from displayed costs and savings. New prices can change the plan and its estimated cost.'],
+    ['One extra day', 'The comparison changes only this charger’s ready-by deadline, keeping the same prices, uncertainty treatment, target and shared priority. Both chargers are planned together; the other charger keeps its deadline and any cost effect is shown separately. Comparison costs cover only remaining energy, including charging losses. The card’s estimated session cost also includes energy already delivered. Allowing another day applies to this connection; it never guarantees a saving. An active allowance can be canceled before the earlier deadline. After that checkpoint, the approved deadline remains binding and another day requires a new choice. Family and admin access can review, refresh, allow and cancel.'],
     ['Period transitions', cloudEasee
       ? 'Installing planned pauses and next starts requires this application and the Easee cloud. Easee shows the current instruction; this page shows all planned periods. If contact is lost, an open period may continue past a planned pause. A confirmed schedule does not by itself confirm a physical pause. Missed or unconfirmed transitions are reported when contact resumes.'
       : localEasee
@@ -1008,7 +1012,7 @@ export function createChargingPanel({ document, request, beforeRequest = () => {
       device.periodCount.textContent = view.periodCount; device.periodCount.hidden = !view.periodCount;
       device.problem.textContent = view.problem; device.problem.hidden = !view.problem;
       setStatusDetail(device.scheduleInfo, { label: 'Charging schedule', title: 'Charging periods',
-        detail: explanation['Price planning'], key: `${charger.id}:schedule` });
+        detail: [explanation['Price planning'], explanation['Prices & uncertainty']].filter(Boolean).join('\n\n'), key: `${charger.id}:schedule` });
       device.scheduleHeading.hidden = !view.periodRows.length;
       list(device.periods, view.periodRows.map(([label, text]) => [label, text.replace(' onwards · vehicle finishes naturally', ' onwards')]));
       device.periods.hidden = !view.periodRows.length;

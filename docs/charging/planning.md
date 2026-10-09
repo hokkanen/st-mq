@@ -19,7 +19,7 @@ choice, which survives restart and new vehicle connections for the same physical
 chargers. Automatic charging is also a persistent dashboard choice; the four
 ready-by and battery defaults remain configuration-owned.
 
-The planner first respects known applicable device/vehicle limits, manual permission, native start times and credible capacity. It protects both deadlines where the modeled opportunities allow that. Actual all-in electricity cost then governs period selection. Priority must not buy more expensive energy merely to favor a charger. In infeasible cases, charger priority favors its remaining request; balanced mode shares normalized shortfall. Eligible charging time and grid-energy need determine pressure. Shared budgets below two minimum currents use bounded time slices rather than invalid sub-minimum simultaneous commands.
+The planner first respects known applicable device/vehicle limits, manual permission, native start times and credible capacity. It protects both deadlines where the modeled opportunities allow that. All-in electricity cost with the common forecast uncertainty allowance then governs period selection. Priority must not buy more expensive energy merely to favor a charger. In infeasible cases, charger priority favors its remaining request; balanced mode shares normalized shortfall. Eligible charging time and grid-energy need determine pressure. Shared budgets below two minimum currents use bounded time slices rather than invalid sub-minimum simultaneous commands.
 
 ### Maximum-available-current assumption
 
@@ -93,8 +93,9 @@ chronological joint simulator and bounded individual refinement validate service
 priority, per-phase/scenario limits and cost. Native timers and period-count
 limits constrain this candidate; fixed permissions are never moved. The existing
 best candidate remains available, and pooled capacity is not proof that every
-individual deadline can be met. Positive and negative prices use the same cash
-objective; this additional seed does not establish global optimality.
+individual deadline can be met. Positive and negative prices use the same price
+objective, including the common uncertainty allowance for predicted intervals;
+this additional seed does not establish global optimality.
 
 If the ordinary search finds no feasible schedule, one additional candidate uses
 the separate windows in which a fixed native current fits every forecast phase
@@ -237,9 +238,41 @@ interpret the forecast as confirmation that a BMW timer allows it.
 
 If a known vehicle start is after ready-by, ST-MQ reports the shortfall and
 releases its economic hold so the vehicle can start when it allows. The other
-charger keeps its own plan. If published prices do not cover any eligible time,
-the provisional fallback also permits charging. ST-MQ cannot override a vehicle
+charger keeps its own plan. If neither published nor admitted forecast prices
+cover any eligible time, the provisional fallback also permits charging.
+ST-MQ cannot override a vehicle
 timer, target or user stop. The final period always remains an open release.
+
+## Published and forecast prices
+
+Normal automatic planning and both alternatives in **One extra day** use one
+price outlook: available published prices plus fresh predictions when the
+optional [electricity forecast](../electricity-forecast.md) is enabled. Published
+prices win overlaps. Both sources use the same dated all-in calculation for
+retailer margin, electricity tax, transfer charges and VAT; valid zero and
+negative prices retain their meaning. Forecast access is independent of whether
+the session has ever received an extra-day allowance.
+
+Each predicted slot receives a **2 c/kWh uncertainty allowance** in the decision
+objective. Both normal and extra-day planning apply this allowance per modeled
+grid kWh, including negative-price intervals. Published slots receive none.
+The allowance guides period selection; it is neither an invoiced charge nor a
+measured forecast error, and it never enters displayed cash prices, estimated
+cash savings or recorded bills. Comparisons retain each plan's cash cost and
+uncertainty allowance separately so the change in forecast exposure is visible.
+
+Running speculative replans require more than 5 cents of risk-adjusted joint
+improvement and retain the existing minimum-run/pause and period-stability
+checks; published-only replans retain the existing cash-cost policy. Native
+constraints and existing instructions keep their authority under either price
+source. A forecast supplies no command permission, physical delivery evidence
+or guarantee of the final cost.
+
+New published prices replace predictions on the next assessment. Expired,
+disabled or unavailable forecasts supply no future rate; available published
+prices remain usable. The existing feasibility/fallback rules apply when those
+prices cannot support the request. Forecast loss does not change a binding
+ready-by deadline, and cheaper prices cannot grant an unapproved extra day.
 
 ## Explicit one-day flexibility
 
@@ -248,8 +281,11 @@ connected unfinished automatic session may compare its current ready-by deadline
 with one additional Helsinki calendar day. Opening the comparison is read-only;
 only the separate **Allow one more day** action grants the later deadline. The
 request is bound to the existing equipment association, physical connection and
-request revision, with a bounded idempotent action receipt. Ordinary defaults,
-charge progress and delivered energy retain their original owners.
+request revision, with a bounded idempotent action receipt. Admin and
+family-password users may open and refresh the comparison, allow one more day
+and cancel an active allowance. The same session and control checks apply to
+both roles; read-only replicas grant neither role write authority. Ordinary
+defaults, charge progress and delivered energy retain their original owners.
 
 There is at most one unconsumed allowance. Until the earlier ready-by checkpoint,
 the later effective deadline is highlighted with **+1 day**. At that checkpoint,
@@ -276,7 +312,9 @@ the existing ready-by parser. The resulting absolute instant is persisted.
 
 Comparisons run two joint plans from one current snapshot for both connected
 chargers, changing only the selected charger's deadline and holding remaining
-energy and already-delivered energy constant. The peer keeps its own deadline;
+energy, already-delivered energy, available prices and uncertainty policy
+constant. Forecast prices are available to both alternatives before their
+respective deadlines. The peer keeps its own deadline;
 shared capacity can change its charging periods and remaining cost. The primary
 saving belongs to the selected charger. A separate household saving is the total
 cost effect of that same one-charger choice, never a grant for both chargers. Native
@@ -287,17 +325,15 @@ published-price cost with the selected forecast plan's remaining cash estimate;
 this display projection does not update accrual, its fallback unit price or the
 published-price ledger.
 
-Predicted slots receive a bounded **2 c/kWh uncertainty premium** in the decision
-objective; their actual estimated cash price remains separate. Published prices
-win overlaps and receive no premium. An ordinary session cannot move its economic
-schedule into predicted slots without an approved flexible deadline. A promoted
-baseline retains that permission only within its now-binding deadline. Independently
-confirmed native periods remain real competing loads without gaining new scheduling
-authority. A positive individual saving is recommended only when combined remaining
-cash cost also improves and the household risk-adjusted improvement is at least
-5 cents. Running speculative replans require more than 5 cents of risk-adjusted
-joint improvement and retain the existing minimum-run/pause and period-stability
-checks; published-only replans retain the existing cash-cost policy.
+The [common uncertainty allowance](#published-and-forecast-prices) applies to
+both alternatives. A positive individual saving is recommended only when
+combined remaining cash cost also improves and the household risk-adjusted
+improvement is at least 5 cents. The latter subtracts the extra-day plan's
+uncertainty allowance and credits the normal plan's allowance; shared forecast
+exposure is not charged twice. Independently confirmed native periods remain
+real competing loads without gaining new scheduling authority. A previously
+approved deadline retains its durable approval provenance after the checkpoint;
+that provenance owns the deadline and does not grant separate forecast access.
 
 Incomplete price coverage through the proposed later deadline does not block a
 comparison when both plans deliver the same required energy using available

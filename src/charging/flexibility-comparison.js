@@ -18,7 +18,7 @@ function covered(prices, start, end) {
 
 /** Both counterfactuals use this one immutable worker snapshot. No outcome,
  * price or delivered-energy history is written by a preview. */
-export function compareChargingFlexibility(options, { chargerId, normalReadyByAt, deferredReadyByAt, normalForecastAllowed = false }) {
+export function compareChargingFlexibility(options, { chargerId, normalReadyByAt, deferredReadyByAt }) {
   const base = { at: options.now, normalReadyByAt, deferredReadyByAt, estimated: true, available: false,
     recommended: false, normalCostCents: null, deferredCostCents: null, savingsCents: null,
     normalFinishAt: null, deferredFinishAt: null, normalChargingDurationMs: null, deferredChargingDurationMs: null,
@@ -29,8 +29,7 @@ export function compareChargingFlexibility(options, { chargerId, normalReadyByAt
     return { ...base, reason: 'ready-by-passed' };
   const prepare = deferred => ({ ...options, previousPeriods: {}, previousAllocations: [],
     chargers: options.chargers.map(charger => ({ ...charger,
-      ...(charger.id === chargerId ? { deadlineAt: deferred ? deferredReadyByAt : normalReadyByAt,
-        forecastAllowed: deferred || normalForecastAllowed } : {}),
+      ...(charger.id === chargerId ? { deadlineAt: deferred ? deferredReadyByAt : normalReadyByAt } : {}),
       // A preview can reconsider automatic permission, never an independent
       // native instruction or manual vehicle restriction.
       control: charger.settings.enabled && !charger.request?.chargeNow && !charger.control?.manual
@@ -59,8 +58,11 @@ export function compareChargingFlexibility(options, { chargerId, normalReadyByAt
     savingsCents: before.costCents - after.costCents, householdSavingsCents,
     normalUncertaintyPremiumCents: before.uncertaintyPremiumCents ?? 0,
     uncertaintyPremiumCents: after.uncertaintyPremiumCents ?? 0,
+    normalHouseholdUncertaintyPremiumCents: sum(normal, 'uncertaintyPremiumCents'),
     householdUncertaintyPremiumCents: sum(deferred, 'uncertaintyPremiumCents'), riskAdjustedSavingsCents,
-    usesForecast: connected.some(charger => deferred.plans[charger.id].usesForecast),
+    normalUsesForecast: before.usesForecast,
+    deferredUsesForecast: after.usesForecast,
+    usesForecast: connected.some(charger => normal.plans[charger.id].usesForecast || deferred.plans[charger.id].usesForecast),
     recommended: before.costCents > after.costCents && householdSavingsCents > 0 && riskAdjustedSavingsCents >= 5,
     forecastUncertaintyCtPerKwh: 2,
     remainingGridKwh: selected.requiredGridKwh,

@@ -6,6 +6,13 @@ Versions follow Semantic Versioning. `-dev.N` denotes a development prerelease.
 
 ## Unreleased
 
+- Normal charging now uses fresh price forecasts alongside published prices,
+  with the same all-in tariff and uncertainty allowance as **One extra day**.
+  The comparison changes only the selected deadline, so its estimate measures
+  the benefit of additional time. Charging help, Schedule & readings and the
+  comparison explain forecast use and separate cash savings from uncertainty.
+  Family-password users can view, refresh, allow and cancel an extra day with
+  the same session and control checks as admins.
 - A missing commissioned local OCPP connection now gets up to three spaced recovery
   attempts using its verified existing Easee configuration. Cloud failures preserve
   local OCPP and charging instructions; working local control stays independent of

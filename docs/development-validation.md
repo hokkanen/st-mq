@@ -137,7 +137,7 @@ and their required evidence.
 
 `node test/browser/charging-flexibility-smoke.js` uses synthetic charger cards to
 check unchanged resting height at 280–1280px in both themes, guarded keyboard
-interaction, comparison snapshots that stay visible until an explicit refresh,
+interaction, retained comparison snapshots and adoption of changed display values,
 active-allowance savings and checkpoint highlight removal; `STMQ_CHROME_BIN` can
 select a local Chrome executable. Backend regressions separate displayed
 comparison scope from live command readiness: small telemetry changes and failed
@@ -148,6 +148,11 @@ The electricity-price forecast uses synthetic provider fixtures for units,
 native hours, gaps, freshness, throttling and RAM-only acquisition. Charging
 flexibility tests cover renewable calendar-day checkpoints, durable deadlines,
 restart/identity fencing and joint cost comparisons separately from billed cost.
+Normal and extra-day plans share forecast eligibility and uncertainty handling;
+regressions cover equal forecast opportunities, extra time that changes the
+economic choice, published-price precedence and unavailable forecasts. Family
+access checks cover viewing/refreshing the comparison and allowing/canceling the
+day without relaxing session, authority or admin-only configuration boundaries.
 `node test/browser/electricity-forecast-smoke.js` checks the actual chart and
 feed entry with no connected cars, sparse canvas strokes, shared colors/toggles,
 unchanged date controls and 320/390/1280px layouts in both themes. Run after the

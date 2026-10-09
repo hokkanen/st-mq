@@ -21,7 +21,8 @@ test('predicted remaining cost is disclosed without claiming that delivered cost
   const item = charger({ sessionCost: { totalCents: 456, estimated: true, usesForecast: true } });
   const cost = chargingCost(item, chargerDisplay(item, { now }), summary(item), { now });
   assert.equal(cost.value, '€4.56');
-  assert.match(cost.detail, /Remaining energy includes predicted electricity prices/);
+  assert.match(cost.detail, /Remaining energy includes forecast electricity prices/);
+  assert.match(cost.detail, /spot price, margin, electricity tax, transfer and VAT.*uncertainty allowance used for planning is excluded/);
   assert.doesNotMatch(cost.detail, /Missing forecast|last available cost estimate/);
 });
 

@@ -4,6 +4,7 @@ import { getEventListeners } from 'node:events';
 import { assertWebRequest, webRequestAllowed, createWebSession, bindPasswordVisibility, createAccessControls } from '../chart/web-access.js';
 import { createPollingRequest, fetchJsonResponse } from '../chart/network.js';
 import { createReadOnlyControls } from '../chart/dashboard-access.js';
+import { familyRouteAllowed } from '../src/app/web-permissions.js';
 
 const admin = { role: 'admin', source: 'password' }, family = { role: 'family', source: 'password' };
 const status = { equipment: { devices: [{ id: 'door', kind: 'door', area: 'garage', controls: { cover: { open: true, close: true, stop: false } } },
@@ -16,7 +17,8 @@ test('family requests allow household controls and reads while all other writes 
     ['/api/dhwr/stop', {}], ['/api/heating-test', { command: 'circulation' }], ['/api/heating-test', { command: 'preheat' }],
     ['/api/garage/heating', { mode: 'normal', targetC: 10 }], ['/api/garage/heating', { mode: 'away' }],
     ['/api/equipment/cover', { deviceId: 'door', action: 'open' }], ['/api/charging/settings', { priority: [] }],
-    ...['settings', 'control', 'charge-now', 'resume', 'identify'].map(action => [`/api/charging/chargers/test/${action}`, {}]),
+    ...['settings', 'control', 'charge-now', 'resume', 'use-automatic', 'identify', 'flexibility', 'flexibility-preview']
+      .map(action => [`/api/charging/chargers/test/${action}`, {}]),
     ...['preview', 'start', 'schedule', 'target', 'cancel'].map(action => [`/api/charging/tests/${action}`, {}]),
   ]) assert.equal(webRequestAllowed(family, path, data, status), true, path);
   for (const [path, data] of [
@@ -37,6 +39,29 @@ test('family requests allow household controls and reads while all other writes 
   assert.equal(webRequestAllowed(undefined, '/api/recording-health'), true, 'authenticated health can load when the first status read fails');
   assert.equal(webRequestAllowed(undefined, '/api/recording-health', {}), false);
   assert.equal(webRequestAllowed(undefined, '/api/fireplace', {}), false);
+});
+
+test('family extra-day review, approval and cancellation pass both client and server access checks', () => {
+  const scope = { association: 'synthetic-charger', sessionId: 'synthetic-connection', revision: 7 };
+  for (const id of ['charger1', 'charger2']) {
+    for (const [route, input] of [
+      ['flexibility-preview', scope],
+      ['flexibility', { ...scope, action: 'allow', actionId: 'synthetic-approval' }],
+      ['flexibility', { ...scope, action: 'cancel', actionId: 'synthetic-cancellation' }],
+      ['use-automatic', { ...scope, controlRevision: 3, takeoverToken: 'synthetic-native-state' }],
+    ]) {
+      const path = `/api/charging/chargers/${id}/${route}`;
+      assert.doesNotThrow(() => assertWebRequest(family, path, input, status), path);
+      assert.equal(familyRouteAllowed('POST', path), true, path);
+      assert.equal(familyRouteAllowed('GET', path), false, `${path} requires an explicit scoped request`);
+      assert.equal(webRequestAllowed(undefined, path, input, status), false, `${path} requires a signed-in role`);
+    }
+    for (const route of ['flexibility-admin', 'flexibility-preview/force', 'flexibility/cancel']) {
+      const path = `/api/charging/chargers/${id}/${route}`;
+      assert.equal(webRequestAllowed(family, path, {}, status), false, path);
+      assert.equal(familyRouteAllowed('POST', path), false, path);
+    }
+  }
 });
 
 function storageFixture() {

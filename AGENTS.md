@@ -303,6 +303,19 @@ permission to act. See [the configuration guide](docs/configuration.md).
   planning assumption, never evidence of current draw, command readiness,
   accepted scheduling or guaranteed completion. See
   [the charging planning contract](docs/charging/planning.md#maximum-available-current-assumption).
+- Normal charging and one-extra-day planning use the same available published
+  prices and configured fresh price forecasts. Published prices take precedence;
+  both plans use the same all-in tariff calculation and forecast uncertainty
+  treatment. The uncertainty allowance guides decisions and remains separate
+  from estimated cash cost and recorded bills. An extra-day comparison changes
+  only the selected charger's deadline, with the same remaining energy and joint
+  capacity assumptions, so any saving reflects additional time. Forecast use
+  does not require a deadline extension or grant control authority. Admin and
+  family-password users may view and refresh the comparison, allow one more day
+  and cancel an active allowance under the same equipment, session and readiness
+  checks. This lasting amendment, approved on 2026-10-09, removes the former rule
+  that reserved forecast scheduling for approved flexibility; see
+  [charging price evidence](docs/charging/planning.md#published-and-forecast-prices).
 - Both charger cards use one shared component with capability-driven differences.
   With Automatic enabled, each new confirmed physical connection takes automatic
   control, superseding earlier charging instructions and native charger schedules,

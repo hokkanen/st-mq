@@ -17,8 +17,10 @@ const duration = milliseconds => {
 // snapshot should replace the open estimate only when the user sees a change.
 const comparisonContent = value => JSON.stringify([
   ...['normalReadyByAt', 'deferredReadyByAt', 'normalFinishAt', 'deferredFinishAt'].map(key => finite(value[key]) ? Math.floor(value[key] / 60_000) : null),
-  ...['normalCostCents', 'deferredCostCents', 'savingsCents', 'householdSavingsCents', 'householdUncertaintyPremiumCents'].map(key => money(value[key])),
-  Math.sign(value.savingsCents), duration(value.normalChargingDurationMs), duration(value.deferredChargingDurationMs), value.recommended, value.usesForecast, value.priceCoverage,
+  ...['normalCostCents', 'deferredCostCents', 'savingsCents', 'householdSavingsCents', 'normalHouseholdUncertaintyPremiumCents',
+    'householdUncertaintyPremiumCents', 'riskAdjustedSavingsCents'].map(key => money(value[key])),
+  Math.sign(value.savingsCents), duration(value.normalChargingDurationMs), duration(value.deferredChargingDurationMs),
+  value.recommended, value.usesForecast, value.normalUsesForecast, value.deferredUsesForecast, value.priceCoverage,
   ...['normalPeriods', 'deferredPeriods'].map(key => value[key]?.map(period => [Math.floor(period.startAt / 60_000),
     finite(period.endAt) ? Math.floor(period.endAt / 60_000) : null])),
   (value.chargers ?? []).filter(peer => finite(peer.normalCostCents) && finite(peer.deferredCostCents)
@@ -53,7 +55,7 @@ const reasonText = reason => ({
 export function createChargingFlexibility({ document, request, save, formatTime }) {
   const entries = new Map(), comparisons = new Map(), incomingComparisons = new Map(), listeners = [];
   let status, receivedAt = Date.now(), writable = false, busy = false, timer, disposed = false;
-  let dialog, title, description, comparisonRows, savingValue, combined, uncertainty, snapshotTime, note, message, refresh, back, apply;
+  let dialog, title, description, comparisonRows, savingValue, combined, uncertainty, priceDetails, riskAllowances, snapshotTime, note, message, refresh, back, apply;
   let selected, invoker, openedScope, openedComparisonScope, preview, previewScope, snapshot, renderedPlans, loading = false, saving = false, generation = 0;
   const make = (tag, text = '', className = '', id) => {
     const node = document.createElement(tag); node.textContent = text;
@@ -120,6 +122,14 @@ export function createChargingFlexibility({ document, request, save, formatTime 
     savingValue = make('p', '', 'charging-flexibility-saving', 'charging-flexibility-saving');
     combined = make('p', '', 'charging-flexibility-detail', 'charging-flexibility-household');
     uncertainty = make('p', '', 'charging-flexibility-detail', 'charging-flexibility-uncertainty');
+    const priceBasis = make('p', 'Both plans use the same all-in prices and forecast uncertainty rules.', 'charging-flexibility-detail', 'charging-flexibility-price-basis');
+    priceDetails = make('details', '', 'charging-flexibility-price-details', 'charging-flexibility-price-details');
+    priceDetails.append(make('summary', 'Prices, forecasts & estimates'),
+      make('p', 'Published prices always take precedence. Fresh forecasts fill unpublished times when enabled. Both plans include spot price, margin, electricity tax, transfer and VAT. Only this charger’s deadline changes; both chargers are planned together.'),
+      make('p', 'For both plans, each forecast-priced kWh carries a 2 c/kWh uncertainty allowance when choosing periods. This planning margin is not an electricity charge and is excluded from the displayed costs and savings. Published prices carry no allowance. Prices, periods and savings may change as new data arrives.'));
+    riskAllowances = make('p', '', 'charging-flexibility-detail', 'charging-flexibility-risk-allowances');
+    priceDetails.append(riskAllowances,
+      make('p', 'Costs cover only the energy still needed to reach the target, including charging losses. Already delivered energy is unchanged. Proposed periods are estimates, not confirmed charger schedules. “Onward” has no planned stop. Charging time excludes pauses.'));
     snapshotTime = make('p', '', 'charging-flexibility-detail', 'charging-flexibility-as-of');
     note = make('p', '', 'charging-flexibility-note', 'charging-flexibility-note');
     message = make('p', '', 'temporary-status', 'charging-flexibility-message'); message.setAttribute('role', 'status');
@@ -127,7 +137,7 @@ export function createChargingFlexibility({ document, request, save, formatTime 
     const actions = make('div', '', 'confirmation-actions');
     back = make('button', 'Close', 'secondary-button', 'charging-flexibility-close'); back.type = 'button';
     apply = make('button', 'Allow one more day', '', 'charging-flexibility-apply'); apply.type = 'button'; apply.setAttribute('data-write-control', '');
-    actions.append(back, apply); dialog.append(title, description, comparisonRows, savingValue, combined, uncertainty, snapshotTime, note, message, refresh, actions);
+    actions.append(back, apply); dialog.append(title, description, comparisonRows, savingValue, combined, uncertainty, priceBasis, priceDetails, snapshotTime, note, message, refresh, actions);
     document.body.append(dialog);
     bind(back, 'click', close);
     bind(refresh, 'click', () => { if (!refresh.disabled) return loadPreview(); });
@@ -156,12 +166,13 @@ export function createChargingFlexibility({ document, request, save, formatTime 
     });
   }
 
-  function plan(label, at, cents, finishAt, chargingDurationMs, periods, active) {
+  function plan(label, at, cents, finishAt, chargingDurationMs, periods, usesForecast, active) {
     const row = make('div', '', 'charging-flexibility-plan'); row.dataset.selected = String(active);
     row.append(make('span', label), make('strong', finite(at) ? formatTime(at, snapshot.timezone, snapshot.now) : 'Time unavailable'),
       make('small', `Remaining cost ${money(cents)}`),
       make('small', `Est. finish ${finite(finishAt) ? formatTime(finishAt, snapshot.timezone, snapshot.now) : 'Unavailable'}`),
       make('small', `Est. charging ${duration(chargingDurationMs)}`));
+    if (typeof usesForecast === 'boolean') row.append(make('small', usesForecast ? 'Includes forecast prices' : 'Published prices'));
     if (Array.isArray(periods) && periods.length) {
       const details = make('details', '', 'charging-flexibility-periods');
       details.append(make('summary', `Proposed periods (${periods.length})`));
@@ -194,10 +205,10 @@ export function createChargingFlexibility({ document, request, save, formatTime 
       const expanded = disclosures.map(details => details?.open), focused = disclosures.findIndex(details => details?.querySelector('summary') === document.activeElement);
       comparisonRows.replaceChildren(plan(displayedActive ? 'Earlier ready-by' : 'Current ready-by', comparison?.normalReadyByAt ?? displayedState?.normalReadyByAt,
       available ? comparison.normalCostCents : null, available ? comparison.normalFinishAt : null, available ? comparison.normalChargingDurationMs : null,
-      available ? comparison.normalPeriods : null, false),
+      available ? comparison.normalPeriods : null, available ? comparison.normalUsesForecast : null, false),
     plan(displayedActive ? 'Approved ready-by' : 'With one extra day', comparison?.deferredReadyByAt ?? displayedState?.deferredReadyByAt,
       available ? comparison.deferredCostCents : null, available ? comparison.deferredFinishAt : null, available ? comparison.deferredChargingDurationMs : null,
-      available ? comparison.deferredPeriods : null, displayedActive));
+      available ? comparison.deferredPeriods : null, available ? comparison.deferredUsesForecast : null, displayedActive));
       [...comparisonRows.children].forEach((row, index) => {
         const details = row.querySelector('details');
         if (details && expanded[index]) details.open = true;
@@ -220,7 +231,11 @@ export function createChargingFlexibility({ document, request, save, formatTime 
     }).join(' ') + (!combined.hidden && finite(comparison.householdSavingsCents)
       ? ` Total estimated ${comparison.householdSavingsCents < 0 ? 'extra cost' : 'saving'}: ${money(Math.abs(comparison.householdSavingsCents))}.` : '');
     uncertainty.hidden = !available || !comparison.usesForecast;
-    uncertainty.textContent = uncertainty.hidden ? '' : `Forecast risk allowance: ${money(comparison.householdUncertaintyPremiumCents)}. This planning margin is not an electricity charge.`;
+    const riskSaving = comparison?.riskAdjustedSavingsCents;
+    uncertainty.textContent = uncertainty.hidden || !finite(riskSaving) ? '' : `After forecast uncertainty: ${money(Math.abs(riskSaving))} combined ${riskSaving < 0 ? 'extra cost' : 'saving'}.`;
+    uncertainty.hidden = !uncertainty.textContent;
+    riskAllowances.hidden = !available || !comparison.usesForecast;
+    riskAllowances.textContent = riskAllowances.hidden ? '' : `Combined planning allowances: ${money(comparison.normalHouseholdUncertaintyPremiumCents)} with the current deadline; ${money(comparison.householdUncertaintyPremiumCents)} with one extra day. Their difference adjusts the combined saving shown above.`;
     snapshotTime.hidden = !available;
     snapshotTime.textContent = available ? `Estimate as of ${snapshotDate(comparison.at, snapshot.timezone)}. Updates automatically when the comparison changes.`
       + (comparison.priceCoverage === 'partial' ? ' Prices cover only part of the planning period. Both plans use available prices; later prices may change the saving.' : '') : '';
@@ -231,8 +246,8 @@ export function createChargingFlexibility({ document, request, save, formatTime 
       : active ? `The +1 day marker ends at ${formatTime(displayedState.checkpointAt, snapshot.timezone, snapshot.now)}; the approved deadline then remains binding. Cancel restores the earlier deadline, with best-effort charging if it can no longer be met.`
       : !state?.eligible ? reasonText(state?.reason)
       : !available && !loading ? reasonText(comparison?.reason)
-      : comparison?.usesForecast ? 'Proposed periods are estimates, not confirmed charger schedules. “Onward” has no planned stop. Charging time excludes pauses. Predicted prices and savings may change.'
-      : 'Proposed periods are estimates, not confirmed charger schedules. “Onward” has no planned stop. Charging time excludes pauses. Already delivered energy is unchanged.';
+      : '';
+    note.hidden = !note.textContent;
     refresh.hidden = readonly;
     refresh.disabled = busy || saving || loading || !charger?.request || !view.visible || readonly;
     apply.hidden = !view.visible || readonly || !active && !state?.eligible;

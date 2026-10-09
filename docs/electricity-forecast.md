@@ -4,8 +4,9 @@
 It defaults to `true`. To disable it, set it to `false` in the existing
 configuration source and apply the reviewed configuration, or restart. It requires
 the Finnish market, including
-any explicit ENTSO-E bidding zone. The setting owns acquisition and display; it
-does not grant a charger control permission or change configured ready-by times.
+any explicit ENTSO-E bidding zone. The setting owns acquisition, display and
+forecast availability for normal and extra-day charging plans; it does not grant
+charger control permission or change configured ready-by times.
 
 The integration is for each user's own private, non-commercial installation.
 Each active master fetches directly from the provider, without credentials.
@@ -67,10 +68,15 @@ Finnish time-of-use transfer charges. An hourly forecast may be repeated in
 quarter-hour planner slots, retaining the same native interval and source;
 the four quarters are not independent model predictions.
 
-The charging-only outlook keeps raw estimated monetary cost separate from its
-initial conservative uncertainty premium of 2 c/kWh on predicted slots. The
-premium is a decision penalty, not an invoiced charge or measured forecast error.
-Published slots have no uncertainty premium.
+Normal charging and both alternatives in **One extra day** use this same
+charging outlook. No deadline extension is needed to schedule with a fresh
+forecast. Both plans keep estimated all-in cash cost separate from a conservative
+uncertainty allowance of **2 c/kWh** on predicted slots, including negative-price
+intervals. The allowance is a decision penalty, not an invoiced charge or measured
+forecast error. Published slots have no uncertainty allowance. A comparison
+changes only the selected charger's deadline; it does not unlock a new price
+source. Its risk-adjusted benefit accounts for the uncertainty allowance in each
+plan, so unchanged forecast exposure cancels out.
 
 Predictions never enter canonical market snapshots, price history, recorded
 energy/cost accounting, Home heating, hot water, Garage control or learning
@@ -108,17 +114,30 @@ these clocks. A forecast outage does not change published-price availability.
 Each eligible connected charger shares its existing footer with a compact
 **One extra day** comparison button. Its two-line label shows the available
 estimated saving immediately, including zero or an estimated extra cost, without
-repeating the deadline. Missing or expired evidence explicitly shows an unavailable
-estimate. Green emphasis appears only when the joint comparison supports a
-positive household saving after the uncertainty premium; other results stay
-neutral. The ordinary total-session cost remains unchanged. Opening the dialog
-changes no charging permission. The comparison
+repeating the deadline. If current evidence cannot support a comparison, it shows
+the limitation. A previous successful comparison for the same session and request
+remains visible with its original calculation time during a failed refresh or
+forecast outage; age alone does not erase it. Without such a retained comparison,
+the estimate is unavailable. Green emphasis appears only when the joint comparison
+supports a positive household saving after the uncertainty premium; other results stay
+neutral. Opening the dialog changes no charging permission or selected plan.
+The ordinary total-session estimate combines accrued published-price cost with
+the current plan's estimated remaining all-in cost; it can include forecast
+prices without changing the recorded bill. The comparison
 shows remaining cost, estimated completion and modeled charging duration for
 the current and next-day deadline. Charging duration includes only modeled
 energy delivery, excluding pauses and waits for available capacity. The dialog
-also shows both chargers' combined estimated impact and a separate forecast risk allowance. Already
-delivered energy is common to both choices. Unavailable comparison data never
-becomes a zero cost or promised saving.
+also explains both chargers' combined estimated impact and the separate
+uncertainty allowance. Both alternatives use published and forecast prices on
+the same basis. Their displayed costs include applicable transfer charges, tax,
+margin and VAT; the uncertainty allowance guides selection and is not added to
+the cash cost or saving. Already delivered energy is common to both choices.
+Unavailable comparison data never becomes a zero cost or promised saving.
+
+**Schedule & readings** and **How charging works** explain that forecast periods
+are estimates, that published prices replace them and that the schedule can
+change when prices or capacity change. A forecast outage retains usable
+published prices and the binding ready-by time; it cannot invent a future rate.
 
 Prices need not reach the later ready-by time when both plans can deliver the
 same required energy within the available priced horizon. The comparison labels
@@ -135,7 +154,10 @@ restores the earlier deadline with best-effort charging if it is no longer
 achievable. An explicit Ready by edit replaces the grant.
 
 The shared dialog uses native keyboard/focus behavior, initially focuses Close
-and returns focus to its opener. Read-only views can inspect but cannot approve.
+and returns focus to its opener. Admin and family-password users have the full
+workflow: view and refresh, allow one more day and cancel an active allowance.
+The same equipment, physical-session, request and control checks apply. Read-only
+views can inspect available results but cannot approve or cancel an allowance.
 The temporary cue clears on a local checkpoint timer and tab visibility change;
 a new approval still requires current server session/revision validation.
 The [charging planning contract](charging/planning.md) owns the durable

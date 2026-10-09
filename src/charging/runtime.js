@@ -1491,7 +1491,6 @@ export class ChargingRuntime {
         sessionCost: item.sessionCost ? { ...item.sessionCost, prices: undefined } : null,
         forecast: item.forecast ?? null, vehicleMqtt: reception,
         mqtt: reception, error: item.error ?? null };
-      view.forecastAllowed = Boolean(item.request?.flexibility?.activeDefer || item.request?.flexibility?.authorizedBaseline);
       // The primary cost tile includes the current predicted remaining bill,
       // while the accrual owner and its carried unit price stay published-only.
       if (forecastSnapshot?.available && item.sessionCost && item.plan?.usesForecast && item.plan.feasible === true
@@ -1533,8 +1532,7 @@ export class ChargingRuntime {
           overrides: request?.overrides, anchorAt: request?.anchorAt,
           chargeNow: request?.chargeNow,
           normalReadyByAt: flexibility.normalReadyByAt, deferredReadyByAt: flexibility.deferredReadyByAt,
-          ...(view.id === id ? { authorizedBaseline: request?.flexibility?.authorizedBaseline === true }
-            : { deadlineAt: request?.deadlineAt, forecastAllowed: Boolean(request?.flexibility?.activeDefer || request?.flexibility?.authorizedBaseline) }) };
+          ...(view.id === id ? {} : { deadlineAt: request?.deadlineAt }) };
       }) });
   }
   flexibilityMarket(now = this.clock()) {
@@ -1542,9 +1540,7 @@ export class ChargingRuntime {
     return digest([priceSnapshot(this.prices), forecast?.enabled, forecast?.available, forecast?.fetchedAt,
       forecast?.generatedAt, forecast?.expiresAt]);
   }
-  getPlanningPrices(now = this.clock(), preview = false) {
-    if (!preview && !Object.values(this.chargers).some(item => item.request?.flexibility?.activeDefer
-      || item.request?.flexibility?.authorizedBaseline)) return this.prices;
+  getPlanningPrices(now = this.clock()) {
     const forecast = this.engine.electricityForecast?.snapshot({ now });
     if (!forecast?.available) return this.prices;
     return forecastPriceOutlook({ official: this.prices, forecast, contract: this.engine.contract(), now });
@@ -1607,8 +1603,7 @@ export class ChargingRuntime {
     if (selected?.association !== view.association || selected.request?.sessionId !== view.request?.sessionId)
       return unavailable('connection-changed');
     const comparison = await this.plannerService.compare(context,
-      { chargerId: id, normalReadyByAt: flexibility.normalReadyByAt, deferredReadyByAt: flexibility.deferredReadyByAt,
-        normalForecastAllowed: selected.request?.flexibility?.authorizedBaseline === true });
+      { chargerId: id, normalReadyByAt: flexibility.normalReadyByAt, deferredReadyByAt: flexibility.deferredReadyByAt });
     if (!comparison || this.closed || !this.canControl() || context.market !== this.flexibilityMarket()
       || this.clock() >= flexibility.normalReadyByAt || scope !== this.flexibilityScope(this.views(), id))
       return unavailable('comparison-changed');
@@ -1884,11 +1879,16 @@ export class ChargingRuntime {
     const comparableService = economicIds.every(id => adopted.plans[id]?.accounting?.length
       && adopted.plans[id].requiredGridKwh === result.plans[id].requiredGridKwh);
     const newCosts = economicIds.map(id => result.plans[id].decisionCostCents ?? result.plans[id].costCents);
+    // Only forecast energy used by either alternative makes this a speculative
+    // replan. Predictions elsewhere in the outlook cannot raise the hurdle for
+    // a change whose complete remaining service uses published prices.
+    const speculativeReplan = accounting.some(row => row.predicted === true)
+      || economicIds.some(id => result.plans[id].accounting?.some(row => row.predicted === true));
     let priceRevisionWorthwhile = result.feasible === true && adopted.feasible === true && priced
       && comparableService
       && newCosts.length > 0 && newCosts.every(Number.isFinite)
       && oldCost - newCosts.reduce((sum, cost) => sum + cost, 0)
-        > (planningPrices.some(row => row.predicted) ? 5 : MIN_PRICE_SAVINGS_CENTS);
+        > (speculativeReplan ? 5 : MIN_PRICE_SAVINGS_CENTS);
     // A newly connected peer may still be awaiting its first adopted program.
     // Revisit the price comparison after adoption instead of treating different
     // delivered service as an economic rejection and consuming the new prices.
@@ -2076,7 +2076,7 @@ export class ChargingRuntime {
     });
     if (current() && this.historyReady) {
       const contextNow = this.clock(), contextViews = this.views(contextNow);
-      this.flexibilityContext = structuredClone({ ...planning, now: contextNow, prices: this.getPlanningPrices(contextNow, true), chargers: contextViews,
+      this.flexibilityContext = structuredClone({ ...planning, now: contextNow, prices: this.getPlanningPrices(contextNow), chargers: contextViews,
         scopes: Object.fromEntries(contextViews.map(view => [view.id, this.flexibilityScope(contextViews, view.id, contextNow)])),
         market: this.flexibilityMarket(contextNow),
         fixedPeriods: Object.fromEntries(contextViews.flatMap(view => {

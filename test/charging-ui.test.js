@@ -32,7 +32,9 @@ const flexibilityComparison = { at: now, available: true, recommended: true, pri
   normalChargingDurationMs: 3 * 3600_000, deferredChargingDurationMs: 2.5 * 3600_000,
   normalPeriods: [{ startAt, endAt: startAt + 3600_000 }, { startAt: deadlineAt - 2 * 3600_000, endAt: null }],
   deferredPeriods: [{ startAt: deadlineAt + 20 * 3600_000, endAt: null }],
-  householdSavingsCents: 145, uncertaintyPremiumCents: 60, householdUncertaintyPremiumCents: 60, riskAdjustedSavingsCents: 85, usesForecast: true, estimated: true,
+  householdSavingsCents: 145, normalUncertaintyPremiumCents: 20, uncertaintyPremiumCents: 60,
+  normalHouseholdUncertaintyPremiumCents: 20, householdUncertaintyPremiumCents: 60, riskAdjustedSavingsCents: 105,
+  normalUsesForecast: true, deferredUsesForecast: true, usesForecast: true, estimated: true,
   chargers: [{ id: 'charger1', normalCostCents: 470, deferredCostCents: 310 },
     { id: 'charger2', normalCostCents: 200, deferredCostCents: 215 }] };
 function flexibleCharger(patch = {}) {
@@ -62,6 +64,42 @@ test('partial price coverage keeps comparison available and refreshes its notice
   panel.close();
 });
 
+test('forecast comparison explains equal price treatment and refreshes uncertainty without losing disclosure focus', async () => {
+  const document = documentFixture(), $ = id => document.getElementById(id), item = flexibleCharger();
+  const panel = createChargingPanel({ document, request: async () => ({ comparison: item.flexibility.preview }) });
+  panel.update(status(item)); await $('charger1-flexibility').listeners.get('click')({ preventDefault() {}, stopPropagation() {} });
+  const details = $('charging-flexibility-price-details'), summary = details.querySelector('summary');
+  assert.match($('charging-flexibility-price-basis').textContent, /same all-in prices and forecast uncertainty/);
+  assert.match(details.textContent, /Published prices always take precedence.*Fresh forecasts fill unpublished times/);
+  assert.match(details.textContent, /spot price, margin, electricity tax, transfer and VAT/);
+  assert.match(details.textContent, /Costs cover only the energy still needed.*Already delivered energy is unchanged/);
+  assert.equal($('charging-flexibility-note').hidden, true, 'Ordinary guidance stays in the folded price explanation');
+  details.open = true; summary.focus();
+  item.flexibility.preview = { ...item.flexibility.preview, at: now + 1000,
+    normalHouseholdUncertaintyPremiumCents: 200, householdUncertaintyPremiumCents: 360, riskAdjustedSavingsCents: -15,
+    normalUsesForecast: false, deferredUsesForecast: true };
+  panel.update(status(item));
+  assert.equal(document.activeElement, summary); assert.equal(details.open, true);
+  assert.match($('charging-flexibility-uncertainty').textContent, /€0.15 combined extra cost/);
+  assert.match($('charging-flexibility-risk-allowances').textContent, /€2.00.*€3.60/);
+  assert.match($('charging-flexibility-plans').children[0].textContent, /Published prices/);
+  assert.match($('charging-flexibility-plans').children[1].textContent, /Includes forecast prices/);
+  panel.close();
+});
+
+test('Schedule and readings and help label forecast prices independently from uncertainty and cash costs', () => {
+  const item = active();
+  const display = view({ ...item, plan: { ...item.plan, usesForecast: true, costCents: 300, uncertaintyPremiumCents: 40 } });
+  const prices = display.rows.find(([label]) => label === 'Plan prices'), help = Object.fromEntries(display.explanations);
+  assert.equal(prices[1], 'Includes forecast prices');
+  assert.match(prices[2], /Published prices take precedence.*2 c\/kWh.*costs exclude this planning allowance/);
+  assert.match(help['Prices & uncertainty'], /Ordinary planning and one extra day use the same all-in/);
+  assert.match(help['One extra day'], /other charger keeps its deadline.*card’s estimated session cost also includes energy already delivered/);
+  assert.match(help['One extra day'], /Family and admin access can review, refresh, allow and cancel/);
+  assert.equal(view({ ...item, plan: { ...item.plan, usesForecast: false } }).rows.find(([label]) => label === 'Plan prices')[1], 'Published prices');
+  assert.equal(view(item).rows.some(([label]) => label === 'Plan prices'), false, 'Absent pricing evidence does not claim published prices');
+});
+
 test('one-day flexibility opens a comparison and requires a separate fenced affirmative action', async () => {
   const document = documentFixture(), $ = id => document.getElementById(id), calls = [];
   let item = flexibleCharger();
@@ -83,14 +121,16 @@ test('one-day flexibility opens a comparison and requires a separate fenced affi
   assert.match($('charging-flexibility-plans').textContent, /Remaining cost €4.70.*Remaining cost €3.10/);
   assert.match($('charging-flexibility-plans').children[0].textContent, /Est\. finish tomorrow 05:00.*Est\. charging 3 h/);
   assert.match($('charging-flexibility-plans').children[1].textContent, /Est\. finish 17 Sept 04:00.*Est\. charging 2 h 30 min/);
-  assert.match($('charging-flexibility-note').textContent, /Charging time excludes pauses/);
+  assert.match($('charging-flexibility-price-details').textContent, /Charging time excludes pauses/);
   assert.match($('charging-flexibility-plans').children[0].querySelector('details').textContent, /Proposed periods \(2\).*23:00 → tomorrow 00:00.*onward/);
   assert.match($('charging-flexibility-plans').children[1].querySelector('details').textContent, /Proposed periods \(1\).*17 Sept 02:00 → onward/);
-  assert.match($('charging-flexibility-note').textContent, /estimates, not confirmed charger schedules/);
+  assert.match($('charging-flexibility-price-details').textContent, /estimates, not confirmed charger schedules/);
   assert.match($('charging-flexibility-household').textContent, /other charger: €0.15 more estimated, with its ready-by time unchanged.*Total estimated saving: €1.45/);
   assert.match($('charging-flexibility-description').textContent, /extends only Charger 1's deadline/);
   assert.match($('charging-flexibility-as-of').textContent, /Estimate as of 15 Sept 2026, 21:00.*Updates automatically/);
-  assert.match($('charging-flexibility-uncertainty').textContent, /€0.60.*not an electricity charge/);
+  assert.match($('charging-flexibility-uncertainty').textContent, /€1.05 combined saving/);
+  assert.match($('charging-flexibility-risk-allowances').textContent, /€0.20 with the current deadline; €0.60 with one extra day/);
+  assert.match($('charging-flexibility-price-details').textContent, /2 c\/kWh.*not an electricity charge/);
   assert.equal($('charging-flexibility-apply').disabled, false);
   await $('charging-flexibility-apply').listeners.get('click')();
   assert.equal(calls.length, 2); assert.match(calls[1][0], /\/flexibility$/);

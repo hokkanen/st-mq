@@ -109,13 +109,8 @@ function planning(two = false) {
     chargers: [charger('charger1', false), ...(two ? [charger('charger2', true)] : [])] };
 }
 
-test('forecast premium is decision-only, applies to predictions only, and needs explicit forecast authority', () => {
+test('ordinary planning uses predictions with a decision-only uncertainty premium', () => {
   const options = planning(); options.chargers[0].deadlineAt = options.now + 4 * HOUR;
-  const ordinary = planChargers(options).plans.charger1;
-  assert.ok(ordinary.finishAt <= options.now + 2 * HOUR);
-  assert.equal(ordinary.costCents, 100);
-  assert.equal(ordinary.uncertaintyPremiumCents, 0);
-  options.chargers[0].forecastAllowed = true;
   const flexible = planChargers(options).plans.charger1;
   assert.ok(flexible.startAt >= options.now + 2 * HOUR);
   assert.ok(Math.abs(flexible.costCents - 5) < 1e-6);
@@ -128,15 +123,15 @@ test('forecast premium is decision-only, applies to predictions only, and needs 
 });
 
 test('published prices supersede predictions even when the supplied prediction sorts first', () => {
-  const options = planning(); options.chargers[0].forecastAllowed = true;
+  const options = planning();
   options.prices.unshift({ start: options.now, end: options.now + 2 * HOUR, priceCtPerKwh: -50, predicted: true });
   const plan = planChargers(options).plans.charger1;
   assert.equal(plan.costCents, 100); assert.equal(plan.uncertaintyPremiumCents, 0);
 });
 
-test('an unapproved peer continues its unknown post-target load through predicted hours', () => {
+test('a peer continues its unknown post-target load through predicted hours', () => {
   const options = planning(true);
-  options.chargers[0].forecastAllowed = true; options.chargers[0].deadlineAt = options.now + 4 * HOUR;
+  options.chargers[0].deadlineAt = options.now + 4 * HOUR;
   options.chargers[1].values.vehicleCeilingSoc = { value: null, available: false };
   const result = planChargers(options);
   assert.equal(result.plans.charger2.feasible, true);
@@ -147,7 +142,7 @@ test('an unapproved peer continues its unknown post-target load through predicte
 
 test('cloud local-clock candidates stay representable while OCPP retains the full 48-hour opportunity', () => {
   const options = planning(), now = options.now;
-  options.chargers[0].forecastAllowed = true; options.chargers[0].deadlineAt = now + 44 * HOUR;
+  options.chargers[0].deadlineAt = now + 44 * HOUR;
   options.prices = Array.from({ length: 48 }, (_, index) => ({ start: now + index * HOUR,
     end: now + (index + 1) * HOUR, priceCtPerKwh: index >= 30 && index < 34 ? 1 : 20,
     ...(index >= 24 ? { predicted: true, uncertaintyCtPerKwh: 2 } : {}) }));
@@ -196,18 +191,56 @@ test('one snapshot compares equal remaining service for both chargers and expose
   assert.deepEqual(options, before, 'no delivered energy or session request is reset by a counterfactual');
 });
 
-test('refreshing an active allowance preserves the ordinary baseline forecast permission', () => {
+test('predictions before the normal deadline cannot manufacture an extra-day saving', () => {
   const options = planning();
   const choice = { chargerId: 'charger1', normalReadyByAt: options.now + 3 * HOUR,
-    deferredReadyByAt: options.now + 4 * HOUR, normalForecastAllowed: false };
+    deferredReadyByAt: options.now + 4 * HOUR };
   const original = compareChargingFlexibility(options, choice);
-  options.chargers[0].forecastAllowed = true;
+  assert.equal(original.available, true);
+  assert.ok(Math.abs(original.normalCostCents - 5) < 1e-6);
+  assert.equal(original.savingsCents, 0);
+  assert.equal(original.riskAdjustedSavingsCents, 0);
+  assert.equal(original.recommended, false);
+  assert.equal(original.normalUsesForecast, true);
+  assert.equal(original.deferredUsesForecast, true);
+  assert.ok(Math.abs(original.normalHouseholdUncertaintyPremiumCents - 10) < 1e-6);
+  assert.equal(original.normalHouseholdUncertaintyPremiumCents, original.householdUncertaintyPremiumCents);
   options.chargers[0].deadlineAt = choice.deferredReadyByAt;
   const active = compareChargingFlexibility(options, choice);
-  assert.deepEqual(active, original, 'allowing the day does not silently authorize the earlier alternative to use predictions');
-  const promoted = compareChargingFlexibility(options, { ...choice, normalForecastAllowed: true });
-  assert.ok(promoted.normalCostCents < original.normalCostCents,
-    'a previously consumed allowance retains its explicit baseline permission');
+  assert.deepEqual(active, original, 'allowing the day leaves both price and uncertainty bases unchanged');
+});
+
+test('both deadlines and the peer use the same forecast uncertainty policy', () => {
+  const options = planning(true);
+  options.chargers[1].deadlineAt = options.now + 3 * HOUR;
+  options.prices[2].priceCtPerKwh = 4;
+  const comparison = compareChargingFlexibility(options, { chargerId: 'charger1',
+    normalReadyByAt: options.now + 3 * HOUR, deferredReadyByAt: options.now + 4 * HOUR });
+  assert.equal(comparison.available, true);
+  assert.ok(Math.abs(comparison.normalCostCents - 20) < 1e-6);
+  assert.ok(Math.abs(comparison.deferredCostCents - 5) < 1e-6);
+  assert.ok(Math.abs(comparison.savingsCents - 15) < 1e-6);
+  assert.ok(Math.abs(comparison.riskAdjustedSavingsCents - 15) < 1e-6,
+    'equal uncertainty premiums cancel instead of being charged only to the later deadline');
+  assert.ok(Math.abs(comparison.normalHouseholdUncertaintyPremiumCents - 20) < 1e-6);
+  assert.ok(Math.abs(comparison.householdUncertaintyPremiumCents - 20) < 1e-6);
+  const peer = comparison.chargers.find(charger => charger.id === 'charger2');
+  assert.ok(Math.abs(peer.normalCostCents - 20) < 1e-6);
+  assert.ok(Math.abs(peer.deferredCostCents - 20) < 1e-6);
+});
+
+test('comparison retains uncertainty disclosure when only the normal plan uses predictions', () => {
+  const options = planning();
+  options.prices.forEach((row, index) => { row.predicted = index < 2; row.uncertaintyCtPerKwh = index < 2 ? 2 : 0; });
+  const comparison = compareChargingFlexibility(options, { chargerId: 'charger1',
+    normalReadyByAt: options.now + 2 * HOUR, deferredReadyByAt: options.now + 4 * HOUR });
+  assert.equal(comparison.available, true);
+  assert.equal(comparison.usesForecast, true);
+  assert.equal(comparison.normalUsesForecast, true);
+  assert.equal(comparison.deferredUsesForecast, false);
+  assert.ok(Math.abs(comparison.savingsCents - 95) < 1e-6);
+  assert.ok(Math.abs(comparison.riskAdjustedSavingsCents - 105) < 1e-6,
+    'replacing forecast energy with published prices removes the normal plan uncertainty allowance');
 });
 
 test('prices ending before ready-by still compare equal service in the cheapest available slots', () => {

@@ -38,7 +38,8 @@ async function fixture(t, options = {}) {
       { id: 'disabled_door', area: 'garage', kind: 'door', enabled: false, controls: { cover: { open: true, close: true, stop: true } } },
       { id: 'sensor_door', area: 'garage', kind: 'door', enabled: true, controls: { cover: false } },
     ] }),
-    charging: Object.fromEntries(['setSettings', 'setChargerSettings', 'setControl', 'resume', 'useAutomatic', 'chargeNow', 'identifyVehicle']
+    charging: Object.fromEntries(['setSettings', 'setChargerSettings', 'setControl', 'resume', 'useAutomatic', 'chargeNow', 'identifyVehicle',
+      'previewFlexibility', 'setFlexibility']
       .map(name => [name, record(`charging.${name}`)])),
     garage: Object.fromEntries(['setHeating', 'setNativeSettings', 'setProtectionSettings']
       .map(name => [name, record(`garage.${name}`)])),
@@ -134,6 +135,36 @@ test('family may use every charging card route but not charger commissioning', a
   assert.equal(f.calls.length, actions.length);
 });
 
+test('family can review, refresh, allow and cancel one extra day on either charger', async t => {
+  const f = await fixture(t);
+  const comparison = { available: true, estimated: true, savingsCents: 12, at: INITIAL };
+  f.engine.charging.previewFlexibility = (id, input) => {
+    f.calls.push({ name: 'charging.previewFlexibility', args: [id, input] });
+    return { comparison };
+  };
+  for (const id of ['charger1', 'charger2']) {
+    const scope = { association: `synthetic-${id}`, sessionId: `synthetic-${id}-connection`, revision: 4 };
+    const previewPath = `/api/charging/chargers/${id}/flexibility-preview`;
+    for (const operation of ['review', 'refresh']) {
+      const response = await f.post(previewPath, scope);
+      assert.equal(response.status, 200, `${id} ${operation}`);
+      assert.deepEqual(response.body, { comparison });
+      assert.deepEqual(f.calls.at(-1), { name: 'charging.previewFlexibility', args: [id, scope] });
+    }
+    for (const action of ['allow', 'cancel']) {
+      const input = { ...scope, revision: action === 'allow' ? 4 : 5, action, actionId: `synthetic-${id}-${action}` };
+      const response = await f.post(`/api/charging/chargers/${id}/flexibility`, input);
+      assert.equal(response.status, 200, `${id} ${action}`);
+      assert.equal(response.body.webAccess.role, 'family');
+      assert.deepEqual(f.calls.at(-1), { name: 'charging.setFlexibility', args: [id, input] },
+        'the charging owner receives the complete device/session/revision and idempotency scope');
+    }
+    assert.equal((await f.call(previewPath)).status, 403, 'scoped review is not an unguarded GET route');
+    assert.equal((await f.post(`/api/charging/chargers/${id}/flexibility/force`)).status, 403);
+  }
+  assert.equal(f.calls.length, 8);
+});
+
 test('family garage-door permission verifies the configured device and exact cover action', async t => {
   const f = await fixture(t);
   for (const action of ['open', 'close', 'stop']) {
@@ -206,7 +237,10 @@ test('family permissions preserve controller ownership protection', async t => {
   const f = await fixture(t, { server: { controlAuthority: { canControl: () => false, status: () => ({ protected: true }) } } });
   for (const [path, input] of [['/api/temporary', { pauseUntil: null }], ['/api/heating-test', { command: 'circulation' }],
     ['/api/garage/heating', { mode: 'away' }], ['/api/equipment/cover', { deviceId: 'garage_door1', action: 'open' }],
-    ['/api/charging/chargers/charger1/charge-now', {}], ['/api/charging/chargers/charger1/identify', {}]]) {
+    ['/api/charging/chargers/charger1/charge-now', {}], ['/api/charging/chargers/charger1/identify', {}],
+    ['/api/charging/chargers/charger1/flexibility-preview', {}],
+    ['/api/charging/chargers/charger1/flexibility', { action: 'allow' }],
+    ['/api/charging/chargers/charger1/flexibility', { action: 'cancel' }]]) {
     assert.equal((await f.post(path, input)).status, 409, path);
   }
   assert.deepEqual(f.calls, []);

@@ -21,6 +21,7 @@ and allowance visible, including while an action is pending, saved or failed.
 | **Use automatic** | Appears when a supported handover from another charger instruction is available. It enables Automatic, ends Charge now and returns to the price plan after confirmed takeover. |
 | **Identify** | Requests another bounded identification attempt for the current connection. An existing confirmed assignment remains visible during the check. |
 | **Shared priority** | Chooses Balanced, Charger 1 or Charger 2 for both chargers. Both cards edit the same saved choice. |
+| **One extra day** | Compares the current deadline with one later calendar day. Allowing the day changes only this connection's deadline; canceling an active allowance restores the earlier deadline. |
 
 Automatic starts off and shared priority starts Balanced on a fresh installation.
 Neither switch alone is a physical Stop control. Use the supported native control
@@ -77,12 +78,31 @@ deadline for this connection, then the button says **One day allowed** and keeps
 its estimated saving visible. The red label and **+1 day** ready-by marker end at
 the earlier deadline; the approved later deadline remains binding.
 
-The comparison shows when it was calculated and stays fixed while the window is
-open. Use **Refresh comparison** to update it. The previous successful estimate
-remains visible during recalculation or a failed refresh. Card estimates update
-when a replacement is ready; ordinary voltage/current updates do not erase them.
+Both alternatives use the same published and fresh forecast prices, including
+transfer charges, electricity tax, margin and VAT. Normal scheduling can already
+use cheaper forecast periods before its deadline. Another day saves money only
+when the additional time changes the plan. The planner adds a **2 c/kWh
+uncertainty allowance** to forecast prices when choosing periods in either
+plan; this allowance is separate from the displayed cash cost and saving.
+Published prices replace forecasts as they become available. The window explains
+the assumptions and each plan's forecast exposure without implying guaranteed
+savings.
+
+The comparison shows when it was calculated. It updates when a replacement
+changes the displayed result; ordinary polling does not renew its timestamp.
+Use **Refresh comparison** to request a new assessment. The previous successful
+estimate remains visible during recalculation or a failed refresh, with its age
+and any refresh limitation. Card estimates also update when a replacement is
+ready; ordinary voltage/current updates do not erase them.
 A changed connection or charging request still requires reviewing its comparison
 before making another choice. Estimates describe a plan, not guaranteed savings.
+
+Admin and family-password users can open and refresh the comparison, allow the
+day and use **Cancel flexibility** before the earlier deadline. Canceling
+restores the earlier deadline with best-effort charging if it can no longer be
+met. These actions require the same current connection and control eligibility
+for both roles. A read-only instance cannot change the allowance. An approved
+day survives forecast loss; another day always requires a new explicit action.
 
 **Added energy** and connection cost cover the physical connection. A new battery
 reading can change estimated charge without resetting its measured grid energy.
@@ -101,6 +121,7 @@ must not be displayed as observed charging.
 | What you see | Meaning |
 | --- | --- |
 | Proposed charging periods | The current economic plan; they may still be awaiting native acceptance. |
+| Forecast prices in the plan | Estimated all-in prices selected with the same uncertainty allowance used by One extra day. They can change and are replaced by published prices. |
 | Charging is allowed | The applicable instruction permits charging. A car timer, target or other restriction can still prevent draw. |
 | Paused between periods | The controller has confirmed the applicable pause. A pending instruction is shown separately. |
 | Identification pending | The attempt is waiting for the evidence or readiness it needs. Ordinary scheduling can use configured/session inputs. |
@@ -108,7 +129,16 @@ must not be displayed as observed charging.
 | Load balancing: Fallback | Current uses its configured fallback cap subject to known tighter limits. It is not proof of healthy household headroom. |
 | Load balancing: Unknown | Current headroom or the controller decision is unavailable. A retained charger setting does not establish available capacity. Healthy feeds use their latest values without waiting for matching timestamps. |
 
-**How charging works** explains the session behavior for that backend. Easee cloud
+Normal automatic scheduling combines published prices with fresh forecast prices
+when the optional feed is enabled. It selects economical periods before the
+binding ready-by time using the same all-in tariff and 2 c/kWh forecast uncertainty
+allowance as the extra-day comparison. The allowance affects selection, not the
+displayed bill estimate. Forecasts can change; expired or unavailable predictions
+are excluded while available published prices remain usable. A proposed plan is
+still separate from native acceptance and observed charging.
+
+**How charging works** explains these price assumptions and the session behavior
+for that backend. Easee cloud
 and OCPP pauses can expire on the charger; a Shelly pause needs a running
 application and working MQTT to resume. OCPP expiry does not authorize a new
 transaction or restore cloud control. See [outages and recovery](execution-and-recovery.md#missing-feeds-and-controller-outages).

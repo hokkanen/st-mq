@@ -78,7 +78,8 @@ export function chargingCost(charger, view, summary, { now = Date.now(), prices 
   if (view.showMetrics && finite(charger.sessionCost?.totalCents)) return {
     value: `€${(charger.sessionCost.totalCents / 100).toFixed(2)}`,
     detail: 'Estimated total electricity cost from plugging in through the target, including charging losses. Delivered energy remains included after the target and any further charging adds to the cost.'
-      + (charger.sessionCost.usesForecast ? ' Remaining energy includes predicted electricity prices; savings and final cost may change.'
+      + ' Electricity prices include spot price, margin, electricity tax, transfer and VAT; the forecast uncertainty allowance used for planning is excluded.'
+      + (charger.sessionCost.usesForecast ? ' Remaining energy includes forecast electricity prices; savings and final cost may change.'
         : charger.sessionCost.estimated ? ' Missing forecast or rate coverage uses the last available cost estimate.' : '') };
   const forecast = charger.forecast, remaining = charger.progress?.remainingGridKwh ?? charger.requiredGridKwh ?? forecast?.requiredGridKwh;
   const unavailable = { value: 'No estimate', detail: 'A current charging forecast and electricity rates covering the time to target are needed.' };

@@ -58,6 +58,8 @@ export function consumeChargingFlexibility(request, now) {
   if (!grant || now < grant.checkpointAt) return false;
   request.revision++;
   request.deadlineAt = grant.deferredReadyByAt;
+  // Keep the approved origin of this binding deadline across future grants and
+  // cancellations. This is deadline provenance, not permission to use forecasts.
   request.flexibility = { normalReadyByAt: grant.deferredReadyByAt, authorizedBaseline: true, activeDefer: null,
     lastTransition: { id: grant.id, action: 'consume', at: grant.checkpointAt,
       deadlineAt: grant.deferredReadyByAt, revision: request.revision } };

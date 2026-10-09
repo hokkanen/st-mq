@@ -303,9 +303,11 @@ access with the family password; see [Home Assistant access details](../DOCS.md#
 Family reads all application data with credentials concealed, may calculate
 read-only heating-plan comparisons, and may record
 firewood, remove entries within 15 minutes, operate DHWR, Away/Pause and manual
-heating, Home Automatic/Pause and Garage manual modes, garage doors and all EV card controls. Every other write, export and
-download requires admin. These permissions do not change equipment authority,
-restoration or freeze protection. The role is not configurable. Native pump
+heating, Home Automatic/Pause and Garage manual modes, garage doors and all EV
+card controls. The EV controls include viewing and refreshing **One extra day**
+comparisons, allowing one more day and canceling an active allowance. Every other
+write, export and download requires admin. These permissions do not change
+equipment authority, restoration or freeze protection. The role is not configurable. Native pump
 parameters, equipment tests, heating-plan one-cycle approvals, pairing,
 configuration, integration setup and electrical limits remain admin-only.
 
@@ -636,9 +638,12 @@ contract.
 `electricity.forecast_enabled` defaults to `true` and fetches hourly predictions
 for the Finnish market in a private, non-commercial installation, for up to
 48 hours from the current request. Set it to `false` to disable the feed; apply
-the reviewed configuration or restart. It adds the forward price-chart feed and enables forecast-aware
-charging comparisons independently of plugged-in vehicles. It does not change
-heating inputs, historical prices, recorded costs or charging permissions.
+the reviewed configuration or restart. Acquisition and the forward price chart
+work independently of plugged-in vehicles. Normal and extra-day charging plans
+both use fresh forecasts alongside published prices, with the same all-in tariff
+and separate 2 c/kWh uncertainty allowance. Published prices take precedence.
+The setting does not change heating inputs, historical prices, recorded costs,
+ready-by deadlines or charging permissions.
 See [forecast acquisition, provider conditions and storage boundaries](electricity-forecast.md).
 
 ## Primary MQTT and HA-hosted integrations
