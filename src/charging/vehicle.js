@@ -111,9 +111,6 @@ export function matchTeslaMinimumCurrent(tesla, { physical, peers = [], minimumP
       || edge.field === 'geofence' && edge.value !== tesla.fields?.geofence?.value)
     && time(edge.at) && edge.at <= now).reduce((at, edge) => Math.max(at, edge.at), lastDisconnectedAt ?? -1);
   const since = connectionEvidenceStart(connectedAt, departure);
-  const freshPower = view => view?.powerKw?.available === true && view.powerKw.retained !== true
-    && view.powerKw.value > .5 && time(view.powerKw.measuredAt) && view.powerKw.measuredAt <= now
-    && now - view.powerKw.measuredAt <= MINUTE && view.charging?.available === true && view.charging.value === true;
   if (!time(connectedAt) || connectedAt > now || tesla?.healthy !== true || !teslamateConnectionContext(tesla, { now })
     || tesla.atHome !== true || tesla.charging !== true || currentTest?.phase !== 'active'
     || !Number.isFinite(currentTest.appliedCurrentA) || currentTest.appliedCurrentA <= 0
@@ -122,10 +119,22 @@ export function matchTeslaMinimumCurrent(tesla, { physical, peers = [], minimumP
     || field?.retained !== false || !time(field.receivedAt) || field.receivedAt < Math.max(since, currentTest.confirmedAt)
     || field.receivedAt > now || now - field.receivedAt > MINUTE
     || time(consumedCurrentAt) && field.receivedAt <= consumedCurrentAt
-    || !Number.isFinite(tesla.actualCurrentA) || tesla.actualCurrentA <= .5
-    || power?.retained !== false || !time(power.receivedAt) || power.receivedAt < since || power.receivedAt > now
-    || !Number.isFinite(tesla.actualPowerKw) || tesla.actualPowerKw <= .5 || !freshPower(physical)
-    || Math.abs(physical.powerKw.value - tesla.actualPowerKw) > .75) return null;
+    || power?.retained !== false || !time(power.receivedAt) || power.receivedAt < since || power.receivedAt > now) return null;
+  const measurements = teslaMinimumCurrentMeasurements(tesla, { physical, peers, minimumPhysical, currentTest, now });
+  return measurements && { receivedAt: field.receivedAt, ...measurements, testId: currentTest.id };
+}
+
+/** Physical comparison only. This can reject a dormant settling sample while
+ * vehicle admission is pending; it never supplies vehicle identity by itself. */
+export function teslaMinimumCurrentMeasurements(tesla, { physical, peers = [], minimumPhysical, currentTest, now }) {
+  const field = tesla?.fields?.charger_actual_current;
+  const freshPower = view => view?.powerKw?.available === true && view.powerKw.retained !== true
+    && view.powerKw.value > .5 && time(view.powerKw.measuredAt) && view.powerKw.measuredAt <= now
+    && now - view.powerKw.measuredAt <= MINUTE && view.charging?.available === true && view.charging.value === true;
+  if (!time(currentTest?.confirmedAt) || !Number.isFinite(currentTest.appliedCurrentA) || !time(field?.receivedAt)
+    || !Number.isFinite(tesla?.actualCurrentA) || tesla.actualCurrentA <= .5
+    || !Number.isFinite(tesla.actualPowerKw) || tesla.actualPowerKw <= .5
+    || !freshPower(physical) || Math.abs(physical.powerKw.value - tesla.actualPowerKw) > .75) return null;
   const current = measuredChargingCurrent(physical, now), minimum = measuredChargingCurrent(minimumPhysical, now);
   if (!current || !minimum || !freshPower(minimumPhysical) || minimum.measuredAt < currentTest.confirmedAt
     || current.measuredAt < currentTest.confirmedAt
@@ -142,8 +151,7 @@ export function matchTeslaMinimumCurrent(tesla, { physical, peers = [], minimumP
     if (!other || !freshPower(peer) || other.measuredAt < currentTest.confirmedAt
       || Math.abs(other.value - tesla.actualCurrentA) <= 1) return null;
   }
-  return { receivedAt: field.receivedAt, physicalAt: current.measuredAt,
-    minimumPhysicalAt: minimum.measuredAt, testId: currentTest.id };
+  return { physicalAt: current.measuredAt, minimumPhysicalAt: minimum.measuredAt };
 }
 
 /** Independent vehicle facts keep their source clocks and original MQTT delivery

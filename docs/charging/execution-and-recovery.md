@@ -25,6 +25,16 @@ Only the planning wait is interrupted; an active native RPC retains its owner.
 The attempt keeps its original deadline and energy allowance, and native
 readiness, session scope, instruction precedence and authority are rechecked.
 
+Received vehicle reports waiting for database admission do not end an existing
+scoped identification probe or minimum-current test. The attempt keeps its
+original elapsed-time and energy accounting while those reports remain
+unavailable for matching. Native identification work rechecks the queued input
+before another Start or current-setting command. An original due Stop or
+restoration remains actionable. Failed admission, actual feed loss, an admitted
+departure or changed scope/instruction retain their normal effects; no pending
+report can create a new probe or identity. Independent Charge now permission
+does not depend on identification evidence.
+
 For an already commissioned Easee Direct OCPP connection, authenticated local
 readiness and valid saved equipment/session authority are sufficient for normal
 operation without an Easee cloud reply. This includes scheduled charging,

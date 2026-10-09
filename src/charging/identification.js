@@ -92,7 +92,8 @@ const finish = (state, phase, reason, now) => ({ ...state, phase, reason, action
  * interruption ends active testing until an explicit retry or new connection;
  * passive evidence can still complete the saved attempt. */
 export function advanceIdentification(previous, { connectedAt, now, connected = true, identified = false,
-  manualRetry = false, manualStop = false, interrupted = false, available = true, charging = false, energyKwh = null, powerKw = null,
+  manualRetry = false, manualStop = false, interrupted = false, available = true, admissionPending = false,
+  charging = false, energyKwh = null, powerKw = null,
   normalCharging = true, chargeNow = false, probeAllowed = false, probeReturnAt = null, probeDurationMs = IDENTIFICATION_CHARGE_LIMIT_MS,
   physicalFresh = true, physicalStopped = false, candidate = null, pause = null } = {}) {
   validateIdentificationState(previous);
@@ -172,7 +173,7 @@ export function advanceIdentification(previous, { connectedAt, now, connected = 
     const reserve = Math.max(state.chargePowerKw ?? 0, powerKw ?? 0) * 10 / 3600;
     if (state.chargeUsedKwh + reserve >= IDENTIFICATION_ENERGY_LIMIT_KWH) stopReason = 'probe-energy-limit';
     else if (now >= state.probe.deadlineAt) stopReason = 'probe-time-limit';
-    else if (!physicalFresh || !available) stopReason = 'telemetry-lost';
+    else if (!physicalFresh || !available && !admissionPending) stopReason = 'telemetry-lost';
   }
   const usable = state.phase === 'charging' && available && charging && validCandidate(candidate)
     && candidate.connectedAt === connectedAt && candidate.capturedAt >= state.startedAt

@@ -9,6 +9,25 @@ const START = Date.parse('2026-10-05T12:00:00Z'), MINUTE = 60_000;
 const SCOPE = 'd'.repeat(64), TOPIC = 'synthetic/reconnect/bmw';
 const RELEASE_AT = START + 60 * MINUTE;
 
+test('an existing BMW OCPP probe waits for a queued receipt without an early pause', async t => {
+  const f = await fixture(t);
+  f.reconnect(); f.publishBmw({ atHome: true, pluggedIn: true, charging: false, soc: 78 });
+  await f.update(); assert.equal(f.startAllowed, true);
+  f.beginTransaction(); await f.update();
+  const original = structuredClone(f.item.identification), before = f.commands.length;
+  assert.equal(original.phase, 'charging');
+  assert(original.probe.deadlineAt > f.now + 1000);
+  let pending = true;
+  f.runtime.setVehicleAdmissionStatus('bmw', () => ({ pending, failed: false,
+    reason: pending ? 'vehicle-observation-storage-pending' : null }));
+  f.runtime.vehicleAdmissionChanged('bmw'); f.advance(1000); await f.update();
+  assert.equal(f.item.identification.phase, original.phase);
+  assert.equal(f.item.identification.probe.deadlineAt, original.probe.deadlineAt);
+  assert.equal(f.commands.slice(before).some(command => command.action === 'SetChargingProfile'), false);
+  pending = false; await f.update();
+  assert.equal(f.item.identification.completedAt, null);
+});
+
 // Production runtime, BMW ingress, OCPP adapter and controller. Only the wire,
 // clock and economic plan are synthetic; transaction confirmation is supplied
 // only after asserting the controller has actually authorized the initial start.

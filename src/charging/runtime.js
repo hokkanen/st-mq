@@ -1,5 +1,5 @@
 import { chargingDefaults, mergeChargingSettings, chargingSettingsFromConfiguration, resolveChargingDeadline } from './settings.js';
-import { acceptVehicleReading, bmwConsumedChargingAt, bmwHomeContext, bmwIdentityContextValid, connectionEvidenceStart, matchTeslaSession, matchTeslaMinimumCurrent, measuredChargingCurrent, bmwSessionMatchDetails, matchBmwControlledPause, pendingBmwControlledPause, pendingBmwSession, bmwDisconnectEvent, bmwReconnectEvent } from './vehicle.js';
+import { acceptVehicleReading, bmwConsumedChargingAt, bmwHomeContext, bmwIdentityContextValid, connectionEvidenceStart, matchTeslaSession, matchTeslaMinimumCurrent, teslaMinimumCurrentMeasurements, measuredChargingCurrent, bmwSessionMatchDetails, matchBmwControlledPause, pendingBmwControlledPause, pendingBmwSession, bmwDisconnectEvent, bmwReconnectEvent } from './vehicle.js';
 import { chargingConfiguration } from './config.js';
 import { TIME_ZONE } from '../domain/prices.js';
 import { CHARGER_DEFINITIONS, buildCharger } from './model.js';
@@ -54,10 +54,11 @@ const vehicleFeedAdmission = feed => {
   return feed?.sourcePending?.size ? { ...status, pending: true,
     reason: status?.reason ?? 'vehicle-source-clock-pending' } : status;
 };
-const vehicleFeedAvailable = (feed, now) => feed?.mqtt.connected && feed.mqtt.subscribed
-  && !vehicleFeedAdmission(feed)?.pending && !vehicleFeedAdmission(feed)?.failed
+const vehicleFeedObserved = (feed, now) => feed?.mqtt.connected && feed.mqtt.subscribed
   && Number.isSafeInteger(feed.mqtt.lastValidLiveAt) && feed.mqtt.lastValidLiveAt <= now
   && now - feed.mqtt.lastValidLiveAt <= VEHICLE_FEED_MAX_AGE_MS;
+const vehicleFeedAvailable = (feed, now) => vehicleFeedObserved(feed, now)
+  && !vehicleFeedAdmission(feed)?.pending && !vehicleFeedAdmission(feed)?.failed;
 const vehicleReception = (feed, now) => ({ ...feed.mqtt, provider: feed.provider,
   admission: vehicleFeedAdmission(feed),
   available: Boolean(vehicleFeedAvailable(feed, now)),
@@ -528,10 +529,13 @@ export class ChargingRuntime {
       && (teslamateConnectionContext(tesla, { now }) || previousUnplug));
   }
   identificationFeedReason(item, now) {
-    const bmw = this.vehicleFeeds.bmw, reading = bmw?.reading;
-    const session = item?.controller?.status()?.session, connectedAt = session?.connectedAt;
     if (this.teslaIdentificationFeedReady(item, now)) return null;
-    if (!vehicleFeedAvailable(bmw, now)) return 'vehicle-feed-stale';
+    if (!vehicleFeedAvailable(this.vehicleFeeds.bmw, now)) return 'vehicle-feed-stale';
+    return this.identificationBmwContextReason(item, now);
+  }
+  identificationBmwContextReason(item, now) {
+    const reading = this.vehicleFeeds.bmw?.reading;
+    const session = item?.controller?.status()?.session, connectedAt = session?.connectedAt;
     if (reading?.fields?.charging?.historyOverflowAt != null) return 'evidence-capacity';
     if (reading?.atHome === false || reading?.atHome === null && reading.fields?.atHome?.lastKnown?.value === false) return 'bmw-away';
     if (!bmwHomeContext(reading, now)) return 'bmw-home-unknown';
@@ -551,6 +555,27 @@ export class ChargingRuntime {
     return null;
   }
   identificationFeedReady(item, now) { return this.identificationFeedReason(item, now) === null; }
+  identificationAdmissionPending(item, now = this.clock()) {
+    const control = item.controller?.status(), test = control?.currentTest, state = item.identification;
+    if (!state || control?.session?.connected !== true || state.connectedAt !== control.session.connectedAt) return false;
+    const sameTest = test?.id === state.id;
+    if (sameTest && (test.sessionId !== control.session.sessionId || test.connectedAt !== state.connectedAt
+      || !['proposed', 'applying', 'active'].includes(test.phase) || test.expiresAt <= now)) return false;
+    if (!sameTest && this.probeReturn(item, now)?.endedAt !== null) return false;
+    // Waiting for another received packet is not a failed existing test.
+    // Actual source loss or an already admitted contrary fact still wins.
+    const bmw = this.vehicleFeeds.bmw, bmwAdmission = vehicleFeedAdmission(bmw);
+    if (bmwAdmission?.pending && !bmwAdmission.failed && vehicleFeedObserved(bmw, now)
+      && this.identificationBmwContextReason(item, now) === null) return true;
+    const tesla = this.teslaCapture?.snapshot(), admission = tesla?.reception?.admission;
+    return Boolean(admission?.pending && !admission.failed && tesla.observationHealthy === true && tesla.atHome === true
+      && !['plugged_in', 'charging_state', 'state'].some(field => {
+        const value = tesla.fields?.[field];
+        return value?.receivedAt >= state.startedAt && teslamateDeparture({ field, value: value.value });
+      })
+      && !(tesla.boundaries ?? []).some(edge => edge.association === tesla.association
+        && edge.at >= state.startedAt && teslamateDeparture(edge)));
+  }
   minimumCurrentIdentification(item, now = this.clock()) {
     if (item?.definition.id !== 'charger2' || item.vehicleMatch && item.identification?.attempt <= 1) return false;
     const control = item.controller?.status();
@@ -743,7 +768,18 @@ export class ChargingRuntime {
   }
   async identificationControl(item, snapshot) {
     const controller = item.controller;
-    return this.write(() => this.identificationState(item, snapshot), { priority: 'control',
+    return this.write(() => {
+      const request = this.identificationState(item, snapshot);
+      if (item.controls.enabled && !item.request?.chargeNow
+        && ['waiting', 'charging'].includes(item.identification?.phase) && this.identificationAdmissionPending(item)) {
+        // The current native frame is between RPCs. Re-evaluate the queued
+        // vehicle observation before another Start/current write; an already
+        // due pause or restoration still proceeds under its original scope.
+        controller.invalidate();
+        return null;
+      }
+      return request;
+    }, { priority: 'control',
       isCurrent: () => this.canControl() && item.controller === controller });
   }
   identificationState(item, snapshot) {
@@ -1252,7 +1288,19 @@ export class ChargingRuntime {
             && current.minimumPhysicalAt > prior.minimumPhysicalAt) {
             candidates[id].push('tesla'); currentMatches[id] = current; independentTeslaMatches.add(id);
           }
-        } else evidence.teslaCurrentCandidate = null;
+        } else {
+          const prior = evidence.teslaCurrentCandidate, admission = tesla.reception?.admission;
+          // A queued report is not a contrary comparison. Keep this already
+          // observed sample dormant; identification still requires the normal
+          // admitted matcher and a later physical sample on its original clock.
+          const pendingComparison = prior && currentScope && currentTest.phase === 'active' && prior.testId === currentTest.id
+            && prior.vehicleAssociation === tesla.association && prior.receivedAt === tesla.fields?.charger_actual_current?.receivedAt
+            && admission?.pending && !admission.failed && tesla.observationHealthy === true
+            && this.identificationAdmissionPending(this.chargers.charger2, now)
+            && teslaMinimumCurrentMeasurements(tesla, { physical: result[id], peers,
+              minimumPhysical: result.charger2, currentTest, now });
+          if (!pendingComparison) evidence.teslaCurrentCandidate = null;
+        }
         if (independentTeslaMatches.has(id) && item.vehicleMatch?.id === 'tesla') delete item.vehicleMatch.pauseRequestedAt;
         if (!teslaPauseUncontested && item.vehicleMatch?.id === 'tesla'
           && item.vehicleMatch.pauseRequestedAt === pauseRequestedAt) {
@@ -1382,8 +1430,10 @@ export class ChargingRuntime {
             ? teslaPauseMatches[id].powerReceivedAt : tesla.fields.charger_power.receivedAt) };
       if (item.controller?.supportsIdentification && connected === true) {
         const control = item.controller.status(), physical = result[id];
-        const available = !item.vehicleEvidence?.historyOverflow && this.identificationAvailable(item, now) && this.identificationFeedReady(item, now)
+        const nativeAvailable = !item.vehicleEvidence?.historyOverflow && this.identificationAvailable(item, now)
           && this.identificationTurn(item);
+        const available = nativeAvailable && this.identificationFeedReady(item, now);
+        const admissionPending = nativeAvailable && !available && this.identificationAdmissionPending(item, now);
         const minimumCurrent = this.minimumCurrentIdentification(item, now);
         const choice = this.identificationChargingChoice(item, now);
         const currentTest = control.currentTest, currentLimit = control.snapshot?.fields?.current_limit;
@@ -1502,7 +1552,7 @@ export class ChargingRuntime {
               && control.snapshot.fields.start_charging.measuredAt >= probeStartedAt);
         item.identification = advanceIdentification(item.identification, {
           ...choice, probeAllowed, chargeNow: item.request?.chargeNow === true,
-          interrupted: sameCurrentTest && (!available
+          interrupted: sameCurrentTest && (!available && !admissionPending
             || currentTest.phase === 'superseded' || currentTest.phase === 'uncertain' && !pendingBmwRestoration
             || (activeBmwPause || currentComparisonResolved) && !comparisonCurrentOwned && !pendingBmwRestoration
             || !activeBmwPause && (currentTest.expiresAt <= now
@@ -1511,7 +1561,7 @@ export class ChargingRuntime {
           probeDurationMs: Math.min(Math.floor((IDENTIFICATION_ENERGY_LIMIT_KWH / probeCeilingKw * 3600 - 10) * 1000),
             minimumReady ? currentTest.expiresAt - now - 10_000 : Infinity), physicalFresh, physicalStopped,
           connectedAt: control.session.connectedAt, now, connected: true, identified: reidentifying ? freshIdentity : Boolean(vehicleId),
-          available, manualStop: Boolean(control.manual || !control.devicePermissionHeld && (control.snapshot?.manualStop || control.snapshot?.stopped)),
+          available, admissionPending, manualStop: Boolean(control.manual || !control.devicePermissionHeld && (control.snapshot?.manualStop || control.snapshot?.stopped)),
           charging: physicalFresh && physical.powerKw.value > .5 && physical.charging?.available === true && physical.charging.value === true,
           energyKwh: item.sessionCost?.deliveredGridKwh ?? null,
           powerKw: physical.powerKw?.available === true ? physical.powerKw.value : null,

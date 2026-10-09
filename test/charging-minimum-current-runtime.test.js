@@ -14,7 +14,7 @@ const START = 1_800_000_000_000;
 // Real runtime, Tesla MQTT capture, Shelly RPC adapter and controller. Charger 1
 // supplies independent synthetic phase measurements and cannot issue commands.
 async function fixture(t, { firstCurrentA = 16, firstAvailable = true, stepMetadata = true, currentWritable = true,
-  teslaPluggedIn = true, initialCurrentA = 12, economicStartAt = START } = {}) {
+  teslaPluggedIn = true, initialCurrentA = 12, economicStartAt = START, admissionStatus = () => null } = {}) {
   let now = START, runtime, adapter, meterAt = START, acceptCurrentWrite = true, measuredCurrentA = null, currentWriteHook = null,
     phaseMeasuredAt = null, statusReadHook = null, currentReadbackHook = null, phaseReadbackHook = null, dropCurrentReply = false, partialNotifications = false, partialNotificationHook = null, firstStopped = false, firstStatusAt = START,
     firstSourceAt = null, firstNative = {};
@@ -84,7 +84,7 @@ async function fixture(t, { firstCurrentA = 16, firstAvailable = true, stepMetad
     });
   };
   const capture = createChargingTeslaCapture({ settings: config.connections.teslamate, clock: () => now,
-    brokerIdentity: 'synthetic-minimum-broker' });
+    brokerIdentity: 'synthetic-minimum-broker', admissionStatus });
   capture.setConnected(true); t.after(() => capture.close());
   const publishTesla = (values, { retained = false, at = now } = {}) => {
     for (const [field, value] of Object.entries(values))
@@ -1574,6 +1574,44 @@ for (const savedConflict of [false, true]) test(`minimum-current runtime replace
   assert.deepEqual(f.item('charger1').identification.probe, priorAttempt.probe, 'Correction never renews an extra charging allowance');
 });
 
+
+for (const change of ['unchanged', 'current', 'departure']) test(`minimum-current settling evidence survives only pending admission followed by ${change}`, async t => {
+  let admission = { pending: false, failed: false };
+  const f = await fixture(t, { admissionStatus: () => admission });
+  await f.update(); f.advance(6000); await f.sampleTesla(6);
+  const original = structuredClone(f.item('charger2').vehicleEvidence.teslaCurrentCandidate);
+  assert(original, 'The real native/vehicle matcher supplied the first sample');
+  f.advance(1000); admission = { pending: true, failed: false }; f.observe();
+  assert.deepEqual(f.item('charger2').vehicleEvidence.teslaCurrentCandidate, original);
+  assert.equal(f.item('charger2').vehicleMatch, null, 'Pending evidence cannot identify the car');
+  admission = { pending: false, failed: false };
+  if (change === 'current') f.publishTesla({ charger_actual_current: 8, charger_power: 5.52 });
+  if (change === 'departure') f.publishTesla({ plugged_in: false });
+  f.advance(4000); await f.adapter.refresh(); f.observe();
+  if (change === 'unchanged') assert.equal(f.item('charger2').vehicleMatch?.id, 'tesla');
+  else {
+    assert.equal(f.item('charger2').vehicleEvidence.teslaCurrentCandidate, null);
+    assert.equal(f.item('charger2').vehicleMatch, null);
+  }
+});
+
+for (const source of ['subject', 'peer']) test(`pending vehicle admission cannot hide contrary ${source} current from the settling comparison`, async t => {
+  let admission = { pending: false, failed: false };
+  const f = await fixture(t, { admissionStatus: () => admission });
+  await f.update(); f.advance(6000); await f.sampleTesla(6);
+  const original = structuredClone(f.item('charger2').vehicleEvidence.teslaCurrentCandidate);
+  assert(original);
+  admission = { pending: true, failed: false }; f.advance(1000);
+  if (source === 'subject') f.setMeasuredCurrent(8); else f.setFirst(6);
+  await f.adapter.refresh(); f.observe();
+  assert.equal(f.item('charger2').vehicleEvidence.teslaCurrentCandidate, null,
+    'Admitted physical disagreement or peer ambiguity clears the earlier sample even during vehicle admission');
+  if (source === 'subject') f.setMeasuredCurrent(6); else f.setFirst(16);
+  admission = { pending: false, failed: false }; f.advance(4000);
+  await f.adapter.refresh(); f.observe();
+  assert.equal(f.item('charger2').vehicleMatch, null);
+  assert(f.item('charger2').vehicleEvidence.teslaCurrentCandidate.observedAt > original.observedAt);
+});
 
 test('minimum-current runtime does not reuse a settling sample from a replaced Tesla feed', async t => {
   const f = await fixture(t); await f.update(); f.advance(6000); await f.sampleTesla(6);

@@ -98,9 +98,10 @@ export function createChargingTeslaCapture({ settings = {}, clock = Date.now, in
     const newest = [fields.state, fields.charging_state].filter(Boolean).sort((a, b) => b.sequence - a.sequence)[0];
     const health = fields.healthy;
     const admission = admissionStatus();
-    const healthy = connected && !admission?.pending && !admission?.failed && liveFields.has('healthy') && health?.value === true && !health.retained
+    const observationHealthy = connected && liveFields.has('healthy') && health?.value === true && !health.retained
       && now >= health.receivedAt && now - health.receivedAt <= settings.maxAgeMs;
-    const result = { connected, healthy, maxAgeMs: settings.maxAgeMs, association: signature, reception: reception(),
+    const healthy = observationHealthy && !admission?.pending && !admission?.failed;
+    const result = { connected, healthy, observationHealthy, maxAgeMs: settings.maxAgeMs, association: signature, reception: reception(),
       atHome: connected && typeof value('geofence') === 'string' ? value('geofence') === settings.homeGeofence : undefined,
       pluggedIn: value('plugged_in'), charging: newest ? ['Charging', 'charging'].includes(newest.value) : undefined,
       batteryLevel: value('battery_level'), chargeLimitSoc: value('charge_limit_soc'), requestedCurrentA: value('charge_current_request'),

@@ -6,12 +6,14 @@ import { EventEmitter } from 'node:events';
 import { ChargingRuntime } from '../src/charging/runtime.js';
 import { advanceIdentification } from '../src/charging/identification.js';
 import { createShellyEvseAdapter } from '../src/charging/shelly-evse.js';
+import { Store } from '../src/storage/store.js';
+import { startMqtt } from '../src/acquisition/mqtt.js';
 
 const START = 1_800_000_000_000, MINUTE = 60_000, FUTURE = START + 60 * MINUTE;
 
 // Exercise the real MQTT RPC adapter, controller, vehicle ingestion and runtime.
 // Only the broker/device and economic price result are synthetic.
-async function fixture(t, { charging = true, retainedOnly = false, enabled = true, inserted = false } = {}) {
+async function fixture(t, { charging = true, retainedOnly = false, enabled = true, inserted = false, durable = false } = {}) {
   let now = START, runtime, failSave = false, vehicleAllows = charging || inserted, planOverride = null;
   const data = new Map(), writes = [], client = new EventEmitter();
   const config = { input: 'mqtt', connections: { mqtt: { address: 'mqtt://synthetic.invalid', user: 'synthetic-user' } },
@@ -19,11 +21,11 @@ async function fixture(t, { charging = true, retainedOnly = false, enabled = tru
       enabled: true, deviceId: 'synthetic-evse', topicPrefix: 'synthetic/evse',
       limiterEnabled: false,
     } } } };
-  const store = { getState: key => structuredClone(data.get(key)), setState: (key, value) => {
+  const store = durable ? new Store(':memory:') : { getState: key => structuredClone(data.get(key)), setState: (key, value) => {
     if (failSave && key.startsWith('charging:')) throw Error('synthetic storage unavailable');
     data.set(key, structuredClone(value));
   }, transaction: fn => fn(), event: () => 1 };
-  withReportDatabase(store, t);
+  if (durable) t.after(() => store.close()); else withReportDatabase(store, t);
   const roles = { current_limit: 'Number', start_charging: 'Boolean', work_state: 'Enum', phase_info: 'Object' };
   const ids = Object.fromEntries(Object.keys(roles).map((role, i) => [role, i + 200]));
   const fields = Object.fromEntries(Object.entries({ current_limit: 12, start_charging: true,
@@ -103,7 +105,7 @@ async function fixture(t, { charging = true, retainedOnly = false, enabled = tru
   await create();
   const item = () => runtime.chargers.charger2;
   const card = () => runtime.status().chargers.find(row => row.id === 'charger2');
-  return { get runtime() { return runtime; }, get now() { return now; }, adapter, fields, writes, schedules, serviceStatus,
+  return { get runtime() { return runtime; }, get now() { return now; }, adapter, store, fields, writes, schedules, serviceStatus,
     item, card, publish, setNow: value => { now = value; }, setFail: value => { failSave = value; },
     setPlan: value => { planOverride = structuredClone(value); },
     async update() { await runtime.reconcile('charger2'); return item().controller.status(); },
@@ -121,6 +123,103 @@ async function fixture(t, { charging = true, retainedOnly = false, enabled = tru
 
 const stops = f => f.writes.filter(row => row.params.role === 'start_charging' && row.params.value === false);
 const starts = f => f.writes.filter(row => row.params.role === 'start_charging' && row.params.value === true);
+
+for (const boundary of ['healthy burst', 'pending native work', 'queued departure', 'failed save', 'original deadline', 'independent Charge now'])
+test(`Tesla MQTT admission preserves the original native minimum-current attempt at ${boundary}`, async t => {
+  const f = await fixture(t, { charging: false, retainedOnly: true, durable: true });
+  await f.update();
+  const runtime = f.runtime, client = new EventEmitter();
+  client.subscribe = (topic, _options, done) => done(null, [{ topic, qos: 0 }]);
+  client.publish = (_topic, _payload, _options, done) => done?.();
+  client.end = (_force, _options, done) => done();
+  const charging = { mqttRoutes: () => [], setMqttStatus() {},
+    receiveVehicleObservation: id => runtime.receiveVehicleObservation(id),
+    receiveVehicleBoundary: (id, boundary) => runtime.receiveVehicleBoundary(id, boundary) };
+  Object.defineProperty(charging, 'teslaCapture', { set: value => { runtime.teslaCapture = value; } });
+  const reader = await startMqtt({ store: f.store, engine: { clock: () => f.now, charging },
+    config: { input: 'mqtt', connections: { mqtt: { address: 'mqtt://vehicle.invalid' }, teslamate: { enabled: true } } },
+    connect: () => client });
+  t.after(() => reader.close({ restore: false }));
+  client.emit('connect'); await reader.ready();
+  const send = (field, value) => client.emit('message', `teslamate/cars/1/${field}`, Buffer.from(String(value)), {});
+  f.setNow(f.now + 1000);
+  for (const [field, value] of Object.entries({ geofence: 'Home', plugged_in: true, healthy: true,
+    state: 'online', charging_state: 'Stopped', charger_actual_current: 0, charger_power: 0 })) send(field, value);
+  await f.store.runWrite(() => {});
+  await f.update();
+  assert.equal(f.item().controller.status().currentTest?.phase, 'active');
+  assert.equal(f.fields.current_limit.value, 6);
+  assert(f.item().identification.probe);
+  const original = structuredClone(f.item().identification), currentTest = structuredClone(f.item().controller.status().currentTest);
+  const observed = [], persist = runtime.persistVehicleObservation.bind(runtime);
+  runtime.persistVehicleObservation = now => {
+    persist(now);
+    observed.push({ pending: runtime.teslaCapture.reception().admission.pending,
+      phase: f.item().identification.phase, completedAt: f.item().identification.completedAt });
+  };
+  f.setNow(f.now + 100);
+  const runWrite = f.store.runWrite.bind(f.store);
+  let releaseReceipt, receipt, held = false;
+  const heldField = boundary === 'queued departure' ? 'geofence' : 'healthy';
+  const heldValue = boundary === 'queued departure' ? 'Away' : 'true';
+  if (boundary !== 'healthy burst') f.store.runWrite = (action, options) => {
+    if (!held && options?.bytes === Buffer.byteLength(`teslamate/cars/1/${heldField}${heldValue}`)) {
+      held = true;
+      receipt = new Promise((resolve, reject) => { releaseReceipt = () => runWrite(action, options).then(resolve, reject); });
+      return receipt;
+    }
+    return runWrite(action, options);
+  };
+  // Enqueue both received packets behind a real parent commit, so the first
+  // accepted packet still sees a later receipt awaiting its own admission.
+  await f.store.runWrite(() => f.store.afterCommit(() => {
+    send('charge_current_request', 6);
+    if (boundary === 'healthy burst') send('state', 'online');
+    send(heldField, heldValue);
+  }));
+  try {
+    await runWrite(() => {});
+    assert(observed.some(row => row.pending), 'The fixture exercised partial admission of a real MQTT burst');
+    assert(observed.every(row => row.completedAt === null), 'Queued healthy receipts cannot terminate the original attempt');
+    assert.equal(f.item().identification.id, original.id);
+    assert.equal(f.item().identification.probe.deadlineAt, original.probe.deadlineAt);
+    assert.equal(f.item().controller.status().currentTest.expiresAt, currentTest.expiresAt);
+    if (boundary !== 'healthy burst') {
+      assert.equal(held, true);
+      const before = f.writes.length;
+      if (boundary === 'original deadline') f.setNow(original.probe.deadlineAt);
+      if (boundary === 'independent Charge now') await runtime.chargeNow('charger2', f.input());
+      else await f.update();
+      if (boundary === 'original deadline') {
+        assert.equal(f.item().identification.phase, 'pausing');
+        assert.equal(f.fields.start_charging.value, false, 'An original due Stop is not held behind vehicle admission');
+        assert.equal(f.item().identification.probe.deadlineAt, original.probe.deadlineAt);
+      } else if (boundary === 'independent Charge now') {
+        assert.equal(f.item().request.chargeNow, true);
+        assert.equal(f.fields.current_limit.value, currentTest.originalCurrentA,
+          'Explicit Charge now can release the current test without waiting for identification evidence');
+      } else assert.equal(f.writes.length, before, 'Pending vehicle input grants no new native Start, Stop or current instruction');
+      if (boundary === 'failed save') {
+        const exec = f.store.db.exec.bind(f.store.db);
+        f.store.db.exec = sql => {
+          if (sql.trim() === 'COMMIT') { f.store.db.exec = exec;
+            throw Object.assign(new Error('Synthetic queued vehicle commit failure'), { errcode: 10, code: 'ERR_SQLITE_ERROR' }); }
+          return exec(sql);
+        };
+      }
+      const release = releaseReceipt; releaseReceipt = null;
+      const admitted = boundary === 'failed save' ? assert.rejects(receipt) : receipt;
+      release(); await admitted; await runWrite(() => {});
+      await f.update();
+      if (['queued departure', 'failed save'].includes(boundary))
+        assert.equal(f.item().identification.phase, 'inconclusive', 'A real contrary observation or failed admission still ends the test');
+      else if (boundary === 'pending native work') assert.equal(f.item().identification.completedAt, null);
+    }
+  } finally {
+    if (releaseReceipt) { releaseReceipt(); await receipt.catch(() => {}); }
+    f.store.runWrite = runWrite;
+  }
+});
 
 for (const preparing of [false, true]) test(`new identification ${preparing ? 'current preparation' : 'probe Start'} precedes an older native planning wait`, async t => {
   const f = await fixture(t, { charging: false }), runtime = f.runtime, item = f.item();

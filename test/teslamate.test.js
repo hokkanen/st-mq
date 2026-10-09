@@ -41,6 +41,29 @@ test('identical live publications preserve retained identity provenance while he
   assert.equal(f.capture.snapshot().fields.healthy.receivedAt, connectedAt + 1000);
 });
 
+test('observed logger health remains separate from admission and belongs to the current live connection', () => {
+  let now = NOW, admission = { pending: true, failed: false }, saved;
+  const capture = createChargingTeslaCapture({ clock: () => now, admissionStatus: () => admission,
+    saveState: value => { saved = value; } });
+  const send = (value, packet = {}) => capture.receive('teslamate/cars/1/healthy', value, packet);
+  capture.setConnected(true); send('true', { retain: true });
+  assert.equal(capture.snapshot().observationHealthy, false);
+  send('true');
+  assert.equal(capture.snapshot().observationHealthy, true);
+  assert.equal(capture.snapshot().healthy, false, 'Observed health never admits pending input');
+  admission = { pending: false, failed: true };
+  assert.equal(capture.snapshot().healthy, false);
+  admission = { pending: false, failed: false };
+  assert.equal(capture.snapshot().healthy, true);
+  assert.equal(Object.hasOwn(saved, 'observationHealthy'), false, 'Connection health is not persisted authority');
+  capture.setConnected(false); capture.setConnected(true);
+  assert.equal(capture.snapshot().observationHealthy, false, 'Previous-connection health cannot survive reconnect');
+  send('true'); assert.equal(capture.snapshot().observationHealthy, true);
+  send('false'); assert.equal(capture.snapshot().observationHealthy, false);
+  send('true'); now += capture.snapshot().maxAgeMs + 1;
+  assert.equal(capture.snapshot().observationHealthy, false);
+});
+
 test('periodic live identity repeats cannot renew plug, power or start clocks', () => {
   const f = fixture();
   for (const [field, value] of Object.entries(identityValues)) f.send(field, value);

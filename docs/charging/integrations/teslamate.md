@@ -38,6 +38,11 @@ the complete buffered prefix commits, including any departure already received;
 new arrivals join that prefix. A failed replay retains earlier committed values
 as unavailable context and requires the existing reconnect/subscription recovery.
 Neither replay nor subscription completion changes an observation's original clock.
+The capture separately projects whether a live healthy pulse remains current in
+this broker connection (`observationHealthy`). This nonpersistent observation
+keeps an already scoped identification attempt from treating pending admission
+as feed loss. It never makes the public admitted `healthy` flag true while a
+report is pending or failed, and supplies no matching or Start permission.
 
 ## Accepted observations
 
