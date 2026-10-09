@@ -24,7 +24,9 @@ the same arrow placement with **One extra day ↗**.
 | **Shared priority** | Chooses Balanced, Charger 1 or Charger 2 for both chargers. Both cards edit the same saved choice. |
 | **One extra day** | Compares the current deadline with one later calendar day. Allowing the day changes only this connection's deadline; canceling an active allowance restores the earlier deadline. |
 
-Automatic starts off and shared priority starts Balanced on a fresh installation.
+Automatic starts on for both chargers and shared priority starts Balanced when
+charging state is first initialized, including a fresh database. Later saved
+choices survive restart; replacement equipment starts with Automatic off.
 Neither switch alone is a physical Stop control. Use the supported native control
 when an explicit physical stop is required and check the observed response.
 [Ownership and takeover](execution-and-recovery.md) explains which instructions

@@ -26,7 +26,7 @@ const CONTROL_ERRORS = new Set(['read-failed', 'command-failed', 'readback-faile
   'ocpp-request-timeout', 'ocpp-request-aborted', 'ocpp-request-failed', 'ocpp-request-revoked',
   'ocpp-disconnected', 'ocpp-reconfigured', 'ocpp-unavailable', 'ocpp-queue-full',
   'provider-offline', 'evse-control-unavailable', 'evse-command-revoked', 'evse-command-unconfirmed',
-  'evse-publish-unconfirmed', 'evse-rpc-rejected', 'evse-profile-unsupported', 'evse-current-control-unavailable', 'evse-work-state-unavailable', 'evse-read-unavailable',
+  'evse-publish-unconfirmed', 'evse-rpc-rejected', 'evse-profile-unsupported', 'evse-current-control-unavailable', 'evse-work-state-unavailable', 'evse-read-unavailable', 'evse-read-timeout',
   'evse-native-restriction', 'evse-native-schedule-unavailable', 'evse-event-overflow', 'evse-component-mapping-unverified',
   'evse-notification-readback-required', 'evse-permission-event-overflow',
   'evse-input-persistence-pending', 'evse-source-time-pending',

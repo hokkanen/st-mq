@@ -439,9 +439,12 @@ other values inherit the shared defaults. Capacity and starting charge are
 planning assumptions when no applicable live reading exists.
 
 Automatic charging and shared charger priority are persistent dashboard
-choices. Automatic charging starts OFF and priority starts Balanced on a fresh
-installation. They survive restart and unplugging for the same equipment;
-changing equipment identity clears its control choices. These are not
+choices. Automatic charging starts ON for both chargers and priority starts
+Balanced when charging state is first initialized, including a fresh database.
+Existing charging state in any input environment prevents this initial ON default.
+They survive restart and unplugging for the same equipment; a saved OFF remains
+OFF. Missing controls within existing state and changed equipment identity default
+to OFF, and unreadable or invalid state is rejected. These are not
 configuration fields. Charger 2's configured `enabled` field controls its
 physical integration and does not grant scheduling or commissioning permission.
 

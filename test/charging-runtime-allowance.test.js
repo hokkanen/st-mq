@@ -5,6 +5,125 @@ import { getDatabaseOverview } from '../src/app/database-overview.js';
 import { getChartData } from '../src/app/chart-data.js';
 import { chargingAllowanceDisplay } from '../chart/charging-allowance.js';
 
+for (const reason of ['evse-input-persistence-pending', 'evse-source-time-pending'])
+  test(`an idle charger keeps its confirmed setting and fresh capacity during ${reason}`, async t => {
+    const f = await fixture(t);
+    await f.automatic('charger2', true); await f.plan(); await f.connect('charger2'); await f.plan();
+    const item = f.runtime.chargers.charger2, controller = item.controller, adapter = item.adapter;
+    const snapshot = adapter.snapshot, initial = controller.status(), commands = f.commands.length;
+    assert.equal(initial.limiter.settingMode, 'idle-fallback');
+    assert.equal(initial.limiter.settingCurrentA, 12);
+    assert.equal(initial.scheduleConfirmed, true);
+    const settingAt = initial.snapshot.fields.current_limit.measuredAt;
+    const permissionAt = initial.snapshot.fields.start_charging.measuredAt;
+    adapter.snapshot = () => ({ ...snapshot(), controlReady: false, observationReady: true, commandBlockReason: reason });
+    t.after(() => { adapter.snapshot = snapshot; });
+    for (const [load, expected] of [[2, 14], [7, 9], [0, 16]]) {
+      f.household.currentA = load; f.advance(5000);
+      await controller.update({ enabled: true, plan: item.plan });
+      const control = controller.status(), limiter = f.runtime.limiterStatus(control, f.now);
+      assert.equal(control.limiter.currentA, expected);
+      assert.equal(control.limiter.settingMode, 'idle-fallback');
+      assert.equal(control.limiter.settingCurrentA, 12);
+      assert.equal(control.scheduleConfirmed, true);
+      assert.equal(control.snapshot.controlReady, false);
+      assert.equal(control.snapshot.fields.current_limit.measuredAt, settingAt);
+      assert.equal(control.snapshot.fields.start_charging.measuredAt, permissionAt);
+      assert.equal(limiter.applicationStatus, 'idle');
+      f.runtime.recordLimiterHistory();
+      const row = f.store.observations({ signal: 'charger2_current_allowance' }).at(-1);
+      assert.equal(row.value, expected, 'Independent capacity continues to be recorded');
+      assert.equal(row.raw.allowance.limiter.applicationStatus, 'idle');
+      assert.equal(f.commands.length, commands, 'Processing holds still prevent every new command');
+    }
+  });
+
+test('an idle processing hold respects a tighter vehicle ceiling without confirming or sending the changed setting', async t => {
+  const f = await fixture(t);
+  await f.automatic('charger2', true); await f.plan(); await f.connect('charger2'); await f.plan();
+  const item = f.runtime.chargers.charger2, controller = item.controller, adapter = item.adapter;
+  const snapshot = adapter.snapshot, allocation = f.runtime.allocationContext, commands = f.commands.length;
+  assert.equal(controller.status().limiter.settingCurrentA, 12);
+  adapter.snapshot = () => ({ ...snapshot(), controlReady: false, observationReady: true,
+    commandBlockReason: 'evse-input-persistence-pending' });
+  f.runtime.allocationContext = (...args) => ({ ...allocation.apply(f.runtime, args), vehicleCurrentA: 8 });
+  t.after(() => { adapter.snapshot = snapshot; f.runtime.allocationContext = allocation; });
+  f.household.currentA = 2; f.advance(5000);
+  await controller.update({ enabled: true, plan: item.plan });
+  const control = controller.status();
+  assert.equal(control.limiter.loadCurrentA, 14);
+  assert.equal(control.limiter.settingMode, 'idle-fallback');
+  assert.equal(control.limiter.settingCurrentA, 8);
+  assert.equal(f.fields.current_limit.value, 12);
+  assert.equal(f.runtime.limiterStatus(control, f.now).applicationStatus, 'blocked');
+  f.runtime.recordLimiterHistory();
+  const row = f.store.observations({ signal: 'charger2_current_allowance' }).at(-1);
+  assert.equal(row.value, 14);
+  assert.equal(row.raw.allowance.limiter.applicationStatus, 'blocked');
+  assert.equal(f.commands.length, commands);
+});
+
+for (const changed of ['generation', 'permission', 'physical-evidence'])
+  test(`idle-setting confirmation does not cross changed ${changed} during an input hold`, async t => {
+    const f = await fixture(t);
+    await f.automatic('charger2', true); await f.plan(); await f.connect('charger2'); await f.plan();
+    const item = f.runtime.chargers.charger2, adapter = item.adapter, controller = item.controller;
+    const snapshot = adapter.snapshot, liveCurrents = adapter.liveCurrents, commands = f.commands.length;
+    assert.equal(controller.status().limiter.settingMode, 'idle-fallback');
+    adapter.snapshot = () => {
+      const current = snapshot();
+      return { ...current, controlReady: false, observationReady: true, commandBlockReason: 'evse-input-persistence-pending',
+        ...(changed === 'generation' ? { generation: current.generation + 1 } : {}),
+        ...(changed === 'permission' ? { fields: { ...current.fields,
+          start_charging: { ...current.fields.start_charging, value: true } } } : {}) };
+    };
+    if (changed === 'physical-evidence') adapter.liveCurrents = () => ({ ...liveCurrents(), healthy: false });
+    t.after(() => { adapter.snapshot = snapshot; adapter.liveCurrents = liveCurrents; });
+    f.household.currentA = 2; f.advance(5000);
+    await controller.update({ enabled: true, plan: item.plan });
+    const control = controller.status();
+    assert.equal(control.limiter.settingMode, undefined);
+    assert.notEqual(f.runtime.limiterStatus(control, f.now).applicationStatus, 'idle');
+    assert.equal(f.commands.length, commands);
+  });
+
+for (const changed of ['work-state', 'power', 'generation', 'hold-cleared'])
+  test(`idle confirmation rechecks ${changed} after awaiting allocation`, async t => {
+    const f = await fixture(t);
+    await f.automatic('charger2', true); await f.plan(); await f.connect('charger2'); await f.plan();
+    const item = f.runtime.chargers.charger2, adapter = item.adapter, controller = item.controller;
+    const snapshot = adapter.snapshot, allocation = f.runtime.allocationContext, commands = f.commands.length;
+    let allocationWaiting, releaseAllocation, changedDuringAllocation = false;
+    const waiting = new Promise(resolve => { allocationWaiting = resolve; });
+    adapter.snapshot = () => {
+      const current = snapshot();
+      if (changedDuringAllocation && changed === 'hold-cleared') return current;
+      return { ...current, controlReady: false, observationReady: true, commandBlockReason: 'evse-input-persistence-pending',
+        ...(changedDuringAllocation && changed === 'generation' ? { generation: current.generation + 1 } : {}),
+        fields: { ...current.fields,
+          ...(changedDuringAllocation && changed === 'work-state'
+            ? { work_state: { ...current.fields.work_state, value: 'charger_charging' } } : {}),
+          ...(changedDuringAllocation && changed === 'power'
+            ? { phase_info: { ...current.fields.phase_info, value: { ...current.fields.phase_info.value, total_power: .15 } } } : {}),
+        } };
+    };
+    f.runtime.allocationContext = (...args) => {
+      const context = allocation.apply(f.runtime, args);
+      return new Promise(resolve => { releaseAllocation = () => resolve(context); allocationWaiting(); });
+    };
+    t.after(() => { adapter.snapshot = snapshot; f.runtime.allocationContext = allocation; });
+    f.household.currentA = 2; f.advance(5000);
+    const updating = controller.update({ enabled: true, plan: item.plan });
+    await waiting;
+    changedDuringAllocation = true;
+    releaseAllocation(); await updating;
+    const control = controller.status();
+    assert(adapter.liveCurrents().currents.every(value => value < .5), 'Low phase currents alone do not prove stopped power or work state');
+    assert.equal(control.limiter.settingMode, changed === 'hold-cleared' ? 'idle-fallback' : undefined);
+    assert.equal(f.runtime.limiterStatus(control, f.now).applicationStatus === 'idle', changed === 'hold-cleared');
+    assert.equal(f.commands.length, commands);
+  });
+
 test('uncertain Charger 2 commands keep recording fresh capacity without replay or invented coverage', async t => {
   const f = await fixture(t, { budgetA: 25 });
   await f.connect('charger2');

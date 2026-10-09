@@ -113,6 +113,11 @@ async function fixture(t, { firstCurrentA = 16, firstAvailable = true, stepMetad
   };
   const create = async () => {
     runtime = new ChargingRuntime({ engine: {}, store, config, clock: () => now });
+    if (!data.has(runtime.key)) {
+      // Each scenario explicitly enables its subject after adapter setup.
+      for (const item of Object.values(runtime.chargers)) item.controls.enabled = false;
+      runtime.refreshSettings();
+    }
     const instance = runtime; t.after(() => instance.close());
     runtime.tick = () => {}; runtime.pricesInitialized = true;
     runtime.updatePlan = () => {

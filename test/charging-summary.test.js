@@ -17,6 +17,15 @@ function summary(item) {
 }
 const notice = item => chargingNotice(item, chargerDisplay(item, { now }), summary(item));
 
+test('a failed reading explains unavailable control without claiming an uncertain command outcome', () => {
+  const item = charger({ provider: 'shelly-evse', control: { phase: 'unavailable', confirmed: false,
+    reason: 'evse-read-timeout', pending: null, execution: { periods: [{ startAt, endAt: null }] } } });
+  const result = summary(item);
+  assert.equal(result.roleLabel, 'Control unconfirmed');
+  assert.match(result.roleDetail, /did not answer a reading request in time/);
+  assert.doesNotMatch(result.roleDetail, /outcome is still unknown|has not confirmed the instruction/);
+});
+
 test('predicted remaining cost is disclosed without claiming that delivered cost or price coverage is missing', () => {
   const item = charger({ sessionCost: { totalCents: 456, estimated: true, usesForecast: true } });
   const cost = chargingCost(item, chargerDisplay(item, { now }), summary(item), { now });

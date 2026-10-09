@@ -6,6 +6,12 @@ Versions follow Semantic Versioning. `-dev.N` denotes a development prerelease.
 
 ## Unreleased
 
+- Brief input-processing holds preserve confirmed charging schedules, pauses
+  and idle current settings while continuing to block new commands. Shelly read
+  timeouts now describe an unavailable reading separately from an uncertain command,
+  and retain bounded timing diagnostics for investigation. Automatic charging
+  starts ON with fresh charging state; saved OFF choices and equipment identity
+  checks remain in force.
 - Vehicle identification can proceed on a reachable charger while its peer is
   explicitly offline. Tesla requires a matching physical charging baseline and
   confirmed controlled stop with fresh vehicle evidence; BMW retains its

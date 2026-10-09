@@ -94,10 +94,13 @@ withdraws readiness; waiting never renews source clocks or identification limits
 Reported hardware maximum and current-setting observations have separate readiness
 from command publication. A packet waiting for storage or bounded source-time
 admission blocks commands with an explicit processing reason; it does not withdraw
-still-valid committed limits, replace an adopted economic plan or reset an
-identification attempt. The command reason clears immediately when admission
-finishes, and ordinary reconciliation resumes within its five-second polling
-cycle. Unknown or invalidated settings, failed persistence, native restrictions
+still-valid committed limits, clear the accepted permission or schedule
+confirmation, replace an adopted economic plan or reset an identification attempt.
+The idle standby setting remains separately confirmed while capacity updates,
+subject to fresh stopped evidence and tighter applicable limits. The command
+reason clears immediately when admission finishes, and ordinary reconciliation
+resumes within its five-second polling cycle. Unknown or invalidated settings,
+failed persistence, native restrictions
 and actual connection loss retain their own unavailable reasons. These checks
 do not extend an observation's lifetime or establish that a requested setting
 has taken physical effect.
@@ -227,6 +230,16 @@ or jump warnings are separate from command-readiness errors and clear after a
 valid subsequent increment, while recorded gaps remain intact. MQTT electrical
 acquisition and lifetime-meter recording remain useful independently of control
 availability.
+
+RPC reads keep the five-second response deadline. A missed read reports a reading
+timeout; only an uncertain write reports an unconfirmed instruction. Receipt of a
+matching reply cancels this response timer before persistence or source-time
+admission, while those admission steps still block subsequent commands. The live
+snapshot retains one `lastRpcTimeout` diagnostic with the method, supported role,
+request/timeout clocks, monotonic elapsed time and timer overrun. It contains no
+request identifiers or payloads, survives a successful poll and resets on a new
+MQTT connection. Timer overrun can show delayed host scheduling; it does not by
+itself establish why a device reply was missing.
 
 [`NotifyStatus`](https://shelly-api-docs.shelly.cloud/gen2/General/Notifications/)
 is a partial overlay, with its own event clock in `params.ts`. Omitted attributes

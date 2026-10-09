@@ -31,7 +31,8 @@ function fixture(charging = {}, saved = {}, automatic = {}) {
   const create = () => {
     const runtime = new ChargingRuntime(options);
     if (!values.has('charging:mqtt')) {
-      for (const [id, enabled] of Object.entries(automatic)) runtime.chargers[id].controls.enabled = enabled;
+      for (const [id, enabled] of Object.entries({ charger1: false, charger2: false, ...automatic }))
+        runtime.chargers[id].controls.enabled = enabled;
       runtime.refreshSettings();
     }
     runtime.setMqttStatus({connected:true,subscribed:true},'bmw');

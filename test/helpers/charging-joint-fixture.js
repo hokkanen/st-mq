@@ -89,6 +89,11 @@ export async function fixture(t, { limiter = true, budgetA = 16, notifyRuntime =
   let shelly, ocpp;
   const create = async () => {
     runtime = new ChargingRuntime({ engine: {}, store, config, clock: () => now });
+    if (store.getState(runtime.key) === null) {
+      // Joint-control scenarios choose each charger's Automatic preference.
+      for (const item of Object.values(runtime.chargers)) item.controls.enabled = false;
+      runtime.refreshSettings();
+    }
     runtime.teslaCapture = capture;
     const scope = runtime.chargers.charger1.association;
     const supply = () => ({ availableCurrentA: triple(Math.max(0, budgetA - household.currentA - amps2())),

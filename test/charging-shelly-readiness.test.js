@@ -186,11 +186,44 @@ test('a timed-out current read does not delay independent physical state or mete
   assert.equal(f.adapter.normalize().powerKw.available, true);
   assert.equal(f.adapter.snapshot().controlReady, false);
   await timeout; await refresh;
-  assert.equal(f.adapter.snapshot().error, 'evse-command-unconfirmed');
+  assert.equal(f.adapter.snapshot().error, 'evse-read-timeout');
+  const timeoutEvidence = f.adapter.snapshot().lastRpcTimeout;
+  assert.equal(timeoutEvidence.method, 'Number.GetStatus'); assert.equal(timeoutEvidence.role, 'current_limit');
+  assert.equal(timeoutEvidence.requestedAt, f.now()); assert.equal(timeoutEvidence.timedOutAt, f.now());
+  assert.ok(timeoutEvidence.elapsedMs >= 4900); assert.ok(timeoutEvidence.timerOverrunMs >= 0);
+  assert.deepEqual(Object.keys(timeoutEvidence).sort(), ['elapsedMs', 'method', 'requestedAt', 'role', 'timedOutAt', 'timerOverrunMs']);
   assert.equal(f.adapter.normalize().connected.value, true);
   assert.deepEqual(f.adapter.snapshot().session, originalSession);
   await assert.rejects(f.command('start_charging', true));
   assert.equal(f.mutations().length, 0);
+  f.client.publish = publish; await f.refresh();
+  assert.equal(f.adapter.snapshot().error, null);
+  assert.equal(f.adapter.snapshot().controlReady, true);
+  assert.deepEqual(f.adapter.snapshot().lastRpcTimeout, timeoutEvidence, 'Successful polling retains the last failure evidence');
+  f.client.emit('offline'); await f.ready();
+  assert.equal(f.adapter.snapshot().lastRpcTimeout, null, 'A new MQTT generation starts fresh diagnostics');
+});
+
+test('read publication failures and lost write replies retain distinct outcomes', async t => {
+  const f = fixture(t); await f.ready();
+  const publish = f.client.publish;
+  for (const throws of [false, true]) {
+    f.client.publish = (_topic, _payload, _options, done) => {
+      if (throws) throw Error('Synthetic transport failure');
+      done(Error('Synthetic transport failure'));
+    };
+    await assert.rejects(f.adapter.rpc('Service.GetStatus', { id: 0 }), { code: 'evse-read-unavailable' });
+    await assert.rejects(f.command('start_charging', false), { code: 'evse-publish-unconfirmed' });
+  }
+  f.client.publish = publish; await f.refresh();
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  f.client.publish = (_topic, _payload, _options, done) => done?.();
+  const command = assert.rejects(f.command('start_charging', false), { code: 'evse-command-unconfirmed' });
+  await Promise.resolve();
+  t.mock.timers.tick(5000);
+  await command;
+  assert.equal(f.adapter.snapshot().lastRpcTimeout.method, 'Boolean.Set');
+  assert.equal(f.adapter.snapshot().lastRpcTimeout.role, 'start_charging');
 });
 
 test('economic pause status requires owned permission and fresh physical no-draw evidence', async t => {

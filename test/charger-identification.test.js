@@ -8,6 +8,9 @@ function fixture(t) {
   const store={getState:key=>structuredClone(saved.get(key)),setState:(key,value)=>saved.set(key,structuredClone(value))};
   withReportDatabase(store, t);
   const runtime=new ChargingRuntime({engine:{},store,config:{input:'mqtt',connections:{easee:{charger_id:'synthetic'}}},clock:()=>now});
+  // Passive matching is independent of the fresh-installation Automatic choice.
+  for(const item of Object.values(runtime.chargers))item.controls.enabled=false;
+  runtime.refreshSettings();
   const tesla={association:"synthetic-tesla-source",connected:true,healthy:true,pluggedIn:true,atHome:true,charging:false,batteryLevel:40,chargeLimitSoc:90,requestedCurrentA:6,maxCurrentA:16,actualPowerKw:0,fields:{healthy:{receivedAt:NOW,retained:false},plugged_in:{receivedAt:NOW,retained:false},battery_level:{receivedAt:NOW,retained:false},charge_limit_soc:{receivedAt:NOW,retained:false},charge_current_request:{receivedAt:NOW,retained:false}},boundaries:[]};
   runtime.teslaCapture={snapshot:()=>structuredClone(tesla)};
   for(const id of Object.keys(physical)) {

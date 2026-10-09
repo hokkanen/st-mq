@@ -31,6 +31,18 @@ function fixture() {
     observe: (view, at = now) => readCompleteReport(observer, observer.observe([view], at).chargers[0].current) };
 }
 
+test('reports retain a timed-out reading separately from an uncertain actuator instruction', () => {
+  const { observe } = fixture(), view = charger();
+  Object.assign(view.control, { phase: 'unavailable', confirmed: false, pending: null,
+    errorCode: 'evse-read-timeout', reason: 'evse-read-timeout' });
+  const report = observe(view);
+  const event = report.timeline.find(row => row.kind === 'control');
+  assert.equal(event.errorCode, 'evse-read-timeout');
+  assert.equal(event.reasonCode, 'evse-read-timeout');
+  assert.equal(event.confirmed, false);
+  assert(!report.timeline.some(row => row.errorCode === 'evse-command-unconfirmed'));
+});
+
 test('draw following a degraded price-plan release does not certify scheduling as expected', () => {
   const { observe } = fixture(), view = charger();
   Object.assign(view.plan, { state: 'release', reason: 'electrical-telemetry-unavailable', feasible: false, provisional: true });

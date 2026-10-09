@@ -181,6 +181,12 @@ test('queued unrelated messages preserve observed limits and the adopted plan wi
   assert.equal(view.phase, 'waiting'); assert.equal(view.reason, 'economic-wait');
   assert.deepEqual(saved.execution, initialState.execution);
   assert.equal(view.snapshot.commandBlockReason, 'evse-input-persistence-pending');
+  assert.equal(view.confirmed, true, 'An ingestion hold cannot erase the accepted permission');
+  assert.equal(view.scheduleConfirmed, true);
+  assert.equal(view.ownsInstruction, true); assert.equal(view.pauseConfirmed, true);
+  assert.equal(view.pending, null);
+  assert.equal(view.snapshot.fields.start_charging.measuredAt, NOW);
+  assert.equal(view.snapshot.fields.start_charging.receivedAt, NOW, 'Waiting does not renew evidence');
   writer.exec('ROLLBACK'); locked = false;
   const deadline = performance.now() + 2000;
   while (store.writeQueueStatus().pending) {
@@ -195,6 +201,9 @@ test('queued unrelated messages preserve observed limits and the adopted plan wi
   f.setNow(NOW + f.adapter.config.maxAgeMs + 1);
   assert.equal(f.adapter.snapshot().currentObservationReady, false, 'Waiting cannot prolong evidence freshness');
   assert.equal(f.adapter.normalize().maximumCurrentA.available, false);
+  assert.equal(controller.status().confirmed, false, 'Expired observations still withdraw confirmation');
+  assert.equal(controller.status().scheduleConfirmed, false);
+  assert.equal(controller.status().pauseConfirmed, false);
 });
 
 test('native restrictions and storage failures withdraw observations instead of masquerading as processing holds', async t => {
@@ -648,6 +657,14 @@ test('invalid or future Shelly phase packets cannot replace supported electrical
 test('small future native Stop events wait once, fence commands, and retain original clocks after admission', async t => {
   for (const lead of [1, 400, 1000]) await t.test(`${lead} ms`, async t => {
     const f = fixture(t); await f.ready();
+    const scope = f.adapter.snapshot().session;
+    const controller = createShellyController({ adapter: f.adapter, clock: f.now, canControl: () => true,
+      initialState: { version: 1, association: f.adapter.association, sessionId: scope.sessionId,
+        phase: 'released', reason: 'economic-window', manual: null, ownedPause: false, pending: null,
+        lastStart: true, lastStartAt: NOW, execution: { planId: 'source-admission-plan', deadlineAt: NOW + 7200_000,
+          finalStartAt: NOW, periods: [{ startAt: NOW, endAt: null }] } } });
+    t.after(() => controller.close());
+    assert.equal(controller.status().scheduleConfirmed, true);
     f.setNow(NOW + 1000);
     const receivedAt = f.now(), sourceAt = receivedAt + lead;
     const maximum = f.adapter.normalize().maximumCurrentA;
@@ -657,6 +674,7 @@ test('small future native Stop events wait once, fence commands, and retain orig
     assert.equal(f.adapter.snapshot().observationReady, true);
     assert.deepEqual(f.adapter.normalize().maximumCurrentA, maximum, 'Time admission cannot erase or renew the confirmed equipment limit');
     assert.equal(f.adapter.snapshot().fields.start_charging.value, true, 'Future state cannot become current authority');
+    assert.equal(controller.status().scheduleConfirmed, true, 'The existing committed instruction retains its confirmation during time admission');
     assert.equal(f.adapter.snapshot().permissionEvents.length, 0);
     await assert.rejects(f.adapter.rpc('Boolean.Set', { owner: 'service:0', role: 'start_charging', value: true }, { mutation: true }),
       { code: 'evse-control-unavailable' });
@@ -666,6 +684,8 @@ test('small future native Stop events wait once, fence commands, and retain orig
     assert.equal(event.value, false); assert.equal(event.eventAt, sourceAt); assert.equal(event.receivedAt, receivedAt);
     assert.ok(event.admittedAt >= sourceAt);
     assert.equal(f.adapter.snapshot().fields.start_charging.value, false);
+    assert.equal(controller.status().confirmed, false, 'The newly admitted Stop withdraws the superseded confirmation');
+    assert.equal(controller.status().scheduleConfirmed, false);
     const saved = f.values.get(`charging:shelly:${f.adapter.association}`);
     assert.doesNotThrow(() => validateShellyAcquisitionState(saved));
     const unsupported = structuredClone(saved); delete unsupported.permissionEvents[0].admittedAt;

@@ -182,7 +182,14 @@ export class ChargingRuntime {
       retentionDays: this.configuration.report_retention_days });
     this.limiterHistory = new ChargingAllowanceHistory({ store, input: config.input });
     this.physicalTests = new ChargingPhysicalTests({ store, key: `${this.key}:physical-tests`, clock });
-    const saved = store.getState(this.key) ?? {};
+    const stored = store.getState(this.key);
+    // Initialize the preference only when all charging runtime state is absent.
+    // A present empty/null record, missing control field or changed association
+    // or environment cannot turn an earlier unknown/off choice into permission.
+    const initialAutomatic = stored == null
+      && !store.db?.prepare(`SELECT 1 FROM state WHERE key IN
+        ('charging:mqtt', 'charging:providers', 'charging:simulated', 'charging:offline') LIMIT 1`).get();
+    const saved = stored ?? {};
     validateChargingRuntimeState(saved);
     this.consumedTeslaPower = saved.consumedTeslaPower ?? null;
     this.consumedTeslaCurrent = saved.consumedTeslaCurrent ?? null;
@@ -220,7 +227,7 @@ export class ChargingRuntime {
       const previous = saved.chargers?.[definition.id]?.association === association ? saved.chargers[definition.id] : {};
       const streamMatches = previous.streamAssociation === this.streamAssociation;
       return [definition.id, { definition, association, ownershipAdmitted: saved.chargers?.[definition.id]?.association === association,
-        controls: previous.controls ?? { enabled: false, revision: 0 }, replan: previous.replan === true,
+        controls: previous.controls ?? { enabled: initialAutomatic, revision: 0 }, replan: previous.replan === true,
         request: previous.request ?? null, plan: previous.plan ?? null,
         sessionCost: previous.sessionCost ?? null,
         vehicleMatch: previous.vehicleMatch?.id === 'bmw' && !this.vehicleFeeds.bmw.reading

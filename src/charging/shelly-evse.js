@@ -81,6 +81,7 @@ export function createShellyEvseAdapter({ config, broker, client, store, engine,
   const notificationBaselines = new Map(), notificationPending = new Map(Object.entries(state.notificationPending ?? {}));
   let notificationRefreshQueued = false;
   let subscriptionStatus = 'disconnected', lastLiveAt = null, readAt = null;
+  let lastRpcTimeout = null;
   let statusObserver = null;
   const cancellation = new AbortController();
   let storagePending = 0;
@@ -215,15 +216,24 @@ export function createShellyEvseAdapter({ config, broker, client, store, engine,
     await beforePublish();
     if (!connected || !admitted || closed || epoch !== generation || mutation && (!online || !permitted() || !canControl() || !guard())) throw fail('evse-command-revoked');
     return new Promise((resolve, reject) => {
-      const timer = setTimeout(() => { pending.delete(id); reject(fail('evse-command-unconfirmed')); }, 5000);
+      const requestedAt = clock(), started = performance.now();
+      const timer = setTimeout(() => {
+        pending.delete(id);
+        const timedOutAt = clock(), elapsedMs = performance.now() - started;
+        // Bounded transport evidence, without request IDs or private payloads.
+        // A missed read is not evidence of an uncertain actuator instruction.
+        lastRpcTimeout = { method, role: typeof params.role === 'string' && Object.hasOwn(TYPES, params.role) ? params.role : null,
+          requestedAt, timedOutAt, elapsedMs, timerOverrunMs: Math.max(0, elapsedMs - 5000) };
+        reject(fail(mutation ? 'evse-command-unconfirmed' : 'evse-read-timeout'));
+      }, 5000);
       if (mutation && params.role) fieldRevisions.set(params.role, (fieldRevisions.get(params.role) ?? 0) + 1);
       timer.unref?.(); pending.set(id, { resolve, reject, timer, generation: epoch,
         readback: statusReadback ? { role: params.role, generation: epoch,
           revision: fieldRevisions.get(params.role) ?? 0, requestedAt: clock() } : null });
       // No offline queue, retention or automatic application-level retry.
       try { client.publish(`${config.topicPrefix}/rpc`, JSON.stringify({ id, src: source, method, params }), { qos: 0, retain: false }, error => {
-        if (error && pending.has(id)) { clearTimeout(timer); pending.delete(id); reject(fail('evse-publish-unconfirmed')); }
-      }); } catch { clearTimeout(timer); pending.delete(id); reject(fail('evse-publish-unconfirmed')); }
+        if (error && pending.has(id)) { clearTimeout(timer); pending.delete(id); reject(fail(mutation ? 'evse-publish-unconfirmed' : 'evse-read-unavailable')); }
+      }); } catch { clearTimeout(timer); pending.delete(id); reject(fail(mutation ? 'evse-publish-unconfirmed' : 'evse-read-unavailable')); }
     });
   }
   function reconcileConnection(value, measuredAt, receivedAt, eventClock = false, valueUpdatedAt = null) {
@@ -690,6 +700,7 @@ export function createShellyEvseAdapter({ config, broker, client, store, engine,
     return polling;
   }
   function connect() {
+    lastRpcTimeout = null;
     sourcePending.clear();
     notificationBaselines.clear();
     connected = true; admitted = false; generation++; buffer = []; pendingEvents = []; overflow = eventOverflow = false; admission.reset(); discovered = controlReady = false;
@@ -746,7 +757,7 @@ export function createShellyEvseAdapter({ config, broker, client, store, engine,
     powerKw: finite(state.fields.phase_info?.value?.total_power) ? state.fields.phase_info.value.total_power : null,
     powerAt: state.fields.phase_info?.measuredAt ?? null,
     mqtt: { brokerConnected: connected, subscribed: admitted, subscriptionStatus, lastLiveAt }, topics: copy(topics),
-    readAt, nativeScheduleActive: chargingSchedules().length > 0,
+    readAt, lastRpcTimeout: copy(lastRpcTimeout), nativeScheduleActive: chargingSchedules().length > 0,
     nativeScheduleFingerprint: chargingSchedules().length
       ? hash(chargingSchedules().map(job => JSON.stringify(job)).sort()) : null,
     nativeScheduleRevision: nativeSchedules?.rev ?? null,
@@ -1106,6 +1117,21 @@ export function createShellyController({ adapter, initialState, saveState = () =
   const fresh = field => field?.invalidatedAt === undefined && field?.measuredAt > 0 && field.measuredAt <= clock() && field.receivedAt <= clock()
     && clock() - field.receivedAt <= adapter.config.maxAgeMs && !field.retained;
   const physicalFresh = field => fresh(field) && clock() - field.measuredAt <= adapter.config.maxAgeMs;
+  const idleCurrentSetting = (snapshot, context) => {
+    const physical = adapter.liveCurrents();
+    if (!fresh(snapshot.fields.start_charging) || snapshot.fields.start_charging.value !== false
+      || !fresh(snapshot.fields.work_state) || !adapter.config.connectedStates.includes(snapshot.fields.work_state.value)
+      || adapter.config.chargingStates.includes(snapshot.fields.work_state.value)
+      || !physical.healthy || !physical.currents.every(value => value < .5)
+      || snapshot.fields.phase_info?.value.total_power !== 0) return null;
+    // Idle is a confirmed permission-off stop, never a momentary zero draw.
+    // Its stable standby pilot still respects native and vehicle ceilings.
+    const cap = Math.floor(Math.min(adapter.config.fallbackCurrentA, adapter.config.maximumCurrentA,
+      ...adapter.config.mainFuseA.map((value, phase) => value - adapter.config.marginA[phase]),
+      ...[state.manualCurrentA, vehiclePilotLimit(context.vehicleCurrentA, adapter.config.minimumCurrentA)]
+        .filter(value => finite(value) && value >= 0)) / adapter.config.currentStepA) * adapter.config.currentStepA;
+    return cap < adapter.config.minimumCurrentA ? 0 : cap;
+  };
   async function refreshCommandReadback(role, scope) {
     await adapter.refresh({ force: true });
     // A delayed notification may arrive after the confirmation query started.
@@ -1147,6 +1173,11 @@ export function createShellyController({ adapter, initialState, saveState = () =
     && snapshot.fields.start_charging.measuredAt === state.owned.permissionAt && state.lastStart === false && state.ownedPause;
   const status = () => {
     const snapshot = adapter.snapshot(), projected = devicePermission(snapshot);
+    // Admission holds block new commands, not already committed confirmation.
+    // Keep its original evidence clocks; actual changes, read failures and stale
+    // observations still withdraw it through their separate readiness fences.
+    const instructionEvidenceReady = snapshot.controlReady || snapshot.observationReady === true
+      && ['evse-input-persistence-pending', 'evse-source-time-pending'].includes(snapshot.commandBlockReason);
     const owned = projected.pauseBroken ? null : state.owned ?? null;
     const permission = snapshot.fields.start_charging;
     const economicPause = state.execution
@@ -1154,7 +1185,7 @@ export function createShellyController({ adapter, initialState, saveState = () =
       && !projected.pauseBroken && !projected.held && state.ownedPause && state.lastStart === false && fresh(permission)
       && sameSetting(permission, { value: false, measuredAt: state.lastStartAt });
     const identificationPause = !projected.pauseBroken && !projected.held && ownSetting(snapshot);
-    const ownsInstruction = Boolean(snapshot.online && snapshot.controlReady && !state.manual && state.pending?.role !== 'start_charging'
+    const ownsInstruction = Boolean(snapshot.online && instructionEvidenceReady && !state.manual && state.pending?.role !== 'start_charging'
       && !snapshot.nativeScheduleActive && (identificationPause || economicPause));
     const physical = snapshot.fields.phase_info, work = snapshot.fields.work_state;
     // Economic pauses can start while the vehicle is already idle. Current
@@ -1172,7 +1203,7 @@ export function createShellyController({ adapter, initialState, saveState = () =
     // An accepted permission and schedule keep their own readback. Changing the
     // pilot does not erase them while fresh matching native permission remains.
     // Physical charging/pausing still has the separate measured-evidence gate.
-    const permissionConfirmed = Boolean(snapshot.online && snapshot.controlReady
+    const permissionConfirmed = Boolean(snapshot.online && instructionEvidenceReady
       && snapshot.session?.connected === true && state.sessionId === snapshot.session.sessionId
       && fresh(permission) && sameSetting(permission, { value: state.lastStart, measuredAt: state.lastStartAt })
       && state.pending?.role !== 'start_charging' && !projected.pauseBroken && !projected.held
@@ -1420,7 +1451,25 @@ export function createShellyController({ adapter, initialState, saveState = () =
         if (adapter.config.limiterEnabled && snapshot.session?.connected === true
           && (state.pending || unavailable || currentUnavailable)) {
           const context = typeof getAllocation === 'function' ? await getAllocation(copy(snapshot)) : input.allocation ?? {};
+          const previous = state.limiter, currentSnapshot = adapter.snapshot();
           rememberLimiter(limitCurrent(context), context, snapshot);
+          // Fresh capacity is independent of the idle setting already selected
+          // for this connection. Re-evaluate that setting through a processing
+          // hold so tighter ceilings or lost stopped evidence cannot be hidden.
+          if (snapshot.observationReady && ['evse-input-persistence-pending', 'evse-source-time-pending'].includes(snapshot.commandBlockReason)
+            && currentSnapshot.observationReady && (currentSnapshot.controlReady
+              || ['evse-input-persistence-pending', 'evse-source-time-pending'].includes(currentSnapshot.commandBlockReason))
+            && currentSnapshot.session?.connected === true
+            && currentSnapshot.generation === snapshot.generation
+            && currentSnapshot.session?.sessionId === snapshot.session.sessionId
+            && currentSnapshot.session?.connectedAt === snapshot.session.connectedAt
+            && previous?.settingMode === 'idle-fallback'
+            && previous.scope?.generation === snapshot.generation
+            && previous.scope?.sessionId === snapshot.session.sessionId
+            && previous.scope?.connectedAt === snapshot.session.connectedAt) {
+            const setting = idleCurrentSetting(currentSnapshot, context);
+            if (setting !== null) Object.assign(state.limiter, { settingMode: 'idle-fallback', settingCurrentA: setting });
+          }
         }
         if (unavailable) {
           // A queued packet fences all mutations, but does not erase the
@@ -1766,20 +1815,8 @@ export function createShellyController({ adapter, initialState, saveState = () =
         const shouldStart = !devicePermission(snapshot).held && !pause && allowStart && !snapshot.nativeScheduleActive && !minimumBlocked && !currentUnconfirmed;
         const mayStartNow = () => shouldStart && (identification || recovery || clock() - (state.lastPauseAt ?? 0) >= adapter.config.dwellMs);
         const selectCurrentSetting = () => {
-          const settingSnapshot = adapter.snapshot(), idlePhysical = adapter.liveCurrents();
-          const idle = !mayStartNow() && fresh(settingSnapshot.fields.start_charging) && settingSnapshot.fields.start_charging.value === false
-            && fresh(settingSnapshot.fields.work_state) && adapter.config.connectedStates.includes(settingSnapshot.fields.work_state.value)
-            && !adapter.config.chargingStates.includes(settingSnapshot.fields.work_state.value)
-            && idlePhysical.healthy && idlePhysical.currents.every(value => value < .5)
-            && settingSnapshot.fields.phase_info?.value.total_power === 0;
-          // Idle is a confirmed permission-off stop, never a momentary zero draw.
-          // Keep a stable standby pilot while recording varying headroom above.
-          // Native/vehicle ceilings still bind; a zero ceiling keeps Stop intact.
-          const idleCap = Math.floor(Math.min(adapter.config.fallbackCurrentA, adapter.config.maximumCurrentA,
-            ...adapter.config.mainFuseA.map((value, phase) => value - adapter.config.marginA[phase]),
-            ...[state.manualCurrentA, vehiclePilotLimit(context.vehicleCurrentA, adapter.config.minimumCurrentA)]
-              .filter(value => finite(value) && value >= 0)) / adapter.config.currentStepA) * adapter.config.currentStepA;
-          const settingCap = idle ? idleCap < adapter.config.minimumCurrentA ? 0 : idleCap : cap;
+          const idleCap = mayStartNow() ? null : idleCurrentSetting(adapter.snapshot(), context);
+          const idle = idleCap !== null, settingCap = idle ? idleCap : cap;
           state.limiter.settingMode = idle ? 'idle-fallback' : 'allocated';
           state.limiter.settingCurrentA = settingCap;
           return { idle, settingCap };

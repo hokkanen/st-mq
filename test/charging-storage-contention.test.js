@@ -16,6 +16,8 @@ function fixture(t) {
     connections: { easee: { charger_id: 'synthetic-contention' } },
     charging: { vehicles: { bmw: { mqttTopic: '' } } } }, canControl: () => authority });
   // These tests isolate durable permission from numerical forecast throughput.
+  runtime.chargers.charger1.controls.enabled = false;
+  runtime.refreshSettings();
   let dispatches = 0;
   runtime.updatePlan = async () => {};
   runtime.reconcile = async () => {

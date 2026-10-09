@@ -244,9 +244,17 @@ still withhold readiness for further commands, and physical charging or stopping
 requires its own fresh measurement.
 
 Pre-1.0 native state is not migrated. The current charging state remains version 6
-and database schema 27; the physical adapter uses its own explicitly scoped
-current state. New optional control choices default to OFF/Balanced when absent;
-recorded presentation never supplies control permission. Retired configuration switches for automatic charging and
+and database schema 28; the physical adapter uses its own explicitly scoped
+current state. First initialization with no saved charging runtime state in any
+current input environment defaults
+to Automatic ON for both chargers and Balanced priority, bound to the configured
+equipment. Existing OFF choices survive restart. Missing controls inside existing
+state, equipment reassociation and switching to an input environment with no
+saved choices default to OFF/Balanced; a present empty/null
+record does not count as first initialization. Invalid state is rejected, and
+recorded presentation never supplies control permission. Initial Automatic still
+requires live authority, fresh connection evidence, commissioning and native
+readiness before any command. Retired configuration switches for automatic charging and
 priority, dashboard overrides of permanent battery defaults, old pseudo-C2
 settings, charger-bound vehicle topics, efficiency overrides, unscoped verdicts
 and aliases are rejected. Incompatible development databases, including those
