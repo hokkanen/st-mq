@@ -27,8 +27,6 @@ export function compareChargingFlexibility(options, { chargerId, normalReadyByAt
   const selected = options.chargers.find(charger => charger.id === chargerId);
   if (!selected || !(normalReadyByAt > options.now) || !(deferredReadyByAt > normalReadyByAt))
     return { ...base, reason: 'ready-by-passed' };
-  if (!covered(options.prices, options.now, deferredReadyByAt))
-    return { ...base, reason: 'price-coverage-unavailable' };
   const prepare = deferred => ({ ...options, previousPeriods: {}, previousAllocations: [],
     chargers: options.chargers.map(charger => ({ ...charger,
       ...(charger.id === chargerId ? { deadlineAt: deferred ? deferredReadyByAt : normalReadyByAt,
@@ -51,6 +49,8 @@ export function compareChargingFlexibility(options, { chargerId, normalReadyByAt
   const householdSavingsCents = sum(normal, 'costCents') - sum(deferred, 'costCents');
   const riskAdjustedSavingsCents = householdSavingsCents + sum(normal, 'uncertaintyPremiumCents') - sum(deferred, 'uncertaintyPremiumCents');
   return { ...base, available: true, reason: null,
+    priceCoverage: covered(options.prices, options.now, deferredReadyByAt)
+      && normal.assumptions.priceCoverage === 'complete' && deferred.assumptions.priceCoverage === 'complete' ? 'complete' : 'partial',
     normalCostCents: before.costCents, deferredCostCents: after.costCents,
     normalFinishAt: before.finishAt, deferredFinishAt: after.finishAt,
     normalChargingDurationMs: chargingDuration(before), deferredChargingDurationMs: chargingDuration(after),

@@ -4,6 +4,8 @@ import { decodeElectricityForecast, fetchElectricityForecast, startElectricityFo
   ELECTRICITY_FORECAST_POLICY, ELECTRICITY_FORECAST_URL } from '../src/acquisition/electricity-forecast.js';
 import { createHttp, ProviderError } from '../src/acquisition/http.js';
 import { startProviders } from '../src/acquisition/providers.js';
+import { electricityForecastView } from '../src/app/electricity-forecast-view.js';
+import { withElectricityForecast } from '../chart/electricity-forecast.js';
 
 const HOUR = 3_600_000, at = Date.parse('2026-10-08T15:30:00Z');
 const iso = value => new Date(value).toISOString();
@@ -23,12 +25,13 @@ const contract = { periods: [{ from: 0, marginCtPerKwh: 1, taxCtPerKwh: 2, vatRa
   tariff: 'day-night', transferRates: { vatIncluded: false, dayCtPerKwh: 3, nightCtPerKwh: 1,
     winterDayCtPerKwh: 3, otherCtPerKwh: 1 } }] };
 
-test('native Finnish predictions retain provenance and clip to 48 hours from request, not official horizon', () => {
+test('native Finnish predictions retain the full final supplied hour, not a cutoff at the request minute', () => {
   const snapshot = decode(body(at, [-0.02, 0, ...Array(46).fill(0.1)]));
   assert.equal(snapshot.intervals.length, 48);
   assert.equal(snapshot.intervals[0].spotCtPerKwh, -2);
   assert.equal(snapshot.intervals[1].spotCtPerKwh, 0);
-  assert.equal(snapshot.intervals.at(-1).end, at + 48 * HOUR);
+  assert.equal(snapshot.intervals.at(-1).end, at + 48.5 * HOUR);
+  assert.equal(snapshot.horizonEnd, at + 48.5 * HOUR);
   assert.equal(snapshot.intervals.at(-1).nativeEnd, at + 48.5 * HOUR);
   assert.equal(snapshot.intervals[0].start, at + 0.5 * HOUR, 'Missing current half hour stays missing');
   assert.equal(snapshot.generatedAt, at);
@@ -39,6 +42,24 @@ test('native Finnish predictions retain provenance and clip to 48 hours from req
   const cents = body(at, [-2, 0]);
   cents.unit = 'c/kWh'; cents.entries.forEach(row => { row.unit = 'c/kWh'; });
   assert.equal(decode(cents).intervals[0].spotCtPerKwh, -2);
+});
+
+test('a request at 05:48 keeps the last 05-06 hour through pricing and chart projection', () => {
+  const requestedAt = Date.parse('2026-11-03T05:48:00+02:00');
+  const expectedEnd = Date.parse('2026-11-05T06:00:00+02:00');
+  const forecast = { ...decode(body(requestedAt), requestedAt), available: true };
+  const outlook = forecastPriceOutlook({ forecast, contract, now: requestedAt });
+  assert.equal(outlook.at(-1).end, expectedEnd);
+  assert.equal(outlook.at(-1).nativeEnd, expectedEnd);
+  const view = electricityForecastView({ forecast, contract, now: requestedAt });
+  const chart = withElectricityForecast({ spot_price: [], all_in_price: [] }, view,
+    { from: requestedAt, to: expectedEnd + HOUR }, requestedAt);
+  for (const points of Object.values(chart)) {
+    assert.equal(points.at(-1).x, expectedEnd - 1, 'Half-open chart interval reaches the 06:00 boundary');
+    assert.equal(points.at(-1).intervalEnd, expectedEnd, 'Tooltip and drawn interval agree');
+  }
+  const onHour = requestedAt + 12 * 60_000;
+  assert.equal(decode(body(onHour), onHour).intervals.at(-1).end, onHour + 48 * HOUR);
 });
 
 test('invalid values, units, zones, sources, ordering, overlaps and native intervals fail closed', () => {
@@ -58,6 +79,8 @@ test('invalid values, units, zones, sources, ordering, overlaps and native inter
     value => { value.generated_at = iso(at - 2 * HOUR); },
     value => { value.source.firestore.updated_at = iso(at - 7 * HOUR); },
     value => { value.entries.at(-1).end = iso(at + 50 * HOUR); },
+    value => { const row = value.entries.at(-1); row.start = row.native_start = row.end;
+      row.end = row.native_end = iso(at + 49.5 * HOUR); },
   ];
   for (const change of changes) { const input = body(); change(input); assert.throws(() => decode(input), /invalid-electricity-forecast/); }
 });
@@ -71,7 +94,8 @@ test('gaps and a shorter entitled horizon survive; absent model time is explicit
   input.meta.allowed_horizon_hours = 24; input.meta.used_horizon_hours = 24;
   input.entries = input.entries.slice(0, 23);
   const shorter = decode(input);
-  assert.equal(shorter.horizonEnd, at + 24 * HOUR);
+  assert.equal(shorter.horizonEnd, at + 24.5 * HOUR);
+  assert.equal(shorter.intervals.at(-1).end, at + 24.5 * HOUR);
 });
 
 test('UTC native hours remain distinct through Finland daylight saving transitions', () => {

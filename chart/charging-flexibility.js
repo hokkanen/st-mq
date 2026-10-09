@@ -18,7 +18,7 @@ const duration = milliseconds => {
 const comparisonContent = value => JSON.stringify([
   ...['normalReadyByAt', 'deferredReadyByAt', 'normalFinishAt', 'deferredFinishAt'].map(key => finite(value[key]) ? Math.floor(value[key] / 60_000) : null),
   ...['normalCostCents', 'deferredCostCents', 'savingsCents', 'householdSavingsCents', 'householdUncertaintyPremiumCents'].map(key => money(value[key])),
-  Math.sign(value.savingsCents), duration(value.normalChargingDurationMs), duration(value.deferredChargingDurationMs), value.recommended, value.usesForecast,
+  Math.sign(value.savingsCents), duration(value.normalChargingDurationMs), duration(value.deferredChargingDurationMs), value.recommended, value.usesForecast, value.priceCoverage,
   ...['normalPeriods', 'deferredPeriods'].map(key => value[key]?.map(period => [Math.floor(period.startAt / 60_000),
     finite(period.endAt) ? Math.floor(period.endAt / 60_000) : null])),
   (value.chargers ?? []).filter(peer => finite(peer.normalCostCents) && finite(peer.deferredCostCents)
@@ -34,7 +34,6 @@ export function chargingFlexibilityActionId(random = globalThis.crypto) {
 }
 const reasonText = reason => ({
   'forecast-unavailable': 'A fresh price forecast is unavailable. No saving can be estimated.',
-  'price-coverage-unavailable': 'Prices do not cover enough of both plans to compare costs.',
   'normal-plan-infeasible': 'The current deadline may not be achievable. A reliable saving cannot be compared.',
   'extended-plan-infeasible': 'Even the later deadline may not fit both charging requests. A reliable saving cannot be compared.',
   'planning-unavailable': 'A current shared charging plan is not yet available. Try the comparison again shortly.',
@@ -223,7 +222,8 @@ export function createChargingFlexibility({ document, request, save, formatTime 
     uncertainty.hidden = !available || !comparison.usesForecast;
     uncertainty.textContent = uncertainty.hidden ? '' : `Forecast risk allowance: ${money(comparison.householdUncertaintyPremiumCents)}. This planning margin is not an electricity charge.`;
     snapshotTime.hidden = !available;
-    snapshotTime.textContent = available ? `Estimate as of ${snapshotDate(comparison.at, snapshot.timezone)}. Updates automatically when the comparison changes.` : '';
+    snapshotTime.textContent = available ? `Estimate as of ${snapshotDate(comparison.at, snapshot.timezone)}. Updates automatically when the comparison changes.`
+      + (comparison.priceCoverage === 'partial' ? ' Prices cover only part of the planning period. Both plans use available prices; later prices may change the saving.' : '') : '';
     const readonly = !writable || charger?.readOnly === true;
     note.textContent = !view.visible ? 'This connection is no longer eligible. Close this comparison to review the current charging state.'
       : !sameSession || !sameComparison || view.awaitingCheckpoint ? 'The charging request changed. Refresh the comparison before making another choice.'

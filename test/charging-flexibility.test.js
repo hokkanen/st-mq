@@ -187,6 +187,7 @@ test('one snapshot compares equal remaining service for both chargers and expose
   const comparison = compareChargingFlexibility(options, { chargerId: 'charger1',
     normalReadyByAt: options.now + 2 * HOUR, deferredReadyByAt: options.now + 4 * HOUR });
   assert.equal(comparison.available, true); assert.equal(comparison.recommended, true);
+  assert.equal(comparison.priceCoverage, 'complete');
   assert.ok(Math.abs(comparison.savingsCents - 95) < 1e-6);
   assert.ok(Math.abs(comparison.householdSavingsCents - 95) < 1e-6);
   assert.ok(Math.abs(comparison.riskAdjustedSavingsCents - 85) < 1e-6);
@@ -209,15 +210,57 @@ test('refreshing an active allowance preserves the ordinary baseline forecast pe
     'a previously consumed allowance retains its explicit baseline permission');
 });
 
-test('missing future coverage is unavailable, never a fabricated zero-price saving', () => {
-  const options = planning(); options.prices.pop();
+test('prices ending before ready-by still compare equal service in the cheapest available slots', () => {
+  const options = planning(true); options.prices.pop();
+  const before = structuredClone(options);
+  const comparison = compareChargingFlexibility(options, { chargerId: 'charger1',
+    normalReadyByAt: options.now + 2 * HOUR, deferredReadyByAt: options.now + 26 * HOUR });
+  assert.equal(comparison.available, true);
+  assert.equal(comparison.priceCoverage, 'partial');
+  assert.ok(Math.abs(comparison.normalCostCents - 100) < 1e-6);
+  assert.ok(Math.abs(comparison.deferredCostCents - 5) < 1e-6);
+  assert.ok(Math.abs(comparison.savingsCents - 95) < 1e-6);
+  assert.ok(Math.abs(comparison.householdSavingsCents - 95) < 1e-6);
+  assert.ok(comparison.deferredPeriods[0].startAt >= options.now + 2 * HOUR);
+  assert.ok(comparison.deferredFinishAt <= options.now + 3 * HOUR);
+  assert.equal(comparison.chargers.length, 2);
+  assert.deepEqual(options, before);
+});
+
+test('partial coverage with only the original slots yields a real zero saving', () => {
+  const options = planning(); options.prices.splice(2);
+  const comparison = compareChargingFlexibility(options, { chargerId: 'charger1',
+    normalReadyByAt: options.now + 2 * HOUR, deferredReadyByAt: options.now + 26 * HOUR });
+  assert.equal(comparison.available, true);
+  assert.equal(comparison.priceCoverage, 'partial');
+  assert.equal(comparison.savingsCents, 0);
+  assert.ok(Math.abs(comparison.deferredCostCents - 100) < 1e-6);
+  assert.equal(comparison.recommended, false);
+});
+
+test('an interior price gap never becomes free charging or an implied native pause', () => {
+  const options = planning(); options.prices.splice(1, 1);
   const comparison = compareChargingFlexibility(options, { chargerId: 'charger1',
     normalReadyByAt: options.now + 2 * HOUR, deferredReadyByAt: options.now + 4 * HOUR });
-  assert.equal(comparison.available, false); assert.equal(comparison.reason, 'price-coverage-unavailable');
-  assert.equal(comparison.savingsCents, null);
-  assert.equal(comparison.normalFinishAt, null); assert.equal(comparison.deferredFinishAt, null);
-  assert.equal(comparison.normalChargingDurationMs, null); assert.equal(comparison.deferredChargingDurationMs, null);
-  assert.equal(comparison.normalPeriods, null); assert.equal(comparison.deferredPeriods, null);
+  assert.equal(comparison.available, true);
+  assert.equal(comparison.priceCoverage, 'partial');
+  assert.equal(comparison.savingsCents, 0);
+  assert.ok(Math.abs(comparison.deferredCostCents - 100) < 1e-6);
+  assert.ok(comparison.deferredFinishAt <= options.now + HOUR);
+});
+
+test('missing prices or insufficient priced capacity cannot fabricate a comparison', () => {
+  for (const prices of [[], [{ start: 0, end: 1, priceCtPerKwh: 1 }],
+    [{ start: planning().now, end: planning().now + 60_000, priceCtPerKwh: 1 }]]) {
+    const options = { ...planning(), prices };
+    const comparison = compareChargingFlexibility(options, { chargerId: 'charger1',
+      normalReadyByAt: options.now + 2 * HOUR, deferredReadyByAt: options.now + 4 * HOUR });
+    assert.equal(comparison.available, false); assert.equal(comparison.reason, 'extended-plan-infeasible');
+    assert.equal(comparison.savingsCents, null);
+    assert.equal(comparison.normalFinishAt, null); assert.equal(comparison.deferredFinishAt, null);
+    assert.equal(comparison.normalChargingDurationMs, null); assert.equal(comparison.deferredChargingDurationMs, null);
+    assert.equal(comparison.normalPeriods, null); assert.equal(comparison.deferredPeriods, null);
+  }
 });
 
 test('comparison completion and charging duration describe the selected schedule without counting pauses', () => {

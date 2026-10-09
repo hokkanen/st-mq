@@ -6,6 +6,9 @@ Versions follow Semantic Versioning. `-dev.N` denotes a development prerelease.
 
 ## Unreleased
 
+- Price forecasts retain the provider's complete final hourly interval. One
+  extra day compares feasible charging plans even when prices end before the
+  later deadline, with a notice that incomplete coverage may change the saving.
 - Device reports up to one second ahead now wait for clock catch-up automatically
   while retaining their original timestamps. Shared admission checks cover
   acquisition, Shelly permissions and sessions, vehicle targets, recording,

@@ -18,7 +18,8 @@ const timestamp = value => {
 };
 
 /** A provider prediction has no authority to become recorded market history.
- * The hourly boundaries survive clipping and subsequent quarter-hour expansion. */
+ * Keep the provider's complete final hour and its native evidence when expanding
+ * the requested horizon into quarter-hour planner slots. */
 export function decodeElectricityForecast(body, { requestedAt, fetchedAt = requestedAt } = {}) {
   if (!finite(requestedAt) || !finite(fetchedAt) || fetchedAt < requestedAt || fetchedAt - requestedAt > MINUTE) throw invalid();
   if (!body || body.api_version !== 'v1' || body.country !== 'FI' || body.currency !== 'EUR'
@@ -42,14 +43,15 @@ export function decodeElectricityForecast(body, { requestedAt, fetchedAt = reque
   }
   if (body.request?.country != null && body.request.country !== 'FI'
     || body.request?.hours != null && body.request.hours !== 48) throw invalid();
-  const horizonEnd = requestedAt + Math.min(48, access.allowed_horizon_hours, access.used_horizon_hours ?? 48) * HOUR;
+  const horizonEnd = Math.ceil(requestedAt / HOUR) * HOUR
+    + Math.min(48, access.allowed_horizon_hours, access.used_horizon_hours ?? 48) * HOUR;
   let previousEnd = -Infinity;
   const rows = body.entries.map(row => {
     const start = timestamp(row?.start), end = timestamp(row?.end);
     if (row.source !== 'forecast' || row.unit !== body.unit || !finite(row.value)
       || row.slot_minutes !== 60 || row.native_resolution_minutes !== 60
       || start % HOUR !== 0 || end - start !== HOUR || start < previousEnd
-      || start < Math.floor(requestedAt / HOUR) * HOUR || end > Math.ceil(horizonEnd / HOUR) * HOUR
+      || start < Math.floor(requestedAt / HOUR) * HOUR || end > horizonEnd
       || row.expansion_method != null && row.expansion_method !== 'native'
       || row.native_start != null && timestamp(row.native_start) !== start
       || row.native_end != null && timestamp(row.native_end) !== end) throw invalid();

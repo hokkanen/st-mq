@@ -33,13 +33,12 @@ ranges and malformed values reject the complete response. Gaps stay gaps.
 An unknown or changed external format fails closed; there are no old-format
 decoders, database migrations or price backfills.
 
-The horizon is at most 48 elapsed hours from the request, or a shorter provider
-entitlement. It is not 48 hours after the last official price. The inspected
-service begins at the next whole UTC hour and may finish its final hourly slot
-slightly beyond that bound. ST-MQ clips the usable end to the request horizon
-while retaining the original native start/end. It does not invent the missing
-current half hour. UTC native intervals preserve both occurrences of a repeated
-Finnish autumn hour.
+The requested horizon is 48 hours, or a shorter provider entitlement, measured
+from the request rather than the last official price. The inspected service
+begins at the next whole UTC hour. ST-MQ retains the complete final supplied
+hour, admitting its end up to that next whole hour plus the permitted horizon.
+It never extends a supplied interval or invents the missing current half hour.
+UTC native intervals preserve both occurrences of a repeated Finnish autumn hour.
 
 The service keeps one bounded snapshot in RAM. It fetches on live master startup
 and every 30 minutes, even when both chargers are unplugged and Automatic is off.
@@ -120,6 +119,10 @@ energy delivery, excluding pauses and waits for available capacity. The dialog
 also shows both chargers' combined estimated impact and a separate forecast risk allowance. Already
 delivered energy is common to both choices. Unavailable comparison data never
 becomes a zero cost or promised saving.
+
+Prices need not reach the later ready-by time when both plans can deliver the
+same required energy within the available priced horizon. The comparison labels
+incomplete coverage and explains that later prices may change the saving.
 
 **Allow one more day** is the separate affirmative action. It permits charging
 at any economical time before the later deadline; it does not request a 24-hour

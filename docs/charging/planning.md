@@ -277,8 +277,12 @@ cash cost also improves and the household risk-adjusted improvement is at least
 joint improvement and retain the existing minimum-run/pause and period-stability
 checks; published-only replans retain the existing cash-cost policy.
 
-Missing coverage through the proposed later deadline or unequal/infeasible modeled
-service makes the comparison unavailable. It never supplies a free future rate.
+Incomplete price coverage through the proposed later deadline does not block a
+comparison when both plans deliver the same required energy using available
+priced intervals. The comparison labels partial coverage; later prices may change
+the saving. Unknown intervals never supply a free future rate. The planner keeps
+its contiguous priced horizon and native-period constraints. Unequal/infeasible
+modeled service or missing prices for modeled delivery makes the comparison unavailable.
 The permission can still be granted without a savings estimate, with the UI stating
 that limitation; ordinary fallback then charges conservatively toward the hard
 deadline. New published prices replace predictions on the next assessment.

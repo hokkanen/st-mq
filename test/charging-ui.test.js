@@ -26,7 +26,7 @@ const status = (...chargers) => ({ role: 'master', now, charging: { settings: { 
 const connected = (id = 'charger1') => { const item = charger(id); return { ...item, values: { ...item.values, connected: reading(true) } }; };
 const sessionPayload = (id, changes, extra = {}) => ({ scope: 'session', association: `fixture:${id}`, sessionId: `session:${id}`, revision: 1, changes, ...extra });
 const view = item => chargerDisplay(item, { now });
-const flexibilityComparison = { at: now, available: true, recommended: true, normalReadyByAt: deadlineAt,
+const flexibilityComparison = { at: now, available: true, recommended: true, priceCoverage: 'complete', normalReadyByAt: deadlineAt,
   deferredReadyByAt: deadlineAt + 86400_000, normalCostCents: 470, deferredCostCents: 310, savingsCents: 160,
   normalFinishAt: deadlineAt - 3600_000, deferredFinishAt: deadlineAt + 86400_000 - 2 * 3600_000,
   normalChargingDurationMs: 3 * 3600_000, deferredChargingDurationMs: 2.5 * 3600_000,
@@ -44,6 +44,23 @@ function flexibleCharger(patch = {}) {
 }
 const active = () => { const item = charger(); return { ...item, settings: { ...item.settings, enabled: true },
   values: { ...item.values, connected: reading(true) }, plan: { startAt, finishAt: deadlineAt, deadlineAt } }; };
+
+test('partial price coverage keeps comparison available and refreshes its notice when coverage changes', async () => {
+  const document = documentFixture(), $ = id => document.getElementById(id);
+  const comparison = { ...flexibilityComparison, priceCoverage: 'partial' };
+  const item = flexibleCharger({ preview: comparison });
+  const panel = createChargingPanel({ document, request: async () => ({ flexibility: item.flexibility, comparison }) });
+  panel.update(status(item));
+  await $('charger1-flexibility').listeners.get('click')({ preventDefault() {}, stopPropagation() {} });
+  assert.match($('charging-flexibility-plans').textContent, /Remaining cost €4.70.*Remaining cost €3.10/);
+  assert.match($('charging-flexibility-as-of').textContent, /Prices cover only part.*later prices may change the saving/);
+  assert.equal($('charging-flexibility-apply').disabled, false);
+  item.flexibility.preview = { ...comparison, at: now + 1000, priceCoverage: 'complete' };
+  panel.update(status(item));
+  assert.doesNotMatch($('charging-flexibility-as-of').textContent, /Prices cover only part/);
+  assert.match($('charging-flexibility-plans').textContent, /Remaining cost €4.70.*Remaining cost €3.10/);
+  panel.close();
+});
 
 test('one-day flexibility opens a comparison and requires a separate fenced affirmative action', async () => {
   const document = documentFixture(), $ = id => document.getElementById(id), calls = [];
