@@ -9,7 +9,8 @@ requested. A connected vehicle can be waiting even when charging is allowed.
 Use the chevron beside **Charger 1** or **Charger 2** to expand readings and
 settings. Below the energy figures, the compact footer keeps the current status
 and allowance visible, including while an action is pending, saved or failed.
-**Session report → Open ↗** opens the report window independently of the card.
+**Session report ↗** opens the report window independently of the card. It shares
+the same arrow placement with **One extra day ↗**.
 
 ## Daily controls
 
@@ -88,6 +89,11 @@ Published prices replace forecasts as they become available. The window explains
 the assumptions and each plan's forecast exposure without implying guaranteed
 savings.
 
+Once a day is allowed, the comparison labels its alternatives **Earlier ready-by**
+and **Approved ready-by**, including their separate planning allowances. Cash
+savings exclude these allowances; their difference belongs only to the
+uncertainty-adjusted comparison.
+
 The comparison shows when it was calculated. It updates when a replacement
 changes the displayed result; ordinary polling does not renew its timestamp.
 Use **Refresh comparison** to request a new assessment. The previous successful
@@ -111,12 +117,22 @@ describes losses, measurement gaps and timing comparisons.
 
 ## Schedule and readings
 
-**Schedule & readings** belongs to the current charging session. Both cards use
-common sections for the plan, control/identification state and current readings.
+**Schedule & readings** belongs to the current charging session. A compact summary
+shows the current activity, control status and expected readiness. Both cards then
+use the same three groups:
+
+- **Charging plan** shows proposed periods, price evidence and forecast power.
+- **Current & limits** separates measured draw, available current, confirmed
+  charger settings and applicable limits.
+- **Charge reference** shows the last vehicle charge, its source and original
+  measurement or receipt time, with any feed or estimate limitation beside it.
+
 Supported hardware differences add relevant information: Easee's reported
 Equalizer allowance is distinct from Shelly's load-balancing status and confirmed
 native current setting. Missing values remain unknown; forecasts and requests
-must not be displayed as observed charging.
+must not be displayed as observed charging. Whole-connection energy stays in
+**Added energy** above, without being repeated in the readings. A recorded snapshot
+is identified as such and does not imply a live vehicle connection.
 
 | What you see | Meaning |
 | --- | --- |
@@ -137,6 +153,8 @@ displayed bill estimate. Forecasts can change; expired or unavailable prediction
 are excluded while available published prices remain usable. A proposed plan is
 still separate from native acceptance and observed charging.
 
+The separate **Help & setup** section contains **How charging works** and
+**Charging setup & documentation**, aligned with the other card sections.
 **How charging works** explains these price assumptions and the session behavior
 for that backend. Easee cloud
 and OCPP pauses can expire on the charger; a Shelly pause needs a running

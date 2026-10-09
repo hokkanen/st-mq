@@ -39,6 +39,11 @@ export function chargingPlanValidUntil(options, result) {
     ...(result.allocations ?? []).flatMap(row => [row.start, row.end]),
     ...Object.values(result.plans ?? {}).flatMap(plan => [plan.deadlineAt,
       ...(plan.periods ?? []).flatMap(row => [row.startAt, row.endAt])]),
+    // Comparisons share this cache but expose their two plans directly. A
+    // refresh after either proposed transition must recalculate from that time.
+    result.normalReadyByAt, result.deferredReadyByAt,
+    ...[...(result.normalPeriods ?? []), ...(result.deferredPeriods ?? [])]
+      .flatMap(row => [row.startAt, row.endAt]),
     ...(options.chargers ?? []).map(charger => charger.control?.manual?.resumeAt),
   ].filter(at => Number.isFinite(at) && at > options.now);
   return Math.min(...boundaries);

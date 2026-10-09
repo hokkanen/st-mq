@@ -138,7 +138,9 @@ and their required evidence.
 `node test/browser/charging-flexibility-smoke.js` uses synthetic charger cards to
 check unchanged resting height at 280–1280px in both themes, guarded keyboard
 interaction, retained comparison snapshots and adoption of changed display values,
-active-allowance savings and checkpoint highlight removal; `STMQ_CHROME_BIN` can
+active-allowance savings, earlier/approved deadline labels and checkpoint highlight
+removal. Real report buttons share the comparison button's arrow geometry; checks
+also cover Help & setup alignment. `STMQ_CHROME_BIN` can
 select a local Chrome executable. Backend regressions separate displayed
 comparison scope from live command readiness: small telemetry changes and failed
 recalculations retain the prior estimate, while replacement sessions and changed
@@ -150,7 +152,10 @@ flexibility tests cover renewable calendar-day checkpoints, durable deadlines,
 restart/identity fencing and joint cost comparisons separately from billed cost.
 Normal and extra-day plans share forecast eligibility and uncertainty handling;
 regressions cover equal forecast opportunities, extra time that changes the
-economic choice, published-price precedence and unavailable forecasts. Family
+economic choice, published-price precedence and unavailable forecasts. A real
+worker regression advances the clock while a forecast-only plan calculates;
+unchanged price evidence must still allow publication. Comparison caches expire
+at either alternative's proposed period boundaries and deadlines. Family
 access checks cover viewing/refreshing the comparison and allowing/canceling the
 day without relaxing session, authority or admin-only configuration boundaries.
 `node test/browser/electricity-forecast-smoke.js` checks the actual chart and

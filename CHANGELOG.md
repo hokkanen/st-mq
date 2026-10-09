@@ -6,6 +6,12 @@ Versions follow Semantic Versioning. `-dev.N` denotes a development prerelease.
 
 ## Unreleased
 
+- Charger details group the plan, current limits and vehicle charge reference,
+  with a separate Help & setup section and consistent report/extra-day arrows.
+  Help clarifies session targets, deadline allowances and estimated costs;
+  an active extra-day comparison labels the earlier and approved deadlines.
+  Forecast-only planning retains stable evidence while workers calculate, and
+  extra-day comparisons refresh across proposed charging boundaries.
 - Normal charging now uses fresh price forecasts alongside published prices,
   with the same all-in tariff and uncertainty allowance as **One extra day**.
   The comparison changes only the selected deadline, so its estimate measures

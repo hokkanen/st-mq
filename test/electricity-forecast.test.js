@@ -187,6 +187,18 @@ test('published slots win; forecast quarters retain native evidence and use the 
   assert.equal(forecastPriceOutlook({ official, forecast, contract, now: forecast.expiresAt }).length, 0);
 });
 
+test('an active forecast slot keeps its interval while the planning clock advances', () => {
+  const forecast = { ...decode(body(at, [0.1, 0])), available: true };
+  const now = forecast.intervals[0].start + 60_000;
+  const first = forecastPriceOutlook({ forecast, contract, now });
+  const later = forecastPriceOutlook({ forecast, contract, now: now + 1 });
+  assert.deepEqual(later, first, 'Elapsed milliseconds do not change price evidence during a worker calculation');
+  assert.equal(first[0].start, forecast.intervals[0].start);
+  assert.ok(first[0].start <= now && now < first[0].end);
+  const next = forecastPriceOutlook({ forecast, contract, now: first[0].end });
+  assert.equal(next[0].start, first[0].end, 'Expired slots still leave the outlook');
+});
+
 test('provider lifecycle fetches without connected chargers and never persists forecast snapshots or health', async () => {
   const state = new Map(), snapshots = [], engine = { charging: { setAdapter() {} } };
   const store = { getState: key => state.get(key), setState: (key, value) => state.set(key, structuredClone(value)),

@@ -103,7 +103,7 @@ test('Electricity prices lists the independent feed without confusing official a
   assert.deepEqual(group.sections.map(section => section.title), ['Prices', 'Price forecast']);
   assert.deepEqual(group.sections[0].datasets.map(row => row.signals[0]), ['spot_price', 'all_in_price']);
   assert.deepEqual(group.sections[1].datasets, [group.datasets.at(-1)]);
-  assert.match(group.sections[1].description, /Hourly estimates.*charging flexibility.*Recorded costs and heating use published prices/);
+  assert.match(group.sections[1].description, /Hourly estimates.*charging schedules and the one-extra-day comparison.*Recorded costs and heating use published prices/);
   assert.equal(group.datasets.at(-1).description, undefined, 'Description belongs to the section heading');
   assert.equal(group.datasets.at(-1).reported,
     `Fetched ${options.formatTime(now)} (just now) · Model updated ${options.formatTime(now - HOUR)} (1 h ago)`);

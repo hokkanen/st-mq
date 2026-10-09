@@ -90,7 +90,8 @@ test('report buttons retain their label, report state and dialog behavior across
   const label = button.querySelector('.charging-session-report-label'), statusText = button.querySelector('.charging-session-report-status');
   assert.equal(label.textContent, 'Session report'); assert.equal(statusText.textContent, 'Checks passed');
   assert.equal(button.dataset.state, 'good');
-  assert.equal(button.querySelector('.charging-session-report-open').textContent, 'Open ↗');
+  assert.equal(button.querySelector('.charging-session-report-open').textContent, 'Open');
+  assert.match(button.className, /\bcharging-card-link\b/);
   assert.equal(button.getAttribute('aria-haspopup'), 'dialog');
   assert.equal(button.getAttribute('aria-controls'), 'charging-report-dialog');
   assert.equal(button.getAttribute('aria-label'), 'Open Charger 1 session report · Checks passed');

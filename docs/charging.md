@@ -19,7 +19,8 @@ a confirmed command is not measured charging.
 | Validate a change or record a selected physical experiment | [Testing and physical development tools](charging/testing.md) |
 
 In the dashboard, charger cards own daily session controls, **Schedule & readings**
-and session reports. **Data & settings → Connections & configuration → Charging**
+and session reports. Their separate **Help & setup** section holds the usage guide
+and setup link. **Data & settings → Connections & configuration → Charging**
 owns device information, installation prerequisites, vehicle-feed setup,
 documentation and guided assessments. Each charger card links to that setup area.
 

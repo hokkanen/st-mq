@@ -61,6 +61,20 @@ fixture.setCase = name => {
       item.telemetry = {identificationCurrentReady:true,commissioning:{controlReady:true,currentControlReady:true}};
       item.plan.periods = [{startAt:now + 3600000,endAt:null}];
     }
+    if (name.startsWith('schedule-')) {
+      item.control = { phase: 'waiting', owned: { startAt: now + 3600000 } };
+      item.plan = { ...item.plan, usesForecast: true, periods: [{ startAt: now + 3600000, endAt: null }] };
+      item.forecast = { powerKw: 11, shortfallGridKwh: 0, feasible: true, finishAt: item.plan.finishAt };
+      item.values = { ...item.values, soc: { ...reading(55, 'bmw-cardata'), measuredAt: now - 3600000 },
+        availableCurrentA: reading(16), currentA: reading(16), maximumCurrentA: reading(16) };
+      item.progress = { estimatedSoc: 56, hasEnergyEstimate: true, deliveredGridKwh: 0.8,
+        retainedVehicleReference: name !== 'schedule-overview', referenceSoc: item.values.soc };
+      item.sessionCost = { recordedGridKwh: 0.8, deliveredGridKwh: 0.8 };
+      if (item.provider === 'shelly-evse') item.limiter = { mode: 'unrestricted', allowanceA: 16,
+        appliedCurrentA: 16, applicationStatus: 'confirmed' };
+      if (name === 'schedule-outage') item.mqtt = { reason: 'disconnected' };
+      if (name === 'schedule-recorded') { item.readOnly = true; item.recorded = true; item.mqtt = { reason: 'read-only-snapshot' }; }
+    }
     if (['missing-vehicle-feed', 'approval-pending'].includes(name)) {
       item.control = { phase: 'waiting', owned: { startAt: now + 3600000 } };
       item.vehicle = { state: 'identifying', id: null };
@@ -222,7 +236,7 @@ try {
       assert.match(marker.glyph, /›/, `${width}px ${theme}: charger title uses the shared disclosure arrow`);
       assert.equal(marker.besideTitle, true, `${width}px ${theme}: arrow stays beside the charger title`);
       assert.equal(await evaluate(`document.querySelector('#${id}-session-report .charging-session-report-label').textContent`), 'Session report');
-      assert.equal(await evaluate(`document.querySelector('#${id}-session-report .charging-session-report-open').textContent`), 'Open ↗');
+      assert.equal(await evaluate(`document.querySelector('#${id}-session-report .charging-session-report-open').textContent`), 'Open');
       await evaluate(`document.querySelector('#${id}-device .charging-expand').click()`);
       assert.equal(await evaluate(`document.getElementById('${id}-device').open`), true, 'Clicking the title arrow opens charging details');
       await evaluate(`document.getElementById('${id}-device-summary').focus()`);
@@ -340,7 +354,7 @@ try {
       assert.equal(await evaluate(`document.getElementById('${id}-control-message').textContent`), '', 'Success and failure receipts expire after 24 hours');
       await receiptFits(id, `${width}px ${theme} ${id} expired receipt`);
     }
-    for (const state of ['ordinary', 'backend-readings', 'missing-vehicle-feed', 'approval-pending', 'confirmed-pause', 'long', 'manual-stop', 'manual-start', 'manual-window', 'pending', 'blocked', 'handover-timeout', 'handover-cancelled', 'handover-protocol', 'unavailable', 'estimate', 'vehicle-reference', 'readonly', 'disconnected', 'unknown-connection', 'missing-token', 'monitoring', 'uncertain', 'startup-stop', 'unavailable-startup-stop']) {
+    for (const state of ['ordinary', 'backend-readings', 'schedule-overview', 'schedule-outage', 'schedule-recorded', 'missing-vehicle-feed', 'approval-pending', 'confirmed-pause', 'long', 'manual-stop', 'manual-start', 'manual-window', 'pending', 'blocked', 'handover-timeout', 'handover-cancelled', 'handover-protocol', 'unavailable', 'estimate', 'vehicle-reference', 'readonly', 'disconnected', 'unknown-connection', 'missing-token', 'monitoring', 'uncertain', 'startup-stop', 'unavailable-startup-stop']) {
       await evaluate(`chargingFixture.setCase('${state}'); document.querySelectorAll('.charging-device').forEach(card => card.open = true)`);
       const layout = await evaluate(`(() => {
         const cards = [...document.querySelectorAll('.charging-device')];
@@ -385,11 +399,38 @@ try {
         assert.match(await evaluate("document.getElementById('charger2-readings').textContent"), /Selected charging current10 A per phase/,
           'Shelly keeps its selected current distinct from measured draw');
       }
+      if (state.startsWith('schedule-')) for (const id of ['charger1', 'charger2']) {
+        const structure = await evaluate(`(() => {
+          const session = document.getElementById('${id}-schedule-readings');
+          const headings = [...session.querySelectorAll('h5, h6')].filter(node => node.checkVisibility());
+          const x = headings[0].getBoundingClientRect().left;
+          return { headings: headings.map(node => node.textContent),
+            aligned: headings.every(node => Math.abs(node.getBoundingClientRect().left - x) < 1),
+            text: session.innerText, notes: document.getElementById('${id}-vehicle-notes').innerText,
+            noteSize: session.querySelector('.charging-vehicle-notes > p') && getComputedStyle(session.querySelector('.charging-vehicle-notes > p')).fontSize,
+            readingSize: getComputedStyle(document.getElementById('${id}-vehicle-readings')).fontSize,
+            clocks: (session.innerText.match(/Measured 2 Oct, 14:00/g) || []).length };
+        })()`);
+        assert.deepEqual(structure.headings, ['Schedule & readings', 'Charging plan', 'Current & limits', 'Charge reference']);
+        assert(structure.aligned, `${width}px ${theme}: session groups share the same left edge`);
+        assert.equal(structure.clocks, 1, 'The original vehicle timestamp appears only beside its reading');
+        assert.doesNotMatch(structure.text, /Connection delivered|Charge measured/);
+        if (structure.noteSize) assert.equal(structure.noteSize, structure.readingSize, 'Vehicle notes use the same compact text size as their readings');
+        if (id === 'charger2') assert.doesNotMatch(structure.text, /Selected charging current/, 'Confirmed setting replaces the duplicate current row');
+        if (state === 'schedule-outage') {
+          assert.match(structure.notes, /Vehicle readings are unavailable.*Edit Current charge/);
+          assert.doesNotMatch(structure.notes, /Vehicle feed:/, 'One coherent note explains the retained outage estimate');
+        }
+        if (state === 'schedule-recorded') {
+          assert.match(structure.notes, /Recorded vehicle snapshot/);
+          assert.doesNotMatch(structure.notes, /unavailable|Edit Current charge/);
+        }
+      }
       if (state === 'vehicle-reference') {
         for (const [id, expected] of [['charger1', ['79 % · BMW CarData', 'Measured 2 Oct, 14:59']],
           ['charger2', ['100 % · TeslaMate', 'Received 2 Oct, 15:00']]]) {
           const reference = await evaluate(`(() => {
-            const label = [...document.querySelectorAll('#${id}-readings dt')].find(node => node.textContent === 'Last reported charge');
+            const label = [...document.querySelectorAll('#${id}-vehicle-readings dt')].find(node => node.textContent === 'Last reported charge');
             const value = label.nextElementSibling, lines = [...value.querySelectorAll('.charging-reading-line')];
             const boxes = lines.map(node => node.getBoundingClientRect()), bounds = value.getBoundingClientRect();
             return { lines: lines.map(node => node.textContent), separateLines: boxes[0].bottom <= boxes[1].top + 1,
@@ -397,7 +438,7 @@ try {
           })()`);
           assert.deepEqual(reference.lines, expected, `${width}px ${theme}: source and clock retain their distinct meanings`);
           assert.equal(reference.separateLines && reference.fits, true, 'Battery source and timestamp fit on separate lines');
-          await evaluate(`[...document.querySelectorAll('#${id}-readings dt')].find(node => node.textContent === 'Last reported charge').querySelector('button').click()`);
+          await evaluate(`[...document.querySelectorAll('#${id}-vehicle-readings dt')].find(node => node.textContent === 'Last reported charge').querySelector('button').click()`);
           const detail = await evaluate("document.getElementById('status-detail-popover').textContent");
           assert.match(detail, id === 'charger1' ? /Charge measured 2 Oct 2026, 14:59/ : /Charge received 2 Oct 2026, 15:00 · measurement time unavailable/);
           await keyPress('Escape', 'Escape', 27);
@@ -476,14 +517,14 @@ try {
           assert.equal(await evaluate(`document.getElementById('${id}-energy').textContent`), '—');
         }
       }
-      if (['ordinary', 'backend-readings', 'approval-pending', 'long', 'manual-stop', 'estimate', 'vehicle-reference', 'uncertain', 'startup-stop', 'unavailable-startup-stop', 'handover-timeout', 'unknown-connection'].includes(state)) {
+      if (['ordinary', 'backend-readings', 'schedule-overview', 'schedule-outage', 'schedule-recorded', 'approval-pending', 'long', 'manual-stop', 'estimate', 'vehicle-reference', 'uncertain', 'startup-stop', 'unavailable-startup-stop', 'handover-timeout', 'unknown-connection'].includes(state)) {
         const metrics = await send('Page.getLayoutMetrics');
         const shot = await send('Page.captureScreenshot', { format: 'png', captureBeyondViewport: true,
           clip: { x: 0, y: 0, width, height: Math.min(metrics.cssContentSize.height, 12000), scale: 1 } });
         writeFileSync(join(artifacts, `charging-${state}-${width}-${theme}.png`), Buffer.from(shot.data, 'base64'));
-        if (state === 'estimate' || state === 'manual-stop') {
+        if (state === 'estimate' || state === 'manual-stop' || state.startsWith('schedule-')) {
           const clip = await evaluate(`(() => {
-            const node = ${state === 'estimate' ? "document.getElementById('charger1-session-settings')" : "document.getElementById('charger1-use-automatic').parentElement"};
+            const node = ${state.startsWith('schedule-') ? "document.getElementById('charger2-schedule-readings')" : state === 'estimate' ? "document.getElementById('charger1-session-settings')" : "document.getElementById('charger1-use-automatic').parentElement"};
             const bounds = node.getBoundingClientRect();
             return { x: bounds.left + scrollX, y: bounds.top + scrollY, width: bounds.width, height: bounds.height, scale: 1 };
           })()`);

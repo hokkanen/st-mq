@@ -333,6 +333,23 @@ test('comparison runs in the shared bounded worker while command calculations re
   assert.deepEqual(order, ['command', 'preview']);
 });
 
+test('comparison cache expires at either proposed period boundary before its ordinary age limit', async t => {
+  const service = createChargingPlannerService(); t.after(() => service.close());
+  const options = planning(), boundary = options.now + 15_000;
+  options.prices = [{ start: options.now, end: boundary, priceCtPerKwh: 30 },
+    { start: boundary, end: options.now + 2 * HOUR, priceCtPerKwh: 20 }, ...options.prices.slice(2)];
+  const choice = { chargerId: 'charger1', normalReadyByAt: options.now + 2 * HOUR,
+    deferredReadyByAt: options.now + 4 * HOUR };
+  const original = await service.compare(options, choice);
+  assert.equal(original.available, true);
+  assert.equal(original.normalPeriods[0].startAt, boundary);
+  assert.equal((await service.compare({ ...options, now: boundary - 1 }, choice)).at, options.now,
+    'unchanged inputs can reuse the explicitly dated comparison before its next boundary');
+  const refreshed = await service.compare({ ...options, now: boundary + 1 }, choice);
+  assert.equal(refreshed.at, boundary + 1, 'crossing the proposed start requires a fresh calculation');
+  assert.equal(refreshed.normalPeriods[0].startAt, boundary + 1);
+});
+
 test('48-hour joint comparison remains off the event loop with realistic two-car energy and 192 price slots', async t => {
   const service = createChargingPlannerService(); t.after(() => service.close());
   const options = planning(true), quarter = HOUR / 4;

@@ -4,7 +4,7 @@ const finite = Number.isFinite;
 const scope = charger => charger?.request ? `${charger.association}:${charger.request.sessionId}:${charger.request.revision}` : null;
 const comparisonScope = charger => charger?.flexibility?.comparisonScope ?? null;
 const validComparison = value => value?.available === true && finite(value.at);
-const money = cents => finite(cents) ? `€${(cents / 100).toFixed(2)}` : 'Unavailable';
+const money = cents => finite(cents) ? `€${(Math.round(cents) / 100).toFixed(2)}` : 'Unavailable';
 const snapshotDate = (at, timezone) => new Intl.DateTimeFormat('en-GB', { timeZone: timezone,
   day: 'numeric', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit' }).format(at);
 const duration = milliseconds => {
@@ -19,7 +19,7 @@ const comparisonContent = value => JSON.stringify([
   ...['normalReadyByAt', 'deferredReadyByAt', 'normalFinishAt', 'deferredFinishAt'].map(key => finite(value[key]) ? Math.floor(value[key] / 60_000) : null),
   ...['normalCostCents', 'deferredCostCents', 'savingsCents', 'householdSavingsCents', 'normalHouseholdUncertaintyPremiumCents',
     'householdUncertaintyPremiumCents', 'riskAdjustedSavingsCents'].map(key => money(value[key])),
-  Math.sign(value.savingsCents), duration(value.normalChargingDurationMs), duration(value.deferredChargingDurationMs),
+  Math.sign(Math.round(value.savingsCents)), duration(value.normalChargingDurationMs), duration(value.deferredChargingDurationMs),
   value.recommended, value.usesForecast, value.normalUsesForecast, value.deferredUsesForecast, value.priceCoverage,
   ...['normalPeriods', 'deferredPeriods'].map(key => value[key]?.map(period => [Math.floor(period.startAt / 60_000),
     finite(period.endAt) ? Math.floor(period.endAt / 60_000) : null])),
@@ -36,8 +36,8 @@ export function chargingFlexibilityActionId(random = globalThis.crypto) {
 }
 const reasonText = reason => ({
   'forecast-unavailable': 'A fresh price forecast is unavailable. No saving can be estimated.',
-  'normal-plan-infeasible': 'The current deadline may not be achievable. A reliable saving cannot be compared.',
-  'extended-plan-infeasible': 'Even the later deadline may not fit both charging requests. A reliable saving cannot be compared.',
+  'normal-plan-infeasible': 'The earlier ready-by time may not be achievable. A reliable saving cannot be compared.',
+  'extended-plan-infeasible': 'The later plan cannot currently be compared. There may be insufficient charging capacity or price coverage.',
   'planning-unavailable': 'A current shared charging plan is not yet available. Try the comparison again shortly.',
   'connection-changed': 'The charging connection changed. Refresh to review its current plan.',
   'comparison-changed': 'The charging plan changed during comparison. Refresh to review current prices and deadlines.',
@@ -216,9 +216,10 @@ export function createChargingFlexibility({ document, request, save, formatTime 
       });
       renderedPlans = plansKey;
     }
-    savingValue.textContent = available && finite(comparison.savingsCents)
-      ? comparison.savingsCents > 0 ? `Estimated saving ${money(comparison.savingsCents)}`
-        : comparison.savingsCents < 0 ? `Estimated extra cost ${money(-comparison.savingsCents)}` : 'No estimated saving'
+    const displayedSaving = available && finite(comparison.savingsCents) ? Math.round(comparison.savingsCents) : null;
+    savingValue.textContent = displayedSaving !== null
+      ? displayedSaving > 0 ? `Estimated saving ${money(displayedSaving)}`
+        : displayedSaving < 0 ? `Estimated extra cost ${money(-displayedSaving)}` : 'No estimated saving'
       : loading ? 'Comparing charging plans…' : '';
     savingValue.hidden = !savingValue.textContent;
     savingValue.dataset.tone = available && comparison.recommended === true ? 'saving' : 'neutral';
@@ -231,11 +232,13 @@ export function createChargingFlexibility({ document, request, save, formatTime 
     }).join(' ') + (!combined.hidden && finite(comparison.householdSavingsCents)
       ? ` Total estimated ${comparison.householdSavingsCents < 0 ? 'extra cost' : 'saving'}: ${money(Math.abs(comparison.householdSavingsCents))}.` : '');
     uncertainty.hidden = !available || !comparison.usesForecast;
-    const riskSaving = comparison?.riskAdjustedSavingsCents;
-    uncertainty.textContent = uncertainty.hidden || !finite(riskSaving) ? '' : `After forecast uncertainty: ${money(Math.abs(riskSaving))} combined ${riskSaving < 0 ? 'extra cost' : 'saving'}.`;
+    const riskSaving = finite(comparison?.riskAdjustedSavingsCents) ? Math.round(comparison.riskAdjustedSavingsCents) : null;
+    uncertainty.textContent = uncertainty.hidden || riskSaving === null ? '' : riskSaving === 0
+      ? 'After forecast uncertainty: no combined saving.'
+      : `After forecast uncertainty: ${money(Math.abs(riskSaving))} combined ${riskSaving < 0 ? 'extra cost' : 'saving'}.`;
     uncertainty.hidden = !uncertainty.textContent;
     riskAllowances.hidden = !available || !comparison.usesForecast;
-    riskAllowances.textContent = riskAllowances.hidden ? '' : `Combined planning allowances: ${money(comparison.normalHouseholdUncertaintyPremiumCents)} with the current deadline; ${money(comparison.householdUncertaintyPremiumCents)} with one extra day. Their difference adjusts the combined saving shown above.`;
+    riskAllowances.textContent = riskAllowances.hidden ? '' : `Combined planning allowances: ${money(comparison.normalHouseholdUncertaintyPremiumCents)} with the ${displayedActive ? 'earlier' : 'current'} deadline; ${money(comparison.householdUncertaintyPremiumCents)} ${displayedActive ? 'with the approved deadline' : 'with one extra day'}. Their difference is included in the uncertainty-adjusted comparison. Cash savings exclude these allowances.`;
     snapshotTime.hidden = !available;
     snapshotTime.textContent = available ? `Estimate as of ${snapshotDate(comparison.at, snapshot.timezone)}. Updates automatically when the comparison changes.`
       + (comparison.priceCoverage === 'partial' ? ' Prices cover only part of the planning period. Both plans use available prices; later prices may change the saving.' : '') : '';
@@ -297,7 +300,7 @@ export function createChargingFlexibility({ document, request, save, formatTime 
   bind(document, 'visibilitychange', () => { if (!disposed) { refreshEntries(); refreshDialog(); } });
   return {
     createEntry(id, { deadlineGroup, deadline }) {
-      const button = make('button', '', 'charging-flexibility-entry', `${id}-flexibility`); button.type = 'button'; button.hidden = true;
+      const button = make('button', '', 'charging-flexibility-entry charging-card-link', `${id}-flexibility`); button.type = 'button'; button.hidden = true;
       button.setAttribute('aria-haspopup', 'dialog'); button.setAttribute('aria-controls', 'charging-flexibility-dialog'); button.setAttribute('aria-expanded', 'false');
       const title = make('span', '', 'charging-flexibility-entry-title'), value = make('strong', '', 'charging-flexibility-entry-value');
       button.append(title, value);

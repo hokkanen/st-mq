@@ -149,14 +149,17 @@ export function forecastPriceOutlook({ official = [], forecast, contract, now = 
   const predictions = [];
   for (const row of priced) {
     if (row.end <= now) continue;
-    const boundaries = new Set([Math.max(now, row.start), row.end]);
-    for (let at = Math.ceil(Math.max(now, row.start) / QUARTER) * QUARTER; at < row.end; at += QUARTER) boundaries.add(at);
+    // Price evidence keeps fixed interval bounds while a worker is running.
+    // The planner clips delivery at its own `now`; clipping prices on every
+    // read would make unchanged current forecasts invalidate every result.
+    const boundaries = new Set([row.start, row.end]);
+    for (let at = Math.ceil(row.start / QUARTER) * QUARTER; at < row.end; at += QUARTER) boundaries.add(at);
     for (const published of known) for (const at of [published.start, published.end])
-      if (at > Math.max(now, row.start) && at < row.end) boundaries.add(at);
+      if (at > row.start && at < row.end) boundaries.add(at);
     const sorted = [...boundaries].sort((a, b) => a - b);
     for (let i = 0; i < sorted.length - 1; i++) {
       const start = sorted[i], end = sorted[i + 1];
-      if (end <= start || known.some(p => p.start < end && p.end > start)) continue;
+      if (end <= start || end <= now || known.some(p => p.start < end && p.end > start)) continue;
       predictions.push({ start, end, priceCtPerKwh: row.totalCtPerKwh, predicted: true,
         uncertaintyCtPerKwh: ELECTRICITY_FORECAST_POLICY.uncertaintyCtPerKwh,
         nativeStart: row.nativeStart, nativeEnd: row.nativeEnd, nativeResolutionMinutes: row.nativeResolutionMinutes,

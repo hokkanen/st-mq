@@ -615,9 +615,9 @@ export function createChargingDiagnosticsPanel({ document, request, onOpenTest =
       if (!footer) continue;
       let button = buttons.get(charger.id);
       if (!button) {
-        button = make('button', '', 'charging-session-report secondary-button'); button.id = `${charger.id}-session-report`; button.type = 'button';
+        button = make('button', '', 'charging-session-report charging-card-link secondary-button'); button.id = `${charger.id}-session-report`; button.type = 'button';
         const copy = make('span', '', 'charging-session-report-copy'), label = make('span', 'Session report', 'charging-session-report-label');
-        const statusText = make('span', '', 'charging-session-report-status'), openLabel = make('span', 'Open ↗', 'charging-session-report-open');
+        const statusText = make('span', '', 'charging-session-report-status'), openLabel = make('span', 'Open', 'charging-session-report-open');
         openLabel.setAttribute('aria-hidden', 'true');
         copy.append(label, statusText); button.append(copy, openLabel); parts.set(button, { statusText });
         button.setAttribute('aria-haspopup', 'dialog'); button.setAttribute('aria-controls', dialog.id); button.setAttribute('aria-expanded', 'false');

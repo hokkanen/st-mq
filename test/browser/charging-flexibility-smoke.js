@@ -78,6 +78,7 @@ try {
   await evaluate(async () => {
 
  const {createChargingPanel}=await import('/chart/charging.js');
+ const {createChargingDiagnosticsPanel}=await import('/chart/charging-diagnostics.js');
  const {assertWebRequest}=await import('/chart/web-access.js');
  const now=Date.parse('2026-10-08T14:00:00Z'),baseline=Date.parse('2026-10-09T03:00:00Z');
  const reading=value=>({value,available:true,source:'manual-fallback'});
@@ -99,7 +100,8 @@ try {
  }});
  window.fixture.charging.chargers.forEach(charger=>Object.assign(charger.plan,{usesForecast:true,costCents:470,uncertaintyPremiumCents:20}));
  window.panel.update(window.fixture);
- for(const el of document.querySelectorAll('.charging-footer')){const button=document.createElement('button');button.className='charging-session-report';button.innerHTML='<span class="charging-session-report-copy"><span class="charging-session-report-label">Session report</span><span class="charging-session-report-status">In progress</span></span><span class="charging-session-report-open">Open ↗</span>';el.append(button);}
+ window.reports=createChargingDiagnosticsPanel({document,request:async()=>({})});
+ window.reports.update(window.fixture);
   });
   const measurements = [];
   for (const width of [280, 320, 390, 768, 1280]) for (const theme of ['dark', 'light']) {
@@ -133,14 +135,20 @@ try {
       assert.equal(state.valueHeight, 15, `The estimate stays on one line at ${width}/${theme}: ${state.label}`);
       assert.equal(state.overflow, false);
     }
-    const arrow = await evaluate(() => {
-      const button = document.querySelector('.charging-flexibility-entry'), style = getComputedStyle(button, '::after');
-      return { content: style.content, top: parseFloat(style.top), height: button.clientHeight,
-        transform: new DOMMatrix(style.transform).m42, arrowHeight: parseFloat(style.height) };
-    });
-    assert.equal(arrow.content, '"↗"');
-    assert(Math.abs(arrow.top + arrow.transform + arrow.arrowHeight / 2 - arrow.height / 2) < 1,
-      `The arrow is vertically centered in the entire button at ${width}/${theme}`);
+    const arrows = await evaluate(() => [...document.querySelectorAll('#charger1-device .charging-card-link')].map(button => {
+      const style = getComputedStyle(button, '::after'), rect = button.getBoundingClientRect();
+      return { content: style.content, top: parseFloat(style.top), right: style.right, height: button.clientHeight,
+        transform: new DOMMatrix(style.transform).m42, arrowHeight: parseFloat(style.height), font: style.font,
+        cardTop: rect.top, cardHeight: rect.height };
+    }));
+    assert.equal(arrows.length, 2);
+    for (const arrow of arrows) {
+      assert.equal(arrow.content, '"↗"');
+      assert(Math.abs(arrow.top + arrow.transform + arrow.arrowHeight / 2 - arrow.height / 2) < 1,
+        `Both arrows are vertically centered in their cards at ${width}/${theme}`);
+    }
+    for (const property of ['right', 'font', 'arrowHeight', 'cardTop', 'cardHeight'])
+      assert.equal(arrows[0][property], arrows[1][property], `Matching arrow ${property} at ${width}/${theme}`);
     assert.equal(await evaluate(() => {
       const field = document.getElementById('charger1-setting-capacityKwh'); field.value = '74.27';
       return field.step === '0.01' && field.checkValidity();
@@ -182,9 +190,14 @@ try {
       document.getElementById('charger1-device').open = true;
       document.getElementById('charger1-explanation-details').open = true;
     });
-    assert.match(await evaluate("document.getElementById('charger1-readings').textContent"), /Plan pricesIncludes forecast prices/);
+    assert.match(await evaluate("document.getElementById('charger1-plan-readings').textContent"), /Plan pricesIncludes forecast prices/);
     assert.match(await evaluate("document.getElementById('charger1-explanations').textContent"), /Prices & uncertainty.*Ordinary planning and one extra day.*2 c\/kWh/);
     assert.equal(await evaluate('document.documentElement.scrollWidth <= innerWidth'), true, `Schedule and help fit ${width}/${theme}`);
+    const helpAlignment = await evaluate(() => {
+      const help = document.getElementById('charger1-help');
+      return [...help.querySelectorAll('h5, summary, #charger1-setup-link, dt, dd')].map(node => node.getBoundingClientRect().left);
+    });
+    assert(helpAlignment.every(left => Math.abs(left - helpAlignment[0]) < 1), `Help topics align at ${width}/${theme}`);
     await screenshot(`${width}-${theme}-schedule-help`);
     await evaluate(() => {
       document.getElementById('charger1-device').open = false;
@@ -243,6 +256,7 @@ try {
   await screenshot('active-light-cards');
   await evaluate("document.getElementById('charger1-flexibility').click()");
   await until("document.getElementById('charging-flexibility-apply').textContent === 'Cancel flexibility'");
+  assert.match(await evaluate("document.getElementById('charging-flexibility-risk-allowances').textContent"), /with the earlier deadline;.*with the approved deadline/);
   await screenshot('active-light-dialog'); await key('Escape');
   await evaluate(() => {
     const c = window.fixture.charging.chargers[0]; window.fixture.now = c.flexibility.checkpointAt;

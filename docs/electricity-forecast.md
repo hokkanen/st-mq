@@ -133,8 +133,12 @@ the same basis. Their displayed costs include applicable transfer charges, tax,
 margin and VAT; the uncertainty allowance guides selection and is not added to
 the cash cost or saving. Already delivered energy is common to both choices.
 Unavailable comparison data never becomes a zero cost or promised saving.
+With an active allowance, the alternatives and planning allowances refer to the
+earlier and approved deadlines. The uncertainty-adjusted result includes the
+difference between allowances; the cash saving remains separate.
 
-**Schedule & readings** and **How charging works** explain that forecast periods
+**Charging plan** within **Schedule & readings**, and **How charging works** in
+**Help & setup**, explain that forecast periods
 are estimates, that published prices replace them and that the schedule can
 change when prices or capacity change. A forecast outage retains usable
 published prices and the binding ready-by time; it cannot invent a future rate.

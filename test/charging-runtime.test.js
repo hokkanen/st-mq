@@ -122,6 +122,25 @@ function syntheticElectricityForecast(f) {
   return value => { available = value; };
 }
 
+test('forecast-only current prices allow a worker plan to publish as the clock advances', async t => {
+  const f = fixture(preferences, {}, { charger1: true }); syntheticElectricityForecast(f);
+  const runtime = f.create(), adapter = fakeAdapter(f.clock); t.after(() => runtime.close());
+  await runtime.setAdapter('charger1', adapter); await runtime.tick({ prices: [] }); await runtime.reconcile();
+  await runtime.planningFlight;
+  const request = runtime.plannerService.request;
+  let requests = 0;
+  runtime.plannerService.request = async options => {
+    const result = await request(options);
+    if (++requests === 1) f.setNow(f.clock() + 1);
+    return result;
+  };
+  await runtime.updatePlan(f.clock());
+  assert.equal(requests, 1, 'Unchanged active forecast prices must not discard the completed worker result');
+  assert.equal(chargerView(runtime).plan.usesForecast, true);
+  assert.equal(chargerView(runtime).plan.feasible, true);
+  assert.equal(runtime.error, null);
+});
+
 test('one-day preview and selected forecast cost stay outside published accounting and stored hourly data', async t => {
   const f = fixture(preferences, {}, { charger1: true }), setAvailable = syntheticElectricityForecast(f);
   const runtime = f.create(), adapter = fakeAdapter(f.clock); t.after(() => runtime.close());

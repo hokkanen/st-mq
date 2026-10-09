@@ -94,8 +94,9 @@ test('Schedule and readings and help label forecast prices independently from un
   assert.equal(prices[1], 'Includes forecast prices');
   assert.match(prices[2], /Published prices take precedence.*2 c\/kWh.*costs exclude this planning allowance/);
   assert.match(help['Prices & uncertainty'], /Ordinary planning and one extra day use the same all-in/);
-  assert.match(help['One extra day'], /other charger keeps its deadline.*card’s estimated session cost also includes energy already delivered/);
-  assert.match(help['One extra day'], /Family and admin access can review, refresh, allow and cancel/);
+  assert.match(help['One extra day'], /other charger keeps its deadline.*card’s estimated session cost also includes energy already delivered/i);
+  assert.match(help['One extra day'], /Opening or refreshing the comparison changes no deadline/);
+  assert.match(help['Allowing or canceling a day'], /best-effort.*approved deadline stays in effect.*Editing Ready by.*Losing price forecasts does not undo/);
   assert.equal(view({ ...item, plan: { ...item.plan, usesForecast: false } }).rows.find(([label]) => label === 'Plan prices')[1], 'Published prices');
   assert.equal(view(item).rows.some(([label]) => label === 'Plan prices'), false, 'Absent pricing evidence does not claim published prices');
 });
@@ -146,6 +147,22 @@ test('one-day flexibility opens a comparison and requires a separate fenced affi
   panel.close();
 });
 
+test('sub-cent comparison differences do not claim a zero extra cost', async () => {
+  const document = documentFixture(), $ = id => document.getElementById(id);
+  const comparison = { ...flexibilityComparison, savingsCents: -.2, riskAdjustedSavingsCents: -.2, recommended: false };
+  const item = flexibleCharger({ preview: comparison });
+  const panel = createChargingPanel({ document, request: async () => ({ flexibility: item.flexibility, comparison }) });
+  panel.update(status(item));
+  await $('charger1-flexibility').listeners.get('click')({ preventDefault() {}, stopPropagation() {} });
+  assert.equal($('charging-flexibility-saving').textContent, 'No estimated saving');
+  assert.equal($('charging-flexibility-uncertainty').textContent, 'After forecast uncertainty: no combined saving.');
+  const estimateTime = $('charging-flexibility-as-of').textContent;
+  item.flexibility.preview = { ...comparison, at: now + 60_000, savingsCents: .2, riskAdjustedSavingsCents: .2 };
+  panel.update(status(item));
+  assert.equal($('charging-flexibility-as-of').textContent, estimateTime, 'Crossing zero below displayed precision does not refresh the estimate');
+  panel.close();
+});
+
 test('the pending grant allows only cancellation and immediately loses its highlight at the checkpoint', async () => {
   const document = documentFixture(), $ = id => document.getElementById(id);
   const item = flexibleCharger({ active: true, eligible: false, checkpointAt: now + 25,
@@ -155,6 +172,8 @@ test('the pending grant allows only cancellation and immediately loses its highl
   assert.equal($('charger1-defer-badge').hidden, false);
   await $('charger1-flexibility').listeners.get('click')({ preventDefault() {}, stopPropagation() {} });
   assert.equal($('charging-flexibility-apply').textContent, 'Cancel flexibility');
+  assert.match($('charging-flexibility-risk-allowances').textContent, /€0.20 with the earlier deadline; €0.60 with the approved deadline/);
+  assert.doesNotMatch($('charging-flexibility-risk-allowances').textContent, /current deadline|with one extra day/);
   await new Promise(resolve => setTimeout(resolve, 35));
   assert.equal($('charger1-defer-badge').hidden, true, 'No dashboard polling is needed to remove the highlight');
   assert.equal($('charger1-deadline').parentElement.matches('.charging-ready-by-deferred'), false);
@@ -1876,10 +1895,46 @@ test('expanded last reported charge explains why the current charging estimate i
     values: { ...item.values, soc: reading(85, 'bmw-cardata', { measuredAt: now - 3600_000 }), minimumSoc: reading(95, 'bmw-cardata') },
     progress: { deliveredGridKwh: 3.5, remainingGridKwh: 5, estimatedSoc: 89, hasEnergyEstimate: true } }));
   assert.equal($('charger1-soc').textContent, '≈89 %'); assert.equal($('charger1-minimum').textContent, '95 %');
-  const readings = $('charger1-readings');
+  const readings = $('charger1-vehicle-readings');
   assert.match(readings.textContent, /Last reported charge85 % · BMW CarDataMeasured 15 Sept, 20:00/);
   const label = descendants(readings).find(node => node.tagName === 'DT' && node.textContent === 'Last reported charge');
   assert.match(openDetail(label).textContent, /main charge estimate adds measured energy.*not necessarily the session’s starting charge/);
+  panel.close();
+});
+
+test('schedule groups separate forecast assumptions from native evidence and consolidate vehicle-feed warnings', () => {
+  const document = documentFixture(), $ = id => document.getElementById(id);
+  const panel = createChargingPanel({ document, request: async () => {} });
+  const item = { ...active(), id: 'charger2', provider: 'shelly-evse',
+    control: { phase: 'waiting', owned: { startAt } },
+    plan: { ...active().plan, usesForecast: true, feasible: true },
+    forecast: { powerKw: 11, shortfallGridKwh: 0, feasible: true, finishAt: deadlineAt },
+    mqtt: { reason: 'mqtt-subscription-failed' },
+    values: { ...active().values, currentA: reading(16), maximumCurrentA: reading(16) },
+    limiter: { mode: 'unrestricted', allowanceA: 16, appliedCurrentA: 16, applicationStatus: 'confirmed' },
+    progress: { estimatedSoc: 56, hasEnergyEstimate: true, retainedVehicleReference: true,
+      deliveredGridKwh: 0.8, referenceSoc: { value: 55, source: 'bmw-cardata', measuredAt: now - 3600_000 },
+      basis: { energyCoverageIncomplete: true } },
+    sessionCost: { recordedGridKwh: 0.8, deliveredGridKwh: 0.8 } };
+  panel.update(status(item));
+  const section = $('charger2-schedule-readings'), reference = $('charger2-vehicle-readings');
+  assert.match($('charger2-plan-readings').textContent, /Plan pricesIncludes forecast pricesForecast power11 kW/);
+  assert.doesNotMatch($('charger2-readings').textContent, /Forecast|Selected charging current|Last reported charge/);
+  assert.match($('charger2-readings').textContent, /Load balancingUnrestricted · 16 ACharger setting16 A confirmedCharging limit16 A per phase/);
+  assert.doesNotMatch(section.textContent, /Connection delivered|Charge measured/);
+  assert.equal(section.textContent.split('Measured 15 Sept, 20:00').length - 1, 1, 'Original source time appears once beside the vehicle reference');
+  assert.equal($('charger2-vehicle-notes').children.length, 2, 'One outage note and one distinct energy-coverage warning remain');
+  assert.match($('charger2-vehicle-notes').textContent, /Vehicle readings are unavailable \(the MQTT subscription failed\).*Edit Current charge.*Some charging energy was not measured/);
+  assert.doesNotMatch($('charger2-notes').textContent, /Vehicle feed|Vehicle readings|charging energy was not measured/);
+  const label = descendants(reference).find(node => node.tagName === 'DT' && node.textContent === 'Last reported charge');
+  const trigger = label.querySelector('.status-detail-trigger'); trigger.focus();
+  panel.update(status({ ...item, readOnly: true, recorded: true, mqtt: { reason: 'read-only-snapshot' },
+    limiter: { ...item.limiter, appliedCurrentA: 12, applicationStatus: 'pending' } }));
+  assert.equal(document.activeElement, trigger, 'Refresh preserves focus on the original vehicle evidence');
+  assert.match($('charger2-readings').textContent, /Awaiting charger confirmation · last confirmed setting 12 A.*Selected charging current16 A per phase/);
+  assert.match($('charger2-vehicle-notes').textContent, /Recorded vehicle snapshot.*Some charging energy was not measured/);
+  assert.doesNotMatch($('charger2-vehicle-notes').textContent, /Vehicle readings are unavailable|Edit Current charge|read only snapshot/);
+  assert.equal($('charger2-vehicle-notes').dataset.state, 'attention', 'A recorded snapshot does not hide missing-energy uncertainty');
   panel.close();
 });
 
@@ -1914,7 +1969,7 @@ test('charge summary explanations update without disturbing form drafts, fold st
 
 test('both chargers keep daily charge, timing, energy and cost in the summary and preferences in the fold', () => {
   const document = documentFixture(), $ = id => document.getElementById(id), panel = createChargingPanel({ document, request: async () => status() });
-  panel.update(status()); assert(!$('charger1-overview').hidden); assert($('charger1-reading-time').hidden);
+  panel.update(status()); assert(!$('charger1-overview').hidden); assert($('charger1-charge-reference').hidden);
   assert.equal($('charger1-soc').textContent, '—'); assert.equal($('charger1-energy').textContent, '—');
   assert.equal($('charger1-enabled-label').textContent, 'Automatic charging');
   assert.equal($('charger1-resume'), null); assert.equal($('charger2-resume'), null);
@@ -1925,7 +1980,7 @@ test('both chargers keep daily charge, timing, energy and cost in the summary an
     forecast: { state: 'forecast', controlled: false, finishAt: deadlineAt - 2 * 3600_000 } };
   panel.update(status(item, observed)); assert(!$('charger1-overview').hidden);
   assert.equal($('charger1-soc').textContent, '20 %'); assert.equal($('charger1-minimum').textContent, '80 %');
-  assert.match($('charger1-reading-time').textContent, /14 Sept 2026, 21:00/);
+  assert.match($('charger1-vehicle-readings').textContent, /Measured 14 Sept, 21:00/);
   assert.equal($('charger1-deadline').textContent, 'tomorrow 06:00');
   assert.equal($('charger1-sources').textContent, 'Vehicle MQTT');
   assert.equal($('charger1-state').textContent, 'Controlled');
@@ -1944,7 +1999,7 @@ test('both chargers keep daily charge, timing, energy and cost in the summary an
     assert.notEqual($(`${id}-soc`).parentElement, $(`${id}-minimum`).parentElement, 'Charge and target have separate metric columns');
     assert.equal($(`${id}-event`).parentElement, $(`${id}-deadline`).parentElement.parentElement, 'Start and ready-by share a timing row');
     assert.equal($(`${id}-event-label`).textContent, 'Starts'); assert.equal($(`${id}-event-value`).textContent, '23:00');
-    assert(summary.contains($(`${id}-remaining`)) && summary.contains($(`${id}-energy`)) && body.contains($(`${id}-reading-time`)));
+    assert(summary.contains($(`${id}-remaining`)) && summary.contains($(`${id}-energy`)) && body.contains($(`${id}-vehicle-readings`)));
     assert(summary.contains($(`${id}-delivered`)) && summary.contains($(`${id}-cost`)), 'Both roles expose all three daily energy and cost facts');
     assert(summary.textContent.includes('kWh'), 'Energy is visible before expanding details');
     assert(body.contains($(`${id}-settings-form`)));
@@ -1960,6 +2015,12 @@ test('both chargers keep daily charge, timing, energy and cost in the summary an
       assert.equal(document.activeElement, root.querySelector('.status-detail-trigger'));
     }
     assert.deepEqual(descendants(body).filter(node => node.tagName === 'DETAILS').map(node => node.id), [`${id}-explanation-details`]);
+    const help = $(`${id}-help`);
+    assert.equal(help.parentElement, body);
+    assert.equal(help.children[0].textContent, 'Help & setup');
+    assert.equal($(`${id}-explanation-details`).parentElement, help);
+    assert(help.contains($(`${id}-setup-link`)));
+    assert(!$(`${id}-charging-controls`).contains(help));
   }
   panel.update(status({ ...item, control: { phase: 'released' }, values: { ...item.values, charging: reading(true), powerKw: reading(8.2) } },
     { ...observed, values: { ...observed.values, charging: reading(true), powerKw: reading(11.2) } }));
