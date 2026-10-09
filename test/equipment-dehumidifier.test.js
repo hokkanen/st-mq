@@ -19,7 +19,7 @@ function fixture(t, options = {}) {
   const settings = equipmentConfiguration({ devices: [device] });
   const capture = createEquipmentCapture({ engine: { clock: () => now, ingest: row => observations.push(row) },
     store, settings, canControl: () => authority, readbackTimeoutMs: 10_000,
-    publish: async (topic, payload, options) => { publications.push({ topic, payload, options }); }, ...options });
+    publish: async (topic, payload, options) => { options.beforePublish?.(); publications.push({ topic, payload, options }); }, ...options });
   t.after(() => { capture.close(); store.close(); });
   const rawReport = (state, at = now, retain = false) => capture.receive('invented/dehumidifier/state',
     JSON.stringify({ identity: 'a'.repeat(64), capabilities,
@@ -149,7 +149,9 @@ test('setting requests enforce supported values, authority and explicit field se
   for (const [setting, value] of [['power', 'on'], ['mode', 'heater'], ['targetHumidity', 80], ['fanSpeed', 'auto'], ['swing', 'fixed_45']]) {
     const previous = f.status().dehumidifier.state;
     await f.command(setting, value);
-    assert.deepEqual(f.publications.at(-1), { topic: device.mqtt.command_topic, payload: JSON.stringify({ [setting]: value, identity: 'a'.repeat(64), requestedAt: f.status().dehumidifier.operation.requestedAt,
+    const { beforePublish, signal, ...flags } = f.publications.at(-1).options;
+    assert.equal(typeof beforePublish, 'function'); assert(signal instanceof AbortSignal);
+    assert.deepEqual({ ...f.publications.at(-1), options: flags }, { topic: device.mqtt.command_topic, payload: JSON.stringify({ [setting]: value, identity: 'a'.repeat(64), requestedAt: f.status().dehumidifier.operation.requestedAt,
       expiresAt: f.status().dehumidifier.operation.requestedAt + 10_000 }),
       options: { qos: 1, retain: false, noReplay: true } });
     assert.deepEqual(f.status().dehumidifier.state, previous, 'Broker publications do not change reported settings');
@@ -206,7 +208,7 @@ test('a conflicting snapshot at an unchanged source time cannot mutate state or 
 
 test('telemetry arriving during publication confirms only after broker acknowledgement', async t => {
   let acknowledge;
-  const f = fixture(t, { publish: () => new Promise(resolve => { acknowledge = resolve; }) });
+  const f = fixture(t, { publish: (topic, payload, options) => { options.beforePublish(); return new Promise(resolve => { acknowledge = resolve; }); } });
   f.online(); f.report(); f.advance(1000);
   const pending = f.command('power', 'on');
   f.report({ power: 'on' });

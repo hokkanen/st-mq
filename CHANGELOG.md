@@ -6,6 +6,10 @@ Versions follow Semantic Versioning. `-dev.N` denotes a development prerelease.
 
 ## Unreleased
 
+- Caravan dehumidifier power checks no longer fail on brief recording backlogs
+  or repeatedly lock settings when meter reports arrive slightly ahead of the
+  local clock. Commands keep their original deadlines, require fresh native
+  confirmation and preserve newer manual choices and restoration duties.
 - Brief input-processing holds preserve confirmed charging schedules, pauses
   and idle current settings while continuing to block new commands. Shelly read
   timeouts now describe an unavailable reading separately from an uncertain command,

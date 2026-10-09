@@ -31,6 +31,7 @@ function fixture(t, options = {}) {
       observations.push(row); return recorder.record(row);
     } }, canControl: () => authority,
     publish: async (topic, payload, flags) => {
+      flags?.beforePublish?.();
       allPublications.push({ topic, payload, flags });
       if (topic !== 'fixture/dryer/set') return;
       const body = JSON.parse(payload), { identity, requestedAt, expiresAt, ...command } = body;
@@ -103,7 +104,9 @@ test('a small matched electrical rise and fall qualify recording without applian
   assert.equal(inventory.find(row => row.id === 'state-caravan-temperature-control').count, 1);
   for (const publication of f.publications) {
     assert.equal(publication.body.expiresAt, publication.body.requestedAt + 10000);
-    assert.deepEqual(publication.flags, { qos: 1, retain: false, noReplay: true });
+    const { beforePublish, signal, ...flags } = publication.flags;
+    assert.equal(typeof beforePublish, 'function'); assert(signal instanceof AbortSignal);
+    assert.deepEqual(flags, { qos: 1, retain: false, noReplay: true });
   }
 });
 

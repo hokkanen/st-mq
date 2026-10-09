@@ -155,6 +155,12 @@ waits for a matching independently received datapoint clocked at or after the
 request. It does not record
 requested settings as actual observations or retry old commands after reconnect.
 Manual controls respect the existing master-control and read-only slave restrictions.
+Brief observation-storage backlogs wait within the original command deadline.
+Before dispatch, the controller checks current authority, appliance identity,
+fresh feedback and the manual, automatic or test request again. Expired,
+superseded or disconnected requests cannot be sent after storage recovers.
+Only native reports received at or after actual dispatch can confirm a setting;
+reports queued before dispatch cannot do so. Failed saves still block commands.
 The request deadline fences bridge dispatch. Once a request reaches Tuya Local,
 that integration's native delivery and retry behavior applies; the deadline is
 not a device-local cancellation guarantee through a broken link.
@@ -230,6 +236,13 @@ requires a new test after completing any pending restoration.
 Qualification is never filled backwards into the test or an earlier reporting
 gap. Device control authority is required for the
 test and restoration; read-only replicas cannot send these commands.
+
+A bounded wait for a slightly early source timestamp pauses test advancement
+and recording without creating a new connection or restarting a failed check.
+The original phase deadline continues to run. With previously fresh, qualified
+evidence, automatic power holds its existing demand during this brief wait;
+cold or missing air evidence still protects Off. Actual stale evidence,
+connection loss and rejected timestamps still invalidate the check.
 
 ## Recording
 

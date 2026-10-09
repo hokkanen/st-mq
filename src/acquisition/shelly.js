@@ -306,7 +306,7 @@ export function createShellyCapture({ engine, store, settings, publish, canContr
     }
     return false;
   }
-  const available = (device, now) => connected && device.available && (!stateName(device) || !pendingFor(device))
+  const available = (device, now, allowPendingTime = false) => connected && device.available && (allowPendingTime || !stateName(device) || !pendingFor(device))
     && device.lastAt <= now && (maxAge(device) === 0 || now - device.lastAt < maxAge(device))
     && definitions(device).filter(row => row.required).every(row => scalar(device.readings[row.signal]?.value)
       && device.readings[row.signal].observedAt <= now
@@ -346,6 +346,12 @@ export function createShellyCapture({ engine, store, settings, publish, canContr
       acknowledgement: device.generation > 1 ? 'shelly-live-relay-readback' : 'shelly-live-relay-state' };
   }
   const api = {
+    // A bounded clock wait fences current use without inventing a connection
+    // loss. Existing evidence must still be fresh and the device connected.
+    sourceTimePending(id, now = engine.clock()) {
+      const device = devices.find(row => row.id === id);
+      return Boolean(device && pendingFor(device) && available(device, now, true));
+    },
     receptionKey(topic, payload) {
       if (topic === replyTopic) {
         let frame; try { frame = JSON.parse(String(payload)); } catch { return null; }
