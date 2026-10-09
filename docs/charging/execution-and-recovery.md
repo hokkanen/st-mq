@@ -18,6 +18,13 @@ can also show proposed periods alongside pending approval, without claiming a
 profile was accepted. Plug-and-charge approval requires the price plan or a
 permitted charging action to call for charging.
 
+A newly selected, current-session identification current preparation or probe
+can interrupt an older native controller wait for an economic plan, just like
+its due Stop or return. Current preparation alone grants no Start permission.
+Only the planning wait is interrupted; an active native RPC retains its owner.
+The attempt keeps its original deadline and energy allowance, and native
+readiness, session scope, instruction precedence and authority are rechecked.
+
 For an already commissioned Easee Direct OCPP connection, authenticated local
 readiness and valid saved equipment/session authority are sufficient for normal
 operation without an Easee cloud reply. This includes scheduled charging,

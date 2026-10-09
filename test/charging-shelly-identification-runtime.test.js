@@ -4,6 +4,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { EventEmitter } from 'node:events';
 import { ChargingRuntime } from '../src/charging/runtime.js';
+import { advanceIdentification } from '../src/charging/identification.js';
 import { createShellyEvseAdapter } from '../src/charging/shelly-evse.js';
 
 const START = 1_800_000_000_000, MINUTE = 60_000, FUTURE = START + 60 * MINUTE;
@@ -120,6 +121,54 @@ async function fixture(t, { charging = true, retainedOnly = false, enabled = tru
 
 const stops = f => f.writes.filter(row => row.params.role === 'start_charging' && row.params.value === false);
 const starts = f => f.writes.filter(row => row.params.role === 'start_charging' && row.params.value === true);
+
+for (const preparing of [false, true]) test(`new identification ${preparing ? 'current preparation' : 'probe Start'} precedes an older native planning wait`, async t => {
+  const f = await fixture(t, { charging: false }), runtime = f.runtime, item = f.item();
+  let request = null, turnAvailable = false, entered = false, finish;
+  runtime.identificationControl = async () => request;
+  runtime.identificationTurn = () => turnAvailable;
+  await f.update();
+  assert.equal(f.fields.start_charging.value, false, 'The existing economic pause is established');
+  const held = new Promise(resolve => { finish = resolve; });
+  runtime.updatePlan = async () => {};
+  runtime.updatePlanForControl = () => { entered = true; return held; };
+  const first = runtime.reconcile('charger2');
+  const turn = () => new Promise(resolve => setImmediate(resolve));
+  try {
+    for (let index = 0; index < 40 && !entered; index++) await turn();
+    assert.equal(entered, true);
+    f.setNow(f.now + 1000);
+    const connectedAt = item.controller.status().session.connectedAt, deadlineAt = f.now + 30_000;
+    item.identification = { ...advanceIdentification(null, { connected: true, connectedAt,
+      now: f.now, available: true }), phase: 'waiting', action: 'allow',
+      probe: { startedAt: f.now, deadlineAt, returnStartAt: FUTURE, endedAt: null } };
+    request = { id: item.identification.id, connectedAt, phase: 'waiting', mode: 'probe',
+      probeUntil: deadlineAt, returnStartAt: FUTURE };
+    turnAvailable = true;
+    if (preparing) {
+      Object.assign(item.identification, { action: null, probe: null });
+      runtime.teslaCapture = { snapshot: () => ({ connected: true, healthy: true, atHome: true, pluggedIn: false,
+        fields: { plugged_in: { value: false, timeBasis: 'receipt-only', measuredAt: null,
+          sequence: 1, receivedAt: connectedAt - 1000, retained: false } } }) };
+      request = runtime.identificationRequest(item, f.adapter.snapshot());
+      assert.equal(request.prepareOnly, true, 'The actual runtime selector grants current preparation without a probe');
+      assert.equal(item.identification.probe, null);
+    }
+    const before = starts(f).length;
+    const currentWrites = () => f.writes.filter(row => row.method === 'Number.Set' && row.params.value === 6).length;
+    const beforeCurrent = currentWrites();
+    void ChargingRuntime.prototype.tick.call(runtime, { force: true });
+    for (let index = 0; index < 80 && (preparing ? currentWrites() === beforeCurrent : starts(f).length === before); index++) await turn();
+    if (preparing) {
+      assert.equal(currentWrites(), beforeCurrent + 1, 'The native owner prepares 6 A without an economic result');
+      assert.equal(starts(f).length, before, 'Current preparation alone grants no Start permission');
+    } else {
+      assert.equal(starts(f).length, before + 1, 'The native owner applies the granted probe without an economic result');
+      assert.equal(item.identification.probe.deadlineAt, deadlineAt, 'Planning interruption cannot extend the probe');
+      assert.equal(item.identification.probe.returnStartAt, FUTURE);
+    }
+  } finally { finish(); await first; }
+});
 
 test('Shelly inserted with native Auto charge disabled can run an authorized identification probe', async t => {
   const f = await fixture(t, { charging: false, inserted: true });

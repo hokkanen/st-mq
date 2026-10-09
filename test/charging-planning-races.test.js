@@ -250,7 +250,13 @@ for (const scenario of [
   { name: 'original probe deadline', kind: 'probe', interrupt: true },
   { name: 'terminal probe still owing its return', kind: 'return', interrupt: true },
   { name: 'current restoration without a planning request', kind: 'test', noRequest: true, interrupt: true },
-  { name: 'future probe deadline', kind: 'probe', future: true, interrupt: false },
+  { name: 'newly granted bounded probe', kind: 'start', interrupt: true },
+  { name: 'probe not selected to allow charging', kind: 'probe', future: true, interrupt: false },
+  { name: 'new probe after a manual instruction', kind: 'start', manual: true, interrupt: false },
+  { name: 'new probe after Automatic OFF', kind: 'start', off: true, interrupt: false },
+  { name: 'new probe after Charge now', kind: 'start', chargeNow: true, interrupt: false },
+  { name: 'new probe after return supersession', kind: 'start', superseded: true, interrupt: false },
+  { name: 'new probe from the previous connection', kind: 'start', previous: true, interrupt: false },
   { name: 'expired selected pause', kind: 'pause', expired: true, interrupt: false },
   { name: 'previous identification connection', kind: 'pause', previous: true, interrupt: false },
   { name: 'identification without a current request', kind: 'pause', noRequest: true, interrupt: false },
@@ -265,6 +271,7 @@ for (const scenario of [
   t.after(release);
   controller.update = async () => { entered = true; await pending; };
   controller.interruptPlanning = () => { interruptions++; return false; };
+  controller.supportsIdentification = true;
   f.runtime.updatePlan = async () => {};
   const native = f.runtime.reconcile('charger2');
   for (let i = 0; i < 20 && !entered; i++) await turn();
@@ -279,13 +286,19 @@ for (const scenario of [
     if (scenario.kind === 'pause') Object.assign(item.identification, { phase: 'pausing', action: 'pause',
       pauseUntil: scenario.expired ? now - 1 : now + 90_000 });
     else {
-      item.identification.probe = { startedAt: AT, deadlineAt: scenario.future ? now + 2000 : now - 500,
+      item.identification.probe = { startedAt: AT, deadlineAt: scenario.future || scenario.kind === 'start' ? now + 2000 : now - 500,
         returnStartAt: AT + HOUR, endedAt: scenario.kind === 'return' ? now - 1 : null };
+      if (scenario.future) item.identification.action = null;
+      if (scenario.kind === 'start') item.identification.action = 'allow';
+      if (scenario.superseded) item.identification.probe.returnSupersededAt = now;
       if (scenario.kind === 'return') Object.assign(item.identification, { phase: 'inconclusive', reason: 'pause-timeout',
         action: null, pauseUntil: now - 1 });
     }
   }
   if (scenario.noRequest) item.request = null;
+  if (scenario.manual) controller.control.manual = { kind: 'stop' };
+  if (scenario.off) item.controls.enabled = false;
+  if (scenario.chargeNow) item.request.chargeNow = true;
   await f.runtime.tick({ force: true });
   assert.equal(interruptions, scenario.interrupt ? 1 : 0);
   assert.ok(item.reconcileFlight, 'Native RPC ownership remains until its owner completes it');

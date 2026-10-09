@@ -750,8 +750,11 @@ export class ChargingRuntime {
     const now = this.clock();
     // Admit the freshly observed session before allowing release or pause.
     this.persist();
-    const state = item.identification;
     this.scheduleWakeup(now);
+    return this.identificationRequest(item, snapshot, now);
+  }
+  identificationRequest(item, snapshot, now = this.clock()) {
+    const state = item.identification;
     if (!state || !this.identificationAvailable(item, now)) return null;
     if (!this.identificationTurn(item)) return null;
     const minimumCurrent = this.minimumCurrentIdentification(item, now);
@@ -2459,12 +2462,19 @@ export class ChargingRuntime {
         && test.sessionId === control.session.sessionId
         && ['applying', 'active', 'restoring', 'uncertain'].includes(test.phase) && test.expiresAt <= now;
       const probe = this.probeReturn(item, now);
+      const selected = sameConnection && identification?.connectedAt === connectedAt
+        ? this.identificationRequest(item, control.snapshot, now) : null;
+      const preparationDue = selected?.prepareOnly === true;
+      const startDue = probe?.endedAt === null && probe.startedAt <= now && now < probe.deadlineAt
+        && identification.action === 'allow' && ['waiting', 'charging'].includes(identification.phase)
+        && selected !== null;
       const returnDue = probe && probe.deadlineAt <= now
         && this.controlPlan(item, item.plan, now)?.reason === 'identification-return';
       // Only the native owner knows whether it is waiting for a plan or an
-      // actual device operation. Due physical duties may revoke that plan wait;
-      // ordinary polling must not repeatedly cancel native RPC/preflight.
-      if (identificationDue || restorationDue || returnDue) item.controller?.interruptPlanning?.();
+      // actual device operation. Selected current preparation, a bounded probe
+      // and due return duties may revoke that plan wait; ordinary polling must
+      // not cancel native RPC/preflight or renew the original allowance.
+      if (preparationDue || startDue || identificationDue || restorationDue || returnDue) item.controller?.interruptPlanning?.();
     }
     // A forecast failure must not stop independent EVSE readback, manual
     // override detection, owned-schedule cleanup or confirmed release times.
