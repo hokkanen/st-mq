@@ -19,18 +19,25 @@ function fixture(t) {
   }
   t.after(()=>runtime.close());
   return {runtime,physical,tesla,saved,setNow:value=>now=value,view:id=>runtime.status().chargers.find(row=>row.id===id),
+    // Synthetic native/vehicle snapshots become accepted context in a write,
+    // as they do after production acquisition or native reconciliation. Views
+    // remain read-only and cannot create a session or consume identity evidence.
+    admit:()=>runtime.write(()=>runtime.persist()),
     charge(id,at){now=at;Object.assign(physical[id],{charging:true,power:4.14,at});Object.assign(tesla,{charging:true,actualPowerKw:4.14});tesla.fields.charger_power={receivedAt:at,retained:false};tesla.fields.charge_current_request={receivedAt:at,retained:false};}};
 }
-test('passive assignment continues hours after plug with automatic OFF on either physical charger',t=>{
+test('passive assignment continues hours after plug with automatic OFF on either physical charger',async t=>{
   for(const id of ['charger1','charger2']) {
     const f=fixture(t);for(const [key,p]of Object.entries(f.physical))Object.assign(p,{connected:key===id,session:key===id?NOW:null});
+    await f.admit();
     assert.equal(f.view(id).vehicle.id,null);f.charge(id,NOW+2*3600000);
+    await f.admit();
     const view=f.view(id);assert.equal(view.vehicle.id,'tesla');assert.equal(view.values.soc.value,40);assert.equal(view.values.vehicleCurrentA.value,6);
     assert.equal(view.settings.enabled,false);assert.equal(view.provider,id==='charger1'?'easee':'shelly-evse');
   }
 });
-test('equal-power chargers remain unidentified without inferring either vehicle',t=>{
+test('equal-power chargers remain unidentified without inferring either vehicle',async t=>{
   const f=fixture(t);Object.assign(f.physical.charger2,{connected:true,session:NOW});f.charge('charger1',NOW+1000);f.charge('charger2',NOW+1000);
+  await f.admit();
   for(const id of ['charger1','charger2']) {
     assert.equal(f.view(id).vehicle.id,null);assert.equal(f.view(id).vehicle.state,'unidentified');
     assert.equal(f.runtime.chargers[id].vehicleMatch,null);
@@ -38,15 +45,16 @@ test('equal-power chargers remain unidentified without inferring either vehicle'
     assert.equal(f.view(id).values.soc.source,'manual-fallback');
   }
 });
-test('physical cable swap changes assignment without borrowing session energy, deadline or ownership',t=>{
-  const f=fixture(t);f.charge('charger1',NOW+1000);const old=f.view('charger1').request;
-  Object.assign(f.physical.charger1,{connected:false,session:null,charging:false,power:0,at:NOW+2000});f.setNow(NOW+2000);f.runtime.status();
+test('physical cable swap changes assignment without borrowing session energy, deadline or ownership',async t=>{
+  const f=fixture(t);f.charge('charger1',NOW+1000);await f.admit();const old=f.view('charger1').request;
+  Object.assign(f.physical.charger1,{connected:false,session:null,charging:false,power:0,at:NOW+2000});f.setNow(NOW+2000);await f.admit();
   Object.assign(f.physical.charger2,{connected:true,session:NOW+3000});f.tesla.fields.plugged_in.receivedAt=NOW+3000;f.charge('charger2',NOW+4000);
+  await f.admit();
   assert.equal(f.view('charger1').vehicle.id,null);assert.equal(f.view('charger2').vehicle.id,'tesla');assert.notEqual(f.view('charger2').request.sessionId,old.sessionId);
   assert.equal(f.view('charger2').progress.deliveredGridKwh,0);
 });
 test('current-session edits retain the physical session and reject stale multi-tab changes',async t=>{
-  const f=fixture(t),view=f.view('charger1'),request=view.request;
+  const f=fixture(t);await f.admit();const view=f.view('charger1'),request=view.request;
   await f.runtime.setChargerSettings('charger1',{scope:'session',association:view.association,sessionId:request.sessionId,revision:request.revision,changes:{minimumSoc:95,manualSoc:30,capacityKwh:60}});
   const updated=f.view('charger1');assert.equal(updated.request.sessionId,request.sessionId);assert.equal(updated.values.minimumSoc.value,95);assert.equal(updated.values.soc.value,30);
   assert.equal(f.runtime.settings.chargers.charger1.minimumSoc,80);
@@ -56,42 +64,43 @@ test('unscoped assignment and former settings never grant new physical authority
   const f=fixture(t);f.runtime.chargers.charger1.vehicleMatch={id:'tesla',connectedAt:NOW,matchedAt:NOW};assert.equal(f.view('charger1').vehicle.id,null);
   assert.throws(()=>new ChargingRuntime({engine:{},store:{getState:()=>({version:4,settings:{}})},config:{input:'mqtt'}}),/Unsupported/);
 });
-test('BMW delayed native starts remain identifiable on either physical EVSE hours after the plug event',t=>{
+test('BMW delayed native starts remain identifiable on either physical EVSE hours after the plug event',async t=>{
  for(const id of ['charger1','charger2']) {
   const f=fixture(t);f.tesla.healthy=false;f.runtime.setMqttStatus({connected:true,subscribed:true},'bmw');
   for(const [key,p] of Object.entries(f.physical))Object.assign(p,{connected:key===id,session:key===id?NOW:null});
-  const send=(at,charging,plug=true)=>{f.setNow(at);f.runtime.receiveSoc('stmq/vehicles/bmw',JSON.stringify({provider:'bmw-cardata',soc:60,readingId:`soc-${at}`,measuredAt:at,atHome:true,pluggedIn:plug,charging,
-    fields:{atHome:{readingId:`home-${at}`,measuredAt:at},pluggedIn:{readingId:`plug-${plug}-${at}`,measuredAt:at},charging:{readingId:`charging-${charging}-${at}`,measuredAt:at}}}));};
-  send(NOW,false);f.view(id);
-  const started=NOW+2*3600000;Object.assign(f.physical[id],{charging:true,power:7,at:started});send(started,true);f.view(id);
-  const stopped=started+60000;Object.assign(f.physical[id],{charging:false,power:0,at:stopped});send(stopped,false);
+  const send=(at,charging,plug=true)=>{f.setNow(at);return f.runtime.write(()=>f.runtime.receiveSoc('stmq/vehicles/bmw',JSON.stringify({provider:'bmw-cardata',soc:60,readingId:`soc-${at}`,measuredAt:at,atHome:true,pluggedIn:plug,charging,
+    fields:{atHome:{readingId:`home-${at}`,measuredAt:at},pluggedIn:{readingId:`plug-${plug}-${at}`,measuredAt:at},charging:{readingId:`charging-${charging}-${at}`,measuredAt:at}}})));};
+  await send(NOW,false);f.view(id);
+  const started=NOW+2*3600000;Object.assign(f.physical[id],{charging:true,power:7,at:started});await send(started,true);f.view(id);
+  const stopped=started+60000;Object.assign(f.physical[id],{charging:false,power:0,at:stopped});await send(stopped,false);
   assert.equal(f.view(id).vehicle.id,'bmw');assert.equal(f.view(id).values.soc.value,60);
   assert.equal(f.view(id).request.sessionId,`${f.view(id).association}:${NOW}`);
  }
 });
-test('Tesla charging edges identify after normal ramp delay and unchanged power on either EVSE',t=>{
+test('Tesla charging edges identify after normal ramp delay and unchanged power on either EVSE',async t=>{
   for(const id of ['charger1','charger2']) {
     const f=fixture(t);
     for(const [key,p]of Object.entries(f.physical))Object.assign(p,{connected:key===id,session:key===id?NOW:null});
     f.tesla.fields.plugged_in.retained=true;
     const start=NOW+60000;
     f.setNow(start);Object.assign(f.physical[id],{charging:true,power:1,at:start});
-    f.view(id);
+    await f.admit();
     Object.assign(f.tesla,{charging:true,actualPowerKw:4.14});
     f.tesla.fields.charging_state={value:'Charging',receivedAt:start+11000,retained:false};
     f.tesla.fields.charger_power={value:4.14,receivedAt:start+34000,retained:false};
     const observed=start+7*60000;
     f.setNow(observed);Object.assign(f.physical[id],{power:4.14,at:observed});
+    await f.admit();
     const view=f.view(id);
     assert.equal(view.vehicle.id,'tesla');
     assert.equal(view.values.soc.value,40);
   }
 });
-test('delayed Tesla matching rejects retained starts, stale EVSE power, unhealthy feeds and earlier connections',t=>{
+test('delayed Tesla matching rejects retained starts, stale EVSE power, unhealthy feeds and earlier connections',async t=>{
   for(const reason of ['retained-start','retained-power','stale-evse','unhealthy','older-connection','unmatched-start']) {
     const f=fixture(t),start=NOW+60000;
     f.tesla.fields.plugged_in.retained=true;
-    f.setNow(start);Object.assign(f.physical.charger1,{charging:true,power:1,at:start});f.view('charger1');
+    f.setNow(start);Object.assign(f.physical.charger1,{charging:true,power:1,at:start});await f.admit();
     Object.assign(f.tesla,{charging:true,actualPowerKw:4.14});
     f.tesla.fields.charging_state={value:'Charging',receivedAt:start+11000,retained:reason==='retained-start'};
     f.tesla.fields.charger_power={value:4.14,receivedAt:start+34000,retained:reason==='retained-power'};
@@ -99,6 +108,7 @@ test('delayed Tesla matching rejects retained starts, stale EVSE power, unhealth
     if(reason==='unhealthy')f.tesla.healthy=false;
     if(reason==='older-connection')Object.assign(f.physical.charger1,{session:now,lastDisconnectedAt:now-1000});
     if(reason==='unmatched-start')f.tesla.fields.charging_state.receivedAt=start+3*60000;
+    await f.admit();
     assert.equal(f.view('charger1').vehicle.id,null,reason);
   }
 });

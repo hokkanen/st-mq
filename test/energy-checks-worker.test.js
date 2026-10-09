@@ -50,7 +50,7 @@ test('large energy-check HTTP reads preserve old successes while independent tim
     } });
   } };
   const base = await serverFixture(t, store, routedService);
-  let finished = false, beats = 0, writes = 0, maxGap = 0, previous = performance.now();
+  let finished = false, beats = 0, writes = 0, maxGap = 0, maxWriteMs = 0, previous = performance.now();
   const request = fetch(`${base}/api/energy-audits`).then(async response => {
     assert.equal(response.status, 200);
     return response.json();
@@ -60,7 +60,9 @@ test('large energy-check HTTP reads preserve old successes while independent tim
   previous = beganAt;
   const heartbeat = setInterval(() => {
     const at = performance.now(); maxGap = Math.max(maxGap, at - previous); previous = at; beats++;
-    store.setState('synthetic:concurrent-recording', { beats }); writes++;
+    const started = performance.now();
+    try { store.setState('synthetic:concurrent-recording', { beats }); writes++; }
+    finally { maxWriteMs = Math.max(maxWriteMs, performance.now() - started); }
   }, 5);
   let rows;
   try {
@@ -69,15 +71,20 @@ test('large energy-check HTTP reads preserve old successes while independent tim
     await independent.json();
     assert.equal(finished, false, 'unrelated HTTP completes during the real history traversal');
     rows = await request;
-  } finally { clearInterval(heartbeat); }
+  } finally {
+    clearInterval(heartbeat);
+    // Keep the measurements even when the overlap assertion fails. A final
+    // blocking write may finish the request before another heartbeat samples it.
+    t.diagnostic(`100,000 counters: ${(performance.now() - beganAt).toFixed(1)} ms after worker start; `
+      + `${beats} timer ticks and ${writes} committed writes; maximum timer gap ${maxGap.toFixed(1)} ms; `
+      + `maximum synchronous write ${maxWriteMs.toFixed(1)} ms (local synthetic fixture)`);
+  }
   assert(beats >= 3 && writes >= 3, 'independent timers and committed writes continue during the read');
   assert.equal(rows[0].summary.readingCount, 100_000);
   assert.equal(rows[0].summary.status, 'incomplete-coverage');
   assert.equal(rows[0].summary.lastSuccessfulComparison.end, start + 1000);
   assert.equal(rows[0].summary.lastSuccessfulComparison.meteredKwh, 1);
   assert.equal(store.db.prepare('SELECT COUNT(*) n FROM energy_audits').get().n, 100_000);
-  t.diagnostic(`100,000 counters: ${(performance.now() - beganAt).toFixed(1)} ms after worker start; `
-    + `${beats} timer ticks and writes; maximum timer gap ${maxGap.toFixed(1)} ms (local synthetic fixture)`);
 });
 
 test('energy checks share the bounded foreground queue and cancellation releases its capacity', async t => {
