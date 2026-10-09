@@ -461,6 +461,19 @@ export function createOcppChargingController({ adapter, initialState = null, sav
       return { startAt: owned.startAt };
     return plan;
   }
+  async function readPlan(signal, options) {
+    let onAbort;
+    const revoked = new Promise((_resolve, reject) => {
+      onAbort = () => reject(fail('control-revoked'));
+      signal.addEventListener('abort', onAbort, { once: true });
+      if (signal.aborted) onAbort();
+    });
+    // The shared economic worker may still serve another charger. Release this
+    // obsolete controller wait immediately, without granting its late result
+    // authority or holding the next scoped physical duty behind that worker.
+    try { return await Promise.race([getPlan(clone(snapshot), options), revoked]); }
+    finally { signal.removeEventListener('abort', onAbort); }
+  }
   function permitStart(plan, current) {
     // Reconcile the newly observed identification/native state synchronously.
     // A routine read may retain permission while waiting, but a completed
@@ -648,7 +661,7 @@ export function createOcppChargingController({ adapter, initialState = null, sav
     if (!token || token !== takeoverToken()) throw fail('takeover-stale');
     if (!canWrite(current) || !takeoverStatus().available || !desired.enabled) throw fail('takeover-unavailable');
     const plan = snapshot.pluggedIn === true
-      ? typeof getPlan === 'function' ? await getPlan(clone(snapshot), { takeover: true }) : desired.plan : null;
+      ? typeof getPlan === 'function' ? await readPlan(signal, { takeover: true }) : desired.plan : null;
     if (snapshot.pluggedIn === true && (!plan || !time(plan.startAt))) throw fail('invalid-plan');
     const now = clock(), periods = plan?.periods;
     const active = periods?.some(period => period.startAt <= now && (period.endAt === null || period.endAt > now));
@@ -798,7 +811,12 @@ export function createOcppChargingController({ adapter, initialState = null, sav
       }
       await refreshIdentification();
       if (closed || current !== generation) return status();
-      const startPlan = retainExecution(typeof getPlan === 'function' ? await getPlan(clone(snapshot)) : desired.plan);
+      // A scoped identification request already supplies its start/pause and
+      // return deadline. Its physical duty, Charge now and disabled automation
+      // cannot wait for an independent economic search to finish.
+      const independentPermission = identification !== null || chargeNowActive() || desired.enabled !== true;
+      const startPlan = retainExecution(!independentPermission && typeof getPlan === 'function'
+        ? await readPlan(signal) : desired.plan);
       permitStart(startPlan, current);
       const instruction = state.pending?.instruction ?? state.owned;
       const wrongSession = instruction && snapshot.transactionConfirmed && instruction.transactionId !== snapshot.transactionId;

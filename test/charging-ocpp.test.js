@@ -8,7 +8,7 @@ import { chargerDisplay } from '../chart/charging.js';
 
 const START = Date.parse('2026-09-24T09:00:00Z'), MINUTE = 60_000, scope = 'a'.repeat(64);
 const plan = (startAt, extra = {}) => ({ id: 'synthetic-plan', startAt, feasible: true, periods: [{ startAt, endAt: null }], ...extra });
-function fixture({ initialState = null, identification = null, nativeTakeover = false } = {}) {
+function fixture({ initialState = null, identification = null, nativeTakeover = false, getPlan } = {}) {
   let now = START, authority = true, connected = true, confirmed = true, transactionId = 7, connectionId = 'synthetic-socket', physicalPause = true;
   let stored = null, saveError = false, witnessSaveError = false, interceptor = null, appControl = null, snapshotChanges = {};
   const profiles = new Map(), calls = [], saves = [], nativeCalls = [];
@@ -47,6 +47,7 @@ function fixture({ initialState = null, identification = null, nativeTakeover = 
       && value.transactionId === transactionId && (!unchangedStatus || value.connectorStatus === readSnapshot().connectorStatus
         && value.statusAt === readSnapshot().statusAt) });
   const controller = adapter.createController({ initialState, clock: () => now, canControl: () => authority,
+    getPlan,
     getIdentification: snapshot => typeof identification === 'function' ? identification(snapshot) : identification,
     saveState: state => {
       if (saveError || witnessSaveError && state.pending?.instruction.pauseRequestedAt !== undefined) throw Error('synthetic disk error');
@@ -1027,6 +1028,98 @@ test('a completed native identification pause becomes the economic profile witho
 const probeIdentification = (phase = 'charging', extra = {}) => ({ id: 'identify-probe', connectedAt: START - MINUTE,
   phase, mode: 'probe', probeUntil: START + 45_000, returnStartAt: START + 30 * MINUTE,
   ...(phase === 'pausing' ? { pauseUntil: START + 90_000 } : {}), ...extra });
+
+test('scoped identification starts and returns at its original deadline while economic planning remains unresolved', async t => {
+  let finishPlanning, plannerCalls = 0, permission = null;
+  const planning = new Promise(resolve => { finishPlanning = resolve; });
+  const f = fixture({ identification: probeIdentification('waiting'),
+    getPlan: () => { plannerCalls++; return planning; } });
+  f.adapter.setStartPermission = (snapshot, options) => { permission = snapshot ? options : null; };
+  t.after(() => f.controller.close());
+  const timely = async input => {
+    let completed = false;
+    const updating = f.controller.update(input).then(value => { completed = true; return value; });
+    try {
+      await new Promise(resolve => setImmediate(resolve));
+      assert.equal(completed, true, 'An independent economic await cannot hold the scoped physical duty');
+      return await updating;
+    } finally {
+      if (!completed) { finishPlanning(plan(START + 30 * MINUTE)); await updating; }
+    }
+  };
+  let view = await timely({ enabled: true, plan: plan(START + 30 * MINUTE) });
+  assert.equal(view.phase, 'identifying'); assert.equal(plannerCalls, 0);
+  assert.equal(permission.until, START + 45_000); assert.equal(permission.guard(), true);
+  f.advance(45_000);
+  view = await timely({ enabled: true });
+  assert.equal(permission, null); assert.equal(view.pauseConfirmed, true);
+  assert.equal(view.owned.startAt, START + 30 * MINUTE);
+  assert.equal(view.owned.pauseRequestedAt, START + 45_000);
+  assert.equal(plannerCalls, 0, 'Expiry returns to the original economic hold without running a new search');
+  f.identify(null);
+  let completed = false;
+  const ordinary = f.controller.update({ enabled: true }).then(value => { completed = true; return value; });
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(plannerCalls, 1); assert.equal(completed, false);
+  finishPlanning(plan(START + 30 * MINUTE));
+  view = await ordinary;
+  assert.equal(view.phase, 'paused'); assert.equal(view.owned.purpose, undefined);
+  assert.equal(writes(f).length, 1, 'Ordinary economics can adopt the already confirmed return profile');
+});
+
+test('new scoped physical duties preempt an obsolete unresolved economic wait without adopting its late result', async t => {
+  for (const action of ['identify', 'off', 'charge-now']) await t.test(action, async t => {
+    let finishPlanning, calls = 0;
+    const planning = new Promise(resolve => { finishPlanning = resolve; });
+    const f = fixture({ getPlan: () => { calls++; return planning; } });
+    t.after(() => f.controller.close());
+    const obsolete = f.controller.update({ enabled: true, plan: plan(START + 30 * MINUTE) });
+    await new Promise(resolve => setImmediate(resolve));
+    assert.equal(calls, 1);
+    if (action === 'identify') f.identify(probeIdentification('pausing'));
+    f.controller.invalidate();
+    let completed = false;
+    const current = f.controller.update({ enabled: action !== 'off',
+      ...(action === 'charge-now' ? { chargeNow: { connectedAt: START - MINUTE } } : {}) })
+      .then(value => { completed = true; return value; });
+    try {
+      await new Promise(resolve => setImmediate(resolve));
+      assert.equal(completed, true, 'The old plan cannot hold an invalidating physical request');
+      const view = await current;
+      assert.equal(view.phase, action === 'identify' ? 'identifying' : action === 'off' ? 'off' : 'released');
+      if (action === 'identify') assert.equal(view.pauseConfirmed, true);
+      const before = f.controller.status(), commands = writes(f).length;
+      finishPlanning(plan(START + 60 * MINUTE)); await obsolete;
+      await new Promise(resolve => setImmediate(resolve));
+      assert.deepEqual(f.controller.status(), before);
+      assert.equal(writes(f).length, commands);
+    } finally { finishPlanning(plan(START + 60 * MINUTE)); await Promise.all([obsolete, current]); }
+  });
+});
+
+test('revoked takeover planning cannot block OFF or apply its late plan', async t => {
+  let finishPlanning, requested;
+  const planning = new Promise(resolve => { finishPlanning = resolve; });
+  const f = fixture({ nativeTakeover: true, getPlan: (_snapshot, options) => { requested = options; return planning; } });
+  t.after(() => f.controller.close());
+  f.app(appState(START, false));
+  const ready = await f.controller.update({ enabled: false });
+  const obsolete = f.controller.update({ enabled: true, takeover: ready.takeover.token });
+  await new Promise(resolve => setImmediate(resolve));
+  assert.deepEqual(requested, { takeover: true });
+  f.controller.invalidate();
+  let completed = false;
+  const off = f.controller.update({ enabled: false }).then(value => { completed = true; return value; });
+  try {
+    await new Promise(resolve => setImmediate(resolve));
+    assert.equal(completed, true);
+    assert.equal((await off).phase, 'off');
+    const before = f.controller.status();
+    finishPlanning(plan(START + 30 * MINUTE)); await obsolete;
+    assert.deepEqual(f.controller.status(), before);
+    assert.equal(writes(f).length, 0); assert.equal(f.nativeCalls.length, 0);
+  } finally { finishPlanning(plan(START + 30 * MINUTE)); await Promise.all([obsolete, off]); }
+});
 
 test('economic identification releases normal charging then installs only a zero profile until the economic return', async () => {
   const f = fixture();
