@@ -20,6 +20,8 @@ Versions follow Semantic Versioning. `-dev.N` denotes a development prerelease.
   retains its original measurement clock.
 - Recording diagnostics separate queue waiting from transaction BEGIN, body and
   COMMIT time, helping identify storage stalls without adding recorded history.
+- Updated a build-only source-map dependency to fix unbounded processing of
+  malformed indexed maps.
 - Caravan dehumidifier power checks no longer fail on brief recording backlogs
   or repeatedly lock settings when meter reports arrive slightly ahead of the
   local clock. Commands keep their original deadlines, require fresh native
