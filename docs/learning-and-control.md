@@ -530,6 +530,14 @@ bookkeeping is waiting for storage. That path can only stop the original relay,
 still subject to live authority, identity and native readiness. It grants no ON
 permission and retains the durable duty until confirmed OFF and its clearing
 commit. Storage delay cannot extend the run or make restoration appear complete.
+If bookkeeping fails instead of waiting, ordinary expiry, restart reconciliation
+and restorative shutdown may still dispatch OFF for that same already committed
+duty. A failed save cannot create a new duty or authorize ON. Cancelled runtime
+admissions, lost authority, changed identity and failed observation admission
+remain fences. A confirmed OFF whose clearing save fails remains pending in
+runtime and on disk; later storage recovery can commit that original confirmation
+without repeating the command or changing its time. Tariff restoration likewise
+retains its runtime obligation until its clearing transaction commits.
 
 Runtime teardown fences new activations immediately. Its own restorative saves
 may wait for storage for up to five seconds; a longer wait cancels that runtime's

@@ -42,9 +42,12 @@ export class Executor {
     this.remaining('manual-preheat', this.state.manualRequested?.phase === 'preheat' ? this.state.manualRequested.expiresAt : undefined);
     this.remaining('dhwr', this.state.dhwrOutstanding ? this.state.pulseUntil : undefined);
     this.remaining('tariff', this.state.legacyOutstanding ? time(this.state.expiresAt) : undefined);
-    const saved = copy(this.state);
+    this.commitState(copy(this.state));
+  }
+  commitState(saved, onCommit = () => {}) {
+    validateExecutorState(saved);
     this.store.setState(this.key, saved);
-    const committed = () => { this.durableState = saved; this.armDhwrDeadline(); };
+    const committed = () => { this.durableState = saved; onCommit(); this.armDhwrDeadline(); };
     if (this.store.afterCommit) this.store.afterCommit(committed); else committed();
   }
   persistAsync() {
@@ -61,12 +64,10 @@ export class Executor {
     const remaining = this.remaining('dhwr', end);
     const check = () => {
       if (this.closed) return;
-      // The normal executor owns ordinary expiry. This independent path exists
-      // only while its bookkeeping is waiting for the SQLite writer.
+      // The normal executor owns ordinary expiry, including failed saves. This
+      // independent path handles a save that is still waiting for the writer.
       if (!this.pending || !(this.store.writeQueueStatus?.().pending > 0)) {
-        // The ordinary expiry callback may start after this timer and discover
-        // contention only then. Keep a bounded check until its clearing commit,
-        // rather than consuming the independent deadline before it can help.
+        // Ordinary expiry can discover contention after this timer runs.
         if (this.store.writeQueueStatus) {
           this.dhwrDeadlineTimer = setTimeout(check, 100);
           this.dhwrDeadlineTimer.unref?.();
@@ -77,20 +78,7 @@ export class Executor {
       if (this.durableState?.targetBindings?.dhwr?.generation !== binding.generation
         || !this.durableState.dhwrOutstanding || this.state.targetBindings.dhwr?.generation !== binding.generation) return;
       this.restartRestore = true;
-      if (this.expiryDhwr?.generation === binding.generation && this.expiryDhwr.end === end) return;
-      const duty = { generation: binding.generation, end, result: null, completedAt: null, promise: null };
-      this.expiryDhwr = duty;
-      duty.promise = (async () => {
-        // OFF is already authorized by the committed timed-run obligation.
-        // Preserve it until later admitted readback/clearing. The transport
-        // still enforces current authority, physical identity and readiness.
-        const result = await this.commandTransport.publishDhwr(false, { expectedTarget: binding.identity });
-        if (result?.sent !== true) throw failure('EXECUTOR_UNCONFIRMED', 'DHWR OFF delivery is unconfirmed.');
-        duty.result = result; duty.completedAt = this.clock();
-        return result;
-      })();
-      void duty.promise.catch(() => {
-        if (this.expiryDhwr === duty) this.expiryDhwr = null;
+      void this.dispatchDhwrOff(binding, end).promise.catch(() => {
         if (!this.closed) {
           this.dhwrDeadlineTimer = setTimeout(() => this.armDhwrDeadline(), 1000);
           this.dhwrDeadlineTimer.unref?.();
@@ -99,6 +87,22 @@ export class Executor {
     };
     this.dhwrDeadlineTimer = setTimeout(check, Math.min(2_147_483_647, Math.max(1, remaining)));
     this.dhwrDeadlineTimer.unref?.();
+  }
+  dispatchDhwrOff(binding, end) {
+    const previous = this.expiryDhwr;
+    if (previous?.generation === binding.generation && end <= previous.end) return previous;
+    const duty = { generation: binding.generation, end, result: null, completedAt: null, promise: null };
+    this.expiryDhwr = duty;
+    duty.promise = (async () => {
+      // Only the original committed duty can survive bookkeeping failure.
+      // Transport checks still own current authority, identity and readiness.
+      const result = await this.commandTransport.publishDhwr(false, { expectedTarget: binding.identity });
+      if (result?.sent !== true) throw failure('EXECUTOR_UNCONFIRMED', 'DHWR OFF delivery is unconfirmed.');
+      duty.result = result; duty.completedAt = this.clock();
+      return result;
+    })();
+    void duty.promise.catch(() => { if (this.expiryDhwr === duty) this.expiryDhwr = null; });
+    return duty;
   }
   target(kind, { acquire = false } = {}) {
     const identity = this.commandTransport?.targetIdentity?.[kind];
@@ -235,6 +239,9 @@ export class Executor {
         if (this.expired('dhwr', this.state.pulseUntil) || this.clock() >= validUntil)
           throw failure('EXECUTOR_EXPIRED', 'Circulation expired while waiting for durable intent.');
         try {
+          // A new ON attempt makes any earlier OFF confirmation insufficient,
+          // even when a wall-clock adjustment gives both runs the same deadline.
+          this.expiryDhwr = null;
           result = await this.commandTransport.publishDhwr(true, { expectedTarget: this.target('dhwr'), validUntil: Math.min(validUntil, this.state.pulseUntil), clock: this.clock });
           acknowledgedAt = this.clock();
         }
@@ -278,22 +285,32 @@ export class Executor {
     if (typeof this.commandTransport?.publishDhwr !== 'function')
       throw failure('DHWR_UNAVAILABLE', 'DHWR OFF is pending until MQTT switch control is available.');
     this.state.dhwrRequested = { on: false, at: now };
-    await this.persistAsync();
-    // The independent deadline may have completed OFF during this admission.
-    const priorExpiry = this.expiryDhwr?.generation === this.state.targetBindings.dhwr?.generation
-      && this.state.pulseUntil <= this.expiryDhwr.end ? this.expiryDhwr : null;
-    let result = priorExpiry?.result;
-    if (!result && priorExpiry) { try { result = await priorExpiry.promise; } catch { /* Ordinary restoration can retry the retained duty. */ } }
-    let stoppedAt = result ? priorExpiry.completedAt : null;
-    if (!result) {
-      result = await this.commandTransport.publishDhwr(false, { expectedTarget: this.target('dhwr') });
-      stoppedAt = this.clock();
+    try { await this.persistAsync(); }
+    catch (error) {
+      const durable = this.durableState;
+      if (this.closed || this.writes.signal.aborted || !durable?.dhwrOutstanding
+        || durable.targetBindings.dhwr?.generation !== this.state.targetBindings.dhwr?.generation
+        || durable.targetBindings.dhwr?.identity !== this.target('dhwr')) throw error;
+      // The OFF duty is already durable. Failing to record its dispatch attempt
+      // cannot require leaving that original relay ON; clearing still commits.
+      this.restartRestore = true;
     }
-    if (result?.sent !== true) throw failure('EXECUTOR_UNCONFIRMED', 'DHWR OFF delivery is unconfirmed.');
-    delete this.state.targetBindings.dhwr; this.elapsedDeadlines.delete('dhwr');
-    this.state.dhwrOutstanding = false; this.state.pulseUntil = 0; this.state.manualDhwrUntil = null;
-    this.expiryDhwr = null;
-    this.state.dhwrStoppedAt = stoppedAt; await this.persistAsync();
+    const binding = this.state.targetBindings.dhwr;
+    const duty = this.dispatchDhwrOff(binding, this.state.pulseUntil);
+    const result = await duty.promise;
+    await this.writes.run(() => {
+      if (this.state.targetBindings.dhwr?.generation !== binding.generation || this.state.pulseUntil > duty.end)
+        throw failure('EXECUTOR_TARGET_CHANGED', 'The circulation obligation changed before its clearing commit.');
+      const saved = copy(this.state);
+      delete saved.targetBindings.dhwr;
+      saved.dhwrOutstanding = false; saved.pulseUntil = 0; saved.manualDhwrUntil = null;
+      saved.dhwrStoppedAt = duty.completedAt;
+      // Publication follows commit. Failed COMMIT leaves both runtime and disk
+      // obligated, with the original confirmation available for a later retry.
+      this.commitState(saved, () => {
+        this.state = copy(saved); this.elapsedDeadlines.delete('dhwr'); this.expiryDhwr = null;
+      });
+    }, { priority: 'control' });
     await this.writes.run(() => this.store.observation?.({ source: 'controller', device: this.input, signal: 'dhwr_request', value: 0,
       unit: 'state', sourceTime: this.state.dhwrStoppedAt, receivedAt: this.state.dhwrStoppedAt,
       quality: ['requested'], raw: { verified: false, basis: result.confirmed === true ? 'Native relay OFF confirmed; pump operation is recorded separately'
@@ -547,7 +564,7 @@ export class Executor {
       const recoveryCompressorOnly = this.state.recoveryAuxReleasedAt == null && decision.recoveryCompressorOnly === true;
       const native = await this.h66.setPhase({ phase, compressorOnly: recoveryCompressorOnly,
         holdDhwReduced: true, now: this.clock(), expiresAt: recoveryHoldUntil });
-      this.state.phase = phase; this.releaseTariff(); this.state.expiresAt = recoveryHoldUntil;
+      this.state.phase = phase; await this.releaseTariff(); this.state.expiresAt = recoveryHoldUntil;
       this.restartRestore = false;
       return this.result(phase, refresh || native.changed?.length > 0, { native,
         recoveryStartedAt: this.state.recoveryStartedAt, recoveryHoldActive: true, recoveryHoldUntil,
@@ -651,9 +668,13 @@ export class Executor {
     this.state.manualPause = null; this.state.manualTemporary = null;
     this.state.manualBaseline = null; this.state.manualRequested = null;
   }
-  releaseTariff() {
-    this.state.legacyOutstanding = false;
-    delete this.state.targetBindings.tariff;
+  async releaseTariff() {
+    await this.writes.run(() => {
+      const saved = copy(this.state);
+      saved.legacyOutstanding = false;
+      delete saved.targetBindings.tariff;
+      this.commitState(saved, () => { this.state = copy(saved); });
+    }, { priority: 'control' });
   }
   async beginManualRestoration() {
     if (this.state.manualRequested?.phase === 'reduction' && this.state.manualRequested.confirmed) {
@@ -684,7 +705,7 @@ export class Executor {
     if (baseline && this.state.manualRequested) {
       await this.publish(['normal'], this.clock());
       sent = true;
-      this.releaseTariff();
+      await this.releaseTariff();
       this.state.expiresAt = null;
     }
     const restorationPending = Boolean(floor?.restorationPending || nativeError || native?.restorationPending || dhwrError);
@@ -722,7 +743,7 @@ export class Executor {
     catch (error) { nativeError = error.code ?? 'H66_RESTORATION_FAILED'; }
     // Restore the tariff relay even if native-setting restoration is temporarily offline.
     if (this.state.legacyOutstanding || this.state.phase === 'reduction' || this.state.phase === 'preheat') {
-      try { await this.publish(['normal'], now); sent = true; this.releaseTariff(); }
+      try { await this.publish(['normal'], now); sent = true; await this.releaseTariff(); }
       catch (error) { nativeError ??= error.code ?? 'TARIFF_RESTORATION_FAILED'; }
     }
     const restorationPending = Boolean(floor?.restorationPending || dhwrError || this.state.dhwrOutstanding && !keepCirculation || nativeError || native?.restorationPending);

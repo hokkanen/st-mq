@@ -53,6 +53,15 @@ instead of resuming ON. The elapsed deadline prevents clock rollback from
 extending an admitted run. Pair demotion fences commands; only the authorized
 controller can discharge restoration.
 
+An already committed OFF duty also survives rejected executor bookkeeping, such
+as a full database or an I/O error. OFF still requires the original relay,
+current control authority and admitted native evidence. Failed device-observation
+storage remains a command fence. If OFF succeeds but its clearing save fails,
+the duty stays visibly pending until that save commits; it cannot authorize a
+new ON or claim that recording has recovered. This software path cannot overcome
+a failed broker, unavailable relay, blocked observation admission or a stopped
+application.
+
 Measured positive power means electrical pump operation and zero means idle.
 Native output state is shown separately. Each new request needs a subsequent
 power report for the dashboard's operation confirmation; relay OFF readback and

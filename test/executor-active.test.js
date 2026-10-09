@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { Executor } from '../src/app/executor.js';
 import { createH66Controller } from '../src/control/h66.js';
 import { createH66Decoder } from '../src/domain/telemetry.js';
-import { validateExecutorState } from '../src/domain/heating-control-state.js';
+import { validateExecutorState, validateH66ControlState } from '../src/domain/heating-control-state.js';
 
 test('retired automatic-reduction manual baselines cannot reacquire tariff authority', () => {
   const saved = { version: 2, targetBindings: {},
@@ -32,7 +32,9 @@ function rig(t, { native = true, saved = new Map(), publishLegacy, publishDhwr, 
   const store = { getState: key => structuredClone(saved.get(key) ?? null),
     setState: (key, value) => {
       if (key === 'executor:home') { validateExecutorState(value); snapshots.push(structuredClone(value)); }
-      saved.set(key, structuredClone(value));
+      const encoded = JSON.parse(JSON.stringify(value));
+      (key === 'executor:home' ? validateExecutorState : validateH66ControlState)(encoded);
+      saved.set(key, encoded);
     }, runWrite: async operation => operation(), event() {}, observation: row => observations.push(row) };
   const decoder = createH66Decoder({ deviceId: 'synthetic' });
   const receive = (index, value) => h66.ingest(decoder.decode({ topic: `synthetic/HP/${index}`, payload: String(value), receivedAt: now }));
