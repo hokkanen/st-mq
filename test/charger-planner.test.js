@@ -533,14 +533,16 @@ test('unscheduled active observed charging remains a competing load', () => {
   assert.ok(result.plans.first.intervals.every(row => row.fixedPhaseCurrentA.every(current => current === 13)));
 });
 
-test('unknown active peer load is disclosed without fabricating a numeric reservation', () => {
+test('unknown active peer load cannot certify shared feasibility or fabricate a numeric reservation', () => {
   const observed = make('observed', { capabilities: { scheduling: false, externalLoadBalancing: false },
     telemetry: { charging: true, currentA: null, maxCurrentA: null } });
   const result = run([make(), observed]);
-  assert.equal(result.plans.first.feasible, true);
-  assert.ok(result.plans.first.intervals.every(row => row.fixedPhaseCurrentA.every(current => current === 0)));
-  assert.match(result.warnings.join(' '), /charging power cannot be estimated/);
-  assert.match(result.plans.first.warnings.join(' '), /charging power cannot be estimated/);
+  assert.equal(result.plans.first.feasible, false);
+  assert.equal(result.plans.first.reason, 'competing-load-unavailable');
+  assert.equal(result.plans.first.costCents, null);
+  assert.deepEqual(result.allocations, []);
+  assert.match(result.warnings.join(' '), /unknown electrical demand/);
+  assert.match(result.plans.first.warnings.join(' '), /unknown electrical demand/);
 });
 
 test('Equalizer allocation caps its charger without constraining independent charging to that cap', () => {

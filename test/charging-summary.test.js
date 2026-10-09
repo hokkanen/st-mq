@@ -535,3 +535,22 @@ test('native stop and future manual windows stay visible ahead of a retained Cha
     assert.doesNotMatch(notice(item).detail, /Automatic control resumes/);
   }
 });
+
+test('a current-only pending adjustment retains the confirmed pause and schedule while exposing its own uncertainty', () => {
+  const periods = [{ startAt: now - 2 * hour, endAt: now - hour }, { startAt, endAt: null }];
+  const item = charger({ id: 'charger2', provider: 'shelly-evse',
+    values: { connected: reading(true), charging: reading(false), minimumSoc: reading(80) },
+    control: { phase: 'uncertain', confirmed: true, scheduleConfirmed: true,
+      currentAdjustment: { pending: true, reason: 'evse-publish-unconfirmed', stage: 'read-back' },
+      nativeExpiry: false, ownsInstruction: true, pauseConfirmed: true,
+      pending: { role: 'current_limit', stage: 'dispatched' }, manual: null,
+      execution: { planId: 'accepted-current-update', periods, finalStartAt: startAt } },
+    plan: { id: 'accepted-current-update', periods, startAt, finishAt, deadlineAt, feasible: true } });
+  const display = chargerDisplay(item, { now });
+  assert.equal(display.state, 'Paused between periods');
+  assert.equal(summary(item).roleLabel, 'Controlled');
+  assert.match(JSON.stringify(display.rows), /Current adjustment.*Delivery.*unconfirmed/);
+  const pendingPause = { ...item, control: { ...item.control, confirmed: false, scheduleConfirmed: false,
+    currentAdjustment: { pending: false }, pending: { role: 'start_charging', stage: 'dispatched' } } };
+  assert.equal(summary(pendingPause).roleState, 'uncertain');
+});

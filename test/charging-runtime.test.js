@@ -229,6 +229,41 @@ test('allowing one day during an open native period waits its minimum run before
   assert.equal(chargerView(runtime).flexibility.active, true);
 });
 
+test('an explicit extra-day allowance applies a sub-five-cent uncertainty-adjusted improvement after the minimum run', async t => {
+  const f = fixture(preferences, {}, { charger1: true }); syntheticElectricityForecast(f);
+  const runtime = f.create(), adapter = fakeAdapter(f.clock); t.after(() => runtime.close());
+  const official = [3.1, 3.1, 3.1, 3.1].map((price, index) => ({ start: initialNow + index * HOUR,
+    end: initialNow + (index + 1) * HOUR, price }));
+  await runtime.setAdapter('charger1', adapter); await runtime.tick({ prices: official }); await runtime.reconcile();
+  assert.equal(chargerView(runtime).control.phase, 'released');
+  f.setNow(initialNow + 15 * 60_000); await runtime.tick({ prices: official }); await runtime.reconcile();
+  const comparison = (await runtime.calculateFlexibilityPreview('charger1')).comparison;
+  assert.equal(comparison.available, true); assert.equal(comparison.recommended, true);
+  assert.ok(comparison.riskAdjustedSavingsCents > 0 && comparison.riskAdjustedSavingsCents < 5);
+  await runtime.setFlexibility('charger1', flexibilityInput(runtime));
+  assert.equal(chargerView(runtime).control.phase, 'paused');
+  assert.ok(chargerView(runtime).control.owned.startAt >= initialNow + 4 * HOUR);
+});
+
+test('one-day unavailable reasons keep the worker blocker through fresh and retained API responses', async t => {
+  const f = fixture(preferences, {}, { charger1: true }); syntheticElectricityForecast(f);
+  const runtime = f.create(), adapter = fakeAdapter(f.clock); t.after(() => runtime.close());
+  await runtime.setAdapter('charger1', adapter); await runtime.tick({ prices }); await runtime.reconcile();
+  await runtime.flexibilityPreviewFlight;
+  const original = (await runtime.calculateFlexibilityPreview('charger1')).comparison;
+  assert.equal(original.available, true);
+  runtime.plannerService.compare = async () => ({ available: false, reason: 'extended-plan-infeasible',
+    blockingReason: 'competing-load-unavailable', blockingChargerId: 'charger2' });
+  const retained = await runtime.calculateFlexibilityPreview('charger1');
+  assert.equal(retained.comparison.available, true);
+  assert.equal(retained.refreshReason, 'competing-load-unavailable');
+  delete runtime.chargers.charger1.flexibilityPreview;
+  const fresh = await runtime.calculateFlexibilityPreview('charger1');
+  assert.equal(fresh.comparison.available, false);
+  assert.equal(fresh.comparison.blockingReason, 'competing-load-unavailable');
+  assert.equal(fresh.comparison.blockingChargerId, 'charger2');
+});
+
 test('a peer or shared-priority edit fences an in-flight one-day comparison and any cached saving', async t => {
   const f = fixture(preferences, {}, { charger1: true }); syntheticElectricityForecast(f);
   const runtime = f.create(), adapter = fakeAdapter(f.clock); t.after(() => runtime.close());
@@ -289,7 +324,7 @@ test('one-day savings survive telemetry, readiness, age and failed refresh witho
   runtime.prices = []; await runtime.updatePlan();
   result = await runtime.calculateFlexibilityPreview('charger1');
   assert.deepEqual(result.comparison, partial, 'loss of all prices retains the explicitly dated estimate');
-  assert.equal(result.refreshReason, 'extended-plan-infeasible');
+  assert.equal(result.refreshReason, 'price-coverage-unavailable');
   assert.equal(chargerView(runtime).flexibility.preview.at, partial.at);
   setAvailable(true);
   runtime.prices = prices.map(row => ({ ...row, price: row.price + 10 }));

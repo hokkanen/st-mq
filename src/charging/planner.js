@@ -24,6 +24,9 @@ const shouldPlan = (charger, now) => charger.settings.enabled && charger.capabil
   && !charger.request?.chargeNow && !manualActive(charger, now) && (!released(charger) || charger.capabilities.currentControl) && charger.requiredGridKwh > EPS && value(charger, 'connected') === true;
 const hasPeriods = rows => Array.isArray(rows) && rows.length > 0;
 const nativeStopped = charger => charger.control?.manual?.kind === 'stop' || charger.telemetry?.manualStop === true;
+const allocationTarget = (charger, now) => finite(charger.allocationTargetAt)
+  && charger.allocationTargetAt > now && charger.allocationTargetAt <= charger.deadlineAt
+  ? charger.allocationTargetAt : charger.deadlineAt;
 // Normalize service against accepted connection progress, not a fresh 100%
 // remaining fraction on every tick. Cost-only missing-energy estimates confer
 // no delivery credit and are deliberately excluded.
@@ -133,7 +136,7 @@ export function forecastCharger({ now, deadlineAt, charger, supply = {} } = {}) 
   // Current consumption already appears in the property/Equalizer observations.
   if (!scheduled && !charging && !permitted) return { ...base, reason: 'no-upcoming-schedule' };
   if (!electric.available) return { ...base, state: 'unavailable', known: false, reason: 'electrical-telemetry-unavailable',
-    powerKw: null, currentA: null, phaseCurrentA: null, scheduled, charging,
+    powerKw: null, currentA: null, phaseCurrentA: null, scheduled, charging, permitted,
     warnings: [...warnings, `${charger.label}: ${scheduled ? 'its scheduled load' : 'charging power'} cannot be estimated until current and voltage are available.`] };
   const startAt = charging || permitted ? now : Math.max(now, schedule, value(charger, 'vehicleNotBefore') ?? now);
   const stopKnown = finite(nativeEnd) && nativeEnd > startAt && charger.telemetry?.scheduledEndKind === 'scheduled-stop';
@@ -216,7 +219,7 @@ export function currentChargingAllocation({ now, chargers, budgetCurrentA, prior
     const electric = electrical(charger);
     if (!electric.available) return [];
     return [{ charger, electric, priority, remaining: charger.requiredGridKwh,
-      targetAt: charger.deadlineAt, allocationHold }];
+      targetAt: allocationTarget(charger, now), allocationHold }];
   });
   if (!active.length) return {};
   const result = allocateOne(active, { phaseHeadroomA: budgetCurrentA }, now);
@@ -797,7 +800,76 @@ function splitCandidate(best, jobs, intervals) {
  * periods may end, but the final release remains enabled beyond the minimum and
  * deadline. Allocated current limits are proposals for a future capable adapter;
  * the externally balanced charger never receives a current proposal. */
-export function planChargers({ now, chargers = [], prices = [], household = [], supply, fixedPeriods = {}, previousPeriods = {}, previousAllocations = [], forecastOnly = false, priority = 'balanced' } = {}) {
+export function chargingPlanParticipants(chargers, ...results) {
+  // A stopped or idle unscheduled peer remains an observed resource input; its
+  // unfulfilled battery request is not a promise the scheduler can deliver.
+  // Independently running/native-scheduled peers with modeled service remain
+  // in the joint cost and equal-service comparison.
+  return chargers.filter(charger => value(charger, 'connected') === true && charger.requiredGridKwh > EPS
+    && (value(charger, 'charging') === true || value(charger, 'actualCurrentA') > 0
+      || results.some(result => result.plans[charger.id]?.feasible != null
+        || ['scheduled', 'charging', 'permitted'].some(key => result.forecasts[charger.id]?.[key]))));
+}
+
+export function chargingPlanTotals(result, participants) {
+  if (!participants.every(charger => {
+    const plan = result.plans[charger.id];
+    return plan?.feasible === true && finite(plan.costCents)
+      && Math.abs(plan.deliveredGridKwh - charger.requiredGridKwh) < 1e-5;
+  })) return null;
+  return participants.reduce((total, charger) => {
+    const plan = result.plans[charger.id];
+    total.costCents += plan.costCents;
+    total.uncertaintyPremiumCents += plan.uncertaintyPremiumCents ?? 0;
+    return total;
+  }, { costCents: 0, uncertaintyPremiumCents: 0 });
+}
+
+/** More time is an additional candidate, never an obligation to move charging.
+ * Retain the complete earlier simulation, including allocation/service targets;
+ * just relabelling its cost after changing allocation deadlines would be false.
+ * The public deadline remains the approved binding limit. */
+function chooseDeadlinePlan(options, normal, extended, chargerId) {
+  const participants = chargingPlanParticipants(options.chargers, normal, extended);
+  const before = chargingPlanTotals(normal, participants), after = chargingPlanTotals(extended, participants);
+  if (!before || !participants.some(charger => charger.id === chargerId)) return extended;
+  const selectedBefore = normal.plans[chargerId], selectedAfter = extended.plans[chargerId];
+  if (after && selectedAfter.costCents <= selectedBefore.costCents + EPS
+    && after.costCents <= before.costCents + EPS && decisionCost(after) < decisionCost(before) - EPS) return extended;
+  for (const charger of options.chargers) normal.plans[charger.id].deadlineAt = charger.deadlineAt;
+  const lowerBound = extended.solver.cashCostLowerBoundCents;
+  normal.solver = { ...normal.solver, cashCostCandidateCents: before.costCents,
+    cashCostLowerBoundCents: finite(lowerBound) ? lowerBound : null,
+    cashCostGapBoundCents: finite(lowerBound) ? Math.max(0, before.costCents - lowerBound) : null };
+  normal.assumptions = { ...normal.assumptions, retainedEarlierDeadline: true };
+  return normal;
+}
+
+export function planChargers(options = {}) {
+  if (options.forecastOnly) return planChargersAtDeadlines(options);
+  const explicit = options.deadlineBaselines ?? {};
+  const choices = (options.chargers ?? []).flatMap(charger => {
+    const grant = charger.request?.flexibility?.activeDefer;
+    const normalReadyByAt = Object.hasOwn(explicit, charger.id) ? explicit[charger.id]
+      : grant?.deferredReadyByAt === charger.deadlineAt ? grant.checkpointAt : null;
+    return finite(normalReadyByAt) && normalReadyByAt > options.now && normalReadyByAt < charger.deadlineAt
+      && charger.settings.enabled && charger.capabilities.scheduling && !charger.request?.chargeNow
+      && !manualActive(charger, options.now) && !nativeStopped(charger) && charger.requiredGridKwh > EPS
+      ? [{ chargerId: charger.id, normalReadyByAt, order: Object.hasOwn(explicit, charger.id) ? Infinity : grant.approvedAt }] : [];
+  }).sort((a, b) => a.order - b.order || a.chargerId.localeCompare(b.chargerId));
+  // At most two physical chargers: <= four ordinary bounded searches. A new
+  // grant compares with the peer's existing grant, without extending its date.
+  const plan = (input, remaining) => {
+    if (!remaining.length) return planChargersAtDeadlines(input);
+    const choice = remaining.at(-1), prior = remaining.slice(0, -1);
+    const normal = plan({ ...input, chargers: input.chargers.map(charger => charger.id === choice.chargerId
+      ? { ...charger, deadlineAt: choice.normalReadyByAt } : charger) }, prior);
+    return chooseDeadlinePlan(input, normal, plan(input, prior), choice.chargerId);
+  };
+  return plan(options, choices);
+}
+
+function planChargersAtDeadlines({ now, chargers = [], prices = [], household = [], supply, fixedPeriods = {}, previousPeriods = {}, previousAllocations = [], forecastOnly = false, priority = 'balanced' } = {}) {
   if (!finite(now)) throw new Error('Charging planner requires numeric UTC time');
   if (!['balanced','charger1','charger2'].includes(priority)) throw new Error('Invalid charging priority');
   if (!Array.isArray(chargers) || new Set(chargers.map(charger => charger.id)).size !== chargers.length)
@@ -822,7 +894,7 @@ export function planChargers({ now, chargers = [], prices = [], household = [], 
   const allocationHold = winners.length === 1 ? { chargerId: winners[0][0], end: Math.min(previousSlice.end, previousSlice.start + MIN_PERIOD_MS) } : null;
   for (const charger of chargers) {
     forecasts[charger.id] = forecastCharger({ now, deadlineAt: horizon, charger, supply });
-    const targetAt = charger.deadlineAt;
+    const targetAt = allocationTarget(charger, now);
     const state = !charger.capabilities.scheduling ? 'observing' : !charger.settings.enabled ? 'disabled'
       : manualActive(charger, now) ? 'manual' : released(charger) || charger.requiredGridKwh <= EPS ? 'released'
         : value(charger, 'connected') === false ? 'disconnected' : 'unavailable';
@@ -902,6 +974,9 @@ export function planChargers({ now, chargers = [], prices = [], household = [], 
     return forecast.scheduled || forecast.controlled || forecast.charging ? [{ chargerId: charger.id, label: charger.label,
       startAt: forecast.startAt, endAt: forecast.endAt, powerKw: forecast.powerKw, known: forecast.known }] : [];
   });
+  if (observed.some(forecast => forecast.state === 'unavailable'
+    && (forecast.scheduled || forecast.charging || forecast.permitted)))
+    return fallback('competing-load-unavailable', 'An independently active charger has unknown electrical demand; shared charging capacity cannot be estimated.');
   if (jobs.some(job => value(job.charger, 'connected') === null))
     return fallback('connection-unavailable', 'Automatic connection information is required before changing a charger schedule.', false);
   const unavailable = jobs.find(job => !job.electric.available);
@@ -1124,7 +1199,7 @@ export function planChargers({ now, chargers = [], prices = [], household = [], 
       currentA: expectedPowerKw * 1000 / (3 * item.electric.voltageV), powerKw: expectedPowerKw });
   }
   if (allocationHold && !result.feasible) {
-    const immediate = planChargers({ now, chargers, prices, household, supply, fixedPeriods, previousPeriods, forecastOnly, priority });
+    const immediate = planChargersAtDeadlines({ now, chargers, prices, household, supply, fixedPeriods, previousPeriods, forecastOnly, priority });
     if (Object.keys(plans).some(id => plans[id].feasible === false && immediate.plans[id].feasible === true)) return immediate;
   }
   return result;

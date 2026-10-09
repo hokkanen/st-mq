@@ -6,6 +6,25 @@ Versions follow Semantic Versioning. `-dev.N` denotes a development prerelease.
 
 ## Unreleased
 
+- Brief vehicle-feed outages retain the current connection's last observed
+  charge target and battery capacity, including across restart. This prevents
+  a nearly full battery being compared with a lower configuration default and
+  incorrectly completing its request. Details identify the retained reference.
+- One extra day retains the earlier plan unless the additional time improves
+  the combined choice after forecast uncertainty, without increasing estimated
+  cash cost for the selected charger or household. A stopped, unscheduled peer
+  no longer blocks the comparison; active peer demand still participates.
+  Active allowances show the current joint proposal and explain redistribution
+  caused by a later allowance for the other charger.
+- A stopped Shelly charger keeps its fallback current setting instead of
+  following every headroom change. Available capacity is still recorded, and
+  the current needed for charging is confirmed before an application Start.
+  Current adjustments have their own confirmation, so they no longer make an
+  accepted charging schedule alternate between confirmed and unconfirmed.
+- Voltage interruptions preserve the original observation and admission times,
+  preventing invalid saved estimates. Pairing and admin recovery controls remain
+  accessible when dashboard status fails. Existing malformed development state
+  is still rejected and requires an explicitly chosen fresh start.
 - Charger details group the plan, current limits and vehicle charge reference,
   with a separate Help & setup section and consistent report/extra-day arrows.
   Help clarifies session targets, deadline allowances and estimated costs;
@@ -79,7 +98,7 @@ Versions follow Semantic Versioning. `-dev.N` denotes a development prerelease.
 - Electricity source details separate Prices and Price forecast with consistent
   descriptions and plain provider attribution. Price and weather forecasts show
   original fetch times and ages. The compact One extra day control shows available
-  estimated savings directly, including zero or extra cost, without adding a date;
+  estimated savings directly, including zero, without adding a date;
   its comparison includes estimated charging duration and completion for both
   deadlines. Existing charging-control eligibility remains unchanged.
 - Optional Finnish electricity-price predictions extend the existing price

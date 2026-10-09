@@ -36,6 +36,8 @@ test('family requests allow household controls and reads while all other writes 
     assert.throws(() => assertWebRequest(family, path, data, status), { status: 403 });
   }
   assert.equal(webRequestAllowed(undefined, '/api/status'), true);
+  assert.equal(webRequestAllowed(undefined, '/api/pair'), true, 'authenticated pairing can establish management access without dashboard status');
+  assert.equal(webRequestAllowed(undefined, '/api/pair/action', { action: 'reset' }), false);
   assert.equal(webRequestAllowed(undefined, '/api/recording-health'), true, 'authenticated health can load when the first status read fails');
   assert.equal(webRequestAllowed(undefined, '/api/recording-health', {}), false);
   assert.equal(webRequestAllowed(undefined, '/api/fireplace', {}), false);

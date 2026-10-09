@@ -5,7 +5,7 @@ export const CHARGING_ALLOWANCE_MODES = Object.freeze(['unknown', 'inactive', 'u
 const SOURCE = 'charging-allowance';
 // Charger 1 follows the existing minute update; Shelly publishes on its five-second poll.
 const COVERAGE_GAP_MS = Object.freeze({ charger1: 90_000, charger2: 30_000 });
-const APPLICATION = new Set(['confirmed', 'pending', 'blocked', 'unknown', 'inactive']);
+const APPLICATION = new Set(['confirmed', 'idle', 'pending', 'blocked', 'unknown', 'inactive']);
 const current = value => Number.isFinite(value) && value >= 0 && value <= 1000 ? value : null;
 const reasonCode = value => typeof value === 'string' && /^[a-z][a-z0-9-]{0,79}$/.test(value) ? value : null;
 const unknownLimiter = reason => ({ mode: 'unknown', allowanceA: null, loadAllowanceA: null,

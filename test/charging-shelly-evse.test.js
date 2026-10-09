@@ -1015,7 +1015,7 @@ test('a successful current command needs fresh native readback and then observed
  };
  const controller=createShellyController({adapter:f.adapter,clock:f.now,canControl:()=>true});t.after(()=>controller.close());
  await controller.update({enabled:false,allocation:{}});
- assert.equal(controller.status().executionStage,'physical-effect');
+ assert.equal(controller.status().currentExecutionStage,'physical-effect');
  assert.equal(controller.status().pending,null);
  assert.equal(f.writes.filter(row=>row.method==='Number.Set').length,1);
 });
@@ -2439,4 +2439,119 @@ test('a source instruction without a known value remains unresolved after curren
   assert.equal(result.reason, 'evse-command-unconfirmed');
   assert.equal(result.ownsInstruction, false);
   assert.equal(f.writes.filter(row => row.method === 'Boolean.Set').length, 0);
+});
+
+test('confirmed idle uses one stable fallback setting while headroom keeps changing, including after restart', async t => {
+  const f = fixture(t, { limiterEnabled: true });
+  f.fields.start_charging = false; f.fields.work_state = 'charger_pause';
+  f.fields.phase_info.total_power = 0;
+  for (const key of ['phase_a', 'phase_b', 'phase_c']) Object.assign(f.fields.phase_info[key], { current: 0, power: 0 });
+  await f.ready(); advanceCommandClock(f);
+  let saved;
+  const create = initialState => createShellyController({ adapter: f.adapter, clock: f.now, canControl: () => true,
+    initialState, saveState: value => { saved = structuredClone(value); } });
+  let controller = create(); t.after(() => controller.close());
+  const update = async allowanceA => {
+    f.setNow(f.now() + 5000);
+    return controller.update({ enabled: false, allocation: {
+      property: reading([25 - allowanceA, 25 - allowanceA, 25 - allowanceA], f.now()), easee: reading([0, 0, 0], f.now()) } });
+  };
+  for (const allowance of [16, 6, 14, 0, 8]) {
+    const status = await update(allowance);
+    assert.equal(status.limiter.loadCurrentA, allowance);
+    assert.equal(status.limiter.settingMode, 'idle-fallback');
+    assert.equal(status.limiter.settingCurrentA, 12);
+    assert.equal(f.fields.current_limit, 12);
+    assert.equal(f.fields.start_charging, false);
+  }
+  assert.deepEqual(f.writes.filter(row => row.method.endsWith('.Set')).map(row => [row.method, row.params.value]), [['Number.Set', 12]]);
+  controller.close(); controller = create(saved);
+  await update(16);
+  assert.equal(f.writes.filter(row => row.method.endsWith('.Set')).length, 1);
+  f.fields.current_limit = 8; f.setNow(f.now() + 1000); f.notify('current_limit', 8);
+  await update(16);
+  assert.equal(controller.status().manualCurrentA, 8); assert.equal(f.fields.current_limit, 8);
+  assert.equal(controller.status().limiter.settingCurrentA, 8, 'A later external current ceiling remains binding while idle');
+});
+
+test('a balancing stop keeps its zero-capacity restriction while idle and confirms a lower allocation before resuming', async t => {
+  const f = fixture(t, { limiterEnabled: true }); await f.ready(); advanceCommandClock(f);
+  const controller = createShellyController({ adapter: f.adapter, clock: f.now, canControl: () => true });
+  t.after(() => controller.close());
+  const update = allocationA => controller.update({ enabled: false, allocation: { allocationA } });
+  await update(0);
+  assert.equal(f.fields.start_charging, false);
+  f.fields.work_state = 'charger_pause'; f.fields.phase_info.total_power = 0;
+  for (const key of ['phase_a', 'phase_b', 'phase_c']) Object.assign(f.fields.phase_info[key], { current: 0, power: 0 });
+  f.setNow(f.now() + 5000); await update(0);
+  assert.equal(f.fields.current_limit, 12); assert.equal(controller.status().limiter.pausedByLimiter, true);
+  const before = f.writes.length;
+  f.setNow(f.now() + 5000); await update(8);
+  assert.equal(f.writes.slice(before).some(row => row.method.endsWith('.Set')), false,
+    'Headroom returning before the restart dwell does not bounce the idle pilot');
+  f.setNow(f.now() + 5000); await update(0);
+  assert.equal(f.writes.slice(before).some(row => row.method.endsWith('.Set')), false);
+  f.setNow(f.now() + 40_000); await update(8);
+  assert.deepEqual(f.writes.slice(before).filter(row => row.method.endsWith('.Set')).map(row => [row.method, row.params.value]),
+    [['Number.Set', 8], ['Boolean.Set', true]], 'The live ceiling is read back before Start');
+});
+
+test('enabled zero draw retains live allocation instead of selecting idle fallback', async t => {
+  const f = fixture(t, { limiterEnabled: true });
+  f.fields.work_state = 'charger_wait'; f.fields.phase_info.total_power = 0;
+  for (const key of ['phase_a', 'phase_b', 'phase_c']) Object.assign(f.fields.phase_info[key], { current: 0, power: 0 });
+  await f.ready(); advanceCommandClock(f);
+  const controller = createShellyController({ adapter: f.adapter, clock: f.now, canControl: () => true });
+  t.after(() => controller.close());
+  await controller.update({ enabled: false, allocation: { allocationA: 8 } });
+  assert.equal(f.fields.current_limit, 8);
+  assert.equal(controller.status().limiter.settingMode, 'allocated');
+  assert.equal(f.fields.start_charging, true);
+});
+
+test('current adjustment physical confirmation does not erase accepted permission and schedule', async t => {
+  const f = fixture(t, { limiterEnabled: true }); await f.ready(); advanceCommandClock(f);
+  const controller = createShellyController({ adapter: f.adapter, clock: f.now, canControl: () => true });
+  t.after(() => controller.close());
+  const plan = { id: 'current-adjustment-plan', deadlineAt: NOW + 7200_000,
+    periods: [{ startAt: NOW, endAt: NOW + 1800_000 }, { startAt: NOW + 3600_000, endAt: null }] };
+  await controller.update({ enabled: true, plan, allocation: { allocationA: 12 } });
+  assert.equal(controller.status().confirmed, true);
+  assert.equal(controller.status().scheduleConfirmed, true);
+  const physicalAt = f.adapter.snapshot().fields.phase_info.measuredAt;
+  f.setSourceTime('phase_info', physicalAt);
+  f.setNow(f.now() + 1000);
+  await controller.update({ enabled: true, plan, allocation: { allocationA: 10 } });
+  assert.equal(controller.status().currentExecutionStage, 'read-back');
+  assert.equal(controller.status().confirmed, true);
+  assert.equal(controller.status().scheduleConfirmed, true);
+  f.client.emit('offline');
+  assert.equal(controller.status().confirmed, false, 'Lost contact still invalidates live confirmation');
+});
+
+test('an unresolved current-only write preserves the confirmed schedule and pause without granting another command', async t => {
+  const f = fixture(t, { limiterEnabled: true });
+  f.fields.start_charging = false; f.fields.work_state = 'charger_pause';
+  f.fields.phase_info.total_power = 0;
+  for (const key of ['phase_a', 'phase_b', 'phase_c']) Object.assign(f.fields.phase_info[key], { current: 0, power: 0 });
+  await f.ready(); advanceCommandClock(f);
+  const controller = createShellyController({ adapter: f.adapter, clock: f.now, canControl: () => true });
+  t.after(() => controller.close());
+  const plan = { id: 'pending-idle-current', deadlineAt: NOW + 7200_000,
+    periods: [{ startAt: NOW - 3600_000, endAt: NOW - 1800_000 }, { startAt: NOW + 3600_000, endAt: null }] };
+  await controller.update({ enabled: true, plan, allocation: {} });
+  assert.equal(controller.status().pauseConfirmed, true);
+  const publish = f.client.publish;
+  f.client.publish = (topic, payload, options, callback) => {
+    if (JSON.parse(payload).method === 'Number.Set') { callback?.(new Error('synthetic publish failure')); return; }
+    return publish(topic, payload, options, callback);
+  };
+  f.setNow(f.now() + 1000);
+  const view = await controller.update({ enabled: true, plan, allocation: { vehicleCurrentA: 8 } });
+  assert.equal(view.phase, 'uncertain'); assert.equal(view.pending.role, 'current_limit');
+  assert.equal(view.confirmed, true); assert.equal(view.scheduleConfirmed, true);
+  assert.equal(view.pauseConfirmed, true); assert.equal(view.ownsInstruction, true);
+  assert.equal(view.currentAdjustment.pending, true);
+  assert.equal(view.currentAdjustment.reason, 'evse-publish-unconfirmed');
+  assert.equal(f.fields.start_charging, false);
 });

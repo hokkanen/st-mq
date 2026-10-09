@@ -3,7 +3,8 @@ import assert from 'node:assert/strict';
 import { chargingFlexibility, consumeChargingFlexibility, changeChargingFlexibility,
   nextLocalChargingDay, validateChargingFlexibility, admittedChargingDeadlineRevision } from '../src/charging/flexibility.js';
 import { compareChargingFlexibility } from '../src/charging/flexibility-comparison.js';
-import { planChargers } from '../src/charging/planner.js';
+import { planChargers, forecastFixedPlans, currentChargingAllocation } from '../src/charging/planner.js';
+import { chargingPlannerInput, chargingPlanValidUntil } from '../src/charging/planner-input.js';
 import { createChargingPlannerService } from '../src/charging/planner-service.js';
 import { delayedScheduleFor } from '../src/charging/easee.js';
 
@@ -189,6 +190,159 @@ test('one snapshot compares equal remaining service for both chargers and expose
   assert.equal(comparison.chargers.length, 2);
   assert.ok(Math.abs(comparison.chargers[1].normalCostCents - comparison.chargers[1].deferredCostCents) < 1e-6);
   assert.deepEqual(options, before, 'no delivered energy or session request is reset by a counterfactual');
+});
+
+test('an independently stopped or idle peer does not turn its outstanding battery request into a scheduling obligation', () => {
+  for (const stopped of [true, false]) {
+    const options = planning(true), peer = options.chargers[1];
+    peer.requiredGridKwh = 500;
+    if (stopped) { peer.control.manual = { kind: 'stop' }; peer.telemetry.manualStop = true; }
+    else peer.settings.enabled = false;
+    const before = structuredClone(options);
+    const result = compareChargingFlexibility(options, { chargerId: 'charger1',
+      normalReadyByAt: options.now + 2 * HOUR, deferredReadyByAt: options.now + 4 * HOUR });
+    assert.equal(result.available, true);
+    assert.deepEqual(result.chargers.map(charger => charger.id), ['charger1']);
+    assert.ok(Math.abs(result.savingsCents - 95) < 1e-6);
+    assert.deepEqual(options, before, 'comparison cannot release a peer stop or enable automatic charging');
+  }
+});
+
+test('independently active peers retain capacity and equal-service accounting; missing demand blocks comparison', () => {
+  const options = planning(true), peer = options.chargers[1];
+  peer.settings.enabled = false;
+  peer.values.charging = reading(true); peer.values.actualCurrentA = reading(6);
+  peer.values.nativeCurrentA = reading(6);
+  const choice = { chargerId: 'charger1', normalReadyByAt: options.now + 2 * HOUR,
+    deferredReadyByAt: options.now + 4 * HOUR };
+  const result = compareChargingFlexibility(options, choice);
+  assert.equal(result.available, true); assert.equal(result.chargers.length, 2);
+  assert.ok(result.chargers.find(charger => charger.id === peer.id).normalCostCents > 0);
+  peer.values.maximumCurrentA = { value: null, available: false };
+  peer.configuration.maximumCurrentA = undefined;
+  const unknown = compareChargingFlexibility(options, choice);
+  assert.equal(unknown.available, false);
+  assert.equal(unknown.blockingReason, 'competing-load-unavailable');
+  assert.equal(unknown.savingsCents, null);
+});
+
+test('a lower uncertainty allowance cannot make extra time increase estimated cash cost', () => {
+  for (const [earlier, later] of [[1, 2], [-4, -3]]) {
+    const options = planning();
+    options.prices.forEach((row, index) => Object.assign(row, { priceCtPerKwh: index < 2 ? earlier : later,
+      predicted: index < 2, uncertaintyCtPerKwh: index < 2 ? 2 : 0 }));
+    const result = compareChargingFlexibility(options, { chargerId: 'charger1',
+      normalReadyByAt: options.now + 2 * HOUR, deferredReadyByAt: options.now + 4 * HOUR });
+    assert.equal(result.available, true);
+    assert.equal(result.normalCostCents, 5 * earlier);
+    assert.equal(result.deferredCostCents, result.normalCostCents);
+    assert.equal(result.savingsCents, 0); assert.equal(result.riskAdjustedSavingsCents, 0);
+    assert.deepEqual(result.deferredPeriods, result.normalPeriods);
+    assert.equal(result.recommended, false);
+  }
+});
+
+test('a sub-five-cent benefit after uncertainty can select the additional day', () => {
+  const options = planning();
+  options.chargers[0].requiredGridKwh = 1;
+  options.prices.forEach((row, index) => { row.priceCtPerKwh = index < 2 ? 5 : 1; });
+  const result = compareChargingFlexibility(options, { chargerId: 'charger1',
+    normalReadyByAt: options.now + 2 * HOUR, deferredReadyByAt: options.now + 4 * HOUR });
+  assert.equal(result.available, true); assert.equal(result.savingsCents, 4);
+  assert.equal(result.riskAdjustedSavingsCents, 2); assert.equal(result.recommended, true);
+  assert.ok(result.deferredPeriods[0].startAt >= options.now + 2 * HOUR);
+});
+
+test('a cheaper joint redistribution cannot charge the selected car more; approval and forecasts retain the real earlier allocation', async t => {
+  const options = planning(true), normalAt = options.now + 2 * HOUR, extendedAt = options.now + 4 * HOUR;
+  options.chargers[0].requiredGridKwh = 15;
+  options.chargers[1].requiredGridKwh = 13; options.chargers[1].deadlineAt = options.now + 3 * HOUR;
+  options.prices = [0, -5, -1, 12, 3, 13, 10, 11].map((priceCtPerKwh, index) => ({
+    start: options.now + index * HOUR / 2, end: options.now + (index + 1) * HOUR / 2, priceCtPerKwh }));
+  const normal = planChargers(options), expanded = structuredClone(options);
+  expanded.chargers[0].deadlineAt = extendedAt;
+  const raw = planChargers(expanded);
+  assert.ok(raw.plans.charger1.costCents > normal.plans.charger1.costCents + 30, 'fixture exposes allocation redistribution');
+  assert.ok(raw.plans.charger1.costCents + raw.plans.charger2.costCents
+    < normal.plans.charger1.costCents + normal.plans.charger2.costCents);
+  const comparison = compareChargingFlexibility(options, { chargerId: 'charger1', normalReadyByAt: normalAt, deferredReadyByAt: extendedAt });
+  assert.equal(comparison.available, true); assert.equal(comparison.savingsCents, 0);
+  assert.equal(comparison.householdSavingsCents, 0);
+  assert.deepEqual(comparison.deferredPeriods, comparison.normalPeriods);
+  expanded.chargers[0].request = { flexibility: { activeDefer: { approvedAt: options.now,
+    checkpointAt: normalAt, deferredReadyByAt: extendedAt } } };
+  const before = structuredClone(expanded), service = createChargingPlannerService(); t.after(() => service.close());
+  const accepted = await service.request(expanded);
+  assert.equal(accepted.plans.charger1.deadlineAt, extendedAt, 'approval extends the public binding deadline');
+  assert.equal(accepted.plans.charger1.targetAt, normalAt, 'retained plan preserves its allocation/service target');
+  assert.deepEqual(accepted.plans.charger1.periods, comparison.deferredPeriods);
+  assert.equal(accepted.plans.charger1.costCents, comparison.deferredCostCents);
+  assert.deepEqual(accepted.allocations, normal.allocations);
+  assert.deepEqual(expanded, before);
+  const fixedChargers = expanded.chargers.map(charger => ({ ...charger, allocationTargetAt: accepted.plans[charger.id].targetAt,
+    telemetry: { currentSharingActive: true } }));
+  const fixed = forecastFixedPlans({ ...expanded, chargers: fixedChargers,
+    periodsByCharger: Object.fromEntries(Object.entries(accepted.plans).map(([id, plan]) => [id, plan.periods])) });
+  assert.equal(fixed.plans.charger1.costCents, accepted.plans.charger1.costCents);
+  assert.deepEqual(fixed.allocations, accepted.allocations);
+  assert.deepEqual(currentChargingAllocation({ now: options.now, chargers: fixedChargers, budgetCurrentA: [16, 16, 16], priority: 'balanced' }),
+    currentChargingAllocation({ now: options.now, chargers: options.chargers.map(charger => ({ ...charger,
+      telemetry: { currentSharingActive: true } })), budgetCurrentA: [16, 16, 16], priority: 'balanced' }));
+});
+
+test('active grant baseline reaches the worker and its checkpoint invalidates cached calculations', () => {
+  const options = planning(), checkpointAt = options.now + 10_000;
+  options.chargers[0].request = { flexibility: { activeDefer: { approvedAt: options.now - 1,
+    checkpointAt, deferredReadyByAt: options.chargers[0].deadlineAt } } };
+  const input = chargingPlannerInput(options);
+  assert.deepEqual(input.chargers[0].request.flexibility, options.chargers[0].request.flexibility);
+  assert.equal(chargingPlanValidUntil(input, {}), checkpointAt);
+});
+
+test('a second charger grant compares against the peer already allowed more time and matches worker scheduling', async t => {
+  const options = planning(true), checkpointAt = options.now + 2 * HOUR;
+  options.chargers[0].deadlineAt = options.now + 3 * HOUR;
+  options.chargers[0].request = { flexibility: { activeDefer: { approvedAt: options.now - 1,
+    checkpointAt, deferredReadyByAt: options.chargers[0].deadlineAt } } };
+  options.prices[2].priceCtPerKwh = 4;
+  const comparison = compareChargingFlexibility(options, { chargerId: 'charger2', normalReadyByAt: checkpointAt,
+    deferredReadyByAt: options.now + 4 * HOUR });
+  assert.equal(comparison.available, true);
+  assert.ok(comparison.savingsCents >= 0); assert.ok(comparison.householdSavingsCents >= 0);
+  const approved = structuredClone(options);
+  approved.chargers[1].deadlineAt = options.now + 4 * HOUR;
+  approved.chargers[1].request = { flexibility: { activeDefer: { approvedAt: options.now,
+    checkpointAt, deferredReadyByAt: approved.chargers[1].deadlineAt } } };
+  const service = createChargingPlannerService(); t.after(() => service.close());
+  const result = await service.request(approved);
+  assert.equal(result.plans.charger1.deadlineAt, options.chargers[0].deadlineAt);
+  assert.equal(result.plans.charger2.deadlineAt, approved.chargers[1].deadlineAt);
+  assert.equal(result.plans.charger2.costCents, comparison.deferredCostCents);
+  assert.deepEqual(result.plans.charger2.periods, comparison.deferredPeriods);
+  for (const charger of comparison.chargers) assert.equal(result.plans[charger.id].costCents, charger.deferredCostCents);
+});
+
+test('an older active allowance shows the actual approval order and an honest cancellation counterfactual', () => {
+  for (const fixture of [{ energy: [9, 6], prices: [3, 4, 11, -1, 13, 3, 10, 9], changed: false },
+    { energy: [6, 10], prices: [-5, 5, 11, -4, 6, -5, 7, 3], changed: true }]) {
+    const options = planning(true), checkpointAt = options.now + 2 * HOUR, deferredReadyByAt = options.now + 4 * HOUR;
+    options.chargers.forEach((charger, index) => {
+      charger.requiredGridKwh = fixture.energy[index]; charger.deadlineAt = deferredReadyByAt;
+      charger.request = { flexibility: { activeDefer: { approvedAt: options.now - 2 + index, checkpointAt, deferredReadyByAt } } };
+    });
+    options.prices = fixture.prices.map((priceCtPerKwh, index) => ({ start: options.now + index * HOUR / 2,
+      end: options.now + (index + 1) * HOUR / 2, priceCtPerKwh }));
+    const actual = planChargers(options);
+    const comparison = compareChargingFlexibility(options, { chargerId: 'charger1', normalReadyByAt: checkpointAt, deferredReadyByAt });
+    assert.equal(comparison.available, true);
+    assert.equal(comparison.deferredCostCents, actual.plans.charger1.costCents);
+    assert.deepEqual(comparison.deferredPeriods, actual.plans.charger1.periods);
+    assert.equal(comparison.sharedPlanChanged, fixture.changed);
+    if (fixture.changed) {
+      assert.ok(comparison.savingsCents < 0, 'a later peer decision can change the earlier allowance marginal comparison');
+      assert.equal(comparison.recommended, false, 'no fabricated zero or saving');
+    }
+  }
 });
 
 test('predictions before the normal deadline cannot manufacture an extra-day saving', () => {

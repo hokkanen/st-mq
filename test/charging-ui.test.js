@@ -163,6 +163,25 @@ test('sub-cent comparison differences do not claim a zero extra cost', async () 
   panel.close();
 });
 
+test('an active allowance with changed shared allocation shows true costs without pretending it is a new extra-cost choice', async () => {
+  const document = documentFixture(), $ = id => document.getElementById(id);
+  const comparison = { ...flexibilityComparison, normalCostCents: 100, deferredCostCents: 110,
+    savingsCents: -10, householdSavingsCents: 5, riskAdjustedSavingsCents: 5, sharedPlanChanged: true, recommended: false,
+    chargers: [{ id: 'charger1', normalCostCents: 100, deferredCostCents: 110 },
+      { id: 'charger2', normalCostCents: 100, deferredCostCents: 85 }] };
+  const item = flexibleCharger({ active: true, checkpointAt: deadlineAt, eligible: false, preview: comparison });
+  const panel = createChargingPanel({ document, request: async () => ({ comparison }) });
+  panel.update(status(item));
+  assert.match($('charger1-flexibility').textContent, /Shared plan changed/);
+  assert.doesNotMatch($('charger1-flexibility').getAttribute('aria-label'), /extra cost/);
+  await $('charger1-flexibility').listeners.get('click')({ preventDefault() {}, stopPropagation() {} });
+  assert.equal($('charging-flexibility-saving').textContent, 'Shared plan changed');
+  assert.match($('charging-flexibility-plans').textContent, /Remaining cost €1.00.*Remaining cost €1.10/);
+  assert.match($('charging-flexibility-description').textContent, /later choices for the other charger retain their priority/);
+  assert.match($('charging-flexibility-household').textContent, /Combined remaining costs: €2.00.*€1.95/);
+  panel.close();
+});
+
 test('the pending grant allows only cancellation and immediately loses its highlight at the checkpoint', async () => {
   const document = documentFixture(), $ = id => document.getElementById(id);
   const item = flexibleCharger({ active: true, eligible: false, checkpointAt: now + 25,
@@ -2746,5 +2765,24 @@ test('pending approval uses an intentional label and time while keeping the comp
   const popup = openDetail($('charger1-event-value'));
   assert.match(popup.textContent, /Planned start tomorrow 01:00 · charging approval pending/);
   assert.equal($('charger1-event').children.length, 2);
+  panel.close();
+});
+
+test('idle fallback setting and retained vehicle target remain separate from live capacity and fresh vehicle readings', () => {
+  const document = documentFixture(), $ = id => document.getElementById(id);
+  const panel = createChargingPanel({ document, request: async () => status() });
+  const item = connected('charger2');
+  const limiter = { mode: 'unrestricted', allowanceA: 16, loadAllowanceA: 16,
+    reason: 'hardware-restriction', appliedCurrentA: 12, applicationStatus: 'idle' };
+  panel.update(status(connected(), { ...item, limiter,
+    vehicle: { state: 'identified', id: 'tesla', label: 'Tesla' },
+    allowance: { mode: 'unrestricted', allowanceA: 16, maximumCurrentA: 16, source: 'st-mq-load-balancing', limiter },
+    values: { ...item.values, minimumSoc: { value: 100, available: true, source: 'teslamate',
+      measuredAt: now - 60_000, retainedForSession: true, assumed: true } } }));
+  assert.equal($('charger2-allowance').textContent, '16 A Available');
+  assert.match(openDetail($('charger2-allowance')).textContent, /Idle current setting: 12 A confirmed/);
+  assert.match($('charger2-readings').textContent, /100 % · last vehicle value/);
+  assert.equal($('charger2-setting-minimumSoc').value, 100);
+  assert.match($('charger2-setting-minimumSoc').parentElement.textContent, /Last vehicle value retained.*current vehicle data is unavailable/);
   panel.close();
 });

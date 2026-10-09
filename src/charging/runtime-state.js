@@ -4,6 +4,7 @@ import { validateTargetState, validateTargetSelection } from './target.js';
 import { validateIdentificationState } from './identification.js';
 import { validateJointTeslaComparison } from './joint-identification.js';
 import { validateChargingFlexibility } from './flexibility.js';
+import { validateChargingProgress } from './progress.js';
 
 const object = input => input && typeof input === 'object' && !Array.isArray(input);
 const sessionConnectedAt = request => Number(request.scope.split(':').at(-1));
@@ -71,6 +72,7 @@ export function validateChargingRuntimeState(saved) {
       throw new Error('Unsupported saved charging session; start a fresh development database');
     validateSavedControls(previous.controls);
     validateTargetState(previous.targetState);
+    validateChargingProgress(previous.progress);
     if (previous.replan !== undefined && typeof previous.replan !== 'boolean')
       throw new Error('Unsupported saved charging controls; start a fresh development database');
     validateSavedRequest(previous.request, previous.association);

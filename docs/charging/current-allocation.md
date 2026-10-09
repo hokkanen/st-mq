@@ -185,6 +185,21 @@ Enabled native schedules conservatively own start/stop until
 disabled/removed; ST-MQ does not guess their cron window or rewrite them.
 Current limiting remains separate.
 
+When fresh native permission is off and healthy physical readback confirms an
+idle connected vehicle, hold `fallbackCurrentA` as a stable standby setting,
+respecting configured maximum and known native/vehicle ceilings. Set it once,
+then keep calculating and recording available capacity without chasing each
+headroom change at the device. The standby pilot is separate from available
+capacity: for example, a stopped charger can retain 12 A while only 8 A is
+currently available. Before an authorized Start, reconcile and confirm a setting
+within the current allocation; the normal increase dwell and ramp still apply.
+Zero allocation retains the owned balancing Stop and never becomes permission
+to resume. An enabled charger drawing zero remains under ordinary live current
+adjustment, since the vehicle may start drawing without a new Start command.
+Momentary low draw alone never selects standby. Unplugged capacity observations
+still send no commands. Identification and restoration keep their separately
+scoped current duties. This idle policy was approved by the owner on 2026-10-09.
+
 The existing five-second Shelly poll and incoming native changes reconcile
 current against the latest admitted phase observations. They do not add a second
 timer, poll the other charger's cloud or repeatedly run the economic search when
@@ -246,6 +261,9 @@ Scheduled or manual stops do not become load-balancing pauses merely because
 power is zero. Fallback remains explicit when a tighter restriction lowers it.
 Unplugged chargers retain numeric allowances when source evidence is usable;
 current-setting application and vehicle connection are shown separately.
+A confirmed idle standby setting is labeled **Idle current setting** separately
+from the varying **Available** allowance. Its confirmation does not claim that
+the standby pilot equals present headroom or that charging is permitted.
 
 The **Charging currents** view replaces the dedicated session-check view. It
 plots the highest property phase current at each timestamp and both charger

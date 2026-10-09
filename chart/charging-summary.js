@@ -28,10 +28,12 @@ export function chargingFlexibility(charger, { now = Date.now(), comparison = ch
   const cents = savings === null ? null : Math.round(Math.abs(savings));
   const amount = cents === null ? null : `€${(cents / 100).toFixed(2)}`;
   const extraCost = savings < 0 && cents > 0;
-  const label = amount !== null ? extraCost ? `+${amount} est. cost` : `${amount} est. saving`
+  const sharedPlanChanged = active && available && comparison.sharedPlanChanged === true;
+  const label = sharedPlanChanged ? 'Shared plan changed' : amount !== null ? extraCost ? `+${amount} est. cost` : `${amount} est. saving`
     : loading ? 'Calculating…' : 'Compare savings';
   const detail = [active ? 'Review the approved one-day allowance.' : awaitingCheckpoint ? 'Waiting for the updated charging request.' : '',
-    amount !== null ? extraCost ? `${amount} estimated extra cost.` : `${amount} estimated saving.`
+    sharedPlanChanged ? 'Compare the current shared plan with canceling this allowance; later peer choices remain in effect.'
+      : amount !== null ? extraCost ? `${amount} estimated extra cost.` : `${amount} estimated saving.`
       : loading ? 'Calculating estimated savings.' : 'Compare the estimated charging costs.'].filter(Boolean).join(' ');
   return { visible, active, awaitingCheckpoint, complete, eligible: state?.eligible === true && !active && !awaitingCheckpoint && !complete,
     effectiveReadyByAt: timestamp(state?.effectiveReadyByAt ?? (state?.active ? state.deferredReadyByAt : state?.normalReadyByAt)),
@@ -123,8 +125,9 @@ export function chargerSummary(charger, view, { now = Date.now(), formatTime = v
   const resumeAt = timestamp(manual?.resumeAt ?? manual?.expiresAt ?? manual?.windowEndAt ?? manual?.endsAt ?? manual?.endAt);
   const handoverPending = yielded && !unknownInstruction && resumeAt !== null && resumeAt <= now;
   const handoverUnconfirmed = supported && !enabled && control.handoverConfirmed === false;
-  const uncertain = (enabled || chargeNow || identificationActive) && (['uncertain', 'ownership-uncertain', 'unavailable', 'pause-unconfirmed', 'unconfirmed'].includes(phase)
-    || control.confirmed === false || Boolean(control.errorCode) || unknownInstruction
+  const currentAdjustmentOnly = control.scheduleConfirmed === true && control.currentAdjustment?.pending === true;
+  const uncertain = (enabled || chargeNow || identificationActive) && ((!currentAdjustmentOnly && ['uncertain', 'ownership-uncertain', 'unavailable', 'pause-unconfirmed', 'unconfirmed'].includes(phase))
+    || control.confirmed === false || !currentAdjustmentOnly && Boolean(control.errorCode) || unknownInstruction
     || view.state === 'Pause unconfirmed' || /update awaiting confirmation/.test(view.event ?? ''));
   let roleLabel = enabled ? 'Controlled' : 'Observed', roleState = enabled ? 'controlled' : 'observed';
   let roleDetail = enabled ? 'Automatic charging chooses charging periods for the ready-by time.'

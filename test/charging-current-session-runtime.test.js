@@ -101,9 +101,19 @@ test('Use automatic supersedes the current-session native cap while adopting eco
   view = f.view('charger2');
   assert.equal(view.settings.enabled, true);
   assert.equal(view.control.manualCurrentA, null);
-  assert.equal(f.fields.current_limit.value, 16);
+  assert.equal(f.fields.current_limit.value, f.runtime.configuration.chargers.charger2.fallbackCurrentA,
+    'The economic wait keeps the idle fallback after superseding the external cap');
   assert.equal(view.control.reason, 'economic-wait');
   assert.equal(f.fields.start_charging.value, false, 'Taking control does not skip the selected cheap charging period');
+  const commandBoundary = f.commands.length;
+  f.advance(view.plan.startAt - f.now);
+  await f.settle();
+  const resumed = f.commands.slice(commandBoundary);
+  const current = resumed.findIndex(command => command.role === 'current_limit' && command.value === 16);
+  const start = resumed.findIndex(command => command.role === 'start_charging' && command.value === true);
+  assert.ok(current >= 0 && start > current, 'The unrestricted allocation is confirmed before the scheduled Start');
+  assert.equal(f.view('charger2').control.manualCurrentA, null);
+  assert.equal(f.fields.current_limit.value, 16);
 });
 
 test('the Automatic scheduling switch does not supersede a later native current cap', async t => {

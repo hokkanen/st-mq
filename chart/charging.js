@@ -31,8 +31,9 @@ export function chargingTime(value, timezone = 'Europe/Helsinki', now = Date.now
     return `${date} ${clock}`;
   } catch { return new Date(value).toISOString(); }
 }
-const automatic = field => field?.available === true && !['manual', 'manual-fallback', 'assumed'].includes(field.source);
+const automatic = field => field?.available === true && field.retainedForSession !== true && !['manual', 'manual-fallback', 'assumed'].includes(field.source);
 const sourceLabel = (field, vehicle) => {
+  if (field?.retainedForSession === true) return 'Last vehicle value for this connection';
   if (['manual', 'manual-fallback'].includes(field?.source)) return 'Manual fallback';
   if (field?.assumed || field?.source === 'assumed') return 'Planning assumption';
   if (field?.available !== true) return 'Awaiting a reading';
@@ -234,9 +235,10 @@ export function chargerDisplay(charger, { now = Date.now(), timezone = 'Europe/H
   const phase = control.phase ?? '', manual = enabled || chargeNow || identificationActive ? control.manual ?? control.manualOverride : null;
   const unknownInstruction = ['unknown', 'takeover-unconfirmed'].includes(manual?.kind);
   const takeoverUnconfirmed = manual?.kind === 'takeover-unconfirmed';
-  const uncertain = (enabled || chargeNow || identificationActive) && (['uncertain', 'ownership-uncertain', 'unavailable', 'pause-unconfirmed'].includes(phase)
+  const currentAdjustmentOnly = control.scheduleConfirmed === true && control.currentAdjustment?.pending === true;
+  const uncertain = (enabled || chargeNow || identificationActive) && ((!currentAdjustmentOnly && ['uncertain', 'ownership-uncertain', 'unavailable', 'pause-unconfirmed'].includes(phase))
     || control.confirmed === false || phase === 'unconfirmed' && (chargeNow || identificationActive || control.owned || control.execution)
-    || Boolean(control.errorCode) || unknownInstruction);
+    || !currentAdjustmentOnly && Boolean(control.errorCode) || unknownInstruction);
   const yielded = (enabled || chargeNow || identificationActive) && (['yielded', 'manual'].includes(phase) || Boolean(manual));
   const activeManual = yielded && !unknownInstruction;
   const handoverUnconfirmed = !enabled && control.handoverConfirmed === false;
@@ -365,6 +367,12 @@ export function chargerDisplay(charger, { now = Date.now(), timezone = 'Europe/H
   const readingTime = showMetrics && vehicleCharge(referenceSoc) ? validTime(referenceSoc.measuredAt) ? `Charge measured ${chargingReadingTime(referenceSoc.measuredAt, timezone)}`
     : validTime(referenceSoc.receivedAt) ? `Charge received ${chargingReadingTime(referenceSoc.receivedAt, timezone)} · measurement time unavailable` : 'Charge measurement time unavailable' : '';
   const rows = [];
+  for (const [field, label] of [[values.minimumSoc, 'Target'], [values.capacityKwh, 'Battery capacity']]) {
+    if (showMetrics && field?.retainedForSession === true) rows.push([`${label} reference`,
+      `${number(field.value, label === 'Target' ? '%' : 'kWh')} · last vehicle value`,
+      `Last vehicle ${label.toLowerCase()} retained for this connection; current vehicle data is unavailable.${validTime(field.measuredAt) ? ` Measured ${chargingReadingTime(field.measuredAt, timezone)}.` : ''}`]);
+  }
+  if (currentAdjustmentOnly) rows.push(['Current adjustment', chargingControlReason(control.currentAdjustment.reason) || 'Awaiting current-setting confirmation. The accepted schedule remains in effect.']);
   if (showPlan && typeof plan.usesForecast === 'boolean') rows.push(['Plan prices', plan.usesForecast ? 'Includes forecast prices' : 'Published prices',
     'All-in electricity prices include spot price, margin, electricity tax, transfer and VAT. Published prices take precedence; fresh forecasts fill unpublished times when enabled. Both ordinary and extra-day planning apply a 2 c/kWh uncertainty allowance to forecast-priced energy when choosing periods. Displayed electricity costs exclude this planning allowance. Forecast prices and periods may change.']);
   if (showPlan && currentAssumption) rows.push(['Planning current', `Up to ${number(currentAssumption.maximumCurrentA, 'A per phase')} assumed · shared capacity may reduce it`]);
@@ -501,12 +509,13 @@ export function chargerDisplay(charger, { now = Date.now(), timezone = 'Europe/H
       unavailable: 'A usable supply estimate is still being established.',
     })[assumptions.supply] ?? 'The night forecast combines the available supply with expected household use; the last reported allowance describes current conditions.';
     explanations.push(['Current allocation', `${provider === 'easee' ? 'Equalizer' : 'The external load balancer'} controls the current and protects the property supply. The reported allowance, charger limit and actual draw are separate: a limit does not promise that current is available now. ${supported ? `${basis} ` : ''}The charging limit caps the forecast. Automatic charging does not change the external limits.`]);
-  } else if (shelly && supported && charger.capabilities?.currentControl) explanations.push(['Charging current', 'This application adjusts Shelly’s current using the configured supply limits, available measurements and shared charger priority. It respects known vehicle and charger limits and pauses when the available current is below the charging minimum. Missing or stale measurements use the configured fallback; this is not a guarantee of property fuse protection. Actual draw can be lower than the selected current.']);
+  } else if (shelly && supported && charger.capabilities?.currentControl) explanations.push(['Charging current', 'This application adjusts Shelly’s current using the configured supply limits, available measurements and shared charger priority. It respects known vehicle and charger limits and pauses when the available current is below the charging minimum. A confirmed idle stop holds the configured fallback setting while available capacity is still calculated; the current allocation is confirmed before starting. Missing or stale measurements use the configured fallback; this is not a guarantee of property fuse protection. Actual draw can be lower than the selected current.']);
   else explanations.push(['Charging current', `Known vehicle and charger current limits constrain the forecast. When current is unknown, the forecast assumes the charger’s maximum within available shared property capacity. This estimates delivery and completion, not a confirmed current setting. Power is the measured charging rate.${shelly && supported ? ' Vehicle identification can temporarily use the verified minimum current, separately from the household current limiter. The previous setting is restored afterward, respecting newer external instructions.' : charger.capabilities?.currentControl === true ? '' : ' This page does not change charging current.'}`]);
   const socSource = retainedVehicleReference ? `Estimated from last known vehicle charge${hasProgress ? ' and measured energy' : ''}`
     : estimatedSoc ? `Estimated from ${vehicleCharge(soc) ? 'vehicle charge' : chargeReferenceLabel(soc)} and measured energy`
     : vehicleCharge(soc) ? sourceLabel(soc, charger.vehicle) : manualChargeReference(soc) ? 'Manual charge reference' : 'Configured starting charge';
-  const targetSource = values.minimumSoc?.source === 'session-request' ? 'Planning target for this connection'
+  const targetSource = values.minimumSoc?.retainedForSession === true ? 'Last vehicle target retained for this connection'
+    : values.minimumSoc?.source === 'session-request' ? 'Planning target for this connection'
     : values.minimumSoc?.source === 'bmw-target-filter' ? 'BMW target held after conflicting reports'
       : automatic(values.minimumSoc) ? `Target from ${sourceLabel(values.minimumSoc, charger.vehicle)}` : 'Requested target';
   const targetSelection = sessionTargetFor(charger);
@@ -861,7 +870,8 @@ export function createChargingPanel({ document, request, beforeRequest = () => {
       const reading = charger?.values?.[field.reading ?? key], live = field.automatic && automaticFor(charger, reading);
       const estimate = key === 'manualSoc' && connectedSession(charger) ? currentChargeEstimate(charger) : null;
       const draft = group.dirty.has(key);
-      const value = (draft ? group.drafts.get(key) : estimate !== null ? Number(estimate.toFixed(1)) : live ? reading.value : get(settings, key)) ?? '';
+      const retainedValue = reading?.retainedForSession === true && reading.available === true && connectedSession(charger);
+      const value = (draft ? group.drafts.get(key) : estimate !== null ? Number(estimate.toFixed(1)) : live || retainedValue ? reading.value : get(settings, key)) ?? '';
       if (!draft || input.value !== value) input.value = value;
       const unsupported = field.scheduling && !charger?.capabilities?.scheduling;
       const configured = get(charger.defaults ?? settings, key);
@@ -870,7 +880,8 @@ export function createChargingPanel({ document, request, beforeRequest = () => {
       const reference = retained ? { ...charger.progress.referenceSoc, available: true } : reading;
       const sourceDetail = estimate !== null
         ? `Estimated from ${retained ? 'the last ' : ''}${automaticFor(charger, reference) && vehicleCharge(reference) ? `${sourceLabel(reference, charger.vehicle)} reading` : chargeReferenceLabel(reference)}${charger.progress.hasEnergyEstimate ? ' and measured energy' : ''}.`
-        : key === 'manualSoc' && reading?.source === 'session-anchor' ? 'Saved manual charge reference.'
+        : retainedValue ? 'Last vehicle value retained for this connection; current vehicle data is unavailable.'
+          : key === 'manualSoc' && reading?.source === 'session-anchor' ? 'Saved manual charge reference.'
           : live && reading.source === 'session-request' ? 'Saved for this session.'
             : live && reading.source === 'bmw-target-filter' ? 'BMW target retained after conflicting reports.'
               : live ? `Latest ${key === 'manualSoc' ? 'reading' : 'value'} from ${sourceLabel(reading, charger.vehicle)}.` : '';

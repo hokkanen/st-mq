@@ -225,6 +225,13 @@ permission to act. See [the configuration guide](docs/configuration.md).
   Charge now is a session action independent of the Automatic charging switch.
   It still respects live control authority, device readiness and native limits.
   Integration setup, commissioning and electrical limits remain configured.
+  The same identified physical connection retains its last usable vehicle target
+  and capacity as labelled planning references during feed loss and restart,
+  together with its charge anchor. Missing telemetry cannot silently lower its
+  effective target and release a completed request. Original clocks and unavailable
+  raw telemetry remain visible; new usable observations and explicit session edits
+  take precedence. These references neither rewrite defaults nor grant actuator
+  authority, and cannot cross vehicle or physical-session boundaries.
 - Charging current adjusts to property loading and shared charger priority by
   default, independently of Automatic scheduling and including Charge now.
   Charger 1 retains native Equalizer current control. Shelly applies the shared
@@ -273,6 +280,17 @@ permission to act. See [the configuration guide](docs/configuration.md).
   An explicit configuration opt-out remains supported. This lasting amendment,
   approved on 2026-10-05, removes the independent Equalizer cross-check and the
   unchanged-value expiry to avoid competing balancing loops and false fallback.
+  With current adjustment enabled, a confirmed connected idle permission-off
+  stop holds the configured fallback setting, constrained by applicable tighter
+  native, vehicle and electrical limits. Changes in computed headroom do not
+  repeatedly rewrite that idle setting. Capacity calculation and history remain
+  independent; the idle setting is not evidence of available capacity. Before
+  an application-authorized Start, apply and confirm a limit within current
+  admitted capacity. Active charging uses normal adjustment. A transient zero
+  draw does not establish idle, and a load-balancing Stop remains held until
+  sufficient capacity returns. Unplugged observation sends no setting commands;
+  scoped identification and restoration duties remain applicable. This idle
+  behavior was explicitly agreed by the owner on 2026-10-09.
 - Shelly's adjustable current setting follows the physical session's instruction
   precedence. With `limiterEnabled:true`, a setting carried into a new confirmed
   connection is readback, not a permanent restriction on load balancing. A
@@ -309,8 +327,19 @@ permission to act. See [the configuration guide](docs/configuration.md).
   treatment. The uncertainty allowance guides decisions and remains separate
   from estimated cash cost and recorded bills. An extra-day comparison changes
   only the selected charger's deadline, with the same remaining energy and joint
-  capacity assumptions, so any saving reflects additional time. Forecast use
-  does not require a deadline extension or grant control authority. Admin and
+  capacity assumptions, so any saving reflects additional time. Retain the
+  earlier complete plan as a candidate, including its allocation targets. A new
+  allowance uses the extra time only when combined cost plus forecast uncertainty
+  improves without increasing the selected charger's or household's estimated
+  cash cost; keep the earlier plan on ties. A stopped, unscheduled peer's unfulfilled
+  request is not promised service, while independently active or scheduled peer
+  demand and its uncertainty remain part of the joint assessment. This
+  owner-approved clarification on 2026-10-09 applies both to prospective
+  comparisons and planning with an approved extra day. Multiple allowances keep
+  their approval order. An active allowance's comparison must show the actual
+  current joint plan; explain any redistribution from a later peer allowance
+  instead of hiding costs or displaying a different hypothetical approved plan.
+  Forecast use does not require a deadline extension or grant control authority. Admin and
   family-password users may view and refresh the comparison, allow one more day
   and cancel an active allowance under the same equipment, session and readiness
   checks. This lasting amendment, approved on 2026-10-09, removes the former rule

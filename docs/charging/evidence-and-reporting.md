@@ -20,6 +20,18 @@ Physical electricity sources are always Easee for C1 and Shelly EVSE for C2, reg
 
 A new SoC observation rebases modeled progress. Connection energy and cost retain their separate physical-session lifetime across those rebases, edited targets, pauses and restart. Native Shelly accumulated-energy deltas record C2 energy as three estimated phase allocations whose sum preserves the measured increment, using the same phase-only interval format as C1 and property. No separate total-energy series is stored. Unallocatable measured increments remain diagnostic events and explicit phase gaps; progress and cost require a complete valid phase group. Counter resets, implausible jumps and excessive source-time gaps start a new baseline without bridging invented energy. Charger 2 does not integrate power to obtain total energy and has no session-energy accumulator or recorded-energy comparison. Property and Charger 1 retain their checks of power-integrated phase energy against meter references.
 
+An identified connection retains its last usable vehicle target and capacity
+alongside its charge reference when the vehicle feed becomes unavailable. These
+compact session references preserve original source clocks across restart; they
+are labelled planning assumptions, not fresh vehicle observations. Feed loss
+cannot combine a retained 96% charge with an 80% default target and falsely
+release a pause as completed. New usable vehicle values and explicit session
+edits take precedence. Disconnecting, changing the identified vehicle or replacing
+the physical connection prevents reuse. Raw automatic fields still report
+unavailability; configured defaults, measured energy and native current limits
+retain their separate ownership. Genuinely absent references use current defaults;
+invalid or retired saved progress is rejected before database mutation.
+
 Price revisions are canonicalized by publication authority over their actual coverage. New quarter/hour slices replace the overlapped region only; negative prices, remaining older coverage and gaps remain explicit. Binary interval lookup prices physical contributions efficiently. Costs distinguish actual delivered, estimated remaining, missing/unpriced coverage and timing comparisons. The per-charger and combined timing benchmark is not proof of causal controller savings.
 
 The **Added energy** tile shows recorded grid energy for the whole plugged-in

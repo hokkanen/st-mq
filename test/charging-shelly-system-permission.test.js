@@ -649,12 +649,16 @@ test(`an acknowledged delayed Start reconciles fresh SYS ${permitted} and ends t
     const phases = current => ({ healthy: true, currents: [current, current, current], times: Array(3).fill(f.now),
       evidence: { connected: true, online: true, synchronized: true, epoch: 'synthetic-recovered-feed' } });
     f.runtime.allocationContext = () => ({ property: phases(3), easee: phases(0), priority: 'balanced' });
+    const currentWrites = f.writes.filter(write => write.role === 'current_limit').length;
     f.advance(1000); control = await f.update();
     assert.equal(control.limiter.fallback, false);
+    assert.equal(control.limiter.currentA, 16, 'Recovered capacity remains visible while the charger waits');
     assert.equal(control.currentTest.phase, 'restored');
-    assert.equal(f.fields.current_limit.value, 14, 'Ordinary current adjustment retains its bounded ramp');
+    assert.equal(f.fields.current_limit.value, 12, 'The restored economic pause keeps its idle fallback');
     f.advance(f.adapter.config.dwellMs + 1000); await f.update();
-    assert.equal(f.fields.current_limit.value, 16, 'Ordinary current adjustment resumes when fallback clears');
+    assert.equal(f.fields.current_limit.value, 12);
+    assert.equal(f.writes.filter(write => write.role === 'current_limit').length, currentWrites,
+      'Recovered headroom creates no unnecessary idle setting changes');
     assert.equal(starts(f).length, 1);
   }
 });

@@ -61,9 +61,10 @@ export const chargingTransactionWaiting = charger => charger.control?.errorCode 
 
 /** A controller-held pause and a native expiring pause have different release evidence. */
 export function chargingPauseConfirmedForPeriod(control, period) {
-  if (control.nativeExpiry === false) return control.phase === 'waiting'
+  const currentAdjustmentOnly = control.scheduleConfirmed === true && control.currentAdjustment?.pending === true;
+  if (control.nativeExpiry === false) return (control.phase === 'waiting' || currentAdjustmentOnly)
     && control.ownsInstruction === true && control.pauseConfirmed === true
-    && !control.pending && !control.manual
+    && (!control.pending || currentAdjustmentOnly) && !control.manual
     && control.execution?.periods?.some(row => Number(row.startAt) === Number(period.startAt)) === true;
   return control.phase === 'paused' && control.pauseConfirmed !== false && control.ownsInstruction !== false
     && Number(control.owned?.startAt) === Number(period.startAt);

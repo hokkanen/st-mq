@@ -439,6 +439,33 @@ test('session capacity edit preserves configured Tesla and unidentified defaults
   assert.equal(view(restarted).values.capacityKwh.value, 50);
 });
 
+test('Tesla logger loss keeps the identified request at 100 percent across polling and restart', async t => {
+  const f = fixture({ defaults: { manualSoc: 20, minimumSoc: 80, capacityKwh: 57 } });
+  f.tesla.batteryLevel = 96; f.tesla.chargeLimitSoc = 100;
+  const runtime = f.create(); t.after(() => runtime.close());
+  f.setTeslaEvidence('easee'); await runtime.tick();
+  const before = view(runtime);
+  assert.equal(before.vehicle.id, 'tesla');
+  assert.equal(before.values.minimumSoc.value, 100);
+  assert.ok(before.requiredGridKwh > 2);
+  f.setCharging(false); f.setNow(START + 2 * MINUTE); f.setTeslaEvidence(null);
+  await runtime.tick();
+  const outage = view(runtime);
+  assert.equal(outage.automatic.minimumSoc.available, false);
+  assert.equal(outage.values.minimumSoc.value, 100);
+  assert.equal(outage.values.minimumSoc.retainedForSession, true);
+  assert.equal(outage.progress.estimatedSoc, 96);
+  assert.equal(outage.requiredGridKwh, before.requiredGridKwh);
+  const restarted = f.create(); t.after(() => restarted.close()); await restarted.tick();
+  assert.equal(view(restarted).values.minimumSoc.value, 100);
+  assert.equal(view(restarted).requiredGridKwh, before.requiredGridKwh);
+  assert.equal(restarted.settings.vehicles.tesla.minimumSoc, 80, 'Configuration defaults are not rewritten');
+  f.setNow(START + 3 * MINUTE); f.tesla.chargeLimitSoc = 98; f.setTeslaEvidence('easee'); await restarted.tick();
+  assert.equal(view(restarted).values.minimumSoc.value, 98);
+  assert.equal(view(restarted).values.minimumSoc.retainedForSession, undefined);
+  assert.ok(view(restarted).requiredGridKwh > 0);
+});
+
 test('old Tesla plug state cannot rebound from unplugged Easee into a duplicate Charger 2 session, including restart', async t => {
   const f = fixture(), runtime = f.create(); t.after(() => runtime.close());
   f.setTeslaEvidence('easee'); runtime.tick(); f.setNow(START + MINUTE); f.setConnection(false); runtime.tick();

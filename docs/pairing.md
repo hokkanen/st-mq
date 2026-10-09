@@ -659,6 +659,12 @@ configuration, peer addresses, shared credentials, provider tokens and the other
 computer's data unchanged. A confirmation is required; a changed pairing role
 or history invalidates an open confirmation.
 
+Pairing management loads independently of database-backed dashboard status. If
+saved state prevents the dashboard from loading, the authenticated **Paired
+computers** panel still offers the existing reset choices to an admin. Family
+access remains read-only for pairing; no successful management response enables
+equipment controls or substitutes for missing dashboard observations.
+
 | Choice | History | Result |
 | --- | --- | --- |
 | **Keep local history** | Archives previous pairing files and retains a separate active copy of the selected local database, including its saved learning and control records. | A new pairing identity in **Protected recovery** when history exists. Explicit promotion or protected recovery is required; ordinary mirroring cannot overwrite the retained history. |

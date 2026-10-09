@@ -20,7 +20,7 @@ const comparisonContent = value => JSON.stringify([
   ...['normalCostCents', 'deferredCostCents', 'savingsCents', 'householdSavingsCents', 'normalHouseholdUncertaintyPremiumCents',
     'householdUncertaintyPremiumCents', 'riskAdjustedSavingsCents'].map(key => money(value[key])),
   Math.sign(Math.round(value.savingsCents)), duration(value.normalChargingDurationMs), duration(value.deferredChargingDurationMs),
-  value.recommended, value.usesForecast, value.normalUsesForecast, value.deferredUsesForecast, value.priceCoverage,
+  value.recommended, value.usesForecast, value.normalUsesForecast, value.deferredUsesForecast, value.priceCoverage, value.sharedPlanChanged,
   ...['normalPeriods', 'deferredPeriods'].map(key => value[key]?.map(period => [Math.floor(period.startAt / 60_000),
     finite(period.endAt) ? Math.floor(period.endAt / 60_000) : null])),
   (value.chargers ?? []).filter(peer => finite(peer.normalCostCents) && finite(peer.deferredCostCents)
@@ -34,7 +34,12 @@ export function chargingFlexibilityActionId(random = globalThis.crypto) {
   else for (let i = 0; i < bytes.length; i++) bytes[i] = Math.floor(Math.random() * 256);
   return `flex-${[...bytes].map(value => value.toString(16).padStart(2, '0')).join('')}`;
 }
-const reasonText = reason => ({
+const reasonText = (reason, comparison) => ({
+  'competing-load-unavailable': 'The other charger is active, but its electrical demand cannot currently be estimated.',
+  'price-coverage-unavailable': 'Available prices do not cover enough eligible charging time for this request.',
+  'electrical-telemetry-unavailable': 'Current or voltage evidence is unavailable, so charging capacity cannot be estimated.',
+  'vehicle-start-after-deadline': 'A vehicle timer prevents the requested charging before ready-by.',
+  'insufficient-time': 'The modeled charging capacity cannot deliver the requested energy before ready-by.',
   'forecast-unavailable': 'A fresh price forecast is unavailable. No saving can be estimated.',
   'normal-plan-infeasible': 'The earlier ready-by time may not be achievable. A reliable saving cannot be compared.',
   'extended-plan-infeasible': 'The later plan cannot currently be compared. There may be insufficient charging capacity or price coverage.',
@@ -49,7 +54,7 @@ const reasonText = reason => ({
   'forecast-disabled': 'Electricity price forecasts are disabled in configuration.',
   'control-unavailable': 'Waiting for confirmed charging control before offering another day.',
   'read-only': 'Changes are available on the controlling computer.',
-})[reason] ?? 'A current feasible charging plan and sufficient price coverage are needed for a cost comparison.';
+})[comparison?.blockingReason ?? reason] ?? 'A current feasible charging plan and sufficient price coverage are needed for a cost comparison.';
 
 /** One guarded dialog serves both cards; only its affirmative action can change intent. */
 export function createChargingFlexibility({ document, request, save, formatTime }) {
@@ -126,7 +131,7 @@ export function createChargingFlexibility({ document, request, save, formatTime 
     priceDetails = make('details', '', 'charging-flexibility-price-details', 'charging-flexibility-price-details');
     priceDetails.append(make('summary', 'Prices, forecasts & estimates'),
       make('p', 'Published prices always take precedence. Fresh forecasts fill unpublished times when enabled. Both plans include spot price, margin, electricity tax, transfer and VAT. Only this charger’s deadline changes; both chargers are planned together.'),
-      make('p', 'For both plans, each forecast-priced kWh carries a 2 c/kWh uncertainty allowance when choosing periods. This planning margin is not an electricity charge and is excluded from the displayed costs and savings. Published prices carry no allowance. Prices, periods and savings may change as new data arrives.'));
+      make('p', 'For both plans, each forecast-priced kWh carries a 2 c/kWh uncertainty allowance when choosing periods. This planning margin is not an electricity charge and is excluded from the displayed costs and savings. Published prices carry no allowance. For a new allowance, the earlier plan remains available: later periods are chosen only when the combined result improves after uncertainty without increasing this charger’s or the combined cash cost. Later choices for the other charger can change how savings are shared; refreshing an active allowance compares the current plan with canceling it. Prices, periods and savings may change as new data arrives.'));
     riskAllowances = make('p', '', 'charging-flexibility-detail', 'charging-flexibility-risk-allowances');
     priceDetails.append(riskAllowances,
       make('p', 'Costs cover only the energy still needed to reach the target, including charging losses. Already delivered energy is unchanged. Proposed periods are estimates, not confirmed charger schedules. “Onward” has no planned stop. Charging time excludes pauses.'));
@@ -195,7 +200,9 @@ export function createChargingFlexibility({ document, request, save, formatTime 
     const active = view.active;
     const displayedActive = snapshot?.active;
     title.textContent = `${snapshot?.label ?? 'Charging'} · ${displayedActive ? 'One day allowed' : 'One extra day'}`;
-    description.textContent = `This choice extends only ${snapshot?.label ?? 'this charger'}'s deadline. ` + (displayedActive
+    description.textContent = displayedActive && comparison?.sharedPlanChanged
+      ? 'The shared plan has changed since this allowance. These are the current approved plan and the alternative with this charger’s earlier deadline; later choices for the other charger retain their priority.'
+      : `This choice extends only ${snapshot?.label ?? 'this charger'}'s deadline. ` + (displayedActive
       ? 'Charging can use any time before the approved deadline. Another day needs a new approval after the earlier deadline.'
       : 'Charging can still happen sooner when it costs less.');
     const plansKey = JSON.stringify([available ? comparisonContent(comparison) : null, displayedActive, displayedState?.normalReadyByAt,
@@ -217,7 +224,7 @@ export function createChargingFlexibility({ document, request, save, formatTime 
       renderedPlans = plansKey;
     }
     const displayedSaving = available && finite(comparison.savingsCents) ? Math.round(comparison.savingsCents) : null;
-    savingValue.textContent = displayedSaving !== null
+    savingValue.textContent = displayedActive && available && comparison.sharedPlanChanged ? 'Shared plan changed' : displayedSaving !== null
       ? displayedSaving > 0 ? `Estimated saving ${money(displayedSaving)}`
         : displayedSaving < 0 ? `Estimated extra cost ${money(-displayedSaving)}` : 'No estimated saving'
       : loading ? 'Comparing charging plans…' : '';
@@ -229,7 +236,9 @@ export function createChargingFlexibility({ document, request, save, formatTime 
     combined.textContent = peerEffects.map(peer => {
       const saving = peer.normalCostCents - peer.deferredCostCents;
       return `${snapshot.labels[peer.id] ?? 'The other charger'}: ${money(Math.abs(saving))} ${saving < 0 ? 'more' : 'less'} estimated, with its ready-by time unchanged.`;
-    }).join(' ') + (!combined.hidden && finite(comparison.householdSavingsCents)
+    }).join(' ') + (!combined.hidden && displayedActive && comparison.sharedPlanChanged
+      ? ` Combined remaining costs: ${money(comparison.chargers.reduce((sum, row) => sum + row.normalCostCents, 0))} with the earlier deadline; ${money(comparison.chargers.reduce((sum, row) => sum + row.deferredCostCents, 0))} with the approved deadline.`
+      : !combined.hidden && finite(comparison.householdSavingsCents)
       ? ` Total estimated ${comparison.householdSavingsCents < 0 ? 'extra cost' : 'saving'}: ${money(Math.abs(comparison.householdSavingsCents))}.` : '');
     uncertainty.hidden = !available || !comparison.usesForecast;
     const riskSaving = finite(comparison?.riskAdjustedSavingsCents) ? Math.round(comparison.riskAdjustedSavingsCents) : null;
@@ -248,7 +257,7 @@ export function createChargingFlexibility({ document, request, save, formatTime 
       : readonly ? 'View only. Changes are available on the controlling computer.'
       : active ? `The +1 day marker ends at ${formatTime(displayedState.checkpointAt, snapshot.timezone, snapshot.now)}; the approved deadline then remains binding. Cancel restores the earlier deadline, with best-effort charging if it can no longer be met.`
       : !state?.eligible ? reasonText(state?.reason)
-      : !available && !loading ? reasonText(comparison?.reason)
+      : !available && !loading ? reasonText(comparison?.reason, comparison)
       : '';
     note.hidden = !note.textContent;
     refresh.hidden = readonly;

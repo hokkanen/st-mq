@@ -15,7 +15,7 @@ const now = Date.parse('2026-09-25T12:00:00Z');
 const screenshotDirectory = process.env.STMQ_ACCESS_SCREENSHOT_DIR;
 const layoutReport = [], layoutFailures = [];
 const writes = [];
-let app, browser, socket, sequence = 0;
+let app, browser, socket, sequence = 0, dashboardUnavailable = false, pairingUnavailable = false;
 const pending = new Map(), errors = [];
 try {
   const configuration = join(directory, 'fixture.json');
@@ -26,14 +26,17 @@ try {
   const pair = { role: 'master', canControl: true, busy: false,
     peer: { reachable: true, role: 'slave', lastSeenAt: now }, vip: { owned: true, ready: true },
     recovery: { state: 'idle' }, reset: { token: 'b'.repeat(64) }, actions: { 'check-recovery': true, recover: false, rejoin: false, handover: true, promote: false, reset: true } };
-  app = await start({ config, clock: () => now, pairContext: { status: () => pair,
-    canControl: () => true, recovering: () => false,
+  app = await start({ config, clock: () => now, pairContext: { status: () => {
+    if (pairingUnavailable) throw new Error('Synthetic pairing status failure');
+    return pair;
+  }, canControl: () => pair.canControl, recovering: () => false,
     requestAction: () => { throw new Error('The browser fixture must never dispatch pairing operations.'); } } });
   app.server.on('request', request => { if (request.method !== 'GET' && request.method !== 'HEAD') writes.push(request.url); });
   // Only enrich display evidence. The runtime remains an isolated simulation;
   // this does not install transports or grant native device command capability.
   const originalStatus = app.engine.status.bind(app.engine);
   app.engine.status = () => {
+    if (dashboardUnavailable) throw new Error('Unsupported voltage estimate state; start a fresh development database');
     const status = originalStatus();
     const values = { power: 'on', mode: 'heat', targetC: 22, fan: 'auto', vane: 'auto', wideVane: 'center' };
     const choices = { power: ['on', 'off'], mode: ['heat', 'cool', 'auto', 'dry', 'fan'],
@@ -396,9 +399,44 @@ try {
   await login(family);
   assert.equal(await evaluate("document.getElementById('database-export-download').disabled"), true,
     'Returning from revoked admin to family restores restrictions');
+
+  // A fresh document has never received /api/status, so pairing must establish
+  // authenticated management access without unblocking ordinary commands.
+  dashboardUnavailable = true;
+  Object.assign(pair, { role: 'protected', canControl: false, reason: 'activation_failed', error: 'database_state_incompatible' });
+  await send('Page.reload');
+  await until("document.body.dataset.authenticated === 'true' && document.getElementById('pairing-panel').checkVisibility()");
+  assert.match(await evaluate("document.getElementById('error').textContent"), /Unsupported voltage estimate state/);
+  assert.equal(await evaluate("document.body.dataset.accessRole"), 'family');
+  assert.equal(await evaluate("document.getElementById('pairing-reset').disabled"), true, 'Recovery does not give family users admin access');
+  await evaluate("document.getElementById('web-logout').click();true");
+  await until("document.body.dataset.authenticated === 'false' && !document.getElementById('auth').hidden");
+  await login('synthetic-browser-rotated-admin-access-token');
+  await until("!document.getElementById('pairing-reset').disabled");
+  assert.equal(await evaluate("[...document.querySelectorAll('[data-write-control]')].flatMap(node => node.matches('button,input,select,textarea') ? [node] : [...node.querySelectorAll('button,input,select,textarea')]).every(node => node.disabled)"), true,
+    'Management access cannot enable equipment or ordinary configuration controls');
+  const writesBeforeRecovery = writes.length;
+  await evaluate("document.getElementById('pairing-details').open=true;true");
+  for (const width of [320, 1440]) for (const theme of ['dark', 'light']) {
+    await send('Emulation.setDeviceMetricsOverride', { width, height: 900, deviceScaleFactor: 1, mobile: false });
+    await evaluate(`window.homeEnergyTheme.setTheme(${JSON.stringify(theme)}); document.getElementById('pairing-reset').click();true`);
+    await until("document.getElementById('pairing-reset-dialog').open");
+    assert.equal(await evaluate("document.getElementById('pairing-reset-fresh').disabled"), true, 'Existing restoration acknowledgement remains required');
+    await evaluate("document.getElementById('pairing-reset-restoration').click();true");
+    assert.equal(await evaluate("document.getElementById('pairing-reset-fresh').disabled"), false, 'Start fresh is reachable while dashboard status fails');
+    assert.equal(await evaluate("document.documentElement.scrollWidth <= innerWidth"), true);
+    assert.equal(await evaluate("(() => { const dialog=document.getElementById('pairing-reset-dialog'); return dialog.scrollWidth <= dialog.clientWidth; })()"), true);
+    await evaluate("document.getElementById('pairing-reset-cancel').click();true");
+  }
+  assert.equal(writes.length, writesBeforeRecovery, 'Reviewing recovery sends no mutation');
+  pairingUnavailable = true;
+  await until("document.getElementById('pairing-reset').disabled");
+  pairingUnavailable = false;
+  await until("!document.getElementById('pairing-reset').disabled");
+  assert.match(await evaluate("document.getElementById('error').textContent"), /Unsupported voltage estimate state/);
   assert.deepEqual(errors, []);
   assert.deepEqual(layoutFailures, [], `Layout failures${screenshotDirectory ? `; inspect ${screenshotDirectory}/geometry.json` : ''}`);
-  console.log('Access browser checks passed: password visibility, family controls, restricted downloads, firewood window, logout, admin login and credential revocation.');
+  console.log('Access browser checks passed: password visibility, family controls, restricted downloads, firewood window, logout, admin login, credential revocation and fresh-load pairing recovery during dashboard failure.');
 } finally {
   socket?.close(); for (const request of pending.values()) clearTimeout(request.timer);
   await app?.close();

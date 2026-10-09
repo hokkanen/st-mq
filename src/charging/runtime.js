@@ -84,6 +84,23 @@ const durablePlan = plan => {
   if (Array.isArray(result.accounting)) result.accounting = result.accounting.filter(row => row.predicted !== true);
   return result;
 };
+// Retaining an earlier economic plan also retains its allocation urgency. Only
+// a matching accepted execution can supply C1's target; C2 may additionally use
+// its prospective program while preparing the current before Start.
+const withAllocationTarget = (view, item, now, proposed = false) => {
+  const plan = item?.plan, execution = view.control?.execution;
+  const grant = view.request?.flexibility?.activeDefer;
+  const extendingAcceptedDeadline = Boolean(grant) && Number.isFinite(grant.checkpointAt)
+    && grant.checkpointAt === plan?.deadlineAt && grant.deferredReadyByAt === view.deadlineAt && now < grant.checkpointAt;
+  if (!plan || item.newEpisode || view.control?.manual || view.request?.chargeNow
+    || !view.settings.enabled || plan.deadlineAt !== view.deadlineAt && !extendingAcceptedDeadline) return view;
+  const matching = Boolean(execution?.planId) && execution.planId === plan.id
+    && digest(remainingPeriods(execution.periods, now)) === digest(remainingPeriods(plan.periods, now));
+  const target = proposed || matching ? plan.targetAt
+    : execution?.planId && plan.priceRevision?.previousPlanId === execution.planId ? plan.priceRevision.previousTargetAt : execution?.deadlineAt;
+  return Number.isFinite(target) && target > now && target <= view.deadlineAt
+    ? { ...view, allocationTargetAt: target } : view;
+};
 const object = input => input && typeof input === 'object' && !Array.isArray(input);
 const sessionConnectedAt = request => Number(request.scope.split(':').at(-1));
 const deadlineRequest = item => item.request?.flexibility?.lastTransition ? {
@@ -1410,13 +1427,15 @@ export class ChargingRuntime {
     const limit = recent ? control.limiter : null;
     const applied = fresh(setting) ? setting.value : null;
     const currentTestOutstanding = ['proposed', 'applying', 'active', 'restoring', 'uncertain'].includes(control.currentTest?.phase);
+    const settingTarget = limit?.settingCurrentA ?? limit?.currentA;
+    const idle = limit?.settingMode === 'idle-fallback' && fresh(permission) && permission.value === false;
     const confirmed = !control.pending && !currentTestOutstanding && limit
-      && (limit.currentA === 0 ? fresh(permission) && permission.value === false && control.ownedPause
-        : applied === limit.currentA);
+      && (idle && settingTarget === 0 ? true : settingTarget === 0 ? fresh(permission) && permission.value === false && control.ownedPause
+        : applied === settingTarget);
     return shellyLimiterStatus({ enabled: installation.enabled && installation.limiterEnabled,
       connected: snapshot?.pluggedIn, online: snapshot?.online === true && this.canControl(),
       maximumCurrentA: installation.maximumCurrentA, limit, appliedCurrentA: applied,
-      applicationStatus: confirmed ? 'confirmed' : currentTestOutstanding ? 'blocked' : control.pending ? 'pending'
+      applicationStatus: confirmed ? idle ? 'idle' : 'confirmed' : currentTestOutstanding ? 'blocked' : control.pending ? 'pending'
         : snapshot?.controlReady === false || control.errorCode ? 'blocked' : recent && applied !== null ? 'pending' : 'unknown',
       pausedByLimiter: limit?.pausedByLimiter === true && fresh(permission) && permission.value === false && control.ownedPause });
   }
@@ -1460,6 +1479,9 @@ export class ChargingRuntime {
       if (Object.hasOwn(item.request?.overrides ?? {}, 'minimumSoc')) { charger.values.minimumSoc = { value: settings.minimumSoc, source: 'session-request', available: true };
         charger.requiredGridKwh = charger.values.capacityKwh.value * Math.max(0, settings.minimumSoc - charger.values.soc.value) / 100 / charger.configuration.efficiency; }
       const progress = updateChargingProgress(item.progress, charger, now, this.readEnergy);
+      Object.assign(charger.values, progress.batteryValues);
+      charger.requiredGridKwh = charger.values.capacityKwh.value
+        * Math.max(0, charger.values.minimumSoc.value - charger.values.soc.value) / 100 / charger.configuration.efficiency;
       const feed = this.vehicleFeeds[telemetry[id]?.vehicle?.id];
       const reception = feed ? vehicleReception(feed, now) : null;
       const identificationPauseOutstanding = control.owned?.purpose === 'identification'
@@ -1486,7 +1508,7 @@ export class ChargingRuntime {
           attempted: Boolean(item.identification?.chargingStartedAt) },
         request: telemetry[id]?.vehicle?.sessionId ? item.request : null, vehicle: telemetry[id]?.vehicle ?? null,
         referenceGridKwh: charger.requiredGridKwh, requiredGridKwh: progress.remainingGridKwh,
-        progress: { ...progress, state: undefined, creditedGridKwh: progress.state.creditKwh },
+        progress: { ...progress, state: undefined, batteryValues: undefined, creditedGridKwh: progress.state.creditKwh },
         automaticSoc: telemetry[id]?.vehicle?.id === 'bmw' && telemetry[id].vehicle.state === 'identified' ? feed?.reading : null, plan: item.plan,
         sessionCost: item.sessionCost ? { ...item.sessionCost, prices: undefined } : null,
         forecast: item.forecast ?? null, vehicleMqtt: reception,
@@ -1584,7 +1606,7 @@ export class ChargingRuntime {
   async calculateFlexibilityPreview(id) {
     const now = this.clock(), views = this.views(now), view = views.find(charger => charger.id === id), item = this.charger(id);
     const flexibility = structuredClone(view.flexibility), context = this.flexibilityContext, scope = this.flexibilityScope(views, id, now);
-    const unavailable = reason => {
+    const unavailable = (reason, blocker = null) => {
       const currentViews = this.views(), sameScope = scope === this.flexibilityScope(currentViews, id);
       const retained = sameScope ? currentViews.find(charger => charger.id === id).flexibility.preview : null;
       // A delayed old request must never borrow the next connection's cache or
@@ -1592,8 +1614,9 @@ export class ChargingRuntime {
       return { flexibility: { ...flexibility, preview: retained,
         ...(!sameScope ? { eligible: false, reason: 'connection-changed' } : {}) },
       comparison: retained ?? { available: false, reason, at: now,
+        ...(blocker ? { blockingReason: blocker.blockingReason, blockingChargerId: blocker.blockingChargerId } : {}),
         normalReadyByAt: flexibility.normalReadyByAt, deferredReadyByAt: flexibility.deferredReadyByAt,
-        recommended: false, estimated: true }, refreshReason: retained ? reason : null };
+        recommended: false, estimated: true }, refreshReason: retained ? blocker?.blockingReason ?? reason : null };
     };
     if (!flexibility.active && !flexibility.eligible) return unavailable(flexibility.reason);
     if (!context || now < context.now || now - context.now >= 30_000 || !this.historyReady
@@ -1607,7 +1630,7 @@ export class ChargingRuntime {
     if (!comparison || this.closed || !this.canControl() || context.market !== this.flexibilityMarket()
       || this.clock() >= flexibility.normalReadyByAt || scope !== this.flexibilityScope(this.views(), id))
       return unavailable('comparison-changed');
-    if (!comparison.available) return unavailable(comparison.reason);
+    if (!comparison.available) return unavailable(comparison.reason, comparison);
     item.flexibilityPreview = { scope, comparison };
     item.previewInputs = this.flexibilityInputs(id, context, now);
     return { flexibility: { ...flexibility, preview: comparison }, comparison, refreshReason: null };
@@ -1867,7 +1890,8 @@ export class ChargingRuntime {
       const periods = confirmedPeriods(view, now);
       return periods ? [[view.id, periods]] : [];
     }));
-    const adopted = forecastFixedPlans({ ...planning, chargers: views, periodsByCharger: adoptedPeriods });
+    const adoptedViews = views.map(view => withAllocationTarget(view, this.charger(view.id), now));
+    const adopted = forecastFixedPlans({ ...planning, chargers: adoptedViews, periodsByCharger: adoptedPeriods });
     // A price revision is an economic choice for the complete shared schedule.
     // Never buy savings for one car by making its peer infeasible or dearer in sum.
     const accounting = Object.values(adopted.forecasts).flatMap(forecast => forecast.accounting ?? []);
@@ -1884,11 +1908,19 @@ export class ChargingRuntime {
     // a change whose complete remaining service uses published prices.
     const speculativeReplan = accounting.some(row => row.predicted === true)
       || economicIds.some(id => result.plans[id].accounting?.some(row => row.predicted === true));
+    const explicitAllowances = views.filter(view => priceReplans.has(view.id)
+      && view.request?.flexibility?.lastTransition?.action === 'allow'
+      && view.request.flexibility.activeDefer?.deferredReadyByAt === view.deadlineAt
+      && this.charger(view.id).plan.deadlineAt !== view.deadlineAt);
+    const cashDoesNotIncrease = !explicitAllowances.length || economicIds.every(id => Number.isFinite(result.plans[id].costCents))
+      && economicIds.reduce((sum, id) => sum + result.plans[id].costCents, 0)
+        <= accounting.reduce((sum, row) => sum + row.energyKwh * row.priceCtPerKwh, 0) + 1e-7
+      && explicitAllowances.every(view => result.plans[view.id].costCents <= adopted.plans[view.id].costCents + 1e-7);
     let priceRevisionWorthwhile = result.feasible === true && adopted.feasible === true && priced
-      && comparableService
+      && comparableService && cashDoesNotIncrease
       && newCosts.length > 0 && newCosts.every(Number.isFinite)
       && oldCost - newCosts.reduce((sum, cost) => sum + cost, 0)
-        > (speculativeReplan ? 5 : MIN_PRICE_SAVINGS_CENTS);
+        > (explicitAllowances.length ? 1e-7 : speculativeReplan ? 5 : MIN_PRICE_SAVINGS_CENTS);
     // A newly connected peer may still be awaiting its first adopted program.
     // Revisit the price comparison after adoption instead of treating different
     // delivered service as an economic rejection and consuming the new prices.
@@ -1961,12 +1993,12 @@ export class ChargingRuntime {
       if (priceReplans.has(view.id)) {
         const next = result.plans[view.id], fixed = fixedForecast();
         if (!priceRevisionDeferred) {
-          item.plan = { ...item.plan, ...(item.request?.flexibility ? { deadlineAt: view.deadlineAt, targetAt: view.deadlineAt } : {}),
+          item.plan = { ...item.plan, ...(item.request?.flexibility ? { deadlineAt: view.deadlineAt } : {}),
             priceSnapshot: priceSnapshot(this.prices), decisionPriceSnapshot: currentPrices };
           if (priceRevisionWorthwhile) {
             item.plan = { ...next, id: randomUUID(), priceSnapshot: priceSnapshot(this.prices), decisionPriceSnapshot: currentPrices,
               replanReadyBy: item.plan.replanReadyBy,
-              priceRevision: { previousPlanId: execution.planId, at: now,
+              priceRevision: { previousPlanId: execution.planId, at: now, previousTargetAt: fixed.plan.targetAt,
                 ...(view.deadlineAt !== execution.deadlineAt ? { deadlineRequest: deadlineRequest(item) } : {}) },
               basis: planBasis(view, planningPrices, environment), creditedGridKwh: view.progress.creditedGridKwh };
             item.lastReconcileAt = null;
@@ -2018,9 +2050,13 @@ export class ChargingRuntime {
     }));
     // Retained native execution can differ from a newly searched candidate.
     // Reassess the selected periods together before publishing their opportunity.
-    const retained = Object.entries(desiredPeriods).some(([id, periods]) =>
-      digest(remainingPeriods(periods, now)) !== digest(remainingPeriods(result.plans[id]?.periods, now)));
-    const proposed = retained ? forecastFixedPlans({ ...planning, chargers: views, periodsByCharger: desiredPeriods }) : result;
+    const proposedViews = views.map(view => withAllocationTarget(view, this.charger(view.id), now, true));
+    const retained = Object.entries(desiredPeriods).some(([id, periods]) => {
+      const view = proposedViews.find(charger => charger.id === id);
+      return digest(remainingPeriods(periods, now)) !== digest(remainingPeriods(result.plans[id]?.periods, now))
+        || result.plans[id]?.targetAt !== (view.allocationTargetAt ?? view.deadlineAt);
+    });
+    const proposed = retained ? forecastFixedPlans({ ...planning, chargers: proposedViews, periodsByCharger: desiredPeriods }) : result;
     for (const [id, periods] of Object.entries(desiredPeriods)) {
       const item = this.charger(id), assessed = proposed.plans[id];
       if (assessed && digest(remainingPeriods(periods, now)) === digest(remainingPeriods(assessed.periods, now)))
@@ -2035,7 +2071,8 @@ export class ChargingRuntime {
     const commandPeriods = { ...desiredPeriods };
     if (adoptedPeriods.charger1) commandPeriods.charger1 = adoptedPeriods.charger1;
     else delete commandPeriods.charger1;
-    const command = forecastFixedPlans({ ...planning, chargers: views, periodsByCharger: commandPeriods });
+    const command = forecastFixedPlans({ ...planning, chargers: views.map(view => withAllocationTarget(view,
+      this.charger(view.id), now, view.id === 'charger2')), periodsByCharger: commandPeriods });
     const sessions = Object.fromEntries(views.map(view => [view.id, view.request?.sessionId ?? null]));
     const requests = Object.fromEntries(views.map(view => [view.id, { sessionId: view.request?.sessionId ?? null,
       revision: view.request?.revision ?? null, automatic: view.settings.enabled, chargeNow: view.request?.chargeNow === true }]));
@@ -2191,7 +2228,8 @@ export class ChargingRuntime {
     // Apply the planner's request/deadline policy to admitted present headroom.
     // C1 participates through confirmed native permission; C2's requested open
     // period may participate prospectively before its own Start is confirmed.
-    const requests = views.map(charger => {
+    const requests = views.map(original => {
+      const charger = withAllocationTarget(original, this.chargers[original.id], now, original.id === 'charger2');
       const plan = this.chargers[charger.id]?.plan;
       const requested = charger.id === 'charger2' && (charger.settings.enabled || charger.request?.chargeNow)
         && !charger.control?.manual && plan?.periods?.some(row => row.startAt <= now && (row.endAt === null || row.endAt > now));
@@ -2200,7 +2238,7 @@ export class ChargingRuntime {
     // Below two minimum pilots, retain an assigned turn through ordinary
     // delivery progress. Its fixed deadline is never an Equalizer response timer.
     const holdScope = priority === 'balanced' ? digest(requests.map(charger => [charger.id, charger.association,
-      charger.request?.sessionId, charger.request?.revision, charger.deadlineAt, charger.settings.enabled,
+      charger.request?.sessionId, charger.request?.revision, charger.deadlineAt, charger.allocationTargetAt, charger.settings.enabled,
       charger.request?.chargeNow === true, charger.control?.session?.connectedAt, charger.control?.manual,
       charger.requiredGridKwh > 1e-7,
       ...['connected', 'maximumCurrentA', 'nativeCurrentA', 'vehicleCurrentA', 'vehicleNotBefore']

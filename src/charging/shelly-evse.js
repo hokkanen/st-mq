@@ -1149,12 +1149,12 @@ export function createShellyController({ adapter, initialState, saveState = () =
     const snapshot = adapter.snapshot(), projected = devicePermission(snapshot);
     const owned = projected.pauseBroken ? null : state.owned ?? null;
     const permission = snapshot.fields.start_charging;
-    const economicPause = state.phase === 'waiting' && state.reason === 'economic-wait' && state.execution
+    const economicPause = state.execution
       && snapshot.session?.connected === true && state.sessionId === snapshot.session.sessionId
       && !projected.pauseBroken && !projected.held && state.ownedPause && state.lastStart === false && fresh(permission)
       && sameSetting(permission, { value: false, measuredAt: state.lastStartAt });
     const identificationPause = !projected.pauseBroken && !projected.held && ownSetting(snapshot);
-    const ownsInstruction = Boolean(snapshot.online && snapshot.controlReady && !state.manual && !state.pending
+    const ownsInstruction = Boolean(snapshot.online && snapshot.controlReady && !state.manual && state.pending?.role !== 'start_charging'
       && !snapshot.nativeScheduleActive && (identificationPause || economicPause));
     const physical = snapshot.fields.phase_info, work = snapshot.fields.work_state;
     // Economic pauses can start while the vehicle is already idle. Current
@@ -1169,12 +1169,26 @@ export function createShellyController({ adapter, initialState, saveState = () =
     const manual = state.manual ?? (snapshot.nativeScheduleActive ? { kind: 'native-schedule' } : null);
     const stopped = manual?.kind === 'stop' || snapshot.fields.start_charging?.value === false
       && (projected.held || projected.pauseBroken || !state.ownedPause && !state.pending?.owned);
+    // An accepted permission and schedule keep their own readback. Changing the
+    // pilot does not erase them while fresh matching native permission remains.
+    // Physical charging/pausing still has the separate measured-evidence gate.
+    const permissionConfirmed = Boolean(snapshot.online && snapshot.controlReady
+      && snapshot.session?.connected === true && state.sessionId === snapshot.session.sessionId
+      && fresh(permission) && sameSetting(permission, { value: state.lastStart, measuredAt: state.lastStartAt })
+      && state.pending?.role !== 'start_charging' && !projected.pauseBroken && !projected.held
+      && !manual && !snapshot.nativeScheduleActive && !state.scheduleTakeoverPending
+      && !['unavailable', 'ownership-uncertain'].includes(state.phase));
+    const currentAdjustment = { pending: state.pending?.role === 'current_limit',
+      reason: state.pending?.role === 'current_limit' ? state.reason ?? state.pending.reason : null,
+      stage: state.pending?.role === 'current_limit' ? state.pending.stage : state.currentExecutionStage ?? null };
+    const scheduleConfirmed = permissionConfirmed && Boolean(state.execution);
     return { ...copy(state), devicePermissionHeld: projected.held, owned: owned ? copy(owned) : null, planningRevision, enabled, manual,
+      scheduleConfirmed, currentAdjustment,
       takeover: takeoverStatus(snapshot),
       identification: identification ? copy(identification) : null, ownsInstruction, pauseConfirmed, nativeExpiry: false,
       snapshot: { ...snapshot, stopped, manualStop: stopped }, session: snapshot.session,
       handoverConfirmed: !state.pending && !owned
-        && (!state.currentTest || ['restored', 'superseded'].includes(state.currentTest.phase)), confirmed: state.executionStage === 'physical-effect' };
+        && (!state.currentTest || ['restored', 'superseded'].includes(state.currentTest.phase)), confirmed: permissionConfirmed };
   };
   async function refreshIdentification(snapshot) {
     const request = typeof getIdentification === 'function' ? await getIdentification(copy(snapshot)) : null, now = clock();
@@ -1377,7 +1391,7 @@ export function createShellyController({ adapter, initialState, saveState = () =
           if (state.pending?.owned) state.owned ??= copy(state.pending.owned);
           state.pending = null;
           delete state.lastStart; delete state.lastStartAt; delete state.lastCurrent; delete state.lastCurrentAtSource; delete state.permissionCommand;
-          delete state.lastCurrentInstructionAt;
+          delete state.lastCurrentInstructionAt; delete state.currentExecutionStage; delete state.currentCommandAt; delete state.executionStage;
         }
         if (snapshot.session?.connected === false && snapshot.pluggedIn === false) {
           // Available capacity is an observation even without a vehicle. Do not
@@ -1573,14 +1587,16 @@ export function createShellyController({ adapter, initialState, saveState = () =
             state.phase = 'uncertain'; state.reason = 'evse-command-unconfirmed'; await persist(); return;
           }
           else if (fresh(readback) && readback.value === pending.value && settingReadback(readback, pending)) {
-            state.executionStage = 'read-back';
             if (pending.role === 'start_charging') {
+              state.executionStage = 'read-back';
               rememberPermissionCommand(pending);
               state.deviceHold = null;
               state.lastStart = pending.value; state.lastStartAt = readback.measuredAt; state.ownedPause = pending.value === false;
               if (pending.owned) state.owned = { ...pending.owned, confirmedAt: clock(), permissionAt: readback.measuredAt };
               else if (pending.value === true) state.owned = null;
             } else {
+              state.currentExecutionStage = 'read-back';
+              state.currentCommandAt = pending.dispatchedAt;
               // A later same-value app selection is still a native ceiling.
               // Without an acknowledgement time, attribution is also unknown.
               if (pending.stage !== 'accepted' || !time(pending.acceptedAt)
@@ -1748,7 +1764,28 @@ export function createShellyController({ adapter, initialState, saveState = () =
         // unconfirmed restoration into permission to release the saved Stop.
         const currentUnconfirmed = state.currentTest?.phase === 'uncertain';
         const shouldStart = !devicePermission(snapshot).held && !pause && allowStart && !snapshot.nativeScheduleActive && !minimumBlocked && !currentUnconfirmed;
+        const mayStartNow = () => shouldStart && (identification || recovery || clock() - (state.lastPauseAt ?? 0) >= adapter.config.dwellMs);
+        const selectCurrentSetting = () => {
+          const settingSnapshot = adapter.snapshot(), idlePhysical = adapter.liveCurrents();
+          const idle = !mayStartNow() && fresh(settingSnapshot.fields.start_charging) && settingSnapshot.fields.start_charging.value === false
+            && fresh(settingSnapshot.fields.work_state) && adapter.config.connectedStates.includes(settingSnapshot.fields.work_state.value)
+            && !adapter.config.chargingStates.includes(settingSnapshot.fields.work_state.value)
+            && idlePhysical.healthy && idlePhysical.currents.every(value => value < .5)
+            && settingSnapshot.fields.phase_info?.value.total_power === 0;
+          // Idle is a confirmed permission-off stop, never a momentary zero draw.
+          // Keep a stable standby pilot while recording varying headroom above.
+          // Native/vehicle ceilings still bind; a zero ceiling keeps Stop intact.
+          const idleCap = Math.floor(Math.min(adapter.config.fallbackCurrentA, adapter.config.maximumCurrentA,
+            ...adapter.config.mainFuseA.map((value, phase) => value - adapter.config.marginA[phase]),
+            ...[state.manualCurrentA, vehiclePilotLimit(context.vehicleCurrentA, adapter.config.minimumCurrentA)]
+              .filter(value => finite(value) && value >= 0)) / adapter.config.currentStepA) * adapter.config.currentStepA;
+          const settingCap = idle ? idleCap < adapter.config.minimumCurrentA ? 0 : idleCap : cap;
+          state.limiter.settingMode = idle ? 'idle-fallback' : 'allocated';
+          state.limiter.settingCurrentA = settingCap;
+          return { idle, settingCap };
+        };
         const publishLimiterStatus = () => {
+          selectCurrentSetting();
           const permission = adapter.snapshot().fields.start_charging;
           state.limiter.pausedByLimiter = limitation.loadCurrentA === 0 && state.ownedPause && permission.value === false
             && state.manual?.kind !== 'stop' && !identificationPause && !(economic && !inWindow)
@@ -1775,7 +1812,9 @@ export function createShellyController({ adapter, initialState, saveState = () =
             || scheduleToken(adapter.snapshot()) !== nativeSchedule) { state.pending = null; await persist(); return false; }
           if (!owned) {
             const prior = copy(state.pending);
-            state.pending.stage = 'dispatched'; state.commandAt = state.pending.dispatchedAt = clock();
+            state.pending.stage = 'dispatched'; state.pending.dispatchedAt = clock();
+            if (role === 'current_limit') state.currentCommandAt = clock();
+            else state.commandAt = clock();
             try { await persist(); } catch (cause) { state.pending = prior; throw cause; }
           }
           await adapter.rpc(role === 'current_limit' ? 'Number.Set' : 'Boolean.Set', { owner: `service:${adapter.config.serviceId}`, role, value },
@@ -1830,8 +1869,8 @@ export function createShellyController({ adapter, initialState, saveState = () =
             state.manual = manualEvent(readback);
             throw fail(state.pending.owned ? 'identification-resume-required' : 'evse-command-unconfirmed');
           }
-          state.executionStage = 'read-back';
           if (role === 'start_charging') {
+            state.executionStage = 'read-back';
             rememberPermissionCommand(state.pending);
             state.deviceHold = null;
             state.lastStart = value; state.lastStartAt = readback.measuredAt; state.ownedPause = value === false;
@@ -1840,6 +1879,7 @@ export function createShellyController({ adapter, initialState, saveState = () =
             if (state.pending.owned) state.owned = { ...state.pending.owned, confirmedAt: clock(), permissionAt: readback.measuredAt };
             else if (value === true) state.owned = null;
           } else {
+            state.currentExecutionStage = 'read-back';
             if (currentInstructionAt(readback) > state.pending.acceptedAt && !systemEcho(readback, value))
               state.manualCurrentA = readback.value < adapter.config.maximumCurrentA ? readback.value : null;
             rememberCurrent(readback); expectedCurrent = copy(readback);
@@ -1861,13 +1901,14 @@ export function createShellyController({ adapter, initialState, saveState = () =
             if (await command('start_charging', false, identificationPause ? 'identification-pause'
               : economic && !inWindow ? 'economic-wait' : limitation.reason, owned)) state.lastPauseAt = clock();
           }
+          const { idle, settingCap } = selectCurrentSetting();
           if (adapter.config.limiterEnabled && !['proposed', 'applying', 'active', 'restoring', 'uncertain'].includes(state.currentTest?.phase)
-            && cap >= adapter.config.minimumCurrentA && cap !== current.value) {
-            const decreasing = cap < current.value;
-            const increaseAllowed = clock() - (state.lastCurrentAt ?? 0) >= adapter.config.dwellMs;
+            && settingCap >= adapter.config.minimumCurrentA && settingCap !== expectedCurrent.value) {
+            const decreasing = settingCap < expectedCurrent.value;
+            const increaseAllowed = idle || clock() - (state.lastCurrentAt ?? 0) >= adapter.config.dwellMs;
             if (decreasing || increaseAllowed) {
-              const target = Math.floor((decreasing ? cap : Math.min(cap, current.value + adapter.config.rampA)) / adapter.config.currentStepA) * adapter.config.currentStepA;
-              if (await command('current_limit', target, limitation.reason)) state.lastCurrentAt = clock();
+              const target = Math.floor((idle || decreasing ? settingCap : Math.min(settingCap, expectedCurrent.value + adapter.config.rampA)) / adapter.config.currentStepA) * adapter.config.currentStepA;
+              if (await command('current_limit', target, idle ? 'idle-fallback' : limitation.reason)) state.lastCurrentAt = clock();
             }
           }
           // Shelly has no verified native timer. Stop on the next available
@@ -1875,15 +1916,18 @@ export function createShellyController({ adapter, initialState, saveState = () =
           // fixed probe deadline; never send a late probe start.
           if (probeExpired() && adapter.snapshot().fields.start_charging.value && state.manual?.kind !== 'stop')
             if (await command('start_charging', false, 'identification-probe-expired')) state.lastPauseAt = clock();
-          if (shouldStart && !devicePermission(adapter.snapshot()).held && !adapter.snapshot().fields.start_charging.value && (!state.manual || nativeRelease)
+          if (mayStartNow() && !devicePermission(adapter.snapshot()).held && !adapter.snapshot().fields.start_charging.value && (!state.manual || nativeRelease)
             && !probeExpired()
-            && (identification || recovery || clock() - (state.lastPauseAt ?? 0) >= adapter.config.dwellMs)
             && (!adapter.config.limiterEnabled || adapter.snapshot().fields.current_limit?.value <= cap)) {
             await command('start_charging', true, recovery ? 'identification-resume' : identification ? 'identification-charge' : 'economic-window');
           }
           const actual = adapter.liveCurrents();
           if (state.executionStage === 'read-back' && actual.healthy && actual.times.every(at => at >= (state.commandAt ?? Infinity))
             && (pause ? actual.currents.every(v => v < .5) : actual.currents.every(v => v <= cap + 1))) state.executionStage = 'physical-effect';
+          if (state.currentExecutionStage === 'read-back' && actual.healthy
+            && actual.times.every(at => at >= (state.currentCommandAt ?? Infinity))
+            && actual.currents.every(value => value <= adapter.snapshot().fields.current_limit.value + 1))
+            state.currentExecutionStage = 'physical-effect';
           if (!guard()) return;
           if (chargeNow || state.manual) { state.execution = null; state.provisional = false; }
           else if (economic && !nativeBlocked && !state.pending) {

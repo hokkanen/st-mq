@@ -2,9 +2,50 @@ import { CHARGING_EFFICIENCY } from '../domain/charging-energy.js';
 
 const finite = Number.isFinite;
 const observedTime = value => finite(value) && value >= 0 ? value : null;
+const object = value => value && typeof value === 'object' && !Array.isArray(value);
+const batterySources = new Set(['teslamate', 'bmw-cardata', 'bmw-target-filter']);
+
+export function validateChargingProgress(previous) {
+  if (previous == null) return;
+  if (!object(previous) || previous.version !== 2
+    || previous.reference !== null && (!object(previous.reference) || typeof previous.reference.key !== 'string'))
+    throw new Error('Unsupported charging progress; start a fresh development database');
+  const saved = previous.batteryInputs;
+  if (saved === undefined || saved === null) return;
+  const fieldValid = (field, key) => object(field)
+    && Object.keys(field).sort().join(',') === 'measuredAt,receivedAt,source,value'
+    && batterySources.has(field.source) && finite(field.value)
+    && (key === 'minimumSoc' ? field.value >= 0 && field.value <= 100 : field.value >= 1 && field.value <= 300)
+    && ['measuredAt', 'receivedAt'].every(key => field[key] === null || Number.isSafeInteger(field[key]) && field[key] >= 0);
+  if (!object(saved) || typeof saved.scope !== 'string' || !saved.scope.length
+    || Object.keys(saved).some(key => !['scope', 'minimumSoc', 'capacityKwh'].includes(key))
+    || ['minimumSoc', 'capacityKwh'].some(key => saved[key] !== undefined && !fieldValid(saved[key], key)))
+    throw new Error('Unsupported charging battery reference; start a fresh development database');
+}
 
 export function restoreChargingProgress(previous) {
-  return previous?.version === 2 && typeof previous.reference?.key === 'string' ? structuredClone(previous) : null;
+  validateChargingProgress(previous);
+  return previous == null ? null : structuredClone(previous);
+}
+
+// A saved vehicle setting is a scoped planning reference, never fresh vehicle
+// telemetry or actuator authority. Retain target and capacity together with the
+// charge anchor so feed loss cannot combine an observed 96% with a default 80%.
+function sessionBatteryInputs(previous, charger, scope, connected) {
+  const usable = scope !== null && connected !== false && previous?.connected !== false;
+  const saved = usable && previous?.batteryInputs?.scope === scope ? previous.batteryInputs : null;
+  const batteryInputs = scope !== null && connected !== false ? { scope } : null;
+  const values = {};
+  for (const key of ['minimumSoc', 'capacityKwh']) {
+    const field = charger.values[key];
+    const observed = batteryInputs && batterySources.has(field.source) && field.available !== false && !field.retainedForSession;
+    const reference = observed ? { value: field.value, source: field.source,
+      measuredAt: observedTime(field.measuredAt), receivedAt: observedTime(field.receivedAt) } : saved?.[key];
+    if (reference && batteryInputs) batteryInputs[key] = { ...reference };
+    values[key] = reference && (field.source === 'manual-fallback' || field.retainedForSession)
+      ? { ...reference, available: true, assumed: true, retainedForSession: true } : field;
+  }
+  return { batteryInputs, values };
 }
 
 /** Keep the raw vehicle reading intact. A separate estimate advances from that
@@ -25,6 +66,7 @@ export function updateChargingProgress(previous, charger, now, readEnergy = () =
   const vehicle = charger.telemetry?.vehicle;
   const vehicleScope = vehicle?.state === 'identified' && vehicle.id && vehicle.sessionId
     ? `${vehicle.id}:${vehicle.sessionId}` : null;
+  const battery = sessionBatteryInputs(previous, charger, vehicleScope, connected);
   // Losing a vehicle feed is not a new battery measurement. Keep this
   // identified connection's last anchor and measured energy until a new
   // reading or an explicit starting-charge edit replaces them. A remembered
@@ -40,17 +82,19 @@ export function updateChargingProgress(previous, charger, now, readEnergy = () =
       soc: soc.value, source: soc.source, measuredAt, receivedAt, vehicleScope, fallbackSoc: charger.settings?.manualSoc };
   if (same && automatic) Object.assign(reference, { source: soc.source, measuredAt, receivedAt,
     vehicleScope, fallbackSoc: charger.settings?.manualSoc });
-  const state = { version: 2, reference, connected, connectionAt, creditKwh: reference.key === previous?.reference?.key ? previous.creditKwh ?? 0 : 0 };
+  const state = { version: 2, reference, connected, connectionAt, batteryInputs: battery.batteryInputs,
+    creditKwh: reference.key === previous?.reference?.key ? previous.creditKwh ?? 0 : 0 };
   let energy = null;
   if (connected !== false) {
     energy = readEnergy({ id: charger.id, start: reference.at, end: now });
     if (finite(energy?.gridKwh)) state.creditKwh = Math.max(state.creditKwh, energy.gridKwh);
   } else { state.reference = null; state.creditKwh = 0; }
-  const capacity = charger.values.capacityKwh.value, efficiency = CHARGING_EFFICIENCY;
+  const capacity = battery.values.capacityKwh.value, efficiency = CHARGING_EFFICIENCY;
   const estimatedSoc = Math.min(100, reference.soc + state.creditKwh * efficiency / capacity * 100);
   const rawRequiredGridKwh = Math.max(0, charger.requiredGridKwh ?? 0);
-  const remainingGridKwh = Math.max(0, capacity * (charger.values.minimumSoc.value - estimatedSoc) / 100 / efficiency);
+  const remainingGridKwh = Math.max(0, capacity * (battery.values.minimumSoc.value - estimatedSoc) / 100 / efficiency);
   return { state, estimatedSoc, hasEnergyEstimate: state.creditKwh > .00001,
+    batteryValues: battery.values,
     retainedVehicleReference, referenceSoc: { value: reference.soc, source: reference.source,
       measuredAt: reference.measuredAt, receivedAt: reference.receivedAt },
     connectionAt,

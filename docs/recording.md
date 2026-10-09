@@ -226,6 +226,11 @@ cannot renew source validity, and gaps do not count as observed time. The estima
 retains bounded feed state and one shared accumulator per phase, not another
 growing raw-observation history.
 
+Feed interruption and invalid-reading boundaries have their own clock. They never
+rewrite the last accepted observation's source, receipt or delayed-admission
+times. Recovery requires evidence acquired after the boundary, including after
+restart, and the first recovered sample adds no coverage across the outage.
+
 Prefer Charger 1 OCPP, then Charger 1 Easee Cloud, then Equalizer Easee Cloud,
 independently for each phase. Charger 2 is excluded from shared estimates and
 startup voltage because its phase order is not verified against these sources.

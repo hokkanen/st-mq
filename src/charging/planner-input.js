@@ -8,12 +8,14 @@ export function chargingPlannerInput(options) {
     && supply.configuredBudgetCurrentA.length === 3 && supply.configuredBudgetCurrentA.every(value => Number.isFinite(value) && value >= 0);
   return { ...options,
     chargers: (options.chargers ?? []).map(charger => ({
-      ...fields(charger, ['id', 'label', 'requiredGridKwh', 'referenceGridKwh', 'deadlineAt']),
+      ...fields(charger, ['id', 'label', 'requiredGridKwh', 'referenceGridKwh', 'deadlineAt', 'allocationTargetAt']),
       sessionCost: fields(charger.sessionCost, ['recordedGridKwh']),
       settings: fields(charger.settings, ['enabled']),
       capabilities: fields(charger.capabilities, ['scheduling', 'currentControl', 'externalLoadBalancing', 'maxSchedulePeriods', 'localClockSchedule']),
       configuration: fields(charger.configuration, ['maximumCurrentA', 'limiterEnabled', 'fallbackCurrentA']),
-      request: fields(charger.request, ['chargeNow']),
+      request: { ...fields(charger.request, ['chargeNow']),
+        ...(charger.request?.flexibility?.activeDefer ? { flexibility: { activeDefer:
+          fields(charger.request.flexibility.activeDefer, ['checkpointAt', 'deferredReadyByAt', 'approvedAt']) } } : {}) },
       control: { ...fields(charger.control, ['released', 'provisional']),
         phase: ['released', 'charging'].includes(charger.control?.phase) ? charger.control.phase : null,
         errorCode: Boolean(charger.control?.errorCode),
@@ -44,7 +46,8 @@ export function chargingPlanValidUntil(options, result) {
     result.normalReadyByAt, result.deferredReadyByAt,
     ...[...(result.normalPeriods ?? []), ...(result.deferredPeriods ?? [])]
       .flatMap(row => [row.startAt, row.endAt]),
-    ...(options.chargers ?? []).map(charger => charger.control?.manual?.resumeAt),
+    ...(options.chargers ?? []).flatMap(charger => [charger.control?.manual?.resumeAt,
+      charger.request?.flexibility?.activeDefer?.checkpointAt]),
   ].filter(at => Number.isFinite(at) && at > options.now);
   return Math.min(...boundaries);
 }

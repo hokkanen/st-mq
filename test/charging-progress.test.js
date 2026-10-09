@@ -95,6 +95,60 @@ test('explicit starting-charge edits and changed vehicle connections replace an 
   }
 });
 
+test('a vehicle feed outage cannot lower the target below a retained charge reference', () => {
+  const current = charger({ soc: value(96, { source: 'teslamate', receivedAt: now }),
+    minimumSoc: value(100, { source: 'teslamate', receivedAt: now }), capacityKwh: value(57) });
+  current.settings = { manualSoc: 20 };
+  current.telemetry.vehicle = { state: 'identified', id: 'tesla', sessionId: 'same-plug' };
+  const before = updateChargingProgress(null, current, now);
+  const outage = { ...current, values: { ...current.values, soc: value(20, { source: 'manual-fallback' }),
+    minimumSoc: value(80, { source: 'manual-fallback' }) } };
+  const after = updateChargingProgress(restoreChargingProgress(before.state), outage, now + HOUR);
+  assert.equal(after.estimatedSoc, 96);
+  assert.equal(after.remainingGridKwh, before.remainingGridKwh);
+  assert.ok(after.remainingGridKwh > 2);
+  assert.deepEqual(after.batteryValues.minimumSoc, { value: 100, source: 'teslamate', receivedAt: now,
+    measuredAt: null, assumed: true, available: true, retainedForSession: true });
+  const explicit = { ...outage, values: { ...outage.values, minimumSoc: value(90, { source: 'session-request' }) } };
+  assert.equal(updateChargingProgress(after.state, explicit, now + HOUR).remainingGridKwh, 0,
+    'An explicit lower session target still takes effect');
+  const live = { ...current, values: { ...current.values, minimumSoc: value(98, { source: 'teslamate', receivedAt: now + HOUR }) } };
+  const fresh = updateChargingProgress(after.state, live, now + HOUR);
+  assert.equal(fresh.batteryValues.minimumSoc.value, 98);
+  assert.equal(fresh.batteryValues.minimumSoc.retainedForSession, undefined);
+  const next = { ...outage, telemetry: { vehicle: { ...current.telemetry.vehicle, sessionId: 'new-plug' } } };
+  assert.equal(updateChargingProgress(after.state, next, now + 2 * HOUR).batteryValues.minimumSoc.value, 80,
+    'A different connection cannot inherit the old vehicle target');
+});
+
+test('target and capacity references retain their source clocks without changing earned energy', () => {
+  const current = charger({ soc: value(60, { source: 'bmw-cardata', measuredAt: now }),
+    minimumSoc: value(90, { source: 'bmw-target-filter', measuredAt: now }),
+    capacityKwh: value(74, { source: 'bmw-cardata', measuredAt: now }) });
+  current.settings = { manualSoc: 20 };
+  current.telemetry.vehicle = { state: 'identified', id: 'bmw', sessionId: 'same-plug' };
+  const before = updateChargingProgress(null, current, now);
+  const charged = updateChargingProgress(before.state, current, now + HOUR, energy(5));
+  const outage = { ...current, values: { ...current.values, soc: value(20, { source: 'manual-fallback' }),
+    minimumSoc: value(80, { source: 'manual-fallback' }), capacityKwh: value(50, { source: 'manual-fallback' }) } };
+  const after = updateChargingProgress(restoreChargingProgress(charged.state), outage, now + 2 * HOUR);
+  assert.equal(after.estimatedSoc, charged.estimatedSoc);
+  assert.equal(after.remainingGridKwh, charged.remainingGridKwh);
+  assert.equal(after.deliveredGridKwh, 5);
+  assert.equal(after.batteryValues.capacityKwh.measuredAt, now);
+  const disconnected = updateChargingProgress(after.state, { ...outage,
+    values: { ...outage.values, connected: value(false) } }, now + 2 * HOUR);
+  assert.equal(disconnected.state.batteryInputs, null);
+  assert.equal(updateChargingProgress(disconnected.state, outage, now + 3 * HOUR).batteryValues.minimumSoc.value, 80);
+  for (const mutate of [state => { state.version = 1; },
+    state => { state.batteryInputs.minimumSoc.value = 101; },
+    state => { state.batteryInputs.capacityKwh.receivedAt = -1; },
+    state => { state.batteryInputs.unrecognized = true; }]) {
+    const invalid = structuredClone(after.state); mutate(invalid);
+    assert.throws(() => restoreChargingProgress(invalid), /Unsupported charging/);
+  }
+});
+
 test('a healthy unchanged observation supplies current vehicle context without rebasing earned energy', () => {
   const current = charger({ soc: value(40, { source: 'bmw-cardata', measuredAt: now }) });
   current.settings = { manualSoc: 90 };

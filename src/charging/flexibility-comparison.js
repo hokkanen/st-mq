@@ -1,4 +1,4 @@
-import { planChargers } from './planner.js';
+import { planChargers, chargingPlanParticipants, chargingPlanTotals } from './planner.js';
 
 const priced = row => Number.isFinite(row.priceCtPerKwh ?? row.allInCentsPerKWh ?? row.totalCtPerKwh ?? row.price);
 // Only modeled energy-delivery spans count as charging time. An allowed period
@@ -27,7 +27,12 @@ export function compareChargingFlexibility(options, { chargerId, normalReadyByAt
   const selected = options.chargers.find(charger => charger.id === chargerId);
   if (!selected || !(normalReadyByAt > options.now) || !(deferredReadyByAt > normalReadyByAt))
     return { ...base, reason: 'ready-by-passed' };
+  const grant = selected.request?.flexibility?.activeDefer;
+  const existingAllowance = grant?.checkpointAt === normalReadyByAt && grant?.deferredReadyByAt === deferredReadyByAt;
   const prepare = deferred => ({ ...options, previousPeriods: {}, previousAllocations: [],
+    // A prospective allowance is the next decision. An already active one
+    // retains its actual approval order relative to the peer's later choices.
+    deadlineBaselines: deferred && existingAllowance ? {} : { [chargerId]: deferred ? normalReadyByAt : null },
     chargers: options.chargers.map(charger => ({ ...charger,
       ...(charger.id === chargerId ? { deadlineAt: deferred ? deferredReadyByAt : normalReadyByAt } : {}),
       // A preview can reconsider automatic permission, never an independent
@@ -35,14 +40,15 @@ export function compareChargingFlexibility(options, { chargerId, normalReadyByAt
       control: charger.settings.enabled && !charger.request?.chargeNow && !charger.control?.manual
         ? { ...charger.control, released: false, phase: null } : charger.control })) });
   const normal = planChargers(prepare(false)), deferred = planChargers(prepare(true));
-  const connected = options.chargers.filter(charger => charger.values.connected.value === true && charger.requiredGridKwh > 1e-7);
-  const comparable = result => connected.every(charger => {
-    const plan = result.plans[charger.id];
-    return plan?.feasible === true && Number.isFinite(plan.costCents)
-      && Math.abs(plan.deliveredGridKwh - charger.requiredGridKwh) < 1e-5;
-  });
-  if (!comparable(normal) || !comparable(deferred)) return { ...base, reason: !comparable(deferred)
-    ? 'extended-plan-infeasible' : 'normal-plan-infeasible' };
+  const connected = chargingPlanParticipants(options.chargers, normal, deferred);
+  const comparable = result => connected.some(charger => charger.id === chargerId)
+    && chargingPlanTotals(result, connected) !== null;
+  if (!comparable(normal) || !comparable(deferred)) {
+    const failed = !comparable(deferred) ? deferred : normal;
+    const blocker = connected.find(charger => chargingPlanTotals(failed, [charger]) === null);
+    return { ...base, reason: failed === deferred ? 'extended-plan-infeasible' : 'normal-plan-infeasible',
+      blockingChargerId: blocker?.id ?? chargerId, blockingReason: failed.plans[blocker?.id ?? chargerId]?.reason ?? null };
+  }
   const sum = (result, field) => connected.reduce((value, charger) => value + (result.plans[charger.id][field] ?? 0), 0);
   const before = normal.plans[chargerId], after = deferred.plans[chargerId];
   const householdSavingsCents = sum(normal, 'costCents') - sum(deferred, 'costCents');
@@ -56,6 +62,8 @@ export function compareChargingFlexibility(options, { chargerId, normalReadyByAt
     normalPeriods: before.periods.map(({ startAt, endAt }) => ({ startAt, endAt })),
     deferredPeriods: after.periods.map(({ startAt, endAt }) => ({ startAt, endAt })),
     savingsCents: before.costCents - after.costCents, householdSavingsCents,
+    sharedPlanChanged: existingAllowance && (after.costCents > before.costCents + 1e-7
+      || householdSavingsCents < -1e-7 || riskAdjustedSavingsCents < -1e-7),
     normalUncertaintyPremiumCents: before.uncertaintyPremiumCents ?? 0,
     uncertaintyPremiumCents: after.uncertaintyPremiumCents ?? 0,
     normalHouseholdUncertaintyPremiumCents: sum(normal, 'uncertaintyPremiumCents'),
@@ -63,7 +71,7 @@ export function compareChargingFlexibility(options, { chargerId, normalReadyByAt
     normalUsesForecast: before.usesForecast,
     deferredUsesForecast: after.usesForecast,
     usesForecast: connected.some(charger => normal.plans[charger.id].usesForecast || deferred.plans[charger.id].usesForecast),
-    recommended: before.costCents > after.costCents && householdSavingsCents > 0 && riskAdjustedSavingsCents >= 5,
+    recommended: before.costCents > after.costCents && householdSavingsCents > 0 && riskAdjustedSavingsCents > 1e-7,
     forecastUncertaintyCtPerKwh: 2,
     remainingGridKwh: selected.requiredGridKwh,
     chargers: connected.map(charger => ({ id: charger.id, requiredGridKwh: charger.requiredGridKwh,

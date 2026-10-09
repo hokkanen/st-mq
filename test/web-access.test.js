@@ -29,6 +29,33 @@ function simulateProxy(server, address = '172.30.32.2') {
   server.on('connection', socket => Object.defineProperty(socket, 'remoteAddress', { value: address }));
 }
 
+test('authenticated pairing management reports access independently of failed dashboard state', async t => {
+  let actions = 0;
+  const familyToken = 'synthetic-family-web-access-token';
+  const pair = { role: 'protected', canControl: false, actions: { reset: true }, reset: { token: 'b'.repeat(64) } };
+  const { access } = await setup(t, configuration({ addon: false, token: firstToken, familyToken }), {
+    engine: { status: () => { throw new Error('Unsupported voltage estimate state; start a fresh development database'); } },
+    pairContext: { status: () => pair, canControl: () => false,
+      requestAction: () => { actions++; return { status: pair }; } },
+  });
+  const base = endpoint(access.server);
+  assert.equal((await fetch(`${base}/api/pair`)).status, 401);
+  for (const [token, role] of [[firstToken, 'admin'], [familyToken, 'family']]) {
+    const unavailable = await fetch(`${base}/api/status`, { headers: authorization(token) });
+    assert.equal(unavailable.ok, false);
+    assert.match((await unavailable.json()).error, /Unsupported voltage estimate state/);
+    const response = await fetch(`${base}/api/pair`, { headers: authorization(token) });
+    assert.equal(response.status, 200);
+    const view = await response.json();
+    assert.equal(view.role, 'protected');
+    assert.equal(view.webAccess.role, role);
+    const action = await fetch(`${base}/api/pair/action`, { method: 'POST',
+      headers: { ...authorization(token), 'Content-Type': 'application/json' }, body: JSON.stringify({ action: 'reset' }) });
+    assert.equal(action.status, role === 'admin' ? 202 : 403);
+  }
+  assert.equal(actions, 1);
+});
+
 test('manual database verification is an admin-only read operation on a slave and rejects caller paths', async t => {
   let calls = 0;
   const verifier = { configure() {}, enable() {}, close() {}, status: () => ({ state: 'idle' }),

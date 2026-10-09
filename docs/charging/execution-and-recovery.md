@@ -185,6 +185,17 @@ Both native expiring pauses and application-managed pauses use the same confirme
 pause wording. An application-managed pause needs current session ownership,
 confirmed disabled start permission and fresh physical noncharging evidence.
 Its next charging period still requires the application to resume the charger.
+Shelly permission/schedule confirmation is independent from current-setting
+confirmation and physical current response. A routine pilot adjustment does not
+erase an accepted schedule or confirmed permission. Unresolved current writes
+remain separately visible and block further commands until reconciled; a lost
+connection, changed permission, uncertain Start/Stop or changed physical session
+still invalidates the affected instruction. Physical pause confirmation keeps
+its own zero-power evidence and cannot be supplied by a current-setting reply.
+The [idle current policy](current-allocation.md#current-steps-dwell-and-dispatch)
+keeps stopped-charger settings stable without removing current allocation or
+restoration responsibilities.
+
 An ordinary OCPP pause installed while already suspended can use fresh zero power
 measured during that suspension together with the current confirmed zero-current
 profile. Replanning does not require the stopped charger to report another stop

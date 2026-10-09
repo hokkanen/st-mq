@@ -67,6 +67,12 @@ current-schema backup, or follow the [coordinated paired fresh-start procedure](
 for Home Assistant and Ubuntu. Deleting only `st-mq.sqlite` is insufficient when
 saved pair authority points to a different active database.
 
+If normal dashboard status fails while the paired application is in protected
+recovery, **Paired computers** loads through its separate authenticated management
+read. An admin can still review **Reset pairing → Start fresh** and its archive
+and restoration requirements. The failed status stays visible and equipment
+controls remain disabled; opening management does not repair saved state.
+
 The database gate also validates the current learning algorithm and saved charging
 and heating state before runtime constructors can write configuration or recovery
 state. Existing files are checked read-only first, including committed WAL pages;

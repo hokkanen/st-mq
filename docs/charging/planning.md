@@ -326,12 +326,39 @@ this display projection does not update accrual, its fallback unit price or the
 published-price ledger.
 
 The [common uncertainty allowance](#published-and-forecast-prices) applies to
-both alternatives. A positive individual saving is recommended only when
-combined remaining cash cost also improves and the household risk-adjusted
-improvement is at least 5 cents. The latter subtracts the extra-day plan's
-uncertainty allowance and credits the normal plan's allowance; shared forecast
-exposure is not charged twice. Independently confirmed native periods remain
-real competing loads without gaining new scheduling authority. A previously
+both alternatives. Opening more time retains the entire feasible earlier plan
+as a candidate, including its earlier allocation target. A later candidate is
+selected only when the household cost plus uncertainty allowance improves and
+neither the selected charger's cash cost nor the combined cash cost increases.
+Ties retain the earlier plan. These are actual simulated plans and costs, never
+a zero-clamped saving. Approval uses the same choice as the preview; the binding
+deadline extends even when retaining earlier charging is best. Current allocation
+and subsequent forecasts retain the selected plan's earlier target, with accepted
+execution governing the peer's allocation. At most four ordinary bounded searches
+cover two active grants, and all expensive searches remain in the existing worker.
+The selected candidate need not use the additional day; this is an opportunity,
+not a requirement to postpone charging. The bounded search remains heuristic.
+New allowances are considered in approval order. Refreshing an existing allowance
+keeps that order in the approved-plan calculation; its earlier-deadline alternative
+asks what canceling this allowance would do now, with the peer's allowance intact.
+A later peer decision can change how savings are shared, so this marginal
+comparison can differ from the original grant. The active display explains such
+changes and shows the true remaining costs; it does not reorder approvals to
+manufacture a saving. Proposed periods remain separate from installed execution.
+
+A positive individual saving is recommended when combined remaining cash cost
+and the household risk-adjusted result also improve. There is no additional
+minimum-saving hurdle for granting time; the existing running-period interruption
+duration checks remain separate. An explicit allowance also uses positive adjusted
+benefit when revising a running plan; the five-cent uncertainty hurdle belongs to
+unsolicited price refreshes. The uncertainty comparison subtracts the extra-day plan's
+allowance and credits the normal plan's allowance; shared forecast exposure is
+not charged twice. Independently confirmed native periods remain
+real competing loads without gaining new scheduling authority. A stopped or idle
+unscheduled peer's unfulfilled battery request does not block comparison of the
+selected charger. An independently running or scheduled peer remains in shared
+capacity and equal-service accounting; unavailable electrical demand cannot be
+silently treated as zero or excluded to certify a saving. A previously
 approved deadline retains its durable approval provenance after the checkpoint;
 that provenance owns the deadline and does not grant separate forecast access.
 

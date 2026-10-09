@@ -34,12 +34,15 @@ function restored(store, input) {
   if (state != null) {
     const validCandidate = (key, row) => /^(1|2|4|8):[012]$/.test(key)
       && fields(row, ['identity', 'source', 'device', 'input', 'sourceTime', 'receivedAt', 'reporting',
-        'lastValue', 'validUntil', 'evidenceBasis', 'evidenceAt', 'healthyMs', ...(Object.hasOwn(row ?? {}, 'admittedAt') ? ['admittedAt'] : [])])
+        'lastValue', 'validUntil', 'evidenceBasis', 'evidenceAt', 'healthyMs', ...(Object.hasOwn(row ?? {}, 'admittedAt') ? ['admittedAt'] : []),
+        ...(Object.hasOwn(row ?? {}, 'interruptedAt') ? ['interruptedAt'] : [])])
       && row.input === Number(key.split(':')[0]) && row.source === sourceFor(row.input)
       && (input === 'simulated' ? row.input === 8 : row.input !== 8)
       && typeof row.device === 'string' && row.device.length > 0 && row.identity === identity(row)
       && (row.sourceTime === null || validateAdmittedSourceTime(row))
       && validTime(row.receivedAt) && typeof row.reporting === 'boolean'
+      && (row.interruptedAt === undefined || !row.reporting && validTime(row.interruptedAt)
+        && row.interruptedAt >= Math.max(row.receivedAt, row.admittedAt ?? 0))
       && (row.lastValue === null || validVoltage(row.lastValue))
       && (row.validUntil === null || validTime(row.validUntil))
       && (row.evidenceAt === null || validTime(row.evidenceAt) && row.evidenceAt <= Math.max(row.receivedAt, row.admittedAt ?? 0))
@@ -169,12 +172,13 @@ export class VoltageEstimator {
     if (this.sourcePolicy && (!this.sourcePolicy[target.slot]
       || this.sourcePolicy[target.slot].source !== observation.source || this.sourcePolicy[target.slot].device !== observation.device)) return false;
     const now = this.clock(), o = { ...observation, input: target.input, receivedAt: observation.receivedAt ?? now };
-    if (!validTime(o.receivedAt) || o.receivedAt > now) return false;
+    if (!validTime(now) || !validTime(o.receivedAt) || o.receivedAt > now) return false;
     return this.store.transaction(() => {
       const state = restored(this.store, this.input), key = `${target.input}:${target.phase}`;
       let candidate = state.candidates[key];
       if (!target.mapped && (!candidate || candidate.identity !== identity(o))) return false;
-      if (candidate && o.receivedAt < candidate.receivedAt) return false;
+      if (candidate && (o.receivedAt < candidate.receivedAt
+        || now < Math.max(candidate.admittedAt ?? 0, candidate.interruptedAt ?? 0))) return false;
       if (!candidate || candidate.identity !== identity(o)) {
         if (candidate && state.phases[target.phase].inputs & target.input) state.phases[target.phase] = phaseEmpty();
         candidate = state.candidates[key] = { identity: identity(o), source: o.source, device: o.device, input: o.input,
@@ -182,6 +186,8 @@ export class VoltageEstimator {
           evidenceBasis: null, evidenceAt: null, healthyMs: 0 };
       }
       const evidence = sourceEvidence(o, now, telemetryAt, this.telemetryMaxAgeMs);
+      if (evidence && candidate.interruptedAt !== undefined
+        && (evidence.observedAt < candidate.interruptedAt || o.receivedAt < candidate.interruptedAt)) return false;
       // Duplicate source clocks can confirm elapsed coverage only inside their
       // original validity window or with genuine same-transport telemetry.
       if (evidence && candidate.sourceTime !== null && (o.sourceTime < candidate.sourceTime
@@ -190,16 +196,26 @@ export class VoltageEstimator {
         || o.receivedAt <= candidate.receivedAt)) return false;
       const availableAt = observationAvailableAt(o) ?? o.receivedAt;
       const previousAvailableAt = Math.max(candidate.receivedAt, candidate.admittedAt ?? 0);
+      // Receipt order alone is insufficient after deferred source admission:
+      // an older acquisition can arrive with a later receipt but still have
+      // become usable before the accepted sample. It cannot reverse coverage.
+      // Nor can later supporting telemetry confirm an earlier acquisition.
+      if (evidence && (availableAt < previousAvailableAt || evidence.observedAt > availableAt)) return false;
       const continuous = evidence && candidate.reporting && availableAt <= candidate.validUntil
         && availableAt - previousAvailableAt <= VOLTAGE_MAX_GAP_MS;
       if (evidence) {
         candidate.healthyMs = continuous ? candidate.healthyMs + availableAt - previousAvailableAt : 0;
         candidate.sourceTime = o.sourceTime; candidate.lastValue = o.value;
         candidate.validUntil = evidence.validUntil; candidate.evidenceBasis = evidence.basis; candidate.evidenceAt = evidence.observedAt;
-      } else candidate.healthyMs = 0;
-      candidate.reporting = Boolean(evidence); candidate.receivedAt = o.receivedAt;
-      if (evidence && o.raw?.timeAdmission) candidate.admittedAt = o.raw.timeAdmission.admittedAt;
-      else delete candidate.admittedAt;
+        candidate.receivedAt = o.receivedAt;
+        if (o.raw?.timeAdmission) candidate.admittedAt = o.raw.timeAdmission.admittedAt;
+        else delete candidate.admittedAt;
+        delete candidate.interruptedAt;
+      } else {
+        candidate.healthyMs = 0;
+        candidate.interruptedAt = now;
+      }
+      candidate.reporting = Boolean(evidence);
       const accumulator = state.phases[target.phase], selectedBefore = accumulator.selected;
       const replaceSeed = accumulator.coverageMs === 0 && accumulator.lastUpdatedAt === availableAt
         && target.input < accumulator.input;
@@ -235,11 +251,15 @@ export class VoltageEstimator {
     }
   }
   interrupt({ source, devices, transport, now = this.clock() }) {
+    if (!validTime(now)) return;
     const state = restored(this.store, this.input), phases = new Set();
     for (const [key, candidate] of Object.entries(state.candidates)) {
-      if (candidate.source !== source || !devices.includes(candidate.device) || now < candidate.receivedAt
+      if (candidate.source !== source || !devices.includes(candidate.device)
+        || now < Math.max(candidate.receivedAt, candidate.admittedAt ?? 0, candidate.interruptedAt ?? 0)
         || transport && (candidate.input === 1 ? 'ocpp' : 'cloud') !== transport) continue;
-      candidate.reporting = false; candidate.receivedAt = now; candidate.healthyMs = 0; phases.add(Number(key.at(-1)));
+      // An interruption is not another receipt of the voltage observation.
+      // Keep its source/receipt/admission clocks and fence pre-outage reports.
+      candidate.reporting = false; candidate.interruptedAt = now; candidate.healthyMs = 0; phases.add(Number(key.at(-1)));
     }
     if (!phases.size) return;
     this.store.transaction(() => {

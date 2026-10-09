@@ -259,6 +259,57 @@ test('explicit provider failure and stream interruption break coverage immediate
   assert(state.phases.every(candidate => candidate.coverageMs === HOUR), 'a short outage is not hidden inside observed coverage');
 });
 
+test('device telemetry newer than the voltage acquisition cannot rewrite its evidence boundary', t => {
+  const f = fixture(t);
+  f.put(START);
+  const original = f.store.getState('voltage:estimate:providers');
+  const now = START + MINUTE + 1000;
+  f.put(now, [231, 232, 233], { sourceTime: START, receivedAt: now - 1000,
+    raw: { voltageMapping: 'phase-neutral', deviceConnection: { connected: true, observedAt: START }, deviceTelemetryAt: now } });
+  assert.deepEqual(f.store.getState('voltage:estimate:providers'), original);
+  f.restart();
+  assert.doesNotThrow(() => f.recorder.status(now));
+  f.put(now + 1000, [231, 232, 233], { sourceTime: START,
+    raw: { voltageMapping: 'phase-neutral', deviceConnection: { connected: true, observedAt: START }, deviceTelemetryAt: now } });
+  assert(f.store.getState('voltage:estimate:providers').phases.every(phase => phase.coverageMs === MINUTE + 2000));
+  f.restart();
+});
+
+for (const interruption of ['transport', 'invalid-observation']) test(`delayed-admission voltage survives ${interruption} without rewriting evidence clocks`, t => {
+  const f = fixture(t), receivedAt = START, sourceTime = START + 500, admittedAt = START + 600;
+  f.put(admittedAt, [231, 232, 233], { sourceTime, receivedAt,
+    raw: { voltageMapping: 'phase-neutral', timeAdmission: { sourceTime, receivedAt, admittedAt } } });
+  const original = f.store.getState('voltage:estimate:providers');
+  f.put(START + 1000, [231, 232, 233], { sourceTime, receivedAt: START + 550 });
+  assert.deepEqual(f.store.getState('voltage:estimate:providers'), original,
+    'later receipt before the accepted admission boundary cannot produce negative coverage');
+  f.restart();
+  assert.doesNotThrow(() => f.recorder.status(START + 1000));
+  f.put(receivedAt + 100, [null, null, null], { sourceTime: null, quality: ['provider_error'], raw: { acquisitionOnly: true } });
+  assert.deepEqual(f.store.getState('voltage:estimate:providers'), original, 'backward processing time cannot corrupt admitted evidence');
+  const interruptedAt = START + MINUTE;
+  f.setNow(interruptedAt);
+  if (interruption === 'transport') f.estimator.interrupt({ source: 'easee', devices: ['invented-grid-meter'] });
+  else f.put(interruptedAt, [null, null, null], { sourceTime: null, quality: ['provider_error'], raw: { acquisitionOnly: true } });
+  f.restart();
+  assert.doesNotThrow(() => f.recorder.status(interruptedAt));
+  const interrupted = f.store.getState('voltage:estimate:providers');
+  for (const [key, candidate] of Object.entries(interrupted.candidates)) {
+    assert.deepEqual(candidate, { ...original.candidates[key], reporting: false, healthyMs: 0, interruptedAt });
+  }
+  assert(f.plan().phases.every(phase => phase.availability === 'held' && phase.coverageMs === 0));
+  // A report newer than the last accepted voltage but acquired before the
+  // interruption must not silently bridge that boundary, even after restart.
+  f.put(START + 2 * MINUTE, [232, 233, 234], { sourceTime: interruptedAt - 1000 });
+  assert(f.plan().phases.every(phase => phase.availability === 'held' && phase.coverageMs === 0));
+  f.put(START + 3 * MINUTE);
+  assert(f.plan().phases.every(phase => phase.availability === 'reporting' && phase.coverageMs === 0));
+  f.put(START + 4 * MINUTE);
+  assert(f.store.getState('voltage:estimate:providers').phases.every(phase => phase.coverageMs === MINUTE));
+  f.restart();
+  assert.doesNotThrow(() => f.recorder.status(START + 4 * MINUTE));
+});
+
 function feed(f, at, input, { phase = null, value = 231, quality = [], ...extra } = {}) {
   f.setNow(at);
   const source = 'easee', slot = input === 4 ? 'property' : 'ev1';

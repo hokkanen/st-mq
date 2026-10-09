@@ -157,8 +157,12 @@ export function createAppServer({ engine, getEngine = () => engine, store, chart
             'cache-control': 'no-store', 'content-length': data.length });
           return res.end(data);
         }
-        if (url.pathname === '/api/pair' && req.method === 'GET')
-          return json(200, pairContext?.status() ?? null);
+        if (url.pathname === '/api/pair' && req.method === 'GET') {
+          const pair = pairContext?.status();
+          // Pair management must bootstrap even when database-backed dashboard
+          // status fails. This is the same authenticated role as /api/status.
+          return json(200, pair ? { ...pair, webAccess } : null);
+        }
         if (url.pathname === '/api/pair/action' && req.method === 'POST') {
           if (!pairContext) return json(409, { error: 'Paired operation is not configured.' });
           const input = await body(req);

@@ -87,6 +87,7 @@ const readOnlyControls = createReadOnlyControls({ document });
 const passwordVisibility = bindPasswordVisibility({ input: $('token'), button: $('password-visibility') });
 let webAccess;
 let lastStatus;
+let dashboardStatusReceived = false;
 let historyChart;
 let temporaryBusy = false;
 let heatingTestBusy = false;
@@ -141,7 +142,7 @@ function lockScreen({ authenticationFailed = false } = {}) {
   selectPickers.dismiss();
   for (const picker of temporaryDatePickers) picker.dismiss();
   const hadPassword = Boolean(session.token), hadStatus = Boolean(lastStatus);
-  session.logout(); ++refreshSequence; lastStatus = undefined; webAccess = undefined;
+  session.logout(); ++refreshSequence; lastStatus = undefined; webAccess = undefined; dashboardStatusReceived = false;
   configurationReview.clear(); configurationReview.update();
   document.body.dataset.authenticated = 'false';
   closeStatusDetails(document);
@@ -782,6 +783,7 @@ function render(s) {
   $('auth').hidden = true;
   $('fireplace-family-help').hidden = webAccess?.role !== 'family';
   lastStatus = s;
+  dashboardStatusReceived = true;
   statusReceivedMonotonicAt = performance.now();
   recordingHealth.update(s);
   readOnlyControls.update(s);
@@ -941,6 +943,7 @@ async function refresh({ forceChart = false, background = false } = {}) {
       if (pairRevision === pairStatusRevision) pairPanel.unavailable();
       showError(error);
       void recordingHealth.refresh();
+      void refreshPairing();
     }
     return;
   }
@@ -965,27 +968,38 @@ async function refresh({ forceChart = false, background = false } = {}) {
 }
 let pairPollBusy = false;
 async function refreshPairing() {
-  if (lastStatus?.topology !== 'pair' || pairPollBusy) return;
+  if (session.locked || lastStatus?.topology && lastStatus.topology !== 'pair' || pairPollBusy) return;
   pairPollBusy = true;
   const pairRevision = pairStatusRevision;
   let received = false;
   try {
     const pair = await api('/api/pair');
+    if (!pair) return;
     received = true;
-    const previous = lastStatus.pair ?? {};
+    const previous = lastStatus?.pair ?? {};
     const changed = pair.role !== previous.role || pair.canControl !== previous.canControl || Boolean(pair.transition) !== Boolean(previous.transition);
-    lastStatus = { ...lastStatus, pair };
+    // A management response proves its own role and access only. Equipment
+    // controls stay fenced until a complete dashboard status is received.
+    lastStatus = { ...(lastStatus ?? { topology: 'pair', readOnly: true,
+      role: pair.role === 'master' ? 'transition' : pair.role }), pair };
+    if (pair.webAccess) {
+      webAccess = pair.webAccess;
+      accessControls.update(webAccess);
+      document.body.dataset.authenticated = 'true';
+      $('auth').hidden = true;
+    }
     readOnlyControls.update(lastStatus);
+    if (!dashboardStatusReceived) $('read-only-help').textContent = 'Dashboard data is unavailable. Pairing management remains available; device commands and ordinary settings changes are disabled.';
     garageDoors.update({ ...equipmentPanel.actions.snapshot(), status: lastStatus });
     pairPanel.update(pairPanelView(lastStatus));
     ++pairStatusRevision;
     historyRecovery.update({ ...lastStatus, webAccess });
     renderInstanceRole(document, lastStatus);
-    if (isReadOnlyReplica(lastStatus)) {
+    if (dashboardStatusReceived && isReadOnlyReplica(lastStatus)) {
       garageDoors.close(); fireplacePanel.close(); heatingExplorer.clear();
       renderReplicaStatus(document, lastStatus, { formatTime: time });
     }
-    if (changed) await refresh({ forceChart: true });
+    if (changed && dashboardStatusReceived) await refresh({ forceChart: true });
   } catch (error) {
     if (session.locked) return;
     if (!received && pairRevision === pairStatusRevision) pairPanel.unavailable();

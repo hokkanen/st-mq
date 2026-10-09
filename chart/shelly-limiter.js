@@ -34,6 +34,7 @@ export function shellyLimiterDisplay(value) {
     : mode === 'limited' || mode === 'paused-by-balancing' ? 'Property load or charger priority' : '');
   const application = ({ confirmed: value?.allowanceA === 0 ? 'Pause instruction confirmed'
     : applied ? `Charger setting: ${applied} confirmed` : 'Charger setting unconfirmed',
+    idle: applied ? `Idle current setting: ${applied} confirmed` : 'Idle current setting unconfirmed',
     pending: `Awaiting charger confirmation${applied ? ` · last confirmed setting ${applied}` : ''}`,
     blocked: `Application blocked${applied ? ` · charger setting ${applied}` : ''}`,
     inactive: 'No limiter instruction applied', unknown: 'Charger setting unconfirmed' })[value?.applicationStatus]
@@ -46,5 +47,5 @@ export function shellyLimiterDisplay(value) {
     effectiveAllowance,
     detail: [`${state.label}${allowance ? ` · ${allowance} allowance` : ''}${reason ? ` · ${reason}` : ''}`,
       effectiveAllowance ? `${effectiveAllowance}, respecting other restrictions.` : '',
-      application, state.description, 'Allowance is a controller ceiling, not measured charging current. Scheduled and manual stops remain separate.'].filter(Boolean).join('\n\n') };
+      application, value?.applicationStatus === 'idle' ? 'Charging permission is off. The configured fallback is held while idle, respecting native and vehicle limits; available capacity is still calculated. The current allocation is confirmed before starting.' : '', state.description, 'Allowance is a controller ceiling, not measured charging current. Scheduled and manual stops remain separate.'].filter(Boolean).join('\n\n') };
 }
