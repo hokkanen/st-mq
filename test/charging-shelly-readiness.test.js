@@ -204,6 +204,93 @@ test('a timed-out current read does not delay independent physical state or mete
   assert.equal(f.adapter.snapshot().lastRpcTimeout, null, 'A new MQTT generation starts fresh diagnostics');
 });
 
+test('a missed ordinary read retains a still-fresh accepted Stop without granting commands', async t => {
+  const f = fixture(t);
+  for (const role of Object.keys(TYPES)) f.measuredAt[role] = NOW;
+  f.fields.work_state = 'charger_wait';
+  f.fields.phase_info = { ...f.fields.phase_info, total_power: 0, ...Object.fromEntries(
+    ['phase_a', 'phase_b', 'phase_c'].map(phase => [phase, { voltage: 230, current: 0, power: 0 }])) };
+  await f.ready(); f.advance(1000);
+  const controller = createShellyController({ adapter: f.adapter, clock: f.now, canControl: () => true });
+  t.after(() => controller.close());
+  const plan = { id: 'waiting', deadlineAt: NOW + 7200_000, periods: [{ startAt: NOW + 3600_000, endAt: null }] };
+  await controller.update({ enabled: true, plan });
+  f.notify('phase_info', f.fields.phase_info);
+  assert.equal(controller.status().pauseConfirmed, true);
+  const acceptedAt = controller.status().lastStartAt;
+  const publish = f.client.publish;
+  f.client.publish = (topic, payload, options, done) => {
+    if (JSON.parse(payload).method === 'Service.GetStatus') { done?.(); return; }
+    publish(topic, payload, options, done);
+  };
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  f.advance(3000);
+  const refreshing = controller.update({ enabled: true, plan });
+  await new Promise(resolve => setImmediate(resolve));
+  const evidence = structuredClone(f.adapter.snapshot().fields);
+  f.advance(5000); t.mock.timers.tick(5000); await refreshing;
+  assert.equal(f.adapter.snapshot().error, 'evse-read-timeout');
+  assert.equal(f.adapter.snapshot().observationReady, true);
+  assert.equal(f.adapter.snapshot().controlReady, false);
+  const before = f.mutations().length;
+  await assert.rejects(f.command('start_charging', true), { code: 'evse-control-unavailable' });
+  const view = controller.status();
+  assert.equal(view.phase, 'waiting');
+  assert.equal(view.ownsInstruction, true, 'A missed query is not contrary evidence of the accepted Stop');
+  assert.equal(view.pauseConfirmed, true);
+  assert.equal(view.confirmed, true); assert.equal(view.scheduleConfirmed, true);
+  assert.equal(view.lastStartAt, acceptedAt);
+  assert.deepEqual(view.snapshot.fields, evidence, 'Timeout does not renew measurement or receipt clocks');
+  assert.equal(f.mutations().length, before);
+  f.advance(16000);
+  assert.equal(controller.status().ownsInstruction, false, 'Original instruction evidence still expires');
+  assert.equal(controller.status().pauseConfirmed, false);
+  f.client.publish = publish;
+  f.measuredAt.phase_info = f.now();
+  await f.adapter.refresh();
+  assert.equal(controller.status().pauseConfirmed, true, 'A normal matching native read restores confirmation');
+  assert.equal(f.mutations().length, before, 'Recovery does not rewrite Stop');
+  f.client.emit('offline');
+  assert.equal(controller.status().ownsInstruction, false);
+});
+
+test('an active identification keeps fresh observations through a missed query without extending its attempt', async t => {
+  const f = fixture(t);
+  for (const role of Object.keys(TYPES)) f.measuredAt[role] = NOW;
+  await f.ready(); f.advance(1000);
+  const request = { id: 'existing-probe', connectedAt: f.adapter.snapshot().session.connectedAt,
+    phase: 'charging', mode: 'probe', probeUntil: NOW + 30000, returnStartAt: NOW + 60000 };
+  const controller = createShellyController({ adapter: f.adapter, clock: f.now, canControl: () => true,
+    getIdentification: () => request });
+  t.after(() => controller.close());
+  await controller.update({ enabled: true });
+  assert.deepEqual(controller.status().identification, request);
+  const publish = f.client.publish;
+  f.client.publish = (topic, payload, options, done) => {
+    if (JSON.parse(payload).method === 'Number.GetStatus') { done?.(); return; }
+    publish(topic, payload, options, done);
+  };
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  const before = f.mutations().length;
+  f.advance(3000);
+  const update = controller.update({ enabled: true });
+  await new Promise(resolve => setImmediate(resolve));
+  const evidence = structuredClone(f.adapter.snapshot().fields);
+  f.advance(5000); t.mock.timers.tick(5000); await update;
+  const view = controller.status();
+  assert.equal(view.snapshot.controlReady, false);
+  assert.equal(view.snapshot.identificationReady, true);
+  assert.equal(view.snapshot.identificationCurrentReady, true);
+  assert.deepEqual(view.identification, request);
+  assert.deepEqual(view.snapshot.fields, evidence);
+  await assert.rejects(f.command('start_charging', true), { code: 'evse-control-unavailable' });
+  assert.equal(f.mutations().length, before);
+  f.advance(16000);
+  assert.equal(f.adapter.snapshot().identificationReady, false, 'Actual evidence expiry still interrupts availability');
+  f.client.emit('offline');
+  assert.equal(f.adapter.snapshot().identificationReady, false);
+});
+
 test('read publication failures and lost write replies retain distinct outcomes', async t => {
   const f = fixture(t); await f.ready();
   const publish = f.client.publish;

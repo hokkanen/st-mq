@@ -236,8 +236,15 @@ Replies are fenced by MQTT generation,
 the setting revision at request publication and intervening command dispatch;
 an older contradictory reply cannot overwrite a newer native setting or grant
 control. After a readback failure, command readiness returns only after a full
-successful refresh; healthy polling preserves existing readiness. A newer
-notification error cannot be cleared by an earlier refresh. Physical current
+successful refresh; healthy polling preserves existing readiness. A missed query
+does not invalidate independently fresh, committed observations in the already
+verified connection. Accepted permission and an active identification attempt
+retain that evidence, with unchanged source clocks and attempt deadlines, while
+new commands remain blocked. Actual native restrictions, invalid input, lost
+transport and original evidence expiry still withdraw the affected observations.
+An unrelated current-setting notification does not erase accepted Stop evidence;
+pending permission, work-state or physical changes withhold the affected proof.
+A newer notification error cannot be cleared by an earlier refresh. Physical current
 and power retain their measurement age. Meter reset
 or jump warnings are separate from command-readiness errors and clear after a
 valid subsequent increment, while recorded gaps remain intact. MQTT electrical

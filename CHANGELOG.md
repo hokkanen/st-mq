@@ -13,6 +13,9 @@ Versions follow Semantic Versioning. `-dev.N` denotes a development prerelease.
 - A burst of vehicle reports waiting to save no longer ends an existing
   identification attempt or stops its probe early. New identification commands
   wait for admission; original time/energy limits and real source failures still apply.
+- A missed Shelly query no longer erases still-fresh accepted Stop confirmation
+  or identification observations. New commands wait for a complete successful
+  refresh; actual source loss, restrictions and original evidence expiry still apply.
 - Charging plans finish under repeated unchanged observations instead of
   restarting until reporting becomes quiet. A bounded additional candidate
   recovers feasible two-car schedules around an earlier vehicle deadline.

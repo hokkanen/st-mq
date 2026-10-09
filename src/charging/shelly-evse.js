@@ -73,7 +73,7 @@ export function createShellyEvseAdapter({ config, broker, client, store, engine,
   validateShellyAcquisitionState(state, association);
   state = copy(state);
   let connected = false, admitted = false, online = false, closed = false, generation = 0, discovered = false, controlReady = false,
-    readinessRevision = 0;
+    readinessRevision = 0, verifiedReadinessRevision = null;
   let error = null, meterError = null, info = null, service = null, serviceStatus = null, nativeSchedules = null, serviceAt = null, currentConfig = null, polling = null, buffer = [], componentRoles = new Map(), pendingEvents = [];
   let profileSupported = false, currentWritable = false, currentControlReady = false;
   let device = null, deviceGeneration = null;
@@ -143,9 +143,17 @@ export function createShellyEvseAdapter({ config, broker, client, store, engine,
   ];
   const admission = createMqttAdmission();
   let overflow = false, eventOverflow = false;
-  const observationServiceReady = () => controlReady && !eventOverflow && !state.permissionOverflow
+  const nativeServiceAvailable = () => serviceStatus?.state === 'running'
+    && (serviceStatus.errors === undefined || Array.isArray(serviceStatus.errors) && serviceStatus.errors.length === 0)
+    && (serviceStatus.flags === undefined || Array.isArray(serviceStatus.flags) && serviceStatus.flags.length === 0);
+  // A failed query closes new command admission. It does not contradict the
+  // still-fresh native evidence already committed in this connection. Invalid
+  // input/storage failures advance readinessRevision and invalidate that proof.
+  const observationServiceReady = () => verifiedReadinessRevision === readinessRevision
+    && discovered && profileSupported && service?.id === config.serviceId && nativeServiceAvailable()
+    && !eventOverflow && !state.permissionOverflow
     && finite(serviceAt) && clock() >= serviceAt && clock() - serviceAt <= config.maxAgeMs;
-  const ready = () => observationServiceReady() && storagePending === 0 && sourcePending.size === 0;
+  const ready = () => controlReady && observationServiceReady() && storagePending === 0 && sourcePending.size === 0;
   const currentReady = () => ready() && currentControlReady;
   function waitForInputAdmission({ deadlineAt = clock() + RPC_TIMEOUT_MS, signal } = {}) {
     if (!Number.isSafeInteger(deadlineAt)) return Promise.reject(fail('invalid-evse-command'));
@@ -706,10 +714,10 @@ export function createShellyEvseAdapter({ config, broker, client, store, engine,
         [service, serviceStatus, nativeSchedules, currentConfig] = reads.map(result => result.value);
         serviceAt = clock();
         if (!Array.isArray(nativeSchedules?.jobs) || nativeSchedules.jobs.length > 20
-          || nativeSchedules.jobs.some(job => typeof job?.enable !== 'boolean')) throw fail('evse-native-schedule-unavailable');
-        const nativeAvailable = serviceStatus?.state === 'running'
-          && (serviceStatus.errors === undefined || Array.isArray(serviceStatus.errors) && serviceStatus.errors.length === 0)
-          && (serviceStatus.flags === undefined || Array.isArray(serviceStatus.flags) && serviceStatus.flags.length === 0);
+          || nativeSchedules.jobs.some(job => typeof job?.enable !== 'boolean')) {
+          readinessRevision++; throw fail('evse-native-schedule-unavailable');
+        }
+        const nativeAvailable = nativeServiceAvailable();
         eligible = !eventOverflow && discovered && profileSupported && service?.id === config.serviceId && nativeAvailable;
         // Healthy polling keeps existing readiness. Recovery cannot reopen the
         // command gate using cached settings before all native reads complete.
@@ -738,7 +746,9 @@ export function createShellyEvseAdapter({ config, broker, client, store, engine,
       if (failed) throw failed.reason;
       // A notification error during any await invalidates this refresh too.
       // Its later successful replies must not erase the newer failure.
-      if (eligible && readinessAtStart === readinessRevision) { controlReady = true; error = null; }
+      if (eligible && readinessAtStart === readinessRevision) {
+        verifiedReadinessRevision = readinessRevision; controlReady = true; error = null;
+      }
       readAt = clock();
     })().catch(cause => {
       if (epoch === generation) { controlReady = false; error = cause.code ?? 'evse-read-unavailable'; }
@@ -749,7 +759,7 @@ export function createShellyEvseAdapter({ config, broker, client, store, engine,
     lastRpcTimeout = null;
     sourcePending.clear();
     notificationBaselines.clear();
-    connected = true; admitted = false; generation++; buffer = []; pendingEvents = []; overflow = eventOverflow = false; admission.reset(); discovered = controlReady = false;
+    connected = true; admitted = false; generation++; buffer = []; pendingEvents = []; overflow = eventOverflow = false; admission.reset(); discovered = controlReady = false; verifiedReadinessRevision = null;
     subscriptionStatus = 'pending';
     const epoch = generation, subscriptions = topics.filter(row => row.direction === 'subscribe').map(row => row.topic);
     client.subscribe(subscriptions, { qos: 0 }, (error, grants) => {
@@ -783,7 +793,7 @@ export function createShellyEvseAdapter({ config, broker, client, store, engine,
   // preparation cannot become an unrestricted probe while readback is pending.
   const observationReady = () => Boolean(connected && admitted && online && observationServiceReady() && knownWorkState()
     && settingFresh('start_charging') && settingFresh('current_limit'));
-  const basicReady = () => observationReady() && storagePending === 0 && sourcePending.size === 0 && !notificationPending.size;
+  const basicReady = () => controlReady && observationReady() && storagePending === 0 && sourcePending.size === 0 && !notificationPending.size;
   const commandBlockReason = () => !connected || !admitted || !online ? 'provider-offline'
     : error ?? (state.permissionOverflow ? 'evse-permission-event-overflow'
       : notificationPending.size ? 'evse-notification-readback-required'
@@ -1177,6 +1187,8 @@ export function createShellyController({ adapter, initialState, saveState = () =
   const fresh = field => field?.invalidatedAt === undefined && field?.measuredAt > 0 && field.measuredAt <= clock() && field.receivedAt <= clock()
     && clock() - field.receivedAt <= adapter.config.maxAgeMs && !field.retained;
   const physicalFresh = field => fresh(field) && clock() - field.measuredAt <= adapter.config.maxAgeMs;
+  const instructionObservationReady = snapshot => snapshot.observationReady === true
+    && (snapshot.notificationPending ?? []).every(role => role === 'current_limit');
   const idleCurrentSetting = (snapshot, context) => {
     const physical = adapter.liveCurrents();
     if (!fresh(snapshot.fields.start_charging) || snapshot.fields.start_charging.value !== false
@@ -1233,10 +1245,10 @@ export function createShellyController({ adapter, initialState, saveState = () =
     && snapshot.fields.start_charging.measuredAt === state.owned.permissionAt && state.lastStart === false && state.ownedPause;
   const status = () => {
     const snapshot = adapter.snapshot(), projected = devicePermission(snapshot);
-    // Admission holds block new commands, not already committed confirmation.
-    // Keep its original evidence clocks; actual changes, read failures and stale
-    // observations still withdraw it through their separate readiness fences.
-    const instructionEvidenceReady = snapshot.controlReady || pendingInstructionObservation(snapshot);
+    // Command admission and committed observation evidence have separate lives.
+    // A failed query or unrelated pending current update cannot erase fresh
+    // matching permission; changes, invalid input and expiry still withdraw it.
+    const instructionEvidenceReady = snapshot.controlReady || instructionObservationReady(snapshot);
     const owned = projected.pauseBroken ? null : state.owned ?? null;
     const permission = snapshot.fields.start_charging;
     const economicPause = state.execution
@@ -1438,12 +1450,6 @@ export function createShellyController({ adapter, initialState, saveState = () =
       await persist();
     }
   }
-  function pendingInstructionObservation(snapshot) {
-    return snapshot.observationReady === true
-      && (['evse-input-persistence-pending', 'evse-source-time-pending'].includes(snapshot.commandBlockReason)
-        || snapshot.commandBlockReason === 'evse-notification-readback-required'
-          && snapshot.notificationPending?.length > 0 && snapshot.notificationPending.every(role => role === 'current_limit'));
-  }
   const stopObserving = adapter.observeStatus?.(() => { if (!closed) notifyStatus(); });
   return { status, supportsIdentification: true, invalidate() { revision++; cancelPlanning(); },
     interruptPlanning() {
@@ -1561,11 +1567,10 @@ export function createShellyController({ adapter, initialState, saveState = () =
           }
         }
         if (unavailable) {
-          // A queued packet fences all mutations, but does not erase the
-          // existing economic instruction or restart identification. The live
-          // snapshot explains the hold and clears it as soon as input admission
-          // completes; the ordinary five-second reconciliation resumes work.
-          if (pendingInstructionObservation(snapshot)) {
+          // Fresh committed observations preserve the existing instruction and
+          // attempt while command admission is blocked. The snapshot exposes
+          // the read/admission failure; recovery still needs a full native read.
+          if (instructionObservationReady(snapshot)) {
             await persist(); return;
           }
           identification = null;
