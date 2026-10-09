@@ -5,6 +5,31 @@ import { createFireplaceActions, createFireplacePanel, fireplaceTime, fireplaceV
 const now = Date.parse('2026-09-09T15:00:00Z');
 const entry = (id = 1, at = now, kg = 8) => ({ id, at, kg, removedAt: null, requiresRebuild: false, canRemove: true });
 const view = (revision = 0, entries = []) => ({ available: true, revision, entries, lastAt: entries[0]?.at ?? null, rebuild: { status: 'idle' } });
+
+test('recorded rebuild state cannot claim live progress or create an action receipt', () => {
+  for (const status of ['pending', 'running', 'failed']) {
+    const result = fireplaceView({ ...view(), readOnly: true, rebuild: { status } }, now);
+    assert.match(result.modelStatus, /Recorded firewood history.*Saved model update.*Live progress is unavailable/);
+    assert.doesNotMatch(result.modelStatus, /control continues|remains available/);
+  }
+  const actions = createFireplaceActions({ request: async () => view(), clock: () => now });
+  actions.update({ ...view(), rebuild: { status: 'running' } }); actions.update(view());
+  assert.equal(actions.snapshot().message, '');
+});
+
+test('firewood receipts expire after a day while unresolved submissions remain actionable', async () => {
+  let at = now, fail = false;
+  const actions = createFireplaceActions({ clock: () => at, request: async () => {
+    if (fail) throw new Error('connection lost');
+    return view(1, [{ id: 1, at, kg: 4 }]);
+  } });
+  actions.update(view()); await actions.add(4);
+  assert.match(actions.snapshot().message, /4 kg recorded/);
+  at += 86400_000; assert.equal(actions.snapshot().message, '');
+  fail = true; await actions.add(4); at += 2 * 86400_000;
+  assert.match(actions.snapshot().message, /Save not confirmed/);
+  assert.ok(actions.snapshot().pending);
+});
 function memoryStorage() {
   const values = new Map();
   return { getItem: key => values.get(key) ?? null, setItem: (key, value) => values.set(key, value), removeItem: key => values.delete(key) };
@@ -75,7 +100,7 @@ test('uncertain removal can be retried even when a refresh no longer lists the r
   assert.equal(await actions.add(8), false);
   assert.equal(await actions.retry(), true);
   assert.deepEqual(bodies[0], bodies[1]);
-  assert.match(actions.snapshot().message, /updating model in background/);
+  assert.match(actions.snapshot().message, /model update status below/);
   actions.update(view(2));
   assert.equal(actions.snapshot().message, 'Entry removed · model updated.');
 });
@@ -101,7 +126,7 @@ test('recent history uses Finnish time, preserves close entries, excludes remove
   assert.equal(summary.total, '3 entries · 18 kg');
   assert.equal(fireplaceTime(now, now), 'Today, 18:00:00');
   assert.equal(fireplaceTime(Date.parse('2026-01-09T15:00:00Z'), Date.parse('2026-01-09T15:00:00Z')), 'Today, 17:00:00');
-  assert.equal(fireplaceView({ ...view(), rebuild: { status: 'running' } }, now).modelStatus, 'Updating model · heating control continues');
+  assert.match(fireplaceView({ ...view(), rebuild: { status: 'running' } }, now).modelStatus, /Updating model.*current model remains available for heating control/);
   const failed = fireplaceView({ ...view(), rebuild: { status: 'failed', error: 'private details' } }, now);
   assert.match(failed.modelStatus, /correction remains saved/);
   assert(!failed.modelStatus.includes('private'));

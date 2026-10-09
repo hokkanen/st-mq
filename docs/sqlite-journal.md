@@ -1,6 +1,7 @@
 # SQLite checkpoints, recording and peer catch-up
 
-The current development schema is **26**; the transaction format is **2**.
+The current development schema is defined in
+[`src/storage/schema.js`](../src/storage/schema.js); the transaction format is **2**.
 Incompatible development databases are rejected before mutation. Select a fresh
 empty development database deliberately; no migration or automatic reset exists.
 Current-schema restart, backups, correction replay and source-only recovery remain

@@ -107,7 +107,9 @@ function recoveryClient() {
           ...(body === undefined ? {} : { 'Content-Type': 'application/json' }) },
         ...(body === undefined ? {} : { body: JSON.stringify(body) }),
       });
-    } catch { throw new Error('The recovery service is unavailable. Check that the application is running, then try again.'); }
+    } catch { throw new Error(path === '/apply'
+      ? 'The configuration save was not confirmed. Reopen this page to check the saved result before saving again.'
+      : 'The recovery service did not respond. Check that the application is running, then try again.'); }
     if (response.status === 401 && !ha) {
       accessKey = '';
       clearReview();
@@ -117,7 +119,9 @@ function recoveryClient() {
     }
     let result;
     try { result = await response.json(); }
-    catch { throw new Error('The recovery service returned an unexpected response. Reopen this page and try again.'); }
+    catch { throw new Error(path === '/apply'
+      ? 'The configuration save result could not be read. Reopen this page to check the saved result before saving again.'
+      : 'The recovery service returned an unexpected response. Reopen this page and check again.'); }
     if (!response.ok) throw new Error(result.error || 'Configuration could not be checked. Try again.');
     return result;
   }

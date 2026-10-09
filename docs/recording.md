@@ -816,10 +816,12 @@ the selected one-hour/day/week window, and require at least two records. Exact
 hourly metrics plus indexed partial-hour boundaries avoid repeated full-week
 scans on control ticks. Approximate
 byte and variation metrics remain labeled as such. Current open energy is shown
-separately from finalized observation counts. The annual target measures overall
-SQLite growth; mandatory exact/history records are never dropped to meet it.
+separately from finalized observation counts. The annual target applies only to
+estimated adaptive measurement additions. Overall SQLite growth is measured
+separately; mandatory exact/history records are never dropped to meet the target.
 
-This recording contract uses database schema 27. An incompatible development
+The current database schema is defined in [`src/storage/schema.js`](../src/storage/schema.js).
+An incompatible development
 schema is rejected before mutation with fresh-database guidance; no migration,
 backfill or automatic reset is provided. Supported read-only v0.7.5 CSV import,
 current-version restart, backup/restore and deterministic journal replay remain.
@@ -1324,7 +1326,7 @@ three-room average. Saved learning-input tooltip rows use a short marker without
 repeating their journal source and interval beside each value. New saved-average
 tooltips additionally identify held rooms, actual observation times and whether
 the window was excluded from learning.
-Sensor replacements, moves and calibrations are recorded under **Home → Heating configuration → Home learning → Model inputs → Average indoor → Sensor changes**. See
+Sensor replacements, moves and calibrations are recorded under **Home → Home heat model → Model inputs → Average indoor → Sensor changes**. See
 [sensor changes](temperature-sensors.md#replacing-moving-or-adjusting-a-sensor)
 for their learning boundary and descriptive reason field.
 The explorer's **All series** mode groups historical signals into temperature,
@@ -1886,6 +1888,10 @@ Open **Recording details → Export database** and choose:
   prompt for a destination and stream directly to the selected file. Other
   browsers buffer the response and use their usual download settings.
 
+**Download sent** confirms that the server finished sending the snapshot. Check
+the browser's download or selected file to confirm that it was saved; the server
+cannot verify the browser's final file or its durability.
+
 Both actions use the same filename format, for example
 `stmq-2026-09-25T15-04-32-123Z.sqlite`: date, time, milliseconds and `Z` for UTC.
 The browser file picker suggests the download's start time; the download fallback
@@ -1983,8 +1989,11 @@ or external token files.
 
 The annual recording budget is a soft objective for estimated adaptive additions,
 not a hard storage cap. Exact changes, imports, learning journals, source revisions,
-diagnostics and SQLite overhead add growth on top of it. Compaction reduces unnecessary future observations; it does not
-rewrite history, reclaim existing database pages or establish physical flash-write
+diagnostics and SQLite overhead add growth on top of it. Adaptive selection limits
+new measurement rows while preserving required boundaries and accepted energy.
+Transaction compaction removes only disposable transaction history; neither
+mechanism deletes required observations or learning inputs. Freed SQLite pages
+can be reused without shrinking the file or establishing physical flash-write
 savings.
 
 Charging reports retain unchanged price arrays and shared forecast context once
@@ -2030,8 +2039,6 @@ These commands operate on the current database contract:
 ```sh
 npm run history -- export --output /tmp/indoor.csv --signal indoor_temperature
 npm run history -- backup --output /tmp/st-mq-backup.sqlite
-npm run history -- restore --input /tmp/st-mq-backup.sqlite --db /tmp/restored.sqlite
-STMQ_INPUT=offline npm start
 ```
 
 Select `--db <path>` when the default database is not the intended source.
@@ -2041,6 +2048,20 @@ WAL/SHM companions. Restore
 to a new path while the target application is stopped; validate the result before
 switching the configured database. Keep backups on separate storage. An existing
 incompatible or malformed database is rejected before mutation.
+
+To inspect a restored copy, choose a new directory and use the runtime's database
+filename, `st-mq.sqlite`. For example:
+
+```sh
+npm run history -- restore --input /tmp/st-mq-backup.sqlite --db /tmp/stmq-history-view/st-mq.sqlite
+STMQ_TOPOLOGY=standalone STMQ_INPUT=offline STMQ_DATA_DIR=/tmp/stmq-history-view STMQ_DATABASE_DIR=/tmp/stmq-history-view STMQ_PORT=1235 npm start
+```
+
+The explicit directory makes the viewer open the restored copy. Setting only
+`STMQ_INPUT=offline` would open `st-mq.sqlite` in the usual configured database
+directory instead. Offline input starts no device providers; standalone topology
+keeps this inspection separate from pairing. Remove the temporary copy only after
+finishing the inspection; retain the original backup separately.
 
 Raw observation queries are bounded to 5,000 observations; `/api/history` limits
 a request to 31 days. `/api/chart` accepts inclusive calendar dates with a named

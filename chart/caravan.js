@@ -41,7 +41,8 @@ export function dehumidifierResult(device, now = Date.now()) {
     || !actionReceiptRecent(operation.requestedAt, now)) return '';
   const value = DEHUMIDIFIER_OPTIONS[operation.setting].find(option => option[0] === operation.value)[1];
   const result = { publishing: 'sending…', published: 'sent; awaiting device report', observed: 'device reported',
-    unconfirmed: 'no confirming device report', failed: 'could not send; check the device' }[operation.status];
+    unconfirmed: operation.error || 'no confirming device report; check the live setting before trying again',
+    failed: operation.error || 'could not send; check the device' }[operation.status];
   return result ? `${settingLabels[operation.setting]}: ${value} requested · ${result}` : '';
 }
 

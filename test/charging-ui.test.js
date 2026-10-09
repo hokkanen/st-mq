@@ -26,6 +26,27 @@ const status = (...chargers) => ({ role: 'master', now, charging: { settings: { 
 const connected = (id = 'charger1') => { const item = charger(id); return { ...item, values: { ...item.values, connected: reading(true) } }; };
 const sessionPayload = (id, changes, extra = {}) => ({ scope: 'session', association: `fixture:${id}`, sessionId: `session:${id}`, revision: 1, changes, ...extra });
 const view = item => chargerDisplay(item, { now });
+
+test('disabled Identify explains current prerequisites separately from the previous attempt', () => {
+  const document = documentFixture(), $ = id => document.getElementById(id);
+  const panel = createChargingPanel({ document, request: async () => { throw new Error('No request expected'); } });
+  for (const [reason, text] of [['vehicle-feed-stale', /current vehicle report/], ['charger-fault', /reports a fault/],
+    ['charging-authorization', /requires authorization/], ['charger-disabled', /disabled on the charger/],
+    ['current-test-restoration-pending', /must be restored/]]) {
+    panel.update(status({ ...connected(), identification: { phase: 'completed', active: false, available: false,
+      availabilityReason: reason, reason: 'matched' } }));
+    assert.equal($('charger1-identify').disabled, true);
+    assert.match($('charger1-identify').title, text);
+    assert.match($('charger1-identification-status').textContent, text);
+  }
+  panel.update(status({ ...connected(), identification: { phase: 'inconclusive', active: false, available: false,
+    availabilityReason: 'charger-fault', reason: 'probe-time-limit' } }));
+  assert.match($('charger1-identification-status').textContent, /safety time limit.*reports a fault/);
+  panel.update(status({ ...connected(), identification: { phase: 'observing', active: false, available: false,
+    availabilityReason: 'charger-offline', reason: 'charger-unavailable' } }));
+  assert.equal($('charger1-identification-status').textContent.split('The charger is offline.').length - 1, 1);
+  panel.close();
+});
 const flexibilityComparison = { at: now, available: true, recommended: true, priceCoverage: 'complete', normalReadyByAt: deadlineAt,
   deferredReadyByAt: deadlineAt + 86400_000, normalCostCents: 470, deferredCostCents: 310, savingsCents: 160,
   normalFinishAt: deadlineAt - 3600_000, deferredFinishAt: deadlineAt + 86400_000 - 2 * 3600_000,

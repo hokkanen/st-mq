@@ -2,7 +2,7 @@
 
 See [MQTT equipment](mqtt-equipment.md) for the explicit `shelly:<topic prefix>` /
 `mqtt:<state topic>` configuration, device setup instructions, Home and Garage
-monitoring, connection checks, timed switch tests and hourly energy recording.
+monitoring, connection checks, timed switch tests and adaptive interval-energy recording.
 
 Device connections and topics now have public defaults in `config.json`; broker
 credentials remain in the private configuration. ST-MQ does not automatically
@@ -26,10 +26,12 @@ Incremental notifications update only fields they actually contain. An omitted
 field retains its original timestamp and expires independently; explicit null,
 component errors and fields missing from a full snapshot invalidate that field.
 
-A malformed or future notification `ts` cannot establish a new measurement or
-refresh device availability. Rejecting that clock preserves previously accepted
-readings with their original timestamps and expiry; even a small source-clock
-lead does not mean both probes failed. Explicit invalid values and component
+A malformed or excessively future notification `ts` cannot establish a new
+measurement or refresh device availability. A source clock at most one second
+ahead waits for admission under the [time-evidence policy](time-evidence.md),
+preserving its original source and receipt times. Pending or rejected clocks
+leave previously accepted readings only their original remaining lifetime; a
+small source-clock lead does not mean both probes failed. Explicit invalid values and component
 errors still invalidate the affected readings, recorded as availability
 transitions without a trusted source time. A notification with no `ts` retains
 the native protocol's receipt-time behavior; an explicitly null clock does not.

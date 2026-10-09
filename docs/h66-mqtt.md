@@ -33,7 +33,8 @@ See the [Husdata MQTT specification](https://husdata.se/docs/h60-manual/home-ass
 ## Configure ST-MQ
 
 Keep the existing `mqtt` broker connection fields. Set `controller.h66_device`
-to the exact prefix **without `/HP`**, a hostname, an IP address or MQTT wildcards.
+to the exact prefix **without `/HP`**. Use the published device prefix, not a
+hostname, IP address or MQTT wildcard.
 An illustrative partial configuration uses a deliberately invented identifier:
 
 ```json
@@ -51,7 +52,7 @@ not start automatic heating commands. Explicit manual controls remain available.
 
 Save private settings in the configured private configuration file, or save
 add-on options in Home Assistant. Choose **Data & settings → Connections &
-settings → Configuration → Check & review configuration**. H66 device selection and
+configuration → Configuration → Check & review configuration**. H66 device selection and
 broker changes reconnect without an ST-MQ restart when input is already live.
 Changing from `simulated` or `offline` to a live input requires a restart. See
 [configuration application](../DOCS.md) for private imports and restart settings.

@@ -33,7 +33,7 @@ test('floor plan describes one SONOFF and four separately identified circuits wi
 test('unsupported activation and commissioning cannot be enabled through configuration', () => {
   assert.equal(floorOverrideConfiguration().devices.length, 1);
   for (const options of [{ enabled: true }, { commissioned: true }, { enabled: true, commissioned: true }])
-    assert.throws(() => floorOverrideConfiguration(options), /SONOFF.*not available/);
+    assert.throws(() => floorOverrideConfiguration(options), /supported floor-control integration is not available/);
   for (const options of [{ storage: {} }, { living: {} }, { device: { topic_prefix: 'fixture-floor' } }, { unknown: false }])
     assert.throws(() => floorOverrideConfiguration(options), /Unsupported floor override/);
 });

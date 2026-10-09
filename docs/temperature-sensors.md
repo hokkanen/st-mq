@@ -41,9 +41,9 @@ retain their original meanings. Unknown or unavailable intervals still break
 the curves. Each view remembers its own legend choices; price visibility is
 shared. **Garage temperatures & compressor**
 also offers the pump's interpreted indoor temperature as a diagnostic, separately
-from the two protection probes. Its saved **Pump power readback** and **Managed
-pause** rows distinguish the native on/off report from a savings or timed-off
-control pause; a pause is not evidence of measured savings. The chart's top-right
+from the two protection probes. Its saved Normal/Away choice, native pump power
+and compressor activity distinguish requested mode, reported power and observed
+operation. Garage has no economic or timed-off pause. The chart's top-right
 selection button opens a centered explorer with **Views** and **All series** modes.
 Individual signals remain searchable in **All series**; selecting a result closes
 the explorer and updates the button to show the chosen series. The summary above
@@ -70,25 +70,20 @@ restart-recovery path.
 These settings apply to the three indoor MQTT topics. Garage has a two-minute
 expiry for either its single Shelly or MQTT connection; outdoor limits remain separate.
 
-Garage control keeps a separate, nonpersistent copy of
-each qualified front/rear measurement. Only explicit communication loss
-(`device-offline` or `mqtt-disconnected`) may mark it as held for the unused
-portion of its original **120-second** lifetime. The NULL availability transition
-still replaces the live observation and ends recorded coverage. Holding never
-repairs a historical gap, authorizes learning or credits warming. Invalid or
-out-of-range reports, a changed source route and an explicit sensor-change
-boundary revoke the held evidence. Host restart discards it. Reconnection alone,
-retained packets and old cached timestamps cannot make it fresh again.
+Garage's MQTT temperature history and device-local heating have separate evidence
+paths. Losing the application's probe feed ends its recorded coverage; a retained
+value cannot fill that gap or prove protection is ready. The heat-pump controller
+receives the rear temperature directly through native BTHome components and keeps
+its saved room target. Healthy local Bluetooth regulation can continue while the
+application or MQTT is unavailable. There are no application-renewed temperature
+permissions or managed OFF leases.
 
-This hold can preserve only an already acknowledged pump external-temperature
-permission or an accepted active managed OFF pause, with both locations'
-freeze-protection reserve still sufficient.
-The requested deadline is at most 120 seconds after the older supporting report,
-including the interruption. New feed and managed OFF admission or renewal require
-connected, usable evidence. A transport-only probe outage alone does not request
-ON or clear external input; invalid evidence, expired permission and protection
-failures still do. See the
-[external-temperature contract](garage-adapter.md#bluetooth-and-local-regulation).
+After 180 seconds without valid local sensor reports, the heat-pump controller
+clears external sensing and selects native 16°C in HEAT, preserving power.
+Independent frost protection can require HEAT/ON. These local decisions require
+their own fresh evidence; the dashboard's last probe value cannot confirm them.
+See [local regulation](garage-adapter.md#bluetooth-and-local-regulation) and
+[Garage protection](garage.md#independent-freeze-protection).
 
 The installed room sensors have a 70-minute maximum delay for unchanged values.
 ST-MQ's five-minute grace makes the expiry exactly 75 minutes after the last
@@ -102,7 +97,7 @@ or model input. Configure each intended source and its membership separately.
 
 An unchanged report confirms coverage without inserting another temperature
 observation. Every actual value change is saved, along with availability changes;
-the recorder's normal five-minute maximum spacing does not force repeated values.
+there is no maximum recording interval that forces repeated values.
 Compact coverage spans preserve the report evidence. Consequently a long flat
 line means the reports continued with the same value. After the report deadline,
 or an explicit disconnection or invalid update, the room line has a gap. A later
@@ -153,7 +148,7 @@ not recorded instead of guessing.
 | Input | Availability rule | Warning or learning effect |
 | --- | --- | --- |
 | Periodic indoor MQTT | 70-minute reporting interval plus five-minute grace | At 75 minutes, or on an explicit acquisition failure, the measured average is unavailable. A bounded one-room estimate may support control. Learning rejects a whole window containing a report gap. |
-| Garage | Two minutes after the last genuine Shelly or MQTT report; direct Shelly is polled every 30 seconds | At expiry the reading becomes unavailable and the chart has a gap. Fresh sensor evidence is required for [Garage control](garage.md). |
+| Garage probe history | Two minutes after the last genuine Shelly or MQTT report; direct Shelly is polled every 30 seconds | At expiry the reading becomes unavailable and the chart has a gap. The pump's local BTHome regulation has its own evidence path and timeout; see [Garage control](garage.md). |
 | Indoor without a periodic contract | Keep the last genuine valid value until replaced or excluded by a sensor change | Applies only when explicitly disabling the reporting contract, not the three configured room sensors. |
 | H66 equipment (outdoor register excluded from weather selection/history) | Five-minute source validity for equipment diagnostics | A stricter live transport/readback gate can reject sooner, and its actual limit is displayed. It cannot extend the source-validity limit. |
 | FMI / Open-Meteo outdoor | Thirty-minute source validity | Expiry removes the reading from current outdoor selection and leaves unavailable learning coverage. |
@@ -197,7 +192,7 @@ continues using only the historical upstairs measurement.
 
 ## Replacing, moving or adjusting a sensor
 
-Open **Home → Heating configuration → Home learning → Model inputs → Average indoor → Sensor
+Open **Home → Home heat model → Model inputs → Average indoor → Sensor
 changes** for indoor sensors, or **Outdoor temperature → Sensor changes** for
 the outdoor sensor, after completing a replacement, move or calibration. Select
 **Sensor** and **Reason**, then choose **Record change now**. Review the
@@ -246,7 +241,11 @@ and **Model coefficients** shows the resulting corrected reconstruction.
 Reverting a genuine change that introduced a measurement bias could combine
 incompatible observations, so use reversal for an incorrectly recorded change.
 
-The panel shows queued, running, completed or failed relearning. If saving was not
+The panel shows queued, running, completed or failed relearning when live progress
+is available. A saved reconstruction request on a read-only view is labelled as
+recorded; it cannot establish whether a worker is running now. Action receipts
+remain visible for 24 hours, while an unresolved save remains available to retry.
+If saving was not
 confirmed after a connection failure, **Retry saving** reuses the original request
 and cannot duplicate the entry or reversal, including after a page reload. If the
 background work fails, **Retry relearning** restarts it while the previous model
@@ -352,7 +351,7 @@ new evidence. Previously accepted measurements keep only their original remainin
 lifetime while a bounded pending report waits; rejected packets cannot renew them or device availability. A clock
 rejection alone does not manufacture an outage for either Garage probe. Explicit
 invalid temperatures or component errors still revoke the affected measurement,
-including its control-only copy, even when the notification's clock is rejected.
+even when the notification's clock is rejected.
 
 Canonical equipment temperature mappings honor the selected primary JSON path.
 Fahrenheit converts to Celsius first, then `scale` and `offset` apply; recorded,

@@ -63,7 +63,7 @@ export function garageDisplay(garage = {}) {
     effectiveTarget: number(garage.effectiveTargetC), normalTarget: number(garage.normalTargetC), awayTarget: number(garage.awayTargetC),
     confirmation: garage.targetConfirmed === true ? 'Confirmed by the heat-pump controller' : 'Waiting for heat-pump controller confirmation',
     ...protectionDisplay(garage),
-    reason: garage.regulationReason || (garage.controlReason ? words(garage.controlReason) : garage.controlAvailable === true
+    reason: [garage.controlReason, garage.regulationReason].filter(Boolean).join(' ') || (garage.controlAvailable === true
       ? 'The selected mode stays until you change it, including across restarts.' : 'Waiting for the garage heating connection.') };
 }
 

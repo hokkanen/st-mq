@@ -42,7 +42,7 @@ export function revertSensorChange(store, input, payload, now, { config = {}, se
       AND json_type(payload,'$.value.sensorChange')='object'`).get(input, payload.id);
     if (!target) throw new TypeError('Sensor change was not found for this input');
     if (target.algorithm_version !== LEARNING_ALGORITHM)
-      throw Object.assign(new Error('This change belongs to an archived learning version and cannot be reverted by this version.'), { statusCode: 409 });
+      throw Object.assign(new Error('Unsupported Home learning journal algorithm; start with a fresh development database.'), { statusCode: 409 });
     const previous = store.db.prepare(`SELECT id,at,json_extract(payload,'$.value.sensorRevert.id') target
       FROM learning_journal WHERE input=? AND kind='context'
       AND json_extract(payload,'$.value.sensorRevert.requestId')=? LIMIT 1`).get(input, payload.requestId);
@@ -66,9 +66,11 @@ export function revertSensorChange(store, input, payload, now, { config = {}, se
 
 export function sensorChangesView(store, input, { now = Date.now(), config = {}, readOnly = false, observedSignals = [] } = {}) {
   const weights = indoorWeights(config), available = INPUTS.has(input) && !readOnly;
-  const events = sensorChangeEvents(store, input, { at: now }).map(({ requestId: _requestId, ...event }) => ({ ...event,
-    canRevert: available && event.revertedAt === null && event.algorithmVersion === LEARNING_ALGORITHM,
-    ...(event.algorithmVersion !== LEARNING_ALGORITHM ? { unsupportedReason: 'Archived learning version' } : {}) }));
+  const events = sensorChangeEvents(store, input, { at: now }).map(({ requestId: _requestId, ...event }) => {
+    if (event.algorithmVersion !== LEARNING_ALGORITHM)
+      throw new TypeError('Unsupported Home learning journal algorithm; start with a fresh development database.');
+    return { ...event, canRevert: available && event.revertedAt === null };
+  });
   const job = store.getState(jobKey(input));
   const rebuilding = ['pending','running','ready','failed'].includes(job?.status);
   const rebuild = { status: rebuilding ? job.status === 'ready' ? 'running' : job.status : 'idle',

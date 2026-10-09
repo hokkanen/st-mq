@@ -6,6 +6,18 @@ import { currentPriceDisplay } from '../chart/current-price.js';
 const now = Date.parse('2026-09-15T12:00:00Z');
 const home = () => ({ now, input: 'providers', automation: { home: { enabled: true }, garage: { enabled: true } }, decision: { phase: 'normal' },
   observations: { actual: { mode: 'normal', source: 'device-readback', verified: true, observedAt: now - 1000 } } });
+
+test('heating status distinguishes not dispatched from delivery and readback uncertainty without exposing unknown errors', () => {
+  const detail = code => homeHeatingConfirmation({ ...home(), execution: { status: 'failed', code,
+    reason: 'invented private transport data' } }).detail;
+  assert.match(detail('MQTT_STORAGE_PENDING'), /command was not sent.*waiting to be saved/);
+  assert.match(detail('SHELLY_READBACK_TIMEOUT'), /did not confirm.*may already have changed/);
+  assert.match(detail('MQTT_AUTHORITY_LOST'), /no longer owns device control/);
+  for (const code of ['invented-private-code', 'constructor', '__proto__']) {
+    assert.match(detail(code), /detailed cause is unavailable/);
+    assert.doesNotMatch(detail(code), /invented private/);
+  }
+});
 test('Home confirmation requires current verified evidence matching the requested phase', () => {
   assert.equal(homeHeatingConfirmation(home()).state, 'confirmed');
   const mismatch = home(); mismatch.observations.actual.mode = 'reduction';

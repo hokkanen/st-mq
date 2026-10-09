@@ -13,7 +13,8 @@ applicable catalogue. A selected-window flag alone gives no executable start/end
 interval. ST-MQ must not infer unrestricted BMW charging from this feed or treat
 predicted completion as a schedule. See [vehicle schedule limits](../planning.md#schedules-inside-the-vehicle).
 
-Under **Data & settings → MQTT**, **BMW** has the subtitle **Vehicle · BMW CarData**.
+Under **Data & settings → Connections & configuration → MQTT → Vehicles**,
+**BMW** has the subtitle **Vehicle · BMW CarData**.
 The configured identity remains visible before the first message. Broker and
 subscription health, live/retained reception and topics are shown separately from
 the current charger association. Invalid reports need attention; repeat messages

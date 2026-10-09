@@ -330,9 +330,9 @@ export function renderRecoveryReport(document, root, data, { formatTime = at => 
   }
   if (!comparison) {
     const policy = document.createElement('p'); policy.className = 'muted';
-    policy.textContent = data.recoverySkipped ? 'Gap recovery was deliberately skipped. The master history and model were kept. The other computer’s previous database is retained inactive while mirroring uses the master history; it is never reused automatically.'
+    policy.textContent = data.recoverySkipped ? 'Gap recovery was deliberately skipped. The master history and model were kept. The other computer’s unmatched history remains inactive while mirroring uses the master history; it is never reused automatically.'
       : source === 'backup' ? 'Existing history takes precedence. The source backup stays unchanged. Conflicting or unsupported entries are skipped; recorded gaps remain unknown where no usable evidence exists.'
-        : 'Existing master history wins overlaps. After verified mirroring, the other computer’s previous database is retained inactive, including skipped history. It is never reused automatically.';
+        : 'Existing master history wins overlaps. After verified mirroring, the other computer’s unmatched history remains inactive, including skipped history. It is never reused automatically.';
     root.append(policy);
   }
   if (focused) [...(root.querySelectorAll?.('details[data-recovery-section]') ?? [])]

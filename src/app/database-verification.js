@@ -1,6 +1,7 @@
 import { fullVerificationActivity, verifyDatabase } from '../storage/full-verifier.js';
 
-const failure = () => Object.assign(new Error('Database verification is unavailable. Wait for storage to be ready.'), { statusCode: 409 });
+const failure = () => Object.assign(new Error('Database verification is unavailable. Wait for storage to be ready.'),
+  { statusCode: 409, code: 'full_verification_unavailable' });
 
 /** Read-only maintenance has its own lifecycle; it never enters a recovery or
  * replication transaction. A completed run schedules the next optional check. */
@@ -53,7 +54,7 @@ export function createDatabaseVerification({ acquire, getIntervalMs = () => 0, a
       state = { ...state, state: signal.aborted ? 'interrupted' : 'error', finishedAt: clock(), progress: null,
         error: ['database_schema_mismatch', 'database_schema_invalid', 'database_algorithm_mismatch', 'database_state_incompatible',
           'database_integrity_failed', 'database_journal_invalid', 'full_verification_checkpoint_mismatch', 'full_verification_content_mismatch',
-          'full_verification_busy'].includes(error?.code)
+          'full_verification_busy', 'full_verification_transport_mismatch', 'full_verification_unavailable'].includes(error?.code)
           ? error.code : 'full_verification_failed' };
     }).finally(() => { running = null; cancellation = null; nextAt = interval ? clock() + interval : null; schedule(); });
     return status();

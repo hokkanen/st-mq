@@ -219,7 +219,7 @@ export function pairDisplay(view, { now = Date.now(), formatTime = at => new Dat
       : 'Source check complete. Recovery will compare history and import missing entries once. Gaps, conflicts and model changes have not yet been assessed.',
     recovering: 'Recovering gaps and rebuilding the model. Heating control remains available with the current model.',
     complete: 'Recovery is complete. Review the result, then resume mirroring to update the other computer from this master.',
-    resolved: recovery.report?.recoverySkipped === true ? 'Mirroring resumed without recovering gaps. The other computer’s previous database is retained inactive and is never reused automatically. See Paired computers for current mirroring status.'
+    resolved: recovery.report?.recoverySkipped === true ? 'Mirroring resumed without recovering gaps. The other computer’s unmatched history remains inactive and is never reused automatically. See Paired computers for current mirroring status.'
       : 'The previous recovery and verified replacement completed. See Paired computers for current mirroring status.',
     error: pairIssueHelp({ error: recovery.error }) || 'The check or recovery could not finish. Review the current computer roles, then check again before retrying.',
   }[recovery.state] ?? '';
@@ -423,17 +423,21 @@ export function createPairActions({ request, storage, confirm = message => confi
     try {
       const result = await request('/api/pair/action', pending);
       const status = result?.status ?? null;
-      if (status) acceptStatus(status);
+      // A matching receipt can arrive through polling before this response.
+      // Keep that confirmed result and its roles instead of an older reply.
+      if (pending && status) acceptStatus(status);
       if (pending) message = 'Operation accepted. Waiting for its completion; status updates automatically.';
       saved = true;
     } catch (failure) {
-      error = true;
-      if (failure.status >= 400 && failure.status < 500 && ![408, 429].includes(failure.status)) {
+      if (!pending) saved = true;
+      else if (failure.status >= 400 && failure.status < 500 && ![408, 429].includes(failure.status)) {
+        error = true;
         pending = null; persist();
-        message = failure.status === 401 ? 'Reconnect with your password, then try again.'
+        message = failure.code === 'pair_action_rejected' && typeof failure.message === 'string' && failure.message.trim()
+          ? failure.message : failure.status === 401 ? 'Reconnect with your password, then try again.'
           : failure.status === 409 ? 'The role, recovery preview or readiness changed. Refresh the status and check again.'
             : 'The operation was not accepted. Check this computer’s role and readiness before retrying.';
-      } else message = 'Operation not confirmed. After this computer reconnects, recheck the same request to avoid starting it twice.';
+      } else { error = true; message = 'Operation not confirmed. After this computer reconnects, recheck the same request to avoid starting it twice.'; }
     } finally { busy = false; notify(); }
     if (saved) await afterMutation();
     return saved;

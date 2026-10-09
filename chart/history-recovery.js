@@ -106,10 +106,10 @@ export function createHistoryRecoveryActions({ request, storage, onChange = () =
       } else if (failure.status >= 400 && failure.status < 500 && ![408, 429].includes(failure.status)) {
         error = true;
         pending = null; persist();
-        message = failure.status === 409 ? 'The reviewed history changed or another operation is running. Refresh and check again.'
-          : failure.status === 401 || failure.status === 403 ? 'Admin access on the active recording computer is required.'
-            : 'The recovery request was rejected. Check the source and review it again.';
-      } else { error = true; message = 'Request not confirmed. Recheck the same request to find its saved outcome.'; }
+        message = recoveryErrorMessage(failure.code) ?? (failure.status === 401 || failure.status === 403 ? 'Admin access on the active recording computer is required.'
+            : 'The recovery request was rejected. Check the source and review it again.');
+      } else { error = true; message = [recoveryErrorMessage(failure.code),
+        'Request not confirmed. Recheck the same request to find its saved outcome.'].filter(Boolean).join(' '); }
     } finally { busy = false; notify(); }
     if (accepted) await afterMutation();
     return accepted;
@@ -418,7 +418,10 @@ export function createHistoryRecoveryPanel({ document, request, upload, storage,
     try {
       const result = await upload(file); uploaded = result.source; selected = result.sourceId; sourceDirty = true; revision = null;
       $('history-recovery-installation-confirm').checked = false;
-    } catch { uploadError = 'The backup could not be uploaded. Select a compatible database copy and retry.'; }
+    } catch (failure) { uploadError = recoveryErrorMessage(failure.code)
+      ?? (failure.status === 401 || failure.status === 403 ? 'Admin access on the active recording computer is required to upload a backup.'
+        : failure.status === 413 ? 'This connection rejected the upload size. Use a smaller backup or upload through a connection that accepts this size.'
+          : 'The backup upload was not confirmed. Reload results to check whether it arrived before uploading again.'); }
     finally { uploadBusy = false; $('history-recovery-file').value = ''; render(controller.snapshot()); }
   });
   $('history-recovery-check').addEventListener('click', () => {

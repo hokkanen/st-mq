@@ -98,6 +98,15 @@ try {
   await send('Page.addScriptToEvaluateOnNewDocument', { source: `(() => {
     localStorage.setItem('home-energy-chart-views', JSON.stringify({view:'charging_currents',views:{},prices:{}}));
     window.currentCharts = []; window.currentStrokes = [];
+    const WorkerOriginal = window.Worker;
+    window.Worker = class extends WorkerOriginal {
+      constructor(...args) {
+        super(...args);
+        this.addEventListener('message', ({data}) => {
+          if (data.type === 'result' && data.result?.series) window.currentCharts.push(data.result);
+        });
+      }
+    };
     const fetchOriginal = window.fetch.bind(window), stroke = CanvasRenderingContext2D.prototype.stroke;
     window.fetch = async (...args) => {
       const response = await fetchOriginal(...args);

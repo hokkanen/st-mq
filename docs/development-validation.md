@@ -141,6 +141,33 @@ and their required evidence.
 
 ## Automated tests and build
 
+### UI messages and evidence
+
+Check the complete path from the producing condition through the public response
+to the displayed text. A message test must distinguish materially different
+outcomes, such as a rejected request, a lost reply, an accepted operation and
+confirmed device feedback. Use safe authored causes; native exceptions can contain
+private paths or data. An unknown cause must stay unknown.
+
+Recovery API/UI tests exercise malformed and working database uploads, size and
+storage failures, timeout, interruption, permission changes and retained request
+identity. Verification tests distinguish unsupported data, integrity failures,
+interrupted checks, refused starts and failed status reads with a previous result.
+Network tests distinguish malformed JSON, interrupted bodies and deliberate
+cancellation. Pairing and source-correction tests retain observed receipts across
+late replies, later polling failures and the 24-hour receipt lifetime.
+
+Charging identification tests exercise each prerequisite and its public reason
+without relaxing the control gate. Cost tests distinguish complete session costs
+from remaining estimates and disclose inferred energy. Home heating and Caravan
+tests keep unconfirmed delivery separate from matching device readback. Recorded
+views cannot use saved progress to claim a worker or physical control is active.
+
+For changed UI surfaces, run their browser fixtures at narrow and wide widths in
+both themes. Preserve focus, quiet background refresh and compact normal states;
+put detailed causes and provenance in existing disclosures. These fixtures use
+synthetic equipment and do not establish physical delivery or device behavior.
+
 `node test/browser/charging-flexibility-smoke.js` uses synthetic charger cards to
 check unchanged resting height at 280–1280px in both themes, guarded keyboard
 interaction, retained comparison snapshots and adoption of changed display values,
@@ -661,8 +688,8 @@ Caravan interval-average power, original energy availability, hollow observation
 markers and point targeting against nearby price samples. Real Chart.js
 interaction tests also cover vertically aligned readings, overlapping markers
 and synthetic edges. Browser checks cover combined home-compressor states, the
-persistent title folds and complete colour keys, separate garage power-readback
-and managed-pause rows, band-only mouse/touch cursor dragging, clipped cursor
+persistent title folds and complete colour keys, separate Garage power-setting
+and Normal/Away selection rows, band-only mouse/touch cursor dragging, clipped cursor
 segments, independent plot navigation, touch and keyboard cleanup, both themes and
 320/390 px fullscreen layouts. Legend checks cover native keyboard disclosure,
 scrolling with Reset view always accessible, uniform active-state swatches,

@@ -11,6 +11,7 @@ import { createChargingTime } from './charging-time.js';
 import { createChargingFlexibility } from './charging-flexibility.js';
 import { chargingControlLabel, chargingControlReason, chargingIdentificationInProgress, chargingTransactionWaiting, chargingPauseConfirmedForPeriod } from './charging-status.js';
 import { CHARGING_LOSS_FRACTION, CHARGING_EFFICIENCY } from '../src/domain/charging-energy.js';
+import { identificationBlockerDetail } from '../src/charging/identification-readiness.js';
 
 const finite = Number.isFinite;
 const number = (value, unit = '') => finite(value) ? `${Number(value.toFixed(1))}${unit ? ` ${unit}` : ''}` : 'Unknown';
@@ -109,7 +110,8 @@ function identificationPresentation(charger, { now = Date.now(), timezone = 'Eur
     'bmw-home-unknown': ['Waiting for home location', 'A BMW home location report is needed before this connection can be tested.'],
     'bmw-away': ['BMW last reported away', 'The latest valid BMW location is away. Waiting for a valid home report or another vehicle’s matching evidence.'],
     'bmw-not-plugged': ['Waiting for BMW plug evidence', 'BMW has not reported a usable plugged-in state for this connection.'],
-    'charger-unavailable': ['Waiting for charger', 'Waiting for a fresh charger connection before continuing identification.'],
+    'charger-unavailable': ['Waiting for charger', identification.availabilityReason
+      ? identificationBlockerDetail(identification.availabilityReason) : 'Waiting for a fresh charger connection before continuing identification.'],
     'another-identification-active': ['Waiting for other charger', 'Waiting for the other charger’s identification test to finish.'],
     'peer-transition-pending': ['Waiting for a quiet charging interval', 'The other charger is changing state or has an upcoming instruction. Identification will wait before requesting a brief pause; the current charging choice still applies.'],
     'vehicle-charging-evidence-pending': ['Waiting for matching vehicle readings', 'Charging is following the current charging choice. A current comparison or brief pause cannot start until usable vehicle charging evidence arrives.'],
@@ -923,14 +925,18 @@ export function createChargingPanel({ document, request, beforeRequest = () => {
         : identification?.recovery ? 'Waiting for the temporary identification settings to be restored'
           : connected === false ? 'Connect a vehicle' : !connectedSession(charger) ? 'Waiting for charger readings'
           : charger.identification?.active ? 'Identification is already in progress'
-            : charger.identification?.available !== true ? 'Identification is currently unavailable' : 'Check which vehicle is connected. This may briefly pause charging.';
+            : charger.identification?.available !== true ? identificationBlockerDetail(charger.identification?.availabilityReason) : 'Check which vehicle is connected. This may briefly pause charging.';
       device.identificationState.textContent = identification?.state ?? (connected === false ? 'Not connected'
         : !connectedSession(charger) || charger.identification?.available !== true ? 'Unavailable' : 'Ready');
       device.identificationSection.dataset.state = identification?.recovery ? 'attention' : charger.identification?.phase === 'inconclusive' ? 'inconclusive' : 'normal';
       device.identificationStatus.textContent = identification?.detail
         ?? (connected === false ? 'Connect a vehicle to identify it.' : !connectedSession(charger) ? 'Waiting for current charger readings before identification is available.'
-          : charger.identification?.available !== true ? 'Identification is currently unavailable. Live vehicle matching continues.'
+          : charger.identification?.available !== true ? identificationBlockerDetail(charger.identification?.availabilityReason)
             : 'A short charging test checks which vehicle is connected and may briefly pause charging. It works with automatic scheduling off or Charge now on. Other stop instructions keep priority.');
+      if (identification?.detail && !identification.recovery && !charger.identification?.active
+        && connectedSession(charger) && charger.identification?.available !== true
+        && !device.identificationStatus.textContent.includes(identificationBlockerDetail(charger.identification?.availabilityReason)))
+        device.identificationStatus.textContent += ` ${identificationBlockerDetail(charger.identification?.availabilityReason)}`;
     }
   }
   function update(next) {
@@ -1022,7 +1028,8 @@ export function createChargingPanel({ document, request, beforeRequest = () => {
       const cost = chargingCost(charger, view, presentation, { now: next.now, prices: next.prices });
       device.cost.textContent = cost.value;
       device.facts.hidden = false;
-      metricDetail(device.costLabel, { label: 'Est. cost', title: 'Estimated total session cost',
+      metricDetail(device.costLabel, { label: cost.scope === 'remaining' ? 'Est. remaining' : 'Est. cost',
+        title: cost.scope === 'remaining' ? 'Estimated remaining charging cost' : 'Estimated total session cost',
         detail: cost.detail, key: `${charger.id}:cost` });
       const notice = chargingNotice(charger, view, presentation);
       device.notice.dataset.state = notice.state;

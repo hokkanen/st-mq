@@ -33,7 +33,7 @@ Configure the installation's per-phase fuse ratings, calibration margins and
 charger ceiling. The effective phase budget is `mainFuseA - marginA`: a positive
 margin leaves headroom and a negative margin intentionally increases the budget.
 Margins may be finite values from -200 to 200 A, including decimals, provided
-each effective budget remains positive. The default is 1 A per phase. Calibration
+each effective budget remains positive. The shared default is 0 A per phase. Calibration
 does not rewrite the declared physical fuse rating or the equipment's protection.
 Property and Easee currents use the same Easee phase basis. Shelly does
 not need a phase correspondence for this limiter: its contribution is the

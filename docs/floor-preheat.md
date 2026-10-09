@@ -18,7 +18,7 @@ The four circuits are intended to form one pooled preheating treatment; all four
 must have fresh ON confirmation before an override can be considered active.
 Other ground-floor loops retain their existing fixed valve settings.
 
-**Device integration is pending.** The hardware selection and circuit mapping do
+The dashboard reports **Integration unavailable**. The hardware selection and circuit mapping do
 not establish a supported firmware, control interface or local expiry mechanism.
 Floor control remains unavailable until those capabilities are implemented and
 verified. Configuration currently rejects enabling floor control or marking it

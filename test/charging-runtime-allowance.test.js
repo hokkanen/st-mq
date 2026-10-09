@@ -149,13 +149,18 @@ test('uncertain Charger 2 commands keep recording fresh capacity without replay 
   f.advance(5000); await f.settle(); f.runtime.recordLimiterHistory();
   assert.equal(rows().length, count, 'Unchanged capacity extends coverage without another observation');
   const adapter = f.runtime.chargers.charger2.adapter, snapshot = adapter.snapshot;
-  adapter.snapshot = () => ({ ...snapshot(), controlReady: false, error: 'evse-control-unavailable' });
   try {
-    f.household.currentA = 13;
-    f.advance(60_000); await f.settle(); f.runtime.recordLimiterHistory();
-    assert.equal(control().phase, 'unavailable');
-    assert.equal(rows().at(-1).value, 12, 'Healthy load evidence is independent of command readiness');
-    assert.deepEqual(control().pending, pending);
+    for (const observationReady of [true, false]) {
+      adapter.snapshot = () => ({ ...snapshot(), controlReady: false, observationReady, error: 'evse-control-unavailable' });
+      f.household.currentA = 13;
+      f.advance(60_000); await f.settle(); f.runtime.recordLimiterHistory();
+      assert.equal(control().snapshot.controlReady, false);
+      assert.equal(control().phase, observationReady ? 'uncertain' : 'unavailable',
+        'Fresh observations retain the uncertain instruction while command access is blocked');
+      assert.equal(control().reason, observationReady ? 'evse-command-unconfirmed' : 'evse-control-unavailable');
+      assert.equal(rows().at(-1).value, 12, 'Healthy load evidence is independent of command readiness');
+      assert.deepEqual(control().pending, pending);
+    }
   } finally { adapter.snapshot = snapshot; }
   // A real acquisition gap stays unknown; new calculations cannot fill it.
   f.advance(6 * 3600_000); f.runtime.recordLimiterHistory();

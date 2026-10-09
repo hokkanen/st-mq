@@ -14,6 +14,16 @@ const now = Date.parse('2026-09-10T12:00:00Z'), HOUR = 3_600_000;
 const change = (requestId = 'invented-change', signal = 'indoor_temperature', reason = 'replacement') => ({ requestId, signal, reason });
 const sourceCount = store => store.db.prepare("SELECT COUNT(*) n FROM learning_journal WHERE json_type(payload,'$.value.sensorChange')='object'").get().n;
 
+test('unsupported sensor history is rejected before mutation instead of admitting archived development records', t => {
+  const store = new Store(':memory:'); t.after(() => store.close());
+  const added = addSensorChange(store, 'providers', change(), now);
+  const before = sourceCount(store);
+  assert.throws(() => store.db.prepare('UPDATE learning_journal_entries SET algorithm_version=? WHERE id=?')
+    .run('invented-unsupported-algorithm', added.id), { code: 'database_algorithm_mismatch' });
+  assert.equal(sourceCount(store), before);
+  assert.equal(sensorChangesView(store, 'providers', { now }).events[0].algorithmVersion, LEARNING_ALGORITHM);
+});
+
 function fixture(t) {
   const store = new Store(':memory:');
   const config = { input: 'providers', settings: validateSettings({  }),

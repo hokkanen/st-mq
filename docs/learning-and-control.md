@@ -59,8 +59,8 @@ The combined parameter's expandable row explains the shared thermal response.
 The **Installed heat-pump model** row holds the source equations, worked example,
 manufacturer link and limitations, using the same calculation disclosure as other parameters.
 
-Each dashboard includes its learning summary alongside the heating and pause controls.
-Home shows **Automatic / Paused**, followed by a compact status strip for
+Home includes its learning summary alongside the heating and pause controls.
+It shows **Automatic / Paused**, followed by a compact status strip for
 heat-pump compressor activity, price control and hot-water circulation. Pump mode
 and confirmation appear as secondary text; selecting a value explains its source
 and uncertainty. **Schedule & away** and **Manual heating override** follow as folds.
@@ -74,27 +74,26 @@ counts of usable observations and accepted model updates. These counts describe
 current evidence; missing values remain unknown and no completion percentage is
 inferred. The **Home heat model** summary opens learning details. Garage has manual
 temperatures and independent local protection, with no learned heat model.
-Both explain the model's role before the nested sections: the model estimates a
+The Home model explains its role before the nested sections: it estimates a
 response, planning combines that response with prices and comfort or protection
-requirements, and control sends the allowed commands. Links lead back to each
-zone's heating strategy and current decision. The three closed sections are:
+requirements, and control sends the allowed commands. Links lead back to Home's
+heating strategy and current decision. The three closed sections are:
 
 - **Learning outcomes · Estimates & checks**: results and validation evidence
   used to assess forecasts. Calculated savings use a modeled alternative, so even
   a qualified electricity measurement does not make the comparison metered savings.
 - **Model inputs · Recorded & estimated**: source observations and derived inputs
-  used for fitting, validation and forecasts. Home lists input definitions and
-  units, with values in the chart; Garage shows current readings and identifies
-  its historical electricity average separately.
+  used for fitting, validation and forecasts. The rows list input definitions and
+  units, with values in the chart.
 - **Model coefficients · Learned & assumed**: current responses and assumptions
   that turn inputs into predictions. Initial estimates, accepted or retained fits,
   observed averages and fixed assumptions keep their own provenance.
 
-Both use the same expandable rows: the name, value or unit, and provenance stay visible;
+These sections use expandable rows: the name, value or unit, and provenance stay visible;
 explanations and supporting evidence open underneath. Inputs and coefficients are grouped by
 their role. **Validation & evidence** keeps detailed checks alongside the outcomes without
-equating Home's conditional temperature, equipment-response and frozen-forecast checks with
-Home’s cycle validation. Status refreshes preserve open explanations,
+equating conditional temperature, equipment-response and frozen-forecast checks with
+cycle validation. Status refreshes preserve open explanations,
 keyboard focus and the sensor-change forms within Home's temperature inputs.
 Current coefficients include their value, unit, explanation and provenance:
 fitted in the accepted model, retained while awaiting evidence, initial estimate
@@ -422,7 +421,7 @@ intervals, preserve nulls and transitions, and do not rerun today's model on his
 
 ## H66 readbacks and commands
 
-In the dashboard, the **Home** upper summary opens **Heating configuration**.
+In the dashboard, expand **Home** for **Heating control** and equipment details.
 Under **Sensors & Equipment**, the **Ground-source heat pump** overview contains
 **Adjust heat-pump parameters**, followed by the **All heat-pump readings** fold.
 Readings are grouped into heating, ground loop, hot water, equipment states,
@@ -438,12 +437,14 @@ Controller configuration remains separate from these native device settings.
 **Manual heating override** actions share the automatic phase equipment behavior.
 Starting Pause selects Normal; subsequent Normal and Reduced stay until another
 selection, Automatic, or the optional resume time. In Automatic they are
-reassessed on the next update. Preheat always has a fixed original floor-lease
-deadline (with a bounded timer when no floor override is configured), and restores
+reassessed on the next update. Preheat always has a fixed original deadline from
+`controller.floor_preheat.lease_seconds` (900 seconds by default), and restores
 ROOM at that deadline even if floor release needs retries. Preheat requests the
 configured increase
-above the current native ROOM baseline and the pooled floor-valve override, with
-normal tariff operation. It does not stack temperature boosts or start continuous
+above the current native ROOM baseline, with normal tariff operation. The current
+floor adapter is unavailable, so no floor-valve override can be activated. A future
+supported, commissioned adapter must follow the [floor lease contract](floor-preheat.md).
+Preheat does not stack temperature boosts or start continuous
 DHWR. A deliberate native ROOM edit supersedes an active manual preheat boost;
 changing a different native parameter leaves the boost's restoration duty intact.
 Automatic heating cycles must finish restoring before ordinary parameter edits

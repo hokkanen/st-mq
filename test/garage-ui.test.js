@@ -10,6 +10,12 @@ import { buildHeatingSavings } from '../src/app/garage-reporting.js';
 
 const now = Date.parse('2026-09-29T12:00:00Z'), day = 86400_000;
 const range = { from: now - day, to: now };
+
+test('garage device regulation does not hide the reason application controls are unavailable', () => {
+  const view = garageDisplay({ controlAvailable: false, controlReason: 'Garage control is disabled in configuration.',
+    regulationReason: 'Local room regulation is suspended by the heat pump’s native operating mode.' });
+  assert.match(view.reason, /^Garage control is disabled.*Local room regulation is suspended/);
+});
 function fixture() {
   const ids = ['garage-mode-normal', 'garage-mode-away', 'garage-mode-normal-target', 'garage-mode-away-target',
     'garage-target-form', 'garage-normal-target', 'garage-target-submit', 'garage-heating-message', 'garage-warming-warning',

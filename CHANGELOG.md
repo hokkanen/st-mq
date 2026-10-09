@@ -6,6 +6,18 @@ Versions follow Semantic Versioning. `-dev.N` denotes a development prerelease.
 
 ## Unreleased
 
+- Charging identification explains its actual blocking condition. Charging cost
+  labels distinguish the remaining estimate from the whole connection, and cost
+  details disclose energy inferred during recording gaps.
+- Recovery, verification and pairing messages retain known refusal causes and
+  distinguish failed requests from uncertain outcomes. Downloads are labelled
+  as sent, without claiming a retained backup on the receiving device.
+- Home and Caravan receipts distinguish command delivery from device confirmation.
+  Sensor and firewood corrections retain dated receipts across refreshes; recorded
+  reconstruction state no longer claims a live worker is running.
+- Corrected configuration, Garage, Caravan, recording, charging and recovery
+  documentation to match current behavior, defaults and supported capabilities.
+  Unsupported floor preheating is distinguished from ROOM-only preheating.
 - Vehicle feeds can finish startup and reconnect with populated charging plans.
   Buffered MQTT observations commit in order without one oversized transaction;
   final admission updates identity before readiness, and pending or failed replay

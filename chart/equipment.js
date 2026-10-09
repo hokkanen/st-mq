@@ -37,7 +37,7 @@ export function equipmentDevices(status = {}) {
     enabled: false, commissioned: false, available: false, topics: [], readings: {},
     controls: { switch: false, tariff: false },
     connectionState: floor.restorationPending ? { label: 'Release pending', state: 'attention' }
-      : { label: floor.integrationSupported === false ? 'Setup pending' : 'Status unavailable', state: 'pending' },
+      : { label: floor.integrationSupported === false ? 'Integration unavailable' : 'Status unavailable', state: 'pending' },
     recent: floor.restorationPending ? 'Previous override release is unconfirmed' : '1 device · 4 floor circuits',
     connectionDetail: FLOOR_PREHEAT_CIRCUITS.map(circuit =>
       `${circuit.id}: ${circuit.label} · ${circuit.lengthM} m`).join('; ') + '. Lengths describe pipe inside the floor.',
@@ -394,7 +394,7 @@ function vehicleConnection({ reception = {}, enabled = true, label, source, deta
 
 /** Device purpose stays separate from changing connection-check results. */
 export function equipmentConnectionIntroduction(device) {
-  if (device.kind === 'floor_override') return 'One SONOFF 4CH PRO R3 is planned for the four ground-floor heating circuits. Preheating remains unavailable until communication and automatic release are verified.';
+  if (device.kind === 'floor_override') return 'One controller is planned for the four ground-floor heating circuits. A supported integration must be implemented and verified before configuration can enable preheating, including contact readback and automatic release.';
   if (device.connectionDetail) return device.connectionDetail;
   if (device.controls?.tariff || device.controlsHeat || device.role === 'heat_savings')
     return 'Heating requests and relay readback use MQTT. Reported relay state confirms whether the requested mode was applied.';

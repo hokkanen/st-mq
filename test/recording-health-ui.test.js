@@ -17,6 +17,8 @@ test('backup age is factual, not an invented schedule or present verification', 
   assert.deepEqual(view.attention, []);
   assert.doesNotMatch(JSON.stringify(view), /overdue|safe backup|verified copy/);
   const download = recordingHealthView(health({ backup: { state: 'available', latestKind: 'download', latestAt: now } }), undefined, now);
+  assert.equal(download.backup.label, 'Download sent');
+  assert.doesNotMatch(download.backup.evidence, /completed|saved/i);
   assert.match(download.backup.verification, /retention.*unknown/);
   const failed = recordingHealthView(health({ backup: { state: 'failed', latestAt: now - 86400_000, lastFailureAt: now } }), undefined, now);
   assert.equal(failed.backup.label, 'Last backup failed');

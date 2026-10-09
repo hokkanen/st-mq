@@ -1,7 +1,7 @@
 import { FLOOR_PREHEAT_DEVICE, FLOOR_PREHEAT_CIRCUITS } from '../domain/floor-circuits.js';
 
 const KEY = 'floor-override:v1';
-const UNSUPPORTED = 'The SONOFF floor-control integration is not available. Keep floor preheating disabled and uncommissioned.';
+const UNSUPPORTED = 'A supported floor-control integration is not available. Keep floor preheating disabled and uncommissioned.';
 const plain = value => value !== null && typeof value === 'object' && !Array.isArray(value);
 
 export function floorOverrideConfiguration(options = {}) {

@@ -36,6 +36,7 @@ import { forecastPriceOutlook } from '../acquisition/electricity-forecast.js';
 import { createSourceTimePending } from '../acquisition/source-time-pending.js';
 import { classifySourceTime } from '../domain/time-evidence.js';
 import { socMeasurementTime } from './soc.js';
+import { identificationControlBlocker, identificationBlockerDetail } from './identification-readiness.js';
 
 const MINUTE = 60_000;
 const noRecordedEnergy = () => null;
@@ -503,17 +504,12 @@ export class ChargingRuntime {
     }
   }
   identificationAvailable(item, now = this.clock()) {
-    const control = item.controller?.status(), snapshot = control?.snapshot;
-    return Boolean(item.controller?.supportsIdentification && !item.backendTransition && !this.closed
-      && this.canControl() && ['mqtt', 'providers'].includes(this.config.input)
-      && snapshot?.online === true && Number.isSafeInteger(snapshot.readAt)
-      && snapshot.readAt <= now && now - snapshot.readAt <= MINUTE
-      && control.session?.connected === true && snapshot.pluggedIn === true
-      && (snapshot.transport !== 'shelly-evse' || snapshot.identificationReady === true && !snapshot.nativeScheduleActive)
-      && !control.manual && (control.devicePermissionHeld === true || !snapshot.manualStop && !snapshot.stopped) && snapshot.enabled !== false
-      && !snapshot.faulted && !snapshot.authorizationBlocked
-      && !['Faulted', 'Unavailable', 'Reserved'].includes(snapshot.connectorStatus)
-      && !control.vehicleDisconnect?.awaitingConnection);
+    return this.identificationControlReason(item, now) === null;
+  }
+  identificationControlReason(item, now = this.clock()) {
+    return identificationControlBlocker({ supported: item.controller?.supportsIdentification,
+      transitioning: Boolean(item.backendTransition), closed: this.closed, canControl: this.canControl(),
+      input: this.config.input, control: item.controller?.status(), now });
   }
   teslaIdentificationFeedReady(item, now) {
     const tesla = this.teslaCapture?.snapshot();
@@ -1756,8 +1752,7 @@ export class ChargingRuntime {
       const identificationAvailabilityReason = !request ? 'assignment-unresolved'
         : identificationPauseOutstanding ? 'awaiting-stop-confirmation'
           : currentTestOutstanding ? 'current-test-restoration-pending'
-            : !this.identificationAvailable(item, now) ? 'charger-unavailable'
-              : this.identificationFeedReason(item, now);
+            : this.identificationControlReason(item, now) ?? this.identificationFeedReason(item, now);
       const currentTest = currentTestOutstanding || control.currentTest?.id === identification?.id
         && control.currentTest?.sessionId === control.session?.sessionId
         && control.currentTest?.connectedAt === control.session?.connectedAt ? control.currentTest ?? null : null;
@@ -2829,18 +2824,7 @@ export class ChargingRuntime {
     const { item, view } = this.checkedSession(id, input);
     if (view.identification.active) throw new Error('Identification is already in progress for this connection.');
     if (!view.identification.available) {
-      const reason = {
-        'assignment-unresolved': 'the charging connection is not established',
-        'awaiting-stop-confirmation': 'the previous identification pause is awaiting confirmation',
-        'current-test-restoration-pending': 'the previous current test is awaiting restoration',
-        'charger-unavailable': 'the charger is not ready for identification',
-        'vehicle-feed-stale': 'a current vehicle feed is not available',
-        'evidence-capacity': 'vehicle observation history is incomplete',
-        'bmw-away': 'the vehicle reports that it is away',
-        'bmw-home-unknown': 'the vehicle location is not available',
-        'bmw-not-plugged': 'the vehicle does not have current plugged-in evidence',
-      }[view.identification.availabilityReason];
-      throw new Error(`Identification is unavailable because ${reason}.`);
+      throw new Error(identificationBlockerDetail(view.identification.availabilityReason));
     }
     const previous = Object.fromEntries(Object.entries(this.chargers).map(([key, charger]) => [key, structuredClone({
       identification: charger.identification, vehicleMatch: charger.vehicleMatch, vehicleEvidence: charger.vehicleEvidence,

@@ -10,6 +10,8 @@ import { Store } from '../src/storage/store.js';
 import { createDatabaseBackup } from '../src/storage/backup.js';
 import { createHistoryRecovery } from '../src/app/history-recovery.js';
 import { createAppServer } from '../src/app/server.js';
+import { apiResponseError } from '../chart/network.js';
+import { createHistoryRecoveryActions } from '../chart/history-recovery.js';
 
 const deferred = () => { let resolve; const promise = new Promise(done => { resolve = done; }); return { promise, resolve }; };
 const request = (action, extra = {}) => ({ action, requestId: randomUUID(), ...extra });
@@ -142,10 +144,16 @@ test('standalone upload, explicit source review, recovery publication and retry 
 test('upload rejects arbitrary paths, non-SQLite data, WAL files, size excess and family access', async t => {
   const f = await fixture(t, { coordinator: { maxUploadBytes: 1024 }, server: { token: 'synthetic-admin', familyToken: 'synthetic-family' } });
   const admin = { headers: { authorization: 'Bearer synthetic-admin', 'content-type': 'application/vnd.sqlite3' } };
-  assert.equal((await f.upload(Buffer.alloc(200), admin)).status, 400);
+  const invalid = await f.upload(Buffer.alloc(200), admin);
+  assert.equal(invalid.status, 400);
+  assert.equal((await invalid.json()).code, 'recovery_upload_not_database');
   const header = Buffer.alloc(200); header.write('SQLite format 3\0'); header[18] = 2; header[19] = 2;
-  assert.equal((await f.upload(header, admin)).status, 400);
-  assert.equal((await f.upload(Buffer.alloc(1025), admin)).status, 413);
+  const working = await f.upload(header, admin);
+  assert.equal(working.status, 400);
+  assert.equal((await working.json()).code, 'recovery_upload_not_snapshot');
+  const oversized = await f.upload(Buffer.alloc(1025), admin);
+  assert.equal(oversized.status, 413);
+  assert.equal((await oversized.json()).code, 'recovery_upload_too_large');
   assert.equal((await f.upload(header, { headers: { authorization: 'Bearer synthetic-family' } })).status, 403);
   assert.equal((await f.post(request('check', { sourceId: '/invented/private.sqlite', installationConfirmed: true }),
     { headers: { authorization: 'Bearer synthetic-admin', 'content-type': 'application/json' } })).status, 409);
@@ -182,12 +190,50 @@ test('recovery API does not expose private paths or rejected JSON content in une
   await writeFile(join(f.root, 'history-recovery'), 'synthetic storage obstruction');
   const upload = await f.upload(backup);
   assert.equal(upload.status, 503);
-  assert.deepEqual(await upload.json(), { error: 'Recovery storage is unavailable. Retry shortly.' });
+  assert.deepEqual(await upload.json(), { code: 'recovery_storage_not_ready', error: 'Recovery working storage is unavailable. Check this computer’s storage and access permissions before retrying.' });
   const malformed = await fetch(`${f.base}/api/history-recovery/action`, { method: 'POST',
     headers: { 'content-type': 'application/json' }, body: '{"private":"/invented/private-source.sqlite", invalid}' });
   assert.equal(malformed.status, 400);
-  assert.deepEqual(await malformed.json(), { error: 'The recovery request must contain valid supported input.' });
+  assert.deepEqual(await malformed.json(), { code: 'recovery_request_invalid', error: 'The recovery request must contain valid supported input.' });
 });
+
+test('actual recovery rejections retain their distinct cause through the browser action controller', async t => {
+  const f = await fixture(t);
+  const actions = createHistoryRecoveryActions({ request: async (_path, body) => {
+    const response = await f.post(body), result = await response.json();
+    if (!response.ok) throw apiResponseError(response, result, { mutation: true });
+    return result;
+  } });
+  actions.update({ available: true });
+  await actions.run('check', { sourceId: 'missing-backup' });
+  assert.match(actions.snapshot().message, /Confirm.*this household/);
+  assert.equal(actions.snapshot().pending, null);
+  await actions.run('check', { sourceId: 'missing-backup', installationConfirmed: true });
+  assert.match(actions.snapshot().message, /Choose an available.*backup/);
+  assert.doesNotMatch(actions.snapshot().message, /another operation|reviewed history changed/);
+  assert.equal(f.calls.length, 0, 'Rejected requests never start a source check');
+});
+
+for (const scenario of ['timeout', 'cancelled', 'permission']) {
+  test(`upload ${scenario} reports its actual boundary and does not register the partial backup`, async t => {
+    const f = await fixture(t, { coordinator: { uploadTimeoutMs: scenario === 'timeout' ? 30 : 60_000 } });
+    const entered = deferred(), resume = deferred();
+    let allowed = true;
+    const header = Buffer.alloc(200); header.write('SQLite format 3\0'); header[18] = 1; header[19] = 1;
+    const stream = { headers: { 'content-type': 'application/vnd.sqlite3' }, destroy() {},
+      async *[Symbol.asyncIterator]() { entered.resolve(); await resume.promise; yield header; } };
+    const upload = f.coordinator.upload(stream, () => allowed);
+    const rejected = assert.rejects(upload, { code: { timeout: 'recovery_upload_timed_out', cancelled: 'recovery_upload_interrupted',
+      permission: 'recovery_upload_authority_changed' }[scenario] });
+    await entered.promise;
+    if (scenario === 'timeout') await new Promise(resolve => setTimeout(resolve, 40));
+    else if (scenario === 'cancelled') f.coordinator.cancel();
+    else allowed = false;
+    resume.resolve(); await rejected;
+    assert.deepEqual(await readdir(join(f.root, 'history-recovery', 'uploads')), []);
+    assert.equal((await f.coordinator.view()).sources.some(source => source.kind === 'upload'), false);
+  });
+}
 
 test('reversal requires a matching reviewed action and publishes through the same coordinator', async t => {
   const f = await fixture(t), operationId = randomUUID();

@@ -15,7 +15,7 @@ const accessKey = 'fixture-recovery-access-key';
 const prefix = '/fixture/ingress/';
 const requests = [], errors = [], layouts = [], pending = new Map();
 const pause = ms => new Promise(resolve => setTimeout(resolve, ms));
-let environment = 'home-assistant', failApply = false, sequence = 0, browser, socket, receipt = null, missingSlug = false;
+let environment = 'home-assistant', failApply = false, loseApplyReply = false, sequence = 0, browser, socket, receipt = null, missingSlug = false;
 const server = createServer(async (request, response) => {
   response.setHeader('Cache-Control', 'no-store');
   response.setHeader('Content-Security-Policy', `default-src 'none'; script-src 'nonce-${nonce}'; style-src 'nonce-${nonce}'; connect-src 'self'; base-uri 'none'; form-action 'self'`);
@@ -55,7 +55,8 @@ const server = createServer(async (request, response) => {
     else {
       receipt = { saved: true, at: Date.now(), message: 'The reviewed configuration is ready. Restart to continue.',
         backupPath: environment === 'home-assistant' ? '/data/configuration-backups/fixture-private-backup.json' : null };
-      reply(200, receipt);
+      if (loseApplyReply) response.destroy();
+      else reply(200, receipt);
     }
   } else reply(404, { error: 'Not found.' });
 });
@@ -207,6 +208,16 @@ try {
   assert.match(await evaluate("document.getElementById('receipt').textContent"), /Configuration saved/,
     'Refresh restores the saved action receipt');
   assert.equal(await evaluate("document.getElementById('problem').hidden"), true, 'Successful recovery no longer shows a startup error');
+  await evaluate("document.querySelector('input[value=replace]').click();true");
+  await preview(); loseApplyReply = true;
+  await click('apply');
+  await until("!document.getElementById('check').disabled && /save was not confirmed/.test(document.getElementById('receipt').textContent)");
+  assert.match(await evaluate("document.getElementById('receipt').textContent"), /Reopen this page.*before saving again/);
+  const afterLostReply = applies();
+  loseApplyReply = false;
+  await send('Page.navigate', { url });
+  await until("document.getElementById('complete') && !document.getElementById('complete').hidden");
+  assert.equal(applies(), afterLostReply, 'Reading the saved receipt never repeats the write');
   receipt.at -= 24 * 60 * 60 * 1000 + 1000;
   await send('Page.navigate', { url });
   await until("document.getElementById('configuration') && !document.getElementById('configuration').hidden");

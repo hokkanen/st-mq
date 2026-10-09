@@ -365,14 +365,18 @@ cross-meter increment. Valid earlier daily totals remain visible across current
 segments with partial coverage. Incompatible development checkpoints are rejected,
 and no historical consumption is reconstructed from an unknown association.
 
-The chart includes the home/garage protection probes through **All home
+The chart includes the Home room and Garage protection probes through **Property
 temperatures**, door states and Caravan interval energy. The separate **Caravan**
 group adds its air temperature, humidity and one dehumidifier state series:
 Off, Low, Medium or High. Off requires fresh native power off; a fan level
 requires fresh power on and a matching fan report. Separate settings and native
-sensor values stay live-only. Unknown, stale or unsupported state remains a gap,
-as does missing humidity agreement with the Caravan Shelly BLU. These caravan
-measurements are excluded from Home learning. Actual tariff relay feedback is recorded on changes, separately from requested
+sensor values stay live-only. With the Caravan sensor association configured,
+recording requires a passed native On/Off power check, fresh appliance and Caravan
+meter evidence, and completed power restoration. Missing humidity or disagreement
+between humidity sensors does not block recording. Unknown, stale or unsupported
+state remains a gap. These Caravan measurements are excluded from Home learning.
+See the [power-check and recording contract](caravan-dehumidifier.md#automatic-power-and-caravan-location-check).
+Actual tariff relay feedback is recorded on changes, separately from requested
 heating control. All four floor override outputs likewise retain exact changes
 when supported contact feedback is available. The planned single ground-floor
 device is awaiting integration; its four connections remain unknown. See
@@ -380,8 +384,8 @@ device is awaiting integration; its four connections remain unknown. See
 [garage adapter](garage-adapter.md) records interpreted indoor temperature and
 compressor frequency adaptively, compressor/defrost states on exact changes and
 external-feed abnormalities as events. It records qualified dedicated electrical
-intervals and retains used learning inputs
-in its current journal. Incompatible development databases require a deliberate
+intervals without creating Garage learning inputs or a Garage model. Home retains
+its separate reconstructible learning journal. Incompatible development databases require a deliberate
 fresh start; startup never deletes or repairs their data.
 
 ## Current configuration

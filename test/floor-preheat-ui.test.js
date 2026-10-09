@@ -16,15 +16,15 @@ test('missing or unsupported status cannot establish readiness or inherit commis
   }
 });
 
-test('the planned SONOFF needs a verified integration and makes no live timer claims', () => {
+test('unsupported floor integration cannot be resolved by configuration or imply a live timer', () => {
   const view = floorPreheatView(planned());
-  assert.equal(view.label, 'Setup pending');
+  assert.equal(view.label, 'Integration unavailable');
   assert.equal(view.commissioning, 'Not recorded');
-  assert.match(view.detail, /SONOFF.*not been set up/);
-  assert.match(view.detail, /unavailable.*verified/);
+  assert.match(view.detail, /no supported device integration.*Configuration cannot enable it/);
+  assert.match(view.detail, /implemented and verified/);
   assert.match(view.renewal, /will need a verified release deadline/);
   assert.doesNotMatch(view.renewal, /local script|native switch timer|every 5 minutes/);
-  assert.equal(floorPreheatView(planned({ enabled: true, commissioned: true, active: true })).label, 'Setup pending');
+  assert.equal(floorPreheatView(planned({ enabled: true, commissioned: true, active: true })).label, 'Integration unavailable');
 });
 
 test('pending physical release remains visible while the new device is unavailable', () => {
@@ -42,7 +42,7 @@ test('renderer clears stale status and tolerates absent sections', () => {
     'floor-preheat-commissioning-status', 'floor-preheat-renewal'].map(id => [id, { textContent: '', dataset: {} }]));
   const document = { getElementById: id => elements.get(id) ?? null };
   renderFloorPreheat(document, planned());
-  assert.equal(elements.get('floor-preheat-state').textContent, 'Setup pending');
+  assert.equal(elements.get('floor-preheat-state').textContent, 'Integration unavailable');
   const view = renderFloorPreheat(document, {});
   assert.equal(elements.get('floor-preheat-state').textContent, view.label);
   assert.equal(elements.get('floor-preheat-state').dataset.state, 'pending');

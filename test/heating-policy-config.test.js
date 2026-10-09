@@ -101,7 +101,7 @@ test('floor plan rejects unsupported activation, retired mappings and invalid re
   for (const key of ['storage', 'living', 'device', 'unknown'])
     assert.throws(() => floorOverrideConfiguration({ [key]: {} }), /Unsupported floor override/);
   for (const key of ['enabled', 'commissioned'])
-    assert.throws(() => floorOverrideConfiguration({ [key]: true }), /SONOFF.*not available/);
+    assert.throws(() => floorOverrideConfiguration({ [key]: true }), /supported floor-control integration is not available/);
   for (const values of [{ renew_seconds: 29 }, { renew_seconds: 451 }, { renew_seconds: '300' }, { renew_seconds: null },
     { lease_seconds: 901 }, { lease_seconds: null }, { renew_seconds: 300, lease_seconds: 599 }])
     assert.throws(() => floorOverrideConfiguration(values));
@@ -197,5 +197,5 @@ test('configuration loads the one-device floor plan without invented transport a
   for (const key of ['storage', 'living', 'device'])
     assert.throws(() => read({ [key]: { topic_prefix: 'fixture-retired-prefix' } }), /Unknown configuration field/);
   for (const key of ['enabled', 'commissioned'])
-    assert.throws(() => read({ [key]: true }), /SONOFF.*not available/);
+    assert.throws(() => read({ [key]: true }), /supported floor-control integration is not available/);
 });

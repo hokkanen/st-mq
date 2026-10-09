@@ -225,7 +225,7 @@ inputs. Configure the desired st-mq topics and membership separately using
 | Detector parameter 20, default 15 minutes | Change-conditional temperature reporting |
 | Driver wake-up selector, default 70 minutes | Request fresh temperature on actual wake-up after the interval is accepted |
 | st-mq expected report interval, default 70 minutes plus 300 seconds grace | Deadline for genuine incoming MQTT evidence; does not program the detector |
-| Recorder's usual five-minute maximum spacing | Other adaptive signals' policy; periodic indoor temperatures do not force equal-value rows |
+| Recording | Actual indoor value/availability changes are saved; genuine unchanged reports extend compact coverage without a forced periodic row |
 | Learning windows, 15 minutes | Existing journal/learning cadence, independent of wake-up interval |
 
 For a verified 70-minute physical/MQTT stream, set

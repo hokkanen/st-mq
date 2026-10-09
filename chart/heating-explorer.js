@@ -20,14 +20,14 @@ const reasonLabels = {
   'unvalidated-heating-energy-model': 'Heating electricity estimates are not yet sufficiently validated.',
   'flat-prices-preserve-normal-warmth': 'The price difference does not justify changing normal heating.',
   'heating-paused': 'Automatic control is paused. Heating can continue. Exploring keeps that choice unchanged.',
-  'heating-planning-in-progress': 'The next heating plan is being calculated. Normal heating continues.',
-  'heating-planning-unavailable': 'The next heating plan is unavailable. Normal heating continues while the controller retries.',
+  'heating-planning-in-progress': 'The next heating plan is being calculated. Normal heating is requested; device feedback confirms the actual state.',
+  'heating-planning-unavailable': 'The next heating plan is unavailable. Normal heating is the fallback request; device feedback confirms the actual state.',
   'estimated-indoor-thermal-state-unavailable': 'The indoor estimate lacks continuous heating evidence for the heat-reserve forecast',
   'trial-needs-measured-indoor-temperature': 'A learning trial requires measured indoor temperatures',
   'indoor-comfort-limit': 'The indoor average is outside its temperature allowance.',
   'missing-or-stale-observations': 'Fresh temperature observations are needed.',
   'currently-selected-cycle': 'This is the cycle currently selected by the controller.',
-  'normal-operation': 'Normal heating continues. No change is scheduled.',
+  'normal-operation': 'Normal heating is selected. No change is scheduled.',
 };
 const reasonsText = reasons => (reasons ?? []).map(reason => reasonLabels[reason] ?? humanize(reason)).join(' · ');
 const validTrial = trial => ['pending', 'running'].includes(trial?.status);

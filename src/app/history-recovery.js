@@ -6,7 +6,7 @@ import { markRecoveryFailed } from '../recovery/state.js';
 import { createRecoveryHistoryReader } from './history-recovery-reader.js';
 import { validBackupMetadata } from '../storage/backup-metadata.js';
 import { RECOVERABLE_TABLES } from '../storage/schema.js';
-import { RECOVERY_ERROR_CODES, recoveryFailure } from '../recovery/errors.js';
+import { RECOVERY_ERROR_CODES, recoveryErrorMessage, recoveryFailure } from '../recovery/errors.js';
 import { validRecoveryCoverageReport, validRecoverySourceSummary } from '../recovery/coverage-report.js';
 import { listSavedBackups } from '../storage/backup-catalog.js';
 import { verifyDatabase } from '../storage/full-verifier.js';
@@ -15,7 +15,7 @@ import { validRecoveryRevisionImpact } from '../recovery/impact-report.js';
 
 const UUID = /^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/;
 const ACTIONS = new Set(['check', 'recover', 'review-revert', 'revert', 'review-restore', 'restore']);
-const fail = (message, statusCode = 409) => Object.assign(new Error(message), { statusCode, publicMessage: message });
+const fail = (code, statusCode = 409) => Object.assign(new Error(recoveryErrorMessage(code)), { code, statusCode });
 const publicSource = ({ id, kind, label, createdAt, bytes, available = true }) => ({ id, kind, label, createdAt, bytes, available });
 const sourceId = path => createHash('sha256').update(path).digest('hex');
 const fields = (value, allowed) => value !== null && typeof value === 'object' && !Array.isArray(value)
@@ -110,7 +110,7 @@ export function createHistoryRecovery({ store, getEngine, canControl = () => tru
   const key = 'history-recovery:coordinator';
   let state = store.getState(key) ?? { version: 1, sources: [], receipts: [], job: null, review: null };
   if (!validState(state))
-    throw fail('Saved recovery state is invalid. Preserve this database and use a fresh current database.');
+    throw fail('recovery_state_invalid');
   let running = null, abort = null, operationSignal = null, closed = false, uploadRunning = false, uploadRequest = null, uploadSettled = null, uploadAbort = null, initialized = false;
   const lifetime = new AbortController();
   let known = new Map(), sourceTask = null, sourceGeneration = 0;
@@ -125,8 +125,8 @@ export function createHistoryRecovery({ store, getEngine, canControl = () => tru
   const pairedBusy = () => Boolean(pairContext?.status()?.busy || pairContext?.status()?.uiOperation?.state === 'running');
   const busy = () => localBusy() || pairedBusy();
   const available = () => !closed && canControl() && ready() && store.path !== ':memory:' && !store.readOnly;
-  const assertReady = () => { if (!available()) throw fail('History recovery requires the active writable instance.'); };
-  const assertIdle = (peer = false) => { assertReady(); if (localBusy() || !peer && pairedBusy()) throw fail('A history recovery operation is already running.'); };
+  const assertReady = () => { if (!available()) throw fail('recovery_active_required'); };
+  const assertIdle = (peer = false) => { assertReady(); if (localBusy() || !peer && pairedBusy()) throw fail('recovery_busy'); };
   const input = () => getEngine().config.input;
   async function initialize() {
     if (initialized) return;
@@ -152,7 +152,7 @@ export function createHistoryRecovery({ store, getEngine, canControl = () => tru
     if (getExportDirectory) {
       let copies;
       try { copies = await listSavedBackups(getExportDirectory()); }
-      catch { throw fail('Saved backups could not be listed.'); }
+      catch { throw fail('recovery_backups_unavailable'); }
       for (const { path, createdAt, bytes } of copies) {
         const id = sourceId(path);
         found.set(id, { id, path, kind: 'backup', label: `Saved backup · ${new Date(createdAt).toISOString()}`,
@@ -168,7 +168,7 @@ export function createHistoryRecovery({ store, getEngine, canControl = () => tru
       await sourceTask.catch(() => {});
       if (sourceTask) return sourceTask;
     }
-    if (closed) throw fail('Recovery storage is unavailable.');
+    if (closed) throw fail('recovery_stopped');
     const generation = sourceGeneration;
     const task = scanSources().then(found => {
       if (generation === sourceGeneration && !closed) {
@@ -225,7 +225,7 @@ export function createHistoryRecovery({ store, getEngine, canControl = () => tru
       if (validProgress(value) && isCurrent()) job.progress = value;
     };
     running = committed.then(() => {
-      if (!isCurrent()) throw fail('Recovery authority changed.');
+      if (!isCurrent()) throw fail('recovery_authority_changed');
       return operation({ engine, signal, isCurrent, onProgress,
         onPublish(result) {
           engine.checkpoint = result.checkpoint; engine.pendingPlan = null;
@@ -254,7 +254,7 @@ export function createHistoryRecovery({ store, getEngine, canControl = () => tru
     // Stop the competing source-correction worker. Full runtime cleanup also
     // closes unrelated helpers and must remain owned by shutdown/reload.
     await engine.fireplaceRebuild?.close(); engine.fireplaceRebuild = null;
-    if (signal.aborted || !canControl() || getEngine() !== engine) throw fail('Recovery authority changed.');
+    if (signal.aborted || !canControl() || getEngine() !== engine) throw fail('recovery_authority_changed');
   }
   async function fullCheck(enabled, paths, context) {
     if (!enabled) return;
@@ -267,7 +267,7 @@ export function createHistoryRecovery({ store, getEngine, canControl = () => tru
       const module = await recoveryModule();
       const preview = await module.recoveryPreview({ masterPath: store.path, donorPath, donorJournalPath, input: input(),
         signal, onProgress });
-      if (!isCurrent()) throw fail('Recovery authority changed.');
+      if (!isCurrent()) throw fail('recovery_authority_changed');
       state.review = { kind: 'recover', source, preview }; await persist();
       return preview;
     });
@@ -284,52 +284,52 @@ export function createHistoryRecovery({ store, getEngine, canControl = () => tru
   function validateAction(value) {
     if (!value || typeof value !== 'object' || Array.isArray(value) || !ACTIONS.has(value.action)
       || !UUID.test(value.requestId ?? '') || Object.keys(value).some(field => !['action', 'requestId', 'sourceId',
-        'operationId', 'previewId', 'confirmed', 'installationConfirmed', 'verifyWithFullSnapshot'].includes(field))) throw fail('Choose a recovery action with a unique request ID.', 400);
-    if (value.verifyWithFullSnapshot !== undefined && typeof value.verifyWithFullSnapshot !== 'boolean') throw fail('Choose whether to verify with a full snapshot.', 400);
+        'operationId', 'previewId', 'confirmed', 'installationConfirmed', 'verifyWithFullSnapshot'].includes(field))) throw fail('recovery_action_invalid', 400);
+    if (value.verifyWithFullSnapshot !== undefined && typeof value.verifyWithFullSnapshot !== 'boolean') throw fail('recovery_verification_invalid', 400);
     const expected = ['action', 'requestId', 'verifyWithFullSnapshot', ...({ check: ['sourceId', 'installationConfirmed'], recover: ['previewId', 'confirmed', 'sourceId'],
       'review-revert': ['operationId'], 'review-restore': ['operationId'], revert: ['previewId', 'confirmed'], restore: ['previewId', 'confirmed'] }[value.action])];
-    if (Object.keys(value).some(field => !expected.includes(field))) throw fail('Unsupported recovery action fields.', 400);
+    if (Object.keys(value).some(field => !expected.includes(field))) throw fail('recovery_fields_invalid', 400);
   }
   async function action(value) {
     validateAction(value); assertReady();
     const signature = JSON.stringify(Object.fromEntries(Object.entries(value).sort(([a], [b]) => a.localeCompare(b))));
     const prior = state.receipts.find(receipt => receipt.id === value.requestId);
     if (prior) {
-      if (prior.signature !== signature) throw fail('This request ID belongs to a different recovery action.');
+      if (prior.signature !== signature) throw fail('recovery_request_conflict');
       return view();
     }
     assertIdle();
     if (value.sourceId === 'peer') {
-      if (!pairContext || !['check', 'recover'].includes(value.action)) throw fail('Paired recovery is unavailable.');
+      if (!pairContext || !['check', 'recover'].includes(value.action)) throw fail('recovery_peer_unavailable');
       pairContext.requestAction({ action: value.action === 'check' ? 'check-recovery' : 'recover', requestId: value.requestId,
         ...(value.verifyWithFullSnapshot === true ? { verifyWithFullSnapshot: true } : {}),
         ...(value.action === 'recover' ? { confirmed: value.confirmed, previewId: value.previewId } : {}) });
     } else if (value.action === 'check') {
-      if (value.installationConfirmed !== true) throw fail('Confirm that this backup contains history from this household before checking it.');
+      if (value.installationConfirmed !== true) throw fail('recovery_installation_unconfirmed');
       await refreshSources(true); assertIdle();
       const source = known.get(value.sourceId);
-      if (!source) throw fail('Choose an available saved or uploaded backup.');
+      if (!source) throw fail('recovery_source_missing');
       checkPath({ donorPath: source.path, source: publicSource(source), requestId: value.requestId, verifyWithFullSnapshot: value.verifyWithFullSnapshot });
     } else if (value.action === 'recover') {
       const review = state.review;
       if (value.confirmed !== true || review?.kind !== 'recover' || review.preview.previewId !== value.previewId)
-        throw fail('Review this backup and confirm recovery first.');
-      if (review.source?.kind === 'peer') throw fail('Use the paired source to retain its protection checks.');
+        throw fail('recovery_review_required');
+      if (review.source?.kind === 'peer') throw fail('recovery_peer_required');
       await refreshSources(true); assertIdle();
       const source = known.get(review.source?.id);
-      if (!source) throw fail('The checked backup is unavailable. Select an available source and check again.');
-      if (state.review !== review) throw fail('The checked recovery changed. Review it again.');
+      if (!source) throw fail('recovery_checked_source_missing');
+      if (state.review !== review) throw fail('recovery_review_changed');
       applyPath({ ...review, donorPath: source.path, requestId: value.requestId, verifyWithFullSnapshot: value.verifyWithFullSnapshot });
     } else if (value.action.startsWith('review-')) {
       if (typeof value.operationId !== 'string' || !value.operationId || value.operationId.length > 128)
-        throw fail('Select an existing recovery operation.', 400);
+        throw fail('recovery_operation_required', 400);
       const active = value.action === 'review-restore';
       state.review = null;
       begin(value.action, value.requestId, null, async ({ signal, onProgress, isCurrent }) => {
         await fullCheck(value.verifyWithFullSnapshot, [store.path], { signal, onProgress });
         const module = await recoveryModule();
         const preview = await module.previewRecoveryRevision({ store, input: input(), recoveryId: value.operationId, active, signal, onProgress });
-        if (!isCurrent()) throw fail('Recovery authority changed.');
+        if (!isCurrent()) throw fail('recovery_authority_changed');
         state.review = { kind: active ? 'restore' : 'revert', preview }; await persist();
         return preview;
       });
@@ -337,7 +337,7 @@ export function createHistoryRecovery({ store, getEngine, canControl = () => tru
     } else {
       const review = state.review;
       if (value.confirmed !== true || review?.kind !== value.action || review.preview.previewId !== value.previewId)
-        throw fail('Review the recovery impact and confirm this change first.');
+        throw fail('recovery_revision_review_required');
       state.review = null;
       begin(value.action, value.requestId, null, async context => {
         await fullCheck(value.verifyWithFullSnapshot, [store.path], context);
@@ -354,13 +354,17 @@ export function createHistoryRecovery({ store, getEngine, canControl = () => tru
   async function upload(request, authorized = () => true) {
     assertIdle();
     if (!['application/vnd.sqlite3', 'application/octet-stream'].includes(request.headers['content-type']?.split(';')[0]))
-      throw fail('Upload a self-contained SQLite backup file.', 400);
+      throw fail('recovery_upload_type', 400);
     const length = Number(request.headers['content-length']);
-    if (Number.isFinite(length) && length > maxUploadBytes) throw fail('This backup exceeds the 8 GiB upload limit.', 413);
+    if (Number.isFinite(length) && length > maxUploadBytes) throw fail('recovery_upload_too_large', 413);
     uploadRunning = true;
     uploadRequest = request;
     uploadAbort = new AbortController();
     const signal = AbortSignal.any([uploadAbort.signal, lifetime.signal, AbortSignal.timeout(uploadTimeoutMs)]);
+    const assertUploadActive = () => {
+      if (signal.aborted) throw fail(signal.reason?.name === 'TimeoutError' ? 'recovery_upload_timed_out' : 'recovery_upload_interrupted');
+      if (!authorized() || !available()) throw fail('recovery_upload_authority_changed');
+    };
     let finishUpload;
     uploadSettled = new Promise(resolve => { finishUpload = resolve; });
     const id = randomUUID(), path = join(directory, 'uploads', `${id}.partial`);
@@ -369,7 +373,7 @@ export function createHistoryRecovery({ store, getEngine, canControl = () => tru
     try {
       await mkdir(join(directory, 'uploads'), { recursive: true, mode: 0o700 });
       for (const folder of [directory, join(directory, 'uploads')]) {
-        if (!(await lstat(folder)).isDirectory()) throw fail('Recovery storage is unavailable.');
+        if (!(await lstat(folder)).isDirectory()) throw fail('recovery_storage_not_ready');
       }
       await chmod(directory, 0o700); await chmod(join(directory, 'uploads'), 0o700);
       // Only application-generated staging copies are disposable. Keep all
@@ -387,24 +391,24 @@ export function createHistoryRecovery({ store, getEngine, canControl = () => tru
       file = await open(path, constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | constants.O_NOFOLLOW, 0o600);
       let bytes = 0, header = Buffer.alloc(0);
       for await (const chunk of request) {
-        if (signal.aborted || !authorized() || !available()) throw fail('Upload authorization changed.');
+        assertUploadActive();
         bytes += chunk.length;
-        if (bytes > maxUploadBytes) throw fail('This backup exceeds the 8 GiB upload limit.', 413);
+        if (bytes > maxUploadBytes) throw fail('recovery_upload_too_large', 413);
         if (header.length < 100) header = Buffer.concat([header, chunk.subarray(0, 100 - header.length)]);
         for (let offset = 0; offset < chunk.length;) {
           const { bytesWritten } = await file.write(chunk, offset, chunk.length - offset);
-          if (!bytesWritten) throw fail('The backup upload could not be stored.');
+          if (!bytesWritten) throw fail('recovery_upload_storage_failed');
           offset += bytesWritten;
         }
       }
-      if (!authorized() || !available()) throw fail('Upload authorization changed.');
-      if (header.subarray(0, 16).toString('binary') !== 'SQLite format 3\0') throw fail('This file is not a SQLite database.', 400);
+      assertUploadActive();
+      if (header.subarray(0, 16).toString('binary') !== 'SQLite format 3\0') throw fail('recovery_upload_not_database', 400);
       if (header.length < 100 || header[18] !== 1 || header[19] !== 1)
-        throw fail('Use a self-contained SQLite backup created by Export database or a reset archive.', 400);
+        throw fail('recovery_upload_not_snapshot', 400);
       await file.sync(); await file.close(); file = null;
-      if (!authorized() || !available()) throw fail('Upload authorization changed.');
+      assertUploadActive();
       await rename(path, finalPath); published = true;
-      if (!authorized() || !available()) throw fail('Upload authorization changed.');
+      assertUploadActive();
       const source = { id, kind: 'upload', label: 'Uploaded database', createdAt: clock(), bytes };
       // At most sixteen upload copies remain. Already imported source evidence
       // and reversal provenance live in SQLite and do not depend on these files.

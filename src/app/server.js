@@ -12,6 +12,7 @@ import { createRecordingHealth } from './recording-health.js';
 import { familyRouteAllowed, familyActionAllowed, fireplaceAccess, FAMILY_FIREWOOD_REMOVAL_MS } from './web-permissions.js';
 import { ChargingSessionDiagnostics } from '../charging/session-diagnostics.js';
 import { electricityForecastView } from './electricity-forecast-view.js';
+import { recoveryFailure } from '../recovery/errors.js';
 
 function authorized(req, token) {
   if (!token) return false;
@@ -610,16 +611,28 @@ export function createAppServer({ engine, getEngine = () => engine, store, chart
       if (!res.destroyed) {
         if (/^\/api\/database-verification(?:\?|$)/.test(req.url))
           return json(error.statusCode ?? (error instanceof SyntaxError ? 400 : 503),
-            { error: 'Database verification is unavailable or the request is invalid. Refresh its status before retrying.' });
+            error.code === 'full_verification_unavailable'
+              ? { code: error.code, error: 'Verification cannot start until a current database is available.' }
+              : { error: 'Database verification is unavailable or the request is invalid. Refresh its status before retrying.' });
         if (req.method === 'GET' && /^\/api\/database-export(?:\?|$)/.test(req.url)
           && databaseExportErrorMessage(error.code))
           return json(error.statusCode ?? 503, { error: databaseExportErrorMessage(error.code) });
         if (/^\/api\/history-recovery(?:\/(?:action|upload))?(?:\?|$)/.test(req.url)) {
           // Filesystem and SQLite failures can contain private paths or source
           // content. Only coordinator-authored explanations cross this boundary.
-          const code = error.statusCode ?? (error instanceof SyntaxError ? 400 : 503);
-          return json(code, { error: error.publicMessage ?? (code >= 500
-            ? 'Recovery storage is unavailable. Retry shortly.' : 'The recovery request must contain valid supported input.') });
+          const status = error.statusCode ?? (error instanceof SyntaxError ? 400 : 503);
+          return json(status, recoveryFailure({ code: error.code, errcode: error.errcode },
+            status >= 500 ? 'recovery_request_unconfirmed' : 'recovery_request_invalid'));
+        }
+        if (/^\/api\/pair\/action(?:\?|$)/.test(req.url)) {
+          const status = error.statusCode ?? (error instanceof SyntaxError ? 400 : 503);
+          // Only coordinator-authored refusals receive this marker. Native
+          // errors and lost outcomes must not acquire a definitive explanation.
+          const refused = Number.isInteger(status) && status >= 400 && status < 500 && ![408, 429].includes(status);
+          return json(status, refused && typeof error.publicMessage === 'string' && error.publicMessage.length > 0
+            ? { code: 'pair_action_rejected', error: error.publicMessage }
+            : { error: refused ? 'The paired request was rejected. Review the action requirements and current status.'
+              : 'The paired request could not be confirmed. Recheck its saved outcome before trying again.' });
         }
         const fireplaceWrite = req.method === 'POST' && /^\/api\/(?:fireplace(?:\/remove)?|sensor-changes(?:\/(?:revert|retry-rebuild))?)(?:\?|$)/.test(req.url);
         const code = error.statusCode ?? (fireplaceWrite && !(error instanceof TypeError || error instanceof SyntaxError) ? 503 : 400);

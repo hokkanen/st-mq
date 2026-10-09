@@ -274,8 +274,9 @@ without restarting. With live input this includes provider connections,
 location, sensor topics, polling intervals, H66 selection and its verification
 file. Existing environment overrides continue to take precedence.
 
-Input mode, web listeners, data/database locations and process environment need
-a restart. A review containing a restart-only change cannot be partly applied.
+Input mode, topology and role, pair and mirror settings, web listeners,
+data/database locations and process environment need a restart. A review
+containing a restart-only change cannot be partly applied.
 Finish equipment tests first. Owned temporary settings must be restored before
 reconnecting; unresolved restoration blocks the change until equipment is
 available. An active heating cycle ends, while Away/Pause intent and learning
@@ -325,8 +326,10 @@ For ingress, use Home Assistant to log out.
 database checks. The shared default is `0` (disabled); a positive interval up to
 8760 hours schedules a check after startup and after the previous check finishes.
 **Recording details → Verify database** starts the same check manually. It pins a
-read-only SQLite transaction, checks integrity, the complete commit hash chain and
-canonical content in a separate worker. Recording continues. Results identify
+read-only SQLite transaction and checks database integrity, the retained transaction
+chain and all current application contents in a separate worker. Compacted
+transactions are no longer available to recheck; their removal does not exclude
+older retained records from the content check. Recording continues. Results identify
 the checked transaction; later changes are outside that result. A full check reads
 all history and may temporarily retain WAL pages while it runs, so its I/O and
 duration grow with database size. It is independent of routine replication and
@@ -460,7 +463,7 @@ the scheduling switch does not clear it. Configure `maximumCurrentA` (normally
 The effective phase budget is `mainFuseA - marginA`. Positive margins leave
 headroom; negative margins intentionally increase the budget for user
 calibration. `marginA` accepts -200 to 200 A per phase, including decimals, and
-each effective phase budget must remain positive. The default remains 1 A.
+each effective phase budget must remain positive. The shared default is 0 A per phase.
 Usable load feeds permit 0 or 6–16 A. `fallbackCurrentA`, initially 12 A, applies
 when those feeds are unusable and remains subject to known tighter limits. It is
 neither a minimum current nor a permanent ceiling on forecast delivery. With
@@ -475,7 +478,7 @@ and Charger 1's Equalizer must yield.
 | `phaseMap` | Recorded phase-energy association; the limiter's conservative common-current calculation needs no Shelly-to-Easee phase map |
 
 The [current-allocation contract](charging/current-allocation.md) owns the exact
-headroom calculation, held-feed admission, observation pairing, allocation-led priority and fallback
+headroom calculation, held-feed admission, independent measurement clocks, shared priority and fallback
 rules. Equalizer supplies property consumption; its reported allowance and native
 budget are not prerequisites for Shelly load balancing. Shelly's allocation does
 not chase Charger 1's draw or take over while Equalizer could remove an excess.
@@ -560,8 +563,11 @@ The retired numeric fields `controller.savings_aggressiveness` and
 `garage.aggressiveness`, and the ineffective `garage.frontRequired` flag, are
 rejected. There are no aliases or automatic conversions. Both Garage protection
 locations have always been required by the current protection algorithm.
-Unsupported saved development settings require a deliberate fresh database;
-loading or applying configuration never rewrites the owner's source.
+Remove retired configuration fields from the installation's settings, then check
+and review the corrected source. A configuration error alone does not require a
+database reset. Independently incompatible saved database state needs an intact
+current-format backup or a deliberate fresh database. Loading or applying
+configuration never translates retired settings or resets a database.
 
 ## Topology and role
 

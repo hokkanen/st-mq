@@ -244,11 +244,11 @@ test('one planned SONOFF device identifies all four floor circuits without bypas
   assert.deepEqual(device.topics, []);
   assert.deepEqual(device.readings, {});
   assert.deepEqual(equipmentConnectionSummary(device), {
-    label: 'Setup pending', state: 'pending', recent: '1 device · 4 floor circuits',
+    label: 'Integration unavailable', state: 'pending', recent: '1 device · 4 floor circuits',
   });
   assert.equal(device.connectionDetail, '1: Living · 106 m; 2: Living · 62 m; 3: Storage · 38 m; 4: Storage · 80 m. Lengths describe pipe inside the floor.');
   assert.doesNotMatch(JSON.stringify(device), /Shelly|Output 0|local.script/);
-  assert.match(equipmentConnectionIntroduction(device), /unavailable until communication and automatic release are verified/);
+  assert.match(equipmentConnectionIntroduction(device), /supported integration must be implemented and verified before configuration can enable/);
   const unavailable = equipmentConnections({}).find(device => device.kind === 'floor_override');
   assert.equal(equipmentConnectionSummary(unavailable).label, 'Status unavailable');
 });
@@ -259,7 +259,7 @@ test('planned floor device never inherits old device readiness and preserves pen
     .filter(device => device.kind === 'floor_override');
   const active = view({ active: true });
   assert.equal(active.length, 1);
-  assert.equal(equipmentConnectionSummary(active[0]).label, 'Setup pending');
+  assert.equal(equipmentConnectionSummary(active[0]).label, 'Integration unavailable');
   assert.equal(active[0].available, false);
   assert.equal(active[0].enabled, false);
   assert.deepEqual(active[0].readings, {});
@@ -333,7 +333,7 @@ test('MQTT device introductions describe purpose independently of connection che
     assert.doesNotMatch(introduction, /timeout|Last check|No live/);
     assert.equal(equipmentConnectionIntroduction({ ...device, available: true, check: { status: 'available' } }), introduction);
   }
-  assert.match(equipmentConnectionIntroduction({ kind: 'floor_override' }), /One SONOFF 4CH PRO R3.*four ground-floor heating circuits/);
+  assert.match(equipmentConnectionIntroduction({ kind: 'floor_override' }), /One controller.*four ground-floor heating circuits/);
 });
 
 test('Garage MQTT order puts local frost protection directly below heat pump before temperatures and other equipment', () => {

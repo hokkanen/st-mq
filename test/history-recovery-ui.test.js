@@ -11,6 +11,43 @@ const view = changes => ({ available: true, readOnly: false, busy: false, source
   preview, job: { kind: 'check', status: 'complete', source }, ...changes });
 const admin = { topology: 'standalone', role: 'master', webAccess: { role: 'admin' } };
 
+test('upload failures explain the known cause without leaking arbitrary exception text', async () => {
+  for (const [code, status, expected] of [
+    ['recovery_upload_too_large', 413, /8 GiB/],
+    ['recovery_upload_not_snapshot', 400, /self-contained.*Export database/],
+    ['recovery_upload_not_database', 400, /not a SQLite database/],
+    ['recovery_storage_full', 503, /storage space/],
+    ['recovery_upload_authority_changed', 409, /permission changed.*active recording computer/],
+    ['recovery_upload_timed_out', 409, /exceeded its time limit/],
+    ['recovery_upload_interrupted', 409, /interrupted before registration/],
+    [undefined, 403, /Admin access/],
+    [undefined, 502, /not confirmed.*Reload results/],
+  ]) {
+    const { document, $ } = fixture();
+    const panel = createHistoryRecoveryPanel({ document, request: async () => view(),
+      upload: async () => { throw Object.assign(new Error('/private/native-error'), { code, status }); } });
+    panel.update(admin); await panel.open();
+    $('history-recovery-file').files = [{}];
+    await $('history-recovery-file').listeners.get('change')();
+    assert.match($('history-recovery-status').textContent, expected);
+    assert.doesNotMatch($('history-recovery-status').textContent, /private|Select a compatible/);
+    assert.equal($('history-recovery-file').disabled, false);
+    assert.equal($('history-recovery-file').value, '');
+  }
+});
+
+test('storage failure after an action preserves its request identity and cause until a durable receipt arrives', async () => {
+  const actions = createHistoryRecoveryActions({ makeRequestId: () => id,
+    request: async () => { throw Object.assign(new Error('/private/disk'), { status: 503, code: 'recovery_storage_full' }); } });
+  actions.update(view());
+  await actions.run('check', { sourceId: source.id, installationConfirmed: true });
+  assert.equal(actions.snapshot().pending.requestId, id);
+  assert.match(actions.snapshot().message, /storage space.*Recheck the same request/);
+  actions.update(view({ job: { id, requestId: id, kind: 'check', status: 'complete' } }));
+  assert.equal(actions.snapshot().pending, null);
+  assert.equal(actions.snapshot().message, '');
+});
+
 test('full verification is an explicit recovery option and persists on transport retry', async () => {
   const saved = storage(), bodies = [];
   const first = createHistoryRecoveryActions({ storage: saved, makeRequestId: () => id, confirm: () => true,

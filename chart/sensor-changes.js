@@ -1,4 +1,5 @@
 import { confirmAction } from './confirmation.js';
+import { actionReceiptRecent } from './action-receipts.js';
 const pendingKey = 'stmq-sensor-change-pending';
 const labels = Object.freeze({ indoor_temperature: 'Upstairs', downstairs_temperature: 'Downstairs',
   bedroom_temperature: 'Bedroom', garage_temperature: 'Garage', outdoor_temperature: 'Outdoor' });
@@ -47,11 +48,16 @@ function confirmation(view, body) {
 }
 
 /** Keep an uncertain submission intact across refreshes and retries. */
-export function createSensorChangeActions({ request, storage, makeRequestId = requestId,
+export function createSensorChangeActions({ request, storage, makeRequestId = requestId, clock = Date.now,
   confirm = message => confirmAction({ document: globalThis.document, title: 'Record a sensor change', message, action: 'Confirm change' }), onChange = () => {}, beforeMutation = () => {}, afterMutation = () => {} }) {
   let view, busy = false, sending = false, loading = false, generation = 0, pending = restorePending(storage);
   let message = pending ? 'A previous save was not confirmed. Retry the same change without adding a duplicate.' : '', error = !!pending;
-  const snapshot = () => ({ view, busy, loading, pending, message, error });
+  let receiptAt = null, refreshError = '', rebuildNeedsRefresh = false;
+  const snapshot = () => {
+    const visible = busy || pending || actionReceiptRecent(receiptAt, clock());
+    return { view, busy, loading, pending, message: [visible ? message : '', refreshError].filter(Boolean).join(' '),
+      error: Boolean(refreshError || visible && error) };
+  };
   const notify = () => onChange(snapshot());
   const persist = () => { try { if (pending) storage?.setItem(pendingKey, JSON.stringify(pending)); else storage?.removeItem(pendingKey); } catch {} };
   function update(next) {
@@ -65,11 +71,12 @@ export function createSensorChangeActions({ request, storage, makeRequestId = re
     try {
       const next = await request('/api/sensor-changes');
       if (sequence !== generation) return false;
-      if (!pending) { message = ''; error = false; }
+      refreshError = '';
       update(next);
+      rebuildNeedsRefresh = false;
       return true;
     } catch {
-      if (sequence === generation && !pending) { message = 'Sensor changes could not be loaded. Refresh to try again.'; error = true; }
+      if (sequence === generation && !pending) refreshError = 'Sensor changes could not be loaded. Refresh to try again.';
       return false;
     } finally { if (sequence === generation) { loading = false; notify(); } }
   }
@@ -83,7 +90,7 @@ export function createSensorChangeActions({ request, storage, makeRequestId = re
       if (!accepted || !allowed(view, body)) { busy = false; notify(); return false; }
       pending = body;
     }
-    ++generation; loading = false; sending = true; error = false;
+    ++generation; loading = false; sending = true; error = false; refreshError = ''; receiptAt = clock();
     message = reverting(pending) ? 'Reverting sensor change…' : 'Recording sensor change…'; persist(); beforeMutation(); notify();
     let saved = false;
     try {
@@ -107,14 +114,19 @@ export function createSensorChangeActions({ request, storage, makeRequestId = re
     return saved;
   }
   async function retryRebuild() {
+    if (rebuildNeedsRefresh && !await refresh()) return false;
     if (busy || pending || !available(view) || view.rebuild?.status !== 'failed' || view.canRetryRebuild === false) return false;
-    ++generation; loading = false; busy = true; sending = true; error = false; message = 'Restarting relearning…'; beforeMutation(); notify();
+    ++generation; loading = false; busy = true; sending = true; error = false; refreshError = ''; receiptAt = clock(); message = 'Restarting relearning…'; beforeMutation(); notify();
     let saved = false;
     try {
       view = await request('/api/sensor-changes/retry-rebuild', {});
       message = 'Relearning requested. Status is shown below.'; saved = true;
-    } catch {
-      error = true; message = 'Relearning could not be restarted. Refresh to check its status, then try again.';
+    } catch (failure) {
+      error = true;
+      const rejected = failure.status >= 400 && failure.status < 500 && ![408, 429].includes(failure.status);
+      rebuildNeedsRefresh = !rejected;
+      message = rejected ? 'Relearning request was rejected. Refresh to check its status and access before retrying.'
+        : 'Relearning request not confirmed. Refresh its status before retrying; it may already be running.';
     } finally { busy = false; sending = false; notify(); }
     if (saved) await afterMutation();
     return saved;
@@ -125,7 +137,12 @@ export function createSensorChangeActions({ request, storage, makeRequestId = re
       ? send({ signal, reason, requestId: makeRequestId() }) : Promise.resolve(false) };
 }
 
-function rebuildMessage(rebuild) {
+function rebuildMessage(rebuild, readOnly) {
+  if (readOnly) {
+    const state = ({ pending: 'queued', running: 'running', failed: 'failed' })[rebuild?.status]
+      ?? (rebuild?.current === true ? 'complete' : null);
+    return state ? `Recorded relearning status: ${state}. Live progress and model use cannot be confirmed in this view.` : '';
+  }
   if (rebuild?.status === 'pending') return 'Relearning is queued. Heating control remains available.';
   if (rebuild?.status === 'running') return `Relearning from recorded history${Number.isFinite(rebuild.processed) ? ` · ${rebuild.processed} records processed` : ''}. Heating control remains available.`;
   if (rebuild?.status === 'failed') return 'Relearning did not finish. The previous model remains in use. Retry relearning to apply the corrected history.';
@@ -168,7 +185,7 @@ export function createSensorChangePanel({ document, request, storage, confirm, b
       node('refresh').disabled = state.busy || state.loading;
       node('availability').textContent = state.view?.readOnly ? 'Manage changes on the active master computer.'
         : state.view && !available(state.view) ? 'Sensor changes are unavailable in this installation.' : '';
-      node('rebuild').textContent = rebuildMessage(state.view?.rebuild);
+      node('rebuild').textContent = rebuildMessage(state.view?.rebuild, state.view?.readOnly === true);
       node('rebuild').classList.toggle('form-error', state.view?.rebuild?.status === 'failed');
       node('retry-rebuild').hidden = state.view?.rebuild?.status !== 'failed';
       node('retry-rebuild').disabled = disabled || state.view?.canRetryRebuild === false;
@@ -178,7 +195,7 @@ export function createSensorChangePanel({ document, request, storage, confirm, b
       node('empty').hidden = events.length > 0;
       node('more').hidden = events.length <= scope.shown;
       const visible = events.slice(0, scope.shown);
-      const entriesKey = JSON.stringify(visible.map(event => [event.id, event.at, event.signal, event.reason, event.revertedAt, event.canRevert, event.affectsLearning, event.unsupportedReason]));
+      const entriesKey = JSON.stringify(visible.map(event => [event.id, event.at, event.signal, event.reason, event.revertedAt, event.canRevert, event.affectsLearning]));
       if (entriesKey !== scope.entriesKey) {
         const focusedId = scope.buttons.find(({ button }) => button === document.activeElement)?.id;
         scope.buttons = [];
@@ -191,18 +208,12 @@ export function createSensorChangePanel({ document, request, storage, confirm, b
           status.textContent = reverted ? `Reverted ${dateFormat.format(event.revertedAt)}` : 'Active';
           row.append(description, at, status);
           if (!reverted) {
-            if (event.canRevert || !event.unsupportedReason) {
               const button = document.createElement('button'); button.setAttribute('data-write-control', ''); button.type = 'button'; button.className = 'secondary-button';
               button.setAttribute('data-admin-only', '');
               button.textContent = event.affectsLearning === false ? 'Revert change' : 'Revert and relearn';
               button.setAttribute('aria-label', `${button.textContent}: ${labels[event.signal]}, ${dateFormat.format(event.at)}`);
               button.addEventListener('click', () => { void actions.revert(event.id); });
               row.append(button); scope.buttons.push({ button, id: event.id, canRevert: event.canRevert === true });
-            } else {
-              const unavailable = document.createElement('span'); unavailable.className = 'muted sensor-change-entry-status';
-              unavailable.textContent = 'Revert unavailable for this archived learning version.';
-              row.append(unavailable);
-            }
           }
           return { row, status, id: event.id };
         });

@@ -10,7 +10,9 @@ measurement of combustion efficiency or delivered heat.
 
 The panel lists unremoved loads from the past 48 hours in Finnish local time, newest
 first. **Remove** corrects a mistaken entry. Its explanation says whether learning
-must be updated and that the original record remains saved. A corrected amount is
+must be updated and that the original record remains saved. Family access can
+remove a load for 15 minutes after it was recorded; older removals require admin
+access. A corrected amount is
 entered as a new load. There is no backdating interface. An unconfirmed save can be
 retried with the same request identifier, including after reloading the page,
 without creating another load. Separate deliberate saves have different identifiers.
@@ -19,6 +21,9 @@ When rebuilding is necessary, the panel reports that it is updating the model wh
 heating control continues. The worker builds the replacement in the background and
 the engine swaps it when it has caught up. See the
 [reconstruction contract](reconstruction-and-versioning.md) for exact semantics.
+On a read-only view, a saved reconstruction request is labelled as recorded;
+current worker progress remains unknown. Action receipts stay visible for 24
+hours, while an unresolved save remains available to retry.
 
 ## How the model uses a load
 
@@ -59,7 +64,7 @@ or certify the original model's control forecasts.
 
 ## Visibility and estimated savings
 
-**Home → Heating configuration → Home learning** explains manual kilograms, calculated delayed release
+**Home → Home heat model** explains manual kilograms, calculated delayed release
 and the effective fireplace response in degrees C/kg, including its evidence status. The
 **View** menu groups **Firewood additions**, **Modeled fireplace release**, daily
 **Firewood electricity cost avoided** and **Firewood electricity avoided** under

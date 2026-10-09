@@ -136,7 +136,9 @@ export async function startPaired({ config, readConfig, clock = Date.now, provid
           finishedAt: receipt.completedAt, result: receipt };
         return context.status();
       }
-      if (closed || closing || context.recovering() || [...operations.values()].some(value => value.state === 'running'))
+      if (closed) throw requestError('This paired instance has stopped. Reconnect to a running computer before continuing.');
+      if (closing) throw requestError('This paired instance is shutting down. Wait for it to reconnect before continuing.');
+      if (context.recovering() || [...operations.values()].some(value => value.state === 'running'))
         throw requestError('A paired operation is already running.');
       if (input.action === 'reset') assertReset(input);
       const operation = { id: input.requestId, action: input.action, ...(input.mode ? { mode: input.mode } : {}), state: 'running', startedAt: clock() };

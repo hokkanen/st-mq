@@ -1,4 +1,5 @@
 import { H66_MAX_AGE_MS } from '../src/domain/reading-freshness.js';
+import { heatingErrorCode, heatingErrorMessage } from '../src/domain/heating-errors.js';
 import { h66ReadingStatus } from './learning-status.js';
 import { isReadOnlyReplica } from './replica-status.js';
 import { setStatusDetail } from './status-details.js';
@@ -39,7 +40,10 @@ export function homeHeatingConfirmation(status = {}) {
   const execution = status.execution ?? {}, h66 = status.h66 ?? {};
   if (execution.restorationPending || h66.restorationPending) reasons.push('Heating settings restoration is pending.');
   if (['pending', 'waiting'].includes(execution.status)) reasons.push('The heating request is still pending.');
-  if (failed(execution.status)) reasons.push('The heating request failed or its delivery is unresolved.');
+  if (failed(execution.status)) reasons.push(heatingErrorCode(execution.code) ? heatingErrorMessage(execution.code)
+    : execution.status === 'rejected' ? 'The heating request was rejected. Review the current equipment status.'
+      : execution.status === 'uncertain' ? 'Heating command delivery is unresolved. Check device feedback before retrying.'
+        : 'The heating request failed; its detailed cause is unavailable. Check device feedback and restoration status.');
   if (h66.enabled === true && h66.connected !== true) reasons.push('H66 device readings are unavailable.');
   const alarm = h66.readings?.['1A20'];
   if (alarm && h66ReadingStatus(h66, alarm, { now }).usable && alarm.value !== 0) reasons.push('The heat pump reports an active alarm.');

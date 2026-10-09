@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { applicationUrl, usesHomeAssistantLogin, authenticationMessage, createPollingRequest,
-  fetchJsonResponse, withReadDeadline, createEventStream, createCommunicationWatch } from '../chart/network.js';
+  fetchJsonResponse, apiResponseError, withReadDeadline, createEventStream, createCommunicationWatch } from '../chart/network.js';
 import { getEventListeners } from 'node:events';
 import { chartQuery } from '../chart/history-model.js';
 
@@ -50,9 +50,42 @@ test('non-JSON proxy failures preserve their HTTP status while successful malfor
   });
   assert.equal(failed.response.status, 502);
   assert.deepEqual(failed.result, {});
+  const readError = apiResponseError(failed.response, failed.result);
+  assert.match(readError.message, /requested information.*HTTP 502/);
+  assert.doesNotMatch(readError.message, /<html>|will retry|network.*down/i);
+  assert.match(apiResponseError(failed.response, failed.result, { mutation: true }).message, /could not confirm.*Check the current result/);
   await assert.rejects(fetchJsonResponse('/api/status', {}, {
-    fetchImpl: async () => new Response('malformed successful response'),
-  }), SyntaxError);
+    fetchImpl: async () => new Response('malformed successful response containing private fixture data'),
+  }), error => {
+    assert(error instanceof SyntaxError);
+    assert.match(error.message, /unreadable response/);
+    assert.doesNotMatch(error.message, /private fixture/);
+    return true;
+  });
+});
+
+test('authored error codes reach feature-specific recovery without exposing arbitrary metadata', () => {
+  const error = apiResponseError({ status: 409 }, { error: 'Review this backup first.', code: 'recovery_review_required',
+    path: '/private/fixture.sqlite', cause: 'private transport body' });
+  assert.equal(error.code, 'recovery_review_required');
+  assert.equal(error.status, 409);
+  assert.equal(error.message, 'Review this backup first.');
+  assert.doesNotMatch(JSON.stringify(error), /private/);
+  assert.equal(apiResponseError({ status: 503 }, { code: '/private/raw-error' }).code, undefined);
+});
+
+test('response parsing distinguishes malformed content, interrupted bodies and deliberate cancellation', async () => {
+  for (const method of ['GET', 'POST']) {
+    const read = error => fetchJsonResponse('/fixture', { method }, { fetchImpl: async () => ({ ok: true,
+      json: async () => { throw error; } }) });
+    await assert.rejects(read(new TypeError('private synthetic body failure')), error => {
+      assert.match(error.message, /response ended.*check the current result/);
+      assert.doesNotMatch(error.message, /private|unreadable|JSON/);
+      return true;
+    });
+    const cancellation = new DOMException('Read cancelled', 'AbortError');
+    await assert.rejects(read(cancellation), error => error === cancellation);
+  }
 });
 
 test('slow status reads survive repeated timer polls without accumulating requests', async () => {
@@ -101,7 +134,12 @@ test('GET deadlines cover an unsettled fetch or body and release polling for rec
       return {json:()=>blocked?new Promise(()=>{}):Promise.resolve({ok:true})};
     };
     const poll=createPollingRequest(({signal})=>fetchJsonResponse('/fixture',{signal},{fetchImpl,timeoutMs:20}),{timeoutMs:30});
-    const first=poll(), rejected=assert.rejects(first,{name:'TimeoutError'});
+    const first=poll(), rejected=assert.rejects(first, error => {
+      assert.equal(error.name, 'TimeoutError');
+      assert.match(error.message, /complete response/);
+      assert.doesNotMatch(error.message, /will retry/);
+      return true;
+    });
     await Promise.resolve();await Promise.resolve();
     assert.equal(poll({background:true}),null);
     t.mock.timers.tick(20);await rejected;

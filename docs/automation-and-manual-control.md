@@ -38,13 +38,19 @@ During Pause, they remain until another selection, Automatic, or the scheduled
 resume time. An indefinite Pause gives them no application end time. Native
 parameter edits remain separate persistent device commands.
 
-Manual Preheat raises ROOM and opens commissioned floor circuits for one original
-floor lease. Polling does not renew that lease. Normal or Reduced ends it sooner.
-At the deadline the controller restores ROOM independently of floor feedback and
-checks whether the device-local floor lease restored circulation. Missing or failed
+Manual Preheat raises ROOM for one fixed deadline, using
+`controller.floor_preheat.lease_seconds` (900 seconds by default), including when
+floor control is disabled. The current floor adapter is unavailable, so this is
+ROOM-only preheating; enabling or commissioning floor control is rejected.
+Polling does not renew the deadline. Normal or Reduced ends it sooner. At the
+deadline the controller restores ROOM independently of floor feedback. See
+[floor capability and commissioning requirements](floor-preheat.md).
+
+With a supported commissioned floor adapter, the same action must also open the
+floor circuits for that one original lease and check whether its device-local
+expiry restored ordinary thermostat control. Missing or failed
 restoration triggers the controller fallback and remains unresolved until fresh
-readback confirms it. With no floor integration, the configured bounded preheat
-duration applies. A report distinguishes device-local expiry, controller fallback
+readback confirms it. A report distinguishes device-local expiry, controller fallback
 and missing evidence; software cannot prove restoration through a broken link.
 
 Action receipts, including Garage and equipment controls, remain visible for

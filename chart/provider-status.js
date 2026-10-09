@@ -720,7 +720,7 @@ export function easeeLocalConnectionDisplay(health, { now, formatTime } = {}) {
     : recoveryTiming || (typeof formatTime === 'function' && Number.isFinite(now)
     && Number.isSafeInteger(setup.nextAttemptAt) && setup.nextAttemptAt > now
     ? ` ${setup.state === 'ready' ? 'Next connection check' : 'Next setup attempt'} ${formatTime(setup.nextAttemptAt)}.` : '');
-  const readings = setup.state === 'disabled' ? ['Not enabled', 'Local charger readings are disabled. Cloud readings remain available.', 'pending']
+  const readings = setup.state === 'disabled' ? ['Not enabled', 'Local charger readings are disabled. Cloud readings use their own connection and availability checks.', 'pending']
     : local.error ? ['Needs attention', 'The local listener needs attention. Available cloud readings remain the backup.', 'attention']
     : local.available === true ? ['Available', 'Fresh charger electricity readings are available through local OCPP.', 'available']
       : local.connected === true ? ['Waiting for readings', 'The charger is connected. Complete fresh electricity readings are still required.', 'pending']

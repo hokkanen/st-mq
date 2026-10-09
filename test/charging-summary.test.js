@@ -33,6 +33,16 @@ test('predicted remaining cost is disclosed without claiming that delivered cost
   assert.match(cost.detail, /Remaining energy includes forecast electricity prices/);
   assert.match(cost.detail, /spot price, margin, electricity tax, transfer and VAT.*uncertainty allowance used for planning is excluded/);
   assert.doesNotMatch(cost.detail, /Missing forecast|last available cost estimate/);
+  assert.doesNotMatch(cost.detail, /Incomplete energy or price coverage/);
+});
+
+test('inferred connection energy is disclosed independently of forecast prices', () => {
+  const item = charger({ sessionCost: { totalCents: 456, estimated: true, unrecordedGridKwh: 1.25 } });
+  const result = chargingCost(item, chargerDisplay(item, { now }), summary(item), { now });
+  assert.equal(result.scope, 'session');
+  assert.match(result.detail, /1.25 kWh inferred from charge progress/);
+  assert.match(result.detail, /Incomplete energy or price coverage/);
+  assert.doesNotMatch(result.detail, /Missing forecast/);
 });
 
 test('missing vehicle feeds leave both chargers planned with configured inputs', () => {
@@ -504,6 +514,8 @@ test('a reached target costs zero even with an old nonzero plan or missing rates
   assert.equal(cost(planned).value, '€0.00');
   assert.equal(cost(observed({ requiredGridKwh: 0, forecast: null })).value, '€0.00');
   assert.match(cost(planned).detail, /No additional grid energy/);
+  assert.equal(cost(planned).scope, 'remaining');
+  assert.match(cost(planned).detail, /total cost since plugging in is unavailable/);
 });
 
 test('an enforced native stop before target invalidates target cost rather than pricing undeliverable energy', () => {

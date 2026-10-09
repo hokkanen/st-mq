@@ -59,9 +59,9 @@ export function settingsReloadScope(status = {}) {
   const supported = reload?.available === true && reload?.unavailable !== true;
   const available = supported && reload?.busy !== true;
   const reloadable = [
-    'Price-control mode, comfort limits and learning settings',
+    'Heating strategy, comfort limits and learning settings',
     'Electricity rates',
-    'Recording interval and storage budget',
+    'Adaptive recording budget, backup folder and verification schedule',
     'Admin and family passwords and direct-access availability',
   ];
   if (['mqtt', 'providers'].includes(status?.input)) {
@@ -72,6 +72,7 @@ export function settingsReloadScope(status = {}) {
     'Input mode',
     'Web address and port',
     'Data and database locations',
+    'Topology, instance role, pairing and mirroring connections',
     'Environment variables, including overrides',
   ];
   const message = reload?.unavailable === true
@@ -80,7 +81,7 @@ export function settingsReloadScope(status = {}) {
       ? 'The application is starting or updating settings. Try again shortly.'
       : !supported
         ? reload?.reason || 'Applying configuration is not available for this instance.'
-        : 'Startup environment overrides still apply. Finish heating tests or setting changes first; any pending heating restoration must complete. Changes to input mode, web address or port, or storage locations require restart and block the whole application of settings.';
+        : 'Startup environment overrides still apply. Finish heating tests or setting changes first; any pending heating restoration must complete. Changes to input mode, web listeners, storage, topology, pairing or mirroring require restart and block the whole application of settings.';
   const configuration = reload?.configuration;
   // Pair slaves expose their local platform through pair status, not reload metadata.
   const pairCopyHelp = configuration?.environment === 'home-assistant'

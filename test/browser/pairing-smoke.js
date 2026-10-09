@@ -100,8 +100,10 @@ try {
         if (body.action === 'reset') {
           assert.equal(body.resetToken, resetToken); assert.equal(body.confirmed, true);
           if (body.mode === 'fresh') assert.equal(body.restorationConfirmed, true);
+          // The app and viewer use this fixed clock; wall time would make a
+          // valid receipt appear to be from the future after several UI steps.
           pair = { ...standby(body.mode === 'keep' ? 'protected' : 'slave'), reason: body.mode === 'keep' ? 'pairing_reset' : null,
-            reset: { token: resetToken, lastResult: { mode: body.mode, completedAt: Date.now(), archiveDirectory: '/config/st-mq/reset-archives/synthetic-reset',
+            reset: { token: resetToken, lastResult: { requestId: body.requestId, mode: body.mode, completedAt: now, archiveDirectory: '/config/st-mq/reset-archives/synthetic-reset',
               backupCount: 1, unavailableCount: 0, unavailableReasons: [] } },
             actions: { promote: true, reset: true }, uiOperation: { id: body.requestId, action: 'reset', state: 'complete' } };
           return json(200, { status: pair });
@@ -517,6 +519,7 @@ try {
   await evaluate("document.querySelector('.confirmation-dialog[open] .confirmation-actions button:last-child').click(); true");
   await until(`${$('pairing-reset-receipt')}.textContent.includes('local history kept protected')`);
   assert.equal(actions.at(-1).mode, 'keep');
+  assert.equal(pair.reset.lastResult.requestId, actions.at(-1).requestId);
   assert.equal(actions.at(-1).restorationConfirmed, undefined);
   assert.equal(pair.role, 'protected');
   assert.equal(await evaluate(`${$('pairing-reset-receipt')}.hidden`), false);

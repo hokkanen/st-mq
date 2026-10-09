@@ -29,7 +29,7 @@ export function instanceRoleDisplay(status) {
       return waiting ? { state: 'transition', label: 'Pair · Master · Waiting',
         detail: 'Master role reported. Waiting for its current dashboard and control readiness.' }
         : { state: 'master', label: 'Pair · Master',
-          detail: 'This computer owns the master role. The operating mode shows whether automatic control is enabled.' };
+          detail: 'This computer owns the master role. Home heating, charging and Caravan power each follow their own control permissions.' };
     }
     return { state: 'transition', label: 'Pair · Checking role', detail: 'Waiting for this computer’s pair role to be confirmed.' };
   }

@@ -8,7 +8,7 @@ import { Store, SCHEMA_VERSION } from '../src/storage/store.js';
 import { createDatabaseBackup } from '../src/storage/backup.js';
 import { fullVerificationActivity, verifyDatabase, verifyCheckpointPair } from '../src/storage/full-verifier.js';
 import { createDatabaseVerification } from '../src/app/database-verification.js';
-import { verificationActivityText } from '../chart/database-verification.js';
+import { verificationActivityText, verificationFailureText } from '../chart/database-verification.js';
 import { registerJournalFunctions } from '../src/storage/journal-codec.js';
 
 async function fixture(t) {
@@ -30,6 +30,12 @@ test('full verification reports incompatible format before attempting to read th
   const before = await readFile(dbPath);
   await assert.rejects(verifyDatabase({ dbPath }), { code: 'database_schema_mismatch',
     actualSchema: SCHEMA_VERSION - 1, requiredSchema: SCHEMA_VERSION });
+  const service = createDatabaseVerification({ acquire: async () => ({ dbPath }) });
+  service.start(); await service.settled();
+  assert.equal(service.status().error, 'database_schema_mismatch');
+  assert.match(verificationFailureText(service.status()), /schema does not match/);
+  assert.doesNotMatch(verificationFailureText(service.status()), /damaged|integrity checks/);
+  await service.close();
   assert.deepEqual(await readFile(dbPath), before);
 });
 
@@ -146,6 +152,7 @@ test('verifier failures and shutdown release the pinned source without affecting
   service.start(); await new Promise(resolve => setImmediate(resolve)); await service.close();
   assert(released); assert.equal(service.status().state, 'interrupted');
   assert.equal(service.status().error, 'full_verification_failed');
+  assert.match(verificationFailureText(service.status()), /interrupted.*interruption alone does not show database damage/);
 });
 
 test('operation and maintenance checks share admission and queued cancellation starts no scan', async t => {

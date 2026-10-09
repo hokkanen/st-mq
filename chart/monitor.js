@@ -30,7 +30,7 @@ import { learningOverview, settingsReloadScope } from './dashboard-status.js';
 import { createFireplacePanel } from './fireplace.js';
 import { createSensorChangePanel } from './sensor-changes.js';
 import { applicationUrl, usesHomeAssistantLogin, authenticationMessage, createPollingRequest,
-  fetchJsonResponse, createEventStream, createCommunicationWatch } from './network.js';
+  fetchJsonResponse, apiResponseError, createEventStream, createCommunicationWatch } from './network.js';
 import { isReadOnlyReplica, renderReplicaStatus, replicaSnapshotKey, renderInstanceRole, pairPanelView } from './replica-status.js';
 import { createPairPanel } from './pair-status.js';
 import { createHistoryRecoveryPanel } from './history-recovery.js';
@@ -175,10 +175,14 @@ async function api(path, data, options = {}) {
     lockScreen({ authenticationFailed: true });
     const error = new Error(authenticationMessage(ingress)); error.status = response.status; throw error;
   }
-  if (!response.ok) { const error = new Error(result.error ?? 'Request failed'); error.status = response.status; throw error; }
+  if (!response.ok) throw apiResponseError(response, result, { mutation: data !== undefined });
   return result;
 }
-function showError(error) { $('error').textContent = error.message; $('error').hidden = false; $('connection').textContent = 'Connection needs attention'; }
+function showError(error, { connection = true } = {}) {
+  $('error').textContent = connection ? error.message : `Some dashboard details could not be refreshed. ${error.message}`;
+  $('error').hidden = false;
+  if (connection) $('connection').textContent = 'Connection needs attention';
+}
 const recordingHealth = createRecordingHealth({ document, request: api });
 const fireplacePanel = createFireplacePanel({ document, request: api, storage: sessionStorage,
   beforeMutation: () => { ++refreshSequence; }, afterMutation: () => refresh() });
@@ -963,7 +967,7 @@ async function refresh({ forceChart = false, background = false } = {}) {
   } catch (error) {
     // Chart, event and rendering failures do not invalidate a received local
     // pairing report or its confirmed MQTT address ownership.
-    if (sequence === refreshSequence) showError(error);
+    if (sequence === refreshSequence) showError(error, { connection: false });
   }
 }
 let pairPollBusy = false;
@@ -1003,7 +1007,7 @@ async function refreshPairing() {
   } catch (error) {
     if (session.locked) return;
     if (!received && pairRevision === pairStatusRevision) pairPanel.unavailable();
-    if (received) showError(error);
+    if (received) showError(error, { connection: false });
   }
   finally { pairPollBusy = false; }
 }

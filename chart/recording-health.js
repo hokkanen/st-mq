@@ -38,9 +38,9 @@ export function recordingHealthView(health, recording, now = Date.now()) {
   const hasSpace = ['ok', 'low', 'critical'].includes(disk.state)
     && finite(disk.freeBytes) && finite(disk.totalBytes) && disk.totalBytes > 0 && disk.freeBytes <= disk.totalBytes;
   const diskFraction = hasSpace ? disk.freeBytes / disk.totalBytes : null;
-  const kind = { 'saved-copy': 'Saved copy', 'reset-archive': 'Reset archive', download: 'Download completed' }[backup.latestKind];
+  const kind = { 'saved-copy': 'Saved copy', 'reset-archive': 'Reset archive', download: 'Download sent' }[backup.latestKind];
   const backupEvidence = validTime(backup.latestAt) ? `${kind ?? 'Latest known copy'} · ${recordingEvidenceTime(backup.latestAt, now)}` : 'No completed copy is known to this computer.';
-  const backupVerification = backup.latestKind === 'download' ? 'Download completed; retention on the receiving device is unknown.'
+  const backupVerification = backup.latestKind === 'download' ? 'Sent to the browser; saving and retention on the receiving device are unknown.'
     : validTime(backup.latestVerifiedAt) ? `Checked ${recordingEvidenceTime(backup.latestVerifiedAt, now)}. A past check does not verify the copy today.`
       : validTime(backup.latestAt) ? 'Listed on this computer; not verified by this status check.' : '';
   const budget = recording ?? {};
@@ -68,7 +68,7 @@ export function recordingHealthView(health, recording, now = Date.now()) {
     recording: { label: recordingLabels[recorder.state] ?? recordingLabels.unknown, tone: tone(recorder.state),
       detail: recorder.detail || 'Waiting for recording health information.',
       evidence: validTime(recorder.lastSourceCheckAt) ? `Last source check · ${recordingEvidenceTime(recorder.lastSourceCheckAt, now)}` : 'Last source check is not known.' },
-    backup: { label: backupLabels[backup.state] ?? backupLabels.unknown, tone: tone(backup.state),
+    backup: { label: backup.state === 'available' && backup.latestKind === 'download' ? 'Download sent' : backupLabels[backup.state] ?? backupLabels.unknown, tone: tone(backup.state),
       detail: backup.detail || 'Only copies known to this computer can be listed here.', evidence: backupEvidence,
       verification: backupVerification,
       activity: backup.state === 'running' && validTime(backup.startedAt) ? `Started ${recordingEvidenceTime(backup.startedAt, now)}`

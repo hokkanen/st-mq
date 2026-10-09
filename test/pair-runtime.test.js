@@ -11,6 +11,7 @@ import { Store } from '../src/storage/store.js';
 import { readReplicaPublication } from '../src/replication/publication.js';
 import { replayLearningJournal, LEARNING_WINDOW_MS } from '../src/app/committed-learning.js';
 import { pairDisplay } from '../chart/pair-status.js';
+import { createAppServer } from '../src/app/server.js';
 
 const W = LEARNING_WINDOW_MS, now = Date.parse('2026-01-09T12:00Z');
 const command = (action, extra = {}) => ({ action, requestId: randomUUID(), confirmed: true, ...extra });
@@ -79,6 +80,60 @@ function observation(store, at, value) {
   store.observation({ source: 'synthetic', device: 'invented-home', signal: 'indoor_temperature',
     value, unit: 'degC', sourceTime: at, receivedAt: at });
 }
+
+test('pair HTTP refusals preserve authored busy and missing-restoration causes before accepting an operation', async t => {
+  const f = await fixture(t), app = await f.open('refusals', 'slave', 'ubuntu');
+  const post = async input => {
+    const response = await fetch(`${url(app)}/api/pair/action`, { method: 'POST',
+      headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(input) });
+    assert.equal(response.status, 409);
+    return response.json();
+  };
+  const token = app.status().reset.token;
+  assert.deepEqual(await post(command('reset', { mode: 'fresh', resetToken: token })), {
+    code: 'pair_action_rejected', error: 'Confirm that temporary equipment changes have been resolved before starting fresh.',
+  });
+  app.pair.busy = true;
+  try {
+    assert.deepEqual(await post(command('reset', { mode: 'keep', resetToken: token })), {
+      code: 'pair_action_rejected', error: 'Wait for the current paired operation to finish before resetting.',
+    });
+  } finally { app.pair.busy = false; }
+  assert.equal(app.status().uiOperation, undefined, 'Refusals do not create an operation or reset archive');
+  assert.equal(app.pair.canControl(), false);
+});
+
+test('pair HTTP boundary never marks raw errors or uncertain statuses as authored refusals', async t => {
+  let failure;
+  const server = createAppServer({ chartService: { overview() {} },
+    pairContext: { requestAction() { throw failure; } } });
+  t.after(() => new Promise(resolve => server.close(resolve)));
+  await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
+  for (const properties of [{ statusCode: 409 }, { statusCode: 409, code: 'private_code' },
+    { statusCode: 409, publicMessage: '' }, { statusCode: 408, publicMessage: 'Synthetic private timeout detail' },
+    { statusCode: 429, publicMessage: 'Synthetic private rate-limit detail' },
+    { statusCode: 503, publicMessage: 'Synthetic private storage detail' }, {}]) {
+    failure = Object.assign(new Error('Synthetic private path /private/household and credential data'), properties);
+    const response = await fetch(`http://127.0.0.1:${server.address().port}/api/pair/action`, { method: 'POST',
+      headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(command('promote')) });
+    assert.equal(response.status, properties.statusCode ?? 503);
+    const result = await response.json();
+    assert.equal(result.code, undefined);
+    assert.doesNotMatch(result.error, /private|household|credential/i);
+    assert.match(result.error, response.status === 409 ? /rejected/ : /could not be confirmed/);
+  }
+});
+
+test('pair requests distinguish shutdown and stopped instances from running operations', async t => {
+  const f = await fixture(t), app = await f.open('closing', 'slave', 'ubuntu');
+  const closed = app.close();
+  assert.throws(() => app.requestAction(command('promote')), error =>
+    error.statusCode === 409 && /shutting down/.test(error.publicMessage) && !/already running/.test(error.publicMessage));
+  await closed;
+  assert.throws(() => app.requestAction(command('promote')), error =>
+    error.statusCode === 409 && /has stopped/.test(error.publicMessage) && !/already running/.test(error.publicMessage));
+  await f.close(app);
+});
 
 test('pair HTTP actions admit full verification only as a boolean for supported operations', async t => {
   const f = await fixture(t), app = await f.open('options', 'slave', 'ubuntu'), received = [];

@@ -42,8 +42,9 @@ restart preserves it. Hardware, electrical and vehicle limits still apply.
 available. It is disabled while its request runs and hides when no longer needed;
 its pending or failed outcome remains visible. **Identify** is at the end of
 Charging controls below Session settings, disabled without control authority or
-while an attempt is already pending/in progress. Admin and family users can use
-it when permitted. Messages and explanations wrap without deliberate clipping;
+while an attempt is already pending/in progress. Its explanation identifies the
+current blocker separately from the result of the previous attempt. Admin and
+family users can use it when permitted. Messages and explanations wrap without deliberate clipping;
 compact labels omit terminal periods and action receipts use complete sentences.
 
 ## Session settings and battery progress
@@ -60,7 +61,10 @@ measured charging energy. A manual edit establishes a new reference for this
 connection. A newer applicable vehicle reading can supersede that reference;
 a pinned capacity takes precedence over reported capacity. The requested target
 remains separate from the car's actual ceiling: requesting 95% does not bypass an
-80% limit set in the vehicle. Original readings remain available beside edits.
+80% limit set in the vehicle. Target and ready-by are planning goals, not Stop
+commands: the final charging period remains open, and further charging follows
+the vehicle's own limits. Energy and cost can continue increasing after the
+planning target is reached. Original readings remain available beside edits.
 The last reported charge shows its value and source above a separate **Measured**
 or **Received** timestamp. Receipt time is not measurement time. Open the reading's
 information for the full date and any unavailable measurement time; compact dates
@@ -114,7 +118,11 @@ day survives forecast loss; another day always requires a new explicit action.
 
 **Added energy** and connection cost cover the physical connection. A new battery
 reading can change estimated charge without resetting its measured grid energy.
-Missing energy is not credited. [Progress and cost](evidence-and-reporting.md#charge-progress-and-cost)
+Missing energy is not credited as recorded energy. A total cost estimate can
+include inferred energy across a recording gap; its details identify that
+unrecorded quantity separately. If only the remaining plan cost is available, the
+card labels it **Est. remaining**, rather than a whole-connection cost.
+[Progress and cost](evidence-and-reporting.md#charge-progress-and-cost)
 describes losses, measurement gaps and timing comparisons.
 
 ## Schedule and readings

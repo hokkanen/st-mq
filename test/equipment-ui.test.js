@@ -7,6 +7,19 @@ import { providerName } from '../chart/provider-status.js';
 import { DEHUMIDIFIER_OPTIONS, dehumidifierControlAllowed, dehumidifierResult } from '../chart/caravan.js';
 
 const now = Date.parse('2026-09-13T12:00:00Z');
+
+test('dehumidifier receipts preserve delivery and feedback causes until confirmation or expiry', () => {
+  const device = { dehumidifier: { operation: { setting: 'power', value: 'on', requestedAt: now, status: 'unconfirmed' } } };
+  for (const cause of ['Dehumidifier command delivery is unconfirmed. Check its live state before trying again.',
+    'Control connection changed. Check the dehumidifier live state.',
+    'The requested setting has not been reported. Check the dehumidifier live state.']) {
+    device.dehumidifier.operation.error = cause;
+    assert.equal(dehumidifierResult(device, now + 1000), `Power: On requested · ${cause}`);
+  }
+  device.dehumidifier.operation.status = 'observed'; delete device.dehumidifier.operation.error;
+  assert.match(dehumidifierResult(device, now + 2000), /device reported/);
+  assert.equal(dehumidifierResult(device, now + 86400_000), '');
+});
 const plug = { id: 'caravan', label: 'Caravan', area: 'garage', kind: 'metered_switch', source: 'MQTT-shelly',
   connection: 'shelly:invented-caravan', available: true, controls: { switch: true },
   readings: { caravan_active: { value: 1, unit: 'state', label: 'Switch', observedAt: now, stale: false },

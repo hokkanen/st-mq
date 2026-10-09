@@ -448,6 +448,61 @@ test('rejected actions clear pending IDs, and asynchronous failures expose only 
   assert.doesNotMatch(accepted.snapshot().message, /private/);
 });
 
+test('pair action refusals show only marked authored messages and retain uncertain request identities', async () => {
+  for (const reason of ['A paired operation is already running.',
+    'Confirm that temporary equipment changes have been resolved before starting fresh.']) {
+    const storage = memoryStorage();
+    const actions = createPairActions({ storage, requestId: () => id, request: async () => {
+      throw Object.assign(new Error(reason), { status: 409, code: 'pair_action_rejected' });
+    } });
+    actions.update(primary());
+    assert.equal(await actions.run('check-recovery'), false);
+    assert.equal(actions.snapshot().message, reason);
+    assert.equal(actions.snapshot().pending, null);
+    assert.equal(storage.getItem('stmq-pair-pending-v1'), null);
+  }
+  for (const status of [408, 429, 503]) {
+    const storage = memoryStorage();
+    const actions = createPairActions({ storage, requestId: () => id, request: async () => {
+      throw Object.assign(new Error('Synthetic private uncertain outcome'), { status, code: 'pair_action_rejected' });
+    } });
+    actions.update(primary());
+    assert.equal(await actions.run('check-recovery'), false);
+    assert.equal(actions.snapshot().pending.requestId, id);
+    assert.equal(JSON.parse(storage.getItem('stmq-pair-pending-v1')).requestId, id);
+    assert.match(actions.snapshot().message, /recheck the same request/i);
+    assert.doesNotMatch(actions.snapshot().message, /private/);
+  }
+});
+
+test('matching durable pair receipts outrank delayed rejection, transport failure and acceptance replies', async () => {
+  for (const state of ['complete', 'error']) for (const reply of ['rejected', 'unconfirmed', 'accepted']) {
+    let resolve, reject, refreshed = 0;
+    const storage = memoryStorage();
+    const actions = createPairActions({ storage, requestId: () => id,
+      request: () => new Promise((done, fail) => { resolve = done; reject = fail; }),
+      afterMutation: () => { refreshed++; } });
+    actions.update(primary());
+    const request = actions.run('check-recovery');
+    const receipt = { ...checked(), ...(state === 'error' ? { error: 'vip_release_failed' } : {}),
+      recentActions: [{ requestId: id, name: 'check-recovery', state }] };
+    actions.update(receipt);
+    const confirmed = actions.snapshot();
+    assert.equal(confirmed.pending, null);
+    if (reply === 'accepted') resolve({ status: operation(primary(), 'running') });
+    else reject(Object.assign(new Error('A delayed refusal must not replace the durable result'), {
+      status: reply === 'rejected' ? 409 : 503, code: 'pair_action_rejected',
+    }));
+    assert.equal(await request, true);
+    assert.equal(actions.snapshot().message, confirmed.message);
+    assert.equal(actions.snapshot().error, state === 'error');
+    assert.equal(actions.snapshot().view, receipt, 'A delayed reply cannot replace newer roles or recovery evidence');
+    assert.equal(actions.snapshot().pending, null);
+    assert.equal(storage.getItem('stmq-pair-pending-v1'), null);
+    assert.equal(refreshed, 1);
+  }
+});
+
 function fixture() {
   class Element {
     constructor(tag = 'div') { this.tagName = tag; this.dataset = {}; this.hidden = false; this.disabled = false; this.children = []; this.attributes = {}; this.textContent = ''; this.listeners = new Map();
@@ -708,7 +763,8 @@ test('skipped recovery reports describe inactive retained history without claimi
   const text = allText($('report'));
   assert.match(text, /Mirroring resumed without recovery/);
   assert.doesNotMatch(text, /Missing entries not recovered:/);
-  assert.match(text, /previous database is retained inactive/);
+  assert.match(text, /unmatched history remains inactive/);
+  assert.doesNotMatch(text, /previous database is retained/);
   assert.doesNotMatch(text, /rebuild|rebuilt/);
   assert.match(pairDisplay(primary({ recovery: { state: 'resolved', report } })).recovery, /without recovering gaps/);
 });
@@ -754,7 +810,7 @@ test('recovery reports render aggregate counts and periods while omitting donor 
   const text = allText(root);
   for (const phrase of ['Recovery result', 'Recovered entries: 12', 'Conflicting entries: 3', 'Already present: 4', 'Skipped entries: 5', 'Recovered entries span:', 'Unsupported learning entries skipped: 2']) assert(text.includes(phrase));
   assert.doesNotMatch(text, /private/);
-  assert.match(text, /previous database is retained inactive/);
+  assert.match(text, /unmatched history remains inactive/);
   renderRecoveryReport(document, root, { counts: { missing: 0 }, from: now - 60000, to: now });
   assert.match(allText(root), /Missing entries: 0/);
   assert.doesNotMatch(allText(root), /entries span:/, 'Retired flattened bounds cannot supply current report provenance');

@@ -456,12 +456,14 @@ Moving the broker address does not restart applications on the failed computer.
 If Home Assistant and TeslaMate ran there, BMW/Tesla vehicle feeds and HA door
 publishers remain unavailable. Charging retains manual inputs and, for the same
 identified connection, its last known charge estimate plus recorded energy.
-Unknown Garage doors block a new target reduction below 2°C outdoors, the same
-rule as an open door. Independent fresh pipe and room evidence continues
-protection; lost protection inputs require restoration. An existing external
-temperature sample or manual timed OFF lease keeps its original local expiry
-while the replacement host reacquires fresh state. Promotion cannot renew either
-permission from copied observations. See [charging outages](charging/execution-and-recovery.md#missing-feeds-and-controller-outages)
+Garage door reports become unavailable independently of heating. Garage's saved
+Normal/Away target has no application expiry or door-based reduction rule. The
+heat-pump controller continues local regulation from fresh BTHome reports, and
+the protection sender continues its independent pipe model. Local sensor or
+protection loss invokes the device's documented fallback; application promotion
+cannot establish that protection is working or turn copied readings into fresh
+evidence. The new master needs fresh controller readback before sending a new
+target or native setting. See [charging outages](charging/execution-and-recovery.md#missing-feeds-and-controller-outages)
 and [garage protection](garage.md#independent-freeze-protection).
 
 Home heating restoration still requires a reachable H66 gateway and broker.
@@ -906,8 +908,10 @@ For a computer in **Protected recovery**:
    The existing model keeps control available while the replacement catches
    up; a partial or stale rebuilt model is not published.
 4. After successful recovery, explicitly **Resume mirroring**. The other computer
-   retains its divergent commits as an inactive branch, reverses only that suffix
-   and applies the master's commits. Normal one-way synchronization then resumes.
+   preserves its unmatched history as inactive evidence and adopts the master's
+   history. With a shared peer anchor this retains changed rows and reverses the
+   divergent suffix; independent histories require the exceptional preserved-copy
+   path described below. Normal one-way synchronization then resumes.
 
 If you stop after recovery, protection stays active. Waiting, closing the
 dashboard or restarting does not resume mirroring. A repeated check of the same

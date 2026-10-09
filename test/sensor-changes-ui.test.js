@@ -17,6 +17,55 @@ function memoryStorage() {
   return { getItem: key => values.get(key) ?? null, setItem: (key, value) => values.set(key, value), removeItem: key => values.delete(key) };
 }
 
+test('sensor correction receipts survive refresh, expire after a day and retain unresolved retries', async () => {
+  let at = now, fail = false;
+  const actions = createSensorChangeActions({ clock: () => at, request: async (_path, body) => {
+    if (body && fail) throw new Error('connection lost');
+    return view(1, [event()]);
+  } });
+  actions.update(view()); await actions.add('indoor_temperature', 'replacement');
+  const receipt = actions.snapshot().message; assert.match(receipt, /Upstairs change recorded/);
+  await actions.refresh(); assert.equal(actions.snapshot().message, receipt);
+  at += 86400_000; assert.equal(actions.snapshot().message, '');
+  fail = true; await actions.add('indoor_temperature', 'replacement'); at += 86400_000;
+  assert.match(actions.snapshot().message, /Save not confirmed/);
+  assert.ok(actions.snapshot().pending);
+});
+
+test('a failed list refresh preserves a confirmed sensor receipt and separately reports the current read problem', async () => {
+  let failRead = false;
+  const actions = createSensorChangeActions({ clock: () => now, request: async (_path, body) => {
+    if (!body && failRead) throw new Error('connection lost');
+    return view(1, [event()]);
+  } });
+  actions.update(view()); await actions.add('indoor_temperature', 'replacement');
+  const receipt = actions.snapshot().message;
+  failRead = true; assert.equal(await actions.refresh(), false);
+  assert.ok(actions.snapshot().message.startsWith(receipt));
+  assert.match(actions.snapshot().message, /could not be loaded/);
+  failRead = false; await actions.refresh();
+  assert.equal(actions.snapshot().message, receipt);
+});
+
+test('an uncertain rebuild response rechecks status before another restart request', async () => {
+  const requests = [];
+  let failRead = true;
+  const actions = createSensorChangeActions({ clock: () => now, request: async (path, body) => {
+    requests.push({ path, body });
+    if (body) throw new Error('response lost after restart accepted');
+    if (failRead) throw new Error('still offline');
+    return { ...view(), rebuild: { status: 'running' } };
+  } });
+  actions.update({ ...view(), rebuild: { status: 'failed' } });
+  assert.equal(await actions.retryRebuild(), false);
+  assert.match(actions.snapshot().message, /not confirmed.*may already be running/);
+  assert.equal(await actions.retryRebuild(), false);
+  failRead = false;
+  assert.equal(await actions.retryRebuild(), false);
+  assert.deepEqual(requests.map(row => row.path), ['/api/sensor-changes/retry-rebuild', '/api/sensor-changes', '/api/sensor-changes']);
+  assert.equal(actions.snapshot().view.rebuild.status, 'running');
+});
+
 test('recording accepts a configured sensor and known reason, blocks duplicate clicks, and does not send client timestamps', async () => {
   let complete;
   const requests = [];
@@ -152,6 +201,16 @@ function panelFixture(options = {}) {
   return { panel, document, $: id => nodes.get(id) };
 }
 
+test('recorded sensor rebuild states never claim live heating control or active corrected model', () => {
+  const { panel, $ } = panelFixture();
+  for (const rebuild of [{ status: 'pending' }, { status: 'running', processed: 42 }, { status: 'failed' },
+    { status: 'idle', current: true }]) {
+    panel.update({ ...view(), readOnly: true, rebuild });
+    assert.match($('sensor-change-rebuild').textContent, /Recorded relearning status.*cannot be confirmed/);
+    assert.doesNotMatch($('sensor-change-rebuild').textContent, /Heating control remains available|corrected model is active/);
+  }
+});
+
 test('panel preserves user selection and focus across status updates and displays safe sensor change history', () => {
   const { panel, document, $ } = panelFixture();
   panel.update(view());
@@ -285,15 +344,15 @@ test('indoor and outdoor history stay separate, older changes remain accessible,
   assert.match($('sensor-change-rebuild').textContent, /Relearning complete/);
 });
 
-test('history clearly distinguishes reverted and archived changes, and read-only controls stay disabled', () => {
+test('history distinguishes active and reverted changes, and read-only controls stay disabled', () => {
   const { panel, $ } = panelFixture();
   panel.update({ ...view(3, [{ ...event(3), revertedAt: now + 1, canRevert: false },
-    { ...event(2), canRevert: false, unsupportedReason: 'Archived learning version' }, event(1)]),
+    { ...event(2), canRevert: false }, event(1)]),
     rebuild: { status: 'failed', error: 'private response body' }, canRetryRebuild: true });
   const entries = $('sensor-change-entries').children;
   assert.match(entries[0].children[2].textContent, /Reverted/);
   assert.equal(entries[0].children.length, 3);
-  assert.match(entries[1].children[3].textContent, /Revert unavailable/);
+  assert.equal(entries[1].children[3].disabled, true);
   assert.equal(entries[2].children[3].textContent, 'Revert and relearn');
   assert.equal($('sensor-change-retry-rebuild').hidden, false);
   assert.equal($('sensor-change-retry-rebuild').disabled, false);

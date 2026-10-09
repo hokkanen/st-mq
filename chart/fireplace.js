@@ -1,3 +1,5 @@
+import { actionReceiptRecent } from './action-receipts.js';
+
 const HISTORY_MS = 48 * 3600_000;
 const pendingKey = 'stmq-fireplace-pending';
 const dateFormat = new Intl.DateTimeFormat('en-GB', {
@@ -24,9 +26,11 @@ export function fireplaceView(view, now = Date.now()) {
   const kg = entries.reduce((total, entry) => total + entry.kg, 0);
   return { entries, total: entries.length ? `${entries.length} ${entries.length === 1 ? 'entry' : 'entries'} · ${kg} kg` : 'No entries',
     overview: Number.isFinite(view?.lastAt) ? `Last ${fireplaceTime(view.lastAt, now).replace('Today, ', '')}` : 'Add firewood',
-    modelStatus: ['pending', 'running'].includes(view?.rebuild?.status) ? 'Updating model · heating control continues'
-      : view?.rebuild?.status === 'failed' ? 'Model update failed. Heating control continues with the previous model; the correction remains saved.'
-        : view?.readOnly === true ? 'Recorded firewood history. Adding and removing entries is disabled in this view.' : view?.available === false ? 'Firewood recording is unavailable in this installation.' : '' };
+    modelStatus: view?.readOnly === true ? `Recorded firewood history.${['pending', 'running', 'failed'].includes(view?.rebuild?.status)
+      ? ` Saved model update: ${view.rebuild.status === 'pending' ? 'queued' : view.rebuild.status}. Live progress is unavailable.` : ''} Adding and removing entries is disabled in this view.`
+      : ['pending', 'running'].includes(view?.rebuild?.status) ? 'Updating model · current model remains available for heating control'
+      : view?.rebuild?.status === 'failed' ? 'Model update failed. The previous model remains available for heating control; the correction remains saved.'
+        : view?.available === false ? 'Firewood recording is unavailable in this installation.' : '' };
 }
 
 // This is an idempotency identifier, not a credential. getRandomValues also works
@@ -56,21 +60,26 @@ export function createFireplaceActions({ request, onChange = () => {}, makeReque
   beforeMutation = () => {}, afterMutation = () => {}, clock = Date.now }) {
   let pending = restorePending(storage);
   let view, busy = false, message = pending ? 'A previous save was not confirmed. Retry to check it without adding a duplicate.' : '', error = !!pending;
-  const snapshot = () => ({ view, busy, pending, message, error });
+  let receiptAt = null, removedRevision = null;
+  const snapshot = () => {
+    const visible = busy || pending || actionReceiptRecent(receiptAt, clock());
+    return { view, busy, pending, message: visible ? message : '', error: Boolean(visible && error) };
+  };
   const notify = () => onChange(snapshot());
   const persist = () => { try { if (pending) storage?.setItem(pendingKey, JSON.stringify(pending)); else storage?.removeItem(pendingKey); } catch {} };
   function update(next) {
     if (busy || !next || (Number.isFinite(view?.revision) && next.revision < view.revision && next.readOnly !== true && view.readOnly !== true)) return;
     const finished = ['pending', 'running'].includes(view?.rebuild?.status) && next.rebuild?.status === 'idle';
     view = next;
-    if (finished && !pending && !error) message = message.startsWith('Entry removed') ? 'Entry removed · model updated.' : 'Model updated.';
+    if (finished && !pending && !error && !next.readOnly && next.revision === removedRevision
+      && actionReceiptRecent(receiptAt, clock())) message = 'Entry removed · model updated.';
     notify();
   }
   async function send(operation) {
-    if (busy || !view?.available || (pending && operation)) return false;
+    if (busy || !view?.available || view.readOnly === true || (pending && operation)) return false;
     pending ??= operation;
     if (!pending) return false;
-    busy = true; error = false;
+    busy = true; error = false; receiptAt = clock(); removedRevision = null;
     const removing = pending.path.endsWith('/remove');
     message = removing ? 'Removing mistaken entry…' : 'Recording firewood…';
     persist(); beforeMutation(); notify();
@@ -78,9 +87,10 @@ export function createFireplaceActions({ request, onChange = () => {}, makeReque
     try {
       const result = await request(pending.path, pending.body);
       view = result;
+      if (removing) removedRevision = result.revision;
       message = removing ? ['pending', 'running'].includes(result.rebuild?.status)
-        ? 'Entry removed · updating model in background.' : 'Entry removed.'
-        : `${pending.body.kg} kg recorded · ${fireplaceTime(result.lastAt)}.`;
+        ? 'Entry removed · model update status below.' : 'Entry removed.'
+        : `${pending.body.kg} kg recorded · ${fireplaceTime(result.lastAt, clock())}.`;
       pending = null; persist(); saved = true;
     } catch (failure) {
       error = true;
@@ -119,7 +129,7 @@ export function createFireplacePanel({ document, request, storage, beforeMutatio
   }
   function close() { if (dialog.open) dialog.close(); }
   function render(state) {
-    const display = fireplaceView(state.view, Math.max(now, state.view?.lastAt ?? now)), available = !!state.view?.available;
+    const display = fireplaceView(state.view, Math.max(now, state.view?.lastAt ?? now)), available = !!state.view?.available && state.view?.readOnly !== true;
     if (state.pending?.path === '/api/fireplace') slider.value = String(state.pending.body.kg);
     slider.disabled = state.busy || !!state.pending || !available;
     showAmount();
@@ -189,7 +199,7 @@ export function createFireplacePanel({ document, request, storage, beforeMutatio
         showPending = false; open();
       }
     },
-    tick() { if (rendered && dialog.open) render(rendered); },
+    tick() { if (rendered && dialog.open) render(actions.snapshot()); },
     close,
   };
 }

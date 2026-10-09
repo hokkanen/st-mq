@@ -6,6 +6,28 @@ const idle = { state: 'idle', intervalMs: 0, activity: { active: null, queued: [
 const admin = { webAccess: { role: 'admin' } };
 const settle = () => new Promise(resolve => setImmediate(resolve));
 
+test('verification failures distinguish incompatible data, integrity damage, differing checkpoints and interruption', async () => {
+  for (const [state, error, expected] of [
+    ['error', 'database_schema_mismatch', /schema does not match/],
+    ['error', 'database_algorithm_mismatch', /different learning algorithm/],
+    ['error', 'database_state_incompatible', /saved application state/],
+    ['error', 'database_integrity_failed', /failed its integrity checks/],
+    ['error', 'database_journal_invalid', /could not verify.*journal.*Preserve the database/],
+    ['error', 'full_verification_checkpoint_mismatch', /not evidence of damage/],
+    ['error', 'full_verification_content_mismatch', /different data.*same transaction/],
+    ['error', 'full_verification_busy', /queue is full/],
+    ['error', '/private/error', /cause was not identified/],
+    ['interrupted', 'full_verification_failed', /interrupted.*interruption alone does not show.*damage/],
+  ]) {
+    const view = fixture(); view.panel.update(admin);
+    view.requests[0].resolve({ ...idle, state, error }); await settle();
+    const text = view.element('database-verification-status').textContent;
+    assert.match(text, expected); assert.doesNotMatch(text, /private/);
+    assert.equal(view.button.disabled, false, 'A terminal result allows a new explicit verification');
+    view.panel.close();
+  }
+});
+
 function fixture() {
   const elements = new Map(), requests = [], timers = new Map();
   let timerId = 0;
@@ -103,6 +125,40 @@ test('verification poll failures remain visible and recover on the next response
   view.element('database-verification-details').open = false;
   view.element('database-verification-details').listeners.toggle();
   assert.equal(view.timers.size, 0, 'Closing an idle section stops polling');
+  view.panel.close();
+});
+
+test('known start refusals survive a successful status refresh and preserve the previous verified result', async () => {
+  for (const [failure, expected] of [
+    [{ status: 403 }, /not started.*Admin access/],
+    [{ status: 409, code: 'full_verification_unavailable' }, /not started.*database is not available/],
+  ]) {
+    const view = fixture(), complete = { ...idle, state: 'complete', lastResult: { verifiedAt: 123, checkpoint: { sequence: 42 } } };
+    view.panel.update(admin); view.requests[0].resolve(complete); await settle();
+    const start = view.button.listeners.click();
+    view.requests[1].reject(Object.assign(new Error('/private/native-failure'), failure)); await start;
+    view.requests[2].resolve(complete); await settle();
+    const text = view.element('database-verification-status').textContent;
+    assert.match(text, expected); assert.match(text, /Verified 123 at transaction 42/);
+    assert.doesNotMatch(text, /private|Reconnect|damage/);
+    view.panel.close();
+  }
+});
+
+test('a lost start reply prompts a status check without replay and a failed read retains dated evidence', async () => {
+  const view = fixture(), complete = { ...idle, state: 'complete', lastResult: { verifiedAt: 123, checkpoint: { sequence: 42 } } };
+  view.panel.update(admin); view.requests[0].resolve(complete); await settle();
+  const start = view.button.listeners.click();
+  view.requests[1].reject(new TypeError('Response lost')); await start;
+  assert.match(view.element('database-verification-status').textContent, /start was not confirmed.*Verified 123/);
+  assert.equal(view.requests[2].body, undefined, 'The follow-up reads status, not another start');
+  view.requests[2].reject(Object.assign(new Error('Private failure'), { status: 403 })); await settle();
+  assert.match(view.element('database-verification-status').textContent, /Admin access.*Last received status: Verified 123/);
+  const poll = view.poll();
+  view.requests[3].resolve({ ...idle, state: 'running', progress: { processed: 12 } }); await poll;
+  assert.match(view.element('database-verification-status').textContent, /running.*12 records/);
+  assert.doesNotMatch(view.element('database-verification-status').textContent, /unconfirmed|not confirmed|Last received|Private/);
+  assert.equal(view.requests.filter(request => request.body !== undefined).length, 1);
   view.panel.close();
 });
 

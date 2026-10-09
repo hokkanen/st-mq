@@ -120,6 +120,24 @@ fixture.setCase = name => {
           : { phase: 'waiting', reason: 'economic-wait', nativeExpiry: false, owned: null,
             executionStage: 'physical-effect', pending: null, manual: null }) };
     }
+    if (name === 'manual-stop') item.identification = {
+      available: false, active: false, availabilityReason: 'other-instruction',
+    };
+    if (name.startsWith('identify-')) {
+      const availabilityReason = name === 'identify-offline' ? 'charger-offline'
+        : name === 'identify-native-schedule' ? item.provider === 'shelly-evse' ? 'native-schedule' : 'other-instruction'
+          : 'unknown-fixture-reason';
+      item.identification = { available: false, active: false, availabilityReason };
+      item.control = name === 'identify-native-schedule'
+        ? { phase: 'manual', reason: 'native-schedule', manual: { kind: 'window', startsAt: now + 3600000, resumeAt: now + 7200000 } }
+        : { phase: name === 'identify-offline' ? 'unavailable' : 'waiting', reason: availabilityReason };
+    }
+    if (name === 'remaining-cost') {
+      item.control = { phase: 'waiting', owned: { startAt: now + 3600000 } };
+      item.plan.costCents = 240;
+      if (item.id === 'charger2') item.progress = { estimatedSoc: 80, hasEnergyEstimate: true,
+        deliveredGridKwh: 30, remainingGridKwh: 0 };
+    }
     if (name === 'manual-start') { item.control.reason = 'manual-release'; item.control.manual = { kind: 'release' }; }
     if (name === 'manual-window') { item.control.reason = 'native-schedule'; item.control.manual = { kind: 'window', startsAt: now + 3600000, resumeAt: now + 7200000 }; }
     if (name === 'long') { item.control.reason = longText; item.control.manual.reason = longText; item.label += ' with a long synthetic descriptive name'; }
@@ -375,7 +393,7 @@ try {
       assert.equal(await evaluate(`document.getElementById('${id}-control-message').textContent`), '', 'Success and failure receipts expire after 24 hours');
       await receiptFits(id, `${width}px ${theme} ${id} expired receipt`);
     }
-    for (const state of ['ordinary', 'backend-readings', 'idle-current', 'schedule-overview', 'schedule-outage', 'schedule-recorded', 'missing-vehicle-feed', 'approval-pending', 'confirmed-pause', 'long', 'manual-stop', 'manual-start', 'manual-window', 'pending', 'blocked', 'handover-timeout', 'handover-cancelled', 'handover-protocol', 'unavailable', 'estimate', 'vehicle-reference', 'readonly', 'disconnected', 'unknown-connection', 'missing-token', 'monitoring', 'uncertain', 'startup-stop', 'unavailable-startup-stop']) {
+    for (const state of ['ordinary', 'backend-readings', 'idle-current', 'schedule-overview', 'schedule-outage', 'schedule-recorded', 'missing-vehicle-feed', 'approval-pending', 'confirmed-pause', 'long', 'manual-stop', 'manual-start', 'manual-window', 'identify-native-schedule', 'identify-offline', 'identify-unknown', 'remaining-cost', 'pending', 'blocked', 'handover-timeout', 'handover-cancelled', 'handover-protocol', 'unavailable', 'estimate', 'vehicle-reference', 'readonly', 'disconnected', 'unknown-connection', 'missing-token', 'monitoring', 'uncertain', 'startup-stop', 'unavailable-startup-stop']) {
       await evaluate(`chargingFixture.setCase('${state}'); document.querySelectorAll('.charging-device').forEach(card => card.open = true)`);
       const layout = await evaluate(`(() => {
         const cards = [...document.querySelectorAll('.charging-device')];
@@ -406,6 +424,34 @@ try {
       }
       assert.deepEqual(layout.cards[0].action, layout.cards[1].action, 'Both providers render the same action and capability state');
       assert.equal(layout.cards[0].action.label, 'Use automatic');
+      if (state.startsWith('identify-') || state === 'manual-stop') for (const id of ['charger1', 'charger2']) {
+        const identification = await evaluate(`(() => {
+          const button = document.getElementById('${id}-identify');
+          return { disabled: button.disabled, title: button.title,
+            status: document.getElementById('${id}-identification-status').textContent };
+        })()`);
+        const expected = state === 'identify-offline' ? /charger is offline.*live connection/
+          : state === 'identify-native-schedule' && id === 'charger2' ? /charger’s own schedule blocks.*Charging controls/
+            : state === 'identify-unknown' ? /prerequisites are unavailable.*charger and vehicle connection status/
+              : /Another charger instruction has priority.*Charging controls/;
+        assert.equal(identification.disabled, true, `${width}px ${theme}: unavailable identification stays disabled`);
+        assert.match(identification.status, expected, `${width}px ${theme}: current identification blocker is visible`);
+        assert.match(identification.title, expected, 'The disabled action gives the same underlying cause');
+        assert.doesNotMatch(identification.status, /unknown-fixture-reason/, 'Unknown blockers retain a safe readable fallback');
+      }
+      if (state === 'remaining-cost') for (const [id, expected] of [['charger1', '€2.40'], ['charger2', '€0.00']]) {
+        assert.equal(await evaluate(`document.getElementById('${id}-cost-label').textContent`), 'Est. remaining');
+        assert.equal(await evaluate(`document.getElementById('${id}-cost').textContent`), expected,
+          'Remaining cost stays separate from the unavailable session total, including after reaching the target');
+        await evaluate(`document.querySelector('#${id}-cost-label button').click()`);
+        const detail = await evaluate("document.getElementById('status-detail-popover').textContent");
+        assert.match(detail, /Estimated remaining charging cost/);
+        assert.match(detail, /total cost since plugging in is unavailable/);
+        assert.doesNotMatch(detail, /Estimated total session cost/);
+        assert.equal(await evaluate("document.getElementById('status-detail-popover').scrollWidth <= document.getElementById('status-detail-popover').clientWidth + 1"), true,
+          'The remaining-cost explanation fits the compact popup');
+        await keyPress('Escape', 'Escape', 27);
+      }
       if (state === 'backend-readings') {
         for (const id of ['charger1', 'charger2']) {
           const readings = await evaluate(`document.getElementById('${id}-readings').textContent`);
@@ -552,14 +598,14 @@ try {
           assert.equal(await evaluate(`document.getElementById('${id}-energy').textContent`), '—');
         }
       }
-      if (['ordinary', 'backend-readings', 'idle-current', 'schedule-overview', 'schedule-outage', 'schedule-recorded', 'approval-pending', 'long', 'manual-stop', 'estimate', 'vehicle-reference', 'uncertain', 'startup-stop', 'unavailable-startup-stop', 'handover-timeout', 'unknown-connection'].includes(state)) {
+      if (['ordinary', 'backend-readings', 'idle-current', 'schedule-overview', 'schedule-outage', 'schedule-recorded', 'approval-pending', 'long', 'manual-stop', 'identify-native-schedule', 'identify-offline', 'identify-unknown', 'remaining-cost', 'estimate', 'vehicle-reference', 'uncertain', 'startup-stop', 'unavailable-startup-stop', 'handover-timeout', 'unknown-connection'].includes(state)) {
         const metrics = await send('Page.getLayoutMetrics');
         const shot = await send('Page.captureScreenshot', { format: 'png', captureBeyondViewport: true,
           clip: { x: 0, y: 0, width, height: Math.min(metrics.cssContentSize.height, 12000), scale: 1 } });
         writeFileSync(join(artifacts, `charging-${state}-${width}-${theme}.png`), Buffer.from(shot.data, 'base64'));
-        if (state === 'estimate' || state === 'manual-stop' || state === 'idle-current' || state.startsWith('schedule-')) {
+        if (state === 'estimate' || state === 'manual-stop' || state === 'idle-current' || state === 'remaining-cost' || state.startsWith('schedule-') || state.startsWith('identify-')) {
           const clip = await evaluate(`(() => {
-            const node = ${state === 'idle-current' || state.startsWith('schedule-') ? "document.getElementById('charger2-schedule-readings')" : state === 'estimate' ? "document.getElementById('charger1-session-settings')" : "document.getElementById('charger1-use-automatic').parentElement"};
+            const node = ${state.startsWith('identify-') ? "document.getElementById('charger2-identification')" : state === 'remaining-cost' ? "document.getElementById('charger1-cost').parentElement.parentElement" : state === 'idle-current' || state.startsWith('schedule-') ? "document.getElementById('charger2-schedule-readings')" : state === 'estimate' ? "document.getElementById('charger1-session-settings')" : "document.getElementById('charger1-use-automatic').parentElement"};
             const bounds = node.getBoundingClientRect();
             return { x: bounds.left + scrollX, y: bounds.top + scrollY, width: bounds.width, height: bounds.height, scale: 1 };
           })()`);

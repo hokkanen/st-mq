@@ -497,10 +497,11 @@ for (const transport of ['cloud', 'ocpp']) {
     else { f.physical.enabled = false; f.physical.enabledAt = f.now; await f.update(); }
     const current = card(f), writes = f.writes.length;
     assert.equal(current.identification.available, false);
-    assert.equal(current.identification.availabilityReason, unavailable === 'vehicle feed' ? 'vehicle-feed-stale' : 'charger-unavailable');
+    assert.equal(current.identification.availabilityReason, unavailable === 'vehicle feed' ? 'vehicle-feed-stale'
+      : transport === 'ocpp' ? 'other-instruction' : 'charger-disabled');
     assert.equal(current.identification.reason, previousReason, 'Attempt history remains distinct from present retry availability');
     await assert.rejects(f.runtime.identifyVehicle('charger1', sessionInput(f)), unavailable === 'vehicle feed'
-      ? /current vehicle feed is not available/ : /charger is not ready/);
+      ? /current vehicle report/ : transport === 'ocpp' ? /Another charger instruction has priority/ : /disabled on the charger/);
     assert.equal(f.writes.length, writes, 'An unavailable retry sends no native command');
   });
 

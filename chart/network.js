@@ -36,7 +36,7 @@ export function withReadDeadline(operation, { signal, timeoutMs = READ_TIMEOUT_M
     controller.signal.addEventListener('abort',aborted,{once:true});
     if (signal?.aborted) { cancel(); return; }
     signal?.addEventListener('abort',cancel,{once:true});
-    timer = setTimeout(() => controller.abort(Object.assign(new Error('The read timed out. Monitoring will retry.'),{name:'TimeoutError'})),timeoutMs);
+    timer = setTimeout(() => controller.abort(Object.assign(new Error('The read timed out before a complete response arrived.'),{name:'TimeoutError'})),timeoutMs);
     Promise.resolve().then(() => operation(controller.signal)).then(value => finish(resolve,value),error => finish(reject,error));
   });
 }
@@ -53,13 +53,33 @@ export function fetchJsonResponse(url, options = {}, { fetchImpl = fetch, timeou
     let result;
     try { result = await response.json(); }
     catch (error) {
-      if (response.ok) throw error;
+      if (response.ok) {
+        if (['AbortError', 'TimeoutError'].includes(error?.name)) throw error;
+        if (error instanceof SyntaxError) throw new SyntaxError('The server returned an unreadable response. Refresh this view to check again.');
+        throw new Error('The response ended before it could be read completely. Refresh to check the current result before trying again.');
+      }
       // Proxies can also return HTML/text for gateway and other HTTP errors.
       result = {};
     }
     return {response,result};
   };
   return (options.method ?? 'GET') === 'GET' ? withReadDeadline(execute,{signal:options.signal,timeoutMs}) : execute(options.signal);
+}
+
+/** Preserve authored API causes; never render a proxy's response body as an error. */
+export function apiResponseError(response, result = {}, { mutation = false } = {}) {
+  const status = response.status;
+  const fallback = status === 403 ? 'Your current access does not allow this action.'
+    : status === 413 ? 'The upload is larger than this connection accepts.'
+      : status === 429 ? 'Too many requests. Wait briefly before trying again.'
+        : status >= 500 ? mutation
+          ? `The server could not confirm the request (HTTP ${status}). Check the current result before trying again.`
+          : `The server could not return the requested information (HTTP ${status}).`
+          : `The request was rejected (HTTP ${status}). Refresh the current state before trying again.`;
+  const error = new Error(typeof result?.error === 'string' && result.error ? result.error : fallback);
+  error.status = status;
+  if (typeof result?.code === 'string' && /^[a-zA-Z][a-zA-Z0-9_-]{0,95}$/.test(result.code)) error.code = result.code;
+  return error;
 }
 
 export function createCommunicationWatch({ clock = () => performance.now(), staleAfterMs = STATUS_STALE_MS } = {}) {

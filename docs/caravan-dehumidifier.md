@@ -165,6 +165,12 @@ The request deadline fences bridge dispatch. Once a request reaches Tuya Local,
 that integration's native delivery and retry behavior applies; the deadline is
 not a device-local cancellation guarantee through a broken link.
 
+The action receipt distinguishes sending, sent but awaiting a device report, and
+a matching device report. If confirmation fails, it identifies the known cause:
+uncertain command delivery, lost feedback or no matching report before the
+deadline. An unconfirmed result does not establish whether the setting changed;
+check the current reported setting before trying again.
+
 ## Automatic power and Caravan location check
 
 The public equipment entry associates `temperature_control.sensor_device_id`

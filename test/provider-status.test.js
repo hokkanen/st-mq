@@ -1067,6 +1067,13 @@ test('local setup readiness diagnostics distinguish storage and authorization fr
   }
 });
 
+test('disabled local OCPP does not claim cloud availability during an independent cloud outage', () => {
+  const display = easeeLocalConnectionDisplay({ status: 'failed', localOcpp: { connected: false,
+    available: false, setup: { state: 'disabled' } } }, options);
+  assert.match(display.readings.detail, /Cloud readings use their own connection and availability checks/);
+  assert.doesNotMatch(display.readings.detail, /Cloud readings remain available/);
+});
+
 test('standalone endpoint ambiguity directs configuration without exposing private setup data', () => {
   const setup = { state: 'needs-endpoint', endpointSource: null, reason: 'synthetic-private-reason',
     endpoint: 'ws://synthetic-private-host:9001/ocpp', password: 'synthetic-private-password' };

@@ -78,19 +78,22 @@ export function chargingNotice(charger, view, summary) {
 /** Show the durable connection total, including already delivered energy. */
 export function chargingCost(charger, view, summary, { now = Date.now(), prices = [] } = {}) {
   if (view.showMetrics && finite(charger.sessionCost?.totalCents)) return {
+    scope: 'session',
     value: `€${(charger.sessionCost.totalCents / 100).toFixed(2)}`,
     detail: 'Estimated total electricity cost from plugging in through the target, including charging losses. Delivered energy remains included after the target and any further charging adds to the cost.'
       + ' Electricity prices include spot price, margin, electricity tax, transfer and VAT; the forecast uncertainty allowance used for planning is excluded.'
-      + (charger.sessionCost.usesForecast ? ' Remaining energy includes forecast electricity prices; savings and final cost may change.'
-        : charger.sessionCost.estimated ? ' Missing forecast or rate coverage uses the last available cost estimate.' : '') };
+      + (charger.sessionCost.usesForecast ? ' Remaining energy includes forecast electricity prices; savings and final cost may change.' : '')
+      + (charger.sessionCost.unrecordedGridKwh > 0
+        ? ` Includes ${Number(charger.sessionCost.unrecordedGridKwh.toFixed(2))} kWh inferred from charge progress during missing energy coverage; this is not recorded charger energy.` : '')
+      + (charger.sessionCost.estimated && !charger.sessionCost.usesForecast ? ' Incomplete energy or price coverage is supplemented by estimates; the total is not a complete recorded bill.' : '') };
   const forecast = charger.forecast, remaining = charger.progress?.remainingGridKwh ?? charger.requiredGridKwh ?? forecast?.requiredGridKwh;
   const unavailable = { value: 'No estimate', detail: 'A current charging forecast and electricity rates covering the time to target are needed.' };
   if (!view.showMetrics || !finite(remaining)) return unavailable;
-  if (remaining <= 0) return { value: '€0.00', detail: 'No additional grid energy is needed to reach the target.' };
+  if (remaining <= 0) return { scope: 'remaining', value: '€0.00', detail: 'No additional grid energy is needed to reach the target. The total cost since plugging in is unavailable.' };
   const finish = summary.completion.at;
   if (summary.roleState === 'uncertain' || !finite(finish) || finish <= now) return unavailable;
   const planned = view.rows.find(([label]) => label === 'Estimated cost to target');
-  if (planned) return { value: planned[1], detail: 'Estimated electricity cost to reach the target during the planned charging periods.' };
+  if (planned) return { scope: 'remaining', value: planned[1], detail: 'Estimated cost of the remaining energy during the planned charging periods. The total cost since plugging in is unavailable.' };
   const start = Math.max(now, timestamp(forecast?.startAt) ?? Infinity);
   if (!nativeForecast(forecast) || finish <= start) return unavailable;
   let cursor = start, cents = 0;
@@ -104,8 +107,8 @@ export function chargingCost(charger, view, summary, { now = Date.now(), prices 
     const end = Math.min(finish, interval.end);
     cents += remaining * (end - cursor) / (finish - start) * interval.price;
     cursor = end;
-    if (cursor >= finish) return { value: `€${(cents / 100).toFixed(2)}`,
-      detail: 'Remaining grid energy, including charging losses, priced at the electricity rates during the forecast charging time.' };
+    if (cursor >= finish) return { scope: 'remaining', value: `€${(cents / 100).toFixed(2)}`,
+      detail: 'Remaining grid energy, including charging losses, priced at the electricity rates during the forecast charging time. The total cost since plugging in is unavailable.' };
   }
   return unavailable;
 }

@@ -11,7 +11,7 @@ export function floorPreheatView(status = {}) {
     return view('Release pending', 'attention', 'A previous floor override still needs physical release verification. The controller cannot confirm that its contacts are OFF.');
   if (floor?.integrationSupported !== false)
     return view('Status unavailable', 'pending', 'Floor control status is unavailable. Readiness and relay positions are unknown.');
-  return view('Setup pending', 'pending', 'The SONOFF device connection has not been set up. Preheating remains unavailable until communication and automatic release are verified.');
+  return view('Integration unavailable', 'pending', 'Floor preheating has no supported device integration yet. Configuration cannot enable it. Device communication, contact readback and automatic release must be implemented and verified first.');
 }
 
 export function renderFloorPreheat(document, status) {
