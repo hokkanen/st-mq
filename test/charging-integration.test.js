@@ -74,6 +74,7 @@ test('charging API saves fenced dashboard controls separately from defaults and 
     charging: { value: false, available: true, measuredAt: engine.clock() } }) };
   item.controller = { status: () => ({ session: { connectedAt }, snapshot: { readAt: engine.clock() }, phase: 'off' }),
     async update() {}, close() {} };
+  await engine.charging.write(() => engine.charging.persist());
   let primary = true;
   const token = 'synthetic-charging-test-authorization';
   const server = createAppServer({ engine, store, token,
@@ -169,7 +170,7 @@ test('Charge Now API authenticates and rejects stale scope with automatic chargi
       assert.equal((await post(request)).status, 400, 'an old screen cannot overwrite the accepted request');
       advance(60_000); sessionAt = engine.clock();
       assert.equal((await post({ ...request, revision: accepted.request.revision })).status, 400);
-      assert.equal(chargerView(runtime).request.chargeNow, undefined, 'a replacement connection does not inherit Charge Now');
+      assert.equal(chargerView(runtime).request?.chargeNow, undefined, 'a replacement connection does not inherit Charge Now');
     }
     assert.deepEqual(runtime.settings, settings);
     assert.deepEqual(config.charging, configured);

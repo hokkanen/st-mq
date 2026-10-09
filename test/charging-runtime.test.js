@@ -1147,7 +1147,7 @@ test('manual window handback replans from newer SoC before issuing a release bas
   f.setNow(initialNow + HOUR / 2); await runtime.reconcile();
   adapter.setObservation({ mode: 3 }); await runtime.reconcile();
   assert.equal(chargerView(runtime).control.phase, 'yielded');
-  runtime.chargers.charger1.vehicleMatch = { id: 'bmw', vehicleAssociation: runtime.vehicleFeeds.bmw.association, scope: runtime.chargers.charger1.request.scope, association: runtime.chargers.charger1.association, connectedAt: chargerView(runtime).control.session.connectedAt, matchedAt: f.clock() };
+  runtime.chargers.charger1.vehicleMatch = { id: 'bmw', vehicleAssociation: runtime.vehicleFeeds.bmw.association, scope: runtime.chargers.charger1.request.scope, association: runtime.chargers.charger1.association, connectedAt: chargerView(runtime).control.session.connectedAt, matchedAt: f.clock(), revision: ++runtime.revision };
   runtime.receiveSoc(runtime.configuration.vehicles.bmw.mqttTopic, packet(85, f.clock(), 'manual-window-result'));
   assert.equal(runtime.chargers.charger1.plan.startAt, originalStart, 'The active manual session keeps its original plan context');
   f.setNow(initialNow + 2 * HOUR); adapter.setObservation({ mode: 2 });
@@ -1362,7 +1362,7 @@ test('a second plug with unavailable current preserves BMW price scheduling and 
   const firstItem = runtime.chargers.charger1;
   firstItem.vehicleMatch = { id: 'bmw', vehicleAssociation: runtime.vehicleFeeds.bmw.association,
     scope: firstItem.request.scope, association: firstItem.association,
-    connectedAt: chargerView(runtime).control.session.connectedAt, matchedAt: f.clock() };
+    connectedAt: chargerView(runtime).control.session.connectedAt, matchedAt: f.clock(), revision: ++runtime.revision };
   runtime.tick({ prices }); await runtime.reconcile();
   const before = chargerView(runtime);
   assert.equal(before.vehicle.id, 'bmw');
@@ -1944,8 +1944,13 @@ test('a newer session or automatic edit revokes an awaited Use automatic result'
     // controller command is awaited; its own reconcile waits on this flight.
     if (change === 'request') item.request.revision++;
     if (change === 'automatic') { item.controls.enabled = false; item.controls.revision++; f.runtime.refreshSettings(); }
-    if (change === 'connection') item.request.sessionId = 'newer-physical-connection';
-    f.runtime.persist(); f.runtime.invalidateCommands(); release(); await rejected;
+    if (change === 'connection') {
+      f.setNow(f.clock() + 1000);
+      const status = f.controller.status.bind(f.controller);
+      f.controller.status = () => { const observed = status(); return { ...observed,
+        session: { ...observed.session, connectedAt: f.clock() } }; };
+    }
+    await f.runtime.write(() => f.runtime.persist()); f.runtime.invalidateCommands(); release(); await rejected;
     assert.equal(item.takeoverAttempt, undefined);
     if (change === 'automatic') assert.equal(item.controls.enabled, false);
   }

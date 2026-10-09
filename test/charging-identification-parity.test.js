@@ -35,6 +35,7 @@ function fixture(t, transport) {
   const tesla = { association: 'synthetic-parity-tesla', healthy: false, pluggedIn: true, atHome: true, charging: true,
     actualPowerKw: 7, batteryLevel: 70, chargeLimitSoc: 85, fields: {} };
   let runtime;
+  const admit = target => store.transaction(() => { target.preserveWriteState(); target.persist(); });
   const attach = (target, id = 'charger1') => {
     const item = target.chargers[id], scope = item.association;
     item.adapter = transport === 'cloud' ? { normalize: easeeChargerTelemetry }
@@ -43,10 +44,12 @@ function fixture(t, transport) {
         request: async () => assert.fail('Synthetic identification fixture does not send commands') });
     item.controller = { status: () => structuredClone({ ...control, snapshot: { ...snapshot, scope, readAt: now } }),
       update: async () => {}, close: async () => {} };
+    admit(target);
   };
   const attachTesla = target => {
     target.teslaCapture = { topic: 'synthetic/parity/tesla/#', snapshot: () => structuredClone(tesla),
       reception: () => ({ connected: true }) };
+    admit(target);
   };
   const create = ({ attached = true, captured = true } = {}) => {
     const target = new ChargingRuntime({ engine: {}, store, config, clock: () => now });
@@ -88,12 +91,14 @@ function fixture(t, transport) {
     }
     control.manual = manual ? { kind: 'stop' } : null;
     control.phase = 'paused';
+    admit(runtime);
   };
   const startTesla = ({ retained = false } = {}) => {
     Object.assign(tesla, { healthy: true, pluggedIn: true, atHome: true, charging: true,
       fields: { charger_power: { value: 7, receivedAt: START, retained },
         plugged_in: { value: true, receivedAt: START, retained: false },
         charging_state: { value: 'Charging', receivedAt: START, retained: false } } });
+    admit(runtime);
   };
   runtime = create();
   return { get runtime() { return runtime; }, snapshot, control, tesla, attach, attachTesla, create, publish,

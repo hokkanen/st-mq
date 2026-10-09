@@ -1,3 +1,4 @@
+import { admitChargingObservation } from './helpers/charging-observation.js';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { EventEmitter } from 'node:events';
@@ -121,7 +122,7 @@ async function fixture(t, { firstCurrentA = 16, firstAvailable = true, stepMetad
     const instance = runtime; t.after(() => instance.close());
     runtime.tick = () => {}; runtime.pricesInitialized = true;
     runtime.updatePlan = () => {
-      runtime.telemetry(now);
+      admitChargingObservation(runtime, now);
       for (const item of Object.values(runtime.chargers)) item.plan = { id: 'synthetic-normal-plan', feasible: true,
         deadlineAt: START + 8 * 3600_000, startAt: economicStartAt, periods: [{ startAt: economicStartAt, endAt: null }] };
     };
@@ -170,11 +171,11 @@ async function fixture(t, { firstCurrentA = 16, firstAvailable = true, stepMetad
     stopFirst() { firstStopped = true; firstCurrentA = 0; firstStatusAt = meterAt = now; },
     setFirstSourceTime(value) { firstSourceAt = value; },
     setFirstNative(value) { firstNative = value; },
-    observe() { return runtime.telemetry(now); },
+    observe() { return admitChargingObservation(runtime, now); },
     async update() { meterAt = now; await runtime.reconcile('charger2'); return runtime.chargers.charger2.controller.status(); },
     async restart() { runtime.persist(); await runtime.close(); await create(); },
     async sampleTesla(current) { publishTesla({ charger_actual_current: current, charger_power: current * .69, healthy: true });
-      await adapter.refresh(); return runtime.telemetry(now); },
+      await adapter.refresh(); return admitChargingObservation(runtime, now); },
   };
 }
 

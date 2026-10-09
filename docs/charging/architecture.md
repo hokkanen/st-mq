@@ -84,6 +84,35 @@ physical evidence. The detailed contracts specify the fresh checks needed before
 using restored state. Report history, session overrides and restoration duties
 are separate records; deleting a report does not erase an equipment obligation.
 
+## Admitted transitions and read-only projections
+
+Vehicle/source admission, native reconciliation and planning-state refresh own
+runtime transitions inside the storage write scope. They advance connection
+requests, simultaneous vehicle assignments, consumed evidence, identification
+attempts, source-derived target state and request defaults. Native reconciliation
+admits these changes even when Automatic is off. An accepted Tesla observation
+updates its capture and runtime context in the same acquisition transaction;
+buffered subscription replay isolates each observation with a savepoint so a
+caught failure cannot commit only one side. Failed buffered replay or its outer
+commit withholds Tesla source readiness until a fresh successful subscription.
+Existing original source clocks and physical obligations retain their meaning.
+
+`telemetry()`, `views()` and `status()` project accepted context and current
+availability. Polling cannot create session requests or attempt IDs, consume
+source evidence, renew deadlines, expire a manual SOC anchor or write storage.
+A newly observed replacement/disconnect immediately withholds the old identity
+and actionable request until the admitted transition completes; it does not
+silently clear durable context. Returned projections do not expose writable
+references to requests, observations, plans or configured defaults. Diagnostics
+consume these same projections without becoming an additional transition owner.
+
+Runtime and Easee ownership serializers validate the candidate current durable
+shape before saving, using the same validators as restart. Failure before COMMIT
+keeps previous committed state and rolls back the owning transition. A failure
+in a postcommit observer retains the new committed state and reports the error;
+it cannot restore older state or automatically dispatch a command. These checks do
+not replace protocol admission, live authority or native command confirmation.
+
 ## Two example sequences
 
 **New connection with Automatic enabled.** Fresh physical evidence starts the

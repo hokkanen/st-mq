@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { createEaseeScheduleAdapter, normalizeScheduleState, scheduleFingerprint,
   delayedScheduleFor, manualScheduleWindow } from '../src/charging/easee.js';
-import { createChargingController } from '../src/charging/controller.js';
+import { createChargingController, validateChargingOwnershipState } from '../src/charging/controller.js';
 import { createHttp } from '../src/acquisition/http.js';
 import { createDeviceProviders } from '../src/acquisition/devices.js';
 
@@ -37,7 +37,7 @@ function harness() {
     waitForReadback: async ms => { h.readbackWaits.push(ms); await h.waitHook?.(ms); } });
   h.restart = () => { h.controller?.close(); h.controller = createChargingController({ adapter: h.adapter, initialState: h.saved,
     getIdentification: snapshot => h.identificationHook ? h.identificationHook(snapshot) : h.identification ?? null,
-    saveState: value => { h.saveHook?.(value); h.saved = structuredClone(value); }, clock: () => h.now, canControl: () => h.allowed }); };
+    saveState: value => { validateChargingOwnershipState(value); h.saveHook?.(value); h.saved = structuredClone(value); }, clock: () => h.now, canControl: () => h.allowed }); };
   h.restart();
   h.update = extra => h.controller.update({ enabled: true, plan: { id: 'plan-one', startAt: NOW + 3 * 3600_000 },
     timezone: 'Europe/Helsinki', maximumAmps: 16, ...extra });

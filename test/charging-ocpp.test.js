@@ -1,3 +1,4 @@
+import { admitChargingObservation } from './helpers/charging-observation.js';
 import { withReportDatabase } from './helpers/report-database.js';
 import test from 'node:test';
 import assert from 'node:assert/strict';
@@ -152,6 +153,29 @@ test('fresh OCPP connector status cannot refresh old or unknown voltage measurem
   assert.equal(adapter.normalize(snapshot, { now: START }).voltageV.available, false);
 });
 
+test('scalar and phase OCPP current preserve their input clocks across connector status refreshes', () => {
+  const { adapter } = fixture();
+  const currentTimes = [START - 10 * MINUTE, START - 9 * MINUTE, START - 8 * MINUTE];
+  const snapshot = { online: true, readAt: START, statusAt: START,
+    supply: { chargerCurrentA: [6, 9, 12], observationTimes: { charger: currentTimes } } };
+  const first = adapter.normalize(snapshot, { now: START });
+  assert.equal(first.actualCurrentA.value, 9);
+  assert.equal(first.actualCurrentA.measuredAt, currentTimes[0]);
+  assert.equal(first.actualCurrentA.receivedAt, null, 'Reading a snapshot cannot manufacture receipt evidence.');
+  assert.deepEqual(first.actualCurrentA.inputs.map(input => input.measuredAt), currentTimes);
+  assert.equal(first.phaseCurrentA.measuredAt, first.actualCurrentA.measuredAt);
+  snapshot.readAt += MINUTE; snapshot.statusAt += MINUTE;
+  const refreshed = adapter.normalize(snapshot, { now: START + MINUTE });
+  assert.deepEqual(refreshed.actualCurrentA, first.actualCurrentA, 'Healthy unchanged current keeps its source clock.');
+  for (const times of [undefined, [START, null, START], [START, START + 1, START]]) {
+    snapshot.supply.observationTimes.charger = times;
+    snapshot.readAt = START; snapshot.statusAt = START;
+    const invalid = adapter.normalize(snapshot, { now: START });
+    assert.equal(invalid.actualCurrentA.available, false);
+    assert.equal(invalid.phaseCurrentA.available, false);
+  }
+});
+
 test('native pause is a finite transaction-specific zero profile with no positive current command', () => {
   const instruction = ocppPauseInstruction({ profileId: 1, transactionId: 7, now: START, startAt: START + 30 * MINUTE });
   const p = instruction.payload.csChargingProfiles;
@@ -225,6 +249,7 @@ test('native physical reconnect restores the charger card without granting trans
   };
   const runtime = attach(f, () => f.now);
   let control = await f.controller.update({ enabled: true, plan: plan(START + 30 * MINUTE) });
+  admitChargingObservation(runtime);
   let charger = runtime.status().chargers[0];
   assert.equal(charger.values.connected.value, true);
   assert.equal(charger.values.connected.source, 'easee-ocpp');
@@ -249,6 +274,7 @@ test('native physical reconnect restores the charger card without granting trans
   restored.snapshot({ transactionId: null, transactionStartedAt: null, transactionConfirmed: false, statusAt: START });
   const restarted = attach(restored, () => restored.now);
   await restored.controller.update({ enabled: true, plan: plan(START + 30 * MINUTE) });
+  admitChargingObservation(restarted);
   charger = restarted.status().chargers[0];
   assert.deepEqual(charger.request, request, 'Restart and rereading the same status preserve the physical session and deadline');
   assert.equal(charger.values.connected.value, true);

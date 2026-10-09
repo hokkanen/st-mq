@@ -348,7 +348,7 @@ test('new timestamps on unchanged plugged/charging states cannot turn a parked B
 test('later competing evidence revokes an earlier association without selecting a different car', async t => {
   const f = fixture(), runtime = f.create(); t.after(() => runtime.close());
   publish(runtime, facts()); pauseBmw(runtime, f); assert.equal(view(runtime).vehicle.id, 'bmw');
-  f.setNow(START + 2 * MINUTE); f.setCharging(true); f.setTeslaEvidence('easee'); runtime.tick();
+  f.setNow(START + 2 * MINUTE); f.setCharging(true); f.setTeslaEvidence('easee'); await runtime.tick();
   assert.equal(view(runtime).vehicle.state, 'conflict');
   assert.equal(view(runtime).vehicle.reason, 'conflicting-vehicle-evidence');
 });
@@ -480,13 +480,13 @@ test('old Tesla plug state cannot rebound from unplugged Easee into a duplicate 
 
 test('fresh Tesla unplug evidence revokes a match and stale probe verdict cannot restore it', async t => {
   const f = fixture(), runtime = f.create(); t.after(() => runtime.close());
-  f.setTeslaEvidence('easee'); runtime.tick();
+  f.setTeslaEvidence('easee'); await runtime.tick();
   f.setNow(START + MINUTE); f.tesla.pluggedIn = false;
   f.tesla.fields = { plugged_in: { receivedAt: START + MINUTE, retained: false } };
-  runtime.tick(); assert.equal(view(runtime).vehicle.state, 'unidentified');
+  await runtime.tick(); assert.equal(view(runtime).vehicle.state, 'unidentified');
   f.setNow(START + 2 * MINUTE); f.tesla.pluggedIn = true; f.tesla.fields.plugged_in.receivedAt = START + 2 * MINUTE;
-  runtime.tick(); assert.equal(view(runtime).vehicle.state, 'unidentified');
-  f.setTeslaEvidence('easee'); runtime.tick(); assert.equal(view(runtime).vehicle.id, 'tesla');
+  await runtime.tick(); assert.equal(view(runtime).vehicle.state, 'unidentified');
+  f.setTeslaEvidence('easee'); await runtime.tick(); assert.equal(view(runtime).vehicle.id, 'tesla');
 });
 
 test('a failed identity persistence cannot consume an event or leave a phantom match', async t => {

@@ -44,7 +44,8 @@ export async function startMqtt({ engine, store, config, connect = mqtt.connect,
     clock: () => engine.clock(), initialState: store.getState('charging:teslamate'),
     brokerIdentity: routing.identity('ha'), saveState: state => store.setState('charging:teslamate', state),
     afterRollback: effect => store.afterRollback?.(effect),
-    onBoundary: event => engine.charging?.receiveVehicleBoundary?.('tesla', event) }) : null;
+    onObservation: ({ boundary }) => boundary ? engine.charging?.receiveVehicleBoundary?.('tesla', boundary)
+      : engine.charging?.receiveVehicleObservation?.('tesla') }) : null;
   const chargingTesla = teslamate;
   if (chargingTesla && engine.charging) engine.charging.teslaCapture = chargingTesla;
   const topicGroups = [
@@ -444,10 +445,15 @@ export async function startMqtt({ engine, store, config, connect = mqtt.connect,
           if (channel.teslaSubscriptionOverflow || !Array.isArray(granted) || subscriptionRejected(teslamate.topic, error, granted)) {
             chargingTesla.setConnected(false, 'subscription-failed'); report('mqtt-teslamate-subscribe-error');
           } else {
+            const failedAdmission = () => {
+              chargingTesla.setConnected(false, 'subscription-failed');
+              channel.readinessFailed = true; channel.ready = false;
+            };
+            store.afterRollback(failedAdmission);
             chargingTesla.setConnected(true);
             for (const message of buffered ?? []) {
-              try { chargingTesla.receive(message.topic, message.payload, message.packet, message.at); }
-              catch { report('mqtt-observation-rejected'); }
+              try { store.transaction(() => chargingTesla.receive(message.topic, message.payload, message.packet, message.at)); }
+              catch { failedAdmission(); report('mqtt-observation-rejected'); break; }
             }
           }
         });

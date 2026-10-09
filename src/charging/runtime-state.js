@@ -7,7 +7,39 @@ import { validateChargingFlexibility } from './flexibility.js';
 import { validateChargingProgress } from './progress.js';
 
 const object = input => input && typeof input === 'object' && !Array.isArray(input);
+const time = value => Number.isSafeInteger(value) && value >= 0;
+const identifier = value => typeof value === 'string' && value.length > 0 && value.length <= 128;
+const fields = (value, allowed) => object(value) && Object.keys(value).every(key => allowed.includes(key));
+const vehicleIds = ['bmw', 'tesla'];
+const evidenceFields = ['scope', 'chargingTimes', 'stoppedTimes', 'physicalCharging', 'historyOverflow',
+  'bmwReason', 'bmwChargingReadingId', 'bmwPlugReadingId', 'bmwContestedPauseRequestedAt', 'teslaContestedPauseRequestedAt',
+  'teslaCurrentCandidate', 'teslaCurrentMatch', 'teslaCurrentMatchTestId', 'teslaCurrentResolvedTestId'];
+const times = value => Array.isArray(value) && value.length <= 4096
+  && value.every((at, index) => time(at) && (index === 0 || value[index - 1] < at));
 const sessionConnectedAt = request => Number(request.scope.split(':').at(-1));
+const scoped = (value, association) => typeof value === 'string' && value.startsWith(`${association}:`)
+  && time(Number(value.slice(association.length + 1))) && value === `${association}:${Number(value.slice(association.length + 1))}`;
+function validateVehicleContext(previous) {
+  const { vehicleEvidence: evidence, vehicleMatch: match, vehicleConflict: conflict, association } = previous;
+  if (evidence != null && (!fields(evidence, evidenceFields) || !scoped(evidence.scope, association)
+    || !times(evidence.chargingTimes) || !times(evidence.stoppedTimes)
+    || evidence.physicalCharging !== undefined && typeof evidence.physicalCharging !== 'boolean'
+    || evidence.historyOverflow !== undefined && typeof evidence.historyOverflow !== 'boolean'
+    || evidence.bmwReason !== undefined && !['matched-controlled-pause', 'matched-identification-pause', 'matched-physical-session'].includes(evidence.bmwReason)
+    || ['bmwChargingReadingId', 'bmwPlugReadingId'].some(key => evidence[key] != null && !identifier(evidence[key])))
+    || match != null && (!fields(match, ['id', 'scope', 'association', 'vehicleAssociation', 'connectedAt', 'matchedAt', 'revision', 'pauseRequestedAt'])
+      || !vehicleIds.includes(match.id) || match.association !== association || !identifier(match.vehicleAssociation)
+      || !time(match.connectedAt) || match.scope !== `${association}:${match.connectedAt}`
+      || !time(match.matchedAt) || match.matchedAt < match.connectedAt
+      || !Number.isSafeInteger(match.revision) || match.revision < 1)
+    || conflict != null && (!fields(conflict, ['scope', 'ids', 'vehicleAssociations', 'at'])
+      || !scoped(conflict.scope, association) || !time(conflict.at)
+      || !Array.isArray(conflict.ids) || !conflict.ids.length || new Set(conflict.ids).size !== conflict.ids.length
+      || conflict.ids.some(id => !vehicleIds.includes(id))
+      || !fields(conflict.vehicleAssociations, vehicleIds)
+      || Object.values(conflict.vehicleAssociations).some(value => value != null && !identifier(value))))
+    throw new Error('Unsupported saved vehicle identity evidence; start a fresh development database');
+}
 function validateSavedRequest(request, association) {
   if (request == null) return;
   try {
@@ -68,9 +100,17 @@ export function validateChargingRuntimeState(saved) {
       throw new Error('Unsupported consumed vehicle evidence; start a fresh development database');
   validateSavedControls(saved.controls, true);
   for (const [id, previous] of Object.entries(saved.chargers ?? {})) {
-    if (!['charger1', 'charger2'].includes(id) || !object(previous)
+    if (!['charger1', 'charger2'].includes(id) || !fields(previous, ['association', 'controls', 'replan', 'request', 'plan', 'progress',
+      'supplyEstimate', 'sessionCost', 'vehicleMatch', 'vehicleEvidence', 'vehicleConflict', 'identification', 'targetState',
+      'vehicleDisconnect', 'streamAssociation', 'streamEvidence'])
       || typeof previous.association !== 'string' || !previous.association.length)
       throw new Error('Unsupported saved charging session; start a fresh development database');
+    for (const key of ['plan', 'supplyEstimate', 'sessionCost', 'vehicleDisconnect', 'streamEvidence'])
+      if (previous[key] != null && !object(previous[key]))
+        throw new Error('Unsupported saved charging session; start a fresh development database');
+    if (previous.streamAssociation !== undefined && !identifier(previous.streamAssociation))
+      throw new Error('Unsupported saved charging session; start a fresh development database');
+    validateVehicleContext(previous);
     validateSavedControls(previous.controls);
     validateTargetState(previous.targetState);
     validateChargingProgress(previous.progress);
@@ -86,8 +126,10 @@ export function validateChargingRuntimeState(saved) {
     if (previous.identification != null) validateIdentificationState(previous.identification);
   }
   for (const previous of saved.view?.chargers ?? []) validateTargetSelection(previous?.targetSelection);
-  for (const previous of Object.values(saved.vehicleFeeds ?? {})) {
-    if (!object(previous)) throw new Error('Unsupported saved vehicle evidence; start a fresh development database');
+  for (const [id, previous] of Object.entries(saved.vehicleFeeds ?? {})) {
+    if (id !== 'bmw' || !fields(previous, ['reading', 'consumedPlugId', 'consumedChargingId'])
+      || ['consumedPlugId', 'consumedChargingId'].some(key => previous[key] != null && !identifier(previous[key])))
+      throw new Error('Unsupported saved vehicle evidence; start a fresh development database');
     validateBmwChargingHistory(previous.reading);
   }
 }

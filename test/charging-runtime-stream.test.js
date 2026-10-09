@@ -43,7 +43,7 @@ function fixture(t) {
   };
   h.start = async runtime => { await runtime.setAdapter('charger1', h.adapter); await runtime.reconcile('charger1');
     const item=runtime.chargers.charger1, at=view(runtime).control.session.connectedAt;
-    if(at===START) item.vehicleMatch={id:'tesla',vehicleAssociation:'synthetic-tesla-source',scope:`${item.association}:${at}`,matchedAt:at}; };
+    if(at===START) item.vehicleMatch={id:'tesla',vehicleAssociation:'synthetic-tesla-source',scope:`${item.association}:${at}`,association:item.association,connectedAt:at,matchedAt:at,revision:1}; };
   h.event = (runtime, id, value, previousValue, measuredAt, previousMeasuredAt = START) => {
     h.now = Math.max(h.now, measuredAt + 1);
     return runtime.receiveEaseeObservation({ id, value, measuredAt, receivedAt: h.now, previousValue, previousMeasuredAt });

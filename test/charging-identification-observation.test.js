@@ -129,7 +129,7 @@ async function fixture(t, transport, vehicle = 'bmw', { retainedOnly = false, he
     const plan = () => ({ id: 'synthetic-economic-plan', feasible: true, startAt: normalCharging ? START : FUTURE,
       periods: [{ startAt: normalCharging ? START : FUTURE, endAt: null }] });
     runtime.chargers.charger1.plan = plan();
-    runtime.updatePlan = async () => { runtime.telemetry(now); runtime.chargers.charger1.plan = plan(); };
+    runtime.updatePlan = async () => { await runtime.write(() => { runtime.chargers.charger1.plan = plan(); runtime.persist(); }); };
     runtime.teslaCapture = { snapshot: () => structuredClone(tesla) };
     runtime.setMqttStatus({ connected: true, subscribed: true }, 'bmw');
     if (vehicle === 'bmw') {
@@ -800,7 +800,7 @@ test('serialized BMW pauses wait for a quiet peer after the first attempt is exh
   control.owned = null; control.identification = null;
   second.controller = { supportsIdentification: true, status: () => control, close() {} };
   second.adapter = { normalize: easeeChargerTelemetry };
-  f.runtime.telemetry(f.now);
+  await f.runtime.write(() => f.runtime.persist());
   assert.equal(first.identification.phase, 'pausing');
   assert.equal(second.identification.phase, 'waiting');
   assert.equal(second.identification.chargeDeadlineAt, null);
@@ -809,7 +809,7 @@ test('serialized BMW pauses wait for a quiet peer after the first attempt is exh
   f.setNow(first.identification.pauseUntil + 1000);
   control.snapshot.readAt = f.now; control.snapshot.powerAt = f.now;
   control.snapshot.observations[120].at = f.now;
-  f.runtime.telemetry(f.now);
+  await f.runtime.write(() => f.runtime.persist());
   assert.equal(first.identification.phase, 'inconclusive');
   assert.equal(second.identification.phase, 'charging', 'An expired attempt cannot immediately hand off another pause with stale peer evidence');
   assert.equal(second.identification.chargeDeadlineAt, null);
@@ -822,10 +822,10 @@ test('serialized BMW pauses wait for a quiet peer after the first attempt is exh
   await f.update();
   control.snapshot.readAt = f.now; control.snapshot.powerAt = f.now;
   control.snapshot.observations[120].at = f.now;
-  f.runtime.telemetry(f.now);
+  await f.runtime.write(() => f.runtime.persist());
   assert.equal(second.identification.phase, 'pausing', 'A fresh stable peer permits the queued BMW pause after the quiet window');
   const secondDeadline = second.identification.pauseUntil;
-  f.setNow(f.now + 1000); f.runtime.telemetry(f.now);
+  f.setNow(f.now + 1000); await f.runtime.write(() => f.runtime.persist());
   assert.equal(second.identification.pauseUntil, secondDeadline);
   assert.equal(first.identification.id, exhausted.id); assert.equal(first.identification.phase, 'inconclusive');
   assert.equal(first.identification.pauseUntil, exhausted.pauseUntil);

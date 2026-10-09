@@ -9,6 +9,7 @@ import { Store } from '../src/storage/store.js';
 import { startReplica } from '../src/app/replica.js';
 import { chargingSettings } from '../src/charging/settings.js';
 import { buildCharger, CHARGER_DEFINITIONS } from '../src/charging/model.js';
+import { normalizeScheduleState, scheduleFingerprint, effectiveScheduleFingerprint } from '../src/charging/easee.js';
 
 const snapshotAt = Date.parse('2026-01-15T00:00:00Z');
 
@@ -40,7 +41,10 @@ test('read-only replica shows saved charging preferences, SoC and ownership at t
     association: 'stmq/garage/charger1/vehicle', readingId: 'snapshot-reading' };
   const plan = { state: 'waiting', reason: 'cheapest-feasible-start', startAt: snapshotAt + 3600_000,
     deadlineAt: snapshotAt + 4 * 3600_000, finishAt: snapshotAt + 3 * 3600_000, requiredGridKwh: 24, feasible: true };
-  const owned = { planId: 'snapshot-plan', startAt: plan.startAt, confirmedAt: snapshotAt - 10_000, fingerprint: 'invented-fingerprint' };
+  const schedule = normalizeScheduleState({ enabled: 'delayed', delayed: { timezone: 'UTC', startTime: '01:00:00', maximumAmps: 16 } });
+  const owned = { planId: 'snapshot-plan', startAt: plan.startAt, confirmedAt: snapshotAt - 10_000,
+    fingerprint: scheduleFingerprint(schedule), activeFingerprint: effectiveScheduleFingerprint(schedule), schedule,
+    scheduleRequestedAt: snapshotAt - 11_000 };
   const ownership = { version: 5, phase: 'waiting', owned,
     released: false, manual: null, reason: 'Native delayed start confirmed.' };
   const view = { settings, controls: { priority: 'balanced', revision: 2 }, chargers: CHARGER_DEFINITIONS.map(definition => {

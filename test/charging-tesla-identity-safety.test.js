@@ -1,3 +1,4 @@
+import { admitChargingObservation } from './helpers/charging-observation.js';
 import { withReportDatabase } from './helpers/report-database.js';
 import test from 'node:test';
 import assert from 'node:assert/strict';
@@ -133,7 +134,7 @@ test('saved Tesla identity is bound to the actual source, including car, broker,
     disabled: null,
   })) await t.test(name, t => {
     const f = runtimeFixture(t), runtime = f.create(), original = f.capture();
-    runtime.teslaCapture = original.capture;
+    runtime.teslaCapture = original.capture; admitChargingObservation(runtime);
     assert.equal(runtime.telemetry(f.now).charger1.vehicle.id, 'tesla');
     assert.equal(runtime.chargers.charger1.vehicleMatch.vehicleAssociation, original.capture.snapshot().association);
     runtime.persist();
@@ -146,7 +147,7 @@ test('saved Tesla identity is bound to the actual source, including car, broker,
 });
 
 test('Tesla power consumption survives restart and fences a quick move to another charger', t => {
-  const f = runtimeFixture(t), runtime = f.create(), source = f.capture(); runtime.teslaCapture = source.capture;
+  const f = runtimeFixture(t), runtime = f.create(), source = f.capture(); runtime.teslaCapture = source.capture; admitChargingObservation(runtime);
   assert.equal(runtime.telemetry(f.now).charger1.vehicle.id, 'tesla');
   f.setNow(NOW + 1000);
   Object.assign(f.physical.charger1, { connected: false, charging: false, at: f.now,
@@ -159,7 +160,7 @@ test('Tesla power consumption survives restart and fences a quick move to anothe
     'The previous charger already consumed this power evidence before restart');
   f.setNow(NOW + 3000); source.send('charger_power', 6);
   f.setNow(NOW + 4000); source.send('charger_power', 7);
-  f.physical.charger2.at = f.now;
+  f.physical.charger2.at = f.now; admitChargingObservation(restarted);
   assert.equal(restarted.telemetry(f.now).charger2.vehicle.id, 'tesla');
 });
 

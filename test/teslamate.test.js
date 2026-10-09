@@ -10,7 +10,7 @@ function fixture(initialState) {
   let now = NOW, saved;
   const boundaries = [];
   const capture = createChargingTeslaCapture({ initialState, clock: () => now,
-    saveState: state => { saved = state; }, onBoundary: event => boundaries.push(event) });
+    saveState: state => { saved = state; }, onObservation: ({ boundary }) => { if (boundary) boundaries.push(boundary); } });
   capture.setConnected(true);
   return { capture, boundaries, setNow(value) { now = value; }, saved: () => structuredClone(saved),
     send(field, value, packet = {}) { return capture.receive(`teslamate/cars/1/${field}`, value, packet); } };

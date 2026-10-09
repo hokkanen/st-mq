@@ -216,6 +216,11 @@ export function createOcppScheduleAdapter({ request, readSnapshot, isCurrent = (
       const voltageTimes = supply.observationTimes?.voltage;
       const voltageAvailable = complete(supply.voltageV) && complete(voltageTimes)
         && voltageTimes.every(at => time(at) && at <= now && now - at <= 5 * 60_000);
+      const currentTimes = supply.observationTimes?.charger;
+      const currentAvailable = complete(supply.chargerCurrentA) && complete(currentTimes)
+        && currentTimes.every(at => time(at) && at <= now);
+      const currentAt = currentAvailable ? Math.min(...currentTimes) : null;
+      const currentInputs = [0, 1, 2].map(phase => ({ measuredAt: currentTimes?.[phase] ?? null }));
       return { ...snapshot, provider: 'easee', providerConnected: available, capabilities: adapter.capabilities,
         connected: signal(snapshot.pluggedIn, snapshot.statusAt, 'easee-ocpp', snapshot.statusReceivedAt ?? null),
         charging: signal(STATUSES.includes(snapshot.connectorStatus) ? snapshot.connectorStatus === 'Charging' : null,
@@ -225,10 +230,9 @@ export function createOcppScheduleAdapter({ request, readSnapshot, isCurrent = (
         availableCurrentA: allowanceTelemetry?.availableCurrentA
           ?? { value: null, available: false, source: 'easee-equalizer', measuredAt: null, receivedAt: null, inputs: [] },
         maxCurrentA: allowanceTelemetry?.maxCurrentA ?? signal(ceilings.length ? Math.min(...ceilings) : null),
-        actualCurrentA: signal(complete(supply.chargerCurrentA) ? supply.chargerCurrentA.reduce((sum, value) => sum + value, 0) / 3 : null),
-        phaseCurrentA: { ...signal(complete(supply.chargerCurrentA) ? supply.chargerCurrentA : null,
-          complete(supply.observationTimes?.charger) ? Math.min(...supply.observationTimes.charger) : null),
-          inputs: [0, 1, 2].map(phase => ({ measuredAt: supply.observationTimes?.charger?.[phase] ?? null })) },
+        actualCurrentA: { ...signal(currentAvailable ? supply.chargerCurrentA.reduce((sum, value) => sum + value, 0) / 3 : null,
+          currentAt), timeBasis: 'derived-observations', inputs: currentInputs },
+        phaseCurrentA: { ...signal(currentAvailable ? supply.chargerCurrentA : null, currentAt), inputs: currentInputs },
         voltageV: { ...signal(voltageAvailable ? supply.voltageV.reduce((sum, value) => sum + value, 0) / 3 : null,
           voltageAvailable ? Math.min(...voltageTimes) : null), timeBasis: 'derived-observations',
           inputs: [0, 1, 2].map(phase => ({ measuredAt: voltageTimes?.[phase] ?? null })) },

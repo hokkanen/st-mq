@@ -31,6 +31,23 @@ insufficient property load can make a case inconclusive. Preserve the observatio
 and continue when useful conditions become available. These local tools require
 no paid model calls; repeated cloud queries are not needed for status recording.
 
+## Offline admission and projection invariants
+
+`test/charging-view-purity.test.js` compares the same admitted multi-session
+history with no public polling and with repeated telemetry/card/status polling.
+It checks runtime/feed/native state, independently readable SQLite values and
+controller request traces, including restart, replacement connections, detached
+outputs and IOERR/FULL rollback. `test/charging-observation-flow.test.js` exercises
+the real MQTT acquisition boundary and native controller reconciliation with
+Automatic off and no dashboard or planner refresh. Ordinary Tesla packets,
+buffered subscription replay and storage failure must admit source/runtime state
+together without renewing source clocks or consuming evidence twice.
+
+Synthetic native fixtures call an explicit admitted observation helper when they
+supply new evidence. Reading a fixture's view is not an event. These regressions
+prove software behavior with controlled source events and fault injection; they
+do not qualify storage hardware or establish a real device's physical response.
+
 ## Prepare a bounded session
 
 1. Record the application revision, charger firmware, actual car-to-charger

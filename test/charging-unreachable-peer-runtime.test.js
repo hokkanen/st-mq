@@ -1,3 +1,4 @@
+import { admitChargingObservation } from './helpers/charging-observation.js';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { ChargingRuntime } from '../src/charging/runtime.js';
@@ -74,13 +75,13 @@ function fixture(t, id, { vehicle = 'tesla', retained = false, minimumCurrent = 
     bmw({ atHome: true, pluggedIn: true }, START - 10 * MINUTE, { retain: true });
     bmw({ charging: true }, START - MINUTE);
   }
-  const read = () => runtime.telemetry(now);
-  return { id, peerId, controls, states, tesla, bmw, read,
+  const observe = () => admitChargingObservation(runtime, now);
+  return { id, peerId, controls, states, tesla, bmw, observe,
     get runtime() { return runtime; }, get item() { return runtime.chargers[id]; }, get now() { return now; },
     setNow(value) { now = value; },
-    begin() { read(); now = START + 1000; return read()[id].vehicle; },
+    begin() { observe(); now = START + 1000; return observe()[id].vehicle; },
     beginCurrentTest() {
-      read();
+      observe();
       const state = runtime.chargers[id].identification, control = controls[id];
       control.currentTest = { id: state.id, connectedAt: control.session.connectedAt,
         sessionId: control.session.sessionId, phase: 'active', startedAt: START,
@@ -88,7 +89,7 @@ function fixture(t, id, { vehicle = 'tesla', retained = false, minimumCurrent = 
         appliedCurrentA: 6, originalCurrentA: 12, restoreCurrentA: null, pending: null };
       control.snapshot.fields.current_limit = { value: 6, measuredAt: START, receivedAt: START,
         retained: false, commandSource: 'rpc' };
-      now = START + 4000; return read()[id].vehicle;
+      now = START + 4000; return observe()[id].vehicle;
     },
     physicalStop({ owned = true, requestedAt = REQUEST, stoppedAt = STOP, readback = true } = {}) {
       const state = runtime.chargers[id].identification, control = controls[id];
@@ -101,12 +102,12 @@ function fixture(t, id, { vehicle = 'tesla', retained = false, minimumCurrent = 
       Object.assign(control.snapshot, { charging: false, connectorStatus: 'SuspendedEVSE',
         powerKw: 0, currentA: 0, statusAt: stoppedAt });
       control.snapshot.fields.start_charging = { value: false, measuredAt: stoppedAt, retained: false };
-      now = stoppedAt + 1000; return readback ? read()[id].vehicle : null;
+      now = stoppedAt + 1000; return readback ? observe()[id].vehicle : null;
     },
     vehicleStop(packet = {}) {
       if (vehicle === 'tesla') tesla({ charging_state: 'Stopped', charger_actual_current: 0, charger_power: 0 }, packet);
       else bmw({ charging: false }, STOP, packet);
-      return read()[id].vehicle;
+      return observe()[id].vehicle;
     },
     peerTransition(at = REQUEST + 1000) {
       Object.assign(controls[peerId].snapshot, { online: true, charging: true,
@@ -121,7 +122,7 @@ function fixture(t, id, { vehicle = 'tesla', retained = false, minimumCurrent = 
       Object.assign(peer.snapshot, { online: true, pluggedIn: false, charging: false,
         connectorStatus: 'Available', powerKw: 0, currentA: 0, statusAt: now });
       tesla({ healthy: true, charging_state: 'Charging', charger_actual_current: 11, charger_power: 8 });
-      return read()[id].vehicle;
+      return observe()[id].vehicle;
     },
     async restart() {
       runtime.persist(); await runtime.close(); runtime = create();
@@ -137,11 +138,11 @@ for (const id of IDS) {
     assert.equal(f.begin().id, null);
     assert.equal(f.item.identification.phase, 'pausing');
     assert.equal(f.item.identification.candidate.kind, 'tesla');
-    assert.equal(f.read()[f.peerId].vehicle.id, null);
+    assert.equal(f.observe()[f.peerId].vehicle.id, null);
     assert.equal(f.physicalStop().id, null, 'Physical Stop still needs Tesla corroboration');
     assert.equal(f.vehicleStop().id, 'tesla');
     assert.equal(f.item.identification.phase, 'completed');
-    assert.equal(f.read()[f.peerId].vehicle.id, null, 'The unavailable peer gains no identity by elimination');
+    assert.equal(f.observe()[f.peerId].vehicle.id, null, 'The unavailable peer gains no identity by elimination');
   });
 
   test(`${id}: BMW keeps its existing live stop matching while the unreachable peer permits a pause`, t => {
@@ -151,7 +152,7 @@ for (const id of IDS) {
     assert.equal(f.item.identification.candidate.kind, 'ongoing');
     assert.equal(f.physicalStop().id, null);
     assert.equal(f.vehicleStop().id, 'bmw');
-    assert.equal(f.read()[f.peerId].vehicle.id, null);
+    assert.equal(f.observe()[f.peerId].vehicle.id, null);
   });
 
   test(`${id}: retained Tesla draw cannot request a peer-unavailable identification pause`, t => {
@@ -161,7 +162,7 @@ for (const id of IDS) {
     assert.equal(f.item.identification.phase, 'charging');
     f.setNow(START + 10_000);
     f.tesla({ charging_state: 'Charging', charger_actual_current: 10, charger_power: 7 });
-    assert.equal(f.read()[id].vehicle.id, null, 'Unchanged re-publication retains original evidence provenance');
+    assert.equal(f.observe()[id].vehicle.id, null, 'Unchanged re-publication retains original evidence provenance');
     assert.equal(f.item.identification.candidate, null);
   });
 
@@ -182,7 +183,7 @@ for (const id of IDS) {
     assert.deepEqual(f.controls[id].owned, owned);
     assert.equal(f.vehicleStop().id, 'tesla');
     await f.restart();
-    assert.equal(f.read()[id].vehicle.id, 'tesla');
+    assert.equal(f.observe()[id].vehicle.id, 'tesla');
     assert.equal(f.item.identification.candidate.powerReceivedAt, START);
   });
 
@@ -191,19 +192,19 @@ for (const id of IDS) {
     assert.equal(f.vehicleStop().id, 'tesla');
     const pause = structuredClone(f.item.identification.pause), owned = structuredClone(f.controls[id].owned);
     f.setNow(STOP + 10_000); f.peerTransition();
-    assert.equal(f.read()[id].vehicle.id, null);
+    assert.equal(f.observe()[id].vehicle.id, null);
     assert.equal(f.item.identification.phase, 'observing');
     assert.deepEqual(f.item.identification.pause, pause);
     assert.deepEqual(f.controls[id].owned, owned);
     await f.restart();
-    assert.equal(f.read()[id].vehicle.id, null);
+    assert.equal(f.observe()[id].vehicle.id, null);
   });
 
   test(`${id}: a failed pause cannot contaminate a later independent Tesla match or its consumption watermark`, async t => {
     const f = fixture(t, id); f.begin(); f.physicalStop();
     const originalCandidateAt = f.item.identification.candidate.powerReceivedAt;
     f.setNow(f.item.identification.pauseUntil + 1000);
-    assert.equal(f.read()[id].vehicle.id, null);
+    assert.equal(f.observe()[id].vehicle.id, null);
     assert.equal(f.item.identification.phase, 'inconclusive', 'Tesla never corroborated the original stop');
     assert.equal(f.independentRamp().id, 'tesla');
     assert.equal(f.item.vehicleMatch.pauseRequestedAt, undefined, 'Independent evidence carries no old pause dependency');
@@ -213,12 +214,12 @@ for (const id of IDS) {
       'Consume the winning power evidence, not the abandoned candidate baseline');
     f.setNow(independentAt + 1000);
     f.runtime.chargers[f.peerId].streamEvidence = { chargingTimes: [REQUEST + 1000] };
-    assert.equal(f.read()[id].vehicle.id, 'tesla');
+    assert.equal(f.observe()[id].vehicle.id, 'tesla');
     assert.equal(f.item.vehicleEvidence.teslaContestedPauseRequestedAt, REQUEST);
     assert.deepEqual(f.item.vehicleMatch, independent);
     assert.equal(f.runtime.consumedTeslaPower.receivedAt, independentAt);
     await f.restart();
-    assert.equal(f.read()[id].vehicle.id, 'tesla');
+    assert.equal(f.observe()[id].vehicle.id, 'tesla');
     assert.deepEqual(f.item.vehicleMatch, independent);
     assert.equal(f.runtime.consumedTeslaPower.receivedAt, independentAt);
   });
@@ -234,12 +235,12 @@ for (const id of IDS) {
     const independent = structuredClone(f.item.vehicleMatch);
     f.setNow(f.now + 1000);
     f.runtime.chargers[f.peerId].streamEvidence = { stoppedTimes: [STOP + 1000] };
-    assert.equal(f.read()[id].vehicle.id, 'tesla');
+    assert.equal(f.observe()[id].vehicle.id, 'tesla');
     assert.equal(f.item.vehicleEvidence.teslaContestedPauseRequestedAt, REQUEST);
     assert.deepEqual(f.item.vehicleMatch, independent);
     assert.ok(f.runtime.consumedTeslaPower.receivedAt >= consumed);
     await f.restart();
-    assert.equal(f.read()[id].vehicle.id, 'tesla');
+    assert.equal(f.observe()[id].vehicle.id, 'tesla');
     assert.equal(f.item.vehicleMatch.pauseRequestedAt, undefined);
   });
 
@@ -253,13 +254,13 @@ for (const id of IDS) {
     assert.equal(f.item.vehicleMatch.pauseRequestedAt, REQUEST);
     Object.assign(f.controls[id], { owned: null, ownsInstruction: false, pauseConfirmed: false });
     await f.restart();
-    assert.equal(f.read()[id].vehicle.id, 'tesla');
+    assert.equal(f.observe()[id].vehicle.id, 'tesla');
     f.setNow(STOP + 10_000); f.peerTransition();
-    assert.equal(f.read()[id].vehicle.id, null);
+    assert.equal(f.observe()[id].vehicle.id, null);
     assert.equal(f.item.identification.phase, 'observing');
     assert.equal(f.item.identification.pause.requestedAt, REQUEST);
     await f.restart();
-    assert.equal(f.read()[id].vehicle.id, null);
+    assert.equal(f.observe()[id].vehicle.id, null);
   });
 }
 
@@ -268,14 +269,14 @@ test('Shelly hands its confirmed 6 A comparison to the unreachable-peer Tesla pa
   assert.equal(f.beginCurrentTest().id, null);
   assert.equal(f.item.identification.phase, 'charging', 'Five seconds of confirmed comparison remain required');
   f.setNow(START + 6000);
-  assert.equal(f.read().charger2.vehicle.id, null);
+  assert.equal(f.observe().charger2.vehicle.id, null);
   assert.equal(f.item.identification.phase, 'pausing');
   assert.equal(f.item.identification.candidate.kind, 'tesla');
   const test = structuredClone(f.controls.charger2.currentTest);
   assert.equal(f.physicalStop({ requestedAt: START + 7000, stoppedAt: START + 10_000 }).id, null);
   assert.equal(f.vehicleStop().id, 'tesla');
   assert.deepEqual(f.controls.charger2.currentTest, test, 'Identity cannot overwrite the current restoration obligation');
-  assert.equal(f.read().charger1.vehicle.id, null);
+  assert.equal(f.observe().charger1.vehicle.id, null);
 });
 
 test('an online peer with missing measurements does not select the unreachable-peer exception', t => {
@@ -301,6 +302,6 @@ for (const restriction of ['pending', 'takeover', 'owned pause', 'native schedul
     f.begin();
     assert.equal(f.item.identification.candidate, null);
     assert.equal(f.item.identification.phase, 'charging');
-    assert.equal(f.read()[f.id].vehicle.id, null);
+    assert.equal(f.observe()[f.id].vehicle.id, null);
   });
 }

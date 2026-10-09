@@ -9,9 +9,49 @@ import { validateAdmittedSourceTime } from '../domain/time-evidence.js';
 const copy = value => structuredClone(value);
 const isTime = value => Number.isSafeInteger(value) && value >= 0;
 const boundaryId = value => typeof value === 'string' && value.length > 0 && value.length <= 128;
+const object = value => value !== null && typeof value === 'object' && !Array.isArray(value);
+const fields = (value, keys) => object(value) && Object.keys(value).every(key => keys.includes(key));
+const fingerprint = value => typeof value === 'string' && /^[a-f0-9]{64}$/.test(value);
+const optionalTime = value => value == null || isTime(value);
+const optionalId = value => value == null || boundaryId(value);
+function validPeriods(periods) {
+  return Array.isArray(periods) && periods.length > 0 && periods.every((period, index) =>
+    fields(period, ['startAt', 'endAt']) && isTime(period.startAt)
+    && (index === periods.length - 1 && period.endAt === null || isTime(period.endAt) && period.endAt > period.startAt)
+    && (index === 0 || isTime(periods[index - 1].endAt) && period.startAt >= periods[index - 1].endAt));
+}
+const validExecution = value => value == null || fields(value, ['planId', 'periods', 'finalStartAt', 'deadlineAt', 'pauseConfirmedThrough'])
+  && optionalId(value.planId) && validPeriods(value.periods) && value.finalStartAt === value.periods.at(-1).startAt
+  && optionalTime(value.deadlineAt) && optionalTime(value.pauseConfirmedThrough);
+const validOwned = value => value == null || fields(value, ['planId', 'startAt', 'fingerprint', 'activeFingerprint', 'schedule',
+  'confirmedAt', 'requestedAt', 'scheduleRequestedAt', 'purpose', 'identificationId', 'identificationConnectedAt', 'periods', 'finalStartAt'])
+  && optionalId(value.planId) && isTime(value.startAt) && fingerprint(value.fingerprint) && fingerprint(value.activeFingerprint)
+  && object(value.schedule) && isTime(value.confirmedAt) && optionalTime(value.requestedAt) && optionalTime(value.scheduleRequestedAt)
+  && (value.periods === undefined ? value.finalStartAt === undefined
+    : validPeriods(value.periods) && value.finalStartAt === value.periods.at(-1).startAt);
+const validPending = value => value == null || fields(value, ['action', 'kind', 'planId', 'startAt', 'expectedFingerprint',
+  'expectedActiveFingerprint', 'previousFingerprint', 'previousActiveFingerprint', 'startedAt', 'installRequestedAt', 'pauseRequestedAt',
+  'purpose', 'identificationId', 'identificationConnectedAt', 'execution', 'periods', 'finalStartAt'])
+  && isTime(value.startedAt) && fingerprint(value.previousFingerprint) && fingerprint(value.previousActiveFingerprint)
+  && optionalTime(value.installRequestedAt) && optionalTime(value.pauseRequestedAt) && validExecution(value.execution)
+  && (value.action === 'clear' ? ['delayed', 'daily', 'weekly'].includes(value.kind)
+    : value.action === 'install' && optionalId(value.planId) && isTime(value.startAt)
+      && fingerprint(value.expectedFingerprint) && fingerprint(value.expectedActiveFingerprint))
+  && (value.periods === undefined ? value.finalStartAt === undefined
+    : validPeriods(value.periods) && value.finalStartAt === value.periods.at(-1).startAt);
+const validManual = value => value == null || fields(value, ['kind', 'detectedAt', 'reason', 'fingerprint', 'activeFingerprint',
+  'windowEndAt', 'cycleEndsAt', 'resumeAt', 'resumeReason', 'repeating', 'startsAt'])
+  && ['stop', 'schedule', 'window', 'enable', 'charge-now'].includes(value.kind)
+  && isTime(value.detectedAt) && isTime(value.cycleEndsAt) && typeof value.reason === 'string'
+  && fingerprint(value.fingerprint) && fingerprint(value.activeFingerprint)
+  && (value.windowEndAt === null || isTime(value.windowEndAt))
+  && (value.resumeAt === null || isTime(value.resumeAt))
+  && (value.resumeReason === null || value.resumeReason === 'window-end')
+  && (value.kind === 'window' ? value.repeating === true && isTime(value.startsAt)
+    && isTime(value.windowEndAt) && value.resumeAt === value.windowEndAt && value.resumeReason === 'window-end'
+    : value.resumeAt === null && value.resumeReason === null);
 // Inactive cached recurrences are not instructions to this charging session.
 const activeFingerprint = effectiveScheduleFingerprint;
-const ownedFingerprint = owned => owned?.activeFingerprint ?? (owned?.schedule ? activeFingerprint(owned.schedule) : null);
 const STOP_REASON = 'The charger reports paused or disabled. A stop instruction is preventing automatic scheduling.';
 const RELEASE_REASON = 'Charging is released and may continue beyond the minimum and deadline.';
 const MIN_PRICE_PAUSE_MS = 15 * 60_000;
@@ -45,7 +85,9 @@ const validTakeoverPending = value => value == null || typeof value === 'object'
   && ['schedule', 'schedule-disable', 'enable', 'resume'].includes(value.stage)
   && [value.beforeSchedule, value.afterSchedule].every(value => typeof value === 'string' && /^[a-f0-9]{64}$/.test(value));
 function validIdentificationOwnership(value) {
-  if (!value || !identificationFields.some(key => Object.hasOwn(value, key))) return true;
+  if (value == null) return true;
+  if (!object(value)) return false;
+  if (!identificationFields.some(key => Object.hasOwn(value, key))) return true;
   const requestedAt = value.scheduleRequestedAt ?? value.installRequestedAt ?? value.startedAt;
   return value.purpose === 'identification' && boundaryId(value.identificationId)
     && isTime(value.identificationConnectedAt) && isTime(requestedAt)
@@ -72,7 +114,15 @@ const DIAGNOSTICS = {
 };
 
 export function validateChargingOwnershipState(initialState) {
-  if (initialState != null && (typeof initialState !== 'object' || Array.isArray(initialState) || initialState.version !== 5 || !validIdentificationOwnership(initialState.owned)
+  if (initialState != null && (!fields(initialState, ['version', 'phase', 'owned', 'pending', 'manual', 'released', 'disconnected',
+    'execution', 'handoverConfirmed', 'reason', 'session', 'errorCode', 'automaticTakeover', 'takeoverPending', 'vehicleDisconnect',
+    'lastManualResume', 'lastMissedTransition', 'lastReadAt', 'provisional']) || initialState.version !== 5
+    || ['owned', 'pending', 'manual', 'execution', 'vehicleDisconnect', 'lastManualResume', 'lastMissedTransition']
+      .some(key => initialState[key] != null && !object(initialState[key]))
+    || ['released', 'disconnected', 'provisional'].some(key => initialState[key] !== undefined && typeof initialState[key] !== 'boolean')
+    || initialState.handoverConfirmed != null && typeof initialState.handoverConfirmed !== 'boolean'
+    || !optionalTime(initialState.lastReadAt) || !validOwned(initialState.owned) || !validPending(initialState.pending)
+    || !validManual(initialState.manual) || !validExecution(initialState.execution) || !validIdentificationOwnership(initialState.owned)
     || !validIdentificationOwnership(initialState.pending) || !validTakeoverPending(initialState.takeoverPending)
     || !validAutomaticTakeover(initialState.automaticTakeover) || !validSession(initialState.session))) throw new Error('Unsupported charging ownership; start a fresh development database');
 }
@@ -108,8 +158,12 @@ export function createChargingController({ adapter, initialState = null, saveSta
   const status = () => ({ ...copy(state), enabled: desired.enabled === true, planningRevision, takeover: takeoverStatus(),
     identification: identification ? copy(identification) : null, snapshot: snapshot ? copy(snapshot) : null });
   const currentFingerprint = () => activeFingerprint(snapshot.schedule);
-  const ownsCurrent = () => state.owned && ownedFingerprint(state.owned) === currentFingerprint();
-  async function persist() { await saveState(copy(state)); }
+  const ownsCurrent = () => state.owned && state.owned.activeFingerprint === currentFingerprint();
+  async function persist() {
+    const saved = copy(state);
+    validateChargingOwnershipState(saved);
+    await saveState(saved);
+  }
   async function phase(value, reason, errorCode = null) { state.phase = value; state.reason = reason; state.errorCode = errorCode; await persist(); }
   const cycleEnd = now => resolveChargingDeadline(now, desired.readyBy, desired.timezone);
   function manual(kind, now, reason, extra = {}) {
@@ -177,7 +231,11 @@ export function createChargingController({ adapter, initialState = null, saveSta
       boundary.reconnected = { readingId: reconnected.readingId, measuredAt: reconnected.measuredAt,
         receivedAt: reconnected.receivedAt, retained: false, ...(reconnected.admittedAt === undefined ? {} : { admittedAt: reconnected.admittedAt }) };
     if (JSON.stringify(prior.vehicleDisconnect) === JSON.stringify(state.vehicleDisconnect)) return;
-    try { await persist(); } catch (error) { state = prior; throw error; }
+    try { await persist(); } catch (error) {
+      // A failed commit observer cannot undo the already durable boundary.
+      if (error?.committed !== true) state = prior;
+      throw error;
+    }
   }
   const staleDisconnect = () => snapshot.pluggedIn === false && state.session?.connected === true
       && isTime(snapshot.disconnectedAt) && snapshot.disconnectedAt < Math.max(
@@ -417,7 +475,10 @@ export function createChargingController({ adapter, initialState = null, saveSta
     state.manual = null; state.released = false; state.execution = execution; state.provisional = false;
     if (priorManual) state.lastManualResume = { at: clock(), deadlineAt: priorManual.cycleEndsAt, reason: automatic ? 'connection' : 'explicit' };
     remember(clock()); state.takeoverPending = null; state.automaticTakeover = null;
-    try { await persist(); } catch (error) { state.takeoverPending = unresolved; throw error; }
+    try { await persist(); } catch (error) {
+      if (error?.committed !== true) state.takeoverPending = unresolved;
+      throw error;
+    }
     takeoverState = 'confirmed';
   }
   async function refreshIdentification(now) {
@@ -466,7 +527,10 @@ export function createChargingController({ adapter, initialState = null, saveSta
         const previous = state.pending, witnessed = { ...pending, installRequestedAt: clock(),
           ...(before.mode === 3 ? { pauseRequestedAt: clock() } : {}) };
         state.pending = witnessed;
-        try { await persist(); } catch (error) { state.pending = previous; throw error; }
+        try { await persist(); } catch (error) {
+          if (error?.committed !== true) state.pending = previous;
+          throw error;
+        }
         Object.assign(pending, witnessed);
       } });
     state.lastReadAt = snapshot.readAt;
@@ -503,7 +567,7 @@ export function createChargingController({ adapter, initialState = null, saveSta
       // before interpreting the newly observed instruction as an app edit.
       if (state.pending?.action === 'install') {
         const expected = state.pending.expectedActiveFingerprint;
-        if (expected ? currentFingerprint() === expected : snapshot.fingerprint === state.pending.expectedFingerprint) {
+        if (currentFingerprint() === expected) {
           state.owned = confirmedOwned(now, state.pending);
           if (state.pending.execution) {
             state.execution = copy(state.pending.execution);
@@ -513,8 +577,7 @@ export function createChargingController({ adapter, initialState = null, saveSta
           // Own writes are never external session actions, including recovery.
           if (state.session) state.session.instruction = currentFingerprint();
         } else {
-          const unchanged = state.pending.previousActiveFingerprint
-            ? currentFingerprint() === state.pending.previousActiveFingerprint : snapshot.fingerprint === state.pending.previousFingerprint;
+          const unchanged = currentFingerprint() === state.pending.previousActiveFingerprint;
           state.pending = null; if (!unchanged) state.owned = null;
         }
       } else if (state.pending?.action === 'clear') {
@@ -523,16 +586,6 @@ export function createChargingController({ adapter, initialState = null, saveSta
           if (state.session) state.session.instruction = currentFingerprint();
         }
         state.pending = null;
-      }
-      if (state.manual && !isTime(state.manual.cycleEndsAt)) {
-        const { reason: _reason, ...prior } = state.manual;
-        const knownWindow = prior.kind === 'window' ? manualScheduleWindow(snapshot.schedule,
-          isTime(prior.detectedAt) ? prior.detectedAt : now) : null;
-        manual(prior.kind === 'window' && !knownWindow ? 'schedule' : prior.kind,
-          isTime(prior.detectedAt) ? prior.detectedAt : now, prior.kind === 'stop' ? STOP_REASON
-            : 'An observed manual Easee instruction has temporary priority.', { ...prior,
-              kind: prior.kind === 'window' && !knownWindow ? 'schedule' : prior.kind,
-              windowEndAt: knownWindow?.windowEndAt ?? null, resumeAt: null });
       }
       if (state.takeoverPending && !desired.takeover) {
         const unresolved = state.takeoverPending;
@@ -770,7 +823,10 @@ export function createChargingController({ adapter, initialState = null, saveSta
           const prior = state.pending, witnessed = { ...pending, installRequestedAt: clock(),
             ...(before.mode === 3 ? { pauseRequestedAt: clock() } : {}) };
           state.pending = witnessed;
-          try { await persist(); } catch (error) { state.pending = prior; throw error; }
+          try { await persist(); } catch (error) {
+            if (error?.committed !== true) state.pending = prior;
+            throw error;
+          }
           pending.installRequestedAt = witnessed.installRequestedAt;
           if (witnessed.pauseRequestedAt !== undefined) pending.pauseRequestedAt = witnessed.pauseRequestedAt;
         } });

@@ -51,7 +51,7 @@ function fixture(t, { naturalStart = false } = {}) {
   };
   publish({ atHome: true, pluggedIn: true }, START - 10 * MINUTE, true);
   publish({ charging: true }, START - MINUTE);
-  runtime.telemetry(now);
+  store.transaction(() => runtime.persist());
   const item = runtime.chargers.charger1, connectedAt = controls.charger1.session.connectedAt;
   item.identification = advanceIdentification(null, { connectedAt, now, charging: true });
   const candidate = prepareActiveBmwCandidate(runtime.vehicleFeeds.bmw.reading, {
@@ -75,6 +75,7 @@ function fixture(t, { naturalStart = false } = {}) {
       const snapshot = controls.charger2.snapshot;
       snapshot.connectorStatus = charging ? 'Charging' : 'SuspendedEV';
       snapshot.powerKw = charging ? 7 : 0; snapshot.statusAt = at;
+      store.transaction(() => { runtime.preserveWriteState(); runtime.persist(); });
     },
     restart() { runtime.persist(); runtime = create(); },
   };

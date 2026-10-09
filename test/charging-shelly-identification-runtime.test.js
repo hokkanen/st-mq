@@ -1,3 +1,4 @@
+import { admitChargingObservation } from './helpers/charging-observation.js';
 import { withReportDatabase } from './helpers/report-database.js';
 import test from 'node:test';
 import assert from 'node:assert/strict';
@@ -79,7 +80,7 @@ async function fixture(t, { charging = true, retainedOnly = false, enabled = tru
     runtime.pricesInitialized = true;
     runtime.chargers.charger2.controls.enabled = enabled; runtime.refreshSettings();
     runtime.updatePlan = () => {
-      runtime.telemetry(now);
+      admitChargingObservation(runtime, now);
       runtime.chargers.charger2.plan = planOverride ? structuredClone(planOverride)
         : { id: 'synthetic-economic-plan', feasible: true, startAt: FUTURE, deadlineAt: FUTURE + 60 * MINUTE,
           periods: [{ startAt: FUTURE, endAt: null }] };
@@ -261,7 +262,7 @@ test('Shelly bounded BMW pause returns to economic waiting without releasing cha
 
 test('Shelly Charge now includes identification and then releases without an economic delay', async t => {
   const f = await fixture(t); f.setNow(START + 1000);
-  f.runtime.telemetry(f.now); f.item().request.chargeNow = true;
+  admitChargingObservation(f.runtime, f.now); f.item().request.chargeNow = true;
   await f.update(); assert.equal(stops(f).length, 1); await f.confirm();
   assert.equal(f.card().vehicle.id, 'bmw'); assert.equal(starts(f).length, 1);
 });

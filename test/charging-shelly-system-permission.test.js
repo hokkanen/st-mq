@@ -1,3 +1,4 @@
+import { admitChargingObservation } from './helpers/charging-observation.js';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { EventEmitter } from 'node:events';
@@ -139,7 +140,7 @@ async function fixture(t, { initiallyPermitted = false, autoCharge = false, star
     runtime.tick = () => {}; runtime.pricesInitialized = true;
     runtime.chargers.charger2.controls.enabled = automatic; runtime.refreshSettings();
     runtime.updatePlan = () => {
-      runtime.telemetry(now);
+      admitChargingObservation(runtime, now);
       runtime.chargers.charger2.plan = { id: 'synthetic-system-plan', feasible: true,
         startAt: planStartAt, deadlineAt: START + 8 * 3600_000, periods: [{ startAt: planStartAt, endAt: null }] };
     };
@@ -491,12 +492,12 @@ test('ordinary automatic charging honors a late SYS hold at native current witho
 for (const chargeNow of [false, true])
 test(`SYS does not acquire Start authority with Automatic OFF and Charge now ${chargeNow}`, async t => {
   const f = await ordinaryFixture(t, { initiallyPermitted: true, automatic: false });
-  f.item().request.chargeNow = chargeNow;
+  if (chargeNow) f.item().request.chargeNow = true; else delete f.item().request.chargeNow;
   f.advance(70_000); f.permission(false); await f.update();
   f.advance(20_000); await f.update();
   assert.equal(f.item().controller.status().manual, null);
   assert.equal(f.item().controller.status().devicePermissionHeld, true);
-  assert.equal(f.item().request.chargeNow, chargeNow);
+  assert.equal(f.item().request.chargeNow === true, chargeNow);
   assert.equal(f.fields.start_charging.value, false);
   assert.equal(starts(f).length, 0);
   f.advance(1000); f.permission(true); await f.update();

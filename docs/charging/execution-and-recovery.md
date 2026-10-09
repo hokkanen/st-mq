@@ -63,6 +63,14 @@ charging paused until a cheaper period. The action is available only for the cur
 Pending, blocked and unconfirmed outcomes remain distinct; success requires
 charger readback.
 
+Persisted ownership and runtime vehicle evidence use the same current validators
+at database startup and controller construction. Unknown fields, malformed
+restriction objects, incomplete manual scope and unordered physical evidence
+reject before the database is changed or an equipment connection starts. Missing
+manual deadlines and retired schedule fingerprints are not repaired or translated
+into current control permission. Valid same-version restart, pending native
+instruction recovery and known later external instructions remain supported.
+
 Shelly current adjustment has independent permission through `limiterEnabled`.
 It remains active with Automatic scheduling off. A current setting carried into
 a new confirmed physical connection supplies initial device readback, not a

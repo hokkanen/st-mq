@@ -79,7 +79,7 @@ export function decodeChargingTeslaField(field, payload) {
 
 /** One durable vehicle projection. Vehicle data never produces EVSE electricity. */
 export function createChargingTeslaCapture({ settings = {}, clock = Date.now, initialState, saveState = () => {},
-  afterRollback = () => {}, brokerIdentity = null, onBoundary = () => {} } = {}) {
+  afterRollback = () => {}, brokerIdentity = null, onObservation = () => {} } = {}) {
   settings = teslamateConfiguration(settings);
   const root = `teslamate/${settings.namespace ? `${settings.namespace}/` : ''}cars/${settings.carId}/`;
   const signature = createHash('sha256').update(JSON.stringify([brokerIdentity, root, settings.homeGeofence])).digest('hex');
@@ -148,10 +148,10 @@ export function createChargingTeslaCapture({ settings = {}, clock = Date.now, in
           boundaries = [...boundaries, boundary].slice(-64);
         }
         saveState({ version: 1, signature, fields: structuredClone(fields), sequence, boundaries, lastMessageAt });
+        onObservation({ field, boundary: boundary ?? null });
       } catch (error) {
         rewind(); throw error;
       }
-      if (boundary) onBoundary(boundary);
       return true;
     },
     status() { const s = snapshot(); return { status: !connected ? 'waiting' : s.healthy ? 'ok' : 'degraded',
