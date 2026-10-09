@@ -204,6 +204,63 @@ test('a timed-out current read does not delay independent physical state or mete
   assert.equal(f.adapter.snapshot().lastRpcTimeout, null, 'A new MQTT generation starts fresh diagnostics');
 });
 
+for (const boundary of ['matching', 'matching reordered keys', 'contrary notification', 'intervening contradiction', 'partial notification', 'invalid notification', 'equal clock', 'older clock', 'new session'])
+test(`physical readback after a newer notification preserves source and session order: ${boundary}`, async t => {
+  const f = fixture(t);
+  for (const role of Object.keys(TYPES)) f.measuredAt[role] = NOW;
+  await f.ready();
+  const publish = f.client.publish, held = [];
+  f.client.publish = (topic, payload, options, done) => {
+    const frame = JSON.parse(payload);
+    if (frame.method === 'Object.GetStatus') { held.push(frame); done?.(); return; }
+    publish(topic, payload, options, done);
+  };
+  f.advance(1000);
+  const refreshing = f.adapter.refresh();
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(held.length, 1);
+  f.advance(1000);
+  const measuredAt = boundary === 'equal clock' ? NOW : boundary === 'older clock' ? NOW - 1000 : f.now();
+  const original = structuredClone(f.adapter.snapshot().fields.phase_info), value = { ...structuredClone(f.fields.phase_info), total_power: 2.4,
+    ...Object.fromEntries(['phase_a', 'phase_b', 'phase_c'].map(phase => [phase, { voltage: 230, current: 3.5, power: .8 }])) };
+  f.advance(1000);
+  const notification = boundary === 'contrary notification' ? { ...value, total_power: 3 }
+    : boundary === 'partial notification' ? { total_power: 2.4 }
+      : boundary === 'invalid notification' ? { ...value, phase_a: { voltage: 999, current: 3.5, power: .8 } } : value;
+  f.client.emit('message', `${PREFIX}/events/rpc`, Buffer.from(JSON.stringify({ src: DEVICE,
+    method: 'NotifyStatus', params: { ts: (NOW + 2030) / 1000, 'object:203': { value: notification } } })), {});
+  if (boundary === 'intervening contradiction') for (const update of [{ ...value, total_power: 3 }, value]) {
+    f.advance(100);
+    f.client.emit('message', `${PREFIX}/events/rpc`, Buffer.from(JSON.stringify({ src: DEVICE,
+      method: 'NotifyStatus', params: { ts: f.now() / 1000, 'object:203': { value: update } } })), {});
+  }
+  if (boundary === 'new session') {
+    f.notify('work_state', 'charger_free');
+    f.notify('work_state', 'charger_insert');
+  }
+  f.advance(1000);
+  const frame = held[0], receivedAt = f.now();
+  const replyValue = boundary === 'matching reordered keys' ? Object.fromEntries(Object.entries(value).reverse()) : value;
+  f.client.emit('message', `${frame.src}/rpc`, Buffer.from(JSON.stringify({ id: frame.id, src: DEVICE, dst: frame.src,
+    result: { value: replyValue, last_update_ts: measuredAt / 1000 } })), {});
+  await refreshing;
+  const physical = f.adapter.snapshot().fields.phase_info;
+  if (!boundary.startsWith('matching')) {
+    assert.equal(physical.measuredAt, original.measuredAt);
+    assert.equal(physical.receivedAt, original.receivedAt);
+    assert.deepEqual(physical.value, original.value);
+    if (boundary.includes('partial') || boundary.includes('invalid')) assert.equal(f.adapter.normalize().powerKw.available, false);
+    assert.equal(f.mutations().length, 0);
+    return;
+  }
+  assert.equal(physical.measuredAt, measuredAt, 'The complete native source measurement advances immediately');
+  assert.equal(physical.receivedAt, receivedAt);
+  assert.deepEqual(physical.value, value);
+  assert.equal(f.adapter.normalize().powerKw.value, 2.4);
+  assert.equal(f.adapter.normalize().powerKw.available, true);
+  assert.equal(f.mutations().length, 0);
+});
+
 test('a missed ordinary read retains a still-fresh accepted Stop without granting commands', async t => {
   const f = fixture(t);
   for (const role of Object.keys(TYPES)) f.measuredAt[role] = NOW;

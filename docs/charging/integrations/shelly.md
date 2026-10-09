@@ -235,7 +235,13 @@ physical measurements.
 Replies are fenced by MQTT generation,
 the setting revision at request publication and intervening command dispatch;
 an older contradictory reply cannot overwrite a newer native setting or grant
-control. After a readback failure, command readiness returns only after a full
+control. Physical phase measurements keep their own source ordering: when one
+complete matching notification arrives after a query, its reply may supply the
+advancing original measurement clock in the same physical session. A later
+contrary change, malformed or invalidated physical data, equal-clock conflict,
+older source or replacement session still prevents that admission. This does
+not relax setting confirmation or extend measurement freshness.
+After a readback failure, command readiness returns only after a full
 successful refresh; healthy polling preserves existing readiness. A missed query
 does not invalidate independently fresh, committed observations in the already
 verified connection. Accepted permission and an active identification attempt

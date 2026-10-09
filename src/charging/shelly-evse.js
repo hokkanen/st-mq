@@ -1,4 +1,5 @@
 import { createHash, randomUUID } from 'node:crypto';
+import { isDeepStrictEqual } from 'node:util';
 import { shellyCurrentLimit, vehiclePilotLimit } from './shelly-limit.js';
 import { createMqttAdmission } from '../acquisition/mqtt-admission.js';
 import { shellyProfile, supportedShellyStates } from './shelly-profile.js';
@@ -283,7 +284,7 @@ export function createShellyEvseAdapter({ config, broker, client, store, engine,
       if (mutation && params.role) fieldRevisions.set(params.role, (fieldRevisions.get(params.role) ?? 0) + 1);
       timer.unref?.(); pending.set(id, { resolve, reject, timer, generation: epoch,
         readback: statusReadback ? { role: params.role, generation: epoch,
-          revision: fieldRevisions.get(params.role) ?? 0, requestedAt: clock() } : null });
+          revision: fieldRevisions.get(params.role) ?? 0, sessionSequence: state.sessionSequence, requestedAt: clock() } : null });
       // No offline queue, retention or automatic application-level retry.
       try { client.publish(`${config.topicPrefix}/rpc`, JSON.stringify({ id, src: source, method, params }), { qos: 0, retain: false }, error => {
         if (error && pending.has(id)) { clearTimeout(timer); pending.delete(id); reject(fail(mutation ? 'evse-publish-unconfirmed' : 'evse-read-unavailable')); }
@@ -315,7 +316,19 @@ export function createShellyEvseAdapter({ config, broker, client, store, engine,
       && !Object.hasOwn(result, 'source') && (!delta.valueKnown || delta.value === null
         || JSON.stringify(result.value) === JSON.stringify(delta.value)))
       result = { ...result, source: delta.commandSource };
-    if (readback && (readback.generation !== generation || readback.revision !== (fieldRevisions.get(role) ?? 0))) return false;
+    // A physical measurement is not a setting confirmation. A notification
+    // after the query may already describe this exact complete measurement,
+    // while only the reply supplies its source clock. Admit that advancing
+    // sample without weakening instruction revisions or contrary evidence.
+    // More than one intervening change still requires a new query, even if
+    // the last value returns to the first value.
+    const matchingPhysicalReadback = role === 'phase_info' && readback?.sessionSequence === state.sessionSequence
+      && readback.revision + 1 === fieldRevisions.get(role)
+      && previous?.invalidatedAt === undefined && measuredAt > previous?.measuredAt
+      && !phaseReadingError(result.value)
+      && isDeepStrictEqual(result.value, notificationBaselines.get(role)?.value);
+    if (readback && (readback.generation !== generation
+      || readback.revision !== (fieldRevisions.get(role) ?? 0) && !matchingPhysicalReadback)) return false;
     const setting = ['start_charging', 'current_limit', 'work_state'].includes(role);
     if (measuredAt === null || !validateAdmittedSourceTime({ sourceTime: measuredAt, receivedAt, admittedAt, now: clock() })) {
       if (readback) throw fail('evse-read-unavailable');

@@ -16,6 +16,9 @@ Versions follow Semantic Versioning. `-dev.N` denotes a development prerelease.
 - A missed Shelly query no longer erases still-fresh accepted Stop confirmation
   or identification observations. New commands wait for a complete successful
   refresh; actual source loss, restrictions and original evidence expiry still apply.
+- Shelly keeps a complete advancing meter report when its matching notification
+  arrives before the query reply, avoiding false telemetry gaps during identification.
+  Original measurement clocks and contrary physical changes remain authoritative.
 - Charging plans finish under repeated unchanged observations instead of
   restarting until reporting becomes quiet. A bounded additional candidate
   recovers feasible two-car schedules around an earlier vehicle deadline.
