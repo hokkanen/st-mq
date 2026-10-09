@@ -11,6 +11,7 @@ const finite = Number.isFinite;
 const copy = value => structuredClone(value);
 const TYPES = { current_limit: 'Number', start_charging: 'Boolean', work_state: 'Enum', phase_info: 'Object' };
 const PERMISSION_EVENT_LIMIT = 64;
+const RPC_TIMEOUT_MS = 5000;
 const PHASE_KEYS = ['phase_a', 'phase_b', 'phase_c'];
 const MUTATIONS = new Set(['Number.Set', 'Boolean.Set', 'Schedule.Update']);
 const METHODS = new Set(['Shelly.GetDeviceInfo', 'Service.GetConfig', 'Service.GetStatus', 'Schedule.List', ...Object.values(TYPES).map(type => `${type}.GetConfig`), ...Object.values(TYPES).map(type => `${type}.GetStatus`), ...MUTATIONS]);
@@ -85,6 +86,7 @@ export function createShellyEvseAdapter({ config, broker, client, store, engine,
   let statusObserver = null;
   const cancellation = new AbortController();
   let storagePending = 0;
+  const admissionWaiters = new Set();
   let sourcePacketSequence = 0;
   const sourcePending = createSourceTimePending({ clock, ordered: true, limit: 128,
     dispatch(action) {
@@ -127,6 +129,7 @@ export function createShellyEvseAdapter({ config, broker, client, store, engine,
     return store.runWrite(action, { signal: cancellation.signal, isCurrent: current, bytes });
   };
   const publishStatus = () => {
+    for (const settled of [...admissionWaiters]) settled();
     if (closed) return;
     // The observer reads an already published snapshot. Its storage failure
     // cannot reject a native reading or interfere with command/readback work.
@@ -144,6 +147,31 @@ export function createShellyEvseAdapter({ config, broker, client, store, engine,
     && finite(serviceAt) && clock() >= serviceAt && clock() - serviceAt <= config.maxAgeMs;
   const ready = () => observationServiceReady() && storagePending === 0 && sourcePending.size === 0;
   const currentReady = () => ready() && currentControlReady;
+  function waitForInputAdmission({ deadlineAt = clock() + RPC_TIMEOUT_MS, signal } = {}) {
+    if (!Number.isSafeInteger(deadlineAt)) return Promise.reject(fail('invalid-evse-command'));
+    const epoch = generation, remaining = Math.max(0, deadlineAt - clock());
+    // This waits only for observations already received by this connection.
+    // It sends no query or command, grants no readiness and never renews the
+    // caller's action deadline. The caller must revalidate its original scope.
+    return new Promise(resolve => {
+      let timer, finished = false;
+      const finish = value => {
+        if (finished) return;
+        finished = true; clearTimeout(timer); admissionWaiters.delete(check);
+        signal?.removeEventListener('abort', cancelled); resolve(value);
+      };
+      const cancelled = () => finish(false);
+      const check = () => {
+        if (closed || !connected || epoch !== generation || signal?.aborted || clock() >= deadlineAt
+          || !observationServiceReady() || error) { finish(false); return; }
+        if (storagePending === 0 && sourcePending.size === 0) finish(true);
+      };
+      admissionWaiters.add(check);
+      signal?.addEventListener('abort', cancelled, { once: true });
+      timer = setTimeout(cancelled, remaining);
+      check();
+    });
+  }
   const identificationCurrentReady = () => observationServiceReady() && currentControlReady
     && Number.isSafeInteger(state.fields.current_limit?.value)
     && state.fields.current_limit.value >= currentConfig.min
@@ -186,7 +214,10 @@ export function createShellyEvseAdapter({ config, broker, client, store, engine,
       && now - field.receivedAt <= config.maxAgeMs;
   };
   function rejectPending(reason) { for (const item of pending.values()) { clearTimeout(item.timer); item.reject(fail(reason)); } pending.clear(); }
-  async function rpc(method, params = {}, { mutation = false, guard = () => true, beforePublish = () => {}, statusReadback = false, identificationCurrent = null } = {}) {
+  async function rpc(method, params = {}, { mutation = false, guard, beforePublish = () => {}, statusReadback = false, identificationCurrent = null } = {}) {
+    const epoch = generation, startedAt = performance.now(), deadlineAt = clock() + RPC_TIMEOUT_MS;
+    const mayWait = mutation && typeof guard === 'function';
+    guard ??= () => true;
     if (MUTATIONS.has(method) && !mutation) throw fail('invalid-evse-command');
     if (!METHODS.has(method) || mutation && !MUTATIONS.has(method)) throw fail('unsupported-evse-method');
     if (statusReadback && (params.owner !== `service:${config.serviceId}` || !TYPES[params.role]
@@ -203,7 +234,17 @@ export function createShellyEvseAdapter({ config, broker, client, store, engine,
         || config.limiterEnabled && currentReady());
     const permitted = () => ready() && !notificationPending.size && knownWorkState() && settingFresh('start_charging') && settingFresh('current_limit')
       && (method !== 'Number.Set' || config.limiterEnabled && currentReady() || identificationCurrentAllowed());
-    if (!connected || !admitted || closed || mutation && (!online || !permitted() || !canControl() || !guard())) throw fail('evse-control-unavailable');
+    const settleInput = async () => {
+      // Only a scoped caller that revalidates its instruction may wait. Use
+      // the same RPC deadline before and after intent persistence; a fresh
+      // Stop, replacement session or failed save must still prevent dispatch.
+      const remaining = Math.max(0, Math.floor(RPC_TIMEOUT_MS - (performance.now() - startedAt)));
+      if (!await waitForInputAdmission({ deadlineAt: Math.min(deadlineAt, clock() + remaining),
+        signal: cancellation.signal })) throw fail('evse-control-unavailable');
+    };
+    if (mayWait && (storagePending || sourcePending.size)) await settleInput();
+    if (!connected || !admitted || closed || epoch !== generation
+      || mutation && (!online || !permitted() || !canControl() || !guard())) throw fail('evse-control-unavailable');
     if (pending.size >= 16) throw fail('evse-request-limit');
     if (mutation && method === 'Schedule.Update' && (Object.keys(params).length !== 2 || params.enable !== false
       || !nativeSchedules?.jobs.some(job => job.id === params.id && job.enable && scheduleKind(job) === 'charging')))
@@ -212,20 +253,22 @@ export function createShellyEvseAdapter({ config, broker, client, store, engine,
       || params.role === 'current_limit' && (!finite(params.value) || params.value < config.minimumCurrentA || params.value > config.maximumCurrentA
         || Math.abs(params.value / config.currentStepA - Math.round(params.value / config.currentStepA)) > 1e-8)
       || params.role === 'start_charging' && typeof params.value !== 'boolean')) throw fail('invalid-evse-command');
-    const id = randomUUID(), epoch = generation;
+    const id = randomUUID();
     await beforePublish();
-    if (!connected || !admitted || closed || epoch !== generation || mutation && (!online || !permitted() || !canControl() || !guard())) throw fail('evse-command-revoked');
+    if (mayWait && (storagePending || sourcePending.size)) await settleInput();
+    if (!connected || !admitted || closed || epoch !== generation || performance.now() - startedAt >= RPC_TIMEOUT_MS
+      || mutation && (!online || !permitted() || !canControl() || !guard())) throw fail('evse-command-revoked');
     return new Promise((resolve, reject) => {
-      const requestedAt = clock(), started = performance.now();
+      const requestedAt = clock(), started = performance.now(), remainingMs = Math.max(0, RPC_TIMEOUT_MS - (started - startedAt));
       const timer = setTimeout(() => {
         pending.delete(id);
         const timedOutAt = clock(), elapsedMs = performance.now() - started;
         // Bounded transport evidence, without request IDs or private payloads.
         // A missed read is not evidence of an uncertain actuator instruction.
         lastRpcTimeout = { method, role: typeof params.role === 'string' && Object.hasOwn(TYPES, params.role) ? params.role : null,
-          requestedAt, timedOutAt, elapsedMs, timerOverrunMs: Math.max(0, elapsedMs - 5000) };
+          requestedAt, timedOutAt, elapsedMs, timerOverrunMs: Math.max(0, elapsedMs - remainingMs) };
         reject(fail(mutation ? 'evse-command-unconfirmed' : 'evse-read-timeout'));
-      }, 5000);
+      }, remainingMs);
       if (mutation && params.role) fieldRevisions.set(params.role, (fieldRevisions.get(params.role) ?? 0) + 1);
       timer.unref?.(); pending.set(id, { resolve, reject, timer, generation: epoch,
         readback: statusReadback ? { role: params.role, generation: epoch,
@@ -805,7 +848,7 @@ export function createShellyEvseAdapter({ config, broker, client, store, engine,
       ['ev2_import_energy_counter', reading(physical?.total_act_energy, 'kWh')],
     ]);
   };
-  const adapter = { association, config, snapshot, readings, refresh, rpc,
+  const adapter = { association, config, snapshot, readings, refresh, rpc, waitForInputAdmission,
     deviceInfo() {
       return device ? { ...device, available: !closed && connected && admitted && online && discovered
         && deviceGeneration === generation && time(readAt) && clock() >= readAt && clock() - readAt <= config.maxAgeMs } : null;

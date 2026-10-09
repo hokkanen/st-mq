@@ -66,6 +66,67 @@ const appState = (at, enabled) => ({ readAt: at, enabled, enabledAt: at, stopped
   controlKnown: true, faulted: false, authorizationBlocked: false, schedule: null });
 const writes = f => f.calls.filter(row => row.action !== 'GetCompositeSchedule');
 
+test('ordinary pending native refresh retains its confirmed pause until new evidence arrives', async t => {
+  const f = fixture(); t.after(() => f.controller.close());
+  const selected = plan(START + 30 * MINUTE);
+  assert.equal((await f.controller.update({ enabled: true, plan: selected })).pauseConfirmed, true);
+  const read = f.adapter.read;
+  let release, entered;
+  const reading = new Promise(resolve => { entered = resolve; });
+  f.adapter.read = async options => {
+    entered();
+    await new Promise(resolve => { release = resolve; });
+    return read(options);
+  };
+  const refresh = f.controller.update({ enabled: true, plan: selected });
+  await reading;
+  try {
+    assert.equal(f.controller.status().ownsInstruction, true);
+    assert.equal(f.controller.status().pauseConfirmed, true);
+  } finally {
+    f.adapter.read = read; release(); await refresh;
+  }
+  assert.equal(f.controller.status().pauseConfirmed, true);
+  assert.equal(writes(f).length, 1, 'Refreshing confirmation sends no replacement setting');
+});
+
+test('in-flight confirmation retains original freshness and withdraws on failed readback', async t => {
+  const f = fixture(); t.after(() => f.controller.close());
+  await f.controller.update({ enabled: true, plan: plan(START + 30 * MINUTE) });
+  const read = f.adapter.read;
+  let reject, entered;
+  const reading = new Promise(resolve => { entered = resolve; });
+  f.adapter.read = () => { entered(); return new Promise((_resolve, fail) => { reject = fail; }); };
+  const refresh = f.controller.update();
+  await reading;
+  assert.equal(f.controller.status().pauseConfirmed, true);
+  f.advance(61_000);
+  assert.equal(f.controller.status().pauseConfirmed, false, 'A held read cannot renew physical freshness');
+  assert.equal(f.controller.status().ownsInstruction, false);
+  f.adapter.read = read; reject(Object.assign(new Error('Synthetic read failure'), { code: 'readback-failed' }));
+  assert.equal((await refresh).errorCode, 'readback-failed');
+  assert.equal(f.controller.status().pauseConfirmed, false);
+  assert.equal((await f.controller.update()).pauseConfirmed, true);
+  assert.equal(writes(f).length, 1, 'A later good read recovers without repeating the accepted profile');
+});
+
+test('a contrary native composite withdraws pause confirmation and a later matching read recovers it', async t => {
+  const f = fixture(); t.after(() => f.controller.close());
+  await f.controller.update({ enabled: true, plan: plan(START + 30 * MINUTE) });
+  f.intercept((action, _payload, _options, result) => {
+    const reply = result();
+    if (action === 'GetCompositeSchedule') reply.chargingSchedule.chargingSchedulePeriod[0].limit = 16;
+    return reply;
+  });
+  const mismatch = await f.controller.update();
+  assert.equal(mismatch.errorCode, 'readback-mismatch');
+  assert.equal(mismatch.ownsInstruction, false);
+  assert.equal(mismatch.pauseConfirmed, false);
+  f.intercept(null);
+  assert.equal((await f.controller.update()).pauseConfirmed, true);
+  assert.equal(writes(f).length, 1, 'Composite recovery verifies the existing profile without replaying it');
+});
+
 test('OCPP preserves explicit balancing evidence and rejects malformed metadata', async t => {
   const f = fixture(); t.after(() => f.controller.close());
   for (const externalLoadBalancing of [true, false, null]) {

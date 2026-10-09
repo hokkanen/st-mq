@@ -137,6 +137,93 @@ test('contended Shelly notification closes command readiness until its original 
   assert.equal(store.writeHealth.status().failing, false);
 });
 
+test('Shelly action admission waits for a real queued receipt and preserves its original scope and clocks', async t => {
+  for (const transition of ['unchanged', 'stop', 'disconnect', 'transport-loss', 'failure', 'cancel', 'deadline']) await t.test(transition, async t => {
+    const directory = mkdtempSync(join(tmpdir(), 'stmq-evse-action-admission-'));
+    const store = new Store(join(directory, 'recording.sqlite')), writer = new DatabaseSync(store.path);
+    const f = fixture(t, {}, store);
+    let locked = false, rejectWrite = false;
+    const setState = store.setState.bind(store);
+    store.setState = (...args) => {
+      if (rejectWrite) throw Object.assign(new Error('Synthetic observation persistence failure'), { code: 'SQLITE_IOERR' });
+      return setState(...args);
+    };
+    t.after(() => {
+      if (locked) writer.exec('ROLLBACK');
+      f.adapter.close(); writer.close(); store.close(); rmSync(directory, { recursive: true, force: true });
+    });
+    await f.ready();
+    const before = f.adapter.snapshot(), commandsBefore = f.writes.filter(row => row.method.endsWith('.Set')).length;
+    writer.exec('BEGIN IMMEDIATE'); locked = true;
+    f.setNow(NOW + 1000);
+    if (transition === 'stop') f.notify('start_charging', false);
+    else if (transition === 'disconnect') f.notify('work_state', 'charger_free');
+    else f.notify('phase_info', structuredClone(f.fields.phase_info));
+    assert.equal(f.adapter.snapshot().commandBlockReason, 'evse-input-persistence-pending');
+    const signal = new AbortController();
+    let completed = false;
+    const waiting = f.adapter.waitForInputAdmission({ deadlineAt: f.now() + (transition === 'deadline' ? 30 : 1000), signal: signal.signal })
+      .then(value => { completed = true; return value; });
+    const scopedCommand = ['unchanged', 'stop', 'disconnect', 'failure'].includes(transition)
+      ? f.adapter.rpc('Boolean.Set', { owner: 'service:0', role: 'start_charging', value: false },
+        { mutation: true, guard: () => f.adapter.snapshot().session.sessionId === before.session.sessionId
+          && f.adapter.snapshot().fields.start_charging.value === before.fields.start_charging.value })
+        .then(() => null, error => error.code) : null;
+    await new Promise(resolve => setTimeout(resolve, 10));
+    assert.equal(completed, false, 'Uncommitted observations still fence the action');
+    assert.equal(f.writes.filter(row => row.method.endsWith('.Set')).length, commandsBefore);
+    if (transition === 'cancel') signal.abort();
+    if (transition === 'transport-loss') f.client.emit('offline');
+    if (transition === 'deadline') assert.equal(await waiting, false, 'Monotonic timeout holds even if the wall clock does not advance');
+    rejectWrite = transition === 'failure';
+    writer.exec('ROLLBACK'); locked = false;
+    const settled = await waiting;
+    assert.equal(settled, !['transport-loss', 'failure', 'cancel', 'deadline'].includes(transition));
+    const deadline = performance.now() + 2000;
+    while (store.writeQueueStatus().pending) {
+      assert.ok(performance.now() < deadline); await new Promise(resolve => setTimeout(resolve, 5));
+    }
+    const after = f.adapter.snapshot();
+    if (transition === 'unchanged') {
+      assert.equal(after.controlReady, true);
+      assert.equal(after.session.sessionId, before.session.sessionId);
+      assert.equal(after.fields.phase_info.receivedAt, NOW + 1000);
+      assert.equal(await scopedCommand, null);
+      assert.equal(f.writes.filter(row => row.method.endsWith('.Set')).length, commandsBefore + 1);
+    } else {
+      if (scopedCommand) assert.equal(await scopedCommand, 'evse-control-unavailable');
+      if (transition === 'stop') assert.equal(after.fields.start_charging.value, false);
+      if (transition === 'disconnect') assert.equal(after.session.connected, false);
+      if (transition === 'failure') assert.equal(after.controlReady, false);
+      assert.equal(f.writes.filter(row => row.method.endsWith('.Set')).length, commandsBefore,
+        'Settling admission never dispatches or authorizes a replacement action');
+    }
+  });
+});
+
+test('Shelly input admission after intent persistence shares the original monotonic RPC deadline', async t => {
+  const f = fixture(t); await f.ready();
+  let elapsed = 0;
+  t.mock.method(performance, 'now', () => elapsed);
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  let outcome = null;
+  const command = f.adapter.rpc('Boolean.Set', { owner: 'service:0', role: 'start_charging', value: false },
+    { mutation: true, guard: () => true, beforePublish: () => {
+      elapsed = 4800;
+      f.delta('phase_info', { value: structuredClone(f.fields.phase_info) }, { eventAt: f.now() + 400 });
+    } }).then(() => { outcome = 'published'; }, error => { outcome = error.code; });
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(f.adapter.snapshot().commandBlockReason, 'evse-source-time-pending');
+  elapsed = 4999; t.mock.timers.tick(199);
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(outcome, null);
+  elapsed = 5000; t.mock.timers.tick(1);
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(outcome, 'evse-control-unavailable', 'A stationary wall clock cannot start another five-second wait');
+  await command;
+  assert.equal(f.writes.filter(row => row.method.endsWith('.Set')).length, 0);
+});
+
 test('queued unrelated messages preserve observed limits and the adopted plan without renewing evidence', async t => {
   const directory = mkdtempSync(join(tmpdir(), 'stmq-evse-readiness-'));
   const store = new Store(join(directory, 'recording.sqlite')), writer = new DatabaseSync(store.path);
@@ -736,7 +823,7 @@ test('deferred Shelly transitions survive commit failure with original clocks an
   assert.equal(f.writes.filter(row => row.method.endsWith('.Set')).length, 0);
 });
 test('correlated Shelly readback with small clock skew settles without a second RPC or changed receipt', async t => {
-  for (const lead of [1, 400]) await t.test(`${lead} ms`, async t => {
+  for (const lead of [1, 2, 400]) await t.test(`${lead} ms`, async t => {
     const f = fixture(t); await f.ready(); f.setNow(NOW + 1000);
     f.setSourceTime('current_limit', f.now() + lead);
     const receivedAt = f.now(), before = f.writes.length;
@@ -744,7 +831,9 @@ test('correlated Shelly readback with small clock skew settles without a second 
     const reading = f.adapter.refresh().then(() => { done = true; });
     await new Promise(resolve => setImmediate(resolve));
     assert.equal(done, false); assert.equal(f.adapter.snapshot().controlReady, false);
+    const admission = f.adapter.waitForInputAdmission({ deadlineAt: receivedAt + 1000 });
     f.setNow(receivedAt + lead + 1); await new Promise(resolve => setTimeout(resolve, lead + 15)); await reading;
+    assert.equal(await admission, true, 'A waiting action observes timer-based admission without another packet or polling cycle');
     const field = f.adapter.snapshot().fields.current_limit;
     assert.equal(field.measuredAt, receivedAt + lead); assert.equal(field.receivedAt, receivedAt);
     assert.equal(field.readback.receivedAt, receivedAt); assert.ok(field.admittedAt >= field.measuredAt);

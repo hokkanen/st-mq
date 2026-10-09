@@ -138,3 +138,64 @@ test('pending native approval starts through the real OCPP transport only when t
   assert.equal(f.requests.filter(row => row.method === 'POST' && row.path.startsWith('/api/')).length, 0,
     'Local pending approval never sends a cloud Start, Resume, enablement or schedule command');
 });
+
+test('an unchanged controller refresh preserves native authorization while its read is in flight', async t => {
+  const f = await fixture(t);
+  const plan = { id: 'synthetic-open-plan', startAt: START, feasible: true,
+    periods: [{ startAt: START, endAt: null }] };
+  await f.controller.update({ enabled: true, plan });
+  const first = await f.call('Authorize', { idTag: f.installation.virtualTag });
+  assert.equal(first[2].idTagInfo.status, 'Accepted');
+  const read = f.adapter.read;
+  let release, entered;
+  const reading = new Promise(resolve => { entered = resolve; });
+  f.adapter.read = async options => {
+    entered();
+    await new Promise(resolve => { release = resolve; });
+    return read(options);
+  };
+  const refresh = f.controller.update({ enabled: true, plan: { ...structuredClone(plan),
+    costCents: 19, decisionCostCents: 20, assumptions: ['synthetic-new-forecast'], allocationTargetA: 12 } });
+  await reading;
+  try {
+    const authorized = await f.call('Authorize', { idTag: f.installation.virtualTag });
+    assert.equal(authorized[2].idTagInfo.status, 'Accepted', 'Polling cannot interrupt an already granted charging instruction');
+    const started = await f.call('StartTransaction', { connectorId: 1, idTag: f.installation.virtualTag,
+      timestamp: new Date(f.now).toISOString(), meterStart: 0 });
+    assert.equal(started[2].idTagInfo.status, 'Accepted');
+    assert.ok(Number.isSafeInteger(started[2].transactionId));
+  } finally {
+    f.adapter.read = read; release(); await refresh;
+  }
+});
+
+test('refreshing start permission retains its original expiry and immediate revocation boundaries', async t => {
+  for (const boundary of ['disabled', 'replan', 'invalidate', 'expiry', 'disconnect']) await t.test(boundary, async t => {
+    const f = await fixture(t);
+    const plan = { id: 'synthetic-open-plan', startAt: START, feasible: true,
+      periods: [{ startAt: START, endAt: null }] };
+    await f.controller.update({ enabled: true, plan });
+    const read = f.adapter.read;
+    let release, entered, replacement;
+    const reading = new Promise(resolve => { entered = resolve; });
+    f.adapter.read = async options => {
+      entered(); await new Promise(resolve => { release = resolve; }); return read(options);
+    };
+    const refresh = f.controller.update({ enabled: true, plan });
+    await reading;
+    try {
+      assert.throws(() => f.controller.update({ resume: false }), /Unsupported charging control field/);
+      assert.equal((await f.call('Authorize', { idTag: f.installation.virtualTag }))[2].idTagInfo.status, 'Accepted',
+        'Rejecting an unsupported action cannot alter existing permission');
+      if (boundary === 'disabled') replacement = f.controller.update({ enabled: false });
+      else if (boundary === 'replan') replacement = f.controller.update({ replan: true,
+        plan: { ...plan, startAt: START + MINUTE, periods: [{ startAt: START + MINUTE, endAt: null }] } });
+      else if (boundary === 'invalidate') f.controller.invalidate();
+      else if (boundary === 'expiry') f.advance(MINUTE);
+      else await f.status('Available');
+      assert.equal((await f.call('Authorize', { idTag: f.installation.virtualTag }))[2].idTagInfo.status, 'Blocked');
+    } finally {
+      f.adapter.read = read; release(); await refresh; await replacement;
+    }
+  });
+});
