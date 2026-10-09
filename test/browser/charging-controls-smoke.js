@@ -44,8 +44,16 @@ const panel = createChargingPanel({ document, request: async (path, payload) => 
   if (path.endsWith('/control')) { item.settings.enabled = payload.enabled; item.controls.enabled = payload.enabled; item.controls.revision++; }
   if (path.endsWith('/use-automatic')) { item.settings.enabled = true; item.controls.enabled = true; item.request.chargeNow = false;
     item.control.takeover = { available: false, token: null, state: 'pending' }; }
-  if (path.endsWith('/charge-now')) item.request.chargeNow = true;
-  if (path.endsWith('/resume')) item.request.chargeNow = false;
+  if (path.endsWith('/charge-now') || path.endsWith('/resume')) {
+    if (Object.keys(payload).sort().join(',') !== 'association,revision,sessionId'
+      || payload.association !== item.association || payload.sessionId !== item.request.sessionId
+      || payload.revision !== item.request.revision) throw new Error('Charging connection changed; refresh before editing');
+    if (path.endsWith('/charge-now')) { item.request.chargeNow = true; item.request.revision++; }
+    else {
+      if (!item.controls.enabled) { item.settings.enabled = true; item.controls.enabled = true; item.controls.revision++; }
+      if (item.request.chargeNow) { delete item.request.chargeNow; item.request.revision++; }
+    }
+  }
   return structuredClone(fixture.status);
 } });
 fixture.setCase = name => {
@@ -54,6 +62,10 @@ fixture.setCase = name => {
     controls: { priority: 'balanced', revision: 1 }, chargers: [charger('charger1', 'easee'), charger('charger2', 'shelly-evse')] } };
   for (const item of fixture.status.charging.chargers) {
     if (name === 'ordinary') item.control = { phase: 'waiting', owned: { startAt: now + 3600000 }, takeover: { available: true, token: 'native:' + item.id } };
+    if (name === 'charge-now-only') {
+      item.settings.enabled = false; item.controls.enabled = false; item.request.chargeNow = true;
+      item.control = { phase: 'active', manual: null, takeover: { available: false, token: null } };
+    }
     if (name === 'backend-readings') {
       item.control = {phase:'waiting',owned:{startAt:now + 3600000}};
       item.values = {...item.values,charging:reading(true),actualCurrentA:reading(6),
@@ -558,6 +570,34 @@ try {
     }
   }
   for (const id of ['charger1', 'charger2']) {
+    await evaluate(`chargingFixture.setCase('charge-now-only'); chargingFixture.writes = []; chargingFixture.hold = true;
+      document.getElementById('${id}-device').open = true;
+      document.getElementById('${id}-charge-now').scrollIntoView({block:'center'})`);
+    assert.equal(await evaluate(`document.getElementById('${id}-enabled').getAttribute('aria-checked')`), 'false');
+    assert.equal(await evaluate(`document.getElementById('${id}-charge-now').getAttribute('aria-pressed')`), 'true');
+    const point = await evaluate(`(() => { const bounds = document.getElementById('${id}-charge-now').getBoundingClientRect();
+      return { x: bounds.left + bounds.width / 2, y: bounds.top + bounds.height / 2 }; })()`);
+    for (const type of ['mousePressed', 'mouseReleased'])
+      await send('Input.dispatchMouseEvent', { type, ...point, button: 'left', clickCount: 1 });
+    await until('Boolean(chargingFixture.finish)');
+    assert.deepEqual(await evaluate('chargingFixture.writes'), [[`/api/charging/chargers/${id}/resume`,
+      { association: `fixture:${id}`, sessionId: `session:${id}`, revision: 7 }]], 'Charge now OFF sends one scoped atomic resume');
+    assert.equal(await evaluate(`document.getElementById('${id}-enabled').disabled && document.getElementById('${id}-charge-now').disabled`), true,
+      'Both controls are locked for the single pending action');
+    assert.equal(await evaluate(`document.getElementById('${id}-enabled').getAttribute('aria-checked')`), 'false');
+    assert.equal(await evaluate(`document.getElementById('${id}-charge-now').getAttribute('aria-pressed')`), 'true');
+    await evaluate(`document.getElementById('${id}-charge-now').click(); document.getElementById('${id}-enabled').click()`);
+    assert.equal(await evaluate('chargingFixture.writes.length'), 1, 'Repeated clicks cannot start a second mutation');
+    await evaluate('chargingFixture.hold = false; chargingFixture.finish(); chargingFixture.finish = null');
+    await until(`!document.getElementById('${id}-charge-now').disabled`);
+    assert.equal(await evaluate(`document.getElementById('${id}-enabled').getAttribute('aria-checked')`), 'true');
+    assert.equal(await evaluate(`document.getElementById('${id}-charge-now').getAttribute('aria-pressed')`), 'false');
+    assert.equal(await evaluate('chargingFixture.writes.length'), 1, 'The response needs no follow-up preference or takeover request');
+    assert.deepEqual(await evaluate(`(() => { const item = chargingFixture.status.charging.chargers.find(item => item.id === '${id}');
+      return { controlRevision: item.controls.revision, requestRevision: item.request.revision }; })()`),
+    { controlRevision: 5, requestRevision: 8 }, 'The atomic response advances each changed scope');
+    const resumeShot = await send('Page.captureScreenshot', { format: 'png', captureBeyondViewport: true });
+    writeFileSync(join(artifacts, `charging-atomic-resume-${id}.png`), Buffer.from(resumeShot.data, 'base64'));
     await evaluate(`chargingFixture.setCase('manual-stop'); chargingFixture.writes = []; document.getElementById('${id}-enabled').click()`);
     await until('chargingFixture.writes.length === 1');
     assert.equal(await evaluate(`document.getElementById('${id}-allowance').checkVisibility({ visibilityProperty: true })`), true, 'The allowance remains visible beside a saved preference');
@@ -584,10 +624,10 @@ try {
     assert.match(await evaluate(`document.getElementById('${id}-takeover-message').textContent`), /charger changed.*latest state/);
   }
   assert.deepEqual(errors, []);
-  console.log(`Charging controls browser checks passed: title disclosures, independent report dialogs, conditional shared controls, explicit takeover fencing, visible allowances beside pending/errors and retained 24-hour receipts, shared allowance colors and details, two-line approval status, expanded session settings, shared readings with capability differences, setup links without installation rows, read-only inspection, consistent compact statuses, readable long states and popups at 320/390/1440px in both themes. Screenshots: ${artifacts}`);
+  console.log(`Charging controls browser checks passed: atomic scoped Charge now OFF enables Automatic with one request, title disclosures, independent report dialogs, conditional shared controls, explicit takeover fencing, visible allowances beside pending/errors and retained 24-hour receipts, shared allowance colors and details, two-line approval status, expanded session settings, shared readings with capability differences, setup links without installation rows, read-only inspection, consistent compact statuses, readable long states and popups at 320/390/1440px in both themes. Screenshots: ${artifacts}`);
 } finally {
   socket?.close(); for (const task of pending.values()) clearTimeout(task.timer);
   if (browser && browser.exitCode === null) { browser.kill(); await new Promise(resolve => browser.once('exit', resolve)); }
   await new Promise(resolve => server.close(resolve));
-  rmSync(directory, { recursive: true, force: true });
+  rmSync(directory, { recursive: true, force: true, maxRetries: 3, retryDelay: 50 });
 }
