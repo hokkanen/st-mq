@@ -12,11 +12,25 @@ const invalidState = () => Object.assign(pairError('invalid_pair_state'), {
   message: 'Saved pair state is incompatible or invalid. Preserve its files and database. Use Reset pairing → Start fresh in the dashboard, or configure a fresh pair directory for a deliberate new setup. Existing state was not replaced.',
 });
 const record = value => value !== null && typeof value === 'object' && !Array.isArray(value);
+const fields = (value, allowed) => record(value) && Object.keys(value).every(key => allowed.includes(key));
 const sequence = value => Number.isSafeInteger(value) && value >= 0;
 const lineagePoint = value => record(value) && NODE_PATTERN.test(value.epoch) && sequence(value.sequence);
-const acceptedSnapshot = value => lineagePoint(value) && NODE_PATTERN.test(value.generation) &&
-  NODE_PATTERN.test(value.nodeId) && /^[a-f0-9]{64}$/.test(value.digest);
-const stamp = value => lineagePoint(value) && NODE_PATTERN.test(value.token);
+const acceptedSnapshot = value => fields(value, ['epoch', 'sequence', 'generation', 'nodeId', 'digest', 'checkpoint'])
+  && lineagePoint(value) && NODE_PATTERN.test(value.generation) && NODE_PATTERN.test(value.nodeId)
+  && /^[a-f0-9]{64}$/.test(value.digest) && (value.checkpoint === undefined || validCheckpoint(value.checkpoint));
+const stamp = value => fields(value, ['epoch', 'sequence', 'token']) && lineagePoint(value) && NODE_PATTERN.test(value.token);
+function handoverTransition(value) {
+  if (!record(value) || value.kind !== 'handover' || !NODE_PATTERN.test(value.token)
+    || !NODE_PATTERN.test(value.peerNodeId)) return false;
+  const common = ['kind', 'phase', 'token', 'peerNodeId'];
+  if (value.phase === 'stopping') return fields(value, common);
+  if (value.phase === 'released') return fields(value, [...common, 'generation']) && NODE_PATTERN.test(value.generation);
+  // Integration owners verify the exact requirements against configuration and
+  // fresh native evidence before activation. Saved handover state must preserve
+  // their explicit null/object values, never manufacture absent requirements.
+  return ['prepared', 'staged'].includes(value.phase) && fields(value, [...common, 'epoch', 'ocpp', 'mqtt'])
+    && NODE_PATTERN.test(value.epoch) && ['ocpp', 'mqtt'].every(key => value[key] === null || record(value[key]));
+}
 const releaseIdentity = value => record(value)
   && ['requestId', 'donorEpoch', 'generation', 'targetEpoch', 'targetNodeId'].every(key => NODE_PATTERN.test(value[key]))
   && ['donorDigest', 'digest'].every(key => /^[a-f0-9]{64}$/.test(value[key]))
@@ -62,7 +76,7 @@ export function compareAuthority(left, right) {
 }
 
 export function validClaim(value) {
-  return value && NODE_PATTERN.test(value.nodeId) && ['hassio', 'ubuntu'].includes(value.platform) &&
+  return record(value) && NODE_PATTERN.test(value.nodeId) && ['hassio', 'ubuntu'].includes(value.platform) &&
     ROLES.has(value.role) && NODE_PATTERN.test(value.epoch);
 }
 
@@ -137,8 +151,14 @@ export class PairState {
 
   async readState() {
     const raw = JSON.parse(await readFile(this.path, 'utf8'));
+    return this.validate(raw);
+  }
+
+  validate(raw) {
     if (!record(raw) || Object.keys(raw).some(key => !STATE_FIELDS.has(key)) ||
       raw.version !== 3 || raw.pairId !== this.options.pairId || !validClaim(raw) ||
+      (raw.transition !== null && !handoverTransition(raw.transition)) ||
+      !sequence(raw.createdAt) || (raw.updatedAt !== undefined && !sequence(raw.updatedAt)) ||
       (raw.release != null && !releaseRecord(raw.release, raw)) ||
       (raw.releaseReceipt != null && (!record(raw.releaseReceipt) || !releaseIdentity(raw.releaseReceipt.identity)
         || raw.releaseReceipt.requestId !== raw.releaseReceipt.identity.requestId
@@ -154,7 +174,7 @@ export class PairState {
         (raw.activeDbPath != null && (typeof raw.activeDbPath !== 'string' || !isAbsolute(raw.activeDbPath))) ||
         ((raw.role === 'master' || raw.everWritten) && !raw.activeDbPath) ||
         [raw.dbStamp, raw.pendingStamp].some(value => value != null && !stamp(value)) ||
-        (raw.supersededPeer != null && (!record(raw.supersededPeer) || !NODE_PATTERN.test(raw.supersededPeer.nodeId) ||
+        (raw.supersededPeer != null && (!fields(raw.supersededPeer, ['nodeId', 'epoch']) || !NODE_PATTERN.test(raw.supersededPeer.nodeId) ||
           !NODE_PATTERN.test(raw.supersededPeer.epoch)))) throw invalidState();
     return raw;
   }
@@ -163,6 +183,7 @@ export class PairState {
     if (this.invalid) return Promise.reject(invalidState());
     const operation = this.queue.then(async () => {
       const next = { ...this.value, ...(typeof patch === 'function' ? patch(this.value) : patch), updatedAt: this.clock() };
+      this.validate(next);
       await durableJson(this.path, next);
       this.value = next;
       return next;
@@ -176,6 +197,7 @@ export class PairState {
     const next = { ...this.value, role: 'protected', reason: 'pairing_reset_pending', transition: null,
       activationError: null, release: null, reset, updatedAt: this.clock() };
     await this.queue;
+    this.validate(next);
     await durableJson(this.path, next);
     this.value = next;
     this.invalid = false;
@@ -193,6 +215,7 @@ export class PairState {
         reason: retained ? 'pairing_reset' : null, activationError: null,
         transition: null, release: null, actions: [], createdAt: this.clock(), updatedAt: this.clock(),
         reset: null, resetReceipt: receipt };
+      this.validate(next);
       await durableJson(this.path, next);
       this.value = next;
       return next;

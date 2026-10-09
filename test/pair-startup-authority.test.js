@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtemp, rm } from 'node:fs/promises';
+import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { createServer } from 'node:http';
 import { Store } from '../src/storage/store.js';
@@ -63,6 +63,22 @@ test('a lower-priority saved master returns protected without opening equipment 
   assert.equal(returning.pair.state.value.role, 'protected');
   assert.equal(returning.starts, 0);
   assert.equal(f.events.includes('returning:acquire'), false);
+});
+
+test('a malformed saved transition cannot restart master control or acquire the address', async t => {
+  const f = await fixture(t), node = await f.create('invalid-transition', 'ubuntu', { timeoutMs: 30 });
+  await node.pair.state.close();
+  const path = node.pair.state.path;
+  const saved = JSON.parse(await readFile(path, 'utf8'));
+  const bytes = JSON.stringify({ ...saved, transition: false });
+  await writeFile(path, bytes);
+  await node.pair.state.open({ allowInvalid: true });
+  await node.start();
+  assert.equal(node.starts, 0);
+  assert.equal(node.pair.canControl(), false);
+  assert.equal(node.pair.state.value.role, 'protected');
+  assert.equal(f.events.includes('invalid-transition:acquire'), false);
+  assert.equal(await readFile(path, 'utf8'), bytes, 'invalid authority evidence remains available for diagnosis');
 });
 
 test('simultaneous saved-master restarts agree on one winner without reciprocal fencing deadlock', async t => {

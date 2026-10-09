@@ -1,8 +1,8 @@
 import { randomUUID } from 'node:crypto';
 import { DatabaseSync } from 'node:sqlite';
 import { isDeepStrictEqual } from 'node:util';
-import { dirname, join, resolve } from 'node:path';
-import { lstat, open, rm } from 'node:fs/promises';
+import { basename, dirname, join, resolve } from 'node:path';
+import { lstat, open, realpath, rm, stat } from 'node:fs/promises';
 import { fileURLToPath } from 'node:url';
 import { setTimeout as delay } from 'node:timers/promises';
 import { acceptsLineage, compareAuthority, NODE_PATTERN, PairState, pairError, validClaim } from './state.js';
@@ -1030,6 +1030,7 @@ export class PairManager {
     if (recovery?.state !== 'ready' || recovery.metadata?.claim?.role !== 'protected'
       || !checkedSource(recovery.preview) || body.previewId !== recovery.preview.previewId) throw pairError('invalid_transition');
     if (!this.hooks.recoveryApply) throw pairError('recovery_unavailable');
+    await this.recoveryFiles(recovery);
     await this.assertRecoveryDonor(recovery);
     if (body.verifyWithFullSnapshot === true && recovery.donorJournalPath)
       await this.peer.request('verify-checkpoint', { checkpoint: recovery.metadata.checkpoint }, { timeoutMs: this.config.timeoutMs });
@@ -1056,10 +1057,65 @@ export class PairManager {
       || this.peerState.nodeId !== checked.nodeId || this.peerState.epoch !== checked.epoch) throw pairError('invalid_transition');
   }
 
+  async assertDisposableRecoveryFile(path, info) {
+    for (const protectedPath of [this.config.databasePath, this.state.value.activeDbPath]) {
+      if (!protectedPath) continue;
+      if (resolve(protectedPath) === path) throw pairError('unsafe_file');
+      const protectedInfo = await stat(protectedPath).catch(error => {
+        if (error.code !== 'ENOENT') throw error;
+        return null;
+      });
+      if (info && protectedInfo && info.dev === protectedInfo.dev && info.ino === protectedInfo.ino)
+        throw pairError('unsafe_file');
+    }
+  }
+
+  async recoveryFiles(recovery) {
+    const files = [];
+    for (const [key, subdirectory] of [['donorPath', 'recovery'], ['donorJournalPath', 'peer-recovery']]) {
+      const path = recovery[key];
+      if (path === undefined) continue;
+      const directory = resolve(this.config.directory, subdirectory);
+      const validName = typeof path === 'string' && (key === 'donorPath'
+        ? NODE_PATTERN.test(recovery.metadata?.generation) && basename(path) === `incoming-${recovery.metadata.generation}.sqlite`
+        : /^incoming-peer-([a-f0-9-]{36})\.changes$/.test(basename(path))
+          && NODE_PATTERN.test(basename(path).slice(14, -8)));
+      if (typeof path !== 'string' || !validName || dirname(path) !== directory || resolve(path) !== path)
+        throw pairError('invalid_pair_state');
+      const root = await realpath(this.config.directory), parent = await lstat(directory);
+      if (!parent.isDirectory() || parent.isSymbolicLink() || await realpath(directory) !== join(root, subdirectory))
+        throw pairError('unsafe_directory');
+      const marker = await lstat(join(directory, key === 'donorPath' ? '.st-mq-recovery-download' : '.st-mq-peer-receive'));
+      if (!marker.isFile() || marker.isSymbolicLink()) throw pairError('unsafe_directory');
+      const info = await lstat(path).catch(error => { if (error.code !== 'ENOENT') throw error; return null; });
+      if (info && (!info.isFile() || info.isSymbolicLink() || info.nlink !== 1)) throw pairError('unsafe_file');
+      await this.assertDisposableRecoveryFile(path, info);
+      // Missing files grant no cleanup authority over a later arrival. Retain
+      // identity across the remote release so a replaced copy cannot be removed.
+      if (info) files.push({ path, directory, parent, info });
+    }
+    return files;
+  }
+
+  async removeRecoveryFiles(files) {
+    for (const file of files) {
+      const parent = await lstat(file.directory), info = await lstat(file.path).catch(error => {
+        if (error.code !== 'ENOENT') throw error;
+        return null;
+      });
+      if (!parent.isDirectory() || parent.isSymbolicLink() || parent.dev !== file.parent.dev || parent.ino !== file.parent.ino
+        || info && (!info.isFile() || info.isSymbolicLink() || info.nlink !== 1 || info.dev !== file.info.dev || info.ino !== file.info.ino))
+        throw pairError('unsafe_file');
+      await this.assertDisposableRecoveryFile(file.path, info);
+      if (info) await rm(file.path);
+    }
+  }
+
   async rejoin(body = {}) {
     if (!this.canControl()) throw pairError('not_master');
     const recovery = this.state.value.recovery;
     if (recovery?.metadata?.claim?.role !== 'protected') throw pairError('recovery_required');
+    const recoveryFiles = await this.recoveryFiles(recovery);
     const skipRecovery = body.discardUnrecovered === true;
     let operation = recovery.releaseOperation;
     if (operation) {
@@ -1117,8 +1173,7 @@ export class PairManager {
       imported: 0, model: { status: 'unchanged' } } : recovery.report;
     await this.state.update({ recovery: { state: 'resolved', report } });
     if (metadata.digestAlgorithm !== JOURNAL_DIGEST) await this.snapshots.unpin(metadata.generation).catch(() => {});
-    if (recovery.donorPath) await rm(recovery.donorPath, { force: true }).catch(() => {});
-    if (recovery.donorJournalPath) await rm(recovery.donorJournalPath, { force: true }).catch(() => {});
+    await this.removeRecoveryFiles(recoveryFiles);
     this.recordPeerStatus(result, result.sync);
   }
 

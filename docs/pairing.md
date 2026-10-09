@@ -142,6 +142,9 @@ never automatically promotes either computer. Existing local history starts in
 that history and use the explicit promotion or recovery actions.
 
 Saved pair state owns the runtime role, relinquishment and protected recovery.
+Saved handover transitions must match a current phase and retain their explicit
+peer identity and integration requirements. Invalid transitions cannot resume
+master control; their source file remains intact for diagnosis and deliberate reset.
 Handover and promotion update that state, never the configuration file. A restart
 does not undo a handover or clear protection. Do not copy or delete the pair state
 directory to force a role change; use the explicit management actions.
@@ -746,6 +749,14 @@ and rejoin behavior is unchanged; reset archives are never used as disposable
 snapshot files or removed by replica retention.
 
 ## Protected history and manual recovery
+
+Recovery downloads are disposable only inside their marked pairing directories,
+under their generated filenames, and while they remain ordinary files separate
+from the configured or active database. Recovery and rejoin reject unsafe paths
+before using the donor or releasing its peer. Cleanup also checks that each file
+and its directory retain their identities after the peer reply; replaced files
+remain intact. These checks protect application ownership boundaries, not against
+an adversary concurrently rewriting the process's private filesystem.
 
 Every prospective slave passes a history/lineage check before ordinary
 mirroring. Local writes or an unrecognized/divergent history put it in

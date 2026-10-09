@@ -30,6 +30,17 @@ test('malformed saved authority is rejected before changing state or acquiring a
     { supersededPeer: { nodeId: randomUUID(), epoch: null } },
     { actions: [null] }, { actions: [{ requestId: randomUUID(), name: 'promote', state: 'approved' }] },
     { retiredAuthority: true },
+    ...[undefined, false, true, 0, '', [], {}, { kind: 'handover' },
+      { kind: 'handover', phase: 'stopping', token: randomUUID() },
+      { kind: 'handover', phase: 'quiescing', token: randomUUID(), peerNodeId: randomUUID() },
+      { kind: 'handover', phase: 'released', token: randomUUID(), peerNodeId: randomUUID() },
+      { kind: 'handover', phase: 'prepared', token: randomUUID(), peerNodeId: randomUUID(), epoch: randomUUID() },
+      { kind: 'handover', phase: 'staged', token: randomUUID(), peerNodeId: randomUUID(), epoch: randomUUID(), ocpp: false, mqtt: null },
+      { kind: 'handover', phase: 'stopping', token: randomUUID(), peerNodeId: randomUUID(), retiredAuthority: true },
+    ].map(transition => ({ transition })),
+    { createdAt: -1 }, { updatedAt: 'recent' },
+    { accepted: { ...accepted, checkpoint: {} } },
+    { accepted: { ...accepted, retiredAuthority: true } },
     { release: {} }, { releaseReceipt: {} },
     { release: { epoch: randomUUID(), digest: 'a'.repeat(64), identity: null } },
     { resetReceipt: { ...receipt, backupCount: undefined } },
@@ -46,6 +57,39 @@ test('malformed saved authority is rejected before changing state or acquiring a
     assert.equal(await readFile(path, 'utf8'), raw);
     assert.deepEqual(await readdir(directory), ['state.json']);
   }
+});
+
+test('invalid updates preserve both durable authority and the usable in-memory state', async t => {
+  const directory = await mkdtemp('/tmp/stmq-pair-state-update-');
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  const state = new PairState({ directory, databasePath: join(directory, 'history.sqlite'), pairId: 'fixture-pair', platform: 'ubuntu' });
+  await state.open(); t.after(() => state.close());
+  const before = structuredClone(state.value), bytes = await readFile(state.path);
+  for (const patch of [{ transition: false }, { role: 'retired' }, { sequence: -1 }, { retiredAuthority: true }]) {
+    await assert.rejects(state.update(patch), { code: 'invalid_pair_state' });
+    assert.deepEqual(state.value, before);
+    assert.deepEqual(await readFile(state.path), bytes);
+  }
+  await state.update({ reason: 'synthetic-retry' });
+  assert.equal(state.value.reason, 'synthetic-retry', 'A rejected update does not poison later valid transitions');
+});
+
+test('every current handover phase survives restart without translating or losing its requirements', async t => {
+  for (const phase of ['stopping', 'released', 'prepared', 'staged']) await t.test(phase, async () => {
+    const directory = await mkdtemp('/tmp/stmq-pair-state-handover-');
+    try {
+      const options = { directory, databasePath: join(directory, 'history.sqlite'), pairId: 'fixture-pair', platform: 'ubuntu' };
+      const state = new PairState(options); await state.open();
+      const transition = { kind: 'handover', phase, token: randomUUID(), peerNodeId: randomUUID(),
+        ...(phase === 'released' ? { generation: randomUUID() } : {}),
+        ...(['prepared', 'staged'].includes(phase) ? { epoch: randomUUID(), ocpp: null,
+          mqtt: { version: 1, protocol: 'mqtt:', port: 1883 } } : {}) };
+      await state.update({ transition }); await state.close();
+      const restarted = new PairState(options);
+      try { await restarted.open(); assert.deepEqual(restarted.value.transition, transition); }
+      finally { await restarted.close(); }
+    } finally { await rm(directory, { recursive: true, force: true }); }
+  });
 });
 
 test('current saved state retains valid accepted history and permits a genuinely absent optional bootstrap flag', async t => {
