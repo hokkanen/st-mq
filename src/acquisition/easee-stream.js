@@ -114,7 +114,9 @@ export function createEaseeStream({ products = [], getAccessToken, clock = Date.
   let attempts = 0, failures = 0, reconnects = 0, authenticationFailures = 0, rejectedToken, retryAt = null;
   const lifetime = new AbortController();
   let pendingSequence = 0;
-  const pendingTime = createSourceTimePending({ clock, setTimeoutFn, clearTimeoutFn, ordered: true,
+  // Keep each device's availability and observations in receive order, while
+  // its clock lead cannot hold ready observations from another device.
+  const pendingTime = createSourceTimePending({ clock, setTimeoutFn, clearTimeoutFn, ordered: row => row.observation.mid,
     onReject({ context, observation, fromStream }, reason) {
       if (reason === 'cleared' || !fromStream || current !== context || !context.active) return;
       const key = `${observation.mid}:${observation.id}`;
@@ -176,7 +178,8 @@ export function createEaseeStream({ products = [], getAccessToken, clock = Date.
     if (!fromStream && !context.seen.get(mid)?.has(id)) return;
     const at = observationTime(timestamp), receivedAt = originalReceivedAt ?? clock();
     const timing = classifySourceTime({ sourceTime: at, receivedAt, now: admittedAt ?? receivedAt });
-    if (admittedAt === undefined && (timing.status === 'pending' || pendingTime.size && timing.status === 'ready')) {
+    if (admittedAt === undefined && (timing.status === 'pending' || timing.status === 'ready'
+      && pendingTime.some(row => row.context === context && row.observation.mid === mid))) {
       pendingTime.defer(++pendingSequence, { context, observation, fromStream }, { sourceTime: at, receivedAt }); return;
     }
     if (!validateAdmittedSourceTime({ sourceTime: at, receivedAt, admittedAt, now: admittedAt ?? receivedAt })) return;
@@ -395,7 +398,11 @@ export function createEaseeStream({ products = [], getAccessToken, clock = Date.
           || sameValue(shared.row.value, live.row.value)
             && (shared.row.unit == null || live.row.unit == null || shared.row.unit === live.row.unit));
       };
-      const synchronized = Boolean(connected && !pendingTime.size && validIds && online === true && evidence?.online === true && !evidence.synchronizing
+      // Only queued evidence for the requested fields or this device's online
+      // boundary can invalidate its already admitted held measurements.
+      const pending = validIds && pendingTime.some(row => row.context === current && row.observation.mid === device
+        && (row.observation.id === 250 || ids.includes(row.observation.id)));
+      const synchronized = Boolean(connected && !pending && validIds && online === true && evidence?.online === true && !evidence.synchronizing
         && ![...ids, 250].some(id => current.rejected.has(`${device}:${id}`))
         && ids.every(id => evidence.seen.has(id) && values?.has(id) && !values.get(id).conflict
           && values.get(id).at === evidence.seen.get(id).at && consistent(id)) && consistent(250));

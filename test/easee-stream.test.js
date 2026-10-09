@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { createEaseeStream } from '../src/acquisition/easee-stream.js';
+import { shellyCurrentLimit } from '../src/charging/shelly-limit.js';
 
 const START = Date.parse('2026-09-22T10:00:00Z');
 const flush = async () => { for (let i = 0; i < 60; i++) await Promise.resolve(); };
@@ -147,6 +148,69 @@ test('held source values retain their clocks while independent product activity 
   unchanged.observations[0].value = 999;
   assert.equal(f.stream.evidence('invented-equalizer', [31]).observations[0].value, 4.5);
   assert.equal(f.stream.evidence('invented-charger', [31]).activityAt, null, 'Another product cannot prove this device is alive');
+});
+
+test('an unrelated two-millisecond power lead preserves admitted current feeds and the full live allowance', async t => {
+  const changes = [], f = fixture(t, { products: [
+    { id: 'invented-charger', ids: [120, 183, 184, 185, 250] },
+    { id: 'invented-equalizer', ids: [31, 32, 33, 250] }],
+  onObservation: (device, row) => changes.push({ device, ...row }) });
+  const connection = await f.start();
+  for (const device of ['invented-charger', 'invented-equalizer']) connection.update(device, 250, true, START);
+  for (const id of [31, 32, 33]) connection.update('invented-equalizer', id, 35, START);
+  for (const id of [183, 184, 185]) connection.update('invented-charger', id, 16, START);
+  connection.update('invented-charger', 120, 11.04, START);
+  const current = (device, ids) => {
+    const evidence = f.stream.evidence(device, ids);
+    return { healthy: true, evidence, currents: evidence.observations?.map(row => row.value),
+      times: evidence.observations?.map(row => Date.parse(row.timestamp)) };
+  };
+  const allowance = () => shellyCurrentLimit({ now: f.timers.now, priority: 'charger2',
+    config: { maximumCurrentA: 16, minimumCurrentA: 6, currentStepA: 1, fallbackCurrentA: 12,
+      mainFuseA: [25, 25, 25], marginA: [0, 0, 0] },
+    property: current('invented-equalizer', [31, 32, 33]), easee: current('invented-charger', [183, 184, 185]),
+    shelly: { healthy: true, currents: [16, 16, 16], times: [START, START, START] } });
+  const before = [current('invented-equalizer', [31, 32, 33]), current('invented-charger', [183, 184, 185])];
+  assert.equal(allowance().currentA, 16);
+  connection.update('invented-charger', 120, 11.03, START + 2);
+  assert.equal(f.stream.pending('invented-charger', [120]), true);
+  assert.deepEqual([current('invented-equalizer', [31, 32, 33]), current('invented-charger', [183, 184, 185])], before);
+  assert.equal(allowance().currentA, 16); assert.equal(allowance().fallback, false);
+  await f.timers.advance(1);
+  for (const id of [31, 32, 33]) connection.update('invented-equalizer', id, 36, f.timers.now);
+  assert.deepEqual(current('invented-equalizer', [31, 32, 33]).currents, [36, 36, 36],
+    'A pending record from another device cannot hold a ready property update');
+  await f.timers.advance(1);
+  assert.equal(f.stream.pending('invented-charger', [120]), false);
+  const admitted = changes.find(row => row.device === 'invented-charger' && row.id === 120);
+  assert.deepEqual([admitted.measuredAt, admitted.receivedAt, admitted.admittedAt], [START + 2, START, START + 2]);
+  assert.deepEqual(current('invented-charger', [183, 184, 185]).times, [START, START, START]);
+  assert.equal(allowance().currentA, 16); assert.equal(allowance().fallback, false);
+});
+
+test('pending requested fields and device availability still withdraw only their own source evidence', async t => {
+  const f = fixture(t), connection = await f.start();
+  for (const device of ['invented-charger', 'invented-equalizer']) {
+    connection.update(device, 31, device === 'invented-charger' ? true : 4, START);
+    connection.update(device, 250, true, START);
+  }
+  const charger = f.stream.evidence('invented-charger', [31]);
+  const propertyEpoch = f.stream.evidence('invented-equalizer', [31]).epoch;
+  connection.update('invented-equalizer', 31, 5, START + 2);
+  assert.equal(f.stream.evidence('invented-equalizer', [31]).synchronized, false);
+  assert.deepEqual(f.stream.evidence('invented-charger', [31]), charger);
+  await f.timers.advance(2);
+  let evidence = f.stream.evidence('invented-equalizer', [31]);
+  assert.equal(evidence.synchronized, true, 'Timer admission recovers the feed without another source packet');
+  assert.equal(evidence.receivedAt, START);
+  assert.equal(Date.parse(evidence.observations[0].timestamp), START + 2);
+  connection.update('invented-equalizer', 250, false, START + 4);
+  assert.equal(f.stream.evidence('invented-equalizer', [31]).synchronized, false);
+  assert.deepEqual(f.stream.evidence('invented-charger', [31]), charger);
+  await f.timers.advance(2);
+  evidence = f.stream.evidence('invented-equalizer', [31]);
+  assert.equal(evidence.online, false); assert.equal(evidence.synchronized, false);
+  assert.notEqual(evidence.epoch, propertyEpoch, 'The admitted device loss retains its own source boundary');
 });
 
 test('newer contradictory REST evidence fences held stream currents until the live stream catches up', async t => {

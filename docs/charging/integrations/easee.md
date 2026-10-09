@@ -64,6 +64,12 @@ Before native schedule mutations and during their readback, the adapter forces
 fresh REST observation reads rather than relying on the stream cache. Original
 measurement timestamps and the existing freshness guards still apply.
 
+Small source-clock leads wait for admission in receive order within each device;
+ready observations from the other device continue independently. Held current
+evidence is withheld for pending requested fields or that device's online state.
+An unrelated pending power report does not invalidate already admitted current
+fields. Timer admission preserves the original source and receipt clocks.
+
 Live changes in Charger 1's mode (109) and pilot state (100) are saved as
 transition evidence before waking the controller. This preserves short
 connection changes even when the latest cached state has already changed back.
