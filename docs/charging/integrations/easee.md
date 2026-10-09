@@ -775,10 +775,13 @@ protocol and production-adapter tests; acceptance by the installed charger still
 needs a separately authorized hardware check.
 
 Power samples from aligned and periodic reporting can disagree at one source
-timestamp. That power value remains unknown, and the conflicting observation
-cannot confirm a transaction. Later advancing, clean reports for the same
-transaction restore confirmation without a transport reconnect; neither a replay
-at the conflicting timestamp nor unrelated fields from that timestamp do so.
+timestamp. That power value remains unknown. An already accepted
+`StartTransaction` retains its still-fresh identity; fresh matching-ID non-power
+measurements can confirm continuity on the current authenticated connection,
+including after reconnection. Conflicting power alone cannot renew that evidence.
+Unknown or meter-recovered transactions still need two advancing, clean power
+reports to establish or restore confirmation without a transport reconnect;
+neither a replay at the conflicting timestamp nor unrelated fields do so.
 This measurement conflict is separate from reports naming different current
 transaction IDs, which retain the connection-scoped identity fence. Original
 measurement and receipt clocks remain unchanged.

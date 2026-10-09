@@ -379,13 +379,16 @@ export function createEaseeOcpp({ config: input, chargerId, clock = Date.now, ca
     if (active && active.id !== transactionId || recoveryCandidate && recoveryCandidate.id !== transactionId) {
       recoveryConflict = true; observedTransaction = null; return true;
     }
+    // An accepted StartTransaction already supplies identity. Its matching
+    // non-power reports can confirm continuity even when power is unknown.
+    if (active && !isRecovered(active)) return true;
     // Aligned and periodic samples can disagree at the same source timestamp.
     // That measurement stays unknown, but does not change transaction identity.
     // Later advancing clean evidence may confirm the same transaction again.
     if (conflicting) {
       observedTransaction = { id: transactionId, at, conflicting: true }; recoveryCandidate = null; return true;
     }
-    if (recoveryConflict || active && !isRecovered(active) || !messageId || !connectorStatusExplicit
+    if (recoveryConflict || !messageId || !connectorStatusExplicit
       || !RECOVERABLE_STATUSES.has(connectorStatus) || connectorStatusAt < evidenceBoundaryAt
       || connectorStatusAt > at || !recoveryCandidate && receivedAt - connectorStatusAt > MAX_AGE_MS) return true;
     const known = ledger.transactions.some(row => row.id === transactionId)
@@ -427,9 +430,11 @@ export function createEaseeOcpp({ config: input, chargerId, clock = Date.now, ca
         try { persist(updateTransaction({ ...active, lastEvidenceAt: at })); }
         catch { return false; }
       }
-      if (!isRecovered(active) && !recoveryConflict && !conflictingPower && at >= active.startedAt
-        && (!observedTransaction || at > observedTransaction.at
-          || at === observedTransaction.at && !observedTransaction.conflicting)) observedTransaction = { id: transactionId, at };
+      const identityReadings = conflictingPower ? readings.filter(row => row.id !== 120) : readings;
+      const identityAt = Math.max(...identityReadings.map(row => instant(row.timestamp)));
+      if (!isRecovered(active) && !recoveryConflict && identityAt >= active.startedAt
+        && (!observedTransaction || identityAt >= observedTransaction.at))
+        observedTransaction = { id: transactionId, at: identityAt };
     }
     for (const row of readings) {
       const before = values.get(row.id), at = instant(row.timestamp), priorAt = instant(before?.timestamp);

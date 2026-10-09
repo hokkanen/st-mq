@@ -1032,7 +1032,7 @@ export function validateShellyOwnershipState(initialState, association = initial
 /** The single serialized writer owns current limits and scoped internal pauses.
  * Identification restoration is an application obligation, never a native timer. */
 export function createShellyController({ adapter, initialState, saveState = () => {}, clock = Date.now,
-  canControl = () => false, getIdentification, getPlan, getAllocation, onStatusChange = () => {} } = {}) {
+  canControl = () => false, hasAuthority = canControl, getIdentification, getPlan, getAllocation, onStatusChange = () => {} } = {}) {
   validateShellyOwnershipState(initialState, adapter.association);
   let state = initialState ? copy(initialState) : { version: 1, association: adapter.association, phase: 'off', manual: null, ownedPause: false, pending: null };
   // A saved diagnostic is not a decision made by this controller instance.
@@ -1454,8 +1454,22 @@ export function createShellyController({ adapter, initialState, saveState = () =
       cancelPlanning();
       let takeoverRequested = typeof input.takeover === 'string';
       const requestedSnapshot = adapter.snapshot();
+      let remainingAdmissionMs = RPC_TIMEOUT_MS;
+      const settleTakeoverAdmission = async () => {
+        // Join received input, not a new query or mutation. All takeover joins
+        // share one bounded allowance for actual admission waiting. Planning,
+        // native reads and persistence do not consume that waiting allowance.
+        // Every caller then checks the original scope and command permission.
+        if (takeoverRequested && adapter.waitForInputAdmission
+          && ['evse-input-persistence-pending', 'evse-source-time-pending'].includes(adapter.snapshot().commandBlockReason)) {
+          const startedAt = clock(), started = performance.now();
+          const admitted = await adapter.waitForInputAdmission({ deadlineAt: startedAt + Math.max(0, Math.floor(remainingAdmissionMs)) });
+          remainingAdmissionMs -= Math.max(performance.now() - started, clock() - startedAt);
+          if (!admitted) throw fail('evse-control-unavailable');
+        }
+      };
       const takeoverCurrent = takeoverRequested && input.enabled === true
-        && canControl() && takeoverStatus(requestedSnapshot).available && input.takeover === takeoverToken(requestedSnapshot);
+        && hasAuthority() && input.takeover === takeoverToken(requestedSnapshot);
       if (takeoverRequested) {
         takeoverAttemptToken = input.takeover; takeoverAttemptRevision = intentRevision;
         takeoverResult = { state: 'pending', reason: null };
@@ -1468,6 +1482,7 @@ export function createShellyController({ adapter, initialState, saveState = () =
         await adapter.refresh();
         let snapshot = adapter.snapshot();
         await manageCurrentTest({ snapshot, intentRevision, early: true });
+        if (takeoverRequested) await settleTakeoverAdmission();
         snapshot = adapter.snapshot();
         const controlScope = snapshot;
         let acceptedTakeoverToken = null, takeoverPlan = null;
@@ -1598,15 +1613,18 @@ export function createShellyController({ adapter, initialState, saveState = () =
           const takeoverGuard = () => takeoverContextCurrent()
             && sameSetting(adapter.snapshot().fields.start_charging, expectedStart);
           try {
+            await settleTakeoverAdmission();
             if (!takeoverGuard()) throw fail('evse-takeover-changed');
             // Consume this connection's automatic claim before any mutation.
             // A lost reply must be reconciled, never repeated as a new takeover.
             state.automaticTakeover = null;
             await persist();
+            await settleTakeoverAdmission();
             if (snapshot.nativeScheduleActive) {
               if (typeof adapter.disableNativeSchedules !== 'function') throw fail('evse-native-schedule-unsupported');
               takeoverPlan ??= chargeNow ? immediatePermission() : typeof getPlan === 'function'
                 ? await readPlan(snapshot, { takeover: true, refresh: input.refreshPlan !== false }, intentRevision) : input.plan;
+              await settleTakeoverAdmission();
               if (!takeoverGuard()) throw fail('evse-takeover-changed');
               const openPeriod = takeoverPlan?.periods?.some(period => period.startAt <= clock()
                 && (period.endAt === null || period.endAt > clock()));
@@ -1653,6 +1671,7 @@ export function createShellyController({ adapter, initialState, saveState = () =
               await adapter.refresh({ force: true });
               snapshot = adapter.snapshot();
             }
+            await settleTakeoverAdmission();
             if (!takeoverGuard() || !snapshot.controlReady || snapshot.nativeScheduleActive) throw fail('evse-takeover-changed');
             // The explicit instruction adopts this exact native permission, even
             // when the economic plan will leave an existing Stop in place. Its
@@ -1669,6 +1688,7 @@ export function createShellyController({ adapter, initialState, saveState = () =
             state.nativeSchedule = scheduleToken(snapshot);
             delete state.scheduleTakeoverPending;
             await persist();
+            await settleTakeoverAdmission();
             if (!takeoverGuard()) throw fail('evse-takeover-changed');
             acceptedTakeoverToken = takeoverToken(snapshot);
           } catch (cause) {
@@ -1862,6 +1882,7 @@ export function createShellyController({ adapter, initialState, saveState = () =
           identification = null; state.lastStart = start.value; state.lastStartAt = start.measuredAt;
         }
         observeCurrentChoice(current, snapshot.session);
+        if (takeoverRequested) await settleTakeoverAdmission();
         if (takeoverRequested && (closed || intentRevision !== revision || !canControl() || !takeoverStatus(adapter.snapshot()).available
           || takeoverToken(adapter.snapshot()) !== acceptedTakeoverToken)) {
           takeoverResult = { state: 'blocked', reason: 'evse-takeover-changed' };
@@ -2096,6 +2117,7 @@ export function createShellyController({ adapter, initialState, saveState = () =
                 ? 'evse-command-unconfirmed' : `manual-${state.manual?.kind}`;
               state.released = false;
             }
+            await settleTakeoverAdmission();
             after = adapter.snapshot();
             const confirmed = !closed && intentRevision === revision && canControl()
               && after.association === controlScope.association && after.generation === controlScope.generation

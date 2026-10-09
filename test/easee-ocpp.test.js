@@ -553,10 +553,12 @@ test('a power timestamp collision does not permanently revoke matching native tr
     assert.equal(f.local.controlSnapshot().transaction.confirmed, true, origin);
     const changed = samples.map(row => row.measurand === 'Power.Active.Import' ? { ...row, value: '6890', context: 'Sample.Clock' } : row);
     await client.call('MeterValues', { ...meter(changed, at + 1000), transactionId });
-    assert.equal(f.local.controlSnapshot().transaction.confirmed, false, 'Contradictory evidence cannot confirm the transaction');
+    assert.equal(f.local.controlSnapshot().transaction.confirmed, origin === 'accepted',
+      'Power disagreement does not revoke accepted identity; recovered identity still needs clean power evidence');
     assert.equal(f.local.controlSnapshot().readings.some(row => row.id === 120), false, 'The contradictory power remains unknown');
     await client.call('MeterValues', { ...meter(samples, at + 1000), transactionId });
-    assert.equal(f.local.controlSnapshot().transaction.confirmed, false, 'Replaying either old value cannot clear the contradiction');
+    assert.equal(f.local.controlSnapshot().transaction.confirmed, origin === 'accepted',
+      'Replaying either old power value cannot restore recovered identity or clear the measurement contradiction');
     for (const offset of [2000, 3000]) {
       f.now = at + offset;
       await client.call('MeterValues', { ...meter(samples, at + offset), transactionId });
@@ -587,7 +589,7 @@ test('a simultaneous power collision cannot hide a conflicting native transactio
   assert.equal(f.local.controlSnapshot().transaction.confirmed, false, 'Actual identity conflict retains its connection fence');
 });
 
-test('future multi-field power conflicts recover only from later source evidence and preserve receipt clocks', async t => {
+test('future power conflicts retain accepted identity and preserve original measurement clocks', async t => {
   const f = await fixture(t), client = await f.connect();
   await client.call('StatusNotification', connector('Charging'));
   const reply = await client.call('StartTransaction', { connectorId: 1, idTag: 'fixture-tag', meterStart: 0,
@@ -599,16 +601,81 @@ test('future multi-field power conflicts recover only from later source evidence
   assert.equal(f.local.controlSnapshot().transaction.confirmed, true, 'Future reports have not replaced original accepted evidence');
   f.now = at + 2;
   const conflicted = f.local.controlSnapshot();
-  assert.equal(conflicted.transaction.confirmed, false, 'Other fields from the conflicting source timestamp cannot restore confirmation');
+  assert.equal(conflicted.transaction.confirmed, true, 'Matching accepted identity remains independent of contradictory power');
   assert.equal(conflicted.readings.some(row => row.id === 120), false);
   assert.equal(conflicted.readings.find(row => row.id === 183).receivedAt, at);
   await client.call('MeterValues', { ...meter(samples, at + 4), transactionId });
-  assert.equal(f.local.controlSnapshot().transaction.confirmed, false, 'Later future evidence still waits for local clock catch-up');
+  assert.equal(f.local.controlSnapshot().readings.some(row => row.id === 120), false,
+    'Later future power evidence still waits for local clock catch-up');
   f.now = at + 4;
   const current = f.local.controlSnapshot();
   assert.equal(current.transaction.confirmed, true, 'Clock catch-up recovers without a second packet');
   assert.equal(current.readings.find(row => row.id === 120).timestamp, new Date(at + 4).toISOString());
   assert.equal(current.readings.find(row => row.id === 120).receivedAt, at + 2);
+});
+
+test('accepted transaction reconnect can use matching non-power evidence while power remains contradictory', async t => {
+  const f = await fixture(t), first = await f.connect();
+  const reply = await first.call('StartTransaction', { connectorId: 1, idTag: 'fixture-tag', meterStart: 0,
+    timestamp: new Date(at).toISOString() });
+  const transactionId = reply[2].transactionId;
+  f.now = at + 1000;
+  const client = await f.connect();
+  await client.call('StatusNotification', connector('Charging', at + 1000));
+  assert.equal(f.local.controlSnapshot().transaction.confirmed, false);
+  const conflicting = [...samples, { measurand: 'Power.Active.Import', unit: 'W', value: '6890' }];
+  await client.call('MeterValues', { ...meter(conflicting, at + 1000), transactionId });
+  const snapshot = f.local.controlSnapshot();
+  assert.equal(snapshot.transaction.confirmed, true);
+  assert.equal(snapshot.transaction.provenance, 'start-transaction');
+  assert.equal(snapshot.transaction.startedAt, at);
+  assert.equal(snapshot.readings.some(row => row.id === 120), false);
+  assert.equal(snapshot.readings.find(row => row.id === 183).timestamp, new Date(at + 1000).toISOString());
+  assert.equal(snapshot.readings.find(row => row.id === 183).receivedAt, at + 1000);
+});
+
+test('power-only contradiction cannot renew accepted transaction freshness or replace its identity', async t => {
+  const f = await fixture(t), client = await f.connect();
+  await client.call('StatusNotification', connector('Charging'));
+  const reply = await client.call('StartTransaction', { connectorId: 1, idTag: 'fixture-tag', meterStart: 0,
+    timestamp: new Date(at).toISOString() });
+  const transactionId = reply[2].transactionId;
+  const contradictory = ['6900', '6890'].map(value => ({ measurand: 'Power.Active.Import', unit: 'W', value }));
+  f.now = at + 59_000;
+  await client.call('MeterValues', { ...meter(contradictory, at + 59_000), transactionId });
+  assert.equal(f.local.controlSnapshot().transaction.confirmed, true, 'Original accepted identity is still fresh');
+  f.now = at + 61_000;
+  await client.call('Heartbeat', {});
+  assert.equal(f.local.controlSnapshot().transaction.confirmed, false, 'Contradictory power did not renew the accepted identity clock');
+  const nonPower = samples.filter(row => row.measurand !== 'Power.Active.Import');
+  await client.call('MeterValues', { ...meter(nonPower, at + 61_000), transactionId });
+  assert.equal(f.local.controlSnapshot().transaction.confirmed, true, 'Fresh matching non-power measurements can reconfirm accepted identity');
+  assert.equal(f.local.controlSnapshot().readings.some(row => row.id === 120), false);
+});
+
+test('accepted reconnect waits for current non-power evidence and keeps its original source and receipt times', async t => {
+  const f = await fixture(t), first = await f.connect();
+  const reply = await first.call('StartTransaction', { connectorId: 1, idTag: 'fixture-tag', meterStart: 0,
+    timestamp: new Date(at).toISOString() });
+  const transactionId = reply[2].transactionId;
+  f.now = at + 1000;
+  const client = await f.connect();
+  await client.call('StatusNotification', connector('Charging', at + 1000));
+  const contradictory = ['6900', '6890'].map(value => ({ measurand: 'Power.Active.Import', unit: 'W', value }));
+  await client.call('MeterValues', { ...meter(contradictory, at + 1000), transactionId });
+  assert.equal(f.local.controlSnapshot().transaction.confirmed, false, 'An unknown power value cannot establish current continuity alone');
+  const nonPower = samples.filter(row => row.measurand !== 'Power.Active.Import');
+  await client.call('MeterValues', { ...meter(nonPower, at + 1002), transactionId });
+  assert.equal(f.local.controlSnapshot().transaction.confirmed, false, 'Future source evidence cannot yet confirm continuity');
+  f.now = at + 1002;
+  const snapshot = f.local.controlSnapshot();
+  assert.equal(snapshot.transaction.confirmed, true);
+  assert.equal(snapshot.readings.some(row => row.id === 120), false);
+  assert.equal(snapshot.readings.find(row => row.id === 183).timestamp, new Date(at + 1002).toISOString());
+  assert.equal(snapshot.readings.find(row => row.id === 183).receivedAt, at + 1000);
+  f.now = at + 61_003;
+  await client.call('Heartbeat', {});
+  assert.equal(f.local.controlSnapshot().transaction.confirmed, false, 'Heartbeat and cached readings cannot renew identity');
 });
 
 test('current measurements maintain recovered confirmation and an explicit later end allows a new authorized session', async t => {

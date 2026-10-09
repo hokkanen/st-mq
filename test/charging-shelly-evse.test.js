@@ -137,6 +137,56 @@ test('contended Shelly notification closes command readiness until its original 
   assert.equal(store.writeHealth.status().failing, false);
 });
 
+for (const scenario of ['ordinary', 'expired-wait', 'slow-ordinary-work', 'accumulated-waits'])
+  test(`explicit takeover bounds admission waiting independently of ordinary work: ${scenario}`, async t => {
+    const directory = mkdtempSync(join(tmpdir(), 'stmq-takeover-admission-'));
+    const store = new Store(join(directory, 'recording.sqlite')), writer = new DatabaseSync(store.path);
+    const f = fixture(t, {}, store), turn = () => new Promise(resolve => setImmediate(resolve));
+    let armed = false, injected = 0, locked = false, release, receiptAt;
+    t.after(async () => {
+      if (locked) { writer.exec('ROLLBACK'); locked = false; }
+      await release; f.adapter.close(); await turn(); writer.close(); store.close(); rmSync(directory, { recursive: true, force: true });
+    });
+    await f.ready(); f.setNow(NOW + 1000);
+    const controller = createShellyController({ adapter: f.adapter, clock: f.now,
+      hasAuthority: () => true,
+      canControl: () => f.adapter.snapshot().commandBlockReason !== 'evse-input-persistence-pending',
+      saveState: async state => {
+        await store.runWrite(() => store.setState('controller', state));
+        if (!armed || injected >= (scenario === 'accumulated-waits' ? 2 : 1)) return;
+        if (scenario === 'slow-ordinary-work') f.setNow(NOW + 7000);
+        receiptAt = f.now();
+        injected++; writer.exec('BEGIN IMMEDIATE'); locked = true;
+        f.notify('phase_info', structuredClone(f.fields.phase_info));
+        assert.equal(f.adapter.snapshot().commandBlockReason, 'evse-input-persistence-pending');
+        release = (async () => {
+          for (let index = 0; index < 5; index++) await turn();
+          if (scenario === 'expired-wait') f.setNow(NOW + 7000);
+          if (scenario === 'accumulated-waits') f.setNow(f.now() + (injected === 1 ? 3000 : 2500));
+          writer.exec('ROLLBACK'); locked = false;
+        })();
+      } });
+    t.after(() => controller.close());
+    await controller.update({ enabled: false });
+    const token = controller.status().takeover.token;
+    armed = true;
+    await controller.update({ enabled: true, takeover: token,
+      plan: { id: 'same-economic-wait', periods: [{ startAt: NOW + 1800000, endAt: null }] } });
+    await release; await store.runWrite(() => {});
+    assert.equal(injected, scenario === 'accumulated-waits' ? 2 : 1);
+    const writes = f.writes.filter(row => row.method.endsWith('.Set'));
+    if (scenario === 'expired-wait' || scenario === 'accumulated-waits') {
+      assert.equal(controller.status().takeover.state, 'blocked');
+      assert.equal(writes.length, 0, 'Expiry cannot renew admission or dispatch an old action');
+    } else {
+      assert.equal(controller.status().takeover.state, 'confirmed');
+      assert.equal(writes.length, 1);
+      assert.equal(writes[0].method, 'Boolean.Set');
+      assert.equal(writes[0].params.value, false, 'The original economic wait progresses without another action');
+      assert.equal(f.adapter.snapshot().fields.phase_info.receivedAt, receiptAt);
+    }
+  });
+
 for (const action of ['identification-pause', 'automatic-off', 'charge-now', 'planning-interrupt'])
   test(`an obsolete Shelly economic wait releases the native queue for ${action}`, async t => {
     const f = fixture(t); await f.ready();

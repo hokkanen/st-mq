@@ -300,6 +300,14 @@ restart or unplugging; genuinely newer source evidence takes priority again.
 Native setting reports retain their command-source evidence. A same-value
 `sys` update without an intervening observed permission change is a device refresh
 and does not revoke saved command ownership.
+If a received telemetry packet is still awaiting persistence or source-time
+admission during takeover, its validation joins that pending work within five
+seconds of accumulated admission waiting. Ordinary planning, reads and
+persistence do not consume that waiting allowance. Waiting sends no query or
+mutation and does not renew any native RPC timeout. The original action token, connection,
+authority and instructions are checked again after admission; a newer external
+instruction still supersedes the action. An expired or failed wait cannot send
+a command, and an uncertain dispatched mutation is never retried by this wait.
 Fresh `sys` edges follow the [system permission exception](../execution-and-recovery.md#shelly-system-permission-changes),
 which preserves physical stops and unrelated native instructions. It does not
 extend the exception to native current changes or uncertain application commands.
