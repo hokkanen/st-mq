@@ -774,6 +774,15 @@ history. Recovery and guarded profile installation are covered by synthetic
 protocol and production-adapter tests; acceptance by the installed charger still
 needs a separately authorized hardware check.
 
+Power samples from aligned and periodic reporting can disagree at one source
+timestamp. That power value remains unknown, and the conflicting observation
+cannot confirm a transaction. Later advancing, clean reports for the same
+transaction restore confirmation without a transport reconnect; neither a replay
+at the conflicting timestamp nor unrelated fields from that timestamp do so.
+This measurement conflict is separate from reports naming different current
+transaction IDs, which retain the connection-scoped identity fence. Original
+measurement and receipt clocks remain unchanged.
+
 Each transaction retains its latest transaction-specific evidence time. A fresh,
 explicitly timestamped `Available` or `Finishing` status from the
 current authenticated connector can establish that no transaction is ongoing,

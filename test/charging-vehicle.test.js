@@ -466,6 +466,35 @@ test('Tesla logger loss keeps the identified request at 100 percent across polli
   assert.ok(view(restarted).requiredGridKwh > 0);
 });
 
+test('startup before charger attachment cannot lose the identified connection target while keeping its charge anchor', async t => {
+  const f = fixture({ defaults: { manualSoc: 20, minimumSoc: 80, capacityKwh: 57 } });
+  f.tesla.batteryLevel = 93; f.tesla.chargeLimitSoc = 100;
+  const runtime = f.create(); t.after(() => runtime.close());
+  f.setTeslaEvidence('easee'); await runtime.tick();
+  const expected = view(runtime).requiredGridKwh;
+  assert.ok(expected > 4);
+  const adapter = runtime.chargers.charger1.adapter, controller = runtime.chargers.charger1.controller;
+  const capture = runtime.teslaCapture;
+  await runtime.close();
+  f.setCharging(false); f.setNow(START + MINUTE); f.setTeslaEvidence(null);
+  const restarted = new ChargingRuntime({ engine: {}, store: f.store, config: f.config, clock: () => START + MINUTE });
+  t.after(() => restarted.close());
+  await restarted.tick();
+  assert.equal(view(restarted).vehicle.reason, 'assignment-unresolved');
+  assert.equal(restarted.chargers.charger1.progress.batteryInputs?.minimumSoc?.value, 100,
+    'The durable startup write retains dormant target evidence before adapter and vehicle feeds attach');
+  Object.assign(restarted.chargers.charger1, { adapter, controller });
+  restarted.teslaCapture = capture;
+  await restarted.tick();
+  const restored = view(restarted);
+  assert.equal(restored.vehicle.id, 'tesla');
+  assert.equal(restored.values.minimumSoc.value, 100);
+  assert.equal(restored.values.minimumSoc.retainedForSession, true);
+  assert.equal(restored.progress.estimatedSoc, 93);
+  assert.equal(restored.requiredGridKwh, expected);
+  assert.notEqual(restored.plan?.reason, 'target-reached');
+});
+
 test('old Tesla plug state cannot rebound from unplugged Easee into a duplicate Charger 2 session, including restart', async t => {
   const f = fixture(), runtime = f.create(); t.after(() => runtime.close());
   f.setTeslaEvidence('easee'); runtime.tick(); f.setNow(START + MINUTE); f.setConnection(false); runtime.tick();

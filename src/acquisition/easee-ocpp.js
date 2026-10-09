@@ -365,18 +365,11 @@ export function createEaseeOcpp({ config: input, chargerId, clock = Date.now, ca
     callQueue.push({ action: 'TriggerMessage', payload: { requestedMessage: 'StatusNotification', connectorId: 1 } });
     sendNextCall();
   }
-  function recoverTransaction(readings, transactionId, receivedAt, messageId) {
+  function recoverTransaction({ at, conflicting }, transactionId, receivedAt, messageId) {
     const validId = Number.isSafeInteger(transactionId) && transactionId > 0 && transactionId < 2147483647;
-    const powerReadings = readings.filter(row => row.id === 120);
-    const at = Math.max(...powerReadings.map(row => instant(row.timestamp)));
     const fresh = validId && Number.isSafeInteger(at) && at >= evidenceBoundaryAt && at - receivedAt <= MAX_FUTURE_MS
       && clock() >= at && clock() - at <= MAX_AGE_MS;
     if (!fresh) return true;
-    const currentPower = powerReadings.filter(row => instant(row.timestamp) === at), priorPower = values.get(120);
-    if (new Set(currentPower.map(row => row.value)).size !== 1
-      || instant(priorPower?.timestamp) === at && priorPower.value !== currentPower[0].value) {
-      recoveryConflict = true; observedTransaction = null; return true;
-    }
     if (recoveryCandidate && at - recoveryCandidate.lastAt > MAX_AGE_MS) recoveryCandidate = null;
     const active = activeTransaction();
     // Two different current transaction identifiers on one connection cannot
@@ -385,6 +378,12 @@ export function createEaseeOcpp({ config: input, chargerId, clock = Date.now, ca
     if (at < Math.max(active?.lastEvidenceAt ?? 0, recoveryCandidate?.lastAt ?? 0)) return true;
     if (active && active.id !== transactionId || recoveryCandidate && recoveryCandidate.id !== transactionId) {
       recoveryConflict = true; observedTransaction = null; return true;
+    }
+    // Aligned and periodic samples can disagree at the same source timestamp.
+    // That measurement stays unknown, but does not change transaction identity.
+    // Later advancing clean evidence may confirm the same transaction again.
+    if (conflicting) {
+      observedTransaction = { id: transactionId, at, conflicting: true }; recoveryCandidate = null; return true;
     }
     if (recoveryConflict || active && !isRecovered(active) || !messageId || !connectorStatusExplicit
       || !RECOVERABLE_STATUSES.has(connectorStatus) || connectorStatusAt < evidenceBoundaryAt
@@ -411,11 +410,16 @@ export function createEaseeOcpp({ config: input, chargerId, clock = Date.now, ca
     return true;
   }
   function applyReadings(readings, transactionId, receivedAt, messageId) {
+    const powerReadings = readings.filter(row => row.id === 120);
+    const powerAt = Math.max(...powerReadings.map(row => instant(row.timestamp)));
+    const currentPower = powerReadings.filter(row => instant(row.timestamp) === powerAt), priorPower = values.get(120);
+    const conflictingPower = currentPower.length > 0 && (new Set(currentPower.map(row => row.value)).size !== 1
+      || instant(priorPower?.timestamp) === powerAt && priorPower.value !== currentPower[0].value);
     if (readings.length && Number.isSafeInteger(transactionId) && transactionId > 0 && transactionId < 2147483647) {
       const at = Math.max(...readings.map(row => instant(row.timestamp)));
       if (!transactionEvidence || at >= transactionEvidence.at) transactionEvidence = { id: transactionId, at };
     }
-    if (!recoverTransaction(readings, transactionId, receivedAt, messageId)) return false;
+    if (!recoverTransaction({ at: powerAt, conflicting: conflictingPower }, transactionId, receivedAt, messageId)) return false;
     const active = activeTransaction();
     if (readings.length && active && transactionId === active.id) {
       const at = Math.max(...readings.map(row => instant(row.timestamp)));
@@ -423,8 +427,9 @@ export function createEaseeOcpp({ config: input, chargerId, clock = Date.now, ca
         try { persist(updateTransaction({ ...active, lastEvidenceAt: at })); }
         catch { return false; }
       }
-      if (!isRecovered(active) && !recoveryConflict && at >= active.startedAt
-        && (!observedTransaction || at >= observedTransaction.at)) observedTransaction = { id: transactionId, at };
+      if (!isRecovered(active) && !recoveryConflict && !conflictingPower && at >= active.startedAt
+        && (!observedTransaction || at > observedTransaction.at
+          || at === observedTransaction.at && !observedTransaction.conflicting)) observedTransaction = { id: transactionId, at };
     }
     for (const row of readings) {
       const before = values.get(row.id), at = instant(row.timestamp), priorAt = instant(before?.timestamp);
@@ -873,7 +878,8 @@ export function createEaseeOcpp({ config: input, chargerId, clock = Date.now, ca
       if (releaseFutureReadings() === false || reconcileTransactionStatus() === false) return null;
       if (!stateReady) return null;
       const active = activeTransaction();
-      const confirmed = !recoveryConflict && observedTransaction?.id === active?.id && clock() >= observedTransaction?.at
+      const confirmed = !recoveryConflict && !observedTransaction?.conflicting
+        && observedTransaction?.id === active?.id && clock() >= observedTransaction?.at
         && clock() - observedTransaction.at <= MAX_AGE_MS;
       const stopped = [...ledger.transactions, ...(ledger.recovered?.transactions ?? [])]
         .filter(row => row.stopReason && (isRecovered(row) || row.status === 'Accepted') && row.stoppedAt <= clock())

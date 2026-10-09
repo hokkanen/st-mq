@@ -25,7 +25,10 @@ alongside its charge reference when the vehicle feed becomes unavailable. These
 compact session references preserve original source clocks across restart; they
 are labelled planning assumptions, not fresh vehicle observations. Feed loss
 cannot combine a retained 96% charge with an 80% default target and falsely
-release a pause as completed. New usable vehicle values and explicit session
+release a pause as completed. Startup before charger observation keeps these
+references dormant until the same vehicle and physical connection are established;
+an unknown startup projection cannot erase the target while retaining its charge
+anchor. New usable vehicle values and explicit session
 edits take precedence. Disconnecting, changing the identified vehicle or replacing
 the physical connection prevents reuse. Raw automatic fields still report
 unavailability; configured defaults, measured energy and native current limits

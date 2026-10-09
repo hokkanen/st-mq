@@ -121,6 +121,48 @@ test('a vehicle feed outage cannot lower the target below a retained charge refe
     'A different connection cannot inherit the old vehicle target');
 });
 
+for (const vehicle of ['tesla', 'bmw'])
+test(`${vehicle}: unknown startup keeps battery references dormant until the same connection is observed`, () => {
+  const source = vehicle === 'tesla' ? 'teslamate' : 'bmw-cardata';
+  const current = charger({ soc: value(93, { source, receivedAt: now }),
+    minimumSoc: value(100, { source, receivedAt: now }), capacityKwh: value(74, { source, receivedAt: now }) });
+  current.settings = { manualSoc: 20 };
+  current.telemetry.vehicle = { state: 'identified', id: vehicle, sessionId: 'same-plug' };
+  const original = updateChargingProgress(null, current, now);
+  const startup = { ...current, telemetry: { providerConnected: false,
+    vehicle: { state: 'unidentified', reason: 'assignment-unresolved' } }, values: { ...current.values,
+    connected: { value: null, available: false }, soc: value(20, { source: 'manual-fallback' }),
+    minimumSoc: value(80, { source: 'manual-fallback' }), capacityKwh: value(57, { source: 'manual-fallback' }) } };
+  const dormant = updateChargingProgress(restoreChargingProgress(original.state), startup, now + HOUR);
+  assert.deepEqual(dormant.state.batteryInputs, original.state.batteryInputs);
+  assert.equal(dormant.batteryValues.minimumSoc.value, 80, 'Unknown scope cannot present old vehicle settings as applicable');
+  const reconnect = { ...startup, telemetry: current.telemetry,
+    values: { ...startup.values, connected: value(true) } };
+  const restored = updateChargingProgress(dormant.state, reconnect, now + HOUR);
+  assert.equal(restored.estimatedSoc, 93);
+  assert.equal(restored.batteryValues.minimumSoc.value, 100);
+  assert.equal(restored.batteryValues.capacityKwh.value, 74);
+  assert.equal(restored.remainingGridKwh, original.remainingGridKwh);
+  for (const changed of [
+    { ...reconnect, values: { ...reconnect.values, connected: value(false) } },
+    { ...reconnect, telemetry: { vehicle: { ...current.telemetry.vehicle, sessionId: 'replacement-plug' } } },
+    { ...reconnect, telemetry: { vehicle: { ...current.telemetry.vehicle, id: 'replacement-vehicle' } } },
+    { ...startup, telemetry: { providerConnected: false, vehicle: { state: 'conflict', reason: 'conflicting-vehicle-evidence' } } },
+  ]) {
+    const withdrawn = updateChargingProgress(dormant.state, changed, now + 2 * HOUR);
+    assert.equal(withdrawn.state.batteryInputs?.minimumSoc, undefined);
+    assert.equal(withdrawn.state.batteryInputs?.capacityKwh, undefined);
+    assert.equal(withdrawn.batteryValues.minimumSoc.value, 80);
+  }
+  const edited = { ...reconnect, values: { ...reconnect.values, minimumSoc: value(95, { source: 'session-request' }),
+    capacityKwh: value(60, { source: 'session-request' }) } };
+  const override = updateChargingProgress(dormant.state, edited, now + 2 * HOUR);
+  assert.equal(override.batteryValues.minimumSoc.value, 95);
+  assert.equal(override.batteryValues.capacityKwh.value, 60);
+  const live = { ...current, values: { ...current.values, minimumSoc: value(98, { source, receivedAt: now + HOUR }) } };
+  assert.equal(updateChargingProgress(dormant.state, live, now + 2 * HOUR).batteryValues.minimumSoc.value, 98);
+});
+
 test('target and capacity references retain their source clocks without changing earned energy', () => {
   const current = charger({ soc: value(60, { source: 'bmw-cardata', measuredAt: now }),
     minimumSoc: value(90, { source: 'bmw-target-filter', measuredAt: now }),

@@ -536,6 +536,81 @@ test('conflicting transaction identities revoke recovery and cannot be voted awa
   assert.equal(f.saved.recovered, undefined);
 });
 
+test('a power timestamp collision does not permanently revoke matching native transaction evidence', async t => {
+  for (const origin of ['accepted', 'recovered']) {
+    const f = await fixture(t), client = await f.connect();
+    await client.call('StatusNotification', connector('Charging'));
+    let transactionId = 731;
+    if (origin === 'accepted') {
+      const reply = await client.call('StartTransaction', { connectorId: 1, idTag: 'fixture-tag', meterStart: 0,
+        timestamp: new Date(at).toISOString() });
+      transactionId = reply[2].transactionId;
+    }
+    await client.call('MeterValues', { ...meter(), transactionId });
+    f.now = at + 1000;
+    await client.call('MeterValues', { ...meter(samples, at + 1000), transactionId });
+    const connection = f.local.controlSnapshot().connectionId;
+    assert.equal(f.local.controlSnapshot().transaction.confirmed, true, origin);
+    const changed = samples.map(row => row.measurand === 'Power.Active.Import' ? { ...row, value: '6890', context: 'Sample.Clock' } : row);
+    await client.call('MeterValues', { ...meter(changed, at + 1000), transactionId });
+    assert.equal(f.local.controlSnapshot().transaction.confirmed, false, 'Contradictory evidence cannot confirm the transaction');
+    assert.equal(f.local.controlSnapshot().readings.some(row => row.id === 120), false, 'The contradictory power remains unknown');
+    await client.call('MeterValues', { ...meter(samples, at + 1000), transactionId });
+    assert.equal(f.local.controlSnapshot().transaction.confirmed, false, 'Replaying either old value cannot clear the contradiction');
+    for (const offset of [2000, 3000]) {
+      f.now = at + offset;
+      await client.call('MeterValues', { ...meter(samples, at + offset), transactionId });
+    }
+    const recovered = f.local.controlSnapshot();
+    assert.equal(recovered.connectionId, connection, 'Recovery requires no reconnect');
+    assert.equal(recovered.transaction.confirmed, true, origin);
+    const power = recovered.readings.find(row => row.id === 120);
+    assert.equal(power.timestamp, new Date(at + 3000).toISOString());
+    assert.equal(power.receivedAt, at + 3000);
+  }
+});
+
+test('a simultaneous power collision cannot hide a conflicting native transaction identity', async t => {
+  const f = await fixture(t), client = await f.connect();
+  await client.call('StatusNotification', connector('Charging'));
+  const reply = await client.call('StartTransaction', { connectorId: 1, idTag: 'fixture-tag', meterStart: 0,
+    timestamp: new Date(at).toISOString() });
+  const transactionId = reply[2].transactionId;
+  await client.call('MeterValues', { ...meter(), transactionId });
+  const changed = samples.map(row => row.measurand === 'Power.Active.Import' ? { ...row, value: '6890' } : row);
+  await client.call('MeterValues', { ...meter(changed), transactionId: transactionId + 1 });
+  for (const offset of [1000, 2000, 3000]) {
+    f.now = at + offset;
+    await client.call('MeterValues', { ...meter(samples, at + offset), transactionId });
+  }
+  assert.equal(f.local.controlSnapshot().transaction.id, transactionId);
+  assert.equal(f.local.controlSnapshot().transaction.confirmed, false, 'Actual identity conflict retains its connection fence');
+});
+
+test('future multi-field power conflicts recover only from later source evidence and preserve receipt clocks', async t => {
+  const f = await fixture(t), client = await f.connect();
+  await client.call('StatusNotification', connector('Charging'));
+  const reply = await client.call('StartTransaction', { connectorId: 1, idTag: 'fixture-tag', meterStart: 0,
+    timestamp: new Date(at).toISOString() });
+  const transactionId = reply[2].transactionId;
+  const changed = samples.map(row => row.measurand === 'Power.Active.Import' ? { ...row, value: '6890' } : row);
+  await client.call('MeterValues', { ...meter(samples, at + 2), transactionId });
+  await client.call('MeterValues', { ...meter(changed, at + 2), transactionId });
+  assert.equal(f.local.controlSnapshot().transaction.confirmed, true, 'Future reports have not replaced original accepted evidence');
+  f.now = at + 2;
+  const conflicted = f.local.controlSnapshot();
+  assert.equal(conflicted.transaction.confirmed, false, 'Other fields from the conflicting source timestamp cannot restore confirmation');
+  assert.equal(conflicted.readings.some(row => row.id === 120), false);
+  assert.equal(conflicted.readings.find(row => row.id === 183).receivedAt, at);
+  await client.call('MeterValues', { ...meter(samples, at + 4), transactionId });
+  assert.equal(f.local.controlSnapshot().transaction.confirmed, false, 'Later future evidence still waits for local clock catch-up');
+  f.now = at + 4;
+  const current = f.local.controlSnapshot();
+  assert.equal(current.transaction.confirmed, true, 'Clock catch-up recovers without a second packet');
+  assert.equal(current.readings.find(row => row.id === 120).timestamp, new Date(at + 4).toISOString());
+  assert.equal(current.readings.find(row => row.id === 120).receivedAt, at + 2);
+});
+
 test('current measurements maintain recovered confirmation and an explicit later end allows a new authorized session', async t => {
   const f = await fixture(t, { authorization_mode: 'plug-and-charge' }, 'fixture-virtual-tag'), client = await f.connect();
   await client.call('StatusNotification', connector('SuspendedEVSE'));

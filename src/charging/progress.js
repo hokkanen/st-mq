@@ -32,6 +32,15 @@ export function restoreChargingProgress(previous) {
 // telemetry or actuator authority. Retain target and capacity together with the
 // charge anchor so feed loss cannot combine an observed 96% with a default 80%.
 function sessionBatteryInputs(previous, charger, scope, connected) {
+  if (connected === null && scope === null && previous?.connected !== false
+    && charger.telemetry?.vehicle?.state === 'unidentified'
+    && charger.telemetry.vehicle.reason === 'assignment-unresolved') {
+    // Adapter/feed startup has not observed a new physical connection. Keep
+    // the old references dormant, just as the charge anchor is retained below.
+    // They become usable only after the exact vehicle/session scope returns.
+    return { batteryInputs: previous?.batteryInputs ? structuredClone(previous.batteryInputs) : null,
+      values: { minimumSoc: charger.values.minimumSoc, capacityKwh: charger.values.capacityKwh } };
+  }
   const usable = scope !== null && connected !== false && previous?.connected !== false;
   const saved = usable && previous?.batteryInputs?.scope === scope ? previous.batteryInputs : null;
   const batteryInputs = scope !== null && connected !== false ? { scope } : null;
