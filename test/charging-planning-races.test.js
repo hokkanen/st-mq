@@ -108,6 +108,75 @@ test('two controllers awaiting a shared calculation receive it without invalidat
   }
 });
 
+test('a valid native plan returns while newer changed measurements keep background planning busy', async t => {
+  const f = await fixture(t), calculate = f.runtime.calculatePlan.bind(f.runtime);
+  let completed = 0;
+  f.runtime.calculatePlan = async (...args) => {
+    await calculate(...args);
+    if (++completed === 1) {
+      // A real input change after publication deserves another search, but
+      // cannot keep the caller of the already committed plan on a global drain.
+      f.controllers.charger2.control.snapshot.limits.chargerA = 12;
+      void f.runtime.updatePlan();
+    }
+  };
+  let returned = false;
+  const native = f.controllers.charger1.getPlan().then(plan => { returned = true; return plan; });
+  await waitForCalls(f.planner, 1);
+  f.planner.complete(0); await waitForCalls(f.planner, 2);
+  await turn();
+  assert.equal(returned, true, 'The native caller is released by publication before the next search completes');
+  const plan = await native;
+  assert.ok(plan.periods.length);
+  assert.equal(f.runtime.coordination.solver.testRequest, 0);
+  assert.equal(f.planner.calls[1].done, false, 'The newer calculation is still running independently');
+  f.planner.complete(1); await f.runtime.planningFlight;
+  assert.equal(f.runtime.coordination.solver.testRequest, 1);
+});
+
+test('control publication waiters cannot finish with an earlier request revision', async t => {
+  const f = await fixture(t);
+  let returned = false, latestReturned = false;
+  const native = f.controllers.charger1.getPlan().then(plan => { returned = true; return plan; });
+  await waitForCalls(f.planner, 1);
+  const item = f.runtime.chargers.charger1;
+  item.request.revision++; item.request.overrides.minimumSoc = 90;
+  const latest = f.runtime.updatePlanForControl().then(() => { latestReturned = true; });
+  f.planner.complete(0); await waitForCalls(f.planner, 2);
+  assert.equal(returned, false);
+  assert.equal(latestReturned, false);
+  assert.equal(f.runtime.coordination, null, 'The previous revision has not been published');
+  f.planner.complete(1); await Promise.all([native, latest]);
+  assert.equal(f.runtime.coordination.requests.charger1.revision, item.request.revision);
+  assert.equal(f.runtime.coordination.solver.testRequest, 1);
+  assert.equal(f.runtime.planPublicationWaiters.size, 0);
+});
+
+test('a control request registered after commit cannot consume the preceding publication', async t => {
+  const f = await fixture(t), persist = f.runtime.persist.bind(f.runtime);
+  let newer, newerReturned = false, registered = false;
+  f.runtime.persist = () => {
+    persist();
+    if (!registered && f.runtime.coordination?.solver.testRequest === 0) {
+      registered = true;
+      f.store.afterCommit(() => {
+        const request = f.runtime.chargers.charger1.request;
+        request.revision++; request.overrides.minimumSoc = 90;
+        newer = f.runtime.updatePlanForControl().then(() => { newerReturned = true; });
+      });
+    }
+  };
+  const native = f.controllers.charger1.getPlan();
+  await waitForCalls(f.planner, 1);
+  f.planner.complete(0); await waitForCalls(f.planner, 2);
+  assert.ok((await native).periods.length);
+  assert.equal(newerReturned, false, 'Only callers covered by the final evidence check receive this publication');
+  f.planner.complete(1); await newer;
+  assert.equal(f.runtime.coordination.solver.testRequest, 1);
+  assert.equal(f.runtime.coordination.requests.charger1.revision, f.runtime.chargers.charger1.request.revision);
+  assert.equal(f.runtime.planPublicationWaiters.size, 0);
+});
+
 test('an unchanged native read receipt does not discard useful planning work', async t => {
   const f = await fixture(t), work = f.runtime.updatePlan();
   await waitForCalls(f.planner, 1);

@@ -444,7 +444,7 @@ export class ChargingRuntime {
           if (!refresh && !takeover && this.currentPlanReusable(item, snapshot))
             return this.controlPlan(item, this.pricesInitialized ? item.plan : null);
           item.awaitingPlan = true;
-          try { await this.updatePlan(this.clock(), { sourceId: id, background: !refresh && !takeover }); }
+          try { await this.updatePlanForControl(this.clock(), { sourceId: id, background: !refresh && !takeover }); }
           catch { this.error = 'charging-planning-unavailable'; return this.controlPlan(item, null); }
           finally { item.awaitingPlan = false; }
           return this.controlPlan(item, this.pricesInitialized ? item.plan : null);
@@ -1906,6 +1906,19 @@ export class ChargingRuntime {
     }
     return this.planningFlight;
   }
+  async updatePlanForControl(now = this.clock(), options = {}) {
+    let published;
+    const publication = new Promise(resolve => { published = resolve; });
+    this.planPublicationWaiters ??= new Set();
+    this.planPublicationWaiters.add(published);
+    try {
+      // Later source traffic may keep the global planning loop busy. A native
+      // caller needs its first committed current result, not silence from all
+      // inputs. Publication keeps the complete evidence checks below; native
+      // preflight still validates the caller's connection and instruction.
+      await Promise.race([this.updatePlan(now, options), publication]);
+    } finally { this.planPublicationWaiters.delete(published); }
+  }
   planningEvidence() {
     const views = this.views(this.clock());
     const external = views.find(view => view.capabilities.externalLoadBalancing);
@@ -2150,6 +2163,7 @@ export class ChargingRuntime {
     await this.write(() => {
     if (!acceptResult(result)) return;
     const coveredRequest = this.planningRequest;
+    const coveredWaiters = [...(this.planPublicationWaiters ?? [])];
     const environment = { supply: { budget: supply?.configuredBudgetCurrentA
         ?? (supply?.estimate?.available ? supply.estimate.budgetCurrentA : supply?.availableCurrentA),
         voltageV: planningVoltageV, allocationA: supply?.allocationA,
@@ -2319,6 +2333,10 @@ export class ChargingRuntime {
       // This committed result already covers any notification queued before
       // its final evidence check. A later request still owns its next pass.
       if (this.planningRequest === coveredRequest) this.planningRequest = null;
+      for (const published of coveredWaiters) {
+        this.planPublicationWaiters.delete(published);
+        published();
+      }
       this.lastBackgroundPlan = { key: settlingKey, at: now };
       this.backgroundPlanDueAt = null;
       this.scheduleWakeup(this.clock());
@@ -2587,7 +2605,7 @@ export class ChargingRuntime {
     item.error = null;
     }, { priority: 'control', isCurrent: () => item.controller === controller });
     if (refreshPlan || !this.currentPlanReusable(item)) {
-      try { await this.updatePlan(this.clock(), { sourceId: id, background: !refreshPlan }); this.error = null; } catch { this.error = 'charging-planning-unavailable'; }
+      try { await this.updatePlanForControl(this.clock(), { sourceId: id, background: !refreshPlan }); this.error = null; } catch { this.error = 'charging-planning-unavailable'; }
     }
   }
   checkControlAuthority() {

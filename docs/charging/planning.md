@@ -75,7 +75,9 @@ the unchanged command-readiness gates.
 
 The expensive joint search runs in one local worker, with one active calculation,
 the latest pending control calculation and at most one pending cost comparison.
-Control calculations take queue priority. Repeated equivalent inputs reuse a bounded
+Control calculations take priority, interrupting an optional comparison already
+running when necessary. The interrupted comparison returns no new result; the
+same single worker slot starts control work after termination completes. Repeated equivalent inputs reuse a bounded
 cache for at most 30 seconds and never across a schedule, allocation or deadline
 boundary. Results retain their calculation time. Changed requests, connections,
 native instructions, authority, source selection or expired results are checked
@@ -85,7 +87,10 @@ result covers those queued notifications so native control can continue while
 healthy reporting remains active. Changed evidence still requires a fresh
 calculation, and result-age and charging-boundary checks remain in force. Accepted session
 evidence and progress are saved independently while planning runs. Device
-readback and command fencing remain authoritative.
+readback and command fencing remain authoritative. Native control callers resume
+after a current joint result commits; later changed measurements may keep
+background planning active without holding those callers on the whole queue.
+An earlier request or connection cannot satisfy that publication check.
 
 The implementation is a bounded search over a declared slot/current model, **not a globally exact continuous-time optimizer**. Results expose the search kind, relaxed cost lower bound, feasible candidate cost and upper bound on the cost gap where available. Search pruning can miss a better joint candidate; reported feasibility is conditional on the recorded assumptions. Synthetic exhaustive small-horizon comparisons validate representative cases. There is no one-cent pause penalty or mandatory one-cent saving hurdle. Practical minimum economic runs/gaps remain 15 minutes; equal-cost choices prefer stability.
 

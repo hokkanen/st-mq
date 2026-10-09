@@ -7,7 +7,7 @@ const unavailable = () => new Error('Charging planning is temporarily unavailabl
 // Control calculations take priority over optional cost comparisons.
 // Computation has no database, device connection or control authority.
 export function createChargingPlannerService() {
-  let worker, active, queued, preview, sequence = 0, closed = false;
+  let worker, active, queued, preview, stopping, sequence = 0, closed = false;
   const cache = new Map();
   const fail = () => {
     const previous = worker; worker = null;
@@ -33,9 +33,7 @@ export function createChargingPlannerService() {
           if (cache.size > 4) cache.delete(cache.keys().next().value);
           completed.resolve(structuredClone(message.result));
         }
-        if (queued) { const next = queued; queued = null; start(next); }
-        else if (preview) { const next = preview; preview = null; start(next); }
-        else worker.unref();
+        startNext();
       });
       worker.on('error', () => { if (worker === current) fail(); });
       worker.on('exit', () => { if (worker === current) fail(); });
@@ -43,6 +41,24 @@ export function createChargingPlannerService() {
     worker.ref();
     try { worker.postMessage({ id: request.id, options: request.options, comparison: request.comparison }); }
     catch { fail(); }
+  };
+  const startNext = () => {
+    if (closed || active || stopping) return;
+    if (queued) { const next = queued; queued = null; start(next); }
+    else if (preview) { const next = preview; preview = null; start(next); }
+    else worker?.unref();
+  };
+  const interruptPreview = () => {
+    const previous = worker;
+    worker = null;
+    active.resolve(null); active = null;
+    // A view comparison has no native duty. Stop its CPU work before giving
+    // the single worker slot to current control; keep only the newest queued
+    // request while termination settles. Late replies cannot enter the cache.
+    stopping = Promise.resolve().then(() => previous?.terminate()).catch(() => {}).finally(() => {
+      stopping = null;
+      startNext();
+    });
   };
   const requestPlan = (options, comparison = null) => {
     if (closed) return Promise.resolve(null);
@@ -56,8 +72,11 @@ export function createChargingPlannerService() {
       return Promise.resolve(structuredClone(saved.result));
     return new Promise((resolve, reject) => {
       const request = { id: ++sequence, options, key, resolve, reject, comparison };
-      if (active && comparison) { preview?.resolve(null); preview = request; }
-      else if (active) { queued?.resolve(null); queued = request; }
+      if ((active || stopping) && comparison) { preview?.resolve(null); preview = request; }
+      else if (active || stopping) {
+        queued?.resolve(null); queued = request;
+        if (active?.comparison) interruptPreview();
+      }
       else start(request);
     });
   };
@@ -71,7 +90,7 @@ export function createChargingPlannerService() {
       queued?.resolve(null); queued = null;
       preview?.resolve(null); preview = null;
       const previous = worker; worker = null;
-      return previous?.terminate().catch(() => {});
+      return Promise.all([stopping, previous?.terminate().catch(() => {})]);
     },
   };
 }

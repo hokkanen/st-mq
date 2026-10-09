@@ -65,6 +65,33 @@ test('busy worker retains its running request and only the newest waiting reques
   assert.equal(newestResult.plans.newest.feasible, true);
 });
 
+test('control work interrupts an optional comparison instead of waiting behind it', async t => {
+  const service = serviceFor(t), options = smallRequest();
+  const comparison = { chargerId: 'charger1', normalReadyByAt: options.chargers[0].deadlineAt,
+    deferredReadyByAt: options.chargers[0].deadlineAt + 24 * HOUR };
+  const preview = service.compare(options, comparison);
+  const control = service.request(smallRequest('control'));
+  assert.equal(await preview, null, 'The optional result is withdrawn as soon as native planning needs the worker');
+  const result = await control;
+  assert.equal(result.plans.control.feasible, true);
+  assert.deepEqual(result, planChargers(smallRequest('control')));
+  assert.equal((await service.compare(options, comparison)).available, true, 'A later comparison still works');
+});
+
+test('interrupting a comparison retains only the newest control and closes all waiting callers', async t => {
+  const service = serviceFor(t), options = smallRequest();
+  const comparison = { chargerId: 'charger1', normalReadyByAt: options.chargers[0].deadlineAt,
+    deferredReadyByAt: options.chargers[0].deadlineAt + 24 * HOUR };
+  const preview = service.compare(options, comparison);
+  const superseded = service.request(smallRequest('superseded'));
+  const newest = service.request(smallRequest('newest'));
+  const queuedPreview = service.compare(options, comparison);
+  const closing = service.close();
+  assert.deepEqual(await Promise.all([preview, superseded, newest, queuedPreview]), [null, null, null, null]);
+  await closing;
+  assert.equal(await service.request(options), null);
+});
+
 test('closing resolves both pending requests without publishing a plan or accepting more work', async t => {
   const service = serviceFor(t);
   const active = service.request(smallRequest());
