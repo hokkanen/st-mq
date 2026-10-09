@@ -244,7 +244,12 @@ valid subsequent increment, while recorded gaps remain intact. MQTT electrical
 acquisition and lifetime-meter recording remain useful independently of control
 availability.
 
-RPC reads keep the five-second response deadline. A missed read reports a reading
+RPC requests keep their five-second response deadline from dispatch. Ordinary
+intent persistence does not consume that response allowance. Scoped mutations
+may join already-received input before and after persistence; those joins share
+five seconds of accumulated actual admission waiting, followed by fresh scope
+and command-readiness checks. They do not retry an uncertain write or extend a
+physical duty deadline. A missed read reports a reading
 timeout; only an uncertain write reports an unconfirmed instruction. Receipt of a
 matching reply cancels this response timer before persistence or source-time
 admission, while those admission steps still block subsequent commands. The live

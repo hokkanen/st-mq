@@ -215,7 +215,8 @@ export function createShellyEvseAdapter({ config, broker, client, store, engine,
   };
   function rejectPending(reason) { for (const item of pending.values()) { clearTimeout(item.timer); item.reject(fail(reason)); } pending.clear(); }
   async function rpc(method, params = {}, { mutation = false, guard, beforePublish = () => {}, statusReadback = false, identificationCurrent = null } = {}) {
-    const epoch = generation, startedAt = performance.now(), deadlineAt = clock() + RPC_TIMEOUT_MS;
+    const epoch = generation;
+    let remainingAdmissionMs = RPC_TIMEOUT_MS;
     const mayWait = mutation && typeof guard === 'function';
     guard ??= () => true;
     if (MUTATIONS.has(method) && !mutation) throw fail('invalid-evse-command');
@@ -235,12 +236,14 @@ export function createShellyEvseAdapter({ config, broker, client, store, engine,
     const permitted = () => ready() && !notificationPending.size && knownWorkState() && settingFresh('start_charging') && settingFresh('current_limit')
       && (method !== 'Number.Set' || config.limiterEnabled && currentReady() || identificationCurrentAllowed());
     const settleInput = async () => {
-      // Only a scoped caller that revalidates its instruction may wait. Use
-      // the same RPC deadline before and after intent persistence; a fresh
-      // Stop, replacement session or failed save must still prevent dispatch.
-      const remaining = Math.max(0, Math.floor(RPC_TIMEOUT_MS - (performance.now() - startedAt)));
-      if (!await waitForInputAdmission({ deadlineAt: Math.min(deadlineAt, clock() + remaining),
-        signal: cancellation.signal })) throw fail('evse-control-unavailable');
+      // Only received-input waiting consumes this shared admission allowance.
+      // Intent persistence keeps its existing lifetime; the native response
+      // timeout starts at dispatch. Every wait still revalidates scope below.
+      const startedAt = clock(), started = performance.now();
+      const admitted = await waitForInputAdmission({ deadlineAt: startedAt + Math.max(0, Math.floor(remainingAdmissionMs)),
+        signal: cancellation.signal });
+      remainingAdmissionMs -= Math.max(performance.now() - started, clock() - startedAt);
+      if (!admitted || remainingAdmissionMs <= 0) throw fail('evse-control-unavailable');
     };
     if (mayWait && (storagePending || sourcePending.size)) await settleInput();
     if (!connected || !admitted || closed || epoch !== generation
@@ -256,19 +259,19 @@ export function createShellyEvseAdapter({ config, broker, client, store, engine,
     const id = randomUUID();
     await beforePublish();
     if (mayWait && (storagePending || sourcePending.size)) await settleInput();
-    if (!connected || !admitted || closed || epoch !== generation || performance.now() - startedAt >= RPC_TIMEOUT_MS
+    if (!connected || !admitted || closed || epoch !== generation
       || mutation && (!online || !permitted() || !canControl() || !guard())) throw fail('evse-command-revoked');
     return new Promise((resolve, reject) => {
-      const requestedAt = clock(), started = performance.now(), remainingMs = Math.max(0, RPC_TIMEOUT_MS - (started - startedAt));
+      const requestedAt = clock(), started = performance.now();
       const timer = setTimeout(() => {
         pending.delete(id);
         const timedOutAt = clock(), elapsedMs = performance.now() - started;
         // Bounded transport evidence, without request IDs or private payloads.
         // A missed read is not evidence of an uncertain actuator instruction.
         lastRpcTimeout = { method, role: typeof params.role === 'string' && Object.hasOwn(TYPES, params.role) ? params.role : null,
-          requestedAt, timedOutAt, elapsedMs, timerOverrunMs: Math.max(0, elapsedMs - remainingMs) };
+          requestedAt, timedOutAt, elapsedMs, timerOverrunMs: Math.max(0, elapsedMs - RPC_TIMEOUT_MS) };
         reject(fail(mutation ? 'evse-command-unconfirmed' : 'evse-read-timeout'));
-      }, remainingMs);
+      }, RPC_TIMEOUT_MS);
       if (mutation && params.role) fieldRevisions.set(params.role, (fieldRevisions.get(params.role) ?? 0) + 1);
       timer.unref?.(); pending.set(id, { resolve, reject, timer, generation: epoch,
         readback: statusReadback ? { role: params.role, generation: epoch,

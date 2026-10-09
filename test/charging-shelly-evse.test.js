@@ -330,7 +330,35 @@ test('Shelly action admission waits for a real queued receipt and preserves its 
   });
 });
 
-test('Shelly input admission after intent persistence shares the original monotonic RPC deadline', async t => {
+test('Shelly valid intent persistence does not shorten the native response deadline', async t => {
+  const f = fixture(t); await f.ready();
+  let elapsed = 0, outcome = null;
+  t.mock.method(performance, 'now', () => elapsed);
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  const publish = f.client.publish;
+  f.client.publish = (topic, body, options, callback) => {
+    const frame = JSON.parse(body);
+    if (frame.method === 'Boolean.Set') { f.writes.push(frame); callback?.(); return; }
+    return publish(topic, body, options, callback);
+  };
+  const command = f.adapter.rpc('Boolean.Set', { owner: 'service:0', role: 'start_charging', value: false },
+    { mutation: true, guard: () => true, beforePublish: () => { elapsed = 6000; f.setNow(NOW + 6000); } })
+    .then(() => { outcome = 'accepted'; }, error => { outcome = error.code; });
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(f.writes.filter(row => row.method === 'Boolean.Set').length, 1,
+    'Valid unchanged persistence work must not introduce a whole-action deadline');
+  assert.equal(outcome, null);
+  elapsed = 10999; t.mock.timers.tick(4999);
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(outcome, null, 'The device still owns its existing full response allowance');
+  elapsed = 11000; t.mock.timers.tick(1);
+  await command;
+  assert.equal(outcome, 'evse-command-unconfirmed');
+  assert.equal(f.adapter.snapshot().lastRpcTimeout.requestedAt, NOW + 6000);
+  assert.equal(f.adapter.snapshot().lastRpcTimeout.elapsedMs, 5000);
+});
+
+test('Shelly input admission keeps its bounded wait after ordinary intent persistence', async t => {
   const f = fixture(t); await f.ready();
   let elapsed = 0;
   t.mock.method(performance, 'now', () => elapsed);
@@ -343,13 +371,33 @@ test('Shelly input admission after intent persistence shares the original monoto
     } }).then(() => { outcome = 'published'; }, error => { outcome = error.code; });
   await new Promise(resolve => setImmediate(resolve));
   assert.equal(f.adapter.snapshot().commandBlockReason, 'evse-source-time-pending');
-  elapsed = 4999; t.mock.timers.tick(199);
+  elapsed = 9799; t.mock.timers.tick(4999);
   await new Promise(resolve => setImmediate(resolve));
   assert.equal(outcome, null);
-  elapsed = 5000; t.mock.timers.tick(1);
+  elapsed = 9800; t.mock.timers.tick(1);
   await new Promise(resolve => setImmediate(resolve));
-  assert.equal(outcome, 'evse-control-unavailable', 'A stationary wall clock cannot start another five-second wait');
+  assert.equal(outcome, 'evse-control-unavailable', 'A stationary wall clock cannot extend actual admission waiting');
   await command;
+  assert.equal(f.writes.filter(row => row.method.endsWith('.Set')).length, 0);
+});
+
+test('Shelly admission joins share actual waiting before and after persistence', async t => {
+  let elapsed = 0, outcome = null;
+  t.mock.method(performance, 'now', () => elapsed);
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  const f = fixture(t); await f.ready();
+  f.delta('phase_info', { value: structuredClone(f.fields.phase_info) }, { eventAt: NOW + 400 });
+  const command = f.adapter.rpc('Boolean.Set', { owner: 'service:0', role: 'start_charging', value: false },
+    { mutation: true, guard: () => true, beforePublish: () => {
+      f.delta('phase_info', { value: structuredClone(f.fields.phase_info) }, { eventAt: NOW + 800 });
+    } }).then(() => { outcome = 'accepted'; }, error => { outcome = error.code; });
+  elapsed = 3000; f.setNow(NOW + 400); t.mock.timers.tick(400);
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(outcome, null);
+  assert.equal(f.adapter.snapshot().commandBlockReason, 'evse-source-time-pending');
+  elapsed = 5500; f.setNow(NOW + 800); t.mock.timers.tick(400);
+  await command;
+  assert.equal(outcome, 'evse-control-unavailable', 'A second receipt cannot restart the admission allowance');
   assert.equal(f.writes.filter(row => row.method.endsWith('.Set')).length, 0);
 });
 
