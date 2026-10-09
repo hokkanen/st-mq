@@ -32,6 +32,11 @@ affected input/device without reconnecting; retained, duplicate, ignored and
 unrelated receipts cannot clear it. Native read-only status requests can refresh
 evidence while mutations stay fenced. Tests distinguish an admitted packet from
 a cached reading with the same timestamp.
+The circulation regressions also hold a real SQLite writer lock across queued
+telemetry and native readback. They verify one dispatch after admission and no
+late dispatch after expiry, authority/identity changes, disconnect, shutdown,
+stale feedback, timeout or a failed save. Controller event tests check that safe
+error codes survive without exposing raw transport details.
 
 Startup rejection tests exercise the real application constructor and snapshot
 workers with unsupported charging state. Compare original database bytes, state

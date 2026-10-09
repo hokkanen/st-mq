@@ -10,6 +10,7 @@ import { Engine } from '../src/app/engine.js';
 import { startMqtt } from '../src/acquisition/mqtt.js';
 import { startProviders } from '../src/acquisition/providers.js';
 import { equipmentConfiguration } from '../src/acquisition/equipment-config.js';
+import { createHeatingTransport } from '../src/control/mqtt.js';
 
 const START = Date.parse('2026-10-07T09:00:00Z'), DEVICE = 'contention-fixture';
 const delay = ms => new Promise(resolve => setTimeout(resolve, ms));
@@ -42,6 +43,91 @@ async function fixture(t, input = 'mqtt', devices = []) {
     unlock() { writer.exec('ROLLBACK'); locked = false; },
     send(register, value, packet = {}) { client.emit('message', `${DEVICE}/HP/${register}`, Buffer.from(String(value)), packet); } };
 }
+
+async function relayFixture(t) {
+  const f = await fixture(t, 'mqtt', [{ id: 'dhwr', kind: 'switch', connection: 'shelly:fixture-circulation', generation: 3 }]);
+  const requests = method => f.commands.filter(row => row.topic === 'fixture-circulation/rpc')
+    .map(row => JSON.parse(row.payload)).filter(row => row.method === method);
+  const reply = (method, result) => {
+    const request = requests(method).at(-1); assert.ok(request, `Expected ${method}`);
+    f.client.emit('message', `${request.src}/rpc`, Buffer.from(JSON.stringify({
+      id: request.id, src: 'fixture-circulation', dst: request.src, result,
+    })), {});
+  };
+  reply('Shelly.GetDeviceInfo', { id: 'fixture-circulation', gen: 3 });
+  reply('Shelly.GetStatus', { 'switch:0': { id: 0, output: false } });
+  f.send('0203', 20);
+  const transport = createHeatingTransport();
+  transport.setDhwrRelay(f.reader.equipment.publishDhwr, () => f.reader.equipment.signature('dhwr'));
+  t.after(() => transport.close());
+  return { ...f, requests, reply, transport };
+}
+
+test('circulation waits for queued observations then publishes once and requires committed native readback', async t => {
+  const f = await relayFixture(t);
+  f.lock(); f.at(START + 1000); f.send('0203', 21);
+  let result;
+  const pending = f.transport.publishDhwr(true).then(value => { result = value; }, error => { result = error; });
+  await delay(40);
+  assert.equal(result, undefined, 'A short observation backlog must wait, not fail the circulation request');
+  assert.equal(f.requests('Switch.Set').length, 0);
+  assert.equal(f.reader.h66.status().readings['0203'].value, 20, 'Queued evidence is not yet usable');
+  f.unlock(); await until(() => f.requests('Switch.Set').length === 1);
+  assert.equal(f.reader.h66.status().readings['0203'].value, 21);
+  assert.equal(f.requests('Switch.Set')[0].params.on, true);
+  assert.equal(result, undefined, 'Broker delivery is not native confirmation');
+  f.reply('Switch.Set', { was_on: false });
+  await until(() => f.requests('Switch.GetStatus').length === 1);
+  f.lock(); f.reply('Switch.GetStatus', { id: 0, output: true }); await delay(40);
+  assert.equal(result, undefined, 'Readback must also commit');
+  f.unlock(); await pending;
+  assert.equal(result.confirmed, true); assert.equal(f.requests('Switch.Set').length, 1);
+});
+
+for (const interruption of ['authority', 'revocation', 'reconnect', 'expiry', 'identity', 'stale-feedback', 'recording-failure', 'shutdown']) {
+  test(`waiting circulation rejects ${interruption} and never publishes after the backlog clears`, async t => {
+    const f = await relayFixture(t);
+    f.lock(); f.at(START + 1000); f.send('0203', 21);
+    const pending = f.transport.publishDhwr(true, { validUntil: interruption === 'stale-feedback' ? Infinity : START + 60_000, clock: f.clock });
+    const rejected = assert.rejects(pending);
+    await delay(20); assert.equal(f.requests('Switch.Set').length, 0);
+    if (interruption === 'authority') f.authority(false);
+    if (interruption === 'revocation') { f.reader.revoke(); await rejected; }
+    if (interruption === 'reconnect') { f.client.emit('offline'); f.client.emit('connect'); }
+    if (interruption === 'expiry') f.at(START + 60_000);
+    if (interruption === 'stale-feedback') f.at(START + 60 * 60_000);
+    if (interruption === 'identity') f.client.emit('message', 'fixture-circulation/online', Buffer.from('true'), {});
+    if (interruption === 'recording-failure') failNextCommit(f.store);
+    if (interruption === 'shutdown') await f.reader.close({ restore: false });
+    f.unlock(); await rejected; await until(() => f.store.writeQueueStatus().pending === 0);
+    assert.equal(f.requests('Switch.Set').length, 0);
+  });
+}
+
+test('circulation timeout cancels an unsent command before a later storage recovery', async t => {
+  const f = await relayFixture(t);
+  f.lock(); f.send('0203', 21);
+  await assert.rejects(f.transport.publishDhwr(true), { code: 'SHELLY_READBACK_TIMEOUT' });
+  f.unlock(); await until(() => f.store.writeQueueStatus().pending === 0); await delay(20);
+  assert.equal(f.requests('Switch.Set').length, 0, 'An expired request cannot escape after storage recovers');
+});
+
+test('a failed observation retains its specific dispatch failure and no raw transport error', async t => {
+  const f = await relayFixture(t);
+  failNextCommit(f.store); f.send('0203', 21); await delay(0);
+  await assert.rejects(f.transport.publishDhwr(true), { code: 'MQTT_STORAGE_FAILED' });
+  assert.equal(f.requests('Switch.Set').length, 0);
+});
+
+test('uncorrelated Gen1 relay feedback cannot confirm a command deferred behind observations', async t => {
+  const f = await fixture(t, 'mqtt', [{ id: 'relay', kind: 'switch', connection: 'shelly:shellies/fixture-relay',
+    generation: 1, switch_control: true }]);
+  f.lock();
+  f.client.emit('message', 'shellies/fixture-relay/relay/0', Buffer.from('off'), {});
+  await assert.rejects(f.reader.equipment.setSwitch('relay', false), { code: 'MQTT_STORAGE_PENDING' });
+  f.unlock(); await until(() => f.store.writeQueueStatus().pending === 0);
+  assert.equal(f.commands.some(row => row.topic.endsWith('/relay/0/command')), false);
+});
 
 function failNextCommit(store) {
   const transaction = store._transaction.bind(store); let armed = true;
@@ -175,7 +261,7 @@ test('native MQTT recovery permits status queries and correlates replies to the 
     src: 'fixture-first', method: 'NotifyStatus', params: { ts: f.clock() / 1000, 'switch:0': { id: 0, output: true } },
   })), {}); await delay(0);
   assert.equal(f.reader.status().brokers.primary.ready, false);
-  await assert.rejects(f.reader.equipment.setSwitch('first', true), /failed|unconfirmed/);
+  await assert.rejects(f.reader.equipment.setSwitch('first', true), { code: 'MQTT_STORAGE_FAILED' });
   assert.equal(f.commands.some(row => row.topic.endsWith('/rpc') && JSON.parse(row.payload).method === 'Switch.Set'), false);
   f.at(START + 31_000); f.reader.equipment.tick(f.clock());
   reply('second', 'Shelly.GetStatus', { 'switch:0': { id: 0, output: false } }); await delay(0);

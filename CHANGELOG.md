@@ -6,6 +6,10 @@ Versions follow Semantic Versioning. `-dev.N` denotes a development prerelease.
 
 ## Unreleased
 
+- Heating and hot-water circulation relay commands wait through brief observation
+  storage backlogs, with authority, identity, feedback and deadline checks before
+  dispatch. Failed recording still blocks control, and execution errors retain
+  specific safe diagnostic codes.
 - Price forecasts retain the provider's complete final hourly interval. One
   extra day compares feasible charging plans even when prices end before the
   later deadline, with a notice that incomplete coverage may change the saving.

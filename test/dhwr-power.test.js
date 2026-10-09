@@ -85,7 +85,9 @@ test('native identity and exact Switch.GetStatus confirm circulation; PUBACK, wa
   await settle();
   const command = f.publications.findLast(row => row.frame.method === 'Switch.Set');
   assert.deepEqual(command.frame.params, { id: 0, on: true });
-  assert.deepEqual(command.options, { qos: 1, retain: false, noReplay: true });
+  const { beforePublish, signal, ...wireOptions } = command.options;
+  assert.deepEqual(wireOptions, { qos: 1, retain: false, noReplay: true });
+  assert.equal(typeof beforePublish, 'function'); assert.equal(signal.aborted, false);
   f.report(25); assert.equal(complete, false);
   f.reply(command, { was_on: false }); await settle(); assert.equal(complete, false);
   f.at(INITIAL + 1);

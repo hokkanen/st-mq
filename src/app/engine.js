@@ -26,7 +26,7 @@ import { SimulatedPlant, simulatedOutlook } from './simulator.js';
 import { Executor } from './executor.js';
 import { assembleOutlook, contractWithPeriod, reconcileConfiguredContract } from './contract.js';
 import { temporaryUpdate } from './temporary.js';
-import { HEATING_COMMANDS, heatingErrorMessage } from '../control/mqtt.js';
+import { HEATING_COMMANDS, heatingErrorCode, heatingErrorMessage } from '../control/mqtt.js';
 import { addSensorChange, revertSensorChange, sensorChangesView } from './sensor-changes.js';
 import { sensorBoundaries, affectsThermalLearning } from './sensor-inputs.js';
 import { indoorAverage, indoorWeights, INDOOR_SIGNALS, HELD_TEMPERATURE_SIGNALS, SENSOR_SETTLING_MS } from '../domain/indoor-sensors.js';
@@ -1510,10 +1510,13 @@ export class Engine {
           });
           return onExecution(result, receipt);
         }, { priority: 'control' });
-      }).catch(() => this.runWrite(() => {
-        this.store.event('control-execution-failed',{input,phase:decision.phase,reason:'Command or native-setting readback failed; restoration remains pending'},this.clock());
+      }).catch(error => this.runWrite(() => {
+        const code = heatingErrorCode(error?.code);
+        const reason = code ? heatingErrorMessage(code) : 'Command or native-setting readback failed; restoration remains pending';
+        this.store.event('control-execution-failed',{input,phase:decision.phase,...(code ? { code } : {}),reason},this.clock());
         if (this.cycles.active()) this.cycles.cancel(this.clock(),'execution-not-established');
-        if (this.latestStatus?.now === now) this.latestStatus.execution = { status:'failed', sent:false, actual:null, reason:'Command or readback failed; retrying restoration' };
+        if (this.latestStatus?.now === now) this.latestStatus.execution = { status:'failed', sent:false, actual:null,
+          ...(code ? { code } : {}), reason: code ? reason : 'Command or readback failed; retrying restoration' };
       }, { priority: 'control' })).catch(error => {
         this.store.writeHealth.failure(error);
       }).finally(() => {

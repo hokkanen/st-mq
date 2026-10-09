@@ -759,7 +759,7 @@ export function createEquipmentCapture({ engine, store, settings, publish, canCo
     },
     topics: [...new Set([...(native?.topics ?? []), ...devices.flatMap(readTopics)])],
     ownsGarage: settings.ownsGarage === true, hasDhwr: Boolean(native?.hasDhwr),
-    publishDhwr: on => native.publishDhwr(on), hasHeating: enabled.some(device => device.controlsHeat), signature,
+    publishDhwr: (on, options) => native.publishDhwr(on, options), hasHeating: enabled.some(device => device.controlsHeat), signature,
     topicsForBroker(broker) { return [...new Set([...(broker === 'primary' ? native?.topics ?? [] : []),
       ...devices.filter(device => device.broker === broker).flatMap(readTopics)])]; },
     setConnected(value, broker = null) {
@@ -1007,13 +1007,13 @@ export function createEquipmentCapture({ engine, store, settings, publish, canCo
       if (!config?.controlsSwitch) throw fail('switch control is not configured');
       return config.protocol === 'shelly' ? native.setSwitch(deviceId, on) : switchDevice(devices.find(row => row.id === deviceId), on);
     },
-    async publishHeating(commands) {
+    async publishHeating(commands, options) {
       if (!Array.isArray(commands) || !commands.length || commands.some(command => !['reduction', 'normal'].includes(command))) throw fail('invalid heating command');
       if (heatingBusy) throw fail('heating operation already in progress');
       if (!connected || closed || !canControl()) throw fail('control authority unavailable');
       heatingBusy = true;
       try {
-        if (native?.hasHeating) await native.publishHeating(commands);
+        if (native?.hasHeating) await native.publishHeating(commands, options);
         for (const command of commands) for (const device of devices.filter(row => row.controlsHeat)) await switchDevice(device, command === 'reduction' ? device.reductionOn : !device.reductionOn);
         return { confirmed: true, status: 'confirmed', sent: true, commands: [...commands], acknowledged: commands.length, acknowledgement: 'equipment-state-readback' };
       } finally { heatingBusy = false; }
