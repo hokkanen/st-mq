@@ -783,7 +783,13 @@ test('production native start authorization is fenced by live status, reconnect 
     x.physical('Preparing', 0, null);
     if (change === 'app-pause') { x.observe({ 48: 16, 96: 0 }); x.f.streamRows = x.f.observations; }
     if (change === 'pending-source-clock') x.f.streamPending = false;
-    assert.equal(canStart(), false, `${change}: a recovered connection cannot reuse authorization issued before the interruption`);
+    assert.equal(canStart(), change === 'pending-source-clock', change === 'pending-source-clock'
+      ? 'Admitting unchanged input restores the original unexpired lease without another controller update'
+      : `${change}: a recovered connection cannot reuse authorization issued before the interruption`);
+    if (change === 'pending-source-clock') {
+      x.f.advance(58_000);
+      assert.equal(canStart(), false, 'Pending source admission cannot renew the original authorization expiry');
+    }
   }
 });
 

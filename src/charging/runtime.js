@@ -2607,7 +2607,12 @@ export class ChargingRuntime {
     item.error = null;
     }, { priority: 'control', isCurrent: () => item.controller === controller });
     if (refreshPlan || !this.currentPlanReusable(item)) {
-      try { await this.updatePlanForControl(this.clock(), { sourceId: id, background: !refreshPlan }); this.error = null; } catch { this.error = 'charging-planning-unavailable'; }
+      // Native work and its durable state are complete. Keep the economic
+      // refresh independent so the next probe stop, current restoration or
+      // native read can run even before its first usable result is published.
+      void Promise.resolve().then(() => this.updatePlan(this.clock(), { sourceId: id, background: !refreshPlan }))
+        .then(() => { if (!this.closed) this.error = null; })
+        .catch(() => { if (!this.closed) this.error = 'charging-planning-unavailable'; });
     }
   }
   checkControlAuthority() {

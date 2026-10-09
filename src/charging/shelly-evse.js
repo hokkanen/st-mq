@@ -1408,11 +1408,12 @@ export function createShellyController({ adapter, initialState, saveState = () =
         { mutation: true, identificationCurrent: copy(test), guard });
       test.pending.acceptedAt = clock(); await persist();
       await refreshCommandReadback('current_limit', snapshot);
-      const actual = adapter.snapshot().fields.current_limit;
+      const confirmedSnapshot = adapter.snapshot(), actual = confirmedSnapshot.fields.current_limit;
       if (!fresh(actual) || !shellyCurrentCommandReadback(actual, test.pending)) throw fail('evse-command-unconfirmed');
       test.pending = null; test.phase = restoring ? 'restored' : 'active';
       test.confirmedAt ??= clock(); test.permissionAt = actual.measuredAt; rememberCurrent(actual);
       await persist();
+      return { before: snapshot, after: confirmedSnapshot };
     } catch (cause) {
       if (['evse-control-unavailable', 'evse-command-revoked', 'invalid-evse-command',
         'unsupported-evse-method', 'evse-request-limit'].includes(cause.code)) {
@@ -1784,9 +1785,20 @@ export function createShellyController({ adapter, initialState, saveState = () =
         const economicWait = !identification && input.enabled && !chargeNow && !state.manual && !snapshot.nativeScheduleActive
           && plan?.periods?.length > 0 && !plan.periods.some(period => period.startAt <= clock()
             && (period.endAt === null || period.endAt > clock()));
-        await manageCurrentTest({ snapshot, intentRevision, request: identification, context,
+        const currentPreparation = await manageCurrentTest({ snapshot, intentRevision, request: identification, context,
           economicWait,
           releaseProbe: !input.enabled || chargeNow || ['enable', 'charge-now'].includes(state.manual?.kind) });
+        if (takeoverRequested && currentPreparation) {
+          const { before, after } = currentPreparation;
+          // Advance this exact takeover only over our confirmed current write.
+          // Permission, session, transport and native schedule must still match;
+          // a newer external change cannot be adopted from a live token.
+          const withoutOwnCurrent = { ...after, notificationRevision: before.notificationRevision,
+            fields: { ...after.fields, current_limit: before.fields.current_limit } };
+          if (takeoverToken(before) === acceptedTakeoverToken && takeoverToken(withoutOwnCurrent) === acceptedTakeoverToken
+            && currentInstructionAt(adapter.snapshot().fields.current_limit) === currentInstructionAt(after.fields.current_limit))
+            acceptedTakeoverToken = takeoverToken(after);
+        }
         snapshot = adapter.snapshot(); start = snapshot.fields.start_charging; current = snapshot.fields.current_limit;
         if (minimumRequest) {
           // Confirm the reduced native pilot before the runtime creates the

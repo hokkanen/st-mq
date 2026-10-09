@@ -108,6 +108,47 @@ test('two controllers awaiting a shared calculation receive it without invalidat
   }
 });
 
+test('a native deadline wakeup progresses while the first economic result is still pending', async t => {
+  const f = await fixture(t), controller = f.controllers.charger2;
+  let now = AT, returned = false;
+  const native = [];
+  controller.control.currentTest = { phase: 'active', expiresAt: AT + 2000 };
+  controller.update = async () => {
+    native.push(now);
+    if (now >= controller.control.currentTest.expiresAt) controller.control.currentTest.phase = 'restored';
+    return structuredClone(controller.control);
+  };
+  const first = f.runtime.reconcile('charger2').then(() => { returned = true; });
+  await waitForCalls(f.planner, 1);
+  for (let i = 0; i < 10; i++) await turn();
+  assert.equal(returned, true, 'Completed native work releases the reconciliation queue before economic publication');
+  now += 2000; f.setNow(now);
+  f.runtime.tick({ force: true });
+  for (let i = 0; i < 10 && native.length < 2; i++) await turn();
+  assert.deepEqual(native, [AT, AT + 2000]);
+  assert.equal(controller.control.currentTest.phase, 'restored');
+  assert.equal(f.runtime.coordination, null, 'The worker is still held, so no economic result authorized the native duty');
+  assert.equal(f.planner.calls[0].done, false);
+  f.planner.complete(0); await first;
+});
+
+test('pending economic work does not let a deadline wakeup bypass lost native authority', async t => {
+  const f = await fixture(t), controller = f.controllers.charger2;
+  let updates = 0;
+  controller.control.currentTest = { phase: 'active', expiresAt: AT + 2000 };
+  controller.update = async () => { updates++; return structuredClone(controller.control); };
+  const first = f.runtime.reconcile('charger2');
+  await waitForCalls(f.planner, 1);
+  for (let i = 0; i < 10; i++) await turn();
+  f.setAuthority(false); f.setNow(AT + 2000);
+  f.runtime.tick({ force: true });
+  for (let i = 0; i < 10; i++) await turn();
+  assert.equal(updates, 1, 'The authority check still precedes every native update');
+  assert.equal(controller.control.currentTest.phase, 'active');
+  assert.equal(f.runtime.coordination, null);
+  f.planner.complete(0); await first;
+});
+
 test('a valid native plan returns while newer changed measurements keep background planning busy', async t => {
   const f = await fixture(t), calculate = f.runtime.calculatePlan.bind(f.runtime);
   let completed = 0;

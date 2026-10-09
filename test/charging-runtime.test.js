@@ -299,6 +299,7 @@ test('allowing one day during an open native period waits its minimum run before
     planId: chargerView(runtime).plan.id, provisional: chargerView(runtime).control.provisional }));
   await runtime.setFlexibility('charger1', flexibilityInput(runtime));
   assert.equal(chargerView(runtime).control.phase, 'released', 'permission does not bypass minimum run');
+  await runtime.planningFlight;
   assert.equal(runtime.chargers.charger1.priceRecheckAt, initialNow + 15 * 60_000);
   f.setNow(initialNow + 15 * 60_000); await runtime.tick({ prices: official }); await runtime.reconcile();
   assert.equal(chargerView(runtime).control.phase, 'paused');
@@ -364,7 +365,7 @@ test('a peer or shared-priority edit fences an in-flight one-day comparison and 
 test('one-day savings survive telemetry, readiness, age and failed refresh without renewing the snapshot clock', async t => {
   const f = fixture(preferences, {}, { charger1: true }), setAvailable = syntheticElectricityForecast(f);
   const runtime = f.create(), adapter = fakeAdapter(f.clock); t.after(() => runtime.close());
-  await runtime.setAdapter('charger1', adapter); await runtime.tick({ prices }); await runtime.reconcile();
+  await runtime.setAdapter('charger1', adapter); await runtime.tick({ prices }); await runtime.reconcile(); await runtime.planningFlight;
   await runtime.flexibilityPreviewFlight; runtime.queueFlexibilityPreviews = () => {};
   const original = (await runtime.calculateFlexibilityPreview('charger1')).comparison;
   assert.equal(original.available, true);
@@ -387,7 +388,7 @@ test('one-day savings survive telemetry, readiness, age and failed refresh witho
   assert.deepEqual(result.comparison, original);
   assert.equal(result.refreshReason, 'control-unavailable');
   pending = false;
-  f.setNow(initialNow + 6 * 60_000); await runtime.reconcile();
+  f.setNow(initialNow + 6 * 60_000); await runtime.reconcile(); await runtime.planningFlight;
   assert.deepEqual(chargerView(runtime).flexibility.preview, original, 'no five-minute display expiry');
   setAvailable(false); await runtime.updatePlan();
   result = await runtime.calculateFlexibilityPreview('charger1');
@@ -659,23 +660,23 @@ test('published voltage survives restart and live voltage changes do not rewrite
   database.close();
   let runtime = f.create(), adapter = fakeAdapter(f.clock);
   t.after(() => runtime.close());
-  await runtime.setAdapter('charger1', adapter); await runtime.reconcile();
-  runtime.tick({ prices }); await runtime.reconcile();
+  await runtime.setAdapter('charger1', adapter); await runtime.reconcile(); await runtime.planningFlight;
+  runtime.tick({ prices }); await runtime.reconcile(); await runtime.planningFlight;
   const original = structuredClone(chargerView(runtime).plan.periods);
   const planCount = () => runtime.sessionDiagnostics.status().chargers.find(row => row.id === 'charger1').current.counts.plans;
   const plansBefore = planCount();
   assert.ok(plansBefore > 0);
   for (const voltage of [225, 234, 228, 239]) {
     adapter.setVoltage([voltage, voltage + 1, voltage + 2]);
-    await runtime.reconcile(); runtime.tick({ prices });
+    await runtime.reconcile(); await runtime.planningFlight; runtime.tick({ prices });
     assert.deepEqual(chargerView(runtime).plan.periods, original);
     assert.equal(chargerView(runtime).values.voltageV.value, voltage + 1, 'Live status remains an actual reading');
     assert.deepEqual(runtime.coordination.assumptions.voltage.voltageV, [228, 230, 232]);
   }
   assert.equal(planCount(), plansBefore);
   runtime.close(); runtime = f.create(); adapter = fakeAdapter(f.clock); adapter.setVoltage([240, 240, 240]);
-  await runtime.setAdapter('charger1', adapter); await runtime.reconcile();
-  runtime.tick({ prices }); await runtime.reconcile();
+  await runtime.setAdapter('charger1', adapter); await runtime.reconcile(); await runtime.planningFlight;
+  runtime.tick({ prices }); await runtime.reconcile(); await runtime.planningFlight;
   assert.deepEqual(chargerView(runtime).plan.periods, original);
   assert.deepEqual(runtime.coordination.assumptions.voltage.voltageV, [228, 230, 232]);
 });
@@ -685,14 +686,14 @@ const priceOutlook = values => values.map((price, index) => ({ start: initialNow
 async function activePriceFixture(t, values = [5, 50, 10, 50], elapsedMinutes = 30) {
   const f = fixture(preferences, {}, { charger1: true }), runtime = f.create(), adapter = fakeAdapter(f.clock);
   t.after(() => runtime.close());
-  await runtime.setAdapter('charger1', adapter); await runtime.reconcile();
-  runtime.tick({ prices: priceOutlook(values) }); await runtime.reconcile();
+  await runtime.setAdapter('charger1', adapter); await runtime.reconcile(); await runtime.planningFlight;
+  runtime.tick({ prices: priceOutlook(values) }); await runtime.reconcile(); await runtime.planningFlight;
   const original = structuredClone(chargerView(runtime).control.execution);
   f.setNow(initialNow + elapsedMinutes * 60_000);
   adapter.setObservation({ mode: 3 });
   runtime.readEnergy = () => ({ gridKwh: 5, coveredMs: f.clock() - initialNow,
     continuousSince: initialNow, lastMeasuredAt: f.clock() });
-  await runtime.reconcile();
+  await runtime.reconcile(); await runtime.planningFlight;
   return { ...f, runtime, adapter, original };
 }
 
@@ -1275,8 +1276,8 @@ test('a disconnected charger has no schedule and a later plug-in uses the new re
   const f = fixture(preferences, {}, { charger1: true }), runtime = f.create(), adapter = fakeAdapter(f.clock);
   t.after(() => runtime.close());
   adapter.setObservation({ pluggedIn: false, mode: 1 });
-  await runtime.setAdapter('charger1', adapter); await runtime.reconcile();
-  runtime.tick({ prices }); await runtime.reconcile();
+  await runtime.setAdapter('charger1', adapter); await runtime.reconcile(); await runtime.planningFlight;
+  runtime.tick({ prices }); await runtime.reconcile(); await runtime.planningFlight;
   const parked = structuredClone(runtime.chargers.charger1.plan);
   assert.equal(chargerView(runtime).control.phase, 'disconnected');
   assert.equal(adapter.calls.filter(call => call.kind === 'install').length, 0);
@@ -1284,7 +1285,7 @@ test('a disconnected charger has no schedule and a later plug-in uses the new re
   const nextPrices = prices.map(row => ({ ...row, start: row.start + 48 * HOUR, end: row.end + 48 * HOUR }));
   runtime.tick({ prices: nextPrices });
   adapter.setObservation({ pluggedIn: true, mode: 2 });
-  await runtime.reconcile();
+  await runtime.reconcile(); await runtime.planningFlight;
   assert.notEqual(runtime.chargers.charger1.plan.id, parked.id);
   assert.equal(runtime.chargers.charger1.plan.deadlineAt, parked.deadlineAt + 48 * HOUR);
   assert.equal(chargerView(runtime).control.phase, 'waiting');
@@ -1635,18 +1636,18 @@ test('native periods pause at their boundary, preserve the active period through
 test('manual handback crossing ready-by preserves the original overdue connection deadline', async t => {
   const f = fixture(preferences, {}, { charger1: true }), runtime = f.create(), adapter = fakeAdapter(f.clock);
   t.after(() => runtime.close());
-  await runtime.setAdapter('charger1', adapter); await runtime.reconcile();
+  await runtime.setAdapter('charger1', adapter); await runtime.reconcile(); await runtime.planningFlight;
   runtime.tick({ prices: [...prices, ...prices.map(row => ({ ...row, start: row.start + 24 * HOUR, end: row.end + 24 * HOUR }))] });
-  await runtime.reconcile();
+  await runtime.reconcile(); await runtime.planningFlight;
   adapter.setSchedule({ enabled: 'daily', daily: { timezone: 'UTC', periods: [{ startTime: '01:00', stopTime: '04:00', maximumAmps: 16 }] } });
-  f.setNow(initialNow + HOUR / 2); await runtime.reconcile();
+  f.setNow(initialNow + HOUR / 2); await runtime.reconcile(); await runtime.planningFlight;
   const manual = chargerView(runtime).control.manual;
   assert.equal(manual.resumeAt, initialNow + 4 * HOUR);
   assert.equal(manual.windowEndAt, manual.cycleEndsAt, 'An exact window/deadline tie also ends the cycle');
   f.setNow(manual.resumeAt - 10);
   const read = adapter.read;
   adapter.read = async () => { f.setNow(f.clock() + 25); return read(); };
-  await runtime.reconcile();
+  await runtime.reconcile(); await runtime.planningFlight;
   assert.equal(chargerView(runtime).control.manual, null);
   assert.equal(chargerView(runtime).plan.deadlineAt, initialNow + 4 * HOUR);
   const newDeadline = chargerView(runtime).plan.deadlineAt;
@@ -1672,16 +1673,16 @@ test('a fully observed zero-power period replans remaining energy once at the ga
   const f = fixture(preferences, {}, { charger1: true }), runtime = f.create(), adapter = fakeAdapter(f.clock);
   t.after(() => runtime.close());
   adapter.setObservation({ powerKw: 0, powerMeasuredAt: initialNow });
-  await runtime.setAdapter('charger1', adapter); await runtime.reconcile();
+  await runtime.setAdapter('charger1', adapter); await runtime.reconcile(); await runtime.planningFlight;
   runtime.tick({ prices: [1, 50, 2, 50].map((price, index) => ({ start: initialNow + index * HOUR,
     end: initialNow + (index + 1) * HOUR, price })) });
-  await runtime.reconcile();
+  await runtime.reconcile(); await runtime.planningFlight;
   runtime.readEnergy = () => ({ gridKwh: 0, coveredMs: f.clock() - initialNow, continuousSince: initialNow, lastMeasuredAt: f.clock() });
   const original = structuredClone(chargerView(runtime).plan);
   assert.equal(original.periods[0].endAt, initialNow + HOUR);
   for (let minute = 1; minute <= 60; minute++) {
     f.setNow(initialNow + minute * 60_000); adapter.setObservation({ powerMeasuredAt: f.clock() });
-    await runtime.reconcile();
+    await runtime.reconcile(); await runtime.planningFlight;
   }
   const revised = chargerView(runtime).plan;
   assert.equal(chargerView(runtime).progress.creditedGridKwh, 0);
@@ -1689,7 +1690,7 @@ test('a fully observed zero-power period replans remaining energy once at the ga
   assert.notEqual(revised.id, original.id);
   assert.equal(revised.replannedGapAt, initialNow + HOUR);
   assert.equal(revised.requiredGridKwh, original.requiredGridKwh, 'The observed lack of delivery leaves the full requirement to schedule');
-  await runtime.reconcile();
+  await runtime.reconcile(); await runtime.planningFlight;
   assert.equal(chargerView(runtime).plan.id, revised.id, 'Repeated gap polls do not keep replacing the same plan');
 });
 
@@ -1698,8 +1699,8 @@ test('vehicle timer changes during a pause revise the remaining confirmed period
   t.after(() => runtime.close());
   const timer = { value: null, available: false };
   adapter.normalize = snapshot => ({ ...easeeChargerTelemetry(snapshot, { now: f.clock() }), vehicleNotBefore: { ...timer } });
-  await runtime.setAdapter('charger1', adapter); await runtime.reconcile();
-  runtime.tick({ prices: priceOutlook([1, 50, 2, 50]) }); await runtime.reconcile();
+  await runtime.setAdapter('charger1', adapter); await runtime.reconcile(); await runtime.planningFlight;
+  runtime.tick({ prices: priceOutlook([1, 50, 2, 50]) }); await runtime.reconcile(); await runtime.planningFlight;
   const original = structuredClone(chargerView(runtime).control.execution);
   assert.equal(original.periods.length, 2);
   const runningPlan = structuredClone(chargerView(runtime).plan);
@@ -1713,7 +1714,7 @@ test('vehicle timer changes during a pause revise the remaining confirmed period
   f.setNow(initialNow + HOUR); adapter.setObservation({ mode: 2 });
   runtime.readEnergy = () => ({ gridKwh: 11.04, coveredMs: HOUR,
     continuousSince: initialNow, lastMeasuredAt: initialNow + HOUR });
-  await runtime.reconcile(); await runtime.reconcile();
+  await runtime.reconcile(); await runtime.planningFlight; await runtime.reconcile(); await runtime.planningFlight;
   const paused = structuredClone(chargerView(runtime).plan);
   assert.equal(paused.startAt, initialNow + 2 * HOUR);
   assert.equal(chargerView(runtime).control.phase, 'paused');
@@ -1722,7 +1723,7 @@ test('vehicle timer changes during a pause revise the remaining confirmed period
   const revised = chargerView(runtime).plan;
   assert.notEqual(revised.id, paused.id);
   assert.ok(revised.startAt >= timer.value, 'The new car timer must constrain the remaining start even though price and energy inputs did not change');
-  await runtime.reconcile();
+  await runtime.reconcile(); await runtime.planningFlight;
   assert.equal(chargerView(runtime).control.owned.startAt, revised.startAt);
   const confirmed = chargerView(runtime).control.execution;
   assert.deepEqual(confirmed.periods[0], original.periods[0], 'The completed period remains in execution history');

@@ -144,6 +144,10 @@ mapping, a verified numeric range and disabled native `auto_balance`. Missing
 `meta.ui.step` does not prevent those exact-value operations; contradictory
 reported step metadata still blocks them. It never changes the economic limiter
 preference or permits unrestricted current commands.
+A successful takeover can continue directly through its own confirmed 6 A
+preparation to the scoped Start. Only the captured, correlated current-write
+receipt advances that takeover check; a changed permission, connection, schedule
+or later external current choice still prevents the application Start.
 Configure the installation's fuse ratings, signed calibration margins and maximum current; charger
 RPC cannot establish those electrical limits. The limiter subtracts the minimum
 admitted measured Shelly phase current equally from the property phases, so it

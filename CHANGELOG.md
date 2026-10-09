@@ -14,6 +14,9 @@ Versions follow Semantic Versioning. `-dev.N` denotes a development prerelease.
   longer wait behind obsolete economic calculations. Local Easee identification
   requests fresh meter reports within the original attempt deadline so slow
   periodic reporting does not consume the probe without usable measurements.
+  Completed native work releases the controller for the next bounded duty while
+  planning continues. Shelly's confirmed identification current preparation no
+  longer invalidates its own automatic takeover.
 - Local OCPP starts and confirmed pauses survive harmless refreshes and cost
   estimate changes. Shelly actions admit already received observations within
   their existing command budget, then recheck the original connection and native

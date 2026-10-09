@@ -950,6 +950,37 @@ test('identification current restoration uses measured household headroom at 6A'
   assert.deepEqual(f.writes.filter(row => row.method === 'Number.Set').map(row => row.params.value), [6, 16]);
 });
 
+for (const change of ['none', 'external-current', 'external-same-current', 'external-permission'])
+  test(`automatic takeover retains only its own confirmed identification current change: ${change}`, async t => {
+    const f = fixture(t, { limiterEnabled: true });
+    f.fields.start_charging = false; f.fields.work_state = 'charger_wait'; f.fields.phase_info.total_power = 0;
+    await f.ready(); f.setNow(NOW + 1000);
+    let reads = 0;
+    const controller = createShellyController({ adapter: f.adapter, clock: f.now, canControl: () => true,
+      getIdentification: async snapshot => {
+        if (++reads === 2 && change !== 'none') {
+          f.setNow(f.now() + 1000);
+          const role = change === 'external-permission' ? 'start_charging' : 'current_limit';
+          f.delta(role, { value: role === 'start_charging' ? true : change === 'external-current' ? 8 : 6, source: 'http' });
+          await f.adapter.refresh({ force: true });
+        }
+        return { id: 'own-current-takeover', connectedAt: snapshot.session.connectedAt,
+          phase: 'waiting', minimumCurrent: true, mode: 'probe', probeUntil: NOW + 45_000, returnStartAt: NOW + 1800_000 };
+      },
+      getAllocation: () => ({ priority: 'charger2', property: reading([4, 4, 4], f.now()), easee: reading([0, 0, 0], f.now()) }) });
+    t.after(() => controller.close());
+    const result = await controller.update({ enabled: true, plan: { periods: [{ startAt: NOW + 1800_000, endAt: null }] } });
+    const commands = f.writes.filter(row => row.method.endsWith('.Set')).map(row => [row.method, row.params.value]);
+    if (change === 'none') {
+      assert.equal(result.reason, 'identification-waiting'); assert.equal(f.fields.start_charging, true);
+      assert.deepEqual(commands, [['Number.Set', 6], ['Boolean.Set', true]], 'Own current preparation proceeds directly to the authorized Start');
+      assert.equal(result.currentTest.probeDeadlineAt, NOW + 45_000);
+    } else {
+      assert.equal(result.reason, 'evse-takeover-changed');
+      assert.deepEqual(commands, [['Number.Set', 6]], 'A later native choice retains priority over application Start');
+    }
+  });
+
 test('first-seen timestamped DUP boundaries are admitted and repeats cannot create another epoch',async t=>{
  const f=fixture(t);await f.ready();f.setNow(NOW+1000);f.notify('work_state','charger_free',{dup:true,messageId:19});
  assert.equal(f.adapter.snapshot().session.connected,false);
