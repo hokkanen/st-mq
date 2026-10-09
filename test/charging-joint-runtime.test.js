@@ -96,7 +96,12 @@ test('Charge now and Automatic edits refresh peer control without changing its s
     () => f.automatic('charger1', false), () => f.automatic('charger1', true)]) {
     const reads = f.reads.charger2;
     await action();
-    assert.ok(f.reads.charger2 > reads, 'A shared load/permission change immediately reaches the peer');
+    // The selected action owns its native result; join the peer work it queued
+    // without initiating a new reconciliation that could hide a missed wakeup.
+    await f.runtime.chargers.charger2.reconcileFlight;
+    await new Promise(resolve => setImmediate(resolve));
+    await f.runtime.chargers.charger2.reconcileFlight;
+    assert.ok(f.reads.charger2 > reads, 'A shared load/permission change queues and reaches the peer');
     assert.deepEqual(f.view('charger2').request, request, 'Peer reconciliation cannot rewrite its user request');
   }
 });

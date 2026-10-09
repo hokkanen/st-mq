@@ -37,6 +37,9 @@ bounded database transaction per message. The source remains unavailable until
 the complete buffered prefix commits, including any departure already received;
 new arrivals join that prefix. A failed replay retains earlier committed values
 as unavailable context and requires the existing reconnect/subscription recovery.
+After the prefix drains, a final transaction applies those admitted observations
+to runtime identity before publishing readiness. A failed final transaction
+rolls back identity while preserving earlier committed source context as unavailable.
 Neither replay nor subscription completion changes an observation's original clock.
 The capture separately projects whether a live healthy pulse remains current in
 this broker connection (`observationHealthy`). This nonpersistent observation

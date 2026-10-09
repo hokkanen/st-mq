@@ -70,10 +70,18 @@ async function fixture(t, { bufferSubscription = false } = {}) {
   return { runtime, store, send, connect, nativeCommands, errors, client, physical,
     get now() { return now; }, advance: ms => { now += ms; },
     setFault: value => { fault = value; },
-    releaseSubscription: async () => { subscription(); await settle(store); },
+    releaseSubscription: async () => { subscription(); await capture.ready(); await settle(store); },
     reconnectMqtt: async buffered => { buffer = buffered; client.emit('offline'); await settle(store);
       client.emit('connect'); await settle(store); },
-    releaseFailedSubscription: async () => { subscription(); await new Promise(resolve => setImmediate(resolve)); },
+    releaseFailedSubscription: async () => {
+      subscription();
+      const deadline = Date.now() + 5000;
+      while (runtime.teslaCapture.reception().subscriptionStatus !== 'failed') {
+        assert(Date.now() < deadline, 'The actual failed replay reaches its terminal subscription state');
+        await new Promise(resolve => setImmediate(resolve));
+      }
+      await assert.rejects(capture.ready(), /subscriptions unavailable/);
+    },
     reconnect: async () => {
       now += 1000; Object.assign(physical, { pluggedIn: false, mode: 1, powerKw: 0, modeAt: now, powerAt: now });
       await runtime.reconcile('charger1', { refreshPlan: false });
@@ -151,7 +159,7 @@ test('native disconnect and reconnect admit a new inert request with Automatic o
   assert.equal(replacement.controls.enabled, false); assert.deepEqual(f.nativeCommands, []);
 });
 
-test('a caught buffered source failure cannot commit capture bytes without its runtime identity', async t => {
+test('failed final replay admission retains committed source context without publishing identity', async t => {
   const f = await fixture(t, { bufferSubscription: true }); await f.connect(); await f.send('charger_power', 7);
   const setState = f.store.setState.bind(f.store);
   f.store.setState = (key, value) => {
@@ -159,9 +167,9 @@ test('a caught buffered source failure cannot commit capture bytes without its r
     if (key === f.runtime.key && value.chargers.charger1.vehicleMatch?.id === 'tesla')
       throw Object.assign(new Error('Synthetic failure after state statement'), { code: 'ERR_SQLITE_ERROR', errcode: 10 });
   };
-  await f.releaseSubscription();
-  assert.equal(f.runtime.teslaCapture.snapshot().fields.charger_power, undefined);
-  assert.equal(f.store.getState('charging:teslamate').fields.charger_power, undefined);
+  await f.releaseFailedSubscription();
+  assert.equal(f.runtime.teslaCapture.snapshot().fields.charger_power.receivedAt, START);
+  assert.equal(f.store.getState('charging:teslamate').fields.charger_power.receivedAt, START);
   assert.equal(f.runtime.chargers.charger1.vehicleMatch, null);
   assert.equal(f.store.getState(f.runtime.key).chargers.charger1.vehicleMatch, null);
   assert.equal(f.runtime.consumedTeslaPower, null);
@@ -169,7 +177,53 @@ test('a caught buffered source failure cannot commit capture bytes without its r
   f.store.setState = setState; f.advance(1000); await f.reconnectMqtt(false); await f.send('healthy', true);
   await f.send('charger_power', 7);
   assert.equal(f.store.getState(f.runtime.key).chargers.charger1.vehicleMatch.id, 'tesla');
-  assert.equal(f.runtime.teslaCapture.snapshot().fields.charger_power.receivedAt, f.now);
+  assert.equal(f.runtime.teslaCapture.snapshot().fields.charger_power.receivedAt, START);
+  assert.deepEqual(f.nativeCommands, []);
+});
+
+for (const errcode of [10, 13]) test(`final buffered identity COMMIT failure (${errcode}) keeps the committed source unavailable`, async t => {
+  const f = await fixture(t, { bufferSubscription: true }); await f.connect(); await f.send('charger_power', 7);
+  const exec = f.store.db.exec.bind(f.store.db);
+  let injected = false;
+  f.store.db.exec = sql => {
+    if (!injected && sql === 'COMMIT' && f.runtime.chargers.charger1.vehicleMatch?.id === 'tesla') {
+      injected = true;
+      throw Object.assign(new Error('Synthetic final identity commit failure'), { code: 'ERR_SQLITE_ERROR', errcode });
+    }
+    return exec(sql);
+  };
+  await f.releaseFailedSubscription();
+  assert.equal(injected, true);
+  assert.equal(f.runtime.chargers.charger1.vehicleMatch, null);
+  assert.equal(f.store.getState(f.runtime.key).chargers.charger1.vehicleMatch, null);
+  assert.equal(f.runtime.consumedTeslaPower, null);
+  assert.equal(f.store.getState('charging:teslamate').fields.charger_power.receivedAt, START);
+  assert.equal(f.runtime.teslaCapture.snapshot().healthy, false);
+  f.advance(1000); await f.reconnectMqtt(false); await f.send('healthy', true);
+  assert.equal(f.store.getState(f.runtime.key).chargers.charger1.vehicleMatch.id, 'tesla');
+  assert.equal(f.runtime.teslaCapture.snapshot().fields.charger_power.receivedAt, START);
+  assert.deepEqual(f.nativeCommands, []);
+});
+
+test('a departure appended during final replay admission precedes readiness and identity', async t => {
+  const f = await fixture(t, { bufferSubscription: true }); await f.connect(); await f.send('charger_power', 7);
+  const receive = f.runtime.receiveVehicleObservation.bind(f.runtime), identities = [];
+  let appended = false;
+  f.runtime.receiveVehicleObservation = id => {
+    if (!appended && f.runtime.teslaCapture.snapshot().healthy) {
+      appended = true; f.advance(1000);
+      f.client.emit('message', 'teslamate/cars/1/plugged_in', Buffer.from('false'), {});
+    }
+    receive(id);
+    f.store.afterCommit(() => identities.push(f.runtime.chargers.charger1.vehicleMatch?.id ?? null));
+  };
+  await f.releaseSubscription();
+  assert.equal(appended, true);
+  assert(identities.every(id => id === null), 'An already received departure prevents publishing the earlier positive comparison');
+  const source = f.runtime.teslaCapture.snapshot();
+  assert.equal(source.healthy, true); assert.equal(source.pluggedIn, false);
+  assert.equal(source.fields.plugged_in.receivedAt, START + 1000);
+  assert.equal(source.fields.charger_power.receivedAt, START);
   assert.deepEqual(f.nativeCommands, []);
 });
 

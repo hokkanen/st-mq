@@ -109,7 +109,8 @@ export async function startMqtt({ engine, store, config, connect = mqtt.connect,
       connected: false, generation: 0, ready: false, subscriptionsReady: false, readinessFailed: false, readinessWaiters: new Set(),
       vehicleSubscriptions: new Map(), equipmentSubscriptionBuffer: null, teslaSubscriptionBuffer: null, teslaSubscriptionOverflow: false,
       pendingPublications: new Set(), pendingSubscriptions: new Set(), pendingReceipts: 0, receptionFailed: false,
-      receiptSequence: 0, receptionOutcomes: new Map(), pendingVehicleReceipts: new Map(), admittingVehicleReceipt: null });
+      receiptSequence: 0, receptionOutcomes: new Map(), pendingVehicleReceipts: new Map(), admittingVehicleReceipt: null,
+      admittingVehicleReplay: null });
   }
   const primary = channels.get('primary'), client = primary.client;
   const evseConfig = engine.charging?.configuration?.chargers?.charger2;
@@ -366,8 +367,10 @@ export async function startMqtt({ engine, store, config, connect = mqtt.connect,
       vehicleAdmissions.set(id, () => {
         const candidate = channel.admittingVehicleReceipt;
         const admitted = candidate?.source === id && candidate.acceptedKeys.size > 0;
-        const replaying = id === 'tesla' ? channel.teslaSubscriptionBuffer !== null
-          : vehicleRoutes.some(route => route.id === id && vehicleSubscriptions.get(route.topic)?.messages != null);
+        const pendingReplay = messages => messages != null
+          && (channel.admittingVehicleReplay !== id || messages.length > 0);
+        const replaying = id === 'tesla' ? pendingReplay(channel.teslaSubscriptionBuffer)
+          : vehicleRoutes.some(route => route.id === id && pendingReplay(vehicleSubscriptions.get(route.topic)?.messages));
         const pending = replaying || [...channel.pendingVehicleReceipts.values()].some(receipt => receipt.source === id
           && receipt.generation === channel.generation && !(admitted && receipt.sequence === candidate.sequence));
         const failed = [...channel.receptionOutcomes].some(([key, outcome]) => vehicleSource(key) === id && !outcome.successful
@@ -413,7 +416,7 @@ export async function startMqtt({ engine, store, config, connect = mqtt.connect,
       channel.connected = true; channel.ready = false; channel.subscriptionsReady = false; channel.readinessFailed = false;
       const currentSubscription = () => channel.connected && !stopped && !stopping && generation === channel.generation;
       let pending = 1;
-      const replayVehicle = ({ messages, current, overflow, receive, clear, failedAdmission }) => {
+      const replayVehicle = ({ id, messages, current, overflow, receive, clear, failedAdmission }) => {
         if (!messages.length) { clear(); return; }
         // Each observation owns one bounded transaction. Keep both source and
         // broker admission closed until the entire received prefix commits.
@@ -444,8 +447,16 @@ export async function startMqtt({ engine, store, config, connect = mqtt.connect,
               }
               store.afterCommit(() => {
                 if (!active() || !canControl()) { reject(); return; }
+                if (messages.length) return;
                 clear(); release();
               });
+              // The drained source prefix needs one admitted runtime projection.
+              // Keep command/readiness gates held until this transaction commits;
+              // another appended packet still fences the projection and replay.
+              const previous = channel.admittingVehicleReplay;
+              channel.admittingVehicleReplay = id;
+              try { engine.charging?.receiveVehicleObservation?.(id); }
+              finally { channel.admittingVehicleReplay = previous; }
             }, { isCurrent: () => active() && canControl(), onFailure: reject });
             if (!finished && !failed) await new Promise(resolve => setImmediate(resolve));
           }
@@ -488,7 +499,7 @@ export async function startMqtt({ engine, store, config, connect = mqtt.connect,
           engine.charging.setMqttStatus({ connected: true, subscribed: !rejected, reason: rejected ? 'mqtt-subscription-failed' : null, broker: channel.id }, id);
           const messages = subscription.messages;
           if (rejected) { subscription.messages = null; failedAdmission(); }
-          else replayVehicle({ messages, current: () => vehicleSubscriptions.get(topic) === subscription && subscription.messages === messages,
+          else replayVehicle({ id, messages, current: () => vehicleSubscriptions.get(topic) === subscription && subscription.messages === messages,
             overflow: () => subscription.overflow, clear: () => { subscription.messages = null; }, failedAdmission,
             receive: message => engine.charging.receiveSoc(topic, message.payload, message.packet, message.at, null, message.onAccepted) });
         });
@@ -552,7 +563,7 @@ export async function startMqtt({ engine, store, config, connect = mqtt.connect,
             };
             store.afterRollback(failedAdmission);
             chargingTesla.setConnected(true);
-            replayVehicle({ messages, current: () => channel.teslaSubscriptionBuffer === messages,
+            replayVehicle({ id: 'tesla', messages, current: () => channel.teslaSubscriptionBuffer === messages,
               overflow: () => channel.teslaSubscriptionOverflow, clear: () => { channel.teslaSubscriptionBuffer = null; }, failedAdmission,
               receive: message => chargingTesla.receive(message.topic, message.payload, message.packet, message.at, message.onAccepted) });
           }

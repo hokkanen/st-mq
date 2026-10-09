@@ -66,7 +66,9 @@ for (const source of ['tesla', 'bmw']) test(`${source} buffered startup admits a
   await settle();
   f.ack(); await f.reader.ready();
   assert(commits.length >= 12, 'The complete buffered prefix reached actual runtime persistence');
-  assert(commits.every(row => row.admission.pending && !row.ready), 'Partial replay cannot supply live evidence or readiness');
+  assert(commits.slice(0, -1).every(row => row.admission.pending && !row.ready), 'Partial replay cannot supply live evidence or readiness');
+  assert.deepEqual(commits.at(-1), { admission: { pending: false, failed: false, reason: null }, ready: true },
+    'Only the final committed projection releases source admission and readiness');
   assert.equal(f.store.db.prepare("SELECT COUNT(*) AS n FROM events WHERE type='mqtt-observation-rejected'").get().n, 0);
   if (source === 'tesla') {
     const state = f.runtime.teslaCapture.snapshot();
@@ -97,8 +99,9 @@ test('a live packet received during replay follows the buffered departure withou
   f.send('teslamate/cars/1/plugged_in', 'true', { retain: true });
   const departureAt = f.send('teslamate/cars/1/plugged_in', 'false', { retain: true });
   f.ack(); await f.reader.ready();
-  assert.equal(persisted.length, 4);
-  assert(persisted.every(state => state.healthy === false));
+  assert.equal(persisted.length, 5);
+  assert(persisted.slice(0, -1).every(state => state.healthy === false));
+  assert.equal(persisted.at(-1).healthy, true);
   assert.equal(persisted[2].pluggedIn, false);
   assert.equal(persisted[2].batteryLevel, undefined);
   assert.equal(capture.snapshot().fields.plugged_in.receivedAt, departureAt);
@@ -157,5 +160,29 @@ test('a replacement broker generation cannot finish or receive packets from the 
   assert.equal(f.reader.status().brokers.primary.ready, false);
   assert.equal(f.runtime.teslaCapture.snapshot().batteryLevel, undefined);
   f.ack(); await f.reader.ready();
+  assert.equal(f.runtime.teslaCapture.snapshot().batteryLevel, 80);
+});
+
+test('a replacement connection during final admission cannot inherit replay readiness', async t => {
+  const f = await fixture(t, { populated: false });
+  const receive = f.runtime.receiveVehicleObservation.bind(f.runtime);
+  let replaced = false;
+  f.runtime.receiveVehicleObservation = id => {
+    if (!replaced && f.runtime.teslaCapture.snapshot().healthy) {
+      replaced = true;
+      f.client.emit('offline'); f.client.emit('connect');
+      f.send('teslamate/cars/1/healthy', 'true'); f.send('teslamate/cars/1/battery_level', '80');
+    }
+    return receive(id);
+  };
+  f.send('teslamate/cars/1/healthy', 'true'); f.send('teslamate/cars/1/battery_level', '60');
+  f.ack();
+  const deadline = Date.now() + 5000;
+  while (!replaced) { assert(Date.now() < deadline); await settle(); }
+  assert.equal(f.reader.status().brokers.primary.ready, false);
+  assert.equal(f.runtime.teslaCapture.snapshot().healthy, false);
+  assert.equal(f.runtime.teslaCapture.snapshot().batteryLevel, 60, 'The committed prefix remains context, not new-connection evidence');
+  f.ack(); await f.reader.ready();
+  assert.equal(f.runtime.teslaCapture.snapshot().healthy, true);
   assert.equal(f.runtime.teslaCapture.snapshot().batteryLevel, 80);
 });

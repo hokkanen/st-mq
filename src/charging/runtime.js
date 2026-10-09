@@ -391,7 +391,7 @@ export class ChargingRuntime {
         ?? this.savedOwnership(id)?.currentTest?.phase));
   }
   receiveVehicleObservation(id) {
-    if (id !== 'tesla') throw new Error('Unknown vehicle observation source');
+    if (id !== 'tesla' && !Object.hasOwn(this.vehicleFeeds, id)) throw new Error('Unknown vehicle observation source');
     this.preserveWriteState();
     const before = Object.values(this.chargers).map(item => [item.identification?.phase, item.vehicleMatch?.id]);
     this.persistVehicleObservation(this.clock());
