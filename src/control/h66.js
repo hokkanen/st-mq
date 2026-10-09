@@ -60,7 +60,7 @@ export function createH66Controller({ deviceId, publish, requestSnapshot = async
   const readings = new Map(), pending = new Map();
   const writes = createWriteScope({ closeTimeoutMs: closeWriteTimeoutMs,
     runWrite: (operation, options) => store.runWrite ? store.runWrite(operation, options) : Promise.resolve().then(operation) });
-  const persist = () => store.setState(key, copy(state));
+  const persist = () => { validateH66ControlState(state); store.setState(key, copy(state)); };
   const event = (type, detail = {}) => store.event?.(type, detail, clock());
   // Admission waits asynchronously; the callback and durable state change stay
   // synchronous. Never keep a SQLite transaction open across MQTT/readback.

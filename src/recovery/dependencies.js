@@ -39,3 +39,44 @@ CREATE INDEX recovery_learning_source ON learning_journal_entries(source_entry_i
 ${triggers('learning_journal_entries')}
 ${triggers('learning_cycles')}
 `;
+
+/** Read-only semantic check for the derived reverse-reference index. SQLite
+ * and the mutation journal cannot detect missing edges in this unjournaled
+ * table. Recompute one owner's references at a time, never all history in RAM.
+ * Projection inserts intentionally omit edges; a later sensor-reference remap
+ * may populate them. Such optional edges must still be justified by the current
+ * projection payload. Authoritative roots and cycles require the complete set. */
+export function validateRecoveryDependencies(db, onProgress = () => {}) {
+  const invalid = () => { throw Object.assign(new Error('Recovery source references failed verification. Preserve the database and use an intact current-version backup.'),
+    { code: 'database_integrity_failed' }); };
+  if (db.prepare(`SELECT 1 FROM recovery_dependencies d
+    LEFT JOIN learning_journal_entries e ON d.owner_table='learning_journal'
+      AND e.id=CAST(d.owner_key AS INTEGER) AND d.owner_key=CAST(e.id AS TEXT)
+    LEFT JOIN learning_cycles c ON d.owner_table='learning_cycles' AND c.id=d.owner_key
+    WHERE e.id IS NULL AND c.id IS NULL LIMIT 1`).get()) invalid();
+  const actual = db.prepare(`SELECT source_table,source_key FROM recovery_dependencies
+    WHERE owner_table=? AND owner_key=? ORDER BY source_table,source_key`);
+  let processed = 0;
+  for (const table of ['learning_journal_entries', 'learning_cycles']) {
+    const learning = table === 'learning_journal_entries', owner = learning ? 'learning_journal' : table;
+    const sourceReferences = learning ? references.replace("WHEN j.key IN ('cycleId','episodeId')",
+      "WHEN j.key='id' AND j.path GLOB '*.value' AND ?='episode' OR j.key IN ('cycleId','episodeId')") : references;
+    const expected = db.prepare(`SELECT DISTINCT source_table,
+      CASE WHEN source_table='learning_journal' THEN CAST(COALESCE((SELECT COALESCE(e.source_entry_id,e.id)
+        FROM learning_journal_entries e WHERE e.id=source_key),source_key) AS TEXT) ELSE CAST(source_key AS TEXT) END source_key
+      FROM (SELECT ${sourceReferences} source_table,j.atom source_key
+        FROM json_tree(?) j WHERE j.type IN ('integer','text'))
+      WHERE source_table IS NOT NULL ORDER BY source_table,source_key`);
+    const rows = db.prepare(`SELECT id,payload${learning ? ',kind,source_entry_id' : ''} FROM ${table}`);
+    for (const row of rows.iterate()) {
+      const found = actual.all(owner, String(row.id));
+      const wanted = expected.all(...(learning ? [row.kind] : []), row.payload);
+      if (learning && row.source_entry_id !== null) {
+        const allowed = new Set(wanted.map(value => JSON.stringify([value.source_table, value.source_key])));
+        if (found.some(value => !allowed.has(JSON.stringify([value.source_table, value.source_key])))) invalid();
+      } else if (JSON.stringify(found) !== JSON.stringify(wanted)) invalid();
+      if (++processed % 256 === 0) onProgress(processed);
+    }
+  }
+  onProgress(processed);
+}

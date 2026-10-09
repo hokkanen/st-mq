@@ -14,6 +14,8 @@ const executorState = extra => ({ version: 2, targetBindings: {
   dhwr: { identity: 'b'.repeat(64), generation: 'dhwr-generation' },
 }, phase: 'normal', legacyOutstanding: false, pulseUntil: 0, expiresAt: null, ...extra });
 const nativeState = extra => ({ version: 1, phase: 'normal', baseline: {}, obligations: {}, requested: {}, expiresAt: null, ...extra });
+const equipmentState = () => ({ version: 1, active: { deviceId: 'synthetic-switch', signature: 'a'.repeat(64),
+  on: true, previousOn: false, requestedAt: 1000, until: 2000, status: 'restoration-pending' } });
 const nativeOverride = () => nativeState({ phase: 'preheat', baseline: { '0203': 20 }, requested: { '0203': 25 },
   obligations: { '0203': { baseline: 20, expected: 25, previousValue: 20,
     originalAt: 1000, requestedAt: 1000, requestedRevision: 1, confirmed: false, restoring: false } }, expiresAt: 2000 });
@@ -57,7 +59,7 @@ test('native pump overrides, manual equipment tests, and floor leases remain phy
   const cases = [
     ['native setting', 'h66:control:fixture-pump', nativeOverride()],
     ['native manual mode', 'h66:control:fixture-pump', nativeState({ manualMode: 'reduction' })],
-    ['equipment test', 'equipment-tests:v1', { version: 1, active: { status: 'restoration-pending' } }],
+    ['equipment test', 'equipment-tests:v1', equipmentState()],
     ['floor lease', 'floor-override:v1', { version: 1, outstanding: { owner: 'fixture-lease' } }],
   ];
   for (const [name, key, value] of cases) await t.test(name, async t => {
@@ -99,13 +101,13 @@ test('charger identification ownership and uncertain identification writes canno
 test('malformed earlier records cannot hide independent known restoration duties', async t => {
   const cases = [
     ['executor JSON before equipment', ['executor:home', '{invalid'],
-      ['equipment-tests:v1', { version: 1, active: {} }]],
+      ['equipment-tests:v1', equipmentState()]],
     ['executor JSON before native settings', ['executor:home', 'null invalid'],
       ['h66:control:fixture-pump', nativeOverride()]],
     ['native JSON before equipment', ['h66:control:fixture-pump', '{invalid'],
-      ['equipment-tests:v1', { version: 1, active: {} }]],
+      ['equipment-tests:v1', equipmentState()]],
     ['malformed native obligation before equipment', ['h66:control:fixture-pump', JSON.stringify(nativeState({ obligations: { '0203': {} } }))],
-      ['equipment-tests:v1', { version: 1, active: {} }]],
+      ['equipment-tests:v1', equipmentState()]],
     ['equipment JSON before floor', ['equipment-tests:v1', '{invalid'],
       ['floor-override:v1', { version: 1, outstanding: {} }]],
     ['ownership JSON before floor', [ownership(1), '{invalid'],
@@ -122,7 +124,7 @@ test('malformed earlier records cannot hide independent known restoration duties
   const path = await fixture(t, [
     ['executor:home', { version: 0, legacyOutstanding: true }],
     ['h66:control:fixture-pump', { version: 99, obligations: {} }],
-    ['equipment-tests:v1', { version: 1, active: { status: 'active' } }],
+    ['equipment-tests:v1', equipmentState()],
   ]);
   assert.equal(resetRestorationStatus(path), 'pending');
 });
@@ -138,6 +140,8 @@ test('unreadable and unsupported current-state records remain unknown when no in
     ['h66:control:fixture-pump', nativeState({ obligations: { '0203': null } })],
     ['h66:control:fixture-pump', nativeState({ requested: null })],
     ['equipment-tests:v1', { version: 0, active: {} }],
+    ...[false, 0, '', [], {}, { status: 'active' }].map(active => ['equipment-tests:v1', { version: 1, active }]),
+    ['equipment-tests:v1', { version: 1 }],
     ['floor-override:v1', { version: 0, outstanding: {} }],
     [ownership(1), { version: 4, owned: { purpose: 'identification' } }],
     [ownership(2), { version: 0, owned: { purpose: 'identification' } }],

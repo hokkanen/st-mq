@@ -7,6 +7,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { Store } from '../src/storage/store.js';
 import { createH66Controller } from '../src/control/h66.js';
+import { validateH66ControlState } from '../src/domain/heating-control-state.js';
 import { createH66Decoder } from '../src/domain/telemetry.js';
 import { startMqtt } from '../src/acquisition/mqtt.js';
 
@@ -48,7 +49,12 @@ function memoryStore(seed = {}) {
   const states = new Map(Object.entries(seed));
   let writes = 0;
   return { events: [], get writes() { return writes; }, getState: key => structuredClone(states.get(key) ?? null),
-    setState: (key, value) => { writes++; states.set(key, structuredClone(value)); },
+    setState: (key, value) => {
+      validateH66ControlState(value);
+      const encoded = JSON.parse(JSON.stringify(value));
+      validateH66ControlState(encoded);
+      writes++; states.set(key, encoded);
+    },
     event(type, detail, now) { this.events.push({ type, detail, now }); } };
 }
 function rig({ store = memoryStore(), values = baselines, settings = {}, behavior = null, startAt = initialTime, closeWriteTimeoutMs = 5000 } = {}) {

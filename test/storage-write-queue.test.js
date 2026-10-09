@@ -145,6 +145,52 @@ test('read-only stores reject admission without calling mutation code', async t 
   await assert.rejects(replica.runWrite(() => assert.fail('read-only callback ran')), { errcode: 8 });
 });
 
+for (const admission of ['synchronous', 'queued']) {
+  test(`${admission} parent rollback rejects deferred children without executing or journaling them`, async t => {
+    const { store } = fixture(t), before = store.checkpoint();
+    const failure = new Error('synthetic parent failure');
+    let child, called = 0;
+    const body = () => {
+      store.setState('parent', true);
+      child = store.runWrite(() => { called++; store.setState('child', true); }).catch(error => error);
+      throw failure;
+    };
+    if (admission === 'queued') await assert.rejects(store.runWrite(body), error => error === failure);
+    else assert.throws(() => store.transaction(body), error => error === failure);
+    assert.equal((await child).code, 'STORAGE_WRITE_ROLLED_BACK');
+    assert.equal(called, 0);
+    assert.equal(store.getState('parent'), null);
+    assert.equal(store.getState('child'), null);
+    assert.deepEqual(store.checkpoint(), before);
+    assert.equal(store.writeQueueStatus().pending, 0);
+  });
+
+  test(`${admission} parent commit preserves children of successful savepoints and rejects rolled-back children`, async t => {
+    const { store, writer } = fixture(t);
+    let discarded, accepted;
+    const body = () => {
+      assert.throws(() => store.transaction(() => {
+        discarded = store.runWrite(() => assert.fail('rolled-back descendant ran')).catch(error => error);
+        throw new Error('synthetic savepoint failure');
+      }), /savepoint failure/);
+      store.transaction(() => {
+        store.setState('parent', true);
+        accepted = store.runWrite(() => {
+          assert.equal(JSON.parse(writer.prepare("SELECT value FROM state WHERE key='parent'").get().value), true);
+          store.setState('child', true);
+        });
+      });
+      assert.equal(store.getState('child'), null);
+    };
+    if (admission === 'queued') await store.runWrite(body);
+    else store.transaction(body);
+    assert.equal((await discarded).code, 'STORAGE_WRITE_ROLLED_BACK');
+    await accepted;
+    assert.equal(store.getState('child'), true);
+    assert.equal(store.checkpoint().sequence, 2, 'child has its own later durable commit');
+  });
+}
+
 test('a post-commit failure cannot roll back saved data or strand subsequent commit callbacks', async t => {
   const { store } = fixture(t);
   let deferred, calls = 0;
@@ -164,4 +210,27 @@ test('cancellation after a synchronous callback starts cannot misreport its comm
     store.setState('accepted', true); cancel.abort(); return 'saved';
   }, { signal: cancel.signal });
   assert.equal(result, 'saved'); assert.equal(store.getState('accepted'), true);
+});
+
+for (const errcode of [10, 13]) test(`SQLite commit failure ${errcode} rejects descendants and preserves the durable checkpoint`, async t => {
+  const { store } = fixture(t), before = store.checkpoint();
+  const exec = store.db.exec.bind(store.db);
+  let calls = 0, child;
+  const failure = Object.assign(new Error('synthetic commit failure'), { code: 'ERR_SQLITE_ERROR', errcode });
+  store.db.exec = sql => { if (sql === 'COMMIT') throw failure; return exec(sql); };
+  try {
+    await assert.rejects(store.runWrite(() => {
+      calls++; store.setState('parent', true);
+      child = store.runWrite(() => assert.fail('child escaped failed commit')).catch(error => error);
+    }), error => error === failure);
+  } finally { store.db.exec = exec; }
+  assert.equal((await child).code, 'STORAGE_WRITE_ROLLED_BACK');
+  assert.equal(calls, 1);
+  assert.deepEqual(store.checkpoint(), before);
+  assert.equal(store.getState('parent'), null);
+  assert.equal(store.db.isTransaction, false);
+  assert.equal(store.db.prepare('SELECT COUNT(*) n FROM journal_pending').get().n, 0);
+  assert.equal(store.writeHealth.status().failing, true);
+  await store.runWrite(() => store.setState('recovered', true));
+  assert.equal(store.writeHealth.status().failing, false);
 });

@@ -126,6 +126,6 @@ for (const shape of ['unversioned','unversioned-sqlite-lookalike','current-sqlit
   assert.throws(()=>new Store(path),rejection);assert.deepEqual(readFileSync(path),before);
   assert.throws(()=>new Store(path,{readOnly:true}),rejection);assert.deepEqual(readFileSync(path),before);
   const restoreRejection = shape === 'dangling-content'
-    ? { code: 'backup_source_incompatible', details: { code: 'database_journal_invalid' } } : rejection;
+    ? { code: 'backup_source_invalid', details: { code: 'database_journal_invalid' } } : rejection;
   await assert.rejects(Store.restore(path,destination),restoreRejection);assert(!existsSync(destination));assert.deepEqual(readFileSync(path),before);
 });

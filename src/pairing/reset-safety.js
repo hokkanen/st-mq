@@ -2,6 +2,7 @@ import { DatabaseSync } from 'node:sqlite';
 import { validateCurrentDatabaseFormat } from '../storage/store.js';
 import { floorOverrideObligation } from '../control/floor-override.js';
 import { validateExecutorState, validateH66ControlState } from '../domain/heating-control-state.js';
+import { validateEquipmentTestState } from '../domain/equipment-test-state.js';
 
 const record = value => value !== null && typeof value === 'object' && !Array.isArray(value);
 
@@ -42,8 +43,10 @@ export function resetRestorationStatus(path) {
       if (native != null && (Object.keys(native.obligations).length || native.manualMode)) return 'pending';
     }
     const tests = readState('equipment-tests:v1');
-    if (tests != null && (!record(tests) || tests.version !== 1)) unknown = true;
-    else if (tests?.active) return 'pending';
+    try {
+      validateEquipmentTestState(tests);
+      if (tests?.active) return 'pending';
+    } catch { unknown = true; }
     // Identification temporarily changes charging and may require resuming the
     // previous instruction. Ordinary charger ownership is not such a lease.
     for (const { key, value } of db.prepare("SELECT key,value FROM state WHERE key GLOB 'charging:*:ownership*'").iterate()) {

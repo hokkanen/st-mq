@@ -30,12 +30,12 @@ function database(t, key, encoded) {
 }
 
 test('unreadable heating obligations reject both database opens before database mutation', t => {
-  for (const key of ['executor:home', 'executor:simulated', 'h66:control:synthetic-device']) {
+  for (const key of ['executor:home', 'executor:simulated', 'h66:control:synthetic-device', 'equipment-tests:v1']) {
     const fixture = database(t, key, '{unreadable-private-payload');
     const bytes = readFileSync(fixture.path);
     for (const readOnly of [false, true]) {
       assert.throws(() => new Store(fixture.path, { readOnly }), error =>
-        error.code === 'HEATING_CONTROL_STATE_UNREADABLE'
+        error.code === (key === 'equipment-tests:v1' ? 'EQUIPMENT_TEST_STATE_UNREADABLE' : 'HEATING_CONTROL_STATE_UNREADABLE')
         && /existing database was not changed/.test(error.message)
         && !error.message.includes(key) && !error.message.includes('private-payload'));
       assert.deepEqual(readFileSync(fixture.path), bytes);

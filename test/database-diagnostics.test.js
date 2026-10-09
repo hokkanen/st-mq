@@ -34,7 +34,7 @@ test('unjournaled external history fails fast startup and worker validation with
   assert.throws(() => new Store(path), { code: 'database_journal_invalid' });
   await assert.rejects(createSourceSnapshot({ dbPath: path, destination }), { code: 'database_journal_invalid' });
   await assert.rejects(verifySnapshot(path, {}), { code: 'database_journal_invalid' });
-  await assert.rejects(createDatabaseBackup({ sourcePath: path, destination }), { code: 'backup_source_incompatible' });
+  await assert.rejects(createDatabaseBackup({ sourcePath: path, destination }), { code: 'backup_source_invalid' });
   assert.deepEqual(readFileSync(path), bytes);
   assert.equal(existsSync(destination), false);
   assert.deepEqual(readdirSync(directory), ['source.sqlite']);
@@ -114,6 +114,7 @@ test('database diagnostics expose only fixed codes and numeric schema fields', (
   }
   assert.equal(databaseErrorDetails({ code: 'journal_checkpoint_mismatch' }), null, 'different peer checkpoints do not establish journal damage');
   for (const code of ['HEATING_CONTROL_STATE_UNREADABLE', 'H66_STATE_UNSUPPORTED', 'EXECUTOR_STATE_UNSUPPORTED',
+    'EQUIPMENT_TEST_STATE_UNREADABLE', 'EQUIPMENT_TEST_STATE_UNSUPPORTED',
     'ADAPTIVE_RECORDING_BUDGET_UNSUPPORTED', 'RECORDING_STORAGE_METRICS_UNSUPPORTED'])
     assert.equal(databaseErrorDetails({ code }).code, 'database_state_incompatible');
   assert.equal(databaseErrorDetails({ code: 'ERR_SQLITE_ERROR', errcode: 11 }).code, 'database_integrity_failed');

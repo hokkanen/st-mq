@@ -8,6 +8,7 @@ const guidance = {
 };
 
 const stateErrors = new Set(['HEATING_CONTROL_STATE_UNREADABLE', 'H66_STATE_UNSUPPORTED', 'EXECUTOR_STATE_UNSUPPORTED',
+  'EQUIPMENT_TEST_STATE_UNREADABLE', 'EQUIPMENT_TEST_STATE_UNSUPPORTED',
   'ADAPTIVE_RECORDING_BUDGET_UNSUPPORTED', 'RECORDING_STORAGE_METRICS_UNSUPPORTED']);
 
 /** Closed diagnostic fields only: exceptions can contain private paths and data. */

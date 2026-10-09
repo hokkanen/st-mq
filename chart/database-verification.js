@@ -1,17 +1,18 @@
 /** Manual verification is read-only, and its accepted job outlives this page. */
 export function verificationActivityText(activity, formatTime = value => new Date(value).toLocaleString()) {
-  const origins = { manual: 'Manual', scheduled: 'Scheduled', pairing: 'Pairing', recovery: 'Recovery', replication: 'Replication', operation: 'Operation' };
+  const origins = { manual: 'Manual', scheduled: 'Scheduled', pairing: 'Pairing', recovery: 'Recovery', replication: 'Replication', backup: 'Backup', operation: 'Operation' };
   const active = activity?.active, queued = activity?.queued?.length ?? 0;
   if (active) {
     const progress = active.progress?.processed ? ` · ${active.progress.processed.toLocaleString()} records checked` : '';
     const phase = { 'checking-transfer': 'Checking snapshot transfer bytes', 'checking-contracts': 'Checking saved data contracts',
       'checking-journal': 'Checking retained transaction history and current row fingerprints',
+      'checking-dependencies': 'Checking recovery source references',
       'checking-integrity': 'Checking SQLite integrity', checking: 'Checking current content' }[active.progress?.phase] ?? 'Full verification running';
     return `${origins[active.origin] ?? 'Operation'} · ${phase}${progress}. Started ${formatTime(active.startedAt)}.${queued ? ` ${queued} further check${queued === 1 ? '' : 's'} waiting.` : ''}`;
   }
   const last = activity?.lastRun;
   if (last) return `${origins[last.origin] ?? 'Operation'} · Last check ${last.state === 'complete' ? 'completed' : last.state === 'interrupted' ? 'was interrupted' : 'failed'} ${formatTime(last.finishedAt)}.`;
-  return 'Full checks run one at a time in this application, including checks requested by pairing and recovery.';
+  return 'Full checks run one at a time in this application, including backup, pairing and recovery checks.';
 }
 
 export function bindDatabaseVerification({ document, request, formatTime = value => new Date(value).toLocaleString(),

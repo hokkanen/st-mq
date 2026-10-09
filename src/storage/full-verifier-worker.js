@@ -6,6 +6,7 @@ import { readCheckpoint, verifyJournal } from './journal.js';
 import { databaseErrorDetails } from './database-errors.js';
 import { FULL_VERIFICATION_ALGORITHM } from './full-verifier.js';
 import { snapshotDigest } from '../replication/publication.js';
+import { validateRecoveryDependencies } from '../recovery/dependencies.js';
 
 const fail = code => Object.assign(new Error(code), { code });
 const identifier = value => `"${value.replaceAll('"', '""')}"`;
@@ -41,6 +42,8 @@ function verify({ db, checkpoint }) {
   validateCurrentDatabase(db, { full: true });
   progress({ phase: 'checking-journal', processed: 0, checkpoint }, true);
   const journal = verifyJournal(db);
+  progress({ phase: 'checking-dependencies', processed: 0, checkpoint }, true);
+  validateRecoveryDependencies(db, processed => progress({ phase: 'checking-dependencies', processed, unit: 'records', checkpoint }));
   progress({ phase: 'checking-integrity', processed: 0, checkpoint }, true);
   const integrity = db.prepare('PRAGMA integrity_check').all();
   if (integrity.length !== 1 || integrity[0].integrity_check !== 'ok' || db.prepare('PRAGMA foreign_key_check').get())

@@ -16,7 +16,7 @@ const messages = {
 const pending = [];
 const MAX_PENDING = 16;
 let active = null, lastRun = null, nextId = 0;
-const origins = new Set(['manual', 'scheduled', 'pairing', 'recovery', 'replication']);
+const origins = new Set(['manual', 'scheduled', 'pairing', 'recovery', 'replication', 'backup']);
 const jobStatus = job => ({ id: job.id, origin: job.origin, queuedAt: job.queuedAt,
   startedAt: job.startedAt, comparison: Boolean(job.options.rightPath), progress: job.progress });
 

@@ -1898,8 +1898,19 @@ snapshot and does not promise to include later writes. Only the copy switches to
 DELETE journal mode, so it can be opened without WAL/SHM companion files. Downloads,
 server copies, CLI backups and reset-archive recovery backups use this same snapshot
 generator and current `.sqlite` format. File-backed copying and current-schema,
-saved-state and integrity validation run in a worker before publication. A pinned
-reader fixes the copied boundary while later WAL writes continue. Diagnostic
+saved-state and integrity validation run in a worker before publication. A damaged
+WAL header, including its checksum, is rejected before SQLite opens the source;
+the original database and its companions remain intact. A pinned
+reader fixes the copied boundary while later WAL writes continue. After copying
+and finalizing, the private standalone copy passes the same independent full
+verification used by manual checks: saved-data contracts, retained journal and
+current row fingerprints, recovery source references, SQLite integrity, foreign
+keys and identifier high-water marks. Its transaction checkpoint must match the copied source boundary. These
+checks share the application's bounded verification queue; waiting or scanning
+the private copy holds no live-source reader. Publication waits for successful
+verification. Cancellation joins the worker before removing staging. Full checking
+adds work proportional to retained data to each explicit backup or restore; routine
+startup and healthy handover keep their bounded checks. Diagnostic
 exporter metadata describes the software that made the copy; it neither replaces
 format validation nor proves household identity. There is no checkpoint or overwrite of the running
 database. Server copies use mode `0600`;
@@ -1907,8 +1918,52 @@ new export directories use mode `0700`. Backup, offline restore and final server
 export share the sequence: flush the completed file, publish without replacing an
 existing destination or SQLite companion, then flush the final parent directory.
 A publication whose directory flush failed is never acknowledged as successful.
-Backup/restore may leave a complete but unconfirmed copy for inspection; an
-unacknowledged web export is removed. No caller overwrites the live database.
+The complete published file remains available for diagnosis and a later verified
+copy, including when saving from the dashboard; its power-loss durability is
+unconfirmed. Ordinary cancelled exports still clean their private staging files.
+Authorization revoked during an otherwise successful web publication still
+removes that unacknowledged export. No caller overwrites the live database.
+
+Recovery-reference checking requires every authoritative learning root and cycle
+to have exactly the reverse references derived from its retained payload. Unknown
+owners, missing owners and unjustified extra references fail verification without
+repairing the source. Current learning projections may have no index references
+when inserted, or populated references after sensor-reversal remapping; any
+references present must match that projection's payload. The root's complete
+references remain required in either case. Checksums and this semantic check
+detect covered damage; they cannot prove that lost WAL frames or missing files
+never contained later committed data. Keep independent dated backups.
+
+The offline `test/extended/backup-storage-scale.test.js` fixture measures copying,
+verification, concurrent committed writes, local history reads, event-loop gaps
+and process memory with growing synthetic databases. For example:
+
+```sh
+STMQ_BACKUP_SCALE_MIB=16,64,256 node --test test/extended/backup-storage-scale.test.js
+STMQ_BACKUP_SCALE_MIB=16,64 STMQ_BACKUP_WRITE_INTERVAL_MS=50 STMQ_BACKUP_BASELINE_MS=3000 node --test test/extended/backup-storage-scale.test.js
+STMQ_BACKUP_SCALE_MIB=64 STMQ_BACKUP_WRITE_INTERVAL_MS=50 STMQ_BACKUP_SETTLE_MS=10000 STMQ_BACKUP_BASELINE_MS=30000 node --test test/extended/backup-storage-scale.test.js
+```
+
+Its timings qualify only the machine and filesystem tested; process termination
+and injected filesystem errors do not simulate a physical power cut or establish
+Raspberry Pi flash durability.
+Use `TMPDIR` on the target storage. The default 5 ms offered write interval is a
+stress workload; repeat with measured installation-relevant rates. Separate
+recording-only, copying and verification results include actual committed writes
+per second, BEGIN/body/COMMIT costs, heartbeat delays and allocated WAL bytes.
+An optional settling period after fixture creation and a longer recording-only
+baseline help distinguish copy pressure from storage latency already present.
+WAL allocation is not the number of outstanding frames, and a passing consistency
+check does not by itself establish acceptable control latency.
+
+`/api/status` exposes `recordingHealth.recording.storageTimings` for the open
+Store: transaction attempt/commit counts and the last, maximum and p99 BEGIN,
+body, COMMIT and total synchronous durations over the last 128 attempts. These
+in-memory diagnostics reset when the Store opens and never write extra history.
+COMMIT time includes any SQLite checkpoint and filesystem wait performed by that
+call; it is not an isolated fsync measurement. Queue depth and `waitingSince`
+remain separate asynchronous-admission evidence. Slow successful writes do not
+prove corruption, and these timings do not grant device authority.
 
 The web API accepts no destination path: authenticated `POST /api/database-export`
 with an empty JSON object saves in the configured server folder, and authenticated

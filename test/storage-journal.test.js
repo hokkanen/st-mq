@@ -6,7 +6,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { DatabaseSync } from 'node:sqlite';
-import { Store } from '../src/storage/store.js';
+import { Store, validateWalHeader } from '../src/storage/store.js';
 import { verifyJournal, resolveChange } from '../src/storage/journal.js';
 
 async function fixture(t) {
@@ -49,6 +49,29 @@ test('kill during uncommitted write leaves exactly the last durable checkpoint',
   const reopened=new Store(join(dir,'source.sqlite'));t.after(()=>reopened.close());
   assert.deepEqual(reopened.checkpoint(),before);assert.equal(reopened.getState('uncommitted'),null);assert.equal(reopened.getState('committed'),1);
 });
+
+for(const boundary of ['inside-body','after-commit']) test(`process death ${boundary} preserves exactly the committed parent and no deferred descendant`,async t=>{
+  const {source,dir}=await fixture(t);
+  source.setState('baseline',1);const before=source.checkpoint();source.close();
+  const url=new URL('../src/storage/store.js',import.meta.url).href;
+  const result=spawnSync(process.execPath,['--input-type=module','-e',
+    `import {Store} from ${JSON.stringify(url)};
+    const store=new Store(process.argv[1]);
+    await store.runWrite(()=>{
+      store.setState('parent',2);
+      if(process.argv[2]==='inside-body')process.kill(process.pid,'SIGKILL');
+      store.afterCommit(()=>process.kill(process.pid,'SIGKILL'));
+      void store.runWrite(()=>store.setState('child',3));
+    });`,join(dir,'source.sqlite'),boundary]);
+  assert.equal(result.signal,'SIGKILL');
+  const reopened=new Store(join(dir,'source.sqlite'));t.after(()=>reopened.close());
+  assert.equal(reopened.getState('baseline'),1);
+  assert.equal(reopened.getState('parent'),boundary==='after-commit'?2:null);
+  assert.equal(reopened.getState('child'),null);
+  assert.equal(reopened.checkpoint().sequence,before.sequence+Number(boundary==='after-commit'));
+  assert.deepEqual(verifyJournal(reopened.db).checkpoint,reopened.checkpoint());
+  assert.equal(reopened.db.prepare('PRAGMA integrity_check').get().integrity_check,'ok');
+});
 test('unsealed external changes fail startup without rewriting original bytes',async t=>{
   const {source}=await fixture(t);source.setState('value',1);source.close();
   const raw=new DatabaseSync(source.path); registerJournalFunctions(raw);raw.prepare("INSERT INTO events(type,payload,at) VALUES('external','{}',1)").run();raw.close();
@@ -65,6 +88,27 @@ test('startup preserves malformed WAL companions instead of silently opening old
     assert.throws(()=>new Store(source.path,{readOnly}),{code:'database_integrity_failed'});
     assert.deepEqual(await readFile(source.path),main);
     assert.deepEqual(await readFile(`${source.path}-wal`),wal);
+  }
+});
+
+test('WAL admission validates both SQLite checksum byte orders and rejects any altered header word',async t=>{
+  const {source}=await fixture(t);source.close();
+  // Fixed vectors from SQLite's documented 32-byte header/checksum format.
+  // Values are intentionally independent of the implementation under test.
+  const headers=[
+    '377f0682002de2180000100000000000123456789abcdef04d3d3725f603cb64',
+    '377f0683002de2180000100000000000123456789abcdef028393d4f69cf03f8',
+  ];
+  for(const hex of headers) {
+    const header=Buffer.from(hex,'hex');
+    await writeFile(`${source.path}-wal`,header);
+    assert.doesNotThrow(()=>validateWalHeader(source.path));
+    for(let offset=0;offset<32;offset+=4) {
+      const damaged=Buffer.from(header);damaged[offset]^=1;
+      await writeFile(`${source.path}-wal`,damaged);
+      assert.throws(()=>validateWalHeader(source.path),{code:'database_integrity_failed'});
+      assert.deepEqual(await readFile(`${source.path}-wal`),damaged);
+    }
   }
 });
 

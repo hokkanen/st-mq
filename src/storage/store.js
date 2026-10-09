@@ -12,6 +12,7 @@ import { createDatabaseBackup } from './backup.js';
 import { cycleAssessmentExcluded } from './cycle-assessment.js';
 import { LEARNING_ALGORITHM } from '../domain/learning-contract.js';
 import { validateExecutorState, validateH66ControlState } from '../domain/heating-control-state.js';
+import { validateEquipmentTestState } from '../domain/equipment-test-state.js';
 import { createWriteHealth } from './write-health.js';
 import { WriteQueue, sqliteContention } from './write-queue.js';
 import { readAdaptiveBudget } from './adaptive-recording-budget.js';
@@ -88,14 +89,15 @@ export function validateCurrentDatabase(db, { full = false } = {}) {
   readStorageMetrics(db);
   // Control-state rejection must precede writable setup and Engine construction,
   // whose unrelated initialization may otherwise mutate a rejected database.
-  for (const row of db.prepare("SELECT key,value FROM state WHERE key IN ('executor:home','executor:simulated') OR key GLOB 'h66:control:*'").iterate()) {
+  for (const row of db.prepare("SELECT key,value FROM state WHERE key IN ('executor:home','executor:simulated','equipment-tests:v1') OR key GLOB 'h66:control:*'").iterate()) {
+    const equipmentTest = row.key === 'equipment-tests:v1';
     let saved;
     try { saved = JSON.parse(row.value); }
     catch {
-      throw Object.assign(new Error('Unreadable heating control state. Safely restore equipment, then use an intact current-version backup or a new empty database. The existing database was not changed.'),
-        { code: 'HEATING_CONTROL_STATE_UNREADABLE' });
+      throw Object.assign(new Error(`Unreadable ${equipmentTest ? 'equipment test' : 'heating control'} state. Safely restore equipment, then use an intact current-version backup or a new empty database. The existing database was not changed.`),
+        { code: equipmentTest ? 'EQUIPMENT_TEST_STATE_UNREADABLE' : 'HEATING_CONTROL_STATE_UNREADABLE' });
     }
-    try { (row.key.startsWith('h66:control:') ? validateH66ControlState : validateExecutorState)(saved); }
+    try { (equipmentTest ? validateEquipmentTestState : row.key.startsWith('h66:control:') ? validateH66ControlState : validateExecutorState)(saved); }
     catch (error) {
       throw Object.assign(new Error(`${error.message} The existing database was not changed.`), { code: error.code });
     }
@@ -126,8 +128,20 @@ export function validateWalHeader(path) {
     if(bytes===0) return;
     const magic=bytes>=4 ? header.readUInt32BE(0) : 0;
     const pageSize=bytes>=12 ? header.readUInt32BE(8) : 0;
+    // SQLite can ignore a checksum-invalid header and expose an older main-file
+    // checkpoint. Check the bounded header before SQLite opens any companion.
+    // https://www.sqlite.org/fileformat2.html#checksum_algorithm
+    let checksum1=0,checksum2=0;
+    if(bytes===32 && [0x377f0682,0x377f0683].includes(magic)) {
+      const word=offset=>magic===0x377f0682 ? header.readUInt32LE(offset) : header.readUInt32BE(offset);
+      for(let offset=0;offset<24;offset+=8) {
+        checksum1=(checksum1+word(offset)+checksum2)>>>0;
+        checksum2=(checksum2+word(offset+4)+checksum1)>>>0;
+      }
+    }
     if(bytes!==32 || ![0x377f0682,0x377f0683].includes(magic) || header.readUInt32BE(4)!==3007000
-      || pageSize<512 || pageSize>65536 || (pageSize & (pageSize-1))!==0)
+      || pageSize<512 || pageSize>65536 || (pageSize & (pageSize-1))!==0
+      || checksum1!==header.readUInt32BE(24) || checksum2!==header.readUInt32BE(28))
       throw Object.assign(new Error('The SQLite write-ahead journal header is invalid. Preserve the database and its companions for verification.'),
         {code:'database_integrity_failed'});
   } finally { closeSync(file); }
@@ -262,7 +276,10 @@ export class Store {
   runWrite(fn, options = {}) {
     if (this.readOnly) return Promise.reject(Object.assign(new Error('This recording storage is read-only.'),
       { code: 'ERR_SQLITE_ERROR', errcode: 8 }));
-    if (this.transactionDepth && !this.writeQueue.running) return new Promise((resolve, reject) => {
+    // Descendants depend on the parent commit regardless of how that parent
+    // acquired its transaction. Enqueuing during a running job must not let a
+    // child escape the parent's rollback or a discarded nested savepoint.
+    if (this.transactionDepth) return new Promise((resolve, reject) => {
       this.afterCommit(() => { this.writeQueue.run(fn, options).then(resolve, reject); });
       this.afterRollback(() => reject(Object.assign(new Error('The preceding save was rolled back.'), { code: 'STORAGE_WRITE_ROLLED_BACK' })));
     });
@@ -322,12 +339,25 @@ export class Store {
     // Diagnostic counters cannot introduce a new failure after a commit or
     // leave an opened transaction behind if the database becomes unreadable.
     const changesBefore = this.databaseChanges();
+    const timing = { beginMs: 0, bodyMs: 0, commitMs: 0, totalMs: 0, committed: false };
+    const transactionStarted = performance.now();
+    const recordTiming = () => {
+      timing.totalMs = performance.now() - transactionStarted;
+      // Diagnostics cannot change a transaction's outcome or durable authority.
+      try { this.writeHealth.transaction(timing); } catch {}
+    };
     try { this.db.exec('BEGIN IMMEDIATE'); }
-    catch (error) { if (!admission || !sqliteContention(error)) this.writeHealth.failure(error); throw error; }
+    catch (error) {
+      timing.beginMs = performance.now() - transactionStarted; recordTiming();
+      if (!admission || !sqliteContention(error)) this.writeHealth.failure(error);
+      throw error;
+    }
+    timing.beginMs = performance.now() - transactionStarted;
     this.transactionDepth = 1; this.savepointSequence ??= 0;
     this.commitEffects = []; this.rollbackEffects = [];
     this.discardedChanges = 0; this.writeEvidenceUnknown = changesBefore === null;
     let result, committed = false;
+    const bodyStarted = performance.now();
     try {
       result = fn();
       if (result && typeof result.then === 'function') {
@@ -336,8 +366,11 @@ export class Store {
       }
       const changesAfter = this.databaseChanges();
       const changed = !this.writeEvidenceUnknown && changesAfter !== null && changesAfter - changesBefore > this.discardedChanges;
-      this.db.exec('COMMIT');
-      committed = true;
+      timing.bodyMs = performance.now() - bodyStarted;
+      const commitStarted = performance.now();
+      try { this.db.exec('COMMIT'); }
+      finally { timing.commitMs = performance.now() - commitStarted; }
+      committed = true; timing.committed = true;
       if (changed) this.writeHealth.success();
     } catch (error) {
       try { this.db.exec('ROLLBACK'); } catch (cleanupError) { if (error && typeof error === 'object') error.cleanupError = cleanupError; }
@@ -347,7 +380,11 @@ export class Store {
       this.writeHealth.failure(error);
       throw error;
     }
-    finally { this.transactionDepth = 0; if (!committed) this.commitEffects = []; this.rollbackEffects = []; }
+    finally {
+      if (!timing.bodyMs && !timing.commitMs) timing.bodyMs = performance.now() - bodyStarted;
+      recordTiming();
+      this.transactionDepth = 0; if (!committed) this.commitEffects = []; this.rollbackEffects = [];
+    }
     const effects = this.commitEffects; this.commitEffects = [];
     const failures = [];
     for (const effect of effects) {

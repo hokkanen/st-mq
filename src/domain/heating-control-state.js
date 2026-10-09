@@ -23,6 +23,23 @@ const h66Obligation = (index, value, saved) => record(value)
  * clears or grants authority from unsupported saved control state. */
 const executorFields = (value, fields) => record(value) && Object.keys(value).every(key => fields.includes(key));
 const executorDeadline = value => value === null || Number.isFinite(value);
+const nonempty = value => typeof value === 'string' && value.length > 0;
+const optional = (value, key, valid) => !Object.hasOwn(value, key) || valid(value[key]);
+const nullable = valid => value => value === null || valid(value);
+const revision = value => Number.isSafeInteger(value) && value >= 0;
+const executorRequest = value => executorFields(value, ['commands', 'at']) && Number.isFinite(value.at)
+  && Array.isArray(value.commands) && value.commands.length > 0
+  && value.commands.every(command => ['normal', 'reduction', 'circulation'].includes(command));
+const executorDhwrRequest = value => executorFields(value, ['on', 'at']) && typeof value.on === 'boolean' && Number.isFinite(value.at);
+const executorTariffRequest = value => executorFields(value, ['mode', 'at']) && ['normal', 'reduction'].includes(value.mode) && Number.isFinite(value.at);
+const executorRecovery = value => executorFields(value, ['owner', 'compressorOnly', 'temperatureValidUntil', 'externalChangeRevision'])
+  && (value.owner === undefined || nonempty(value.owner)) && typeof value.compressorOnly === 'boolean'
+  && Number.isFinite(value.temperatureValidUntil) && revision(value.externalChangeRevision);
+const executorKeys = ['version', 'targetBindings', 'phase', 'pulseUntil', 'expiresAt', 'legacyOutstanding',
+  'requested', 'acknowledgedAt', 'lastResult', 'dhwrOutstanding', 'dhwrRequested', 'manualDhwrUntil',
+  'tariffRequested', 'dhwrStoppedAt', 'manualBaseline', 'manualRequested', 'manualPause', 'manualTemporary',
+  'manualPreheatReport', 'recoveryOwner', 'recoveryStartedAt', 'recoveryHoldUntil', 'recoveryAuxReleasedAt',
+  'recoveryFallbackReason', 'recoveryOnExpiry'];
 const executorBinding = value => executorFields(value, ['identity', 'generation'])
   && typeof value.identity === 'string' && /^[a-f0-9]{64}$/.test(value.identity)
   && typeof value.generation === 'string' && value.generation.length > 0;
@@ -40,7 +57,7 @@ const executorChoice = value => executorFields(value, ['phase', 'at', 'expiresAt
   && (value.phase === 'preheat' || value.roomBoostC === 0);
 
 export function validateExecutorState(saved) {
-  if (saved != null && (!record(saved) || saved.version !== 2 || !record(saved.targetBindings)
+  if (saved != null && (!executorFields(saved, executorKeys) || saved.version !== 2 || !record(saved.targetBindings)
     || Object.entries(saved.targetBindings).some(([kind, binding]) => !['tariff', 'dhwr'].includes(kind) || !executorBinding(binding))
     || typeof saved.legacyOutstanding !== 'boolean'
     || Object.hasOwn(saved, 'dhwrOutstanding') && typeof saved.dhwrOutstanding !== 'boolean'
@@ -48,6 +65,14 @@ export function validateExecutorState(saved) {
     || !['normal', 'recovery', 'preheat', 'reduction', 'restoration-pending'].includes(saved.phase)
     || saved.dhwrOutstanding && !saved.targetBindings.dhwr
     || saved.legacyOutstanding && !saved.targetBindings.tariff
+    || !optional(saved, 'requested', nullable(executorRequest))
+    || !optional(saved, 'dhwrRequested', nullable(executorDhwrRequest))
+    || !optional(saved, 'tariffRequested', nullable(executorTariffRequest))
+    || !optional(saved, 'recoveryOnExpiry', nullable(executorRecovery))
+    || ['acknowledgedAt', 'manualDhwrUntil', 'dhwrStoppedAt', 'recoveryStartedAt', 'recoveryHoldUntil', 'recoveryAuxReleasedAt']
+      .some(key => !optional(saved, key, executorDeadline))
+    || !optional(saved, 'recoveryOwner', value => value === undefined || value === null || nonempty(value))
+    || !optional(saved, 'recoveryFallbackReason', nullable(nonempty))
     || saved.manualBaseline != null && !executorBaseline(saved.manualBaseline)
     || saved.manualPause != null && !executorPause(saved.manualPause)
     || saved.manualTemporary != null && !executorTemporary(saved.manualTemporary)
@@ -59,10 +84,23 @@ export function validateExecutorState(saved) {
     throw failure('EXECUTOR_STATE_UNSUPPORTED', 'Unsupported heating state. Safely stop existing equipment, then start with a fresh development database.');
 }
 
+const h66Keys = ['version', 'phase', 'baseline', 'obligations', 'requested', 'expiresAt', 'lastResult',
+  'lastManual', 'lastTest', 'manualMode', 'pauseId', 'manualPreheat', 'externalChangeRevision', 'externalChangeAt'];
+const h66Preheat = value => executorFields(value, ['enabled', 'confirmed', 'baseValue', 'roomSettingC', 'roomBoostC', 'expiresAt', 'pauseId', 'at'])
+  && value.enabled === true && value.confirmed === true && h66Value('0203', value.baseValue)
+  && h66Value('0203', value.roomSettingC) && Number.isFinite(value.roomBoostC) && value.roomBoostC >= 0 && value.roomBoostC <= 5
+  && value.roomSettingC === Math.min(H66_SETTING_LIMITS['0203'][1], value.baseValue + value.roomBoostC)
+  && Number.isFinite(value.expiresAt) && nullable(nonempty)(value.pauseId) && Number.isFinite(value.at);
+
 export function validateH66ControlState(saved) {
-  if (saved != null && (!record(saved) || saved.version !== 1 || !h66Map(saved.baseline) || !h66Map(saved.requested)
+  if (saved != null && (!executorFields(saved, h66Keys) || saved.version !== 1 || !h66Map(saved.baseline) || !h66Map(saved.requested)
     || !record(saved.obligations) || Object.entries(saved.obligations).some(([index, value]) => !h66Obligation(index, value, saved))
-    || Object.keys(saved.obligations).length > 0 && !(saved.expiresAt === null || Number.isFinite(saved.expiresAt))
-    || ['manual-pause', 'manual-temporary'].includes(saved.phase)))
+    || !executorDeadline(saved.expiresAt)
+    || !['normal', 'recovery', 'preheat', 'reduction', 'test', 'restoration-pending', 'external-change'].includes(saved.phase)
+    || !optional(saved, 'manualMode', value => value === null || ['recovery', 'preheat', 'reduction'].includes(value))
+    || !optional(saved, 'pauseId', nullable(nonempty))
+    || !optional(saved, 'manualPreheat', nullable(h66Preheat))
+    || !optional(saved, 'externalChangeRevision', revision)
+    || !optional(saved, 'externalChangeAt', executorDeadline)))
     throw failure('H66_STATE_UNSUPPORTED', 'Unsupported native-setting state. Start with a fresh development database after safely restoring equipment.');
 }

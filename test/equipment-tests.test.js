@@ -7,6 +7,7 @@ import { tmpdir } from 'node:os';
 import { setTimeout as delay } from 'node:timers/promises';
 import { createEquipmentTests } from '../src/app/equipment-tests.js';
 import { Store } from '../src/storage/store.js';
+import { validateEquipmentTestState } from '../src/domain/equipment-test-state.js';
 
 const KEY = 'equipment-tests:v1', INITIAL = Date.parse('2026-09-13T10:00:00Z');
 const digest = 'a'.repeat(64);
@@ -17,7 +18,12 @@ function fixture(t, { saved = new Map(), command, on = false, storage } = {}) {
   const device = { id: 'caravan', label: 'Caravan plug', area: 'Outside', kind: 'plug', available: true,
     controls: { switch: true, tariff: false }, readings: { active: { value: Number(on), unit: 'state', stale: false, observedAt: now } } };
   const store = storage ?? { getState: key => structuredClone(saved.get(key) ?? null),
-    setState: (key, value) => saved.set(key, structuredClone(value)), runWrite: async operation => operation() };
+    setState: (key, value) => {
+      validateEquipmentTestState(value);
+      const encoded = JSON.parse(JSON.stringify(value));
+      validateEquipmentTestState(encoded);
+      saved.set(key, encoded);
+    }, runWrite: async operation => operation() };
   const equipment = { status: () => ({ devices: [device] }), signature: id => id === device.id ? route : null,
     async setSwitch(id, nextOn) {
       const persisted = store.getState(KEY), active = persisted.active;

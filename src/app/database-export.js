@@ -22,7 +22,7 @@ export function createDatabaseExport({ getDirectory, onBackupEvent = () => {} })
     const cancellation = new AbortController();
     const disconnected = () => cancellation.abort();
     response.once?.('close', disconnected);
-    let directory, publishedPath, saved = false, completed = false, bytes, backupPhase;
+    let directory, publishedPath, preservePublished = false, saved = false, completed = false, bytes, backupPhase;
     const notify = (phase, extra = {}) => {
       backupPhase = phase;
       // Health reporting cannot turn a completed backup into a failed operation.
@@ -54,7 +54,7 @@ export function createDatabaseExport({ getDirectory, onBackupEvent = () => {} })
           const candidate = join(destination, filename);
           try { await publishDatabaseFile(path, candidate); publishedPath = candidate; break; }
           catch (error) {
-            if (error.published) publishedPath = candidate;
+            if (error.published) { publishedPath = candidate; preservePublished = true; }
             if (!['EEXIST', 'database_destination_occupied'].includes(error.code)) throw error;
             filename = `${stem}-${collision + 1}.sqlite`;
           }
@@ -81,7 +81,10 @@ export function createDatabaseExport({ getDirectory, onBackupEvent = () => {} })
       fail(error);
     } finally {
       try {
-        try { if (publishedPath && !saved) await rm(publishedPath, { force: true }); }
+        // A failed directory flush leaves a complete verified artifact whose
+        // crash durability is uncertain. Preserve that evidence without claiming
+        // success; only ordinary cancelled publication is disposable here.
+        try { if (publishedPath && !saved && !preservePublished) await rm(publishedPath, { force: true }); }
         finally { if (directory) await rm(directory, { recursive: true, force: true }); }
       } catch {
         notify('failed', { errorCode: 'backup_cleanup_failed' });

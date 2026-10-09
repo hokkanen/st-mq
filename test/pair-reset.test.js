@@ -193,7 +193,8 @@ test('reset rejects missing confirmation, unknown fields, and a stale review bef
 test('fresh cannot erase a recorded equipment restoration obligation even with confirmation', async t => {
   const f = await fixture(t);
   const db = new Store(f.config.dbPath);
-  db.setState('equipment-tests:v1', { version: 1, active: { synthetic: 'outstanding obligation' } }); db.close();
+  db.setState('equipment-tests:v1', { version: 1, active: { deviceId: 'synthetic-switch', signature: 'a'.repeat(64),
+    on: true, previousOn: false, requestedAt: 1000, until: 2000, status: 'restoration-pending' } }); db.close();
   const app = await f.open();
   const op = await completed(app, command(app, 'fresh'));
   assert.equal(op.state, 'error'); assert.match(op.error, /still require restoration/);

@@ -78,6 +78,28 @@ test('full verification detects an altered historical commit without exposing so
   });
 });
 
+for (const mutation of ['missing', 'extra', 'wrong']) {
+  test(`full verification and backup reject ${mutation} derived recovery edges at an unchanged journal checkpoint`, async t => {
+    const { store, directory } = await fixture(t), at = 1767225600000;
+    const id = store.observation({ source: 'synthetic', device: 'synthetic-room', signal: 'indoor_temperature',
+      unit: 'degC', value: 21, sourceTime: at, receivedAt: at });
+    store.cycle('mqtt', { id: 'synthetic-cycle', status: 'active', startedAt: at, observations: [{ provenance: { observationId: id } }] });
+    await verifyDatabase({ dbPath: store.path });
+    const checkpoint = store.checkpoint();
+    if (mutation === 'missing') store.db.exec('DELETE FROM recovery_dependencies');
+    if (mutation === 'extra') store.db.exec("INSERT INTO recovery_dependencies VALUES('learning_cycles','synthetic-cycle','observations','999')");
+    if (mutation === 'wrong') store.db.exec("UPDATE recovery_dependencies SET source_key='999'");
+    assert.deepEqual(store.checkpoint(), checkpoint);
+    assert.equal(store.db.prepare('PRAGMA integrity_check').get().integrity_check, 'ok');
+    const before = await readFile(store.path), wal = await readFile(`${store.path}-wal`);
+    await assert.rejects(verifyDatabase({ dbPath: store.path }), { code: 'database_integrity_failed' });
+    await assert.rejects(store.backup(join(directory, 'rejected.sqlite')), { code: 'backup_source_invalid' });
+    assert.deepEqual(await readFile(store.path), before);
+    assert.deepEqual(await readFile(`${store.path}-wal`), wal);
+    assert.deepEqual(store.checkpoint(), checkpoint);
+  });
+}
+
 test('live full verification pins its checkpoint while later writes continue', async t => {
   const { store } = await fixture(t);
   store.transaction(() => { for (let at = 2; at < 3000; at++) store.event('fixture', { example: at }, at); });
@@ -185,6 +207,8 @@ test('manual service exposes other operation activity and shutdown cancels its q
 });
 
 test('verification activity identifies queued work and transfer checking without displaying private values', () => {
+  assert.match(verificationActivityText({ active: { origin: 'backup', startedAt: 1,
+    progress: { phase: 'checking-journal' } } }, String), /Backup.*Checking retained transaction history/);
   assert.match(verificationActivityText({ active: { origin: 'recovery', startedAt: 1,
     progress: { phase: 'checking', processed: 2048 } }, queued: [{}, {}] }, value => `time ${value}`),
   /Recovery.*2,048 records checked.*Started time 1.*2 further checks waiting/);

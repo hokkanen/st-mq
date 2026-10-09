@@ -1,8 +1,8 @@
 import { createWriteScope } from '../storage/write-scope.js';
+import { validateEquipmentTestState } from '../domain/equipment-test-state.js';
 
 const KEY = 'equipment-tests:v1';
 const MINUTE = 60_000, RETRY_MS = 5000;
-const MODES = new Set(['starting', 'active', 'restoration-pending']);
 const timestamp = value => Number.isSafeInteger(value) && value >= 0;
 const signatureValid = value => typeof value === 'string' && /^[a-f0-9]{64}$/i.test(value);
 const idValid = value => typeof value === 'string' && /^[A-Za-z0-9_-]{1,100}$/.test(value);
@@ -62,12 +62,8 @@ function freshState(device, now) {
  * this obligation to another output. Construction never sends a command. */
 export function createEquipmentTests({ store, clock = Date.now, getEquipment, canControl = () => false, report } = {}) {
   let state = store.getState(KEY) ?? { version: 1, active: null, lastResult: null };
+  validateEquipmentTestState(state);
   const saved = state.active;
-  if (state.version !== 1 || saved && (!idValid(saved.deviceId) || !signatureValid(saved.signature)
-    || typeof saved.on !== 'boolean' || typeof saved.previousOn !== 'boolean'
-    || !timestamp(saved.until) || !timestamp(saved.requestedAt)
-    || saved.confirmedAt !== undefined && !timestamp(saved.confirmedAt) || !MODES.has(saved.status)))
-    throw new Error('Saved equipment test state could not be validated.');
   state = structuredClone(state);
   // A direct manual request is never replayed or reversed after a restart.
   if (state.lastManual?.status === 'pending') state.lastManual = { ...state.lastManual,
@@ -82,6 +78,7 @@ export function createEquipmentTests({ store, clock = Date.now, getEquipment, ca
   const notify = result => { try { report?.({ type: 'equipment-test', ...result }); } catch { /* Reporting cannot interrupt restoration. */ } };
   const persist = (next, beforeSave = () => {}) => writes.run(() => {
     beforeSave();
+    validateEquipmentTestState(next);
     const previous = state;
     store.afterRollback?.(() => { state = previous; });
     store.setState(KEY, structuredClone(next)); state = next;

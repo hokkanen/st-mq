@@ -320,7 +320,12 @@ test('a failed final export directory flush never acknowledges a saved copy or r
   await assert.rejects(exportDatabase({ store, response: { destroyed: false, headersSent: false }, authorized: () => true, save: true }), { code: 'backup_failed' });
   assert.deepEqual(events.map(event => event.phase), ['start', 'failed']);
   assert.equal(events[1].errorCode, 'database_publication_unconfirmed');
-  assert.deepEqual(readdirSync(exportDirectory), [], 'The failed unacknowledged export and its staging are cleaned up');
+  const remaining = readdirSync(exportDirectory);
+  assert.equal(remaining.length, 1, 'Private staging is cleaned but the unconfirmed published artifact is preserved');
+  assert(remaining[0].endsWith('.sqlite'));
+  const preserved = new Store(join(exportDirectory, remaining[0]), { readOnly: true });
+  try { assert.deepEqual(preserved.checkpoint(), store.checkpoint()); }
+  finally { preserved.close(); }
 });
 
 for (const send of [fetch, saveCopy]) {
